@@ -1345,18 +1345,63 @@ conf |> Seq.iter print
   expressions), not runnable. Import it with `import "./lib/x.weir"`
   (a literal path, first in the file before declarations) or
   `import "./lib/x.weir" as X`. Access is ALWAYS qualified:
-  `X.helper`, `X.Ctx` types cross the boundary. Construct an imported
-  record with the qualified literal `X.Ctx { field = v; ... }` (or
-  `Ctx { ... }` when the name is unambiguous); a bare `{ ... }` still
-  works when exactly one record in scope has those fields. The alias
-  defaults to the module's declared name (or the capitalized
-  filename). Errors are named: running a module, importing a
-  non-module, a self-import, a module `let` that runs a command
-  (wrap it in a function), or a missing file (the message shows the
-  resolved absolute path). Resolution is check-time — nothing loads
-  at runtime. `import` is script-only (not `-e`/REPL). Imports are
-  transitive (a module may import); a shared module is checked once
-  (diamonds collapse) and an import cycle is a named check error.
+  `X.helper`, `X.Ctx` types cross the boundary. THE EXPORT RULE
+  [D:module-signatures]: a SIGNATURE line — `let helper : int -> int`
+  with NO `=` — declares a member's type AND exports it; the
+  signature IS the export. An unsigned member is module-PRIVATE
+  (full inference inside the module, invisible to importers —
+  importing one errors with the exact signature to add, inferred
+  type included). The implementation follows as its own plain
+  `let helper n = …`, annotation-free: the signature's types flow
+  INTO its checking, so a param can pattern-match its declared union
+  and a generic sig (`'a -> 'a`) is honoured — an impl that pins `'a`
+  refuses as less-general. The sig precedes its impl; a sig without
+  an impl is a check error at the sig. `///` docs live ON the
+  signature line (hover reads sig + doc there; a doc on the impl of
+  a signed member teaches the one home). `type` declarations stay
+  auto-exported — already fully explicit. SCRIPTS REFUSE the
+  signature form (scripts infer; the API law is a module law).
+  Construct an imported record with the qualified literal
+  `X.Ctx { field = v; ... }` (or `Ctx { ... }` when the name is
+  unambiguous); a bare `{ ... }` still works when exactly one record
+  in scope has those fields. The alias defaults to the module's
+  declared name (or the capitalized filename). Errors are named:
+  running a module, importing a non-module, a self-import, a module
+  `let` that runs a command (wrap it in a function), or a missing
+  file (the message shows the resolved absolute path). Resolution is
+  check-time — nothing loads at runtime. `import` is script-only
+  (not `-e`/REPL). Imports are transitive (a module may import); a
+  shared module is checked once (diamonds collapse) and an import
+  cycle is a named check error.
+
+```weir
+// a module: the signed member exports, the unsigned one is private
+[
+    "module Msig"
+    "type Verdict = Good of int | Bad"
+    ""
+    "/// grade a score"
+    "let grade : int -> Verdict"
+    ""
+    "let grade n = if n > 60 then Good n else Bad"
+    ""
+    "let raw n = n + 1"
+] |> File.write "msig-lib.weir"
+```
+
+```weir
+import "./msig-lib.weir" as M
+
+match M.grade 90 with
+| Good n -> print $"good {n}"
+| Bad -> print "bad"
+```
+
+```weir-error
+// unsigned = module-private; the error names the signature to add
+import "./msig-lib.weir" as M
+print (show (M.raw 1))
+```
 
 ```weir
 let clean = not (1 == 2)

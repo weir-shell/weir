@@ -29,6 +29,8 @@ let modSrc = <<<
     module RefMod
 
     /// doubles
+    let twice : int -> int
+
     let twice n = n * 2
 
 let useSrc = <<<
@@ -40,6 +42,22 @@ modSrc |> File.write "refmod.weir"
 useSrc |> File.write "use-refmod.weir"
 weir use-refmod.weir
 ```
+
+## The signature is the export
+
+A member exports by declaring a signature — `let twice : int -> int`
+with no `=` — above its implementation. Unsigned members are
+module-private: fully inferred inside the module, invisible to
+importers, and importing one is a check error naming the signature
+to add (inferred type included). The implementation stays
+annotation-free; the signature's types flow into its checking, so a
+param can pattern-match its declared union and a generic signature
+(`'a -> 'a`) is honoured — an implementation that pins a signature
+variable refuses as less-general. A signature precedes its
+implementation; one without an implementation errors at the
+signature. `///` docs attach to the signature line (the API's one
+home); `type` declarations stay auto-exported. Scripts refuse the
+form — scripts infer.
 
 ## Qualified access, and what never leaks
 

@@ -349,6 +349,12 @@ type TypeEnv =
       // records provenance so the qualified literal `Git.Ctx { .. }`
       // can confirm the module owns that type. Empty for single-file.
       ModuleTypes: Map<string, Set<string>>
+      // imported modules' PRIVATE members [D:module-signatures]:
+      // alias -> unsigned member name -> its inferred scheme. Never
+      // resolvable — carried so the import-of-private error can teach
+      // the migration (the signature to add, type included). Empty
+      // for builtin modules and single-file runs.
+      ModulePrivate: Map<string, Map<string, Scheme>>
       // anonymous LITERAL defs minted mid-statement [D:anon-literals]:
       // a literal's canonical name exists only after inference — too
       // late for the withAnonDefs pre-walk — so the check arm writes

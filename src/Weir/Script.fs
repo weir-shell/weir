@@ -2101,6 +2101,10 @@ and LoadedModule =
       AbsPath: string
       TypeDefs: (string * TypeDef) list
       Members: (string * Scheme) list
+      // unsigned members [D:module-signatures]: never resolvable from an
+      // importer — carried so the import-of-private error can teach the
+      // signature to add (type included)
+      PrivateMembers: (string * Scheme) list
       TypeNames: string list
       // each statement WITH its logical line [D:can-report]: the line
       // carries the segment table, so a capability inside a module can
@@ -2231,6 +2235,32 @@ let discardError (ty: Ty) : string option =
 // physical spans computed INSIDE. Every consumer (runner, REPL, -e,
 // check/LSP, the oracle mirror) calls this and only renders.
 
+// a module member SIGNATURE [D:module-signatures] — the export
+// declaration. Line/Col are the sig's own physical site (mismatch and
+// orphan errors name it); Scheme is the sig type generalized (the
+// paired implementation's check refines its Cs).
+type MemberSig =
+    { Ty: Ty
+      Scheme: Scheme
+      Line: int
+      Col: int }
+
+// the module-signature context a MODULE check threads [D:module-signatures]:
+// None = script/REPL/-e, where the form refuses with the teaching.
+// Pending = declared, not yet implemented; Signed = every name ever
+// signed (re-implementation guard); Implemented = every module-own
+// binder so far (the sig-after-impl guard).
+type SigContext =
+    { Pending: Map<string, MemberSig>
+      Signed: Set<string>
+      Implemented: Set<string> }
+
+module SigContext =
+    let empty =
+        { Pending = Map.empty
+          Signed = Set.empty
+          Implemented = Set.empty }
+
 type CheckedKind =
     | KType of Decl
     | KLet of name: string * scheme: Scheme * te: Check.TypedExpr
@@ -2242,6 +2272,9 @@ type CheckedKind =
     | KModule of name: string option * kwSpan: Span
     // a resolved import [D:modules-v1] — its Env merge already applied
     | KImport of LoadedModule
+    // a member signature [D:module-signatures] — binds nothing yet; the
+    // caller pairs it with its implementation (and errors the orphan)
+    | KSig of name: string * decl: MemberSig
 
 [<RequireQualifiedAccess>]
 type StmtTag =
@@ -2474,10 +2507,12 @@ let private mergeModule (tenv: TypeEnv) (lm: LoadedModule) : TypeEnv =
     { tenv with
         Modules = Map.add lm.Alias (Map.ofList lm.Members) tenv.Modules
         Types = lm.TypeDefs |> List.fold (fun ts (n, d) -> Map.add n d ts) tenv.Types
-        ModuleTypes = Map.add lm.Alias (Set.ofList lm.TypeNames) tenv.ModuleTypes }
+        ModuleTypes = Map.add lm.Alias (Set.ofList lm.TypeNames) tenv.ModuleTypes
+        ModulePrivate = Map.add lm.Alias (Map.ofList lm.PrivateMembers) tenv.ModulePrivate }
 
 let checkStatement
     (gateExprs: bool)
+    (sigCtx: SigContext option)
     (mkR: TypeEnv -> Parser.Resolver)
     (loadImport: ImportLoader)
     (tenv: TypeEnv)
@@ -2535,6 +2570,7 @@ let checkStatement
                         | SExpr e
                         | SCmd e -> Some e
                         | SType _
+                        | SSig _
                         | SModule _
                         | SImport _ -> None
 
@@ -2602,19 +2638,90 @@ let checkStatement
                     { Kind = KType decl
                       Env = tenv'
                       Warnings = [] }
-        | Ok(SLetPat(pat, e)) ->
-            // anonymous adapter shapes persist their defs [D:anon-records]
-            let tenv = Check.withAnonDefs tenv e
+        | Ok(SSig(name, ty, nameSpan)) ->
+            let sigErr msg =
+                Error(
+                    typed
+                        StmtTag.Let
+                        { Span = nameSpan
+                          Message = msg
+                          Origin = None }
+                )
 
-            match Check.typecheckBinder tenv pat e with
-            | Error terr -> Error(typed StmtTag.LetPat terr)
-            | Ok(te, schemes) ->
-                Ok
-                    { Kind = KLetPat(pat, schemes, te)
-                      Env =
-                        { tenv with
-                            Values = schemes |> List.fold (fun vs (n, sch) -> Map.add n sch vs) tenv.Values }
-                      Warnings = warningsOf te }
+            match sigCtx with
+            | None ->
+                // scripts infer [D:module-signatures] — the API-surface law
+                // is a MODULE law; a script's lets need no export marker
+                sigErr
+                    $"signatures belong to module APIs — scripts infer: drop the signature (let {name} = …), or move this into a module"
+            | Some sc ->
+                match Check.checkBinderName nameSpan name with
+                | Error terr -> Error(typed StmtTag.Let terr)
+                | Ok() ->
+                    if Map.containsKey name sc.Pending then
+                        sigErr $"duplicate signature for '{name}'"
+                    elif Set.contains name sc.Signed then
+                        sigErr $"'{name}' already has a signature and an implementation — one signature per member"
+                    elif Set.contains name sc.Implemented then
+                        sigErr
+                            $"the signature for '{name}' comes after its implementation — declare the signature above it"
+                    else
+                        match Check.validateSigTy tenv nameSpan ty with
+                        | Error terr -> Error(typed StmtTag.Let terr)
+                        | Ok tenv' ->
+                            let line, col = translate ll nameSpan.Start.Col
+
+                            Ok
+                                { Kind =
+                                    KSig(
+                                        name,
+                                        { Ty = ty
+                                          Scheme = generalize ty
+                                          Line = line
+                                          Col = col }
+                                    )
+                                  Env = tenv'
+                                  Warnings = [] }
+        | Ok(SLetPat(pat, e)) ->
+            // a destructuring let cannot IMPLEMENT a signature
+            // [D:module-signatures] — pairing is by the plain name
+            let sigClash =
+                sigCtx
+                |> Option.bind (fun sc ->
+                    let rec patVars (p: Pattern) =
+                        match p.PKind with
+                        | PVar n -> [ n ]
+                        | PTuple ps -> ps |> List.collect patVars
+                        | PRecord fields -> fields |> List.map snd |> List.collect patVars
+                        | PCase(_, Some inner) -> patVars inner
+                        | _ -> []
+
+                    patVars pat
+                    |> List.tryFind (fun n -> Map.containsKey n sc.Pending || Set.contains n sc.Signed))
+
+            match sigClash with
+            | Some n ->
+                Error(
+                    typed
+                        StmtTag.LetPat
+                        { Span = pat.PSpan
+                          Message =
+                            $"'{n}' has a signature, and a signature pairs with a plain implementation — write 'let {n} … = …'"
+                          Origin = None }
+                )
+            | None ->
+                // anonymous adapter shapes persist their defs [D:anon-records]
+                let tenv = Check.withAnonDefs tenv e
+
+                match Check.typecheckBinder tenv pat e with
+                | Error terr -> Error(typed StmtTag.LetPat terr)
+                | Ok(te, schemes) ->
+                    Ok
+                        { Kind = KLetPat(pat, schemes, te)
+                          Env =
+                            { tenv with
+                                Values = schemes |> List.fold (fun vs (n, sch) -> Map.add n sch vs) tenv.Values }
+                          Warnings = warningsOf te }
         | Ok(SLet(name, e)) ->
             // SLet carries the name as a bare string, so re-derive its own
             // columns from the statement text (grammar: ws `let` ws name)
@@ -2632,20 +2739,77 @@ let checkStatement
 
             let tenv = Check.withAnonDefs tenv e
 
-            match
-                Check.checkBinderName nameSpan name
-                |> Result.bind (fun () -> Check.typecheckWith tenv e)
-            with
-            | Error terr -> Error(typed StmtTag.Let terr)
-            | Ok(te, cs, origins, holeDefaults) ->
-                let scheme = generalizeWithOrigins cs origins holeDefaults te.Ty
+            match sigCtx |> Option.bind (fun sc -> Map.tryFind name sc.Pending) with
+            | Some sd ->
+                // check-against-sig [D:module-signatures]: the signature's
+                // types FLOW INTO the implementation's checking; the
+                // exported scheme is the signature's (plus the
+                // implementation's constraint residue)
+                let sigErrAt (span: Span) msg =
+                    Error(
+                        typed
+                            StmtTag.Let
+                            { Span = span
+                              Message = msg
+                              Origin = None }
+                    )
 
-                Ok
-                    { Kind = KLet(name, scheme, te)
-                      Env =
-                        { tenv with
-                            Values = Map.add name scheme tenv.Values }
-                      Warnings = warningsOf te }
+                match Check.checkBinderName nameSpan name with
+                | Error terr -> Error(typed StmtTag.Let terr)
+                | Ok() ->
+                    match Check.typecheckAgainstSig tenv sd.Ty e with
+                    | Error(Check.SigBody terr) -> Error(typed StmtTag.Let terr)
+                    | Error(Check.SigShape(implTy, span)) ->
+                        sigErrAt
+                            span
+                            ($"the implementation of '{name}' does not match its signature: "
+                             + $"the signature (line {sd.Line}) declares {formatTy sd.Ty}, but the implementation is {formatTy implTy}")
+                    | Error(Check.SigPinned(v, pinnedTy, span)) ->
+                        sigErrAt
+                            span
+                            ($"the implementation of '{name}' is less general than its signature: "
+                             + $"'{v} (line {sd.Line}) is pinned to {formatTy pinnedTy} here — generalize the implementation, or narrow the signature")
+                    | Error(Check.SigMerged(v1, v2, span)) ->
+                        sigErrAt
+                            span
+                            ($"the implementation of '{name}' is less general than its signature: "
+                             + $"'{v1} and '{v2} (line {sd.Line}) are forced to one type here — the signature promises they stay independent")
+                    | Ok(te, scheme) ->
+                        Ok
+                            { Kind = KLet(name, scheme, te)
+                              Env =
+                                { tenv with
+                                    Values = Map.add name scheme tenv.Values }
+                              Warnings = warningsOf te }
+            | None ->
+                match sigCtx with
+                | Some sc when Set.contains name sc.Signed ->
+                    // paired already — a second implementation would let the
+                    // last binding win at replay while the export keeps the
+                    // signature's, so the split is refused
+                    Error(
+                        typed
+                            StmtTag.Let
+                            { Span = nameSpan
+                              Message =
+                                $"'{name}' already implements its signature — one implementation per signed member"
+                              Origin = None }
+                    )
+                | _ ->
+                    match
+                        Check.checkBinderName nameSpan name
+                        |> Result.bind (fun () -> Check.typecheckWith tenv e)
+                    with
+                    | Error terr -> Error(typed StmtTag.Let terr)
+                    | Ok(te, cs, origins, holeDefaults) ->
+                        let scheme = generalizeWithOrigins cs origins holeDefaults te.Ty
+
+                        Ok
+                            { Kind = KLet(name, scheme, te)
+                              Env =
+                                { tenv with
+                                    Values = Map.add name scheme tenv.Values }
+                              Warnings = warningsOf te }
         | Ok(SCmd e) ->
             let tenv = Check.withAnonDefs tenv e
 
@@ -2973,11 +3137,17 @@ let rec loadModuleCached
                               Col = col
                               Message = msg }
 
-                    let rec go (tenv: TypeEnv) (accBody: (LogicalLine * CheckedStmt) list) (stmts: LogicalLine list) =
+                    let rec go
+                        (tenv: TypeEnv)
+                        (sc: SigContext)
+                        (implLines: (string * int) list)
+                        (accBody: (LogicalLine * CheckedStmt) list)
+                        (stmts: LogicalLine list)
+                        =
                         match stmts with
-                        | [] -> Ok(tenv, List.rev accBody)
+                        | [] -> Ok(tenv, sc, List.rev implLines, List.rev accBody)
                         | (ll: LogicalLine) :: tail ->
-                            match checkStatement true resolver childLoader tenv ll with
+                            match checkStatement true (Some sc) resolver childLoader tenv ll with
                             | Error d ->
                                 // a DEEPER module's error (File already set)
                                 // propagates unchanged; this module's OWN error
@@ -2992,8 +3162,17 @@ let rec loadModuleCached
                                 | None -> at d.PhysLine d.PhysCol d.Message
                             | Ok chk ->
                                 match chk.Kind with
-                                | KType decl -> go chk.Env ((ll, CType decl) :: accBody) tail
-                                | KImport lm -> go chk.Env ((ll, CImport lm) :: accBody) tail
+                                | KType decl -> go chk.Env sc implLines ((ll, CType decl) :: accBody) tail
+                                | KImport lm -> go chk.Env sc implLines ((ll, CImport lm) :: accBody) tail
+                                | KSig(name, sd) ->
+                                    // the sig binds nothing yet [D:module-signatures];
+                                    // the paired implementation is the value
+                                    let sc' =
+                                        { sc with
+                                            Pending = Map.add name sd sc.Pending
+                                            Signed = Set.add name sc.Signed }
+
+                                    go chk.Env sc' implLines accBody tail
                                 | KLet(_, _, te) when runsCommandT te ->
                                     at
                                         ll.Head
@@ -3001,8 +3180,26 @@ let rec loadModuleCached
                                         "a module 'let' cannot run a command at import — wrap it in a function (let f () = …), the command runs when a script calls it"
                                 | KLetPat(_, _, te) when runsCommandT te ->
                                     at ll.Head 1 "a module 'let' cannot run a command at import"
-                                | KLet(name, _, te) -> go chk.Env ((ll, CLet(name, te)) :: accBody) tail
-                                | KLetPat(pat, _, te) -> go chk.Env ((ll, CLetPat(pat, te)) :: accBody) tail
+                                | KLet(name, _, te) ->
+                                    let sc' =
+                                        { sc with
+                                            Pending = Map.remove name sc.Pending
+                                            Implemented = Set.add name sc.Implemented }
+
+                                    let implLines' =
+                                        if Set.contains name sc.Signed then
+                                            (name, ll.Head) :: implLines
+                                        else
+                                            implLines
+
+                                    go chk.Env sc' implLines' ((ll, CLet(name, te)) :: accBody) tail
+                                | KLetPat(pat, schemes, te) ->
+                                    let sc' =
+                                        { sc with
+                                            Implemented =
+                                                schemes |> List.fold (fun s (n, _) -> Set.add n s) sc.Implemented }
+
+                                    go chk.Env sc' implLines ((ll, CLetPat(pat, te)) :: accBody) tail
                                 | KModule _ -> at ll.Head 1 "a file has at most one 'module' marker, and it comes first"
                                 | KCmd _
                                 | KExpr _ ->
@@ -3011,36 +3208,95 @@ let rec loadModuleCached
                                         1
                                         "a module declares only — 'type' and 'let', no commands or bare expressions"
 
-                    match go baseTenv [] rest with
+                    match go baseTenv SigContext.empty [] [] rest with
                     | Error e -> Error e
-                    | Ok(finalTenv, moduleBody) ->
-                        // a module exports only its OWN types (from its Body's
-                        // decls), NOT what it transitively imported (no re-export,
-                        // decision 3); Members already exclude imported ones
-                        // (those live under Modules[·], not Values)
-                        let typeDefs =
-                            moduleBody
-                            |> List.choose (function
-                                | _, CType decl ->
-                                    Map.tryFind decl.Name finalTenv.Types |> Option.map (fun d -> decl.Name, d)
-                                | _ -> None)
+                    | Ok(finalTenv, sc, implLines, moduleBody) ->
+                        // sig without impl = check error AT THE SIG
+                        // [D:module-signatures]; impl without sig = private
+                        let orphan =
+                            sc.Pending |> Map.toList |> List.sortBy (fun (_, sd) -> sd.Line) |> List.tryHead
 
-                        let members =
-                            finalTenv.Values
-                            |> Map.toList
-                            |> List.filter (fun (n, _) -> not (Map.containsKey n baseTenv.Values))
+                        // a signed member's /// doc belongs on the SIGNATURE
+                        // (one home) [D:module-signatures]
+                        let docOnImpl =
+                            lazy
+                                (docAttachments rawLines
+                                 |> List.tryPick (fun d ->
+                                     implLines
+                                     |> List.tryFind (fun (_, implLine) -> d.Line = implLine)
+                                     |> Option.map (fun (n, _) -> n, d)))
 
-                        let loaded =
-                            { Alias = alias
-                              NaturalName = natural |> Option.defaultValue alias
-                              AbsPath = absPath
-                              TypeDefs = typeDefs
-                              Members = members
-                              TypeNames = typeDefs |> List.map fst
-                              Body = moduleBody }
+                        let lawError =
+                            match orphan with
+                            | Some(name, sd) ->
+                                Some(
+                                    sd.Line,
+                                    sd.Col,
+                                    $"signature without implementation — no 'let {name} … = …' follows in this module"
+                                )
+                            | None ->
+                                match docOnImpl.Value with
+                                | Some(name, d) ->
+                                    Some(
+                                        max 1 (d.Line - List.length d.Doc),
+                                        1,
+                                        $"'{name}' is signed, and its /// doc belongs on the signature — move it above 'let {name} : …' (one doc home)"
+                                    )
+                                | None -> None
 
-                        cache[absPath] <- loaded
-                        Ok loaded
+                        match lawError with
+                        | Some(l, c, msg) -> at l c msg
+                        | None ->
+
+                            // a module exports only its OWN types (from its Body's
+                            // decls), NOT what it transitively imported (no re-export,
+                            // decision 3); Members already exclude imported ones
+                            // (those live under Modules[·], not Values)
+                            let typeDefs =
+                                moduleBody
+                                |> List.choose (function
+                                    | _, CType decl ->
+                                        Map.tryFind decl.Name finalTenv.Types |> Option.map (fun d -> decl.Name, d)
+                                    | _ -> None)
+
+                            // the export split [D:module-signatures]: the SIGNATURE
+                            // is the export — signed members and declared types'
+                            // constructors cross; unsigned members stay private
+                            // (carried for the import-of-private teaching only)
+                            let ctorNames =
+                                typeDefs
+                                |> List.collect (fun (_, d) ->
+                                    match d with
+                                    | Union u -> u.Cases |> List.map fst
+                                    | Record _ -> [])
+                                |> Set.ofList
+
+                            let ownMembers =
+                                finalTenv.Values
+                                |> Map.toList
+                                |> List.filter (fun (n, _) -> not (Map.containsKey n baseTenv.Values))
+
+                            let members =
+                                ownMembers
+                                |> List.filter (fun (n, _) -> Set.contains n sc.Signed || Set.contains n ctorNames)
+
+                            let privateMembers =
+                                ownMembers
+                                |> List.filter (fun (n, _) ->
+                                    not (Set.contains n sc.Signed) && not (Set.contains n ctorNames))
+
+                            let loaded =
+                                { Alias = alias
+                                  NaturalName = natural |> Option.defaultValue alias
+                                  AbsPath = absPath
+                                  TypeDefs = typeDefs
+                                  Members = members
+                                  PrivateMembers = privateMembers
+                                  TypeNames = typeDefs |> List.map fst
+                                  Body = moduleBody }
+
+                            cache[absPath] <- loaded
+                            Ok loaded
             | Ok _ -> notAModule
             | Error _ -> notAModule
 
@@ -3336,6 +3592,7 @@ let schemaDiagnostics (path: string) (pairs: (LogicalLine * CheckedStatement) li
             | KCmd te
             | KExpr te -> [ te ]
             | KType _
+            | KSig _
             | KModule _
             | KImport _ -> []
 
@@ -3611,6 +3868,7 @@ let sigCmdDiagnostics
                 | KCmd te
                 | KExpr te -> [ te ]
                 | KType _
+                | KSig _
                 | KModule _
                 | KImport _ -> []
 
@@ -4550,6 +4808,13 @@ let analyzeLines
              | _ -> [])
             @ (Check.childExprs te |> List.collect cmdHeads)
 
+        // module-signature pairing state [D:module-signatures] — module
+        // files only; scripts pass None so the form refuses with the
+        // teaching. The whole-file laws (orphan, doc-on-impl) are judged
+        // after the fold, mirroring the module loader.
+        let mutable sigState = if isModule then Some SigContext.empty else None
+        let sigImplLines = ResizeArray<string * int>()
+
         for ll in logicalLines do
             // ONE spelling for the head warning, shared by the Ok walk
             // (typed) and the Error walk (parse-level) below
@@ -4590,7 +4855,7 @@ let analyzeLines
                          | None ->
                              $"command not found on PATH: {prog}{hint} — weir resolves commands at check time; the script runs once it is installed") }
 
-            match checkStatement true assumeResolver analyzeImport tenv ll with
+            match checkStatement true sigState assumeResolver analyzeImport tenv ll with
             | Ok chk ->
                 chk.Warnings |> List.iter warn
 
@@ -4625,6 +4890,7 @@ let analyzeLines
 
                 (match chk.Kind with
                  | KType _
+                 | KSig _
                  | KModule _
                  | KImport _ -> ()
                  | KLet(_, _, te)
@@ -4659,6 +4925,29 @@ let analyzeLines
                                Message = msg }
                      | None -> ())
 
+                (match sigState, chk.Kind with
+                 | Some sc, KSig(name, sd) ->
+                     sigState <-
+                         Some
+                             { sc with
+                                 Pending = Map.add name sd sc.Pending
+                                 Signed = Set.add name sc.Signed }
+                 | Some sc, KLet(name, _, _) ->
+                     if Set.contains name sc.Signed then
+                         sigImplLines.Add(name, ll.Head)
+
+                     sigState <-
+                         Some
+                             { sc with
+                                 Pending = Map.remove name sc.Pending
+                                 Implemented = Set.add name sc.Implemented }
+                 | Some sc, KLetPat(_, schemes, _) ->
+                     sigState <-
+                         Some
+                             { sc with
+                                 Implemented = schemes |> List.fold (fun st (n, _) -> Set.add n st) sc.Implemented }
+                 | _ -> ())
+
                 stmts.Add(ll, chk)
                 tenv <- chk.Env
             | Error d ->
@@ -4691,6 +4980,7 @@ let analyzeLines
                          | SExpr v
                          | SCmd v -> [ v ]
                          | SType _
+                         | SSig _
                          | SModule _
                          | SImport _ -> []
 
@@ -4717,6 +5007,18 @@ let analyzeLines
                          | SLet(name, _) -> [ name ]
                          | SLetPat(pat, _) -> patVars pat
                          | _ -> []
+
+                     // an ERRORED implementation still discharges its
+                     // pending signature — one real error beats a trailing
+                     // orphan echo [D:module-signatures]
+                     (match sigState with
+                      | Some sc when bound |> List.exists (fun n -> Map.containsKey n sc.Pending) ->
+                          sigState <-
+                              Some
+                                  { sc with
+                                      Pending = bound |> List.fold (fun m n -> Map.remove n m) sc.Pending
+                                      Implemented = bound |> List.fold (fun st n -> Set.add n st) sc.Implemented }
+                      | _ -> ())
 
                      for n in bound do
                          tenv <-
@@ -4749,6 +5051,40 @@ let analyzeLines
                           Code = "imported-here"
                           Message = nmsg }
                 | None -> ()
+
+        // the whole-file signature laws [D:module-signatures]: every
+        // remaining pending sig is an orphan; a /// doc on a signed
+        // member's implementation names its one home
+        (match sigState with
+         | Some sc ->
+             for name, sd in sc.Pending |> Map.toList |> List.sortBy (fun (_, sd) -> sd.Line) do
+                 diags.Add
+                     { File = path
+                       Line = sd.Line
+                       Col = sd.Col
+                       EndLine = None
+                       EndCol = None
+                       Severity = "error"
+                       Code = "sig-orphan"
+                       Message = $"signature without implementation — no 'let {name} … = …' follows in this module" }
+
+             let attaches = docAttachments rawLines
+
+             for name, implLine in sigImplLines do
+                 match attaches |> List.tryFind (fun d -> d.Line = implLine) with
+                 | Some d ->
+                     diags.Add
+                         { File = path
+                           Line = max 1 (d.Line - List.length d.Doc)
+                           Col = 1
+                           EndLine = None
+                           EndCol = None
+                           Severity = "error"
+                           Code = "sig-doc"
+                           Message =
+                             $"'{name}' is signed, and its /// doc belongs on the signature — move it above 'let {name} : …' (one doc home)" }
+                 | None -> ()
+         | None -> ())
 
         (let sigLoadDiags, sigInfos = loadSigs path sigDecls
 
@@ -4937,7 +5273,7 @@ let run (path: string) (scriptArgs: string list) : int =
                             match state with
                             | Error e -> Error e
                             | Ok(tenv, acc) ->
-                                match checkStatement true resolver entryImport tenv ll with
+                                match checkStatement true None resolver entryImport tenv ll with
                                 | Error d ->
                                     let c = Color.onStderr.Value
 
@@ -5081,8 +5417,11 @@ let run (path: string) (scriptArgs: string list) : int =
                                                 | KCmd te -> CCmd te
                                                 | KExpr te -> CExpr te
                                                 | KImport lm -> CImport lm
-                                                // unreachable: the marker is caught before the fold
-                                                | KModule _ -> CNoop
+                                                // unreachable: the marker is caught before the fold,
+                                                // and a script's KSig never checks (scripts refuse
+                                                // the form) [D:module-signatures]
+                                                | KModule _
+                                                | KSig _ -> CNoop
 
                                             // enrich a record's Docs from the `///`
                                             // field docs, so --help reads them

@@ -131,6 +131,7 @@ let weirVerdict (src: string) : Verdict =
                 match
                     Weir.Script.checkStatement
                         true
+                        None
                         (fun te ->
                             { resolver with
                                 IsKnown = fun n -> Map.containsKey n te.Values || Map.containsKey n te.Modules })

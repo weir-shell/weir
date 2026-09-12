@@ -1649,6 +1649,8 @@ let greetSrc = <<<
     module Greet
 
     /// the shared helper
+    let hello : string -> string
+
     let hello name = $"hi {name}"
 
 let useSrc = <<<
@@ -1660,6 +1662,17 @@ greetSrc |> File.write "greet.weir"
 useSrc |> File.write "use-greet.weir"
 weir use-greet.weir
 ```
+
+The `let hello : string -> string` line — a `let` with a type and
+no `=` — is a *signature*, and the signature is the export: only
+signed members are visible to importers. An unsigned `let` is
+module-private, with full inference inside the module; importing
+one is a check error that names the exact signature to add,
+inferred type included. The implementation stays annotation-free —
+the signature's types flow into its checking — and `///` docs live
+on the signature line, the API's one home. `type` declarations are
+already explicit, so they export as they are. Scripts refuse the
+signature form: scripts infer, module APIs declare.
 
 (Note the plain `<<<`, not `$<<<`: the module body contains
 `$"hi {name}"`, and the interpolated twin would substitute `{name}`

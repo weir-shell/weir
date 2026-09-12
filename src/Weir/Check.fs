@@ -3160,8 +3160,22 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
 
                     return! err fieldSpan $"{m}.load takes ONE record{union} type name, e.g. {m}.load Config"
                 | None ->
-                    let hint = didYouMean field (Map.keys members)
-                    return! err fieldSpan $"module {m} has no member '{field}'{hint}"
+                    // an unsigned member exists but does not export
+                    // [D:module-signatures] — teach the migration (the
+                    // signature to add, its inferred type included);
+                    // did-you-mean stays scoped to the SIGNED members
+                    match env.ModulePrivate |> Map.tryFind m |> Option.bind (Map.tryFind field) with
+                    | Some priv ->
+                        let hint = didYouMean field (Map.keys members)
+
+                        return!
+                            err
+                                fieldSpan
+                                ($"'{m}.{field}' is module-private (no signature) — add `let {field} : {formatTy priv.Ty}` "
+                                 + $"in the module to export it{hint}")
+                    | None ->
+                        let hint = didYouMean field (Map.keys members)
+                        return! err fieldSpan $"module {m} has no member '{field}'{hint}"
         }
     | EField(target, field, fieldSpan) ->
         result {
@@ -4842,6 +4856,186 @@ let typecheckWith
 let typecheck (env: TypeEnv) (expr: Expr) : Result<TypedExpr, TypeError> =
     typecheckWith env expr |> Result.map (fun (te, _, _, _) -> te)
 
+// ---- check-against-sig [D:module-signatures] ------------------------------
+// A signed module member is checked WITH its signature's types flowing
+// in (the lambda spine is checked bidirectionally: each param takes the
+// signature's domain, so constructor patterns and operators inside the
+// body resolve), never infer-then-compare. The caller (the module
+// loader) owns the prose for the non-body failures — it knows both
+// sites — so those travel as data.
+type SigFailure =
+    // an ordinary located error inside the implementation (sig types
+    // already flowed in — the span is the honest place)
+    | SigBody of TypeError
+    // the implementation's SHAPE does not unify with the signature
+    | SigShape of implTy: Ty * span: Span
+    // a signature type variable the implementation pins to a concrete
+    // type — the implementation is less general than its signature
+    | SigPinned of sigVar: string * pinned: Ty * span: Span
+    // two signature type variables the implementation forces together
+    | SigMerged of sigVar1: string * sigVar2: string * span: Span
+
+let private typecheckAgainstSigCore (env: TypeEnv) (sigTy: Ty) (expr: Expr) : Result<TypedExpr * Scheme, SigFailure> =
+    let env =
+        { withAnonDefs env expr with
+            AnonLitDefs = System.Collections.Generic.Dictionary() }
+
+    let ctx = newCtx ()
+
+    // instantiate the signature's vars as fresh unification vars and
+    // REMEMBER the mapping: generality is judged at the end — a sig var
+    // still resolving to an unbound var (distinct per sig var) is the
+    // still-as-general verdict; anything else names what pinned it
+    let sigVars = tyVars sigTy |> Set.toList
+    let mapping = sigVars |> List.map (fun v -> v, freshName ctx "s")
+    let instMap = mapping |> List.map (fun (v, f) -> v, TVar f) |> Map.ofList
+
+    let rec inst (t: Ty) : Ty =
+        match t with
+        | TVar v -> Map.tryFind v instMap |> Option.defaultValue t
+        | TFun(a, b) -> TFun(inst a, inst b)
+        | TSeq t -> TSeq(inst t)
+        | TTuple ts -> TTuple(List.map inst ts)
+        | TNamed(n, args) -> TNamed(n, List.map inst args)
+        | t -> t
+
+    let expected0 = inst sigTy
+
+    // the bidirectional spine: a lambda meets a function-shaped
+    // expectation by taking the DOMAIN as its param type and checking
+    // the body against the codomain; everything else infers and unifies
+    // (`wrap` rebuilds the full implementation type for the mismatch
+    // report — the domains are the signature's by construction)
+    let rec go (env: TypeEnv) (expected: Ty) (e: Expr) (wrap: Ty -> Ty) : Result<TypedExpr, SigFailure> =
+        let fallback () =
+            match infer ctx env e with
+            | Error terr -> Error(SigBody terr)
+            | Ok te ->
+                match bind ctx env e.Span expected te.Ty with
+                | Ok() -> Ok te
+                | Error _ -> Error(SigShape(finalTy ctx (wrap te.Ty), e.Span))
+
+        match e.Kind, resolve ctx expected with
+        | ELambda("()", pspan, body), TFun(dom, cod) ->
+            (match bind ctx env pspan dom TUnit with
+             | Ok() -> Ok()
+             | Error _ -> Error(SigShape(finalTy ctx (wrap (TFun(TUnit, cod))), pspan)))
+            |> Result.bind (fun () ->
+                go env cod body (wrap << fun t -> TFun(TUnit, t))
+                |> Result.map (fun tb ->
+                    { Kind = TELambda("()", pspan, tb)
+                      Ty = TFun(dom, tb.Ty)
+                      Span = e.Span }))
+        | ELambda(param, pspan, body), TFun(dom, cod) ->
+            match checkBinderName e.Span param with
+            | Error terr -> Error(SigBody terr)
+            | Ok() ->
+                go (bindParams env [ param, dom ]) cod body (wrap << fun t -> TFun(dom, t))
+                |> Result.map (fun tb ->
+                    { Kind = TELambda(param, pspan, tb)
+                      Ty = TFun(dom, tb.Ty)
+                      Span = e.Span })
+        | ELambdaPat(pat, body), TFun(dom, cod) ->
+            match binderShape ctx env pat with
+            | Error terr -> Error(SigBody terr)
+            | Ok(shape, binds) ->
+                match bind ctx env pat.PSpan dom shape with
+                | Error _ -> Error(SigShape(finalTy ctx (wrap (TFun(shape, cod))), pat.PSpan))
+                | Ok() ->
+                    go (bindParams env binds) cod body (wrap << fun t -> TFun(dom, t))
+                    |> Result.map (fun tb ->
+                        { Kind = TELambdaPat(pat, tb)
+                          Ty = TFun(dom, tb.Ty)
+                          Span = e.Span })
+        | _ -> fallback ()
+
+    match go env expected0 expr id with
+    | Error f -> Error f
+    | Ok te ->
+        match resolvePendingSplices ctx env with
+        | Error terr -> Error(SigBody terr)
+        | Ok() ->
+            let te = finalizeExpr ctx te
+
+            // generality: each sig var must still resolve to an UNBOUND
+            // var, and no two to the same one
+            let resolved = mapping |> List.map (fun (v, f) -> v, finalTy ctx (TVar f))
+
+            let pinned =
+                resolved
+                |> List.tryPick (fun (v, t) ->
+                    match t with
+                    | TVar _ -> None
+                    | t -> Some(v, t))
+
+            match pinned with
+            | Some(v, t) -> Error(SigPinned(v, t, expr.Span))
+            | None ->
+                let varOf =
+                    resolved
+                    |> List.map (fun (v, t) ->
+                        match t with
+                        | TVar u -> u, v
+                        | _ -> "", v)
+
+                let merged =
+                    varOf
+                    |> List.groupBy fst
+                    |> List.tryPick (fun (_, vs) ->
+                        match vs with
+                        | (_, v1) :: (_, v2) :: _ -> Some(v1, v2)
+                        | _ -> None)
+
+                match merged with
+                | Some(v1, v2) -> Error(SigMerged(v1, v2, expr.Span))
+                | None ->
+                    // constraint residue rides the EXPORTED scheme keyed by
+                    // the signature's own var names (the sig grammar spells
+                    // no constraints; the implementation's demands are the
+                    // truth) — a residue on any OTHER var is stranded,
+                    // exactly as the plain-let boundary rules
+                    let backMap = varOf |> Map.ofList
+
+                    let openCons =
+                        ctx.Cons
+                        |> Map.toList
+                        |> List.collect (fun (v, ps) ->
+                            match resolve ctx (TVar v) with
+                            | TVar u
+                            | TRowVar(u, _) when not (u.StartsWith "__hole") -> ps |> List.map (fun p -> u, p)
+                            | _ -> [])
+
+                    match openCons |> List.tryFind (fun (u, _) -> not (Map.containsKey u backMap)) with
+                    | Some(_, p) ->
+                        Error(
+                            SigBody
+                                { Span = p.Span
+                                  Message =
+                                    "this leaves an equality requirement on a type nothing determines — pipe in data or use a concrete value"
+                                  Origin = None }
+                        )
+                    | None ->
+                        let cs =
+                            openCons
+                            |> List.groupBy (fun (u, _) -> backMap[u])
+                            |> List.map (fun (v, ps) -> v, ps |> List.map (fun (_, p) -> p.Cls) |> Set.ofList)
+                            |> Map.ofList
+
+                        let scheme =
+                            { Forall = Set.ofList sigVars
+                              Cs = cs
+                              Ty = sigTy
+                              RowOrigins = Map.empty
+                              HoleDefaults = [] }
+
+                        Ok(te, scheme)
+
+let typecheckAgainstSig (env: TypeEnv) (sigTy: Ty) (expr: Expr) : Result<TypedExpr * Scheme, SigFailure> =
+    try
+        typecheckAgainstSigCore env sigTy expr
+    with BudgetExceeded(span, sized) ->
+        Error(SigBody(budgetError span sized))
+
 let rec private validateTy
     (env: TypeEnv)
     (selfName: string)
@@ -4895,6 +5089,15 @@ let rec private validateTy
         | None -> err span $"unknown type '{n}'{didYouMean n (Map.keys env.Types)}"
         | Some a when a <> targs.Length -> err span $"'{n}' expects {a} type argument(s), got {targs.Length}"
         | Some _ -> allOk targs (validateTy env selfName selfArity allowed span)
+
+// a SIGNATURE's type validates like a declaration's [D:module-signatures]:
+// unknown names and generic arities refuse at the sig; its type vars are
+// implicitly quantified (every 'a is its own universal). Returns the env
+// WITH any anonymous shapes the sig's parse minted, so they persist.
+let validateSigTy (env: TypeEnv) (span: Span) (ty: Ty) : Result<TypeEnv, TypeError> =
+    let env = withDefList env (pendingAnonRecords ())
+
+    validateTy env "" 0 (tyVars ty) span ty |> Result.map (fun () -> env)
 
 // registered attribute names [D:attributes]: unknown names are check
 // errors; registered-but-unconsumed is legal-and-inert. Validation

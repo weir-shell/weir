@@ -5367,10 +5367,16 @@ let lspCrossFileTests =
                "    | Bad of int"
                ""
                "/// doubles a number"
+               "let double : int -> int"
+               ""
                "let double n = n * 2"
                ""
                "/// a plain constant"
+               "let origin : string"
+               ""
                "let origin = \"here\""
+               ""
+               "let sample : Verdict"
                ""
                "let sample = Bad 7" |]
         )
@@ -16061,6 +16067,218 @@ let versionStampTests =
               Expect.isFalse (System.String.IsNullOrEmpty hash) "the hash component is present"
           } ]
 
+// module signatures [D:module-signatures]: a signature IS the export —
+// one pin per law, over real files (the module loader is the
+// enforcement point) plus the parse/script-refusal edges
+let moduleSignatureTests =
+    let withDir (files: (string * string list) list) (f: string -> unit) =
+        let td =
+            System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-msig-{System.Guid.NewGuid():N}")
+
+        System.IO.Directory.CreateDirectory td |> ignore
+
+        try
+            for name, lines in files do
+                System.IO.File.WriteAllLines(System.IO.Path.Combine(td, name), lines)
+
+            f td
+        finally
+            System.IO.Directory.Delete(td, true)
+
+    let diagsOf (td: string) (entry: string) =
+        let path = System.IO.Path.Combine(td, entry)
+
+        let ds, _, _, _ =
+            Weir.Script.analyzeLines path (List.ofArray (System.IO.File.ReadAllLines path))
+
+        ds |> List.filter (fun d -> d.Severity = "error")
+
+    let lib =
+        [ "module Lib"
+          ""
+          "/// doubles"
+          "let double : int -> int"
+          ""
+          "let double n = n * 2"
+          ""
+          "let helper n = n + 1" ]
+
+    testList
+        "module signatures [D:module-signatures]"
+        [ test "the headless let parses as a signature (sexpr pin)" {
+              match Weir.Parser.parseLine cmdResolver "let f : int -> seq<string>" with
+              | Ok(SSig("f", ty, _)) -> Expect.equal (Weir.Types.formatTy ty) "int -> seq<string>" "the type"
+              | other -> failtest $"expected SSig, got {other}"
+
+              // generic vars are admitted (exported Seq-like helpers)
+              match Weir.Parser.parseLine cmdResolver "let pick : 'a -> 'a" with
+              | Ok(SSig("pick", _, _)) -> ()
+              | other -> failtest $"expected generic SSig, got {other}"
+
+              // an '=' after the type gets the dedicated teaching
+              match Weir.Parser.parseLine cmdResolver "let f : int -> int = 5" with
+              | Error msg -> Expect.stringContains msg "a signature declares only the type" ""
+              | Ok _ -> failtest "a sig with an RHS must refuse"
+          }
+          test "a signature exports; an unsigned member is private and teaches the migration" {
+              withDir
+                  [ "lib.weir", lib
+                    "ok.weir", [ "import \"./lib.weir\""; "print (show (Lib.double 3))" ]
+                    "bad.weir", [ "import \"./lib.weir\""; "print (show (Lib.helper 3))" ] ]
+                  (fun td ->
+                      Expect.isEmpty (diagsOf td "ok.weir") "the signed member resolves"
+
+                      match diagsOf td "bad.weir" with
+                      | d :: _ ->
+                          Expect.stringContains
+                              d.Message
+                              "'Lib.helper' is module-private (no signature) — add `let helper : int -> int` in the module to export it"
+                              "the migration teaching, inferred type included"
+                      | [] -> failtest "the private member must refuse")
+          }
+          test "did-you-mean at the private refusal ranges over SIGNED members only" {
+              withDir
+                  [ "lib.weir",
+                    [ "module Lib"
+                      "let doubles : int -> int"
+                      "let doubles n = n * 2"
+                      "let doublez n = n" ]
+                    "m.weir", [ "import \"./lib.weir\""; "print (show (Lib.doublez 3))" ] ]
+                  (fun td ->
+                      match diagsOf td "m.weir" with
+                      | d :: _ ->
+                          Expect.stringContains d.Message "module-private" "the exact unsigned name is the private hit"
+                          Expect.stringContains d.Message "Did you mean 'doubles'?" "did-you-mean stays over the SIGNED members"
+                      | [] -> failtest "expected the refusal")
+          }
+          test "sig without impl = check error at the sig (orphan)" {
+              withDir
+                  [ "o.weir", [ "module O"; "let f : int -> int" ] ]
+                  (fun td ->
+                      match diagsOf td "o.weir" with
+                      | [ d ] ->
+                          Expect.equal (d.Line, d.Col) (2, 5) "at the sig"
+                          Expect.stringContains d.Message "signature without implementation" ""
+                      | ds -> failtest $"expected exactly the orphan, got {ds |> List.map (fun d -> d.Message)}")
+          }
+          test "sig/impl mismatch names BOTH sites and both types" {
+              withDir
+                  [ "m.weir", [ "module M"; "let f : int -> int"; "let f x = \"s\"" ] ]
+                  (fun td ->
+                      match diagsOf td "m.weir" with
+                      | d :: _ ->
+                          Expect.equal d.Line 3 "located at the implementation"
+
+                          Expect.stringContains
+                              d.Message
+                              "the signature (line 2) declares int -> int, but the implementation is int -> string"
+                              "both sites, both types"
+                      | [] -> failtest "expected the mismatch")
+          }
+          test "scripts refuse the form with the teaching" {
+              withDir
+                  [ "s.weir", [ "let f : int -> int"; "let f x = x"; "print (show (f 1))" ] ]
+                  (fun td ->
+                      match diagsOf td "s.weir" with
+                      | d :: _ -> Expect.stringContains d.Message "signatures belong to module APIs — scripts infer" ""
+                      | [] -> failtest "a script signature must refuse")
+          }
+          test "a /// doc on a signed member's impl teaches the one home; on the sig it reads on hover" {
+              withDir
+                  [ "d.weir", [ "module D"; "let f : int -> int"; ""; "/// wrong home"; "let f x = x" ] ]
+                  (fun td ->
+                      match diagsOf td "d.weir" with
+                      | d :: _ ->
+                          Expect.equal d.Line 4 "at the doc"
+                          Expect.stringContains d.Message "doc belongs on the signature" ""
+                      | [] -> failtest "expected the doc-home teaching")
+
+              // doc on the SIG line: hover reads sig + doc there
+              withDir
+                  [ "lib.weir", lib ]
+                  (fun td ->
+                      let libPath = System.IO.Path.Combine(td, "lib.weir")
+                      let lines = List.ofArray (System.IO.File.ReadAllLines libPath)
+                      Expect.equal (Weir.Lsp.hoverAt libPath lines 4 6) (Some "double : int -> int\n\ndoubles") "sig hover")
+          }
+          test "check-against-sig retires the KSL shapes: ctor pattern on an own param; a sig-pinned to yaml" {
+              withDir
+                  [ "k.weir",
+                    [ "module K"
+                      "type Sh = Circle of int | Sq of int"
+                      "let area : Sh -> int"
+                      ""
+                      "let area s ="
+                      "    match s with"
+                      "    | Circle r -> r * r * 3"
+                      "    | Sq a -> a * a" ]
+                    "y.weir",
+                    [ "module Y"
+                      "type Doc = { name: string }"
+                      "let render : Doc -> seq<string>"
+                      ""
+                      "let render d = d |> to yaml" ] ]
+                  (fun td ->
+                      Expect.isEmpty (diagsOf td "k.weir") "the sig types the scrutinee"
+                      Expect.isEmpty (diagsOf td "y.weir") "the sig pins the adapter's record")
+          }
+          test "generic sigs: general impls pass; pinned and merged type vars refuse as less-general" {
+              withDir
+                  [ "g.weir", [ "module G"; "let pick : 'a -> 'a -> 'a"; "let pick a b = a" ]
+                    "p.weir", [ "module P"; "let idf : 'a -> 'a"; "let idf x = x + 1" ]
+                    "m.weir", [ "module Mg"; "let f : 'a -> 'b -> 'a"; "let f x y = y" ] ]
+                  (fun td ->
+                      Expect.isEmpty (diagsOf td "g.weir") "still general"
+
+                      (match diagsOf td "p.weir" with
+                       | d :: _ -> Expect.stringContains d.Message "less general than its signature: 'a (line 2) is pinned to int" ""
+                       | [] -> failtest "pinned must refuse")
+
+                      match diagsOf td "m.weir" with
+                      | d :: _ -> Expect.stringContains d.Message "'a and 'b (line 2) are forced to one type" ""
+                      | [] -> failtest "merged must refuse")
+          }
+          test "ordering and pairing guards: sig-after-impl, duplicate sig, second impl, destructuring impl" {
+              withDir
+                  [ "a.weir", [ "module A"; "let f x = x"; "let f : int -> int" ]
+                    "b.weir", [ "module B"; "let f : int -> int"; "let f : int -> int"; "let f x = x" ]
+                    "c.weir", [ "module C"; "let f : int -> int"; "let f x = x"; "let f x = x + 1" ]
+                    "e.weir", [ "module E"; "let f : int -> int"; "let (f, g) = (1, 2)" ] ]
+                  (fun td ->
+                      (match diagsOf td "a.weir" with
+                       | d :: _ -> Expect.stringContains d.Message "comes after its implementation" ""
+                       | [] -> failtest "sig-after-impl must refuse")
+
+                      (match diagsOf td "b.weir" with
+                       | d :: _ -> Expect.stringContains d.Message "duplicate signature for 'f'" ""
+                       | [] -> failtest "duplicate sig must refuse")
+
+                      (match diagsOf td "c.weir" with
+                       | d :: _ -> Expect.stringContains d.Message "already implements its signature" ""
+                       | [] -> failtest "a second impl must refuse")
+
+                      match diagsOf td "e.weir" with
+                      | d :: _ -> Expect.stringContains d.Message "a signature pairs with a plain implementation" ""
+                      | [] -> failtest "a destructuring impl must refuse")
+          }
+          test "types stay auto-exported: a union crosses, its ctors resolve qualified, sig types validate" {
+              withDir
+                  [ "t.weir",
+                    [ "module T"
+                      "type Verdict = Good | Bad of int"
+                      "let judge : int -> Verdict"
+                      ""
+                      "let judge n = if n > 0 then Good else Bad n" ]
+                    "u.weir", [ "import \"./t.weir\""; "let v = T.judge 3"; "print (show 1)" ]
+                    "bad.weir", [ "module Z"; "let f : Nope -> int"; "let f x = 1" ] ]
+                  (fun td ->
+                      Expect.isEmpty (diagsOf td "u.weir") "type + signed member cross"
+
+                      match diagsOf td "bad.weir" with
+                      | d :: _ -> Expect.stringContains d.Message "unknown type 'Nope'" "the sig type validates"
+                      | [] -> failtest "an unknown sig type must refuse")
+          } ]
+
 [<Tests>]
 let allTests =
     testList
@@ -16177,6 +16395,7 @@ let allTests =
           pipeAlignTests
           optionSweepTests
           moduleTests
+          moduleSignatureTests
           scriptTests
           multilineTests
           readProbes

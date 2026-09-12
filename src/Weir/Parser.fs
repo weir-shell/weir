@@ -3991,6 +3991,23 @@ let private letKeywordGuard: Parser<Stmt, unit> =
     )
     >>= fun (at, w) -> failFatallyAt at $"'{w}' is a keyword"
 
+// `let name : <ty>` with NO `=` [D:module-signatures] — a SIGNATURE
+// declaration. The headless form was a parse error before, so committing
+// after the `:` claims unowned ground; the module-vs-script law is the
+// CHECKER's (scripts refuse with a teaching), so the parse succeeds
+// everywhere and the error can carry the file kind.
+let private letSig: Parser<Stmt, unit> =
+    attempt (keyword "let" >>. identSpanned .>> str_ws ":")
+    >>= fun (name, nameSpan) ->
+        tySyn .>> ws
+        >>= fun ty ->
+            choice
+                [ eof >>% SSig(name, ty, nameSpan)
+                  str_ws "="
+                  >>. failFatally
+                          $"a signature declares only the type — no '='; write the implementation as its own 'let {name} … = …' below"
+                  failFatally "unexpected content after the signature's type" ]
+
 // module + import statements [D:modules-v1] — top-level, no `=`, no body.
 // A module/alias name is uppercase (the casing law: uppercase declares).
 let private upperName (role: string) : Parser<string * Span, unit> =
@@ -4039,6 +4056,7 @@ let private stmtWith (r: Resolver) =
               |>> SLetPat
               foreignKeywordGuard ()
               letKeywordGuard
+              letSig
               topLet r
               cmdLine r .>> eof |>> SCmd
               (seqExpr >>= pipeOrHint) .>> eof |>> SExpr ]
@@ -4098,6 +4116,7 @@ let private stmtNodes (s: Stmt) : DeepNode list =
     | SCmd v -> [ NExpr v ]
     | SLetPat(p, v) -> [ NPat p; NExpr v ]
     | SType _
+    | SSig _
     | SModule _
     | SImport _ -> []
 
@@ -4108,6 +4127,7 @@ let private stmtExprs (s: Stmt) : Expr list =
     | SExpr v
     | SCmd v -> [ v ]
     | SType _
+    | SSig _
     | SModule _
     | SImport _ -> []
 
