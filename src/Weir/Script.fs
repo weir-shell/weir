@@ -1523,9 +1523,19 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                             // ON — `(match …) |> f` [D:match-pipe-offside]
                                                             let closeAt = if closes then indent - 1 else indent
 
-                                                            let rec closeDeeper ll compounds =
+                                                            let rec closeDeeper (ll: LogicalLine) compounds =
                                                                 match compounds with
-                                                                | (h, ts, _) :: rest when h > closeAt ->
+                                                                | (h, ts, _) :: rest when
+                                                                    h > closeAt
+                                                                    // a within head has no arm at its
+                                                                    // column [D:within-tail-pipe]: a pipe
+                                                                    // AT the head closes the scope and
+                                                                    // pipes the whole — `(within …) |> f`,
+                                                                    // the match-close wrap one keyword over
+                                                                    || (h = indent
+                                                                        && cls.Kind = PieceKind.PipeHead
+                                                                        && ll.Text.Substring(ts).StartsWith "within ")
+                                                                    ->
                                                                     closeDeeper (wrapFrom ll ts) rest
                                                                 | _ -> ll, compounds
 

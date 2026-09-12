@@ -86,18 +86,21 @@ Three boundaries, types kept exactly where they mean something:
 - Priority: hops first (the substance), `| bytes` second (receipt
   exists), `| lines` last — receipt-driven, possibly never.
 
-## RIDER — resolved in two, one still open
+## RIDER — resolved in full
 
 BUILT (2026-09-12, branch ambient-capture): the ESCAPE class — a lazy
 command bound inside a scope and forced outside now replays its
 written-site ambient (Spec Cwd/Ambient snapshots; [D:ambient-capture]).
-STILL OPEN, rediagnosed with debug-order evidence: the probe matrix's
-within-body cells are a PARSER ASSOCIATION defect — `xs | cmd` written
-as a block's TAIL line parses as `(within …) | cmd`, the pipe attaching
-OUTSIDE the block, so the command never sits in the scope at all (and a
-tail `s |> f` in the same position is a bare parse error). Fix lives in
-the joined-form within-body grammar, its own branch; the matrix below
-becomes its regression pins.
+FIXED (2026-09-12, branch within-tail-pipe): the probe matrix's
+within-body cells were a PARSER ASSOCIATION defect — `xs | cmd` written
+as a block's TAIL line parsed as `(within …) | cmd`, the pipe attaching
+OUTSIDE the block, so the command never sat in the scope at all (and a
+mid-body `xs | cmd` was a bare parse error at the statement boundary).
+[D:within-tail-pipe]: seqExpr's elements claim the value-headed tail
+per statement; the assembler wraps `(within …)` for a pipe dedented to
+the head column, so the offside close survives. The matrix below is
+pinned as an e2e cell (all six cells see the scope) plus the dedent-
+outside pin.
 
 ## The original probe matrix (the association defect's pins)
 

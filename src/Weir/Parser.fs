@@ -2985,10 +2985,34 @@ let private stmtElem: Parser<Choice<Expr, Expr>, unit> =
             else
                 letRhsCmd stream
 
+    // a value-headed pipe on a body statement belongs to THAT statement
+    // [D:within-tail-pipe]: claim the `| cmd` tail per element, so a
+    // block's inline pipe cannot escape to the enclosing expression
+    // (`(within …) | cmd` spawned after the scope restored). Chain-classed
+    // (Choice1) so armSeq arms a non-final one exactly like a
+    // command-headed chain; expression parens stay pipe-free (cmdTry's
+    // gate, same reason). A zero-stage claim (the arm-boundary stop)
+    // stays an expression.
+    let exprElem: Parser<Choice<Expr, Expr>, unit> =
+        commaExpr
+        >>= fun e ->
+            fun stream ->
+                if exprParen.Value then
+                    Reply(Choice2Of2 e)
+                else
+                    ((valueHeadedTail e
+                      |>> fun e2 ->
+                          if LanguagePrimitives.PhysicalEquality e2 e then
+                              Choice2Of2 e2
+                          else
+                              Choice1Of2 e2)
+                     <|> preturn (Choice2Of2 e))
+                        stream
+
     choice
         [ foreignKeywordGuard ()
           attempt (cmdTry |>> Choice1Of2)
-          commaExpr |>> Choice2Of2 ]
+          exprElem ]
 
 let private armSeq (all: Choice<Expr, Expr> list) : Parser<Expr, unit> =
     let n = List.length all
