@@ -604,9 +604,19 @@ print first
   counting need the whole input. `Seq.windowed n` is lazy (short
   source = empty seq, no partial window; n <= 0 raises). `Option.iter` runs a Some-only
   effect; `Option.orElse fallback opt` stays in Option
-  (`defaultValue` is the one that unwraps). `Path.tempRoot ()` is the
+  (`defaultValue` is the one that unwraps). `Option.bind f opt` chains
+  an Option-returning step (map without the re-wrap); `Option.flatten`
+  collapses `Option<Option<T>>` to `Option<T>`. `Path.tempRoot ()` is the
   pure query; `Path.newTempDir ()` CREATES (cleanup is yours —
   `within tmp` is the scoped-cleanup spelling).
+
+```weir
+// bind chains an Option step; flatten collapses one nesting level
+let step = fun x -> if x > 0 then Some (x + 1) else None
+print (Some 5 |> Option.bind step |> Option.defaultValue 0)
+print (Option.flatten (Some (Some 9)) |> Option.defaultValue 0)
+print (Option.flatten (Some None) |> Option.defaultValue 0)
+```
 - Filesystem [D:fs-members]: `File.delete/copy/move/size` (copy/move
   = (src, dst), REFUSE existing destinations — delete first to
   overwrite), `Dir.create` (idempotent, makes parents) /`exists`/

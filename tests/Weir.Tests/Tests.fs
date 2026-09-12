@@ -7358,6 +7358,15 @@ let optionSweepTests =
               expectValue "[3] |> Seq.tryHead |> Option.map double |> Option.defaultValue 0" (VInt 6)
               expectValue "[] |> Seq.tryHead |> Option.map double |> Option.defaultValue 0" (VInt 0)
           }
+          test "Option.bind chains Option-returning steps" {
+              expectValue "Some 3 |> Option.bind (fun x -> Some (x + 1))" (VUnion("Some", Some(VInt 4L)))
+              expectValue "None |> Option.bind (fun x -> Some (x + 1))" (VUnion("None", None))
+          }
+          test "Option.flatten collapses a nested Option" {
+              expectValue "Option.flatten (Some (Some 5))" (VUnion("Some", Some(VInt 5L)))
+              expectValue "Option.flatten (Some None)" (VUnion("None", None))
+              expectValue "Option.flatten None" (VUnion("None", None))
+          }
           test "Seq.tryFind is data-last and Option-returning" {
               expectValue
                   "ls |> Seq.tryFind _.hidden |> Option.map _.name |> Option.defaultValue \"none\""
