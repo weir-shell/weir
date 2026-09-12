@@ -341,6 +341,12 @@ type TypeDef =
 
 type TypeEnv =
     { Values: Map<string, Scheme>
+      // purity of earlier top-level bindings [D:pure-stage1]: written by
+      // the checked-statement pipeline's post-check layer (the classifier
+      // lives after Builtins, so Check.fs itself never computes it),
+      // carried HERE so every consumer that threads the env — scripts,
+      // modules, the REPL — gets `pure` transitivity for free
+      PureBindings: Map<string, bool>
       Modules: Map<string, Map<string, Scheme>>
       Types: Map<string, TypeDef>
       // imported modules [D:modules-v1]: alias -> the type names that

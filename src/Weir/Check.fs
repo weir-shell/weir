@@ -4215,6 +4215,11 @@ and private withinContracts
                 | Some a -> infer ctx env a |> Result.map Some
                 | None -> Ok None
             | WithinTmp -> Ok None
+            // pure carries no resource [D:pure-stage1] — no arg, no
+            // binder; its LAW is enforced by the checked-statement
+            // pipeline's post-check layer (the classifier lives after
+            // Builtins, out of this file's compile reach)
+            | WithinPure -> Ok None
 
         let! topts =
             match opts with
@@ -4232,7 +4237,8 @@ and private withinContracts
             | WithinTmp
             | WithinCd
             | WithinEnv
-            | WithinLock -> TStr
+            | WithinLock
+            | WithinPure -> TStr
 
         let benv =
             match binder with

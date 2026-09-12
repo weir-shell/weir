@@ -4,6 +4,25 @@
 
 ### Added
 
+- **`pure` regions are ENFORCED — Stage 1 of the effects plan.** A bare
+  `pure` head + indented block asserts the body reaches NO effect
+  (filesystem, commands, network, environment, console, clock, any
+  `within` resource); a reachable effect is a located check error
+  naming the offender (`this 'pure' block forbids effects, but
+  'File.write' writes the filesystem`). `let pure f x = …` — weir's
+  first post-let modifier — asserts a whole binding and keeps the
+  `(pure)` hover badge; an impure body is a check error. Judged by the
+  Stage 0 classifier: transitive through earlier bindings, conservative
+  at unknown callables (a refusal can be over-careful, an acceptance is
+  never wrong). Opt-in only — nothing outside a `pure` region is
+  gated, and `pure` is its own head, never `within pure`. `pure` is now
+  a reserved keyword.
+
+- **The `within` kind is a union.** Internal, [D:host-strictness]'s
+  deferred restructure: Check/Eval dispatch kind-first on
+  `Ast.WithinKindId`, so a new kind (like `pure` above) is a build
+  failure at every consumer instead of a silent gap. No surface change.
+
 - **`fail` (and `exit`) now diverge: `string -> 'a`.** A failing arm
   sits opposite a value arm — `match o with | Some v -> v | None ->
   fail "absent"` types as the value, and `if bad then fail "no" else 5`

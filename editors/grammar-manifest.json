@@ -37,6 +37,7 @@
     "mutable",
     "of",
     "poll",
+    "pure",
     "rec",
     "retry",
     "return",
@@ -56,6 +57,7 @@
     "env",
     "lock",
     "proc",
+    "pure",
     "tmp"
   ]
 }

@@ -436,6 +436,23 @@ let isWithinHead (piece: string) : bool =
     afterLet = "within"
     || afterLet.StartsWith "within " && not (afterLet.Contains ";")
 
+// the standalone pure head [D:pure-stage1]: `pure` (bare, or behind
+// `let <name> =`) opens its block exactly as a within head does — the
+// same lexical rule, one word shorter (no kind, no args)
+let isPureHead (piece: string) : bool =
+    let t = piece.Trim()
+
+    let afterLet =
+        if t.StartsWith "let " then
+            match t.IndexOf '=' with
+            | -1 -> t
+            | i -> t.Substring(i + 1).TrimStart()
+        else
+            t
+
+    afterLet = "pure"
+    || afterLet.StartsWith "pure " && not (afterLet.Contains ";")
+
 // the proc head [D:scoped-procs]: its TAIL is a command line, so the
 // FIRST block statement must join at the machine boundary too — a
 // space join would feed it to the command's argv (the
@@ -496,6 +513,7 @@ let dangleOpensBlock (piece: string) : bool =
     || t.EndsWith " function"
     || t.EndsWith "(function"
     || isWithinHead t
+    || isPureHead t
     // retry/poll heads and the until binder line open their blocks
     // [D:retry-poll]
     || t = "retry"
@@ -2521,7 +2539,7 @@ let private mergeModule (tenv: TypeEnv) (lm: LoadedModule) : TypeEnv =
         ModuleTypes = Map.add lm.Alias (Set.ofList lm.TypeNames) tenv.ModuleTypes
         ModulePrivate = Map.add lm.Alias (Map.ofList lm.PrivateMembers) tenv.ModulePrivate }
 
-let checkStatement
+let private checkStatementCore
     (gateExprs: bool)
     (sigCtx: SigContext option)
     (mkR: TypeEnv -> Parser.Resolver)
@@ -2989,6 +3007,64 @@ let checkStatement
                           Warnings = [] }
     finally
         Check.toPhys.Value <- None
+
+// [D:pure-stage1]: the pure region's LAW, enforced as a post-CHECK
+// layer HERE — the classifier needs the closed builtin surface, so it
+// lives after Builtins (Purity.fs), out of Check.fs's compile reach;
+// and every consumer — runner, REPL, -e, modules — flows through this
+// pipeline [D:one-pipeline], so the layer covers them all. A KLet
+// registers its purity into the env the next statement threads:
+// transitivity through earlier bindings is one forward pass (no
+// `let rec` exists).
+let checkStatement
+    (gateExprs: bool)
+    (sigCtx: SigContext option)
+    (mkR: TypeEnv -> Parser.Resolver)
+    (loadImport: ImportLoader)
+    (tenv: TypeEnv)
+    (ll: LogicalLine)
+    : Result<CheckedStatement, StmtDiag> =
+    checkStatementCore gateExprs sigCtx mkR loadImport tenv ll
+    |> Result.bind (fun st ->
+        let teTag =
+            match st.Kind with
+            | KLet(_, _, te) -> Some(te, StmtTag.Let)
+            | KLetPat(_, _, te) -> Some(te, StmtTag.LetPat)
+            | KCmd te -> Some(te, StmtTag.Cmd)
+            | KExpr te -> Some(te, StmtTag.Expr)
+            | KType _
+            | KSig _
+            | KModule _
+            | KImport _ -> None
+
+        match teTag with
+        | None -> Ok st
+        | Some(te, tag) ->
+            match Purity.pureViolation tenv.PureBindings te with
+            | Some(span, phrase) ->
+                let physLine, physCol = translate ll span.Start.Col
+
+                Error
+                    { PhysLine = physLine
+                      PhysCol = physCol
+                      PhysEnd = Some(translate ll span.End.Col)
+                      Tag = Some tag
+                      HasCol = true
+                      Span = Some span
+                      Parse = false
+                      Message = $"this 'pure' block forbids effects, but {phrase}"
+                      File = None
+                      Note = None
+                      Warnings = [] }
+            | None ->
+                match st.Kind with
+                | KLet(name, _, te) ->
+                    Ok
+                        { st with
+                            Env =
+                                { st.Env with
+                                    PureBindings = Map.add name (Purity.isPureExpr tenv.PureBindings te) st.Env.PureBindings } }
+                | _ -> Ok st)
 
 // ---- the module loader [D:modules-v1] ------------------------------------
 // A module's OWN base env: builtins (strict) + prelude + Self, with

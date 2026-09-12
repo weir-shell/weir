@@ -1759,6 +1759,13 @@
       "pointer": "a pipe stage: lines |\u003E from yaml Deployment \u2014 yields seq\u003CDeployment\u003E, one per document."
     },
     {
+      "name": "let pure",
+      "signature": null,
+      "summary": "The purity MODIFIER \u2014 weir\u0027s first post-let modifier: \u0060let pure f x = \u2026\u0060 asserts the binding\u0027s whole body reaches no effect, and an impure body is a check error. Desugars to a body-spanning pure block; the binding hovers with the (pure) badge.",
+      "example": "let pure double n = n * 2",
+      "pointer": "#help pure has the block form and the effect families"
+    },
+    {
       "name": "not",
       "signature": "not (b: bool) : bool",
       "summary": "Boolean negation.",
@@ -1792,6 +1799,13 @@
       "summary": "Write a value and a newline to stderr \u2014 diagnostics there, data on stdout. Same accepted set as print: string, int, float, bool, or seq\u003Cstring\u003E.",
       "example": "printerr \u0022oops\u0022",
       "pointer": null
+    },
+    {
+      "name": "pure",
+      "signature": null,
+      "summary": "A purity assertion for an indented block: the body must reach NO effect (filesystem, command, network, environment, console, clock) \u2014 a reachable effect is a check error naming the offender. Opt-in only: weir stays effect-normal, and code outside a pure region is never gated.",
+      "example": "pure 1 \u002B 1",
+      "pointer": "the binding spelling is the \u0060let pure\u0060 modifier; unknown callables (a function param, an import\u0027s member) forfeit purity \u2014 the judgement may refuse, it never lies"
     },
     {
       "name": "retry",

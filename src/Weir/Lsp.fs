@@ -1135,6 +1135,8 @@ let private withinFormHover (text: string) (jcol: int) : string option =
         if w = "within" then
             let kinds =
                 Ast.withinKinds
+                // standalone heads (pure) are not within kinds [D:pure-stage1]
+                |> List.filter (fun k -> not k.Standalone)
                 |> List.map (fun k -> k.Name + (if k.Binds then " (binds)" else ""))
                 |> String.concat ", "
 
@@ -1143,7 +1145,7 @@ let private withinFormHover (text: string) (jcol: int) : string option =
                 + kinds
             )
         else
-            match Ast.withinKinds |> List.tryFind (fun k -> k.Name = w) with
+            match Ast.withinKinds |> List.tryFind (fun k -> k.Name = w && not k.Standalone) with
             | Some wk when endsWithWord "within" before ->
                 let nature = if wk.Binds then "binds" else "consumes"
                 Some $"{wk.Name} — {nature}: {wk.Doc}"
@@ -1609,8 +1611,10 @@ let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string 
                     // missing badge is conservative, never a lie
                     let badge =
                         if
-                            Can.tyHasFun sch.Ty
-                            && (Can.pureTopBindings stmts |> Map.tryFind name |> Option.defaultValue false)
+                            Purity.tyHasFun sch.Ty
+                            && (Can.pureTopBindings stmts
+                                |> Map.tryFind name
+                                |> Option.defaultValue false)
                         then
                             "  (pure)"
                         else
