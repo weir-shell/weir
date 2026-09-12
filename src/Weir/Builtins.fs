@@ -1984,10 +1984,12 @@ let private pathNormalize (p: string) : string =
                 out.Add ".."
         | s -> out.Add s
 
-    let sep = string System.IO.Path.DirectorySeparatorChar
-    let body = String.concat sep (List.ofSeq out)
+    // ONE output shape on every platform [D:lf-output]'s sibling law:
+    // '/' — Windows accepts it, and both porting receipts normalize TO
+    // it (the originals do .Replace('\\', "/"))
+    let body = String.concat "/" (List.ofSeq out)
 
-    if rooted then sep + body
+    if rooted then "/" + body
     elif body = "" then "."
     else body
 
