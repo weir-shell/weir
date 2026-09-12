@@ -2481,6 +2481,14 @@ and eval (env: Env) (te: TypedExpr) : Value =
         // command feeding a command is a raw byte hop (a hop makes no
         // value — [D:colour-inherit]'s rationale, completed); only the
         // chain's far-left VALUE head (if any) is a text edge
+        // the ambient snapshot [D:ambient-capture]: taken HERE, where
+        // the pipe is written — a lazy seq escaping a `within` scope
+        // still spawns under the scope it was written in (closure law)
+        let snapCwd = Some(Weir.Session.Cwd())
+
+        let snapAmb =
+            Some(Weir.Session.envOverlay () |> List.rev |> List.collect id)
+
         let rec collect (e: TypedExpr) (acc: Proc.Spec list) : TypedExpr option * Proc.Spec list =
             match e.Kind with
             | TECmd(p2, a2, e2) ->
@@ -2488,7 +2496,9 @@ and eval (env: Env) (te: TypedExpr) : Value =
                 { Proc.Prog = Proc.resolveProg p2
                   Proc.Args = argvOf env a2
                   Proc.Env = overlayOf env e2
-                  Proc.Input = None }
+                  Proc.Input = None
+                  Proc.Cwd = snapCwd
+                  Proc.Ambient = snapAmb }
                 :: acc
             | TEPipe(l, { Kind = TECmd(p2, a2, e2) }) ->
                 collect
@@ -2496,7 +2506,9 @@ and eval (env: Env) (te: TypedExpr) : Value =
                     ({ Proc.Prog = Proc.resolveProg p2
                        Proc.Args = argvOf env a2
                        Proc.Env = overlayOf env e2
-                       Proc.Input = None }
+                       Proc.Input = None
+                       Proc.Cwd = snapCwd
+                       Proc.Ambient = snapAmb }
                      :: acc)
             | _ -> Some e, acc
 
@@ -2524,7 +2536,9 @@ and eval (env: Env) (te: TypedExpr) : Value =
             @ [ { Proc.Prog = Proc.resolveProg prog
                   Proc.Args = argvOf env cargs
                   Proc.Env = overlayOf env cenvO
-                  Proc.Input = (if leftSpecs.IsEmpty then stdin else None) } ]
+                  Proc.Input = (if leftSpecs.IsEmpty then stdin else None)
+                  Proc.Cwd = snapCwd
+                  Proc.Ambient = snapAmb } ]
 
         VSeq(Seq.delay (fun () -> Proc.chainLinesOf specs) |> Seq.map VStr)
     // the armed statement command STREAMS at a tty [D:stream-echo]:
@@ -2543,7 +2557,9 @@ and eval (env: Env) (te: TypedExpr) : Value =
             { Prog = Proc.resolveProg prog
               Args = argv
               Env = overlayOf env cenvO
-              Input = None }
+              Input = None
+              Cwd = None
+              Ambient = None }
 
         let mutable atLineStart = true
 
@@ -2650,10 +2666,16 @@ and eval (env: Env) (te: TypedExpr) : Value =
     | TECmd(prog, args, cenvO) ->
         let argv = argvOf env args
 
-        VSeq(
-            Seq.delay (fun () -> Proc.linesWith (overlayOf env cenvO) (Proc.resolveProg prog) argv None)
-            |> Seq.map VStr
-        )
+        // written-site ambient [D:ambient-capture], the lazy-spawn law
+        let spec: Proc.Spec =
+            { Prog = Proc.resolveProg prog
+              Args = argv
+              Env = overlayOf env cenvO
+              Input = None
+              Cwd = Some(Weir.Session.Cwd())
+              Ambient = Some(Weir.Session.envOverlay () |> List.rev |> List.collect id) }
+
+        VSeq(Seq.delay (fun () -> Proc.linesOf spec) |> Seq.map VStr)
     | TEInterp parts ->
         let sb = System.Text.StringBuilder()
 
@@ -3230,7 +3252,9 @@ let private commandStatementSpec (env: Env) (te: Check.TypedExpr) : Proc.Spec =
         { Prog = Proc.resolveProg prog
           Args = argvOf env args
           Env = overlayOf env cenvO
-          Input = None }
+          Input = None
+          Cwd = None
+          Ambient = None }
     | _ -> unreachable "a command-statement helper takes the bare-command statement only"
 
 /// the REPL's streaming statement echo [D:stream-echo] — spawns the

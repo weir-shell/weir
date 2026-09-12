@@ -12,7 +12,22 @@ type Spec =
     { Prog: string
       Args: string list
       Env: (string * string) list
-      Input: seq<string> option }
+      Input: seq<string> option
+      // the ambient snapshot [D:ambient-capture]: a LAZY command spawn
+      // replays the scope state captured where the expression was
+      // WRITTEN (closure semantics) — None reads the live session (the
+      // eager statement paths, where site and spawn coincide)
+      Cwd: string option
+      Ambient: (string * string) list option }
+
+/// the live-session ambient — the default for every eager spawn
+let liveAmbient () =
+    { Prog = ""
+      Args = []
+      Env = []
+      Input = None
+      Cwd = None
+      Ambient = None }
 
 // the ONE spawn [D:spawn-spec]: psi construction, the env law, cwd, the
 // not-found mapping, and the race-group registration every child owes
@@ -22,6 +37,8 @@ let private spawn
     (redirectOut: bool)
     (redirectErr: bool)
     (redirectIn: bool)
+    (cwdO: string option)
+    (ambientO: (string * string) list option)
     (prog: string)
     (args: string list)
     (env: (string * string) list)
@@ -34,14 +51,20 @@ let private spawn
     // ambient `within env` layers apply OUTER-FIRST under the explicit
     // spec env, so inner and explicit keys win [D:within-scopes] — at
     // the spawn, so EVERY child (reifiers, cmd/into, scoped procs) obeys
-    // the one law, not just the Eval command paths
-    for k, v in Session.envOverlay () |> List.rev |> List.collect id do
+    // the one law, not just the Eval command paths. A LAZY spawn replays
+    // its written-site snapshot instead [D:ambient-capture].
+    let ambient =
+        match ambientO with
+        | Some snap -> snap
+        | None -> Session.envOverlay () |> List.rev |> List.collect id
+
+    for k, v in ambient do
         psi.Environment[k] <- v
 
     for k, v in env do
         psi.Environment[k] <- v
 
-    psi.WorkingDirectory <- Session.Cwd()
+    psi.WorkingDirectory <- (match cwdO with Some c -> c | None -> Session.Cwd())
     psi.UseShellExecute <- false
     psi.RedirectStandardOutput <- redirectOut
     psi.RedirectStandardError <- redirectErr
@@ -63,7 +86,7 @@ let private spawn
 // the one starter: the shared spawn plus the stdin writer — which PULLS
 // the input seq lazily as the pipe accepts (laziness reaches inputs too)
 let private start (redirectOut: bool) (redirectErr: bool) (s: Spec) : Process =
-    let p = spawn redirectOut redirectErr s.Input.IsSome s.Prog s.Args s.Env
+    let p = spawn redirectOut redirectErr s.Input.IsSome s.Cwd s.Ambient s.Prog s.Args s.Env
 
     match s.Input with
     | Some lines ->
@@ -441,7 +464,7 @@ let chainLinesOf (specs: Spec list) : seq<string> =
                     if i = 0 then
                         sp, start true false sp
                     else
-                        sp, spawn true false true sp.Prog sp.Args sp.Env)
+                        sp, spawn true false true sp.Cwd sp.Ambient sp.Prog sp.Args sp.Env)
 
             try
                 // wire stage i's stdout into stage i+1's stdin, bytes 1:1
@@ -494,7 +517,9 @@ let linesWith
         { Prog = prog
           Args = args
           Env = overlay
-          Input = input }
+          Input = input
+          Cwd = None
+          Ambient = None }
 
 let lines (prog: string) (args: string list) (input: seq<string> option) : seq<string> = linesWith [] prog args input
 
@@ -503,7 +528,9 @@ let streamCode (overlay: (string * string) list) (prog: string) (args: string li
         { Prog = prog
           Args = args
           Env = overlay
-          Input = None }
+          Input = None
+          Cwd = None
+          Ambient = None }
 
 let completeWith
     (overlay: (string * string) list)
@@ -515,7 +542,9 @@ let completeWith
         { Prog = prog
           Args = args
           Env = overlay
-          Input = input }
+          Input = input
+          Cwd = None
+          Ambient = None }
 
 let complete (prog: string) (args: string list) (input: seq<string> option) : int * seq<string> * seq<string> =
     completeWith [] prog args input
@@ -535,7 +564,7 @@ let startSpilled
     (outPath: string)
     (errPath: string)
     : Process * (unit -> unit) =
-    let p = spawn true true true prog args overlay
+    let p = spawn true true true None None prog args overlay
 
     // stdin closed HERE, not through the writer task: a scoped child
     // that reads must see EOF at once, with no thread between
