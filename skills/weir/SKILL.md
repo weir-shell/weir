@@ -1234,7 +1234,13 @@ type Bad = C of int
   `File.read f |> Yaml.parse |> Yaml.merge p |> to yaml |> File.write f`.
 
 ```weir
-let doc = ["replicas: 1"; "labels:"; "    app: web"; "    tier: x"] |> Yaml.parse
+let doc =
+    <<<
+        replicas: 1
+        labels:
+            app: web
+            tier: x
+    |> Yaml.parse
 let p = yaml patch
     replicas: 3
     labels:
