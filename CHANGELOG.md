@@ -17,9 +17,19 @@
   `within cd`/`within env` and forced after the block used to spawn under
   the restored outer ambient. The ambient (cwd + env overlay) is now
   captured at the expression's written site, closure-style, and replayed
-  at spawn. (A related, different defect remains open: a `xs | cmd` pipe
-  written as a block's tail line associates to the outside of the block —
-  a parser association issue, tracked separately.)
+  at spawn. (The related, different defect — a `xs | cmd` pipe written as
+  a block's tail line associating to the outside of the block — is fixed
+  below.)
+
+- **Fixed: a pipe on a `within` body line belongs to the body.** A
+  value-headed pipe written wholly on a block's body line
+  (`["x"] | sh -c "…"` under `within cd`/`within env`) used to associate
+  to the whole block expression — `(within …) | cmd` — so the command
+  spawned after the scope restored: the cd invisible, the env overlay
+  invisible. It is now part of the body statement and sees the scope; a
+  non-final body pipe (previously a bare parse error at the statement
+  boundary) works too. The offside law is unchanged: a pipe DEDENTED to
+  the block's head column still closes the block and pipes its value.
 
 - **Command pipes carry bytes.** A command→command hop is now a raw byte
   pipe — no decode, no line split, no appended newline — so binary flows

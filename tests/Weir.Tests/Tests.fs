@@ -7454,6 +7454,59 @@ let optionSweepTests =
               | Error msg -> Expect.stringContains msg "'|' chains commands" "library head keeps the hint"
               | Ok _ -> failtest "expected the hint"
           }
+          test "a body-line pipe belongs to the body statement [D:within-tail-pipe]" {
+              // the inline `| cmd` on a within block's tail line stays
+              // INSIDE the scope — it parsed as `(within …) | cmd`, the
+              // command spawning after the scope restored
+              match Weir.Parser.parseLine cmdResolver "within cd \"/d\" [\"x\"] | cat" with
+              | Ok(SExpr e | SCmd e) ->
+                  Expect.equal (Weir.Ast.sexpr e) "(within cd \"/d\" ([\"x\"] |> (cmd cat)))" "the pipe rides the body"
+              | other -> failtest $"expected the scoped pipe, got {other}"
+
+              // a NON-FINAL value-headed pipe is a body statement too (was
+              // a bare parse error at the sibling boundary) — and armSeq
+              // arms it exactly like a command-headed chain
+              let joined =
+                  match
+                      Weir.Script.assemble [ 1, "within cd \"/d\""; 2, "    [\"x\"] | cat"; 3, "    print \"after\"" ]
+                  with
+                  | Ok [ ll ] -> ll.Text
+                  | other -> failtest $"expected one logical line, got {other}"
+
+              match Weir.Parser.parseLine cmdResolver joined with
+              | Ok(SExpr e | SCmd e) ->
+                  Expect.equal
+                      (Weir.Ast.sexpr e)
+                      "(within cd \"/d\" (seq (([\"x\"] |> (cmd cat)) |> |print) (print \"after\")))"
+                      "the mid-body pipe arms in place"
+              | other -> failtest $"expected the armed body, got {other}"
+          }
+          test "a dedented pipe below a within block closes it [D:within-tail-pipe]" {
+              // the offside face: at (or left of) the head column the pipe
+              // takes the WHOLE scope — the assembler wraps `(within …)`,
+              // the match-close shape [D:match-pipe-offside]
+              let dedentBar =
+                  match Weir.Script.assemble [ 1, "within cd \"/d\""; 2, "    [\"x\"]"; 3, "| cat" ] with
+                  | Ok [ ll ] -> ll.Text
+                  | other -> failtest $"expected one logical line, got {other}"
+
+              Expect.equal dedentBar "(within cd \"/d\" [\"x\"]) | cat" "the dedented | wraps the scope"
+
+              let dedentFwd =
+                  match Weir.Script.assemble [ 1, "within cd \"/d\""; 2, "    [\"x\"]"; 3, "|> Seq.length" ] with
+                  | Ok [ ll ] -> ll.Text
+                  | other -> failtest $"expected one logical line, got {other}"
+
+              Expect.equal dedentFwd "(within cd \"/d\" [\"x\"]) |> Seq.length" "the dedented |> wraps the scope"
+
+              // a pipe at BODY indent extends the body statement (no wrap)
+              let bodyPipe =
+                  match Weir.Script.assemble [ 1, "within cd \"/d\""; 2, "    [\"x\"]"; 3, "    | cat" ] with
+                  | Ok [ ll ] -> ll.Text
+                  | other -> failtest $"expected one logical line, got {other}"
+
+              Expect.equal bodyPipe "within cd \"/d\" [\"x\"] | cat" "a body-indent pipe stays inside"
+          }
           test "retired names teach their replacements [D:seq-force]" {
               Expect.stringContains (checkErr "[1] |> Seq.toList").Message "'Seq.force' is the materializer" ""
               Expect.stringContains (checkErr "[1] |> toList").Message "'force' is the materializer" ""

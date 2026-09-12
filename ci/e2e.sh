@@ -3289,6 +3289,48 @@ echo "$out" | grep -q "/inner$" || fail "an escaped lazy command must keep its w
 echo "e2e ok: ambient capture — an escaped lazy command spawns under its written-site scope"
 rm -rf "$adir2"
 
+# within tail pipes [D:within-tail-pipe]: a pipe ON a body line belongs
+# to the body statement — the six-cell matrix (within cd / within env ×
+# bare command, value-headed pipe, cmd|cmd chain) all see the scope, a
+# `s |> f` tail line parses, and a DEDENTED pipe at the head column
+# still closes the scope (the offside law [D:match-pipe-offside])
+wtpdir=$(mkweirtmp)
+mkdir -p "$wtpdir/scoped"
+cat > "$wtpdir/wtp.weir" <<'WEOF'
+within cd "scoped"
+    sh -c "echo c1=$(basename $(pwd))"
+within cd "scoped"
+    ["x"] | sh -c "cat >/dev/null; echo c2=$(basename $(pwd))"
+within cd "scoped"
+    sh -c "echo y" | sh -c "cat >/dev/null; echo c3=$(basename $(pwd))"
+within env [{ name = "WTP"; value = "ov" }]
+    sh -c "echo e1=$WTP"
+within env [{ name = "WTP"; value = "ov" }]
+    ["x"] | sh -c "cat >/dev/null; echo e2=$WTP"
+within env [{ name = "WTP"; value = "ov" }]
+    sh -c "echo y" | sh -c "cat >/dev/null; echo e3=$WTP"
+let s = ["a"; "b"; "c"]
+within cd "scoped"
+    s |> Seq.where (fun l -> l <> "b") |> Seq.iter (fun l -> print l)
+within cd "scoped"
+    ["x"]
+| sh -c "cat >/dev/null; echo dedent=$(basename $(pwd))"
+WEOF
+out=$(cd "$wtpdir" && $BIN wtp.weir)
+for cell in c1 c2 c3; do
+    echo "$out" | grep -qF "$cell=scoped" || fail "within cd must reach the $cell spawn: $out"
+done
+for cell in e1 e2 e3; do
+    echo "$out" | grep -qF "$cell=ov" || fail "within env must reach the $cell spawn: $out"
+done
+echo "$out" | grep -qxF "a" || fail "the |> tail line must parse and run in the body: $out"
+echo "$out" | grep -qxF "c" || fail "the |> tail line must parse and run in the body: $out"
+echo "$out" | grep -qxF "b" && fail "the |> tail's filter must apply: $out" || true
+echo "$out" | grep -qF "dedent=scoped" && fail "a dedented pipe must close the scope (spawn outside): $out" || true
+echo "$out" | grep -qE "dedent=" || fail "the dedented pipe's stage must still run: $out"
+echo "e2e ok: within tail pipes — the six-cell matrix scopes, dedented pipe closes"
+rm -rf "$wtpdir"
+
 # districts in MODULES [D:yaml-nodes]: a `yaml patch` district inside an
 # imported module function assembles and runs — pinned after a stale-
 # binary report claimed the loader broke on the district sentinel
