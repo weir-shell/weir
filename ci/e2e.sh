@@ -1099,7 +1099,10 @@ root = sys.argv[1]
 ast = open(f"{root}/src/Weir/Ast.fs").read()
 # the table block: Name = "..." entries inside withinKinds
 tbl_block = re.search(r"let withinKinds[^=]*=\n(.*?)\n\n", ast, re.S).group(1)
-table = set(re.findall(r'Name = "(\w+)"', tbl_block))
+# a Standalone kind (pure) is its OWN head, never `within pure` — the
+# grammars' within-alternation lists non-standalone kinds only
+entries = re.findall(r'\{[^}]*?Name = "(\w+)"[^}]*?Standalone = (true|false)', tbl_block, re.S)
+table = set(n for n, st in entries if st == "false")
 def alt(path, rx):
     m = re.search(rx, open(f"{root}/{path}").read())
     if not m: return None
