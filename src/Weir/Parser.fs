@@ -3314,14 +3314,28 @@ let private commandSegment
         // sentinel can only be the assembler's yaml-district wrap
         // (statement joins always space the sentinel) — never a command
         .>> notFollowedBy (pchar sibSep)
-        // …and its marker+schema face [D:yaml-schemas]: a ` schema=<name>`
-        // suffix GLUED to the sentinel is the same wrap (`yaml schema=x`);
-        // no user argv is ever glued, so the whole segment refuses here
-        // and the parse falls through to the district arm
+        // …and its marker+modifier face [D:yaml-schemas][D:yaml-nodes]:
+        // a modifier suffix (` patch [by=<key>]` and/or ` schema=<name>`)
+        // GLUED to the sentinel is the same wrap (`yaml patch`,
+        // `yaml schema=x`); no user argv is ever glued, so the whole
+        // segment refuses here and the parse falls through to the
+        // district arm. The check-side resolver assumes unknown heads
+        // are commands [D:assume-resolver], so without the patch face
+        // `weir check` claimed a patch marker as a command while the
+        // runner's hard resolver fell through correctly.
         .>> notFollowedBy (
             attempt (
-                pstring " schema="
-                >>. many1Satisfy (fun c -> System.Char.IsLower c || System.Char.IsDigit c || c = '-')
+                choice
+                    [ pstring " patch"
+                      >>. opt (pstring " by=" >>. many1Satisfy (fun c -> c <> ' ' && c <> sibSep))
+                      >>. opt (
+                          pstring " schema="
+                          >>. many1Satisfy (fun c -> System.Char.IsLower c || System.Char.IsDigit c || c = '-')
+                      )
+                      >>% ()
+                      pstring " schema="
+                      >>. many1Satisfy (fun c -> System.Char.IsLower c || System.Char.IsDigit c || c = '-')
+                      >>% () ]
                 >>. pchar sibSep
             )
         )
@@ -3827,8 +3841,20 @@ tySynRef.Value <-
                   | "seq" -> ws >>. between (str_ws "<") (str_ws ">") tySyn |>> TSeq
                   | w when keywords.Contains w -> fail $"'{w}' is a keyword"
                   | w ->
-                      ws >>. opt (between (str_ws "<") (str_ws ">") (sepBy1 tySyn (str_ws ",")))
-                      |>> fun args -> TNamed(w, Option.defaultValue [] args) ]
+                      // a QUALIFIED type name (`M.Spec`) dominates with the
+                      // law [D:modules-v1]: imported types resolve by PLAIN
+                      // name (qualified type names are deferred), so the dot
+                      // teaches instead of dying as a bare parse error
+                      getPosition .>>. opt (attempt (pchar '.' >>. rawWord))
+                      >>= fun (dotAt, quald) ->
+                          match quald with
+                          | Some sub ->
+                              failFatallyAt
+                                  dotAt
+                                  $"a signature names types bare — an imported type resolves by its plain name; write '{sub}', not '{w}.{sub}'"
+                          | None ->
+                              ws >>. opt (between (str_ws "<") (str_ws ">") (sepBy1 tySyn (str_ws ",")))
+                              |>> fun args -> TNamed(w, Option.defaultValue [] args) ]
         // t1 * t2 [* ...] is a tuple type [D:tuples-reversal]; `a -> b` is
         // a function type [D:function-types] — RIGHT-associative and LOOSER
         // than `*` and generics (`int * string -> bool` is

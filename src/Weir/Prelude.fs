@@ -62,8 +62,9 @@ let extend (typeEnv: TypeEnv) (valueEnv: Eval.Env) : TypeEnv * Eval.Env =
         // entry — Map [D:map-string], the Proc handle [D:scoped-procs],
         // and the patch district's type [D:yaml-nodes]. Without this a
         // user `type Proc = …` would silently retype every scoped-process
-        // binder behind it.
-        for name in [ "Map"; "Proc"; "YamlPatch" ] do
+        // binder behind it. The arity-0 pair rides Check's ONE list, so
+        // registration and signature nameability cannot drift.
+        for name in "Map" :: Check.deflessBuiltinNominals do
             Check.builtinTypeNames.TryAdd(name, 0uy) |> ignore
 
         te, ve

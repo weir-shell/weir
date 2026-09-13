@@ -5108,6 +5108,13 @@ let typecheckAgainstSig (env: TypeEnv) (sigTy: Ty) (expr: Expr) : Result<TypedEx
     with BudgetExceeded(span, sized) ->
         Error(SigBody(budgetError span sized))
 
+// the def-less builtin nominals beside Map [D:scoped-procs][D:yaml-nodes]:
+// type constructors with NO Record/Union entry. ONE list — Prelude's
+// built-in-name registration and validateTy's arity table both read it,
+// so a nominal cannot be registered-but-unnameable (the YamlPatch
+// signature gap: the privacy teaching suggested a sig validateTy refused)
+let deflessBuiltinNominals = [ "Proc"; "YamlPatch" ]
+
 let rec private validateTy
     (env: TypeEnv)
     (selfName: string)
@@ -5151,6 +5158,9 @@ let rec private validateTy
         let arity =
             if n = selfName then
                 Some selfArity
+            // nameable like any nominal, the Map precedent (arity 0)
+            elif List.contains n deflessBuiltinNominals then
+                Some 0
             else
                 match typeDefFor env n with
                 | Some(Record d) -> Some d.Params.Length

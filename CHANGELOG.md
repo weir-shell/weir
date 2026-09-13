@@ -35,6 +35,16 @@
   A pipe line landing exactly on its own arm group's column is a
   returning arm (the deeper compound offside-closes as it always did);
   genuinely misaligned or left-of-match arms keep their errors.
+- **Module signatures can name every builtin type.** `let mk : string ->
+  YamlPatch` (and `Proc`) refused as "unknown type" — the def-less
+  builtin nominals were unnameable in signatures, even though the
+  module-privacy error itself suggested exactly that signature. Both
+  now validate in signatures and field types (arity 0), like `Map`;
+  the suggested signature round-trips.
+- **A qualified type name teaches the bare-name law.** `let f : M.Spec
+  -> string` died with a bare parse error at the dot; every type
+  position now refuses with "a signature names types bare — an
+  imported type resolves by its plain name".
 
 ### Changed
 

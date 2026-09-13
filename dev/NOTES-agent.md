@@ -6,6 +6,10 @@ weekly: self-correction rate (stranded = failures), fallback ranking
 skill lines and targeted hints).
 
 ## fallbacks
+- 2026-09-13 | commit-staging file-state slicing (one-off, not kept) ->
+  python | splitting one 870KB Tests.fs working state into per-commit
+  intermediate states by byte index is heavy text processing; nothing
+  landed in the repo.
 - 2026-09-13 | search postbuild guard (site/scripts/check-search.mjs) ->
   node | runs inside the site's npm postbuild in the deploy job, which
   has no weir binary at build time (same forcing gap as the 2026-08-20
