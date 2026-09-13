@@ -9383,6 +9383,70 @@ let agentFindingsTests =
               | Ok [ ll ] -> Expect.equal ll.Text (asmSib "if a then f x ; g") "the sibling after a continuation"
               | other -> failtest $"expected one logical line, got {other}"
           }
+          test "a `)`-headed line closes a multi-line application, never siblings [D:continuation-siblings]" {
+              // the close paren at the opener's indent CONTINUES the
+              // statement while a plain paren is open — the lambda
+              // closer's rule extended to ordinary applications
+              match
+                  Weir.Script.assemble
+                      [ 1, "let v ="; 2, "    YMap("; 3, "        [(\"a\", YStr \"x\")]"; 4, "    )" ]
+              with
+              | Ok [ ll ] -> Expect.equal ll.Text "let v = YMap( [(\"a\", YStr \"x\")] )" "the closer joins"
+              | other -> failtest $"expected one logical line, got {other}"
+
+              // …and in a nested arm body: the ported-port shape — a
+              // constructor application inside an if arm at depth
+              let clean lines =
+                  let diags, _, _, _ = Weir.Script.analyzeLines "pin.weir" lines
+                  Expect.isEmpty (diags |> List.map (fun d -> d.Message)) $"checks: {lines}"
+
+              clean
+                  [ "let build tag ="
+                    "    if tag == \"map\" then"
+                    "        YMap("
+                    "            [(\"a\", YStr \"x\")]"
+                    "        )"
+                    "    else"
+                    "        YStr \"plain\""
+                    "build \"map\" |> to yaml |> Seq.iter print" ]
+
+              clean
+                  [ "let build tag ="
+                    "    match tag with"
+                    "    | \"map\" ->"
+                    "        YMap("
+                    "            [(\"a\", YStr \"x\")]"
+                    "        )"
+                    "    | _ -> YStr \"plain\""
+                    "build \"map\" |> to yaml |> Seq.iter print" ]
+
+              // the closer restores the statement level: the next body
+              // line is a SIBLING of the whole application (the in-join
+              // for a pending block let), never an argument
+              match
+                  Weir.Script.assemble
+                      [ 1, "let outer ="
+                        2, "    let inner = YMap("
+                        3, "        [(\"a\", YStr \"x\")]"
+                        4, "    )"
+                        5, "    inner" ]
+              with
+              | Ok [ ll ] ->
+                  Expect.equal
+                      ll.Text
+                      "let outer = let inner = YMap( [(\"a\", YStr \"x\")] ) in inner"
+                      "the in-join waits for the closer"
+              | other -> failtest $"expected one logical line, got {other}"
+
+              // the other direction: with NO paren open a `)`-headed
+              // sibling is still refused, never silently joined
+              let diags, _, _, _ =
+                  Weir.Script.analyzeLines "pin.weir" [ "if 1 > 0 then"; "    print \"x\""; "    )" ]
+
+              Expect.isNonEmpty
+                  (diags |> List.filter (fun d -> d.Severity = "error"))
+                  "a stray `)` sibling stays an error"
+          }
           test "multi-line application assembles inside a module body too [D:continuation-siblings]" {
               let td =
                   System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-mlapp-{System.Guid.NewGuid():N}")

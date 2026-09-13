@@ -1659,6 +1659,14 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
 
                                                         let lets, join =
                                                             match p.Lets with
+                                                            // a `)`-headed line while a plain paren is
+                                                            // open closes a multi-line application — a
+                                                            // continuation at ANY body indent, never a
+                                                            // sibling; the `in`/`;` joins wait for the
+                                                            // `)` exactly as the lambda floor rules
+                                                            // [D:multiline-lambda][D:continuation-siblings]
+                                                            | _ when cls.ClosesParen && p.ParenDepth > 0 ->
+                                                                p.Lets, JSpace
                                                             | (k, _) :: rest when indent = k && k > lambdaFloor ->
                                                                 rest, JIn
                                                             // a proc head's block joins sentineled even in

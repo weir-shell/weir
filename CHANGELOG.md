@@ -20,6 +20,14 @@
   and lambdas did. Bindings-beat-PATH now reaches block-let depth;
   a genuine external head in that condition position
   (`if test -f $p | succeeds then`) still chains.
+- **A `)` on its own line closes a multi-line application anywhere.**
+  `YMap(` with arguments on deeper lines and the close paren alone at
+  the body indent was a parse error at the paren inside if/match arm
+  bodies (and everywhere else the closer sat at the sibling level) —
+  the assembler sequenced the `)` line as a block statement. While a
+  plain paren is open a `)`-headed line now continues the statement,
+  the rule multiline lambdas already had; a stray `)` with no paren
+  open still refuses.
 
 ## v0.0.32
 
