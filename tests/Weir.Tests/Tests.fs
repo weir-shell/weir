@@ -16681,6 +16681,8 @@ let moduleSignatureTests =
                       "let a y = y"
                       "let b : Retry -> int"
                       "let b r = r.attempts"
+                      "let e : Poll -> Duration"
+                      "let e p = p.timeout"
                       "let c : HttpRequest -> string"
                       "let c r = r.url"
                       "let d : Map<string, int> -> Map<string, int>"
