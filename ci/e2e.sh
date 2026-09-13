@@ -7412,6 +7412,8 @@ module Mlm
 
 let combine3 a b c = a * 2 + b * 3 + c * 5
 
+let total : seq<string> -> int
+
 let total xs =
     combine3
         (xs |> Seq.length)
