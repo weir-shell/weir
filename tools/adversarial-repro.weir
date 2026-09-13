@@ -44,16 +44,18 @@ let cli = Args.load Cli
 // ---- probes whose verdict weir can reach on its own ------------------------
 
 let probeF2a =
-    [ @"type Doc = { k: string }"
-      @"let orig = "" a\nb"""
-      @"let back = { k = orig } |> to yaml |> from yaml Doc"
-      @"print (if back.k == orig then ""OK"" else ""BROKEN"")" ]
+    <<<
+        type Doc = { k: string }
+        let orig = " a\nb"
+        let back = { k = orig } |> to yaml |> from yaml Doc
+        print (if back.k == orig then "OK" else "BROKEN")
 
 let probeF2b =
-    [ @"type Doc = { k: string }"
-      @"let orig = ""a\n """
-      @"let back = { k = orig } |> to yaml |> from yaml Doc"
-      @"print (if back.k == orig then ""OK"" else ""BROKEN"")" ]
+    <<<
+        type Doc = { k: string }
+        let orig = "a\n "
+        let back = { k = orig } |> to yaml |> from yaml Doc
+        print (if back.k == orig then "OK" else "BROKEN")
 
 // F3, RE-POINTED at the teaching: the shipped fix makes the off-spine
 // boundary TEACH (the fifth refusal cell) rather than degrade to a
@@ -61,9 +63,10 @@ let probeF2b =
 // question. The probe asserts the located teaching, and silent
 // success (the old degradation running a PATH tool) stays BROKEN.
 let probeF3 =
-    [ @"if 1 > 0 then"
-      @"    let r = sh -c ""exit 7"" | complete"
-      @"    print (if r.exitCode == 7 then ""OK"" else ""BROKEN"")" ]
+    <<<
+        if 1 > 0 then
+            let r = sh -c "exit 7" | complete
+            print (if r.exitCode == 7 then "OK" else "BROKEN")
 
 // F4, RE-POINTED at the rejection (the plan's acceptance rule): fix (1)
 // landed, so the base64 construction must REFUSE with the not-text
@@ -72,12 +75,14 @@ let probeF3 =
 // truncation diagnostic. Silent truncation (a child seeing 1 byte)
 // stays BROKEN.
 let probeF4construct =
-    [ @"let v = Str.fromBase64 ""YQBi"""
-      @"print (show (Str.length v))" ]
+    <<<
+        let v = Str.fromBase64 "YQBi"
+        print (show (Str.length v))
 
 let probeF4argv nulPath =
-    [ $"""let v = File.read "{nulPath}" |> Seq.head"""
-      @"python3 -c ""import sys; print(len(sys.argv[1]))"" $v" ]
+    $<<<
+        let v = File.read "{nulPath}" |> Seq.head
+        python3 -c "import sys; print(len(sys.argv[1]))" $v
 
 // F5: the POST-PARSE seam. Parse depth here is ~1 — no parse-depth guard can
 // ever see this file — but each line DOUBLES the inferred type, so the
@@ -101,22 +106,24 @@ let probeControl = [ @"print ""BROKEN""" ]
 // escape for what weir cannot do itself (repo scripting policy).
 
 let checker =
-    [ @"import sys, base64, yaml"
-      @"expected = base64.b64decode(sys.argv[1]).decode(""utf-8"")"
-      @"try:"
-      @"    got = yaml.safe_load(sys.stdin.read())"
-      @"except Exception as e:"
-      @"    print(""PARSE-FAIL "" + type(e).__name__)"
-      @"    sys.exit(1)"
-      @"if got == {""k"": expected}:"
-      @"    sys.exit(0)"
-      @"print(""MISMATCH "" + repr(got))"
-      @"sys.exit(1)" ]
+    <<<
+        import sys, base64, yaml
+        expected = base64.b64decode(sys.argv[1]).decode("utf-8")
+        try:
+            got = yaml.safe_load(sys.stdin.read())
+        except Exception as e:
+            print("PARSE-FAIL " + type(e).__name__)
+            sys.exit(1)
+        if got == {"k": expected}:
+            sys.exit(0)
+        print("MISMATCH " + repr(got))
+        sys.exit(1)
 
 let emitProbe b64 =
-    [ @"type Doc = { k: string }"
-      $"""let v = Str.fromBase64 "{b64}" """
-      @"{ k = v } |> to yaml |> Seq.iter print" ]
+    $<<<
+        type Doc = {{ k: string }}
+        let v = Str.fromBase64 "{b64}"
+        {{ k = v }} |> to yaml |> Seq.iter print
 
 // instrument availability — probed, never assumed. `timeout` is GNU coreutils
 // and absent on a stock macOS, where sh would return 127 and a `<> 124` test
