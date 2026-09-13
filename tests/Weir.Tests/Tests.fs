@@ -3812,17 +3812,27 @@ let genericsTests =
               | Error terr -> Expect.stringContains terr.Message "expected int, got string" ""
               | Ok _ -> failtest "expected rejection"
           }
-          test "Seq.groupBy lands on generic Group records" {
+          test "Seq.groupBy lands on (key, items) pairs — F#'s shape [D:groupby-pairs]" {
               Expect.equal
-                  (run "[1; 2; 3; 4] |> Seq.groupBy (fun x -> x < 3) |> map _.key" |> forceSeq)
+                  (run "[1; 2; 3; 4] |> Seq.groupBy (fun x -> x < 3) |> map fst" |> forceSeq)
                   [ VBool true; VBool false ]
-                  "keys"
+                  "keys, first-appearance order"
 
-              expectValue "[1; 2; 3; 4] |> Seq.groupBy (fun x -> x < 3) |> head |> (fun g -> g.items) |> sum" (VInt 3)
+              expectValue "[1; 2; 3; 4] |> Seq.groupBy (fun x -> x < 3) |> head |> snd |> sum" (VInt 3)
+
+              // the pair destructure every F# hand writes
+              expectValue
+                  "[\"aa\"; \"ab\"; \"b\"] |> Seq.groupBy (Str.sub 0 1) |> Seq.map (fun (k, g) -> $\"{k}:{g |> Seq.length}\") |> Str.join \",\""
+                  (VStr "a:2,b:1")
+
+              // pair-currency composition: string keys feed Map.ofPairs directly
+              expectValue
+                  "[\"aa\"; \"ab\"; \"b\"] |> Seq.groupBy (Str.sub 0 1) |> Seq.map (fun (k, g) -> (k, g |> Seq.length)) |> Map.ofPairs |> Map.get \"a\""
+                  (VInt 2L)
 
               Expect.equal
                   (formatTy (checkOk "[1; 2] |> Seq.groupBy (fun x -> x)").Ty)
-                  "seq<Group<int, int>>"
+                  "seq<int * seq<int>>"
                   "type display"
           } ]
 

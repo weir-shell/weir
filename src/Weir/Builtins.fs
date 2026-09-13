@@ -929,13 +929,6 @@ let private seqStr = TSeq TStr
 let private tA = TVar "a"
 let private tB = TVar "b"
 
-let groupDef: RecordDef =
-    { Name = "Group"
-      Params = [ "k"; "v" ]
-      Fields = [ "key", TVar "k"; "items", TSeq(TVar "v") ]
-      Attrs = Map.empty
-      Docs = Map.empty }
-
 // pairwise/zip produce tuples [D:tuples-reversal]
 let private pairwiseImpl: Value =
     VBuiltin(fun s ->
@@ -972,7 +965,7 @@ let private groupByImpl: Value =
                                 | :? bool as b -> VBool b
                                 | _ -> unreachable "groupBy key box"
 
-                            recordOf groupDef [ keyValue; VSeq(List.ofSeq group :> seq<Value>) ]))
+                            VTuple [ keyValue; VSeq(List.ofSeq group :> seq<Value>) ]))
                 )
             | v -> unreachable $"the checker rejects 'groupBy' on {formatValue v}"))
 
@@ -1728,7 +1721,9 @@ let private seqMembers: (string * Ty * Value) list =
       "skip", TFun(TInt, TFun(TSeq tA, TSeq tA)), skipImpl
       "contains", TFun(tA, TFun(TSeq tA, TBool)), containsImpl
       "distinct", TFun(TSeq tA, TSeq tA), distinctImpl
-      "groupBy", TFun(TFun(tA, tB), TFun(TSeq tA, TSeq(TNamed("Group", [ tB; tA ])))), groupByImpl
+      // pairs, F#'s own shape [D:groupby-pairs] — countBy/zip/pairwise
+      // already speak tuples; the record was the lone deviation
+      "groupBy", TFun(TFun(tA, tB), TFun(TSeq tA, TSeq(TTuple [ tB; TSeq tA ]))), groupByImpl
       // ---- the Seq-gaps cohort [D:seq-gaps] ----------------------
       "collect", TFun(TFun(tA, TSeq tB), TFun(TSeq tA, TSeq tB)), collectImpl
       "concat", TFun(TSeq(TSeq tA), TSeq tA), concatImpl
@@ -4035,7 +4030,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
            |> named [ "start"; "step"; "stop" ])
           "Seq.groupBy",
           bd
-              "Group elements by a key into Group records."
+              "Group elements by a key into (key, items) pairs — F#'s own shape; countBy/zip/pairwise speak the same tuples."
               (Some "[1; 2; 3] |> Seq.groupBy (fun x -> x) |> Seq.force")
               None
           |> named [ "key"; "xs" ]
@@ -4942,8 +4937,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
               "A directory entry: name, kind (Regular | Directory | Symlink — a fact, not an answer), target (Some for a symlink, None otherwise — the one fact no File.* query answers), bytes (0 B for a directory), modified (the last-write Instant — the file's own fact, stable under binding; the table renders it relatively, show keeps ISO), hidden, path. From `ls` — files and subdirectories, sorted by name (ordinal: case-sensitive, uppercase first; never the locale). name is for matching and display; path is for handing to File.* - name derives from path, never the reverse. Narrow facts are queries, not columns: File.mode for permissions."
               None
               None
-          "EnvVar", bd "A name/value environment pair. From `Env.vars` / `pair` / `ofPairs` / `fromFile`." None None
-          "Group", bd "A key and its items, from `Seq.groupBy`." None None ]
+          "EnvVar", bd "A name/value environment pair. From `Env.vars` / `pair` / `ofPairs` / `fromFile`." None None ]
 
 /// the boundary adapters a direction supports, DERIVED from the doc keys
 /// (`from json` / `to yaml` …) [D:form-word-hover] — the one source the
@@ -5301,7 +5295,6 @@ let typeEnv: TypeEnv =
             [ fileRow.Name, Record fileRow
               fileKind.Name, Union fileKind
               completedDef.Name, Record completedDef
-              groupDef.Name, Record groupDef
               envVarDef.Name, Record envVarDef ]
       ModuleTypes = Map.empty
       ModulePrivate = Map.empty

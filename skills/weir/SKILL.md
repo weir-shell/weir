@@ -708,13 +708,14 @@ print (Option.flatten (Some None) |> Option.defaultValue 0)
   is `seq<int>`; `Float.sum`/`Size.sum`/`Duration.sum` (and their
   `average`s) own the other types — `Seq.average` alone crosses types
   (the mean of ints is a float). `Seq.filter` teaches `where`.
-  `Seq.groupBy` yields `Group` RECORDS `{ key; items }`, never pairs —
-  destructure with the record pattern, not `(k, g)`:
+  `Seq.groupBy` yields `(key, items)` PAIRS — F#'s own shape, the same
+  tuples `countBy`/`zip`/`pairwise` speak; string keys feed
+  `Map.ofPairs` directly [D:groupby-pairs]:
 
 ```weir
 ["aa"; "ab"; "b"]
     |> Seq.groupBy (Str.sub 0 1)
-    |> Seq.iter (fun { key = k; items = g } -> print $"{k}:{g |> Seq.length}")
+    |> Seq.iter (fun (k, g) -> print $"{k}:{g |> Seq.length}")
 ```
   An OPERATOR can be a value, UNAPPLIED only [D:operator-values]:
   `Seq.reduce (+)`, `Seq.fold (+) 0` — exactly `fun a b -> a + b`, so
