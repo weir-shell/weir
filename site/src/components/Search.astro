@@ -1,0 +1,322 @@
+---
+// The search modal: two tiers in one Ctrl-K dialog (a header trigger on
+// every page). The MEMBER tier filters the shipped reference.json — the
+// binary's own docs dump, so member search can never drift from the
+// language — with a hand-rolled prefix-then-substring rank: symbol
+// queries (`Seq.groupBy`, `from xml`) are what users type, and generic
+// tokenizers are weak exactly there. The PROSE tier is Pagefind over the
+// built site. Both indexes load on OPEN, never on page load; a missing
+// Pagefind bundle (dev builds) degrades to members-only with a note —
+// the postbuild guard keeps a broken index from ever shipping.
+// Anchors mirror reference/index.astro's scheme exactly:
+// #<module>-<member> (lowercase, spaces to dashes).
+import refUrl from "../data/reference.json?url";
+---
+
+<button id="search-open" aria-label="Search (Ctrl+K)" title="Search (Ctrl+K)">
+  <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+    <circle cx="11" cy="11" r="7" />
+    <line x1="16.5" y1="16.5" x2="21" y2="21" />
+  </svg>
+</button>
+
+<dialog id="search-modal" aria-label="Search" data-ref-url={refUrl}>
+  <input
+    id="search-input"
+    type="search"
+    placeholder="Search members and pages…"
+    autocomplete="off"
+    spellcheck="false"
+  />
+  <div id="search-results">
+    <section id="search-members" hidden>
+      <h3>Members</h3>
+      <ul></ul>
+    </section>
+    <section id="search-prose" hidden>
+      <h3>Pages</h3>
+      <ul></ul>
+    </section>
+    <p id="search-note" hidden>
+      Page-text search needs the built index — showing language members only.
+    </p>
+    <p id="search-empty" hidden>No matches.</p>
+  </div>
+</dialog>
+
+<script>
+  const modal = document.getElementById("search-modal");
+  const input = document.getElementById("search-input");
+  const membersSec = document.getElementById("search-members");
+  const proseSec = document.getElementById("search-prose");
+  const note = document.getElementById("search-note");
+  const empty = document.getElementById("search-empty");
+
+  let members = null; // the member index — fetched on first open
+  let pagefind = null; // the Pagefind module — imported on first open
+  let proseState = "unloaded"; // "ready" | "missing"
+
+  const open = () => {
+    modal.showModal();
+    input.select();
+    ensureLoaded();
+  };
+  document.getElementById("search-open").addEventListener("click", open);
+  addEventListener("keydown", (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
+      e.preventDefault();
+      modal.open ? modal.close() : open();
+    }
+  });
+  // a click on the backdrop lands on the dialog element itself
+  modal.addEventListener("click", (e) => {
+    if (e.target === modal) modal.close();
+    else if (e.target.closest("a")) modal.close();
+  });
+
+  async function ensureLoaded() {
+    if (!members) {
+      try {
+        const ref = await (await fetch(modal.dataset.refUrl)).json();
+        const anchor = (g, n) =>
+          `${g.toLowerCase()}-${n.toLowerCase().replaceAll(" ", "-")}`;
+        members = [...ref.modules, { name: "Forms", members: ref.forms }].flatMap(
+          (g) =>
+            g.members.map((m) => {
+              const label = g.name === "Forms" ? m.name : `${g.name}.${m.name}`;
+              return {
+                label,
+                full: label.toLowerCase(),
+                bare: m.name.toLowerCase(),
+                sig: m.signature,
+                doc: m.summary,
+                href: `/reference/#${anchor(g.name, m.name)}`,
+              };
+            }),
+        );
+      } catch {
+        members = [];
+      }
+    }
+    if (proseState === "unloaded") {
+      try {
+        pagefind = await import(/* @vite-ignore */ "/pagefind/pagefind.js");
+        pagefind.init();
+        proseState = "ready";
+      } catch {
+        proseState = "missing";
+      }
+    }
+    render(input.value);
+  }
+
+  const filterMembers = (q) => {
+    const hits = [];
+    for (const m of members ?? []) {
+      const rank =
+        m.full.startsWith(q) || m.bare.startsWith(q)
+          ? 0
+          : m.full.includes(q)
+            ? 1
+            : 2;
+      if (rank < 2) hits.push([rank, m]);
+    }
+    hits.sort((a, b) => a[0] - b[0] || a[1].full.localeCompare(b[1].full));
+    return hits.slice(0, 12).map((h) => h[1]);
+  };
+
+  const fill = (section, items) => {
+    const ul = section.querySelector("ul");
+    ul.replaceChildren(...items);
+    section.hidden = items.length === 0;
+  };
+
+  const el = (tag, cls, text) => {
+    const n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text) n.textContent = text;
+    return n;
+  };
+
+  let seq = 0;
+  async function render(q) {
+    q = q.trim();
+    const my = ++seq;
+    if (!q) {
+      membersSec.hidden = proseSec.hidden = true;
+      note.hidden = empty.hidden = true;
+      return;
+    }
+
+    const memberHits = filterMembers(q.toLowerCase()).map((m) => {
+      const li = document.createElement("li");
+      const a = el("a");
+      a.href = m.href;
+      a.append(el("code", "s-name", m.label));
+      if (m.sig && m.sig !== m.label) a.append(el("code", "s-sig", m.sig));
+      if (m.doc) a.append(el("span", "s-doc", m.doc));
+      li.append(a);
+      return li;
+    });
+    fill(membersSec, memberHits);
+    note.hidden = !(proseState === "missing");
+
+    let proseHits = [];
+    if (proseState === "ready") {
+      const res = await pagefind.debouncedSearch(q);
+      if (res === null || my !== seq) return; // superseded by newer input
+      const pages = await Promise.all(
+        res.results.slice(0, 8).map((r) => r.data()),
+      );
+      if (my !== seq) return;
+      proseHits = pages.map((p) => {
+        const li = document.createElement("li");
+        const a = el("a");
+        a.href = p.url;
+        a.append(el("span", "s-title", p.meta?.title ?? p.url));
+        const ex = el("span", "s-excerpt");
+        ex.innerHTML = p.excerpt; // Pagefind's own <mark>-highlighted excerpt
+        a.append(ex);
+        li.append(a);
+        return li;
+      });
+    }
+    fill(proseSec, proseHits);
+    empty.hidden = memberHits.length > 0 || proseHits.length > 0;
+  }
+
+  input.addEventListener("input", () => render(input.value));
+
+  // arrow keys walk the flat result list; Enter follows the active hit
+  input.addEventListener("keydown", (e) => {
+    if (e.key !== "ArrowDown" && e.key !== "ArrowUp" && e.key !== "Enter")
+      return;
+    const links = [...modal.querySelectorAll("section:not([hidden]) a")];
+    if (!links.length) return;
+    const at = links.findIndex((a) => a.classList.contains("active"));
+    if (e.key === "Enter") {
+      e.preventDefault();
+      (links[at] ?? links[0]).click();
+      return;
+    }
+    e.preventDefault();
+    const next =
+      e.key === "ArrowDown"
+        ? links[(at + 1) % links.length]
+        : links[(at - 1 + links.length) % links.length];
+    links[at]?.classList.remove("active");
+    next.classList.add("active");
+    next.scrollIntoView({ block: "nearest" });
+  });
+</script>
+
+<!-- is:global: the result rows are built by the script above, and
+     Astro's scoped styles cannot match JS-created nodes — everything
+     stays fenced under the modal's own ids -->
+<style is:global>
+  #search-open {
+    border: 1px solid var(--border);
+    background: var(--bg);
+    color: var(--muted);
+    border-radius: 6px;
+    padding: 0.28rem 0.45rem;
+    cursor: pointer;
+    line-height: 0;
+  }
+  #search-open:hover {
+    color: var(--accent);
+    border-color: var(--accent);
+  }
+  @media (pointer: coarse) {
+    #search-open {
+      padding: 0.6rem;
+    }
+  }
+  #search-modal {
+    width: min(42rem, calc(100vw - 2rem));
+    margin: 8vh auto auto;
+    padding: 0;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--bg);
+    color: var(--fg);
+    font: inherit;
+  }
+  #search-modal::backdrop {
+    background: rgba(0, 0, 0, 0.35);
+  }
+  #search-input {
+    width: 100%;
+    padding: 0.8rem 1rem;
+    border: none;
+    border-bottom: 1px solid var(--border);
+    border-radius: 8px 8px 0 0;
+    background: transparent;
+    color: var(--fg);
+    font: inherit;
+    outline: none;
+  }
+  #search-results {
+    max-height: 60vh;
+    overflow-y: auto;
+    padding: 0.4rem 0 0.6rem;
+  }
+  #search-results:empty {
+    padding: 0;
+  }
+  #search-results h3 {
+    margin: 0.5rem 1rem 0.2rem;
+    font-size: var(--text-sm);
+    font-weight: 600;
+    color: var(--muted);
+  }
+  #search-results ul {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+  #search-results a {
+    display: block;
+    padding: 0.42rem 1rem;
+    color: var(--fg);
+    text-decoration: none;
+  }
+  #search-results a:hover,
+  #search-results a.active {
+    background: var(--code-bg);
+  }
+  #search-results .s-name {
+    color: var(--accent);
+    font-size: var(--text-sm);
+  }
+  #search-results .s-sig,
+  #search-results .s-doc,
+  #search-results .s-excerpt {
+    display: block;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    color: var(--muted);
+    font-size: var(--text-sm);
+  }
+  #search-results .s-title {
+    display: block;
+  }
+  #search-results .s-excerpt {
+    white-space: normal;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+  }
+  #search-results .s-excerpt mark {
+    background: none;
+    color: var(--accent);
+    font-weight: 600;
+  }
+  #search-note,
+  #search-empty {
+    margin: 0.5rem 1rem;
+    color: var(--muted);
+    font-size: var(--text-sm);
+  }
+</style>

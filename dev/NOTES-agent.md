@@ -6,6 +6,10 @@ weekly: self-correction rate (stranded = failures), fallback ranking
 skill lines and targeted hints).
 
 ## fallbacks
+- 2026-09-13 | search postbuild guard (site/scripts/check-search.mjs) ->
+  node | runs inside the site's npm postbuild in the deploy job, which
+  has no weir binary at build time (same forcing gap as the 2026-08-20
+  entry); node is already the toolchain running the build.
 - 2026-08-20 | site deploy verification (site.yml) -> inline workflow
   bash | the deploy job has no weir binary (building the AOT compiler to
   run three curl/grep checks would add minutes and a failure mode to the
