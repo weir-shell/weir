@@ -30,17 +30,31 @@ let firstHeading =
     |> Seq.head
 
 // -- the gates that burned releases before ----------------------------------
-let changelogOk = ^weir ci/changelog-check.weir --tag (cli.tag) | succeeds
-let grammarOk = ^weir ci/grammar-currency.weir | succeeds
-let zedPinOk = ^weir ci/zed-rev-current.weir | succeeds
+// | complete, not | succeeds: a sub-check's OWN error is the diagnosis —
+// swallowing it once misread a transient api.github.com 504 as "the rev
+// ritual is due"
+let subDetail teaching r =
+    let said = r.stderr |> Seq.append r.stdout |> Str.join " | "
+    if r.exitCode == 0 then "" else $"{teaching}; the check said: {said}"
+
+let changelogRes = ^weir ci/changelog-check.weir --tag (cli.tag) | complete
+let grammarRes = ^weir ci/grammar-currency.weir | complete
+let zedPinRes = ^weir ci/zed-rev-current.weir | complete
 
 // -- the grammar repo must NOT already target the new tag --------------------
 // (its TARGET bump belongs AFTER the release publishes; pushing it early
 // moves grammar main and re-stales the zed pin — the v0.0.30 race)
-let grammarTarget =
-    Http.fetch "https://raw.githubusercontent.com/weir-shell/tree-sitter-weir/main/TARGET_WEIR_RELEASE"
-    |> Seq.head
-    |> Str.trim
+// a transient 5xx retries; a 4xx is a fact
+let targetResp =
+    retry attempts=3 delay=5s
+        Http.send (Http.get "https://raw.githubusercontent.com/weir-shell/tree-sitter-weir/main/TARGET_WEIR_RELEASE")
+    until r
+        r.status < 500
+
+if targetResp.status <> 200 then
+    fail $"TARGET_WEIR_RELEASE fetch answered {targetResp.status}"
+
+let grammarTarget = targetResp.body |> Seq.head |> Str.trim
 
 let checks =
     [ ("clean working tree", dirty == 0, $"{dirty} uncommitted change(s) — commit or stash first")
@@ -48,9 +62,9 @@ let checks =
       ("local == origin/main", localSha == originSha, $"local {localSha} vs origin {originSha} — push or pull first (the v0.0.25 burn)")
       ("tag is free", tagTaken == 0, $"{cli.tag} already exists")
       ("changelog top section is this tag", firstHeading == $"## {cli.tag}", $"top section is '{firstHeading}'")
-      ("changelog content", changelogOk, "ci/changelog-check.weir refused — see its output")
-      ("grammar-currency", grammarOk, "the published grammar lags the manifest — push tree-sitter-weir first (the v0.0.26 burn)")
-      ("zed pin == grammar main", zedPinOk, "the rev ritual is due — land the pin bump BEFORE tagging (the v0.0.30 burn)")
+      ("changelog content", changelogRes.exitCode == 0, subDetail "ci/changelog-check.weir refused" changelogRes)
+      ("grammar-currency", grammarRes.exitCode == 0, subDetail "push tree-sitter-weir first (the v0.0.26 burn)" grammarRes)
+      ("zed pin == grammar main", zedPinRes.exitCode == 0, subDetail "if the pin is truly stale, land the bump BEFORE tagging (the v0.0.30 burn)" zedPinRes)
       ("grammar targets the PREVIOUS release", grammarTarget <> cli.tag, $"tree-sitter-weir already targets {cli.tag} — its TARGET bump belongs after the release publishes") ]
 
 checks

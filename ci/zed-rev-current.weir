@@ -48,10 +48,19 @@ if Str.length rev <> 40 then
 // 1 — the pinned rev is the grammar's current main
 let localSha d = git -C $d rev-parse HEAD |> Seq.head
 
+// a transient 5xx retries (a real 504 turned a green preflight red);
+// a 4xx is a fact and returns at once
+let fetchWithRetry url =
+    retry attempts=3 delay=5s
+        Http.send (Http.get url)
+    until r
+        r.status < 500
+
 let fetchedSha () =
-    (Http.fetch "https://api.github.com/repos/weir-shell/tree-sitter-weir/commits/main"
-        |> from json Commit)
-            .sha
+    let resp = fetchWithRetry "https://api.github.com/repos/weir-shell/tree-sitter-weir/commits/main"
+    if resp.status <> 200 then
+        fail $"grammar main query answered {resp.status}"
+    (resp.body |> from json Commit).sha
 
 let mainSha =
     match cli.gdir with
@@ -74,7 +83,7 @@ let ancestorLocal d = git -C $d merge-base --is-ancestor $rev HEAD | succeeds
 type Compare = { status: string }
 
 let ancestorRemote () =
-    let resp = Http.send (Http.get $"https://api.github.com/repos/weir-shell/tree-sitter-weir/compare/{rev}...main")
+    let resp = fetchWithRetry $"https://api.github.com/repos/weir-shell/tree-sitter-weir/compare/{rev}...main"
     if resp.status <> 200 then false
     else
         let c = resp.body |> from json Compare
@@ -96,8 +105,10 @@ let nodeTypesText =
     match cli.gdir with
     | Some d -> File.read $"{d}/src/node-types.json" |> Str.join "\n"
     | None ->
-        Http.fetch $"https://raw.githubusercontent.com/weir-shell/tree-sitter-weir/{rev}/src/node-types.json"
-        |> Str.join "\n"
+        let resp = fetchWithRetry $"https://raw.githubusercontent.com/weir-shell/tree-sitter-weir/{rev}/src/node-types.json"
+        if resp.status <> 200 then
+            fail $"node-types.json fetch at {rev} answered {resp.status}"
+        resp.body |> Str.join "\n"
 
 let nodeNames =
     Str.rmatchAll "\"type\": *\"([A-Za-z_]+)\"" nodeTypesText
