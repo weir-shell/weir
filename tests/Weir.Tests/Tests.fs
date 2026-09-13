@@ -16656,6 +16656,48 @@ let moduleSignatureTests =
                       | d :: _ -> Expect.stringContains d.Message "unknown type 'Nope'" "the sig type validates"
                       | [] -> failtest "an unknown sig type must refuse")
           }
+          test "def-less builtin nominals are nameable in signatures [D:yaml-nodes]: YamlPatch exports a patch builder; Proc and the declared builtins pin" {
+              withDir
+                  [ "m.weir",
+                    [ "module M"
+                      ""
+                      "let mk : string -> YamlPatch"
+                      ""
+                      "let mk tier = yaml patch"
+                      "    labels:"
+                      "        tier: $tier" ]
+                    "use.weir",
+                    [ "import \"./m.weir\" as M"
+                      "let doc = [\"kind: K\"] |> Yaml.parse"
+                      "doc |> Yaml.merge (M.mk \"gold\") |> to yaml |> Seq.iter print" ]
+                    // Proc is semantically exportable: a module helper over a
+                    // HANDLE (handles are data and escape scopes [D:scoped-procs])
+                    "p.weir", [ "module P"; "let pid : Proc -> int"; "let pid p = Proc.pid p" ]
+                    // the declared prelude nominals + Map already crossed —
+                    // pinned so it stays true
+                    "b.weir",
+                    [ "module B"
+                      "let a : Yaml -> Yaml"
+                      "let a y = y"
+                      "let b : Retry -> int"
+                      "let b r = r.attempts"
+                      "let c : HttpRequest -> string"
+                      "let c r = r.url"
+                      "let d : Map<string, int> -> Map<string, int>"
+                      "let d m = m" ]
+                    // a def-less nominal takes no type arguments
+                    "e.weir", [ "module E"; "let f : YamlPatch<int> -> int"; "let f x = 1" ] ]
+                  (fun td ->
+                      Expect.isEmpty (diagsOf td "m.weir") "the module exports a patch builder"
+                      Expect.isEmpty (diagsOf td "use.weir") "the consumer merges it"
+                      Expect.isEmpty (diagsOf td "p.weir") "Proc names a handle helper"
+                      Expect.isEmpty (diagsOf td "b.weir") "declared builtins + Map keep crossing"
+
+                      match diagsOf td "e.weir" with
+                      | d :: _ ->
+                          Expect.stringContains d.Message "'YamlPatch' expects 0 type argument(s), got 1" "arity refuses"
+                      | [] -> failtest "YamlPatch<int> must refuse")
+          }
           test "a `yaml patch` marker never parses as a command on the check side [D:assume-resolver]" {
               // the check-side resolver assumes unknown heads are commands;
               // the head guard's modifier face must still refuse the glued
@@ -16674,6 +16716,36 @@ let moduleSignatureTests =
                   (fun td ->
                       Expect.isEmpty (diagsOf td "s.weir") "the plain patch marker checks"
                       Expect.isEmpty (diagsOf td "t.weir") "the by= marker checks")
+          }
+          test "the privacy suggestion round-trips [D:module-signatures]: the suggested signature parses, validates, and exports" {
+              withDir
+                  [ "lib.weir", [ "module L"; ""; "let mkp name = yaml patch"; "    labels:"; "        app: $name" ]
+                    "use.weir",
+                    [ "import \"./lib.weir\" as L"
+                      "[\"kind: K\"] |> Yaml.parse |> Yaml.merge (L.mkp \"web\") |> to yaml |> Seq.iter print" ] ]
+                  (fun td ->
+                      let sugg =
+                          match diagsOf td "use.weir" with
+                          | d :: _ ->
+                              Expect.stringContains
+                                  d.Message
+                                  "-> YamlPatch` in the module to export it"
+                                  "the teaching names a YamlPatch signature"
+
+                              let m = System.Text.RegularExpressions.Regex.Match(d.Message, "add `(let [^`]+)`")
+                              Expect.isTrue m.Success "the teaching carries the signature to paste"
+                              m.Groups[1].Value
+                          | [] -> failtest "the private member must refuse"
+
+                      // paste the suggested line verbatim above the impl —
+                      // the module checks and the import resolves
+                      // (error text -> paste -> green)
+                      let libPath = System.IO.Path.Combine(td, "lib.weir")
+                      let lines = System.IO.File.ReadAllLines libPath |> List.ofArray
+                      let patched = List.item 0 lines :: "" :: sugg :: List.skip 1 lines
+                      System.IO.File.WriteAllLines(libPath, patched)
+                      Expect.isEmpty (diagsOf td "lib.weir") "the pasted signature checks in the module"
+                      Expect.isEmpty (diagsOf td "use.weir") "the member now exports")
           } ]
 
 [<Tests>]

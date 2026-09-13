@@ -3389,16 +3389,31 @@ let addRes resPath doc =
         resources:
             - $resPath
     doc |> Yaml.merge p
+
+let mk : string -> YamlPatch
+
+let mk resPath = yaml patch
+    resources:
+        - $resPath
 WEOF
 cat > "$mdir/puse.weir" <<'WEOF'
 import "./pmod.weir" as Pmod
 ["kind: K"] |> Yaml.parse |> Pmod.addRes "a.yaml" |> to yaml |> Seq.iter print
+["kind: K"] |> Yaml.parse |> Yaml.merge (Pmod.mk "b.yaml") |> to yaml |> Seq.iter print
 WEOF
 out=$(cd "$mdir" && $BIN puse.weir)
 expect "a yaml patch district works inside an imported module" 'kind: K
 resources:
   - a.yaml' "$out"
-echo "e2e ok: districts in modules — patch district in an imported function"
+# a module EXPORTS a patch builder — the sig names the def-less nominal
+# [D:yaml-nodes]; the consumer merges the returned patch
+expect "a module exports a YamlPatch-typed builder" 'kind: K
+resources:
+  - b.yaml' "$out"
+# the CHECK side agrees with the runner on both files (the assume-
+# resolver once claimed the patch marker as a command [D:assume-resolver])
+(cd "$mdir" && $BIN check pmod.weir && $BIN check puse.weir) || fail "check must agree with run on the patch-district module"
+echo "e2e ok: districts in modules — patch district in an imported function, YamlPatch-typed export"
 rm -rf "$mdir"
 
 # prompt + the Self.stdin law [D:prompt]: one line per interaction
