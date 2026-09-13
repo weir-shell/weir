@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.0.33
+
+### Fixed
+
+- **Module signatures can name every builtin type.** `let mk : string ->
+  YamlPatch` (and `Proc`) refused as "unknown type" — the def-less
+  builtin nominals were unnameable in signatures, even though the
+  module-privacy error itself suggested exactly that signature. Both
+  now validate in signatures and field types (arity 0), like `Map`;
+  the suggested signature round-trips.
+- **`weir check` parses `yaml patch` districts.** The check-side
+  resolver assumes unknown heads are commands, and the command head
+  guard knew the ` schema=` marker face but not ` patch [by=]` — so
+  `let p = yaml patch` was a parse error under `check` (and in the
+  editor) while running fine.
+- **A qualified type name teaches the bare-name law.** `let f : M.Spec
+  -> string` died with a bare parse error at the dot; every type
+  position now refuses with "a signature names types bare — an
+  imported type resolves by its plain name".
+
 ## v0.0.32
 
 > First release published since v0.0.29: this ships everything under
