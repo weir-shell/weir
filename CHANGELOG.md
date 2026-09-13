@@ -12,6 +12,14 @@
   ran green (a kustomize-shaped port hit both). The command grammar now
   refuses the patch marker face glued to the district sentinel, exactly
   as it already did for plain `yaml` and `schema=`, so check == run.
+- **Block-let params shadow PATH in their own RHS.** A param heading an
+  if-condition inside a nested `let f pairs = if pairs |> … then …`
+  resolved as a PATH command (cmd-not-found warnings plus bogus type
+  errors) until the condition was parenthesized — the block-let RHS
+  never extended the resolver with its params, though top-level lets
+  and lambdas did. Bindings-beat-PATH now reaches block-let depth;
+  a genuine external head in that condition position
+  (`if test -f $p | succeeds then`) still chains.
 
 ## v0.0.32
 

@@ -7511,6 +7511,40 @@ let multilineLambdaTests =
 
               let diags, _, _, _ = Weir.Script.analyzeLines "pin.weir" lines
               Expect.isEmpty diags "no diagnostics — the param is known, not a command head"
+          }
+          test "block-let params shadow PATH in an if-condition head [D:paramful-rhs]" {
+              // a param heading a block-let's if-condition is a BINDING —
+              // bindings-beat-PATH reaches condition position at block-let
+              // depth (check's assume-resolver once claimed it as a
+              // phantom command: cmd-not-found + bogus type errors)
+              let clean lines =
+                  let diags, _, _, _ = Weir.Script.analyzeLines "pin.weir" lines
+                  Expect.isEmpty diags $"check == run: {lines}"
+
+              clean
+                  [ "let outer xs ="
+                    "    let f pairs = if pairs |> Seq.exists (fun (_, v) -> v > 3) then \"big\" else \"small\""
+                    "    f xs"
+                    "print (outer [(\"a\", 5)])" ]
+
+              // even a param NAMED like a real PATH binary stays the binding
+              clean
+                  [ "let outer b ="
+                    "    let pick test = if test then \"y\" else \"n\""
+                    "    pick b"
+                    "print (outer true)" ]
+
+              // the other direction: a genuine external head in that same
+              // condition position keeps the command chain [D:if-succeeds]
+              let diags, _, _, _ =
+                  Weir.Script.analyzeLines
+                      "pin.weir"
+                      [ "let outer p ="
+                        "    let probe f = if test -f $f | succeeds then \"yes\" else \"no\""
+                        "    probe p"
+                        "print (outer \"/etc/hostname\")" ]
+
+              Expect.isEmpty diags "an external head in a block-let if-condition still chains"
           } ]
 
 let pipeAlignTests =

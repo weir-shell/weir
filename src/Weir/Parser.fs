@@ -1497,6 +1497,33 @@ let private letInBody =
                           else
                               ifail "block-let command RHS is spine-only" stream
 
+                  // params shadow PATH inside their own RHS
+                  // [D:paramful-rhs] — the top-level rule at block-let
+                  // depth: without this a param heading an if-condition
+                  // resolved as a PATH command under check's
+                  // assume-resolver (bindings-beat-PATH, params included)
+                  let withParams (inner: Parser<'b, unit>) : Parser<'b, unit> =
+                      fun stream ->
+                          let saved = ambientResolver.Value
+
+                          let rec leafNames (pt: Pattern) =
+                              match pt.PKind with
+                              | PVar n -> [ n ]
+                              | PTuple pts -> pts |> List.collect leafNames
+                              | PRecord fields -> fields |> List.map snd |> List.collect leafNames
+                              | _ -> []
+
+                          let names = ps |> List.collect leafNames |> Set.ofList
+
+                          ambientResolver.Value <-
+                              { saved with
+                                  IsKnown = fun n -> Set.contains n names || saved.IsKnown n }
+
+                          try
+                              inner stream
+                          finally
+                              ambientResolver.Value <- saved
+
                   // a bare `let name =` with NOTHING after it gets its own
                   // first-reached diagnosis [D:windows-findings] — without
                   // this the report was a 12-item expecting list with the
@@ -1504,7 +1531,7 @@ let private letInBody =
                   // a false "specific" diagnosis
                   (followedBy eof
                    >>. fun stream -> failFatally $"this binding has no value — give '{name}' a right-hand side" stream)
-                  <|> ((cmdRhs <|> ((seqExpr >>= pipeOrHint))) .>> keyword "in")
+                  <|> (withParams (cmdRhs <|> ((seqExpr >>= pipeOrHint))) .>> keyword "in")
                   >>= fun value ->
                       withAmbientName name (withExprParen false seqExpr)
                       |>> fun body ->
