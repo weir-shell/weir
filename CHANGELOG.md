@@ -2,6 +2,10 @@
 
 ## v0.0.32
 
+> First release published since v0.0.29: this ships everything under
+> `## v0.0.31` below as well — that tag was cut but never published
+> (see its note).
+
 ### Added
 
 - **`prompt` — interactive input as a builtin.** `prompt "msg?"` writes
@@ -25,10 +29,12 @@
 
 ## v0.0.31
 
-> v0.0.30 was burned: the tag was cut, but the release run failed on the
-> zed-pin/grammar-main race (the pin bump had not landed when the gate
-> ran) — nothing was published under it. Everything below ships as
-> v0.0.31.
+> Neither v0.0.30 nor v0.0.31 was ever published. v0.0.30's tag was cut
+> but its release run failed on the zed-pin/grammar-main race (the pin
+> bump had not landed when the gate ran). v0.0.31's tag was then cut and
+> its run died on the same race, re-armed by a publish-wait that trusted
+> a bare 200 from releases/latest — so nothing shipped under it either.
+> Everything below first reached users in v0.0.32.
 
 ### Added
 
