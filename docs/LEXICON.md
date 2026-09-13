@@ -26,15 +26,15 @@ content.
 
 **Module.** weir's unit of code sharing and namespacing. A builtin
 namespace (`Seq`, `Str`, `Env`, `Args`, `Self`) and a user-authored
-one (a file marked `module`) are the SAME concept with different
+one (a file marked `module`) are the *same* concept with different
 origins — both are a named bag of members reached by qualified access
 (`Seq.map`, `Git.revParse`), both live in `TypeEnv.Modules`. "library"
-and "package" are RETIRED as synonyms; "dependency" survives for the
-RELATIONSHIP (the dependency graph), and "import" is the verb and the
+and "package" are *retired* as synonyms; "dependency" survives for the
+*relationship* (the dependency graph), and "import" is the verb and the
 statement. [D:modules-v1]
 
 **Row polymorphism.** A record type is a set of named fields; a
-function can accept "any record that HAS these fields" without naming
+function can accept "any record that *has* these fields" without naming
 the whole type. weir uses open-row compatibility for the
 declared-record-field completion fallback and for `Args.load` shapes —
 a value typed by the fields it demands, not by a nominal name.
@@ -44,16 +44,16 @@ a value typed by the fields it demands, not by a nominal name.
 if they share a name. Structural: same if they have the same shape.
 weir records are structural for compatibility but carry a name for
 diagnostics; attributes are erased so an attributed record is
-STRUCTURALLY identical to a bare one. [D:attributes]
+*structurally* identical to a bare one. [D:attributes]
 
 **Erasure.** A construct that exists only at check time and leaves no
 trace at run time. In the field generally it means type erasure
-(generics compiled away); in weir it also names ATTRIBUTES — `[<Short
+(generics compiled away); in weir it also names *attributes* — `[<Short
 "c">]` is check-time data, fully erased, so `cli` is indistinguishable
 from a bare record at run time. [D:attributes]
 
 **Bidirectional checking.** Type-checking that alternates two modes:
-CHECK a term against a known expected type, or INFER a type when none
+**check** a term against a known expected type, or **infer** a type when none
 is given. weir's checker has three real check rules (lambda, let,
 fallback-to-infer-and-compare); the complexity lives in infer's
 per-node rules, not the discipline. (NOTES: Spike 1.)
@@ -62,8 +62,8 @@ per-node rules, not the discipline. (NOTES: Spike 1.)
 binding type variables as needed. The engine under inference.
 
 **Generalization.** Turning a type with free variables into a reusable
-SCHEME (∀-quantified) at a let binding — the source of let-polymorphism.
-weir runs splice-defaulting BEFORE generalization: a bare spliced param
+**scheme** (∀-quantified) at a let binding — the source of let-polymorphism.
+weir runs splice-defaulting *before* generalization: a bare spliced param
 defaults to string at the statement boundary, so it is not
 prematurely generalized into an unusable type variable.
 [D:splice-default-last]
@@ -76,13 +76,13 @@ no annotations required, unification + generalization.
 interface. **weir's variant is closed, structural, and erased**: the
 closed set is **Eq, Show, Ord** (compiler-owned, not user-extensible —
 the door stays shut), instances are decided by structure, constraints
-are inferred and checked at the USE site, and nothing is passed at run
+are inferred and checked at the *use* site, and nothing is passed at run
 time. The admission rules differ per class: **Eq** — equatable unless
 the type contains a function or a seq, anywhere, recursively
 (records/unions/tuples decompose). **Show** — showable unless it
-contains a function; seqs DO show (rendered lossily, truncated) —
-wider than Eq by exactly the seq rule, but the same KIND of failable
-constraint. **Ord** — int, string, bool EXACTLY; no structural
+contains a function; seqs *do* show (rendered lossily, truncated) —
+wider than Eq by exactly the seq rule, but the same *kind* of failable
+constraint. **Ord** — int, string, bool *exactly*; no structural
 decomposition (no record/union/tuple ordering) — narrower than both.
 [D:inferred-type-classes]
 
@@ -91,13 +91,13 @@ equatable". weir infers constraints (from `==`, `show`, `Seq.sortBy`)
 and reports the violation at the use site, not the definition.
 [D:inferred-type-classes]
 
-**Scheme.** ⚠ Two meanings in the repo (see Findings): (1) a TYPE
-SCHEME — a ∀-quantified type produced by generalization; (2) a checker
-MECHANISM — the "sentinel scheme" that types `print`/`show` (a bespoke
+**Scheme.** ⚠ Two meanings in the repo (see Findings): (1) a *type
+scheme* — a ∀-quantified type produced by generalization; (2) a checker
+*mechanism* — the "sentinel scheme" that types `print`/`show` (a bespoke
 ∀ that a dedicated checker arm consumes). Meaning is context-clear but
 the word is overloaded.
 
-**Datatype-generic elaboration.** Deriving code from a type's STRUCTURE
+**Datatype-generic elaboration.** Deriving code from a type's *structure*
 at compile time — the `Args.load Cli` / `Env.load T` family reads a
 record's fields and elaborates a parser. Neighbours: Rust serde/clap
 `derive`, Haskell aeson `Generic`, F# type providers, Zig comptime
@@ -110,7 +110,7 @@ brackets — the type is an ordinary identifier in value position, read
 by the bespoke checker arm; there is no `<...>` syntax. [D:typed-argv]
 
 **Exhaustiveness.** A match must cover every case; a non-exhaustive
-match is a HARD ERROR (not a warning), coverage recurses through
+match is a *hard error* (not a warning), coverage recurses through
 constructor payloads, and int/string literals never complete a match
 alone (add a `_`). [D:exhaustiveness-hard-error]
 
@@ -129,34 +129,34 @@ boundary. [D:block-let-cmd] [D:body-blanks]
 
 **Committed choice vs speculative alternation.** Speculative: try an
 alternative, backtrack on failure (FParsec's `attempt`/`<|>`).
-Committed: once a marker is consumed, do NOT backtrack. weir's
+Committed: once a marker is consumed, do *not* backtrack. weir's
 **consumed-separator law** — a consumed `;`/`|`/record-`ident =` head
 commits to its element — converts speculation to commitment exactly
 where a rewind would otherwise manufacture a false-shallow parse.
 [D:seq-commit] [D:arm-commit]
 
 **Furthest-error merge.** FParsec reports the error at the furthest
-STREAM POSITION reached. weir's diagnostics policy rests on this: "the
+stream position reached. weir's diagnostics policy rests on this: "the
 error at the furthest point the parser reached in your file" — furthest
-REACHED, not latest-in-file (two problems in one statement report the
+*reached*, not latest-in-file (two problems in one statement report the
 first). The commit law makes the furthest position the true cause.
 [D:diag-arbitration]
 
 **Anchor before the read.** A parser error's caret belongs on its
-TRIGGER token, captured BEFORE the trigger is consumed — `failFatally`
-fires at the CURRENT position, so a consume-then-fail site drifts past
+trigger token, captured *before* the trigger is consumed — `failFatally`
+fires at the *current* position, so a consume-then-fail site drifts past
 its token (trailing ws even crosses physical lines in assembled
 statements). Shape: `failFatallyAt`/`failFatallyAtCol` — consume the
-trigger (which CLEARS the competing "expected" errors that sit there,
+trigger (which clears the competing "expected" errors that sit there,
 so the message does not bury), then Seek back to the anchor. Caveat:
-clean ONLY where the anchor position has no surviving competitor;
+clean *only* where the anchor position has no surviving competitor;
 where one remains (neg-int's `-` is the unary-minus operator's spot)
 the expected-set re-merges. [D:anchor-before-read] [D:message-domination]
 
 **A fatal inside an `attempt` is not a fatal.** FParsec's `attempt`
 backtracks fatal errors too, so a `failFatally` inside speculative
-`attempt`/`choice` is ADVISORY — it will be swallowed. A teaching error
-that must survive needs one of: an anchor OUTSIDE the attempt (the
+`attempt`/`choice` is *advisory* — it will be swallowed. A teaching error
+that must survive needs one of: an anchor *outside* the attempt (the
 `letKeywordGuard` fires before topLet's attempt), an exception channel
 (`DepthExceeded` throws past the protocol), or a commit point ahead of
 it (the consumed-separator law). Three sightings: arm-commit, the depth
@@ -170,9 +170,9 @@ stops at the buffer, not the end. Proved by pull-count pins, never by
 inspection. [D:value-headed-pipe]
 
 **Memoization vs materialization.** ⚠ The pair that caused real
-confusion. MATERIALIZATION (`Seq.force`) runs a lazy seq to a concrete
-list ONCE and returns it — total, so an infinite source never returns.
-MEMOIZATION (`Seq.cache`) wraps a seq so re-enumeration reuses computed
+confusion. **Materialization** (`Seq.force`) runs a lazy seq to a concrete
+list *once* and returns it — total, so an infinite source never returns.
+**Memoization** (`Seq.cache`) wraps a seq so re-enumeration reuses computed
 elements without re-running the generator. `force` changes the type
 (seq→list); `cache` keeps it (seq→seq). Retired names (`toList`) teach
 `force`. [D:seq-force] [D:seq-patterns]
@@ -184,7 +184,7 @@ after the safe-by-design review found stack-exhausting inputs.
 [D:depth-guard]
 
 **Check-time vs run-time.** weir's defining split: the checker runs
-before ANY effect, so a script with an error in line 40 executes none
+before any effect, so a script with an error in line 40 executes none
 of lines 1–39. "Check-green must mean runnable modulo uninstalled
 tools" is the contract the assume-resolver serves. [D:assume-resolver]
 
@@ -194,23 +194,23 @@ tools" is the contract the assume-resolver serves. [D:assume-resolver]
 
 **The pin.** A test asserting an exact behaviour against the compiled
 binary. Two roles: **pin-as-regression-guard** (this must not change)
-and **pin-as-constitution** (this behaviour IS the decision — moving it
+and **pin-as-constitution** (this behaviour *is* the decision — moving it
 is a decision, recorded with archaeology). A "done-when boundary
 behaviour" earns a pin. PROCESS: Behavioral pins over parse-shape pins.
 
 **The oracle.** Differential testing against the real F# compiler (FCS)
 — `tests/Weir.Fidelity` refs each fidelity case Same/Diverges against
-`divergences.md`. WARNINGS count as ACCEPT (F# ran it). Catches: weir
+`divergences.md`. Warnings count as *accept* (F# ran it). Catches: weir
 accepting what F# rejects (the zero-gold claim). Cannot catch: bugs
 where weir and F# agree wrongly. [D:tuples-reversal] (the oracle's
 first live catch: `rec`/`mutable` had begun parsing as function names.)
 
 **Probes-first / the folklore rule.** Establish the FCS/binary verdict
-BEFORE implementing — no feature rests on a remembered belief about
+*before* implementing — no feature rests on a remembered belief about
 what F# does. The folklore rule: a claim like "F# warns here" is probed,
 not assumed (FS0058 folklore was corrected this way). PROCESS.
 
-**Pin hygiene.** A probe that can fail for a reason OTHER than the one
+**Pin hygiene.** A probe that can fail for a reason other than the one
 under test proves nothing — e.g. a missing-type probe that read as "F#
 tolerates literals" was a probe artifact. Also the pgrep variant (below).
 
@@ -225,14 +225,14 @@ the untested combination has a name. The fuzzer owns the unnamed cells;
 hand-pinned matrices keep the named ones. [D:fuzz-harness]
 
 **Metamorphic testing.** Testing without a known-correct output by
-asserting a RELATION: a semantics-neutral transform of a program must
+asserting a *relation*: a semantics-neutral transform of a program must
 produce byte-identical `(rc, stdout, stderr)`. weir's transform library
 (district↔`!(...)`, bare-RHS↔`$(...)`, block-siblings↔`;`, Stroustrup↔
 inline, and all composed) is the fuzzer's invariant 1. [D:fuzz-harness]
 
 **Property-based generation.** Generating valid-by-construction programs
 from a grammar and asserting invariants over all of them. The
-denominator honesty rule: what the generator CAN'T produce is stated
+denominator honesty rule: what the generator *can't* produce is stated
 (GRAMMAR.md), so "the fuzzer passed" has an honest scope. [D:fuzz-harness]
 
 **Delta-debugging shrink.** On failure, shrink the counterexample to a
@@ -247,35 +247,35 @@ second junk must not steal the first-reached error's site.
 
 **Totality invariants.** The fuzzer's invariant 2: assemble→parse→check
 returns a diagnostic on every generated program and mutated neighbour —
-no exception, no hang. Gained a DEPTH axis after the safe-by-design
+no exception, no hang. Gained a depth axis after the safe-by-design
 review. [D:depth-guard]
 
-**Pull-count pins.** Laziness proved by COUNTING how many elements a
+**Pull-count pins.** Laziness proved by *counting* how many elements a
 lazy source yields, never by inspecting internals — `first 2` over a
 counted source must pull exactly to the second element. The standing
 rule for every lazy surface. PROCESS.
 
-**Effect-counted pins.** Correctness of effect ORDER/COUNT proved by a
+**Effect-counted pins.** Correctness of effect order/count proved by a
 counter (how many times a command ran, in what order) rather than
 output shape.
 
-**Graded positive control.** A deliberately-wrong input that MUST fail
-— proving the DETECTOR fires, not just that the happy path passes. Its
+**Graded positive control.** A deliberately-wrong input that *must* fail
+— proving the *detector* fires, not just that the happy path passes. Its
 dangerous inverse is the **manufactured failure**: an instrument that
 can match itself (`pgrep -f "sleep 300"` matched the probe's own shell,
 inventing phantom orphans). Count by name (`ps -C`), never by a pattern
 the measuring command carries. PROCESS: Harness truth.
 
 **The harness-truth class.** Failures of the test apparatus itself:
-STALE ARTIFACTS (an outdated binary), MASKED FAILURES (a gate that
+**stale artifacts** (an outdated binary), **masked failures** (a gate that
 can't see what it claims — including a lying comment, the seventh
-member), and MANUFACTURED FAILURES (the pgrep variant). Mechanised
+member), and **manufactured failures** (the pgrep variant). Mechanised
 away, not remembered. [D:masking-mechanized] PROCESS: Harness truth.
 
 **Byte-identity pins vs invariant-by-architecture.** A byte-identity
 pin asserts two spellings produce identical bytes (`xs | prog` ≡ `xs |>
-feed`); invariant-by-architecture makes the equivalence hold BY
-CONSTRUCTION (both hit one `Proc.linesWith`). The standing preference is
+feed`); invariant-by-architecture makes the equivalence hold *by
+construction* (both hit one `Proc.linesWith`). The standing preference is
 the latter — the pin then guards a property the code already
 guarantees. [D:value-headed-pipe] [D:child-env-overlay]
 
@@ -284,7 +284,7 @@ against the binary; every `weir-error` block must fail. A doc line that
 stops being true fails the build. (`ci/skill-doc.sh`.)
 
 **The freshness gate.** One shared check (`ci/check-fresh.sh`) that the
-binary's stamp equals git HEAD AND no source is newer than it, run by
+binary's stamp equals git HEAD *and* no source is newer than it, run by
 every consumer — stale results become impossible, not catchable. The
 one window it can't see (a republish mid-run) is closed by the
 deep-run lock. [D:masking-mechanized]
@@ -293,12 +293,12 @@ deep-run lock. [D:masking-mechanized]
 criterion: not one pinned behaviour changes. The regroup and hardening
 sessions ran under it; any red is a finding.
 
-**Failing-first ordering.** Write the pin so it FAILS before the fix
+**Failing-first ordering.** Write the pin so it *fails* before the fix
 exists (spawn the failing pin first) — the hazard is the test that
 passes for the wrong reason. PROCESS.
 
 **Stop-and-report.** On a behaviour delta mid-refactor, a budget
-overrun, or a precedence-class grammar change, STOP and report rather
+overrun, or a precedence-class grammar change, *stop* and report rather
 than pressing on — the greedy-`;` and the value-headed-pipeline
 scope-cut were stop-and-reports. PROCESS.
 
@@ -311,27 +311,27 @@ mined for triple-quoted snippets — real F# weir is measured against. Its
 licensing posture: read-only reference, env-gated (`WEIR_CORPUS_DIR`),
 never redistributed.
 
-**Extraction vs keeping.** EXTRACTED = every `"""…"""` snippet found
-(4253); KEPT = those the filter judges weir-plausible (base 76). The gap
+**Extraction vs keeping.** **Extracted** = every `"""…"""` snippet found
+(4253); **kept** = those the filter judges weir-plausible (base 76). The gap
 is the point: most F# uses constructs weir bounds out.
 
 **The reject list.** The named substrings/regexes that bound a snippet
-out (`module`, `printfn`, `|>`, …). The filter DIFF reads as language
+out (`module`, `printfn`, `|>`, …). The filter diff reads as language
 growth — WAVE_REJECTS are shapes the feature waves later admitted (base
 mode rejects them, wide mode lifts them). (dev/plans/PLAN-corpus-remine.md;
 NOTES.)
 
-**Base vs wide mode.** BASE reproduces the first mine's world (waves
-rejected); WIDE lifts the four feature-wave rejects (tuples, literal
+**Base vs wide mode.** **Base** reproduces the first mine's world (waves
+rejected); **wide** lifts the four feature-wave rejects (tuples, literal
 patterns, composition, raw strings). Wide's larger kept set (102) is
 free fidelity verdicts on machinery that shipped.
 
-**GOLD snippets.** Snippets weir ACCEPTS that F# REJECTS — the unsafe
-direction. The prize number is ZERO GOLD: weir never accepts what F#
+**GOLD snippets.** Snippets weir *accepts* that F# *rejects* — the unsafe
+direction. The prize number is *zero gold*: weir never accepts what F#
 rejects, holding even over the widened set.
 
-**Comparability / disagreement bucketing.** COMPARABLE = a snippet both
-tools have a verdict on; DISAGREEMENTS are bucketed by cause (the 18
+**Comparability / disagreement bucketing.** **Comparable** = a snippet both
+tools have a verdict on; **disagreements** are bucketed by cause (the 18
 remaining, each named). Disagreements fell 24→18 while the set grew 26 —
 the waves converted disagreement into agreement.
 
@@ -339,28 +339,28 @@ the waves converted disagreement into agreement.
 proves what the first mine cannot: that the shipped features moved real
 snippets from reject→accept, measured against the same denominator.
 
-**Receipt.** Evidence that a feature is genuinely NEEDED — a real script
+**Receipt.** Evidence that a feature is genuinely *needed* — a real script
 that could not be written, or was awkward, without it. The **provenance
-lens** (new): a receipt from MODEL-AUTHORED code may reflect the
+lens** (new): a receipt from *model-authored* code may reflect the
 training distribution's idioms rather than a wall the script hit —
 distinguish a script that could not be written (demand) from one written
 in an unfamiliar idiom (acclimation). PROCESS: Receipt provenance.
 
 **Friction log / stranded log.** dev/NOTES-agent.md ledgers from
-dogfooding: FRICTION = agent-noticed awkwardness (roadmap input);
-STRANDED = a script abandoned after 3 failed check iterations (appended
+dogfooding: **friction** = agent-noticed awkwardness (roadmap input);
+**stranded** = a script abandoned after 3 failed check iterations (appended
 verbatim). (CLAUDE.md scripting policy.)
 
 **Forward archaeology.** Recording, at a decision, the trigger that
-would REOPEN it — so a future receipt finds the reasoning waiting rather
+would *reopen* it — so a future receipt finds the reasoning waiting rather
 than re-derived. Parks carry reopen criteria this way.
 
 **Prediction grading.** Stating a prediction (e.g. "the deep run will
-find a bug") and later grading it FOUND/REVERSED against what happened —
+find a bug") and later grading it *found/reversed* against what happened —
 the base-rate argument checked against reality. (NOTES: fuzzer Session 2.)
 
 **The denominator honesty rule.** Any bounded coverage (top-N, a
-generator's shape list, a sampled corpus) states what it EXCLUDES, so a
+generator's shape list, a sampled corpus) states what it *excludes*, so a
 green result isn't read as "covered everything". GRAMMAR.md is the
 fuzzer's denominator. PROCESS: Fuzzer grammar membership.
 
@@ -370,15 +370,15 @@ fuzzer's denominator. PROCESS: Fuzzer grammar membership.
 
 **Receipt.** (See §3.) The unit of feature justification.
 
-**Park.** A deliberately-deferred feature, filed with a REOPEN
-CRITERION (a.k.a. trigger) — not "no", but "not until X". Parks reopen
+**Park.** A deliberately-deferred feature, filed with a **reopen
+criterion** (a.k.a. trigger) — not "no", but "not until X". Parks reopen
 on a concrete receipt (Map/Set on a keyed-lookup receipt; positionals
-on a hand-written-weir receipt). A park closed WITHOUT its criterion
+on a hand-written-weir receipt). A park closed *without* its criterion
 firing is a squat (see drop-positional). [D:drop-positional]
 
 **Bless.** User approval of a plan document, turning a PROPOSED design
-into an executable session. A blessed plan is a DECISION, not a fact —
-consuming plans gate on the SESSION REPORT, not the bless. PROCESS:
+into an executable session. A blessed plan is a *decision*, not a fact —
+consuming plans gate on the *session report*, not the bless. PROCESS:
 Dependency-gate rule.
 
 **The advisor-error ledger.** A record of process-integrity errors the
@@ -391,7 +391,7 @@ opened later by call or receipt (the seq-patterns and modules designs
 sat on file). Distinct from a park: design-on-file is ready to build.
 
 **The deferral regime (machine vs read).** Two kinds of "later": a
-MACHINE deferral (the fuzzer will find it) vs a READ deferral (a human
+**machine** deferral (the fuzzer will find it) vs a **read** deferral (a human
 must review this before it closes). The check/run verdict-split was
 held for a human read; the unnamed-triple space was left to the machine.
 
@@ -399,16 +399,16 @@ held for a human read; the unnamed-triple space was left to the machine.
 `scriptPath` rider, the LICENSE/NOTICE rider) — sized in hours, not a
 plan of its own.
 
-**The zero-behavior contract.** A session that promises NO behaviour
+**The zero-behavior contract.** A session that promises *no* behaviour
 change (a refactor, a docs sweep, a verification pass) — measured by
 zero pin movement. Verification and hardening never share a session.
 
 **Opened-by-choice / opened-by-sequencing.** Two ways a park opens:
-by-CHOICE (a receipt fires) or by-SEQUENCING (a later feature's
+by-choice (a receipt fires) or by-sequencing (a later feature's
 customers need it first, so it lands ahead of its own plan —
 `scriptPath` opened this way, recorded as such). [D:script-path]
 
-**The paired precedent.** Measures REMOVED / classes BUILT — the twin
+**The paired precedent.** Measures *removed* / classes *built* — the twin
 rulings that ripping a feature out and building one in are the same kind
 of move, each with archaeology. The evidence-standard case study.
 
@@ -418,16 +418,16 @@ open-bug marker to fixed-behaviour; the Positional pins flipped to
 unknown-attribute). Never a silent edit.
 
 **The docs-sweep.** Idioms rot, keywords do not — a sweep greps living
-docs for stale IDIOMS (an example using a retired spelling) with hit
+docs for stale idioms (an example using a retired spelling) with hit
 counts, leaving keyword mentions alone. The regroup's five zero-hit
 greps + one real find. [D:masking-mechanized, via the sweep discipline]
 
 **Teaching error / hints-name-the-spelling.** An error that names the
-FIX, not just the fault ("`|` chains commands; pipe with `|>`";
+*fix*, not just the fault ("`|` chains commands; pipe with `|>`";
 "map show or interpolate per element"). One shared mechanism
 (`Diagnose.hint`), not per-case hacks. [D:pipe-hint]
 
-**Reject-don't-guess.** When input is ambiguous, REJECT with the fix
+**Reject-don't-guess.** When input is ambiguous, *reject* with the fix
 rather than guess an interpretation (complex range endpoints need
 parens; `+` on two unknowns can't infer). The safe direction.
 
@@ -437,7 +437,7 @@ park's hardest question. `[<Positional>]` was one; dropped when its only
 receipt proved to be model idiom (a not-yet whose consumer never
 arrives is a squat). [D:drop-positional]
 
-**Legal-parse-wrong-meaning.** A parse that SUCCEEDS but builds the
+**Legal-parse-wrong-meaning.** A parse that *succeeds* but builds the
 wrong AST (the compound-paren-prune bug: a match in a closed lambda got
 outer stages wrapped in). More dangerous than a parse error — caught by
 metamorphic equivalence, not by "does it parse". [D:compound-paren-prune]
@@ -448,10 +448,10 @@ junk became a phantom command's argv). The totality floor and
 consumed-separator law exist to make it impossible. [D:seq-commit]
 
 **District / sigil / reifier / splat.** weir's command-mode vocabulary
-(the rules live on the reference's Commands page): a DISTRICT is a line-end `!` block
-of command lines; a SIGIL is `$(chain)` (capture) or `!(chain)`
-(effect); a REIFIER (`complete`/`succeeds`/`orFail`/`exitCode`) turns a
-command's run into a value where the meaning goes; a SPLAT (`$@xs`)
+(the rules live on the reference's Commands page): a **district** is a line-end `!` block
+of command lines; a **sigil** is `$(chain)` (capture) or `!(chain)`
+(effect); a **reifier** (`complete`/`succeeds`/`orFail`/`exitCode`) turns a
+command's run into a value where the meaning goes; a **splat** (`$@xs`)
 splices N argv words. [D:exit-reifiers] [D:argv-splat] (district & sigil:
 SEMANTICS — no DECISIONS row, see Findings.)
 
