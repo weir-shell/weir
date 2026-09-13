@@ -122,10 +122,10 @@ let weirVerdict (src: string) : Verdict =
               BareHome = fun _ -> None }
 
         // the unused-binding law rides the mirror [D:unused-bindings] — the
-    // mirror replicates the runner's check phase, whole-file laws included
-    let unusedTracker = Weir.Script.UnusedTracker()
+        // mirror replicates the runner's check phase, whole-file laws included
+        let unusedTracker = Weir.Script.UnusedTracker()
 
-    let step env (ll: Weir.Script.LogicalLine) =
+        let step env (ll: Weir.Script.LogicalLine) =
             match env with
             | Error() -> Error()
             | Ok tenv ->
