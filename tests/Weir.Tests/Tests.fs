@@ -16746,6 +16746,27 @@ let moduleSignatureTests =
                       System.IO.File.WriteAllLines(libPath, patched)
                       Expect.isEmpty (diagsOf td "lib.weir") "the pasted signature checks in the module"
                       Expect.isEmpty (diagsOf td "use.weir") "the member now exports")
+          }
+          test "a qualified type name in a signature teaches the bare-name law [D:modules-v1]" {
+              match Weir.Parser.parseLine cmdResolver "let f : M.Spec -> string" with
+              | Error msg ->
+                  Expect.stringContains
+                      msg
+                      "a signature names types bare — an imported type resolves by its plain name"
+                      "the law"
+
+                  Expect.stringContains msg "write 'Spec', not 'M.Spec'" "the rewrite"
+              | Ok s -> failtest $"a qualified sig type must refuse, got {s}"
+
+              // nested type positions teach the same law
+              match Weir.Parser.parseLine cmdResolver "let g : seq<M.Spec> -> int" with
+              | Error msg -> Expect.stringContains msg "a signature names types bare" "nested position"
+              | Ok s -> failtest $"nested qualified must refuse, got {s}"
+
+              // the ONE type grammar: a record field's type teaches too
+              match Weir.Parser.parseLine cmdResolver "type R = { f: M.Spec }" with
+              | Error msg -> Expect.stringContains msg "plain name" "field position"
+              | Ok s -> failtest $"a qualified field type must refuse, got {s}"
           } ]
 
 [<Tests>]

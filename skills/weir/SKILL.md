@@ -1400,7 +1400,9 @@ conf |> Seq.iter print
   `let helper n = …`, annotation-free: the signature's types flow
   INTO its checking, so a param can pattern-match its declared union
   and a generic sig (`'a -> 'a`) is honoured — an impl that pins `'a`
-  refuses as less-general. The sig precedes its impl; a sig without
+  refuses as less-general. A signature names types bare — an imported
+  type resolves by its plain name, never `X.Ty`.
+  The sig precedes its impl; a sig without
   an impl is a check error at the sig. `///` docs live ON the
   signature line (hover reads sig + doc there; a doc on the impl of
   a signed member teaches the one home). `type` declarations stay

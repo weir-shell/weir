@@ -3797,8 +3797,20 @@ tySynRef.Value <-
                   | "seq" -> ws >>. between (str_ws "<") (str_ws ">") tySyn |>> TSeq
                   | w when keywords.Contains w -> fail $"'{w}' is a keyword"
                   | w ->
-                      ws >>. opt (between (str_ws "<") (str_ws ">") (sepBy1 tySyn (str_ws ",")))
-                      |>> fun args -> TNamed(w, Option.defaultValue [] args) ]
+                      // a QUALIFIED type name (`M.Spec`) dominates with the
+                      // law [D:modules-v1]: imported types resolve by PLAIN
+                      // name (qualified type names are deferred), so the dot
+                      // teaches instead of dying as a bare parse error
+                      getPosition .>>. opt (attempt (pchar '.' >>. rawWord))
+                      >>= fun (dotAt, quald) ->
+                          match quald with
+                          | Some sub ->
+                              failFatallyAt
+                                  dotAt
+                                  $"a signature names types bare — an imported type resolves by its plain name; write '{sub}', not '{w}.{sub}'"
+                          | None ->
+                              ws >>. opt (between (str_ws "<") (str_ws ">") (sepBy1 tySyn (str_ws ",")))
+                              |>> fun args -> TNamed(w, Option.defaultValue [] args) ]
         // t1 * t2 [* ...] is a tuple type [D:tuples-reversal]; `a -> b` is
         // a function type [D:function-types] — RIGHT-associative and LOOSER
         // than `*` and generics (`int * string -> bool` is
