@@ -2928,6 +2928,11 @@ and eval (env: Env) (te: TypedExpr) : Value =
             | None -> unreachable $"the parser gives within {what} its binder"
 
         match kind with
+        | WithinPure ->
+            // the purity assertion is a CHECK-time law [D:pure-stage1]:
+            // by the time evaluation reaches it, the body is verified
+            // effect-free — the region is transparent at runtime
+            eval env body
         | WithinLock ->
             // advisory file lock [D:within-lock]: FileShare.None maps to
             // flock(2) on Unix (probe-pinned: per-open-file-description,

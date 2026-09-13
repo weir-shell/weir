@@ -31,7 +31,7 @@ let cli = Args.load Cli
 let m = File.read "editors/grammar-manifest.json" |> from json Manifest
 
 let core = ["do"; "elif"; "else"; "false"; "for"; "fun"; "function"; "if"; "import"; "in"; "let"; "match"; "module"; "of"; "then"; "true"; "type"; "when"; "with"]
-let specific = ["always"; "from"; "poll"; "retry"; "to"; "until"; "within"]
+let specific = ["always"; "from"; "poll"; "pure"; "retry"; "to"; "until"; "within"]
 let inert = ["mutable"; "rec"]
 let teaching = ["def"; "return"; "try"; "while"]
 
@@ -60,9 +60,13 @@ let block = [
     $"| reserved, no meaning | {fmt inert} |"
     $"| reserved to teach | {fmt teaching} |"
     ""
-    $"`within` takes a kind word after it — {fmt m.withinKinds} — and the"
+    // `pure` rides the manifest's withinKinds (the family's union) but is
+    // its own head, never `within pure` [D:pure-stage1]
+    $"`within` takes a kind word after it — {fmt (m.withinKinds |> Seq.where (fun k -> k <> "pure"))} — and the"
     $"adapters read `from` {fmt m.adapters.fromAdapters} and write `to` {fmt m.adapters.toAdapters};"
     "kind and adapter words are ordinary identifiers everywhere else."
+    "`pure` heads its own indented block (a purity assertion) and marks"
+    "`let pure` bindings; it never follows `within`."
 ]
 
 let path = "docs/reference/lexical.md"

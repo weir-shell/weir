@@ -26,7 +26,10 @@ keywords = sorted(set(re.findall(r'"(\w+)"', kw_block.group(1))))
 
 ast_src = open(f"{root}/src/Weir/Ast.fs").read()
 wk_block = re.search(r"let withinKinds[^=]*=\n(.*?)\n\n", ast_src, re.S).group(1)
-within_kinds = sorted(set(re.findall(r'Name = "(\w+)"', wk_block)))
+# Standalone kinds (pure) are their own heads — never `within <kind>`,
+# so the grammars' within lists exclude them; they ride keywords instead
+wk_entries = re.findall(r'\{[^}]*?Name = "(\w+)"[^}]*?Standalone = (true|false)', wk_block, re.S)
+within_kinds = sorted(set(n for n, st in wk_entries if st == "false"))
 
 builtins_src = open(f"{root}/src/Weir/Builtins.fs").read()
 adapters = {

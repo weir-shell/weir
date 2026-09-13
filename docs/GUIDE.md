@@ -1874,6 +1874,36 @@ Imports are walked transitively, and a module's capabilities carry
 the module's own file:line. `--json` emits the same facts for
 machines.
 
+## Pure islands: `pure` and `let pure`
+
+weir is effect-normal — effects run free, un-nagged. `pure` is the
+opt-in inverse: an assertion that a region reaches **no** effect at
+all (filesystem, commands, network, environment, console, clock, any
+`within` resource), verified at check time:
+
+```weir
+let pure slug s = s |> Str.toLower |> Str.replace " " "-"
+
+let name =
+    pure
+        slug "Release Notes"
+print name
+```
+
+`let pure f x = …` asserts a whole binding; the bare `pure` head
+asserts a block. A reachable effect is a located check error naming
+the offender:
+
+```text
+deploy.weir:4:9: error [check]: this 'pure' block forbids effects, but 'File.write' writes the filesystem
+```
+
+The judgement is the `(pure)` hover badge's, and conservative the
+same way: purity flows through earlier bindings, but an unknown
+callable — a function-typed parameter, an import's member — forfeits
+it. A refusal can be over-careful; an acceptance is never wrong.
+Nothing outside a `pure` region is ever gated.
+
 ## Failing and diagnosing
 
 `fail "reason"` stops the script with a located error and exit 1.

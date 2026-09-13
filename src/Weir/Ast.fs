@@ -49,42 +49,62 @@ type WithinKindId =
     | WithinEnv
     | WithinProc
     | WithinLock
+    // the purity assertion [D:pure-stage1] — the family's first
+    // STANDALONE head: spelled `pure`, never `within pure`
+    | WithinPure
 
 // the `within` kinds as DATA — one table, three consumers (the
 // parser's dispatch, hover, completion) [D:within-kinds]. Binds is the
 // form's central asymmetry: tmp PRODUCES a binder, cd/env CONSUME an
-// atom. The editor grammars list the same closed set by necessity
-// (separate files); the inventory guard pins them to this table.
+// atom. Standalone marks a kind spelled as its OWN head (pure) — the
+// `within <kind>` surfaces (dispatch, hover, completion, the teaching
+// list) filter it out [D:pure-stage1]. The editor grammars list the
+// same closed set by necessity (separate files); the inventory guard
+// pins them to this table.
 type WithinKind =
     { Id: WithinKindId
       Name: string
       Binds: bool
+      Standalone: bool
       Doc: string }
 
 let withinKinds: WithinKind list =
     [ { Id = WithinTmp
         Name = "tmp"
         Binds = true
+        Standalone = false
         Doc = "a fresh directory, removed when the block exits" }
       { Id = WithinCd
         Name = "cd"
         Binds = false
+        Standalone = false
         Doc = "the working directory for the block, restored after" }
       { Id = WithinEnv
         Name = "env"
         Binds = false
+        Standalone = false
         Doc = "an environment overlay for the block's children" }
       // the no-orphan law [D:scoped-procs]: the scope IS the lifetime
       { Id = WithinProc
         Name = "proc"
         Binds = true
+        Standalone = false
         Doc = "a background process, tree-killed and reaped when the block exits" }
       // advisory file lock [D:within-lock] — the one kind whose
       // guarantee survives kill -9 (the kernel releases it)
       { Id = WithinLock
         Name = "lock"
         Binds = false
-        Doc = "an advisory file lock, held for the block, released on every exit (kill -9 included)" } ]
+        Standalone = false
+        Doc = "an advisory file lock, held for the block, released on every exit (kill -9 included)" }
+      // [D:pure-stage1]: in the FAMILY (the union's exhaustiveness, the
+      // grammar inventory) but its own head — the one kind that scopes
+      // a LAW instead of a resource
+      { Id = WithinPure
+        Name = "pure"
+        Binds = false
+        Standalone = true
+        Doc = "a purity assertion: the block's body must reach no effect" } ]
 
 /// a kind's table row — total by construction: an Id only enters the
 /// tree through this table (the parser's name lookup), so the find
@@ -94,10 +114,11 @@ let withinKind (id: WithinKindId) : WithinKind =
 
 let withinKindName (id: WithinKindId) : string = (withinKind id).Name
 
-/// "tmp, cd, or env" — the teaching list, derived so a new kind
-/// cannot miss the message
+/// "tmp, cd, or env" — the teaching list for `within <kind>`, derived
+/// so a new kind cannot miss the message; standalone heads (pure) are
+/// not within kinds and stay out [D:pure-stage1]
 let withinKindList =
-    match withinKinds |> List.map (fun k -> k.Name) with
+    match withinKinds |> List.filter (fun k -> not k.Standalone) |> List.map (fun k -> k.Name) with
     | [] -> ""
     | [ one ] -> one
     | names ->
@@ -443,6 +464,9 @@ let rec sexpr (e: Expr) : string =
     | ELetPat(p, v, b) -> $"(letpat {sexprPat p} {sexpr v} {sexpr b})"
     | ELambda(p, _, b) -> $"(fun {p} {sexpr b})"
     | ELambdaPat(p, b) -> $"(funpat {sexprPat p} {sexpr b})"
+    | EWithin(WithinPure, _, _, _, b) ->
+        // the standalone head renders as written [D:pure-stage1]
+        $"(pure {sexpr b})"
     | EWithin(k, binder, arg, opts, b) ->
         let bn = binder |> Option.map fst |> Option.defaultValue ""
         let av = arg |> Option.map sexpr |> Option.defaultValue ""

@@ -558,6 +558,34 @@ print $"{key} -> {value}"
   lockfile or deregister never gets the chance. A child that must
   OUTLIVE the script is a daemon — write a unit file; weir declines
   nohup.
+- `pure` + an indented block is the PURITY ASSERTION
+  [D:pure-stage1]: the body must reach NO effect — filesystem,
+  commands, network, environment, console, clock, any `within`
+  resource — or check refuses, naming the offender at its site.
+  `let pure f x = …` is the binding spelling (weir's one post-let
+  modifier; an impure body is a check error, and the binding keeps
+  its `(pure)` hover badge). Opt-in ONLY: weir stays effect-normal —
+  nothing outside a `pure` region is ever gated. Conservatism is the
+  law: an unknown callable (a function-typed param, an import's
+  member) forfeits purity — the judgement may refuse a truly-pure
+  body, it never accepts an effectful one. `pure` is its own head,
+  never `within pure`.
+
+```weir
+// carve out a verified pure island exactly where it pays
+let pure slug s = s |> Str.toLower |> Str.replace " " "-"
+let title =
+    pure
+        let t = slug "Release Notes"
+        $"{t}.md"
+print title
+```
+
+```weir-error
+// a reachable effect refuses, located at the offender
+let pure leak p = File.write p ["x"]
+```
+
 - A `let` RHS takes command mode wherever lets go — top level AND
   inside bodies (`let tree = git rev-parse $c |> Seq.exactlyOne` in a
   function); `$()` covers sub-expression positions. `function | pat -> e | …`

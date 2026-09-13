@@ -2590,7 +2590,10 @@ let completionTests =
                         "until"
                         // the bare scope's teardown segment continues,
                         // as until does [D:within-always]
-                        "always" ]
+                        "always"
+                        // the purity assertion starts statements like
+                        // within/retry [D:pure-stage1]
+                        "pure" ]
 
               Expect.equal
                   (Weir.Parser.keywords - Weir.Complete.unsuggestedKeywords)
@@ -5537,6 +5540,132 @@ let purityBadgeTests =
 
               Expect.isFalse ((hoverOf lines 1 5).Contains "(pure)") "File.read is fs — no badge"
               Expect.isFalse ((hoverOf lines 2 5).Contains "(pure)") "data is trivially pure — the badge is for functions"
+          } ]
+
+let pureRegionTests =
+    // STAGE 1 of [D:pure]: the `pure` region ENFORCES [D:pure-stage1] —
+    // opt-in only (nothing outside a region is gated), judged by the
+    // Stage 0 classifier, refused with a LOCATED teaching naming the
+    // offender's effect family.
+    let errsOf (lines: string list) =
+        let ds, _, _, _ = Weir.Script.analyzeLines "pure.weir" lines
+        ds |> List.filter (fun d -> d.Severity = "error")
+
+    let firstErr (lines: string list) =
+        match errsOf lines with
+        | e :: _ -> e
+        | [] -> failtest "must refuse"
+
+    testList
+        "the pure region — enforcement [D:pure-stage1]"
+        [ test "parse shape: a bare pure head + block is a within-family node" {
+              let asmLine = "pure" + Weir.Parser.sibSepStr + "1 + 1"
+
+              match Weir.Parser.parseLine realResolver asmLine with
+              | Ok(SExpr { Kind = EWithin(WithinPure, None, None, None, _) }) -> ()
+              | other -> failtest $"unexpected: {other}"
+          }
+          test "a pure body is accepted, evaluates, and sees local lets" {
+              Expect.isEmpty
+                  (errsOf
+                      [ "let x ="
+                        "    pure"
+                        "        let y = 2"
+                        "        y + 1"
+                        "print $\"{x}\"" ])
+                  "no effect, no error"
+          }
+          test "each effect family refuses with the located offender" {
+              let cases =
+                  [ [ "let x ="; "    pure"; "        print \"no\"" ], "'print' writes to the console"
+                    [ "pure"; "    echo hi" ], "'echo' runs a command"
+                    [ "let x ="; "    pure"; "        File.write \"f\" [\"y\"]" ], "'File.write' writes the filesystem"
+                    [ "let x ="; "    pure"; "        Env.get \"HOME\"" ], "'Env.get' reads the environment"
+                    [ "let t ="; "    pure"; "        Instant.now ()" ], "'Instant.now' reads the clock"
+                    [ "let d ="; "    pure"; "        within tmp t"; "            t" ], "'within tmp' scopes a resource"
+                    [ "let x ="; "    pure"; "        within proc p = sleep 5"; "            1" ],
+                    "'within proc' scopes a resource" ]
+
+              for lines, phrase in cases do
+                  let e = firstErr lines
+                  Expect.stringContains e.Message "this 'pure' block forbids effects, but" $"the law: {phrase}"
+                  Expect.stringContains e.Message phrase $"the offender: {phrase}"
+          }
+          test "the refusal is LOCATED at the offending node" {
+              let e = firstErr [ "let x ="; "    pure"; "        print \"no\"" ]
+              Expect.equal e.Line 3 "the print's physical line"
+              Expect.equal e.Col 9 "the print's column"
+          }
+          test "let pure: a pure body binds, runs, and keeps the hover badge" {
+              let lines = [ "let pure double n = n * 2"; "print $\"{double 4}\"" ]
+              Expect.isEmpty (errsOf lines) "pure body accepted"
+
+              match Weir.Lsp.hoverType lines 1 10 with
+              | Some h -> Expect.stringContains h "(pure)" "the modifier composes with the Stage 0 badge"
+              | None -> failtest "the binding must hover"
+          }
+          test "let pure: an impure body is a check ERROR — the modifier's point" {
+              let e = firstErr [ "let pure leak () = print \"x\""; "leak ()" ]
+              Expect.stringContains e.Message "'print' writes to the console" "names the effect"
+          }
+          test "transitivity: an earlier pure binding passes; an effectful one refuses through its name" {
+              Expect.isEmpty
+                  (errsOf [ "let helper n = n + 1"; "let pure lifted n = helper n"; "print $\"{lifted 4}\"" ])
+                  "purity flows forward through earlier bindings"
+
+              let e =
+                  firstErr [ "let eff () = print \"hi\""; "let x ="; "    pure"; "        eff ()"; "print $\"{x}\"" ]
+
+              Expect.stringContains e.Message "'eff' reaches an effect" "the earlier binding's impurity surfaces by name"
+          }
+          test "an unknown callable refuses — conservatism is the soundness law" {
+              let e = firstErr [ "let unknown g ="; "    pure"; "        g 1" ]
+              Expect.stringContains e.Message "unknown callable" "a function-typed param could do anything"
+          }
+          test "keyword reservation: pure cannot be a binder; a blockless pure teaches" {
+              let e = firstErr [ "let pure = 1" ]
+              Expect.stringContains e.Message "'pure' is a keyword" "the binder slot refuses"
+
+              let ds, _, _, _ = Weir.Script.analyzeLines "bare.weir" [ "pure" ]
+
+              Expect.isTrue
+                  (ds
+                   |> List.exists (fun d -> d.Message.Contains "pure takes a block"))
+                  "the bare head teaches the block form"
+          }
+          test "modules: let pure crosses the import; an impure module member refuses at ITS site" {
+              let dir =
+                  System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-pure-{System.Guid.NewGuid():N}")
+
+              System.IO.Directory.CreateDirectory dir |> ignore
+
+              try
+                  let lib = System.IO.Path.Combine(dir, "lib.weir")
+                  System.IO.File.WriteAllLines(lib, [ "module Lib"; "let triple : int -> int"; "let pure triple n = n * 3" ])
+                  let main = System.IO.Path.Combine(dir, "main.weir")
+                  System.IO.File.WriteAllLines(main, [ "import \"./lib.weir\""; "print $\"{Lib.triple 5}\"" ])
+
+                  let ds, _, _, _ =
+                      Weir.Script.analyzeLines main (List.ofArray (System.IO.File.ReadAllLines main))
+
+                  Expect.isEmpty (ds |> List.filter (fun d -> d.Severity = "error")) "a module's pure binding imports"
+
+                  let bad = System.IO.Path.Combine(dir, "bad.weir")
+                  System.IO.File.WriteAllLines(bad, [ "module Bad"; "let leak : unit -> unit"; "let pure leak () = print \"leak\"" ])
+                  let entry = System.IO.Path.Combine(dir, "entry.weir")
+                  System.IO.File.WriteAllLines(entry, [ "import \"./bad.weir\""; "print \"ok\"" ])
+
+                  let ds2, _, _, _ =
+                      Weir.Script.analyzeLines entry (List.ofArray (System.IO.File.ReadAllLines entry))
+
+                  let errs = ds2 |> List.filter (fun d -> d.Severity = "error")
+                  Expect.isNonEmpty errs "the module's pure law holds"
+                  Expect.stringContains errs.Head.Message "'print' writes to the console" "same teaching, module site"
+              finally
+                  try
+                      System.IO.Directory.Delete(dir, true)
+                  with _ ->
+                      ()
           } ]
 
 let withinKindsTests =
@@ -16476,6 +16605,7 @@ let allTests =
           lspCrossFileTests
           letBindingHoverTests
           purityBadgeTests
+          pureRegionTests
           withinKindsTests
           withinAlwaysLockTests
           wireKeyTests

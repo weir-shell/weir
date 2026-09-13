@@ -3770,11 +3770,24 @@ let builtinDocs: Map<string, BuiltinDoc> =
           bd
               ("A scoped resource for an indented block, released on every exit (normal and raise): "
                + (Ast.withinKinds
+                  |> List.filter (fun k -> not k.Standalone)
                   |> List.map (fun k -> $"`{k.Name}` — {k.Doc}")
                   |> String.concat "; ")
                + ".")
               (Some "within tmp d print d")
               (Some "within proc srv = <command> binds a Proc handle; the tree is killed and reaped at scope exit")
+          // the purity assertion's two spellings [D:pure-stage1] — its
+          // OWN head, never `within pure`
+          "pure",
+          bd
+              "A purity assertion for an indented block: the body must reach NO effect (filesystem, command, network, environment, console, clock) — a reachable effect is a check error naming the offender. Opt-in only: weir stays effect-normal, and code outside a pure region is never gated."
+              (Some "pure 1 + 1")
+              (Some "the binding spelling is the `let pure` modifier; unknown callables (a function param, an import's member) forfeit purity — the judgement may refuse, it never lies")
+          "let pure",
+          bd
+              "The purity MODIFIER — weir's first post-let modifier: `let pure f x = …` asserts the binding's whole body reaches no effect, and an impure body is a check error. Desugars to a body-spanning pure block; the binding hovers with the (pure) badge."
+              (Some "let pure double n = n * 2")
+              (Some "#help pure has the block form and the effect families")
           // ---- Instant: the UTC point [D:instant] ----
           "Instant.now",
           bd "The current instant (UTC)." (Some "Instant.now () > Instant.parse \"2020-01-01\"") None
@@ -5292,6 +5305,7 @@ let typeEnv: TypeEnv =
               envVarDef.Name, Record envVarDef ]
       ModuleTypes = Map.empty
       ModulePrivate = Map.empty
+      PureBindings = Map.empty
       AnonLitDefs = System.Collections.Generic.Dictionary() }
 
 let typeEnvStrict: TypeEnv =

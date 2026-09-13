@@ -34,6 +34,9 @@ let keywords =
           "elif"
           "rec"
           "mutable"
+          // the purity assertion's two spellings [D:pure-stage1]: the
+          // `pure` block head and the `let pure` modifier
+          "pure"
           // the module system's two words [D:modules-v1]: reserved so a
           // bare `module`/`import` never resolves as an identifier or a
           // command head (keyword-domination)
@@ -1925,6 +1928,12 @@ let private withinExprBody =
                 | None -> failFatally $"unknown scope kind '{kind}' — within takes {Ast.withinKindList}"
                 | Some wk ->
                     match wk.Id with
+                    | Ast.WithinPure ->
+                        // the standalone head [D:pure-stage1]: `pure` is in
+                        // the family, not behind `within` (unreachable while
+                        // `pure` is a keyword — identSpanned refuses it — but
+                        // the union demands the arm say so)
+                        failFatally "'pure' is its own head — write `pure` and an indented block, not `within pure`"
                     | Ast.WithinProc ->
                         // the scoped process [D:scoped-procs]: binder `=` then ONE
                         // command line (the block-let RHS grammar — splices, ^, the
@@ -1986,6 +1995,23 @@ let private withinExprBody =
 // argument rule); with no keys, ONE atom is the options value
 // (`retry fast`); the head never falls through to the body.
 let private withinExpr = deepenAfter [ "within" ] withinExprBody // [D:depth-guard]
+
+// the purity assertion [D:pure-stage1]: a bare `pure` head + block — a
+// withinKinds sibling through the union (no binder, no arg, and never
+// `within pure`); the LAW (the body reaches no effect) is enforced by
+// the checked-statement pipeline, not here
+let private pureExprBody =
+    getPosition .>> keyword "pure"
+    >>= fun p ->
+        ((opt (str_ws ";" <|> str_ws sibSepStr)
+          >>. (withExprParen false seqExpr <?> "the pure block's body"))
+         <|> failFatally
+                 "pure takes a block — indent its body (the body must reach no effect); a pure BINDING is `let pure f x = …`")
+        |>> fun body ->
+            { Kind = EWithin(Ast.WithinPure, None, None, None, body)
+              Span = { Start = pos p; End = body.Span.End } }
+
+let private pureExpr = deepenAfter [ "pure" ] pureExprBody // [D:depth-guard]
 
 let private retryExprBody =
     getPosition .>>. ((keyword "retry" >>% false) <|> (keyword "poll" >>% true))
@@ -2888,6 +2914,7 @@ opp.TermParser <-
           matchExpr
           forExpr
           withinExpr
+          pureExpr
           retryExpr
           yamlDistrict
           heredocDistrict
@@ -2908,6 +2935,7 @@ segOpp.TermParser <-
           ifExpr
           matchExpr
           withinExpr
+          pureExpr
           retryExpr
           fromExpr
           toExpr
@@ -3908,8 +3936,11 @@ let private typeDecl =
 // barewords.
 let private topLet (r: Resolver) =
     attempt (
-        keyword "let" >>. ident .>>. many binderParam .>> str_ws "="
-        >>= fun (name, ps) ->
+        // `let pure f …` [D:pure-stage1]: weir's FIRST post-let modifier
+        // (no let rec/inline/mutable exists) — a new let-head production,
+        // one token, no list; desugars below to a body-spanning pure block
+        keyword "let" >>. opt (attempt (keyword "pure")) .>>. (ident .>>. many binderParam) .>> str_ws "="
+        >>= fun (pureMod, (name, ps)) ->
             rejectDupParams ps
             >>= fun () ->
                 // RHS takes sequenced blocks too, and commands
@@ -3956,7 +3987,21 @@ let private topLet (r: Resolver) =
                         finally
                             ambientResolver.Value <- saved
 
-                withSpine (rhsP .>> eof) |>> fun rhs -> SLet(name, curryParams ps rhs)
+                withSpine (rhsP .>> eof)
+                |>> fun rhs ->
+                    let curried = curryParams ps rhs
+
+                    let value =
+                        match pureMod with
+                        | Some _ ->
+                            // the modifier IS a pure region spanning the
+                            // whole RHS (params included — the region
+                            // wraps the curried lambda) [D:pure-stage1]
+                            { Kind = EWithin(Ast.WithinPure, None, None, None, curried)
+                              Span = curried.Span }
+                        | None -> curried
+
+                    SLet(name, value)
     )
 
 // `let <keyword>` [D:anchor-before-read]: a keyword in the binder-name
@@ -3982,8 +4027,13 @@ let private letKeywordGuard: Parser<Stmt, unit> =
         keyword "let" >>. many binderTok
         >>= fun toks ->
             match
-                toks
-                |> List.choose id
+                (match toks |> List.choose id with
+                 // `let pure f …` [D:pure-stage1]: a LEADING `pure` with a
+                 // binder after it is the purity modifier, not a binder —
+                 // topLet owns it; `let pure = …` (nothing after) still
+                 // teaches the keyword
+                 | (_, ("pure", _)) :: (_ :: _ as rest) -> rest
+                 | other -> other)
                 |> List.tryPick (fun (at, (w, _)) ->
                     // true/false are LITERAL patterns, not keyword names
                     // (patWord's rule) — a refutable binder, not a parse error

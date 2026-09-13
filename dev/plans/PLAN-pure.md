@@ -1,6 +1,27 @@
 # weir — `pure`: an opt-in purity assertion in an effect-normal language
 
-Status: STAGE 0 BUILT (2026-09-11, branch pure-stage0; [D:pure]) — the
+Status: STAGE 1 BUILT (2026-09-12, branches withinkinds-union +
+pure-stage1; [D:within-kind-union] [D:pure-stage1]) — the prerequisite
+and the enforcement stage both shipped. The withinKinds union landed
+first (kind-first Check/Eval, FS0025 at every consumer for a new kind);
+then the `pure` block (a bare head — the family's first standalone
+kind, never `within pure`) and the `let pure` modifier, enforced in
+Script.checkStatement's post-check layer through the classifier moved
+to Purity.fs (Check.fs compiles before Builtins — the compile-order
+trap the Footprint anticipated). DEVIATIONS from this plan's Stage 1
+sketch, recorded: (1) the refusal is offender+span — "this 'pure'
+block forbids effects, but 'File.write' writes the filesystem" — NOT
+the full call-trace rendering sketched below; the trace is a v2
+refinement. (2) HOF call-site resolution via the `--can` walk was NOT
+built; enforcement reuses Stage 0's conservative isPureExpr (a
+function-typed unknown refuses), so a HOF-heavy pure body may be
+over-refused — the same conservatism the badge has. (3) `pure` rides
+the withinKinds table with a Standalone flag (the manifest's
+withinKinds list includes it; the `within` surfaces filter it).
+grammar-currency red vs tree-sitter-weir until it learns `pure` — the
+xml ritual. Fuzz seeds owed to CI (parser moved).
+
+Previously: STAGE 0 BUILT (2026-09-11, branch pure-stage0; [D:pure]) — the
 display stage shipped: classification in Can.fs (whole effectful modules
 + member exceptions + bare names + node kinds; console counts; `fail`
 pure, `exit` not), conservative transitive `isPureExpr`/`pureTopBindings`

@@ -593,6 +593,8 @@ let suggestScoped (env: TypeEnv) (binderScope: string) (text: string) (wordStart
             // table — the kinds and NOTHING else (an identifier cannot sit
             // there); the schema= shape, its mechanism kin
             Weir.Ast.withinKinds
+            // a standalone head (pure) is not a `within` kind [D:pure-stage1]
+            |> List.filter (fun k -> not k.Standalone)
             |> List.map (fun k -> k.Name)
             |> List.filter (fun k -> k.StartsWith word && k <> word)
         elif

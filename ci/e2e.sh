@@ -1099,7 +1099,10 @@ root = sys.argv[1]
 ast = open(f"{root}/src/Weir/Ast.fs").read()
 # the table block: Name = "..." entries inside withinKinds
 tbl_block = re.search(r"let withinKinds[^=]*=\n(.*?)\n\n", ast, re.S).group(1)
-table = set(re.findall(r'Name = "(\w+)"', tbl_block))
+# a Standalone kind (pure) is its OWN head, never `within pure` — the
+# grammars' within-alternation lists non-standalone kinds only
+entries = re.findall(r'\{[^}]*?Name = "(\w+)"[^}]*?Standalone = (true|false)', tbl_block, re.S)
+table = set(n for n, st in entries if st == "false")
 def alt(path, rx):
     m = re.search(rx, open(f"{root}/{path}").read())
     if not m: return None
@@ -1884,6 +1887,47 @@ else
     $BIN -e 'Path.under "/safe" "..\\..\\etc"' >/dev/null 2>&1 || fail "a backslash name is one ordinary POSIX filename segment"
 fi
 echo "e2e ok: Path.under at the binary — twin joins, sibling/absolute/climb/drive/UNC refuse, the separator split holds per platform"
+
+# ---- pure regions [D:pure-stage1] -------------------------------------------
+# the ENFORCED purity assertion at the binary: a pure body runs; an
+# effect refuses with the located teaching (block, let pure, and the
+# within-proc composition); the law is check-time, so `check` sees it
+puredir=$(mkweirtmp)
+cat > "$puredir/ok.weir" <<'WEOF'
+let pure double n = n * 2
+let x =
+    pure
+        let y = double 3
+        y + 1
+print $"{x}"
+WEOF
+out=$($BIN "$puredir/ok.weir") || fail "a pure body must run: $out"
+[ "$out" = "7" ] || fail "pure block value: expected 7, got $out"
+
+cat > "$puredir/bad.weir" <<'WEOF'
+pure
+    print "no"
+WEOF
+out=$($BIN check "$puredir/bad.weir" 2>&1) && fail "an effectful pure body must refuse" || true
+echo "$out" | grep -q "this 'pure' block forbids effects, but 'print' writes to the console" || fail "the teaching names the offender: $out"
+echo "$out" | grep -q "bad.weir:2:5" || fail "the refusal is located at the offending node: $out"
+
+cat > "$puredir/modif.weir" <<'WEOF'
+let pure leak () = print "x"
+leak ()
+WEOF
+out=$($BIN check "$puredir/modif.weir" 2>&1) && fail "let pure with an impure body must refuse" || true
+echo "$out" | grep -q "writes to the console" || fail "the modifier shares the block's teaching: $out"
+
+cat > "$puredir/proc.weir" <<'WEOF'
+let x =
+    pure
+        within proc p = sleep 5
+            1
+WEOF
+out=$($BIN check "$puredir/proc.weir" 2>&1) && fail "a scoped process inside pure must refuse" || true
+echo "$out" | grep -q "'within proc' scopes a resource" || fail "composition with within proc refuses: $out"
+echo "e2e ok: pure regions — a pure body runs (7), effects refuse LOCATED (block, let pure, within proc), the law is check-time"
 
 # ---- commit areas [D:commit-areas] ------------------------------------------
 # the derived-area check, pinned BOTH ways (a check that rejects

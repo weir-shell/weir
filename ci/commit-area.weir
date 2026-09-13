@@ -36,6 +36,7 @@ let areaOfSrc p =
     | "src/Weir/Script.fs" -> Some "parser"
     | "src/Weir/Ast.fs" -> Some "parser"
     | "src/Weir/Check.fs" -> Some "checker"
+    | "src/Weir/Purity.fs" -> Some "checker"
     | "src/Weir/Types.fs" -> Some "checker"
     | "src/Weir/Eval.fs" -> Some "eval"
     | "src/Weir/Session.fs" -> Some "eval"

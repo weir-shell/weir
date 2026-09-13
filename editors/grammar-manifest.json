@@ -37,6 +37,7 @@
     "mutable",
     "of",
     "poll",
+    "pure",
     "rec",
     "retry",
     "return",
