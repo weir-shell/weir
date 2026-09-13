@@ -4317,6 +4317,12 @@ let builtinDocs: Map<string, BuiltinDoc> =
                   "message-carrying; `exit n` is the bare-code spelling. Diverges (`string -> 'a`): a failing arm sits opposite a value arm [D:fail-bottom].")
            |> named [ "message" ])
           "exit", (bd "Exit the process with a status code." None None |> named [ "code" ])
+          "prompt",
+          (bd
+              "Write a message to STDERR and read one line from stdin (interactive input; a piped stdout stays data). EOF refuses — no phantom input. Self.stdin stays the STREAM reading (one enumeration; the two compose per-line vs whole-stream)."
+              None
+              (Some "let name = prompt \"your name?\" — interactive; in tests, pipe the answer in.")
+           |> named [ "message" ])
 
           // ---- Str ----
           "Str.contains",
@@ -5106,6 +5112,22 @@ let private entries: (string * Ty * Value) list =
       // or branch that fails/exits unifies with the value the others make
       "fail", TFun(TStr, tA), failImpl
       "exit", TFun(TInt, tA), exitImpl
+      // the interactive read [D:prompt]: message to STDERR (a piped
+      // stdout stays data), one line from stdin; EOF refuses — no
+      // phantom input
+      "prompt",
+      TFun(TStr, TStr),
+      VBuiltin(fun v ->
+          match v with
+          | VStr msg ->
+              eprintf "%s " msg
+              System.Console.Error.Flush()
+
+              match System.Console.In.ReadLine() with
+              | null ->
+                  failwith "prompt: stdin is closed (EOF) — no line to read; pipe an answer in, or run at a terminal"
+              | line -> VStr line
+          | v -> unreachable $"the checker rejects 'prompt' on {formatValue v}")
       // env-carrying twins — the env-sigil reifier route
       // (`$e(cmd | complete)`)
       "|completedEnv",

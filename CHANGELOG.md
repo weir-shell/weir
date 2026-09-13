@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.0.32
+
+### Added
+
+- **`prompt` — interactive input as a builtin.** `prompt "msg?"` writes
+  the message to stderr (piped stdout stays data) and reads one line
+  from stdin; EOF refuses rather than inventing phantom input. And
+  `Self.stdin` now states its law: it is a live stream read ONCE — a
+  second enumeration used to silently yield empty and now raises,
+  naming both repairs (bind one enumeration, or `prompt` per
+  interaction).
+
 ## v0.0.31
 
 > v0.0.30 was burned: the tag was cut, but the release run failed on the

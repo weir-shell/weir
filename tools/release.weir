@@ -20,9 +20,7 @@ let cli = Args.load Cli
 let gdir = cli.grammar |> Option.defaultValue "../tree-sitter-weir"
 
 let confirm msg =
-    print $"{msg} [y/N]"
-    let r = sh -c "read -r a && printf %s \"$a\"" | complete
-    let a = r.stdout |> Seq.tryHead |> Option.defaultValue ""
+    let a = prompt $"{msg} [y/N]"
     a == "y" || a == "Y" || a == "yes"
 
 // ---- 1. preflight: refuse before anything mutates -------------------------
@@ -74,10 +72,11 @@ let bumped =
 let highlightsSame =
     diff $"{gdir}/queries/highlights.scm" editors/zed/languages/weir/highlights.scm | succeeds
 
-if not (confirm $"pin zed to {newRev} on a branch zed-rev-next (highlights same: {highlightsSame})?") then
+if not (confirm $"pin zed to {newRev} and push STRAIGHT ON MAIN (highlights same: {highlightsSame})?") then
     fail "aborted — the zed pin is one commit stale until the ritual runs"
 
-git checkout -b zed-rev-next
+// straight on main by the owner's ruling: the pin bump is the ritual's
+// own tail, sequenced here so the stale window closes in the same run
 bumped |> File.write "editors/zed/extension.toml"
 
 if not highlightsSame then
@@ -86,5 +85,6 @@ if not highlightsSame then
 
 git add editors/zed/extension.toml
 git commit -m $"docs: the zed grammar pin follows tree-sitter-weir main ({cli.tag} target)"
+git push origin main
 print ""
-print $"release {cli.tag} complete — one branch remains: push zed-rev-next and open its PR"
+print $"release {cli.tag} complete — zed pin landed on main, nothing remains"
