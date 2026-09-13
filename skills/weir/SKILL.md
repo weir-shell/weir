@@ -565,6 +565,8 @@ print $"{key} -> {value}"
   [D:pure-stage1]: the body must reach NO effect — filesystem,
   commands, network, environment, console, clock, any `within`
   resource — or check refuses, naming the offender at its site.
+  `Self.stdin` counts (reading drains the input stream); the per-run
+  `Self` constants and union constructors are pure.
   `let pure f x = …` is the binding spelling (weir's one post-let
   modifier; an impure body is a check error, and the binding keeps
   its `(pure)` hover badge). Opt-in ONLY: weir stays effect-normal —
