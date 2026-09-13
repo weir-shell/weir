@@ -7566,6 +7566,35 @@ let pipeAlignTests =
               | Error e -> Expect.stringContains e "left of its match (head at column 4)" ""
               | Ok _ -> failtest "expected the offside error"
           }
+          test "a returning arm after a multi-statement body is an arm, not left-of-match [D:match-pipe-offside]" {
+              // a `let` then an if/else in an arm body leaves the if
+              // compound open when the NEXT arm arrives: the arm group
+              // at the arm's own column says it is a returning arm —
+              // the deeper if offside-closes, it is not "its match"
+              let lines =
+                  [ "let classify n ="
+                    "    match n with"
+                    "    | v when v > 0 ->"
+                    "        let doubled = v * 2"
+                    "        if doubled > 10 then"
+                    "            print \"big\""
+                    "        else"
+                    "            print \"small\""
+                    "    | _ -> print \"zero\""
+                    "classify 9" ]
+
+              let diags, _, _, _ = Weir.Script.analyzeLines "pin.weir" lines
+              Expect.isEmpty (diags |> List.map (fun d -> d.Message)) "the healthy arm assembles and checks"
+
+              // the other direction: an arm genuinely left of its match
+              // (no arm group at its column) keeps the offside error
+              match
+                  Weir.Script.assemble
+                      [ 1, "let v ="; 2, "    match 3 with"; 3, "    | 1 -> 0"; 4, "  | _ -> 1" ]
+              with
+              | Error e -> Expect.stringContains e "align the group" "misaligned arms still refuse"
+              | Ok _ -> failtest "expected the alignment error"
+          }
           // the arm-commit soundness premise rides THIS invariant
           // [D:arm-commit]: offside-close paren-wraps nested matches, so
           // at the logical line a '|' after a completed arm at the same

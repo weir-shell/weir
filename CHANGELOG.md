@@ -28,6 +28,13 @@
   plain paren is open a `)`-headed line now continues the statement,
   the rule multiline lambdas already had; a stray `)` with no paren
   open still refuses.
+- **A returning match arm after a multi-statement body assembles.**
+  An arm body ending in an if/else (after a `let`) left the if
+  compound open, and the next arm then died with "this arm sits left
+  of its match (head at column N)" pointing at the if — healthy code.
+  A pipe line landing exactly on its own arm group's column is a
+  returning arm (the deeper compound offside-closes as it always did);
+  genuinely misaligned or left-of-match arms keep their errors.
 
 ## v0.0.32
 

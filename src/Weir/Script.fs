@@ -1503,16 +1503,27 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                                 // with/->/function) opens one too:
                                                                 // its arms sit deeper by design
                                                                 // [D:function-keyword]
-                                                                match p.Compounds with
-                                                                | (h, _, _) :: _ when indent < h ->
-                                                                    Error
-                                                                        $"line {lineNo}: this arm sits left of its match (head at column {h}) — align arms at or right of it"
+                                                                match groups with
+                                                                | (g, _, false) :: rest when g = indent && not isFwd ->
+                                                                    // a RETURNING arm after a non-pipe
+                                                                    // body [D:match-pipe-offside]: the
+                                                                    // group at this exact column is the
+                                                                    // arm's own match — a deeper open
+                                                                    // compound (the previous arm's
+                                                                    // if/let tail) offside-closes below,
+                                                                    // it is not "its match"
+                                                                    Ok(false, (g, bodyCol, false) :: rest)
                                                                 | _ ->
-                                                                    Ok(
-                                                                        false,
-                                                                        (indent, (if isFwd then indent else bodyCol), isFwd)
-                                                                        :: groups
-                                                                    )
+                                                                    match p.Compounds with
+                                                                    | (h, _, _) :: _ when indent < h ->
+                                                                        Error
+                                                                            $"line {lineNo}: this arm sits left of its match (head at column {h}) — align arms at or right of it"
+                                                                    | _ ->
+                                                                        Ok(
+                                                                            false,
+                                                                            (indent, (if isFwd then indent else bodyCol), isFwd)
+                                                                            :: groups
+                                                                        )
                                                             else
                                                                 match groups with
                                                                 | (g, _, false) :: rest when g = indent && not isFwd ->
