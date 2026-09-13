@@ -2005,8 +2005,8 @@ compiler in CI. The short version:
 - no exceptions — values, `fail` and `exit` instead
 - no OO
 - no async
-- no user type classes — the three built-in constraint families are
-  closed
+- no user type classes, no SRTP — the three built-in constraint
+  families are closed
 
 When a task outgrows a shell, the graduation path is full F# — weir
 points there on purpose.
