@@ -1889,6 +1889,14 @@ let rec private checkPattern (ctx: Ctx) (env: TypeEnv) (ty: Ty) (p: Pattern) : R
                         p.PSpan
                         $"{typeName} is a record; match it with a name, '_', or a record pattern ({{ field = binder }})"
                 | None -> err p.PSpan $"unknown type '{typeName}'"
+            // an UNRESOLVED scrutinee is almost always a param — params
+            // are not typed FROM patterns, so the teaching names both
+            // repairs instead of a bare type variable
+            | TVar _ ->
+                err
+                    p.PSpan
+                    ("constructor patterns need a scrutinee whose type is already known — params are not typed from patterns. "
+                     + "Two repairs: inline the lambda at its use site (a typed pipe position types the binder there), or match on already-typed data")
             | ty -> err p.PSpan $"constructor patterns need a union value; this one has type {formatTy ty}"
 
 // A binder pattern's SHAPE: fresh vars at the leaves, TUnit at (),

@@ -36,6 +36,15 @@
   returning arm (the deeper compound offside-closes as it always did);
   genuinely misaligned or left-of-match arms keep their errors.
 
+### Changed
+
+- **The ctor-pattern refusal teaches its repairs.** A constructor
+  pattern on an unresolved param (`let step (m, wd) = match m with
+  | Ctor …`) now says params are not typed from patterns and names
+  both ways out — inline the lambda at its use site (a typed pipe
+  position types the binder there), or match on already-typed data —
+  instead of "needs a union value; this one has type 'a1".
+
 ## v0.0.32
 
 > First release published since v0.0.29: this ships everything under

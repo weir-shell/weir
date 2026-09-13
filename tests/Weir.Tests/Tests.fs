@@ -11812,7 +11812,13 @@ let ambiguousCtorTests =
           }
           test "an unresolved scrutinee stays refused for its own reason" {
               match analyze [ "type Z = C"; "let f x = match x with | C -> 1"; "print \"n\"" ] with
-              | d :: _ -> Expect.stringContains d.Message "constructor patterns need a union value" ""
+              | d :: _ ->
+                  Expect.stringContains d.Message "params are not typed from patterns" ""
+                  // the teaching names BOTH repairs: the same lambda
+                  // inlined at a typed pipe position types fine, so the
+                  // error must say so rather than dump a type variable
+                  Expect.stringContains d.Message "inline the lambda at its use site" ""
+                  Expect.stringContains d.Message "match on already-typed data" ""
               | [] -> failtest "expected the unresolved-scrutinee rejection"
           } ]
 
@@ -13111,7 +13117,7 @@ let recordPatternRowTests =
               // type there is nothing to validate the constructor against
               Expect.stringContains
                   (errR "fun p -> match p with | Some 1 -> \"y\" | _ -> \"n\"").Message
-                  "constructor patterns need a union value"
+                  "params are not typed from patterns"
                   "the ctor law is untouched"
           } ]
 
