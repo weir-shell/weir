@@ -35,11 +35,11 @@ let private pinT name weir fs tag =
 
 let pins =
     [ // --- block lets (the incident cluster: drift risk concentrated here) ---
-      pin "block let, implicit in" "let x =\n    let a = 1\n    a + 1\n" Same
-      pin "nested block let with RHS spill" "let x =\n    let a =\n        1 + 2\n    a * 2\n" Same
+      pin "block let, implicit in" "let _x =\n    let a = 1\n    a + 1\n" Same
+      pin "nested block let with RHS spill" "let _x =\n    let a =\n        1 + 2\n    a * 2\n" Same
       pin
           "valid match arms sit deeper than the binding (with a guard)"
-          "let category =\n    match 3 with\n    | s when s > 2 -> \"big\"\n    | _ -> \"small\"\n"
+          "let _category =\n    match 3 with\n    | s when s > 2 -> \"big\"\n    | _ -> \"small\"\n"
           Same
       pin
           "F#-rejects-this: dedented arm inside a block"
@@ -50,21 +50,21 @@ let pins =
           "let r =\n    let v =\n        match 3 with\n    | _ -> 0\n"
           Same
       pin "F#-rejects-this: bodyless block let" "let x =\n    let a = 1\n" Same
-      pin "comment lines are transparent inside blocks" "let x =\n    // note\n    let a = 1\n    a + 1\n" Same
+      pin "comment lines are transparent inside blocks" "let _x =\n    // note\n    let a = 1\n    a + 1\n" Same
       // blanks are transparent; the col-0 law is the boundary
       // [D:body-blanks]
-      pin "blank line inside a block is transparent (row RETIRED)" "let x =\n    let a = 1\n\n    a + 1\n" Same
+      pin "blank line inside a block is transparent (row RETIRED)" "let _x =\n    let a = 1\n\n    a + 1\n" Same
 
       // --- offside close & record continuations ---
-      pin "multi-line if/else as a let body" "let x =\n    if true then 1\n    else 2\n" Same
+      pin "multi-line if/else as a let body" "let _x =\n    if true then 1\n    else 2\n" Same
       pinT
           "sibling at the if's indent runs unconditionally"
-          "let f c =\n    if c then printerr \"a\"\n    printerr \"b\"\n"
-          "let f c =\n    if c then eprintfn \"a\"\n    eprintfn \"b\"\n"
+          "let _f c =\n    if c then printerr \"a\"\n    printerr \"b\"\n"
+          "let _f c =\n    if c then eprintfn \"a\"\n    eprintfn \"b\"\n"
           Same
       pin
           "multi-line record, bare fields (F# light syntax)"
-          "type T = { Name: string; Count: int }\nlet t =\n    { Name = \"a\"\n      Count = 2 }\n"
+          "type T = { Name: string; Count: int }\nlet _t =\n    { Name = \"a\"\n      Count = 2 }\n"
           Same
       pin "F#-rejects-this: EOF inside an open brace" "type T = { Name: string }\nlet t =\n    { Name = \"a\"\n" Same
       pin
@@ -75,8 +75,8 @@ let pins =
       // --- type classes: Eq ---
       pinT
           "generic equality generalizes (F# equality constraint, inferred)"
-          "let same x y = x == y\nlet r = same 1 1\n"
-          "let same x y = x = y\nlet r = same 1 1\n"
+          "let same x y = x == y\nlet _r = same 1 1\n"
+          "let same x y = x = y\nlet _r = same 1 1\n"
           Same
       pinT
           "generic equality rejected at functions (both sides) — the mirror-drift incident pin, now a REGRESSION GUARD (one-pipeline, 2026-07-21: the mirror calls checkStatement, drift is unconstructible)"
@@ -87,8 +87,8 @@ let pins =
       // --- type classes: Show/Ord ---
       pinT
           "generic sort helper (F# comparison constraint, inferred)"
-          "let bykey k xs = xs |> Seq.sortBy k\nlet r = [3; 1] |> bykey (fun n -> n)\n"
-          "let bykey k xs = xs |> Seq.sortBy k\nlet r = [3; 1] |> bykey (fun n -> n)\n"
+          "let bykey k xs = xs |> Seq.sortBy k\nlet _r = [3; 1] |> bykey (fun n -> n)\n"
+          "let bykey k xs = xs |> Seq.sortBy k\nlet _r = [3; 1] |> bykey (fun n -> n)\n"
           Same
       pinT
           "sort by function key rejected (both compilers)"
@@ -97,12 +97,34 @@ let pins =
           Same
 
       // --- exit (F#-parity) ---
-      pin "exit is F#'s exit (statement position)" "let go () = exit 3\n" Same
+      pin "exit is F#'s exit (statement position)" "let _go () = exit 3\n" Same
 
       // --- literal patterns + () thunks ---
-      pin "int literal patterns with catch-all" "let v =\n    match 1 with\n    | 0 -> 10\n    | _ -> 20\n" Same
+      pin "int literal patterns with catch-all" "let _v =\n    match 1 with\n    | 0 -> 10\n    | _ -> 20\n" Same
       pin "uppercase value binding rejected (the casing law)" "let Foo = 1\n" (Diverges "lowercase-binds")
       pin "underscore-leading binding accepted both sides" "let _keep = 1\n" Same
+
+      // --- unused bindings [D:unused-bindings]: the strictness family ---
+      // F# accepts an unread binder SILENTLY by default (FS1182 is
+      // opt-in via --warnon:1182, fsy-probed 2026-09-13); weir
+      // hard-errors, and `_name` is the escape both sides accept
+      pin "unused top-level binder: weir hard-errors, F# accepts silently" "let tmp = 5\n" (Diverges "unused-binding")
+      pin
+          "unused block-local binder rejects"
+          "let _x =\n    let a = 1\n    2\n"
+          (Diverges "unused-binding")
+      pin
+          "unused destructured NAME rejects (each name judged)"
+          "let (a, b) = (1, 2)\nlet _r = a\n"
+          (Diverges "unused-binding")
+      pin
+          "an unread binder rebound (shadow) rejects at the earlier binder"
+          // block-scoped: F#'s MODULE-level lets refuse duplicates
+          // (FS0037), so the shadow divergence lives in expression scope
+          "let _f () =\n    let x = 1\n    let x = 2\n    x\n"
+          (Diverges "unused-binding")
+      pin "a bare _ let binder rejects (the anonymous swallow)" "let _ = 5\n" (Diverges "unused-binding")
+      pin "an unused PARAM is exempt (API shape, not a swallowed value)" "let f x = 1\nlet _r = f 2\n" Same
       pin
           "unknown uppercase pattern: weir errors, F# binds a var (FS0049 warn)"
           "type T = A of int | B\nlet v =\n    match B with\n    | Foo -> 1\n    | _ -> 2\n"
@@ -118,14 +140,14 @@ let pins =
 
       // --- prefix minus: F# parses `f -1` as APPLICATION of -1
       // (adjacency), not subtraction ---
-      pin "negative literal at operand position" "let x = -5\n" Same
-      pin "prefix minus binds above * (both compilers)" "let x = 2 * -3\n" Same
-      pin "f -1 applies the negative literal (both compilers)" "let f n = n + 1\nlet r = f -1\n" Same
+      pin "negative literal at operand position" "let _x = -5\n" Same
+      pin "prefix minus binds above * (both compilers)" "let _x = 2 * -3\n" Same
+      pin "f -1 applies the negative literal (both compilers)" "let f n = n + 1\nlet _r = f -1\n" Same
       pin "F#-rejects-this: 1 -2 is int applied to int" "let r = 1 -2\n" Same
 
       // --- composition >>/<< ---
-      pin "forward composition of let-functions" "let f n = n + 1\nlet g = f >> f\nlet r = g 40\n" Same
-      pin "backward composition" "let f n = n + 1\nlet g = f << f\nlet r = g 40\n" Same
+      pin "forward composition of let-functions" "let f n = n + 1\nlet g = f >> f\nlet _r = g 40\n" Same
+      pin "backward composition" "let f n = n + 1\nlet g = f << f\nlet _r = g 40\n" Same
       // verdict-visible precedence — the oracle REFUTED tighter-than-
       // pipe: F# parses `xs |> f >> g` as `(xs |> f) >> g` (shared
       // infix class), both compilers reject it unparenthesized
@@ -135,21 +157,21 @@ let pins =
           Same
       pin
           "the parenthesized composition pipes fine (both compilers)"
-          "let r = [1; 2] |> (Seq.map (fun x -> x) >> Seq.sum)\n"
+          "let _r = [1; 2] |> (Seq.map (fun x -> x) >> Seq.sum)\n"
           Same
       pin "F#-rejects-this: >> on a non-function LHS" "let r = 1 >> 2\n" Same
-      pin "adjacent lexing: > comparison vs >> composition" "let a = 1 > 2\nlet f n = n + 1\nlet g = f >> f\n" Same
+      pin "adjacent lexing: > comparison vs >> composition" "let _a = 1 > 2\nlet f n = n + 1\nlet _g = f >> f\n" Same
 
       // --- raw strings (PLAN-raw-strings) — probes BEFORE code, per the
       // folklore-vs-compiler rule; edge verdicts are ASKED, not recalled ---
-      pin "verbatim string with backslashes" "let s = @\"a\\nb\"\n" Same
-      pin "verbatim quote doubling" "let s = @\"x\"\"y\"\n" Same
-      pin "triple-quoted with a bare quote" "let s = \"\"\"a\"b\"\"\"\n" Same
-      pin "edge: quad-quote opener (\"\"\"\"a\"\"\")" "let s = \"\"\"\"a\"\"\"\n" Same
+      pin "verbatim string with backslashes" "let _s = @\"a\\nb\"\n" Same
+      pin "verbatim quote doubling" "let _s = @\"x\"\"y\"\n" Same
+      pin "triple-quoted with a bare quote" "let _s = \"\"\"a\"b\"\"\"\n" Same
+      pin "edge: quad-quote opener (\"\"\"\"a\"\"\")" "let _s = \"\"\"\"a\"\"\"\n" Same
       pin "edge: quad-quote closer (\"\"\"a\"\"\"\")" "let s = \"\"\"a\"\"\"\"\n" Same
       // --- modulo [D:modulo] ---
-      pin "modulo accepted, int" "let x = 7 % 3\n" Same
-      pin "modulo on negatives (truncated is F#'s own)" "let x = -7 % 3\n" Same
+      pin "modulo accepted, int" "let _x = 7 % 3\n" Same
+      pin "modulo on negatives (truncated is F#'s own)" "let _x = -7 % 3\n" Same
       pin
           "float modulo refused (finite-only floats cannot hold NaN remainder)"
           "let x = 7.5 % 2.0\n"
@@ -157,7 +179,7 @@ let pins =
       pin "multi-line verbatim: weir is single-line" "let s = @\"a\nb\"\n" (Diverges "raw-single-line")
       pin "multi-line triple: weir is single-line" "let s = \"\"\"a\nb\"\"\"\n" (Diverges "raw-single-line")
       pin "interpolated verbatim $@ teaches the one spelling" "let s = $@\"x{1}\"\n" (Diverges "interpolated-raw")
-      pin "interpolated triple: raw with holes lands both sides" "let s = $\"\"\"x{1}\"\"\"\n" Same
+      pin "interpolated triple: raw with holes lands both sides" "let _s = $\"\"\"x{1}\"\"\"\n" Same
       pin
           "raw interpolated {{ has no spelling (F# escapes; weir teaches)"
           "let s = $\"\"\"x{{y\"\"\"\n"
@@ -167,23 +189,23 @@ let pins =
       // argument-order claim class bit once (composition precedence) ---
       pin
           "fold: state-first folder (verdict-visible via string state)"
-          "let n = Seq.fold (fun s x -> s + $\"{x}\") \"\" [ 1; 2 ]\n"
+          "let _n = Seq.fold (fun s x -> s + $\"{x}\") \"\" [ 1; 2 ]\n"
           Same
       // shape amended in-session: `a + b` hits weir's KNOWN
       // +-on-unknowns limit (wrong reject reason); `b` isolates currying
-      pin "two-param lambda is CURRIED: partial application works" "let f = (fun a b -> b) 1\nlet s = f \"x\"\n" Same
+      pin "two-param lambda is CURRIED: partial application works" "let f = (fun a b -> b) 1\nlet _s = f \"x\"\n" Same
       pin "F#-rejects-this: a tupled lambda is not curried" "let g = fun (a, b) -> a + b\nlet n = g 1 2\n" Same
       // shape amended in-session: the arithmetic-empty form hits the
       // +-on-unknowns limit in weir's one-pass order (nothing anchors
       // s or x — the documented anchor-one-side rule); the identity
       // folder isolates the empty-seq acceptance claim
-      pin "fold over empty returns the initial state (acceptance)" "let n = Seq.fold (fun s x -> s) 7 []\n" Same
+      pin "fold over empty returns the initial state (acceptance)" "let _n = Seq.fold (fun s x -> s) 7 []\n" Same
       pin "duplicate lambda params: ask F#, do not recall" "let f = fun a a -> a\nlet n = f 1 2\n" Same
 
       // --- elif ---
       pin
           "elif chains, F# semantics"
-          "let x = 10\nlet y =\n    if x > 100 then \"a\"\n    elif x > 5 then \"b\"\n    else \"c\"\n"
+          "let x = 10\nlet _y =\n    if x > 100 then \"a\"\n    elif x > 5 then \"b\"\n    else \"c\"\n"
           Same
       pin "F#-rejects-this: elif without a preceding if" "let y = elif 1 > 0 then \"x\"\n" Same
       pin
@@ -192,30 +214,30 @@ let pins =
           Same
 
       // --- splice defaulting is a FINALIZATION step (small-items sweep) ---
-      pin "hole under a pipe-bound lambda types from the pipe" "let s = 1 |> (fun k -> $\"{k}\")\n" Same
+      pin "hole under a pipe-bound lambda types from the pipe" "let _s = 1 |> (fun k -> $\"{k}\")\n" Same
 
       // --- record update probes (PLAN-record-update) — BEFORE code, the
       // folklore rule: every asserted F# grammar fact gets its verdict
       // pin first; guesses flip to FCS's truth before implementation ---
       pin
           "record update: flat single field (corpus bbffe988 shape)"
-          "type R = { V: string; I: int }\nlet m = { V = \"\"; I = 0 }\nlet m1 = { m with V = \"m\" }\n"
+          "type R = { V: string; I: int }\nlet m = { V = \"\"; I = 0 }\nlet _m1 = { m with V = \"m\" }\n"
           Same
       pin
           "record update: multiple fields"
-          "type R = { A: int; B: int }\nlet r = { A = 1; B = 2 }\nlet r2 = { r with A = 3; B = 4 }\n"
+          "type R = { A: int; B: int }\nlet r = { A = 1; B = 2 }\nlet _r2 = { r with A = 3; B = 4 }\n"
           Same
       pin
           "record update: nested I.X sugar (corpus 56d739b shape)"
-          "type Inner = { X: int }\ntype Outer = { I: Inner }\nlet o = { I = { X = 1 } }\nlet o2 = { o with I.X = 2 }\n"
+          "type Inner = { X: int }\ntype Outer = { I: Inner }\nlet o = { I = { X = 1 } }\nlet _o2 = { o with I.X = 2 }\n"
           Same
       pin
           "record update: parenthesized general-expression source"
-          "type R = { A: int }\nlet id2 r = r\nlet x = { A = 1 }\nlet y = { (id2 x) with A = 2 }\n"
+          "type R = { A: int }\nlet id2 r = r\nlet x = { A = 1 }\nlet _y = { (id2 x) with A = 2 }\n"
           Same
       pin
           "record update: unparenthesized application source"
-          "type R = { A: int }\nlet id2 r = r\nlet x = { A = 1 }\nlet y = { id2 x with A = 2 }\n"
+          "type R = { A: int }\nlet id2 r = r\nlet x = { A = 1 }\nlet _y = { id2 x with A = 2 }\n"
           Same
       pin
           "F#-rejects-this: update cannot add fields"
@@ -226,7 +248,7 @@ let pins =
       // divergence, weir-accepts direction, rowed as update-path-plain
       pin
           "update paths ignore type names (weir accepts; F# captures the type)"
-          "type I = { X: int }\ntype O = { I: I }\nlet o = { I = { X = 1 } }\nlet o2 = { o with I.X = 2 }\n"
+          "type I = { X: int }\ntype O = { I: I }\nlet o = { I = { X = 1 } }\nlet _o2 = { o with I.X = 2 }\n"
           (Diverges "update-path-plain")
 
       pin
@@ -236,7 +258,7 @@ let pins =
 
       // --- anonymous record literals [D:anon-literals] — the row
       // no-anonymous-records NARROWED to its edges ---
-      pin "anonymous literal accepted, field access included" "let x = {| a = 1; b = \"t\" |}\nlet n = x.a\n" Same
+      pin "anonymous literal accepted, field access included" "let x = {| a = 1; b = \"t\" |}\nlet _n = x.a\n" Same
       pin "punning rejected both sides" "let k = 1\nlet x = {| k |}\n" Same
       pin
           "a literal never becomes a declared record (nominal both sides)"
@@ -255,28 +277,28 @@ let pins =
       // --- the Regex pattern (the weir-only match form) ---
       pin
           "the Regex match pattern: weir-only (F# has no built-in regex pattern)"
-          "let v =\n    match \"a1\" with\n    | Regex @\"([a-z])(1)\" (a, b) -> a\n    | _ -> \"\"\n"
+          "let _v =\n    match \"a1\" with\n    | Regex @\"([a-z])(1)\" (a, b) -> a\n    | _ -> \"\"\n"
           (Diverges "regex-pattern")
-      pin "unit param pins the thunk type" "let cleanup () = 1\nlet r = cleanup ()\n" Same
+      pin "unit param pins the thunk type" "let cleanup () = 1\nlet _r = cleanup ()\n" Same
       pin "F#-rejects-this: thunk applied to a value" "let cleanup () = 1\nlet r = cleanup 5\n" Same
 
       // --- tuples ---
-      pin "tuple literal, type, pattern" "let p = (1, \"a\")\nlet v =\n    match p with\n    | (n, s) -> n\n" Same
+      pin "tuple literal, type, pattern" "let p = (1, \"a\")\nlet _v =\n    match p with\n    | (n, s) -> n\n" Same
       // bare commas in the two match positions [D:bare-comma] — both
       // idiomatic F#; the gap the portable showcase found, closed
       pin
           "bare-comma tuple scrutinee"
-          "let a = Some 1\nlet v =\n    match a, 2 with\n    | (Some d, _) -> d\n    | _ -> 0\n"
+          "let a = Some 1\nlet _v =\n    match a, 2 with\n    | (Some d, _) -> d\n    | _ -> 0\n"
           Same
       pin
           "bare-comma arm pattern, guard outside the tuple"
-          "let v =\n    match (1, 2) with\n    | a, b when a < b -> a\n    | _ -> 9\n"
+          "let _v =\n    match (1, 2) with\n    | a, b when a < b -> a\n    | _ -> 9\n"
           Same
-      pin "multi-payload constructor" "type Msg = | Move of int * int | Stop\nlet m = Move (1, 2)\n" Same
+      pin "multi-payload constructor" "type Msg = | Move of int * int | Stop\nlet _m = Move (1, 2)\n" Same
       pinT
           "tuple equality (componentwise, both compilers)"
-          "let b = (1, \"a\") == (1, \"a\")\n"
-          "let b = (1, \"a\") = (1, \"a\")\n"
+          "let _b = (1, \"a\") == (1, \"a\")\n"
+          "let _b = (1, \"a\") = (1, \"a\")\n"
           Same
       pin
           "tuple ordering: weir rejects, F# compares lexicographically"
@@ -287,46 +309,46 @@ let pins =
           "let v =\n    match (true, 1) with\n    | (true, _) -> 1\n    | (false, _) -> 2\n"
           (Diverges "tuple-exhaustiveness-bounded")
       // the binder shapes are features — both pins Same
-      pin "pattern params (row content moved to refutable binders)" "let f = fun (a, b) -> a\n" Same
-      pin "destructuring let (shipped; the row's arc completes)" "let p = (1, 2)\nlet x, y = p\n" Same
-      pin "bare-comma tuple at full precedence" "let t = 1, 2\n" Same
+      pin "pattern params (row content moved to refutable binders)" "let _f = fun (a, b) -> a\n" Same
+      pin "destructuring let (shipped; the row's arc completes)" "let p = (1, 2)\nlet _x, _y = p\n" Same
+      pin "bare-comma tuple at full precedence" "let _t = 1, 2\n" Same
       pin
           "refutable binder: F# warns-accepts, weir rejects (the row's remaining content)"
           "let x = Some 1\nlet (Some y) = x\n"
           (Diverges "no-pattern-binders")
 
       // --- let ... in ---
-      pin "explicit let-in one-liner" "let y = let x = 1 in x + 1\n" Same
+      pin "explicit let-in one-liner" "let _y = let x = 1 in x + 1\n" Same
 
       // --- conditionals and matches ---
-      pin "if-then-else expression" "let v = if 1 > 2 then \"a\" else \"b\"\n" Same
-      pin "else-if chain" "let v = if 1 > 2 then 1 else if 2 > 3 then 2 else 3\n" Same
-      pin "bool patterns" "let v = match 1 > 2 with\n        | true -> 1\n        | false -> 0\n" Same
+      pin "if-then-else expression" "let _v = if 1 > 2 then \"a\" else \"b\"\n" Same
+      pin "else-if chain" "let _v = if 1 > 2 then 1 else if 2 > 3 then 2 else 3\n" Same
+      pin "bool patterns" "let _v = match 1 > 2 with\n         | true -> 1\n         | false -> 0\n" Same
 
       // --- interpolation ---
-      pin "interpolated string with a hole" "let s = $\"a{1 + 1}b\"\n" Same
-      pin "brace escapes in interpolation" "let s = $\"x{{y}}z\"\n" Same
+      pin "interpolated string with a hole" "let _s = $\"a{1 + 1}b\"\n" Same
+      pin "brace escapes in interpolation" "let _s = $\"x{{y}}z\"\n" Same
 
       // --- ranges ---
-      pin "basic range" "let r = [1..5]\n" Same
-      pin "stepped descending range, spaced" "let r = [10 .. -1 .. 1]\n" Same
+      pin "basic range" "let _r = [1..5]\n" Same
+      pin "stepped descending range, spaced" "let _r = [10 .. -1 .. 1]\n" Same
       pin "F#-rejects-this: open range" "let r = [1..]\n" Same
       pin "F#-rejects-this: triple-dotted range" "let r = [1..2..3..4]\n" Same
       // a written function type PARSES [D:function-types] — weir and F# agree
       pin "function type in a union payload" "type Z = B of (unit -> string)\n" Same
       // --- slicing [D:range-slicing]: weir and F# both accept x[a..b] ---
-      pin "slice a list, inclusive" "let xs = [1..10]\nlet s = xs[3..7]\n" Same
-      pin "slice a string" "let w = \"abcdefghi\"\nlet s = w[3..7]\n" Same
-      pin "slice, open-ended start" "let xs = [1..10]\nlet s = xs[..3]\n" Same
-      pin "slice, open-ended end" "let xs = [1..10]\nlet s = xs[7..]\n" Same
+      pin "slice a list, inclusive" "let xs = [1..10]\nlet _s = xs[3..7]\n" Same
+      pin "slice a string" "let w = \"abcdefghi\"\nlet _s = w[3..7]\n" Same
+      pin "slice, open-ended start" "let xs = [1..10]\nlet _s = xs[..3]\n" Same
+      pin "slice, open-ended end" "let xs = [1..10]\nlet _s = xs[7..]\n" Same
 
       // --- multiline bracket probes (PLAN-multiline-brackets) ---
       pin
           "multiline type declaration (F# light's own rule)"
-          "type Ctx =\n    { Subdir: string\n      Subref: string }\nlet c = { Subdir = \"a\"; Subref = \"b\" }\n"
+          "type Ctx =\n    { Subdir: string\n      Subref: string }\nlet _c = { Subdir = \"a\"; Subref = \"b\" }\n"
           Same
-      pin "multiline list literal" "let pairs =\n    [(\"a\", 1)\n     (\"b\", 2)]\n" Same
-      pin "multiline list: wrapped element via dangling operator" "let x =\n    [1 +\n     2\n     3]\n" Same
+      pin "multiline list literal" "let _pairs =\n    [(\"a\", 1)\n     (\"b\", 2)]\n" Same
+      pin "multiline list: wrapped element via dangling operator" "let _x =\n    [1 +\n     2\n     3]\n" Same
       pin "F#-rejects-this: cross-bracket closer" "let x =\n    [1; 2\n     3}\n" Same
       pin
           "F#-rejects-this: type field at column 0 (narrowed 2026-07-24)"
@@ -338,40 +360,40 @@ let pins =
           (Diverges "attributes-registered")
 
       // --- body-blank probes (PLAN-body-blanks: the core reversal) ---
-      pin "blank inside a function body" "let f x =\n    let a = 1\n\n    a + x\nlet y = f 1\n" Same
-      pin "blank between match arms" "let v =\n    match 1 with\n    | 1 -> \"a\"\n\n    | _ -> \"b\"\n" Same
-      pin "blank between a let head and its first body line" "let x =\n\n    1\n" Same
-      pin "blank inside an if body" "let v =\n    if true then\n        let a = 1\n\n        a + 1\n    else 2\n" Same
-      pin "blank between match head and the first arm" "let v =\n    match 1 with\n\n    | _ -> \"b\"\n" Same
+      pin "blank inside a function body" "let f x =\n    let a = 1\n\n    a + x\nlet _y = f 1\n" Same
+      pin "blank between match arms" "let _v =\n    match 1 with\n    | 1 -> \"a\"\n\n    | _ -> \"b\"\n" Same
+      pin "blank between a let head and its first body line" "let _x =\n\n    1\n" Same
+      pin "blank inside an if body" "let _v =\n    if true then\n        let a = 1\n\n        a + 1\n    else 2\n" Same
+      pin "blank between match head and the first arm" "let _v =\n    match 1 with\n\n    | _ -> \"b\"\n" Same
       pin "stray after a blank (the deliberate consequence)" "let x = 1\n\n    2\n" Same
 
       // --- blank-inside-bracket probes (PLAN-blank-lines) ---
       pin
           "blank inside a Stroustrup type declaration"
-          "type Ctx = {\n    A: int\n\n    B: int\n}\nlet c = { A = 1; B = 2 }\n"
+          "type Ctx = {\n    A: int\n\n    B: int\n}\nlet _c = { A = 1; B = 2 }\n"
           Same
-      pin "blank inside a record literal" "type R = { A: int; B: int }\nlet r = {\n    A = 1\n\n    B = 2\n}\n" Same
-      pin "blank inside a list" "let xs = [\n    1\n\n    2\n]\n" Same
+      pin "blank inside a record literal" "type R = { A: int; B: int }\nlet _r = {\n    A = 1\n\n    B = 2\n}\n" Same
+      pin "blank inside a list" "let _xs = [\n    1\n\n    2\n]\n" Same
       pin
           "blank inside an update rides the update-offside row"
-          "type R = { A: int; B: int }\nlet r = { A = 1; B = 2 }\nlet r2 = { r with\n    A = 3\n\n    B = 4\n}\n"
+          "type R = { A: int; B: int }\nlet r = { A = 1; B = 2 }\nlet _r2 = { r with\n    A = 3\n\n    B = 4\n}\n"
           (Diverges "record-fields-ignore-indent")
       pin "F#-rejects-this: col-0 let while a bracket is open (the guard)" "let xs = [\n    1\nlet y = 2\n" Same
 
       // --- Stroustrup bracket probes (fantomas-poll house style) ---
       pin
           "Stroustrup type declaration"
-          "type Ctx = {\n    Subdir: string\n    Repo: string\n}\nlet c = { Subdir = \"a\"; Repo = \"b\" }\n"
+          "type Ctx = {\n    Subdir: string\n    Repo: string\n}\nlet _c = { Subdir = \"a\"; Repo = \"b\" }\n"
           Same
-      pin "Stroustrup record literal" "type R = { A: int }\nlet r = {\n    A = 1\n}\n" Same
-      pin "Stroustrup list literal" "let xs = [\n    1\n    2\n]\n" Same
+      pin "Stroustrup record literal" "type R = { A: int }\nlet _r = {\n    A = 1\n}\n" Same
+      pin "Stroustrup list literal" "let _xs = [\n    1\n    2\n]\n" Same
       // REFUTED as Same by the probe: F# offside-rejects the col-0
       // closer in UPDATE position (accepts it for type decls,
       // literals, lists — the fantomas-poll controversy, refereed);
       // weir is indentation-blind inside brackets — the standing row
       pin
           "Stroustrup copy-and-update (weir indentation-blind; F# offside-rejects)"
-          "type R = { A: int; B: int }\nlet r = { A = 1; B = 2 }\nlet r2 = { r with\n    A = 3\n}\n"
+          "type R = { A: int; B: int }\nlet r = { A = 1; B = 2 }\nlet _r2 = { r with\n    A = 3\n}\n"
           (Diverges "record-fields-ignore-indent")
 
       // --- field-alignment probes (the records half) ---
@@ -386,7 +408,7 @@ let pins =
       pin "list element off by one" "let xs =\n    [1\n      2\n     3]\n" Same
       pin
           "aligned continuation fields under the opener-line first field"
-          "type R2 = { A: int; B: string }\nlet r =\n    { A = 1\n      B = \"x\" }\n"
+          "type R2 = { A: int; B: string }\nlet _r =\n    { A = 1\n      B = \"x\" }\n"
           Same
 
       // --- pipe-alignment probes (the indentation session) ---
@@ -410,11 +432,11 @@ let pins =
           Same
       pin
           "arms consistently deeper than the match head are fine"
-          "let v =\n    match 1 with\n        | 1 -> \"a\"\n        | _ -> \"b\"\n"
+          "let _v =\n    match 1 with\n        | 1 -> \"a\"\n        | _ -> \"b\"\n"
           Same
       pin
           "nested arms return to the outer column"
-          "let v =\n    match 1 with\n    | 1 ->\n        match 2 with\n        | 2 -> \"a\"\n        | _ -> \"b\"\n    | _ -> \"c\"\n"
+          "let _v =\n    match 1 with\n    | 1 ->\n        match 2 with\n        | 2 -> \"a\"\n        | _ -> \"b\"\n    | _ -> \"c\"\n"
           Same
 
       // --- a trailing pipe and the match's offside [D:match-pipe-offside] ---
@@ -422,12 +444,12 @@ let pins =
       // (1) at the arm column CLOSES the match and pipes the whole (Same)
       pin
           "a |> at the arm column closes the match and pipes the whole"
-          "let v =\n    match 1 with\n    | 1 -> 10\n    | _ -> 20\n    |> (fun n -> n + 1)\n"
+          "let _v =\n    match 1 with\n    | 1 -> 10\n    | _ -> 20\n    |> (fun n -> n + 1)\n"
           Same
       // (2) at/under the arm body EXTENDS the arm (Same)
       pin
           "a |> under the arm body extends the arm"
-          "let v =\n    match 1 with\n    | _ -> 20\n           |> (fun n -> n + 1)\n"
+          "let _v =\n    match 1 with\n    | _ -> 20\n           |> (fun n -> n + 1)\n"
           Same
       // (3) LEFT of the body weir REJECTS at the clean floor; F#'s relaxed
       // offside tolerates a few columns of hang, so it extends this one —
@@ -443,30 +465,30 @@ let pins =
       // --- seq-pattern probes (PLAN-seq-force-patterns Part 2) ---
       pin
           "seq patterns: F#'s spelling on a LIST literal scrutinee agrees"
-          "let v =\n    match [1; 2] with\n    | [] -> 0\n    | x :: rest -> x\n"
+          "let _v =\n    match [1; 2] with\n    | [] -> 0\n    | x :: rest -> x\n"
           Same
       pin
           "seq patterns on a SEQ scrutinee: F# rejects, weir extends (the row)"
-          "let v =\n    match ([1; 2] |> Seq.skip 0) with\n    | [] -> 0\n    | x :: rest -> x\n"
+          "let _v =\n    match ([1; 2] |> Seq.skip 0) with\n    | [] -> 0\n    | x :: rest -> x\n"
           (Diverges "seq-patterns")
       pin
           "fixed-arity pattern on a seq scrutinee"
-          "let v =\n    match ([1; 2] |> Seq.skip 0) with\n    | [a; b] -> a + b\n    | _ -> 0\n"
+          "let _v =\n    match ([1; 2] |> Seq.skip 0) with\n    | [a; b] -> a + b\n    | _ -> 0\n"
           (Diverges "seq-patterns")
       pin
           "chained cons on a list literal (F#'s right assoc)"
-          "let v =\n    match [1; 2; 3] with\n    | a :: b :: rest -> a + b\n    | _ -> 0\n"
+          "let _v =\n    match [1; 2; 3] with\n    | a :: b :: rest -> a + b\n    | _ -> 0\n"
           Same
 
       // --- Seq.append probe (the full-port receipt: variable argv) ---
-      pin "Seq.append: piped tail after the head seq" "let xs = [3; 4] |> Seq.append [1; 2] |> Seq.length\n" Same
+      pin "Seq.append: piped tail after the head seq" "let _xs = [3; 4] |> Seq.append [1; 2] |> Seq.length\n" Same
 
       // --- Seq.choose probes (PLAN-choose) ---
       pin
           "Seq.choose: partial map, applied"
-          "let n = [1; 2; 3] |> Seq.choose (fun x -> if x > 1 then Some x else None) |> Seq.length\n"
+          "let _n = [1; 2; 3] |> Seq.choose (fun x -> if x > 1 then Some x else None) |> Seq.length\n"
           Same
-      pin "Seq.choose: all-None yields empty" "let n = [1; 2] |> Seq.choose (fun x -> None) |> Seq.length\n" Same
+      pin "Seq.choose: all-None yields empty" "let _n = [1; 2] |> Seq.choose (fun x -> None) |> Seq.length\n" Same
       pin "Seq.choose: chooser must return Option" "let bad = [1] |> Seq.choose (fun x -> x)\n" Same
 
       // --- attribute probes (PLAN-attributes) — attachment shape is
@@ -474,7 +496,7 @@ let pins =
       // weir's registry is closed, so names diverge both ways ---
       pin
           "attributes: registered name attaches (F# has no Short type)"
-          "type T = { [<Short \"c\">] A: int }\nlet t = { A = 1 }\n"
+          "type T = { [<Short \"c\">] A: int }\nlet _t = { A = 1 }\n"
           (Diverges "attributes-registered")
       pin
           "attributes: F# accepts a real attribute weir does not register"
@@ -484,18 +506,18 @@ let pins =
       pin "F#-rejects-this: attribute in expression position" "let x = [<Short \"c\">] 1\n" Same
       pin
           "attributes: multiple in one list, semicolon-separated"
-          "type T = { [<Short \"c\"; Default 5>] A: int }\nlet t = { A = 1 }\n"
+          "type T = { [<Short \"c\"; Default 5>] A: int }\nlet _t = { A = 1 }\n"
           (Diverges "attributes-registered")
       // the widened positions [D:attr-positions] — union decls and cases
       // host attributes in BOTH languages (FCS-probed 2026-09-04); the
       // name registry keeps diverging exactly as fields do
       pin
           "attributes: union declaration hosts a registered name (F# has no Tag type)"
-          "type P = { n: int }\n[<Tag \"kind\">]\ntype K =\n    | A of P\n    | B\nlet v = B\n"
+          "type P = { n: int }\n[<Tag \"kind\">]\ntype K =\n    | A of P\n    | B\nlet _v = B\n"
           (Diverges "attributes-registered")
       pin
           "attributes: union case hosts a registered name (F# has no Wire type)"
-          "type P = { n: int }\n[<Tag \"k\">]\ntype K = [<Wire \"x\">] A of P | B\nlet v = B\n"
+          "type P = { n: int }\n[<Tag \"k\">]\ntype K = [<Wire \"x\">] A of P | B\nlet _v = B\n"
           (Diverges "attributes-registered")
       pin
           "attributes: F# accepts a real attribute on a union weir does not register"
@@ -503,19 +525,19 @@ let pins =
           (Diverges "attributes-registered")
 
       // --- named divergences, refereed from both sides ---
-      pinT "equality spelling: == vs =" "let b = 1 == 1\n" "let b = 1 == 1\n" (Diverges "double-equals")
+      pinT "equality spelling: == vs =" "let _b = 1 == 1\n" "let _b = 1 == 1\n" (Diverges "double-equals")
       pinT "binding-only =: F# equality rejected by weir" "let b = 1 = 1\n" "let b = 1 = 1\n" (Diverges "double-equals")
-      pin "tuple literal (row RETIRED 2026-07-21 — the reversal)" "let p = (1, 2)\n" Same
+      pin "tuple literal (row RETIRED 2026-07-21 — the reversal)" "let _p = (1, 2)\n" Same
       pin "starred union payload (single-payload rule retired with tuples)" "type T = A of int * string\n" Same
       pin "discarded value statement" "\"orphan\"\n" (Diverges "statement-rule")
       pin "block comment" "(* block *)\nlet x = 1\n" (Diverges "block-comments")
       pin "printfn" "printfn \"hi\"\n" (Diverges "no-printf-family")
       pin "mutable binding" "let mutable x = 1\n" (Diverges "no-mutation")
       pin "let rec" "let rec f = 1\n" (Diverges "no-let-rec")
-      pin "negative literal outside a range" "let n = -1\n" Same
+      pin "negative literal outside a range" "let _n = -1\n" Same
 
       // --- floats, finite-only [D:floats] ---
-      pin "float literal and arithmetic" "let f = 0.5 + 0.5\n" Same
+      pin "float literal and arithmetic" "let _f = 0.5 + 0.5\n" Same
       pin "mixed int/float arithmetic: both reject (no tower on either side)" "let f = 3 / 2.0\n" Same
       pinT
           "float equality: weir excludes Eq, F# compares floats"
@@ -529,12 +551,12 @@ let pins =
           (Diverges "seq-equality")
 
       // --- corpus-born pins (dotnet/fsharp @ 5928e91, ComponentTests mining) ---
-      pin "let parameter sugar (corpus-born feature, 2026-07-20)" "let f x = x + 1\n" Same
-      pin "HOF param application" "let apply f x = f x\n" Same // [D:higher-order-params]: weir now infers it, as F# does
+      pin "let parameter sugar (corpus-born feature, 2026-07-20)" "let _f x = x + 1\n" Same
+      pin "HOF param application" "let _apply f x = f x\n" Same // [D:higher-order-params]: weir now infers it, as F# does
       pin "operator on two unresolved params" "let add x y = x + y\n" (Diverges "no-operator-defaulting")
       pin
           "corpus: literal int pattern (row RETIRED 2026-07-21 — the fidelity gain)"
-          "let v =\n    match 1 with\n    | 0 -> 0\n    | _ -> 1\n"
+          "let _v =\n    match 1 with\n    | 0 -> 0\n    | _ -> 1\n"
           Same
       pin
           "corpus: function-valued interpolation hole"
@@ -548,23 +570,23 @@ let pins =
       // --- block sequencing (Session 2): the fidelity GAIN pins ---
       pinT
           "sequenced effect block under if"
-          "let go = 1 > 0\nlet w =\n    if go then\n        print \"a\"\n        print \"b\"\n"
-          "let go = 1 > 0\nlet w =\n    if go then\n        printf \"a\"\n        printf \"b\"\n"
+          "let go = 1 > 0\nlet _w =\n    if go then\n        print \"a\"\n        print \"b\"\n"
+          "let go = 1 > 0\nlet _w =\n    if go then\n        printf \"a\"\n        printf \"b\"\n"
           Same
-      pinT "explicit semicolon sequencing" "let u = (print \"x\" ; 1)\n" "let u = (printf \"x\" ; 1)\n" Same
+      pinT "explicit semicolon sequencing" "let _u = (print \"x\" ; 1)\n" "let _u = (printf \"x\" ; 1)\n" Same
 
       // --- multiline lambdas [D:multiline-lambda] — light-syntax
       // lambdas are core F#, so the cells sit Same ---
       pin
           "multiline lambda: dangling (fun -> opens a body block"
-          "let f =\n    [1] |> Seq.map (fun x ->\n        let y = x + 1\n        y * 2)\n"
+          "let _f =\n    [1] |> Seq.map (fun x ->\n        let y = x + 1\n        y * 2)\n"
           Same
-      pin "multiline lambda: closer alone at column 0" "let f =\n    [1] |> Seq.map (fun x ->\n        x + 1\n)\n" Same
+      pin "multiline lambda: closer alone at column 0" "let _f =\n    [1] |> Seq.map (fun x ->\n        x + 1\n)\n" Same
       pin
           "multiline lambda: closer alone at body indent"
-          "let f =\n    [1] |> Seq.map (fun x ->\n        x + 1\n    )\n"
+          "let _f =\n    [1] |> Seq.map (fun x ->\n        x + 1\n    )\n"
           Same
-      pin "multiline lambda: body at the opener's own indent" "let f =\n    [1] |> Seq.map (fun x ->\n    x + 1)\n" Same
+      pin "multiline lambda: body at the opener's own indent" "let _f =\n    [1] |> Seq.map (fun x ->\n    x + 1)\n" Same
       pin
           "multiline lambda: body left of the opener rejects (weir-stricter)"
           "let f =\n    [1] |> Seq.map (fun x ->\n  x + 1)\n"
@@ -575,7 +597,7 @@ let pins =
           Same
       pin
           "multiline lambda: a match body prunes at the closer, the next stage stays outer"
-          "let v =\n    [1; 2]\n    |> Seq.map (fun n ->\n        match n with\n        | 1 -> 10\n        | _ -> n\n    )\n    |> Seq.sum\n"
+          "let _v =\n    [1; 2]\n    |> Seq.map (fun n ->\n        match n with\n        | 1 -> 10\n        | _ -> n\n    )\n    |> Seq.sum\n"
           Same
       pin
           "or-patterns are not a weir feature (F# accepts; located reject)"
@@ -583,18 +605,18 @@ let pins =
           (Diverges "or-patterns")
       pin
           "nested multiline lambdas pop innermost-first"
-          "let v =\n    [[1]; [2]]\n    |> Seq.map (fun row ->\n        row\n        |> Seq.map (fun c ->\n            let u = c + 1\n            u)\n        |> Seq.sum\n    )\n    |> Seq.sum\n"
+          "let _v =\n    [[1]; [2]]\n    |> Seq.map (fun row ->\n        row\n        |> Seq.map (fun c ->\n            let u = c + 1\n            u)\n        |> Seq.sum\n    )\n    |> Seq.sum\n"
           Same
 
       // --- function: the implicit-match lambda [D:function-keyword] ---
       pin
           "function is F#'s own desugar (arms, wildcard)"
-          "let f = function | 0 -> \"z\" | _ -> \"n\"\nlet r = f 5\n"
+          "let f = function | 0 -> \"z\" | _ -> \"n\"\nlet _r = f 5\n"
           Same
-      pin "function: the first | is optional both sides" "let f = function 0 -> \"z\" | _ -> \"n\"\nlet r = f 0\n" Same
+      pin "function: the first | is optional both sides" "let f = function 0 -> \"z\" | _ -> \"n\"\nlet _r = f 0\n" Same
       pin
           "function: guards ride the arms both sides"
-          "let f = function | n when n > 0 -> 1 | _ -> 0\nlet r = f 2\n"
+          "let f = function | n when n > 0 -> 1 | _ -> 0\nlet _r = f 2\n"
           Same
       pin "function with no arms rejects both sides" "let f = function -> 1\nlet r = 2\n" Same ]
 

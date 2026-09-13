@@ -37,7 +37,5 @@ let issue =
 git switch -c (issue.Key)
 git commit --allow-empty -m $"{issue.Key} {issue.Title}"
 
-let app = issue.Title |> Str.split " " |> Seq.head
-
 let json = issue |> to json
 File.write "lock.tmp.fsx" json

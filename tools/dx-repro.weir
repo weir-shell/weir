@@ -133,7 +133,7 @@ within tmp d
     print $"  D1-qualify-flag-gone: {d1aWord}"
 
     let d1fmtPath = writeProbe d "D1-fmt-keeps-directive" d1Loose
-    let _ = fmtRun d1fmtPath
+    let _fmtr = fmtRun d1fmtPath
     let kept = File.read d1fmtPath
     let d1b = kept |> Seq.exists (fun l -> l == "#loose")
     let d1bWord = if d1b then "fixed (fmt leaves the directive)" else "REPRODUCES (fmt stripped #loose)"

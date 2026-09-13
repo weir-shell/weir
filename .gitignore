@@ -74,3 +74,4 @@ node_modules/
 
 # a dotnet run with HOME at the repo root writes NuGet markers here
 .local/
+.cache/

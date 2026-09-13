@@ -721,7 +721,9 @@ let positiveControls =
               | SpanNoDiag m -> failtest $"expected a site miss, got no-diagnostic: {m}"
           }
           test "invariant 3: a clean program with a claimed bad site is DETECTED, named" {
-              match spanSoundCore [ "let a = 1"; "print \"x\"" ] 1 12 with
+              // `a` is read, so the program is clean under the
+              // unused-binding law too [D:unused-bindings]
+              match spanSoundCore [ "let a = 1"; "print (show a)" ] 1 12 with
               | SpanNoDiag m -> Expect.stringContains m "no diagnostic" "the no-diagnostic detector names itself"
               | SpanOk -> failtest "a clean program cannot satisfy a bad-site claim"
               | SpanMiss m -> failtest $"expected no-diagnostic, got a miss: {m}"

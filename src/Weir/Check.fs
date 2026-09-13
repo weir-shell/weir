@@ -4915,6 +4915,148 @@ let childExprs (te: TypedExpr) : TypedExpr list =
             | IStr _ -> None)
     | TEYaml(tpl, _, _) -> yamlTplTypedExprs tpl
 
+// ---- unused bindings [D:unused-bindings] ----------------------------------
+// The usage core: a scoped walk of the typed tree. Free names propagate
+// upward minus each form's bound set; let-class binders (TELet/TELetPat)
+// are TRACKED — an unread one collects as a located finding — while
+// params, arm patterns, retry `until`, `within` and yaml `for` binders
+// SHADOW only (the exempt classes). `let x = x + 1` reads the OUTER x:
+// the RHS walks before the binder registers (no `let rec` exists).
+
+/// every named binder in a pattern, with its span
+let patNameSpans (p: Pattern) : (string * Span) list =
+    let rec go (p: Pattern) =
+        match p.PKind with
+        | PVar n -> [ n, p.PSpan ]
+        | _ -> patChildren p |> List.collect go
+
+    go p
+
+/// the escape [D:unused-bindings]: a '_'-prefixed name is
+/// deliberately-unused and never errors
+let unusedExempt (n: string) = n.StartsWith "_"
+
+type UnusedLocal =
+    { UName: string
+      USpan: Span
+      // a bare `_` as the WHOLE let binder — the anonymous swallow
+      UBareWildcard: bool }
+
+/// free names used in a typed statement tree, plus its unused
+/// block-local let binders (and bare-`_` block binders)
+let bindingUsage (te: TypedExpr) : Set<string> * UnusedLocal list =
+    let found = ResizeArray<UnusedLocal>()
+
+    let patNames p =
+        patNameSpans p |> List.map fst |> Set.ofList
+
+    let unionAll (sets: Set<string> list) =
+        sets |> List.fold Set.union Set.empty
+
+    let rec walk (te: TypedExpr) : Set<string> =
+        match te.Kind with
+        | TEVar n -> Set.singleton n
+        | TELet(n, ns, v, b) ->
+            let fv = walk v
+            let fb = walk b
+
+            if not (Set.contains n fb) && not (unusedExempt n) then
+                found.Add
+                    { UName = n
+                      USpan = ns
+                      UBareWildcard = false }
+
+            Set.union fv (Set.remove n fb)
+        | TELetPat(pat, v, b) ->
+            let fv = walk v
+            let fb = walk b
+
+            (match pat.PKind with
+             | PWildcard ->
+                 found.Add
+                     { UName = "_"
+                       USpan = pat.PSpan
+                       UBareWildcard = true }
+             | _ ->
+                 for n, sp in patNameSpans pat do
+                     if not (Set.contains n fb) && not (unusedExempt n) then
+                         found.Add
+                             { UName = n
+                               USpan = sp
+                               UBareWildcard = false })
+
+            Set.union fv (Set.difference fb (patNames pat))
+        | TELambda(p, _, b) -> Set.remove p (walk b)
+        | TELambdaPat(pat, b) -> Set.difference (walk b) (patNames pat)
+        | TEMatch(s, arms) ->
+            arms
+            |> List.fold
+                (fun acc (pat, g, b) ->
+                    let armFv =
+                        Set.union (g |> Option.map walk |> Option.defaultValue Set.empty) (walk b)
+
+                    Set.union acc (Set.difference armFv (patNames pat)))
+                (walk s)
+        | TERetry(_, o, w, b, u) ->
+            let head =
+                unionAll [ walk o; (w |> Option.map walk |> Option.defaultValue Set.empty); walk b ]
+
+            match u with
+            | Some(n, pred) -> Set.union head (Set.remove n (walk pred))
+            | None -> head
+        | TEWithin(_, binder, a, o, b) ->
+            let args =
+                unionAll
+                    [ a |> Option.map walk |> Option.defaultValue Set.empty
+                      o |> Option.map walk |> Option.defaultValue Set.empty ]
+
+            let fb =
+                match binder with
+                | Some n -> Set.remove n (walk b)
+                | None -> walk b
+
+            Set.union args fb
+        | TEYaml(tpl, _, _) -> walkTpl tpl
+        | _ -> childExprs te |> List.map walk |> unionAll
+
+    and walkTpl (tpl: TypedYamlTpl) : Set<string> =
+        match tpl with
+        | TYtScalar _
+        | TYtBlock _
+        | TYtDrop _ -> Set.empty
+        | TYtSplice e -> walk e
+        | TYtSeq(items, _) ->
+            items
+            |> List.map (function
+                | TYtItem t -> walkTpl t
+                | TYtDropItem(t, _) -> walkTpl t
+                | TYtForItems(binder, src, body) ->
+                    Set.union
+                        (walk src)
+                        (Set.difference
+                            (body
+                             |> List.map (fun i -> walkTpl (TYtSeq([ i ], Unchecked.defaultof<Ast.Span>)))
+                             |> unionAll)
+                            (patNames binder)))
+            |> unionAll
+        | TYtMap(entries, _) ->
+            entries
+            |> List.map (function
+                | TYtPair(TYtKeyLit _, v) -> walkTpl v
+                | TYtPair(TYtKeySplice k, v) -> Set.union (walk k) (walkTpl v)
+                | TYtForEntries(binder, src, body) ->
+                    Set.union
+                        (walk src)
+                        (Set.difference
+                            (body
+                             |> List.map (fun e -> walkTpl (TYtMap([ e ], Unchecked.defaultof<Ast.Span>)))
+                             |> unionAll)
+                            (patNames binder)))
+            |> unionAll
+
+    let free = walk te
+    free, List.ofSeq found
+
 let typecheckWith
     (env: TypeEnv)
     (expr: Expr)
