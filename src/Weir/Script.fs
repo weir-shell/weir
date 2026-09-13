@@ -2182,8 +2182,19 @@ let private baseEnvs (scriptArgs: string list) (scriptPath: string) =
             Modules = typeEnv.Modules |> Map.add "Self" selfMembers }
 
     let stdinStream =
+        // ONE enumeration [D:prompt]: stdin is a live stream — a second
+        // GetEnumerator cannot rewind the fd, and yielding empty there
+        // was the silent-wrong-data class; raise with the repair instead
+        let consumed = ref false
+
         Eval.VSeq(
             Seq.delay (fun () ->
+                if consumed.Value then
+                    failwith
+                        "Self.stdin is a live stream and was already consumed — bind ONE enumeration (let lines = Self.stdin |> Seq.force), or read a line per interaction with `prompt`"
+
+                consumed.Value <- true
+
                 seq {
                     let mutable line = Console.In.ReadLine()
 

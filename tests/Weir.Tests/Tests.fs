@@ -1474,6 +1474,9 @@ let boundaryTests =
                   Expect.stringContains (formatError terr) "a patch is partial — schema= validates whole documents" ""
               | Ok _ -> failtest "patch x schema= must refuse"
           }
+          test "prompt is string -> string, bare and effectful [D:prompt]" {
+              Expect.equal (formatTy (checkOk "prompt").Ty) "string -> string" "the interactive read's type"
+          }
           test "the marker law learns the patch modifiers [D:yaml-nodes]" {
               Expect.isTrue (Weir.Parser.isYamlMarkerPiece "let p = yaml patch") "patch arms"
               Expect.isTrue (Weir.Parser.isYamlMarkerPiece "let p = yaml patch by=name") "patch by= arms"
