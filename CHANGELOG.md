@@ -4,6 +4,13 @@
 
 ### Added
 
+- **Breaking: `Seq.groupBy` returns `(key, items)` pairs.** F#'s own
+  shape, replacing the `Group { key; items }` record — `countBy`, `zip`,
+  and `pairwise` already speak tuples, and string keys now feed
+  `Map.ofPairs` directly. Destructure with `fun (k, g) ->` (or
+  `fst`/`snd`); code that pattern-matched the record updates
+  mechanically. The `Group` type is retired.
+
 - **`pure` regions are ENFORCED — Stage 1 of the effects plan.** A bare
   `pure` head + indented block asserts the body reaches NO effect
   (filesystem, commands, network, environment, console, clock, any

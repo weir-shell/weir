@@ -19,10 +19,10 @@ let locOf items =
 
 counts
     |> Seq.groupBy (fst >> group)
-    |> Seq.sortByDescending (_.items >> locOf)
-    |> Seq.iter (fun g ->
-        print $"== {g.key} ({locOf g.items})"
-        g.items
+    |> Seq.sortByDescending (snd >> locOf)
+    |> Seq.iter (fun (k, items) ->
+        print $"== {k} ({locOf items})"
+        items
             |> Seq.sortByDescending snd
             |> Seq.iter (fun (f, n) -> print $"{n}\t{f}"))
 

@@ -1071,8 +1071,8 @@
         },
         {
           "name": "groupBy",
-          "signature": "Seq.groupBy (key: \u0027a -\u003E \u0027b) (xs: seq\u003C\u0027a\u003E) : seq\u003CGroup\u003C\u0027b, \u0027a\u003E\u003E",
-          "summary": "Group elements by a key into Group records.",
+          "signature": "Seq.groupBy (key: \u0027a -\u003E \u0027b) (xs: seq\u003C\u0027a\u003E) : seq\u003C\u0027b * seq\u003C\u0027a\u003E\u003E",
+          "summary": "Group elements by a key into (key, items) pairs \u2014 F#\u0027s own shape; countBy/zip/pairwise speak the same tuples.",
           "example": "[1; 2; 3] |\u003E Seq.groupBy (fun x -\u003E x) |\u003E Seq.force",
           "pointer": null
         },
@@ -1678,13 +1678,6 @@
       "name": "FileRow",
       "signature": null,
       "summary": "A directory entry: name, kind (Regular | Directory | Symlink \u2014 a fact, not an answer), target (Some for a symlink, None otherwise \u2014 the one fact no File.* query answers), bytes (0 B for a directory), modified (the last-write Instant \u2014 the file\u0027s own fact, stable under binding; the table renders it relatively, show keeps ISO), hidden, path. From \u0060ls\u0060 \u2014 files and subdirectories, sorted by name (ordinal: case-sensitive, uppercase first; never the locale). name is for matching and display; path is for handing to File.* - name derives from path, never the reverse. Narrow facts are queries, not columns: File.mode for permissions.",
-      "example": null,
-      "pointer": null
-    },
-    {
-      "name": "Group",
-      "signature": null,
-      "summary": "A key and its items, from \u0060Seq.groupBy\u0060.",
       "example": null,
       "pointer": null
     },
