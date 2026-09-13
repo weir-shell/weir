@@ -9412,7 +9412,7 @@ let agentFindingsTests =
               | Ok [ ll ] -> Expect.equal ll.Text (asmSib "if a then f x ; g") "the sibling after a continuation"
               | other -> failtest $"expected one logical line, got {other}"
           }
-          test "a `)`-headed line closes a multi-line application, never siblings [D:continuation-siblings]" {
+          test "a `)`-headed line closes a multi-line application, never siblings [D:paren-close-continuation]" {
               // the close paren at the opener's indent CONTINUES the
               // statement while a plain paren is open — the lambda
               // closer's rule extended to ordinary applications

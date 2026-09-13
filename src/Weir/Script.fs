@@ -1675,7 +1675,7 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                             // continuation at ANY body indent, never a
                                                             // sibling; the `in`/`;` joins wait for the
                                                             // `)` exactly as the lambda floor rules
-                                                            // [D:multiline-lambda][D:continuation-siblings]
+                                                            // [D:paren-close-continuation]
                                                             | _ when cls.ClosesParen && p.ParenDepth > 0 ->
                                                                 p.Lets, JSpace
                                                             | (k, _) :: rest when indent = k && k > lambdaFloor ->
