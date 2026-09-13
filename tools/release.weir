@@ -1,0 +1,90 @@
+/// The interactive release driver: preflight, then each mutation of the
+/// ritual behind its own confirm — cut+push the tag, wait for the
+/// publish, bump the grammar's TARGET, prepare the zed rev bump. The
+/// ordering that burned v0.0.25/26/30 lives in this script, not in
+/// memory. Run from the weir repo root, at a terminal:
+///
+///     weir tools/release.weir --tag v0.0.31
+///
+/// Every step shows what it is about to do and waits for y/N; anything
+/// else aborts with nothing half-done beyond the steps already confirmed.
+
+type Cli = {
+    /// the tag to cut, e.g. v0.0.31
+    tag: string
+    /// path to the tree-sitter-weir checkout (default ../tree-sitter-weir)
+    grammar: Option<string>
+}
+
+let cli = Args.load Cli
+let gdir = cli.grammar |> Option.defaultValue "../tree-sitter-weir"
+
+let confirm msg =
+    print $"{msg} [y/N]"
+    let r = sh -c "read -r a && printf %s \"$a\"" | complete
+    let a = r.stdout |> Seq.tryHead |> Option.defaultValue ""
+    a == "y" || a == "Y" || a == "yes"
+
+// ---- 1. preflight: refuse before anything mutates -------------------------
+print $"== preflight for {cli.tag} =="
+let pf = ^weir tools/release-preflight.weir --tag (cli.tag) | complete
+pf.stdout |> Seq.iter print
+
+if pf.exitCode <> 0 then
+    pf.stderr |> Seq.iter printerr
+    fail "preflight refused — do not tag"
+
+
+// ---- 2. the tag ------------------------------------------------------------
+if not (confirm $"cut AND push tag {cli.tag}?") then
+    fail "aborted — nothing was tagged"
+
+git tag (cli.tag)
+git push origin (cli.tag)
+print $"tagged and pushed {cli.tag} — the gated release flow is running"
+
+// ---- 3. wait for the publish (drafts do not count) -------------------------
+// the release workflow builds four binaries then a human clicks publish;
+// poll the stable-release gate until it names this tag
+print "waiting for the release to PUBLISH (draft + your publish click)..."
+
+poll timeout=45m interval=30s
+    ^weir ci/release-published.weir | succeeds
+
+print $"{cli.tag} is published"
+
+// ---- 4. the grammar TARGET bump (AFTER publish, never before) --------------
+if not (confirm $"bump {gdir}/TARGET_WEIR_RELEASE to {cli.tag}, commit and push?") then
+    fail "aborted — remember: the grammar bump is still owed"
+
+File.write $"{gdir}/TARGET_WEIR_RELEASE" [cli.tag]
+git -C (gdir) add TARGET_WEIR_RELEASE
+git -C (gdir) commit -m $"target {cli.tag}"
+git -C (gdir) push
+print "grammar target pushed"
+
+// ---- 5. the zed rev ritual (the grammar main just moved) -------------------
+let newRev = $(git -C (gdir) rev-parse HEAD) |> Seq.head
+
+let bumped =
+    File.read "editors/zed/extension.toml"
+    |> Seq.map (fun l -> if Str.startsWith "rev = " l then $"rev = \"{newRev}\"" else l)
+    |> Seq.force
+
+let highlightsSame =
+    diff $"{gdir}/queries/highlights.scm" editors/zed/languages/weir/highlights.scm | succeeds
+
+if not (confirm $"pin zed to {newRev} on a branch zed-rev-next (highlights same: {highlightsSame})?") then
+    fail "aborted — the zed pin is one commit stale until the ritual runs"
+
+git checkout -b zed-rev-next
+bumped |> File.write "editors/zed/extension.toml"
+
+if not highlightsSame then
+    File.read $"{gdir}/queries/highlights.scm" |> File.write "editors/zed/languages/weir/highlights.scm"
+    git add editors/zed/languages/weir/highlights.scm
+
+git add editors/zed/extension.toml
+git commit -m $"docs: the zed grammar pin follows tree-sitter-weir main ({cli.tag} target)"
+print ""
+print $"release {cli.tag} complete — one branch remains: push zed-rev-next and open its PR"

@@ -1,0 +1,69 @@
+/// Release preflight: every burned tag came from a precondition that was
+/// checkable BEFORE `git tag` — the wrong commit tagged (v0.0.25), a red
+/// gate shipped (v0.0.26), the zed-pin/grammar race (v0.0.30). Run this
+/// from the repo root immediately before tagging; it refuses with the
+/// specific teaching, or prints the post-tag ritual.
+///
+///     weir tools/release-preflight.weir --tag v0.0.31
+
+type Cli = {
+    /// the tag about to be cut, e.g. v0.0.31
+    tag: string
+}
+
+let cli = Args.load Cli
+
+// -- the working tree and the commit about to be tagged ---------------------
+let dirty = $(git status --porcelain) |> Seq.length
+let branch = $(git rev-parse --abbrev-ref HEAD) |> Seq.head
+
+git fetch origin main
+let localSha = $(git rev-parse HEAD) |> Seq.head
+let originSha = $(git rev-parse origin/main) |> Seq.head
+
+let tagTaken = $(git tag -l (cli.tag)) |> Seq.length
+
+// -- the changelog names this tag at the TOP --------------------------------
+let firstHeading =
+    File.read "CHANGELOG.md"
+    |> Seq.where (fun l -> Str.startsWith "## " l)
+    |> Seq.head
+
+// -- the gates that burned releases before ----------------------------------
+let changelogOk = ^weir ci/changelog-check.weir --tag (cli.tag) | succeeds
+let grammarOk = ^weir ci/grammar-currency.weir | succeeds
+let zedPinOk = ^weir ci/zed-rev-current.weir | succeeds
+
+// -- the grammar repo must NOT already target the new tag --------------------
+// (its TARGET bump belongs AFTER the release publishes; pushing it early
+// moves grammar main and re-stales the zed pin — the v0.0.30 race)
+let grammarTarget =
+    Http.fetch "https://raw.githubusercontent.com/weir-shell/tree-sitter-weir/main/TARGET_WEIR_RELEASE"
+    |> Seq.head
+    |> Str.trim
+
+let checks =
+    [ ("clean working tree", dirty == 0, $"{dirty} uncommitted change(s) — commit or stash first")
+      ("on main", branch == "main", $"on '{branch}' — releases tag main")
+      ("local == origin/main", localSha == originSha, $"local {localSha} vs origin {originSha} — push or pull first (the v0.0.25 burn)")
+      ("tag is free", tagTaken == 0, $"{cli.tag} already exists")
+      ("changelog top section is this tag", firstHeading == $"## {cli.tag}", $"top section is '{firstHeading}'")
+      ("changelog content", changelogOk, "ci/changelog-check.weir refused — see its output")
+      ("grammar-currency", grammarOk, "the published grammar lags the manifest — push tree-sitter-weir first (the v0.0.26 burn)")
+      ("zed pin == grammar main", zedPinOk, "the rev ritual is due — land the pin bump BEFORE tagging (the v0.0.30 burn)")
+      ("grammar targets the PREVIOUS release", grammarTarget <> cli.tag, $"tree-sitter-weir already targets {cli.tag} — its TARGET bump belongs after the release publishes") ]
+
+checks
+    |> Seq.iter (fun (name, ok, detail) -> print (if ok then $"  ok: {name}" else $"  FAIL: {name} — {detail}"))
+
+let bad = checks |> Seq.where (fun (_, ok, _) -> not ok) |> Seq.length
+
+if bad > 0 then
+    fail $"{bad} precondition(s) unmet — do not tag"
+
+print ""
+print $"preflight green — tag with: git tag {cli.tag} && git push --tags"
+print "after the release PUBLISHES:"
+print $"  1. tree-sitter-weir: TARGET_WEIR_RELEASE -> {cli.tag}, commit, plain push"
+print "  2. that push moves grammar main — bump editors/zed/extension.toml's rev"
+print "     (+ refresh highlights.scm if the grammar changed) in a routine commit"

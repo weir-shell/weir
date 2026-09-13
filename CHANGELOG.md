@@ -1,6 +1,11 @@
 # Changelog
 
-## v0.0.30
+## v0.0.31
+
+> v0.0.30 was burned: the tag was cut, but the release run failed on the
+> zed-pin/grammar-main race (the pin bump had not landed when the gate
+> ran) — nothing was published under it. Everything below ships as
+> v0.0.31.
 
 ### Added
 
