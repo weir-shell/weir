@@ -5354,11 +5354,18 @@ let analyzeLines
          | None -> ())
 
         // the unused-binding law [D:unused-bindings]: whole-file, so it
-        // judges after the fold; poisoned (any errored statement) = silent
-        (let signedNames =
-            sigState |> Option.map (fun sc -> sc.Signed) |> Option.defaultValue Set.empty
+        // judges after the fold; poisoned (any errored statement) = silent.
+        // A file under .weir/sigs/ is a SIG CONTRACT — its members
+        // (version, exhaustive, Cmd) are read by the sig loader, so the
+        // loader is the use and a direct `weir check` agrees with it
+        (let isSigContract =
+            let norm = path.Replace('\\', '/')
+            norm.Contains "/.weir/sigs/" || norm.StartsWith ".weir/sigs/"
 
-         for f in unusedTracker.Flush signedNames isModule do
+         let signedNames =
+             sigState |> Option.map (fun sc -> sc.Signed) |> Option.defaultValue Set.empty
+
+         for f in (if isSigContract then [] else unusedTracker.Flush signedNames isModule) do
              diags.Add
                  { File = path
                    Line = f.ULine
