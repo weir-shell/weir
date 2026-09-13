@@ -3300,7 +3300,7 @@ echo "e2e ok: yaml patch — kustomization RMW (upsert/append/tombstones, unknow
 (cd "$ydir" && $BIN check patch.weir) || fail "a patch-district script that runs must check (check == run)"
 cat > "$ydir/patch-splice.weir" <<'WEOF'
 let n = "api"
-let p = yaml patch by=name
+let _p = yaml patch by=name
     images:
         - name: $n
           newTag: v2
