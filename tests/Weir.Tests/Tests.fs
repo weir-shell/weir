@@ -8957,9 +8957,99 @@ let agentFindingsTests =
               expectValue "Path.combine \"ci\" \"e2e.sh\"" (VStr(platformPath "ci/e2e.sh"))
           }
           test "fail raises with the message" {
-              Expect.equal (checkOk "fail \"boom\"").Ty TUnit "unit-typed statement"
+              // diverging [D:fail-bottom]: an undemanded fail keeps a
+              // fresh var (the statement gate checks it against unit)
+              match (checkOk "fail \"boom\"").Ty with
+              | TVar _ -> ()
+              | other -> failtest $"expected a fresh var, got {other}"
+
               Expect.throwsT<exn> (fun () -> run "fail \"boom\"" |> ignore) "raises"
               expectValue "if 1 > 2 then fail \"never\"" VUnit
+          }
+          test "fail diverges: a fail arm sits opposite a value arm [D:fail-bottom]" {
+              // the ported-module receipt: no throwaway pin construction
+              expectValue "match Some 1 with | Some v -> v | None -> fail \"absent\"" (VInt 1L)
+              Expect.equal (checkOk "if 1 > 2 then fail \"no\" else 5").Ty TInt "the if-branch twin"
+              Expect.equal (checkOk "if 1 > 2 then exit 2 else 5").Ty TInt "exit is the sibling, same typing"
+          }
+          test "fail's var never leaks where nothing determines it [D:fail-bottom]" {
+              // a class demand on the undetermined var still refuses —
+              // the pending-constraint surface stays an error, not silence
+              let terr = checkErr "show (fail \"x\")"
+              Expect.stringContains (formatError terr) "nothing determines" "constraint demand refuses"
+              // the previously-taught idiom stays legal: the seq gate
+              // carves the diverging heads and checks them against unit
+              Expect.equal (checkOk "fail \"x\" ; 0").Ty TInt "the fail-then-value idiom"
+              // a NON-diverging unresolved value keeps the dead-value
+              // tripwire the [D:fail-unit] ruling defended
+              let terr2 = checkErr "Seq.head [] ; 0"
+              Expect.stringContains (formatError terr2) "must be unit" "the tripwire survives"
+
+              // a mid-script fail STATEMENT passes the discard gate (its
+              // fresh var is no value to discard); a non-diverging var
+              // statement stays refused
+              let diags, _, _, _ =
+                  Weir.Script.analyzeLines "t.weir" [ "print \"a\""; "fail \"stop\""; "print \"b\"" ]
+
+              Expect.isEmpty (diags |> List.map (fun d -> d.Message)) "the statement gate admits the diverging tail"
+          }
+          test "a block-let tuple binder inside a multiline lambda body assembles and checks (ported-module pin)" {
+              match
+                  Weir.Script.assemble [ 1, "xs |> Seq.iter (fun p ->"; 2, "    let a, b = p"; 3, "    print a)" ]
+              with
+              | Ok [ ll ] ->
+                  Expect.equal ll.Text "xs |> Seq.iter (fun p -> let a, b = p in print a)" "the in-join inside the body"
+              | other -> failtest $"expected one logical line, got {other}"
+
+              expectValue "[(1, 2); (3, 4)] |> Seq.map (fun p -> let a, b = p in a + b) |> Seq.sum" (VInt 10L)
+          }
+          test "multi-line application: EVERY deeper line continues the statement [D:continuation-siblings]" {
+              // the sibling floor is the statement's start column — a
+              // continuation line must not hoist it, or the second
+              // argument line sequences as a block statement
+              match
+                  Weir.Script.assemble [ 1, "let v ="; 2, "    combine3"; 3, "        1"; 4, "        2"; 5, "        3" ]
+              with
+              | Ok [ ll ] -> Expect.equal ll.Text "let v = combine3 1 2 3" "all argument lines join"
+              | other -> failtest $"expected one logical line, got {other}"
+
+              // a block statement AFTER a deeper continuation still
+              // sequences at the block level (was a dedent-floor error)
+              match Weir.Script.assemble [ 1, "if a then"; 2, "    f"; 3, "        x"; 4, "    g" ] with
+              | Ok [ ll ] -> Expect.equal ll.Text (asmSib "if a then f x ; g") "the sibling after a continuation"
+              | other -> failtest $"expected one logical line, got {other}"
+          }
+          test "multi-line application assembles inside a module body too [D:continuation-siblings]" {
+              let td =
+                  System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-mlapp-{System.Guid.NewGuid():N}")
+
+              System.IO.Directory.CreateDirectory td |> ignore
+
+              System.IO.File.WriteAllLines(
+                  System.IO.Path.Combine(td, "m.weir"),
+                  [| "module M"
+                     ""
+                     "let combine3 a b c = a * 2 + b * 3 + c * 5"
+                     ""
+                     "let total : seq<string> -> int"
+                     ""
+                     "let total xs ="
+                     "    combine3"
+                     "        (xs |> Seq.length)"
+                     "        10"
+                     "        100" |]
+              )
+
+              try
+                  let entry =
+                      [ "import \"./m.weir\" as M"; "print (show (M.total [\"a\"; \"b\"]))" ]
+
+                  let diags, _, _, _ =
+                      Weir.Script.analyzeLines (System.IO.Path.Combine(td, "main.weir")) entry
+
+                  Expect.isEmpty (diags |> List.map (fun d -> d.Message)) "the module body assembles the application"
+              finally
+                  System.IO.Directory.Delete(td, true)
           }
           test "printerr types like print" {
               Expect.equal (checkOk "printerr \"x\"").Ty TUnit "scalar"
@@ -10323,11 +10413,14 @@ let offsideTests =
               | Ok [ ll ] -> Expect.equal ll.Text (asmSib "if c then awk \"{print}\" f ; git pull") ""
               | other -> failtest $"unexpected: {other}"
           }
-          test "exit types like fail: int -> unit" {
+          test "exit types like fail: int -> 'a [D:fail-bottom]" {
               match Weir.Parser.parseLine cmdResolver "exit 3" with
               | Ok(SExpr e) ->
                   match Weir.Check.typecheck env e with
-                  | Ok te -> Expect.equal (Weir.Types.formatTy te.Ty) "unit" ""
+                  | Ok te ->
+                      match te.Ty with
+                      | Weir.Types.TVar _ -> ()
+                      | other -> failtest $"expected a fresh var, got {other}"
                   | Error terr -> failtest (formatError terr)
               | other -> failtest $"unexpected: {other}"
           }

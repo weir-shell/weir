@@ -875,6 +875,23 @@ let private seqUnitError (first: Expr) (ty: Ty) : string =
 
     $"a sequenced expression must be unit; this one is {formatTy ty} — bind it or print it{drop}"
 
+// a diverging tail [D:fail-bottom]: every path out of the expression
+// ends in fail/exit (reserved names, un-shadowable), so its value is a
+// fresh var no position should have to name. Shared by the unit-position
+// carves (ESeq head, else-less if) and the statement gate.
+let rec divergesTo (x: Expr) : bool =
+    match x.Kind with
+    | EApp({ Kind = EVar("fail" | "exit") }, _) -> true
+    | ESeq(_, b)
+    | ELet(_, _, _, b)
+    | ELetPat(_, _, b)
+    | EWithin(_, _, _, _, b)
+    | EAlways(b, _)
+    | ECapture b -> divergesTo b
+    | EIf(_, t, Some e) -> divergesTo t && divergesTo e
+    | EMatch(_, arms) -> arms |> List.forall (fun (_, _, b) -> divergesTo b)
+    | _ -> false
+
 let private printArgTy (ctx: Ctx) (env: TypeEnv) (span: Span) (ty: Ty) : Result<Ty, TypeError> =
     match resolve ctx ty with
     | TVar _ as v -> bind ctx env span TStr v |> Result.map (fun () -> TStr)
@@ -2333,7 +2350,13 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
         }
     | ESeq(first, rest) ->
         result {
-            let! tfirst = infer ctx env first
+            let! tfirst =
+                // a diverging head's 'a meets the unit demand
+                // [D:fail-bottom] — the taught `fail "x" ; 0` stays legal
+                if divergesTo first then
+                    check ctx env first TUnit
+                else
+                    infer ctx env first
 
             match resolve ctx tfirst.Ty with
             | TUnit ->
@@ -3928,7 +3951,15 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                 // [D:interior-arming] — `if force then git clean -fd`
                 // is the effect form; the teaching text below is
                 // untouched for everything else
-                let! tthn = infer ctx env (armTail thn)
+                let armed = armTail thn
+
+                // a diverging tail meets the unit demand [D:fail-bottom]
+                // — `if bad then fail "usage"` stays the guard idiom
+                let! tthn =
+                    if divergesTo armed then
+                        check ctx env armed TUnit
+                    else
+                        infer ctx env armed
 
                 match resolve ctx tthn.Ty with
                 | TUnit ->
@@ -4251,7 +4282,12 @@ and private check (ctx: Ctx) (env: TypeEnv) (expr: Expr) (expected: Ty) : Result
     // final command in a unit-demanded block arm
     | ESeq(first, rest), _ ->
         result {
-            let! tfirst = infer ctx env first
+            let! tfirst =
+                // the infer twin's diverging-head carve [D:fail-bottom]
+                if divergesTo first then
+                    check ctx env first TUnit
+                else
+                    infer ctx env first
 
             match resolve ctx tfirst.Ty with
             | TUnit ->

@@ -167,6 +167,7 @@ computation expressions, no `let rec`, no implicit widening.
 | `while` / `let rec` | neither exists — `let rec` refuses at parse (`'rec' is a keyword`); `retry`/`poll` for condition loops (bounded); pipelines/`Seq.fold` to transform/accumulate; `for … do` ≡ `Seq.iter` for effects |
 | `open Seq` | no `open` — access is always qualified; `import "./lib/x.weir" as X` shares code |
 | `.fsi` / `.mli` signature files | the sig lives INLINE: `let f : int -> int` (no `=`) above the impl — and it IS the export; unsigned members are module-private, implementations stay annotation-free |
+| `\| MyMod.Case v ->` qualified cases in patterns | patterns name a case BARE — `\| X.Case v ->` is a parse error; the scrutinee's type resolves `\| Case v ->`, imported unions included |
 | `$@"…"` / `$$"""…"""` | `$"""…{hole}…"""` only — one raw interpolated spelling; no multi-`$` brace scheme (a literal brace belongs to `$"…"`'s `{{`); all string kinds are single-line |
 | `[\| 1; 2 \|]` arrays, `list` | one sequence type, `seq<'a>` — `[1; 2]` literals are eager seqs |
 | `{\| ip = "x" \|}` anonymous records | the same spellings, types and literals — but a literal's fields need concrete types (`fun x -> {\| a = x \|}` refuses; F# admits the generic form), no empty `{\|\|}` (F# admits it), no punning, no `{\| r with … \|}` |

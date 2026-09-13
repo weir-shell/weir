@@ -187,7 +187,10 @@ type T = { [<Shrot "c">] A: int } // unknown attribute: did you mean 'Short'?
   last-wins [D:ambiguous-ctor]; rename one. Arity does not disambiguate
   (applying it does not pick an overload), and PATTERNS are unaffected: a
   case in a pattern resolves against the scrutinee's type. Imported unions
-  never collide — their cases are not in scope bare.
+  never collide — their cases are not in scope bare. A pattern names a
+  case BARE only: a qualified case (`| X.Case v ->`) is a parse error in
+  pattern position — the scrutinee's type resolves the bare name,
+  imported unions included.
 - A FUNCTION TYPE is writable [D:function-types] in any type position — a
   union payload (`Custom of (string -> bool)`), a record field
   (`{ matches: string -> bool }`), a generic arg. `->` is right-associative
@@ -677,6 +680,14 @@ print (Option.flatten (Some None) |> Option.defaultValue 0)
   is `seq<int>`; `Float.sum`/`Size.sum`/`Duration.sum` (and their
   `average`s) own the other types — `Seq.average` alone crosses types
   (the mean of ints is a float). `Seq.filter` teaches `where`.
+  `Seq.groupBy` yields `Group` RECORDS `{ key; items }`, never pairs —
+  destructure with the record pattern, not `(k, g)`:
+
+```weir
+["aa"; "ab"; "b"]
+    |> Seq.groupBy (Str.sub 0 1)
+    |> Seq.iter (fun { key = k; items = g } -> print $"{k}:{g |> Seq.length}")
+```
   An OPERATOR can be a value, UNAPPLIED only [D:operator-values]:
   `Seq.reduce (+)`, `Seq.fold (+) 0` — exactly `fun a b -> a + b`, so
   context resolves the overload (`(+)` sums floats/strings/Durations/
@@ -1757,7 +1768,14 @@ git status --porcelain |> Seq.choose (function | Regex @"^.. (.*)$" path -> Some
 
 - `fail "reason"` raises: the script stops with a located error and
   exit 1. `if bad then fail $"broken: {n}"` is the checking-script
-  idiom.
+  idiom. `fail` DIVERGES (`string -> 'a`), so a failing arm sits
+  opposite a value arm and the whole takes the value's type; `exit n`
+  types the same way.
+
+```weir
+let port = match Some 8080 with | Some p -> p | None -> fail "absent"
+print (show port)
+```
 - `printerr` is `print` to stderr (same argument rule) — diagnostics
   there, data on stdout, so `weir script | next` stays clean.
 - `Log.trace/debug/info/warn "msg"` — levelled diagnostics, ALWAYS to
