@@ -3339,23 +3339,6 @@ let private commandSegment
                 >>. pchar sibSep
             )
         )
-        // …and its patch face [D:yaml-nodes]: a ` patch [by=<key>]
-        // [schema=<name>]` suffix GLUED to the sentinel is the same
-        // wrap (`yaml patch by=name`) — without this refusal check's
-        // assume-resolver reads `yaml` as a command head and the
-        // district content then fails as statements, while run (no
-        // `yaml` on PATH) reaches the district arm: check must equal run
-        .>> notFollowedBy (
-            attempt (
-                pstring " patch"
-                >>. opt (pstring " by=" >>. many1Satisfy (fun c -> c <> ' ' && c <> sibSep))
-                >>. opt (
-                    pstring " schema="
-                    >>. many1Satisfy (fun c -> System.Char.IsLower c || System.Char.IsDigit c || c = '-')
-                )
-                >>. pchar sibSep
-            )
-        )
         .>> ws
         >>= fun ((forced, w), span) ->
             if w[0] = '[' then
