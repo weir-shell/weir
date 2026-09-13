@@ -1263,7 +1263,8 @@ type Bad = C of int
   the form follows the value both directions, and a multiline string
   renders as a block scalar automatically. A `yaml` BLOCK is a
   checked template: `let d = yaml` + an indented
-  YAML block; `$name`/`$(expr)` splice VALUES (never text — no
+  YAML block (canonical: the marker on the binding line; fmt
+  rewrites the next-line spelling); `$name`/`$(expr)` splice VALUES (never text — no
   injection is possible), a `None` splice omits its entry, and
   `for (k, v) in pairs` under a mapping yields dynamic keys (under a
   sequence, items). `yaml schema=<name>` on the marker line validates
@@ -1293,13 +1294,12 @@ type Bad = C of int
   `File.read f |> Yaml.parse |> Yaml.merge p |> to yaml |> File.write f`.
 
 ```weir
-let doc =
-    <<<
-        replicas: 1
-        labels:
-            app: web
-            tier: x
-    |> Yaml.parse
+let doc = <<<
+    replicas: 1
+    labels:
+        app: web
+        tier: x
+|> Yaml.parse
 let p = yaml patch
     replicas: 3
     labels:
@@ -1343,7 +1343,10 @@ refs |> Seq.iter (fun r -> print r.Include)
   through untouched). The markers are GLYPHS, not words — no
   identifier is reserved and `$<<<` can never read as a splice; any
   line ENDING in the glyph arms a block (no indented block below is
-  an error), and nothing else may legally end in `<<<`. YAML
+  an error), and nothing else may legally end in `<<<`. Canonical:
+  the marker on the binding line (`let x = <<<`), never alone on a
+  continuation line — both spellings parse, `weir fmt` rewrites the
+  next-line one. YAML
   `key: |` scalars stay fully literal — a `$<<<` block is the
   interpolated spelling. The block is a `seq<string>` VALUE — pipe it
   or bind it like any other; a `|>` on the line that closes the block
@@ -1352,11 +1355,10 @@ refs |> Seq.iter (fun r -> print r.Include)
 
 ```weir
 ["a"; "b"] |> Seq.iter print
-let n =
-    <<<
-        one
-        two
-    |> Seq.length
+let n = <<<
+    one
+    two
+|> Seq.length
 print $"{n}"
 ```
 

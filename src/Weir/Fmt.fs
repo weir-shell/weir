@@ -52,19 +52,142 @@ let private canonicalizeDocs (out: string list) : string list =
 
     List.ofArray arr
 
+// district markers ride the binding line [D:district-canonical]: a
+// marker ALONE on a continuation line (`let x =` / `    <<<`) merges
+// up onto the line it continues — the assembler joins the two with a
+// single space, so the merged line assembles to the SAME logical text
+// and the rewrite is lossless by construction (the caller verifies and
+// reverts wholesale on any mismatch). Content lines are bytes and stay
+// put — their indentation is RELATIVE to the first content line, so
+// the main pass re-anchors them under the merged marker's depth. A
+// close line between the binding indent and the old marker indent
+// (`    |> f` under a next-line marker) outdents with the marker, or
+// it would read as content; deeper statement-tail lines ride the same
+// uniform shift.
+let private canonicalizeDistrictMarkers (body: string list) : string list =
+    let arr = List.toArray body
+    let indentOf (s: string) = s |> Seq.takeWhile ((=) ' ') |> Seq.length
+    let isBlank (s: string) = s.Trim() = ""
+
+    // the WHOLE piece is the marker — `<<<`, `$<<<`, `yaml` plus its
+    // marker-line modifiers (`patch`, `by=`, `schema=`), nothing else
+    let markerOnly (piece: string) =
+        match (Script.classifyPiece piece).Marker with
+        | Script.MarkerKind.NoMarker -> false
+        | Script.MarkerKind.Heredoc -> piece = "<<<" || piece = "$<<<"
+        | _ -> Parser.yamlMarkerLen piece = piece.Length
+
+    let out = ResizeArray<string>()
+    // the arming marker line's ORIGINAL indent while its content pends
+    let mutable armed: int option = None
+    // after a merge: the merged line's indent, waiting for the close line
+    let mutable pendingShift: int option = None
+    // (delta, floor): statement-tail lines deeper than floor outdent by delta
+    let mutable tailShift: (int * int) option = None
+
+    let shifted (raw: string) (ind: int) =
+        match tailShift with
+        | Some(delta, floor) when ind > floor -> String.replicate (max floor (ind - delta)) " " + raw.TrimStart()
+        | _ -> raw
+
+    for i in 0 .. arr.Length - 1 do
+        let raw = arr[i]
+        let code = Script.stripComment raw
+
+        if isBlank raw then
+            out.Add raw
+        elif code.Trim() = "" then
+            // comment-only: rides a live tail shift, otherwise verbatim
+            // (content bytes and transparent comments alike)
+            out.Add(shifted raw (indentOf raw))
+        else
+            let ind = indentOf code
+
+            match armed with
+            | Some m when ind > m -> out.Add(shifted raw ind) // content is bytes
+            | _ ->
+                // leaving content: a close line above the merged indent must
+                // outdent with the marker, and the statement tail rides along
+                (match armed, pendingShift with
+                 | Some _, Some newBase when ind > newBase -> tailShift <- Some(ind - newBase, newBase)
+                 | _ -> ())
+
+                if armed.IsSome then
+                    armed <- None
+                    pendingShift <- None
+
+                (match tailShift with
+                 | Some(_, floor) when ind <= floor -> tailShift <- None
+                 | _ -> ())
+
+                let raw = shifted raw ind
+                let code = Script.stripComment raw
+                let ind = indentOf code
+                let piece = code.TrimStart()
+
+                let mergeTarget =
+                    if markerOnly piece && ind > 0 && i > 0 && out.Count > 0 then
+                        // the physically previous line, and it must be code
+                        // (adjacency: blanks and comments never sit between),
+                        // shallower, and comment-free (a trailing comment has
+                        // no seat once the marker takes the line end)
+                        let prevRaw = arr[i - 1]
+                        let prev = out[out.Count - 1]
+
+                        if
+                            not (isBlank prevRaw)
+                            && (Script.stripComment prevRaw).Trim() <> ""
+                            && indentOf (Script.stripComment prev) < ind
+                            && (Script.stripComment prev).TrimEnd() = prev.TrimEnd()
+                        then
+                            Some prev
+                        else
+                            None
+                    else
+                        None
+
+                match mergeTarget with
+                | Some prev ->
+                    out[out.Count - 1] <- prev.TrimEnd() + " " + raw.TrimStart().TrimEnd()
+                    armed <- Some ind // the OLD marker indent still bounds the content
+                    pendingShift <- Some(indentOf (Script.stripComment prev))
+                | None ->
+                    out.Add raw
+
+                    if Script.isMarkerPiece piece then
+                        armed <- Some ind
+
+    List.ofSeq out
+
 let private formatLinesCore (body: string list) : Result<string list, string> =
     // trailing whitespace is never significant (strings are single-line and
     // close with a quote), so both equivalence passes compare TrimEnd'd code
     let commentOnly (raw: string) =
         Script.classifyLine raw = Script.LineKind.CommentOnly
 
-    let numbered =
-        body
+    let logicalOf (ls: string list) =
+        ls
         |> List.mapi (fun i l -> i + 1, l)
         |> List.filter (fun (_, raw) -> not (commentOnly raw))
         |> List.map (fun (n, raw) -> n, (Script.stripComment raw).TrimEnd())
+        |> Script.assemble
 
-    match Script.assemble numbered with
+    let texts (lls: Script.LogicalLine list) = lls |> List.map (fun ll -> ll.Text)
+
+    let body =
+        // adopt the canonical marker layout ONLY under proof: the merged
+        // lines must assemble to the byte-identical logical text
+        // [D:district-canonical] — anything else keeps the source layout
+        let candidate = canonicalizeDistrictMarkers body
+
+        if candidate = body then
+            body
+        else
+            match logicalOf body, logicalOf candidate with
+            | Ok a, Ok b when texts a = texts b -> candidate
+            | _ -> body
+
+    match logicalOf body with
     | Error e -> Error $"cannot format: {e} (fix errors first)"
     | Ok originalLogical ->
 
@@ -279,17 +402,9 @@ let private formatLinesCore (body: string list) : Result<string list, string> =
                         braces <- pushed @ (braces |> List.skip (List.length braces - survived))
                         formatted)
 
-        let renumbered =
-            formatted
-            |> List.mapi (fun i l -> i + 1, l)
-            |> List.filter (fun (_, raw) -> not (commentOnly raw))
-            |> List.map (fun (n, raw) -> n, (Script.stripComment raw).TrimEnd())
-
-        match Script.assemble renumbered with
+        match logicalOf formatted with
         | Error e -> Error $"fmt safety check failed (file left unchanged): {e}"
         | Ok formattedLogical ->
-            let texts (lls: Script.LogicalLine list) = lls |> List.map (fun ll -> ll.Text)
-
             if texts originalLogical <> texts formattedLogical then
                 Error "fmt safety check failed: reformatting would change the parse; file left unchanged"
             else
@@ -319,13 +434,7 @@ let private formatLinesCore (body: string list) : Result<string list, string> =
                         + code.Substring codeTrim.Length
                         + raw.Substring code.Length)
 
-                let renumbered2 =
-                    respaced
-                    |> List.mapi (fun i l -> i + 1, l)
-                    |> List.filter (fun (_, raw) -> not (commentOnly raw))
-                    |> List.map (fun (n, raw) -> n, (Script.stripComment raw).TrimEnd())
-
-                match Script.assemble renumbered2 with
+                match logicalOf respaced with
                 | Error _ -> Ok formatted // respace broke assembly: revert wholesale
                 | Ok respacedLogical when List.length respacedLogical <> List.length formattedLogical -> Ok formatted
                 | Ok respacedLogical ->
