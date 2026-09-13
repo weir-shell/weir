@@ -5598,6 +5598,18 @@ let purityBadgeTests =
 
               Expect.isFalse ((hoverOf lines 1 5).Contains "(pure)") "File.read is fs — no badge"
               Expect.isFalse ((hoverOf lines 2 5).Contains "(pure)") "data is trivially pure — the badge is for functions"
+          }
+          test "a constructor-building function keeps the badge; a Self.stdin toucher loses it [D:pure-stdin-ctors]" {
+              let lines =
+                  [ "type Shape ="
+                    "    | Dot"
+                    "    | Box of int"
+                    "let mk n = Box n"
+                    "let drain () = Self.stdin |> Seq.length"
+                    "print $\"{mk 1} {drain ()}\"" ]
+
+              Expect.stringContains (hoverOf lines 4 5) "(pure)" "a data constructor is pure by construction"
+              Expect.isFalse ((hoverOf lines 5 5).Contains "(pure)") "Self.stdin drains the input stream — no badge"
           } ]
 
 let pureRegionTests =
@@ -5679,6 +5691,59 @@ let pureRegionTests =
           test "an unknown callable refuses — conservatism is the soundness law" {
               let e = firstErr [ "let unknown g ="; "    pure"; "        g 1" ]
               Expect.stringContains e.Message "unknown callable" "a function-typed param could do anything"
+          }
+          test "Self.stdin is ambient input — a pure region refuses it by name [D:pure-stdin-ctors]" {
+              let e = firstErr [ "let pure count () = Self.stdin |> Seq.length"; "print $\"{count ()}\"" ]
+
+              Expect.stringContains
+                  e.Message
+                  "'Self.stdin' reads the process's input stream"
+                  "the injected value classifies like the effect it is"
+          }
+          test "the per-run Self constants stay pure-admissible [D:pure-stdin-ctors]" {
+              Expect.isEmpty
+                  (errsOf
+                      [ "let pure nargs () = Self.args |> Seq.length"
+                        "let pure me () = Self.pid"
+                        "print $\"{nargs ()} {me ()}\"" ])
+                  "args/pid are per-run constants, not effects"
+          }
+          test "prompt in a pure region still refuses — the ambient-input guard holds" {
+              let e = firstErr [ "let x ="; "    pure"; "        prompt \"q\""; "print x" ]
+              Expect.stringContains e.Message "'prompt'" "prompt reads and writes — never pure"
+          }
+          test "union constructors are pure by construction — applied and partially applied [D:pure-stdin-ctors]" {
+              Expect.isEmpty
+                  (errsOf
+                      [ "type Shape ="
+                        "    | Dot"
+                        "    | Box of int"
+                        "let pure mk n = Box n"
+                        "let pure lift xs = xs |> Seq.map Box"
+                        "let s ="
+                        "    pure"
+                        "        let b = Box 4"
+                        "        match b with"
+                        "        | Box n -> n"
+                        "        | Dot -> 0"
+                        "print $\"{mk 3} {s}\"" ])
+                  "a data constructor is not an unknown callable"
+          }
+          test "record and anonymous-shape literals build in a pure region" {
+              Expect.isEmpty
+                  (errsOf
+                      [ "type Endpoint = { Host: string; Port: int }"
+                        "let e ="
+                        "    pure"
+                        "        { Host = \"h\"; Port = 1 }"
+                        "let a ="
+                        "    pure"
+                        "        {| key = \"k\"; n = 3 |}"
+                        "let e2 ="
+                        "    pure"
+                        "        { e with Port = 2 }"
+                        "print $\"{e.Port} {e2.Port}\"" ])
+                  "literals are construction, not effects"
           }
           test "keyword reservation: pure cannot be a binder; a blockless pure teaches" {
               let e = firstErr [ "let pure = 1" ]

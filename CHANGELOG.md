@@ -46,6 +46,19 @@
   position now refuses with "a signature names types bare — an
   imported type resolves by its plain name".
 
+- **`pure` no longer admits `Self.stdin`.** Reading it drains the
+  process's live input stream — an effect the classifier missed because
+  the value is injected per run rather than called through a builtin.
+  A pure region now refuses it with a located teaching ("'Self.stdin'
+  reads the process's input stream"), and a function touching it loses
+  the `(pure)` hover badge. The per-run constants
+  (`Self.args`/`pid`/`scriptPath`/`entryPath`) stay pure-admissible.
+- **`pure` accepts union constructors.** A data constructor is pure by
+  construction, but a payload constructor's function type fell into the
+  unknown-callable bucket and refused as an unknown callable. Applied
+  and partially applied constructors now pass in pure regions, and a
+  constructor-building function keeps its `(pure)` badge.
+
 ### Changed
 
 - **The ctor-pattern refusal teaches its repairs.** A constructor
