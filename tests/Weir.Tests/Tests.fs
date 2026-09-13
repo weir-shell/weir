@@ -1501,19 +1501,19 @@ let boundaryTests =
               // a $name splice in scalar value position
               clean
                   [ "let n = \"api\""
-                    "let p = yaml patch by=name"
+                    "let _p = yaml patch by=name"
                     "    images:"
                     "        - name: $n"
                     "print \"ok\"" ]
               // a multi-line mapping as a seq item
               clean
-                  [ "let p = yaml patch by=name"
+                  [ "let _p = yaml patch by=name"
                     "    images:"
                     "        - name: api"
                     "          newTag: v2"
                     "print \"ok\"" ]
               // bare `patch`, single scalar entry
-              clean [ "let p = yaml patch"; "    replicas: 3"; "print \"ok\"" ]
+              clean [ "let _p = yaml patch"; "    replicas: 3"; "print \"ok\"" ]
 
               // the patch x schema= refusal still fires — the guard routes
               // to the district arm, never past its own checks
@@ -5726,7 +5726,7 @@ let pureRegionTests =
                         "        match b with"
                         "        | Box n -> n"
                         "        | Dot -> 0"
-                        "print $\"{mk 3} {s}\"" ])
+                        "print $\"{mk 3} {s} {lift [1] |> Seq.length}\"" ])
                   "a data constructor is not an unknown callable"
           }
           test "record and anonymous-shape literals build in a pure region" {
@@ -5742,7 +5742,7 @@ let pureRegionTests =
                         "let e2 ="
                         "    pure"
                         "        { e with Port = 2 }"
-                        "print $\"{e.Port} {e2.Port}\"" ])
+                        "print $\"{e.Port} {e2.Port} {a.n}\"" ])
                   "literals are construction, not effects"
           }
           test "keyword reservation: pure cannot be a binder; a blockless pure teaches" {
@@ -16964,7 +16964,7 @@ let moduleSignatureTests =
           }
           test "the privacy suggestion round-trips [D:module-signatures]: the suggested signature parses, validates, and exports" {
               withDir
-                  [ "lib.weir", [ "module L"; ""; "let mkp name = yaml patch"; "    labels:"; "        app: $name" ]
+                  [ "lib.weir", [ "module L"; ""; "let mkp name = yaml patch"; "    labels:"; "        app: $name"; ""; "let mk2 : string -> YamlPatch"; "let mk2 n = mkp n" ]
                     "use.weir",
                     [ "import \"./lib.weir\" as L"
                       "[\"kind: K\"] |> Yaml.parse |> Yaml.merge (L.mkp \"web\") |> to yaml |> Seq.iter print" ] ]
