@@ -6644,6 +6644,149 @@ let semanticTokenTests =
                   | Ok out2 -> Expect.equal out2 out "fmt is idempotent on nested districts"
                   | Error e -> failtestf "second fmt failed: %s" e
           }
+          test "fmt: a next-line district marker merges onto the binding line [D:district-canonical]" {
+              // canonical layout puts the marker ON the binding line; the
+              // next-line spelling stays parseable at the assembler and fmt
+              // REWRITES it — both spellings converge on ONE canonical text
+              let next =
+                  [ "let x ="
+                    "    <<<"
+                    "        alpha"
+                    ""
+                    "        beta"
+                    "            deep"
+                    "x |> Seq.iter print" ]
+
+              let canonical =
+                  [ "let x = <<<"
+                    "    alpha"
+                    ""
+                    "    beta"
+                    "        deep"
+                    "x |> Seq.iter print" ]
+
+              match Weir.Fmt.formatLines next, Weir.Fmt.formatLines canonical with
+              | Ok a, Ok b ->
+                  Expect.equal a canonical "the next-line spelling rewrites to the canonical text"
+                  Expect.equal b canonical "the canonical spelling is a fixpoint"
+
+                  match Weir.Fmt.formatLines a with
+                  | Ok a2 -> Expect.equal a2 a "the rewrite is idempotent"
+                  | Error e -> failtestf "second fmt failed: %s" e
+              | Error e, _
+              | _, Error e -> failtestf "fmt failed: %s" e
+          }
+          test "fmt: every marker kind merges — $<<< holes and yaml marker modifiers ride [D:district-canonical]" {
+              let cases =
+                  [ [ "let t ="; "    $<<<"; "        literal $HOME rides"; "t |> Seq.iter print" ],
+                    [ "let t = $<<<"; "    literal $HOME rides"; "t |> Seq.iter print" ]
+
+                    [ "let d ="; "    yaml"; "        a: 1"; "d |> to yaml |> Seq.iter print" ],
+                    [ "let d = yaml"; "    a: 1"; "d |> to yaml |> Seq.iter print" ]
+
+                    [ "let p ="
+                      "    yaml patch by=name"
+                      "        images:"
+                      "            - name: app"
+                      "print \"ok\"" ],
+                    [ "let p = yaml patch by=name"; "    images:"; "        - name: app"; "print \"ok\"" ] ]
+
+              for next, canonical in cases do
+                  match Weir.Fmt.formatLines next with
+                  | Ok out -> Expect.equal out canonical "converges to the marker-on-binding-line layout"
+                  | Error e -> failtestf "fmt failed: %s" e
+          }
+          test "fmt: the district-pipe close outdents with the marker; the canonical close is untouched [D:district-canonical]" {
+              let next =
+                  [ "let n ="
+                    "    <<<"
+                    "        a"
+                    "        b"
+                    "    |> Seq.length"
+                    "print (show n)" ]
+
+              let canonical =
+                  [ "let n = <<<"; "    a"; "    b"; "|> Seq.length"; "print (show n)" ]
+
+              match Weir.Fmt.formatLines next with
+              | Ok out ->
+                  Expect.equal out canonical "the close line rides the marker's outdent — never swallowed as content"
+
+                  match Weir.Fmt.formatLines canonical with
+                  | Ok out2 -> Expect.equal out2 canonical "the canonical district-pipe close survives untouched"
+                  | Error e -> failtestf "canonical fmt failed: %s" e
+              | Error e -> failtestf "fmt failed: %s" e
+          }
+          test "fmt: district canonicalization preserves the VALUE byte-for-byte [D:district-canonical]" {
+              // eval the same program before and after fmt; the heredoc's
+              // joined text must be identical — blank interior lines, deeper
+              // indents and $<<< holes included
+              let evalJoined (lines: string list) : Value =
+                  match Weir.Script.assemble (lines |> List.mapi (fun i l -> i + 1, l)) with
+                  | Error e -> failtest $"assemble: {e}"
+                  | Ok lls ->
+                      lls
+                      |> List.fold
+                          (fun (te, ve) ll ->
+                              match Weir.Parser.parseLine cmdResolver ll.Text with
+                              | Error m -> failtest $"parse: {m}"
+                              | Ok(SLet(n, e)) ->
+                                  match Weir.Check.typecheck te e with
+                                  | Error terr -> failtest $"check: {formatError terr}"
+                                  | Ok typed ->
+                                      let v = eval ve typed
+
+                                      { te with
+                                          Values = Map.add n (generalize typed.Ty) te.Values },
+                                      Map.add n v ve
+                              | Ok other -> failtest $"unexpected statement {other}")
+                          (env, valueEnv)
+                      |> snd
+                      |> Map.find "j"
+
+              let src =
+                  [ "let region = \"eu-1\""
+                    "let s ="
+                    "    $<<<"
+                    "        endpoint {region}"
+                    ""
+                    "            deeper literal $HOME"
+                    "let j = s |> Str.join \"\\n\"" ]
+
+              match Weir.Fmt.formatLines src with
+              | Error e -> failtestf "fmt failed: %s" e
+              | Ok out ->
+                  Expect.isTrue (out |> List.exists (fun l -> l.Contains "let s = $<<<")) "the marker merged"
+                  Expect.equal (evalJoined out) (evalJoined src) "the district value is byte-identical across fmt"
+          }
+          test "fmt: a commented binding line keeps the next-line marker; nested positions merge [D:district-canonical]" {
+              // no seat remains for the comment once the marker takes the
+              // line end, so the next-line spelling stays as written there
+              let commented =
+                  [ "let x = // why"; "    <<<"; "        a"; "x |> Seq.iter print" ]
+
+              match Weir.Fmt.formatLines commented with
+              | Ok out -> Expect.equal out commented "not merged; left formatted as written"
+              | Error e -> failtestf "fmt failed: %s" e
+
+              let nested =
+                  [ "let f v ="
+                    "    match v with"
+                    "    | 1 ->"
+                    "        let y ="
+                    "            <<<"
+                    "                hi"
+                    "        y"
+                    "    | _ -> [\"other\"]"
+                    "f 1 |> Seq.iter print" ]
+
+              match Weir.Fmt.formatLines nested with
+              | Ok out ->
+                  Expect.isTrue
+                      (out |> List.exists (fun l -> l.TrimStart().StartsWith "let y = <<<"))
+                      "a match-arm binding merges too — the rewrite is position-general"
+              | Error e -> failtestf "fmt failed: %s" e
+          }
           test "builtin docs: every module member has an entry — hover coverage is CHECKED [D:docs-coverage]" {
               // the skill-surface rule applied to builtinDocs: a member
               // the binary ships that hover/completion cannot explain is

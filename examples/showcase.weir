@@ -308,10 +308,9 @@ type Peer = { host: string; port: int; note: Option<string> }
 
 // a heredoc block is a seq<string> value — it pipes straight into the
 // json adapter, no escaped-quote seq literal needed
-let peer =
-    <<<
-        {"host": "a.example", "port": 9000}
-    |> from json Peer
+let peer = <<<
+    {"host": "a.example", "port": 9000}
+|> from json Peer
 
 print $"peer {peer.host}:{peer.port} (note {peer.note})"
 

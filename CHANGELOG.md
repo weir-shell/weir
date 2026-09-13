@@ -12,6 +12,17 @@
   naming both repairs (bind one enumeration, or `prompt` per
   interaction).
 
+### Changed
+
+- **`weir fmt` puts district markers on the binding line.** Canonical
+  layout is `let x = <<<` / `let p = yaml patch by=name` — never the
+  marker alone on a continuation line. Both spellings still parse and
+  run identically (district content is relative to its first line, so
+  the rewrite is lossless); `fmt` now merges the next-line spelling up,
+  outdenting a district-pipe close (`|> f`) with the marker, and
+  `fmt --check` flags it. A binding line with a trailing comment keeps
+  the next-line spelling.
+
 ## v0.0.31
 
 > v0.0.30 was burned: the tag was cut, but the release run failed on the
