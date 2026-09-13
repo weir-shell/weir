@@ -1489,6 +1489,51 @@ let boundaryTests =
               | Error terr -> Expect.stringContains terr.Message "'YamlPatch' is a built-in type" ""
               | Ok _ -> failtest "declaring YamlPatch must refuse"
           }
+          test "check parses patch districts exactly as run — the assume-resolver never claims the marker head [D:yaml-nodes]" {
+              // check's assume-resolver reads any command-shaped head
+              // as external, `yaml` included — commandSegment must
+              // refuse the ` patch [by=] [schema=]` face glued to the
+              // sentinel so the district arm parses, as run does
+              let clean lines =
+                  let diags, _, _, _ = Weir.Script.analyzeLines "pin.weir" lines
+                  Expect.isEmpty diags $"check == run: {lines}"
+
+              // a $name splice in scalar value position
+              clean
+                  [ "let n = \"api\""
+                    "let p = yaml patch by=name"
+                    "    images:"
+                    "        - name: $n"
+                    "print \"ok\"" ]
+              // a multi-line mapping as a seq item
+              clean
+                  [ "let p = yaml patch by=name"
+                    "    images:"
+                    "        - name: api"
+                    "          newTag: v2"
+                    "print \"ok\"" ]
+              // bare `patch`, single scalar entry
+              clean [ "let p = yaml patch"; "    replicas: 3"; "print \"ok\"" ]
+
+              // the patch x schema= refusal still fires — the guard routes
+              // to the district arm, never past its own checks
+              let diags, _, _, _ =
+                  Weir.Script.analyzeLines
+                      "pin.weir"
+                      [ "let p = yaml patch by=name schema=k8s"; "    a: 1"; "print \"ok\"" ]
+
+              Expect.exists
+                  diags
+                  (fun d -> d.Message.Contains "a patch is partial")
+                  "patch x schema= still refuses via the district arm"
+
+              // the other direction: an unarmed line ending in the modifier
+              // words stays a command (no sentinel glue, no district)
+              let cmdDiags, _, _, _ =
+                  Weir.Script.analyzeLines "pin.weir" [ "let x = echo patch by=name"; "x |> Seq.iter print" ]
+
+              Expect.isEmpty cmdDiags "a command with 'patch by=name' argv stays a command"
+          }
           test "district templates check: splice law, key-splice string, for binder [D:yaml-district]" {
               // a record splice violates the liftable law
               let asm lines' =

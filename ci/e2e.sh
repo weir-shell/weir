@@ -3293,6 +3293,28 @@ yerr2=$($BIN -e 'let d = yaml
 print "no"' 2>&1) && fail "a plain district must refuse a tombstone" || true
 echo "$yerr2" | grep -qF "only inside a \`yaml patch\` district" || fail "the tombstone scope teaches: $yerr2"
 echo "e2e ok: yaml patch — kustomization RMW (upsert/append/tombstones, unknown keys kept, idempotent), render+scope laws"
+# check == run for patch districts [D:yaml-nodes]: check's assume path
+# once claimed the `yaml patch …` marker line as a command and the
+# district body then failed as statements, while the same file ran
+# green — every patch-district script must CHECK green too
+(cd "$ydir" && $BIN check patch.weir) || fail "a patch-district script that runs must check (check == run)"
+cat > "$ydir/patch-splice.weir" <<'WEOF'
+let n = "api"
+let p = yaml patch by=name
+    images:
+        - name: $n
+          newTag: v2
+print "ok"
+WEOF
+(cd "$ydir" && $BIN check patch-splice.weir) || fail "a \$name splice inside a patch district must check"
+# the acceptance test: the adapters reference's own patch example
+# checks green — extracted verbatim, so the doc and the checker
+# cannot drift apart
+awk '/^```weir$/{f=1;buf="";next} /^```/{if(f && buf ~ /yaml patch/){print buf; exit} f=0;next} f{buf=buf $0 "\n"}' \
+    "$(dirname "$0")/../docs/reference/adapters.md" > "$ydir/docs-patch.weir"
+[ -s "$ydir/docs-patch.weir" ] || fail "adapters.md lost its yaml patch example (extractor found nothing)"
+(cd "$ydir" && $BIN check docs-patch.weir) || fail "the adapters.md patch example must check green"
+echo "e2e ok: patch districts check as they run (splice + multi-line item + the adapters.md example)"
 rm -rf "$ydir"
 
 # byte pipes [D:byte-pipes]: a command→command hop is a RAW byte pipe —

@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.0.33
+
+### Fixed
+
+- **`weir check` accepts every patch district `weir run` accepts.**
+  Check's assume-resolver read the `yaml patch [by=<key>]` marker line
+  as a command head (`yaml` is command-shaped), so the district body
+  then failed as statements — any `$name` splice or multi-line mapping
+  item inside a `yaml patch` district checked red while the same file
+  ran green (a kustomize-shaped port hit both). The command grammar now
+  refuses the patch marker face glued to the district sentinel, exactly
+  as it already did for plain `yaml` and `schema=`, so check == run.
+
 ## v0.0.32
 
 > First release published since v0.0.29: this ships everything under
