@@ -58,8 +58,35 @@ let mainSha =
     | Some d -> localSha d
     | None -> fetchedSha ()
 
-if not (Str.startsWith rev mainSha) then
-    fail $"ZED PIN STALE: extension.toml pins rev {rev} but tree-sitter-weir main is {Str.sub 0 12 mainSha} — the rev ritual is due: bump the rev and refresh languages/weir/highlights.scm from that same commit"
+// At a TAG ref the pin may legitimately TRAIL main [D:zed-tag-ancestor]:
+// the release's own TARGET bump moves grammar main AFTER the tag is
+// frozen, so equality is false on every post-publish re-run with nothing
+// to fix. Ancestor-of-main = trailing by the ritual; a rev off main's
+// history is still stale, tag or not. Forward-looking runs (main, cron,
+// preflight — no GITHUB_REF_TYPE=tag) keep strict equality.
+let atTag =
+    match Env.get "GITHUB_REF_TYPE" with
+    | Some "tag" -> true
+    | _ -> false
+
+let ancestorLocal d = git -C $d merge-base --is-ancestor $rev HEAD | succeeds
+
+type Compare = { status: string }
+
+let ancestorRemote () =
+    let resp = Http.send (Http.get $"https://api.github.com/repos/weir-shell/tree-sitter-weir/compare/{rev}...main")
+    if resp.status <> 200 then false
+    else
+        let c = resp.body |> from json Compare
+        c.status == "identical" || c.status == "ahead"
+
+let pinDesc =
+    if Str.startsWith rev mainSha then
+        "is tree-sitter-weir main"
+    elif atTag && (match cli.gdir with | Some d -> ancestorLocal d | None -> ancestorRemote ()) then
+        $"trails tree-sitter-weir main {Str.sub 0 12 mainSha} as an ancestor (tag checkout: the release's own TARGET bump moved main past the tag)"
+    else
+        fail $"ZED PIN STALE: extension.toml pins rev {rev} but tree-sitter-weir main is {Str.sub 0 12 mainSha} — the rev ritual is due: bump the rev and refresh languages/weir/highlights.scm from that same commit"
 
 // 2 — every queried node exists in the grammar at the pinned rev.
 // node-types.json's "type" values at every level are real node names,
@@ -98,4 +125,4 @@ let unknown =
 if not (Seq.isEmpty unknown) then
     fail $"ZED QUERIES BROKEN: highlights.scm names node(s) the grammar at {rev} does not have: [{Str.join ", " unknown}] — refresh languages/weir/highlights.scm from the grammar commit the rev pins"
 
-print $"zed pin ok: rev {rev} is tree-sitter-weir main, and all {queried |> Seq.length} queried node names exist in its {nodeNames |> Seq.length}-node inventory"
+print $"zed pin ok: rev {rev} {pinDesc}, and all {queried |> Seq.length} queried node names exist in its {nodeNames |> Seq.length}-node inventory"
