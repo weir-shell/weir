@@ -1999,6 +1999,9 @@ machine-verified against the real F#
 compiler in CI. The short version:
 
 - no mutation
+- no unbounded loops, no recursion — `retry`/`poll` are the bounded
+  loops, `Graph.reach`/`Tree.walk` the cycle-safe walks; an unbounded
+  iteration is unrepresentable
 - no exceptions — values, `fail` and `exit` instead
 - no OO
 - no async
