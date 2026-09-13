@@ -1,7 +1,11 @@
 ---
 // the skeleton layout [D:site-skeleton]: structure and navigation only —
 // the homepage/hero content is its own later work
-const { title, toc } = Astro.props;
+import Search from "../components/Search.astro";
+// search: pages opt OUT of the Pagefind prose index (the hero and 404
+// are chrome, not content); with data-pagefind-body present anywhere,
+// only pages carrying it are indexed
+const { title, toc, search = true } = Astro.props;
 // the displayed version [D:site-version]: derived from the deploy's
 // resolved tag (WEIR_RELEASE_TAG), never hardcoded — absent on local
 // builds, so dev pages show no version rather than a wrong one
@@ -366,6 +370,7 @@ const releaseTag = process.env.WEIR_RELEASE_TAG || "";
         <a href="/changelog/">Changelog</a>
       </nav>
       <div class="nav-right">
+        <Search />
         {releaseTag && (
           <a class="ver" href={`https://github.com/weir-shell/weir/releases/tag/${releaseTag}`}>{releaseTag}</a>
         )}
@@ -402,8 +407,8 @@ const releaseTag = process.env.WEIR_RELEASE_TAG || "";
               ))}
             </ul>
           </aside>
-          <main>
-            <details class="toc-mobile">
+          <main data-pagefind-body={search || undefined}>
+            <details class="toc-mobile" data-pagefind-ignore>
               <summary>On this page</summary>
               <ul>
                 {toc.map((h) => (
@@ -417,7 +422,7 @@ const releaseTag = process.env.WEIR_RELEASE_TAG || "";
           </main>
         </div>
       ) : (
-        <main>
+        <main data-pagefind-body={search || undefined}>
           <slot />
         </main>
       )
