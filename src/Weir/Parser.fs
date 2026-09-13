@@ -3287,14 +3287,28 @@ let private commandSegment
         // sentinel can only be the assembler's yaml-district wrap
         // (statement joins always space the sentinel) — never a command
         .>> notFollowedBy (pchar sibSep)
-        // …and its marker+schema face [D:yaml-schemas]: a ` schema=<name>`
-        // suffix GLUED to the sentinel is the same wrap (`yaml schema=x`);
-        // no user argv is ever glued, so the whole segment refuses here
-        // and the parse falls through to the district arm
+        // …and its marker+modifier face [D:yaml-schemas][D:yaml-nodes]:
+        // a modifier suffix (` patch [by=<key>]` and/or ` schema=<name>`)
+        // GLUED to the sentinel is the same wrap (`yaml patch`,
+        // `yaml schema=x`); no user argv is ever glued, so the whole
+        // segment refuses here and the parse falls through to the
+        // district arm. The check-side resolver assumes unknown heads
+        // are commands [D:assume-resolver], so without the patch face
+        // `weir check` claimed a patch marker as a command while the
+        // runner's hard resolver fell through correctly.
         .>> notFollowedBy (
             attempt (
-                pstring " schema="
-                >>. many1Satisfy (fun c -> System.Char.IsLower c || System.Char.IsDigit c || c = '-')
+                choice
+                    [ pstring " patch"
+                      >>. opt (pstring " by=" >>. many1Satisfy (fun c -> c <> ' ' && c <> sibSep))
+                      >>. opt (
+                          pstring " schema="
+                          >>. many1Satisfy (fun c -> System.Char.IsLower c || System.Char.IsDigit c || c = '-')
+                      )
+                      >>% ()
+                      pstring " schema="
+                      >>. many1Satisfy (fun c -> System.Char.IsLower c || System.Char.IsDigit c || c = '-')
+                      >>% () ]
                 >>. pchar sibSep
             )
         )

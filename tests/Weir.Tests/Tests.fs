@@ -16655,6 +16655,25 @@ let moduleSignatureTests =
                       match diagsOf td "bad.weir" with
                       | d :: _ -> Expect.stringContains d.Message "unknown type 'Nope'" "the sig type validates"
                       | [] -> failtest "an unknown sig type must refuse")
+          }
+          test "a `yaml patch` marker never parses as a command on the check side [D:assume-resolver]" {
+              // the check-side resolver assumes unknown heads are commands;
+              // the head guard's modifier face must still refuse the glued
+              // marker so the district arm takes it — run and check agree
+              withDir
+                  [ "s.weir",
+                    [ "let p = yaml patch"
+                      "    replicas: 3"
+                      "[\"kind: K\"] |> Yaml.parse |> Yaml.merge p |> to yaml |> Seq.iter print" ]
+                    "t.weir",
+                    [ "let p = yaml patch by=name"
+                      "    images:"
+                      "        - name: app"
+                      "          newTag: v3"
+                      "[\"kind: K\"] |> Yaml.parse |> Yaml.merge p |> to yaml |> Seq.iter print" ] ]
+                  (fun td ->
+                      Expect.isEmpty (diagsOf td "s.weir") "the plain patch marker checks"
+                      Expect.isEmpty (diagsOf td "t.weir") "the by= marker checks")
           } ]
 
 [<Tests>]
