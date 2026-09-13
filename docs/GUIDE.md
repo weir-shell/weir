@@ -91,7 +91,7 @@ lines included:
 
 ```weir
 let retries = 3 // why: registry flakes under load
-echo done // trailing works on command lines too
+echo retrying $retries times // trailing works on command lines too
 ```
 
 `///` is the doc comment, and it pays its way: it attaches to the
@@ -475,6 +475,7 @@ let latest = git log -1 "--format=%h" |> Seq.exactlyOne
 print $"at {latest}"
 
 let tagged = $"at {$(git log -1 "--format=%h") |> Seq.exactlyOne}"
+print tagged
 ```
 
 There is no syntax for a computed program name — branch the whole
@@ -837,7 +838,6 @@ it runs with that environment:
 ["STAGE=prod"] |> File.write "stage.env"
 
 let e = Env.fromFile "stage.env"
-let ready = 1 > 0
 
 !e(sh -c "echo inline: $STAGE")
 
@@ -929,6 +929,7 @@ match Path.glob "*.md" with
 | docs -> docs |> Seq.sortBy (fun s -> s) |> Seq.iter print
 
 let pinned = Path.glob "*.md" |> Seq.force
+print $"pinned: {pinned |> Seq.length}"
 ```
 
 A batch splats into a command with `$@` — N files become N argv
@@ -1812,7 +1813,7 @@ that belongs to systemd or launchd, and weir deliberately has no
 Dir.create "wa"
 Dir.create "wb"
 ["wa"; "wb"] |> Seq.pmap (fun d ->
-    let x = cd d
+    let _cd = cd d
     pwd |> Seq.head) |> print
 ```
 

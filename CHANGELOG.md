@@ -1,5 +1,29 @@
 # Changelog
 
+## v0.0.33
+
+### Added
+
+- **Breaking: an unread `let` binder is a hard check error.** The
+  strictness family grows its next member (statement rule,
+  exhaustiveness, unreachable arms — weir has no warnings): binding is
+  exactly how weir silences raise-on-nonzero, so a
+  `let r = cmd | complete` nothing ever reads is a swallowed failure,
+  and the checker now refuses it — scripts and module bodies,
+  top-level and block-local, destructured names each judged, and a
+  name rebound before its earlier binding was read errors at the
+  earlier binder. A module's unsigned member unread at home is dead
+  private code and errors with the signature repair. The escape is a
+  `_`-prefixed name (`let _r = …` — deliberately unused, never
+  errors, still readable); a bare `_` let binder now refuses (name
+  the discard). Exempt: function params, match-arm binders,
+  `for`/`until`/`within` binders, signed module members (the
+  signature is the use), and `#sig` contract files (the sig loader is
+  their reader). Errors are collected and located at the binder;
+  every consumer agrees — `check`, run, import, the LSP, and the
+  fidelity oracle. F# accepts unread binders silently by default
+  (FS1182 is opt-in), recorded as the `unused-binding` divergence.
+
 ## v0.0.32
 
 > First release published since v0.0.29: this ships everything under
