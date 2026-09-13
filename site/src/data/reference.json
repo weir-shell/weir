@@ -948,6 +948,46 @@
       ]
     },
     {
+      "name": "Self",
+      "members": [
+        {
+          "name": "args",
+          "signature": "Self.args : seq\u003Cstring\u003E",
+          "summary": "The invoked script\u0027s argument vector (a process fact \u2014 the same in every module).",
+          "example": null,
+          "pointer": null
+        },
+        {
+          "name": "entryPath",
+          "signature": "Self.entryPath : string",
+          "summary": "The path of the invoked script (a process fact \u2014 the same in every module, unlike scriptPath).",
+          "example": null,
+          "pointer": null
+        },
+        {
+          "name": "pid",
+          "signature": "Self.pid : int",
+          "summary": "This process\u0027s id.",
+          "example": null,
+          "pointer": null
+        },
+        {
+          "name": "scriptPath",
+          "signature": "Self.scriptPath : string",
+          "summary": "The path of the file reading it \u2014 a module sees its own path.",
+          "example": null,
+          "pointer": null
+        },
+        {
+          "name": "stdin",
+          "signature": "Self.stdin : seq\u003Cstring\u003E",
+          "summary": "This process\u0027s standard input, as lazy lines (a process fact).",
+          "example": null,
+          "pointer": null
+        }
+      ]
+    },
+    {
       "name": "Seq",
       "members": [
         {
@@ -1853,8 +1893,30 @@
       "name": "within",
       "signature": null,
       "summary": "A scoped resource for an indented block, released on every exit (normal and raise): \u0060tmp\u0060 \u2014 a fresh directory, removed when the block exits; \u0060cd\u0060 \u2014 the working directory for the block, restored after; \u0060env\u0060 \u2014 an environment overlay for the block\u0027s children; \u0060proc\u0060 \u2014 a background process, tree-killed and reaped when the block exits; \u0060lock\u0060 \u2014 an advisory file lock, held for the block, released on every exit (kill -9 included).",
-      "example": "within tmp d print d",
-      "pointer": "within proc srv = \u003Ccommand\u003E binds a Proc handle; the tree is killed and reaped at scope exit"
+      "example": "within tmp d\n    print d",
+      "pointer": "within proc srv = \u003Ccommand\u003E binds a Proc handle; the tree is killed and reaped at scope exit",
+      "kinds": [
+        {
+          "name": "tmp",
+          "doc": "a fresh directory, removed when the block exits"
+        },
+        {
+          "name": "cd",
+          "doc": "the working directory for the block, restored after"
+        },
+        {
+          "name": "env",
+          "doc": "an environment overlay for the block\u0027s children"
+        },
+        {
+          "name": "proc",
+          "doc": "a background process, tree-killed and reaped when the block exits"
+        },
+        {
+          "name": "lock",
+          "doc": "an advisory file lock, held for the block, released on every exit (kill -9 included)"
+        }
+      ]
     }
   ]
 }
