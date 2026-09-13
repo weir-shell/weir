@@ -3769,7 +3769,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
                   |> List.map (fun k -> $"`{k.Name}` — {k.Doc}")
                   |> String.concat "; ")
                + ".")
-              (Some "within tmp d print d")
+              (Some "within tmp d\n    print d")
               (Some "within proc srv = <command> binds a Proc handle; the tree is killed and reaped at scope exit")
           // the purity assertion's two spellings [D:pure-stage1] — its
           // OWN head, never `within pure`

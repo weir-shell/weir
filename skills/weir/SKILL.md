@@ -65,10 +65,13 @@ print (show 1)
   `Self.stdin : seq<string>` (the WHOLE input stream, ONE
   enumeration — it is live, a second enumeration raises with the
   repair; `prompt "msg?"` reads a line per interaction instead, message
-  to stderr so piped stdout stays data, EOF refuses), `Self.pid : int` (the process id), and
-  `Self.scriptPath : string` (the script's own ABSOLUTE path, resolved
-  at startup before any `cd`; symlinks unresolved like bash's `$0`).
-  `Self.scriptPath |> Path.dir` is the dirname-$0 idiom.
+  to stderr so piped stdout stays data, EOF refuses), `Self.pid : int` (the process id),
+  `Self.scriptPath : string` (the FILE'S OWN absolute path, resolved
+  at startup before any `cd`; symlinks unresolved like bash's `$0` —
+  an imported module sees its own), and `Self.entryPath : string`
+  (the INVOKED script's path — a process fact like args/stdin, the
+  same in every module). `Self.scriptPath |> Path.dir` is the
+  dirname-$0 idiom.
 
 ## The statement rule (most important)
 
@@ -1878,6 +1881,7 @@ not the teaching.
 - `Proc`: `pid` `running` `stop` `tail` `wait`
 - `Retry`: `defaults`
 - `Secret`: `map` `of` `reveal`
+- `Self`: `args` `entryPath` `pid` `scriptPath` `stdin` (script-only — absent in the REPL, so `#help` does not list it)
 - `Seq`: `append` `average` `choose` `chunkBySize` `collect` `concat` `contains` `countBy` `distinct` `distinctBy` `except` `exactlyOne` `exists` `find` `fold` `forall` `force` `groupBy` `head` `indexed` `isEmpty` `item` `iter` `last` `length` `map` `max` `maxBy` `min` `minBy` `pairwise` `pfirst` `pfirstWith` `pick` `piter` `piterWith` `pmap` `pmapWith` `range` `reduce` `replicate` `rev` `scan` `skip` `skipWhile` `sort` `sortBy` `sortByDescending` `sortDescending` `sum` `take` `takeWhile` `tryExactlyOne` `tryFind` `tryHead` `tryItem` `tryLast` `tryPick` `where` `windowed` `zip`
 - `Bytes`: `fromBase64` `length` `sha256` `toBase64` `tryFromBase64`
 - `Size`: `average` `bytes` `parse` `sum` `toBytes` `tryParse`

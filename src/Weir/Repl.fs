@@ -150,7 +150,12 @@ let docsJson () : string =
     w.WriteStartObject()
     w.WriteStartArray "modules"
 
-    for KeyValue(m, members) in te.Modules do
+    // Self is script-only [D:self-module] — absent from the REPL env this
+    // dump reads, but the reference documents the language, so it joins
+    // the module walk from its one source (Script.selfMembers)
+    let modules = te.Modules |> Map.add "Self" Script.selfMembers
+
+    for KeyValue(m, members) in modules do
         w.WriteStartObject()
         w.WriteString("name", m)
         w.WriteStartArray "members"
@@ -183,6 +188,21 @@ let docsJson () : string =
             | None -> w.WriteNull "signature"
 
             writeDocFields (Some d)
+
+            // the within entry carries its kind table structurally — the
+            // site renders rows where the summary's prose enumeration
+            // cannot (the one source: Ast.withinKinds)
+            if k = "within" then
+                w.WriteStartArray "kinds"
+
+                for kind in Ast.withinKinds |> List.filter (fun x -> not x.Standalone) do
+                    w.WriteStartObject()
+                    w.WriteString("name", kind.Name)
+                    w.WriteString("doc", kind.Doc)
+                    w.WriteEndObject()
+
+                w.WriteEndArray()
+
             w.WriteEndObject()
 
     w.WriteEndArray()
