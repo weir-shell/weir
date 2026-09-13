@@ -20,9 +20,7 @@ let cli = Args.load Cli
 let gdir = cli.grammar |> Option.defaultValue "../tree-sitter-weir"
 
 let confirm msg =
-    print $"{msg} [y/N]"
-    let r = sh -c "read -r a && printf %s \"$a\"" | complete
-    let a = r.stdout |> Seq.tryHead |> Option.defaultValue ""
+    let a = prompt $"{msg} [y/N]"
     a == "y" || a == "Y" || a == "yes"
 
 // ---- 1. preflight: refuse before anything mutates -------------------------

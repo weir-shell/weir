@@ -36,7 +36,7 @@ let private effectfulQualified =
           "Instant.now"
           "Duration.sleep" ]
 
-let private effectfulBare = Set [ "ls"; "glob"; "print"; "printerr"; "exit" ]
+let private effectfulBare = Set [ "ls"; "glob"; "print"; "printerr"; "exit"; "prompt" ]
 
 let private effectfulName (n: string) =
     if n.Contains "." then

@@ -1794,6 +1794,13 @@
       "pointer": null
     },
     {
+      "name": "prompt",
+      "signature": "prompt (message: string) : string",
+      "summary": "Write a message to STDERR and read one line from stdin (interactive input; a piped stdout stays data). EOF refuses \u2014 no phantom input. Self.stdin stays the STREAM reading (one enumeration; the two compose per-line vs whole-stream).",
+      "example": null,
+      "pointer": "let name = prompt \u0022your name?\u0022 \u2014 interactive; in tests, pipe the answer in."
+    },
+    {
       "name": "pure",
       "signature": null,
       "summary": "A purity assertion for an indented block: the body must reach NO effect (filesystem, command, network, environment, console, clock) \u2014 a reachable effect is a check error naming the offender. Opt-in only: weir stays effect-normal, and code outside a pure region is never gated.",
