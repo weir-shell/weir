@@ -602,6 +602,8 @@ conf |> File.write "app.conf"
 File.read "app.conf" |> Seq.iter print
 ```
 
+### Scoped resources: `within` and `always`
+
 A scratch directory is a scope, not a chore:
 `within tmp <name>` binds a fresh directory for the block and removes
 it on every exit — including the raise path, which is the half that
