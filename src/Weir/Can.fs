@@ -161,20 +161,21 @@ let rec private walkExpr
           | Some ns -> binds[n] <- ns
           | None -> ())
      | TEWithin(kind, _, arg, _, _) ->
+         // exhaustive on the kind UNION [D:within-kind-union] — the
+         // wildcard this table drifted under is gone by construction
          (match kind with
-          | "tmp" -> add (TempWrite "within tmp (a temporary directory)") te.Span
-          | "proc" ->
+          | WithinTmp -> add (TempWrite "within tmp (a temporary directory)") te.Span
+          | WithinProc ->
               add ProcScope te.Span
               add (TempWrite "the proc scope's spill files") te.Span
-          | "env" ->
+          | WithinEnv ->
               let names = arg |> Option.bind (envNamesOf binds)
               add (EnvWrite("within env", names)) te.Span
-          | "cd" -> add CwdChange te.Span
+          | WithinCd -> add CwdChange te.Span
           // the lock FILE is a write [D:within-lock]: the scope creates it
           // when missing, so a report that omits it denies a write that
           // happens
-          | "lock" -> add (FsWrite("within lock", arg |> Option.bind literalStr)) te.Span
-          | _ -> ())
+          | WithinLock -> add (FsWrite("within lock", arg |> Option.bind literalStr)) te.Span)
      | TEEnvLoad(def, _) ->
          for fname, fty in def.Fields do
              add (EnvRead $"{fname} (Env.load {def.Name})") te.Span

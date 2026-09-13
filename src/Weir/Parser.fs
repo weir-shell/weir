@@ -1917,59 +1917,65 @@ let private withinExprBody =
                         fail "not a scope kind"
             )
             >>= fun (kind, _) ->
-                // dispatch off the kinds TABLE [D:within-kinds]: Binds is the
-                // arity switch, membership and the teaching list derive
+                // dispatch off the kind UNION [D:within-kind-union]: the
+                // table resolves the word, then every kind claims its FORM
+                // here or the build fails; the teaching list still derives
+                // from the table [D:within-kinds]
                 match Ast.withinKinds |> List.tryFind (fun k -> k.Name = kind) with
-                | Some wk when wk.Name = "proc" ->
-                    // the scoped process [D:scoped-procs]: binder `=` then ONE
-                    // command line (the block-let RHS grammar — splices, ^, the
-                    // argv law); a pipeline refuses — the scope owns ONE child,
-                    // compose inside sh -c
-                    identSpanned .>> ws .>> str_ws "="
-                    >>= fun (binder, bspan) ->
-                        letRhsCmd
-                        >>= fun cmdE ->
-                            (match cmdE.Kind with
-                             | ECmd _ -> preturn cmdE
-                             | _ ->
-                                 failFatally
-                                     "within proc takes ONE command — a pipeline or capture is not a scoped child; compose inside sh -c \"…\"")
-                            >>= fun cmdE ->
-                                (opt (str_ws ";" <|> str_ws sibSepStr))
-                                >>. (withPatNames { PKind = PVar binder; PSpan = bspan } (withExprParen false seqExpr)
-                                     <?> "the scope's block")
-                                |>> fun body ->
-                                    { Kind = EWithin(kind, Some(binder, bspan), Some cmdE, None, body)
-                                      Span = { Start = pos p; End = body.Span.End } }
-                | Some wk when wk.Binds ->
-                    // a binding kind PRODUCES its resource: a binder, joining
-                    // bindings-beat-PATH (the patLeafNames class, 5th site)
-                    identSpanned
-                    >>= fun (binder, bspan) ->
-                        (opt (str_ws ";" <|> str_ws sibSepStr))
-                        >>. (withPatNames { PKind = PVar binder; PSpan = bspan } (withExprParen false seqExpr)
-                             <?> "the scope's block")
-                        |>> fun body ->
-                            { Kind = EWithin(kind, Some(binder, bspan), None, None, body)
-                              Span = { Start = pos p; End = body.Span.End } }
-                | Some _ ->
-                    // a consuming kind takes a value: ONE ATOM (a literal, a
-                    // name, a paren, an interpolation) — never a greedy expr,
-                    // which would swallow the space-joined first statement.
-                    // lock alone takes an optional timeout= key (Duration),
-                    // the retry key=value spelling [D:within-lock]
-                    (postfixAtom <?> $"the {kind} scope's argument (parenthesize a compound)")
-                    >>= fun argE ->
-                        (if kind = "lock" then
-                             opt (attempt (pstring "timeout" >>. ws >>. pchar '=' >>. ws >>. postfixAtom))
-                         else
-                             preturn None)
-                        >>= fun optsE ->
-                            block
-                            |>> fun body ->
-                                { Kind = EWithin(kind, None, Some argE, optsE, body)
-                                  Span = { Start = pos p; End = body.Span.End } }
                 | None -> failFatally $"unknown scope kind '{kind}' — within takes {Ast.withinKindList}"
+                | Some wk ->
+                    match wk.Id with
+                    | Ast.WithinProc ->
+                        // the scoped process [D:scoped-procs]: binder `=` then ONE
+                        // command line (the block-let RHS grammar — splices, ^, the
+                        // argv law); a pipeline refuses — the scope owns ONE child,
+                        // compose inside sh -c
+                        identSpanned .>> ws .>> str_ws "="
+                        >>= fun (binder, bspan) ->
+                            letRhsCmd
+                            >>= fun cmdE ->
+                                (match cmdE.Kind with
+                                 | ECmd _ -> preturn cmdE
+                                 | _ ->
+                                     failFatally
+                                         "within proc takes ONE command — a pipeline or capture is not a scoped child; compose inside sh -c \"…\"")
+                                >>= fun cmdE ->
+                                    (opt (str_ws ";" <|> str_ws sibSepStr))
+                                    >>. (withPatNames { PKind = PVar binder; PSpan = bspan } (withExprParen false seqExpr)
+                                         <?> "the scope's block")
+                                    |>> fun body ->
+                                        { Kind = EWithin(wk.Id, Some(binder, bspan), Some cmdE, None, body)
+                                          Span = { Start = pos p; End = body.Span.End } }
+                    | Ast.WithinTmp ->
+                        // a binding kind PRODUCES its resource: a binder, joining
+                        // bindings-beat-PATH (the patLeafNames class, 5th site)
+                        identSpanned
+                        >>= fun (binder, bspan) ->
+                            (opt (str_ws ";" <|> str_ws sibSepStr))
+                            >>. (withPatNames { PKind = PVar binder; PSpan = bspan } (withExprParen false seqExpr)
+                                 <?> "the scope's block")
+                            |>> fun body ->
+                                { Kind = EWithin(wk.Id, Some(binder, bspan), None, None, body)
+                                  Span = { Start = pos p; End = body.Span.End } }
+                    | Ast.WithinCd
+                    | Ast.WithinEnv
+                    | Ast.WithinLock ->
+                        // a consuming kind takes a value: ONE ATOM (a literal, a
+                        // name, a paren, an interpolation) — never a greedy expr,
+                        // which would swallow the space-joined first statement.
+                        // lock alone takes an optional timeout= key (Duration),
+                        // the retry key=value spelling [D:within-lock]
+                        (postfixAtom <?> $"the {kind} scope's argument (parenthesize a compound)")
+                        >>= fun argE ->
+                            (if wk.Id = Ast.WithinLock then
+                                 opt (attempt (pstring "timeout" >>. ws >>. pchar '=' >>. ws >>. postfixAtom))
+                             else
+                                 preturn None)
+                            >>= fun optsE ->
+                                block
+                                |>> fun body ->
+                                    { Kind = EWithin(wk.Id, None, Some argE, optsE, body)
+                                      Span = { Start = pos p; End = body.Span.End } }
 
         kinded <|> bareForm
 
