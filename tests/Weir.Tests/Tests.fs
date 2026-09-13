@@ -5857,7 +5857,7 @@ let withinAlwaysLockTests =
               clean [ "within"; "    sh -c \"true\""; "always"; "    print \"c\"" ] "command body"
 
               clean
-                  [ "let r = retry attempts=2 delay=10ms"
+                  [ "let _r = retry attempts=2 delay=10ms"
                     "    sh -c \"true\""
                     "until r"
                     "    true"
@@ -7681,16 +7681,16 @@ let optionSweepTests =
                   let ds, _, _, _ = Weir.Script.analyzeLines "pin.weir" [ line ]
                   Expect.isEmpty (ds |> List.filter (fun d -> d.Severity = "error")) $"parses: {line}"
 
-              okParses "let z = match Some 1 with | Some n -> n | _ -> 0"
-              okParses "let (a, b) = (1, 2)"
-              okParses "let z = match 1 with | _ -> 0"
-              okParses "let z = match 5 with | n when n > 0 -> 1 | _ -> 0"
-              okParses "let z = match true with | true -> 1 | false -> 0"
-              okParses "let z = match [1] with | [x] -> x | _ -> 0"
+              okParses "let _z = match Some 1 with | Some n -> n | _ -> 0"
+              okParses "let (_a, _b) = (1, 2)"
+              okParses "let _z = match 1 with | _ -> 0"
+              okParses "let _z = match 5 with | n when n > 0 -> 1 | _ -> 0"
+              okParses "let _z = match true with | true -> 1 | false -> 0"
+              okParses "let _z = match [1] with | [x] -> x | _ -> 0"
               // the binder-scan skips pattern delimiters and stops at `=`:
               // an RHS keyword is not a binder keyword, and true/false in a
               // destructure are LITERAL patterns (a check error, not parse)
-              okParses "let go = (let (a, b) = (1, 2) in a)"
+              okParses "let _go = (let (a, _b) = (1, 2) in a)"
 
               let noParseError (line: string) =
                   let ds, _, _, _ = Weir.Script.analyzeLines "pin.weir" [ line ]
@@ -9042,7 +9042,7 @@ let agentFindingsTests =
                   let ds, _, _, _ = Weir.Script.analyzeLines "pin.weir" [ line ]
                   Expect.isEmpty (ds |> List.filter (fun d -> d.Severity = "error")) $"accepted: {line}"
 
-              ok "let r = git status | complete"
+              ok "let _r = git status | complete"
               ok "git status | orFail \"boom\""
           }
           test "orFail carries its message expression" {
@@ -10802,7 +10802,7 @@ let siblingSentinelTests =
               // the old pin asserted the seq-unit rejection at the head;
               // the interior-arming rule makes the command an EFFECT and
               // the body legal — the flip, named
-              let ds = diags [ "let f t ="; "    git status"; "    let e = \"x\""; "    print e" ]
+              let ds = diags [ "let _f t ="; "    git status"; "    let e = \"x\""; "    print e" ]
 
               Expect.isEmpty (ds |> List.filter (fun d -> d.Severity = "error")) "the armed body checks clean"
           }
@@ -11583,10 +11583,10 @@ let ambiguousCtorTests =
               | other -> failtest $"applied: expected one error, got {other.Length}"
           }
           test "the repair works: renaming one case resolves the other" {
-              Expect.isEmpty (analyze [ "type B = D"; "type Z = C"; "let x = C"; "print \"n\"" ]) "renamed"
+              Expect.isEmpty (analyze [ "type B = D"; "type Z = C"; "let _x = C"; "print \"n\"" ]) "renamed"
           }
           test "one declaration still resolves bare" {
-              Expect.isEmpty (analyze [ "type Z = C"; "let x = C"; "print \"n\"" ]) "single owner"
+              Expect.isEmpty (analyze [ "type Z = C"; "let _x = C"; "print \"n\"" ]) "single owner"
           }
           test "a collision that is never USED bare still checks" {
               Expect.isEmpty (analyze [ "type B = C"; "type Z = C"; "print \"n\"" ]) "use-site rule"
@@ -11625,7 +11625,7 @@ let ambiguousCtorTests =
                       main,
                       [ "import \"./lib.weir\""
                         "type Mine = Failed of int"
-                        "let s = Failed 1"
+                        "let _s = Failed 1"
                         "print \"n\"" ]
                   )
 
@@ -11665,7 +11665,7 @@ let dupTypeTests =
               match
                   analyze
                       [ "type T = { a: int }"
-                        "let x = { a = 1 }"
+                        "let _x = { a = 1 }"
                         "type T = { b: string }"
                         "print \"n\"" ]
               with
@@ -15094,7 +15094,7 @@ let anonRecordTests =
               let ds, _, _, _ =
                   Weir.Script.analyzeLines
                       "anon.weir"
-                      [ "let x = [\"{}\"]  |> from json {| ip: string |}"; "let y = x.ip" ]
+                      [ "let x = [\"{}\"]  |> from json {| ip: string |}"; "let _y = x.ip" ]
 
               Expect.isEmpty
                   (ds |> List.filter (fun d -> d.Severity = "error"))
@@ -15166,7 +15166,7 @@ let anonLiteralTests =
           }
           test "the def persists across statements (script + REPL share checkStatement)" {
               let ds, _, _, _ =
-                  Weir.Script.analyzeLines "anonlit.weir" [ "let x = {| ip = \"z\" |}"; "let y = x.ip" ]
+                  Weir.Script.analyzeLines "anonlit.weir" [ "let x = {| ip = \"z\" |}"; "let _y = x.ip" ]
 
               Expect.isEmpty (ds |> List.filter (fun d -> d.Severity = "error")) "the later statement resolves"
           }
@@ -15177,9 +15177,9 @@ let anonLiteralTests =
                   Weir.Script.analyzeLines
                       "anonlit2.weir"
                       [ "type AG = { ip: string }"
-                        "let a = {| ip = \"x\" |}"
+                        "let _a = {| ip = \"x\" |}"
                         "let b = { ip = \"y\" }"
-                        "let c = b.ip" ]
+                        "let _c = b.ip" ]
 
               Expect.isEmpty (ds |> List.filter (fun d -> d.Severity = "error")) "the bare literal stays unambiguous"
           }
@@ -16474,12 +16474,12 @@ let moduleSignatureTests =
     let lib =
         [ "module Lib"
           ""
+          "let helper n = n + 1"
+          ""
           "/// doubles"
           "let double : int -> int"
           ""
-          "let double n = n * 2"
-          ""
-          "let helper n = n + 1" ]
+          "let double n = helper n + n - 1" ]
 
     testList
         "module signatures [D:module-signatures]"
@@ -16518,9 +16518,9 @@ let moduleSignatureTests =
               withDir
                   [ "lib.weir",
                     [ "module Lib"
+                      "let doublez n = n"
                       "let doubles : int -> int"
-                      "let doubles n = n * 2"
-                      "let doublez n = n" ]
+                      "let doubles n = doublez (n * 2)" ]
                     "m.weir", [ "import \"./lib.weir\""; "print (show (Lib.doublez 3))" ] ]
                   (fun td ->
                       match diagsOf td "m.weir" with
@@ -16577,7 +16577,7 @@ let moduleSignatureTests =
                   (fun td ->
                       let libPath = System.IO.Path.Combine(td, "lib.weir")
                       let lines = List.ofArray (System.IO.File.ReadAllLines libPath)
-                      Expect.equal (Weir.Lsp.hoverAt libPath lines 4 6) (Some "double : int -> int\n\ndoubles") "sig hover")
+                      Expect.equal (Weir.Lsp.hoverAt libPath lines 6 6) (Some "double : int -> int\n\ndoubles") "sig hover")
           }
           test "check-against-sig retires the KSL shapes: ctor pattern on an own param; a sig-pinned to yaml" {
               withDir
@@ -16647,7 +16647,7 @@ let moduleSignatureTests =
                       "let judge : int -> Verdict"
                       ""
                       "let judge n = if n > 0 then Good else Bad n" ]
-                    "u.weir", [ "import \"./t.weir\""; "let v = T.judge 3"; "print (show 1)" ]
+                    "u.weir", [ "import \"./t.weir\""; "let _v = T.judge 3"; "print (show 1)" ]
                     "bad.weir", [ "module Z"; "let f : Nope -> int"; "let f x = 1" ] ]
                   (fun td ->
                       Expect.isEmpty (diagsOf td "u.weir") "type + signed member cross"
@@ -16655,6 +16655,131 @@ let moduleSignatureTests =
                       match diagsOf td "bad.weir" with
                       | d :: _ -> Expect.stringContains d.Message "unknown type 'Nope'" "the sig type validates"
                       | [] -> failtest "an unknown sig type must refuse")
+          } ]
+
+let unusedBindingTests =
+    // the unused-binding law [D:unused-bindings]: an unread let binder is
+    // a hard check error — the strictness family (statement rule,
+    // exhaustiveness, unreachable arms); `_name` is the escape
+    let errsOf (lines: string list) =
+        let ds, _, _, _ = Weir.Script.analyzeLines "ub.weir" lines
+        ds |> List.filter (fun d -> d.Severity = "error")
+
+    let clean (lines: string list) (label: string) =
+        Expect.isEmpty (errsOf lines) $"{label}: expected clean, got {errsOf lines |> List.map _.Message}"
+
+    testList
+        "unused bindings [D:unused-bindings]"
+        [ test "an unread top-level binder errors, located at the binder, code unused-binding" {
+              match errsOf [ "let tmp = 5"; "print \"x\"" ] with
+              | [ d ] ->
+                  Expect.equal (d.Line, d.Col) (1, 5) "at the binder"
+                  Expect.equal d.Code "unused-binding" "the code"
+
+                  Expect.equal
+                      d.Message
+                      "'tmp' is bound but never used — read it, or name it '_tmp' to keep it deliberately"
+                      "the teaching voice, escape included"
+              | other -> failtest $"expected one error, got {other}"
+          }
+          test "collected, not first-only: every unused binder reports" {
+              let ds = errsOf [ "let a = 1"; "let b = 2"; "print \"x\"" ]
+              Expect.equal (ds |> List.length) 2 "both"
+              Expect.equal (ds |> List.map (fun d -> d.Line)) [ 1; 2 ] "position order"
+          }
+          test "the receipt class: a bound-and-forgotten | complete is the swallowed failure" {
+              match errsOf [ "let r = git status | complete"; "print \"done\"" ] with
+              | [ d ] -> Expect.stringContains d.Message "'r' is bound but never used" "the swallow surfaces"
+              | other -> failtest $"expected one error, got {other}"
+          }
+          test "a block-local unread binder errors at its own site" {
+              match errsOf [ "let f () ="; "    let a = 1"; "    2"; "print (show (f ()))" ] with
+              | [ d ] ->
+                  Expect.equal (d.Line, d.Col) (2, 9) "at the block binder"
+                  Expect.stringContains d.Message "'a' is bound but never used" ""
+              | other -> failtest $"expected one error, got {other}"
+          }
+          test "destructuring judges each NAME; a wildcard component is fine" {
+              match errsOf [ "let (a, b) = (1, 2)"; "print (show a)" ] with
+              | [ d ] -> Expect.stringContains d.Message "'b' is bound but never used" "per-name"
+              | other -> failtest $"expected one error, got {other}"
+
+              clean [ "let (a, _) = (1, 2)"; "print (show a)" ] "wildcard component"
+          }
+          test "shadow without a read errors AT THE EARLIER binder, naming the rebind line" {
+              match errsOf [ "let cfg = 1"; "let cfg = 2"; "print (show cfg)" ] with
+              | [ d ] ->
+                  Expect.equal d.Line 1 "the earlier binder"
+                  Expect.stringContains d.Message "never used before being rebound at line 2" "the rebind cited"
+              | other -> failtest $"expected one error, got {other}"
+
+              // the RHS reads the OUTER binding (no let rec): a read-through
+              // rebind is clean
+              clean [ "let x = 1"; "let x = x + 1"; "print (show x)" ] "read-through rebind"
+          }
+          test "the exempt classes: params, arm binders, for/until/within" {
+              clean [ "let f x = 1"; "print (show (f 2))" ] "unused param"
+              clean [ "[1] |> Seq.iter (fun n -> print \"y\")" ] "unused lambda param"
+
+              clean
+                  [ "let v = match Some 1 with | Some n -> 9 | None -> 0"; "print (show v)" ]
+                  "unused arm binder"
+
+              clean [ "for x in [1; 2] do print \"y\"" ] "unused for binder"
+              clean [ "within tmp d"; "    print \"b\"" ] "unused within binder"
+
+              clean
+                  [ "let v ="
+                    "    retry attempts=1 delay=1ms"
+                    "        7"
+                    "    until r"
+                    "        true"
+                    "print (show v)" ]
+                  "unused until binder"
+          }
+          test "the escape: a '_'-prefixed name never errors, top-level and block" {
+              clean [ "let _keep = 5"; "print \"x\"" ] "top-level _name"
+              clean [ "let f () ="; "    let _a = 1"; "    2"; "print (show (f ()))" ] "block _name"
+              // and a _name stays READABLE — the prefix only switches the
+              // judgement off
+              clean [ "let _n = 5"; "print (show _n)" ] "_name read back"
+          }
+          test "a bare '_' let binder refuses — the anonymous swallow" {
+              match errsOf [ "let _ = sh -c \"exit 3\" | complete"; "print \"x\"" ] with
+              | [ d ] -> Expect.stringContains d.Message "a bare '_' binder discards its value anonymously" "the teaching"
+              | other -> failtest $"expected one error, got {other}"
+
+              match errsOf [ "let f () ="; "    let _ = 1"; "    2"; "print (show (f ()))" ] with
+              | [ d ] -> Expect.stringContains d.Message "a bare '_' binder" "block form too"
+              | other -> failtest $"expected one error, got {other}"
+          }
+          test "POISON: an errored statement suppresses the unused pass (one real error beats echoes)" {
+              match errsOf [ "let x = 5"; "let y = \"a\" + 1"; "print \"x\"" ] with
+              | [ d ] -> Expect.stringContains d.Message "expected string, got int" "only the real error"
+              | other -> failtest $"expected exactly the type error, got {other |> List.map (fun d -> d.Message)}"
+          }
+          test "module: an unsigned member unread at home is dead private code; signed is exempt" {
+              match
+                  errsOf [ "module M"; "let grade : int -> int"; "let dead n = n * 2"; "let grade n = n + 1" ]
+              with
+              | [ d ] ->
+                  Expect.equal d.Line 3 "at the dead member"
+                  Expect.stringContains d.Message "an unsigned module member is private dead code" "the module voice"
+                  Expect.stringContains d.Message "export it with a signature" "the export repair"
+              | other -> failtest $"expected one error, got {other |> List.map (fun d -> d.Message)}"
+
+              // the signature IS the use — a signed member unread at home is
+              // the export case, pinned
+              clean [ "module M"; "let grade : int -> int"; "let grade n = n + 1" ] "signed member exempt"
+
+              // an unsigned member the module reads is the private-helper
+              // case, clean
+              clean
+                  [ "module M"
+                    "let helper n = n * 2"
+                    "let grade : int -> int"
+                    "let grade n = helper n + 1" ]
+                  "used private member"
           } ]
 
 [<Tests>]
@@ -16806,6 +16931,7 @@ let allTests =
           closersTests
           sigilTests
           districtTests
+          unusedBindingTests
           indexerTests
           envLoadTests
           parallelTests

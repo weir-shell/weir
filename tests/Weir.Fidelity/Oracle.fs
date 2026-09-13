@@ -121,7 +121,11 @@ let weirVerdict (src: string) : Verdict =
               ExternalNames = (fun () -> Seq.empty)
               BareHome = fun _ -> None }
 
-        let step env (ll: Weir.Script.LogicalLine) =
+        // the unused-binding law rides the mirror [D:unused-bindings] — the
+    // mirror replicates the runner's check phase, whole-file laws included
+    let unusedTracker = Weir.Script.UnusedTracker()
+
+    let step env (ll: Weir.Script.LogicalLine) =
             match env with
             | Error() -> Error()
             | Ok tenv ->
@@ -140,10 +144,16 @@ let weirVerdict (src: string) : Verdict =
                         ll
                 with
                 | Error _ -> Error()
-                | Ok chk -> Ok chk.Env
+                | Ok chk ->
+                    unusedTracker.Feed ll chk
+                    Ok chk.Env
 
         match logicalLines |> List.fold step (Ok typeEnv0) with
-        | Ok _ -> Accept
+        | Ok _ ->
+            if unusedTracker.Flush Set.empty false |> List.isEmpty then
+                Accept
+            else
+                Reject
         | Error() -> Reject
 
 // The named-divergence artifact: ids parsed from the markdown table.
