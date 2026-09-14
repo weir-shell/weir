@@ -19,6 +19,19 @@
   paren interiors, single-line `let … in`, and lambda bodies off a
   top-level let's spine.
 
+### Fixed
+
+- **An HTTP response body reads under the same line law as everything
+  else.** `resp.body` split on `\n` raw, so a body ending in a
+  newline carried a trailing empty line (a one-line file came back as
+  two elements), a CRLF body left a stray `\r` on each line, and an
+  empty body was one empty line rather than none. It now reads the
+  way `File.read` and command output do — a trailing newline
+  terminates rather than separates, `\r\n` normalizes, an empty body
+  is zero lines — so a URL fetched with `curl url` and with
+  `Http.fetch url` agree exactly. Bodies piped into `from json` are
+  unaffected.
+
 ## v0.0.33
 
 ### Added

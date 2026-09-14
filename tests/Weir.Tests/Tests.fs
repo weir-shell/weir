@@ -12233,7 +12233,15 @@ let httpTests =
 
     testList
         "Http [D:http]"
-        [ test "show of a request MASKS its Secret — auth union AND secret headers (formatWith recursion, confirmed)" {
+        [ test "the response body reads under weir's line law [D:http-body-lines]: no trailing empty, CRLF normalized, empty is empty" {
+              let lines s = Weir.Builtins.bodyLines s
+              Expect.equal (lines "v0.0.33\n") [ "v0.0.33" ] "trailing newline is a terminator, not a separator"
+              Expect.equal (lines "v0.0.33") [ "v0.0.33" ] "no trailing newline, same one element"
+              Expect.equal (lines "a\r\nb\r\n") [ "a"; "b" ] "CRLF terminators strip whole"
+              Expect.equal (lines "a\n\nb\n") [ "a"; ""; "b" ] "interior blank survives"
+              Expect.equal (lines "") [] "empty body is empty"
+          }
+          test "show of a request MASKS its Secret — auth union AND secret headers (formatWith recursion, confirmed)" {
               let r =
                   run
                       "{ Http.defaults with auth = Bearer (Secret.of \"tok\"); secretHeaders = [(\"X-API-Key\", Secret.of \"k\")] }"
