@@ -22,37 +22,40 @@ let tag = $"ext-vscode-v{manifest.version}"
 // ---- 1. preflight: refuse before anything mutates -------------------------
 print $"== preflight for {tag} =="
 
-let dirty = $(git status --porcelain) |> Seq.length
+let dirty = git status --porcelain |> Seq.length
 
 if dirty <> 0 then
     fail $"{dirty} uncommitted change(s) — commit or stash first"
 
-let branch = $(git rev-parse --abbrev-ref HEAD) |> Seq.head
+let branch = git rev-parse --abbrev-ref HEAD |> Seq.exactlyOne
 
 if branch <> "main" then
     fail $"on '{branch}' — the extension releases from main"
 
 git fetch origin main
-let localSha = $(git rev-parse HEAD) |> Seq.head
-let originSha = $(git rev-parse origin/main) |> Seq.head
+let localSha = git rev-parse HEAD |> Seq.exactlyOne
+let originSha = git rev-parse origin/main |> Seq.exactlyOne
 
 if localSha <> originSha then
     fail $"local {localSha} vs origin {originSha} — push or pull first"
 
-let taken = $(git tag -l $tag) |> Seq.length
+let taken = git tag -l $tag |> Seq.length
 
 if taken <> 0 then
     fail $"{tag} already exists — registries never reuse a version; bump editors/vscode/package.json"
 
 // the vsix must build BEFORE the tag: a manifest or .vscodeignore slip
-// is fixable here, unrecoverable after the registries see the version
-let pkgDir = Path.newTempDir ()
-let pkg = sh -c $"cd editors/vscode && npx --no-install vsce package --out {pkgDir}/weir.vsix" | complete
-Dir.deleteAll pkgDir
+// is fixable here, unrecoverable after the registries see the version.
+// Both scopes release on the fail path too (the tmp dir is absolute, so
+// the cd cannot orphan it); the reifier rides $() because a block-let
+// sits off the top-level spine
+within tmp d
+    within cd "editors/vscode"
+        let pkg = $(npx --no-install vsce package --out $"{d}/weir.vsix" | complete)
 
-if pkg.exitCode <> 0 then
-    pkg.stderr |> Seq.iter printerr
-    fail "vsce package refused — fix the manifest (node_modules present? `npm ci` in editors/vscode) before tagging"
+        if pkg.exitCode <> 0 then
+            pkg.stderr |> Seq.iter printerr
+            fail "vsce package refused — fix the manifest (node_modules present? `npm ci` in editors/vscode) before tagging"
 
 print $"  ok: clean tree on pushed main; {tag} free; vsix packages"
 

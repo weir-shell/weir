@@ -84,12 +84,12 @@ let areaOfOther p =
         "docs"
 
 let checkCommit c =
-    let subject = git log -1 --format=%s $c |> Seq.head
+    let subject = git log -1 --format=%s $c |> Seq.exactlyOne
     // merge commits SKIP [D:commit-areas]: their subjects are
     // GitHub-generated and their diffs are resolutions, not work — the
     // area lives on the commits being merged (rev-list --no-merges
     // covers ranges; this covers --commit)
-    let parents = git rev-list --parents -n 1 $c |> Seq.head |> Str.split " " |> Seq.length
+    let parents = git rev-list --parents -n 1 $c |> Seq.exactlyOne |> Str.split " " |> Seq.length
 
     if parents > 2 then
         print $"commit-area SKIP: {c} is a merge ({subject})"
