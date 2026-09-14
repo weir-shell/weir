@@ -46,14 +46,16 @@ if taken <> 0 then
 
 // the vsix must build BEFORE the tag: a manifest or .vscodeignore slip
 // is fixable here, unrecoverable after the registries see the version.
-// The tmp scope releases on the fail path too; the reifier rides $()
-// because a block-let sits off the top-level spine
+// Both scopes release on the fail path too (the tmp dir is absolute, so
+// the cd cannot orphan it); the reifier rides $() because a block-let
+// sits off the top-level spine
 within tmp d
-    let pkg = $(sh -c $"cd editors/vscode && npx --no-install vsce package --out {d}/weir.vsix" | complete)
+    within cd "editors/vscode"
+        let pkg = $(npx --no-install vsce package --out $"{d}/weir.vsix" | complete)
 
-    if pkg.exitCode <> 0 then
-        pkg.stderr |> Seq.iter printerr
-        fail "vsce package refused — fix the manifest (node_modules present? `npm ci` in editors/vscode) before tagging"
+        if pkg.exitCode <> 0 then
+            pkg.stderr |> Seq.iter printerr
+            fail "vsce package refused — fix the manifest (node_modules present? `npm ci` in editors/vscode) before tagging"
 
 print $"  ok: clean tree on pushed main; {tag} free; vsix packages"
 
