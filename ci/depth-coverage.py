@@ -43,9 +43,10 @@ rec_re = re.compile(r"^let\s+(?:private\s+)?rec\s|^let\s+rec\s")
 asg_re = re.compile(r"^(\w+)(?:\.Value|\.TermParser)?\s*<-")
 
 # recursive AST walkers whose depth is bounded by the deepen'd parse
-# that built the tree (patLeafNames), or tail recursion the compiler
+# that built the tree (patLeafNames, chainReifier [D:statement-lets]),
+# or tail recursion the compiler
 # turns into a loop (exitCodeSpine) — not input-driven stack growth
-AST_WALKERS = {"patLeafNames", "exitCodeSpine"}
+AST_WALKERS = {"patLeafNames", "exitCodeSpine", "chainReifier"}
 
 ref_to_node = {}  # exprRef -> expr
 defs = []  # (node, start_line, is_rec)
