@@ -1,8 +1,6 @@
 # weir — command-mode block lets in every statement context
 
-Status: PLANNED (2026-09-14, designer: "plan it" — the within-body
-`$()` wart ruled worth fixing, the spine boundary ruled arbitrary
-where it crosses statement bodies).
+Status: IN EXECUTION (2026-09-14; probes run first, results below).
 
 ## The finding
 
@@ -84,6 +82,61 @@ where the let already is one.
 6. Fuzz grammar: does the generator emit block-lets in statement
    bodies at all? Extend it to generate command-RHS lets there, or
    the property never exercises the new position.
+
+## Probe results (2026-09-14, before any parser change)
+
+1. TRANSCRIBED. All four contexts refuse a bare reifier block-let
+   uniformly, at the reifier, with the fifth-cell teaching
+   ("'complete' is a reifier, not a PATH program — reify on a
+   statement-level let RHS…"): `within tmp d`, `if 1 > 0 then`,
+   `for x in [1] do`, a statement-position match arm — and the
+   `always` block joins them. The text is nonsense at every one of
+   these sites: the let IS statement-level there. `pure` on a let
+   RHS is ALREADY the desired interplay (the RHS spine admits the
+   grammar; purity refuses at check, located at the command:
+   "this 'pure' block forbids effects, but '|completed' runs a
+   command"). The dash-death twin transcribed too: `let r = npx
+   --no-install vsce package | complete` in a within body dies RAW
+   at the double dash ("Expecting: identifier, '!', '$', …") — the
+   reifier teaching never fires; `sh -c … | complete` teaches.
+2. THE PAREN-SWALLOW DOES NOT REPRODUCE. `cmdWordChar`
+   (Parser.fs) excludes `)` from argv words, so a lambda's closer
+   can never join a command's argv. Probed on the live spine
+   (lambda bodies take command mode there today): `echo charlie)`,
+   `echo bravo (1 + 1))`, `echo delta (x)` with the closer glued
+   AND alone, `echo ")" tail)` (a QUOTED paren does not confuse the
+   assembler's balance), and a command block-let with `")"` in
+   argv — every shape parses, runs, and never swallows the closer.
+   Per the plan's own honesty clause: lambda bodies STAY out of
+   scope (the boundary holds on precedent, not on this hazard), and
+   the lambda question reopens as its own ruling with its own
+   receipt bar — not folded into this one.
+3. PIN INVENTORY. FLIPS: the fifth-refusal-cell unit pin's if-body
+   and within-body positions (4 reifiers × 2 positions become
+   legal). STAYS: its lambda-body position (text moves to the new
+   hardened teaching); "single-line let-in stays expression-only"
+   (the standing park); "products: parens interiors stay
+   expression-only" (off-spine); "command block-let in a lambda
+   body parses on the let-RHS spine" ([D:multiline-lambda] —
+   inheritance untouched); SKILL's weir-error statement-level
+   `Seq.iter` block (stays refused, NEW text); SKILL's weir
+   `Seq.map`-on-spine block (stays legal). Probed en route: the
+   SPINE flag already rides through paren interiors, interpolation
+   holes, and list literals (`let x = $"pre {let y = echo hi in
+   y |> Seq.head}"` runs today) — unpinned, untouched by this plan.
+4. PARITY BASELINE: check and run refuse identically today (same
+   parse error, both paths); post-change pins go per context,
+   analyzeLines (assume-resolver) against a real run.
+5. `within proc srv = <command>` heads parse via letRhsCmd
+   DIRECTLY, ungated — the head owns its line before the body block
+   opens, so no collision with body command-lets is possible by
+   construction; pinned in stage 4.
+6. THE GENERATOR DOES NOT reach the new positions: command-backed
+   lets render top-level and in block-let bodies (the spine) only;
+   if bodies get bare commands/prints/nested ifs; `within` and
+   `for` are outside the grammar entirely. Without the stage-6
+   extension the property never exercises a statement-body
+   command-let.
 
 ## Footprint
 

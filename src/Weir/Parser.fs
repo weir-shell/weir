@@ -79,12 +79,22 @@ let private ambientResolver =
           ExternalNames = (fun () -> Seq.empty)
           BareHome = fun _ -> None })
 
-// Block-let command RHS [D:block-let-cmd]: TRUE only along the
-// statement spine a block assembles into (topLet RHS + its let-in
-// chain) — parens, lambda bodies, and the bare single-line let-in
-// (REPL/-e) stay expression-only, holding the original in-swallow
-// park's boundary by construction.
+// Block-let command RHS [D:block-let-cmd][D:statement-lets]:
+// context-derived — TRUE along the spine a top-level let's RHS
+// assembles into (its let-in chain included; inheritance through
+// parens and lambda bodies untouched, [D:multiline-lambda]) AND
+// wherever a STATEMENT body opens (if/elif/else, for, match arms,
+// every within kind + always blocks, pure); FALSE in expression
+// territory — paren interiors, lambda bodies off the spine, and the
+// bare single-line let-in (REPL/-e), holding the original in-swallow
+// park's boundary.
 let private letCmdOk = new System.Threading.ThreadLocal<bool>(fun () -> false)
+
+// [D:statement-lets] the grant's SOURCE tag: TRUE when the current
+// letCmdOk came from a statement body, so paren interiors and lambda
+// bodies clear THAT grant while the spine's flag rides through them
+// exactly as before.
+let private letCmdStmt = new System.Threading.ThreadLocal<bool>(fun () -> false)
 
 // plain parens are EXPRESSION territory [D:interior-arming]: the
 // interior-command element does not apply there ($()/!() are the
@@ -125,6 +135,78 @@ let private withLetCmd (v: bool) (p: Parser<'a, unit>) : Parser<'a, unit> =
             p stream
         finally
             letCmdOk.Value <- saved
+
+// [D:statement-lets] a statement body GRANTS command-mode lets — the
+// top-level law, one body deeper. Unconditional on parens: bodies are
+// statement territory even inside (assembler-wrapped) parens — the
+// [D:interior-arming] precedent, and the fuzzer caught the gated
+// version refusing a nested if's let behind the assembler's wrap. A
+// flag already up (the spine) is never re-tagged, so its inheritance
+// is untouched.
+let private withStmtLetCmd (p: Parser<'a, unit>) : Parser<'a, unit> =
+    fun stream ->
+        if letCmdOk.Value then
+            p stream
+        else
+            let savedOk = letCmdOk.Value
+            let savedStmt = letCmdStmt.Value
+            letCmdOk.Value <- true
+            letCmdStmt.Value <- true
+
+            try
+                p stream
+            finally
+                letCmdOk.Value <- savedOk
+                letCmdStmt.Value <- savedStmt
+
+// [D:statement-lets] spans that parsed as a GRANTED command-let RHS in
+// an earlier attempt of the SAME line: a backtrack that re-reaches one
+// through a refused route (a re-parse after unrelated junk killed the
+// first route) is an artifact, and no refusal FATAL — the hardened
+// teaching, the reifier-stage guard, the bare-pipe hint — may steal
+// the true error's site from inside it (the fuzz arbitration property
+// caught exactly that theft). Cleared per line.
+let private grantedRhsRanges =
+    new System.Threading.ThreadLocal<ResizeArray<struct (int64 * int64)>>(fun () -> ResizeArray())
+
+let private inGrantedRange (off: int64) : bool =
+    grantedRhsRanges.Value |> Seq.exists (fun struct (s, e) -> off >= s && off < e)
+
+// [D:statement-lets] the hardened teaching names the ACTUAL refusing
+// context ("inside a lambda body, a command needs $(…)") — innermost
+// setter wins; the default covers the genuine single-line spelling
+// (REPL/-e/top level), the one place no setter has run.
+let private exprCtxName =
+    new System.Threading.ThreadLocal<string>(fun () -> "in the single-line let…in form")
+
+let private withExprCtxName (n: string) (p: Parser<'a, unit>) : Parser<'a, unit> =
+    fun stream ->
+        let saved = exprCtxName.Value
+        exprCtxName.Value <- n
+
+        try
+            p stream
+        finally
+            exprCtxName.Value <- saved
+
+// [D:statement-lets] paren interiors and lambda bodies are expression
+// territory for the STATEMENT grant only — the spine's flag keeps its
+// standing ride through both ([D:multiline-lambda], untouched).
+let private clearStmtLetCmd (p: Parser<'a, unit>) : Parser<'a, unit> =
+    fun stream ->
+        if letCmdStmt.Value then
+            let savedOk = letCmdOk.Value
+            let savedStmt = letCmdStmt.Value
+            letCmdOk.Value <- false
+            letCmdStmt.Value <- false
+
+            try
+                p stream
+            finally
+                letCmdOk.Value <- savedOk
+                letCmdStmt.Value <- savedStmt
+        else
+            p stream
 
 let private withIfCond (v: bool) (p: Parser<'a, unit>) : Parser<'a, unit> =
     fun stream ->
@@ -338,8 +420,20 @@ let private reifierWordEnd: Parser<unit, unit> =
 
 let private barePipeHint: Parser<unit, unit> =
     // a bare `|` after a completed EXPRESSION [D:pipe-hint]; anchor the
-    // caret ON the `|`, not the ws after it [D:anchor-before-read]
-    (attempt (getPosition .>> pchar '|' .>> notFollowedBy (anyOf "|>"))
+    // caret ON the `|`, not the ws after it [D:anchor-before-read].
+    // Inside a granted command-let span the hint stands down
+    // [D:statement-lets] — a refused re-parse there is backtrack
+    // artifact, and its fatal would steal the true error's site.
+    (attempt (
+        getPosition .>> pchar '|' .>> notFollowedBy (anyOf "|>")
+        >>= fun p ->
+            if inGrantedRange p.Index then
+                // pre-ifail position: the marker spelled inline (the
+                // label is attempt-swallowed either way)
+                fail "a granted route owns this pipe"
+            else
+                preturn p
+     )
      >>= fun pipePos ->
          // a reifier name after the bare pipe teaches the reifier
          // boundary, not the pipe glyph [D:reifier-family-complete]
@@ -705,7 +799,12 @@ let private opValue =
 let private parens =
     // (e) groups; tuples come from the comma INSIDE seqExpr (the
     // bare-comma amendment moved the comma into the expression grammar)
-    spanned (pchar '(' >>. ws >>. withExprParen true seqExpr .>> pchar ')')
+    // — and a statement body's let-cmd grant stops here [D:statement-lets]
+    spanned (
+        pchar '(' >>. ws
+        >>. withExprParen true (withExprCtxName "inside parentheses" (clearStmtLetCmd seqExpr))
+        .>> pchar ')'
+    )
     |>> fun (inner, span) -> { inner with Span = span }
     .>> ws
 
@@ -1006,6 +1105,22 @@ let rec private exitCodeSpine (e: Expr) : bool =
     | EVar("|exitCoded" | "|exitCodedEnv") -> true
     | EApp(f, _) -> exitCodeSpine f
     | _ -> false
+
+// [D:statement-lets] which reifier heads a probed chain — the hardened
+// teaching's evidence: a refused-context RHS that PARSES as a reifier
+// chain is a command the position cannot take, whether or not the
+// expression grammar would survive its argv (`--flag` heads die there
+// before the pipe is ever seen). App spines head the desugar; a post-
+// reifier `|>` stage rides an EPipe.
+let rec private chainReifier (e: Expr) : string option =
+    match e.Kind with
+    | EVar v when v.StartsWith "|completed" -> Some "complete"
+    | EVar v when v.StartsWith "|succeeded" -> Some "succeeds"
+    | EVar v when v.StartsWith "|exitCoded" -> Some "exitCode"
+    | EVar v when v.StartsWith "|orFailed" -> Some "orFail"
+    | EApp(f, _) -> chainReifier f
+    | EPipe(l, r) -> chainReifier r |> Option.orElseWith (fun () -> chainReifier l)
+    | _ -> None
 
 let private captureSigil =
     spanned (
@@ -1445,7 +1560,9 @@ let private lambdaBody =
                     finally
                         ambientResolver.Value <- saved
 
-            withParams (withExprParen false seqExpr)
+            // a lambda body clears a statement body's let-cmd grant
+            // [D:statement-lets] — lambda bodies stay spine-gated
+            withParams (withExprParen false (withExprCtxName "inside a lambda body" (clearStmtLetCmd seqExpr)))
             |>> fun body ->
                 let inner = curryParams ps body
 
@@ -1489,13 +1606,46 @@ let private letInBody =
               >>= fun ((name, nameSpan), ps) ->
                   // the block-let command RHS [D:block-let-cmd]: the same
                   // grammar the top-level bare RHS takes (in-stop argv, one
-                  // gate), live only on the assembled statement spine
+                  // gate), live on the spine and in every statement
+                  // context [D:statement-lets]
                   let cmdRhs: Parser<Expr, unit> =
                       fun stream ->
                           if letCmdOk.Value then
-                              letRhsCmd stream
+                              // a granted success memoizes its span so a
+                              // later refused re-parse of the SAME text never
+                              // teaches over the true error [D:statement-lets]
+                              let off = stream.Index
+                              let reply = letRhsCmd stream
+
+                              if reply.Status = ReplyStatus.Ok then
+                                  grantedRhsRanges.Value.Add(struct (off, stream.Index))
+
+                              reply
+                          elif inGrantedRange stream.Index then
+                              ifail "a granted route owns this RHS — backtrack artifact, no teach" stream
                           else
-                              ifail "block-let command RHS is spine-only" stream
+                              // the hardened teaching [D:statement-lets]: probe
+                              // the RHS under a granted flag — a chain that
+                              // parses WITH a reifier is a command this
+                              // expression context refuses, so teach $() at
+                              // the head, naming the ACTUAL context; the probe
+                              // consumes nothing and fires BEFORE the
+                              // expression parse, so a `--flag` argv teaches
+                              // exactly like one that survives to the pipe. A
+                              // reifier-free chain falls through — the
+                              // interior-command element takes it.
+                              let teach =
+                                  attempt (lookAhead (getPosition .>>. withLetCmd true letRhsCmd))
+                                  >>= fun (at, probed) ->
+                                      match chainReifier probed with
+                                      | Some reif ->
+                                          failFatallyAt
+                                              at
+                                              ($"{exprCtxName.Value}, a command needs $(…) on a 'let' RHS — write: let {name} = $(<command> | {reif}); "
+                                               + "bare command lets belong to statement bodies (top level, if/for/match arms, within blocks)")
+                                      | None -> ifail "reifier-free chain — the interior element takes it"
+
+                              (teach <|> ifail "block-let command RHS is statement-context-only") stream
 
                   // params shadow PATH inside their own RHS
                   // [D:paramful-rhs] — the top-level rule at block-let
@@ -1901,7 +2051,8 @@ let private matchArm =
         withPatNames
             p
             (opt (keyword "when" >>. expr) .>> str_ws "->"
-             .>>. withMatchArm true (withExprParen false seqExpr))
+             // an arm body takes command lets [D:statement-lets]
+             .>>. withMatchArm true (withStmtLetCmd (withExprParen false seqExpr)))
         |>> fun (guard, body) -> p, guard, body
 
 // within <kind> <binder> + block [D:within-scopes]: a scoped resource
@@ -1915,7 +2066,8 @@ let private withinExprBody =
         // then-convention); siblings arrive sentineled
         let block =
             opt (str_ws ";" <|> str_ws sibSepStr)
-            >>. (withExprParen false seqExpr <?> "the scope's block")
+            // every within kind's body is a statement context [D:statement-lets]
+            >>. (withStmtLetCmd (withExprParen false seqExpr) <?> "the scope's block")
 
         // the bare scope [D:within-always]: no resource, the exit
         // discipline alone — a body then the `always` segment, run on
@@ -1930,7 +2082,8 @@ let private withinExprBody =
                 (attempt (opt (str_ws ";" <|> str_ws sibSepStr) >>. keyword "always")
                  <?> $"the always segment (bare within = body + always cleanup; a resource scope names its kind: {Ast.withinKindList})")
                 >>. (opt (str_ws ";" <|> str_ws sibSepStr))
-                >>. (withExprParen false seqExpr <?> "the always block")
+                // the always block joins the statement contexts [D:statement-lets]
+                >>. (withStmtLetCmd (withExprParen false seqExpr) <?> "the always block")
                 |>> fun cleanup ->
                     { Kind = EAlways(body, cleanup)
                       Span =
@@ -1977,7 +2130,11 @@ let private withinExprBody =
                                          "within proc takes ONE command — a pipeline or capture is not a scoped child; compose inside sh -c \"…\"")
                                 >>= fun cmdE ->
                                     (opt (str_ws ";" <|> str_ws sibSepStr))
-                                    >>. (withPatNames { PKind = PVar binder; PSpan = bspan } (withExprParen false seqExpr)
+                                    // proc bodies too [D:statement-lets] — the head owns
+                                    // its own line, so no collision with body lets
+                                    >>. (withPatNames
+                                            { PKind = PVar binder; PSpan = bspan }
+                                            (withStmtLetCmd (withExprParen false seqExpr))
                                          <?> "the scope's block")
                                     |>> fun body ->
                                         { Kind = EWithin(wk.Id, Some(binder, bspan), Some cmdE, None, body)
@@ -1988,7 +2145,10 @@ let private withinExprBody =
                         identSpanned
                         >>= fun (binder, bspan) ->
                             (opt (str_ws ";" <|> str_ws sibSepStr))
-                            >>. (withPatNames { PKind = PVar binder; PSpan = bspan } (withExprParen false seqExpr)
+                            // tmp bodies too [D:statement-lets]
+                            >>. (withPatNames
+                                    { PKind = PVar binder; PSpan = bspan }
+                                    (withStmtLetCmd (withExprParen false seqExpr))
                                  <?> "the scope's block")
                             |>> fun body ->
                                 { Kind = EWithin(wk.Id, Some(binder, bspan), None, None, body)
@@ -2031,7 +2191,10 @@ let private pureExprBody =
     getPosition .>> keyword "pure"
     >>= fun p ->
         ((opt (str_ws ";" <|> str_ws sibSepStr)
-          >>. (withExprParen false seqExpr <?> "the pure block's body"))
+          // the parser ADMITS command lets here [D:statement-lets]; the
+          // purity checker refuses them with its own located teaching —
+          // the better span than a parse error at the head
+          >>. (withStmtLetCmd (withExprParen false seqExpr) <?> "the pure block's body"))
          <|> failFatally
                  "pure takes a block — indent its body (the body must reach no effect); a pure BINDING is `let pure f x = …`")
         |>> fun body ->
@@ -2197,13 +2360,14 @@ let private ifExprBody =
         getPosition
         (keyword "if" >>. ifCond)
         // bodies are STATEMENT territory even inside (assembler-wrapped)
-        // parens [D:interior-arming] — the lambda-body precedent
-        (keyword "then" >>. withExprParen false seqExpr)
+        // parens [D:interior-arming] — the lambda-body precedent; and
+        // statement bodies grant command lets [D:statement-lets]
+        (keyword "then" >>. withStmtLetCmd (withExprParen false seqExpr))
         (many (
             (keyword "elif" >>. ifCond)
-            .>>. (keyword "then" >>. withExprParen false seqExpr)
+            .>>. (keyword "then" >>. withStmtLetCmd (withExprParen false seqExpr))
         ))
-        (opt (keyword "else" >>. withExprParen false seqExpr))
+        (opt (keyword "else" >>. withStmtLetCmd (withExprParen false seqExpr)))
         (fun p cond thn elifs els ->
             // fold from the right, iteratively — a long elif chain is a
             // spine and must not recurse per clause [D:depth-guard]
@@ -2263,8 +2427,9 @@ let private forExprBody =
             expr .>> keyword "do"
             >>= fun source ->
                 // the body knows its binder [D:interior-arming] — same
-                // bindings-beat-PATH extension as lambda params
-                withPatNames binder (cmdBody <|> withExprParen false seqExpr)
+                // bindings-beat-PATH extension as lambda params; for
+                // bodies are statement contexts [D:statement-lets]
+                withPatNames binder (cmdBody <|> withStmtLetCmd (withExprParen false seqExpr))
                 |>> fun body ->
                     let span = { Start = pos p; End = body.Span.End }
                     let mk k = { Kind = k; Span = span }
@@ -3245,7 +3410,7 @@ let private spliceSplat: Parser<Expr, unit> =
         pstring "$@"
         >>. (choice
                  [ rawWord |>> Choice1Of2
-                   (pchar '(' >>. ws >>. withExprParen true seqExpr .>> ws .>> pchar ')')
+                   (pchar '(' >>. ws >>. withExprParen true (clearStmtLetCmd seqExpr) .>> ws .>> pchar ')')
                    |>> Choice2Of2 ]
              <?> "a name or (expr) after '$@' — the argv splat")
     )
@@ -3666,6 +3831,14 @@ let private reifierStageGuard: Parser<Seg, unit> =
         getPosition
         .>>. (choice [ pstring "complete"; pstring "succeeds"; pstring "exitCode"; pstring "orFail" ]
               .>> notFollowedBy (satisfy cmdWordChar))
+        // inside a granted command-let span the guard stands down
+        // [D:statement-lets] — the refused re-parse is backtrack
+        // artifact; its fatal must not steal the true error's site
+        >>= fun (at, name) ->
+            if inGrantedRange at.Index then
+                ifail "a granted route owns this stage"
+            else
+                preturn (at, name)
     )
     >>= fun (at, name) -> failFatallyAt at (reifierHereMsg name)
 
@@ -4022,7 +4195,20 @@ let private topLet (r: Resolver) =
                 // user ';' after the command is still a bareword arg
                 // (eaten by cmdArg), so only the machine sentinel splits.
                 let rhsCmd =
-                    cmdLineLetRhs r' .>>. many (str_ws sibSepStr >>. stmtElem)
+                    // the spine RHS memoizes its granted span too
+                    // [D:statement-lets]: topLet's attempt swallows the
+                    // arming fatals (the exit-discard teaching among
+                    // them), and the refused re-parse behind it must
+                    // fall through to the SAME teaching, not the $() one
+                    (fun stream ->
+                        let off = stream.Index
+                        let reply = (cmdLineLetRhs r') stream
+
+                        if reply.Status = ReplyStatus.Ok then
+                            grantedRhsRanges.Value.Add(struct (off, stream.Index))
+
+                        reply)
+                    .>>. many (str_ws sibSepStr >>. stmtElem)
                     >>= fun (h, rest) -> armSeq (Choice1Of2 h :: rest)
 
                 let rhsP = rhsCmd <|> ((seqExpr >>= pipeOrHint))
@@ -4270,6 +4456,8 @@ let private pipeToCommand (r: Resolver) (root: Expr) : (Span * string option) op
 let parseLineFull (r: Resolver) (input: string) : Result<Stmt, ParseFailure> =
     ambientResolver.Value <- r
     parseDepth.Value <- 0
+    // per-line memo [D:statement-lets] — offsets are line-relative
+    grantedRhsRanges.Value.Clear()
 
     try
         try

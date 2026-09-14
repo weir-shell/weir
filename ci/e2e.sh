@@ -1321,6 +1321,74 @@ done
 echo "$out" | grep -qF "testing" && fail "only the matched arm runs"
 echo "e2e ok: match arms dispatch bare commands (multi-line bodies, capture position intact)"
 
+# command-mode block lets in every statement context [D:statement-lets]:
+# a cell per context — within/if/for/match-arm/always/proc bodies take
+# the full command-let law (reifiers, splices, param-ful lets)
+sldir=$(mkweirtmp)
+cat > "$sldir/sl.weir" <<'WEOF'
+within tmp d
+    let r = sh -c "echo in-within" | complete
+    print $"w:{r.stdout |> Seq.exactlyOne}:{r.exitCode}"
+if 1 > 0 then
+    let r = sh -c "echo in-if" | complete
+    print $"i:{r.stdout |> Seq.exactlyOne}"
+for i in [7] do
+    let r = sh -c $"echo in-for-{i}" | complete
+    print $"f:{r.stdout |> Seq.exactlyOne}"
+match "go" with
+| "go" ->
+    let r = sh -c "echo in-arm" | complete
+    print $"m:{r.stdout |> Seq.exactlyOne}"
+| _ -> print "no"
+within
+    print "body-ran"
+always
+    let r = sh -c "echo in-always" | complete
+    print $"a:{r.stdout |> Seq.exactlyOne}"
+within proc srv = sh -c "sleep 3"
+    let r = sh -c "echo in-proc" | complete
+    print $"p:{r.stdout |> Seq.exactlyOne}:{Proc.running srv}"
+within tmp d2
+    let tag = "spliced-deep"
+    let f x = echo $x
+    let got = f tag |> Seq.exactlyOne
+    print $"s:{got}"
+WEOF
+$BIN check "$sldir/sl.weir" || fail "statement-lets battery must check"
+out=$(cd "$sldir" && $BIN sl.weir) || fail "statement-lets battery must run"
+for want in "w:in-within:0" "i:in-if" "f:in-for-7" "m:in-arm" "a:in-always" "p:in-proc:true" "s:spliced-deep"; do
+    echo "$out" | grep -qF "$want" || fail "statement lets: missing '$want': $out"
+done
+echo "e2e ok: block lets take command RHS in within/if/for/match/always/proc bodies"
+
+# the pure interplay [D:statement-lets]: the parser admits the grammar;
+# PURITY refuses, located at the command — never a parse error
+cat > "$sldir/slpure.weir" <<'WEOF'
+if 1 > 0 then
+    let v =
+        pure
+            let r = sh -c "echo x" | complete
+            r.exitCode
+    print $"{v}"
+WEOF
+out=$($BIN check "$sldir/slpure.weir" 2>&1) && fail "a command let inside pure must refuse" || true
+echo "$out" | grep -qF "forbids effects" || fail "purity's own teaching must fire: $out"
+echo "$out" | grep -qF "is a reifier" && fail "no parse-level refusal may preempt purity's span"
+echo "e2e ok: pure admits the grammar; purity refuses at the command"
+
+# the hardened teaching [D:statement-lets]: a refused context names $()
+# and the ACTUAL context — --flag argv included (the dash-death class,
+# which used to die raw at the double dash before the pipe)
+cat > "$sldir/sllam.weir" <<'WEOF'
+[1] |> Seq.iter (fun _ ->
+    let r = npx --no-install vsce package | complete
+    print $"{r.exitCode}")
+WEOF
+out=$($BIN check "$sldir/sllam.weir" 2>&1) && fail "a lambda-body reifier let must refuse" || true
+echo "$out" | grep -qF 'inside a lambda body, a command needs $(' || fail "the hardened teaching must fire: $out"
+echo "e2e ok: the refusal teaches \$() naming the lambda context, --flag argv included"
+
+
 # raise timings [D:interior-arming]: ARMED raises immediately (the tail
 # never runs); CAPTURE raises only at force (existing law, re-pinned)
 cat > "$iadir/armed.weir" <<'WEOF'
