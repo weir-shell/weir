@@ -1,0 +1,105 @@
+/// The vsix release driver [D:ext-publish]: the version comes from
+/// editors/vscode/package.json (the workflow refuses a tag that
+/// disagrees, so this script never asks), the `ext-vscode-v*` tag
+/// triggers build-once-publish-twice (Marketplace + Open VSX + a
+/// GitHub release for the manual path), and the script watches the
+/// run to its conclusion — registries never unpublish or reuse a
+/// version, so a red run means bump-and-retag, never re-run. Run from
+/// the weir repo root, at a terminal:
+///
+///     weir tools/ext-release.weir
+
+let confirm msg =
+    let a = prompt $"{msg} [y/N]"
+    a == "y" || a == "Y" || a == "yes"
+
+let manifest =
+    File.read "editors/vscode/package.json"
+    |> from json {| version: string; publisher: string |}
+
+let tag = $"ext-vscode-v{manifest.version}"
+
+// ---- 1. preflight: refuse before anything mutates -------------------------
+print $"== preflight for {tag} =="
+
+let dirty = $(git status --porcelain) |> Seq.length
+
+if dirty <> 0 then
+    fail $"{dirty} uncommitted change(s) — commit or stash first"
+
+let branch = $(git rev-parse --abbrev-ref HEAD) |> Seq.head
+
+if branch <> "main" then
+    fail $"on '{branch}' — the extension releases from main"
+
+git fetch origin main
+let localSha = $(git rev-parse HEAD) |> Seq.head
+let originSha = $(git rev-parse origin/main) |> Seq.head
+
+if localSha <> originSha then
+    fail $"local {localSha} vs origin {originSha} — push or pull first"
+
+let taken = $(git tag -l $tag) |> Seq.length
+
+if taken <> 0 then
+    fail $"{tag} already exists — registries never reuse a version; bump editors/vscode/package.json"
+
+// the vsix must build BEFORE the tag: a manifest or .vscodeignore slip
+// is fixable here, unrecoverable after the registries see the version
+let pkgDir = Path.newTempDir ()
+let pkg = sh -c $"cd editors/vscode && npx --no-install vsce package --out {pkgDir}/weir.vsix" | complete
+Dir.deleteAll pkgDir
+
+if pkg.exitCode <> 0 then
+    pkg.stderr |> Seq.iter printerr
+    fail "vsce package refused — fix the manifest (node_modules present? `npm ci` in editors/vscode) before tagging"
+
+print $"  ok: clean tree on pushed main; {tag} free; vsix packages"
+
+// ---- 2. the tag ------------------------------------------------------------
+if not (confirm $"cut AND push {tag} (publishes {manifest.publisher}.weir {manifest.version} to BOTH registries)?") then
+    fail "aborted — nothing was tagged"
+
+git tag $tag
+git push origin $tag
+print $"tagged and pushed {tag} — the publish workflow is running"
+
+// ---- 3. watch the run to its conclusion ------------------------------------
+let runsUrl =
+    "https://api.github.com/repos/weir-shell/weir/actions/workflows/ext-vscode.yml/runs?event=push&per_page=10"
+
+// a non-200 (rate limit, gateway flake) reads as not-yet, never a crash
+// mid-ritual — the poll just asks again at the next tick
+let tagRun () =
+    let r = Http.send (Http.get runsUrl)
+
+    if r.status <> 200 then
+        None
+    else
+        (r.body
+            |> from json {| workflow_runs: seq<{| head_branch: string; status: string; conclusion: Option<string> |}> |})
+                .workflow_runs
+        |> Seq.tryFind (fun w -> w.head_branch == tag)
+
+print "waiting for the workflow to complete..."
+
+poll timeout=20m interval=20s
+    tagRun ()
+    |> Option.map (fun w -> w.status == "completed")
+    |> Option.defaultValue false
+
+let final =
+    tagRun ()
+    |> Option.defaultWith (fun () -> fail "the run vanished from the Actions API — check the Actions tab")
+
+match final.conclusion with
+| Some "success" ->
+    print ""
+    print $"{tag} published:"
+    print $"  marketplace: https://marketplace.visualstudio.com/items?itemName={manifest.publisher}.weir"
+    print $"  open-vsx:    https://open-vsx.org/extension/{manifest.publisher}/weir"
+    print $"  vsix:        attached to the {tag} GitHub release"
+| Some c ->
+    fail $"the run concluded '{c}' — nothing published; fix, bump the version, re-tag (a version the registries saw is spent)"
+| None ->
+    fail "the run completed without a conclusion — check the Actions tab"
