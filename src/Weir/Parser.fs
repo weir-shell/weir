@@ -4194,7 +4194,20 @@ let private topLet (r: Resolver) =
                 // user ';' after the command is still a bareword arg
                 // (eaten by cmdArg), so only the machine sentinel splits.
                 let rhsCmd =
-                    cmdLineLetRhs r' .>>. many (str_ws sibSepStr >>. stmtElem)
+                    // the spine RHS memoizes its granted span too
+                    // [D:statement-lets]: topLet's attempt swallows the
+                    // arming fatals (the exit-discard teaching among
+                    // them), and the refused re-parse behind it must
+                    // fall through to the SAME teaching, not the $() one
+                    (fun stream ->
+                        let off = stream.Index
+                        let reply = (cmdLineLetRhs r') stream
+
+                        if reply.Status = ReplyStatus.Ok then
+                            grantedRhsRanges.Value.Add(struct (off, stream.Index))
+
+                        reply)
+                    .>>. many (str_ws sibSepStr >>. stmtElem)
                     >>= fun (h, rest) -> armSeq (Choice1Of2 h :: rest)
 
                 let rhsP = rhsCmd <|> ((seqExpr >>= pipeOrHint))
