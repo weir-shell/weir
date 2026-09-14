@@ -1,11 +1,14 @@
 #!/usr/bin/env weir
 // The tag-without-publish gate [D:release-gate]: `releases/latest`
-// EXCLUDES drafts, and [D:releases] produces drafts — so a tag with an
-// unpublished draft 404s there, and install.sh / install.ps1 both fail
-// with "could not resolve the latest release tag". Tagging alone does
-// NOT make the installers work; a human must publish the draft. This
-// fails LOUD on exactly that state, so the missing publish-click can't
-// ship silently — it guards every release, not just the first.
+// EXCLUDES drafts, and [D:releases] produces drafts — so tagging alone
+// does NOT make the installers serve the release; a human must publish.
+// The check is latest's TAG == the NEWEST stable tag, never bare
+// reachability: once ANY release is published /latest answers 200
+// forever, so a 200 proves nothing about the tag just cut (the blind
+// spot that let a publish-wait poll report v0.0.31 shipped while
+// /latest still served v0.0.29). A burned tag ages out on its own: the
+// next release makes a newer tag the newest, and the burned one is
+// never demanded again (the v0.0.30 precedent).
 
 let repo = "weir-shell/weir"
 
@@ -24,6 +27,14 @@ if Seq.isEmpty tags then
     print "no stable v* tag yet — nothing to check (pre-first-release; prerelease tags are exempt)"
     exit 0
 
+// newest by VERSION, not by text — v0.0.9 sorts after v0.0.31 textually
+let verKey t =
+    match t with
+    | Regex @"^v(\d+)\.(\d+)\.(\d+)$" (ma, mi, pa) -> (Str.toInt ma) * 1000000 + (Str.toInt mi) * 1000 + (Str.toInt pa)
+    | _ -> -1
+
+let newest = tags |> Seq.maxBy verKey
+
 // status is DATA — Http.send binds it, a 404 is a value not an error.
 // GitHub's API requires a User-Agent; the default one [D:http-ua] covers it.
 // GITHUB_TOKEN when present: CI runners share egress IPs, so the
@@ -36,13 +47,17 @@ let rel =
     | None -> Http.send req
 
 if rel.status == 200 then
-    print $"releases/latest resolves (200) — a published release exists for {tags |> Seq.length} tag(s)"
-    exit 0
+    let latest = (rel.body |> from json {| tag_name: string |}).tag_name
+    if latest == newest then
+        print $"releases/latest is {latest} — the newest stable tag is published"
+        exit 0
+    fail $"releases/latest is {latest} but the newest stable tag is {newest} — that tag was pushed and never PUBLISHED, and the installers silently keep serving {latest}. If its draft exists: gh release edit {newest} --draft=false (or the Releases page); if the release run never built (a red gate), fix and re-release — or burn the tag by cutting the next one"
 
-// ONLY a 404 is the missing-publish-click state — /latest excluding a
-// draft answers 404, never 403. Any other status is the API refusing
-// the QUERY, and the draft repair would be the wrong teach for it.
+// a 404 is the missing-publish state with NO release published yet —
+// /latest excluding drafts answers 404, never 403. Any other status is
+// the API refusing the QUERY, and the draft repair would be the wrong
+// teach for it.
 if rel.status == 404 then
-    fail $"releases/latest 404s but v* tag(s) exist — [D:releases] produces DRAFTS, which /latest excludes; the installers 404. PUBLISH THE DRAFT: gh release edit <tag> --draft=false (or the Releases page)"
+    fail $"releases/latest 404s but v* tag(s) exist — [D:releases] produces DRAFTS, which /latest excludes; the installers 404. PUBLISH THE DRAFT: gh release edit {newest} --draft=false (or the Releases page)"
 
 fail $"releases/latest returned {rel.status} — the API refused the query, not a release state (an unpublished draft answers 404, and this is not one). Most often the unauthenticated rate limit on shared CI egress IPs: set GITHUB_TOKEN, or retry"
