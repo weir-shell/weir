@@ -47,11 +47,10 @@ if taken <> 0 then
 // the vsix must build BEFORE the tag: a manifest or .vscodeignore slip
 // is fixable here, unrecoverable after the registries see the version.
 // Both scopes release on the fail path too (the tmp dir is absolute, so
-// the cd cannot orphan it); the reifier rides $() because a block-let
-// sits off the top-level spine
+// the cd cannot orphan it)
 within tmp d
     within cd "editors/vscode"
-        let pkg = $(npx --no-install vsce package --out $"{d}/weir.vsix" | complete)
+        let pkg = npx --no-install vsce package --out $"{d}/weir.vsix" | complete
 
         if pkg.exitCode <> 0 then
             pkg.stderr |> Seq.iter printerr

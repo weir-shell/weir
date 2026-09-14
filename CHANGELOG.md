@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.0.34
+
+### Changed
+
+- **A `let` in any statement body takes command lines, exactly like
+  top level.** `within` bodies (every kind, `always` blocks
+  included), if/elif/else bodies, `for` bodies, and match arms now
+  give a block `let` the full command-RHS law — bare chains,
+  reifiers, splices, param-ful lets, bindings-beat-PATH — so
+  `let r = npx … | complete` inside `within tmp`/`within cd` no
+  longer needs its `$()` wrapper. `pure` blocks admit the grammar
+  and the purity checker refuses at the command, its own located
+  teaching. The expression positions keep the refusal, with a
+  hardened teaching that names `$()` and the actual context
+  ("inside a lambda body, a command needs `$(…)`") and fires even
+  when the RHS argv would have died at a `--flag` before the pipe:
+  paren interiors, single-line `let … in`, and lambda bodies off a
+  top-level let's spine.
+
 ## v0.0.33
 
 ### Added

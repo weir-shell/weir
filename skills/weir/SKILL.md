@@ -1035,7 +1035,7 @@ ls |> Seq.where _.isDirectory |> Seq.iter (fun f -> print f.name)
 within tmp d
     within cd d
         File.write "plain.txt" ["x"]
-        let _linked = $(sh -c "ln -s plain.txt link 2>/dev/null" | complete)
+        let _linked = sh -c "ln -s plain.txt link 2>/dev/null" | complete
         ls |> Seq.where (fun f -> f.kind == Symlink) |> Seq.iter (fun f -> print $"{f.name} -> {f.target |> Option.defaultValue "?"}")
         let plain = ls |> Seq.find (fun f -> f.name == "plain.txt")
         print (show plain.target)
@@ -1505,17 +1505,22 @@ if clean then sh -c "echo acting"
   sigil. Interiors are ordinary command chains (splices, pipes,
   `| complete`). `!` is NOT bash history/extglob and `;` still does
   not chain inside them.
-- A top-level `let` RHS takes command lines — param-ful included
-  (`let f r = git rev-parse $r |> Seq.exactlyOne`): `let files = git ls-files`
-  binds `seq<string>`; `let r = git status | complete` binds the
-  record. Externals only — builtins stay functions there
-  (`let w = cd target` applies the BINDING target). BLOCK lets inside
-  bodies take the same command RHS ONLY along a top-level let's spine —
-  a lambda body qualifies exactly when the lambda itself sits on that
-  spine; off the spine (a statement-level `Seq.iter`, for example) a
-  reifier on a block-let RHS is a teaching error, never a PATH lookup.
-  The single-line `let ... in` spelling stays expression-only — there
-  use `$(git status)`. A bareword `in` on a let RHS ends the command
+- A `let` RHS takes command lines in every STATEMENT context
+  [D:statement-lets] — top level, param-ful included
+  (`let f r = git rev-parse $r |> Seq.exactlyOne`), and any body where
+  statements sequence: if/elif/else, `for`, match arms, every `within`
+  kind and its `always` block, `pure` blocks (the parser admits the
+  grammar there; the purity checker refuses at CHECK, located at the
+  command). `let files = git ls-files` binds `seq<string>`;
+  `let r = git status | complete` binds the record. Externals only —
+  builtins stay functions there (`let w = cd target` applies the
+  BINDING target). The carve-outs are EXPRESSION positions: paren
+  interiors, the single-line `let ... in` spelling (the `in`-swallow
+  is structural), and lambda bodies off a top-level let's spine (a
+  lambda body closes by its own paren balance — its boundary is a
+  separate ruling; ON the spine it inherits command mode as before).
+  In a refused position a command-shaped RHS teaches `$()`, naming
+  the actual context. A bareword `in` on a let RHS ends the command
   grammar; quote `"in"` to pass it.
 
 ```weir
@@ -1526,6 +1531,8 @@ print (codes |> Seq.head)
 ```
 
 ```weir-error
+// inside a lambda body, a command needs $(…) on a 'let' RHS — the
+// statement-context law stops at lambda bodies off the spine
 [1] |> Seq.iter (fun _ ->
     let r = sh -c "echo x" | complete
     print r.exitCode)
