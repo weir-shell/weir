@@ -1,0 +1,9 @@
+<!-- the weir mark, light-theme set (deep hues on a light surface) —
+     derived from icon-mark.svg [D:ext-publish]; file icons cannot use
+     a prefers-color-scheme query (they must follow the EDITOR theme,
+     which VS Code expresses as two files on the language contribution) -->
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <rect fill="#004396" x="20" y="34" width="56" height="12" rx="6"/>
+  <rect fill="#00658a" x="36" y="57" width="56" height="12" rx="6"/>
+  <rect fill="#007575" x="52" y="80" width="56" height="12" rx="6"/>
+</svg>
