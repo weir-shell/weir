@@ -139,13 +139,12 @@ orderless and idempotent — update-or-insert is the semantics of
 `by=`, not a branch you write.
 
 ```weir
-let doc =
-    <<<
-        kind: Kustomization
-        images:
-            - name: app
-              newTag: v1
-    |> Yaml.parse
+let doc = <<<
+    kind: Kustomization
+    images:
+        - name: app
+          newTag: v1
+|> Yaml.parse
 let p = yaml patch by=name
     images:
         - name: app
