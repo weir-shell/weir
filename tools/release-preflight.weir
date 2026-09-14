@@ -54,7 +54,10 @@ let targetResp =
 if targetResp.status <> 200 then
     fail $"TARGET_WEIR_RELEASE fetch answered {targetResp.status}"
 
-let grammarTarget = targetResp.body |> Seq.exactlyOne |> Str.trim
+// Seq.head, not exactlyOne: an HTTP body keeps its trailing newline as
+// an empty final element (unlike File.read / command output, which strip
+// it), so the one-line TARGET file arrives as ["v0.0.33"; ""]
+let grammarTarget = targetResp.body |> Seq.head |> Str.trim
 
 let checks =
     [ ("clean working tree", dirty == 0, $"{dirty} uncommitted change(s) — commit or stash first")
