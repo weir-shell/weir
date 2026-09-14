@@ -395,7 +395,7 @@ zx is also "a real language for shell scripts", so the diff is sharp.
 Two real differences. Weir checks the whole file before running a
 line — types, fields, match coverage, and whether the commands exist
 — where zx discovers a typo'd binary at await-time, halfway through
-the deploy. And there is no runtime to install: one AOT binary,
+the deploy. And there is no runtime to install: one static binary,
 millisecond startup, no `node_modules`, no `package.json`.
 
 | zx / Node | weir |

@@ -24,6 +24,7 @@ argument that killed the subtractive fork.
 | no-mutation | rejected | mutable / <- assignment (reserved word) | reject | accept | SEMANTICS: evaluation |
 | no-operator-defaulting | rejected | + on two unresolved params | reject (int-or-string guess refused) | accept (defaults int) | SEMANTICS: var-var operators |
 | no-oo | rejected | classes, interfaces, members, inheritance | reject | accept | a typed shell, not an object language |
+| no-srtp | rejected | SRTP — `inline` + `^a` member-constraint machinery | `^a` rejects at parse (a sig type is `'a`-shaped); `inline` is an ordinary lowercase identifier, no modifier exists | accept | SEMANTICS: inferred classes — the built-in constraint families (Eq, Ord, Show) are closed; ad-hoc polymorphism, if ever, arrives as a family, never user machinery |
 | no-computation-expressions | rejected | builder blocks (seq { }, async { }, custom CEs) | reject | accept | pipelines are the composition story; comprehension sugar, if ever, is parser-only — not CE machinery |
 | no-async-concurrency | rejected | async/task/await machinery | reject | accept | a scripting shell does not need it: processes and pipelines ARE the concurrency model (data-parallel combinators Seq.pmap/piter exist — parallelism as a library detail, never language machinery); wanting async is the graduation signal — go to full F# |
 <!-- no-imperative-loops NARROWED 2026-08-05 (the coming-from agent's staleness find): `for…do` landed 2026-07-30 [D:for-do] (≡ Seq.iter, desugared) and comprehensions with it; the row below is the remainder. -->

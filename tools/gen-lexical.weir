@@ -30,8 +30,9 @@ type Manifest = {
 let cli = Args.load Cli
 let m = File.read "editors/grammar-manifest.json" |> from json Manifest
 
-let core = ["do"; "elif"; "else"; "false"; "for"; "fun"; "function"; "if"; "import"; "in"; "let"; "match"; "module"; "of"; "then"; "true"; "type"; "when"; "with"]
-let specific = ["always"; "from"; "poll"; "pure"; "retry"; "to"; "until"; "within"]
+// import is weir's own word — F# spells the concept `open`
+let core = ["do"; "elif"; "else"; "false"; "for"; "fun"; "function"; "if"; "in"; "let"; "match"; "module"; "of"; "then"; "true"; "type"; "when"; "with"]
+let specific = ["always"; "from"; "import"; "poll"; "pure"; "retry"; "to"; "until"; "within"]
 let inert = ["mutable"; "rec"]
 let teaching = ["def"; "return"; "try"; "while"]
 
