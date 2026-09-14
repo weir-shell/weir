@@ -2,7 +2,7 @@
   "name": "weir",
   "displayName": "weir",
   "description": "Language support for weir, the typed shell \u2014 diagnostics, hover, and completion via `weir lsp`, plus TextMate colorization.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publisher": "weir-shell",
   "license": "Apache-2.0",
   "engines": {
@@ -26,7 +26,11 @@
           ".weir"
         ],
         "firstLine": "^#!.*\\bweir\\b",
-        "configuration": "./language-configuration.json"
+        "configuration": "./language-configuration.json",
+        "icon": {
+          "light": "./icons/weir-file-light.svg",
+          "dark": "./icons/weir-file-dark.svg"
+        }
       }
     ],
     "grammars": [
