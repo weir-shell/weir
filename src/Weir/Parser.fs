@@ -157,6 +157,23 @@ let private withStmtLetCmd (p: Parser<'a, unit>) : Parser<'a, unit> =
                 letCmdOk.Value <- savedOk
                 letCmdStmt.Value <- savedStmt
 
+// [D:statement-lets] the hardened teaching names the ACTUAL refusing
+// context ("inside a lambda body, a command needs $(…)") — innermost
+// setter wins; the default covers the genuine single-line spelling
+// (REPL/-e/top level), the one place no setter has run.
+let private exprCtxName =
+    new System.Threading.ThreadLocal<string>(fun () -> "in the single-line let…in form")
+
+let private withExprCtxName (n: string) (p: Parser<'a, unit>) : Parser<'a, unit> =
+    fun stream ->
+        let saved = exprCtxName.Value
+        exprCtxName.Value <- n
+
+        try
+            p stream
+        finally
+            exprCtxName.Value <- saved
+
 // [D:statement-lets] paren interiors and lambda bodies are expression
 // territory for the STATEMENT grant only — the spine's flag keeps its
 // standing ride through both ([D:multiline-lambda], untouched).
@@ -756,7 +773,11 @@ let private parens =
     // (e) groups; tuples come from the comma INSIDE seqExpr (the
     // bare-comma amendment moved the comma into the expression grammar)
     // — and a statement body's let-cmd grant stops here [D:statement-lets]
-    spanned (pchar '(' >>. ws >>. withExprParen true (clearStmtLetCmd seqExpr) .>> pchar ')')
+    spanned (
+        pchar '(' >>. ws
+        >>. withExprParen true (withExprCtxName "inside parentheses" (clearStmtLetCmd seqExpr))
+        .>> pchar ')'
+    )
     |>> fun (inner, span) -> { inner with Span = span }
     .>> ws
 
@@ -1057,6 +1078,22 @@ let rec private exitCodeSpine (e: Expr) : bool =
     | EVar("|exitCoded" | "|exitCodedEnv") -> true
     | EApp(f, _) -> exitCodeSpine f
     | _ -> false
+
+// [D:statement-lets] which reifier heads a probed chain — the hardened
+// teaching's evidence: a refused-context RHS that PARSES as a reifier
+// chain is a command the position cannot take, whether or not the
+// expression grammar would survive its argv (`--flag` heads die there
+// before the pipe is ever seen). App spines head the desugar; a post-
+// reifier `|>` stage rides an EPipe.
+let rec private chainReifier (e: Expr) : string option =
+    match e.Kind with
+    | EVar v when v.StartsWith "|completed" -> Some "complete"
+    | EVar v when v.StartsWith "|succeeded" -> Some "succeeds"
+    | EVar v when v.StartsWith "|exitCoded" -> Some "exitCode"
+    | EVar v when v.StartsWith "|orFailed" -> Some "orFail"
+    | EApp(f, _) -> chainReifier f
+    | EPipe(l, r) -> chainReifier r |> Option.orElseWith (fun () -> chainReifier l)
+    | _ -> None
 
 let private captureSigil =
     spanned (
@@ -1498,7 +1535,7 @@ let private lambdaBody =
 
             // a lambda body clears a statement body's let-cmd grant
             // [D:statement-lets] — lambda bodies stay spine-gated
-            withParams (withExprParen false (clearStmtLetCmd seqExpr))
+            withParams (withExprParen false (withExprCtxName "inside a lambda body" (clearStmtLetCmd seqExpr)))
             |>> fun body ->
                 let inner = curryParams ps body
 
@@ -1549,7 +1586,28 @@ let private letInBody =
                           if letCmdOk.Value then
                               letRhsCmd stream
                           else
-                              ifail "block-let command RHS is statement-context-only" stream
+                              // the hardened teaching [D:statement-lets]: probe
+                              // the RHS under a granted flag — a chain that
+                              // parses WITH a reifier is a command this
+                              // expression context refuses, so teach $() at
+                              // the head, naming the ACTUAL context; the probe
+                              // consumes nothing and fires BEFORE the
+                              // expression parse, so a `--flag` argv teaches
+                              // exactly like one that survives to the pipe. A
+                              // reifier-free chain falls through — the
+                              // interior-command element takes it.
+                              let teach =
+                                  attempt (lookAhead (getPosition .>>. withLetCmd true letRhsCmd))
+                                  >>= fun (at, probed) ->
+                                      match chainReifier probed with
+                                      | Some reif ->
+                                          failFatallyAt
+                                              at
+                                              ($"{exprCtxName.Value}, a command needs $(…) on a 'let' RHS — write: let {name} = $(<command> | {reif}); "
+                                               + "bare command lets belong to statement bodies (top level, if/for/match arms, within blocks)")
+                                      | None -> ifail "reifier-free chain — the interior element takes it"
+
+                              (teach <|> ifail "block-let command RHS is statement-context-only") stream
 
                   // params shadow PATH inside their own RHS
                   // [D:paramful-rhs] — the top-level rule at block-let
