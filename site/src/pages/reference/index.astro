@@ -57,6 +57,11 @@ const anchor = (group, name) =>
 // generator, gated by ci/site-anchors.weir). Member anchors keep
 // their published #<module>-<member> form untouched.
 const moduleAnchor = (name) => `module-${name.toLowerCase()}`;
+// builtinDocs summaries/pointers are plain strings injected into the
+// page (unlike the written pages, which run through markdown), so their
+// inline `code` spans rendered as literal backticks — split on the
+// backtick and wrap the odd segments in <code>.
+const inlineCode = (text) => text.split("`").map((v, i) => ({ code: i % 2 === 1, v }));
 const groups = [
   ...ref.modules.map((m) => ({ name: m.name, members: m.members })),
   { name: "Forms", members: ref.forms },
@@ -115,7 +120,7 @@ const toc = [
             <a href={`#${anchor(g.name, m.name)}`}>{g.name === "Forms" ? m.name : `${g.name}.${m.name}`}</a>
           </h4>
           {m.signature && <Code code={m.signature} lang={weirGrammar} themes={queilThemes} defaultColor={false} />}
-          {m.summary && <p>{m.summary}</p>}
+          {m.summary && <p>{inlineCode(m.summary).map((s) => (s.code ? <code>{s.v}</code> : s.v))}</p>}
           {m.kinds && (
             <>
               <table class="kinds-table">
@@ -132,7 +137,7 @@ const toc = [
             </>
           )}
           {m.example && <Code code={m.example} lang={weirGrammar} themes={queilThemes} defaultColor={false} />}
-          {m.pointer && <p><em>{m.pointer}</em></p>}
+          {m.pointer && <p><em>{inlineCode(m.pointer).map((s) => (s.code ? <code>{s.v}</code> : s.v))}</em></p>}
         </section>
       ))}
     </section>
