@@ -204,7 +204,7 @@ let polled = poll timeout=2s interval=10ms
     r
 until r
     r.exitCode == 0
-print (polled.stdout |> Seq.head)
+print (polled.stdout |> Seq.exactlyOne)
 
 // ---- seqs: Regex patterns, choose, seq patterns, fold -----------------
 
@@ -339,7 +339,7 @@ let envFile = Path.combine tmpBase $"weir-showcase-{Self.pid}.env"
 let ev = Env.fromFile envFile
 
 // the SAME command twice: first CAPTURED under the overlay…
-let greetz = $ev(weir $probe --greet) |> Seq.head
+let greetz = $ev(weir $probe --greet) |> Seq.exactlyOne
 print greetz
 
 // …then as an EFFECT — streams to the terminal, raises on failure
@@ -357,7 +357,7 @@ within env ev
 within cd helperDir
     // pwd is a weir BUILTIN (like ls/cd) — no PATH head resolves here,
     // so the weir+git-only portability claim in the header holds
-    let here = pwd |> Seq.head
+    let here = pwd |> Seq.exactlyOne
     print $"cd-scoped: running beside {Path.fileName here}"
 
 // commands are ordinary statements inside any block — parsed and
@@ -377,7 +377,7 @@ for s in ["first"; "second"] do
 
 let shouts =
     ["fan"; "out"]
-    |> Seq.pmap (fun w -> $(weir $probe --out $w) |> Seq.head)
+    |> Seq.pmap (fun w -> $(weir $probe --out $w) |> Seq.exactlyOne)
 
 shouts |> print
 
@@ -457,7 +457,7 @@ File.delete envFile
 let weir = "a local binding now shadows the command name"
 print $"shadow: {weir}"
 
-let v = $(^weir --version) |> Seq.head
+let v = ^weir --version |> Seq.exactlyOne
 print $"^weir still reaches the binary: {v}"
 
 // ---- exit is explicit; unit prints nothing ----------------------------

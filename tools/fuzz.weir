@@ -20,7 +20,7 @@ type Cli = {
 
 let cli = Args.load Cli
 
-let root = git rev-parse --show-toplevel |> Seq.head
+let root = git rev-parse --show-toplevel |> Seq.exactlyOne
 cd $root
 
 // hold the deep-run lock [D:masking-mechanized] so publish.sh refuses
@@ -36,7 +36,7 @@ let seed =
     // normalized through int: %N pads with LEADING ZEROS, and the
     // harness echoes the seed it parsed — "027" vs "27" would trip the
     // receipt check on formatting, not config [D:observed-report]
-    | None -> $(date +%N) |> Seq.head |> Str.toInt |> fun n -> $"{n}"
+    | None -> $(date +%N) |> Seq.exactlyOne |> Str.toInt |> fun n -> $"{n}"
 
 let count = $"{cli.count}"
 
@@ -62,7 +62,7 @@ within tmp d
     // harness writes back the config it actually read; missing or
     // mismatched means the run did NOT execute the requested fuzz —
     // fail LOUD (the silent-defaults window is the receipt)
-    let observed = File.read report |> Seq.head
+    let observed = File.read report |> Seq.exactlyOne
 
     if observed <> $"seed={seed} count={count}" then
         fail $"deep fuzz config MISMATCH — requested seed={seed} count={count}, harness observed: {observed}"
