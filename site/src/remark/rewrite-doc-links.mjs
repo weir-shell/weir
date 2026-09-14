@@ -4,10 +4,12 @@
 // rules, applied to every relative link ending in .md:
 //   1. a doc this site renders        -> /docs/<slug>/#anchor
 //   2. CHANGELOG.md                   -> /changelog/
-//   3. anything else in the repo      -> the GitHub blob URL
-// Rule 3 covers DECISIONS.md (the maintainers' ledger — 557KB of index
-// rows is not a docs page), SECURITY.md, tests/fidelity/divergences.md:
-// real files a reader may want, just not site pages.
+//   3. tests/fidelity/divergences.md  -> /divergences/ (the machine-read
+//      table's readable face — divergences.astro parses the same file)
+//   4. anything else in the repo      -> the GitHub blob URL
+// Rule 4 covers DECISIONS.md (the maintainers' ledger — 557KB of index
+// rows is not a docs page) and SECURITY.md: real files a reader may
+// want, just not site pages.
 import { readdirSync } from "node:fs";
 import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -77,6 +79,9 @@ export function rewriteDocLinks() {
         node.url = anchor ? `/reference/${suffix}` : `/reference/#${slug}`;
       } else if (repoPath === "CHANGELOG.md") {
         node.url = `/changelog/${suffix}`;
+      } else if (repoPath === "tests/fidelity/divergences.md") {
+        // machine-read table, readable face at /divergences/
+        node.url = `/divergences/${suffix}`;
       } else if (!repoPath.startsWith("..")) {
         node.url = `${GITHUB}/${repoPath}${suffix}`;
       }

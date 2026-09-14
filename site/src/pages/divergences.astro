@@ -1,0 +1,125 @@
+---
+// The readable face of tests/fidelity/divergences.md [D:site-skeleton]:
+// that file is MACHINE-READ (Weir.Fidelity parses row ids from its
+// table), so it stays a dense one-table artifact — and GitHub renders
+// paragraph-sized cells as a mess. This page parses the same table at
+// build time and lays each row out for reading; rewrite-doc-links.mjs
+// points doc links here instead of at the GitHub blob.
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import Base from "../layouts/Base.astro";
+
+const repoRoot = resolve(process.cwd(), "..");
+const src = readFileSync(resolve(repoRoot, "tests/fidelity/divergences.md"), "utf8");
+
+// cell split that survives what GitHub's own table parser does not:
+// a `|` inside a backtick span (the or-patterns row) or escaped `\|`
+// stays content, never a cell border
+const splitRow = (t) => {
+  const cells = [];
+  let cur = "";
+  let inCode = false;
+  for (let i = 0; i < t.length; i++) {
+    const ch = t[i];
+    if (ch === "\\" && t[i + 1] === "|") {
+      cur += "|";
+      i++;
+    } else if (ch === "`") {
+      inCode = !inCode;
+      cur += ch;
+    } else if (ch === "|" && !inCode) {
+      cells.push(cur.trim());
+      cur = "";
+    } else cur += ch;
+  }
+  cells.push(cur.trim());
+  if (cells[0] === "") cells.shift();
+  if (cells[cells.length - 1] === "") cells.pop();
+  return cells;
+};
+
+const rows = [];
+for (const line of src.split("\n")) {
+  const t = line.trim();
+  if (!t.startsWith("| ") || t.startsWith("| id") || t.startsWith("|--")) continue;
+  const cells = splitRow(t);
+  if (cells.length !== 6)
+    throw new Error(`divergences page: row does not have 6 cells (got ${cells.length}): ${t.slice(0, 80)}`);
+  const [id, status, shape, weir, fsharp, ref] = cells;
+  rows.push({ id, status, shape, weir, fsharp, ref });
+}
+if (rows.length < 10)
+  throw new Error(`divergences page: only ${rows.length} rows parsed — the table shape moved`);
+
+// cells carry `code` spans; split on backticks so they render as <code>
+const spans = (cell) =>
+  cell.split("`").map((v, i) => ({ code: i % 2 === 1, v }));
+
+const legend = {
+  different: "weir has an equivalent, deliberately different",
+  rejected: "absent by design, with a rationale",
+  pending: "absent, undecided — treat as absent",
+};
+const toc = rows.map((r) => ({ depth: 2, slug: r.id, href: `#${r.id}`, text: r.id }));
+---
+
+<Base title="Divergences from F#" toc={toc}>
+  <h1>Divergences from F#</h1>
+  <p>
+    The complete border: what is deliberately different, what is rejected
+    by design, what is merely pending. One entry per divergence or
+    absence, machine-verified — the fidelity oracle runs both compilers
+    and fails the build on any pin whose F#/weir verdicts disagree
+    without citing an id here. The source of truth is
+    <a href="https://github.com/weir-shell/weir/blob/main/tests/fidelity/divergences.md">
+      <code>tests/fidelity/divergences.md</code></a>, machine-read and
+    dense by design; this page is its readable face.
+  </p>
+  <ul>
+    {Object.entries(legend).map(([k, v]) => (
+      <li><span class={`status status-${k}`}>{k}</span> — {v}</li>
+    ))}
+  </ul>
+
+  {rows.map((r) => (
+    <section class="divergence">
+      <h2 id={r.id}>
+        <a href={`#${r.id}`}><code>{r.id}</code></a>
+        <span class={`status status-${r.status}`}>{r.status}</span>
+      </h2>
+      <p class="shape">{spans(r.shape).map((s) => (s.code ? <code>{s.v}</code> : s.v))}</p>
+      <dl>
+        <dt>weir</dt>
+        <dd>{spans(r.weir).map((s) => (s.code ? <code>{s.v}</code> : s.v))}</dd>
+        <dt>F#</dt>
+        <dd>{spans(r.fsharp).map((s) => (s.code ? <code>{s.v}</code> : s.v))}</dd>
+      </dl>
+      <p class="ref"><em>{spans(r.ref).map((s) => (s.code ? <code>{s.v}</code> : s.v))}</em></p>
+    </section>
+  ))}
+</Base>
+
+<style>
+  .status {
+    font-size: 0.72em;
+    font-weight: 600;
+    padding: 0.1em 0.55em;
+    border-radius: 1em;
+    vertical-align: middle;
+    margin-left: 0.6em;
+    border: 1px solid var(--border);
+  }
+  .status-different { color: var(--accent, #4a7); }
+  .status-rejected { opacity: 0.75; }
+  .status-pending { opacity: 0.55; font-style: italic; }
+  .divergence { margin-top: var(--space-4); }
+  .divergence h2 { border-bottom: 1px solid var(--border); padding-bottom: 0.25rem; }
+  .divergence .shape { font-weight: 500; }
+  .divergence dl {
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    gap: 0.35rem 1rem;
+  }
+  .divergence dt { font-weight: 600; opacity: 0.7; }
+  .divergence dd { margin: 0; }
+</style>
