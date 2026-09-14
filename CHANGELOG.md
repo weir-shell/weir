@@ -1,5 +1,95 @@
 # Changelog
 
+## v0.0.33
+
+### Added
+
+- **Breaking: an unread `let` binder is a hard check error.** The
+  strictness family grows its next member (statement rule,
+  exhaustiveness, unreachable arms — weir has no warnings): binding is
+  exactly how weir silences raise-on-nonzero, so a
+  `let r = cmd | complete` nothing ever reads is a swallowed failure,
+  and the checker now refuses it — scripts and module bodies,
+  top-level and block-local, destructured names each judged, and a
+  name rebound before its earlier binding was read errors at the
+  earlier binder. A module's unsigned member unread at home is dead
+  private code and errors with the signature repair. The escape is a
+  `_`-prefixed name (`let _r = …` — deliberately unused, never
+  errors, still readable); a bare `_` let binder now refuses (name
+  the discard). Exempt: function params, match-arm binders,
+  `for`/`until`/`within` binders, signed module members (the
+  signature is the use), and `#sig` contract files (the sig loader is
+  their reader). Errors are collected and located at the binder;
+  every consumer agrees — `check`, run, import, the LSP, and the
+  fidelity oracle. F# accepts unread binders silently by default
+  (FS1182 is opt-in), recorded as the `unused-binding` divergence.
+
+### Fixed
+
+- **`weir check` accepts every patch district `weir run` accepts.**
+  Check's assume-resolver read the `yaml patch [by=<key>]` marker line
+  as a command head (`yaml` is command-shaped), so the district body
+  then failed as statements — any `$name` splice or multi-line mapping
+  item inside a `yaml patch` district checked red while the same file
+  ran green (a kustomize-shaped port hit both). The command grammar now
+  refuses the patch marker face glued to the district sentinel, exactly
+  as it already did for plain `yaml` and `schema=`, so check == run.
+- **Block-let params shadow PATH in their own RHS.** A param heading an
+  if-condition inside a nested `let f pairs = if pairs |> … then …`
+  resolved as a PATH command (cmd-not-found warnings plus bogus type
+  errors) until the condition was parenthesized — the block-let RHS
+  never extended the resolver with its params, though top-level lets
+  and lambdas did. Bindings-beat-PATH now reaches block-let depth;
+  a genuine external head in that condition position
+  (`if test -f $p | succeeds then`) still chains.
+- **A `)` on its own line closes a multi-line application anywhere.**
+  `YMap(` with arguments on deeper lines and the close paren alone at
+  the body indent was a parse error at the paren inside if/match arm
+  bodies (and everywhere else the closer sat at the sibling level) —
+  the assembler sequenced the `)` line as a block statement. While a
+  plain paren is open a `)`-headed line now continues the statement,
+  the rule multiline lambdas already had; a stray `)` with no paren
+  open still refuses.
+- **A returning match arm after a multi-statement body assembles.**
+  An arm body ending in an if/else (after a `let`) left the if
+  compound open, and the next arm then died with "this arm sits left
+  of its match (head at column N)" pointing at the if — healthy code.
+  A pipe line landing exactly on its own arm group's column is a
+  returning arm (the deeper compound offside-closes as it always did);
+  genuinely misaligned or left-of-match arms keep their errors.
+- **Module signatures can name every builtin type.** `let mk : string ->
+  YamlPatch` (and `Proc`) refused as "unknown type" — the def-less
+  builtin nominals were unnameable in signatures, even though the
+  module-privacy error itself suggested exactly that signature. Both
+  now validate in signatures and field types (arity 0), like `Map`;
+  the suggested signature round-trips.
+- **A qualified type name teaches the bare-name law.** `let f : M.Spec
+  -> string` died with a bare parse error at the dot; every type
+  position now refuses with "a signature names types bare — an
+  imported type resolves by its plain name".
+
+- **`pure` no longer admits `Self.stdin`.** Reading it drains the
+  process's live input stream — an effect the classifier missed because
+  the value is injected per run rather than called through a builtin.
+  A pure region now refuses it with a located teaching ("'Self.stdin'
+  reads the process's input stream"), and a function touching it loses
+  the `(pure)` hover badge. The per-run constants
+  (`Self.args`/`pid`/`scriptPath`/`entryPath`) stay pure-admissible.
+- **`pure` accepts union constructors.** A data constructor is pure by
+  construction, but a payload constructor's function type fell into the
+  unknown-callable bucket and refused as an unknown callable. Applied
+  and partially applied constructors now pass in pure regions, and a
+  constructor-building function keeps its `(pure)` badge.
+
+### Changed
+
+- **The ctor-pattern refusal teaches its repairs.** A constructor
+  pattern on an unresolved param (`let step (m, wd) = match m with
+  | Ctor …`) now says params are not typed from patterns and names
+  both ways out — inline the lambda at its use site (a typed pipe
+  position types the binder there), or match on already-typed data —
+  instead of "needs a union value; this one has type 'a1".
+
 ## v0.0.32
 
 > First release published since v0.0.29: this ships everything under
@@ -11,7 +101,7 @@
 - **`prompt` — interactive input as a builtin.** `prompt "msg?"` writes
   the message to stderr (piped stdout stays data) and reads one line
   from stdin; EOF refuses rather than inventing phantom input. And
-  `Self.stdin` now states its law: it is a live stream read ONCE — a
+  `Self.stdin` now states its law: it is a live stream read once — a
   second enumeration used to silently yield empty and now raises,
   naming both repairs (bind one enumeration, or `prompt` per
   interaction).
@@ -45,8 +135,8 @@
   `fst`/`snd`); code that pattern-matched the record updates
   mechanically. The `Group` type is retired.
 
-- **`pure` regions are ENFORCED — Stage 1 of the effects plan.** A bare
-  `pure` head + indented block asserts the body reaches NO effect
+- **`pure` regions are enforced — Stage 1 of the effects plan.** A bare
+  `pure` head + indented block asserts the body reaches no effect
   (filesystem, commands, network, environment, console, clock, any
   `within` resource); a reachable effect is a located check error
   naming the offender (`this 'pure' block forbids effects, but
@@ -59,8 +149,8 @@
   gated, and `pure` is its own head, never `within pure`. `pure` is now
   a reserved keyword.
 
-- **The `within` kind is a union.** Internal, [D:host-strictness]'s
-  deferred restructure: Check/Eval dispatch kind-first on
+- **The `within` kind is a union.** A long-deferred internal
+  restructure: Check/Eval dispatch kind-first on
   `Ast.WithinKindId`, so a new kind (like `pure` above) is a build
   failure at every consumer instead of a silent gap. No surface change.
 
@@ -81,7 +171,7 @@
   statement after a deeper continuation also sequences instead of dying
   at the dedent floor.
 
-- **Module signatures — a signature IS the export.** In a module,
+- **Module signatures — a signature *is* the export.** In a module,
   `let name : int -> int` with no `=` declares a member's type and
   exports it; an unsigned member is module-private (full inference,
   invisible to importers — importing one names the exact signature to
@@ -92,7 +182,7 @@
   refused as less-general. Signature without implementation errors at
   the signature; `///` docs live on the signature line (hover and
   definition read the sig); `type` declarations stay auto-exported;
-  scripts refuse the form (scripts infer). BREAKING: previously every
+  scripts refuse the form (scripts infer). Breaking: previously every
   module member was public — export now requires the signature; the
   import error teaches the migration.
 
@@ -120,7 +210,7 @@
   spawned after the scope restored: the cd invisible, the env overlay
   invisible. It is now part of the body statement and sees the scope; a
   non-final body pipe (previously a bare parse error at the statement
-  boundary) works too. The offside law is unchanged: a pipe DEDENTED to
+  boundary) works too. The offside law is unchanged: a pipe dedented to
   the block's head column still closes the block and pipes its value.
 
 - **Command pipes carry bytes.** A command→command hop is now a raw byte
@@ -432,7 +522,7 @@ consumed. The content shipped as v0.0.21._
 
 ### New features
 
-- **Breaking: `to yaml` writes ONE document; `to yaml stream`
+- **Breaking: `to yaml` writes one document; `to yaml stream`
   writes the `---` bundle.** The write side now mirrors the read
   side exactly, completing the grid json got in v0.0.17:
   `[1; 2; 3] |> to yaml` renders one sequence document (`- 1`,
@@ -455,7 +545,7 @@ consumed. The content shipped as v0.0.21._
 ### Checks clean, behaves differently
 
 - `xs |> to yaml` on a seq previously wrote `---`-separated
-  documents; it now writes ONE sequence document. Scripts that
+  documents; it now writes one sequence document. Scripts that
   meant the bundle should say `to yaml stream` — same bytes as
   before.
 
@@ -536,7 +626,7 @@ consumed. The content shipped as v0.0.21._
   position says where it belongs (`'Tag' attaches to a union
   declaration`), an unknown one keeps the did-you-mean.
 
-- **Breaking: `to json` writes ONE document; `to jsonl` writes
+- **Breaking: `to json` writes one document; `to jsonl` writes
   NDJSON.** The write side now mirrors the read side: `value |> to
   json` renders one minified document — a record becomes an object,
   a seq becomes an array — and the new `to jsonl` does what `to
@@ -561,7 +651,7 @@ consumed. The content shipped as v0.0.21._
 ### Checks clean, behaves differently
 
 - `xs |> to json` on a seq previously wrote one JSON document per
-  element (NDJSON); it now writes ONE array document. Scripts that
+  element (NDJSON); it now writes one array document. Scripts that
   meant NDJSON should say `to jsonl` — same bytes as before. This is
   the section's first real entry since v0.0.2 defined it.
 
@@ -623,19 +713,19 @@ _Tag burned — released from the wrong commit. Version number consumed; no arti
   `source: help (walked 12 subcommand help(s), 0 answered, none yielded flags)`.
 
 - Bare-word probes are gated on advertisement — `weir add sig code`
-  ran `code completion fish`, which OPENED VS Code on two files.
+  ran `code completion fish`, which opened VS Code on two files.
   `completion fish` and the `version` word now run only when the
   tool's own `--help` advertises that subcommand; flag probes
   (`--version`, `--help`) remain universal.
 
-- The recorded version identity is `--version`'s FIRST line,
+- The recorded version identity is `--version`'s first line,
   whitespace-collapsed — az's multi-page environment report (with
   machine paths) is not an identity. And az's help dialect parses:
   `--flag --alias -s [Required] : doc` rows record the postfix
   short, each alias as its own flag, and a clean description.
 
 - A path-y tool (`weir add sig ./lib/jp`, an absolute path) mints a
-  legal module name and ONE flat sig file under `.weir/sigs/`
+  legal module name and one flat sig file under `.weir/sigs/`
   (separators become `_`) — the absolute case had aimed the write
   outside `.weir` entirely, and a leading `/` or `.` broke the
   module line.
@@ -659,7 +749,7 @@ _Tag burned — released from the wrong commit. Version number consumed; no arti
   resource`), reads gh's colon-suffixed command tables, and the
   not-on-PATH message dropped its aside.
 
-- A sub-less line on a scoped sig checks the GLOBALS — flag-only
+- A sub-less line on a scoped sig checks the globals — flag-only
   usage (`claude --scop2 --scope`) squiggles again: the flags riding
   every case are the global set, so the case intersection checks it;
   hand-written unions that share nothing keep the partial-surface
@@ -701,7 +791,7 @@ _Tag burned — released from the wrong commit. Version number consumed; no arti
 - A flag whose long is a weir keyword (docker's `--type`, kubectl's
   `--for`) no longer aborts generation — the generator emits
   `[<Wire "type">] typeFlag: bool`, and the sig checker reads the
-  Wire spelling for matching and did-you-mean. A keyword long WITH a
+  Wire spelling for matching and did-you-mean. A keyword long with a
   short (jira's `-t, --type`) shares one attr bracket, and when
   walked subcommands reuse a short (docker's `-a` on `all` and
   `all-tags`) the first holder keeps it — longs still check. A
@@ -735,7 +825,7 @@ _Tag burned — released from the wrong commit. Version number consumed; no arti
   ladder: `--version`, then the `version` subcommand (`jira version`
   works), with null stdin and a temp cwd so a bare-word probe can
   neither hang nor serve a local VERSION file as the identity. A
-  tool answering neither records NO identity, the sig says so in a
+  tool answering neither records no identity, the sig says so in a
   comment, and `weir verify` takes the hash-only arm. `let version`
   is now optional in sig files.
 
@@ -771,7 +861,7 @@ _Tag burned — released from the wrong commit. Version number consumed; no arti
 - **`Seq.exactlyOne` / `Seq.tryExactlyOne` — the cardinality
   assertion.** `head` takes the first and silently accepts more, so
   a wrong-arity command output passes quietly; `exactlyOne` raises
-  on none AND on more, with distinct messages (they are different
+  on none *and* on more, with distinct messages (they are different
   bugs). The try twin answers None for both shapes, and stops at
   the second element — an infinite source never hangs it. The guide
   now teaches it for one-line expectations
@@ -793,7 +883,7 @@ _Tag burned — released from the wrong commit. Version number consumed; no arti
 ### New features
 
 - **`%` — integer remainder.** F#'s spelling at `*`/`/`'s
-  precedence, TRUNCATED — the sign follows the dividend (`-7 % 3`
+  precedence, truncated — the sign follows the dividend (`-7 % 3`
   is `-1`, matching F#/.NET; Python's floored `%` gives `2` there).
   A zero divisor raises ("modulo by zero", `/`'s discipline);
   floats are refused with a teach — finite-only floats cannot hold
@@ -881,7 +971,7 @@ _Tag burned — released from the wrong commit. Version number consumed; no arti
   missing path) no longer crashes the REPL with a raw .NET stack
   trace — it reports the located error, prints `init: NOT loaded`,
   and the session starts with none of the init's names.
-- `weir restore` now repairs a present-but-MODIFIED vendored
+- `weir restore` now repairs a present-but-modified vendored
   artifact by refetching it (schemas and modules alike) — the lock
   is the intent. Previously it only materialized absent files,
   leaving local drift in place; a deliberate local edit is a

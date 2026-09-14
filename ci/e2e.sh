@@ -524,12 +524,12 @@ echo "e2e ok: piter parallelism (4x300ms in ${elapsed_ms}ms)"
 forkdir=$(mkweirtmp)
 mkdir -p "$forkdir/home" "$forkdir/wa" "$forkdir/wb"
 cat > "$forkdir/fork.weir" <<'WEOF'
-let a = cd "FORKMARK/home"
+let _home = cd "FORKMARK/home"
 
 let workers =
     ["FORKMARK/wa"; "FORKMARK/wb"]
     |> Seq.pmap (fun d ->
-        let x = cd d
+        let _cd = cd d
         pwd |> Seq.head)
 
 let ws = workers |> Seq.force
@@ -554,13 +554,13 @@ seqdir=$(mkweirtmp)
 cat > "$seqdir/seq.weir" <<'WEOF'
 let go = 1 > 0
 
-let steps =
+let _steps =
     if go then
         !(sh -c "echo one")
         !(sh -c "echo two")
         print "three"
 
-let skipped =
+let _skipped =
     if 1 > 2 then
         !(sh -c "echo never")
         print "never"
@@ -667,7 +667,7 @@ type Config = { WEIR_E2E_PORT: int; WEIR_E2E_MISSING_ZZ: string }
 
 sh -c "touch env-proof"
 
-let cfg = Env.load Config
+let _cfg = Env.load Config
 print "unreached"
 WEOF
 errout=$(cd "$envdir" && WEIR_E2E_PORT=abc $BIN bad.weir 2>&1) && fail "bad environment must fail"
@@ -1260,7 +1260,7 @@ echo "e2e ok: match-position record patterns accumulate fields and keep provenan
 # fixture (the statement rule is unchanged for those); the old
 # rejection this pin asserted is the rule's named flip.
 cat > "$ckdir/sib.weir" <<'WEOF'
-let f t =
+let _f t =
     git status
     let e = "x"
     print e
@@ -1333,7 +1333,7 @@ WEOF
 out=$(cd "$iadir" && $BIN armed.weir 2>&1) && fail "an armed failure must raise" || true
 echo "$out" | grep -qF "never" && fail "the tail must not run after an armed failure"
 cat > "$iadir/cap.weir" <<'WEOF'
-let x = sh -c "exit 3"
+let _x = sh -c "exit 3"
 print "bound-fine"
 WEOF
 out=$(cd "$iadir" && $BIN cap.weir 2>&1) || fail "an unforced capture must not raise: $out"
@@ -2131,7 +2131,7 @@ echo "$out" | grep -qvF "Expecting:" || fail "no buried expecting-list: $out"
 printf '$@xs foo\n' > "$ckdir/dom2.weir"
 out=$($BIN check --json "$ckdir/dom2.weir" || true)
 echo "$out" | grep -qF "a splat cannot head a command" || fail "splat-head teaching surfaces: $out"
-printf 'let x = if true then 1 else 2\n' > "$ckdir/dom3.weir"
+printf 'let _x = if true then 1 else 2\n' > "$ckdir/dom3.weir"
 $BIN check "$ckdir/dom3.weir" >/dev/null 2>&1 || fail "keyword fall-through must still parse (if)"
 echo "e2e ok: teaching fatals dominate; the reserved-word gate stays fall-through-safe"
 
@@ -3293,6 +3293,28 @@ yerr2=$($BIN -e 'let d = yaml
 print "no"' 2>&1) && fail "a plain district must refuse a tombstone" || true
 echo "$yerr2" | grep -qF "only inside a \`yaml patch\` district" || fail "the tombstone scope teaches: $yerr2"
 echo "e2e ok: yaml patch — kustomization RMW (upsert/append/tombstones, unknown keys kept, idempotent), render+scope laws"
+# check == run for patch districts [D:yaml-nodes]: check's assume path
+# once claimed the `yaml patch …` marker line as a command and the
+# district body then failed as statements, while the same file ran
+# green — every patch-district script must CHECK green too
+(cd "$ydir" && $BIN check patch.weir) || fail "a patch-district script that runs must check (check == run)"
+cat > "$ydir/patch-splice.weir" <<'WEOF'
+let n = "api"
+let _p = yaml patch by=name
+    images:
+        - name: $n
+          newTag: v2
+print "ok"
+WEOF
+(cd "$ydir" && $BIN check patch-splice.weir) || fail "a \$name splice inside a patch district must check"
+# the acceptance test: the adapters reference's own patch example
+# checks green — extracted verbatim, so the doc and the checker
+# cannot drift apart
+awk '/^```weir$/{f=1;buf="";next} /^```/{if(f && buf ~ /yaml patch/){print buf; exit} f=0;next} f{buf=buf $0 "\n"}' \
+    "$(dirname "$0")/../docs/reference/adapters.md" > "$ydir/docs-patch.weir"
+[ -s "$ydir/docs-patch.weir" ] || fail "adapters.md lost its yaml patch example (extractor found nothing)"
+(cd "$ydir" && $BIN check docs-patch.weir) || fail "the adapters.md patch example must check green"
+echo "e2e ok: patch districts check as they run (splice + multi-line item + the adapters.md example)"
 rm -rf "$ydir"
 
 # byte pipes [D:byte-pipes]: a command→command hop is a RAW byte pipe —
@@ -3389,16 +3411,31 @@ let addRes resPath doc =
         resources:
             - $resPath
     doc |> Yaml.merge p
+
+let mk : string -> YamlPatch
+
+let mk resPath = yaml patch
+    resources:
+        - $resPath
 WEOF
 cat > "$mdir/puse.weir" <<'WEOF'
 import "./pmod.weir" as Pmod
 ["kind: K"] |> Yaml.parse |> Pmod.addRes "a.yaml" |> to yaml |> Seq.iter print
+["kind: K"] |> Yaml.parse |> Yaml.merge (Pmod.mk "b.yaml") |> to yaml |> Seq.iter print
 WEOF
 out=$(cd "$mdir" && $BIN puse.weir)
 expect "a yaml patch district works inside an imported module" 'kind: K
 resources:
   - a.yaml' "$out"
-echo "e2e ok: districts in modules — patch district in an imported function"
+# a module EXPORTS a patch builder — the sig names the def-less nominal
+# [D:yaml-nodes]; the consumer merges the returned patch
+expect "a module exports a YamlPatch-typed builder" 'kind: K
+resources:
+  - b.yaml' "$out"
+# the CHECK side agrees with the runner on both files (the assume-
+# resolver once claimed the patch marker as a command [D:assume-resolver])
+(cd "$mdir" && $BIN check pmod.weir && $BIN check puse.weir) || fail "check must agree with run on the patch-district module"
+echo "e2e ok: districts in modules — patch district in an imported function, YamlPatch-typed export"
 rm -rf "$mdir"
 
 # prompt + the Self.stdin law [D:prompt]: one line per interaction
@@ -3814,7 +3851,7 @@ cat > "$odir/sh.weir" <<'WEOF'
 type PushCfg = { remote: string; depth: int }
 type Verb = | Push of PushCfg
 type Cli = { level: int; cmd: Verb }
-let cli = Args.load Cli
+let _cli = Args.load Cli
 print "ok"
 WEOF
 got=$($BIN "$odir/sh.weir" --level x push --depth y 2>&1 | tail -1 | sed 's/^.*error: //' || true)
@@ -3841,7 +3878,7 @@ type Cli = {
     /// a second line, hover-only
     verbose: bool
 }
-let c = Args.load Cli
+let _c = Args.load Cli
 print "x"
 WEOF
 out=$($BIN "$tadir/multi.weir" --help)
@@ -4173,7 +4210,7 @@ cat > "$bldir/force.weir" <<'WEOF'
 let f y =
     let zzshadow = fun a -> a
     let z = ^zzshadow y |> Seq.head
-    z
+    zzshadow z
 
 print (f "x")
 WEOF
@@ -4961,8 +4998,8 @@ echo "e2e ok: deep-lock refuses to guess on a garbage lock (exit 3, lock preserv
 # a small stack must produce the located diagnostic, never a SIGSEGV
 # (the macOS finding — test hosts there run smaller stacks than Linux)
 ddir=$(mkweirtmp)
-python3 -c "print('let x = ' + '('*499 + '1' + ')'*499)" > "$ddir/deep.weir" 2>/dev/null \
-    || awk 'BEGIN{s="let x = "; for(i=0;i<499;i++)s=s"("; s=s"1"; for(i=0;i<499;i++)s=s")"; print s}' > "$ddir/deep.weir"
+python3 -c "print('let _x = ' + '('*499 + '1' + ')'*499)" > "$ddir/deep.weir" 2>/dev/null \
+    || awk 'BEGIN{s="let _x = "; for(i=0;i<499;i++)s=s"("; s=s"1"; for(i=0;i<499;i++)s=s")"; print s}' > "$ddir/deep.weir"
 $BIN check "$ddir/deep.weir" >/dev/null 2>&1 || fail "depth 499 must parse on a full-size stack"
 if [ "$IS_WINDOWS" = "1" ]; then
     # ulimit -s cannot constrain a native Windows process (the stack
@@ -5161,12 +5198,12 @@ echo "e2e ok: a module's Self.scriptPath is its own file; entryPath the invoked 
 cat > "$mdir/sigmod.weir" <<'WEOF'
 module Sigmod
 
+let hidden n = n + 1
+
 /// double it
 let twice : int -> int
 
-let twice n = n * 2
-
-let hidden n = n + 1
+let twice n = hidden n + n - 1
 WEOF
 printf 'import "./sigmod.weir"\nprint (show (Sigmod.twice 21))\n' > "$mdir/sig_ok.weir"
 out=$($BIN "$mdir/sig_ok.weir")
@@ -5836,6 +5873,7 @@ echo "e2e ok: Instant (cert-expiry via openssl enddate, log slicing by cutoff, J
 candir=$(mkweirtmp)
 cat > "$candir/lib.weir" <<'WEOF'
 module Lib
+let fetchTags : unit -> seq<string>
 let fetchTags () = git tag
 WEOF
 cat > "$candir/cap.weir" <<'WEOF'
@@ -5846,7 +5884,7 @@ let t = cfg.token
 sh -c "curl example.com"
 if 1 == 2 then rg TODO
 ["x"] |> File.write "out.txt"
-let body = Http.fetch "https://api.example.com/items"
+let _body = Http.fetch "https://api.example.com/items"
 curl -H $t https://x.example
 WEOF
 canrc=0
@@ -6916,7 +6954,7 @@ WEOF
     # TRANSPORT failure raises, in its OWN words per case [D:transport-words];
     # and CHECK makes NO request (a bogus URL checks clean, no network)
     cat > "$hdir/dead.weir" <<'WEOF'
-let resp = Http.send { Http.defaults with url = "http://127.0.0.1:1/never" }
+let _resp = Http.send { Http.defaults with url = "http://127.0.0.1:1/never" }
 print "unreached"
 WEOF
     $BIN check "$hdir/dead.weir" >/dev/null 2>&1 || fail "check must not make a request (should pass clean)"
@@ -7266,7 +7304,7 @@ let log : string -> unit
 
 let log msg = [msg] |> File.write "audit.log"
 WEOF
-printf 'module NeedsDep\n\nimport "./x.weir" as X\n\nlet f x = x\n' > "$amdir/serve/needsdep.weir"
+printf 'module NeedsDep\n\nimport "./x.weir" as X\n\nlet f : int -> int\nlet f x = x\n' > "$amdir/serve/needsdep.weir"
 amport=$((21000 + RANDOM % 2000))
 python3 -m http.server $amport --bind 127.0.0.1 --directory "$amdir/serve" >/dev/null 2>&1 &
 amsrv=$!
@@ -7288,7 +7326,7 @@ sed -i.bak 's/hi/hacked/' "$amdir/proj/.weir/modules/greet.weir" && rm -f "$amdi
 ( cd "$amdir/proj" && $BIN verify || true ) | grep -q "module greet: MODIFIED" || fail "verify must flag the tampered module"
 ( cd "$amdir/proj" && $BIN restore ) | grep -q "module greet: repaired" || fail "restore must repair a modified vendored file"
 ( cd "$amdir/proj" && $BIN verify ) | grep -q "module greet: ok" || fail "post-repair verify"
-printf '\n/// third\nlet bye n = $"bye {n}"\n' >> "$amdir/serve/greet.weir"
+printf '\n/// third\nlet bye : string -> string\nlet bye n = $"bye {n}"\n' >> "$amdir/serve/greet.weir"
 ( cd "$amdir/proj" && $BIN add module "http://127.0.0.1:$amport/greet.weir" --as greet ) | grep -q "updated module greet: " || fail "re-add must print old → new sha"
 ( cd "$amdir/proj" && $BIN add module "http://127.0.0.1:$amport/needsdep.weir" --as dep 2>&1 || true ) | grep -q "vendored modules are leaves for now" || fail "import refusal teach"
 ( cd "$amdir/proj" && $BIN add module "github.com/acme/lib/x.weir@v1" --as x 2>&1 || true ) | grep -q "needs the // repo/path separator" || fail "// teach"

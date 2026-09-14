@@ -1489,6 +1489,51 @@ let boundaryTests =
               | Error terr -> Expect.stringContains terr.Message "'YamlPatch' is a built-in type" ""
               | Ok _ -> failtest "declaring YamlPatch must refuse"
           }
+          test "check parses patch districts exactly as run — the assume-resolver never claims the marker head [D:yaml-nodes]" {
+              // check's assume-resolver reads any command-shaped head
+              // as external, `yaml` included — commandSegment must
+              // refuse the ` patch [by=] [schema=]` face glued to the
+              // sentinel so the district arm parses, as run does
+              let clean lines =
+                  let diags, _, _, _ = Weir.Script.analyzeLines "pin.weir" lines
+                  Expect.isEmpty diags $"check == run: {lines}"
+
+              // a $name splice in scalar value position
+              clean
+                  [ "let n = \"api\""
+                    "let _p = yaml patch by=name"
+                    "    images:"
+                    "        - name: $n"
+                    "print \"ok\"" ]
+              // a multi-line mapping as a seq item
+              clean
+                  [ "let _p = yaml patch by=name"
+                    "    images:"
+                    "        - name: api"
+                    "          newTag: v2"
+                    "print \"ok\"" ]
+              // bare `patch`, single scalar entry
+              clean [ "let _p = yaml patch"; "    replicas: 3"; "print \"ok\"" ]
+
+              // the patch x schema= refusal still fires — the guard routes
+              // to the district arm, never past its own checks
+              let diags, _, _, _ =
+                  Weir.Script.analyzeLines
+                      "pin.weir"
+                      [ "let p = yaml patch by=name schema=k8s"; "    a: 1"; "print \"ok\"" ]
+
+              Expect.exists
+                  diags
+                  (fun d -> d.Message.Contains "a patch is partial")
+                  "patch x schema= still refuses via the district arm"
+
+              // the other direction: an unarmed line ending in the modifier
+              // words stays a command (no sentinel glue, no district)
+              let cmdDiags, _, _, _ =
+                  Weir.Script.analyzeLines "pin.weir" [ "let x = echo patch by=name"; "x |> Seq.iter print" ]
+
+              Expect.isEmpty cmdDiags "a command with 'patch by=name' argv stays a command"
+          }
           test "district templates check: splice law, key-splice string, for binder [D:yaml-district]" {
               // a record splice violates the liftable law
               let asm lines' =
@@ -5553,6 +5598,18 @@ let purityBadgeTests =
 
               Expect.isFalse ((hoverOf lines 1 5).Contains "(pure)") "File.read is fs — no badge"
               Expect.isFalse ((hoverOf lines 2 5).Contains "(pure)") "data is trivially pure — the badge is for functions"
+          }
+          test "a constructor-building function keeps the badge; a Self.stdin toucher loses it [D:pure-stdin-ctors]" {
+              let lines =
+                  [ "type Shape ="
+                    "    | Dot"
+                    "    | Box of int"
+                    "let mk n = Box n"
+                    "let drain () = Self.stdin |> Seq.length"
+                    "print $\"{mk 1} {drain ()}\"" ]
+
+              Expect.stringContains (hoverOf lines 4 5) "(pure)" "a data constructor is pure by construction"
+              Expect.isFalse ((hoverOf lines 5 5).Contains "(pure)") "Self.stdin drains the input stream — no badge"
           } ]
 
 let pureRegionTests =
@@ -5634,6 +5691,59 @@ let pureRegionTests =
           test "an unknown callable refuses — conservatism is the soundness law" {
               let e = firstErr [ "let unknown g ="; "    pure"; "        g 1" ]
               Expect.stringContains e.Message "unknown callable" "a function-typed param could do anything"
+          }
+          test "Self.stdin is ambient input — a pure region refuses it by name [D:pure-stdin-ctors]" {
+              let e = firstErr [ "let pure count () = Self.stdin |> Seq.length"; "print $\"{count ()}\"" ]
+
+              Expect.stringContains
+                  e.Message
+                  "'Self.stdin' reads the process's input stream"
+                  "the injected value classifies like the effect it is"
+          }
+          test "the per-run Self constants stay pure-admissible [D:pure-stdin-ctors]" {
+              Expect.isEmpty
+                  (errsOf
+                      [ "let pure nargs () = Self.args |> Seq.length"
+                        "let pure me () = Self.pid"
+                        "print $\"{nargs ()} {me ()}\"" ])
+                  "args/pid are per-run constants, not effects"
+          }
+          test "prompt in a pure region still refuses — the ambient-input guard holds" {
+              let e = firstErr [ "let x ="; "    pure"; "        prompt \"q\""; "print x" ]
+              Expect.stringContains e.Message "'prompt'" "prompt reads and writes — never pure"
+          }
+          test "union constructors are pure by construction — applied and partially applied [D:pure-stdin-ctors]" {
+              Expect.isEmpty
+                  (errsOf
+                      [ "type Shape ="
+                        "    | Dot"
+                        "    | Box of int"
+                        "let pure mk n = Box n"
+                        "let pure lift xs = xs |> Seq.map Box"
+                        "let s ="
+                        "    pure"
+                        "        let b = Box 4"
+                        "        match b with"
+                        "        | Box n -> n"
+                        "        | Dot -> 0"
+                        "print $\"{mk 3} {s} {lift [1] |> Seq.length}\"" ])
+                  "a data constructor is not an unknown callable"
+          }
+          test "record and anonymous-shape literals build in a pure region" {
+              Expect.isEmpty
+                  (errsOf
+                      [ "type Endpoint = { Host: string; Port: int }"
+                        "let e ="
+                        "    pure"
+                        "        { Host = \"h\"; Port = 1 }"
+                        "let a ="
+                        "    pure"
+                        "        {| key = \"k\"; n = 3 |}"
+                        "let e2 ="
+                        "    pure"
+                        "        { e with Port = 2 }"
+                        "print $\"{e.Port} {e2.Port} {a.n}\"" ])
+                  "literals are construction, not effects"
           }
           test "keyword reservation: pure cannot be a binder; a blockless pure teaches" {
               let e = firstErr [ "let pure = 1" ]
@@ -5857,7 +5967,7 @@ let withinAlwaysLockTests =
               clean [ "within"; "    sh -c \"true\""; "always"; "    print \"c\"" ] "command body"
 
               clean
-                  [ "let r = retry attempts=2 delay=10ms"
+                  [ "let _r = retry attempts=2 delay=10ms"
                     "    sh -c \"true\""
                     "until r"
                     "    true"
@@ -7466,6 +7576,40 @@ let multilineLambdaTests =
 
               let diags, _, _, _ = Weir.Script.analyzeLines "pin.weir" lines
               Expect.isEmpty diags "no diagnostics — the param is known, not a command head"
+          }
+          test "block-let params shadow PATH in an if-condition head [D:paramful-rhs]" {
+              // a param heading a block-let's if-condition is a BINDING —
+              // bindings-beat-PATH reaches condition position at block-let
+              // depth (check's assume-resolver once claimed it as a
+              // phantom command: cmd-not-found + bogus type errors)
+              let clean lines =
+                  let diags, _, _, _ = Weir.Script.analyzeLines "pin.weir" lines
+                  Expect.isEmpty diags $"check == run: {lines}"
+
+              clean
+                  [ "let outer xs ="
+                    "    let f pairs = if pairs |> Seq.exists (fun (_, v) -> v > 3) then \"big\" else \"small\""
+                    "    f xs"
+                    "print (outer [(\"a\", 5)])" ]
+
+              // even a param NAMED like a real PATH binary stays the binding
+              clean
+                  [ "let outer b ="
+                    "    let pick test = if test then \"y\" else \"n\""
+                    "    pick b"
+                    "print (outer true)" ]
+
+              // the other direction: a genuine external head in that same
+              // condition position keeps the command chain [D:if-succeeds]
+              let diags, _, _, _ =
+                  Weir.Script.analyzeLines
+                      "pin.weir"
+                      [ "let outer p ="
+                        "    let probe f = if test -f $f | succeeds then \"yes\" else \"no\""
+                        "    probe p"
+                        "print (outer \"/etc/hostname\")" ]
+
+              Expect.isEmpty diags "an external head in a block-let if-condition still chains"
           } ]
 
 let pipeAlignTests =
@@ -7486,6 +7630,35 @@ let pipeAlignTests =
               match Weir.Script.assemble [ 1, "let v ="; 2, "    match 3 with"; 3, "| _ -> 0" ] with
               | Error e -> Expect.stringContains e "left of its match (head at column 4)" ""
               | Ok _ -> failtest "expected the offside error"
+          }
+          test "a returning arm after a multi-statement body is an arm, not left-of-match [D:match-pipe-offside]" {
+              // a `let` then an if/else in an arm body leaves the if
+              // compound open when the NEXT arm arrives: the arm group
+              // at the arm's own column says it is a returning arm —
+              // the deeper if offside-closes, it is not "its match"
+              let lines =
+                  [ "let classify n ="
+                    "    match n with"
+                    "    | v when v > 0 ->"
+                    "        let doubled = v * 2"
+                    "        if doubled > 10 then"
+                    "            print \"big\""
+                    "        else"
+                    "            print \"small\""
+                    "    | _ -> print \"zero\""
+                    "classify 9" ]
+
+              let diags, _, _, _ = Weir.Script.analyzeLines "pin.weir" lines
+              Expect.isEmpty (diags |> List.map (fun d -> d.Message)) "the healthy arm assembles and checks"
+
+              // the other direction: an arm genuinely left of its match
+              // (no arm group at its column) keeps the offside error
+              match
+                  Weir.Script.assemble
+                      [ 1, "let v ="; 2, "    match 3 with"; 3, "    | 1 -> 0"; 4, "  | _ -> 1" ]
+              with
+              | Error e -> Expect.stringContains e "align the group" "misaligned arms still refuse"
+              | Ok _ -> failtest "expected the alignment error"
           }
           // the arm-commit soundness premise rides THIS invariant
           // [D:arm-commit]: offside-close paren-wraps nested matches, so
@@ -7681,16 +7854,16 @@ let optionSweepTests =
                   let ds, _, _, _ = Weir.Script.analyzeLines "pin.weir" [ line ]
                   Expect.isEmpty (ds |> List.filter (fun d -> d.Severity = "error")) $"parses: {line}"
 
-              okParses "let z = match Some 1 with | Some n -> n | _ -> 0"
-              okParses "let (a, b) = (1, 2)"
-              okParses "let z = match 1 with | _ -> 0"
-              okParses "let z = match 5 with | n when n > 0 -> 1 | _ -> 0"
-              okParses "let z = match true with | true -> 1 | false -> 0"
-              okParses "let z = match [1] with | [x] -> x | _ -> 0"
+              okParses "let _z = match Some 1 with | Some n -> n | _ -> 0"
+              okParses "let (_a, _b) = (1, 2)"
+              okParses "let _z = match 1 with | _ -> 0"
+              okParses "let _z = match 5 with | n when n > 0 -> 1 | _ -> 0"
+              okParses "let _z = match true with | true -> 1 | false -> 0"
+              okParses "let _z = match [1] with | [x] -> x | _ -> 0"
               // the binder-scan skips pattern delimiters and stops at `=`:
               // an RHS keyword is not a binder keyword, and true/false in a
               // destructure are LITERAL patterns (a check error, not parse)
-              okParses "let go = (let (a, b) = (1, 2) in a)"
+              okParses "let _go = (let (a, _b) = (1, 2) in a)"
 
               let noParseError (line: string) =
                   let ds, _, _, _ = Weir.Script.analyzeLines "pin.weir" [ line ]
@@ -9042,7 +9215,7 @@ let agentFindingsTests =
                   let ds, _, _, _ = Weir.Script.analyzeLines "pin.weir" [ line ]
                   Expect.isEmpty (ds |> List.filter (fun d -> d.Severity = "error")) $"accepted: {line}"
 
-              ok "let r = git status | complete"
+              ok "let _r = git status | complete"
               ok "git status | orFail \"boom\""
           }
           test "orFail carries its message expression" {
@@ -9303,6 +9476,70 @@ let agentFindingsTests =
               match Weir.Script.assemble [ 1, "if a then"; 2, "    f"; 3, "        x"; 4, "    g" ] with
               | Ok [ ll ] -> Expect.equal ll.Text (asmSib "if a then f x ; g") "the sibling after a continuation"
               | other -> failtest $"expected one logical line, got {other}"
+          }
+          test "a `)`-headed line closes a multi-line application, never siblings [D:paren-close-continuation]" {
+              // the close paren at the opener's indent CONTINUES the
+              // statement while a plain paren is open — the lambda
+              // closer's rule extended to ordinary applications
+              match
+                  Weir.Script.assemble
+                      [ 1, "let v ="; 2, "    YMap("; 3, "        [(\"a\", YStr \"x\")]"; 4, "    )" ]
+              with
+              | Ok [ ll ] -> Expect.equal ll.Text "let v = YMap( [(\"a\", YStr \"x\")] )" "the closer joins"
+              | other -> failtest $"expected one logical line, got {other}"
+
+              // …and in a nested arm body: the ported-port shape — a
+              // constructor application inside an if arm at depth
+              let clean lines =
+                  let diags, _, _, _ = Weir.Script.analyzeLines "pin.weir" lines
+                  Expect.isEmpty (diags |> List.map (fun d -> d.Message)) $"checks: {lines}"
+
+              clean
+                  [ "let build tag ="
+                    "    if tag == \"map\" then"
+                    "        YMap("
+                    "            [(\"a\", YStr \"x\")]"
+                    "        )"
+                    "    else"
+                    "        YStr \"plain\""
+                    "build \"map\" |> to yaml |> Seq.iter print" ]
+
+              clean
+                  [ "let build tag ="
+                    "    match tag with"
+                    "    | \"map\" ->"
+                    "        YMap("
+                    "            [(\"a\", YStr \"x\")]"
+                    "        )"
+                    "    | _ -> YStr \"plain\""
+                    "build \"map\" |> to yaml |> Seq.iter print" ]
+
+              // the closer restores the statement level: the next body
+              // line is a SIBLING of the whole application (the in-join
+              // for a pending block let), never an argument
+              match
+                  Weir.Script.assemble
+                      [ 1, "let outer ="
+                        2, "    let inner = YMap("
+                        3, "        [(\"a\", YStr \"x\")]"
+                        4, "    )"
+                        5, "    inner" ]
+              with
+              | Ok [ ll ] ->
+                  Expect.equal
+                      ll.Text
+                      "let outer = let inner = YMap( [(\"a\", YStr \"x\")] ) in inner"
+                      "the in-join waits for the closer"
+              | other -> failtest $"expected one logical line, got {other}"
+
+              // the other direction: with NO paren open a `)`-headed
+              // sibling is still refused, never silently joined
+              let diags, _, _, _ =
+                  Weir.Script.analyzeLines "pin.weir" [ "if 1 > 0 then"; "    print \"x\""; "    )" ]
+
+              Expect.isNonEmpty
+                  (diags |> List.filter (fun d -> d.Severity = "error"))
+                  "a stray `)` sibling stays an error"
           }
           test "multi-line application assembles inside a module body too [D:continuation-siblings]" {
               let td =
@@ -10802,7 +11039,7 @@ let siblingSentinelTests =
               // the old pin asserted the seq-unit rejection at the head;
               // the interior-arming rule makes the command an EFFECT and
               // the body legal — the flip, named
-              let ds = diags [ "let f t ="; "    git status"; "    let e = \"x\""; "    print e" ]
+              let ds = diags [ "let _f t ="; "    git status"; "    let e = \"x\""; "    print e" ]
 
               Expect.isEmpty (ds |> List.filter (fun d -> d.Severity = "error")) "the armed body checks clean"
           }
@@ -11583,10 +11820,10 @@ let ambiguousCtorTests =
               | other -> failtest $"applied: expected one error, got {other.Length}"
           }
           test "the repair works: renaming one case resolves the other" {
-              Expect.isEmpty (analyze [ "type B = D"; "type Z = C"; "let x = C"; "print \"n\"" ]) "renamed"
+              Expect.isEmpty (analyze [ "type B = D"; "type Z = C"; "let _x = C"; "print \"n\"" ]) "renamed"
           }
           test "one declaration still resolves bare" {
-              Expect.isEmpty (analyze [ "type Z = C"; "let x = C"; "print \"n\"" ]) "single owner"
+              Expect.isEmpty (analyze [ "type Z = C"; "let _x = C"; "print \"n\"" ]) "single owner"
           }
           test "a collision that is never USED bare still checks" {
               Expect.isEmpty (analyze [ "type B = C"; "type Z = C"; "print \"n\"" ]) "use-site rule"
@@ -11625,7 +11862,7 @@ let ambiguousCtorTests =
                       main,
                       [ "import \"./lib.weir\""
                         "type Mine = Failed of int"
-                        "let s = Failed 1"
+                        "let _s = Failed 1"
                         "print \"n\"" ]
                   )
 
@@ -11640,7 +11877,13 @@ let ambiguousCtorTests =
           }
           test "an unresolved scrutinee stays refused for its own reason" {
               match analyze [ "type Z = C"; "let f x = match x with | C -> 1"; "print \"n\"" ] with
-              | d :: _ -> Expect.stringContains d.Message "constructor patterns need a union value" ""
+              | d :: _ ->
+                  Expect.stringContains d.Message "params are not typed from patterns" ""
+                  // the teaching names BOTH repairs: the same lambda
+                  // inlined at a typed pipe position types fine, so the
+                  // error must say so rather than dump a type variable
+                  Expect.stringContains d.Message "inline the lambda at its use site" ""
+                  Expect.stringContains d.Message "match on already-typed data" ""
               | [] -> failtest "expected the unresolved-scrutinee rejection"
           } ]
 
@@ -11665,7 +11908,7 @@ let dupTypeTests =
               match
                   analyze
                       [ "type T = { a: int }"
-                        "let x = { a = 1 }"
+                        "let _x = { a = 1 }"
                         "type T = { b: string }"
                         "print \"n\"" ]
               with
@@ -12939,7 +13182,7 @@ let recordPatternRowTests =
               // type there is nothing to validate the constructor against
               Expect.stringContains
                   (errR "fun p -> match p with | Some 1 -> \"y\" | _ -> \"n\"").Message
-                  "constructor patterns need a union value"
+                  "params are not typed from patterns"
                   "the ctor law is untouched"
           } ]
 
@@ -15094,7 +15337,7 @@ let anonRecordTests =
               let ds, _, _, _ =
                   Weir.Script.analyzeLines
                       "anon.weir"
-                      [ "let x = [\"{}\"]  |> from json {| ip: string |}"; "let y = x.ip" ]
+                      [ "let x = [\"{}\"]  |> from json {| ip: string |}"; "let _y = x.ip" ]
 
               Expect.isEmpty
                   (ds |> List.filter (fun d -> d.Severity = "error"))
@@ -15166,7 +15409,7 @@ let anonLiteralTests =
           }
           test "the def persists across statements (script + REPL share checkStatement)" {
               let ds, _, _, _ =
-                  Weir.Script.analyzeLines "anonlit.weir" [ "let x = {| ip = \"z\" |}"; "let y = x.ip" ]
+                  Weir.Script.analyzeLines "anonlit.weir" [ "let x = {| ip = \"z\" |}"; "let _y = x.ip" ]
 
               Expect.isEmpty (ds |> List.filter (fun d -> d.Severity = "error")) "the later statement resolves"
           }
@@ -15177,9 +15420,9 @@ let anonLiteralTests =
                   Weir.Script.analyzeLines
                       "anonlit2.weir"
                       [ "type AG = { ip: string }"
-                        "let a = {| ip = \"x\" |}"
+                        "let _a = {| ip = \"x\" |}"
                         "let b = { ip = \"y\" }"
-                        "let c = b.ip" ]
+                        "let _c = b.ip" ]
 
               Expect.isEmpty (ds |> List.filter (fun d -> d.Severity = "error")) "the bare literal stays unambiguous"
           }
@@ -16474,12 +16717,12 @@ let moduleSignatureTests =
     let lib =
         [ "module Lib"
           ""
+          "let helper n = n + 1"
+          ""
           "/// doubles"
           "let double : int -> int"
           ""
-          "let double n = n * 2"
-          ""
-          "let helper n = n + 1" ]
+          "let double n = helper n + n - 1" ]
 
     testList
         "module signatures [D:module-signatures]"
@@ -16518,9 +16761,9 @@ let moduleSignatureTests =
               withDir
                   [ "lib.weir",
                     [ "module Lib"
+                      "let doublez n = n"
                       "let doubles : int -> int"
-                      "let doubles n = n * 2"
-                      "let doublez n = n" ]
+                      "let doubles n = doublez (n * 2)" ]
                     "m.weir", [ "import \"./lib.weir\""; "print (show (Lib.doublez 3))" ] ]
                   (fun td ->
                       match diagsOf td "m.weir" with
@@ -16577,7 +16820,7 @@ let moduleSignatureTests =
                   (fun td ->
                       let libPath = System.IO.Path.Combine(td, "lib.weir")
                       let lines = List.ofArray (System.IO.File.ReadAllLines libPath)
-                      Expect.equal (Weir.Lsp.hoverAt libPath lines 4 6) (Some "double : int -> int\n\ndoubles") "sig hover")
+                      Expect.equal (Weir.Lsp.hoverAt libPath lines 6 6) (Some "double : int -> int\n\ndoubles") "sig hover")
           }
           test "check-against-sig retires the KSL shapes: ctor pattern on an own param; a sig-pinned to yaml" {
               withDir
@@ -16647,7 +16890,7 @@ let moduleSignatureTests =
                       "let judge : int -> Verdict"
                       ""
                       "let judge n = if n > 0 then Good else Bad n" ]
-                    "u.weir", [ "import \"./t.weir\""; "let v = T.judge 3"; "print (show 1)" ]
+                    "u.weir", [ "import \"./t.weir\""; "let _v = T.judge 3"; "print (show 1)" ]
                     "bad.weir", [ "module Z"; "let f : Nope -> int"; "let f x = 1" ] ]
                   (fun td ->
                       Expect.isEmpty (diagsOf td "u.weir") "type + signed member cross"
@@ -16655,6 +16898,245 @@ let moduleSignatureTests =
                       match diagsOf td "bad.weir" with
                       | d :: _ -> Expect.stringContains d.Message "unknown type 'Nope'" "the sig type validates"
                       | [] -> failtest "an unknown sig type must refuse")
+          }
+          test "def-less builtin nominals are nameable in signatures [D:yaml-nodes]: YamlPatch exports a patch builder; Proc and the declared builtins pin" {
+              withDir
+                  [ "m.weir",
+                    [ "module M"
+                      ""
+                      "let mk : string -> YamlPatch"
+                      ""
+                      "let mk tier = yaml patch"
+                      "    labels:"
+                      "        tier: $tier" ]
+                    "use.weir",
+                    [ "import \"./m.weir\" as M"
+                      "let doc = [\"kind: K\"] |> Yaml.parse"
+                      "doc |> Yaml.merge (M.mk \"gold\") |> to yaml |> Seq.iter print" ]
+                    // Proc is semantically exportable: a module helper over a
+                    // HANDLE (handles are data and escape scopes [D:scoped-procs])
+                    "p.weir", [ "module P"; "let pid : Proc -> int"; "let pid p = Proc.pid p" ]
+                    // the declared prelude nominals + Map already crossed —
+                    // pinned so it stays true
+                    "b.weir",
+                    [ "module B"
+                      "let a : Yaml -> Yaml"
+                      "let a y = y"
+                      "let b : Retry -> int"
+                      "let b r = r.attempts"
+                      "let e : Poll -> Duration"
+                      "let e p = p.timeout"
+                      "let c : HttpRequest -> string"
+                      "let c r = r.url"
+                      "let d : Map<string, int> -> Map<string, int>"
+                      "let d m = m" ]
+                    // a def-less nominal takes no type arguments
+                    "e.weir", [ "module E"; "let f : YamlPatch<int> -> int"; "let f x = 1" ] ]
+                  (fun td ->
+                      Expect.isEmpty (diagsOf td "m.weir") "the module exports a patch builder"
+                      Expect.isEmpty (diagsOf td "use.weir") "the consumer merges it"
+                      Expect.isEmpty (diagsOf td "p.weir") "Proc names a handle helper"
+                      Expect.isEmpty (diagsOf td "b.weir") "declared builtins + Map keep crossing"
+
+                      match diagsOf td "e.weir" with
+                      | d :: _ ->
+                          Expect.stringContains d.Message "'YamlPatch' expects 0 type argument(s), got 1" "arity refuses"
+                      | [] -> failtest "YamlPatch<int> must refuse")
+          }
+          test "a `yaml patch` marker never parses as a command on the check side [D:assume-resolver]" {
+              // the check-side resolver assumes unknown heads are commands;
+              // the head guard's modifier face must still refuse the glued
+              // marker so the district arm takes it — run and check agree
+              withDir
+                  [ "s.weir",
+                    [ "let p = yaml patch"
+                      "    replicas: 3"
+                      "[\"kind: K\"] |> Yaml.parse |> Yaml.merge p |> to yaml |> Seq.iter print" ]
+                    "t.weir",
+                    [ "let p = yaml patch by=name"
+                      "    images:"
+                      "        - name: app"
+                      "          newTag: v3"
+                      "[\"kind: K\"] |> Yaml.parse |> Yaml.merge p |> to yaml |> Seq.iter print" ] ]
+                  (fun td ->
+                      Expect.isEmpty (diagsOf td "s.weir") "the plain patch marker checks"
+                      Expect.isEmpty (diagsOf td "t.weir") "the by= marker checks")
+          }
+          test "the privacy suggestion round-trips [D:module-signatures]: the suggested signature parses, validates, and exports" {
+              withDir
+                  [ "lib.weir", [ "module L"; ""; "let mkp name = yaml patch"; "    labels:"; "        app: $name"; ""; "let mk2 : string -> YamlPatch"; "let mk2 n = mkp n" ]
+                    "use.weir",
+                    [ "import \"./lib.weir\" as L"
+                      "[\"kind: K\"] |> Yaml.parse |> Yaml.merge (L.mkp \"web\") |> to yaml |> Seq.iter print" ] ]
+                  (fun td ->
+                      let sugg =
+                          match diagsOf td "use.weir" with
+                          | d :: _ ->
+                              Expect.stringContains
+                                  d.Message
+                                  "-> YamlPatch` in the module to export it"
+                                  "the teaching names a YamlPatch signature"
+
+                              let m = System.Text.RegularExpressions.Regex.Match(d.Message, "add `(let [^`]+)`")
+                              Expect.isTrue m.Success "the teaching carries the signature to paste"
+                              m.Groups[1].Value
+                          | [] -> failtest "the private member must refuse"
+
+                      // paste the suggested line verbatim above the impl —
+                      // the module checks and the import resolves
+                      // (error text -> paste -> green)
+                      let libPath = System.IO.Path.Combine(td, "lib.weir")
+                      let lines = System.IO.File.ReadAllLines libPath |> List.ofArray
+                      let patched = List.item 0 lines :: "" :: sugg :: List.skip 1 lines
+                      System.IO.File.WriteAllLines(libPath, patched)
+                      Expect.isEmpty (diagsOf td "lib.weir") "the pasted signature checks in the module"
+                      Expect.isEmpty (diagsOf td "use.weir") "the member now exports")
+          }
+          test "a qualified type name in a signature teaches the bare-name law [D:modules-v1]" {
+              match Weir.Parser.parseLine cmdResolver "let f : M.Spec -> string" with
+              | Error msg ->
+                  Expect.stringContains
+                      msg
+                      "a signature names types bare — an imported type resolves by its plain name"
+                      "the law"
+
+                  Expect.stringContains msg "write 'Spec', not 'M.Spec'" "the rewrite"
+              | Ok s -> failtest $"a qualified sig type must refuse, got {s}"
+
+              // nested type positions teach the same law
+              match Weir.Parser.parseLine cmdResolver "let g : seq<M.Spec> -> int" with
+              | Error msg -> Expect.stringContains msg "a signature names types bare" "nested position"
+              | Ok s -> failtest $"nested qualified must refuse, got {s}"
+
+              // the ONE type grammar: a record field's type teaches too
+              match Weir.Parser.parseLine cmdResolver "type R = { f: M.Spec }" with
+              | Error msg -> Expect.stringContains msg "plain name" "field position"
+              | Ok s -> failtest $"a qualified field type must refuse, got {s}"
+          } ]
+
+let unusedBindingTests =
+    // the unused-binding law [D:unused-bindings]: an unread let binder is
+    // a hard check error — the strictness family (statement rule,
+    // exhaustiveness, unreachable arms); `_name` is the escape
+    let errsOf (lines: string list) =
+        let ds, _, _, _ = Weir.Script.analyzeLines "ub.weir" lines
+        ds |> List.filter (fun d -> d.Severity = "error")
+
+    let clean (lines: string list) (label: string) =
+        Expect.isEmpty (errsOf lines) $"{label}: expected clean, got {errsOf lines |> List.map _.Message}"
+
+    testList
+        "unused bindings [D:unused-bindings]"
+        [ test "an unread top-level binder errors, located at the binder, code unused-binding" {
+              match errsOf [ "let tmp = 5"; "print \"x\"" ] with
+              | [ d ] ->
+                  Expect.equal (d.Line, d.Col) (1, 5) "at the binder"
+                  Expect.equal d.Code "unused-binding" "the code"
+
+                  Expect.equal
+                      d.Message
+                      "'tmp' is bound but never used — read it, or name it '_tmp' to keep it deliberately"
+                      "the teaching voice, escape included"
+              | other -> failtest $"expected one error, got {other}"
+          }
+          test "collected, not first-only: every unused binder reports" {
+              let ds = errsOf [ "let a = 1"; "let b = 2"; "print \"x\"" ]
+              Expect.equal (ds |> List.length) 2 "both"
+              Expect.equal (ds |> List.map (fun d -> d.Line)) [ 1; 2 ] "position order"
+          }
+          test "the receipt class: a bound-and-forgotten | complete is the swallowed failure" {
+              match errsOf [ "let r = git status | complete"; "print \"done\"" ] with
+              | [ d ] -> Expect.stringContains d.Message "'r' is bound but never used" "the swallow surfaces"
+              | other -> failtest $"expected one error, got {other}"
+          }
+          test "a block-local unread binder errors at its own site" {
+              match errsOf [ "let f () ="; "    let a = 1"; "    2"; "print (show (f ()))" ] with
+              | [ d ] ->
+                  Expect.equal (d.Line, d.Col) (2, 9) "at the block binder"
+                  Expect.stringContains d.Message "'a' is bound but never used" ""
+              | other -> failtest $"expected one error, got {other}"
+          }
+          test "destructuring judges each NAME; a wildcard component is fine" {
+              match errsOf [ "let (a, b) = (1, 2)"; "print (show a)" ] with
+              | [ d ] -> Expect.stringContains d.Message "'b' is bound but never used" "per-name"
+              | other -> failtest $"expected one error, got {other}"
+
+              clean [ "let (a, _) = (1, 2)"; "print (show a)" ] "wildcard component"
+          }
+          test "shadow without a read errors AT THE EARLIER binder, naming the rebind line" {
+              match errsOf [ "let cfg = 1"; "let cfg = 2"; "print (show cfg)" ] with
+              | [ d ] ->
+                  Expect.equal d.Line 1 "the earlier binder"
+                  Expect.stringContains d.Message "never used before being rebound at line 2" "the rebind cited"
+              | other -> failtest $"expected one error, got {other}"
+
+              // the RHS reads the OUTER binding (no let rec): a read-through
+              // rebind is clean
+              clean [ "let x = 1"; "let x = x + 1"; "print (show x)" ] "read-through rebind"
+          }
+          test "the exempt classes: params, arm binders, for/until/within" {
+              clean [ "let f x = 1"; "print (show (f 2))" ] "unused param"
+              clean [ "[1] |> Seq.iter (fun n -> print \"y\")" ] "unused lambda param"
+
+              clean
+                  [ "let v = match Some 1 with | Some n -> 9 | None -> 0"; "print (show v)" ]
+                  "unused arm binder"
+
+              clean [ "for x in [1; 2] do print \"y\"" ] "unused for binder"
+              clean [ "within tmp d"; "    print \"b\"" ] "unused within binder"
+
+              clean
+                  [ "let v ="
+                    "    retry attempts=1 delay=1ms"
+                    "        7"
+                    "    until r"
+                    "        true"
+                    "print (show v)" ]
+                  "unused until binder"
+          }
+          test "the escape: a '_'-prefixed name never errors, top-level and block" {
+              clean [ "let _keep = 5"; "print \"x\"" ] "top-level _name"
+              clean [ "let f () ="; "    let _a = 1"; "    2"; "print (show (f ()))" ] "block _name"
+              // and a _name stays READABLE — the prefix only switches the
+              // judgement off
+              clean [ "let _n = 5"; "print (show _n)" ] "_name read back"
+          }
+          test "a bare '_' let binder refuses — the anonymous swallow" {
+              match errsOf [ "let _ = sh -c \"exit 3\" | complete"; "print \"x\"" ] with
+              | [ d ] -> Expect.stringContains d.Message "a bare '_' binder discards its value anonymously" "the teaching"
+              | other -> failtest $"expected one error, got {other}"
+
+              match errsOf [ "let f () ="; "    let _ = 1"; "    2"; "print (show (f ()))" ] with
+              | [ d ] -> Expect.stringContains d.Message "a bare '_' binder" "block form too"
+              | other -> failtest $"expected one error, got {other}"
+          }
+          test "POISON: an errored statement suppresses the unused pass (one real error beats echoes)" {
+              match errsOf [ "let x = 5"; "let y = \"a\" + 1"; "print \"x\"" ] with
+              | [ d ] -> Expect.stringContains d.Message "expected string, got int" "only the real error"
+              | other -> failtest $"expected exactly the type error, got {other |> List.map (fun d -> d.Message)}"
+          }
+          test "module: an unsigned member unread at home is dead private code; signed is exempt" {
+              match
+                  errsOf [ "module M"; "let grade : int -> int"; "let dead n = n * 2"; "let grade n = n + 1" ]
+              with
+              | [ d ] ->
+                  Expect.equal d.Line 3 "at the dead member"
+                  Expect.stringContains d.Message "an unsigned module member is private dead code" "the module voice"
+                  Expect.stringContains d.Message "export it with a signature" "the export repair"
+              | other -> failtest $"expected one error, got {other |> List.map (fun d -> d.Message)}"
+
+              // the signature IS the use — a signed member unread at home is
+              // the export case, pinned
+              clean [ "module M"; "let grade : int -> int"; "let grade n = n + 1" ] "signed member exempt"
+
+              // an unsigned member the module reads is the private-helper
+              // case, clean
+              clean
+                  [ "module M"
+                    "let helper n = n * 2"
+                    "let grade : int -> int"
+                    "let grade n = helper n + 1" ]
+                  "used private member"
           } ]
 
 [<Tests>]
@@ -16806,6 +17288,7 @@ let allTests =
           closersTests
           sigilTests
           districtTests
+          unusedBindingTests
           indexerTests
           envLoadTests
           parallelTests

@@ -34,7 +34,14 @@ let private effectfulQualified =
           "Path.tempRoot"
           "Path.newTempDir"
           "Instant.now"
-          "Duration.sleep" ]
+          "Duration.sleep"
+          // Self.stdin is a per-run VALUE injected by Script (not a
+          // Builtins member), so the effect walk sees a plain variable
+          // — classified here or nowhere. Reading it DRAINS the live
+          // one-shot fd: ambient input, an effect. Its siblings
+          // (Self.args/pid/scriptPath/entryPath) are per-run CONSTANTS
+          // and stay pure-admissible [D:pure-stdin-ctors]
+          "Self.stdin" ]
 
 let private effectfulBare = Set [ "ls"; "glob"; "print"; "printerr"; "exit"; "prompt" ]
 
@@ -53,6 +60,14 @@ let private effectfulName (n: string) =
 // member (Str.trim) never falls into the unknown-callable bucket
 let private builtinNames =
     lazy (Weir.Builtins.valueEnv |> Map.toSeq |> Seq.map fst |> Set.ofSeq)
+
+// a bare UPPERCASE name in expression position is a union CONSTRUCTOR:
+// binders start lowercase (Check.casingError's law) and a module never
+// survives check as a value — so a function type here is a payload
+// arrow, not a callable that could reach an effect. Data by
+// construction, pure [D:pure-stdin-ctors]
+let private isCtorName (n: string) =
+    not (n.Contains ".") && n.Length > 0 && System.Char.IsUpper n[0]
 
 let rec tyHasFun (t: Ty) =
     match t with
@@ -105,12 +120,13 @@ let rec isPureExpr (env: Map<string, bool>) (te: TypedExpr) : bool =
     | TEVar n ->
         if effectfulName n then false
         elif builtinNames.Force().Contains n then true
+        elif isCtorName n then true
         else
             match Map.tryFind n env with
             | Some p -> p
             | None ->
-                // a constructor or data-typed unknown is inert; an
-                // unknown CALLABLE could do anything — no badge
+                // a data-typed unknown is inert; an unknown CALLABLE
+                // could do anything — no badge
                 not (tyHasFun te.Ty)
     | TELet(n, _, v, b) ->
         let pv = isPureExpr env v
@@ -152,6 +168,7 @@ let private effectPhrase (n: string) : string =
         | "Path.newTempDir" -> $"'{n}' touches the filesystem"
         | "Instant.now" -> "'Instant.now' reads the clock"
         | "Duration.sleep" -> "'Duration.sleep' waits on the clock"
+        | "Self.stdin" -> "'Self.stdin' reads the process's input stream"
         | _ ->
             match n.Split '.' with
             | [| ("File" | "Dir"); m |] when fsWriteMembers.Contains m -> $"'{n}' writes the filesystem"
@@ -191,7 +208,7 @@ let rec firstEffect (env: Map<string, bool>) (te: TypedExpr) : (Span * string) o
     | TEVar n ->
         if effectfulName n then
             Some(te.Span, effectPhrase n)
-        elif builtinNames.Force().Contains n then
+        elif builtinNames.Force().Contains n || isCtorName n then
             None
         else
             match Map.tryFind n env with

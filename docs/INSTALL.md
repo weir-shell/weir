@@ -1,6 +1,6 @@
 # Installing weir
 
-One AOT binary, no runtime. Every release carries one binary per
+One static binary, no runtime. Every release carries one binary per
 platform plus a `SHA256SUMS` file.
 
 ## The quick way

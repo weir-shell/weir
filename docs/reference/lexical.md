@@ -59,8 +59,8 @@ here without a docs edit.
 
 | kind | keywords |
 |---|---|
-| core, F#-shaped | `do`, `elif`, `else`, `false`, `for`, `fun`, `function`, `if`, `import`, `in`, `let`, `match`, `module`, `of`, `then`, `true`, `type`, `when`, `with` |
-| weir-specific | `always`, `from`, `poll`, `pure`, `retry`, `to`, `until`, `within` |
+| core, F#-shaped | `do`, `elif`, `else`, `false`, `for`, `fun`, `function`, `if`, `in`, `let`, `match`, `module`, `of`, `then`, `true`, `type`, `when`, `with` |
+| weir-specific | `always`, `from`, `import`, `poll`, `pure`, `retry`, `to`, `until`, `within` |
 | reserved, no meaning | `mutable`, `rec` |
 | reserved to teach | `def`, `return`, `try`, `while` |
 

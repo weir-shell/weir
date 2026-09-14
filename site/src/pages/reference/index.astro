@@ -116,6 +116,21 @@ const toc = [
           </h4>
           {m.signature && <Code code={m.signature} lang={weirGrammar} themes={queilThemes} defaultColor={false} />}
           {m.summary && <p>{m.summary}</p>}
+          {m.kinds && (
+            <>
+              <table class="kinds-table">
+                <tbody>
+                  {m.kinds.map((k) => (
+                    <tr>
+                      <td><code>{k.name}</code></td>
+                      <td>{k.doc}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <p><em>each kind's laws and examples: <a href="#scopes">Scopes</a></em></p>
+            </>
+          )}
           {m.example && <Code code={m.example} lang={weirGrammar} themes={queilThemes} defaultColor={false} />}
           {m.pointer && <p><em>{m.pointer}</em></p>}
         </section>

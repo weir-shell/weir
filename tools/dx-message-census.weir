@@ -103,9 +103,6 @@ let checkRun path =
     let r = sh -c $"'{cli.bin}' check '{path}' 2>&1" | complete
     r
 
-let saysAny text phrases =
-    phrases |> Seq.exists (fun p -> text |> Str.contains p)
-
 let classify d entry =
     let name = fst entry
     let path = $"{d}/{name}.weir"

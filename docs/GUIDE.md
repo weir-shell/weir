@@ -11,19 +11,33 @@ break there fails the build too; everything else runs.)
 
 ## Why weir
 
-Three properties, in the order they matter:
+Five properties, in the order they matter:
 
 1. **The whole script typechecks before line one runs.** A typo, a
    wrong field, a discarded value, a missing match case — all of them
    stop the script with `file:line:col` and a hint, before any side
    effect. Bash tells you about your mistake halfway through making it.
-2. **Command output is typed data.** A JSON document — pretty-printed
-   or not — pipes through `|> from json T` into a record with the
-   fields you declared, not string soup; `|> from jsonl T` reads
-   NDJSON streams, and the `Regex` match pattern covers everything
-   line-shaped.
-3. **It starts in ~6ms** (an expression line; the timing gate pins the
-   median) — a single AOT binary, fine for shebangs.
+2. **Every boundary is typed data.** Command output pipes through
+   `|> from json T` into a record with the fields you declared, not
+   string soup — `from jsonl`/`from yaml`/`from xml` cover the wire,
+   `Args.load` types argv and derives `--help`, `Env.load` types the
+   environment, and the `Regex` match pattern covers everything
+   line-shaped. YAML you did *not* declare edits structurally
+   (`Yaml.parse` and a `yaml patch` district) instead of through sed.
+3. **Effects are governed.** A background child is scoped or
+   unrepresentable — there is no `&`; `within proc` tree-kills and
+   reaps at every exit, and `within tmp`/`cd`/`env`/`lock` release the
+   same way, raise included. Splices are values, never text, so
+   command injection has no spelling. A `Secret` refuses to print,
+   interpolate, or serialize — `Secret.reveal` is the one deliberate
+   exit.
+4. **You can ask before you run.** `weir check --can` reports every
+   command, file path, URL, and env var a script *can* touch —
+   statically, because command heads are literal (interpreters like
+   `sh -c` are counted as opaque, loudly). `pure` marks a region the
+   checker guarantees reaches no effect.
+5. **It starts in ~6ms** (an expression line; the timing gate pins the
+   median) — a single static binary, fine for shebangs.
 
 ## Running weir
 
@@ -91,7 +105,7 @@ lines included:
 
 ```weir
 let retries = 3 // why: registry flakes under load
-echo done // trailing works on command lines too
+echo retrying $retries times // trailing works on command lines too
 ```
 
 `///` is the doc comment, and it pays its way: it attaches to the
@@ -475,6 +489,7 @@ let latest = git log -1 "--format=%h" |> Seq.exactlyOne
 print $"at {latest}"
 
 let tagged = $"at {$(git log -1 "--format=%h") |> Seq.exactlyOne}"
+print tagged
 ```
 
 There is no syntax for a computed program name — branch the whole
@@ -837,7 +852,6 @@ it runs with that environment:
 ["STAGE=prod"] |> File.write "stage.env"
 
 let e = Env.fromFile "stage.env"
-let ready = 1 > 0
 
 !e(sh -c "echo inline: $STAGE")
 
@@ -929,6 +943,7 @@ match Path.glob "*.md" with
 | docs -> docs |> Seq.sortBy (fun s -> s) |> Seq.iter print
 
 let pinned = Path.glob "*.md" |> Seq.force
+print $"pinned: {pinned |> Seq.length}"
 ```
 
 A batch splats into a command with `$@` — N files become N argv
@@ -1812,7 +1827,7 @@ that belongs to systemd or launchd, and weir deliberately has no
 Dir.create "wa"
 Dir.create "wb"
 ["wa"; "wb"] |> Seq.pmap (fun d ->
-    let x = cd d
+    let _cd = cd d
     pwd |> Seq.head) |> print
 ```
 
@@ -1985,11 +2000,14 @@ machine-verified against the real F#
 compiler in CI. The short version:
 
 - no mutation
+- no unbounded loops, no recursion — `retry`/`poll` are the bounded
+  loops, `Graph.reach`/`Tree.walk` the cycle-safe walks; an unbounded
+  iteration is unrepresentable
 - no exceptions — values, `fail` and `exit` instead
 - no OO
 - no async
-- no user type classes — the three built-in constraint families are
-  closed
+- no user type classes, no SRTP — the three built-in constraint
+  families are closed
 
 When a task outgrows a shell, the graduation path is full F# — weir
 points there on purpose.

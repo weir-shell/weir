@@ -65,10 +65,13 @@ print (show 1)
   `Self.stdin : seq<string>` (the WHOLE input stream, ONE
   enumeration — it is live, a second enumeration raises with the
   repair; `prompt "msg?"` reads a line per interaction instead, message
-  to stderr so piped stdout stays data, EOF refuses), `Self.pid : int` (the process id), and
-  `Self.scriptPath : string` (the script's own ABSOLUTE path, resolved
-  at startup before any `cd`; symlinks unresolved like bash's `$0`).
-  `Self.scriptPath |> Path.dir` is the dirname-$0 idiom.
+  to stderr so piped stdout stays data, EOF refuses), `Self.pid : int` (the process id),
+  `Self.scriptPath : string` (the FILE'S OWN absolute path, resolved
+  at startup before any `cd`; symlinks unresolved like bash's `$0` —
+  an imported module sees its own), and `Self.entryPath : string`
+  (the INVOKED script's path — a process fact like args/stdin, the
+  same in every module). `Self.scriptPath |> Path.dir` is the
+  dirname-$0 idiom.
 
 ## The statement rule (most important)
 
@@ -126,6 +129,37 @@ if ok then
 
 let branches = $(git branch) |> Seq.length
 print $"branches: {branches}"
+```
+
+- An unread `let` binder is a HARD CHECK ERROR [D:unused-bindings] —
+  scripts and module bodies, top-level and block-local, destructured
+  names each judged. Binding is exactly how weir silences
+  raise-on-nonzero, so `let r = cmd | complete` never read is a
+  SWALLOWED FAILURE — the discard family one binder away. The escape
+  is a `_`-prefixed NAME (`let _r = …` — deliberately unused, never
+  errors, still readable); a BARE `_` binder refuses (name the
+  discard so it survives a grep). Rebinding a name whose earlier
+  binding went unread errors AT the earlier binder (the copy-paste
+  bug), and a module's UNSIGNED member unread at home is dead private
+  code — an error naming the signature repair. EXEMPT: function
+  params, match-arm binders, `for`/`until`/`within` binders, and
+  SIGNED module members (the signature is the use). The law judges
+  the WHOLE file after every statement checks; an errored file
+  reports only its real error, never unused echoes.
+
+```weir-error
+// the swallow: bound, never read — the exit code vanished silently
+let r = sh -c "exit 3" | complete
+print "done"
+```
+
+```weir
+// the escape: a '_'-prefixed name is deliberately-unused (and stays
+// readable); an unused PARAM is exempt without it — API shape, not a
+// swallowed value
+let _probe = sh -c "exit 3" | complete
+let f x = 1
+print (show (f 2))
 ```
 
 ## Syntax that differs from your priors
@@ -565,6 +599,8 @@ print $"{key} -> {value}"
   [D:pure-stage1]: the body must reach NO effect — filesystem,
   commands, network, environment, console, clock, any `within`
   resource — or check refuses, naming the offender at its site.
+  `Self.stdin` counts (reading drains the input stream); the per-run
+  `Self` constants and union constructors are pure.
   `let pure f x = …` is the binding spelling (weir's one post-let
   modifier; an impure body is a check error, and the binding keeps
   its `(pure)` hover badge). Opt-in ONLY: weir stays effect-normal —
@@ -999,7 +1035,7 @@ ls |> Seq.where _.isDirectory |> Seq.iter (fun f -> print f.name)
 within tmp d
     within cd d
         File.write "plain.txt" ["x"]
-        let linked = $(sh -c "ln -s plain.txt link 2>/dev/null" | complete)
+        let _linked = $(sh -c "ln -s plain.txt link 2>/dev/null" | complete)
         ls |> Seq.where (fun f -> f.kind == Symlink) |> Seq.iter (fun f -> print $"{f.name} -> {f.target |> Option.defaultValue "?"}")
         let plain = ls |> Seq.find (fun f -> f.name == "plain.txt")
         print (show plain.target)
@@ -1400,7 +1436,9 @@ conf |> Seq.iter print
   `let helper n = …`, annotation-free: the signature's types flow
   INTO its checking, so a param can pattern-match its declared union
   and a generic sig (`'a -> 'a`) is honoured — an impl that pins `'a`
-  refuses as less-general. The sig precedes its impl; a sig without
+  refuses as less-general. A signature names types bare — an imported
+  type resolves by its plain name, never `X.Ty`.
+  The sig precedes its impl; a sig without
   an impl is a check error at the sig. `///` docs live ON the
   signature line (hover reads sig + doc there; a doc on the impl of
   a signed member teaches the one home). `type` declarations stay
@@ -1425,12 +1463,12 @@ conf |> Seq.iter print
     "module Msig"
     "type Verdict = Good of int | Bad"
     ""
+    "let raw n = n + 1"
+    ""
     "/// grade a score"
     "let grade : int -> Verdict"
     ""
-    "let grade n = if n > 60 then Good n else Bad"
-    ""
-    "let raw n = n + 1"
+    "let grade n = if raw n > 61 then Good n else Bad"
 ] |> File.write "msig-lib.weir"
 ```
 
@@ -1878,6 +1916,7 @@ not the teaching.
 - `Proc`: `pid` `running` `stop` `tail` `wait`
 - `Retry`: `defaults`
 - `Secret`: `map` `of` `reveal`
+- `Self`: `args` `entryPath` `pid` `scriptPath` `stdin` (script-only — absent in the REPL, so `#help` does not list it)
 - `Seq`: `append` `average` `choose` `chunkBySize` `collect` `concat` `contains` `countBy` `distinct` `distinctBy` `except` `exactlyOne` `exists` `find` `fold` `forall` `force` `groupBy` `head` `indexed` `isEmpty` `item` `iter` `last` `length` `map` `max` `maxBy` `min` `minBy` `pairwise` `pfirst` `pfirstWith` `pick` `piter` `piterWith` `pmap` `pmapWith` `range` `reduce` `replicate` `rev` `scan` `skip` `skipWhile` `sort` `sortBy` `sortByDescending` `sortDescending` `sum` `take` `takeWhile` `tryExactlyOne` `tryFind` `tryHead` `tryItem` `tryLast` `tryPick` `where` `windowed` `zip`
 - `Bytes`: `fromBase64` `length` `sha256` `toBase64` `tryFromBase64`
 - `Size`: `average` `bytes` `parse` `sum` `toBytes` `tryParse`
