@@ -5508,6 +5508,21 @@ let statementLetTests =
                   (checkDiags [ "if 1 > 0 then"; "    let out = echo hi"; "    out |> Seq.iter print" ])
                   "if: bare command let accepted"
           }
+          test "a NESTED statement body grants through the assembler's paren wrap (the fuzzer's catch)" {
+              // the assembler wraps a multi-statement if body in parens;
+              // bodies are statement territory even there ([D:interior-arming]
+              // precedent) — the exprParen-gated grant refused this shape
+              // until deep fuzz caught it [D:statement-lets]
+              Expect.isEmpty
+                  (checkDiags
+                      [ "if 33 == 68 then"
+                        "    if 77 == 12 then"
+                        "        let v2 = echo m1 w654 | complete"
+                        "        v2.stdout |> print"
+                        "    if 63 > 76 then"
+                        "        echo m2 w979" ])
+                  "the inner if body's reifier let parses behind the wrap"
+          }
           test "within proc: the head and body lets do not collide — the head owns its line" {
               let lines =
                   [ "within proc srv = sh -c \"sleep 5\""

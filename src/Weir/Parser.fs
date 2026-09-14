@@ -137,13 +137,15 @@ let private withLetCmd (v: bool) (p: Parser<'a, unit>) : Parser<'a, unit> =
             letCmdOk.Value <- saved
 
 // [D:statement-lets] a statement body GRANTS command-mode lets — the
-// top-level law, one body deeper. No-op when the body opens in
-// expression-paren territory (a value-position if/match keeps its
-// branches expressions) or when the flag is already up (the spine —
-// never re-tagged, so its inheritance is untouched).
+// top-level law, one body deeper. Unconditional on parens: bodies are
+// statement territory even inside (assembler-wrapped) parens — the
+// [D:interior-arming] precedent, and the fuzzer caught the gated
+// version refusing a nested if's let behind the assembler's wrap. A
+// flag already up (the spine) is never re-tagged, so its inheritance
+// is untouched.
 let private withStmtLetCmd (p: Parser<'a, unit>) : Parser<'a, unit> =
     fun stream ->
-        if exprParen.Value || letCmdOk.Value then
+        if letCmdOk.Value then
             p stream
         else
             let savedOk = letCmdOk.Value
@@ -2049,8 +2051,7 @@ let private matchArm =
         withPatNames
             p
             (opt (keyword "when" >>. expr) .>> str_ws "->"
-             // a statement-position arm body takes command lets
-             // [D:statement-lets] (no-op in expression parens)
+             // an arm body takes command lets [D:statement-lets]
              .>>. withMatchArm true (withStmtLetCmd (withExprParen false seqExpr)))
         |>> fun (guard, body) -> p, guard, body
 
