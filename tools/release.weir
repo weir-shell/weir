@@ -62,7 +62,7 @@ git -C (gdir) push
 print "grammar target pushed"
 
 // ---- 5. the zed rev ritual (the grammar main just moved) -------------------
-let newRev = $(git -C (gdir) rev-parse HEAD) |> Seq.head
+let newRev = git -C (gdir) rev-parse HEAD |> Seq.exactlyOne
 
 let bumped =
     File.read "editors/zed/extension.toml"

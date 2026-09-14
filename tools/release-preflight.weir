@@ -14,14 +14,14 @@ type Cli = {
 let cli = Args.load Cli
 
 // -- the working tree and the commit about to be tagged ---------------------
-let dirty = $(git status --porcelain) |> Seq.length
-let branch = $(git rev-parse --abbrev-ref HEAD) |> Seq.head
+let dirty = git status --porcelain |> Seq.length
+let branch = git rev-parse --abbrev-ref HEAD |> Seq.exactlyOne
 
 git fetch origin main
-let localSha = $(git rev-parse HEAD) |> Seq.head
-let originSha = $(git rev-parse origin/main) |> Seq.head
+let localSha = git rev-parse HEAD |> Seq.exactlyOne
+let originSha = git rev-parse origin/main |> Seq.exactlyOne
 
-let tagTaken = $(git tag -l (cli.tag)) |> Seq.length
+let tagTaken = git tag -l (cli.tag) |> Seq.length
 
 // -- the changelog names this tag at the TOP --------------------------------
 let firstHeading =
@@ -54,7 +54,7 @@ let targetResp =
 if targetResp.status <> 200 then
     fail $"TARGET_WEIR_RELEASE fetch answered {targetResp.status}"
 
-let grammarTarget = targetResp.body |> Seq.head |> Str.trim
+let grammarTarget = targetResp.body |> Seq.exactlyOne |> Str.trim
 
 let checks =
     [ ("clean working tree", dirty == 0, $"{dirty} uncommitted change(s) — commit or stash first")

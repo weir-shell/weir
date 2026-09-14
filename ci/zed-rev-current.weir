@@ -46,7 +46,7 @@ if Str.length rev <> 40 then
     fail $"ZED PIN TOO SHORT: rev '{rev}' has {Str.length rev} chars — Zed fetches the literal rev and git cannot fetch an abbreviated sha; pin the full 40-char commit"
 
 // 1 — the pinned rev is the grammar's current main
-let localSha d = git -C $d rev-parse HEAD |> Seq.head
+let localSha d = git -C $d rev-parse HEAD |> Seq.exactlyOne
 
 // a transient 5xx retries (a real 504 turned a green preflight red);
 // a 4xx is a fact and returns at once
