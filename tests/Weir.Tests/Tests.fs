@@ -5399,6 +5399,188 @@ let blockLetCmdTests =
               | Ok _ -> failtest "expected the keyword refusal"
           } ]
 
+let statementLetTests =
+    // command-mode block lets in every statement context
+    // [D:statement-lets] — per context: bare command let, reifier let,
+    // splice + param resolution at the new depth [D:paramful-rhs], and
+    // check==run parity under the assume-resolver [D:assume-resolver]
+    // (the patch-district lesson: the two parse paths drift exactly
+    // here, so each fixture runs BOTH — analyzeLines against a real
+    // parse+check+eval fold).
+    let checkDiags lines =
+        let ds, _, _, _ = Weir.Script.analyzeLines "sl.weir" lines
+        ds |> List.filter (fun d -> d.Severity = "error")
+
+    // the run path: assemble + parse under the REAL resolver + check +
+    // eval, statement by statement (the dedent-join fold, real heads)
+    let runStmts (lines: string list) : unit =
+        match Weir.Script.assemble (lines |> List.mapi (fun i l -> i + 1, l)) with
+        | Error e -> failtest $"assemble: {e}"
+        | Ok lls ->
+            lls
+            |> List.fold
+                (fun (te, ve) ll ->
+                    match Weir.Parser.parseLine realResolver ll.Text with
+                    | Error m -> failtest $"parse: {m}"
+                    | Ok(SExpr e)
+                    | Ok(SCmd e) ->
+                        match Weir.Check.typecheck te e with
+                        | Error terr -> failtest $"check: {formatError terr}"
+                        | Ok typed ->
+                            eval ve typed |> ignore
+                            te, ve
+                    | Ok(SLet(n, e)) ->
+                        match Weir.Check.typecheck te e with
+                        | Error terr -> failtest $"check: {formatError terr}"
+                        | Ok typed ->
+                            let v = eval ve typed
+
+                            { te with
+                                Values = Map.add n (Weir.Types.generalize typed.Ty) te.Values },
+                            Map.add n v ve
+                    | Ok other -> failtest $"unexpected statement {other}")
+                (env, valueEnv)
+            |> ignore
+
+    // one parity fixture per context: check accepts AND the run path
+    // produces the marker file — both parse paths, one meaning
+    let parity (name: string) (fixture: string -> string list) =
+        test $"parity: {name} body takes a command let, check == run [D:statement-lets]" {
+            skipOnWindows ()
+            let td = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-sl-{System.Guid.NewGuid():N}")
+            System.IO.Directory.CreateDirectory td |> ignore
+
+            try
+                let out = System.IO.Path.Combine(td, "out.txt")
+                let lines = fixture out
+                Expect.isEmpty (checkDiags lines) $"check accepts the {name} fixture"
+                runStmts lines
+                Expect.equal (System.IO.File.ReadAllLines out |> Array.head) "marker" $"the {name} body ran its let"
+            finally
+                System.IO.Directory.Delete(td, true)
+        }
+
+    testList
+        "Statement-context command lets [D:statement-lets]"
+        [ parity "within tmp" (fun out ->
+              [ "within tmp d"
+                "    let r = sh -c \"echo marker\" | complete"
+                $"    r.stdout |> File.write \"{out}\"" ])
+          parity "if-then" (fun out ->
+              [ "if 1 > 0 then"
+                "    let r = sh -c \"echo marker\" | complete"
+                $"    r.stdout |> File.write \"{out}\"" ])
+          parity "for" (fun out ->
+              [ "for i in [0] do"
+                "    let r = sh -c $\"echo marker-{i}\" | complete"
+                "    let m = r.stdout |> Seq.head |> Str.replace \"-0\" \"\""
+                $"    [m] |> File.write \"{out}\"" ])
+          parity "match arm" (fun out ->
+              [ "match 1 with"
+                "| 1 ->"
+                "    let r = sh -c \"echo marker\" | complete"
+                $"    r.stdout |> File.write \"{out}\""
+                "| _ -> print \"\"" ])
+          parity "always block" (fun out ->
+              [ "within"
+                "    print \"\""
+                "always"
+                "    let r = sh -c \"echo marker\" | complete"
+                $"    r.stdout |> File.write \"{out}\"" ])
+          parity "splice + param resolution at depth" (fun out ->
+              // [D:paramful-rhs] reaches the new depth: a param-ful
+              // block let takes a command RHS, its param splices, and
+              // block names resolve ahead of PATH
+              [ "within tmp d"
+                "    let tag = \"marker\""
+                "    let f x = echo $x"
+                "    let got = f tag |> Seq.head"
+                $"    [got] |> File.write \"{out}\"" ])
+          test "a bare command let binds in every context — parse shape, no reifier needed" {
+              Expect.isEmpty
+                  (checkDiags
+                      [ "within tmp d"
+                        "    let files = git ls-files"
+                        "    print $\"{files |> Seq.length}\"" ])
+                  "within: bare command let accepted"
+
+              Expect.isEmpty
+                  (checkDiags [ "if 1 > 0 then"; "    let out = echo hi"; "    out |> Seq.iter print" ])
+                  "if: bare command let accepted"
+          }
+          test "within proc: the head and body lets do not collide — the head owns its line" {
+              let lines =
+                  [ "within proc srv = sh -c \"sleep 5\""
+                    "    let r = echo body | complete"
+                    "    print $\"{r.exitCode} up={Proc.running srv}\"" ]
+
+              Expect.isEmpty (checkDiags lines) "proc head (letRhsCmd, ungated) + body reifier let both parse"
+          }
+          test "a command let inside `pure` parses; PURITY refuses it, located at the command" {
+              // the parser admits the grammar [D:statement-lets]; the
+              // purity checker owns the refusal — the better span
+              let ds =
+                  checkDiags
+                      [ "let v ="
+                        "    pure"
+                        "        let r = sh -c \"echo x\" | complete"
+                        "        r.exitCode"
+                        "print $\"{v}\"" ]
+
+              Expect.exists
+                  ds
+                  (fun d -> d.Message.Contains "'pure' block forbids effects")
+                  "the purity teaching, not a parse error"
+
+              Expect.isFalse
+                  (ds |> List.exists (fun d -> d.Message.Contains "is a reifier, not a PATH program"))
+                  "no parse-level refusal preempts purity's span"
+          }
+          test "the paren-swallow non-repro, pinned: a lambda's closer never joins argv" {
+              // probe 2's verdict recorded in PLAN-statement-lets:
+              // cmdWordChar excludes ')', so `echo charlie)` splits into
+              // the command and the lambda's own closer — on the spine
+              // today, and unchanged by this ruling
+              let assembled =
+                  match
+                      Weir.Script.assemble [ 1, "let out = [1] |> Seq.map (fun _ ->"; 2, "    echo charlie)" ]
+                  with
+                  | Ok [ ll ] -> ll.Text
+                  | other -> failtest $"unexpected assembly: {other}"
+
+              match Weir.Parser.parseLine cmdResolver assembled with
+              | Ok(SLet(_, e)) ->
+                  Expect.isFalse ((Weir.Ast.sexpr e).Contains "\")\"") "no ')' argv word — the closer closed the lambda"
+              | other -> failtest $"expected the let to parse, got {other}"
+          }
+          test "refused contexts teach $() with the ACTUAL context named — dash argv included" {
+              // the hardened teaching [D:statement-lets]: fires whether or
+              // not the expression parse would survive to the pipe (npx's
+              // `--no-install` used to die raw at the double dash)
+              for rhs in [ "sh -c \"echo x\" | complete"; "npx --no-install vsce package | complete" ] do
+                  let ds =
+                      checkDiags
+                          [ "[1] |> Seq.iter (fun _ ->"
+                            $"    let r = {rhs}"
+                            "    print $\"{r.exitCode}\")" ]
+
+                  Expect.exists
+                      ds
+                      (fun d -> d.Message.Contains "inside a lambda body, a command needs $(…)")
+                      $"the lambda teaching for: {rhs}"
+
+              // the paren interior names ITS context
+              let ds =
+                  checkDiags
+                      [ "within tmp d"
+                        "    print (show (let r = sh -c \"x\" | complete in r.exitCode))" ]
+
+              Expect.exists
+                  ds
+                  (fun d -> d.Message.Contains "inside parentheses, a command needs $(…)")
+                  "the paren teaching"
+          } ]
+
 let lspCrossFileTests =
     // real files on disk: cross-file targets re-analyze the TARGET file
     // through the import channel [D:lsp-cross-file]
@@ -9143,44 +9325,53 @@ let agentFindingsTests =
               | Error msg -> Expect.stringContains msg "single external command segment" ""
               | Ok _ -> failtest "exitCode must keep the family's segment rule"
           }
-          test "the fifth refusal cell: off-spine reifiers TEACH, never PATH-resolve [D:reifier-family-complete]" {
-              // 4 reifiers x 3 off-spine positions (if-body, within-body,
-              // lambda-body): the marker cannot match there, and the
-              // fallback must be the reifier teaching — a stage that
-              // resolves the keyword on PATH is the degradation F3 found
-              let positions =
-                  [ "if-body", [ "if true then"; "    let r = sh -c \"echo x\" | %s"; "    print \"z\"" ]
-                    "within-body", [ "within tmp d"; "    let r = sh -c \"echo x\" | %s"; "    print \"z\"" ]
-                    "lambda-body",
-                    [ "[1] |> Seq.iter (fun _ ->"
-                      "    let r = sh -c \"echo x\" | %s"
-                      "    print \"z\")" ] ]
-
+          test "the fifth refusal cell: refused-context reifiers TEACH, never PATH-resolve [D:reifier-family-complete]" {
+              // [D:statement-lets] moved the boundary: if-body and
+              // within-body block lets now TAKE the reifier (statement
+              // contexts — pinned in statementLetTests); the remaining
+              // refused position (lambda-body) must teach $() with its
+              // context named, and NEVER resolve the keyword on PATH —
+              // the degradation F3 found.
               for name, spelled in
                   [ "complete", "complete"
                     "succeeds", "succeeds"
                     "exitCode", "exitCode"
                     "orFail", "orFail \"m\"" ] do
-                  for posName, tpl in positions do
-                      let lines = tpl |> List.map (fun l -> l.Replace("%s", spelled))
+                  // the two FLIPPED positions accept
+                  for posName, tpl in
+                      [ "if-body", [ "if true then"; "    let _r = sh -c \"echo x\" | %s"; "    print \"z\"" ]
+                        "within-body", [ "within tmp d"; "    let _r = sh -c \"echo x\" | %s"; "    print \"z\"" ] ] do
+                      let lines = tpl |> List.map (fun (l: string) -> l.Replace("%s", spelled))
                       let diags, _, _, _ = Weir.Script.analyzeLines "pin.weir" lines
 
-                      Expect.exists
-                          diags
-                          (fun d -> d.Message.Contains $"'{name}' is a reifier, not a PATH program")
-                          $"{name} in {posName}: the fifth cell must teach"
+                      Expect.isEmpty
+                          (diags |> List.filter (fun d -> d.Severity = "error"))
+                          $"{name} in {posName}: statement contexts take the reifier let now"
 
-                      Expect.isFalse
-                          (diags |> List.exists (fun d -> d.Message.Contains "not found on PATH"))
-                          $"{name} in {posName}: no PATH resolution for a reifier name"
+                  // the lambda position stays refused, with the NEW teaching
+                  let diags, _, _, _ =
+                      Weir.Script.analyzeLines
+                          "pin.weir"
+                          [ "[1] |> Seq.iter (fun _ ->"
+                            $"    let r = sh -c \"echo x\" | {spelled}"
+                            "    print \"z\")" ]
+
+                  Expect.exists
+                      diags
+                      (fun d -> d.Message.Contains "inside a lambda body, a command needs $(…)")
+                      $"{name} in lambda-body: the hardened teaching"
+
+                  Expect.isFalse
+                      (diags |> List.exists (fun d -> d.Message.Contains "not found on PATH"))
+                      $"{name} in lambda-body: no PATH resolution for a reifier name"
 
               // the ^ escape stays: a real tool of that name is reachable
               let escaped, _, _, _ =
                   Weir.Script.analyzeLines
                       "pin.weir"
-                      [ "if true then"
-                        "    let r = sh -c \"echo x\" | ^complete"
-                        "    print \"z\"" ]
+                      [ "[1] |> Seq.iter (fun _ ->"
+                        "    let _r = sh -c \"echo x\" | ^complete"
+                        "    print \"z\")" ]
 
               Expect.isFalse
                   (escaped |> List.exists (fun d -> d.Message.Contains "is a reifier"))
@@ -17238,6 +17429,7 @@ let allTests =
           replColorTests
           seqPatternTests
           blockLetCmdTests
+          statementLetTests
           multilineLambdaTests
           semanticTokenTests
           lspCrossFileTests
