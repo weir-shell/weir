@@ -3111,10 +3111,23 @@ let private runRequest (reqV: Value) : Http.Resp =
         | Error(msg, _) -> failwith msg
     | v -> unreachable $"the checker rejects a request on {formatValue v}"
 
-// split the response bytes back into lines, byte-exact with the join at
-// send — a body pipes straight into `from json T`
+// the response body under weir's ONE line law [D:http-body-lines]: a
+// raw `.Split('\n')` kept a trailing-newline body's final "" (so a
+// one-line file arrived as two elements), carried a stray \r on a CRLF
+// body, and turned an empty body into [""] — none of which File.read
+// (ReadAllLines) or command output (ReadLine) do. StringReader.ReadLine
+// is the SAME reader command output uses, so `curl url` and
+// `Http.fetch url` now agree exactly. Public for the line-law pin.
+let bodyLines (body: string) : string list =
+    [ use r = new StringReader(body)
+      let mutable line = r.ReadLine()
+
+      while not (isNull line) do
+          yield line
+          line <- r.ReadLine() ]
+
 let private respBodyLines (resp: Http.Resp) : seq<Value> =
-    resp.Body.Split('\n') |> Array.map VStr :> seq<Value>
+    resp.Body |> bodyLines |> List.map VStr :> seq<Value>
 
 // status is DATA [D:http]: a 4xx/5xx binds, never raises (the `| complete`
 // posture for exit codes); ONLY transport failure raises
