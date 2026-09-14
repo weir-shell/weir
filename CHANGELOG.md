@@ -1,5 +1,95 @@
 # Changelog
 
+## v0.0.33
+
+### Added
+
+- **Breaking: an unread `let` binder is a hard check error.** The
+  strictness family grows its next member (statement rule,
+  exhaustiveness, unreachable arms — weir has no warnings): binding is
+  exactly how weir silences raise-on-nonzero, so a
+  `let r = cmd | complete` nothing ever reads is a swallowed failure,
+  and the checker now refuses it — scripts and module bodies,
+  top-level and block-local, destructured names each judged, and a
+  name rebound before its earlier binding was read errors at the
+  earlier binder. A module's unsigned member unread at home is dead
+  private code and errors with the signature repair. The escape is a
+  `_`-prefixed name (`let _r = …` — deliberately unused, never
+  errors, still readable); a bare `_` let binder now refuses (name
+  the discard). Exempt: function params, match-arm binders,
+  `for`/`until`/`within` binders, signed module members (the
+  signature is the use), and `#sig` contract files (the sig loader is
+  their reader). Errors are collected and located at the binder;
+  every consumer agrees — `check`, run, import, the LSP, and the
+  fidelity oracle. F# accepts unread binders silently by default
+  (FS1182 is opt-in), recorded as the `unused-binding` divergence.
+
+### Fixed
+
+- **`weir check` accepts every patch district `weir run` accepts.**
+  Check's assume-resolver read the `yaml patch [by=<key>]` marker line
+  as a command head (`yaml` is command-shaped), so the district body
+  then failed as statements — any `$name` splice or multi-line mapping
+  item inside a `yaml patch` district checked red while the same file
+  ran green (a kustomize-shaped port hit both). The command grammar now
+  refuses the patch marker face glued to the district sentinel, exactly
+  as it already did for plain `yaml` and `schema=`, so check == run.
+- **Block-let params shadow PATH in their own RHS.** A param heading an
+  if-condition inside a nested `let f pairs = if pairs |> … then …`
+  resolved as a PATH command (cmd-not-found warnings plus bogus type
+  errors) until the condition was parenthesized — the block-let RHS
+  never extended the resolver with its params, though top-level lets
+  and lambdas did. Bindings-beat-PATH now reaches block-let depth;
+  a genuine external head in that condition position
+  (`if test -f $p | succeeds then`) still chains.
+- **A `)` on its own line closes a multi-line application anywhere.**
+  `YMap(` with arguments on deeper lines and the close paren alone at
+  the body indent was a parse error at the paren inside if/match arm
+  bodies (and everywhere else the closer sat at the sibling level) —
+  the assembler sequenced the `)` line as a block statement. While a
+  plain paren is open a `)`-headed line now continues the statement,
+  the rule multiline lambdas already had; a stray `)` with no paren
+  open still refuses.
+- **A returning match arm after a multi-statement body assembles.**
+  An arm body ending in an if/else (after a `let`) left the if
+  compound open, and the next arm then died with "this arm sits left
+  of its match (head at column N)" pointing at the if — healthy code.
+  A pipe line landing exactly on its own arm group's column is a
+  returning arm (the deeper compound offside-closes as it always did);
+  genuinely misaligned or left-of-match arms keep their errors.
+- **Module signatures can name every builtin type.** `let mk : string ->
+  YamlPatch` (and `Proc`) refused as "unknown type" — the def-less
+  builtin nominals were unnameable in signatures, even though the
+  module-privacy error itself suggested exactly that signature. Both
+  now validate in signatures and field types (arity 0), like `Map`;
+  the suggested signature round-trips.
+- **A qualified type name teaches the bare-name law.** `let f : M.Spec
+  -> string` died with a bare parse error at the dot; every type
+  position now refuses with "a signature names types bare — an
+  imported type resolves by its plain name".
+
+- **`pure` no longer admits `Self.stdin`.** Reading it drains the
+  process's live input stream — an effect the classifier missed because
+  the value is injected per run rather than called through a builtin.
+  A pure region now refuses it with a located teaching ("'Self.stdin'
+  reads the process's input stream"), and a function touching it loses
+  the `(pure)` hover badge. The per-run constants
+  (`Self.args`/`pid`/`scriptPath`/`entryPath`) stay pure-admissible.
+- **`pure` accepts union constructors.** A data constructor is pure by
+  construction, but a payload constructor's function type fell into the
+  unknown-callable bucket and refused as an unknown callable. Applied
+  and partially applied constructors now pass in pure regions, and a
+  constructor-building function keeps its `(pure)` badge.
+
+### Changed
+
+- **The ctor-pattern refusal teaches its repairs.** A constructor
+  pattern on an unresolved param (`let step (m, wd) = match m with
+  | Ctor …`) now says params are not typed from patterns and names
+  both ways out — inline the lambda at its use site (a typed pipe
+  position types the binder there), or match on already-typed data —
+  instead of "needs a union value; this one has type 'a1".
+
 ## v0.0.32
 
 > First release published since v0.0.29: this ships everything under

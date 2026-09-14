@@ -645,7 +645,7 @@ expect(lsp_rows == sorted(cj_rows),
 # keystroke-to-squiggle budget, lenient over a 3-line file on AOT
 send5({"jsonrpc": "2.0", "method": "textDocument/didChange",
        "params": {"textDocument": {"uri": p5uri},
-                  "contentChanges": [{"text": 'let x = 1\nprint "hi"\n'}]}})
+                  "contentChanges": [{"text": 'let x = 1\nprint (show x)\n'}]}})
 _t0 = _time.monotonic()
 m = read5()
 while m.get("method") != "textDocument/publishDiagnostics":

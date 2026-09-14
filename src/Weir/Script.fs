@@ -1503,16 +1503,27 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                                 // with/->/function) opens one too:
                                                                 // its arms sit deeper by design
                                                                 // [D:function-keyword]
-                                                                match p.Compounds with
-                                                                | (h, _, _) :: _ when indent < h ->
-                                                                    Error
-                                                                        $"line {lineNo}: this arm sits left of its match (head at column {h}) — align arms at or right of it"
+                                                                match groups with
+                                                                | (g, _, false) :: rest when g = indent && not isFwd ->
+                                                                    // a RETURNING arm after a non-pipe
+                                                                    // body [D:match-pipe-offside]: the
+                                                                    // group at this exact column is the
+                                                                    // arm's own match — a deeper open
+                                                                    // compound (the previous arm's
+                                                                    // if/let tail) offside-closes below,
+                                                                    // it is not "its match"
+                                                                    Ok(false, (g, bodyCol, false) :: rest)
                                                                 | _ ->
-                                                                    Ok(
-                                                                        false,
-                                                                        (indent, (if isFwd then indent else bodyCol), isFwd)
-                                                                        :: groups
-                                                                    )
+                                                                    match p.Compounds with
+                                                                    | (h, _, _) :: _ when indent < h ->
+                                                                        Error
+                                                                            $"line {lineNo}: this arm sits left of its match (head at column {h}) — align arms at or right of it"
+                                                                    | _ ->
+                                                                        Ok(
+                                                                            false,
+                                                                            (indent, (if isFwd then indent else bodyCol), isFwd)
+                                                                            :: groups
+                                                                        )
                                                             else
                                                                 match groups with
                                                                 | (g, _, false) :: rest when g = indent && not isFwd ->
@@ -1659,6 +1670,14 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
 
                                                         let lets, join =
                                                             match p.Lets with
+                                                            // a `)`-headed line while a plain paren is
+                                                            // open closes a multi-line application — a
+                                                            // continuation at ANY body indent, never a
+                                                            // sibling; the `in`/`;` joins wait for the
+                                                            // `)` exactly as the lambda floor rules
+                                                            // [D:paren-close-continuation]
+                                                            | _ when cls.ClosesParen && p.ParenDepth > 0 ->
+                                                                p.Lets, JSpace
                                                             | (k, _) :: rest when indent = k && k > lambdaFloor ->
                                                                 rest, JIn
                                                             // a proc head's block joins sentineled even in
@@ -2722,6 +2741,19 @@ let private checkStatementCore
                                     )
                                   Env = tenv'
                                   Warnings = [] }
+        | Ok(SLetPat({ PKind = PWildcard } as pat, _)) when gateExprs ->
+            // a bare `_` binder is the anonymous swallow — binding is how
+            // weir silences raise-on-nonzero, so the discard gets a NAME
+            // [D:unused-bindings]; gateExprs scopes the refusal with the
+            // discard family (the REPL and -e keep their echo regime)
+            Error(
+                typed
+                    StmtTag.LetPat
+                    { Span = pat.PSpan
+                      Message =
+                        "a bare '_' binder discards its value anonymously — name the discard (let _r = …) so the intent survives a grep"
+                      Origin = None }
+            )
         | Ok(SLetPat(pat, e)) ->
             // a destructuring let cannot IMPLEMENT a signature
             // [D:module-signatures] — pairing is by the plain name
@@ -3077,6 +3109,132 @@ let checkStatement
                                     PureBindings = Map.add name (Purity.isPureExpr tenv.PureBindings te) st.Env.PureBindings } }
                 | _ -> Ok st)
 
+// ---- unused bindings [D:unused-bindings]: whole-file threading ------------
+// The law is a WHOLE-FILE judgement (a binder's readers may sit any
+// number of statements later), so it applies POST-FOLD — beside the
+// sig-orphan law — in every consumer that folds a complete file:
+// analyzeLines (check / --can / LSP), the runner's check phase, the
+// module loader, and the fidelity mirror. Per-statement consumers
+// (REPL, -e, Complete) never see it. An errored statement POISONS the
+// pass for the whole file — one real error beats N echoes (the
+// hole-scheme precedent).
+
+type UnusedFinding =
+    { ULine: int
+      UCol: int
+      UEndCol: int
+      UMessage: string }
+
+type UnusedTracker() =
+    // pending top-level binders: name -> (physLine, physCol, physEndCol, used)
+    let pending = System.Collections.Generic.Dictionary<string, int * int * int * bool>()
+    let found = ResizeArray<UnusedFinding>()
+    let mutable poisoned = false
+
+    let plainMsg (n: string) =
+        $"'{n}' is bound but never used — read it, or name it '_{n}' to keep it deliberately"
+
+    let bareMsg =
+        "a bare '_' binder discards its value anonymously — name the discard (let _r = …) so the intent survives a grep"
+
+    member _.Poison() = poisoned <- true
+
+    member _.Uses(names: Set<string>) =
+        for n in names do
+            match pending.TryGetValue n with
+            | true, (l, c, e, false) -> pending[n] <- (l, c, e, true)
+            | _ -> ()
+
+    member _.Locals (ll: LogicalLine) (locals: Check.UnusedLocal list) =
+        for u in locals do
+            let l, c = translate ll u.USpan.Start.Col
+            let _, ec = translate ll u.USpan.End.Col
+
+            found.Add
+                { ULine = l
+                  UCol = c
+                  UEndCol = max (c + 1) ec
+                  UMessage = if u.UBareWildcard then bareMsg else plainMsg u.UName }
+
+    /// register a top-level binder; an unread pending binder of the
+    /// same name errors AT THE EARLIER BINDER (the shadow rule —
+    /// DECIDED yes, the classic copy-paste bug)
+    member _.Binder (ll: LogicalLine) (name: string) (startCol: int) (endCol: int) =
+        if not (Check.unusedExempt name) then
+            let l, c = translate ll startCol
+            let _, ec = translate ll endCol
+
+            (match pending.TryGetValue name with
+             | true, (ol, oc, oe, false) ->
+                 found.Add
+                     { ULine = ol
+                       UCol = oc
+                       UEndCol = oe
+                       UMessage =
+                         $"'{name}' is bound but never used before being rebound at line {l} — read it, or name it '_{name}' to keep it deliberately" }
+             | _ -> ())
+
+            pending[name] <- (l, c, max (c + 1) ec, false)
+
+    /// the KLet binder's own span, re-derived from the statement text
+    /// exactly as the squiggle does [D:squiggle-on-binder]
+    member this.LetBinder (ll: LogicalLine) (name: string) =
+        let m = Text.RegularExpressions.Regex.Match(ll.Text, @"^\s*let\s+(?:pure\s+)?")
+
+        if m.Success then
+            this.Binder ll name (m.Length + 1) (m.Length + 1 + name.Length)
+        else
+            this.Binder ll name 1 (1 + name.Length)
+
+    /// one checked statement, in file order: mark its uses, collect its
+    /// block-local findings, then register its own binders (a
+    /// same-statement read of the same name reads the OUTER binding —
+    /// no `let rec` exists)
+    member this.Feed (ll: LogicalLine) (chk: CheckedStatement) =
+        match chk.Kind with
+        | KType _
+        | KSig _
+        | KModule _
+        | KImport _ -> ()
+        | KLet(name, _, te) ->
+            let free, locals = Check.bindingUsage te
+            this.Uses free
+            this.Locals ll locals
+            this.LetBinder ll name
+        | KLetPat(pat, _, te) ->
+            let free, locals = Check.bindingUsage te
+            this.Uses free
+            this.Locals ll locals
+
+            for n, sp in Check.patNameSpans pat do
+                this.Binder ll n sp.Start.Col sp.End.Col
+        | KCmd te
+        | KExpr te ->
+            let free, locals = Check.bindingUsage te
+            this.Uses free
+            this.Locals ll locals
+
+    /// end of file: every still-unread binder errors — SIGNED module
+    /// members exempt (the signature is the use); an unsigned module
+    /// member unread at home is dead private code
+    member _.Flush (signedNames: Set<string>) (isModule: bool) : UnusedFinding list =
+        if poisoned then
+            []
+        else
+            let flushed =
+                [ for KeyValue(name, (l, c, e, used)) in pending do
+                      if not used && not (Set.contains name signedNames) then
+                          { ULine = l
+                            UCol = c
+                            UEndCol = e
+                            UMessage =
+                              if isModule then
+                                  $"'{name}' is bound but never used — an unsigned module member is private dead code: use it, export it with a signature (let {name} : …), or name it '_{name}'"
+                              else
+                                  plainMsg name } ]
+
+            (List.ofSeq found) @ flushed |> List.sortBy (fun f -> f.ULine, f.UCol)
+
 // ---- the module loader [D:modules-v1] ------------------------------------
 // A module's OWN base env: builtins (strict) + prelude + Self, with
 // Self.scriptPath = the module's own path. Pure — no stdin/args/Session
@@ -3155,7 +3313,12 @@ let private readImportSource (absPath: string) : string list option =
 // shared module ONCE (diamonds); `chain` is the current DFS path of importing
 // files, so a repeat is a cycle. Transitive: a reached module's own imports
 // resolve too, sharing the cache with this module pushed on the chain.
-let rec loadModuleCached
+// sigContract [D:unused-bindings]: a #sig file is a module whose
+// members (version, exhaustive, Cmd) are read by the SIG LOADER, not by
+// the module's own text — the loader is the use, so the unused law
+// stays off for that one consumer
+let rec loadModuleCachedWith
+    (sigContract: bool)
     (cache: System.Collections.Generic.Dictionary<string, LoadedModule>)
     (chain: string list)
     (importingAbsPath: string)
@@ -3232,7 +3395,7 @@ let rec loadModuleCached
                     // transitive: a reached module's OWN imports resolve, sharing
                     // the cache, with this module pushed on the chain
                     let childLoader: ImportLoader =
-                        fun p _ a -> loadModuleCached cache (absPath :: chain) absPath p a
+                        fun p _ a -> loadModuleCachedWith false cache (absPath :: chain) absPath p a
 
                     // a module-CONTENT error reports at the module's OWN site
                     let at line col msg : Result<_, ImportError> =
@@ -3241,6 +3404,10 @@ let rec loadModuleCached
                               Line = line
                               Col = col
                               Message = msg }
+
+                    // unused bindings in the module's own text
+                    // [D:unused-bindings]: signed members exempt at flush
+                    let moduleUnused = UnusedTracker()
 
                     let rec go
                         (tenv: TypeEnv)
@@ -3297,6 +3464,7 @@ let rec loadModuleCached
                                         else
                                             implLines
 
+                                    moduleUnused.Feed ll chk
                                     go chk.Env sc' implLines' ((ll, CLet(name, te)) :: accBody) tail
                                 | KLetPat(pat, schemes, te) ->
                                     let sc' =
@@ -3304,6 +3472,7 @@ let rec loadModuleCached
                                             Implemented =
                                                 schemes |> List.fold (fun s (n, _) -> Set.add n s) sc.Implemented }
 
+                                    moduleUnused.Feed ll chk
                                     go chk.Env sc' implLines ((ll, CLetPat(pat, te)) :: accBody) tail
                                 | KModule _ -> at ll.Head 1 "a file has at most one 'module' marker, and it comes first"
                                 | KCmd _
@@ -3347,6 +3516,12 @@ let rec loadModuleCached
                                         1,
                                         $"'{name}' is signed, and its /// doc belongs on the signature — move it above 'let {name} : …' (one doc home)"
                                     )
+                                | None when not sigContract ->
+                                    // an unsigned member the module never reads is
+                                    // dead private code [D:unused-bindings]
+                                    match moduleUnused.Flush sc.Signed true |> List.tryHead with
+                                    | Some f -> Some(f.ULine, f.UCol, f.UMessage)
+                                    | None -> None
                                 | None -> None
 
                         match lawError with
@@ -3464,7 +3639,7 @@ let checkVendoredModule (absPath: string) : Result<int, string> =
             // absPath, so the self-import guard stays quiet
             let phantom = absPath + ".add"
 
-            match loadModuleCached cache [] phantom absPath None with
+            match loadModuleCachedWith false cache [] phantom absPath None with
             | Ok lm -> Ok(List.length lm.Members)
             | Error e ->
                 let where =
@@ -3858,7 +4033,7 @@ let loadSigs (path: string) (decls: SigDecl list) : Diagnostic list * SigInfo li
                 let cache = System.Collections.Generic.Dictionary<string, LoadedModule>()
                 let absScript = IO.Path.GetFullPath path
 
-                match loadModuleCached cache [ absScript ] absScript sigFile None with
+                match loadModuleCachedWith true cache [ absScript ] absScript sigFile None with
                 | Error ie -> diags.Add(mk decl.Line $"#sig {decl.Tool}: {ie.Message}")
                 | Ok lm ->
                     let letStr name =
@@ -4824,7 +4999,7 @@ let analyzeLines
     let analyzeImport: ImportLoader =
         let absPath = IO.Path.GetFullPath path
         let cache = System.Collections.Generic.Dictionary<string, LoadedModule>()
-        fun p _ alias -> loadModuleCached cache [ absPath ] absPath p alias
+        fun p _ alias -> loadModuleCachedWith false cache [ absPath ] absPath p alias
 
     Extern.refresh ()
 
@@ -4919,6 +5094,10 @@ let analyzeLines
         // after the fold, mirroring the module loader.
         let mutable sigState = if isModule then Some SigContext.empty else None
         let sigImplLines = ResizeArray<string * int>()
+
+        // unused bindings [D:unused-bindings]: fed per statement, judged
+        // after the fold with the module's Signed set
+        let unusedTracker = UnusedTracker()
 
         for ll in logicalLines do
             // ONE spelling for the head warning, shared by the Ok walk
@@ -5053,9 +5232,11 @@ let analyzeLines
                                  Implemented = schemes |> List.fold (fun st (n, _) -> Set.add n st) sc.Implemented }
                  | _ -> ())
 
+                unusedTracker.Feed ll chk
                 stmts.Add(ll, chk)
                 tenv <- chk.Env
             | Error d ->
+                unusedTracker.Poison()
                 d.Warnings |> List.iter warn
 
                 // [PLAN-diagnostics-arc B5+B6]: an ERRORED statement
@@ -5190,6 +5371,29 @@ let analyzeLines
                              $"'{name}' is signed, and its /// doc belongs on the signature — move it above 'let {name} : …' (one doc home)" }
                  | None -> ()
          | None -> ())
+
+        // the unused-binding law [D:unused-bindings]: whole-file, so it
+        // judges after the fold; poisoned (any errored statement) = silent.
+        // A file under .weir/sigs/ is a SIG CONTRACT — its members
+        // (version, exhaustive, Cmd) are read by the sig loader, so the
+        // loader is the use and a direct `weir check` agrees with it
+        (let isSigContract =
+            let norm = path.Replace('\\', '/')
+            norm.Contains "/.weir/sigs/" || norm.StartsWith ".weir/sigs/"
+
+         let signedNames =
+             sigState |> Option.map (fun sc -> sc.Signed) |> Option.defaultValue Set.empty
+
+         for f in (if isSigContract then [] else unusedTracker.Flush signedNames isModule) do
+             diags.Add
+                 { File = path
+                   Line = f.ULine
+                   Col = f.UCol
+                   EndLine = Some f.ULine
+                   EndCol = Some f.UEndCol
+                   Severity = "error"
+                   Code = "unused-binding"
+                   Message = f.UMessage })
 
         (let sigLoadDiags, sigInfos = loadSigs path sigDecls
 
@@ -5362,7 +5566,7 @@ let run (path: string) (scriptArgs: string list) : int =
                 // per run dedups a diamond, one chain catches a cycle
                 let entryImport: ImportLoader =
                     let cache = System.Collections.Generic.Dictionary<string, LoadedModule>()
-                    fun p _ alias -> loadModuleCached cache [ absScriptPath ] absScriptPath p alias
+                    fun p _ alias -> loadModuleCachedWith false cache [ absScriptPath ] absScriptPath p alias
 
                 // signatures load ONCE, before the check fold; a load
                 // failure (missing/malformed sig) is a check error —
@@ -5370,6 +5574,10 @@ let run (path: string) (scriptArgs: string list) : int =
                 // [D:command-signatures]
                 let sigLoadDiags, runSigInfos = loadSigs path runSigDecls
                 let runDeclaredTypes = System.Collections.Generic.Dictionary<string, int * bool>()
+
+                // unused bindings gate the RUN too [D:unused-bindings] —
+                // check error = zero side effects, this law included
+                let runUnused = UnusedTracker()
 
                 let checkedProgram =
                     logicalLines
@@ -5513,6 +5721,7 @@ let run (path: string) (scriptArgs: string list) : int =
                                         match dupError with
                                         | Some e -> Error e
                                         | None ->
+                                            runUnused.Feed ll chk
 
                                             let stmt =
                                                 match chk.Kind with
@@ -5571,6 +5780,25 @@ let run (path: string) (scriptArgs: string list) : int =
                 with
                 | Error msg ->
                     Console.Error.WriteLine msg
+                    1
+                | Ok _ when not (runUnused.Flush Set.empty false |> List.isEmpty) ->
+                    // the unused-binding law [D:unused-bindings]: judged after
+                    // the whole-file fold, before ANY line runs
+                    let c = Color.onStderr.Value
+
+                    for f in runUnused.Flush Set.empty false do
+                        let src = rawByLine |> Map.tryFind f.ULine |> Option.defaultValue ""
+
+                        let underline =
+                            Color.red c (String(' ', max 0 (f.UCol - 1)) + String('^', max 1 (f.UEndCol - f.UCol)))
+
+                        Console.Error.WriteLine(
+                            Color.bold c $"{path}:{f.ULine}:{f.UCol}"
+                            + ": "
+                            + Color.red c "check error"
+                            + $":\n{src}\n{underline}\n{f.UMessage}"
+                        )
+
                     1
                 | Ok(_, revStmts) ->
                     let stmts = List.rev revStmts

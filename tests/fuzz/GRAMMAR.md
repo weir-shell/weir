@@ -10,6 +10,10 @@ metamorphic law is part of the feature.
 Programs are valid-by-construction: type-correct, casing-lawful,
 exhaustive matches, exact alignment, program-unique names, effects
 carrying unique markers (`m<n>`) so output identity sees ORDER.
+Unused-binding-lawful too [D:unused-bindings]: a binder the program
+never reads renders `_`-prefixed (the language's own escape) — usage
+is a fact of the Stmt tree (`renderUses`/`unreadBinders`), so every
+render config agrees and the shrinker re-derives it per shrink.
 Expression bodies are trivial (small ints, safe words, `$"..."`
 interpolation with int-typed holes) — the subject is line-shape
 composition, not type complexity.

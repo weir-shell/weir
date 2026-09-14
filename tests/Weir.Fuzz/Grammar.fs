@@ -198,435 +198,6 @@ let private printArg (e: Expr) =
 // Lines carry a tag for the span-soundness invariant: true = expression
 // territory (an appended bad token must error HERE); false = command
 // territory (junk becomes argv, not an error).
-let renderTagged (cfg: RenderCfg) (p: Program) : (string * bool) list =
-    let sp n = String(' ', n)
-    let out = ResizeArray<string * bool>()
-    let emit ind (text: string) = out.Add(sp ind + text, true)
-    let emitCmd ind (text: string) = out.Add(sp ind + text, false)
-    let extra = cfg.Extra
-
-    let tyText =
-        function
-        | VInt -> "int"
-        | VStr -> "string"
-
-    let rec emitMatch (ind: int) (m: MatchE) =
-        // head at ind; arms at ind + extra (a group may sit deeper
-        // than its head uniformly).
-        // A third of FLAT matches render as the `function` spelling
-        // [D:function-keyword] — `(function | arms) scrut` is the same
-        // match by definition, so every invariant must hold across the
-        // alternation; the coin is Bid parity (deterministic per seed)
-        let allFlat =
-            (match m.Catch with
-             | RExpr _ -> true
-             | RMatch _ -> false)
-            && m.Arms
-               |> List.forall (fun a ->
-                   match a with
-                   | ALit(_, RExpr _)
-                   | AGuard(_, _, RExpr _) -> true
-                   | _ -> false)
-
-        if allFlat && m.Bid % 3 = 0 then
-            emit ind "(function"
-            let armInd = ind + extra m.Bid
-
-            let armLine (pat: string) (rhs: ArmRhs) =
-                match rhs with
-                | RExpr e -> $"| {pat} -> {renderExpr e}"
-                | RMatch _ -> failwith "unreachable: allFlat guarded"
-
-            for a in m.Arms do
-                emit
-                    armInd
-                    (armLine
-                        (renderPat a)
-                        (match a with
-                         | ALit(_, r) -> r
-                         | AGuard(_, _, r) -> r))
-
-            emit armInd (armLine "_" m.Catch + $") ({renderExpr m.Scrut})")
-        else
-
-            emit ind $"match {renderExpr m.Scrut} with"
-            let armInd = ind + extra m.Bid
-
-            let emitArm (pat: string) (rhs: ArmRhs) =
-                match rhs with
-                | RExpr e -> emit armInd $"| {pat} -> {renderExpr e}"
-                | RMatch inner ->
-                    emit armInd $"| {pat} ->"
-                    emitMatch (armInd + 4) inner
-
-            for a in m.Arms do
-                emitArm
-                    (renderPat a)
-                    (match a with
-                     | ALit(_, r) -> r
-                     | AGuard(_, _, r) -> r)
-
-            emitArm "_" m.Catch
-
-    let rec emitStmt (ind: int) (s: Stmt) =
-        match s with
-        | SLet(v, e) -> emit ind $"let {v} = {renderExpr e}"
-        | SRetryPoll(v, isPoll, value) ->
-            emit
-                ind
-                (if isPoll then
-                     "let " + v + " = poll timeout=1s interval=0ms"
-                 else
-                     "let " + v + " = retry attempts=1 delay=0ms")
-
-            emit (ind + 4) $"{value}"
-            emit ind "until r"
-            emit (ind + 4) $"r > {value - 1}"
-            emit ind $"print $\"{{{v}}}\""
-        | SFloat(v, a, op, b, cmp) ->
-            emit ind $"let {v} = {formatFloat a} {op} {formatFloat b}"
-            emit ind $"print $\"{{{v}}}\""
-
-            match cmp with
-            | Some c -> emit ind $"print $\"{{{v} < {formatFloat c}}}\""
-            | None -> ()
-        | SLetBlock(v, b) when cfg.JoinBlock b.Bid && joinable b.Body ->
-            let parts =
-                (b.Body
-                 |> List.map (function
-                     | SPrint e -> $"print {printArg e}"
-                     | _ -> failwith "joinable lied"))
-                @ [ renderExpr b.Result ]
-
-            emit ind ($"let {v} = " + String.concat " ; " parts)
-        | SLetBlock(v, b) ->
-            emit ind $"let {v} ="
-            let bodyInd = ind + 4 + extra b.Bid
-
-            for st in b.Body do
-                emitStmt bodyInd st
-
-            emit bodyInd (renderExpr b.Result)
-        | SLetMatch(v, m) ->
-            emit ind $"let {v} ="
-            emitMatch (ind + 4) m
-        | SLetUnionMatch(v, uv, arms) ->
-            emit ind $"let {v} ="
-            emit (ind + 4) $"match {uv} with"
-
-            for (case, binder, rhs) in arms do
-                match binder with
-                | Some b -> emit (ind + 4) $"| {case} {b} -> {renderExpr rhs}"
-                | None -> emit (ind + 4) $"| {case} -> {renderExpr rhs}"
-        | SPrint e -> emit ind $"print {printArg e}"
-        | SIf(bid, c, body) when cfg.JoinBlock bid && joinable body ->
-            let parts =
-                body
-                |> List.map (function
-                    | SPrint e -> $"print {printArg e}"
-                    | _ -> failwith "joinable lied")
-
-            emit ind ($"if {renderCond c} then " + String.concat " ; " parts)
-        | SIf(bid, c, body) ->
-            emit ind $"if {renderCond c} then"
-
-            for st in body do
-                emitStmt (ind + 4 + extra bid) st
-        | STypeRec(n, fields, style) ->
-            // inline styles have no line above the field for a `///` doc, so
-            // they carry none; only the own-line RStroustrup style docs its
-            // fields [D:doc-help] (the [<Doc>] attribute retired)
-            let fieldText (_attr, f, ty) = $"{f}: {tyText ty}"
-
-            let style =
-                match style with
-                | RStroustrup bid when cfg.InlineBracket bid -> RInline
-                | s -> s
-
-            match style with
-            | RInline ->
-                let fs = fields |> List.map fieldText |> String.concat "; "
-                emit ind $"type {n} = {{ {fs} }}"
-            | RStroustrup bid ->
-                emit ind $"type {n} = {{"
-                let entryInd = ind + 4 + extra bid
-
-                for (attr, f, ty) in fields do
-                    match attr with
-                    | Some d ->
-                        // a `///` doc + its field form ONE entry, both at the
-                        // anchor column (the doc-alignment lint governs this).
-                        // TAG FALSE: a doc line is COMMENT territory — junk
-                        // appended to it becomes legal doc TEXT, never an
-                        // error (the span invariant must not target it; the
-                        // fresh-seed find of the coverage audit)
-                        emitCmd entryInd $"/// {d}"
-                        emit entryInd $"{f}: {tyText ty}"
-                    | None -> emit entryInd $"{f}: {tyText ty}"
-
-                emit ind "}"
-            | RAligned ->
-                emit ind $"type {n} ="
-                let anchor = ind + 4 + 2 // "{ " on the opener line
-
-                fields
-                |> List.iteri (fun i f ->
-                    let text = fieldText f
-                    let closing = (if i = fields.Length - 1 then " }" else "")
-
-                    if i = 0 then
-                        emit (ind + 4) $"{{ {text}{closing}"
-                    else
-                        emit anchor $"{text}{closing}")
-        | STypeUnion(n, cases, multiline, bid) ->
-            let caseText (c, payload) =
-                match payload with
-                | Some t -> $"{c} of {tyText t}"
-                | None -> c
-
-            if multiline then
-                emit ind $"type {n} ="
-
-                for c in cases do
-                    emit (ind + 4 + extra bid) $"| {caseText c}"
-            else
-                let cs = cases |> List.map caseText |> String.concat " | "
-                emit ind $"type {n} = {cs}"
-        | SRecLet(r, _, fvs, style) ->
-            let style =
-                match style with
-                | RStroustrup bid when cfg.InlineBracket bid -> RInline
-                | s -> s
-
-            match style with
-            | RInline ->
-                let fs =
-                    fvs |> List.map (fun (f, e) -> $"{f} = {renderExpr e}") |> String.concat "; "
-
-                emit ind $"let {r} = {{ {fs} }}"
-            | RStroustrup bid ->
-                emit ind $"let {r} = {{"
-
-                for (f, e) in fvs do
-                    emit (ind + 4 + extra bid) $"{f} = {renderExpr e}"
-
-                emit ind "}"
-            | RAligned ->
-                let head = $"let {r} = {{ "
-                let anchor = ind + head.Length
-
-                fvs
-                |> List.iteri (fun i (f, e) ->
-                    let text = $"{f} = {renderExpr e}"
-                    let closing = (if i = fvs.Length - 1 then " }" else "")
-
-                    if i = 0 then
-                        emit ind $"{head}{text}{closing}"
-                    else
-                        emit anchor $"{text}{closing}")
-        | SUnionLet(u, case, payload) ->
-            match payload with
-            | Some e ->
-                let arg = (if atomic e then renderExpr e else $"({renderExpr e})")
-                emit ind $"let {u} = {case} {arg}"
-            | None -> emit ind $"let {u} = {case}"
-        | SListLet(x, _, elems, style) ->
-            let style =
-                match style with
-                | LStroustrup bid when cfg.InlineBracket bid -> LInline
-                | s -> s
-
-            match style with
-            | LInline ->
-                let es = elems |> List.map renderExpr |> String.concat "; "
-                emit ind $"let {x} = [{es}]"
-            | LStroustrup bid ->
-                emit ind $"let {x} = ["
-
-                for e in elems do
-                    emit (ind + 4 + extra bid) (renderExpr e)
-
-                emit ind "]"
-            | LAligned ->
-                let head = $"let {x} = [ "
-                let anchor = ind + head.Length
-
-                elems
-                |> List.iteri (fun i e ->
-                    let closing = (if i = elems.Length - 1 then " ]" else "")
-
-                    if i = 0 then
-                        emit ind $"{head}{renderExpr e}{closing}"
-                    else
-                        emit anchor $"{renderExpr e}{closing}")
-        | SPipeLet(bid, n, src, k) ->
-            emit ind $"let {n} ="
-            let bodyInd = ind + 4 + extra bid
-            emit bodyInd src
-            emit bodyInd $"|> Seq.map (fun a -> a + {k})"
-            emit bodyInd "|> Seq.length"
-        | SIterLambda(bid, param, elems, tv, k, mark, closerAlone) ->
-            let elemsTxt = elems |> List.map (fun e -> $"\"{e}\"") |> String.concat "; "
-            let letLine = $"let {tv} = {k}"
-            let p1 = $"print {param}"
-            let p2 = $"print $\"{mark} {{({tv} + 1)}} \""
-
-            if cfg.SingleLambda bid then
-                emit ind $"[{elemsTxt}] |> Seq.iter (fun {param} -> {letLine} in {p1} ; {p2})"
-            else
-                emit ind $"[{elemsTxt}] |> Seq.iter (fun {param} ->"
-                let bodyInd = ind + 4 + extra bid
-                emit bodyInd letLine
-                emit bodyInd p1
-
-                if closerAlone then
-                    emit bodyInd p2
-                    emit ind ")"
-                else
-                    emit bodyInd (p2 + ")")
-        | SMapLambda(bid, name, param, elems, tv, addend, closerAlone) ->
-            let elemsTxt = elems |> List.map string |> String.concat "; "
-            let letLine = $"let {tv} = {param} + {addend}"
-            let res = $"{tv} * 2"
-
-            if cfg.SingleLambda bid then
-                emit ind $"let {name} = [{elemsTxt}] |> Seq.map (fun {param} -> {letLine} in {res}) |> Seq.sum"
-            else
-                emit ind $"let {name} ="
-                let stageInd = ind + 4
-                emit stageInd $"[{elemsTxt}]"
-                emit stageInd $"|> Seq.map (fun {param} ->"
-                let bodyInd = stageInd + 4 + extra bid
-                emit bodyInd letLine
-
-                if closerAlone then
-                    emit bodyInd res
-                    emit stageInd ")"
-                else
-                    emit bodyInd (res + ")")
-
-                emit stageInd "|> Seq.sum"
-        | SEcho words ->
-            // splat-of-literal ↔ inline words, byte-identical output
-            match words with
-            | marker :: _ when cfg.SplatEcho marker ->
-                let lit = words |> List.map (fun w -> $"\"{w}\"") |> String.concat "; "
-                emitCmd ind $"echo $@([{lit}])"
-            | _ -> emitCmd ind ("echo " + String.concat " " words)
-        | SDistrict(bid, headed, cmds) when cfg.ExplicitDistrict bid ->
-            // the arming equivalence [D:interior-arming]: a bare command
-            // statement = `!(...)` — the retirement's surviving transform
-            let line cmd = "!(echo " + String.concat " " cmd + ")"
-
-            match headed with
-            | Some c ->
-                emit ind $"if {renderCond c} then"
-
-                for cmd in cmds do
-                    emitCmd (ind + 4 + extra bid) (line cmd)
-            | None ->
-                for cmd in cmds do
-                    emitCmd ind (line cmd)
-        | SDistrict(bid, headed, cmds) ->
-            // RETARGETED at the district retirement
-            // [D:district-retirement]: the same coverage now renders the
-            // ARMING rule's spelling — bare command statements (headed:
-            // in an if body; standalone: at the statement level) — and
-            // the ExplicitDistrict transform is the bare-vs-!() sigil
-            // EQUIVALENCE, the arming rule's own metamorphic property
-            (match headed with
-             | Some c -> emitCmd ind $"if {renderCond c} then"
-             | None -> ())
-
-            let cind = if headed.IsSome then ind + 4 + extra bid else ind
-
-            for cmd in cmds do
-                emitCmd cind ("echo " + String.concat " " cmd)
-        | SCmdLet(g, words) ->
-            let rhs = "echo " + String.concat " " words
-
-            if cfg.SigilCmdLet g then
-                emitCmd ind ("let " + g + " = $(" + rhs + ")")
-            else
-                emitCmd ind ("let " + g + " = " + rhs)
-        | SSeqPrint x -> emit ind $"{x} |> print"
-        | SYaml(bid, d, entries) ->
-            // marker line: NON-error territory — under the assume
-            // resolver, junk after `yaml` re-reads as a command's argv
-            // (the verdict-split shape the agreement property hunts),
-            // so the span invariant must not target it
-            emitCmd ind $"let {d} = yaml"
-
-            let rec emitVal (vind: int) (k: string) (v: YVal) =
-                match v with
-                | YLitInt n -> emitCmd vind $"{k}: {n}"
-                | YLitWord w -> emitCmd vind $"{k}: {w}"
-                | YSplice x -> emitCmd vind $"{k}: ${x}"
-                | YNest es ->
-                    emitCmd vind $"{k}:"
-
-                    for (nk, nv) in es do
-                        emitVal (vind + 4) nk nv
-
-            for (k, v) in entries do
-                emitVal (ind + 4 + extra bid) k v
-
-            emit ind $"{d} |> to yaml |> print"
-
-    for s in p.Stmts do
-        emitStmt 0 s
-
-    List.ofSeq out
-
-let render (cfg: RenderCfg) (p: Program) : string list = renderTagged cfg p |> List.map fst
-
-let renderPlain (p: Program) : string list = render defaultCfg p
-
-
-// every reindentable block id in the program, for the transform to pick from
-let blockIds (p: Program) : int list =
-    let ids = ResizeArray<int>()
-
-    let rec ofRhs r =
-        match r with
-        | RExpr _ -> ()
-        | RMatch m -> ofMatch m
-
-    and ofMatch (m: MatchE) =
-        ids.Add m.Bid
-
-        for a in m.Arms do
-            ofRhs (
-                match a with
-                | ALit(_, r) -> r
-                | AGuard(_, _, r) -> r
-            )
-
-        ofRhs m.Catch
-
-    let rec ofStmt s =
-        match s with
-        | SLetBlock(_, b) ->
-            ids.Add b.Bid
-            List.iter ofStmt b.Body
-        | SLetMatch(_, m) -> ofMatch m
-        | SYaml(bid, _, _) -> ids.Add bid
-        | SIf(bid, _, body) ->
-            ids.Add bid
-            List.iter ofStmt body
-        | STypeRec(_, _, RStroustrup bid) -> ids.Add bid
-        | SRecLet(_, _, _, RStroustrup bid) -> ids.Add bid
-        | SListLet(_, _, _, LStroustrup bid) -> ids.Add bid
-        | STypeUnion(_, _, true, bid) -> ids.Add bid
-        | SPipeLet(bid, _, _, _) -> ids.Add bid
-        | SDistrict(bid, _, _) -> ids.Add bid
-        | SIterLambda(bid, _, _, _, _, _, _) -> ids.Add bid
-        | SMapLambda(bid, _, _, _, _, _, _) -> ids.Add bid
-        | _ -> ()
-
-    List.iter ofStmt p.Stmts
-    List.ofSeq ids
-
 // ---------------------------------------------------------------------------
 // defs/uses — names are program-unique, so dependency closure for the
 // shrinker is set arithmetic. uses(stmt) excludes names the statement
@@ -725,6 +296,503 @@ let rec stmtUses (s: Stmt) : string list =
         entries |> List.collect (snd >> vUses)
     | SIterLambda _
     | SMapLambda _ -> []
+
+// every name a RENDER of this statement references, recursive and
+// unfiltered [D:unused-bindings]: the renamer's oracle. Differs from
+// stmtUses two ways — nested block bodies contribute their OWN uses
+// (a block-local binder's reader is inside the block), and the
+// statements that render a trailing self-print (SFloat, SRetryPoll,
+// SYaml) count as their own readers, exactly as the emitted text does.
+let rec private renderUses (s: Stmt) : string list =
+    match s with
+    | SFloat(v, _, _, _, _) -> [ v ]
+    | SRetryPoll(v, _, _) -> [ v ]
+    | SLet(_, e) -> exprUses e
+    | SLetBlock(_, b) -> (b.Body |> List.collect renderUses) @ exprUses b.Result
+    | SLetMatch(_, m) -> matchUses m
+    | SLetUnionMatch(_, uv, arms) ->
+        uv
+        :: (arms
+            |> List.collect (fun (_, binder, rhs) -> exprUses rhs |> List.filter (fun n -> Some n <> binder)))
+    | SPrint e -> exprUses e
+    | SIf(_, c, body) -> condUses c @ (body |> List.collect renderUses)
+    | STypeRec _
+    | STypeUnion _
+    | SEcho _
+    | SCmdLet _ -> []
+    | SRecLet(_, _, fvs, _) -> fvs |> List.collect (snd >> exprUses)
+    | SUnionLet(_, _, payload) -> payload |> Option.map exprUses |> Option.defaultValue []
+    | SListLet(_, _, elems, _) -> elems |> List.collect exprUses
+    | SPipeLet(_, _, src, _) -> [ src ]
+    | SDistrict(_, headed, _) -> headed |> Option.map condUses |> Option.defaultValue []
+    | SSeqPrint x -> [ x ]
+    | SYaml(_, d, entries) ->
+        let rec vUses v =
+            match v with
+            | YLitInt _
+            | YLitWord _ -> []
+            | YSplice x -> [ x ]
+            | YNest es -> es |> List.collect (snd >> vUses)
+
+        d :: (entries |> List.collect (snd >> vUses))
+    | SIterLambda _
+    | SMapLambda _ -> []
+
+/// every binder the program never renders a read of — those def-sites
+/// render '_'-prefixed [D:unused-bindings]: names are program-unique
+/// (Fresh), so referenced-anywhere equals referenced-in-scope, and the
+/// judgement is a pure function of the Stmt tree — deterministic across
+/// every render config, and re-derived after every shrink by
+/// construction (the validity oracle survives the unused-binding law)
+let unreadBinders (p: Program) : Set<string> =
+    let used = p.Stmts |> List.collect renderUses |> Set.ofList
+
+    let rec defs (s: Stmt) : string list =
+        (match s with
+         | SLetBlock(_, b) -> b.Body |> List.collect defs
+         | SIf(_, _, body) -> body |> List.collect defs
+         | _ -> [])
+        @ stmtDefs s
+
+    p.Stmts
+    |> List.collect defs
+    |> List.filter (fun n -> not (used.Contains n))
+    |> Set.ofList
+
+
+let renderTagged (cfg: RenderCfg) (p: Program) : (string * bool) list =
+    // unread binders render '_'-prefixed — the language's own escape
+    // [D:unused-bindings]; usage is a fact of the tree, so every render
+    // config agrees
+    let unread = unreadBinders p
+    let bindName (v: string) = if unread.Contains v then "_" + v else v
+    let sp n = String(' ', n)
+    let out = ResizeArray<string * bool>()
+    let emit ind (text: string) = out.Add(sp ind + text, true)
+    let emitCmd ind (text: string) = out.Add(sp ind + text, false)
+    let extra = cfg.Extra
+
+    let tyText =
+        function
+        | VInt -> "int"
+        | VStr -> "string"
+
+    let rec emitMatch (ind: int) (m: MatchE) =
+        // head at ind; arms at ind + extra (a group may sit deeper
+        // than its head uniformly).
+        // A third of FLAT matches render as the `function` spelling
+        // [D:function-keyword] — `(function | arms) scrut` is the same
+        // match by definition, so every invariant must hold across the
+        // alternation; the coin is Bid parity (deterministic per seed)
+        let allFlat =
+            (match m.Catch with
+             | RExpr _ -> true
+             | RMatch _ -> false)
+            && m.Arms
+               |> List.forall (fun a ->
+                   match a with
+                   | ALit(_, RExpr _)
+                   | AGuard(_, _, RExpr _) -> true
+                   | _ -> false)
+
+        if allFlat && m.Bid % 3 = 0 then
+            emit ind "(function"
+            let armInd = ind + extra m.Bid
+
+            let armLine (pat: string) (rhs: ArmRhs) =
+                match rhs with
+                | RExpr e -> $"| {pat} -> {renderExpr e}"
+                | RMatch _ -> failwith "unreachable: allFlat guarded"
+
+            for a in m.Arms do
+                emit
+                    armInd
+                    (armLine
+                        (renderPat a)
+                        (match a with
+                         | ALit(_, r) -> r
+                         | AGuard(_, _, r) -> r))
+
+            emit armInd (armLine "_" m.Catch + $") ({renderExpr m.Scrut})")
+        else
+
+            emit ind $"match {renderExpr m.Scrut} with"
+            let armInd = ind + extra m.Bid
+
+            let emitArm (pat: string) (rhs: ArmRhs) =
+                match rhs with
+                | RExpr e -> emit armInd $"| {pat} -> {renderExpr e}"
+                | RMatch inner ->
+                    emit armInd $"| {pat} ->"
+                    emitMatch (armInd + 4) inner
+
+            for a in m.Arms do
+                emitArm
+                    (renderPat a)
+                    (match a with
+                     | ALit(_, r) -> r
+                     | AGuard(_, _, r) -> r)
+
+            emitArm "_" m.Catch
+
+    let rec emitStmt (ind: int) (s: Stmt) =
+        match s with
+        | SLet(v, e) -> emit ind $"let {bindName v} = {renderExpr e}"
+        | SRetryPoll(v, isPoll, value) ->
+            emit
+                ind
+                (if isPoll then
+                     "let " + v + " = poll timeout=1s interval=0ms"
+                 else
+                     "let " + v + " = retry attempts=1 delay=0ms")
+
+            emit (ind + 4) $"{value}"
+            emit ind "until r"
+            emit (ind + 4) $"r > {value - 1}"
+            emit ind $"print $\"{{{v}}}\""
+        | SFloat(v, a, op, b, cmp) ->
+            emit ind $"let {v} = {formatFloat a} {op} {formatFloat b}"
+            emit ind $"print $\"{{{v}}}\""
+
+            match cmp with
+            | Some c -> emit ind $"print $\"{{{v} < {formatFloat c}}}\""
+            | None -> ()
+        | SLetBlock(v, b) when cfg.JoinBlock b.Bid && joinable b.Body ->
+            let parts =
+                (b.Body
+                 |> List.map (function
+                     | SPrint e -> $"print {printArg e}"
+                     | _ -> failwith "joinable lied"))
+                @ [ renderExpr b.Result ]
+
+            emit ind ($"let {bindName v} = " + String.concat " ; " parts)
+        | SLetBlock(v, b) ->
+            emit ind $"let {bindName v} ="
+            let bodyInd = ind + 4 + extra b.Bid
+
+            for st in b.Body do
+                emitStmt bodyInd st
+
+            emit bodyInd (renderExpr b.Result)
+        | SLetMatch(v, m) ->
+            emit ind $"let {bindName v} ="
+            emitMatch (ind + 4) m
+        | SLetUnionMatch(v, uv, arms) ->
+            emit ind $"let {bindName v} ="
+            emit (ind + 4) $"match {uv} with"
+
+            for (case, binder, rhs) in arms do
+                match binder with
+                | Some b -> emit (ind + 4) $"| {case} {b} -> {renderExpr rhs}"
+                | None -> emit (ind + 4) $"| {case} -> {renderExpr rhs}"
+        | SPrint e -> emit ind $"print {printArg e}"
+        | SIf(bid, c, body) when cfg.JoinBlock bid && joinable body ->
+            let parts =
+                body
+                |> List.map (function
+                    | SPrint e -> $"print {printArg e}"
+                    | _ -> failwith "joinable lied")
+
+            emit ind ($"if {renderCond c} then " + String.concat " ; " parts)
+        | SIf(bid, c, body) ->
+            emit ind $"if {renderCond c} then"
+
+            for st in body do
+                emitStmt (ind + 4 + extra bid) st
+        | STypeRec(n, fields, style) ->
+            // inline styles have no line above the field for a `///` doc, so
+            // they carry none; only the own-line RStroustrup style docs its
+            // fields [D:doc-help] (the [<Doc>] attribute retired)
+            let fieldText (_attr, f, ty) = $"{f}: {tyText ty}"
+
+            let style =
+                match style with
+                | RStroustrup bid when cfg.InlineBracket bid -> RInline
+                | s -> s
+
+            match style with
+            | RInline ->
+                let fs = fields |> List.map fieldText |> String.concat "; "
+                emit ind $"type {n} = {{ {fs} }}"
+            | RStroustrup bid ->
+                emit ind $"type {n} = {{"
+                let entryInd = ind + 4 + extra bid
+
+                for (attr, f, ty) in fields do
+                    match attr with
+                    | Some d ->
+                        // a `///` doc + its field form ONE entry, both at the
+                        // anchor column (the doc-alignment lint governs this).
+                        // TAG FALSE: a doc line is COMMENT territory — junk
+                        // appended to it becomes legal doc TEXT, never an
+                        // error (the span invariant must not target it; the
+                        // fresh-seed find of the coverage audit)
+                        emitCmd entryInd $"/// {d}"
+                        emit entryInd $"{f}: {tyText ty}"
+                    | None -> emit entryInd $"{f}: {tyText ty}"
+
+                emit ind "}"
+            | RAligned ->
+                emit ind $"type {n} ="
+                let anchor = ind + 4 + 2 // "{ " on the opener line
+
+                fields
+                |> List.iteri (fun i f ->
+                    let text = fieldText f
+                    let closing = (if i = fields.Length - 1 then " }" else "")
+
+                    if i = 0 then
+                        emit (ind + 4) $"{{ {text}{closing}"
+                    else
+                        emit anchor $"{text}{closing}")
+        | STypeUnion(n, cases, multiline, bid) ->
+            let caseText (c, payload) =
+                match payload with
+                | Some t -> $"{c} of {tyText t}"
+                | None -> c
+
+            if multiline then
+                emit ind $"type {n} ="
+
+                for c in cases do
+                    emit (ind + 4 + extra bid) $"| {caseText c}"
+            else
+                let cs = cases |> List.map caseText |> String.concat " | "
+                emit ind $"type {n} = {cs}"
+        | SRecLet(r, _, fvs, style) ->
+            let style =
+                match style with
+                | RStroustrup bid when cfg.InlineBracket bid -> RInline
+                | s -> s
+
+            match style with
+            | RInline ->
+                let fs =
+                    fvs |> List.map (fun (f, e) -> $"{f} = {renderExpr e}") |> String.concat "; "
+
+                emit ind $"let {bindName r} = {{ {fs} }}"
+            | RStroustrup bid ->
+                emit ind $"let {bindName r} = {{"
+
+                for (f, e) in fvs do
+                    emit (ind + 4 + extra bid) $"{f} = {renderExpr e}"
+
+                emit ind "}"
+            | RAligned ->
+                let head = $"let {bindName r} = {{ "
+                let anchor = ind + head.Length
+
+                fvs
+                |> List.iteri (fun i (f, e) ->
+                    let text = $"{f} = {renderExpr e}"
+                    let closing = (if i = fvs.Length - 1 then " }" else "")
+
+                    if i = 0 then
+                        emit ind $"{head}{text}{closing}"
+                    else
+                        emit anchor $"{text}{closing}")
+        | SUnionLet(u, case, payload) ->
+            match payload with
+            | Some e ->
+                let arg = (if atomic e then renderExpr e else $"({renderExpr e})")
+                emit ind $"let {bindName u} = {case} {arg}"
+            | None -> emit ind $"let {bindName u} = {case}"
+        | SListLet(x, _, elems, style) ->
+            let style =
+                match style with
+                | LStroustrup bid when cfg.InlineBracket bid -> LInline
+                | s -> s
+
+            match style with
+            | LInline ->
+                let es = elems |> List.map renderExpr |> String.concat "; "
+                emit ind $"let {bindName x} = [{es}]"
+            | LStroustrup bid ->
+                emit ind $"let {bindName x} = ["
+
+                for e in elems do
+                    emit (ind + 4 + extra bid) (renderExpr e)
+
+                emit ind "]"
+            | LAligned ->
+                let head = $"let {bindName x} = [ "
+                let anchor = ind + head.Length
+
+                elems
+                |> List.iteri (fun i e ->
+                    let closing = (if i = elems.Length - 1 then " ]" else "")
+
+                    if i = 0 then
+                        emit ind $"{head}{renderExpr e}{closing}"
+                    else
+                        emit anchor $"{renderExpr e}{closing}")
+        | SPipeLet(bid, n, src, k) ->
+            emit ind $"let {bindName n} ="
+            let bodyInd = ind + 4 + extra bid
+            emit bodyInd src
+            emit bodyInd $"|> Seq.map (fun a -> a + {k})"
+            emit bodyInd "|> Seq.length"
+        | SIterLambda(bid, param, elems, tv, k, mark, closerAlone) ->
+            let elemsTxt = elems |> List.map (fun e -> $"\"{e}\"") |> String.concat "; "
+            let letLine = $"let {tv} = {k}"
+            let p1 = $"print {param}"
+            let p2 = $"print $\"{mark} {{({tv} + 1)}} \""
+
+            if cfg.SingleLambda bid then
+                emit ind $"[{elemsTxt}] |> Seq.iter (fun {param} -> {letLine} in {p1} ; {p2})"
+            else
+                emit ind $"[{elemsTxt}] |> Seq.iter (fun {param} ->"
+                let bodyInd = ind + 4 + extra bid
+                emit bodyInd letLine
+                emit bodyInd p1
+
+                if closerAlone then
+                    emit bodyInd p2
+                    emit ind ")"
+                else
+                    emit bodyInd (p2 + ")")
+        | SMapLambda(bid, name, param, elems, tv, addend, closerAlone) ->
+            let elemsTxt = elems |> List.map string |> String.concat "; "
+            let letLine = $"let {tv} = {param} + {addend}"
+            let res = $"{tv} * 2"
+
+            if cfg.SingleLambda bid then
+                emit ind $"let {bindName name} = [{elemsTxt}] |> Seq.map (fun {param} -> {letLine} in {res}) |> Seq.sum"
+            else
+                emit ind $"let {bindName name} ="
+                let stageInd = ind + 4
+                emit stageInd $"[{elemsTxt}]"
+                emit stageInd $"|> Seq.map (fun {param} ->"
+                let bodyInd = stageInd + 4 + extra bid
+                emit bodyInd letLine
+
+                if closerAlone then
+                    emit bodyInd res
+                    emit stageInd ")"
+                else
+                    emit bodyInd (res + ")")
+
+                emit stageInd "|> Seq.sum"
+        | SEcho words ->
+            // splat-of-literal ↔ inline words, byte-identical output
+            match words with
+            | marker :: _ when cfg.SplatEcho marker ->
+                let lit = words |> List.map (fun w -> $"\"{w}\"") |> String.concat "; "
+                emitCmd ind $"echo $@([{lit}])"
+            | _ -> emitCmd ind ("echo " + String.concat " " words)
+        | SDistrict(bid, headed, cmds) when cfg.ExplicitDistrict bid ->
+            // the arming equivalence [D:interior-arming]: a bare command
+            // statement = `!(...)` — the retirement's surviving transform
+            let line cmd = "!(echo " + String.concat " " cmd + ")"
+
+            match headed with
+            | Some c ->
+                emit ind $"if {renderCond c} then"
+
+                for cmd in cmds do
+                    emitCmd (ind + 4 + extra bid) (line cmd)
+            | None ->
+                for cmd in cmds do
+                    emitCmd ind (line cmd)
+        | SDistrict(bid, headed, cmds) ->
+            // RETARGETED at the district retirement
+            // [D:district-retirement]: the same coverage now renders the
+            // ARMING rule's spelling — bare command statements (headed:
+            // in an if body; standalone: at the statement level) — and
+            // the ExplicitDistrict transform is the bare-vs-!() sigil
+            // EQUIVALENCE, the arming rule's own metamorphic property
+            (match headed with
+             | Some c -> emitCmd ind $"if {renderCond c} then"
+             | None -> ())
+
+            let cind = if headed.IsSome then ind + 4 + extra bid else ind
+
+            for cmd in cmds do
+                emitCmd cind ("echo " + String.concat " " cmd)
+        | SCmdLet(g, words) ->
+            let rhs = "echo " + String.concat " " words
+
+            if cfg.SigilCmdLet g then
+                emitCmd ind ("let " + bindName g + " = $(" + rhs + ")")
+            else
+                emitCmd ind ("let " + bindName g + " = " + rhs)
+        | SSeqPrint x -> emit ind $"{x} |> print"
+        | SYaml(bid, d, entries) ->
+            // marker line: NON-error territory — under the assume
+            // resolver, junk after `yaml` re-reads as a command's argv
+            // (the verdict-split shape the agreement property hunts),
+            // so the span invariant must not target it
+            emitCmd ind $"let {d} = yaml"
+
+            let rec emitVal (vind: int) (k: string) (v: YVal) =
+                match v with
+                | YLitInt n -> emitCmd vind $"{k}: {n}"
+                | YLitWord w -> emitCmd vind $"{k}: {w}"
+                | YSplice x -> emitCmd vind $"{k}: ${x}"
+                | YNest es ->
+                    emitCmd vind $"{k}:"
+
+                    for (nk, nv) in es do
+                        emitVal (vind + 4) nk nv
+
+            for (k, v) in entries do
+                emitVal (ind + 4 + extra bid) k v
+
+            emit ind $"{d} |> to yaml |> print"
+
+    for s in p.Stmts do
+        emitStmt 0 s
+
+    List.ofSeq out
+
+let render (cfg: RenderCfg) (p: Program) : string list = renderTagged cfg p |> List.map fst
+
+let renderPlain (p: Program) : string list = render defaultCfg p
+
+
+// every reindentable block id in the program, for the transform to pick from
+let blockIds (p: Program) : int list =
+    let ids = ResizeArray<int>()
+
+    let rec ofRhs r =
+        match r with
+        | RExpr _ -> ()
+        | RMatch m -> ofMatch m
+
+    and ofMatch (m: MatchE) =
+        ids.Add m.Bid
+
+        for a in m.Arms do
+            ofRhs (
+                match a with
+                | ALit(_, r) -> r
+                | AGuard(_, _, r) -> r
+            )
+
+        ofRhs m.Catch
+
+    let rec ofStmt s =
+        match s with
+        | SLetBlock(_, b) ->
+            ids.Add b.Bid
+            List.iter ofStmt b.Body
+        | SLetMatch(_, m) -> ofMatch m
+        | SYaml(bid, _, _) -> ids.Add bid
+        | SIf(bid, _, body) ->
+            ids.Add bid
+            List.iter ofStmt body
+        | STypeRec(_, _, RStroustrup bid) -> ids.Add bid
+        | SRecLet(_, _, _, RStroustrup bid) -> ids.Add bid
+        | SListLet(_, _, _, LStroustrup bid) -> ids.Add bid
+        | STypeUnion(_, _, true, bid) -> ids.Add bid
+        | SPipeLet(bid, _, _, _) -> ids.Add bid
+        | SDistrict(bid, _, _) -> ids.Add bid
+        | SIterLambda(bid, _, _, _, _, _, _) -> ids.Add bid
+        | SMapLambda(bid, _, _, _, _, _, _) -> ids.Add bid
+        | _ -> ()
+
+    List.iter ofStmt p.Stmts
+    List.ofSeq ids
 
 // ---------------------------------------------------------------------------
 // Generator. Scope threads in-scope names by type; Fresh/Marker/Bid are
