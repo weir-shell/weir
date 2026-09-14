@@ -1373,13 +1373,12 @@ of the keyed merge, not a branch you write; applying a patch twice
 changes nothing:
 
 ```weir
-let doc =
-    <<<
-        namespace: prod
-        images:
-            - name: app
-              newTag: v1
-    |> Yaml.parse
+let doc = <<<
+    namespace: prod
+    images:
+        - name: app
+          newTag: v1
+|> Yaml.parse
 
 let p = yaml patch by=name
     images:
