@@ -84,6 +84,12 @@ type Stmt =
     | SEcho of string list
     | SDistrict of bid: int * headed: Cond option * cmds: string list list
     | SCmdLet of binder: string * words: string list
+    // command-RHS block lets in STATEMENT bodies [D:statement-lets]:
+    // an if-body `let` takes the command grammar (bare and `| complete`
+    // spellings) — self-contained: the binder's reader renders beside
+    // it, so nothing escapes the body and the unused-binding law holds
+    // by construction
+    | SBodyCmdLet of binder: string * marker: string * word: string * reify: bool
     | SSeqPrint of string // xs |> print (seq<string> binders only)
     // multiline lambdas [D:multiline-lambda]: body block under a
     // dangling `(fun p ->`; closerAlone renders `)` on its own line
@@ -246,6 +252,7 @@ let rec stmtDefs (s: Stmt) : string list =
     | SListLet(x, _, _, _) -> [ x ]
     | SPipeLet(_, n, _, _) -> [ n ]
     | SCmdLet(g, _) -> [ g ]
+    | SBodyCmdLet(g, _, _, _) -> [ g ]
     | SYaml(_, d, _) -> [ d ]
     | SFloat(v, _, _, _, _) -> [ v ]
     | SRetryPoll(v, _, _) -> [ v ]
@@ -279,6 +286,8 @@ let rec stmtUses (s: Stmt) : string list =
     | STypeUnion _
     | SEcho _
     | SCmdLet _ -> []
+    // self-contained: the reader is inside the statement's own render
+    | SBodyCmdLet _ -> []
     | SRecLet(_, ty, fvs, _) -> ty :: (fvs |> List.collect (snd >> exprUses))
     | SUnionLet(_, case, payload) -> case :: (payload |> Option.map exprUses |> Option.defaultValue [])
     | SListLet(_, _, elems, _) -> elems |> List.collect exprUses
@@ -320,6 +329,9 @@ let rec private renderUses (s: Stmt) : string list =
     | STypeUnion _
     | SEcho _
     | SCmdLet _ -> []
+    // renders its own read (the SFloat rule) — the binder never
+    // '_'-prefixes [D:unused-bindings]
+    | SBodyCmdLet(g, _, _, _) -> [ g ]
     | SRecLet(_, _, fvs, _) -> fvs |> List.collect (snd >> exprUses)
     | SUnionLet(_, _, payload) -> payload |> Option.map exprUses |> Option.defaultValue []
     | SListLet(_, _, elems, _) -> elems |> List.collect exprUses
@@ -716,6 +728,17 @@ let renderTagged (cfg: RenderCfg) (p: Program) : (string * bool) list =
                 emitCmd ind ("let " + bindName g + " = $(" + rhs + ")")
             else
                 emitCmd ind ("let " + bindName g + " = " + rhs)
+        | SBodyCmdLet(g, m, w, reify) ->
+            // the let line is command territory (junk becomes argv on the
+            // bare spelling; the reified line is exempt like every reifier
+            // chain — outside the span property's aim either way); the
+            // reader line is expression territory
+            if reify then
+                emitCmd ind $"let {bindName g} = echo {m} {w} | complete"
+                emit ind $"{bindName g}.stdout |> print"
+            else
+                emitCmd ind $"let {bindName g} = echo {m} {w}"
+                emit ind $"{bindName g} |> print"
         | SSeqPrint x -> emit ind $"{x} |> print"
         | SYaml(bid, d, entries) ->
             // marker line: NON-error territory — under the assume
@@ -1567,6 +1590,19 @@ and genUnitStmt (sc: Scope) (depth: int) (inBlock: bool) : Gen<Stmt * Scope> =
                   let m, sc = freshMarker sc
                   let! e = genExpr sc VInt 1
                   return SPrint(EInterp([ m, e ], "")), sc
+              }
+
+          // a command-RHS let in the statement body [D:statement-lets]:
+          // the new position's fuzz coverage — bare and reified
+          // spellings, the binder read in place
+          yield
+              2,
+              gen {
+                  let g, sc = freshVal sc
+                  let m, sc = freshMarker sc
+                  let! w = genSafeWord
+                  let! reify = Gen.elements [ false; true ]
+                  return SBodyCmdLet(g, m, w, reify), sc
               }
 
           yield

@@ -157,6 +157,19 @@ let private withStmtLetCmd (p: Parser<'a, unit>) : Parser<'a, unit> =
                 letCmdOk.Value <- savedOk
                 letCmdStmt.Value <- savedStmt
 
+// [D:statement-lets] spans that parsed as a GRANTED command-let RHS in
+// an earlier attempt of the SAME line: a backtrack that re-reaches one
+// through a refused route (a re-parse after unrelated junk killed the
+// first route) is an artifact, and no refusal FATAL — the hardened
+// teaching, the reifier-stage guard, the bare-pipe hint — may steal
+// the true error's site from inside it (the fuzz arbitration property
+// caught exactly that theft). Cleared per line.
+let private grantedRhsRanges =
+    new System.Threading.ThreadLocal<ResizeArray<struct (int64 * int64)>>(fun () -> ResizeArray())
+
+let private inGrantedRange (off: int64) : bool =
+    grantedRhsRanges.Value |> Seq.exists (fun struct (s, e) -> off >= s && off < e)
+
 // [D:statement-lets] the hardened teaching names the ACTUAL refusing
 // context ("inside a lambda body, a command needs $(…)") — innermost
 // setter wins; the default covers the genuine single-line spelling
@@ -405,8 +418,20 @@ let private reifierWordEnd: Parser<unit, unit> =
 
 let private barePipeHint: Parser<unit, unit> =
     // a bare `|` after a completed EXPRESSION [D:pipe-hint]; anchor the
-    // caret ON the `|`, not the ws after it [D:anchor-before-read]
-    (attempt (getPosition .>> pchar '|' .>> notFollowedBy (anyOf "|>"))
+    // caret ON the `|`, not the ws after it [D:anchor-before-read].
+    // Inside a granted command-let span the hint stands down
+    // [D:statement-lets] — a refused re-parse there is backtrack
+    // artifact, and its fatal would steal the true error's site.
+    (attempt (
+        getPosition .>> pchar '|' .>> notFollowedBy (anyOf "|>")
+        >>= fun p ->
+            if inGrantedRange p.Index then
+                // pre-ifail position: the marker spelled inline (the
+                // label is attempt-swallowed either way)
+                fail "a granted route owns this pipe"
+            else
+                preturn p
+     )
      >>= fun pipePos ->
          // a reifier name after the bare pipe teaches the reifier
          // boundary, not the pipe glyph [D:reifier-family-complete]
@@ -1584,7 +1609,18 @@ let private letInBody =
                   let cmdRhs: Parser<Expr, unit> =
                       fun stream ->
                           if letCmdOk.Value then
-                              letRhsCmd stream
+                              // a granted success memoizes its span so a
+                              // later refused re-parse of the SAME text never
+                              // teaches over the true error [D:statement-lets]
+                              let off = stream.Index
+                              let reply = letRhsCmd stream
+
+                              if reply.Status = ReplyStatus.Ok then
+                                  grantedRhsRanges.Value.Add(struct (off, stream.Index))
+
+                              reply
+                          elif inGrantedRange stream.Index then
+                              ifail "a granted route owns this RHS — backtrack artifact, no teach" stream
                           else
                               // the hardened teaching [D:statement-lets]: probe
                               // the RHS under a granted flag — a chain that
@@ -3794,6 +3830,14 @@ let private reifierStageGuard: Parser<Seg, unit> =
         getPosition
         .>>. (choice [ pstring "complete"; pstring "succeeds"; pstring "exitCode"; pstring "orFail" ]
               .>> notFollowedBy (satisfy cmdWordChar))
+        // inside a granted command-let span the guard stands down
+        // [D:statement-lets] — the refused re-parse is backtrack
+        // artifact; its fatal must not steal the true error's site
+        >>= fun (at, name) ->
+            if inGrantedRange at.Index then
+                ifail "a granted route owns this stage"
+            else
+                preturn (at, name)
     )
     >>= fun (at, name) -> failFatallyAt at (reifierHereMsg name)
 
@@ -4398,6 +4442,8 @@ let private pipeToCommand (r: Resolver) (root: Expr) : (Span * string option) op
 let parseLineFull (r: Resolver) (input: string) : Result<Stmt, ParseFailure> =
     ambientResolver.Value <- r
     parseDepth.Value <- 0
+    // per-line memo [D:statement-lets] — offsets are line-relative
+    grantedRhsRanges.Value.Clear()
 
     try
         try

@@ -45,6 +45,14 @@ composition, not type complexity.
 - command lines: top-level bare `echo`; command-backed `let` (top
   level AND block bodies — the spine flag); `seq |> print`;
   `(xs |> Seq.length)` forcing command output in expressions
+- command-RHS block lets in STATEMENT bodies [D:statement-lets]:
+  if-body `let g = echo …` in bare AND `| complete` spellings, the
+  binder read in place (`g |> print` / `g.stdout |> print`) — the
+  statement-context law's coverage; the reified let line is
+  command-territory-tagged like every reifier chain, so the span
+  property does not aim junk at it. The OTHER new positions
+  (`within`, `for`, match-statement bodies) stay outside the
+  generator with their forms (see CANNOT), pinned at unit/e2e.
 - bare command GROUPS (the retired districts' coverage, retargeted
   [D:district-retirement]): standalone runs at statement level, headed
   `if … then` bodies of bare commands — with the per-line `!(...)`
