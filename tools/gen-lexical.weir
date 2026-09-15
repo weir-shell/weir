@@ -32,7 +32,7 @@ let m = File.read "editors/grammar-manifest.json" |> from json Manifest
 
 // import is weir's own word — F# spells the concept `open`
 let core = ["do"; "elif"; "else"; "false"; "for"; "fun"; "function"; "if"; "in"; "let"; "match"; "module"; "of"; "then"; "true"; "type"; "when"; "with"]
-let specific = ["always"; "deterministic"; "from"; "import"; "poll"; "pure"; "retry"; "to"; "until"; "within"]
+let specific = ["always"; "deterministic"; "from"; "import"; "plan"; "poll"; "pure"; "retry"; "to"; "until"; "within"]
 let inert = ["mutable"; "rec"]
 let teaching = ["def"; "return"; "try"; "while"]
 
