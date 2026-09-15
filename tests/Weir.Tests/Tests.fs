@@ -2642,9 +2642,9 @@ let completionTests =
                         // the purity assertion starts statements like
                         // within/retry [D:pure-stage1]
                         "pure"
-                        // the determinism assertion starts statements too
+                        // the read-only assertion starts statements too
                         // [D:pure-stage2]
-                        "deterministic"
+                        "readonly"
                         // the plan/apply capture starts statements too
                         // [D:plan-apply]
                         "plan" ]
@@ -6067,13 +6067,13 @@ let effectPartitionTests =
                   Expect.isSome (Weir.Effects.effectClass n) $"{n} is classified"
           } ]
 
-let deterministicBlockTests =
-    // STAGE 2 [D:pure-stage2]: the `deterministic` block — the user-facing
-    // surface. `deterministic == only ambient-input`, one tier up from
+let readonlyBlockTests =
+    // STAGE 2 [D:pure-stage2]: the `readonly` block — the user-facing
+    // surface. `readonly == only ambient-input`, one tier up from
     // `pure == only ∅`; a reachable external MUTATION refuses (located,
     // naming the offender AND its class), an ambient READ is fine.
     let errsOf (lines: string list) =
-        let ds, _, _, _ = Weir.Script.analyzeLines "det.weir" lines
+        let ds, _, _, _ = Weir.Script.analyzeLines "ro.weir" lines
         ds |> List.filter (fun d -> d.Severity = "error")
 
     let firstErr (lines: string list) =
@@ -6082,19 +6082,19 @@ let deterministicBlockTests =
         | [] -> failtest "must refuse"
 
     testList
-        "the deterministic block [D:pure-stage2]"
-        [ test "parse shape: a bare deterministic head + block is a within-family node" {
-              let asmLine = "deterministic" + Weir.Parser.sibSepStr + "1 + 1"
+        "the readonly block [D:pure-stage2]"
+        [ test "parse shape: a bare readonly head + block is a within-family node" {
+              let asmLine = "readonly" + Weir.Parser.sibSepStr + "1 + 1"
 
               match Weir.Parser.parseLine realResolver asmLine with
-              | Ok(SExpr { Kind = EWithin(WithinDeterministic, None, None, None, _) }) -> ()
+              | Ok(SExpr { Kind = EWithin(WithinReadonly, None, None, None, _) }) -> ()
               | other -> failtest $"unexpected: {other}"
           }
           test "a reading body is ACCEPTED — ambient input is allowed" {
               Expect.isEmpty
                   (errsOf
                       [ "let x ="
-                        "    deterministic"
+                        "    readonly"
                         "        let home = Env.get \"HOME\""
                         "        let _now = Instant.now ()"
                         "        home |> Option.defaultValue \"none\""
@@ -6102,27 +6102,27 @@ let deterministicBlockTests =
                   "env read + clock read are ambient — no mutation"
           }
           test "a writing body REFUSES — the located offender AND its class" {
-              let e = firstErr [ "let x ="; "    deterministic"; "        File.write \"f\" [\"y\"]"; "print \"x\"" ]
+              let e = firstErr [ "let x ="; "    readonly"; "        File.write \"f\" [\"y\"]"; "print \"x\"" ]
 
               Expect.stringContains
                   e.Message
-                  "this 'deterministic' block forbids external mutation, but 'File.write' writes the filesystem"
+                  "this 'readonly' block forbids external mutation, but 'File.write' writes the filesystem"
                   "names the offender and the class"
 
               Expect.stringContains e.Message "reads are allowed" "the teaching states the allowance"
               Expect.equal e.Line 3 "located at the write"
           }
           test "a command (proc) REFUSES — a spawn is external mutation" {
-              let e = firstErr [ "deterministic"; "    echo hi" ]
+              let e = firstErr [ "readonly"; "    echo hi" ]
               Expect.stringContains e.Message "'echo' runs a command" "proc mutates"
           }
           test "Http.send{post} refuses, Http.send{get} admits — the per-method net split" {
               Expect.isEmpty
-                  (errsOf [ "let x ="; "    deterministic"; "        Http.send (Http.get \"http://x\")"; "print $\"{x.status}\"" ])
+                  (errsOf [ "let x ="; "    readonly"; "        Http.send (Http.get \"http://x\")"; "print $\"{x.status}\"" ])
                   "a GET reads — ambient"
 
               let e =
-                  firstErr [ "let x ="; "    deterministic"; "        Http.send (Http.post \"http://x\")"; "print $\"{x.status}\"" ]
+                  firstErr [ "let x ="; "    readonly"; "        Http.send (Http.post \"http://x\")"; "print $\"{x.status}\"" ]
 
               Expect.stringContains e.Message "'Http.send' talks to the network" "a POST mutates"
               Expect.stringContains e.Message "mutating HTTP method" "the class names the method"
@@ -6131,32 +6131,32 @@ let deterministicBlockTests =
               Expect.isEmpty
                   (errsOf
                       [ "let x ="
-                        "    deterministic"
+                        "    readonly"
                         "        Http.query \"http://x\" |> Http.send"
                         "print $\"{x.status}\"" ])
                   "the query method is ambient (piped send resolves it)"
 
               Expect.isEmpty
-                  (errsOf [ "let x ="; "    deterministic"; "        Http.fetch \"http://x\""; "x |> Seq.iter print" ])
+                  (errsOf [ "let x ="; "    readonly"; "        Http.fetch \"http://x\""; "x |> Seq.iter print" ])
                   "fetch is a GET shorthand — ambient"
           }
-          test "pure ⊂ deterministic — a pure body is trivially deterministic" {
+          test "pure ⊂ readonly — a pure body is trivially read-only" {
               Expect.isEmpty
-                  (errsOf [ "let x ="; "    deterministic"; "        let y = 2"; "        y + 1"; "print $\"{x}\"" ])
+                  (errsOf [ "let x ="; "    readonly"; "        let y = 2"; "        y + 1"; "print $\"{x}\"" ])
                   "no effect at all is within the ambient-input ceiling"
 
-              // and a nested pure region inside deterministic is fine
+              // and a nested pure region inside readonly is fine
               Expect.isEmpty
                   (errsOf
                       [ "let x ="
-                        "    deterministic"
+                        "    readonly"
                         "        pure"
                         "            1 + 1"
                         "print $\"{x}\"" ])
                   "a pure island nests inside the looser ceiling"
           }
           test "an unknown callable refuses — conservatism carries over" {
-              let e = firstErr [ "let unknown g ="; "    deterministic"; "        g 1" ]
+              let e = firstErr [ "let unknown g ="; "    readonly"; "        g 1" ]
               Expect.stringContains e.Message "unknown callable" "a function-typed param could mutate"
           }
           test "reading DATA from an impure binding is NOT a mutation — the fuzz-found line" {
@@ -6165,30 +6165,37 @@ let deterministicBlockTests =
               // ambient, not mutation — only a CALLABLE mutates when applied
               Expect.isEmpty
                   (errsOf
-                      [ "let lines = git status"; "let n ="; "    deterministic"; "        lines |> Seq.length"; "print $\"{n}\"" ])
+                      [ "let lines = git status"; "let n ="; "    readonly"; "        lines |> Seq.length"; "print $\"{n}\"" ])
                   "reading a command-bound seq is a read, not a write"
           }
-          test "keyword reservation: deterministic cannot be a binder; a blockless head teaches" {
-              let e = firstErr [ "let deterministic = 1" ]
-              Expect.stringContains e.Message "'deterministic' is a keyword" "the binder slot refuses"
+          test "keyword reservation: readonly cannot be a binder; a blockless head teaches" {
+              let e = firstErr [ "let readonly = 1" ]
+              Expect.stringContains e.Message "'readonly' is a keyword" "the binder slot refuses"
 
-              let ds, _, _, _ = Weir.Script.analyzeLines "bare.weir" [ "deterministic" ]
+              let ds, _, _, _ = Weir.Script.analyzeLines "bare.weir" [ "readonly" ]
 
               Expect.isTrue
-                  (ds |> List.exists (fun d -> d.Message.Contains "deterministic takes a block"))
+                  (ds |> List.exists (fun d -> d.Message.Contains "readonly takes a block"))
                   "the bare head teaches the block form"
           }
-          test "within deterministic refuses — it is its own head, never behind within" {
-              let ds, _, _, _ = Weir.Script.analyzeLines "wd.weir" [ "within deterministic"; "    1" ]
+          test "the freed word: deterministic is now an ORDINARY identifier — the pre-release rename" {
+              // deterministic was the OLD keyword; the rename frees it, so
+              // it binds like any other name (a misnomer retired — the block
+              // permits clock/stdin/file READS, so it never guaranteed
+              // determinism; readonly names 'no external mutation')
+              Expect.isEmpty (errsOf [ "let deterministic = 1"; "print $\"{deterministic}\"" ]) "the old keyword is a free identifier again"
+          }
+          test "within readonly refuses — it is its own head, never behind within" {
+              let ds, _, _, _ = Weir.Script.analyzeLines "wr.weir" [ "within readonly"; "    1" ]
 
               Expect.isNonEmpty
                   (ds |> List.filter (fun d -> d.Severity = "error"))
-                  "`within deterministic` does not parse — deterministic is a keyword, its own head"
+                  "`within readonly` does not parse — readonly is a keyword, its own head"
           }
-          test "badge interplay: deterministic does NOT mint a (pure) badge — the asymmetry holds" {
-              // a function whose body reads ambient input is deterministic
+          test "badge interplay: readonly does NOT mint a (pure) badge — the asymmetry holds" {
+              // a function whose body reads ambient input is read-only
               // but NOT pure; the (pure) badge stays absent (effect-normal
-              // display is untouched — deterministic is the looser tier)
+              // display is untouched — readonly is the looser tier)
               let lines = [ "let reader () = Env.get \"HOME\""; "print (show (reader () |> Option.defaultValue \"x\"))" ]
 
               match Weir.Lsp.hoverType lines 1 6 with
@@ -17899,7 +17906,7 @@ let allTests =
           purityBadgeTests
           pureRegionTests
           effectPartitionTests
-          deterministicBlockTests
+          readonlyBlockTests
           planApplyTests
           withinKindsTests
           withinAlwaysLockTests

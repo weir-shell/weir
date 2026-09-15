@@ -2994,11 +2994,11 @@ and eval (env: Env) (te: TypedExpr) : Value =
 
         match kind with
         | WithinPure
-        | WithinDeterministic ->
-            // the purity/determinism assertions are CHECK-time laws
+        | WithinReadonly ->
+            // the purity/read-only assertions are CHECK-time laws
             // [D:pure-stage1] [D:pure-stage2]: by the time evaluation
             // reaches the region, the body is verified within its ceiling
-            // (∅ for pure, ambient-input for deterministic) — the region
+            // (∅ for pure, ambient-input for readonly) — the region
             // is transparent at runtime, so ambient READS still run
             eval env body
         | WithinPlan ->

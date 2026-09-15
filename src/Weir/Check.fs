@@ -4246,13 +4246,13 @@ and private withinContracts
             // pure carries no resource [D:pure-stage1] — no arg, no
             // binder; its LAW is enforced by the checked-statement
             // pipeline's post-check layer (the classifier lives after
-            // Builtins, out of this file's compile reach). deterministic
+            // Builtins, out of this file's compile reach). readonly
             // is the same shape, its law the ambient/mutation ceiling
             // [D:pure-stage2]
             // plan carries no resource either [D:plan-apply] — its law
             // (proc/apply refusals) rides the same post-check layer
             | WithinPure
-            | WithinDeterministic
+            | WithinReadonly
             | WithinPlan -> Ok None
 
         let! topts =
@@ -4273,7 +4273,7 @@ and private withinContracts
             | WithinEnv
             | WithinLock
             | WithinPure
-            | WithinDeterministic
+            | WithinReadonly
             | WithinPlan -> TStr
 
         let benv =

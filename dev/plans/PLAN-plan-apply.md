@@ -58,7 +58,7 @@ script". Do not conflate it with the homepage's three-distance check
    accommodated.
 6. THUNKS FORCE AT PLAN TIME UNDER THE PLAN'S OWN PARTITION. A content
    thunk (KSL's `File(path, content: unit -> string)`) is evaluated
-   while planning: pure or read-only content (the `deterministic`
+   while planning: pure or read-only content (the `readonly`
    tier) forces into a DATA op; a thunk that would MUTATE refuses
    (mutation in content position is incoherent; `proc` already
    refused). Two consequences, both strictly better than deferring:
@@ -199,12 +199,12 @@ The Op therefore always carries data — no closure survives.
 
 (5) apply-in-plan and proc-in-plan REFUSE — proc-in-plan is a CHECK
 error (a command/Proc member reachable under a `plan` region, mirroring
-`deterministic`'s firstMutation walk but refusing proc specifically
+`readonly`'s firstMutation walk but refusing proc specifically
 with the plan teaching). apply-in-plan is a runtime refusal (Plan.apply
 consults PlanMode; active => refuse). Nested plan composes (each pushes
 its own capture frame).
 
-(6) FUZZ — an `SPlan` Stmt case (mirroring `SDeterministic`) emits a
+(6) FUZZ — an `SPlan` Stmt case (mirroring `SReadonly`) emits a
 `plan` head + a `File.write` body (captured, not performed), bound and
 read — so invariant 1 exercises the plan parser + eval interception.
 

@@ -27,19 +27,34 @@ skill lines and targeted hints).
 ## stranded
 
 ## owed (cross-repo)
-- 2026-09-15 | `deterministic` keyword -> weir-shell/tree-sitter-weir |
-  Stage 2 [D:pure-stage2] added the `deterministic` keyword (grammar-
-  manifest + lexical.md updated in-repo). The external tree-sitter-weir
-  grammar owes the keyword, so `grammar-currency` goes RED until the
-  maintainer's cross-repo push adds it — the KNOWN, ACCEPTED state, the
-  same posture `xml` and `pure` took. No ssh here; do not chase it.
+- 2026-09-15 | `readonly` keyword -> weir-shell/tree-sitter-weir |
+  Stage 2 [D:pure-stage2] added the read-only block keyword (grammar-
+  manifest + lexical.md updated in-repo). It was originally named
+  `deterministic`; the pre-release rename (see the rename note below)
+  freed that word and made the keyword `readonly`. The external
+  tree-sitter-weir grammar owes `readonly`, so `grammar-currency` goes
+  RED until the maintainer's cross-repo push adds it — the KNOWN,
+  ACCEPTED state, the same posture `xml` and `pure` took. No ssh here;
+  do not chase it.
 - 2026-09-15 | `plan` keyword -> weir-shell/tree-sitter-weir |
   [D:plan-apply] added the `plan` keyword (grammar-manifest + gen-lexical
   + lexical.md + in-repo tmLanguage/micro updated). The external tree-
-  sitter-weir grammar now owes BOTH `deterministic` AND `plan`, so
-  `grammar-currency` stays RED (`[deterministic, plan]`) until the
+  sitter-weir grammar now owes BOTH `readonly` AND `plan`, so
+  `grammar-currency` stays RED (`[readonly, plan]`) until the
   maintainer's cross-repo push — the SAME accepted posture. Do not chase
   it; do not push the external grammar repo.
+
+## renames (pre-release)
+- 2026-09-15 | keyword `deterministic` -> `readonly` | The Stage 2
+  block keyword was renamed BEFORE any release. WHY it was a misnomer:
+  the block permits ambient READS — the clock (`Instant.now`), stdin
+  (`Self.stdin`), file/env reads, query HTTP — so it never guaranteed
+  determinism. What it actually enforces is "no external mutation" =
+  read-only, which `readonly` names honestly. Pre-release, so no
+  migration/teaching: the old word `deterministic` is a free identifier
+  again (`let deterministic = 1` checks). Internal identifiers moved for
+  hygiene: `WithinDeterministic`->`WithinReadonly`, `deterministicExpr`->
+  `readonlyExpr`, fuzz `SDeterministic`->`SReadonly`.
 
 ## friction
 - 2026-08-20 | Http sends NO default User-Agent, and github.com's API

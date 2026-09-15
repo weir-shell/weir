@@ -176,13 +176,13 @@ let rec private walkExpr
           // when missing, so a report that omits it denies a write that
           // happens
           | WithinLock -> add (FsWrite("within lock", arg |> Option.bind literalStr)) te.Span
-          // pure/deterministic regions ASSERT, they do not touch
+          // pure/readonly regions ASSERT, they do not touch
           // [D:pure-stage1] [D:pure-stage2] — the capabilities inside
           // still surface through their own nodes; a plan region
           // [D:plan-apply] transforms them into Ops but the same nodes
           // report what the plan CAN do when applied
           | WithinPure
-          | WithinDeterministic
+          | WithinReadonly
           | WithinPlan -> ())
      | TEEnvLoad(def, _) ->
          for fname, fty in def.Fields do
@@ -363,7 +363,7 @@ let private sectionOrder =
       "terminates" ]
 
 // the ambient/mutation CLASS of a capability [D:pure-stage2]: the same
-// partition the `deterministic` ceiling and plan/apply use, applied to
+// partition the `readonly` ceiling and plan/apply use, applied to
 // the report so "what does this script CHANGE?" is answerable — not just
 // "what can it touch?". Ambient READS the world (reproducible), Mutation
 // CHANGES it. A network fact carries its member; Http.send's per-method

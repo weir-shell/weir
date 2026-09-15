@@ -37,9 +37,9 @@ let keywords =
           // the purity assertion's two spellings [D:pure-stage1]: the
           // `pure` block head and the `let pure` modifier
           "pure"
-          // the determinism assertion [D:pure-stage2]: a `deterministic`
+          // the read-only assertion [D:pure-stage2]: a `readonly`
           // block head, one tier up from `pure`
-          "deterministic"
+          "readonly"
           // the plan/apply capture [D:plan-apply]: a `plan` block head —
           // the third standalone withinKinds head. Reserved so a bare
           // `plan` never resolves as an identifier or command head; in a
@@ -2124,11 +2124,11 @@ let private withinExprBody =
                         // `pure` is a keyword — identSpanned refuses it — but
                         // the union demands the arm say so)
                         failFatally "'pure' is its own head — write `pure` and an indented block, not `within pure`"
-                    | Ast.WithinDeterministic ->
+                    | Ast.WithinReadonly ->
                         // the second standalone head [D:pure-stage2], same
                         // posture (unreachable while it is a keyword)
                         failFatally
-                            "'deterministic' is its own head — write `deterministic` and an indented block, not `within deterministic`"
+                            "'readonly' is its own head — write `readonly` and an indented block, not `within readonly`"
                     | Ast.WithinPlan ->
                         // the third standalone head [D:plan-apply], same
                         // posture (unreachable while it is a keyword)
@@ -2222,32 +2222,32 @@ let private pureExprBody =
 
 let private pureExpr = deepenAfter [ "pure" ] pureExprBody // [D:depth-guard]
 
-// the determinism assertion [D:pure-stage2]: a bare `deterministic` head
+// the read-only assertion [D:pure-stage2]: a bare `readonly` head
 // + block — the second standalone withinKinds head (no binder, no arg,
-// never `within deterministic`); the LAW (the body reaches no external
+// never `within readonly`); the LAW (the body reaches no external
 // mutation) is enforced by the checked-statement pipeline, ambient reads
 // admitted
-let private deterministicExprBody =
-    getPosition .>> keyword "deterministic"
+let private readonlyExprBody =
+    getPosition .>> keyword "readonly"
     >>= fun p ->
         ((opt (str_ws ";" <|> str_ws sibSepStr)
           // the parser ADMITS command lets here [D:statement-lets]; the
-          // determinism checker refuses a mutating command with its own
+          // read-only checker refuses a mutating command with its own
           // located teaching (a reading command is allowed)
           >>. (withStmtLetCmd (withExprParen false seqExpr)
-               <?> "the deterministic block's body"))
+               <?> "the readonly block's body"))
          <|> failFatally
-                 "deterministic takes a block — indent its body (the body must reach no external mutation; ambient reads are allowed)")
+                 "readonly takes a block — indent its body (the body must reach no external mutation; ambient reads are allowed)")
         |>> fun body ->
-            { Kind = EWithin(Ast.WithinDeterministic, None, None, None, body)
+            { Kind = EWithin(Ast.WithinReadonly, None, None, None, body)
               Span = { Start = pos p; End = body.Span.End } }
 
-let private deterministicExpr =
-    deepenAfter [ "deterministic" ] deterministicExprBody // [D:depth-guard]
+let private readonlyExpr =
+    deepenAfter [ "readonly" ] readonlyExprBody // [D:depth-guard]
 
 // the plan/apply capture [D:plan-apply]: a bare `plan` head + block — the
 // third standalone withinKinds head (no binder, no arg, never `within
-// plan`). Unlike pure/deterministic it CHANGES the value: the region
+// plan`). Unlike pure/readonly it CHANGES the value: the region
 // yields a Plan (the body's external mutations captured as Ops, reads
 // still run). The body admits command lets like the other standalone
 // heads; a `proc` inside is refused by the checked-statement pipeline.
@@ -3168,7 +3168,7 @@ opp.TermParser <-
           forExpr
           withinExpr
           pureExpr
-          deterministicExpr
+          readonlyExpr
           planExpr
           retryExpr
           yamlDistrict
@@ -3191,7 +3191,7 @@ segOpp.TermParser <-
           matchExpr
           withinExpr
           pureExpr
-          deterministicExpr
+          readonlyExpr
           planExpr
           retryExpr
           fromExpr

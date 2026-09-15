@@ -20,7 +20,6 @@
   "keywords": [
     "always",
     "def",
-    "deterministic",
     "do",
     "elif",
     "else",
@@ -40,6 +39,7 @@
     "plan",
     "poll",
     "pure",
+    "readonly",
     "rec",
     "retry",
     "return",
