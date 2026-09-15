@@ -1972,10 +1972,13 @@ mutation, `plan` *reifies* it: the same `File.write` that
     if changes |> Plan.isEmpty then print "no changes"
     changes |> Plan.apply                        // now perform them
 
-The block yields a `Plan` — an **equatable, showable** `seq<Op>`. That
-is what makes the testing story exist without mocks: `plan <block> ==
-[WriteFile("out.json", rendered)]` is a plain equality, and preview and
-diff fall out for free. The `Op` union is the mutation surface:
+The block yields a `Plan` — an **equatable, showable** value over a
+`seq<Op>`. That is what makes the testing story exist without mocks:
+two plans compare directly, so `plan <actual> == plan <expected>` is a
+plain equality where *neither block performs anything* (both capture),
+and for a single op `plan <block> |> Plan.ops |> Seq.exactlyOne ==
+WriteFile("out.json", rendered)` asserts it — preview and diff fall out
+for free. The `Op` union is the mutation surface:
 `WriteFile`, `DeleteFile`, `Copy`, `Move`, `MakeDir`, `DeleteDir`, and
 `HttpSend` (a mutating HTTP method only — `show` masks the auth
 Secret). Reads still **run** inside a plan (a script reads to decide
