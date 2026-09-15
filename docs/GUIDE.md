@@ -1955,6 +1955,56 @@ script's capabilities into ambient reads (they inform, they change
 nothing) and mutations (they change the world), so "what does this
 script change?" reads off the report.
 
+## Dry-run as a primitive: `plan` and `apply`
+
+A `plan` block runs a computation but **captures** its external
+mutations as data instead of performing them — the Terraform plan/apply
+loop, built into the language. Where `deterministic` *forbids*
+mutation, `plan` *reifies* it: the same `File.write` that
+`deterministic` refuses, a `plan` records as a pending `WriteFile` op.
+
+    let changes =
+        plan
+            File.write "out.json" rendered
+            Dir.copy "templates" "site"
+
+    changes |> Plan.preview |> Seq.iter print   // render; wrote nothing
+    if changes |> Plan.isEmpty then print "no changes"
+    changes |> Plan.apply                        // now perform them
+
+The block yields a `Plan` — an **equatable, showable** `seq<Op>`. That
+is what makes the testing story exist without mocks: `plan <block> ==
+[WriteFile("out.json", rendered)]` is a plain equality, and preview and
+diff fall out for free. The `Op` union is the mutation surface:
+`WriteFile`, `DeleteFile`, `Copy`, `Move`, `MakeDir`, `DeleteDir`, and
+`HttpSend` (a mutating HTTP method only — `show` masks the auth
+Secret). Reads still **run** inside a plan (a script reads to decide
+what to write), and content is snapshotted at plan time, so
+**`preview == apply`**: a file changing between the two cannot make
+apply diverge from what preview showed.
+
+The boundaries are where the guarantee stops being honest:
+
+- **`proc` is refused in a plan.** weir cannot see past a spawned
+  binary — it reads and writes opaquely — so plan is dry-run for
+  *file/config orchestration*, not "dry-run for any script".
+- **`apply` inside a plan is refused** (a mutation cannot be captured);
+  build the plan in the block, apply it outside. Nested `plan`
+  composes — each yields its own value.
+- **A known-after-apply read is refused** (located): reading a path an
+  earlier captured mutation targets would see stale state, since the
+  mutation is a pending op, not yet applied. Restructure so the read
+  does not depend on a captured write.
+- **`apply` is not transactional.** It performs ops in capture order
+  and **stops at the first failure with prior ops already done — no
+  rollback.** Rollback is the IaC line weir does not cross; lean on
+  `always`/`within` for cleanup.
+
+`confirm` is ordinary user code — a plan is a value, so confirmation is
+a branch on it (`if approved then changes |> Plan.apply`), not a
+builtin. Like `pure`/`deterministic`, `plan` is opt-in and its own head
+— never `within plan`.
+
 ## Failing and diagnosing
 
 `fail "reason"` stops the script with a located error and exit 1.

@@ -246,6 +246,71 @@ let rec private formatWith (lim: RenderLimits) (depth: int) (v: Value) : string 
 
 let formatValue (v: Value) : string = formatWith showLimits 0 v
 
+// ---- plan/apply capture [D:plan-apply] ------------------------------
+// A `plan` block runs its body but CAPTURES external mutations as Op
+// values instead of performing them. The interpreter holds the running
+// Value at each mutation builtin, so the interception is a thread-local
+// CAPTURE STACK the mutation builtins consult: active => append an Op
+// and return VUnit; ambient reads (fs.read/env/clock/query-net) ignore
+// it and RUN. Nested plan composes (each pushes its own frame — the
+// TOP frame captures). The stack is per-thread so pmap arms cannot
+// cross-contaminate captures. Op is a `VUnion(case, payload)` value
+// (the prelude `Op` type), so equality/show/masking ride the existing
+// Value machinery [D:secret].
+type private PlanFrame =
+    { Ops: ResizeArray<Value>
+      // the LITERAL target paths captured mutations write [D:plan-apply]
+      // — a later read of one is known-after-apply (refused). Session-
+      // resolved so a relative read matches an earlier relative write.
+      Targets: System.Collections.Generic.HashSet<string> }
+
+module PlanMode =
+    let private stack = new System.Threading.ThreadLocal<PlanFrame list>(fun () -> [])
+
+    /// is a plan currently capturing on THIS thread?
+    let active () = not (List.isEmpty stack.Value)
+
+    /// run f while a fresh capture frame is on top; returns the captured
+    /// Ops in capture order (the frame is popped on every exit)
+    let capturing (f: unit -> unit) : Value list =
+        let frame =
+            { Ops = ResizeArray()
+              Targets = System.Collections.Generic.HashSet() }
+
+        stack.Value <- frame :: stack.Value
+
+        try
+            f ()
+        finally
+            stack.Value <-
+                match stack.Value with
+                | _ :: rest -> rest
+                | [] -> []
+
+        List.ofSeq frame.Ops
+
+    /// append a captured Op to the top frame; record its target paths so
+    /// a later read of the same path is refused (known-after-apply)
+    let capture (op: Value) (targets: string list) =
+        match stack.Value with
+        | frame :: _ ->
+            frame.Ops.Add op
+            targets |> List.iter (fun p -> frame.Targets.Add p |> ignore)
+        | [] -> unreachable "PlanMode.capture with no active frame"
+
+    /// a read builtin's known-after-apply gate [D:plan-apply]: inside a
+    /// plan, reading a path an earlier captured mutation targeted would
+    /// see STALE state (the mutation has not run — it is a pending Op).
+    /// A LOCATED refusal, path-scoped: only a read of a captured target
+    /// refuses; other reads run. `op`/`path` name the offender and the
+    /// restructure.
+    let checkRead (op: string) (resolvedPath: string) =
+        match stack.Value with
+        | frame :: _ when frame.Targets.Contains resolvedPath ->
+            failwith
+                $"{op}: known-after-apply — this reads '{resolvedPath}', but an earlier captured mutation in this 'plan' targets it; the read would see stale state (the mutation is a pending Op, not yet applied). Restructure so the read does not depend on a captured write, or move it out of the plan"
+        | _ -> ()
+
 // The REPL/-e echo [D:repl-echo]: bounded render + the way-out hint.
 // The count shows only when already known (a materialized list) —
 // counting a lazy seq would force it.
@@ -2936,6 +3001,15 @@ and eval (env: Env) (te: TypedExpr) : Value =
             // (∅ for pure, ambient-input for deterministic) — the region
             // is transparent at runtime, so ambient READS still run
             eval env body
+        | WithinPlan ->
+            // the plan capture [D:plan-apply]: run the body while a fresh
+            // capture frame is on top — the mutation builtins append Ops
+            // instead of performing (ambient reads still run); the body's
+            // own value is DISCARDED (it ran for its capture). The region
+            // yields a Plan (a VRecord carrying the captured Ops in order,
+            // all-data by ruling 6 — content thunks forced at capture).
+            let ops = PlanMode.capturing (fun () -> eval env body |> ignore)
+            VRecord("Plan", [ "ops", VSeq ops ])
         | WithinLock ->
             // advisory file lock [D:within-lock]: FileShare.None maps to
             // flock(2) on Unix (probe-pinned: per-open-file-description,

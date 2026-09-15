@@ -57,6 +57,11 @@ type WithinKindId =
     // MUTATION (ambient reads are fine); spelled `deterministic`, never
     // `within deterministic`
     | WithinDeterministic
+    // the plan/apply capture [D:plan-apply] — a STANDALONE head like
+    // pure/deterministic, but it CHANGES the value: the body's external
+    // MUTATIONS are captured as Ops (reads still run) and the region
+    // yields a `Plan`. Spelled `plan`, never `within plan`.
+    | WithinPlan
 
 // the `within` kinds as DATA — one table, three consumers (the
 // parser's dispatch, hover, completion) [D:within-kinds]. Binds is the
@@ -117,7 +122,16 @@ let withinKinds: WithinKind list =
         Name = "deterministic"
         Binds = false
         Standalone = true
-        Doc = "a determinism assertion: the block's body must reach no external mutation (ambient reads are allowed)" } ]
+        Doc = "a determinism assertion: the block's body must reach no external mutation (ambient reads are allowed)" }
+      // [D:plan-apply]: the third standalone head — like deterministic it
+      // partitions ambient/mutation, but instead of REFUSING mutation it
+      // CAPTURES it as an Op; the region yields a Plan. Its own head,
+      // never `within plan`.
+      { Id = WithinPlan
+        Name = "plan"
+        Binds = false
+        Standalone = true
+        Doc = "a plan block: the body's external mutations are captured as Ops (reads run); the block yields a Plan to inspect and apply" } ]
 
 /// a kind's table row — total by construction: an Id only enters the
 /// tree through this table (the parser's name lookup), so the find
@@ -483,6 +497,9 @@ let rec sexpr (e: Expr) : string =
     | EWithin(WithinDeterministic, _, _, _, b) ->
         // the second standalone head [D:pure-stage2]
         $"(deterministic {sexpr b})"
+    | EWithin(WithinPlan, _, _, _, b) ->
+        // the third standalone head [D:plan-apply]
+        $"(plan {sexpr b})"
     | EWithin(k, binder, arg, opts, b) ->
         let bn = binder |> Option.map fst |> Option.defaultValue ""
         let av = arg |> Option.map sexpr |> Option.defaultValue ""

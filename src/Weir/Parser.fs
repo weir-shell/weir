@@ -40,6 +40,13 @@ let keywords =
           // the determinism assertion [D:pure-stage2]: a `deterministic`
           // block head, one tier up from `pure`
           "deterministic"
+          // the plan/apply capture [D:plan-apply]: a `plan` block head —
+          // the third standalone withinKinds head. Reserved so a bare
+          // `plan` never resolves as an identifier or command head; in a
+          // language that HAS plan/apply, `let plan = …` is a confusing
+          // shadow (the `let match =` class). apply/preview stay ordinary
+          // members, no reservation.
+          "plan"
           // the module system's two words [D:modules-v1]: reserved so a
           // bare `module`/`import` never resolves as an identifier or a
           // command head (keyword-domination)
@@ -2122,6 +2129,10 @@ let private withinExprBody =
                         // posture (unreachable while it is a keyword)
                         failFatally
                             "'deterministic' is its own head — write `deterministic` and an indented block, not `within deterministic`"
+                    | Ast.WithinPlan ->
+                        // the third standalone head [D:plan-apply], same
+                        // posture (unreachable while it is a keyword)
+                        failFatally "'plan' is its own head — write `plan` and an indented block, not `within plan`"
                     | Ast.WithinProc ->
                         // the scoped process [D:scoped-procs]: binder `=` then ONE
                         // command line (the block-let RHS grammar — splices, ^, the
@@ -2233,6 +2244,25 @@ let private deterministicExprBody =
 
 let private deterministicExpr =
     deepenAfter [ "deterministic" ] deterministicExprBody // [D:depth-guard]
+
+// the plan/apply capture [D:plan-apply]: a bare `plan` head + block — the
+// third standalone withinKinds head (no binder, no arg, never `within
+// plan`). Unlike pure/deterministic it CHANGES the value: the region
+// yields a Plan (the body's external mutations captured as Ops, reads
+// still run). The body admits command lets like the other standalone
+// heads; a `proc` inside is refused by the checked-statement pipeline.
+let private planExprBody =
+    getPosition .>> keyword "plan"
+    >>= fun p ->
+        ((opt (str_ws ";" <|> str_ws sibSepStr)
+          >>. (withStmtLetCmd (withExprParen false seqExpr) <?> "the plan block's body"))
+         <|> failFatally
+                 "plan takes a block — indent its body (its external mutations are captured as Ops; the block yields a Plan to inspect and apply)")
+        |>> fun body ->
+            { Kind = EWithin(Ast.WithinPlan, None, None, None, body)
+              Span = { Start = pos p; End = body.Span.End } }
+
+let private planExpr = deepenAfter [ "plan" ] planExprBody // [D:depth-guard]
 
 let private retryExprBody =
     getPosition .>>. ((keyword "retry" >>% false) <|> (keyword "poll" >>% true))
@@ -3139,6 +3169,7 @@ opp.TermParser <-
           withinExpr
           pureExpr
           deterministicExpr
+          planExpr
           retryExpr
           yamlDistrict
           heredocDistrict
@@ -3161,6 +3192,7 @@ segOpp.TermParser <-
           withinExpr
           pureExpr
           deterministicExpr
+          planExpr
           retryExpr
           fromExpr
           toExpr

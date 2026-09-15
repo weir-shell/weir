@@ -1,5 +1,34 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **`plan`/`apply` — effects reified into an inspectable Plan (dry-run
+  as a language primitive).** A `plan` block runs its body but
+  CAPTURES its external mutations as `Op` values instead of performing
+  them, while ambient reads still RUN — yielding a `Plan`, an
+  equatable and showable `seq<Op>` you inspect, diff, confirm, then
+  apply. The members: `Plan.ops` (the raw ops — `plan <block> ==
+  [WriteFile(p, c)]` is the mock-free test), `Plan.preview` (human
+  lines; wrote nothing), `Plan.isEmpty`, and `Plan.apply` (perform, in
+  capture order). The `Op` arms are the mutation surface: `WriteFile
+  of string * seq<string>`, `DeleteFile of string`, `Copy`/`Move of
+  string * string` (File/Dir), `MakeDir of string`, `DeleteDir of
+  string` (Dir.delete/deleteAll), and `HttpSend of HttpRequest` (a
+  mutating HTTP method only — `show` masks the auth Secret). Content
+  is snapshotted at plan time, so `preview == apply`. The refusals:
+  `proc` inside a plan (a spawned binary is uncapturable — plan covers
+  weir-native mutation only), `apply` inside a plan (a capture cannot
+  be captured), and a known-after-apply read (reading a path an
+  earlier captured mutation targets is a located error). `apply` is
+  NOT transactional — it stops at the first failing op with prior ops
+  done, no rollback. `plan` is a new keyword, the third standalone
+  head beside `pure`/`deterministic` (the grammar-manifest and lexical
+  table gain it; the tree-sitter-weir grammar owes the addition, the
+  `pure`/`deterministic` posture). Consumes the ambient/mutation
+  partition [D:pure-stage2].
+
 ## v0.0.35
 
 ### Added

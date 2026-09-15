@@ -81,9 +81,13 @@ let rec isPureExpr (env: Map<string, bool>) (te: TypedExpr) : bool =
         (match kind with
          // pure/deterministic ASSERT, they do not touch — the region is
          // pure iff its body is (an ambient read inside a deterministic
-         // block still makes it impure) [D:pure-stage1] [D:pure-stage2]
+         // block still makes it impure) [D:pure-stage1] [D:pure-stage2].
+         // A plan region [D:plan-apply] is transparent to the OUTER law:
+         // its ambient reads still RUN when the plan is built, so the
+         // region is pure iff its body is.
          | WithinPure
-         | WithinDeterministic -> isPureExpr env body
+         | WithinDeterministic
+         | WithinPlan -> isPureExpr env body
          | WithinTmp
          | WithinCd
          | WithinEnv
@@ -175,9 +179,12 @@ let rec firstEffect (env: Map<string, bool>) (te: TypedExpr) : (Span * string) o
         (match kind with
          // a nested pure/deterministic region asserts, it does not touch —
          // the pure ceiling still walks its body (an ambient read inside a
-         // deterministic block is an effect pure forbids) [D:pure-stage2]
+         // deterministic block is an effect pure forbids) [D:pure-stage2].
+         // A plan region [D:plan-apply] is transparent to the outer pure
+         // ceiling — its reads run when the plan builds.
          | WithinPure
-         | WithinDeterministic -> firstEffect env body
+         | WithinDeterministic
+         | WithinPlan -> firstEffect env body
          | WithinTmp
          | WithinCd
          | WithinEnv
@@ -293,6 +300,12 @@ let rec firstMutation (env: Map<string, bool>) (te: TypedExpr) : (Span * string)
          | WithinDeterministic ->
              [ arg; opts ] |> List.choose id |> List.tryPick (firstMutation env)
              |> Option.orElseWith (fun () -> firstMutation env body)
+         // a plan region [D:plan-apply] performs NO external mutation: its
+         // captured builtins do not run (they append Ops), only its
+         // ambient reads execute — so a `plan` block is deterministic. The
+         // captured mutations are the Plan's DATA, not effects here;
+         // Plan.apply (a later call) is where they'd run.
+         | WithinPlan -> None
          // tmp/cd/env/proc/lock all scope a RESOURCE: tmp/proc mutate,
          // cd/env/lock change the process/child world — every within
          // resource is external mutation for the determinism ceiling
@@ -378,6 +391,44 @@ let rec firstMutation (env: Map<string, bool>) (te: TypedExpr) : (Span * string)
              ))
     | _ -> Check.childExprs te |> List.tryPick (firstMutation env)
 
+/// the FIRST plan-scope refusal under a `plan` region [D:plan-apply]:
+/// unlike deterministic, fs/http MUTATIONS are fine (they are captured
+/// as Ops) — but `proc` HARD-REFUSES (a spawned binary reads AND writes
+/// opaquely, uncapturable) and `apply` INSIDE a plan refuses (a mutation
+/// cannot be coherently captured). A nested `plan` region COMPOSES: this
+/// walk stops at it (its own pureViolation arm re-enters), so a nested
+/// plan's proc is caught by the inner region, not double-reported here.
+let rec firstPlanRefusal (te: TypedExpr) : (Span * string) option =
+    match te.Kind with
+    // a command IS proc — the uncapturable spawn
+    | TECmd(prog, _, _) ->
+        Some(
+            te.Span,
+            $"'{prog}' runs a command, and 'proc' is refused inside 'plan' — a spawned binary reads and writes opaquely, so its effects cannot be captured; plan covers weir-native mutation only (File/Dir/Http)"
+        )
+    // a nested plan composes: it handles its own refusals
+    | TEWithin(WithinPlan, _, _, _, _) -> None
+    | TEVar n ->
+        match n.Split '.' with
+        | [| "Proc"; m |] ->
+            Some(
+                te.Span,
+                $"'Proc.{m}' touches a process, and 'proc' is refused inside 'plan' — a spawned binary's effects cannot be captured; plan covers weir-native mutation only (File/Dir/Http)"
+            )
+        | [| "Plan"; "apply" |] ->
+            Some(
+                te.Span,
+                "'Plan.apply' is refused inside 'plan' — a mutation cannot be coherently captured; build the plan here, apply it OUTSIDE the block"
+            )
+        // the '|'-prefixed reifier desugar targets a spawn (proc)
+        | _ when n.StartsWith "|" ->
+            Some(
+                te.Span,
+                "a command reifier runs a command, and 'proc' is refused inside 'plan' — its effects cannot be captured; plan covers weir-native mutation only (File/Dir/Http)"
+            )
+        | _ -> None
+    | _ -> Check.childExprs te |> List.tryPick firstPlanRefusal
+
 /// scan a checked statement's tree for `pure` regions and report the
 /// first violation [D:pure-stage1] — the env tracks bindings on the way
 /// down exactly as isPureExpr does, so a region deep in a statement
@@ -399,6 +450,12 @@ let rec pureViolation (env: Map<string, bool>) (te: TypedExpr) : (Span * string)
              (firstMutation env body
               |> Option.map (fun (span, phrase) ->
                   span, $"this 'deterministic' block forbids external mutation, but {phrase} — reads are allowed"))
+         // the plan scope [D:plan-apply]: fs/http mutations are CAPTURED
+         // (fine), proc and nested apply REFUSE — then keep walking the
+         // body for nested pure/deterministic/plan regions
+         | WithinPlan ->
+             firstPlanRefusal body
+             |> Option.orElseWith (fun () -> pureViolation env body)
          | WithinTmp
          | WithinCd
          | WithinEnv
