@@ -6172,6 +6172,16 @@ let deterministicBlockTests =
               Expect.isNonEmpty
                   (ds |> List.filter (fun d -> d.Severity = "error"))
                   "`within deterministic` does not parse — deterministic is a keyword, its own head"
+          }
+          test "badge interplay: deterministic does NOT mint a (pure) badge — the asymmetry holds" {
+              // a function whose body reads ambient input is deterministic
+              // but NOT pure; the (pure) badge stays absent (effect-normal
+              // display is untouched — deterministic is the looser tier)
+              let lines = [ "let reader () = Env.get \"HOME\""; "print (show (reader () |> Option.defaultValue \"x\"))" ]
+
+              match Weir.Lsp.hoverType lines 1 6 with
+              | Some h -> Expect.isFalse (h.Contains "(pure)") "an ambient reader is not pure-badged"
+              | None -> failtest "the binding must hover"
           } ]
 
 let withinKindsTests =
