@@ -2641,7 +2641,10 @@ let completionTests =
                         "always"
                         // the purity assertion starts statements like
                         // within/retry [D:pure-stage1]
-                        "pure" ]
+                        "pure"
+                        // the determinism assertion starts statements too
+                        // [D:pure-stage2]
+                        "deterministic" ]
 
               Expect.equal
                   (Weir.Parser.keywords - Weir.Complete.unsuggestedKeywords)
@@ -6059,6 +6062,116 @@ let effectPartitionTests =
 
               for n in names do
                   Expect.isSome (Weir.Effects.effectClass n) $"{n} is classified"
+          } ]
+
+let deterministicBlockTests =
+    // STAGE 2 [D:pure-stage2]: the `deterministic` block — the user-facing
+    // surface. `deterministic == only ambient-input`, one tier up from
+    // `pure == only ∅`; a reachable external MUTATION refuses (located,
+    // naming the offender AND its class), an ambient READ is fine.
+    let errsOf (lines: string list) =
+        let ds, _, _, _ = Weir.Script.analyzeLines "det.weir" lines
+        ds |> List.filter (fun d -> d.Severity = "error")
+
+    let firstErr (lines: string list) =
+        match errsOf lines with
+        | e :: _ -> e
+        | [] -> failtest "must refuse"
+
+    testList
+        "the deterministic block [D:pure-stage2]"
+        [ test "parse shape: a bare deterministic head + block is a within-family node" {
+              let asmLine = "deterministic" + Weir.Parser.sibSepStr + "1 + 1"
+
+              match Weir.Parser.parseLine realResolver asmLine with
+              | Ok(SExpr { Kind = EWithin(WithinDeterministic, None, None, None, _) }) -> ()
+              | other -> failtest $"unexpected: {other}"
+          }
+          test "a reading body is ACCEPTED — ambient input is allowed" {
+              Expect.isEmpty
+                  (errsOf
+                      [ "let x ="
+                        "    deterministic"
+                        "        let home = Env.get \"HOME\""
+                        "        let _now = Instant.now ()"
+                        "        home |> Option.defaultValue \"none\""
+                        "print x" ])
+                  "env read + clock read are ambient — no mutation"
+          }
+          test "a writing body REFUSES — the located offender AND its class" {
+              let e = firstErr [ "let x ="; "    deterministic"; "        File.write \"f\" [\"y\"]"; "print \"x\"" ]
+
+              Expect.stringContains
+                  e.Message
+                  "this 'deterministic' block forbids external mutation, but 'File.write' writes the filesystem"
+                  "names the offender and the class"
+
+              Expect.stringContains e.Message "reads are allowed" "the teaching states the allowance"
+              Expect.equal e.Line 3 "located at the write"
+          }
+          test "a command (proc) REFUSES — a spawn is external mutation" {
+              let e = firstErr [ "deterministic"; "    echo hi" ]
+              Expect.stringContains e.Message "'echo' runs a command" "proc mutates"
+          }
+          test "Http.send{post} refuses, Http.send{get} admits — the per-method net split" {
+              Expect.isEmpty
+                  (errsOf [ "let x ="; "    deterministic"; "        Http.send (Http.get \"http://x\")"; "print $\"{x.status}\"" ])
+                  "a GET reads — ambient"
+
+              let e =
+                  firstErr [ "let x ="; "    deterministic"; "        Http.send (Http.post \"http://x\")"; "print $\"{x.status}\"" ]
+
+              Expect.stringContains e.Message "'Http.send' talks to the network" "a POST mutates"
+              Expect.stringContains e.Message "mutating HTTP method" "the class names the method"
+          }
+          test "Http.query and Http.fetch admit — idempotent by construction" {
+              Expect.isEmpty
+                  (errsOf
+                      [ "let x ="
+                        "    deterministic"
+                        "        Http.query \"http://x\" |> Http.send"
+                        "print $\"{x.status}\"" ])
+                  "the query method is ambient (piped send resolves it)"
+
+              Expect.isEmpty
+                  (errsOf [ "let x ="; "    deterministic"; "        Http.fetch \"http://x\""; "x |> Seq.iter print" ])
+                  "fetch is a GET shorthand — ambient"
+          }
+          test "pure ⊂ deterministic — a pure body is trivially deterministic" {
+              Expect.isEmpty
+                  (errsOf [ "let x ="; "    deterministic"; "        let y = 2"; "        y + 1"; "print $\"{x}\"" ])
+                  "no effect at all is within the ambient-input ceiling"
+
+              // and a nested pure region inside deterministic is fine
+              Expect.isEmpty
+                  (errsOf
+                      [ "let x ="
+                        "    deterministic"
+                        "        pure"
+                        "            1 + 1"
+                        "print $\"{x}\"" ])
+                  "a pure island nests inside the looser ceiling"
+          }
+          test "an unknown callable refuses — conservatism carries over" {
+              let e = firstErr [ "let unknown g ="; "    deterministic"; "        g 1" ]
+              Expect.stringContains e.Message "unknown callable" "a function-typed param could mutate"
+          }
+          test "keyword reservation: deterministic cannot be a binder; a blockless head teaches" {
+              let e = firstErr [ "let deterministic = 1" ]
+              Expect.stringContains e.Message "'deterministic' is a keyword" "the binder slot refuses"
+
+              let ds, _, _, _ = Weir.Script.analyzeLines "bare.weir" [ "deterministic" ]
+
+              Expect.isTrue
+                  (ds |> List.exists (fun d -> d.Message.Contains "deterministic takes a block"))
+                  "the bare head teaches the block form"
+          }
+          test "within deterministic refuses — it is its own head, never behind within" {
+              let ds, _, _, _ = Weir.Script.analyzeLines "wd.weir" [ "within deterministic"; "    1" ]
+
+              Expect.isNonEmpty
+                  (ds |> List.filter (fun d -> d.Severity = "error"))
+                  "`within deterministic` does not parse — deterministic is a keyword, its own head"
           } ]
 
 let withinKindsTests =
@@ -17533,6 +17646,7 @@ let allTests =
           purityBadgeTests
           pureRegionTests
           effectPartitionTests
+          deterministicBlockTests
           withinKindsTests
           withinAlwaysLockTests
           wireKeyTests

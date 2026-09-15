@@ -79,7 +79,11 @@ let rec isPureExpr (env: Map<string, bool>) (te: TypedExpr) : bool =
         // region asserts, it does not touch); every resource kind is
         // an effect [D:pure-stage1]
         (match kind with
-         | WithinPure -> isPureExpr env body
+         // pure/deterministic ASSERT, they do not touch — the region is
+         // pure iff its body is (an ambient read inside a deterministic
+         // block still makes it impure) [D:pure-stage1] [D:pure-stage2]
+         | WithinPure
+         | WithinDeterministic -> isPureExpr env body
          | WithinTmp
          | WithinCd
          | WithinEnv
@@ -169,7 +173,11 @@ let rec firstEffect (env: Map<string, bool>) (te: TypedExpr) : (Span * string) o
     | TECmd(prog, _, _) -> Some(te.Span, $"'{prog}' runs a command")
     | TEWithin(kind, _, _, _, body) ->
         (match kind with
-         | WithinPure -> firstEffect env body
+         // a nested pure/deterministic region asserts, it does not touch —
+         // the pure ceiling still walks its body (an ambient read inside a
+         // deterministic block is an effect pure forbids) [D:pure-stage2]
+         | WithinPure
+         | WithinDeterministic -> firstEffect env body
          | WithinTmp
          | WithinCd
          | WithinEnv
@@ -209,6 +217,158 @@ let rec firstEffect (env: Map<string, bool>) (te: TypedExpr) : (Span * string) o
              Some((headOf te).Span, "a computed function is an unknown callable, and an unknown callable forfeits purity"))
     | _ -> Check.childExprs te |> List.tryPick (firstEffect env)
 
+// the mutation-class phrase: effectPhrase names the effect; this
+// appends its CLASS so the deterministic teaching says both what the
+// offender does AND that it is external mutation [D:pure-stage2]
+let private mutationPhrase (n: string) : string = effectPhrase n
+
+// resolve an `Http.send` request argument's METHOD case at CHECK time
+// [D:pure-stage2] — the per-method net split's check-time half. A
+// literal constructor (`Http.post u`) or an explicit `method = Post`
+// update is determinable; anything else is None (the caller
+// conservatively treats an unresolved send as mutation — over-refusing
+// is licensed, admitting a mutation is not).
+let rec private httpSendMethod (arg: TypedExpr) : string option =
+    match arg.Kind with
+    // pipes/apps: strip to the constructor head
+    | TEApp(f, _) -> httpSendMethod f
+    | TEPipe(a, f) ->
+        // `u |> Http.get` shape: the fn carries the method
+        match httpSendMethod f with
+        | Some m -> Some m
+        | None -> httpSendMethod a
+    | TEVar n ->
+        match n.Split '.' with
+        | [| "Http"; ("get" | "head" | "options" | "query" | "post" | "put" | "delete" | "patch") as m |] ->
+            Some(m.ToUpperInvariant())
+        | _ -> None
+    // { Http.post u with method = Get; … } — an explicit method update
+    // WINS (last write); otherwise the source's constructor decides
+    | TEUpdate(src, ups) ->
+        match ups |> List.tryPick (fun (path, v) -> if path = [ "method" ] then Some v else None) with
+        | Some { Kind = TEVar case } -> Some(case.ToUpperInvariant())
+        | Some _ -> None // a computed method — not statically known
+        | None -> httpSendMethod src
+    | TERecord(_, fields) ->
+        match fields |> List.tryPick (fun (f, v) -> if f = "method" then Some v else None) with
+        | Some { Kind = TEVar case } -> Some(case.ToUpperInvariant())
+        | _ -> None
+    | _ -> None
+
+// the EXTERNAL-MUTATION class of an Http.send call given its request
+// argument [D:pure-stage2]: a determinable idempotent method is Ambient
+// (allowed); anything else — a mutating verb OR an unresolved method —
+// is Mutation (conservative)
+let private httpSendIsMutation (arg: TypedExpr option) : bool =
+    match arg |> Option.bind httpSendMethod with
+    | Some m -> Weir.Effects.httpMethodClass m = Weir.Effects.Mutation
+    | None -> true // unknown method — refuse (the safe direction)
+
+/// the FIRST external-MUTATION node under a `deterministic` region, with
+/// its span [D:pure-stage2] — the ambient/mutation partition's ceiling
+/// walk. Ambient effects (fs.read, env, clock, query-net, Self.stdin)
+/// PASS; only external mutation (fs.write, fs.delete, proc, mutating-net,
+/// console, an unknown callable) is reported. Same env discipline and
+/// conservatism as firstEffect; reuses Effects.effectClass as the line.
+let rec firstMutation (env: Map<string, bool>) (te: TypedExpr) : (Span * string) option =
+    let headOf (e: TypedExpr) =
+        let rec go (e: TypedExpr) =
+            match e.Kind with
+            | TEApp(g, _) -> go g
+            | _ -> e
+
+        go e
+
+    // the reusable teaching: "'File.write' writes the filesystem"
+    let mut (span: Span) (n: string) = Some(span, mutationPhrase n)
+
+    match te.Kind with
+    | TECmd(prog, _, _) -> Some(te.Span, $"'{prog}' runs a command") // proc: mutation
+    | TEWithin(kind, _, arg, opts, body) ->
+        (match kind with
+         // a nested pure/deterministic region asserts, does not touch —
+         // walk its body for mutations (a pure body has none, trivially
+         // deterministic; the pin `pure ⊂ deterministic`)
+         | WithinPure
+         | WithinDeterministic ->
+             [ arg; opts ] |> List.choose id |> List.tryPick (firstMutation env)
+             |> Option.orElseWith (fun () -> firstMutation env body)
+         // tmp/cd/env/proc/lock all scope a RESOURCE: tmp/proc mutate,
+         // cd/env/lock change the process/child world — every within
+         // resource is external mutation for the determinism ceiling
+         | WithinTmp
+         | WithinCd
+         | WithinEnv
+         | WithinProc
+         | WithinLock -> Some(te.Span, $"'within {withinKindName kind}' scopes a resource (external mutation)"))
+    // Env.load/Args.load READ the environment/arguments — ambient input,
+    // allowed; keep walking children (an argument could mutate)
+    | TEEnvLoad _
+    | TEArgsLoad _ -> Check.childExprs te |> List.tryPick (firstMutation env)
+    // retry/poll waits on the clock — ambient; walk the body for mutation
+    | TERetry _ -> Check.childExprs te |> List.tryPick (firstMutation env)
+    | TEVar n ->
+        if effectfulName n then
+            match Weir.Effects.effectClass n with
+            | Some Weir.Effects.Mutation -> mut te.Span n
+            | Some Weir.Effects.Ambient -> None // ambient read — allowed
+            | None ->
+                // Http.send: method-dependent, resolved at the enclosing
+                // application (handled in the TEApp arm); a bare send
+                // reference cannot be placed — refuse conservatively
+                Some(te.Span, $"'{n}' talks to the network (external mutation unless a query method)")
+        elif builtinNames.Force().Contains n || isCtorName n then
+            None
+        else
+            match Map.tryFind n env with
+            | Some true -> None // an earlier binding proven mutation-free
+            | Some false -> Some(te.Span, $"'{n}' reaches an effect")
+            | None ->
+                if tyHasFun te.Ty then
+                    Some(te.Span, $"'{n}' is an unknown callable, and an unknown callable forfeits determinism")
+                else
+                    None
+    | TELet(n, _, v, b) ->
+        firstMutation env v
+        |> Option.orElseWith (fun () -> firstMutation (Map.add n true env) b)
+    | TELetPat(p, v, b) ->
+        firstMutation env v
+        |> Option.orElseWith (fun () -> firstMutation (dropPat p env) b)
+    | TELambda(p, _, b) -> firstMutation (Map.remove p env) b
+    | TELambdaPat(p, b) -> firstMutation (dropPat p env) b
+    // `req |> Http.send` — the piped send: the request is the pipe's ARG
+    | TEPipe(reqArg, { Kind = TEVar "Http.send" }) ->
+        if httpSendIsMutation (Some reqArg) then
+            Some(te.Span, "'Http.send' talks to the network (external mutation — a mutating HTTP method)")
+        else
+            firstMutation env reqArg
+    | TEApp(_, _) ->
+        // the per-method net split's check-time site: an Http.send
+        // application resolves its method from the request argument
+        (match (headOf te).Kind with
+         | TEVar "Http.send" ->
+             let reqArg =
+                 match te.Kind with
+                 | TEApp(_, a) -> Some a
+                 | _ -> None
+
+             if httpSendIsMutation reqArg then
+                 Some((headOf te).Span, "'Http.send' talks to the network (external mutation — a mutating HTTP method)")
+             else
+                 // ambient (query method): walk ONLY the argument for a
+                 // nested mutation — NOT the `Http.send` head var (whose
+                 // TEVar arm would re-report the network as mutation)
+                 reqArg |> Option.bind (firstMutation env)
+         | TEVar _
+         | TELambda _
+         | TELambdaPat _ -> Check.childExprs te |> List.tryPick (firstMutation env)
+         | _ ->
+             Some(
+                 (headOf te).Span,
+                 "a computed function is an unknown callable, and an unknown callable forfeits determinism"
+             ))
+    | _ -> Check.childExprs te |> List.tryPick (firstMutation env)
+
 /// scan a checked statement's tree for `pure` regions and report the
 /// first violation [D:pure-stage1] — the env tracks bindings on the way
 /// down exactly as isPureExpr does, so a region deep in a statement
@@ -217,7 +377,19 @@ let rec pureViolation (env: Map<string, bool>) (te: TypedExpr) : (Span * string)
     match te.Kind with
     | TEWithin(kind, _, arg, opts, body) ->
         (match kind with
-         | WithinPure -> firstEffect env body
+         // pure: the located teaching names the offender's effect family
+         // [D:pure-stage1] — the FULL message lives here now (was wrapped
+         // in Script) so the deterministic ceiling can carry its own
+         | WithinPure ->
+             firstEffect env body
+             |> Option.map (fun (span, phrase) -> span, $"this 'pure' block forbids effects, but {phrase}")
+         // the determinism ceiling [D:pure-stage2]: ambient reads pass,
+         // external mutation refuses — the located teaching names the
+         // offender AND its class
+         | WithinDeterministic ->
+             (firstMutation env body
+              |> Option.map (fun (span, phrase) ->
+                  span, $"this 'deterministic' block forbids external mutation, but {phrase} — reads are allowed"))
          | WithinTmp
          | WithinCd
          | WithinEnv

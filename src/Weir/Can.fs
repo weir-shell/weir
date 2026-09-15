@@ -176,8 +176,11 @@ let rec private walkExpr
           // when missing, so a report that omits it denies a write that
           // happens
           | WithinLock -> add (FsWrite("within lock", arg |> Option.bind literalStr)) te.Span
-          // a pure region asserts, it does not touch [D:pure-stage1]
-          | WithinPure -> ())
+          // pure/deterministic regions ASSERT, they do not touch
+          // [D:pure-stage1] [D:pure-stage2] — the capabilities inside
+          // still surface through their own nodes
+          | WithinPure
+          | WithinDeterministic -> ())
      | TEEnvLoad(def, _) ->
          for fname, fty in def.Fields do
              add (EnvRead $"{fname} (Env.load {def.Name})") te.Span
