@@ -2290,6 +2290,56 @@ let private ioGuarded (op: string) (r: string) (f: unit -> 'a) : 'a =
     | :? System.UnauthorizedAccessException -> failwith $"{op}: permission denied: {r}"
     | :? System.IO.IOException as e -> failwith $"{op}: cannot access {r} — {e.Message}"
 
+// ---- plan/apply capture [D:plan-apply] ------------------------------
+// The mutation builtins consult PlanMode: inside a `plan` block they
+// CAPTURE an Op (a `VUnion` of the prelude `Op` type) and return VUnit
+// instead of performing. Ambient reads do NOT call these — they run.
+// Each helper returns Some VUnit (captured — the builtin returns it) or
+// None (not planning — the builtin performs). The Op carries the USER's
+// path (apply re-resolves through the normal builtin); the RESOLVED path
+// is the known-after-apply target key. Content is FORCED here (ruling 6:
+// every plan is all-data, preview == apply) — a lazy `seq<string>`
+// captured raw would let a read run at apply time, breaking the snapshot;
+// forcing NOW runs its reads under the plan's own frame (a nested
+// mutation in the content is captured/refused).
+
+/// capture a WriteFile op (File.write): force the content seq to data now
+let private capWrite (userPath: string) (resolved: string) (lines: Value seq) : Value option =
+    if PlanMode.active () then
+        let snapshot = lines |> List.ofSeq // FORCE: snapshot content at plan time
+        PlanMode.capture (VUnion("WriteFile", Some(VTuple [ VStr userPath; VSeq snapshot ]))) [ resolved ]
+        Some VUnit
+    else
+        None
+
+/// capture a one-path op (DeleteFile / MakeDir / DeleteDir)
+let private capPath1 (case: string) (userPath: string) (resolved: string) : Value option =
+    if PlanMode.active () then
+        PlanMode.capture (VUnion(case, Some(VStr userPath))) [ resolved ]
+        Some VUnit
+    else
+        None
+
+/// capture a two-path op (Copy / Move): the DESTINATION is the target a
+/// later read would see stale (the source is read, not written)
+let private capPath2 (case: string) (userSrc: string) (userDst: string) (resolvedDst: string) : Value option =
+    if PlanMode.active () then
+        PlanMode.capture (VUnion(case, Some(VTuple [ VStr userSrc; VStr userDst ]))) [ resolvedDst ]
+        Some VUnit
+    else
+        None
+
+/// a mutation builtin with NO Plan Op in v1 REFUSES inside a plan
+/// [D:plan-apply] — the kind-first discipline: an uncaptured mutation
+/// cannot silently perform under a plan. File.append/writeBytes are the
+/// two fs.write members outside the v1 Op union.
+let private refuseInPlan (op: string) (why: string) : Value option =
+    if PlanMode.active () then
+        failwith
+            $"{op}: no Plan Op in v1 — {why}; a plan captures File.write/delete/copy/move, Dir.create/delete/deleteAll/move/copy, and mutating Http.send. Restructure to those, or run this outside the plan"
+    else
+        None
+
 let private fileMembers: (string * Ty * Value) list =
     [ "read",
       TFun(TStr, TSeq TStr),
@@ -2297,6 +2347,7 @@ let private fileMembers: (string * Ty * Value) list =
           match v with
           | VStr path ->
               let r = Session.resolve path
+              PlanMode.checkRead "File.read" r
               readGuard "File.read" r
               VSeq(ioGuarded "File.read" r (fun () -> File.ReadAllLines r) |> Seq.map VStr)
           | v -> unreachable $"the checker rejects 'File.read' on {formatValue v}")
@@ -2310,6 +2361,7 @@ let private fileMembers: (string * Ty * Value) list =
           match v with
           | VStr path ->
               let r = Session.resolve path
+              PlanMode.checkRead "File.readSecret" r
               readGuard "File.readSecret" r
               VSecret((ioGuarded "File.readSecret" r (fun () -> File.ReadAllText r)).TrimEnd('\n', '\r'))
           | v -> unreachable $"the checker rejects 'File.readSecret' on {formatValue v}")
@@ -2320,6 +2372,10 @@ let private fileMembers: (string * Ty * Value) list =
               match pathV, linesV with
               | VStr path, VSeq lines ->
                   let r = Session.resolve path
+
+                  match capWrite path r lines with
+                  | Some captured -> captured
+                  | None ->
                   writeGuard "File.write" r
 
                   ioGuarded "File.write" r (fun () ->
@@ -2359,6 +2415,10 @@ let private fileMembers: (string * Ty * Value) list =
               match pathV, linesV with
               | VStr path, VSeq lines ->
                   let r = Session.resolve path
+
+                  match refuseInPlan "File.append" "an append is a read-modify-write with no captured Op" with
+                  | Some _ -> VUnit
+                  | None ->
                   writeGuard "File.append" r
 
                   ioGuarded "File.append" r (fun () ->
@@ -2430,14 +2490,21 @@ let private logMembers: (string * Ty * Value) list =
 // exception: an existing directory IS create's post-condition, where
 // an existing copy destination is data the caller did not ask to
 // destroy. Every path resolves against the session cwd.
-let private fsStr2 (name: string) (f: string -> string -> unit) : Value =
+// a two-path fs mutation [D:plan-apply]: `opCase` is its Plan Op (Copy /
+// Move) — inside a plan it CAPTURES (src, dst) and records the dst as the
+// known-after-apply target; otherwise it performs f.
+let private fsStr2 (name: string) (opCase: string) (f: string -> string -> unit) : Value =
     VBuiltin(fun a ->
         VBuiltin(fun b ->
             match a, b with
             | VStr src, VStr dst ->
                 let s, d = Session.resolve src, Session.resolve dst
-                ioGuarded name s (fun () -> f s d)
-                VUnit
+
+                match capPath2 opCase src dst d with
+                | Some captured -> captured
+                | None ->
+                    ioGuarded name s (fun () -> f s d)
+                    VUnit
             | _ -> unreachable $"the checker rejects '{name}' on these arguments"))
 
 let private fsMoreFileMembers: (string * Ty * Value) list =
@@ -2503,6 +2570,10 @@ let private fsMoreFileMembers: (string * Ty * Value) list =
               match pathV, bytesV with
               | VStr path, VBytes b ->
                   let r = Session.resolve path
+
+                  match refuseInPlan "File.writeBytes" "the WriteFile Op carries text lines, not bytes" with
+                  | Some _ -> VUnit
+                  | None ->
                   writeGuard "File.writeBytes" r
                   ioGuarded "File.writeBytes" r (fun () -> System.IO.File.WriteAllBytes(r, b))
                   VUnit
@@ -2534,6 +2605,10 @@ let private fsMoreFileMembers: (string * Ty * Value) list =
           | VStr p ->
               let r = Session.resolve p
 
+              match capPath1 "DeleteFile" p r with
+              | Some captured -> captured
+              | None ->
+
               if not (System.IO.File.Exists r) then
                   failwith $"File.delete: no such file: {r}"
 
@@ -2542,7 +2617,7 @@ let private fsMoreFileMembers: (string * Ty * Value) list =
           | v -> unreachable $"the checker rejects 'File.delete' on {formatValue v}")
       "copy",
       TFun(TStr, TFun(TStr, TUnit)),
-      fsStr2 "File.copy" (fun src dst ->
+      fsStr2 "File.copy" "Copy" (fun src dst ->
           if not (System.IO.File.Exists src) then
               failwith $"File.copy: no such file: {src}"
 
@@ -2552,7 +2627,7 @@ let private fsMoreFileMembers: (string * Ty * Value) list =
           System.IO.File.Copy(src, dst))
       "move",
       TFun(TStr, TFun(TStr, TUnit)),
-      fsStr2 "File.move" (fun src dst ->
+      fsStr2 "File.move" "Move" (fun src dst ->
           if not (System.IO.File.Exists src) then
               failwith $"File.move: no such file: {src}"
 
@@ -2568,6 +2643,7 @@ let private fsMoreFileMembers: (string * Ty * Value) list =
           match v with
           | VStr p ->
               let r = Session.resolve p
+              PlanMode.checkRead "File.size" r
 
               if not (System.IO.File.Exists r) then
                   failwith $"File.size: no such file: {r}"
@@ -2584,6 +2660,7 @@ let private fsMoreFileMembers: (string * Ty * Value) list =
           match v with
           | VStr p ->
               let r = Session.resolve p
+              PlanMode.checkRead "File.stat" r
 
               // FileInfo.Exists is the path's OWN fact (true for a
               // dangling link); a directory — or a link to one — takes
@@ -2608,6 +2685,11 @@ let private dirMembers: (string * Ty * Value) list =
           match v with
           | VStr p ->
               let r = Session.resolve p
+
+              match capPath1 "MakeDir" p r with
+              | Some captured -> captured
+              | None ->
+
               // mkdir -p: parents created, existing = the post-condition
               ioGuarded "Dir.create" r (fun () -> System.IO.Directory.CreateDirectory r |> ignore)
               VUnit
@@ -2616,7 +2698,10 @@ let private dirMembers: (string * Ty * Value) list =
       TFun(TStr, TBool),
       VBuiltin(fun v ->
           match v with
-          | VStr p -> VBool(System.IO.Directory.Exists(Session.resolve p))
+          | VStr p ->
+              let r = Session.resolve p
+              PlanMode.checkRead "Dir.exists" r
+              VBool(System.IO.Directory.Exists r)
           | v -> unreachable $"the checker rejects 'Dir.exists' on {formatValue v}")
       "delete",
       TFun(TStr, TUnit),
@@ -2624,6 +2709,10 @@ let private dirMembers: (string * Ty * Value) list =
           match v with
           | VStr p ->
               let r = Session.resolve p
+
+              match capPath1 "DeleteDir" p r with
+              | Some captured -> captured
+              | None ->
 
               if not (System.IO.Directory.Exists r) then
                   failwith $"Dir.delete: no such directory: {r}"
@@ -2643,6 +2732,10 @@ let private dirMembers: (string * Ty * Value) list =
           | VStr p ->
               let r = Session.resolve p
 
+              match capPath1 "DeleteDir" p r with
+              | Some captured -> captured
+              | None ->
+
               if not (System.IO.Directory.Exists r) then
                   failwith $"Dir.deleteAll: no such directory: {r}"
 
@@ -2655,6 +2748,7 @@ let private dirMembers: (string * Ty * Value) list =
           match v with
           | VStr p ->
               let r = Session.resolve p
+              PlanMode.checkRead "Dir.list" r
 
               if not (System.IO.Directory.Exists r) then
                   failwith $"Dir.list: no such directory: {r}"
@@ -2692,7 +2786,7 @@ let private dirMembers: (string * Ty * Value) list =
           | v -> unreachable $"the checker rejects 'Dir.stat' on {formatValue v}")
       "move",
       TFun(TStr, TFun(TStr, TUnit)),
-      fsStr2 "Dir.move" (fun src dst ->
+      fsStr2 "Dir.move" "Move" (fun src dst ->
           if not (System.IO.Directory.Exists src) then
               failwith $"Dir.move: no such directory: {src}"
 
@@ -2707,7 +2801,7 @@ let private dirMembers: (string * Ty * Value) list =
       // Dir.deleteAll is the deliberate replace spelling.
       "copy",
       TFun(TStr, TFun(TStr, TUnit)),
-      fsStr2 "Dir.copy" (fun src dst ->
+      fsStr2 "Dir.copy" "Copy" (fun src dst ->
           if not (System.IO.Directory.Exists src) then
               failwith $"Dir.copy: no such directory: {src}"
 
@@ -3159,16 +3253,33 @@ let private respBodyLines (resp: Http.Resp) : seq<Value> =
 
 // status is DATA [D:http]: a 4xx/5xx binds, never raises (the `| complete`
 // posture for exit codes); ONLY transport failure raises
+// a captured send's placeholder response [D:plan-apply]: a mutating
+// Http.send inside a plan does NOT run (it is a pending HttpSend Op), so
+// it has no real response. It yields an EMPTY response (status 0) — the
+// body ran for its capture, its value is discarded; a script that reads
+// this response inside the plan is reading a not-yet-sent request, the
+// http analogue of known-after-apply.
+let private plannedResponse: Value =
+    VRecord("HttpResponse", [ "status", VInt 0L; "headers", VSeq Seq.empty; "body", VSeq Seq.empty ])
+
 let private httpSendImpl: Value =
     VBuiltin(fun reqV ->
-        let resp = runRequest reqV
+        // reads (GET/HEAD/OPTIONS/QUERY) RUN even inside a plan — they
+        // inform it; only a MUTATING method is captured as an Op
+        // [D:plan-apply] (the per-method class resolves from the request
+        // VALUE, the eval hook pure-stage2 confirmed)
+        if PlanMode.active () && httpRequestClass reqV = Weir.Effects.Mutation then
+            PlanMode.capture (VUnion("HttpSend", Some reqV)) []
+            plannedResponse
+        else
+            let resp = runRequest reqV
 
-        VRecord(
-            "HttpResponse",
-            [ "status", VInt(int64 resp.Status)
-              "headers", VSeq(resp.Headers |> List.map (fun (k, hv) -> VTuple [ VStr k; VStr hv ]))
-              "body", VSeq(respBodyLines resp) ]
-        ))
+            VRecord(
+                "HttpResponse",
+                [ "status", VInt(int64 resp.Status)
+                  "headers", VSeq(resp.Headers |> List.map (fun (k, hv) -> VTuple [ VStr k; VStr hv ]))
+                  "body", VSeq(respBodyLines resp) ]
+            ))
 
 // a CONSTRUCTOR [D:http-s2]: `Http.get u` = `{ Http.defaults with method =
 // Get; url = u }` byte-identically (pinned) — a record PRODUCER, not a
@@ -3240,6 +3351,143 @@ let private httpMembers: (string * Ty * Value) list =
       "head", ctorTy, httpCtor "Head"
       "options", ctorTy, httpCtor "Options"
       "query", ctorTy, httpCtor "Query" ]
+
+// ---- plan/apply: the Plan.* members [D:plan-apply] -----------------
+// A Plan is a VRecord("Plan", ["ops", VSeq ops]) built by the `plan`
+// region (Eval). Its ops are Op VUnions. The members inspect (ops /
+// isEmpty), render (preview — Secrets masked by formatValue), and
+// perform (apply — replay through the NORMAL mutation path, sequential,
+// STOPS at the first failing Op with prior ops DONE, NO rollback).
+
+let private planOps (v: Value) : Value seq =
+    match v with
+    | VRecord("Plan", f) ->
+        match recGet "ops" f with
+        | VSeq ops -> ops
+        | v -> unreachable $"a Plan's ops is not a seq: {formatValue v}"
+    | v -> unreachable $"the checker rejects a Plan member on {formatValue v}"
+
+// human render of one Op [D:plan-apply] — formatValue masks a Secret in
+// an HttpSend request via the recursive renderer, so a preview line
+// never leaks an auth token
+let private previewOp (op: Value) : string =
+    match op with
+    | VUnion("WriteFile", Some(VTuple [ VStr p; VSeq lines ])) ->
+        $"write {p} ({lines |> Seq.length} line(s))"
+    | VUnion("DeleteFile", Some(VStr p)) -> $"delete file {p}"
+    | VUnion("MakeDir", Some(VStr p)) -> $"make dir {p}"
+    | VUnion("DeleteDir", Some(VStr p)) -> $"delete dir {p}"
+    | VUnion("Copy", Some(VTuple [ VStr s; VStr d ])) -> $"copy {s} -> {d}"
+    | VUnion("Move", Some(VTuple [ VStr s; VStr d ])) -> $"move {s} -> {d}"
+    | VUnion("HttpSend", Some req) -> $"http send {formatValue req}"
+    | v -> formatValue v
+
+// perform one Op through the real IO [D:plan-apply] — the SAME effect
+// the captured builtin would have had (apply runs with no active plan
+// frame, so the mutation builtins would perform too; applyOp performs
+// directly to keep the replay self-contained). Overwrite/existence rules
+// match the builtins (copy/move refuse an existing destination).
+let private applyOp (op: Value) : unit =
+    match op with
+    | VUnion("WriteFile", Some(VTuple [ VStr path; VSeq lines ])) ->
+        let r = Session.resolve path
+        writeGuard "Plan.apply (WriteFile)" r
+
+        ioGuarded "Plan.apply (WriteFile)" r (fun () ->
+            use fs =
+                new FileStream(r, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.Read)
+
+            let head = Array.zeroCreate 3
+            let n = fs.Read(head, 0, 3)
+            let keepBom = n = 3 && head[0] = 0xEFuy && head[1] = 0xBBuy && head[2] = 0xBFuy
+            fs.SetLength 0L
+            fs.Seek(0L, SeekOrigin.Begin) |> ignore
+
+            use w =
+                new StreamWriter(fs, (if keepBom then utf8Bom else utf8Strict), 1024, true)
+
+            w.NewLine <- "\n"
+
+            for l in lines do
+                w.WriteLine(asString l))
+    | VUnion("DeleteFile", Some(VStr path)) ->
+        let r = Session.resolve path
+
+        if not (System.IO.File.Exists r) then
+            failwith $"Plan.apply (DeleteFile): no such file: {r}"
+
+        ioGuarded "Plan.apply (DeleteFile)" r (fun () -> System.IO.File.Delete r)
+    | VUnion("MakeDir", Some(VStr path)) ->
+        let r = Session.resolve path
+        ioGuarded "Plan.apply (MakeDir)" r (fun () -> System.IO.Directory.CreateDirectory r |> ignore)
+    | VUnion("DeleteDir", Some(VStr path)) ->
+        let r = Session.resolve path
+
+        if not (System.IO.Directory.Exists r) then
+            failwith $"Plan.apply (DeleteDir): no such directory: {r}"
+
+        ioGuarded "Plan.apply (DeleteDir)" r (fun () -> System.IO.Directory.Delete(r, true))
+    | VUnion("Copy", Some(VTuple [ VStr src; VStr dst ])) ->
+        let s, d = Session.resolve src, Session.resolve dst
+
+        if System.IO.File.Exists d || System.IO.Directory.Exists d then
+            failwith $"Plan.apply (Copy): destination exists: {d}"
+
+        ioGuarded "Plan.apply (Copy)" s (fun () ->
+            if System.IO.Directory.Exists s then
+                let rec go (a: string) (b: string) =
+                    System.IO.Directory.CreateDirectory b |> ignore
+
+                    for f in System.IO.Directory.EnumerateFiles a do
+                        System.IO.File.Copy(f, System.IO.Path.Combine(b, System.IO.Path.GetFileName f))
+
+                    for sub in System.IO.Directory.EnumerateDirectories a do
+                        go sub (System.IO.Path.Combine(b, System.IO.Path.GetFileName sub))
+
+                go s d
+            elif System.IO.File.Exists s then
+                System.IO.File.Copy(s, d)
+            else
+                failwith $"Plan.apply (Copy): no such source: {s}")
+    | VUnion("Move", Some(VTuple [ VStr src; VStr dst ])) ->
+        let s, d = Session.resolve src, Session.resolve dst
+
+        if System.IO.File.Exists d || System.IO.Directory.Exists d then
+            failwith $"Plan.apply (Move): destination exists: {d}"
+
+        ioGuarded "Plan.apply (Move)" s (fun () ->
+            if System.IO.Directory.Exists s then
+                System.IO.Directory.Move(s, d)
+            elif System.IO.File.Exists s then
+                System.IO.File.Move(s, d)
+            else
+                failwith $"Plan.apply (Move): no such source: {s}")
+    | VUnion("HttpSend", Some req) -> runRequest req |> ignore
+    | v -> unreachable $"an unknown Op reached Plan.apply: {formatValue v}"
+
+let private planApplyImpl: Value =
+    VBuiltin(fun v ->
+        // apply-in-plan refuses [D:plan-apply]: the check catches it, but
+        // a Plan value applied through an unchecked path (a computed
+        // call) still must not capture-a-capture — refuse at runtime too
+        if PlanMode.active () then
+            failwith
+                "Plan.apply is refused inside a 'plan' block — a mutation cannot be coherently captured; apply the plan OUTSIDE the block"
+
+        // sequential, in capture order; STOPS at the first failing Op
+        // (prior ops stay done); NO rollback — the non-claim, stated
+        for op in planOps v do
+            applyOp op
+
+        VUnit)
+
+let private planMembers: (string * Ty * Value) list =
+    let planTy = TNamed("Plan", [])
+
+    [ "ops", TFun(planTy, TSeq(TNamed("Op", []))), VBuiltin(fun v -> VSeq(planOps v))
+      "preview", TFun(planTy, TSeq TStr), VBuiltin(fun v -> VSeq(planOps v |> Seq.map (previewOp >> VStr)))
+      "apply", TFun(planTy, TUnit), planApplyImpl
+      "isEmpty", TFun(planTy, TBool), VBuiltin(fun v -> VBool(planOps v |> Seq.isEmpty)) ]
 
 
 // ---- Map<string, T> [D:map-string]: the ID-keyed object ------------
@@ -3755,6 +4003,10 @@ let private moduleTable: (string * (string * Ty * Value) list) list =
         VRecord("Retry", [ "attempts", VInt 5L; "delay", VDur 1000L; "timeout", VUnion("None", None) ]) ]
       "Poll", [ "defaults", TNamed("Poll", []), VRecord("Poll", [ "timeout", VDur 60000L; "interval", VDur 1000L ]) ]
       "Http", httpMembers
+      // plan/apply [D:plan-apply]: the Plan value's members —
+      // ops/preview/apply/isEmpty (the `plan` scope itself is a keyword
+      // head, not a member)
+      "Plan", planMembers
       "Float", floatMembers ]
 
 // ---- builtin docs [D:builtin-docs] (PLAN-doc-comments half 2) --------
@@ -4818,6 +5070,29 @@ let builtinDocs: Map<string, BuiltinDoc> =
               (Some "\"http://x/s\" |> Http.withQuery [(\"q\", \"a b\")]")
               None
            |> named [ "params"; "base" ])
+
+          // ---- plan/apply [D:plan-apply]: the Plan value's members ------
+          "Plan.ops",
+          (bd
+              "The captured Ops of a plan, in capture order — the raw seq<Op> for test and inspection (`plan <block> == [WriteFile(p, c)]`; the union is equatable/showable, Secrets masked)."
+              None
+              None
+           |> named [ "plan" ])
+          "Plan.preview",
+          (bd
+              "A human render of a plan's ops, one line each — 'wrote nothing' yet (a plan performs no mutation; Plan.apply does). Secrets are masked."
+              None
+              None
+           |> named [ "plan" ])
+          "Plan.apply",
+          (bd
+              "Perform a plan's ops through the normal builtins, in capture order. STOPS at the first failing op (prior ops stay done); NOT transactional — no rollback (that is the IaC line weir does not cross). Refused inside a `plan` block."
+              None
+              None
+           |> named [ "plan" ])
+          "Plan.isEmpty",
+          (bd "True when the plan captured no ops (a script that only read the world builds an empty plan)." None None
+           |> named [ "plan" ])
 
           // ---- Size: bytes as a type [D:size] --------------------------
           "Bytes.fromBase64",

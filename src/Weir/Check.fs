@@ -597,6 +597,14 @@ let private demand (ctx: Ctx) (env: TypeEnv) (p: Pending) (ty0: Ty) : Result<uni
             | Cls.Eq, TFloat -> false
             | Cls.Eq, (TFun _ | TSeq _) -> false
             | Cls.Eq, TTuple ts -> ts |> List.forall (ok seen)
+            // plan/apply's Op and Plan are Eq-admitted BY DESIGN
+            // [D:plan-apply]: the testing story is `plan <block> ==
+            // [WriteFile("x", c)]`, and Op carries a seq (file content)
+            // that the generic decompose would reject. The value-level Eq
+            // (Value.Equals) forces the seqs and compares them; the Secret
+            // in HttpSend compares via VSecret's own Eq. Explicit carve-out
+            // (the Proc-Show precedent — a named type gets its own arm).
+            | Cls.Eq, TNamed(("Op" | "Plan"), _) -> true
             | Cls.Eq, TNamed(n, targs) -> decompose n targs
             // Show: no function anywhere; seqs render fine
             | Cls.Show, (TInt | TFloat | TStr | TBool | TUnit | TDur | TSize | TInstant | TBytes | TSecret) -> true
@@ -610,6 +618,9 @@ let private demand (ctx: Ctx) (env: TypeEnv) (p: Pending) (ty0: Ty) : Result<uni
             // a handle shows (pid + state) [D:scoped-procs]; Eq/Ord
             // stay excluded by construction (the decompose fall-through)
             | Cls.Show, TNamed("Proc", []) -> true
+            // a Plan shows (its ops, Secrets masked) [D:plan-apply] — the
+            // preview/diff story; def-less, so it needs its own arm
+            | Cls.Show, TNamed("Plan", []) -> true
             | Cls.Show, TNamed(n, targs) -> decompose n targs
             // Ord: int | string | bool EXACTLY — no decomposition, no
             // record/union ordering (no receipts; the message names it)
@@ -2351,9 +2362,18 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
             let! targ, topts, benv = withinContracts ctx env kind binder arg opts
             let! tbody = infer ctx benv body
 
+            // the scope's type IS the body's [D:within-scopes] — EXCEPT a
+            // plan block, which REIFIES the body's mutations and yields a
+            // Plan [D:plan-apply] (the body's own value is discarded — it
+            // runs for its capture, not its result)
+            let scopeTy =
+                match kind with
+                | WithinPlan -> TNamed("Plan", [])
+                | _ -> tbody.Ty
+
             return
                 { Kind = TEWithin(kind, binder |> Option.map fst, targ, topts, tbody)
-                  Ty = tbody.Ty
+                  Ty = scopeTy
                   Span = expr.Span }
         }
     | ESeq(first, rest) ->
@@ -4229,8 +4249,11 @@ and private withinContracts
             // Builtins, out of this file's compile reach). deterministic
             // is the same shape, its law the ambient/mutation ceiling
             // [D:pure-stage2]
+            // plan carries no resource either [D:plan-apply] — its law
+            // (proc/apply refusals) rides the same post-check layer
             | WithinPure
-            | WithinDeterministic -> Ok None
+            | WithinDeterministic
+            | WithinPlan -> Ok None
 
         let! topts =
             match opts with
@@ -4250,7 +4273,8 @@ and private withinContracts
             | WithinEnv
             | WithinLock
             | WithinPure
-            | WithinDeterministic -> TStr
+            | WithinDeterministic
+            | WithinPlan -> TStr
 
         let benv =
             match binder with
@@ -4305,6 +4329,22 @@ and private check (ctx: Ctx) (env: TypeEnv) (expr: Expr) (expected: Ty) : Result
             return
                 { Kind = TEAlways(tbody, tcleanup)
                   Ty = tbody.Ty
+                  Span = expr.Span }
+        }
+    // a plan block yields a Plan regardless of the body's type
+    // [D:plan-apply]: the body runs for its CAPTURE, its own value is
+    // discarded — so infer the body (not check it against `expected`)
+    // and unify the region's Plan with the expectation
+    | EWithin(WithinPlan, binder, arg, opts, body), _ ->
+        result {
+            let! targ, topts, benv = withinContracts ctx env WithinPlan binder arg opts
+            let! tbody = infer ctx benv body
+            let planTy = TNamed("Plan", [])
+            do! bind ctx env expr.Span expected planTy
+
+            return
+                { Kind = TEWithin(WithinPlan, binder |> Option.map fst, targ, topts, tbody)
+                  Ty = planTy
                   Span = expr.Span }
         }
     | EWithin(kind, binder, arg, opts, body), _ ->
@@ -5259,7 +5299,11 @@ let typecheckAgainstSig (env: TypeEnv) (sigTy: Ty) (expr: Expr) : Result<TypedEx
 // built-in-name registration and validateTy's arity table both read it,
 // so a nominal cannot be registered-but-unnameable (the YamlPatch
 // signature gap: the privacy teaching suggested a sig validateTy refused)
-let deflessBuiltinNominals = [ "Proc"; "YamlPatch" ]
+// Plan is an OPAQUE nominal [D:plan-apply]: its runtime rep is a record
+// of captured Ops, but the value surface is the `Plan.*` members
+// (ops/preview/apply/isEmpty) plus `==` — never a field, so a user
+// `plan.ops` field-access is not offered. Def-less like Proc/YamlPatch.
+let deflessBuiltinNominals = [ "Proc"; "YamlPatch"; "Plan" ]
 
 let rec private validateTy
     (env: TypeEnv)

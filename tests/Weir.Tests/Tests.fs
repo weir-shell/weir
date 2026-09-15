@@ -2644,7 +2644,10 @@ let completionTests =
                         "pure"
                         // the determinism assertion starts statements too
                         // [D:pure-stage2]
-                        "deterministic" ]
+                        "deterministic"
+                        // the plan/apply capture starts statements too
+                        // [D:plan-apply]
+                        "plan" ]
 
               Expect.equal
                   (Weir.Parser.keywords - Weir.Complete.unsuggestedKeywords)
@@ -6191,6 +6194,233 @@ let deterministicBlockTests =
               match Weir.Lsp.hoverType lines 1 6 with
               | Some h -> Expect.isFalse (h.Contains "(pure)") "an ambient reader is not pure-badged"
               | None -> failtest "the binding must hover"
+          } ]
+
+let planApplyTests =
+    // [D:plan-apply]: `plan` captures a body's external mutations as Ops
+    // (reads run), yielding an inspectable/equatable/showable Plan;
+    // Plan.apply replays them. The refusals: proc-in-plan (check),
+    // apply-in-plan (check), known-after-apply (located runtime).
+    let errsOf (lines: string list) =
+        let ds, _, _, _ = Weir.Script.analyzeLines "plan.weir" lines
+        ds |> List.filter (fun d -> d.Severity = "error")
+
+    let firstErr (lines: string list) =
+        match errsOf lines with
+        | e :: _ -> e
+        | [] -> failtest "must refuse"
+
+    // run a full multi-line program from a temp file; returns its exit
+    // code (0 = clean) — the e2e path for capture+apply fs fidelity
+    let runFile (lines: string list) : int =
+        let path =
+            System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-plan-{System.Guid.NewGuid():N}.weir")
+
+        System.IO.File.WriteAllLines(path, lines)
+
+        try
+            Weir.Script.run path []
+        finally
+            System.IO.File.Delete path
+
+    let td () =
+        let d =
+            System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-plan-{System.Guid.NewGuid():N}")
+
+        d
+
+    testList
+        "the plan/apply capture [D:plan-apply]"
+        [ test "parse shape: a bare plan head + block is a within-family node" {
+              let asmLine = "plan" + Weir.Parser.sibSepStr + "File.write \"f\" [\"x\"]"
+
+              match Weir.Parser.parseLine realResolver asmLine with
+              | Ok(SExpr { Kind = EWithin(WithinPlan, None, None, None, _) }) -> ()
+              | other -> failtest $"unexpected: {other}"
+          }
+          test "a plan block yields a Plan, not the body's type" {
+              match typecheck env (parse ("plan" + Weir.Parser.sibSepStr + "File.write \"f\" [\"x\"]")) with
+              | Ok te -> Expect.equal te.Ty (TNamed("Plan", [])) "the region is Plan-typed"
+              | Error terr -> failtest (formatError terr)
+          }
+          test "capture: a write becomes a WriteFile Op, no file written; equality holds" {
+              let p =
+                  run ("plan" + Weir.Parser.sibSepStr + "File.write \"/tmp/weir-plan-never\" [\"a\"; \"b\"]")
+
+              Expect.equal
+                  p
+                  (VRecord(
+                      "Plan",
+                      [ "ops", VSeq [ VUnion("WriteFile", Some(VTuple [ VStr "/tmp/weir-plan-never"; VSeq [ VStr "a"; VStr "b" ] ])) ] ]
+                  ))
+                  "one WriteFile Op captured"
+
+              Expect.isFalse (System.IO.File.Exists "/tmp/weir-plan-never") "the plan wrote nothing"
+          }
+          test "Plan equality is content-sensitive; isEmpty reads the ops" {
+              // multi-line plan bodies go through the real assembler (a
+              // temp file); the program self-checks and exits nonzero on
+              // mismatch, so exit 0 IS the assertion
+              let prog =
+                  [ "let a ="
+                    "    plan"
+                    "        File.write \"x\" [\"hi\"]"
+                    "let b ="
+                    "    plan"
+                    "        File.write \"x\" [\"hi\"]"
+                    "let c ="
+                    "    plan"
+                    "        File.write \"x\" [\"bye\"]"
+                    "let e ="
+                    "    plan"
+                    "        let _h = Env.get \"HOME\""
+                    "        print \"read only\""
+                    "if not (a == b) then fail \"a==b\""
+                    "if a == c then fail \"a<>c\""
+                    "if not (e |> Plan.isEmpty) then fail \"e empty\""
+                    "if a |> Plan.isEmpty then fail \"a not empty\""
+                    "print \"ok\"" ]
+
+              Expect.equal (runFile prog) 0 "equality + isEmpty hold"
+          }
+          test "preview masks a Secret in an HttpSend request [D:secret]" {
+              let prog =
+                  [ "let t = Secret.of \"tok\""
+                    "let p ="
+                    "    plan"
+                    "        let _r = Http.send { Http.post \"http://x\" with auth = Bearer t }"
+                    "        print \"sent\""
+                    "let text = Str.join \"\\n\" (p |> Plan.preview)"
+                    "if not (Str.contains \"***\" text) then fail \"not masked\""
+                    "if Str.contains \"tok\" text then fail \"leaked\""
+                    "print \"ok\"" ]
+
+              Expect.equal (runFile prog) 0 "the token is masked in preview"
+          }
+          test "Http.send{post} captures as an HttpSend Op — the per-method split" {
+              let prog =
+                  [ "let p ="
+                    "    plan"
+                    "        let _r = Http.send (Http.post \"http://x\")"
+                    "        print \"sent\""
+                    "if (p |> Plan.ops |> Seq.length) <> 1 then fail \"not one op\""
+                    "print \"ok\"" ]
+
+              Expect.equal (runFile prog) 0 "a POST captures one HttpSend Op"
+          }
+          test "proc inside a plan HARD-REFUSES — a spawn is uncapturable" {
+              let e = firstErr [ "let p ="; "    plan"; "        echo hi"; "print $\"{p |> Plan.isEmpty}\"" ]
+              Expect.stringContains e.Message "'echo' runs a command" "proc named"
+              Expect.stringContains e.Message "refused inside 'plan'" "the plan refusal"
+              Expect.equal e.Line 3 "located at the command"
+          }
+          test "apply inside a plan REFUSES — a capture cannot be captured" {
+              let e =
+                  firstErr
+                      [ "let q ="
+                        "    plan"
+                        "        File.write \"f\" [\"a\"]"
+                        "let p ="
+                        "    plan"
+                        "        q |> Plan.apply"
+                        "print $\"{p |> Plan.isEmpty}\"" ]
+
+              Expect.stringContains e.Message "'Plan.apply' is refused inside 'plan'" "the apply-in-plan refusal"
+          }
+          test "known-after-apply: reading a captured target is a LOCATED runtime refusal" {
+              let dir = td ()
+              System.IO.Directory.CreateDirectory dir |> ignore
+              let f = weirPath (System.IO.Path.Combine(dir, "a.txt"))
+
+              try
+                  // exit != 0 (a raise): the read of a captured target refuses
+                  let code =
+                      runFile
+                          [ "let p ="
+                            "    plan"
+                            $"        File.write \"{f}\" [\"a\"]"
+                            $"        let _c = File.read \"{f}\""
+                            "        print \"unreached\""
+                            "print $\"{p |> Plan.isEmpty}\"" ]
+
+                  Expect.notEqual code 0 "the plan raised (known-after-apply)"
+              finally
+                  System.IO.Directory.Delete(dir, true)
+          }
+          test "reading a DIFFERENT path inside a plan RUNS (path-scoped)" {
+              let dir = td ()
+              System.IO.Directory.CreateDirectory dir |> ignore
+              let src = System.IO.Path.Combine(dir, "src.txt")
+              System.IO.File.WriteAllText(src, "hello\n")
+              let srcW = weirPath src
+              let dstW = weirPath (System.IO.Path.Combine(dir, "dst.txt"))
+
+              try
+                  let code =
+                      runFile
+                          [ "let p ="
+                            "    plan"
+                            $"        let c = File.read \"{srcW}\""
+                            $"        File.write \"{dstW}\" c"
+                            "if (p |> Plan.ops |> Seq.length) <> 1 then fail \"expected one op\""
+                            "print \"ok\"" ]
+
+                  Expect.equal code 0 "the read ran (different path), one write captured"
+              finally
+                  System.IO.Directory.Delete(dir, true)
+          }
+          test "e2e: a manifest-tree plan applies to a byte-identical tree vs the direct run" {
+              let root = td ()
+              let direct = weirPath (System.IO.Path.Combine(root, "direct"))
+              let applied = weirPath (System.IO.Path.Combine(root, "applied"))
+
+              let renderTo dst =
+                  [ $"Dir.create \"{dst}/conf\""
+                    $"File.write \"{dst}/conf/app.ini\" [\"name = demo\"; \"port = 8080\"]"
+                    $"Dir.create \"{dst}/conf/env\""
+                    $"File.write \"{dst}/conf/env/prod.env\" [\"TIER=prod\"]" ]
+
+              let prog =
+                  renderTo direct
+                  @ [ "let p ="; "    plan" ]
+                  @ (renderTo applied |> List.map (fun l -> "        " + l))
+                  @ [ "p |> Plan.apply"; "print $\"{p |> Plan.ops |> Seq.length}\"" ]
+
+              try
+                  Expect.equal (runFile prog) 0 "the program ran clean"
+
+                  let read d =
+                      System.IO.Directory.GetFiles(d, "*", System.IO.SearchOption.AllDirectories)
+                      |> Array.sortBy (fun p -> p.Substring(d.Length))
+                      |> Array.map (fun p -> p.Substring(d.Length), System.IO.File.ReadAllText p)
+
+                  Expect.equal (read applied) (read direct) "the applied tree is byte-identical to the direct one"
+              finally
+                  System.IO.Directory.Delete(root, true)
+          }
+          test "File.append inside a plan refuses — no v1 Op arm (kind-first)" {
+              let dir = td ()
+              System.IO.Directory.CreateDirectory dir |> ignore
+              let f = weirPath (System.IO.Path.Combine(dir, "a.txt"))
+
+              try
+                  Expect.throwsC
+                      (fun () ->
+                          run ("plan" + Weir.Parser.sibSepStr + $"File.append \"{f}\" [\"x\"]")
+                          |> ignore)
+                      (fun ex -> Expect.stringContains ex.Message "no Plan Op in v1" "the kind-first refusal")
+              finally
+                  System.IO.Directory.Delete(dir, true)
+          }
+          test "keyword reservation: plan cannot be a binder; a blockless head teaches" {
+              let e = firstErr [ "let plan = 1" ]
+              Expect.stringContains e.Message "'plan' is a keyword" "the binder slot refuses"
+
+              let ds, _, _, _ = Weir.Script.analyzeLines "bare.weir" [ "plan" ]
+
+              Expect.isTrue
+                  (ds |> List.exists (fun d -> d.Message.Contains "plan takes a block"))
+                  "the bare head teaches the block form"
           } ]
 
 let withinKindsTests =
@@ -10660,9 +10890,13 @@ let tupleTests =
               | Error terr -> failtest (formatError terr)
           }
           test "multi-payload constructors un-restricted (the corollary retires)" {
-              let e2 = env |> declare "type Msg = | Move of int * int | Stop"
+              // Shift/Stop, not Move — Move/Copy are now prelude Op ctors
+              // [D:plan-apply] (like Some/Get, they occupy the bare
+              // namespace, so a user union spelling one collides
+              // [D:ambiguous-ctor])
+              let e2 = env |> declare "type Msg = | Shift of int * int | Stop"
 
-              let expr = parse "match Move (3, 4) with | Move (x, y) -> x + y | Stop -> 0"
+              let expr = parse "match Shift (3, 4) with | Shift (x, y) -> x + y | Stop -> 0"
 
               match Weir.Check.typecheck e2 expr with
               | Ok te -> Expect.equal (formatTy te.Ty) "int" ""
@@ -17666,6 +17900,7 @@ let allTests =
           pureRegionTests
           effectPartitionTests
           deterministicBlockTests
+          planApplyTests
           withinKindsTests
           withinAlwaysLockTests
           wireKeyTests

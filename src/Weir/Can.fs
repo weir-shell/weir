@@ -178,9 +178,12 @@ let rec private walkExpr
           | WithinLock -> add (FsWrite("within lock", arg |> Option.bind literalStr)) te.Span
           // pure/deterministic regions ASSERT, they do not touch
           // [D:pure-stage1] [D:pure-stage2] — the capabilities inside
-          // still surface through their own nodes
+          // still surface through their own nodes; a plan region
+          // [D:plan-apply] transforms them into Ops but the same nodes
+          // report what the plan CAN do when applied
           | WithinPure
-          | WithinDeterministic -> ())
+          | WithinDeterministic
+          | WithinPlan -> ())
      | TEEnvLoad(def, _) ->
          for fname, fty in def.Fields do
              add (EnvRead $"{fname} (Env.load {def.Name})") te.Span

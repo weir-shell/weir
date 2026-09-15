@@ -453,6 +453,26 @@ let isPureHead (piece: string) : bool =
     afterLet = "pure"
     || afterLet.StartsWith "pure " && not (afterLet.Contains ";")
 
+// the standalone plan head [D:plan-apply]: `plan` (bare, or behind
+// `let <name> =`) opens its block exactly as pure does — but a plan body
+// is a STATEMENT sequence (bare consecutive mutations, captured as Ops),
+// so unlike pure/deterministic it genuinely NEEDS the sibling sentinel
+// between its statements (the reason it is registered in dangleOpensBlock
+// where deterministic is not — deterministic's body is value-shaped).
+let isPlanHead (piece: string) : bool =
+    let t = piece.Trim()
+
+    let afterLet =
+        if t.StartsWith "let " then
+            match t.IndexOf '=' with
+            | -1 -> t
+            | i -> t.Substring(i + 1).TrimStart()
+        else
+            t
+
+    afterLet = "plan"
+    || afterLet.StartsWith "plan " && not (afterLet.Contains ";")
+
 // the proc head [D:scoped-procs]: its TAIL is a command line, so the
 // FIRST block statement must join at the machine boundary too — a
 // space join would feed it to the command's argv (the
@@ -514,6 +534,8 @@ let dangleOpensBlock (piece: string) : bool =
     || t.EndsWith "(function"
     || isWithinHead t
     || isPureHead t
+    // the plan head opens a statement block [D:plan-apply]
+    || isPlanHead t
     // retry/poll heads and the until binder line open their blocks
     // [D:retry-poll]
     || t = "retry"
