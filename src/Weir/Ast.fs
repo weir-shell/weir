@@ -52,6 +52,11 @@ type WithinKindId =
     // the purity assertion [D:pure-stage1] — the family's first
     // STANDALONE head: spelled `pure`, never `within pure`
     | WithinPure
+    // the determinism assertion [D:pure-stage2] — a STANDALONE head one
+    // tier up the lattice from pure: the body reaches no EXTERNAL
+    // MUTATION (ambient reads are fine); spelled `deterministic`, never
+    // `within deterministic`
+    | WithinDeterministic
 
 // the `within` kinds as DATA — one table, three consumers (the
 // parser's dispatch, hover, completion) [D:within-kinds]. Binds is the
@@ -104,7 +109,15 @@ let withinKinds: WithinKind list =
         Name = "pure"
         Binds = false
         Standalone = true
-        Doc = "a purity assertion: the block's body must reach no effect" } ]
+        Doc = "a purity assertion: the block's body must reach no effect" }
+      // [D:pure-stage2]: one tier up from pure — the body must reach no
+      // EXTERNAL MUTATION; ambient reads (fs.read, env, clock, query-net)
+      // are allowed. Its own head, never `within deterministic`.
+      { Id = WithinDeterministic
+        Name = "deterministic"
+        Binds = false
+        Standalone = true
+        Doc = "a determinism assertion: the block's body must reach no external mutation (ambient reads are allowed)" } ]
 
 /// a kind's table row — total by construction: an Id only enters the
 /// tree through this table (the parser's name lookup), so the find
@@ -467,6 +480,9 @@ let rec sexpr (e: Expr) : string =
     | EWithin(WithinPure, _, _, _, b) ->
         // the standalone head renders as written [D:pure-stage1]
         $"(pure {sexpr b})"
+    | EWithin(WithinDeterministic, _, _, _, b) ->
+        // the second standalone head [D:pure-stage2]
+        $"(deterministic {sexpr b})"
     | EWithin(k, binder, arg, opts, b) ->
         let bn = binder |> Option.map fst |> Option.defaultValue ""
         let av = arg |> Option.map sexpr |> Option.defaultValue ""

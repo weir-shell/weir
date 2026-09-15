@@ -91,6 +91,13 @@ type Stmt =
     // by construction
     | SBodyCmdLet of binder: string * marker: string * word: string * reify: bool
     | SSeqPrint of string // xs |> print (seq<string> binders only)
+    // a `deterministic` block [D:pure-stage2]: a bare head + an indented
+    // PURE body (an int expression — pure is trivially deterministic, so
+    // it checks clean under the ambient-input ceiling), bound and read.
+    // The pure precedent left the generator untouched (`deterministic` is
+    // ungenerable as a v{n}/w{n} name); this extends it so invariant 1
+    // exercises the new parser+checker path.
+    | SDeterministic of binder: string * body: Expr
     // multiline lambdas [D:multiline-lambda]: body block under a
     // dangling `(fun p ->`; closerAlone renders `)` on its own line
     | SIterLambda of
@@ -257,6 +264,7 @@ let rec stmtDefs (s: Stmt) : string list =
     | SFloat(v, _, _, _, _) -> [ v ]
     | SRetryPoll(v, _, _) -> [ v ]
     | SMapLambda(_, n, _, _, _, _, _) -> [ n ]
+    | SDeterministic(v, _) -> [ v ]
     | SIterLambda _
     | SPrint _
     | SIf _
@@ -268,6 +276,9 @@ let rec stmtUses (s: Stmt) : string list =
     match s with
     | SFloat _ -> []
     | SRetryPoll _ -> []
+    // the block is self-contained: its body reads earlier names, and the
+    // binder's reader is the trailing self-print (renderUses counts it)
+    | SDeterministic(_, body) -> exprUses body
     | SLet(_, e) -> exprUses e
     | SLetBlock(_, b) ->
         let localDefs = b.Body |> List.collect stmtDefs |> Set.ofList
@@ -316,6 +327,8 @@ let rec private renderUses (s: Stmt) : string list =
     match s with
     | SFloat(v, _, _, _, _) -> [ v ]
     | SRetryPoll(v, _, _) -> [ v ]
+    // the trailing `print $"{v}"` reads the binder; the body reads earlier
+    | SDeterministic(v, body) -> v :: exprUses body
     | SLet(_, e) -> exprUses e
     | SLetBlock(_, b) -> (b.Body |> List.collect renderUses) @ exprUses b.Result
     | SLetMatch(_, m) -> matchUses m
@@ -450,6 +463,13 @@ let renderTagged (cfg: RenderCfg) (p: Program) : (string * bool) list =
     let rec emitStmt (ind: int) (s: Stmt) =
         match s with
         | SLet(v, e) -> emit ind $"let {bindName v} = {renderExpr e}"
+        | SDeterministic(v, body) ->
+            // a bare `deterministic` head [D:pure-stage2] + a PURE body
+            // (trivially deterministic — checks clean), bound and read
+            emit ind $"let {bindName v} ="
+            emit (ind + 4) "deterministic"
+            emit (ind + 8) (renderExpr body)
+            emit ind $"print $\"{{{v}}}\""
         | SRetryPoll(v, isPoll, value) ->
             emit
                 ind
@@ -1172,6 +1192,18 @@ let rec genStmt (sc: Scope) (depth: int) (inBlock: bool) : Gen<Stmt * Scope> =
                       let! isPoll = Gen.elements [ false; true ]
                       let! value = Gen.choose (1, 99)
                       return SRetryPoll(v, isPoll, value), sc
+                  }
+
+          // a `deterministic` block [D:pure-stage2]: a PURE int body,
+          // trivially deterministic, so it checks clean under the ambient
+          // ceiling — exercises the new standalone head + the enforcement
+          if not inBlock then
+              yield
+                  2,
+                  gen {
+                      let v, sc = freshVal sc
+                      let! body = genExpr sc VInt 1
+                      return SDeterministic(v, body), { sc with Ints = v :: sc.Ints }
                   }
 
           if not inBlock then

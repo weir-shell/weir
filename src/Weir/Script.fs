@@ -3083,8 +3083,11 @@ let checkStatement
         match teTag with
         | None -> Ok st
         | Some(te, tag) ->
+            // pureViolation now returns the COMPLETE located message
+            // (pure's "…forbids effects, but…" OR deterministic's
+            // "…forbids external mutation, but…") [D:pure-stage2]
             match Purity.pureViolation tenv.PureBindings te with
-            | Some(span, phrase) ->
+            | Some(span, message) ->
                 let physLine, physCol = translate ll span.Start.Col
 
                 Error
@@ -3095,7 +3098,7 @@ let checkStatement
                       HasCol = true
                       Span = Some span
                       Parse = false
-                      Message = $"this 'pure' block forbids effects, but {phrase}"
+                      Message = message
                       File = None
                       Note = None
                       Warnings = [] }

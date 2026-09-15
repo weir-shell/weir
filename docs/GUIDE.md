@@ -1920,6 +1920,41 @@ callable — a function-typed parameter, an import's member — forfeits
 it. A refusal can be over-careful; an acceptance is never wrong.
 Nothing outside a `pure` region is ever gated.
 
+## Reproducible islands: `deterministic`
+
+`deterministic` is one tier looser than `pure`. Where `pure` forbids
+every effect, a `deterministic` block forbids only **external
+mutation** — writing files, running commands, the mutating HTTP verbs
+(POST/PUT/DELETE/PATCH), any `within` resource — while **ambient
+reads are allowed**: reading a file, `Env`/`Args`, the clock, a query
+HTTP method (`Http.fetch`/`Http.query`, or `Http.send` of a
+GET/HEAD/OPTIONS/QUERY request), and stdin. The idea is
+reproducibility: a computation that only reads the world produces the
+same result each time.
+
+```weir
+let cfg =
+    deterministic
+        let home = Env.get "HOME" |> Option.defaultValue "/"
+        $"{home}/config"
+print cfg
+```
+
+A reachable mutation is a located check error naming the offender and
+its class:
+
+```text
+deploy.weir:3:9: error [check]: this 'deterministic' block forbids external mutation, but 'File.write' writes the filesystem — reads are allowed
+```
+
+So `deterministic` admits everything `pure` does and more: a pure body
+is trivially deterministic. Like `pure`, it is opt-in, effect-normal
+outside, and its own head — never `within deterministic`. The same
+ambient/mutation line drives `weir check --can`, which now groups a
+script's capabilities into ambient reads (they inform, they change
+nothing) and mutations (they change the world), so "what does this
+script change?" reads off the report.
+
 ## Failing and diagnosing
 
 `fail "reason"` stops the script with a located error and exit 1.

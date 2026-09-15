@@ -32,7 +32,7 @@ let m = File.read "editors/grammar-manifest.json" |> from json Manifest
 
 // import is weir's own word — F# spells the concept `open`
 let core = ["do"; "elif"; "else"; "false"; "for"; "fun"; "function"; "if"; "in"; "let"; "match"; "module"; "of"; "then"; "true"; "type"; "when"; "with"]
-let specific = ["always"; "from"; "import"; "poll"; "pure"; "retry"; "to"; "until"; "within"]
+let specific = ["always"; "deterministic"; "from"; "import"; "poll"; "pure"; "retry"; "to"; "until"; "within"]
 let inert = ["mutable"; "rec"]
 let teaching = ["def"; "return"; "try"; "while"]
 
@@ -67,7 +67,9 @@ let block = [
     $"adapters read `from` {fmt m.adapters.fromAdapters} and write `to` {fmt m.adapters.toAdapters};"
     "kind and adapter words are ordinary identifiers everywhere else."
     "`pure` heads its own indented block (a purity assertion) and marks"
-    "`let pure` bindings; it never follows `within`."
+    "`let pure` bindings; it never follows `within`. `deterministic` heads"
+    "its own indented block too (a determinism assertion: no external"
+    "mutation, ambient reads allowed); it never follows `within`."
 ]
 
 let path = "docs/reference/lexical.md"
