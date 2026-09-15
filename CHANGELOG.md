@@ -8,9 +8,11 @@
   as a language primitive).** A `plan` block runs its body but
   CAPTURES its external mutations as `Op` values instead of performing
   them, while ambient reads still RUN — yielding a `Plan`, an
-  equatable and showable `seq<Op>` you inspect, diff, confirm, then
-  apply. The members: `Plan.ops` (the raw ops — `plan <block> ==
-  [WriteFile(p, c)]` is the mock-free test), `Plan.preview` (human
+  equatable and showable value over a `seq<Op>` you inspect, diff,
+  confirm, then apply. Two plans compare directly (both capture,
+  neither performs), so `plan <actual> == plan <expected>` is the
+  mock-free test. The members: `Plan.ops` (the raw ops), `Plan.preview`
+  (human
   lines; wrote nothing), `Plan.isEmpty`, and `Plan.apply` (perform, in
   capture order). The `Op` arms are the mutation surface: `WriteFile
   of string * seq<string>`, `DeleteFile of string`, `Copy`/`Move of
