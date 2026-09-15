@@ -1,6 +1,8 @@
 # weir — plan/apply: effects reified into an inspectable Plan
 
-Status: BLESSED build spec (2026-09-14, designer — opened by call; all
+Status: IN EXECUTION (2026-09-15, branch plan-apply off pure-stage2).
+Probe outcomes recorded below; stages land one commit each.
+Was BLESSED build spec (2026-09-14, designer — opened by call; all
 design forks ruled below). Prerequisite: [PLAN-pure-stage2] (the
 ambient/mutation partition this consumes). Receipt: the modernized
 KSL port ([PLAN-ksl-migration]) — its `Tree.walk` fs interpreter is
@@ -156,6 +158,55 @@ stay done); NO rollback — rollback is the IaC line. Cleanup leans on
    their teachings.
 6. Fuzz: does the generator reach `plan` blocks? Extend it to emit
    plan-captured mutations, or the property never runs.
+
+## Probe outcomes (2026-09-15, recorded before execution)
+
+(1) THE EVAL HOOK POINT — CONFIRMED. `Builtins.effectClassOfCall name
+args` (Builtins.fs) and `Builtins.httpRequestClass reqV` are pure
+functions of the runtime Values; `Http.send`'s per-method class comes
+from the request record's `method` field (`VUnion(case, None)`). But
+builtins are OPAQUE `VBuiltin (Value -> Value)` closures — by `apply`
+the name is gone. So the interception is at the ENV ASSEMBLY, not at a
+central call site: a `PlanMode` thread-local (like `ambientResolver`)
+is consulted INSIDE the wrapped mutation builtins. The env's mutation
+entries (File.write/delete/copy/move, Dir.create/delete/deleteAll/move,
+Http.send{POST..}) are re-bound to capturing wrappers that, when
+planning is active, APPEND an Op and return VUnit; ambient entries are
+untouched so their reads RUN. This keeps the class resolution at the
+value (Http.send reads its request to decide capture-vs-run).
+
+(2) THE ACCEPTANCE DEMO — a NEUTRAL "manifest tree" renderer: a
+`Tree.walk` that Dir.creates directories and File.writes small config
+files across a nested tree. Run inside `plan` it must capture every
+Dir/File op (reads run), and the Plan must `apply` to a byte-identical
+tree vs the direct (non-plan) run. This is the e2e cell (ci/e2e test).
+
+(3) KNOWN-AFTER-APPLY — SHIPPED path-scoped: the plan tracks the set of
+LITERAL paths captured mutations target; a read builtin (File.read/
+readBytes/sha256/size/mode/stat, Dir.list/exists, ls) whose literal
+path argument matches a captured target is a LOCATED runtime refusal
+(the reads-stale-state teaching). A conservative "any read after any
+capture" fallback was NOT needed — path-scoped is precise for v1.
+
+(4) THUNK FORCING — content thunks (`unit -> seq<string>` /
+`unit -> string`) are FORCED at plan time under the plan's own mode: a
+pure/read-only thunk forces to a DATA op (its reads run then); a
+MUTATING thunk refuses (a capture inside a content thunk). In weir's
+value model a "thunk" is a VClosure of unit; File.write already takes
+`seq<string>` DATA, so forcing is: evaluate the seq NOW (inside plan
+mode, so any nested mutation is captured/refused), snapshot to a VSeq.
+The Op therefore always carries data — no closure survives.
+
+(5) apply-in-plan and proc-in-plan REFUSE — proc-in-plan is a CHECK
+error (a command/Proc member reachable under a `plan` region, mirroring
+`deterministic`'s firstMutation walk but refusing proc specifically
+with the plan teaching). apply-in-plan is a runtime refusal (Plan.apply
+consults PlanMode; active => refuse). Nested plan composes (each pushes
+its own capture frame).
+
+(6) FUZZ — an `SPlan` Stmt case (mirroring `SDeterministic`) emits a
+`plan` head + a `File.write` body (captured, not performed), bound and
+read — so invariant 1 exercises the plan parser + eval interception.
 
 ## Footprint
 
