@@ -26,6 +26,14 @@ skill lines and targeted hints).
 
 ## stranded
 
+## owed (cross-repo)
+- 2026-09-15 | `deterministic` keyword -> weir-shell/tree-sitter-weir |
+  Stage 2 [D:pure-stage2] added the `deterministic` keyword (grammar-
+  manifest + lexical.md updated in-repo). The external tree-sitter-weir
+  grammar owes the keyword, so `grammar-currency` goes RED until the
+  maintainer's cross-repo push adds it — the KNOWN, ACCEPTED state, the
+  same posture `xml` and `pure` took. No ssh here; do not chase it.
+
 ## friction
 - 2026-08-20 | Http sends NO default User-Agent, and github.com's API
   403s such requests — a status that reads as an auth failure, not a

@@ -1,5 +1,41 @@
 # Changelog
 
+## v0.0.35
+
+### Added
+
+- **`deterministic` — a determinism assertion, one tier up from
+  `pure`.** A bare `deterministic` head + an indented block asserts
+  the body reaches no EXTERNAL MUTATION; unlike `pure` (which forbids
+  every effect), AMBIENT READS are fine — `fs.read`, `Env`/`Args`,
+  the clock, the query HTTP methods (`Http.fetch`/`Http.query` and
+  `Http.send` of a GET/HEAD/OPTIONS/QUERY request), and `Self.stdin`.
+  A reachable mutation (`File.write`, a command, a mutating HTTP
+  method, any `within` resource) is a located check error naming the
+  offender AND its class ("this 'deterministic' block forbids external
+  mutation, but 'File.write' writes the filesystem — reads are
+  allowed"). `deterministic == only ambient-input`, so a `pure` body
+  (only ∅) is trivially deterministic. Opt-in only, effect-normal
+  outside, its own head — never `within deterministic`. `deterministic`
+  is a new keyword (the grammar-manifest and lexical table gain it; the
+  tree-sitter-weir grammar owes the addition, the `pure`/`xml` posture).
+- **The ambient/mutation partition, consultable at check AND eval
+  time.** Every effect label ({fs.read, fs.write, net, proc, env,
+  clock}) now classifies as ambient-input (reads the world) or
+  external-mutation (changes it), with the `net` split resolved
+  per-METHOD from the request (`Http.send` reads its HttpMethod case).
+  The classification drives the `deterministic` ceiling, `--can`'s
+  new class grouping, and — resolvable where the interpreter runs — the
+  reads-run / mutations-capture rule the plan/apply build consumes.
+
+### Changed
+
+- **`weir check --can` groups its report by class.** The capabilities
+  now render under two headings — ambient reads (inform, change
+  nothing) and mutations (change the world) — so "what does this
+  script CHANGE?" is answerable, not just "what can it touch". The
+  `--json` output gains a `class` field per capability.
+
 ## v0.0.34
 
 ### Changed
