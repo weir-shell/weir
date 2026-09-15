@@ -3024,6 +3024,34 @@ let private httpMethodName (v: Value) : string =
     | VUnion(m, None) -> m.ToUpperInvariant()
     | v -> unreachable $"the checker rejects a non-method {formatValue v}"
 
+// the ambient/mutation class of an `Http.send` request VALUE at EVAL
+// time [D:pure-stage2] — the per-method net split, resolved where the
+// interpreter holds the request (the slice [PLAN-plan-apply] intercepts
+// at eval). The method rides the request record as VUnion(case, None);
+// the class map is Effects', shared with the checker so send{post} and
+// send{get} classify identically both ends.
+let httpRequestClass (reqV: Value) : Weir.Effects.EffectClass =
+    match reqV with
+    | VRecord("HttpRequest", f) -> Weir.Effects.httpMethodClass (httpMethodName (recGet "method" f))
+    | v -> unreachable $"the checker rejects a request on {formatValue v}"
+
+/// the EVAL-time effect class of a builtin CALL [D:pure-stage2]: the
+/// name places every fixed-class effect (Effects.effectClass), and
+/// `Http.send`'s per-method class is resolved from the request VALUE the
+/// interpreter holds at the call site. This is the partition made
+/// consultable at eval — plan/apply's actual dependency. Returns None
+/// for a name that is not classified-effectful (a pure builtin).
+let effectClassOfCall (name: string) (args: Value list) : Weir.Effects.EffectClass option =
+    match name with
+    | "Http.send" ->
+        match args with
+        | reqV :: _ -> Some(httpRequestClass reqV)
+        // no request in hand (partial application): its class is the
+        // method's, unknowable until applied — the caller decides how to
+        // treat an unresolved send; here it is honestly None
+        | [] -> None
+    | _ -> Weir.Effects.effectClass name
+
 // auth is a UNION the runner encodes [D:http]: Basic is base64(user:pass),
 // an ENCODING no caller should build by hand. The Secret is REVEALED here —
 // the one deliberate reveal (the value reaches the socket in the clear, a

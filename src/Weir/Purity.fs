@@ -21,39 +21,11 @@ open Weir.Check
 // whole effectful MODULES (new members default impure — the safe drift
 // direction), plus the effectful members of otherwise-pure modules and
 // the bare effectful names. `fail` stays pure (control flow, not an
-// external touch); `exit` does not (it takes the process down).
-let private effectfulModules =
-    Set [ "File"; "Dir"; "Env"; "Args"; "Proc"; "Net"; "Log" ]
-
-let private effectfulQualified =
-    Set
-        [ "Http.send"
-          "Http.fetch"
-          "Http.query"
-          "Path.glob"
-          "Path.tempRoot"
-          "Path.newTempDir"
-          "Instant.now"
-          "Duration.sleep"
-          // Self.stdin is a per-run VALUE injected by Script (not a
-          // Builtins member), so the effect walk sees a plain variable
-          // — classified here or nowhere. Reading it DRAINS the live
-          // one-shot fd: ambient input, an effect. Its siblings
-          // (Self.args/pid/scriptPath/entryPath) are per-run CONSTANTS
-          // and stay pure-admissible [D:pure-stdin-ctors]
-          "Self.stdin" ]
-
-let private effectfulBare = Set [ "ls"; "glob"; "print"; "printerr"; "exit"; "prompt" ]
-
-let private effectfulName (n: string) =
-    if n.Contains "." then
-        effectfulQualified.Contains n
-        || (match n.Split '.' with
-            | [| m; _ |] -> effectfulModules.Contains m
-            | _ -> false)
-    else
-        // the |-prefixed reifier desugar targets spawn [D:exit-reifiers]
-        effectfulBare.Contains n || n.StartsWith "|"
+// external touch); `exit` does not (it takes the process down). The
+// effectful-name classification (the sets and the predicate) MOVED to
+// Effects.fs [D:pure-stage2] so the ambient/mutation partition can gate
+// on the SAME judgement — a name outside it is pure and has no class.
+let private effectfulName = Weir.Effects.effectfulName
 
 // the CLOSED builtin surface: a dotted or bare name found here is pure
 // unless classified above — exhaustive by construction, so a pure
@@ -150,8 +122,9 @@ let rec isPureExpr (env: Map<string, bool>) (te: TypedExpr) : bool =
 // internal labels' vocabulary [D:pure-stage1] — one phrase per family,
 // offender + span only in v1 (the plan's full call-trace rendering is
 // a recorded simplification)
-let private fsWriteMembers =
-    Set [ "write"; "append"; "copy"; "create"; "delete"; "deleteAll"; "move" ]
+// the fs.write ∪ fs.delete membership lives in Effects [D:pure-stage2] —
+// the ONE set both the partition and this teaching vocabulary read
+let private fsWriteMembers = Weir.Effects.fsWriteMembers
 
 let private effectPhrase (n: string) : string =
     if n.StartsWith "|" then

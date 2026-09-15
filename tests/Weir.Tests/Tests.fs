@@ -5988,6 +5988,79 @@ let pureRegionTests =
                       ()
           } ]
 
+let effectPartitionTests =
+    // STAGE 2 of [D:pure]: the ambient/mutation PARTITION [D:pure-stage2]
+    // — effectClass over the effect-label table, plus the per-method net
+    // split, consultable at BOTH check time (Effects.effectClass) and
+    // eval time (Builtins.effectClassOfCall). This is [PLAN-plan-apply]'s
+    // load-bearing dependency: probe it directly, both ends.
+    let A = Weir.Effects.Ambient
+    let M = Weir.Effects.Mutation
+
+    // a minimal HttpRequest VALUE carrying a method case — the shape the
+    // interpreter holds at an Http.send call site
+    let reqWith (methodCase: string) =
+        VRecord(
+            "HttpRequest",
+            [ "method", VUnion(methodCase, None)
+              "url", VStr "http://x"
+              "auth", VUnion("NoAuth", None)
+              "headers", VSeq Seq.empty
+              "secretHeaders", VSeq Seq.empty
+              "body", VUnion("NoBody", None)
+              "timeout", VDur 30000L
+              "insecure", VBool false ]
+        )
+
+    testList
+        "the ambient/mutation partition [D:pure-stage2]"
+        [ test "effectClass per label — the fixed-class names split as the table says" {
+              // ambient input (reads, changes nothing)
+              for n in [ "File.read"; "File.size"; "Dir.list"; "Path.glob"; "Env.get"; "Args.load"; "Instant.now"; "Self.stdin"; "Net.portOpen"; "Http.fetch"; "Http.query" ] do
+                  Expect.equal (Weir.Effects.effectClass n) (Some A) $"{n} is ambient input"
+              // external mutation (changes the world)
+              for n in [ "File.write"; "File.append"; "File.copy"; "Dir.create"; "Dir.delete"; "Dir.deleteAll"; "Proc.stop"; "print"; "printerr"; "Log.info"; "exit"; "Path.newTempDir" ] do
+                  Expect.equal (Weir.Effects.effectClass n) (Some M) $"{n} is external mutation"
+          }
+          test "Http.send is method-dependent — effectClass alone cannot place it (None)" {
+              Expect.equal (Weir.Effects.effectClass "Http.send") None "the name defers to the request value"
+          }
+          test "the net split: query methods are ambient, mutating verbs are mutation" {
+              for m in [ "GET"; "HEAD"; "OPTIONS"; "QUERY"; "Get"; "get" ] do
+                  Expect.equal (Weir.Effects.httpMethodClass m) A $"{m} is idempotent → ambient"
+
+              for m in [ "POST"; "PUT"; "DELETE"; "PATCH"; "Post"; "patch" ] do
+                  Expect.equal (Weir.Effects.httpMethodClass m) M $"{m} mutates → mutation"
+          }
+          test "EVAL-TIME resolution: Http.send{post} = Mutation, Http.send{get} = Ambient (probe 2)" {
+              // the CRITICAL probe — plan/apply intercepts at eval; the
+              // class of a builtin call must resolve where the interpreter
+              // runs, from the runtime request Value
+              Expect.equal (Weir.Builtins.effectClassOfCall "Http.send" [ reqWith "Post" ]) (Some M) "send{post} mutates"
+              Expect.equal (Weir.Builtins.effectClassOfCall "Http.send" [ reqWith "Get" ]) (Some A) "send{get} reads"
+              Expect.equal (Weir.Builtins.effectClassOfCall "Http.send" [ reqWith "Delete" ]) (Some M) "send{delete} mutates"
+              Expect.equal (Weir.Builtins.effectClassOfCall "Http.send" [ reqWith "Query" ]) (Some A) "send{query} is idempotent"
+          }
+          test "eval-time resolution agrees with the name map for fixed-class calls" {
+              Expect.equal (Weir.Builtins.effectClassOfCall "File.write" []) (Some M) "fs.write is mutation at eval"
+              Expect.equal (Weir.Builtins.effectClassOfCall "File.read" []) (Some A) "fs.read is ambient at eval"
+              Expect.equal (Weir.Builtins.effectClassOfCall "Http.fetch" []) (Some A) "fetch is ambient at eval"
+              Expect.equal (Weir.Builtins.effectClassOfCall "Str.trim" []) None "a pure builtin has no class"
+          }
+          test "the partition is TOTAL over every classified-effectful name effectPhrase names" {
+              // every name the teaching vocabulary classifies effectful
+              // must also get a class — the two cannot drift (Http.send is
+              // the ONE deliberate None, resolved per-request)
+              let names =
+                  [ "File.read"; "File.write"; "Dir.create"; "Dir.list"; "Env.get"; "Args.load"; "Proc.stop"
+                    "Net.portOpen"; "Http.fetch"; "Http.query"; "Log.info"; "print"; "printerr"; "exit"
+                    "ls"; "glob"; "Path.glob"; "Path.tempRoot"; "Path.newTempDir"; "Instant.now"
+                    "Duration.sleep"; "Self.stdin" ]
+
+              for n in names do
+                  Expect.isSome (Weir.Effects.effectClass n) $"{n} is classified"
+          } ]
+
 let withinKindsTests =
     // one table [D:within-kinds], three consumers: hover, completion,
     // and the grammar inventories (the last checked mechanically in
@@ -17459,6 +17532,7 @@ let allTests =
           letBindingHoverTests
           purityBadgeTests
           pureRegionTests
+          effectPartitionTests
           withinKindsTests
           withinAlwaysLockTests
           wireKeyTests

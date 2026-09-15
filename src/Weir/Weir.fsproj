@@ -74,6 +74,9 @@
     <!-- after Check: the schema validator walks the TYPED template;
          before Script: check-time schema resolution [D:contracts-spine] -->
     <Compile Include="Http.fs" />
+    <!-- before Builtins (Eval) and before Purity (Check): the ambient/
+         mutation partition both ends consult [D:pure-stage2] -->
+    <Compile Include="Effects.fs" />
     <Compile Include="Contracts.fs" />
     <Compile Include="Parser.fs" />
     <Compile Include="Session.fs" />
