@@ -6156,6 +6156,15 @@ let deterministicBlockTests =
               let e = firstErr [ "let unknown g ="; "    deterministic"; "        g 1" ]
               Expect.stringContains e.Message "unknown callable" "a function-typed param could mutate"
           }
+          test "reading DATA from an impure binding is NOT a mutation — the fuzz-found line" {
+              // a value computed from an impure command holds DATA once
+              // bound (the command ran outside the block); reading it is
+              // ambient, not mutation — only a CALLABLE mutates when applied
+              Expect.isEmpty
+                  (errsOf
+                      [ "let lines = git status"; "let n ="; "    deterministic"; "        lines |> Seq.length"; "print $\"{n}\"" ])
+                  "reading a command-bound seq is a read, not a write"
+          }
           test "keyword reservation: deterministic cannot be a binder; a blockless head teaches" {
               let e = firstErr [ "let deterministic = 1" ]
               Expect.stringContains e.Message "'deterministic' is a keyword" "the binder slot refuses"

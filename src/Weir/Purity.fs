@@ -320,14 +320,23 @@ let rec firstMutation (env: Map<string, bool>) (te: TypedExpr) : (Span * string)
         elif builtinNames.Force().Contains n || isCtorName n then
             None
         else
-            match Map.tryFind n env with
-            | Some true -> None // an earlier binding proven mutation-free
-            | Some false -> Some(te.Span, $"'{n}' reaches an effect")
-            | None ->
-                if tyHasFun te.Ty then
-                    Some(te.Span, $"'{n}' is an unknown callable, and an unknown callable forfeits determinism")
-                else
-                    None
+            // a user binding: reading DATA is never a mutation — even a
+            // value computed from an impure command holds data once bound
+            // (the command ran OUTSIDE the block). Only a CALLABLE can
+            // mutate when applied: a function-typed binding proven
+            // mutation-free passes; one that is impure or unknown forfeits
+            // (an application would run it — the conservatism line)
+            if not (tyHasFun te.Ty) then
+                None
+            else
+                // conservatism [D:pure-stage1]: PureBindings tracks PURITY,
+                // not mutation-freeness, so a read-only function reads as
+                // impure here — refusing it over-refuses (licensed; a
+                // refusal never lies) rather than track a second env
+                match Map.tryFind n env with
+                | Some true -> None // proven pure ⊂ mutation-free
+                | Some false -> Some(te.Span, $"'{n}' may reach an effect — a function not proven pure forfeits determinism")
+                | None -> Some(te.Span, $"'{n}' is an unknown callable, and an unknown callable forfeits determinism")
     | TELet(n, _, v, b) ->
         firstMutation env v
         |> Option.orElseWith (fun () -> firstMutation (Map.add n true env) b)
