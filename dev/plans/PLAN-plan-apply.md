@@ -1,122 +1,189 @@
 # weir — plan/apply: effects reified into an inspectable Plan
 
-Status: EXPLORATORY, deferred behind a receipt (2026-09-11). Depends on
-[PLAN-pure] (you cannot reify effects you have not named). The KSL port
-([PLAN-ksl-migration]) is the likely receipt.
+Status: BLESSED build spec (2026-09-14, designer — opened by call; all
+design forks ruled below). Prerequisite: [PLAN-pure-stage2] (the
+ambient/mutation partition this consumes). Receipt: the modernized
+KSL port ([PLAN-ksl-migration]) — its `Tree.walk` fs interpreter is
+the ready-made acceptance demo; hand-writing a second (dry-run)
+interpreter is the duplication this feature removes.
 
 ## The idea
 
-A `plan` block runs a computation but CAPTURES its external effects as
-data instead of performing them — yielding an inspectable, diffable `Plan`
-value you can show, confirm, then `apply`. Terraform's plan/apply loop as
-a general language primitive, not a per-tool reimplementation.
+A `plan` block runs a computation but CAPTURES its external mutations
+as data instead of performing them — yielding an inspectable,
+diffable, testable `Plan` value you show, confirm, then `apply`.
+Terraform's plan/apply loop as a language primitive, not a per-tool
+reimplementation.
 
-Scope honesty, stated in the pitch and not only the boundaries: this is a
-FULL guarantee only for weir-NATIVE mutation (`File`/`Dir`/`Http`). In a
-shell most scripts are mostly `proc`, and a plan cannot see past
-`bicep deploy` or `kubectl apply` — a `proc`-heavy script gets a PARTIAL
-plan with opaque process nodes, covering the minority of what it does.
-KSL is the ideal receipt precisely BECAUSE it is fs-only, and that is
-unusual. This is dry-run for weir-native effects — file/config
-orchestration, generation — NOT "dry-run for any script", and the
-homepage's three-distance check is a different (narrower, already-shipped)
-thing; do not conflate them.
+Scope honesty, up front: a FULL guarantee only for weir-NATIVE
+mutation (`File`/`Dir`/`Http`). weir cannot see past a spawned binary,
+so `proc` is REFUSED in plan scope in v1 (below) — this is dry-run for
+file/config orchestration and generation, not "dry-run for any
+script". Do not conflate it with the homepage's three-distance check
+(narrower, already shipped).
 
-## Why it belongs to weir specifically
+## The rulings (2026-09-14)
 
-- It is the value-level DUAL of [PLAN-pure]. #1 asks statically "does this
-  reach `fs.write`?"; plan/apply reifies that same `fs.write` as a pending
-  op. The effect labels ARE the Plan's op constructors:
-  `fs.write -> WriteFile(path, content)`, `proc -> RunProcess(argv)`,
-  `net -> HttpSend(request)`. `Plan` is essentially `seq<Op>` over the
-  effect vocabulary. Build #1 first; plan/apply is its runtime payoff.
-- weir already sells "wrote nothing" (the homepage three-distance check).
-  plan/apply turns that discipline into a primitive.
+1. SPELLING: bare `plan` + `apply`, NOT `within plan`. `plan` enters
+   the `withinKinds` dispatch table as a Standalone kind (the `pure`
+   precedent — a scope that changes WHETHER effects execute, not a
+   scoped resource), spelled bare. Reserving `plan` costs ~nothing: in
+   a language that HAS plan/apply, `let plan = …` is a confusing
+   shadow anyway (the `let match =` class), unlike the common data
+   noun `delay`. `apply`/`preview` stay ordinary members, no
+   reservation. The pair is universal ops vocabulary (Terraform,
+   Pulumi, kubectl) — recognizability is the feature's marketing; a
+   synonym was rejected.
+2. `Plan` IS an inspectable `seq<Op>` over a user-visible union `Op`,
+   EQUATABLE and SHOWABLE — this is what makes mock-free testing exist
+   (`plan <block> == [WriteFile("x", c)]`) and diff/preview fall out
+   for free. An opaque Plan would kill the testing story.
+3. READS RUN, MUTATIONS CAPTURE — [PLAN-pure-stage2]'s partition,
+   double duty. During planning: ambient-input (`fs.read`, `env`,
+   `clock`, query-`net`) EXECUTES (it informs the plan); external-
+   mutation (`fs.write`, `fs.delete`, mutating-`net`) is CAPTURED as
+   an Op. A script reads to decide what to write; deferring reads
+   would make the plan uncomputable.
+4. `proc` HARD-REFUSES in plan scope (check error, teaching): a
+   spawned binary reads AND writes opaquely, uncapturable — plan over
+   weir-native mutation only. (The parked alternative, opaque whole-
+   capture, reopens on a receipt.)
+5. KNOWN-AFTER-APPLY IS REFUSED: an intra-plan read of state an
+   earlier captured mutation targeted (write A, then read A) is a
+   located error — the read would see stale state, and resolving it is
+   the graph-based IaC line weir does not cross. KSL's
+   `NoYamlPath(onRemoved)` is this node; it must be restructured, not
+   accommodated.
+6. THUNKS FORCE AT PLAN TIME UNDER THE PLAN'S OWN PARTITION. A content
+   thunk (KSL's `File(path, content: unit -> string)`) is evaluated
+   while planning: pure or read-only content (the `deterministic`
+   tier) forces into a DATA op; a thunk that would MUTATE refuses
+   (mutation in content position is incoherent; `proc` already
+   refused). Two consequences, both strictly better than deferring:
+   - EVERY PLAN IS ALL-DATA by construction — no thunk survives into
+     the value, so a Plan is ALWAYS renderable/diffable/storable. The
+     old "only for all-data payloads" caveat DISSOLVES.
+   - preview == apply, GUARANTEED. Content is snapshotted at plan time
+     (its reads run then), so apply does exactly what preview showed —
+     a file changing between preview and apply cannot make apply
+     diverge. The Terraform-faithful property, and the same snapshot
+     honesty as ruling 5.
 
-## Mechanism
+## Why it belongs to weir
 
-A `plan` block intercepts the effectful builtins for the scope — same
-SHAPE as `within` (a scope that changes how effects behave), except
-`within` changes lifetime/env and `plan` changes WHETHER they execute.
-Inside `plan`, `File.write "x" c` appends `WriteFile("x", c)` and returns.
+The value-level DUAL of [PLAN-pure]: purity asks statically "does this
+reach `fs.write`?"; plan/apply reifies that same `fs.write` as a
+pending Op. The effect labels ARE the Op constructors
+(`fs.write → WriteFile`, mutating-`net → HttpSend`). weir already
+sells "wrote nothing" (the homepage check); this makes the discipline
+a primitive.
 
-The crucial split — READS RUN, MUTATIONS CAPTURE. A script reads to decide
-what to write; if reads were deferred the plan could not compute the
-writes. So during planning: `fs.read`/`env`/query-`net` execute (they
-inform the plan); `fs.write`/delete/`proc`/mutating-`net` are captured.
-That is exactly the ambient-input vs external-mutation partition floated
-for the `deterministic` tier of [PLAN-pure] — the same line, double duty.
-
-## Notation (indentation blocks, weir-shaped)
+## Notation
 
     let changes =
         plan
             File.write "out.json" rendered
             Dir.copy src dst
 
-    changes |> preview     // render the ops, wrote nothing
-            |> confirm     // interactive, or a CI gate
-            |> apply       // now perform them
+    changes |> Plan.preview |> Seq.iter print   // render; wrote nothing
+    if changes |> Plan.ops |> Seq.isEmpty then …  // inspect / test
+    changes |> Plan.apply                        // now perform them
 
-A `plan` block's result type can carry which effects it captured
-(`Plan[fs.write]`) — the value-level echo of #1's signature.
+`plan` yields a `Plan`; it is an ordinary value — bind it, pass it,
+store it, apply later. `apply` INSIDE a `plan` refuses (a mutation
+cannot be coherently captured). Nested `plan` composes (each yields
+its own value).
 
-## What it buys
+## The Op union (v1)
 
-- Dry-run as a uniform GUARANTEE, not per-tool code.
-- Testing effectful code with NO mocks: `plan { thing } == expectedOps` —
-  assert on the plan value, no filesystem stubbing. For an automation
-  language this is the feature that makes ops code testable.
-- Audit/preview: the plan is a renderable, diffable, storable change log —
-  BOUNDED by function-types' refusals (shipped v0.0.23): a STORABLE plan
-  cannot contain thunks. An op with a function payload (a deferred content
-  thunk, KSL's `File(path, content: unit -> string)`) inherits "show
-  cannot render functions" and every wire's function rejection — such a
-  plan can apply, but not serialize or fully render. Either force thunks
-  at capture time (evaluate `content ()` into a data op while planning) or
-  accept preview-shows-the-op-name-only; the
-  renderable/diffable/storable claim holds only for all-data payloads.
+    Op =
+        | WriteFile of string * seq<string>
+        | DeleteFile of string
+        | Copy of string * string        // File.copy / Dir.copy
+        | Move of string * string
+        | MakeDir of string
+        | DeleteDir of string            // Dir.delete / deleteAll
+        | HttpSend of HttpRequest        // mutating methods only
 
-## Boundaries — where to STOP (feature, not a product)
+Equatable + showable (all-data by ruling 6). The exact arm set tracks
+the `File`/`Dir` mutation surface + mutating-`Http`; a builtin that
+mutates and has no arm is a build failure (the kind-first discipline).
 
-- Imperative capture, NOT declarative convergence. weir's plan records
-  "the ops this script would do"; it is NOT `desired - current` with
-  providers and state refresh. Cross that line and you are building
-  Terraform. Keep `plan` as reified imperative effects.
-- `proc` is the black-box edge (⊤, per [PLAN-pure]): a spawned binary
-  reads AND writes and weir cannot see past it, so `proc` in a plan can
-  only be captured OPAQUELY (deferred whole) — and a later op depending on
-  its output is uncomputable at plan time. v1: plan cleanly over
-  weir-native mutations (`File`/`Dir`/`Http`); `proc` captures opaque or
-  is refused in plan scope.
-- Intra-plan write->read does not compose: write A, read A, write B from A
-  — the deferred write means the read sees OLD A ("known after apply").
-  KSL's `NoYamlPath(onRemoved)` is this exact node in real code. Disallow
-  or clearly document; going graph-based is the IaC-engine line.
-- Apply atomicity: partial failure mid-`apply` leans on `always`/`within`.
+## Surface
 
-## The domain-intent tension (from KSL)
+- `plan <block> : Plan` — the capturing scope.
+- `Plan.ops : Plan -> seq<Op>` — the raw ops (test/inspect).
+- `Plan.preview : Plan -> seq<string>` — human render.
+- `Plan.apply : Plan -> unit` — perform, in order.
+- `Plan.isEmpty`, `Plan == Plan` (the union is equatable) — testing.
+- `confirm` is USER code (or a small helper), not built-in: a plan is
+  a value, confirmation is an ordinary branch.
 
-A generic effect-plan captures `WriteFile` — it does not know that is a
-"kustomize resource add" or a "yaml merge at a path". KSL's
-`KustomizeResource`/`MergeYzlAt` carry INTENT a raw `fs.write` log loses.
-Synthesis worth chasing: DOMAIN OPS as user-defined types that LOWER to
-primitive effects — intent at the top, generic plan/diff/test underneath.
+## apply — the non-claims (stated, not hidden)
 
-## Receipt / trigger
+Sequential, in capture order; STOPS at the first failing Op (prior ops
+stay done); NO rollback — rollback is the IaC line. Cleanup leans on
+`always`/`within`. apply is NOT transactional; the doc says so.
 
-Port KSL's `RenderTo.fileSystem` ([PLAN-ksl-migration]) as a weir union +
-`Tree.walk` interpreter; then find yourself hand-writing a SECOND
-interpreter (`RenderTo.plan`) and duplicating all ~18 op arms. That
-duplication — the N-ops x M-interpreters matrix — is the trigger for
-language-provided plan/apply.
+## Boundaries — where to STOP
 
-## Open questions
+- Imperative capture, NOT declarative convergence. weir records "the
+  ops this script would do" — NOT `desired − current` with providers
+  and state refresh. Cross that and you are building Terraform.
+- DOMAIN-INTENT ops (KSL's typed `KustomizeResource` lowering to
+  primitives — intent at the top, generic plan/diff underneath) are
+  OUT of v1. v1 captures PRIMITIVE effects only. Parked; trigger: a
+  real second domain wanting typed ops over the same Plan machinery.
+- `proc`, known-after-apply, non-transactional apply — ruled above.
 
-1. `plan` a `within`-family block, or its own construct? (Rec: family —
-   and it then inherits [PLAN-pure]'s prerequisite: the `withinKinds`
-   kind-first restructure + union [D:host-strictness]; `plan` would be the
-   SEVENTH kind entering that table.)
-2. Does `Plan` carry its captured-effect set in the type? (Rec: yes, once
-   [PLAN-pure] lands the labels.)
-3. `proc` in a plan: opaque-capture or hard refuse? (Defer to the receipt.)
+## Probes (run FIRST)
+
+1. The partition ([PLAN-pure-stage2]) is consultable at EVAL time, not
+   just check time — plan/apply intercepts at eval, so confirm the
+   class of a builtin call is resolvable where the interpreter runs
+   (esp. `Http.send`'s per-method class from the request value).
+2. The KSL receipt, made concrete: take the modernized port's
+   `Tree.walk` fs render and run it inside `plan` — every `File.write`
+   / `Dir` op must capture, reads must run, and the resulting Plan
+   must `apply` to a byte-identical tree vs the direct run. This IS
+   the acceptance demo (fs-only, the full-guarantee case).
+3. Known-after-apply detection: build the write-A-then-read-A repro;
+   confirm it is a LOCATED refusal, not a silent stale read.
+4. Thunk forcing: a pure content thunk and a read-only one force to
+   data ops; a mutating one refuses — all at plan time; the Plan has
+   no surviving thunks.
+5. `apply` inside `plan`, and `proc` inside `plan` — both refuse with
+   their teachings.
+6. Fuzz: does the generator reach `plan` blocks? Extend it to emit
+   plan-captured mutations, or the property never runs.
+
+## Footprint
+
+- Ast.fs: `plan` a Standalone `withinKinds` kind; `Op`/`Plan` types.
+- Parser.fs: the `plan` head (keyword — grammar ritual + temp
+  `grammar-currency` red).
+- Eval.fs: a PLANNING MODE flag on the interpreter — inside `plan`,
+  mutation builtins append an Op instead of performing; ambient-input
+  builtins run; `proc` and known-after-apply refuse; thunks force
+  under the partition. `Plan.apply` replays the ops through the normal
+  (non-planning) builtins.
+- Check.fs: `plan` yields `Plan`; `apply`-in-plan and `proc`-in-plan
+  refusals; the Op union admission.
+- Builtins.fs: `Plan.ops`/`preview`/`apply`/`isEmpty`; the Op arms per
+  mutation builtin.
+- Tests: the Op union round-trips (capture == expected ops); apply
+  performs; equality/show; every ruling's refusal; the KSL-shaped
+  fs demo as an e2e cell.
+- SKILL/GUIDE: a plan/apply section (dry-run as a primitive, the
+  testability pitch, the boundaries); CHANGELOG; DECISIONS
+  `[D:plan-apply]`; `[D:]` at sites.
+- Gates: build ×4, units, publish, skill-doc, e2e (the KSL-shaped
+  demo + refusals), grammar ritual, fuzz 3×10k.
+
+## Relation
+
+Prerequisite [PLAN-pure-stage2] (the partition). Dual of [PLAN-pure].
+Consumes [PLAN-structural-walk] (`Tree.walk` — the receipt's shape).
+Composes with [PLAN-yaml-nodes] (a `Yaml.merge` write captures as
+`WriteFile` of the rendered doc). The KSL port is the demo; its typed-
+ops synthesis is the parked v2 trigger.
