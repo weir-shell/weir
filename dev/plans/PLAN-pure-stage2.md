@@ -1,9 +1,40 @@
 # weir — PLAN-pure Stage 2: expose labels + the ambient/mutation partition
 
-Status: BLESSED (2026-09-14, designer — opened by call as the
+Status: IN EXECUTION (2026-09-15, branch pure-stage2 off plan-apply-spec).
+Was BLESSED (2026-09-14, designer — opened by call as the
 prerequisite for [PLAN-plan-apply], which cannot reify effects the
 language has not partitioned). Extends [D:pure-stage1] / [D:pure];
 the internal label set has existed since Stage 0.
+
+## Probe outcomes (2026-09-15, recorded before execution)
+
+(1) THE LABELS AND WHERE — the internal effect labels are NOT a
+materialized `label`-typed table. They live IMPLICITLY, two places:
+`Purity.effectfulModules/effectfulQualified/effectfulBare` (the CLASSES,
+a name → effectful boolean) and `Purity.effectPhrase` (the VOCABULARY,
+a name → "'File.write' writes the filesystem" i.e. the fs.write/fs.read/
+net/proc/env/clock label rendered as a phrase). "Stage 0's table" = these
+functions. Stage 2 REFINES them: a new `effectClass : name -> EffectClass`
+in Purity.fs reading the same dispatch effectPhrase already performs, plus
+the per-method net split. No re-tag.
+
+(2) EVAL-TIME CLASS RESOLUTION — CONFIRMED resolvable. At eval an
+`Http.send` call reaches `Builtins.runRequest` with the request as
+`VRecord("HttpRequest", fields)`; the `method` field is `VUnion(case,
+None)` (Get/Post/…), already read by `httpMethodName`. So the class of a
+builtin call — including Http.send's per-method class — is a pure function
+of the runtime Value the interpreter holds at the call site, exactly where
+plan/apply intercepts. Repro built (probe-http-class.weir) resolving
+Http.send{post}=Mutation vs Http.send{get}=Ambient via
+`Builtins.effectClassOfCall` at eval; both classes resolve. Http.fetch/
+Http.query fixed-Ambient; the label→class map is total.
+
+(3) FUZZ GENERATOR — CONFIRMED it does NOT emit `pure` (nor will it emit
+`deterministic`): the pure-stage1 commit left the generator untouched
+("`pure` ungenerable — names are v{n}/w{n}"). Extended here: a new
+`SDeterministic` Stmt case renders a `deterministic` head + an ambient/
+pure body (checks clean), so invariant 1 (generated programs check clean)
+exercises the new parser+checker path.
 
 ## What already exists (do not rebuild)
 
