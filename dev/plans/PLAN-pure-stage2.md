@@ -1,6 +1,14 @@
 # weir — PLAN-pure Stage 2: expose labels + the ambient/mutation partition
 
-Status: IN EXECUTION (2026-09-15, branch pure-stage2 off plan-apply-spec).
+Status: BUILT (2026-09-15, branch pure-stage2 off plan-apply-spec) —
+both deliverables shipped: the ambient/mutation partition
+(Effects.effectClass + the per-method net split, consultable at check
+AND eval; [D:pure-stage2]) and the `deterministic` block (the
+withinKinds union's second standalone head, enforced through the Stage 1
+walk with ceiling = ambient-input). `--can` groups by class; pins,
+docs, and the fuzz-generator extension landed. The tree-sitter-weir
+grammar owes the `deterministic` keyword (grammar-currency red, the
+accepted xml/pure posture — noted in NOTES-agent).
 Was BLESSED (2026-09-14, designer — opened by call as the
 prerequisite for [PLAN-plan-apply], which cannot reify effects the
 language has not partitioned). Extends [D:pure-stage1] / [D:pure];
