@@ -359,6 +359,36 @@ let private sectionOrder =
       "processes"
       "terminates" ]
 
+// the ambient/mutation CLASS of a capability [D:pure-stage2]: the same
+// partition the `deterministic` ceiling and plan/apply use, applied to
+// the report so "what does this script CHANGE?" is answerable — not just
+// "what can it touch?". Ambient READS the world (reproducible), Mutation
+// CHANGES it. A network fact carries its member; Http.send's per-method
+// split is not statically known here (the request value is dynamic), so
+// send lands under mutations conservatively — fetch/query read.
+let private factClass (f: Fact) : Weir.Effects.EffectClass =
+    match f with
+    | FsRead _ -> Weir.Effects.Ambient
+    | EnvRead _ -> Weir.Effects.Ambient
+    | SecretLoad _ -> Weir.Effects.Ambient // loading a secret reads a channel
+    | Network(m, _) ->
+        match Weir.Effects.effectClass m with
+        | Some c -> c
+        | None -> Weir.Effects.Mutation // Http.send — method not static here
+    // everything else changes the world: commands, writes, cwd, env
+    // overlays for children, scoped procs, proc control, termination,
+    // an argv-visible secret (rides a spawn), an opaque interpreter arg
+    | Runs _
+    | OpaqueArg _
+    | FsWrite _
+    | TempWrite _
+    | CwdChange
+    | EnvWrite _
+    | SecretArgv _
+    | ProcScope
+    | ProcCtl _
+    | Terminates _ -> Weir.Effects.Mutation
+
 let opaqueCount (caps: Cap list) : int =
     caps
     |> List.sumBy (fun c ->
@@ -390,38 +420,53 @@ let renderHuman (script: string) (caps: Cap list) : string =
             | _ -> None)
         |> Set.ofList
 
+    // each entry carries its CLASS (ambient read vs mutation) alongside
+    // its section+message+site, so the report groups by class first
+    // [D:pure-stage2] — "what does this script CHANGE?" is answerable
     let entries =
         caps
         |> List.choose (fun c ->
             match c.Fact with
             | OpaqueArg _ -> None
-            | Runs p when opaqueSites.Contains(p, c.Site) -> Some(("runs", $"{p} (opaque)"), c.Site)
-            | _ -> Some(factLine c, c.Site))
+            | Runs p when opaqueSites.Contains(p, c.Site) -> Some(factClass c.Fact, ("runs", $"{p} (opaque)"), c.Site)
+            | _ -> Some(factClass c.Fact, factLine c, c.Site))
 
     // identical messages group with a count, sites kept — 22 lines of
     // `weir` carry one line of information [D:can-report]. Distinct
     // sites stay visible, so a genuine same-line pair reads as one.
     let grouped =
         entries
-        |> List.groupBy fst
-        |> List.map (fun ((section, msg), hits) -> section, msg, hits |> List.map snd)
+        |> List.groupBy (fun (cls, sm, _) -> cls, sm)
+        |> List.map (fun ((cls, (section, msg)), hits) -> cls, section, msg, hits |> List.map (fun (_, _, s) -> s))
 
-    for section in sectionOrder do
-        let lines = grouped |> List.filter (fun (sec, _, _) -> sec = section)
+    // the TWO class buckets [D:pure-stage2], ambient reads first (they
+    // inform, they do not change), then mutations (what the script does
+    // to the world) — each bucket keeps the section order within it
+    let renderBucket (cls: Weir.Effects.EffectClass) (heading: string) =
+        let inClass = grouped |> List.filter (fun (c, _, _, _) -> c = cls)
 
-        if not lines.IsEmpty then
-            sb.AppendLine $"  {section}:" |> ignore
+        if not inClass.IsEmpty then
+            sb.AppendLine $"  {heading}:" |> ignore
 
-            for _, msg, sites in lines do
-                let siteList = sites |> List.map siteStr |> String.concat " "
+            for section in sectionOrder do
+                let lines = inClass |> List.filter (fun (_, sec, _, _) -> sec = section)
 
-                let line =
-                    if List.length sites > 1 then
-                        $"{msg} × {List.length sites}  {siteList}"
-                    else
-                        $"{msg}  {siteList}"
+                if not lines.IsEmpty then
+                    sb.AppendLine $"    {section}:" |> ignore
 
-                sb.AppendLine $"    {line}" |> ignore
+                    for _, _, msg, sites in lines do
+                        let siteList = sites |> List.map siteStr |> String.concat " "
+
+                        let line =
+                            if List.length sites > 1 then
+                                $"{msg} × {List.length sites}  {siteList}"
+                            else
+                                $"{msg}  {siteList}"
+
+                        sb.AppendLine $"      {line}" |> ignore
+
+    renderBucket Weir.Effects.Ambient "ambient reads (inform, change nothing)"
+    renderBucket Weir.Effects.Mutation "mutations (change the world)"
 
     if caps.IsEmpty then
         sb.AppendLine "  nothing — no commands, no filesystem, no network, no environment"
@@ -472,6 +517,14 @@ let renderJson (script: string) (caps: Cap list) : string =
 
         w.WriteString("kind", kind)
         w.WriteString("detail", detail)
+        // the ambient/mutation class [D:pure-stage2] — machines get the
+        // partition too, so "what changes?" is a filter, not a heuristic
+        w.WriteString(
+            "class",
+            match factClass c.Fact with
+            | Weir.Effects.Ambient -> "ambient"
+            | Weir.Effects.Mutation -> "mutation"
+        )
         writeSite c.Site
         w.WriteEndObject()
 
