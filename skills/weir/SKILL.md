@@ -664,11 +664,14 @@ let x =
   body runs, but its external MUTATIONS (`File`/`Dir`/mutating-`Http`)
   are CAPTURED as `Op` values instead of performed, while AMBIENT
   READS still run (a script reads to decide what to write). The block
-  yields a `Plan` — an equatable, showable `seq<Op>` you inspect,
-  diff, confirm, then apply: `Plan.ops` (the raw ops — `plan <block>
-  == [WriteFile(p, c)]` is the mock-free test), `Plan.preview` (human
-  lines; wrote nothing), `Plan.isEmpty`, and `Plan.apply` (perform, in
-  capture order). The Op arms are the mutation surface: `WriteFile of
+  yields a `Plan` — an equatable, showable value over a `seq<Op>` you
+  inspect, diff, confirm, then apply. Two plans compare directly (both
+  capture, neither performs), so `plan <actual> == plan <expected>` is
+  the mock-free test; `Plan.ops` gives the raw ops for a per-op assert
+  (`Plan.ops |> Seq.exactlyOne == WriteFile(p, c)`; a bare `seq<Op>`
+  itself is not equatable, so compare plans or ops, not the seq).
+  `Plan.preview` renders human lines (wrote nothing), `Plan.isEmpty`,
+  and `Plan.apply` performs in capture order. The Op arms are the mutation surface: `WriteFile of
   string * seq<string>`, `DeleteFile`, `Copy`/`Move of string *
   string`, `MakeDir`, `DeleteDir`, `HttpSend of HttpRequest` (a
   mutating method only; `show` masks the auth Secret). Content is
@@ -689,6 +692,12 @@ let changes =
         File.write "/tmp/weir-plan-demo.json" ["{}"]
 if changes |> Plan.isEmpty then print "nothing to do"
 changes |> Plan.preview |> Seq.iter print   // render; wrote nothing
+// the mock-free test: two plans compare, neither performs
+let expected =
+    plan
+        File.write "/tmp/weir-plan-demo.json" ["{}"]
+print $"matches expected: {changes == expected}"
+print $"one op: {(changes |> Plan.ops |> Seq.exactlyOne) == WriteFile("/tmp/weir-plan-demo.json", ["{}"])}"
 ```
 
 ```weir-error
