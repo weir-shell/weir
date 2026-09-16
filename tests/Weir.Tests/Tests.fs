@@ -1680,6 +1680,67 @@ let boundaryTests =
                   | Error terr -> failtest (formatError terr)
               | other -> failtest $"unexpected: {other}"
           }
+          test "$<<< dedents IDENTICALLY to <<<: only the hole differs [D:text-block]" {
+              // the regression [D:text-block]: $<<< once left-trimmed every
+              // line (runFragmentAt's `ws`), flattening deeper-indented lines
+              // to column 0 while <<< kept the relative indent. The twins must
+              // differ ONLY in whether {holes} interpolate — indentation,
+              // interior blanks, deeper indent and trailing-clip byte-identical.
+              let asm lines' =
+                  match Weir.Script.assemble (lines' |> List.mapi (fun i l -> i + 1, l)) with
+                  | Ok [ ll ] -> ll.Text
+                  | other -> failtest $"assembly: {other}"
+
+              let evalBlock src =
+                  match Weir.Parser.parseLine realResolver src with
+                  | Ok(SLet(_, e)) ->
+                      match typecheck env e with
+                      | Ok te ->
+                          match Weir.Eval.eval valueEnv te with
+                          | Weir.Eval.VSeq items ->
+                              items
+                              |> Seq.map (fun v ->
+                                  match v with
+                                  | Weir.Eval.VStr s -> s
+                                  | v -> failtest $"bad item {v}")
+                              |> List.ofSeq
+                          | v -> failtest $"expected VSeq, got {v}"
+                      | Error terr -> failtest (formatError terr)
+                  | other -> failtest $"unexpected: {other}"
+
+              // same content, plain vs interp — deeper indent, a hole at the
+              // START of a deeper line, an interior blank, and a trailing blank
+              let plainSrc =
+                  asm
+                      [ "let t = <<<"
+                        "    a:"
+                        "        b: 1"
+                        "            c: 1"
+                        ""
+                        "        1"
+                        "    e: 1"
+                        "" ]
+
+              let interpSrc =
+                  asm
+                      [ "let t = $<<<"
+                        "    a:"
+                        "        b: {1}"
+                        "            c: {1}"
+                        ""
+                        "        {1}"
+                        "    e: {1}"
+                        "" ]
+
+              let expected =
+                  [ "a:"; "    b: 1"; "        c: 1"; ""; "    1"; "e: 1" ]
+
+              Expect.equal (evalBlock plainSrc) expected "plain <<< keeps relative + deeper indent"
+              Expect.equal
+                  (evalBlock interpSrc)
+                  expected
+                  "$<<< dedents byte-identically to <<<: deeper indent kept, a leading-hole line keeps its indent, interior blank kept, trailing blank clipped"
+          }
           test "heredoc errors: no block, outdent, the }-teaching, empty [D:text-block]" {
               match Weir.Script.assemble [ 1, "let t = <<<"; 2, "print \"x\"" ] with
               | Error e -> Expect.stringContains e "'<<<' needs an indented block" "the no-block error names the glyph"
