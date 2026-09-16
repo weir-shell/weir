@@ -70,6 +70,10 @@
     <!-- before Check: the checker builds from-yaml Shapes; before Eval:
          the adapters parse/render through it [D:yaml-v1] -->
     <Compile Include="Yaml.fs" />
+    <!-- after Yaml: #infer lowers a JSON/YAML sample to declaration text,
+         reusing Yaml's parser [D:repl-infer]; before Builtins so the
+         Json/Yaml.inferShape members call it. Never on a check path. -->
+    <Compile Include="Infer.fs" />
     <Compile Include="Check.fs" />
     <!-- after Check: the schema validator walks the TYPED template;
          before Script: check-time schema resolution [D:contracts-spine] -->

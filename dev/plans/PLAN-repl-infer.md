@@ -1,8 +1,26 @@
 # weir — `#infer`: named types drafted from a JSON/YAML sample in the REPL
 
-Status: PROPOSED (2026-09-15, designer conversation — the JSON-
-exploration ergonomic). A REPL scaffolding directive, not a language
-change; `weir check` stays evaluation-free and untouched.
+Status: IN EXECUTION (2026-09-16 — probes green). A REPL scaffolding
+directive, not a language change; `weir check` stays evaluation-free and
+untouched.
+
+## Probe outcomes (2026-09-16)
+
+All four probes GREEN (tests/Weir.Tests/InferProbe.fs):
+
+1. SESSION INJECTION — a `type` line fed through `Script.checkStatement`
+   (the exact path the REPL's fold uses) returns a new `TypeEnv` whose
+   `Types` carries the decl; a subsequent `from json <Name>` line checks
+   against it. So `#infer` injects by checking synthesized `type` lines.
+2. `Builtins.bareAliasHomes : Map<string,string>` is reachable and gives
+   `map→Seq`, `where→Seq`, `iter→Seq`, `startsWith→Str` — the qualified
+   home is `<value>.<name>`.
+3. The adapters parse a `seq<string>` into a schema-less `Infer.INode`
+   (json via `System.Text.Json`, yaml via `Yaml.parseDocs`, jsonl per
+   line) — no declared type needed (the from-json reader is schema-driven
+   and could NOT be reused; #infer needs the reverse, so `Infer.fs` owns
+   its own schema-less lowering).
+4. The empty-array / null-field / heterogeneous-array note paths fire.
 
 ## The tension it resolves
 
