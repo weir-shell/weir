@@ -1101,6 +1101,23 @@ let private printHint (state: State) (line: string) =
         line
     |> Option.iter (fun h -> Console.WriteLine $"hint: {h}")
 
+// the LAST-RESULT binding [D:repl-it]: every REPL line that produces a
+// value (an expression, a command, or a `let` RHS — the echo path) also
+// binds it to the session name `it`, ghci's convention. `_` is taken
+// (the `_.field` lambda shorthand and the `let _ =` discard), so `it` is
+// the spelling; it collides with nothing and is REPL-only (scripts/-e
+// never see it, like the bare aliases). A unit statement or a directive
+// leaves `it` untouched. Both the TypeEnv scheme AND the value bind, so
+// the next line both checks and evaluates against `it`.
+let private bindIt (ty: Ty) (v: Eval.Value) (env: State) : State =
+    if ty = TUnit then
+        env
+    else
+        { TypeEnv =
+            { env.TypeEnv with
+                Values = Map.add "it" (Types.generalize ty) env.TypeEnv.Values }
+          Values = Map.add "it" v env.Values }
+
 // the Ok-side rendering, shared by the single-line and multiline
 // submission paths [D:repl-multiline]
 let private evalCheckedBody (state: State) (chk: Script.CheckedStatement) : State =
@@ -1200,6 +1217,7 @@ let private evalCheckedBody (state: State) (chk: Script.CheckedStatement) : Stat
 
             { TypeEnv = chk.Env
               Values = Map.add name v state.Values }
+            |> bindIt te.Ty v
          with
          | Eval.ExitRequest _ -> reraise ()
          | ex ->
@@ -1238,10 +1256,12 @@ let private evalCheckedBody (state: State) (chk: Script.CheckedStatement) : Stat
             (try
                 let v = Eval.eval state.Values te
 
-                if v <> Eval.VUnit then
-                    // ONE enumeration for the whole echo [D:echo-once]
-                    let v = Eval.echoPrep v
+                // ONE enumeration for the whole echo [D:echo-once]; the
+                // prepped (cached) value is also what binds to `it`, so a
+                // command-backed seq reused as `it` does not re-run
+                let ev = if v <> Eval.VUnit then Eval.echoPrep v else v
 
+                if v <> Eval.VUnit then
                     let cap =
                         if Console.IsOutputRedirected then
                             Eval.echoPipedCap
@@ -1251,16 +1271,16 @@ let private evalCheckedBody (state: State) (chk: Script.CheckedStatement) : Stat
                     match
                         (if Console.IsOutputRedirected then
                              None
-                         elif Eval.echoBinary cap v then
+                         elif Eval.echoBinary cap ev then
                              Some(
                                  [],
                                  Some
                                      "binary output — the echo refuses a terminal; redirect to a file, or print deliberately"
                              )
                          elif te.Ty = TSeq TStr then
-                             Eval.echoLines cap v
+                             Eval.echoLines cap ev
                          else
-                             Eval.echoTable cap (termWidth ()) v)
+                             Eval.echoTable cap (termWidth ()) ev)
                     with
                     | Some(lines, hint) ->
                         (if te.Ty = TSeq TStr then
@@ -1270,11 +1290,11 @@ let private evalCheckedBody (state: State) (chk: Script.CheckedStatement) : Stat
 
                         echoMeta $": {formatTy te.Ty}{Eval.echoTail hint}"
                     | None ->
-                        let rendered, hint = Eval.echoValue cap v
+                        let rendered, hint = Eval.echoValue cap ev
                         let tail = Eval.echoTail hint
                         Console.WriteLine $"{rendered} : {formatTy te.Ty}{tail}"
 
-                state
+                bindIt te.Ty ev state
              with
              | Eval.ExitRequest _ -> reraise ()
              | ex ->
