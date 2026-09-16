@@ -36,6 +36,16 @@
   directive leaves it untouched. Lets a just-built pipeline feed the
   next line (and the no-source `#infer`).
 
+### Fixed
+
+- **`$<<<` heredocs now dedent byte-identically to plain `<<<`.** The
+  interpolated form over-stripped leading whitespace, flattening
+  deeper-indented lines to column 0, while `<<<` correctly preserved
+  indentation relative to the first content line. The two forms now
+  differ ONLY in whether `{holes}` interpolate — indentation, interior
+  blank lines, deeper indentation and trailing-blank clipping match
+  exactly, as the docs always promised.
+
 ## v0.0.35
 
 ### Added
