@@ -456,9 +456,9 @@ let isPureHead (piece: string) : bool =
 // the standalone plan head [D:plan-apply]: `plan` (bare, or behind
 // `let <name> =`) opens its block exactly as pure does — but a plan body
 // is a STATEMENT sequence (bare consecutive mutations, captured as Ops),
-// so unlike pure/deterministic it genuinely NEEDS the sibling sentinel
+// so unlike pure/readonly it genuinely NEEDS the sibling sentinel
 // between its statements (the reason it is registered in dangleOpensBlock
-// where deterministic is not — deterministic's body is value-shaped).
+// where readonly is not — readonly's body is value-shaped).
 let isPlanHead (piece: string) : bool =
     let t = piece.Trim()
 
@@ -3106,7 +3106,7 @@ let checkStatement
         | None -> Ok st
         | Some(te, tag) ->
             // pureViolation now returns the COMPLETE located message
-            // (pure's "…forbids effects, but…" OR deterministic's
+            // (pure's "…forbids effects, but…" OR readonly's
             // "…forbids external mutation, but…") [D:pure-stage2]
             match Purity.pureViolation tenv.PureBindings te with
             | Some(span, message) ->

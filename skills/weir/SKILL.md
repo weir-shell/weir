@@ -625,7 +625,7 @@ print title
 let pure leak p = File.write p ["x"]
 ```
 
-- `deterministic` + an indented block is the DETERMINISM ASSERTION
+- `readonly` + an indented block is the READ-ONLY ASSERTION
   [D:pure-stage2], ONE TIER UP from `pure`: the body must reach no
   EXTERNAL MUTATION — `fs.write`/`fs.delete`, `proc` (a command or a
   Proc member), console writes, the mutating HTTP methods
@@ -633,20 +633,20 @@ let pure leak p = File.write p ["x"]
   are fine: `fs.read`, `Env`/`Args`, the clock (`Instant.now`), the
   query HTTP methods (`Http.fetch`/`Http.query`, and `Http.send` of a
   GET/HEAD/OPTIONS/QUERY request), and `Self.stdin`. So
-  `deterministic == only ambient-input`, and a `pure` body (only ∅)
-  is trivially deterministic. A reachable mutation is a located check
-  error naming the offender AND its class ("this 'deterministic' block
+  `readonly == only ambient-input`, and a `pure` body (only ∅)
+  is trivially read-only. A reachable mutation is a located check
+  error naming the offender AND its class ("this 'readonly' block
   forbids external mutation, but 'File.write' writes the filesystem —
   reads are allowed"). The line is [PLAN-plan-apply]'s too: the same
   ambient/mutation partition drives `--can`'s class grouping (ambient
   reads vs mutations) and plan/apply's reads-run / mutations-capture
   rule. Opt-in ONLY, effect-normal outside, its own head — never
-  `within deterministic`.
+  `within readonly`.
 
 ```weir
-// a reproducible transform: reads the world, changes nothing
+// reads the world, changes nothing — the read-only island
 let cfg =
-    deterministic
+    readonly
         let home = Env.get "HOME" |> Option.defaultValue "/"
         $"{home}/config"
 print cfg
@@ -655,7 +655,7 @@ print cfg
 ```weir-error
 // a reachable external mutation refuses; an ambient read would pass
 let x =
-    deterministic
+    readonly
         File.write "out" ["y"]
 ```
 

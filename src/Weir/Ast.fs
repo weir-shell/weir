@@ -52,13 +52,13 @@ type WithinKindId =
     // the purity assertion [D:pure-stage1] — the family's first
     // STANDALONE head: spelled `pure`, never `within pure`
     | WithinPure
-    // the determinism assertion [D:pure-stage2] — a STANDALONE head one
+    // the read-only assertion [D:pure-stage2] — a STANDALONE head one
     // tier up the lattice from pure: the body reaches no EXTERNAL
-    // MUTATION (ambient reads are fine); spelled `deterministic`, never
-    // `within deterministic`
-    | WithinDeterministic
+    // MUTATION (ambient reads are fine); spelled `readonly`, never
+    // `within readonly`
+    | WithinReadonly
     // the plan/apply capture [D:plan-apply] — a STANDALONE head like
-    // pure/deterministic, but it CHANGES the value: the body's external
+    // pure/readonly, but it CHANGES the value: the body's external
     // MUTATIONS are captured as Ops (reads still run) and the region
     // yields a `Plan`. Spelled `plan`, never `within plan`.
     | WithinPlan
@@ -117,13 +117,13 @@ let withinKinds: WithinKind list =
         Doc = "a purity assertion: the block's body must reach no effect" }
       // [D:pure-stage2]: one tier up from pure — the body must reach no
       // EXTERNAL MUTATION; ambient reads (fs.read, env, clock, query-net)
-      // are allowed. Its own head, never `within deterministic`.
-      { Id = WithinDeterministic
-        Name = "deterministic"
+      // are allowed. Its own head, never `within readonly`.
+      { Id = WithinReadonly
+        Name = "readonly"
         Binds = false
         Standalone = true
-        Doc = "a determinism assertion: the block's body must reach no external mutation (ambient reads are allowed)" }
-      // [D:plan-apply]: the third standalone head — like deterministic it
+        Doc = "a read-only assertion: the block's body must reach no external mutation (ambient reads are allowed)" }
+      // [D:plan-apply]: the third standalone head — like readonly it
       // partitions ambient/mutation, but instead of REFUSING mutation it
       // CAPTURES it as an Op; the region yields a Plan. Its own head,
       // never `within plan`.
@@ -494,9 +494,9 @@ let rec sexpr (e: Expr) : string =
     | EWithin(WithinPure, _, _, _, b) ->
         // the standalone head renders as written [D:pure-stage1]
         $"(pure {sexpr b})"
-    | EWithin(WithinDeterministic, _, _, _, b) ->
+    | EWithin(WithinReadonly, _, _, _, b) ->
         // the second standalone head [D:pure-stage2]
-        $"(deterministic {sexpr b})"
+        $"(readonly {sexpr b})"
     | EWithin(WithinPlan, _, _, _, b) ->
         // the third standalone head [D:plan-apply]
         $"(plan {sexpr b})"

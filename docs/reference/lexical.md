@@ -60,7 +60,7 @@ here without a docs edit.
 | kind | keywords |
 |---|---|
 | core, F#-shaped | `do`, `elif`, `else`, `false`, `for`, `fun`, `function`, `if`, `in`, `let`, `match`, `module`, `of`, `then`, `true`, `type`, `when`, `with` |
-| weir-specific | `always`, `deterministic`, `from`, `import`, `plan`, `poll`, `pure`, `retry`, `to`, `until`, `within` |
+| weir-specific | `always`, `from`, `import`, `plan`, `poll`, `pure`, `readonly`, `retry`, `to`, `until`, `within` |
 | reserved, no meaning | `mutable`, `rec` |
 | reserved to teach | `def`, `return`, `try`, `while` |
 
@@ -68,8 +68,8 @@ here without a docs edit.
 adapters read `from` `json`, `jsonl`, `xml`, `yaml` and write `to` `json`, `jsonl`, `yaml`;
 kind and adapter words are ordinary identifiers everywhere else.
 `pure` heads its own indented block (a purity assertion) and marks
-`let pure` bindings; it never follows `within`. `deterministic` heads
-its own indented block too (a determinism assertion: no external
+`let pure` bindings; it never follows `within`. `readonly` heads
+its own indented block too (a read-only assertion: no external
 mutation, ambient reads allowed); it never follows `within`.
 <!-- keywords:end -->
 

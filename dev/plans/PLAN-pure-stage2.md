@@ -3,11 +3,11 @@
 Status: BUILT (2026-09-15, branch pure-stage2 off plan-apply-spec) —
 both deliverables shipped: the ambient/mutation partition
 (Effects.effectClass + the per-method net split, consultable at check
-AND eval; [D:pure-stage2]) and the `deterministic` block (the
+AND eval; [D:pure-stage2]) and the `readonly` block (the
 withinKinds union's second standalone head, enforced through the Stage 1
 walk with ceiling = ambient-input). `--can` groups by class; pins,
 docs, and the fuzz-generator extension landed. The tree-sitter-weir
-grammar owes the `deterministic` keyword (grammar-currency red, the
+grammar owes the `readonly` keyword (grammar-currency red, the
 accepted xml/pure posture — noted in NOTES-agent).
 Was BLESSED (2026-09-14, designer — opened by call as the
 prerequisite for [PLAN-plan-apply], which cannot reify effects the
@@ -38,9 +38,9 @@ Http.send{post}=Mutation vs Http.send{get}=Ambient via
 Http.query fixed-Ambient; the label→class map is total.
 
 (3) FUZZ GENERATOR — CONFIRMED it does NOT emit `pure` (nor will it emit
-`deterministic`): the pure-stage1 commit left the generator untouched
+`readonly`): the pure-stage1 commit left the generator untouched
 ("`pure` ungenerable — names are v{n}/w{n}"). Extended here: a new
-`SDeterministic` Stmt case renders a `deterministic` head + an ambient/
+`SReadonly` Stmt case renders a `readonly` head + an ambient/
 pure body (checks clean), so invariant 1 (generated programs check clean)
 exercises the new parser+checker path.
 
@@ -64,7 +64,7 @@ AMBIENT-INPUT vs EXTERNAL-MUTATION:
   `proc`, and the MUTATING subset of `net` (POST/PUT/DELETE/PATCH).
 
 This line is LOAD-BEARING TWICE, which is why it earns its own tier:
-it is the `deterministic` split (a computation that only reads ambient
+it is the `readonly` split (a computation that only reads ambient
 input is reproducible), AND it is exactly [PLAN-plan-apply]'s
 reads-RUN / mutations-CAPTURE rule. One classification, two consumers.
 
@@ -81,13 +81,13 @@ method-dependent, resolved at the value.
    per-method `net` resolution. This is the slice [PLAN-plan-apply]
    consumes at eval time; it is small and derives from the existing
    labels.
-2. `deterministic` — the user-facing Stage 2 surface: a bare head +
+2. `readonly` — the user-facing Stage 2 surface: a bare head +
    indented block (the `pure`/withinKinds precedent, a Standalone
    kind) asserting the body reaches NO external mutation — ambient
-   reads are FINE. `deterministic == only ambient-input`, one tier up
+   reads are FINE. `readonly == only ambient-input`, one tier up
    the lattice from `pure == only ∅`. A reachable mutation is a
    located check error naming the offender and its class ("this
-   'deterministic' block forbids external mutation, but 'File.write'
+   'readonly' block forbids external mutation, but 'File.write'
    writes the filesystem — reads are allowed"). Opt-in only, effect-
    normal outside it, same as `pure`.
 3. `--can` already lists labels; it now groups them by class in the
@@ -98,7 +98,7 @@ method-dependent, resolved at the value.
 
 - `only <effects>` arbitrary ceiling block + effect vocabulary
   granularity (coarse `fs`, an `io` bundle) — its own trigger (ported
-  code wanting a specific ceiling); `deterministic` is the ONE named
+  code wanting a specific ceiling); `readonly` is the ONE named
   ceiling Stage 2 ships because it has two consumers.
 - `within tmp` region discharge (scoped writes counted ambient) —
   region tracking, own trigger; v1 `within tmp` still colours
@@ -109,22 +109,22 @@ method-dependent, resolved at the value.
 ## Footprint
 
 - Check.fs / Purity.fs: `effectClass` over the existing label table;
-  `deterministic` reachability (reuse the Stage 1 walk, ceiling =
+  `readonly` reachability (reuse the Stage 1 walk, ceiling =
   ambient-input instead of ∅); the located mutation teaching.
-- Ast.fs: `deterministic` joins `withinKinds` as a Standalone kind
+- Ast.fs: `readonly` joins `withinKinds` as a Standalone kind
   (the [D:within-kind-union] table; `pure`'s precedent — grammar
   admits, a mutation refuses at check).
-- Parser.fs: `deterministic` head (a keyword; the tree-sitter-weir
+- Parser.fs: `readonly` head (a keyword; the tree-sitter-weir
   ritual + temporary `grammar-currency` red, same posture as `pure`).
 - Builtins.fs: the per-method `net` class resolution reads the request
   `HttpMethod`.
 - Repl.fs `--can`: group the report by class.
-- Tests: `effectClass` per label; `deterministic` admits a reading
+- Tests: `effectClass` per label; `readonly` admits a reading
   body, refuses a writing one, refuses `proc`, admits `Http.query`,
   refuses `Http.send {post}` and admits `Http.send {get}`; the badge
-  interplay; `pure ⊂ deterministic` (a pure body is trivially
-  deterministic).
-- SKILL: a `deterministic` bullet beside `pure`; CHANGELOG; DECISIONS
+  interplay; `pure ⊂ readonly` (a pure body is trivially
+  read-only).
+- SKILL: a `readonly` bullet beside `pure`; CHANGELOG; DECISIONS
   `[D:pure-stage2]` (cites [D:pure-stage1], states the partition is
   plan/apply's shared line); `[D:]` at code sites.
 - Gates: build ×4, units, publish, skill-doc, e2e cell, and — a

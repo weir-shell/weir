@@ -77,7 +77,7 @@ about the pinned tree, not a trusted boundary declaration.
 Implementation discipline that makes every later tier a refinement: tag
 each builtin INTERNALLY with its real label (`fs.read`, `fs.write`,
 `net`, `proc`, `env`, `clock`) but EXPOSE only the boolean in v1. Then
-`only …` / `deterministic` later expose labels already recorded — never a
+`only …` / `readonly` later expose labels already recorded — never a
 re-tag. `pure == only ∅`, so the bottom of the lattice shipped now is the
 bottom of the lattice extended later. No corner painted.
 
@@ -122,7 +122,7 @@ bottom of the lattice extended later. No corner painted.
   in the dbt port; it is the signal for the very next tier.
 - `proc = ⊤` rules / refusing a vacuous `only … proc` (a ceiling that
   admits proc bounds nothing) — lands WITH `only`.
-- `deterministic` tier (ambient-input vs external-mutation split) —
+- `readonly` tier (ambient-input vs external-mutation split) —
   TRIGGER: a cache / reproducibility need.
 - `within tmp` region discharge (writes confined to a scoped, deleted dir
   counted pure) — TRIGGER: a pure transform wanting scratch space; needs

@@ -1920,21 +1920,22 @@ callable — a function-typed parameter, an import's member — forfeits
 it. A refusal can be over-careful; an acceptance is never wrong.
 Nothing outside a `pure` region is ever gated.
 
-## Reproducible islands: `deterministic`
+## Read-only islands: `readonly`
 
-`deterministic` is one tier looser than `pure`. Where `pure` forbids
-every effect, a `deterministic` block forbids only **external
+`readonly` is one tier looser than `pure`. Where `pure` forbids
+every effect, a `readonly` block forbids only **external
 mutation** — writing files, running commands, the mutating HTTP verbs
 (POST/PUT/DELETE/PATCH), any `within` resource — while **ambient
 reads are allowed**: reading a file, `Env`/`Args`, the clock, a query
 HTTP method (`Http.fetch`/`Http.query`, or `Http.send` of a
-GET/HEAD/OPTIONS/QUERY request), and stdin. The idea is
-reproducibility: a computation that only reads the world produces the
-same result each time.
+GET/HEAD/OPTIONS/QUERY request), and stdin. The guarantee is
+*no external mutation*: a computation that only reads the world
+changes nothing (it does not, however, guarantee determinism — the
+clock and stdin are readable, hence the name).
 
 ```weir
 let cfg =
-    deterministic
+    readonly
         let home = Env.get "HOME" |> Option.defaultValue "/"
         $"{home}/config"
 print cfg
@@ -1944,12 +1945,12 @@ A reachable mutation is a located check error naming the offender and
 its class:
 
 ```text
-deploy.weir:3:9: error [check]: this 'deterministic' block forbids external mutation, but 'File.write' writes the filesystem — reads are allowed
+deploy.weir:3:9: error [check]: this 'readonly' block forbids external mutation, but 'File.write' writes the filesystem — reads are allowed
 ```
 
-So `deterministic` admits everything `pure` does and more: a pure body
-is trivially deterministic. Like `pure`, it is opt-in, effect-normal
-outside, and its own head — never `within deterministic`. The same
+So `readonly` admits everything `pure` does and more: a pure body
+is trivially read-only. Like `pure`, it is opt-in, effect-normal
+outside, and its own head — never `within readonly`. The same
 ambient/mutation line drives `weir check --can`, which now groups a
 script's capabilities into ambient reads (they inform, they change
 nothing) and mutations (they change the world), so "what does this
@@ -1959,9 +1960,9 @@ script change?" reads off the report.
 
 A `plan` block runs a computation but **captures** its external
 mutations as data instead of performing them — the Terraform plan/apply
-loop, built into the language. Where `deterministic` *forbids*
+loop, built into the language. Where `readonly` *forbids*
 mutation, `plan` *reifies* it: the same `File.write` that
-`deterministic` refuses, a `plan` records as a pending `WriteFile` op.
+`readonly` refuses, a `plan` records as a pending `WriteFile` op.
 
     let changes =
         plan
@@ -2005,7 +2006,7 @@ The boundaries are where the guarantee stops being honest:
 
 `confirm` is ordinary user code — a plan is a value, so confirmation is
 a branch on it (`if approved then changes |> Plan.apply`), not a
-builtin. Like `pure`/`deterministic`, `plan` is opt-in and its own head
+builtin. Like `pure`/`readonly`, `plan` is opt-in and its own head
 — never `within plan`.
 
 ## Failing and diagnosing

@@ -9,7 +9,7 @@ module Weir.Purity
 // Script's types) stays in Can.fs and delegates.
 //
 // A binding is pure when its body can reach NO effect — exposed as a
-// boolean only (labels stay internal; `only`/`deterministic` tiers
+// boolean only (labels stay internal; `only`/`readonly` tiers
 // expose them later). CONSERVATIVE by construction: an unknown
 // callable (a function-typed param, an applied field, an import's
 // member) forfeits — the judgement may miss, it can never lie.
@@ -79,14 +79,14 @@ let rec isPureExpr (env: Map<string, bool>) (te: TypedExpr) : bool =
         // region asserts, it does not touch); every resource kind is
         // an effect [D:pure-stage1]
         (match kind with
-         // pure/deterministic ASSERT, they do not touch — the region is
-         // pure iff its body is (an ambient read inside a deterministic
+         // pure/readonly ASSERT, they do not touch — the region is
+         // pure iff its body is (an ambient read inside a readonly
          // block still makes it impure) [D:pure-stage1] [D:pure-stage2].
          // A plan region [D:plan-apply] is transparent to the OUTER law:
          // its ambient reads still RUN when the plan is built, so the
          // region is pure iff its body is.
          | WithinPure
-         | WithinDeterministic
+         | WithinReadonly
          | WithinPlan -> isPureExpr env body
          | WithinTmp
          | WithinCd
@@ -177,13 +177,13 @@ let rec firstEffect (env: Map<string, bool>) (te: TypedExpr) : (Span * string) o
     | TECmd(prog, _, _) -> Some(te.Span, $"'{prog}' runs a command")
     | TEWithin(kind, _, _, _, body) ->
         (match kind with
-         // a nested pure/deterministic region asserts, it does not touch —
+         // a nested pure/readonly region asserts, it does not touch —
          // the pure ceiling still walks its body (an ambient read inside a
-         // deterministic block is an effect pure forbids) [D:pure-stage2].
+         // readonly block is an effect pure forbids) [D:pure-stage2].
          // A plan region [D:plan-apply] is transparent to the outer pure
          // ceiling — its reads run when the plan builds.
          | WithinPure
-         | WithinDeterministic
+         | WithinReadonly
          | WithinPlan -> firstEffect env body
          | WithinTmp
          | WithinCd
@@ -225,7 +225,7 @@ let rec firstEffect (env: Map<string, bool>) (te: TypedExpr) : (Span * string) o
     | _ -> Check.childExprs te |> List.tryPick (firstEffect env)
 
 // the mutation-class phrase: effectPhrase names the effect; this
-// appends its CLASS so the deterministic teaching says both what the
+// appends its CLASS so the readonly teaching says both what the
 // offender does AND that it is external mutation [D:pure-stage2]
 let private mutationPhrase (n: string) : string = effectPhrase n
 
@@ -271,7 +271,7 @@ let private httpSendIsMutation (arg: TypedExpr option) : bool =
     | Some m -> Weir.Effects.httpMethodClass m = Weir.Effects.Mutation
     | None -> true // unknown method — refuse (the safe direction)
 
-/// the FIRST external-MUTATION node under a `deterministic` region, with
+/// the FIRST external-MUTATION node under a `readonly` region, with
 /// its span [D:pure-stage2] — the ambient/mutation partition's ceiling
 /// walk. Ambient effects (fs.read, env, clock, query-net, Self.stdin)
 /// PASS; only external mutation (fs.write, fs.delete, proc, mutating-net,
@@ -293,22 +293,22 @@ let rec firstMutation (env: Map<string, bool>) (te: TypedExpr) : (Span * string)
     | TECmd(prog, _, _) -> Some(te.Span, $"'{prog}' runs a command") // proc: mutation
     | TEWithin(kind, _, arg, opts, body) ->
         (match kind with
-         // a nested pure/deterministic region asserts, does not touch —
+         // a nested pure/readonly region asserts, does not touch —
          // walk its body for mutations (a pure body has none, trivially
-         // deterministic; the pin `pure ⊂ deterministic`)
+         // read-only; the pin `pure ⊂ readonly`)
          | WithinPure
-         | WithinDeterministic ->
+         | WithinReadonly ->
              [ arg; opts ] |> List.choose id |> List.tryPick (firstMutation env)
              |> Option.orElseWith (fun () -> firstMutation env body)
          // a plan region [D:plan-apply] performs NO external mutation: its
          // captured builtins do not run (they append Ops), only its
-         // ambient reads execute — so a `plan` block is deterministic. The
+         // ambient reads execute — so a `plan` block is read-only. The
          // captured mutations are the Plan's DATA, not effects here;
          // Plan.apply (a later call) is where they'd run.
          | WithinPlan -> None
          // tmp/cd/env/proc/lock all scope a RESOURCE: tmp/proc mutate,
          // cd/env/lock change the process/child world — every within
-         // resource is external mutation for the determinism ceiling
+         // resource is external mutation for the read-only ceiling
          | WithinTmp
          | WithinCd
          | WithinEnv
@@ -348,8 +348,8 @@ let rec firstMutation (env: Map<string, bool>) (te: TypedExpr) : (Span * string)
                 // refusal never lies) rather than track a second env
                 match Map.tryFind n env with
                 | Some true -> None // proven pure ⊂ mutation-free
-                | Some false -> Some(te.Span, $"'{n}' may reach an effect — a function not proven pure forfeits determinism")
-                | None -> Some(te.Span, $"'{n}' is an unknown callable, and an unknown callable forfeits determinism")
+                | Some false -> Some(te.Span, $"'{n}' may reach an effect — a function not proven pure forfeits read-only")
+                | None -> Some(te.Span, $"'{n}' is an unknown callable, and an unknown callable forfeits read-only")
     | TELet(n, _, v, b) ->
         firstMutation env v
         |> Option.orElseWith (fun () -> firstMutation (Map.add n true env) b)
@@ -387,12 +387,12 @@ let rec firstMutation (env: Map<string, bool>) (te: TypedExpr) : (Span * string)
          | _ ->
              Some(
                  (headOf te).Span,
-                 "a computed function is an unknown callable, and an unknown callable forfeits determinism"
+                 "a computed function is an unknown callable, and an unknown callable forfeits read-only"
              ))
     | _ -> Check.childExprs te |> List.tryPick (firstMutation env)
 
 /// the FIRST plan-scope refusal under a `plan` region [D:plan-apply]:
-/// unlike deterministic, fs/http MUTATIONS are fine (they are captured
+/// unlike readonly, fs/http MUTATIONS are fine (they are captured
 /// as Ops) — but `proc` HARD-REFUSES (a spawned binary reads AND writes
 /// opaquely, uncapturable) and `apply` INSIDE a plan refuses (a mutation
 /// cannot be coherently captured). A nested `plan` region COMPOSES: this
@@ -439,20 +439,20 @@ let rec pureViolation (env: Map<string, bool>) (te: TypedExpr) : (Span * string)
         (match kind with
          // pure: the located teaching names the offender's effect family
          // [D:pure-stage1] — the FULL message lives here now (was wrapped
-         // in Script) so the deterministic ceiling can carry its own
+         // in Script) so the readonly ceiling can carry its own
          | WithinPure ->
              firstEffect env body
              |> Option.map (fun (span, phrase) -> span, $"this 'pure' block forbids effects, but {phrase}")
-         // the determinism ceiling [D:pure-stage2]: ambient reads pass,
+         // the read-only ceiling [D:pure-stage2]: ambient reads pass,
          // external mutation refuses — the located teaching names the
          // offender AND its class
-         | WithinDeterministic ->
+         | WithinReadonly ->
              (firstMutation env body
               |> Option.map (fun (span, phrase) ->
-                  span, $"this 'deterministic' block forbids external mutation, but {phrase} — reads are allowed"))
+                  span, $"this 'readonly' block forbids external mutation, but {phrase} — reads are allowed"))
          // the plan scope [D:plan-apply]: fs/http mutations are CAPTURED
          // (fine), proc and nested apply REFUSE — then keep walking the
-         // body for nested pure/deterministic/plan regions
+         // body for nested pure/readonly/plan regions
          | WithinPlan ->
              firstPlanRefusal body
              |> Option.orElseWith (fun () -> pureViolation env body)

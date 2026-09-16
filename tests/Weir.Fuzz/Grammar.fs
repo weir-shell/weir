@@ -91,13 +91,13 @@ type Stmt =
     // by construction
     | SBodyCmdLet of binder: string * marker: string * word: string * reify: bool
     | SSeqPrint of string // xs |> print (seq<string> binders only)
-    // a `deterministic` block [D:pure-stage2]: a bare head + an indented
-    // PURE body (an int expression — pure is trivially deterministic, so
+    // a `readonly` block [D:pure-stage2]: a bare head + an indented
+    // PURE body (an int expression — pure is trivially read-only, so
     // it checks clean under the ambient-input ceiling), bound and read.
-    // The pure precedent left the generator untouched (`deterministic` is
+    // The pure precedent left the generator untouched (`readonly` is
     // ungenerable as a v{n}/w{n} name); this extends it so invariant 1
     // exercises the new parser+checker path.
-    | SDeterministic of binder: string * body: Expr
+    | SReadonly of binder: string * body: Expr
     // a `plan` block [D:plan-apply]: a bare head + an indented body that
     // File.writes a fixed path (a captured mutation — the write does NOT
     // perform, it appends a WriteFile Op), bound and read via Plan.isEmpty
@@ -269,7 +269,7 @@ let rec stmtDefs (s: Stmt) : string list =
     | SFloat(v, _, _, _, _) -> [ v ]
     | SRetryPoll(v, _, _) -> [ v ]
     | SMapLambda(_, n, _, _, _, _, _) -> [ n ]
-    | SDeterministic(v, _) -> [ v ]
+    | SReadonly(v, _) -> [ v ]
     | SPlan v -> [ v ]
     | SIterLambda _
     | SPrint _
@@ -284,7 +284,7 @@ let rec stmtUses (s: Stmt) : string list =
     | SRetryPoll _ -> []
     // the block is self-contained: its body reads earlier names, and the
     // binder's reader is the trailing self-print (renderUses counts it)
-    | SDeterministic(_, body) -> exprUses body
+    | SReadonly(_, body) -> exprUses body
     // the plan body writes a fixed path, reads no earlier names
     | SPlan _ -> []
     | SLet(_, e) -> exprUses e
@@ -336,7 +336,7 @@ let rec private renderUses (s: Stmt) : string list =
     | SFloat(v, _, _, _, _) -> [ v ]
     | SRetryPoll(v, _, _) -> [ v ]
     // the trailing `print $"{v}"` reads the binder; the body reads earlier
-    | SDeterministic(v, body) -> v :: exprUses body
+    | SReadonly(v, body) -> v :: exprUses body
     // the trailing `print $"{v |> Plan.isEmpty}"` reads the plan binder
     | SPlan v -> [ v ]
     | SLet(_, e) -> exprUses e
@@ -473,11 +473,11 @@ let renderTagged (cfg: RenderCfg) (p: Program) : (string * bool) list =
     let rec emitStmt (ind: int) (s: Stmt) =
         match s with
         | SLet(v, e) -> emit ind $"let {bindName v} = {renderExpr e}"
-        | SDeterministic(v, body) ->
-            // a bare `deterministic` head [D:pure-stage2] + a PURE body
-            // (trivially deterministic — checks clean), bound and read
+        | SReadonly(v, body) ->
+            // a bare `readonly` head [D:pure-stage2] + a PURE body
+            // (trivially read-only — checks clean), bound and read
             emit ind $"let {bindName v} ="
-            emit (ind + 4) "deterministic"
+            emit (ind + 4) "readonly"
             emit (ind + 8) (renderExpr body)
             emit ind $"print $\"{{{v}}}\""
         | SPlan v ->
@@ -1212,8 +1212,8 @@ let rec genStmt (sc: Scope) (depth: int) (inBlock: bool) : Gen<Stmt * Scope> =
                       return SRetryPoll(v, isPoll, value), sc
                   }
 
-          // a `deterministic` block [D:pure-stage2]: a PURE int body,
-          // trivially deterministic, so it checks clean under the ambient
+          // a `readonly` block [D:pure-stage2]: a PURE int body,
+          // trivially read-only, so it checks clean under the ambient
           // ceiling — exercises the new standalone head + the enforcement
           if not inBlock then
               yield
@@ -1221,7 +1221,7 @@ let rec genStmt (sc: Scope) (depth: int) (inBlock: bool) : Gen<Stmt * Scope> =
                   gen {
                       let v, sc = freshVal sc
                       let! body = genExpr sc VInt 1
-                      return SDeterministic(v, body), { sc with Ints = v :: sc.Ints }
+                      return SReadonly(v, body), { sc with Ints = v :: sc.Ints }
                   }
 
           // a `plan` block [D:plan-apply]: a captured File.write, bound and

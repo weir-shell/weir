@@ -18,13 +18,13 @@ module Weir.Effects
 //     `exit`, and the MUTATING subset of net (POST/PUT/DELETE/PATCH).
 //
 // This line is LOAD-BEARING TWICE, which is why it earns its own tier:
-// it is the `deterministic` ceiling (a computation that only reads
+// it is the `readonly` ceiling (a computation that only reads
 // ambient input is reproducible) AND it is exactly [PLAN-plan-apply]'s
 // reads-RUN / mutations-CAPTURE rule. One classification, two consumers.
 //
 // It lives HERE — before Builtins (Eval) and before Purity (Check) — so
 // BOTH ends consult the SAME source of truth: the checker refuses a
-// mutation in a `deterministic` block, and the interpreter (plan/apply)
+// mutation in a `readonly` block, and the interpreter (plan/apply)
 // classifies a builtin call at EVAL time. `net` cannot be split on the
 // NAME alone: `Http.send` carries its method in the request VALUE, so
 // its class is per-CALL — resolved at the value (Builtins reads the
