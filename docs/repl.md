@@ -180,3 +180,11 @@ The fixed bindings (this is not a keybinding-config feature):
 | <kbd>Ctrl+R</kbd> | history search (fzf when installed; entries display one-line, ⏎-joined) |
 | <kbd>Esc</kbd> / <kbd>Ctrl+C</kbd> | abandon the whole buffer |
 | <kbd>Ctrl+D</kbd> | EOF on an empty buffer; delete/join otherwise |
+
+A REDIRECTED session (`printf '…' | weir`) has no editor, but it
+assembles multi-line statements the same way — the way a script does.
+It reads physical lines and keeps them together while the statement is
+still open (a heredoc body, a multi-line `type`, an offside
+`if`/`match` block, a leading-`|>` pipeline), so a pasted or scripted
+block runs as one statement. A single statement per line is unchanged,
+and a directive is always one line.
