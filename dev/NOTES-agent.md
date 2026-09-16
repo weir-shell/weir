@@ -33,6 +33,13 @@ skill lines and targeted hints).
   grammar owes the keyword, so `grammar-currency` goes RED until the
   maintainer's cross-repo push adds it — the KNOWN, ACCEPTED state, the
   same posture `xml` and `pure` took. No ssh here; do not chase it.
+- 2026-09-15 | `plan` keyword -> weir-shell/tree-sitter-weir |
+  [D:plan-apply] added the `plan` keyword (grammar-manifest + gen-lexical
+  + lexical.md + in-repo tmLanguage/micro updated). The external tree-
+  sitter-weir grammar now owes BOTH `deterministic` AND `plan`, so
+  `grammar-currency` stays RED (`[deterministic, plan]`) until the
+  maintainer's cross-repo push — the SAME accepted posture. Do not chase
+  it; do not push the external grammar repo.
 
 ## friction
 - 2026-08-20 | Http sends NO default User-Agent, and github.com's API

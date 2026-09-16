@@ -7597,4 +7597,88 @@ out=$(cd "$tdir" && $BIN mluse.weir)
 expect "multi-line application assembles in a module body" '534' "$out"
 rm -rf "$tdir"
 
+# ---- plan/apply [D:plan-apply]: the acceptance cell ------------------
+# a NEUTRAL manifest-tree renderer run inside `plan` must CAPTURE every
+# File.write/Dir op (its reads run) and the resulting Plan must `apply`
+# to a BYTE-IDENTICAL tree vs the direct (non-plan) run — the full-
+# guarantee case (fs-only). Plus the refusals: proc-in-plan and
+# apply-in-plan (check), known-after-apply (located runtime).
+padir=$(mktemp -d)
+cat > "$padir/render.weir" <<'WEOF'
+type Node = { Rel: string; Content: seq<string> }
+
+let nodes =
+    [ { Rel = "conf"; Content = [] }
+      { Rel = "conf/app.ini"; Content = ["name = demo"; "port = 8080"] }
+      { Rel = "conf/env"; Content = [] }
+      { Rel = "conf/env/prod.env"; Content = ["TIER=prod"] } ]
+
+let render root =
+    for n in nodes do
+        let full = $"{root}/{n.Rel}"
+        if n.Content |> Seq.isEmpty then
+            Dir.create full
+        else
+            File.write full n.Content
+
+let base = Self.args |> Seq.head
+Dir.create $"{base}/direct"
+render $"{base}/direct"
+
+Dir.create $"{base}/applied"
+let changes =
+    plan
+        render $"{base}/applied"
+
+print $"ops: {changes |> Plan.ops |> Seq.length}"
+changes |> Plan.apply
+print "applied"
+WEOF
+out=$($BIN "$padir/render.weir" "$padir" 2>&1) || fail "the plan acceptance render failed: $out"
+expect "plan captures every fs op (reads run)" "ops: 4" "$out"
+expect "the plan applies" "applied" "$out"
+if ! diff -r "$padir/direct" "$padir/applied" >/dev/null 2>&1; then
+    fail "the applied tree diverges from the direct run — not byte-identical"
+fi
+echo "e2e ok: plan/apply — the applied tree is byte-identical to the direct run"
+
+# proc-in-plan REFUSES (check)
+cat > "$padir/proc.weir" <<'WEOF'
+let p =
+    plan
+        git status
+print $"{p |> Plan.isEmpty}"
+WEOF
+out=$($BIN check "$padir/proc.weir" 2>&1) && fail "proc inside a plan must refuse" || true
+echo "$out" | grep -qF "refused inside 'plan'" || fail "the proc-in-plan teaching must fire: $out"
+echo "e2e ok: plan/apply — proc inside a plan refuses"
+
+# apply-in-plan REFUSES (check)
+cat > "$padir/applyin.weir" <<'WEOF'
+let q =
+    plan
+        File.write "f" ["a"]
+let p =
+    plan
+        q |> Plan.apply
+print $"{p |> Plan.isEmpty}"
+WEOF
+out=$($BIN check "$padir/applyin.weir" 2>&1) && fail "apply inside a plan must refuse" || true
+echo "$out" | grep -qF "'Plan.apply' is refused inside 'plan'" || fail "the apply-in-plan teaching must fire: $out"
+echo "e2e ok: plan/apply — apply inside a plan refuses"
+
+# known-after-apply: a read of a captured target is a LOCATED runtime refusal
+cat > "$padir/kaa.weir" <<WEOF
+let p =
+    plan
+        File.write "$padir/kaa.txt" ["a"]
+        let _c = File.read "$padir/kaa.txt"
+        print "unreached"
+print \$"{p |> Plan.isEmpty}"
+WEOF
+out=$($BIN "$padir/kaa.weir" 2>&1) && fail "a known-after-apply read must refuse" || true
+echo "$out" | grep -qF "known-after-apply" || fail "the known-after-apply teaching must fire: $out"
+echo "e2e ok: plan/apply — a known-after-apply read refuses (located)"
+rm -rf "$padir"
+
 echo "e2e battery: all green"

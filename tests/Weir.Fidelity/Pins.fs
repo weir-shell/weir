@@ -294,7 +294,8 @@ let pins =
           "bare-comma arm pattern, guard outside the tuple"
           "let _v =\n    match (1, 2) with\n    | a, b when a < b -> a\n    | _ -> 9\n"
           Same
-      pin "multi-payload constructor" "type Msg = | Move of int * int | Stop\nlet _m = Move (1, 2)\n" Same
+      // Shift, not Move — Move/Copy are now prelude Op ctors [D:plan-apply]
+      pin "multi-payload constructor" "type Msg = | Shift of int * int | Stop\nlet _m = Shift (1, 2)\n" Same
       pinT
           "tuple equality (componentwise, both compilers)"
           "let _b = (1, \"a\") == (1, \"a\")\n"

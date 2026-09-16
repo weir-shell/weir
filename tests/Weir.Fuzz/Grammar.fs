@@ -98,6 +98,11 @@ type Stmt =
     // ungenerable as a v{n}/w{n} name); this extends it so invariant 1
     // exercises the new parser+checker path.
     | SDeterministic of binder: string * body: Expr
+    // a `plan` block [D:plan-apply]: a bare head + an indented body that
+    // File.writes a fixed path (a captured mutation — the write does NOT
+    // perform, it appends a WriteFile Op), bound and read via Plan.isEmpty
+    // — so invariant 1 exercises the plan parser + the eval interception.
+    | SPlan of binder: string
     // multiline lambdas [D:multiline-lambda]: body block under a
     // dangling `(fun p ->`; closerAlone renders `)` on its own line
     | SIterLambda of
@@ -265,6 +270,7 @@ let rec stmtDefs (s: Stmt) : string list =
     | SRetryPoll(v, _, _) -> [ v ]
     | SMapLambda(_, n, _, _, _, _, _) -> [ n ]
     | SDeterministic(v, _) -> [ v ]
+    | SPlan v -> [ v ]
     | SIterLambda _
     | SPrint _
     | SIf _
@@ -279,6 +285,8 @@ let rec stmtUses (s: Stmt) : string list =
     // the block is self-contained: its body reads earlier names, and the
     // binder's reader is the trailing self-print (renderUses counts it)
     | SDeterministic(_, body) -> exprUses body
+    // the plan body writes a fixed path, reads no earlier names
+    | SPlan _ -> []
     | SLet(_, e) -> exprUses e
     | SLetBlock(_, b) ->
         let localDefs = b.Body |> List.collect stmtDefs |> Set.ofList
@@ -329,6 +337,8 @@ let rec private renderUses (s: Stmt) : string list =
     | SRetryPoll(v, _, _) -> [ v ]
     // the trailing `print $"{v}"` reads the binder; the body reads earlier
     | SDeterministic(v, body) -> v :: exprUses body
+    // the trailing `print $"{v |> Plan.isEmpty}"` reads the plan binder
+    | SPlan v -> [ v ]
     | SLet(_, e) -> exprUses e
     | SLetBlock(_, b) -> (b.Body |> List.collect renderUses) @ exprUses b.Result
     | SLetMatch(_, m) -> matchUses m
@@ -470,6 +480,14 @@ let renderTagged (cfg: RenderCfg) (p: Program) : (string * bool) list =
             emit (ind + 4) "deterministic"
             emit (ind + 8) (renderExpr body)
             emit ind $"print $\"{{{v}}}\""
+        | SPlan v ->
+            // a bare `plan` head [D:plan-apply] + a CAPTURED write (the
+            // write does not perform — it becomes a WriteFile Op); bound
+            // and read via Plan.isEmpty (which forces the ops seq)
+            emit ind $"let {bindName v} ="
+            emit (ind + 4) "plan"
+            emit (ind + 8) $"File.write \"/tmp/weir-fuzz-plan-{v}\" [\"x\"]"
+            emit ind $"print $\"{{{v} |> Plan.isEmpty}}\""
         | SRetryPoll(v, isPoll, value) ->
             emit
                 ind
@@ -1204,6 +1222,19 @@ let rec genStmt (sc: Scope) (depth: int) (inBlock: bool) : Gen<Stmt * Scope> =
                       let v, sc = freshVal sc
                       let! body = genExpr sc VInt 1
                       return SDeterministic(v, body), { sc with Ints = v :: sc.Ints }
+                  }
+
+          // a `plan` block [D:plan-apply]: a captured File.write, bound and
+          // read via Plan.isEmpty — exercises the plan head + the eval
+          // interception (the write does not perform). The binder is
+          // Plan-typed, read only by its trailing self-print, so it joins
+          // no scope collection.
+          if not inBlock then
+              yield
+                  2,
+                  gen {
+                      let v, sc = freshVal sc
+                      return SPlan v, sc
                   }
 
           if not inBlock then

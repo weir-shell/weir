@@ -858,6 +858,39 @@
       ]
     },
     {
+      "name": "Plan",
+      "members": [
+        {
+          "name": "apply",
+          "signature": "Plan.apply (plan: Plan) : unit",
+          "summary": "Perform a plan\u0027s ops through the normal builtins, in capture order. STOPS at the first failing op (prior ops stay done); NOT transactional \u2014 no rollback (that is the IaC line weir does not cross). Refused inside a \u0060plan\u0060 block.",
+          "example": null,
+          "pointer": null
+        },
+        {
+          "name": "isEmpty",
+          "signature": "Plan.isEmpty (plan: Plan) : bool",
+          "summary": "True when the plan captured no ops (a script that only read the world builds an empty plan).",
+          "example": null,
+          "pointer": null
+        },
+        {
+          "name": "ops",
+          "signature": "Plan.ops (plan: Plan) : seq\u003COp\u003E",
+          "summary": "The captured Ops of a plan, in capture order \u2014 the raw seq\u003COp\u003E for test and inspection (\u0060plan \u003Cblock\u003E == [WriteFile(p, c)]\u0060; the union is equatable/showable, Secrets masked).",
+          "example": null,
+          "pointer": null
+        },
+        {
+          "name": "preview",
+          "signature": "Plan.preview (plan: Plan) : seq\u003Cstring\u003E",
+          "summary": "A human render of a plan\u0027s ops, one line each \u2014 \u0027wrote nothing\u0027 yet (a plan performs no mutation; Plan.apply does). Secrets are masked.",
+          "example": null,
+          "pointer": null
+        }
+      ]
+    },
+    {
       "name": "Poll",
       "members": [
         {

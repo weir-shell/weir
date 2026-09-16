@@ -659,6 +659,45 @@ let x =
         File.write "out" ["y"]
 ```
 
+- `plan` + an indented block is the PLAN/APPLY CAPTURE [D:plan-apply],
+  the third standalone head — dry-run as a language primitive. The
+  body runs, but its external MUTATIONS (`File`/`Dir`/mutating-`Http`)
+  are CAPTURED as `Op` values instead of performed, while AMBIENT
+  READS still run (a script reads to decide what to write). The block
+  yields a `Plan` — an equatable, showable `seq<Op>` you inspect,
+  diff, confirm, then apply: `Plan.ops` (the raw ops — `plan <block>
+  == [WriteFile(p, c)]` is the mock-free test), `Plan.preview` (human
+  lines; wrote nothing), `Plan.isEmpty`, and `Plan.apply` (perform, in
+  capture order). The Op arms are the mutation surface: `WriteFile of
+  string * seq<string>`, `DeleteFile`, `Copy`/`Move of string *
+  string`, `MakeDir`, `DeleteDir`, `HttpSend of HttpRequest` (a
+  mutating method only; `show` masks the auth Secret). Content is
+  snapshotted at plan time, so `preview == apply`. The refusals:
+  `proc` inside a plan (a spawned binary is uncapturable — plan covers
+  weir-native mutation only), `apply` inside a plan (a capture cannot
+  be captured — apply OUTSIDE), and a known-after-apply read (reading
+  a path an earlier captured mutation targets would see stale state).
+  `apply` is NOT transactional: it stops at the first failing op with
+  prior ops done, no rollback (that is the IaC line weir does not
+  cross). `confirm` is your own branch on a Plan value, not a builtin.
+  Opt-in, effect-normal outside, its own head — never `within plan`.
+
+```weir
+// dry-run a config write: the plan captures it, the file is untouched
+let changes =
+    plan
+        File.write "/tmp/weir-plan-demo.json" ["{}"]
+if changes |> Plan.isEmpty then print "nothing to do"
+changes |> Plan.preview |> Seq.iter print   // render; wrote nothing
+```
+
+```weir-error
+// proc is refused inside a plan — a spawned binary is uncapturable
+let p =
+    plan
+        git status
+```
+
 - A `let` RHS takes command mode wherever lets go — top level AND
   inside bodies (`let tree = git rev-parse $c |> Seq.exactlyOne` in a
   function); `$()` covers sub-expression positions. `function | pat -> e | …`
