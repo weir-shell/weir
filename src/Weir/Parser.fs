@@ -2565,9 +2565,13 @@ let private runFragment (col: int) (frag: string) (p: Parser<'a, unit>) : Result
 
 // runFragment plus WHERE — the padded run's column is already the true
 // logical column, so a heredoc line's hole errors land on the offending
-// character [D:text-block]
+// character [D:text-block]. The `col - 1` pad is column bookkeeping ONLY:
+// skip EXACTLY it (never `ws`, which would also eat the fragment's own
+// leading indent) so `$<<<` preserves relative indentation byte-for-byte
+// like plain `<<<` — the twins differ ONLY in hole interpolation
+// [D:text-block].
 let private runFragmentAt (col: int) (frag: string) (p: Parser<'a, unit>) : Result<'a, string * int> =
-    match run (ws >>. p .>> eof) (System.String(' ', col - 1) + frag) with
+    match run (skipManyMinMaxSatisfy (col - 1) (col - 1) (fun c -> c = ' ') >>. p .>> eof) (System.String(' ', col - 1) + frag) with
     | Success(v, _, _) -> Result.Ok v
     | Failure(msg, err, _) -> Result.Error(fragmentErrorLine msg, int err.Position.Column)
 

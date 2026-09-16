@@ -83,27 +83,23 @@ let commonBlock = <<<
         production: false
     networkStorePath: "/networkStore"
 
-// %PLACEHOLDER% substitution rather than an interpolated $<<< block: $<<<
-// currently strips leading whitespace from every line, which YAML cannot
-// survive. (Tracked as a weir bug; collapses to a $<<< hole once fixed.)
-let listenTemplate = <<<
+// An interpolated $<<< block: the ports splice straight in. show keeps
+// them polymorphic (s is row-typed), and $<<< dedents byte-identically
+// to plain <<<, so the deeper YAML indentation survives.
+let listenBlock s = $<<<
     drpc:
         stream:
             maxMsgSizeMb: 256
     yamux:
         listenAddrs:
-            - "0.0.0.0:%PORT%"
+            - "0.0.0.0:{show s.port}"
         writeTimeoutSec: 10
         dialTimeoutSec: 10
     quic:
         listenAddrs:
-            - "0.0.0.0:%QUIC_PORT%"
+            - "0.0.0.0:{show s.quicPort}"
         writeTimeoutSec: 10
         dialTimeoutSec: 10
-
-let listenBlock s =
-    listenTemplate
-    |> Seq.map (Str.replace "%QUIC_PORT%" (show s.quicPort) >> Str.replace "%PORT%" (show s.port))
 
 let coordinatorBlock = <<<
     mongo:

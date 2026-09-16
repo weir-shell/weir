@@ -38,6 +38,13 @@
 
 ### Fixed
 
+- **`$<<<` heredocs now dedent byte-identically to plain `<<<`.** The
+  interpolated form over-stripped leading whitespace, flattening
+  deeper-indented lines to column 0, while `<<<` correctly preserved
+  indentation relative to the first content line. The two forms now
+  differ ONLY in whether `{holes}` interpolate — indentation, interior
+  blank lines, deeper indentation and trailing-blank clipping match
+  exactly, as the docs always promised.
 - **A piped REPL (`printf '…' | weir`) now assembles multi-line
   statements.** The redirected-stdin loop read one physical line per
   prompt, so a statement spanning lines (a heredoc body, a multi-line
