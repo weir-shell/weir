@@ -1591,6 +1591,15 @@ let casingError (span: Span) (name: string) : Result<'a, TypeError> =
 // at construction: the DERIVED no-home set, never a hand copy.
 let reservedBinderNames: Set<string> ref = ref Set.empty
 
+// the KNOWN builtin name that is BOTH a module and a builtin value
+// [D:repl-infer]: `Json` names HttpBody's `Json` constructor AND the
+// Json module (Json.inferShape). A constructor value has no record
+// fields, so `Json.<member>` can only mean the module — but a USER
+// union case shadowing a module name must still error ordinarily
+// [D:desugar-capture], so the module-preference is scoped to this fixed
+// builtin set, never a general value/module tie-break.
+let moduleValueOverlap: Set<string> = Set [ "Json" ]
+
 let rec private isIrrefutablePat (p: Pattern) =
     match p.PKind with
     | PWildcard
@@ -3188,7 +3197,17 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
             | _ -> return! err fnExpr.Span "the right side of a pipe must be a function"
         }
     | EField({ Kind = EVar m }, field, fieldSpan) when
-        not (Map.containsKey m env.Values) && Map.containsKey m env.Modules
+        Map.containsKey m env.Modules
+        && (not (Map.containsKey m env.Values)
+            // a BUILTIN module name that ALSO names a builtin value
+            // [D:repl-infer]: `Json` is both a module (Json.inferShape) and
+            // HttpBody's `Json` constructor. That constructor has no record
+            // fields, so `Json.field` could only ever be a module member —
+            // resolve it there when the member exists. Scoped to the KNOWN
+            // builtin overlaps (moduleValueOverlap) so a USER union case
+            // that shadows a module name still produces an ordinary
+            // field-access error [D:desugar-capture].
+            || (Set.contains m moduleValueOverlap && env.Modules[m] |> Map.containsKey field))
         ->
         result {
             let members = env.Modules[m]

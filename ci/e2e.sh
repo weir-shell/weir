@@ -889,6 +889,29 @@ echo "$out" | grep -qF "hi" || fail "REPL print lost its output"
 if echo "$out" | grep -qF "() : unit"; then fail "unit leaked into REPL display"; fi
 echo "e2e ok: unit is invisible in the REPL"
 
+# --- #infer / it / #save round-trip (2026-09-16) [D:repl-infer] -------
+# a REPL session: bind a JSON sample, #infer types from it (source
+# omitted -> defaults to `it`), field-access the injected type through a
+# bare alias (map), #save the session, then weir check the saved file
+# clean. A single physical line per statement (piped REPL reads one line
+# per prompt; heredoc blocks are the tty editor's domain).
+infdir=$(mkweirtmp)
+infout=$(printf '%s\n%s\n%s\n%s\n%s\n' \
+  'let sample = ["{\"items\": [{\"name\": \"a\", \"port\": 8080}], \"count\": 1}"]' \
+  '#infer from json as Root' \
+  'sample |> from json Root |> _.items |> map _.name |> Seq.length' \
+  "#save $infdir/explore.weir" \
+  '#quit' | $BIN)
+echo "$infout" | grep -qF "defined: Item, Root" || fail "#infer did not define the auto-named types: $infout"
+echo "$infout" | grep -qF "#save: wrote" || fail "#save did not report a write: $infout"
+[ -f "$infdir/explore.weir" ] || fail "#save did not write the file"
+grep -qF "Seq.map" "$infdir/explore.weir" || fail "#save did not qualify the bare alias 'map': $(cat "$infdir/explore.weir")"
+grep -qF "type Root" "$infdir/explore.weir" || fail "#save did not carry the injected type"
+$BIN check "$infdir/explore.weir"
+echo "REAL=$?" >> /tmp/e2e-infer.out
+$BIN check "$infdir/explore.weir" || fail "the saved script must weir-check clean: $(cat "$infdir/explore.weir")"
+echo "e2e ok: #infer (it default) + #save round-trips to a checking .weir script"
+
 stmtdir=$(mkweirtmp)
 cat > "$stmtdir/discard.weir" <<'WEOF'
 sh -c "touch discard-proof"

@@ -1,5 +1,41 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **`#infer` — draft named types from a JSON/YAML sample, in the
+  REPL.** `#infer <source> from <json|jsonl|yaml> as <Name>` evaluates
+  the source ONCE (a binding, a `$(…)` capture, or a bare command),
+  parses it by the named adapter, walks it to a set of named `type`
+  declarations, and INJECTS them into the session — so `from json
+  <Name>` checks and field completion lights up. Auto-naming: a nested
+  record takes its field name capitalised (`metadata` → `Metadata`), a
+  seq-of-record element the field name singularised best-effort
+  (`items` → `Item`, `data` stays `Data`), a same-name-different-shape
+  collision a parent prefix (`PodSpec`/`ContainerSpec`), a same-shape
+  dedup to one type. A single sample cannot see optional/absent fields,
+  so absent/null/empty-array/heterogeneous cases PRINT a note rather
+  than guess. Scaffolding, not a language change: `check` stays
+  evaluation-free and `from json` never sniffs — the `weir add schema`
+  category (external structure → a declaration you own and edit). The
+  source defaults to `it` (the last result) when omitted. The same
+  inference is a composable builtin — `Json.inferShape`/`Yaml.inferShape
+  : seq<string> -> string` return the declaration text outside the REPL.
+- **`#save <path>` — dump the session to a runnable script.** Writes
+  the accepted statement lines to a `.weir` file, auto-qualifying bare
+  aliases (`map` → `Seq.map`, `startsWith` → `Str.startsWith`) via the
+  same map the checker's did-you-mean reads, then formatting the result.
+  Errored lines drop; injected `#infer` types come out as ordinary
+  `type` decls; a bare non-unit expression echo is saved as a `let _rN
+  = …` discard so the strict unused-binding law holds. The saved file
+  `weir check`s clean. `#infer` to explore, `#save` to keep.
+- **`it` — the last result, bound at the prompt.** Every REPL line that
+  produces a value (an expression, a command, or a `let` RHS) also binds
+  it to `it` (ghci's convention). REPL-only; a unit statement or a
+  directive leaves it untouched. Lets a just-built pipeline feed the
+  next line (and the no-source `#infer`).
+
 ## v0.0.35
 
 ### Added

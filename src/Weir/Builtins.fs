@@ -3969,9 +3969,27 @@ let private yamlMergeImpl: Value =
             | VUnion("|ypatch", Some(VTuple [ VStr by; tree ])) -> yamlMerge by tree doc
             | v -> unreachable $"the checker admits only a yaml patch district here: {formatValue v}"))
 
+// #infer's COMPOSABLE CORE as a builtin [D:repl-infer]: a sample's LINES
+// -> the declaration TEXT (ONE string, newline-separated), so
+// `sample |> Json.inferShape |> print` scaffolds a type OUTSIDE the REPL.
+// The REPL directive is a thin wrapper that ALSO injects. The default top
+// name is `Root` — the directive supplies the real `as` name. Raises on a
+// parse failure (the builtin-raise law).
+let private inferShapeImpl (fmt: Infer.Format) : Value =
+    VBuiltin(fun v ->
+        match v with
+        | VSeq items ->
+            let lines = items |> Seq.map asString
+            VStr(Infer.inferShapeText fmt "Root" lines)
+        | v -> unreachable $"the checker rejects 'inferShape' on {formatValue v}")
+
 let private yamlModuleMembers: (string * Ty * Value) list =
     [ "parse", TFun(TSeq TStr, TNamed("Yaml", [])), yamlParseImpl
-      "merge", TFun(TNamed("YamlPatch", []), TFun(TNamed("Yaml", []), TNamed("Yaml", []))), yamlMergeImpl ]
+      "merge", TFun(TNamed("YamlPatch", []), TFun(TNamed("Yaml", []), TNamed("Yaml", []))), yamlMergeImpl
+      "inferShape", TFun(TSeq TStr, TStr), inferShapeImpl Infer.Yaml ]
+
+let private jsonModuleMembers: (string * Ty * Value) list =
+    [ "inferShape", TFun(TSeq TStr, TStr), inferShapeImpl Infer.Json ]
 
 let private moduleTable: (string * (string * Ty * Value) list) list =
     [ "Seq", seqMembers
@@ -3980,6 +3998,7 @@ let private moduleTable: (string * (string * Ty * Value) list) list =
       "Graph", graphMembers
       "Tree", treeMembers
       "Yaml", yamlModuleMembers
+      "Json", jsonModuleMembers
       "Map", mapMembers
       "Instant", instantMembers
       "Proc", procMembers
@@ -5232,6 +5251,18 @@ let builtinDocs: Map<string, BuiltinDoc> =
               (Some
                   "let p = yaml patch by=name (indented patch lines) — then File.read f |> Yaml.parse |> Yaml.merge p |> to yaml |> File.write f.")
            |> named [ "patch"; "doc" ])
+          "Yaml.inferShape",
+          (bd
+              "Draft named `type` declarations from a YAML sample — the composable core of `#infer` [D:repl-infer]: returns the declaration TEXT (top record named Root; nested records auto-named; notes for empty/null/heterogeneous fields ride as `//` lines). It DRAFTS what the sample has; you edit the emitted types. NOT check-time inference (the value is a runtime sample)."
+              (Some "let sample = <<<\n    name: web\n    port: 8080\nprint (Yaml.inferShape sample)")
+              (Some "the `weir add schema` category: external structure -> a declaration you own; check and `from yaml` stay untouched.")
+           |> named [ "lines" ])
+          "Json.inferShape",
+          (bd
+              "Draft named `type` declarations from a JSON sample — the composable core of `#infer` [D:repl-infer]: returns the declaration TEXT (top record named Root; nested records auto-named by field, seq elements singularised; notes for empty arrays, null fields and heterogeneous arrays ride as `//` lines). It DRAFTS what the sample has; you edit the emitted types. NOT check-time inference (the value is a runtime sample)."
+              (Some "print (Json.inferShape [\"{\\\"id\\\": 1, \\\"name\\\": \\\"x\\\"}\"])")
+              (Some "the `weir add schema` category: external structure -> a declaration you own; check and `from json` stay untouched.")
+           |> named [ "lines" ])
 
           // ---- reifiers: turn a command chain into a value [D:exit-reifiers].
           // Surface names; the typed tree carries the un-typeable |completed

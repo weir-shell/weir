@@ -1410,6 +1410,23 @@ type Bad = C of int
   refuse (a patch is partial); `Yaml.parse` can never produce a
   tombstone (parsed text is data). The file round-trip is composition:
   `File.read f |> Yaml.parse |> Yaml.merge p |> to yaml |> File.write f`.
+- `Json.inferShape`/`Yaml.inferShape : seq<string> -> string` draft
+  named `type` declarations from a SAMPLE [D:repl-infer] — the
+  `weir add schema` category (external structure → a declaration you
+  own and edit), NOT check-time inference (check never evaluates,
+  `from json`/`from yaml` never sniff). It returns the declaration TEXT
+  (top record `Root`; nested records auto-named, seq elements
+  singularised; empty-array/null/heterogeneous cases ride as `//`
+  notes). The REPL's `#infer <source> from <json|jsonl|yaml> as <Name>`
+  directive also INJECTS the drafted types into the session (so
+  `from json <Name>` and field completion light up); `#save` dumps a
+  session to a runnable script. Both are REPL scaffolding — see
+  docs/repl.md.
+
+```weir
+let sample = ["{\"id\": 1, \"tags\": [\"a\"]}"]
+print (Json.inferShape sample)
+```
 
 ```weir
 let doc = <<<
@@ -1995,6 +2012,8 @@ not the teaching.
 - `File`: `append` `copy` `delete` `exists` `move` `read` `readBytes` `readSecret` `sha256` `size` `write` `writeBytes`
 - `Float`: `abs` `average` `near` `ofInt` `parse` `round` `sum` `toInt` `tryParse`
 - `Instant`: `epochMs` `now` `ofEpochMs` `parse` `parseWith` `tryParse` `tryParseWith`
+- `Json`: `inferShape`
+- `Yaml`: `parse` `merge` `inferShape`
 - `Http`: `defaults` `delete` `fetch` `get` `head` `options` `patch` `post` `put` `query` `send` `withQuery`
 - `Log`: `debug` `debugWith` `info` `infoWith` `trace` `traceWith` `warn` `warnWith`
 - `Map`: `add` `count` `get` `has` `keys` `ofPairs` `pairs` `remove` `tryGet` `values`

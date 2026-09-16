@@ -463,6 +463,41 @@ let private formatLinesCore (body: string list) : Result<string list, string> =
 let formatLines (body: string list) : Result<string list, string> =
     formatLinesCore body |> Result.map canonicalizeDocs
 
+// #save's bare-alias QUALIFIER [D:repl-save]: a saved script is STRICT,
+// where bare aliases (`map`, `where`, `startsWith`) do not exist — so
+// each single-home bare name is rewritten to its qualified spelling
+// (`Seq.map`, `Str.startsWith`) using the SAME `bareAliasHomes` map the
+// checker's did-you-mean reads. Span-based (parse, collect EVar uses,
+// replace right-to-left) so it never touches a string literal or a field
+// name that happens to spell a bare alias. A SINGLE physical line
+// (the REPL transcript's logical-line text); parse failure -> unchanged.
+let qualifyBareAliases (r: Parser.Resolver) (line: string) : string =
+    match Parser.parseLineFull r line with
+    | Error _ -> line
+    | Ok stmt ->
+        let uses =
+            Parser.stmtExprs stmt
+            |> List.collect collectBareUses
+            // right-to-left so earlier column offsets stay valid
+            |> List.sortByDescending (fun (sp, _) -> sp.Start.Col)
+
+        uses
+        |> List.fold
+            (fun (acc: string) (sp, name) ->
+                let col = sp.Start.Col - 1 // 1-based -> 0-based
+
+                if
+                    col >= 0
+                    && col + name.Length <= acc.Length
+                    && acc.Substring(col, name.Length) = name
+                then
+                    match Map.tryFind name Builtins.bareAliasHomes with
+                    | Some home -> acc.Substring(0, col) + $"{home}.{name}" + acc.Substring(col + name.Length)
+                    | None -> acc
+                else
+                    acc)
+            line
+
 let formatFile (checkOnly: bool) (path: string) : int =
     if not (System.IO.File.Exists path) then
         System.Console.Error.WriteLine $"weir: no such script: {path}"
