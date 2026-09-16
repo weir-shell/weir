@@ -45,6 +45,15 @@
   differ ONLY in whether `{holes}` interpolate — indentation, interior
   blank lines, deeper indentation and trailing-blank clipping match
   exactly, as the docs always promised.
+- **A piped REPL (`printf '…' | weir`) now assembles multi-line
+  statements.** The redirected-stdin loop read one physical line per
+  prompt, so a statement spanning lines (a heredoc body, a multi-line
+  `type`, an offside `if`/`match` block, a leading-`|>` pipeline) never
+  assembled — `let block = <<<` / indented body errored "unbound
+  variable". It now accumulates the way a script does, reusing the
+  interactive editor's completeness rule and the assembler's own
+  statement boundary (no second parser); a single statement per line is
+  unchanged, and directives stay one line.
 
 ## v0.0.35
 

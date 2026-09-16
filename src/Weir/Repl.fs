@@ -1094,10 +1094,93 @@ let private setupLineEditor () =
 
     loadHistory ()
 
+// one-line pushback for the redirected accumulator [D:repl-multiline]: a
+// peeked line that did NOT attach to the current statement belongs to the
+// NEXT one — it must survive across readInput calls (a fresh statement is
+// a fresh readRedirected call), so it lives at module scope, not inside
+// the function
+let mutable private pendingLine: string option = None
+
+// the redirected-stdin ACCUMULATOR [D:repl-multiline]: a piped REPL
+// (printf '…' | weir) has no tty line editor, so it reads physical lines
+// with Console.ReadLine. A statement that spans lines (heredoc, a
+// multi-line `type`, an open `if`/`for`/`match` block, a leading-`|>`
+// pipeline, an unbalanced bracket) must ASSEMBLE the way a SCRIPT does —
+// Script.assemble is the ONE authority (never a second parser). The tty
+// editor cannot look ahead (the user types), so it submits on the first
+// complete buffer; a pipe HAS the rest of the input, so it reads
+// script-like: keep the current statement open while the NEXT physical
+// line still attaches to it (a `|>` tail, an offside `else`, a district
+// body). Return one logical statement (lines \n-joined) so the loop's
+// existing single/multiline arms handle it unchanged.
+//
+// A directive line (#help/#quit/#infer/…) is one line by definition —
+// returned immediately, its own multi-line handling (#infer) untouched. A
+// blank/comment-only first line has no statement to open, so it returns
+// alone (the no-op arm). AT EOF with an unclosed buffer: return what
+// accumulated and let it error normally — the tty editor's
+// blank-line/Ctrl+D escape does the same at its equivalent boundary.
+let private readRedirected () : string =
+    let readLine () =
+        match pendingLine with
+        | Some l ->
+            pendingLine <- None
+            l
+        | None -> Console.ReadLine()
+
+    // the completed statement's prompts, emitted ONCE at return so the
+    // eval output that follows keeps its order [D:repl-multiline] — a peek
+    // reads the next statement's line BEFORE this one evaluates, so the
+    // prompt cannot be written at read time. weir> for the first line,
+    // "  ... " (same width) for each continuation, mirroring the tty.
+    let emitPrompts (buf: string list) =
+        buf
+        |> List.iteri (fun i _ -> Console.Write(if i = 0 then prompt else contPrompt))
+
+    let ret (buf: string list) =
+        emitPrompts buf
+        String.Join("\n", buf)
+
+    let rec go (acc: string list) =
+        match readLine () with
+        | null ->
+            match acc with
+            | [] ->
+                // EOF, empty buffer: still show the prompt the loop would
+                // have shown, then end the session (the loop's null arm)
+                Console.Write prompt
+                null
+            | _ -> ret (List.rev acc)
+        | line ->
+            let acc' = line :: acc
+            let buf = List.rev acc'
+
+            // a FRESH first line that is a directive, blank, or
+            // comment-only is complete on its own — it opens no statement
+            // for later lines to continue
+            let firstLineComplete =
+                List.isEmpty acc
+                && (line.TrimStart().StartsWith "#"
+                    || Script.classifyLine line <> Script.LineKind.Code)
+
+            if firstLineComplete then
+                ret buf
+            elif not (bufferComplete buf) then
+                go acc' // structurally incomplete — read the body
+            else
+                // complete AS-IS; peek whether the next line continues it
+                match readLine () with
+                | null -> ret buf
+                | next when Script.pipedAttaches buf next -> go (next :: acc')
+                | next ->
+                    pendingLine <- Some next
+                    ret buf
+
+    go []
+
 let private readInput () =
     if Console.IsInputRedirected then
-        Console.Write prompt
-        Console.ReadLine()
+        readRedirected ()
     else
         Term.editorActive.Value <- true
 
