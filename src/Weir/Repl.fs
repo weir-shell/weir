@@ -16,6 +16,42 @@ let private prompt = "weir> "
 // everywhere counts prompt.Length — the tint is zero-width.
 let mutable private lastErrored = false
 
+// the session TRANSCRIPT [D:repl-save]: the ACCEPTED statements, in
+// order, that `#save` dumps to a runnable .weir file. A statement lands
+// here only after it CHECKS and EVALUATES clean (errored lines drop).
+// `NeedsDiscard` is TRUE for a NON-UNIT expression/command echo: at the
+// prompt the value was only glanced, but a strict script's
+// unused-binding law refuses a discarded value — so `#save` WRAPS it as
+// `let _N = <expr>` (the deliberate-discard escape), which both reads
+// the bindings it references (no orphaned `let`) and is itself
+// unused-exempt. `let`/`type`/unit statements save verbatim. Directives
+// never record; #infer records the DRAFTED type decls (session
+// declarations) instead of the directive line.
+type private TranscriptLine = { Text: string; NeedsDiscard: bool }
+
+let private transcript = System.Collections.Generic.List<TranscriptLine>()
+
+let private recordLine (text: string) =
+    transcript.Add { Text = text; NeedsDiscard = false }
+
+let private recordDiscard (text: string) =
+    transcript.Add { Text = text; NeedsDiscard = true }
+
+// how an accepted statement RECORDS [D:repl-save]: a `let`/`type`/unit
+// statement saves verbatim (`Some false`); a non-unit expression/command
+// echo saves WRAPPED as a discard (`Some true`); a module/import/sig
+// never records (`None`).
+let private recordKind (chk: Script.CheckedStatement) : bool option =
+    match chk.Kind with
+    | Script.KLet _
+    | Script.KLetPat _
+    | Script.KType _ -> Some false
+    | Script.KCmd te
+    | Script.KExpr te -> Some(te.Ty <> TUnit)
+    | Script.KModule _
+    | Script.KImport _
+    | Script.KSig _ -> None
+
 // the cooked-terminal trap [D:repl-cooked-trap]: when a child that shares
 // the terminal runs long enough, .NET restores cooked mode for it and can
 // fail to re-apply its raw config afterwards (the managed surface offers
@@ -1101,6 +1137,23 @@ let private printHint (state: State) (line: string) =
         line
     |> Option.iter (fun h -> Console.WriteLine $"hint: {h}")
 
+// the LAST-RESULT binding [D:repl-it]: every REPL line that produces a
+// value (an expression, a command, or a `let` RHS — the echo path) also
+// binds it to the session name `it`, ghci's convention. `_` is taken
+// (the `_.field` lambda shorthand and the `let _ =` discard), so `it` is
+// the spelling; it collides with nothing and is REPL-only (scripts/-e
+// never see it, like the bare aliases). A unit statement or a directive
+// leaves `it` untouched. Both the TypeEnv scheme AND the value bind, so
+// the next line both checks and evaluates against `it`.
+let private bindIt (ty: Ty) (v: Eval.Value) (env: State) : State =
+    if ty = TUnit then
+        env
+    else
+        { TypeEnv =
+            { env.TypeEnv with
+                Values = Map.add "it" (Types.generalize ty) env.TypeEnv.Values }
+          Values = Map.add "it" v env.Values }
+
 // the Ok-side rendering, shared by the single-line and multiline
 // submission paths [D:repl-multiline]
 let private evalCheckedBody (state: State) (chk: Script.CheckedStatement) : State =
@@ -1200,6 +1253,7 @@ let private evalCheckedBody (state: State) (chk: Script.CheckedStatement) : Stat
 
             { TypeEnv = chk.Env
               Values = Map.add name v state.Values }
+            |> bindIt te.Ty v
          with
          | Eval.ExitRequest _ -> reraise ()
          | ex ->
@@ -1238,10 +1292,12 @@ let private evalCheckedBody (state: State) (chk: Script.CheckedStatement) : Stat
             (try
                 let v = Eval.eval state.Values te
 
-                if v <> Eval.VUnit then
-                    // ONE enumeration for the whole echo [D:echo-once]
-                    let v = Eval.echoPrep v
+                // ONE enumeration for the whole echo [D:echo-once]; the
+                // prepped (cached) value is also what binds to `it`, so a
+                // command-backed seq reused as `it` does not re-run
+                let ev = if v <> Eval.VUnit then Eval.echoPrep v else v
 
+                if v <> Eval.VUnit then
                     let cap =
                         if Console.IsOutputRedirected then
                             Eval.echoPipedCap
@@ -1251,16 +1307,16 @@ let private evalCheckedBody (state: State) (chk: Script.CheckedStatement) : Stat
                     match
                         (if Console.IsOutputRedirected then
                              None
-                         elif Eval.echoBinary cap v then
+                         elif Eval.echoBinary cap ev then
                              Some(
                                  [],
                                  Some
                                      "binary output — the echo refuses a terminal; redirect to a file, or print deliberately"
                              )
                          elif te.Ty = TSeq TStr then
-                             Eval.echoLines cap v
+                             Eval.echoLines cap ev
                          else
-                             Eval.echoTable cap (termWidth ()) v)
+                             Eval.echoTable cap (termWidth ()) ev)
                     with
                     | Some(lines, hint) ->
                         (if te.Ty = TSeq TStr then
@@ -1270,11 +1326,11 @@ let private evalCheckedBody (state: State) (chk: Script.CheckedStatement) : Stat
 
                         echoMeta $": {formatTy te.Ty}{Eval.echoTail hint}"
                     | None ->
-                        let rendered, hint = Eval.echoValue cap v
+                        let rendered, hint = Eval.echoValue cap ev
                         let tail = Eval.echoTail hint
                         Console.WriteLine $"{rendered} : {formatTy te.Ty}{tail}"
 
-                state
+                bindIt te.Ty ev state
              with
              | Eval.ExitRequest _ -> reraise ()
              | ex ->
@@ -1375,6 +1431,9 @@ let private helpDirective (te: TypeEnv) (arg: string) : string =
         + "  #help <name>          // documentation for a module or member\n"
         + "  #echo [<n> | all]     // the unforced-echo cap (default 100); bare reports;\n"
         + "                        //   all = no cap — an INFINITE seq will hang (Ctrl+C)\n"
+        + "  #infer [<src>] from <json|jsonl|yaml> as <Name>\n"
+        + "                        //   draft named types from a sample (src defaults to 'it')\n"
+        + "  #save <path>          // dump the session's accepted lines to a runnable .weir\n"
         + "  #quit                 // leave the REPL (Ctrl+D works too)\n\n"
         + "Modules: "
         + flowNames "         " 72 mods
@@ -1434,6 +1493,228 @@ let private helpDirective (te: TypeEnv) (arg: string) : string =
 
                     $"#help: unknown name '{name}'{didYouMean name pool}"
 
+// ---- #infer [D:repl-infer]: draft named types from a sample ----------
+// The directive OWNS its parse (string-match, like #help): split the
+// line on the literal ` from ` and ` as ` markers, evaluate the source
+// as an ordinary weir expression ONCE, parse the resulting seq<string>
+// by the named adapter, walk it to a set of named `type` decls, INJECT
+// them into the session TypeEnv (the same path a typed `type` line
+// takes), and print `defined: …` plus any inference notes. `check`
+// stays evaluation-free — this is the RUNTIME's exploration surface.
+
+/// split "src from fmt as Name" on the literal markers; source may be
+/// empty (defaults to `it`). Returns (source, format, name) or an error.
+let private parseInfer (rest: string) : Result<string * string * string, string> =
+    // find ` as ` LAST (a name has no spaces), ` from ` before it
+    let asIdx = rest.LastIndexOf " as "
+
+    if asIdx < 0 then
+        Error "#infer <source> from <json|jsonl|yaml> as <Name> — missing 'as <Name>'"
+    else
+        let head = rest.Substring(0, asIdx)
+        let name = rest.Substring(asIdx + 4).Trim()
+        let fromIdx = head.LastIndexOf " from "
+
+        if fromIdx < 0 then
+            // allow "#infer from json as N": the head IS " from …" with an
+            // empty source when it starts with the marker
+            if head.TrimStart().StartsWith "from " then
+                let fmt = head.TrimStart().Substring(5).Trim()
+                Ok("", fmt, name)
+            else
+                Error "#infer <source> from <json|jsonl|yaml> as <Name> — missing 'from <format>'"
+        else
+            let source = head.Substring(0, fromIdx).Trim()
+            let fmt = head.Substring(fromIdx + 6).Trim()
+            Ok(source, fmt, name)
+
+/// evaluate a source EXPRESSION to a seq<string> for the adapter (checked
+/// against the session env, evaluated once); teaches on a non-seq<string>
+let private evalSource (state: State) (source: string) : Result<string list, string> =
+    let ll = Script.singleLine (Script.stripComment source)
+
+    match Script.checkStatement false None (fun _ -> resolver state) Script.scriptOnlyImport state.TypeEnv ll with
+    | Error d -> Error $"#infer: the source does not check: {d.Message}"
+    | Ok chk ->
+        let teOpt =
+            match chk.Kind with
+            | Script.KExpr te
+            | Script.KCmd te
+            | Script.KLet(_, _, te) -> Some te
+            | _ -> None
+
+        match teOpt with
+        | None -> Error "#infer: the source must be an expression that produces seq<string>"
+        | Some te ->
+            if te.Ty <> TSeq TStr then
+                Error $"#infer: the source has type {formatTy te.Ty}; the adapter needs seq<string> (a captured JSON/YAML sample)"
+            else
+                try
+                    match Eval.eval state.Values te with
+                    | Eval.VSeq items ->
+                        Ok(
+                            items
+                            |> Seq.map (fun v ->
+                                match v with
+                                | Eval.VStr s -> s
+                                | _ -> "")
+                            |> List.ofSeq
+                        )
+                    | _ -> Error "#infer: the source did not produce a sequence"
+                with ex ->
+                    Error $"#infer: evaluating the source raised: {ex.Message}"
+
+/// inject the decl TEXT (multi-line `type` blocks) into the session,
+/// returning the new state and the ordered list of defined type names.
+/// Reuses the assembler + checkStatement — the multiline submission path.
+let private injectDecls (state: State) (declText: string list) : Result<State * string list, string> =
+    // each decl is a MULTI-LINE `type` block — split to physical lines so
+    // the assembler groups them (the multiline-submission path)
+    let physical = declText |> List.collect (fun d -> d.Split '\n' |> List.ofArray)
+
+    let numbered =
+        physical
+        |> List.mapi (fun i l -> i + 1, l)
+        |> List.filter (fun (_, raw) -> Script.classifyLine raw <> Script.LineKind.CommentOnly)
+        |> List.map (fun (n, raw) -> n, Script.stripComment raw)
+
+    match Script.assemble numbered with
+    | Error msg -> Error $"#infer: the drafted types did not assemble: {msg}"
+    | Ok lls ->
+        let rec go (st: State) (defined: string list) rest =
+            match rest with
+            | [] -> Ok(st, List.rev defined)
+            | (ll: Script.LogicalLine) :: tail ->
+                match
+                    Script.checkStatement false None (fun _ -> resolver st) Script.scriptOnlyImport st.TypeEnv ll
+                with
+                | Error d -> Error $"#infer: a drafted type did not check: {d.Message}"
+                | Ok chk ->
+                    match chk.Kind with
+                    | Script.KType decl ->
+                        let ctors =
+                            match decl.Body with
+                            | DUnion cases -> Eval.constructorValues cases
+                            | DRecord _ -> []
+
+                        let st' =
+                            { TypeEnv = chk.Env
+                              Values = ctors |> List.fold (fun vs (n, v) -> Map.add n v vs) st.Values }
+
+                        go st' (decl.Name :: defined) tail
+                    | _ -> Error "#infer: a drafted statement was not a type declaration"
+
+        go state [] lls
+
+let private inferDirective (state: State) (rest: string) : State =
+    match parseInfer rest with
+    | Error msg ->
+        Console.WriteLine msg
+        state
+    | Ok(source, fmtStr, name) ->
+        match Infer.parseFormat fmtStr with
+        | Error msg ->
+            Console.WriteLine msg
+            state
+        | Ok fmt ->
+            // an empty source defaults to `it` — the last result
+            let sourceExpr, sourceMissing =
+                if source = "" then
+                    (if Map.containsKey "it" state.TypeEnv.Values then "it", false else "", true)
+                else
+                    source, false
+
+            if sourceMissing then
+                Console.WriteLine
+                    "#infer: no prior result — write '#infer <source> from … as <Name>', or run an expression first (it binds 'it')"
+
+                state
+            elif name = "" || not (Char.IsUpper name[0]) then
+                Console.WriteLine $"#infer: the type name '{name}' must start with an uppercase letter"
+                state
+            else
+                match evalSource state sourceExpr with
+                | Error msg ->
+                    Console.WriteLine msg
+                    state
+                | Ok lines ->
+                    match Infer.infer fmt name lines with
+                    | Error msg ->
+                        Console.WriteLine msg
+                        state
+                    | Ok(decls, notes) ->
+                        match injectDecls state decls with
+                        | Error msg ->
+                            Console.WriteLine msg
+                            state
+                        | Ok(state', defined) ->
+                            // the drafted types are session declarations —
+                            // record the CLEAN multi-line text (not the
+                            // assembler's control-char-joined logical line)
+                            // so #save carries runnable `type` decls
+                            for d in decls do
+                                for physLine in d.Split '\n' do
+                                    recordLine physLine
+
+                            let count = List.length defined
+
+                            Console.WriteLine
+                                $"""defined: {String.concat ", " defined} ({count} type{if count = 1 then "" else "s"})"""
+
+                            for n in notes do
+                                Console.WriteLine $"  note: {n}"
+
+                            state'
+
+// ---- #save [D:repl-save]: the session to a runnable script -----------
+// Writes the ACCEPTED statement lines (the transcript — errored lines
+// already dropped) to <path> as a .weir script, AUTO-QUALIFYING bare
+// aliases (map -> Seq.map, startsWith -> Str.startsWith) via the exact
+// bareAliasHomes map the checker uses, then running the result through
+// `fmt`. Injected #infer types come out as ordinary `type` decls (they
+// are already session declarations in the transcript). Directives never
+// record; a bare non-unit expression echo never records — so the saved
+// script obeys the strict unused-binding law and `weir check` passes.
+let private saveDirective (state: State) (path: string) : unit =
+    if path = "" then
+        Console.WriteLine "#save <path> — a destination path is required (e.g. #save explore.weir)"
+    elif transcript.Count = 0 then
+        Console.WriteLine "#save: nothing to save yet — the session has no accepted statements"
+    else
+        let r = resolver state
+        let mutable discardN = 0
+
+        let qualified =
+            [ for entry in transcript ->
+                  let q = Fmt.qualifyBareAliases r entry.Text
+
+                  if entry.NeedsDiscard then
+                      discardN <- discardN + 1
+                      // the deliberate-discard escape: a `_`-prefixed name
+                      // is unused-exempt, and reading it keeps every binding
+                      // it references alive (no orphaned `let`)
+                      $"let _r{discardN} = {q}"
+                  else
+                      q ]
+
+        match Fmt.formatLines qualified with
+        | Error msg ->
+            // the qualified lines still failed to format — write them raw
+            // rather than lose the session, and say what happened
+            Console.WriteLine $"#save: formatting failed ({msg}); writing unformatted"
+
+            try
+                File.WriteAllLines(path, qualified)
+                Console.WriteLine $"#save: wrote {qualified.Length} line(s) to {path} (unformatted)"
+            with ex ->
+                Console.WriteLine $"#save: could not write {path}: {ex.Message}"
+        | Ok formatted ->
+            try
+                File.WriteAllLines(path, formatted)
+                Console.WriteLine $"#save: wrote {List.length formatted} line(s) to {path}"
+            with ex ->
+                Console.WriteLine $"#save: could not write {path}: {ex.Message}"
+
 let rec private loop (state: State) =
     currentEnv.Value <- state.TypeEnv
 
@@ -1478,6 +1759,11 @@ let rec private loop (state: State) =
                      Console.WriteLine $"echo cap: {n}"
                  | _ -> Console.WriteLine $"#echo takes a positive count or 'all' — e.g. #echo 100")
 
+            loop state
+        elif t = "#infer" || t.StartsWith "#infer " then
+            loop (inferDirective state (t.Substring(6).Trim()))
+        elif t = "#save" || t.StartsWith "#save " then
+            saveDirective state (t.Substring(5).Trim())
             loop state
         else
             let word = t.Split(' ').[0]
@@ -1554,7 +1840,16 @@ let rec private loop (state: State) =
                             )
 
                             st
-                        | Ok chk -> evalChecked st chk)
+                        | Ok chk ->
+                            let st' = evalChecked st chk
+
+                            (if not lastErrored then
+                                 match recordKind chk with
+                                 | Some true -> recordDiscard ll.Text
+                                 | Some false -> recordLine ll.Text
+                                 | None -> ())
+
+                            st')
                     state
 
         loop next
@@ -1608,7 +1903,16 @@ let rec private loop (state: State) =
                  | _ -> ())
 
                 state
-            | Ok chk -> evalChecked state chk
+            | Ok chk ->
+                let next = evalChecked state chk
+
+                (if not lastErrored then
+                     match recordKind chk with
+                     | Some true -> recordDiscard ll.Text
+                     | Some false -> recordLine ll.Text
+                     | None -> ())
+
+                next
 
         loop next
 

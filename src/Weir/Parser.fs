@@ -4480,7 +4480,7 @@ let private stmtNodes (s: Stmt) : DeepNode list =
     | SModule _
     | SImport _ -> []
 
-let private stmtExprs (s: Stmt) : Expr list =
+let stmtExprs (s: Stmt) : Expr list =
     match s with
     | SLet(_, v)
     | SLetPat(_, v)

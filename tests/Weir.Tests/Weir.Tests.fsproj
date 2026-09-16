@@ -25,6 +25,7 @@
     <Compile Include="Tests.fs" />
     <Compile Include="DataRange.fs" />
     <Compile Include="Tripwires.fs" />
+    <Compile Include="InferProbe.fs" />
   </ItemGroup>
 
 </Project>
