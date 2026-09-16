@@ -20,6 +20,29 @@ let private inject (tenv: TypeEnv) (line: string) : Result<TypeEnv, string> =
     | Ok chk -> Ok chk.Env
     | Error d -> Error d.Message
 
+// inject a possibly MULTI-LINE statement (a `type` decl block) via the
+// assembler — the path the REPL's multiline arm uses.
+let private injectBlock (tenv: TypeEnv) (text: string) : Result<TypeEnv, string> =
+    let numbered =
+        text.Split '\n'
+        |> Array.toList
+        |> List.mapi (fun i l -> i + 1, l)
+        |> List.filter (fun (_, raw) -> Script.classifyLine raw <> Script.LineKind.CommentOnly)
+        |> List.map (fun (n, raw) -> n, Script.stripComment raw)
+
+    match Script.assemble numbered with
+    | Error msg -> Error msg
+    | Ok lls ->
+        let rec go env rest =
+            match rest with
+            | [] -> Ok env
+            | (ll: Script.LogicalLine) :: tail ->
+                match Script.checkStatement false None (fun _ -> Script.resolver env) Script.scriptOnlyImport env ll with
+                | Ok chk -> go chk.Env tail
+                | Error d -> Error d.Message
+
+        go tenv lls
+
 [<Tests>]
 let probes =
     testList
@@ -75,4 +98,103 @@ let probes =
 
               let _, n3 = Infer.inferDecls "T" het
               Expect.isTrue (n3 |> List.exists (fun n -> n.Contains "heterogeneous")) "heterogeneous note"
+          } ]
+
+// render the inferred declarations to ONE string for substring pins
+let private renderJson (topName: string) (json: string) : string =
+    match Infer.infer Infer.Json topName [ json ] with
+    | Ok(decls, _) -> String.concat "\n" decls
+    | Error e -> failtestf "infer failed: %s" e
+
+// a session that CHECKS the injected decls followed by a `from json`
+// use — the round-trip that proves injection lights up the field.
+let private checksAfterInject (decls: string list) (useLine: string) : Result<unit, string> =
+    let mutable env = preludeTypeEnv
+    let mutable err = None
+
+    for line in decls @ [ useLine ] do
+        if err.IsNone then
+            match injectBlock env line with
+            | Ok e -> env <- e
+            | Error m -> err <- Some m
+
+    match err with
+    | Some m -> Error m
+    | None -> Ok()
+
+[<Tests>]
+let inferRules =
+    testList
+        "infer rules"
+        [ test "scalar widening: int vs float by token" {
+              let out = renderJson "T" "{\"a\": 1, \"b\": 1.5, \"c\": \"x\", \"d\": true}"
+              Expect.stringContains out "a: int" "integer token -> int"
+              Expect.stringContains out "b: float" "decimal token -> float"
+              Expect.stringContains out "c: string" "string"
+              Expect.stringContains out "d: bool" "bool"
+          }
+
+          test "nested record capitalises the field name" {
+              let out = renderJson "Root" "{\"metadata\": {\"name\": \"x\"}}"
+              Expect.stringContains out "type Metadata = {" "metadata -> Metadata"
+              Expect.stringContains out "metadata: Metadata" "field references it"
+          }
+
+          test "seq-of-record element is singularised" {
+              let out = renderJson "Root" "{\"items\": [{\"id\": 1}]}"
+              Expect.stringContains out "type Item = {" "items -> Item"
+              Expect.stringContains out "items: seq<Item>" "field is seq<Item>"
+          }
+
+          test "un-pluralisable field name falls back as-is" {
+              let out = renderJson "Root" "{\"data\": [{\"v\": 1}]}"
+              Expect.stringContains out "type Data = {" "data stays Data (not Datum)"
+          }
+
+          test "array of scalars -> seq<scalar>" {
+              let out = renderJson "T" "{\"tags\": [\"a\", \"b\"]}"
+              Expect.stringContains out "tags: seq<string>" "seq of scalars"
+          }
+
+          test "dedup: same field name + same shape -> one type" {
+              // two 'spec' objects, IDENTICAL shape -> a single Spec type
+              let out = renderJson "Root" "{\"a\": {\"spec\": {\"n\": 1}}, \"b\": {\"spec\": {\"n\": 2}}}"
+              let count =
+                  System.Text.RegularExpressions.Regex.Matches(out, "type Spec = \\{").Count
+
+              Expect.equal count 1 "one Spec type, deduped"
+          }
+
+          test "collision: same field name + different shape -> parent prefix" {
+              // two 'spec' objects with DIFFERENT shapes under different parents
+              let out =
+                  renderJson "Root" "{\"pod\": {\"spec\": {\"cpu\": 1}}, \"container\": {\"spec\": {\"image\": \"x\"}}}"
+              // the first Spec keeps the name; the second parent-prefixes
+              Expect.stringContains out "type Spec = {" "first spec"
+              Expect.isTrue
+                  (out.Contains "type ContainerSpec = {" || out.Contains "type PodSpec = {")
+                  "second spec parent-prefixed"
+          }
+
+          test "reserved wire key rides [<Wire>]" {
+              let out = renderJson "T" "{\"type\": \"user\"}"
+              Expect.stringContains out "[<Wire \"type\">]" "wire attr"
+              Expect.stringContains out "kind: string" "legal field name"
+          }
+
+          test "round-trip: inferred decls check, and 'from json' lights up" {
+              match Infer.infer Infer.Json "Cfg" [ "{\"host\": \"h\", \"port\": 8080}" ] with
+              | Error e -> failtestf "infer failed: %s" e
+              | Ok(decls, _) ->
+                  match checksAfterInject decls "[\"{}\"] |> from json Cfg |> _.port |> print" with
+                  | Ok() -> ()
+                  | Error m -> failtestf "round-trip failed: %s" m
+          }
+
+          test "top-level array names the element" {
+              match Infer.infer Infer.Json "User" [ "[{\"id\": 1}]" ] with
+              | Ok(decls, notes) ->
+                  Expect.stringContains (String.concat "\n" decls) "type User = {" "element named User"
+                  Expect.isTrue (notes |> List.exists (fun n -> n.Contains "array")) "array note"
+              | Error e -> failtestf "infer failed: %s" e
           } ]

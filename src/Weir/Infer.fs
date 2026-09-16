@@ -217,15 +217,18 @@ let rec private shapeOf (reg: Registry) (desired: string) (parentStem: string) (
         reg.AddNote $"a null value under '{desired}' — inferred Option<string> (edit if the real type is known)"
         "Option<string>"
     | IObj fields ->
+        // the collision prefix is the ENCLOSING record's stem: a `spec`
+        // under `pod` disambiguates to `PodSpec`. So each field's child
+        // carries THIS record's stem as its parentStem, not the field's.
+        let thisStem = identStem desired
+
         let rendered =
             fields
             |> List.map (fun (k, v) ->
                 let childDesired = capitalize (identStem k)
-                let childStem = identStem k
-                k, shapeOf reg childDesired childStem v)
+                k, shapeOf reg childDesired thisStem v)
 
-        let finalName = reg.Claim desired parentStem rendered
-        finalName
+        reg.Claim desired parentStem rendered
     | IArr items ->
         match items with
         | [] ->
@@ -251,10 +254,12 @@ let rec private shapeOf (reg: Registry) (desired: string) (parentStem: string) (
                 "seq<Option<string>>"
             | Some elem ->
                 // the element of a seq-of-record takes the SINGULARISED
-                // field name; a seq of scalars is seq<scalar>
+                // field name; a seq of scalars is seq<scalar>. The
+                // element's collision prefix is the record enclosing the
+                // seq FIELD (parentStem), so two same-named seqs under
+                // different parents disambiguate.
                 let elemDesired = capitalize (singularize (identStem desired))
-                let elemStem = singularize (identStem desired)
-                let inner = shapeOf reg elemDesired elemStem elem
+                let inner = shapeOf reg elemDesired parentStem elem
                 $"seq<{inner}>"
 
 // ---- the public surface -----------------------------------------------
