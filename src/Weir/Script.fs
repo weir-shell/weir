@@ -1913,6 +1913,40 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
         | Error e -> Error e
         | Ok(current, acc, _) -> close current acc |> Result.map List.rev
 
+// how many logical statements a raw physical buffer assembles to
+// [D:repl-multiline] — comment-only lines filtered, comments stripped
+// exactly as the REPL preprocesses. An assembly error (a still-open or
+// pending statement) is "not yet countable" -> None. The piped REPL's
+// continuation oracle: an added line that keeps the count MERGED into the
+// pending statement; one that raises it STARTED a new statement.
+let statementCount (bufLines: string list) : int option =
+    let numbered =
+        bufLines
+        |> List.mapi (fun i l -> i + 1, l)
+        |> List.filter (fun (_, raw) -> classifyLine raw <> LineKind.CommentOnly)
+        |> List.map (fun (n, raw) -> n, stripComment raw)
+
+    match assemble numbered with
+    | Ok lls -> Some(List.length lls)
+    | Error _ -> None
+
+/// does `next` CONTINUE the already-complete statement in `buf`?
+/// [D:repl-multiline] The assembler's own answer, no second parser: a
+/// blank/comment line breaks a completed statement (the blank-boundary
+/// rule) and does NOT attach; otherwise `next` attaches iff appending it
+/// does not RAISE the assembled statement count (a `|>` tail, an offside
+/// `else`, a district body keep it; still-pending buffers always want
+/// more). Drives the piped REPL's read-ahead so a multi-line statement
+/// assembles the way a script does.
+let pipedAttaches (buf: string list) (next: string) : bool =
+    if classifyLine next <> LineKind.Code then
+        false
+    else
+        match statementCount buf, statementCount (buf @ [ next ]) with
+        | _, None -> true
+        | None, Some _ -> true
+        | Some a, Some b -> b <= a
+
 let translate (ll: LogicalLine) (col: int) : int * int =
     let joinedIdx = col - 1
 

@@ -1722,6 +1722,36 @@ let boundaryTests =
               | Error e -> Expect.stringContains e "this heredoc block is empty" "the defensive empty error"
               | other -> failtest $"expected a parse error, got {other}"
           }
+          test "piped-REPL accumulation: statementCount + pipedAttaches are the assembler's own boundary [D:repl-multiline]" {
+              // the count is the assembler's statement count, comment-filtered.
+              // A pending/open buffer is not-yet-countable (None).
+              Expect.equal (Weir.Script.statementCount [ "let x = 1" ]) (Some 1) "one complete statement"
+              Expect.equal (Weir.Script.statementCount [ "let x = 1"; "x + 1" ]) (Some 2) "two independent statements"
+              // assemble reports STRUCTURE: an armed district with no body
+              // is an assembly error (None); an open `match with` is
+              // structurally one statement (Some 1) — the parse-completeness
+              // half is bufferComplete's, layered on top in the REPL
+              Expect.equal (Weir.Script.statementCount [ "let block = <<<" ]) None "an armed heredoc with no body pends"
+
+              // a leading-|> continuation MERGES: the count does not rise ->
+              // pipedAttaches true (the pipeline stays one statement)
+              Expect.isTrue (Weir.Script.pipedAttaches [ "xs" ] "|> Seq.sum") "a |> tail attaches to the value above"
+              // a heredoc body line attaches (district content keeps count 1)
+              Expect.isTrue (Weir.Script.pipedAttaches [ "let block = <<<"; "    a" ] "    b") "a second heredoc body line attaches"
+              // an offside else attaches to the pending if under a let
+              Expect.isTrue
+                  (Weir.Script.pipedAttaches [ "let r ="; "  if 1 > 0 then"; "    \"y\"" ] "  else")
+                  "an offside else attaches"
+
+              // an INDEPENDENT statement does NOT attach — the count rises
+              Expect.isFalse (Weir.Script.pipedAttaches [ "let x = 1" ] "x + 1") "an independent statement does not attach"
+              Expect.isFalse
+                  (Weir.Script.pipedAttaches [ "type P = {"; "  x: int"; "}" ] "{ x = 1 }.x")
+                  "a value after a complete type is its own statement"
+              // a blank/comment line breaks a completed statement (no attach)
+              Expect.isFalse (Weir.Script.pipedAttaches [ "let x = 1" ] "") "a blank line breaks a completed statement"
+              Expect.isFalse (Weir.Script.pipedAttaches [ "let x = 1" ] "// c") "a comment line breaks a completed statement"
+          }
           test "block scalars read: | and |- chomp semantically; content is bytes [D:block-scalars]" {
               let docOf lines' =
                   match Weir.Yaml.parseDocs (lines' |> List.mapi (fun i l -> i + 1, l)) with

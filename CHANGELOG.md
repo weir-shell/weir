@@ -36,6 +36,18 @@
   directive leaves it untouched. Lets a just-built pipeline feed the
   next line (and the no-source `#infer`).
 
+### Fixed
+
+- **A piped REPL (`printf '…' | weir`) now assembles multi-line
+  statements.** The redirected-stdin loop read one physical line per
+  prompt, so a statement spanning lines (a heredoc body, a multi-line
+  `type`, an offside `if`/`match` block, a leading-`|>` pipeline) never
+  assembled — `let block = <<<` / indented body errored "unbound
+  variable". It now accumulates the way a script does, reusing the
+  interactive editor's completeness rule and the assembler's own
+  statement boundary (no second parser); a single statement per line is
+  unchanged, and directives stay one line.
+
 ## v0.0.35
 
 ### Added
