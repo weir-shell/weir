@@ -4226,8 +4226,11 @@ and private withinContracts
             // pure carries no resource [D:pure-stage1] — no arg, no
             // binder; its LAW is enforced by the checked-statement
             // pipeline's post-check layer (the classifier lives after
-            // Builtins, out of this file's compile reach)
-            | WithinPure -> Ok None
+            // Builtins, out of this file's compile reach). deterministic
+            // is the same shape, its law the ambient/mutation ceiling
+            // [D:pure-stage2]
+            | WithinPure
+            | WithinDeterministic -> Ok None
 
         let! topts =
             match opts with
@@ -4246,7 +4249,8 @@ and private withinContracts
             | WithinCd
             | WithinEnv
             | WithinLock
-            | WithinPure -> TStr
+            | WithinPure
+            | WithinDeterministic -> TStr
 
         let benv =
             match binder with

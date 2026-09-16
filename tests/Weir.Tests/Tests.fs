@@ -2641,7 +2641,10 @@ let completionTests =
                         "always"
                         // the purity assertion starts statements like
                         // within/retry [D:pure-stage1]
-                        "pure" ]
+                        "pure"
+                        // the determinism assertion starts statements too
+                        // [D:pure-stage2]
+                        "deterministic" ]
 
               Expect.equal
                   (Weir.Parser.keywords - Weir.Complete.unsuggestedKeywords)
@@ -5986,6 +5989,208 @@ let pureRegionTests =
                       System.IO.Directory.Delete(dir, true)
                   with _ ->
                       ()
+          } ]
+
+let effectPartitionTests =
+    // STAGE 2 of [D:pure]: the ambient/mutation PARTITION [D:pure-stage2]
+    // — effectClass over the effect-label table, plus the per-method net
+    // split, consultable at BOTH check time (Effects.effectClass) and
+    // eval time (Builtins.effectClassOfCall). This is [PLAN-plan-apply]'s
+    // load-bearing dependency: probe it directly, both ends.
+    let A = Weir.Effects.Ambient
+    let M = Weir.Effects.Mutation
+
+    // a minimal HttpRequest VALUE carrying a method case — the shape the
+    // interpreter holds at an Http.send call site
+    let reqWith (methodCase: string) =
+        VRecord(
+            "HttpRequest",
+            [ "method", VUnion(methodCase, None)
+              "url", VStr "http://x"
+              "auth", VUnion("NoAuth", None)
+              "headers", VSeq Seq.empty
+              "secretHeaders", VSeq Seq.empty
+              "body", VUnion("NoBody", None)
+              "timeout", VDur 30000L
+              "insecure", VBool false ]
+        )
+
+    testList
+        "the ambient/mutation partition [D:pure-stage2]"
+        [ test "effectClass per label — the fixed-class names split as the table says" {
+              // ambient input (reads, changes nothing)
+              for n in [ "File.read"; "File.size"; "Dir.list"; "Path.glob"; "Env.get"; "Args.load"; "Instant.now"; "Self.stdin"; "Net.portOpen"; "Http.fetch"; "Http.query" ] do
+                  Expect.equal (Weir.Effects.effectClass n) (Some A) $"{n} is ambient input"
+              // external mutation (changes the world)
+              for n in [ "File.write"; "File.append"; "File.copy"; "Dir.create"; "Dir.delete"; "Dir.deleteAll"; "Proc.stop"; "print"; "printerr"; "Log.info"; "exit"; "Path.newTempDir" ] do
+                  Expect.equal (Weir.Effects.effectClass n) (Some M) $"{n} is external mutation"
+          }
+          test "Http.send is method-dependent — effectClass alone cannot place it (None)" {
+              Expect.equal (Weir.Effects.effectClass "Http.send") None "the name defers to the request value"
+          }
+          test "the net split: query methods are ambient, mutating verbs are mutation" {
+              for m in [ "GET"; "HEAD"; "OPTIONS"; "QUERY"; "Get"; "get" ] do
+                  Expect.equal (Weir.Effects.httpMethodClass m) A $"{m} is idempotent → ambient"
+
+              for m in [ "POST"; "PUT"; "DELETE"; "PATCH"; "Post"; "patch" ] do
+                  Expect.equal (Weir.Effects.httpMethodClass m) M $"{m} mutates → mutation"
+          }
+          test "EVAL-TIME resolution: Http.send{post} = Mutation, Http.send{get} = Ambient (probe 2)" {
+              // the CRITICAL probe — plan/apply intercepts at eval; the
+              // class of a builtin call must resolve where the interpreter
+              // runs, from the runtime request Value
+              Expect.equal (Weir.Builtins.effectClassOfCall "Http.send" [ reqWith "Post" ]) (Some M) "send{post} mutates"
+              Expect.equal (Weir.Builtins.effectClassOfCall "Http.send" [ reqWith "Get" ]) (Some A) "send{get} reads"
+              Expect.equal (Weir.Builtins.effectClassOfCall "Http.send" [ reqWith "Delete" ]) (Some M) "send{delete} mutates"
+              Expect.equal (Weir.Builtins.effectClassOfCall "Http.send" [ reqWith "Query" ]) (Some A) "send{query} is idempotent"
+          }
+          test "eval-time resolution agrees with the name map for fixed-class calls" {
+              Expect.equal (Weir.Builtins.effectClassOfCall "File.write" []) (Some M) "fs.write is mutation at eval"
+              Expect.equal (Weir.Builtins.effectClassOfCall "File.read" []) (Some A) "fs.read is ambient at eval"
+              Expect.equal (Weir.Builtins.effectClassOfCall "Http.fetch" []) (Some A) "fetch is ambient at eval"
+              Expect.equal (Weir.Builtins.effectClassOfCall "Str.trim" []) None "a pure builtin has no class"
+          }
+          test "the partition is TOTAL over every classified-effectful name effectPhrase names" {
+              // every name the teaching vocabulary classifies effectful
+              // must also get a class — the two cannot drift (Http.send is
+              // the ONE deliberate None, resolved per-request)
+              let names =
+                  [ "File.read"; "File.write"; "Dir.create"; "Dir.list"; "Env.get"; "Args.load"; "Proc.stop"
+                    "Net.portOpen"; "Http.fetch"; "Http.query"; "Log.info"; "print"; "printerr"; "exit"
+                    "ls"; "glob"; "Path.glob"; "Path.tempRoot"; "Path.newTempDir"; "Instant.now"
+                    "Duration.sleep"; "Self.stdin" ]
+
+              for n in names do
+                  Expect.isSome (Weir.Effects.effectClass n) $"{n} is classified"
+          } ]
+
+let deterministicBlockTests =
+    // STAGE 2 [D:pure-stage2]: the `deterministic` block — the user-facing
+    // surface. `deterministic == only ambient-input`, one tier up from
+    // `pure == only ∅`; a reachable external MUTATION refuses (located,
+    // naming the offender AND its class), an ambient READ is fine.
+    let errsOf (lines: string list) =
+        let ds, _, _, _ = Weir.Script.analyzeLines "det.weir" lines
+        ds |> List.filter (fun d -> d.Severity = "error")
+
+    let firstErr (lines: string list) =
+        match errsOf lines with
+        | e :: _ -> e
+        | [] -> failtest "must refuse"
+
+    testList
+        "the deterministic block [D:pure-stage2]"
+        [ test "parse shape: a bare deterministic head + block is a within-family node" {
+              let asmLine = "deterministic" + Weir.Parser.sibSepStr + "1 + 1"
+
+              match Weir.Parser.parseLine realResolver asmLine with
+              | Ok(SExpr { Kind = EWithin(WithinDeterministic, None, None, None, _) }) -> ()
+              | other -> failtest $"unexpected: {other}"
+          }
+          test "a reading body is ACCEPTED — ambient input is allowed" {
+              Expect.isEmpty
+                  (errsOf
+                      [ "let x ="
+                        "    deterministic"
+                        "        let home = Env.get \"HOME\""
+                        "        let _now = Instant.now ()"
+                        "        home |> Option.defaultValue \"none\""
+                        "print x" ])
+                  "env read + clock read are ambient — no mutation"
+          }
+          test "a writing body REFUSES — the located offender AND its class" {
+              let e = firstErr [ "let x ="; "    deterministic"; "        File.write \"f\" [\"y\"]"; "print \"x\"" ]
+
+              Expect.stringContains
+                  e.Message
+                  "this 'deterministic' block forbids external mutation, but 'File.write' writes the filesystem"
+                  "names the offender and the class"
+
+              Expect.stringContains e.Message "reads are allowed" "the teaching states the allowance"
+              Expect.equal e.Line 3 "located at the write"
+          }
+          test "a command (proc) REFUSES — a spawn is external mutation" {
+              let e = firstErr [ "deterministic"; "    echo hi" ]
+              Expect.stringContains e.Message "'echo' runs a command" "proc mutates"
+          }
+          test "Http.send{post} refuses, Http.send{get} admits — the per-method net split" {
+              Expect.isEmpty
+                  (errsOf [ "let x ="; "    deterministic"; "        Http.send (Http.get \"http://x\")"; "print $\"{x.status}\"" ])
+                  "a GET reads — ambient"
+
+              let e =
+                  firstErr [ "let x ="; "    deterministic"; "        Http.send (Http.post \"http://x\")"; "print $\"{x.status}\"" ]
+
+              Expect.stringContains e.Message "'Http.send' talks to the network" "a POST mutates"
+              Expect.stringContains e.Message "mutating HTTP method" "the class names the method"
+          }
+          test "Http.query and Http.fetch admit — idempotent by construction" {
+              Expect.isEmpty
+                  (errsOf
+                      [ "let x ="
+                        "    deterministic"
+                        "        Http.query \"http://x\" |> Http.send"
+                        "print $\"{x.status}\"" ])
+                  "the query method is ambient (piped send resolves it)"
+
+              Expect.isEmpty
+                  (errsOf [ "let x ="; "    deterministic"; "        Http.fetch \"http://x\""; "x |> Seq.iter print" ])
+                  "fetch is a GET shorthand — ambient"
+          }
+          test "pure ⊂ deterministic — a pure body is trivially deterministic" {
+              Expect.isEmpty
+                  (errsOf [ "let x ="; "    deterministic"; "        let y = 2"; "        y + 1"; "print $\"{x}\"" ])
+                  "no effect at all is within the ambient-input ceiling"
+
+              // and a nested pure region inside deterministic is fine
+              Expect.isEmpty
+                  (errsOf
+                      [ "let x ="
+                        "    deterministic"
+                        "        pure"
+                        "            1 + 1"
+                        "print $\"{x}\"" ])
+                  "a pure island nests inside the looser ceiling"
+          }
+          test "an unknown callable refuses — conservatism carries over" {
+              let e = firstErr [ "let unknown g ="; "    deterministic"; "        g 1" ]
+              Expect.stringContains e.Message "unknown callable" "a function-typed param could mutate"
+          }
+          test "reading DATA from an impure binding is NOT a mutation — the fuzz-found line" {
+              // a value computed from an impure command holds DATA once
+              // bound (the command ran outside the block); reading it is
+              // ambient, not mutation — only a CALLABLE mutates when applied
+              Expect.isEmpty
+                  (errsOf
+                      [ "let lines = git status"; "let n ="; "    deterministic"; "        lines |> Seq.length"; "print $\"{n}\"" ])
+                  "reading a command-bound seq is a read, not a write"
+          }
+          test "keyword reservation: deterministic cannot be a binder; a blockless head teaches" {
+              let e = firstErr [ "let deterministic = 1" ]
+              Expect.stringContains e.Message "'deterministic' is a keyword" "the binder slot refuses"
+
+              let ds, _, _, _ = Weir.Script.analyzeLines "bare.weir" [ "deterministic" ]
+
+              Expect.isTrue
+                  (ds |> List.exists (fun d -> d.Message.Contains "deterministic takes a block"))
+                  "the bare head teaches the block form"
+          }
+          test "within deterministic refuses — it is its own head, never behind within" {
+              let ds, _, _, _ = Weir.Script.analyzeLines "wd.weir" [ "within deterministic"; "    1" ]
+
+              Expect.isNonEmpty
+                  (ds |> List.filter (fun d -> d.Severity = "error"))
+                  "`within deterministic` does not parse — deterministic is a keyword, its own head"
+          }
+          test "badge interplay: deterministic does NOT mint a (pure) badge — the asymmetry holds" {
+              // a function whose body reads ambient input is deterministic
+              // but NOT pure; the (pure) badge stays absent (effect-normal
+              // display is untouched — deterministic is the looser tier)
+              let lines = [ "let reader () = Env.get \"HOME\""; "print (show (reader () |> Option.defaultValue \"x\"))" ]
+
+              match Weir.Lsp.hoverType lines 1 6 with
+              | Some h -> Expect.isFalse (h.Contains "(pure)") "an ambient reader is not pure-badged"
+              | None -> failtest "the binding must hover"
           } ]
 
 let withinKindsTests =
@@ -17459,6 +17664,8 @@ let allTests =
           letBindingHoverTests
           purityBadgeTests
           pureRegionTests
+          effectPartitionTests
+          deterministicBlockTests
           withinKindsTests
           withinAlwaysLockTests
           wireKeyTests

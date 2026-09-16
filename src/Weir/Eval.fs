@@ -2928,10 +2928,13 @@ and eval (env: Env) (te: TypedExpr) : Value =
             | None -> unreachable $"the parser gives within {what} its binder"
 
         match kind with
-        | WithinPure ->
-            // the purity assertion is a CHECK-time law [D:pure-stage1]:
-            // by the time evaluation reaches it, the body is verified
-            // effect-free — the region is transparent at runtime
+        | WithinPure
+        | WithinDeterministic ->
+            // the purity/determinism assertions are CHECK-time laws
+            // [D:pure-stage1] [D:pure-stage2]: by the time evaluation
+            // reaches the region, the body is verified within its ceiling
+            // (∅ for pure, ambient-input for deterministic) — the region
+            // is transparent at runtime, so ambient READS still run
             eval env body
         | WithinLock ->
             // advisory file lock [D:within-lock]: FileShare.None maps to

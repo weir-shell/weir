@@ -625,6 +625,40 @@ print title
 let pure leak p = File.write p ["x"]
 ```
 
+- `deterministic` + an indented block is the DETERMINISM ASSERTION
+  [D:pure-stage2], ONE TIER UP from `pure`: the body must reach no
+  EXTERNAL MUTATION — `fs.write`/`fs.delete`, `proc` (a command or a
+  Proc member), console writes, the mutating HTTP methods
+  (POST/PUT/DELETE/PATCH), any `within` resource — but AMBIENT READS
+  are fine: `fs.read`, `Env`/`Args`, the clock (`Instant.now`), the
+  query HTTP methods (`Http.fetch`/`Http.query`, and `Http.send` of a
+  GET/HEAD/OPTIONS/QUERY request), and `Self.stdin`. So
+  `deterministic == only ambient-input`, and a `pure` body (only ∅)
+  is trivially deterministic. A reachable mutation is a located check
+  error naming the offender AND its class ("this 'deterministic' block
+  forbids external mutation, but 'File.write' writes the filesystem —
+  reads are allowed"). The line is [PLAN-plan-apply]'s too: the same
+  ambient/mutation partition drives `--can`'s class grouping (ambient
+  reads vs mutations) and plan/apply's reads-run / mutations-capture
+  rule. Opt-in ONLY, effect-normal outside, its own head — never
+  `within deterministic`.
+
+```weir
+// a reproducible transform: reads the world, changes nothing
+let cfg =
+    deterministic
+        let home = Env.get "HOME" |> Option.defaultValue "/"
+        $"{home}/config"
+print cfg
+```
+
+```weir-error
+// a reachable external mutation refuses; an ambient read would pass
+let x =
+    deterministic
+        File.write "out" ["y"]
+```
+
 - A `let` RHS takes command mode wherever lets go — top level AND
   inside bodies (`let tree = git rev-parse $c |> Seq.exactlyOne` in a
   function); `$()` covers sub-expression positions. `function | pat -> e | …`
