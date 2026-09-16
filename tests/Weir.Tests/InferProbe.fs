@@ -198,3 +198,57 @@ let inferRules =
                   Expect.isTrue (notes |> List.exists (fun n -> n.Contains "array")) "array note"
               | Error e -> failtestf "infer failed: %s" e
           } ]
+
+// #save's bare-alias qualifier [D:repl-save]: span-based, string-safe
+[<Tests>]
+let saveQualify =
+    let r = Script.resolver preludeTypeEnv
+
+    testList
+        "save qualify"
+        [ test "single-home bare aliases qualify" {
+              Expect.equal
+                  (Fmt.qualifyBareAliases r "[1; 2] |> map (fun n -> n + 1) |> where (fun n -> n > 1)")
+                  "[1; 2] |> Seq.map (fun n -> n + 1) |> Seq.where (fun n -> n > 1)"
+                  "map -> Seq.map, where -> Seq.where"
+          }
+
+          test "startsWith qualifies to Str" {
+              Expect.equal
+                  (Fmt.qualifyBareAliases r "[\"ab\"] |> where (startsWith \"a\")")
+                  "[\"ab\"] |> Seq.where (Str.startsWith \"a\")"
+                  "startsWith -> Str.startsWith"
+          }
+
+          test "a bare alias INSIDE a string literal is untouched" {
+              // 'map' as data in a string must not be rewritten
+              Expect.equal
+                  (Fmt.qualifyBareAliases r "let s = \"map where iter\"")
+                  "let s = \"map where iter\""
+                  "string data untouched"
+          }
+
+          test "an already-qualified name is untouched" {
+              Expect.equal
+                  (Fmt.qualifyBareAliases r "[1] |> Seq.map (fun n -> n)")
+                  "[1] |> Seq.map (fun n -> n)"
+                  "Seq.map stays"
+          }
+
+          test "the saved round-trip CHECKS [D:repl-save]" {
+              // simulate a #save output: a binding, injected type decls,
+              // and a discard-wrapped bare-alias echo — then weir check it
+              let saved =
+                  [ "let sample = [\"{\\\"items\\\": [{\\\"name\\\": \\\"a\\\"}], \\\"count\\\": 1}\"]"
+                    "type Item = {"
+                    "    name: string"
+                    "}"
+                    "type Root = {"
+                    "    items: seq<Item>"
+                    "    count: int"
+                    "}"
+                    "let _r1 = sample |> from json Root |> _.items |> Seq.map _.name |> Seq.length" ]
+
+              let diags, _, _, _ = Weir.Script.analyzeLines "saved.weir" saved
+              Expect.isEmpty diags (sprintf "saved script checks clean; diags: %A" diags)
+          } ]
