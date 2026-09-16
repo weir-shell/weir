@@ -1094,6 +1094,13 @@ let private setupLineEditor () =
 
     loadHistory ()
 
+// one-line pushback for the redirected accumulator [D:repl-multiline]: a
+// peeked line that did NOT attach to the current statement belongs to the
+// NEXT one — it must survive across readInput calls (a fresh statement is
+// a fresh readRedirected call), so it lives at module scope, not inside
+// the function
+let mutable private pendingLine: string option = None
+
 // the redirected-stdin ACCUMULATOR [D:repl-multiline]: a piped REPL
 // (printf '…' | weir) has no tty line editor, so it reads physical lines
 // with Console.ReadLine. A statement that spans lines (heredoc, a
@@ -1113,13 +1120,6 @@ let private setupLineEditor () =
 // alone (the no-op arm). AT EOF with an unclosed buffer: return what
 // accumulated and let it error normally — the tty editor's
 // blank-line/Ctrl+D escape does the same at its equivalent boundary.
-// one-line pushback for the redirected accumulator [D:repl-multiline]: a
-// peeked line that did NOT attach to the current statement belongs to the
-// NEXT one — it must survive across readInput calls (a fresh statement is
-// a fresh readRedirected call), so it lives at module scope, not inside
-// the function
-let mutable private pendingLine: string option = None
-
 let private readRedirected () : string =
     let readLine () =
         match pendingLine with
