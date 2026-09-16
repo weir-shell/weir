@@ -1,0 +1,248 @@
+#!/usr/bin/env weir
+//
+// Generates the any-sync network identity and per-node configuration, then
+// seals the private parts into SealedSecrets committed next to this script.
+//
+// Running this MINTS A NEW NETWORK: new networkId, new node keys. Existing
+// clients and existing data on the nodes belong to the old network and will not
+// follow. --force is the guard.
+//
+// Requires on PATH: anyconf, kubectl, kubeseal, openssl.
+//   go install github.com/anyproto/any-sync-tools/anyconf@latest
+
+type Cli = {
+    /// hostname clients use to reach this network, e.g. anysync.example.com
+    host: string
+    /// kubernetes namespace
+    [<Default "anytype">]
+    namespace: string
+    /// sealed-secrets certificate (default: <repo>/seal-cert.pem)
+    cert: Option<string>
+    /// overwrite an existing network - discards the current identity
+    force: bool
+}
+
+type NodeSpec = {
+    name: string
+    kind: string
+    port: int
+    quicPort: int
+}
+
+type Acct = { peerId: string; peerKey: string; signingKey: string }
+type Priv = { account: Acct }
+type Node = { peerId: string; addresses: seq<string>; types: seq<string> }
+type NetConf = { id: string; networkId: string; nodes: seq<Node> }
+
+let cli = Args.load Cli
+let ns = cli.namespace
+let host = cli.host
+
+let outDir = Self.scriptPath |> Path.dir
+let configsDir = Path.combine outDir "configs"
+let repoRoot = outDir |> Path.dir |> Path.dir |> Path.dir
+let cert = cli.cert |> Option.defaultValue (Path.combine repoRoot "seal-cert.pem")
+
+// Node order is load-bearing: anyconf writes account0.yml..account3.yml in the
+// order the --t flags are given, and the ports below must agree with
+// vendor/anytype/install.yaml, infra/traefik/helm-config.yaml and the routes.
+let nodeSpec = { name = "any-sync-node-1"; kind = "tree"; port = 1001; quicPort = 1011 }
+let coordSpec = { name = "any-sync-coordinator"; kind = "coordinator"; port = 1004; quicPort = 1014 }
+let fileSpec = { name = "any-sync-filenode"; kind = "file"; port = 1005; quicPort = 1015 }
+let consSpec = { name = "any-sync-consensusnode"; kind = "consensus"; port = 1006; quicPort = 1016 }
+let specs = [nodeSpec; coordSpec; fileSpec; consSpec]
+
+let existing = if Dir.exists configsDir then Dir.list configsDir else []
+if ((existing |> Seq.length) > 0) && not cli.force then
+    fail $"{configsDir} is not empty - a network already exists here. Pass --force to mint a new one (old identity and all synced data are abandoned)."
+
+if not (File.exists cert) then
+    fail $"sealed-secrets certificate not found: {cert}"
+
+let svcOf s = $"{s.name}.{ns}.svc.cluster.local"
+
+// Both the in-cluster address and the external one are advertised, in that
+// order: cluster peers stay inside the cluster, clients fall through to the
+// gateway. This mirrors what docker-generateconfig/setListenIp.py does.
+let addressesOf s =
+    let svc = svcOf s
+    // show keeps port/quicPort polymorphic: s is row-typed here, and a
+    // bare hole would default the field to string (then clash at the call)
+    [
+        $"{svc}:{show s.port}"
+        $"quic://{svc}:{show s.quicPort}"
+        $"{host}:{show s.port}"
+        $"quic://{host}:{show s.quicPort}"
+    ]
+
+let commonBlock = <<<
+    metric:
+        addr: "0.0.0.0:8000"
+    log:
+        defaultLevel: ""
+        production: false
+    networkStorePath: "/networkStore"
+
+// %PLACEHOLDER% substitution rather than an interpolated $<<< block: $<<<
+// currently strips leading whitespace from every line, which YAML cannot
+// survive. (Tracked as a weir bug; collapses to a $<<< hole once fixed.)
+let listenTemplate = <<<
+    drpc:
+        stream:
+            maxMsgSizeMb: 256
+    yamux:
+        listenAddrs:
+            - "0.0.0.0:%PORT%"
+        writeTimeoutSec: 10
+        dialTimeoutSec: 10
+    quic:
+        listenAddrs:
+            - "0.0.0.0:%QUIC_PORT%"
+        writeTimeoutSec: 10
+        dialTimeoutSec: 10
+
+let listenBlock s =
+    listenTemplate
+    |> Seq.map (Str.replace "%QUIC_PORT%" (show s.quicPort) >> Str.replace "%PORT%" (show s.port))
+
+let coordinatorBlock = <<<
+    mongo:
+        connect: "mongodb://mongo:27017"
+        database: coordinator
+    spaceStatus:
+        runSeconds: 5
+        deletionPeriodDays: 0
+    defaultLimits:
+        spaceMembersRead: 1000
+        spaceMembersWrite: 1000
+        sharedSpacesLimit: 1000
+
+let consensusBlock = <<<
+    mongo:
+        connect: "mongodb://mongo:27017/?w=majority"
+        database: consensus
+        logCollection: log
+
+let filenodeTemplate = <<<
+    s3Store:
+        bucket: anytype
+        indexBucket: anytype
+        maxThreads: 16
+        profile: default
+        region: us-east-1
+        endpoint: "http://minio:9000"
+        forcePathStyle: true
+        credentials:
+            accessKey: "%ACCESS_KEY%"
+            secretKey: "%SECRET_KEY%"
+    redis:
+        isCluster: false
+        url: "redis://redis:6379?dial_timeout=3&read_timeout=6s"
+    defaultLimit: 1099511627776
+
+let filenodeBlock accessKey secretKey =
+    filenodeTemplate
+    |> Seq.map (Str.replace "%ACCESS_KEY%" accessKey >> Str.replace "%SECRET_KEY%" secretKey)
+
+let treeBlock = <<<
+    apiServer:
+        listenAddr: "0.0.0.0:8080"
+    space:
+        gcTTL: 60
+        syncPeriod: 600
+    storage:
+        path: "/storage"
+        anyStorePath: "/anyStorage"
+    nodeSync:
+        periodicSyncHours: 2
+        syncOnStart: true
+    s3Store:
+        enabled: false
+    archive:
+        enabled: false
+        archiveAfterDays: 1
+        checkPeriodMinutes: 2
+
+// kubectl builds the Secret, kubeseal encrypts it - neither shape is
+// hand-written. The tmp scope releases even if the seal pipe raises.
+let seal nodeName lines =
+    let name = $"{nodeName}-config"
+    within tmp d
+        let src = Path.combine d "config.yml"
+        lines |> File.write src
+        kubectl create secret generic $name -n $ns --from-file $"config.yml={src}" --dry-run=client -o yaml | kubeseal --cert $cert --scope namespace-wide --format yaml |> File.write $"{configsDir}/{name}.yaml"
+
+let accessKey = openssl rand -hex 16 |> Seq.exactlyOne
+let secretKey = openssl rand -hex 32 |> Seq.exactlyOne
+
+Dir.create configsDir
+
+within tmp work
+    within cd work
+        // Phase 1: the network key pair. Its private half becomes the signing
+        // key of the coordinator and the consensus node.
+        anyconf create-network
+        // read the id off the line: create-network writes `addresses: []`, and
+        // flow style is outside weir's yaml subset
+        let netId =
+            File.read "nodes.yml"
+            |> Seq.choose (function | Regex @"^networkId:\s*(\S+)$" v -> Some v | _ -> None)
+            |> Seq.tryExactlyOne
+            |> Option.defaultWith (fun () -> fail "no single networkId: line in nodes.yml - anyconf create-network output shape changed")
+        let netSigningKey = File.read "account.yml" |> from yaml Priv |> _.account |> _.signingKey
+
+        // Phase 2: one account per node. The --addresses here are placeholders;
+        // the real address list is written below.
+        let typeFlags = specs |> Seq.collect (fun s -> ["--t"; s.kind])
+        let addrFlags = specs |> Seq.collect (fun s -> ["--addresses"; $"{svcOf s}:{show s.port}"])
+        anyconf generate-nodes $@typeFlags $@addrFlags
+
+        let generated = File.read "nodes.yml" |> from yaml NetConf
+        if (generated.nodes |> Seq.length) <> (specs |> Seq.length) then
+            fail $"anyconf produced {generated.nodes |> Seq.length} nodes, expected {specs |> Seq.length}"
+
+        let nodes =
+            generated.nodes
+            |> Seq.indexed
+            |> Seq.map (fun (i, n) ->
+                let s = specs[i]
+                if not (n.types |> Seq.contains s.kind) then
+                    fail $"node {i} has types {n.types}, expected {s.kind}"
+                { n with addresses = addressesOf s })
+
+        let network = { generated with networkId = netId; nodes = nodes |> Seq.force }
+        let networkLines = network |> to yaml
+
+        // The public half: peer ids and addresses only. Committed as-is and
+        // uploaded to Anytype clients as the self-hosted network config.
+        networkLines |> File.write (Path.combine outDir "network.yml")
+
+        let networkBlock = networkLines |> Seq.map (fun l -> $"    {l}") |> Seq.append ["network:"]
+
+        // The signing key is the account's own unless overridden (the network
+        // key, for the coordinator and consensus node).
+        let accountBlock i signingOverride =
+            let a = File.read $"account{i}.yml" |> from yaml Priv |> _.account
+            let key = signingOverride |> Option.defaultValue a.signingKey
+            { account = { a with signingKey = key } } |> to yaml
+
+        let assemble i signingOverride spec body =
+            let parts = [networkBlock; commonBlock; accountBlock i signingOverride; listenBlock spec; body]
+            let lines = parts |> Seq.collect (fun p -> p) |> Seq.force
+            let rendered = lines |> Yaml.parse |> to yaml |> Seq.length
+            if rendered < 20 then
+                fail $"assembled config for {spec.name} does not look like a config ({rendered} lines)"
+            lines
+
+        // Only the coordinator and the consensus node sign with the network key.
+        seal nodeSpec.name (assemble 0 None nodeSpec treeBlock)
+        seal coordSpec.name (assemble 1 (Some netSigningKey) coordSpec coordinatorBlock)
+        seal fileSpec.name (assemble 2 None fileSpec (filenodeBlock accessKey secretKey))
+        seal consSpec.name (assemble 3 (Some netSigningKey) consSpec consensusBlock)
+
+        kubectl create secret generic minio-credentials -n $ns --from-literal $"MINIO_ROOT_USER={accessKey}" --from-literal $"MINIO_ROOT_PASSWORD={secretKey}" --dry-run=client -o yaml | kubeseal --cert $cert --scope namespace-wide --format yaml |> File.write $"{configsDir}/minio-credentials.yaml"
+
+        print $"networkId: {netId}"
+
+print $"wrote {configsDir}/*.yaml and {outDir}/network.yml"
+print "next: uncomment anytype in apps/home/kustomization.yaml, apply, then upload network.yml to your clients"
