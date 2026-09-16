@@ -1094,24 +1094,6 @@ let private setupLineEditor () =
 
     loadHistory ()
 
-// how many logical statements a buffer assembles to [D:repl-multiline] —
-// the assembler's own boundary count, comment-filtered exactly as
-// bufferComplete preprocesses. An assembly error (an open/pending
-// statement) is "not yet countable" -> None. Reused as the continuation
-// oracle below: a peeked line that keeps the count the same MERGED into
-// the pending statement (a `|>` tail, an offside `else`, a block body); a
-// line that raises the count STARTED a new statement.
-let private stmtCount (bufLines: string list) : int option =
-    let numbered =
-        bufLines
-        |> List.mapi (fun i l -> i + 1, l)
-        |> List.filter (fun (_, raw) -> Script.classifyLine raw <> Script.LineKind.CommentOnly)
-        |> List.map (fun (n, raw) -> n, Script.stripComment raw)
-
-    match Script.assemble numbered with
-    | Ok lls -> Some(List.length lls)
-    | Error _ -> None
-
 // the redirected-stdin ACCUMULATOR [D:repl-multiline]: a piped REPL
 // (printf '…' | weir) has no tty line editor, so it reads physical lines
 // with Console.ReadLine. A statement that spans lines (heredoc, a
@@ -1145,21 +1127,6 @@ let private readRedirected () : string =
             pendingLine <- None
             l
         | None -> Console.ReadLine()
-
-    // does `next` CONTINUE the already-COMPLETE statement in `buf`? — the
-    // assembler's own answer: it attaches iff appending it does not raise
-    // the assembled statement count (a `|>` tail, an offside `else`, a
-    // district body all keep the count). A blank/comment line breaks a
-    // completed statement (the assembler's blank-boundary rule), so it
-    // does NOT attach — it ends the buffer and starts fresh.
-    let attaches (buf: string list) (next: string) =
-        if Script.classifyLine next <> Script.LineKind.Code then
-            false
-        else
-            match stmtCount buf, stmtCount (buf @ [ next ]) with
-            | _, None -> true // buf@next still pends -> more wanted
-            | None, Some _ -> true // buf pended, next completed it
-            | Some a, Some b -> b <= a // next merged into the last statement
 
     // the completed statement's prompts, emitted ONCE at return so the
     // eval output that follows keeps its order [D:repl-multiline] — a peek
@@ -1204,7 +1171,7 @@ let private readRedirected () : string =
                 // complete AS-IS; peek whether the next line continues it
                 match readLine () with
                 | null -> ret buf
-                | next when attaches buf next -> go (next :: acc')
+                | next when Script.pipedAttaches buf next -> go (next :: acc')
                 | next ->
                     pendingLine <- Some next
                     ret buf

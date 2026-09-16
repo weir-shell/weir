@@ -893,8 +893,9 @@ echo "e2e ok: unit is invisible in the REPL"
 # a REPL session: bind a JSON sample, #infer types from it (source
 # omitted -> defaults to `it`), field-access the injected type through a
 # bare alias (map), #save the session, then weir check the saved file
-# clean. A single physical line per statement (piped REPL reads one line
-# per prompt; heredoc blocks are the tty editor's domain).
+# clean. Each statement here is a single physical line; the piped
+# multi-line assembly (heredoc/type/if/pipeline spanning lines) is pinned
+# in its own cell below.
 infdir=$(mkweirtmp)
 infout=$(printf '%s\n%s\n%s\n%s\n%s\n' \
   'let sample = ["{\"items\": [{\"name\": \"a\", \"port\": 8080}], \"count\": 1}"]' \
@@ -911,6 +912,47 @@ $BIN check "$infdir/explore.weir"
 echo "REAL=$?" >> /tmp/e2e-infer.out
 $BIN check "$infdir/explore.weir" || fail "the saved script must weir-check clean: $(cat "$infdir/explore.weir")"
 echo "e2e ok: #infer (it default) + #save round-trips to a checking .weir script"
+
+# --- piped REPL multi-line assembly (2026-09-16) [D:repl-multiline] ----
+# a REDIRECTED REPL (printf … | weir) reads physical lines but must
+# ASSEMBLE a statement that spans several — heredoc, a multi-line `type`,
+# an offside if/match block, a leading-`|>` pipeline — the way a script
+# does. The bug (v0.0.35): each physical line parsed alone, so a heredoc
+# body was "unbound variable 'a'". Reuses bufferComplete + Script.assemble
+# (no second parser); a peeked line stays only if it still attaches.
+
+# the flagship repro: a heredoc body of two lines, then a statement that
+# USES the binding — both must assemble, and Seq.length is 2
+out=$(printf 'let block = <<<\n    a\n    b\nblock |> Seq.length\n' | $BIN 2>&1)
+expect "piped heredoc assembles its body" 'block : seq<string> = ["a"; "b"]' "$out"
+expect "piped heredoc then a using-statement evaluates" "2 : int" "$out"
+
+# a multi-line record `type`, then a value that uses it — the type must
+# declare and the following field-access must evaluate as its OWN echo
+out=$(printf 'type Point = {\n  x: int\n  y: int\n}\n{ x = 1; y = 2 }.x\n' | $BIN 2>&1)
+expect "piped multi-line type declares" "type Point declared" "$out"
+expect "piped value after a type evaluates separately" "1 : int" "$out"
+
+# an offside if/else block under a `let` (col-0 if/then/else is not one
+# statement in weir — the block rides its binding); the `else` and body
+# lines must stay attached
+out=$(printf 'let r =\n  if 1 > 0 then\n    "yes"\n  else\n    "no"\nr\n' | $BIN 2>&1)
+expect "piped offside if/else block assembles" 'r : string = "yes"' "$out"
+
+# a leading-`|>` pipeline: `xs` then continuation lines each begin with
+# `|>` — they must attach to the value above, not error "continuation
+# without a statement"
+out=$(printf 'let xs = [1; 2; 3]\nxs\n|> Seq.map (fun n -> n * 2)\n|> Seq.sum\n' | $BIN 2>&1)
+expect "piped leading-pipe continuation assembles" "12 : int" "$out"
+echo "$out" | grep -qF "continuation without a statement" && fail "leading-|> lines split into separate statements: $out"
+
+# the REGRESSION guard: a run of single-line statements must EACH still
+# evaluate and echo, exactly as before — no gluing of independent lines
+out=$(printf 'let a = 1\na + 1\n"hi"\n' | $BIN 2>&1)
+expect "single-line: let echoes" "a : int = 1" "$out"
+expect "single-line: expression echoes" "2 : int" "$out"
+expect "single-line: string echoes" '"hi" : string' "$out"
+echo "e2e ok: piped REPL assembles multi-line statements; single-line lines each still echo"
 
 stmtdir=$(mkweirtmp)
 cat > "$stmtdir/discard.weir" <<'WEOF'
