@@ -49,6 +49,64 @@ language. File directives (`#sig`, `#schema`) are read at check
 time; session directives (`#help`, `#quit`) run now. One glyph, two
 lifetimes.
 
+## The last result: `it`
+
+Every line that produces a value binds it to `it` — an expression, a
+command, or a `let` RHS (the echo path). So a pipeline you just
+built is one word away:
+
+```
+weir> kubectl get po -o json |> from json Pods |> _.items
+weir> it |> Seq.map _.name
+```
+
+`it` is REPL-only (scripts and `-e` never see it, like the bare
+aliases). A unit statement or a directive leaves `it` untouched. The
+spelling is `it` deliberately: `_` is taken (the `_.field` shorthand
+and the `let _ =` discard), so it cannot be the last result — `it`
+(ghci's convention) collides with nothing.
+
+## `#infer`: draft types from a sample
+
+Exploring an unknown JSON/YAML blob means hand-transcribing its
+shape. `#infer` drafts it from an evaluated sample:
+
+```
+weir> let raw = kubectl get po -o json
+weir> #infer raw from json as Pods
+defined: Pods, Metadata, Status (3 types)
+weir> raw |> from json Pods |> _.items |> Seq.map _.⟨TAB⟩
+```
+
+`#infer <source> from <json|jsonl|yaml> as <Name>` evaluates the
+source ONCE, parses it by the named adapter, walks it to a set of
+named `type` declarations, and injects them into the session (as if
+you had typed them) — so `from json Pods` checks and field
+completion lights up. The source defaults to `it` when omitted
+(`#infer from json as Pods` reads the last result — the way to "pipe
+into" a directive). A bare top-level array (or `from jsonl`) names
+the ELEMENT: you write `seq<Name>`.
+
+The output is ordinary `type` decls you own and edit — this is the
+`weir add schema` category, not check-time inference (`check` never
+evaluates; `from json` never sniffs). A single sample cannot see
+optional/absent fields, so `#infer` PRINTS notes rather than
+guessing: an empty array (`seq<string>` default), a null field
+(`Option<string>`), a heterogeneous array (first element, "verify").
+The same inference is a builtin — `sample |> Json.inferShape |> print`
+(and `Yaml.inferShape`) returns the declaration text outside the REPL.
+
+## `#save`: the session to a script
+
+`#save <path>` writes the session's accepted statement lines to a
+runnable `.weir` file, auto-qualifying bare aliases (`map` →
+`Seq.map`, `startsWith` → `Str.startsWith`) and formatting the
+result — so `#infer` to explore, `#save` to keep. Errored lines
+drop; injected `#infer` types come out as ordinary `type` decls; a
+bare non-unit expression echo (a glance) is saved as a `let _rN = …`
+discard so the strict unused-binding law is satisfied. The saved
+file `weir check`s clean.
+
 ## The prompt and the colors
 
 The prompt reddens after an entry that errors, and clears on the

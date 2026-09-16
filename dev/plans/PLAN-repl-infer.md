@@ -1,8 +1,8 @@
 # weir — `#infer`: named types drafted from a JSON/YAML sample in the REPL
 
-Status: IN EXECUTION (2026-09-16 — probes green). A REPL scaffolding
-directive, not a language change; `weir check` stays evaluation-free and
-untouched.
+Status: SHIPPED (2026-09-16 — `#infer`, `#save`, and the `it` last-result
+binding built; check untouched). A REPL scaffolding directive, not a
+language change; `weir check` stays evaluation-free and untouched.
 
 ## Probe outcomes (2026-09-16)
 
