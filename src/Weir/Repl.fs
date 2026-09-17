@@ -1880,8 +1880,6 @@ let private candidateErrors (stmts: DistillStmt list) : Script.Diagnostic list =
         let diags, _, _, _ = Script.analyzeLines "#save" lines
         diags |> List.filter (fun d -> d.Severity = "error" || namesSessionIt d)
 
-let private candidateChecks (stmts: DistillStmt list) : bool = candidateErrors stmts |> List.isEmpty
-
 // PROTECT a self-contained-but-unused named `let` [D:repl-save]: the
 // unused-binding law refuses a top-level `let x = <<<…>>>` that nothing
 // reads, but a distilled DEFINITION is the product, not scratch — so it
