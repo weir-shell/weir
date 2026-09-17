@@ -182,6 +182,74 @@ if "binary output" in segs[0]:
 if "\x00" not in segs[0]:
     failures.append(f"the child's bytes reach the terminal raw: {segs[0][-200:]!r}")
 
+# --- Tab completion: an empty prompt teaches the directives, not the
+# flood [D:empty-prompt-directives]; a constructor is not a statement
+# head [D:constructors-not-heads] ---------------------------------------
+def pty_tab(prefix, taps=1, settle=0.6):
+    # type <prefix> then Tab(s), capture the paint, then ^C + ^D to leave.
+    # a set of candidates sharing a prefix extends on the first Tab and
+    # LISTS on the second (readline convention) — taps controls it
+    pid, fd = pty.fork()
+    if pid == 0:
+        os.execv(WEIR, ["weir"])
+    time.sleep(0.8)
+    out = b""
+    if prefix:
+        os.write(fd, prefix.encode())
+        time.sleep(0.2)
+    def drain(t):
+        nonlocal out
+        deadline = time.time() + t
+        while time.time() < deadline:
+            r, _, _ = select.select([fd], [], [], 0.1)
+            if r:
+                try:
+                    out += os.read(fd, 65536)
+                except OSError:
+                    return
+    for _ in range(taps):
+        os.write(fd, b"\t")
+        drain(0.35)
+    drain(settle)
+    os.write(fd, b"\x03")  # Ctrl+C: abandon the line
+    os.write(fd, b"\x04")  # Ctrl+D: leave
+    time.sleep(0.3)
+    try:
+        while True:
+            r, _, _ = select.select([fd], [], [], 0.2)
+            if not r:
+                break
+            c = os.read(fd, 65536)
+            if not c:
+                break
+            out += c
+    except OSError:
+        pass
+    try:
+        os.close(fd)
+    except OSError:
+        pass
+    os.waitpid(pid, 0)
+    return re.sub(r"\x1b\[[0-9;]*[A-Za-z]|\x1b=|\x1b\][^\x07]*\x07", "", out.decode(errors="replace"))
+
+# an empty prompt: the 5 directives share the '#' prefix, so the first
+# Tab extends the line to '#' and the second lists the directive names
+# (the '#'-slot takes over once '#' is present) — never the 954-PATH
+# flood. Both halves prove the fix: the line becomes '#', and the menu
+# is the closed directive set.
+t = pty_tab("", taps=2)
+if "weir> #" not in t:
+    failures.append(f"an empty-prompt Tab must extend to '#' (the directives' shared prefix): {t[-400:]!r}")
+if "help" not in t or "infer" not in t or "save" not in t:
+    failures.append(f"an empty-prompt Tab must offer the session directives: {t[-400:]!r}")
+
+# `Wr` at a head has a single completion and it is NOT the WriteFile
+# constructor — Tab either does nothing visible or completes a function;
+# WriteFile must not be the offered head
+t = pty_tab("Wr")
+if "WriteFile" in t:
+    failures.append(f"a constructor (WriteFile) must not complete at a statement head: {t[-300:]!r}")
+
 # --- Ctrl+D still leaves (the pty half) -------------------------------
 pid, fd = pty.fork()
 if pid == 0:
@@ -212,4 +280,4 @@ if failures:
         print("repl-directives FAIL:", f)
     sys.exit(1)
 
-print("repl-directives: #help x3 (one source), #quit + Ctrl+D, :q retired, comments no-op, #echo cap (report/set/all/teach, tty live, piped pinned)")
+print("repl-directives: #help x3 (one source), #quit + Ctrl+D, :q retired, comments no-op, #echo cap (report/set/all/teach, tty live, piped pinned), empty-prompt Tab offers directives, constructor not a head")
