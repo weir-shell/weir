@@ -2727,7 +2727,61 @@ let completionTests =
 
               suggest "/etc/hos" 0 |> ignore
               suggest "cd" 0 |> ignore
+              suggest "File.read ./e" 10 |> ignore
               Expect.isFalse (System.IO.File.Exists marker) "completion must not execute"
+          }
+          test "expression-position path completion quotes; command-argv stays bare [D:repl-path-quote]" {
+              skipOnWindows ()
+              // a bare filesystem path is not a valid weir expression, so a
+              // path completed as a FUNCTION argument must come back quoted —
+              // otherwise the line the editor builds fails to parse on Enter.
+              let d =
+                  System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-pq-{System.Guid.NewGuid():N}")
+
+              System.IO.Directory.CreateDirectory(System.IO.Path.Combine(d, "sub"))
+              |> ignore
+
+              System.IO.File.WriteAllText(System.IO.Path.Combine(d, "note.txt"), "x")
+              let dir = d.Replace("\\", "/")
+
+              try
+                  let ask (line: string) =
+                      suggest line (Weir.Complete.wordStartAt line line.Length)
+
+                  // (a) after a function head the completion is QUOTED and the
+                  // line it produces PARSES — a bare path would not
+                  let fnLine = "File.read " + dir + "/n"
+                  let fnGot = ask fnLine
+                  Expect.equal (List.length fnGot) 1 "one match"
+                  Expect.isTrue (fnGot.Head.StartsWith "\"") "the expression-slot path is quoted"
+                  Expect.isTrue (fnGot.Head.EndsWith "note.txt\"") "…around the real entry"
+
+                  // the produced line parses (a bare path would be a parse error)
+                  let ws = Weir.Complete.wordStartAt fnLine fnLine.Length
+                  let produced = fnLine.Substring(0, ws) + fnGot.Head
+
+                  match Weir.Parser.parseExpr produced with
+                  | Ok _ -> ()
+                  | Error e -> failtestf "the completed line must parse: %s -> %s" produced e
+
+                  // (b) command-argv stays BARE — cat takes an unquoted argv path
+                  let argvGot = ask ("cat " + dir + "/n")
+                  Expect.equal (List.length argvGot) 1 "one match"
+                  Expect.isFalse (argvGot.Head.StartsWith "\"") "an argv path is never quoted"
+                  Expect.isTrue (argvGot.Head.EndsWith "note.txt") "the bare entry"
+
+                  // (c) completing INSIDE an already-open quote does NOT double
+                  let inQuote = ask ("File.read \"" + dir + "/n")
+                  Expect.equal (List.length inQuote) 1 "one match"
+                  Expect.isFalse (inQuote.Head.StartsWith "\"") "no second opening quote inside the string"
+                  Expect.isTrue (inQuote.Head.EndsWith "note.txt") "the entry lands inside the quotes"
+
+                  // (d) a DIRECTORY keeps its trailing '/' — inside the quotes
+                  let dirGot = ask ("File.read " + dir + "/s")
+                  Expect.equal (List.length dirGot) 1 "one match"
+                  Expect.equal dirGot.Head ("\"" + dir + "/sub/\"") "trailing slash survives inside the quotes"
+              finally
+                  System.IO.Directory.Delete(d, true)
           }
           test "command argv completes paths, never fields — and an unbound scrutinee offers NOTHING [D:complete-argv]" {
               let sug (t: string) =

@@ -28,6 +28,13 @@ commands. Two behaviours worth naming:
   `#help Module.<TAB>` completes that module's members. The offered
   set and the documented set are one, so a type you can `#help` is a
   type you can Tab.
+- **A path completes quoted in an expression, bare as a command
+  argument.** `File.read ./x<TAB>` yields `File.read "./x"` — a bare
+  path is not a valid weir expression, so the completion is a string
+  literal that parses. In command-argv position (`cat ./x`, `ls ./dir`)
+  the path stays bare, the way argv wants it. If you already opened the
+  quote (`File.read "./x<TAB>`), the completion lands inside it — no
+  second quote; a directory keeps its trailing `/` within the quotes.
 
 Completion never runs anything — a directory read or a cached PATH
 lookup at most.

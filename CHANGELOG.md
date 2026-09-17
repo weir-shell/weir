@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.0.39
+
+### Added
+
+- **REPL path completion quotes in an expression, stays bare as a
+  command argument.** Tab-completing a filesystem path after a function
+  head — `File.read ./weir-pods.yaml<TAB>` — used to insert the bare
+  path (`File.read ./weir-pods.yaml`), which then failed to parse on
+  Enter: a bare path is not a valid weir expression. The completion is
+  now a string literal — `File.read "./weir-pods.yaml"` — which parses.
+  The distinction is the slot's: a COMMAND-argv path (`cat ./x`,
+  `ls ./dir`) stays BARE, the way argv wants it. If you already opened
+  the quote (`File.read "./x<TAB>`), the completion lands inside it —
+  no second quote is added; a directory keeps its trailing `/` within
+  the quotes. Completion still runs nothing — a directory read at most.
+
 ## v0.0.38
 
 ### Fixed

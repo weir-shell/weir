@@ -1257,6 +1257,9 @@ PYADP
     python3 "$(dirname "$0")/../tests/repl/repl-directives.py" "$BIN" || fail "repl directives"
     echo "e2e ok: repl directives (#help x3, #quit, :q retired, comments no-op, #echo cap)"
 
+    python3 "$(dirname "$0")/../tests/repl/repl-pathquote.py" "$BIN" || fail "repl path-quote completion"
+    echo "e2e ok: repl path completion quotes in expression position, bare in command-argv [D:repl-path-quote]"
+
     python3 "$(dirname "$0")/../tests/repl/repl-multiline.py" "$BIN" || fail "repl multiline editor"
     fi
     echo "e2e ok: repl 2D buffer, Enter-completeness, whole-entry history, wrap at two widths"
