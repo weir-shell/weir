@@ -4,6 +4,15 @@
 
 ### Fixed
 
+- **A command line ending in `yaml` is argv, not a district marker.**
+  `kubectl get po -o yaml`, `docker … --format yaml` — everyday ops
+  commands whose last word is `yaml` — failed at assembly with
+  "line-end 'yaml' needs an indented block below it", misread as arming
+  a `yaml` district. The marker now arms token-precisely: only a bare
+  `yaml` (the next-line form) or a `= yaml` assignment RHS
+  (`let d = yaml`) arms; `yaml` preceded by argv (`-o yaml`,
+  `--format yaml`, a trailing bare word) stays a command. `weir check`
+  and `weir <file>` agree — the check gap is closed.
 - **REPL Tab completes record fields through a pipe.** A record piped
   into `_.` or a lambda param — `x |> from yaml T |> _.`, `r |> _.`,
   `x |> … |> (fun row -> row.` — offered no fields (or, for the lambda,
