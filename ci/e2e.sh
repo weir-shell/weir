@@ -889,29 +889,46 @@ echo "$out" | grep -qF "hi" || fail "REPL print lost its output"
 if echo "$out" | grep -qF "() : unit"; then fail "unit leaked into REPL display"; fi
 echo "e2e ok: unit is invisible in the REPL"
 
-# --- #infer / it / #save round-trip (2026-09-16) [D:repl-infer] -------
-# a REPL session: bind a JSON sample, #infer types from it (source
-# omitted -> defaults to `it`), field-access the injected type through a
-# bare alias (map), #save the session, then weir check the saved file
-# clean. Each statement here is a single physical line; the piped
-# multi-line assembly (heredoc/type/if/pipeline spanning lines) is pinned
-# in its own cell below.
+# --- #infer / it / #save DISTILL round-trip (2026-09-17) [D:repl-save] -
+# #save DISTILLS a session to its checkable DEFINITIONS (option B): it
+# keeps `type` decls and named `let` bindings (with their real multi-line
+# source), DEDUPS a redeclared name to its last form, DROPS bare-echo
+# scratch and `it`-references, and GUARANTEES the file weir-checks clean.
+# A realistic messy session drives it here; each single-line statement,
+# plus the multi-line heredoc/type distill, is pinned. The piped
+# multi-line assembly is pinned in its own cell below.
 infdir=$(mkweirtmp)
-infout=$(printf '%s\n%s\n%s\n%s\n%s\n' \
+infout=$(printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' \
   'let sample = ["{\"items\": [{\"name\": \"a\", \"port\": 8080}], \"count\": 1}"]' \
   '#infer from json as Root' \
   'sample |> from json Root |> _.items |> map _.name |> Seq.length' \
+  'type Mode = Fast | Slow' \
+  'type Mode = Fast | Slow | Idle' \
+  'let picked = ["a"; "b"] |> map (Str.toUpper)' \
+  'let gobeldy = it' \
   "#save $infdir/explore.weir" \
   '#quit' | $BIN)
 echo "$infout" | grep -qF "defined: Item, Root" || fail "#infer did not define the auto-named types: $infout"
 echo "$infout" | grep -qF "#save: wrote" || fail "#save did not report a write: $infout"
 [ -f "$infdir/explore.weir" ] || fail "#save did not write the file"
-grep -qF "Seq.map" "$infdir/explore.weir" || fail "#save did not qualify the bare alias 'map': $(cat "$infdir/explore.weir")"
-grep -qF "type Root" "$infdir/explore.weir" || fail "#save did not carry the injected type"
+# (a) the acceptance-defining guarantee: the distilled file weir-checks clean
 $BIN check "$infdir/explore.weir"
 echo "REAL=$?" >> /tmp/e2e-infer.out
 $BIN check "$infdir/explore.weir" || fail "the saved script must weir-check clean: $(cat "$infdir/explore.weir")"
-echo "e2e ok: #infer (it default) + #save round-trips to a checking .weir script"
+# (b) the injected type is carried; a bare alias qualified (map -> Seq.map)
+grep -qF "type Root" "$infdir/explore.weir" || fail "#save did not carry the injected type"
+grep -qF "Seq.map" "$infdir/explore.weir" || fail "#save did not qualify the bare alias 'map': $(cat "$infdir/explore.weir")"
+# (c) DEDUP: the redeclared type appears ONCE, in its LAST form
+[ "$(grep -cF "type Mode" "$infdir/explore.weir")" = "1" ] || fail "#save did not dedup the redeclared type: $(cat "$infdir/explore.weir")"
+grep -qF "Idle" "$infdir/explore.weir" || fail "#save kept the wrong (earlier) redeclaration: $(cat "$infdir/explore.weir")"
+# (d) DROP the bare expression echo and the it-reference
+grep -qF "Seq.length" "$infdir/explore.weir" && fail "#save kept a bare expression echo (scratch): $(cat "$infdir/explore.weir")"
+grep -qF "= it" "$infdir/explore.weir" && fail "#save kept an it-referencing binding: $(cat "$infdir/explore.weir")"
+grep -qF "gobeldy" "$infdir/explore.weir" && fail "#save kept the dropped it-binding: $(cat "$infdir/explore.weir")"
+# (e) the dropped-count note fires for the it-line
+echo "$infout" | grep -qF "dropped 1 line(s) that referenced session-only state" \
+  || fail "#save did not print the dropped-count note: $infout"
+echo "e2e ok: #save DISTILLS a messy session to a checking .weir (dedup, drop it, note)"
 
 # --- piped REPL multi-line assembly (2026-09-16) [D:repl-multiline] ----
 # a REDIRECTED REPL (printf … | weir) reads physical lines but must
