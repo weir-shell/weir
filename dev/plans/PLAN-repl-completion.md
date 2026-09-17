@@ -1,9 +1,16 @@
 # weir — REPL completion: record fields through pipes, and the empty-prompt flood
 
-Status: PROPOSED (2026-09-16, from a measured probe against the real
-`Weir.Complete.suggest` — every claim below is empirical, not code-read).
+Status: BLESSED (2026-09-16, designer — build all three; empty-prompt
+ruling below). From a measured probe against the real
+`Weir.Complete.suggest` — every claim below is empirical, not code-read.
 Three independent fixes, all in `src/Weir/Complete.fs`; no grammar/parser
 change, `check` untouched.
+
+DESIGNER RULINGS:
+- Empty-prompt Tab offers the SESSION DIRECTIVES, `#help` first
+  (`#help`, `#echo`, `#infer`, `#save`, `#quit`) — a fresh Tab teaches
+  the REPL's affordances rather than dumping the universe or a dead `[]`.
+- Ship all three fixes together (one branch).
 
 ## Driver
 
@@ -71,16 +78,17 @@ modules + keywords, then filters `n.StartsWith word`; with `word = ""`,
 (`Fi` → `[File; FileCheck-21]`, `Wr` → `[WriteFile]`) — the pathology is
 empty-prefix ONLY.
 
-THE FIX: guard `word = ""` in that head branch. The designer ruling to
-make (RECOMMEND the first):
-- return `[]` on an empty statement-head prefix — simplest, "nothing to
-  complete yet; type a character"; OR
-- a CURATED small set (keywords only, or keywords + module names) —
-  offers the language's own starters without the 954-binary PATH dump.
-Either way: DO NOT dump PATH executables on an empty prefix. The branch
-also serves argv positions (`before` non-empty, adds `cwdEntries`) — the
-guard must key on the statement-head context (`before = ""`), leaving an
-intentional bare-Tab in argv position alone unless we rule otherwise.
+THE FIX (ruled): guard `word = ""` in that head branch and offer the
+SESSION DIRECTIVES, `#help` first — `[#help; #echo; #infer; #save;
+#quit]`. An empty-prompt Tab then teaches discovery (`#help` lists the
+modules/members; `#infer`/`#save` announce themselves) instead of
+dumping 954 PATH binaries + the universe. DO NOT dump PATH executables
+on an empty prefix. The branch also serves argv positions (`before`
+non-empty, adds `cwdEntries`) — the guard keys on the statement-head
+context (`before = ""`), leaving an intentional bare-Tab in argv
+position alone (a directory listing there is useful, not noise). The
+directive list is the one the REPL already knows (single source — the
+same set `#help` documents).
 
 PIN: `suggest env "" 0` returns the curated set (or `[]`), not 1130;
 `suggest env "Fi" 2` still `[File; FileCheck-21]` (filtered completion
