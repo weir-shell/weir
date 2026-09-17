@@ -26,6 +26,22 @@ let private keywords = Weir.Parser.keywords - unsuggestedKeywords |> Set.toList
 // head [D:empty-prompt-directives] (the '#'-prefixed teaching set).
 let sessionDirectives = [ "help"; "echo"; "infer"; "save"; "quit" ]
 
+// the `#help` DOCUMENTABLE universe, one source [D:help-arg-complete]:
+// the bare names `#help <name>` can DOCUMENT — modules, top-level
+// forms/members (user values), and TYPES (records AND unions, the
+// #infer-injected ones included). Both `#help`'s unknown-name pool
+// (Repl.fs) and the #help-arg completion slot read this, so what
+// `#help X` documents and what `#help <TAB>` offers cannot drift
+// (the sessionDirectives precedent). Modules also document their
+// members via `#help Module.member`; the qualified names live in the
+// slot itself, keyed off env.Modules.
+let helpNames (env: TypeEnv) : string list =
+    List.concat
+        [ Map.keys env.Modules |> List.ofSeq
+          Map.keys env.Values |> Seq.filter Types.isUserName |> List.ofSeq
+          Map.keys env.Types |> List.ofSeq ]
+    |> List.distinct
+
 let private recordFields (env: TypeEnv) (ty: Ty) : (string * Ty) list option =
     match ty with
     | TNamed(n, _) ->
@@ -324,8 +340,47 @@ let suggestScoped (env: TypeEnv) (binderScope: string) (text: string) (wordStart
         let raw = text.Substring(0, min wordStart text.Length)
         raw.TrimStart() = "#"
 
+    // the `#help <arg>` slot [D:help-arg-complete]: a sibling to
+    // directiveSlot — it fires when the text before the word is
+    // `#help` (completing `#help <TAB>`) or `#help <partial>`, and
+    // offers the #help DOCUMENTABLE universe (helpNames — modules,
+    // types, user forms) BARE (so the editor yields `#help Patatas`,
+    // never doubling the `#help `). This is the gap: an #infer'd type
+    // lives only in env.Types, which the general/head pool never
+    // surfaces, so it was documentable but not completable. Qualified
+    // `#help Module.member` mirrors #help's dotted arm when a module
+    // prefix is typed. Scoped to this slot — the general pool is
+    // untouched.
+    let helpArgSlot =
+        // the whole line up to the cursor, trimmed of the word — must
+        // reduce to exactly `#help` (the directive owns the rest of its
+        // own line, so a sibling separator or newline earlier bars it)
+        let before = text.Substring(0, min wordStart text.Length)
+        before.TrimStart() = "#help "
+
     if directiveSlot then
         sessionDirectives |> List.filter (fun d -> d.StartsWith word) |> List.sort
+    elif helpArgSlot then
+        // a `Module.` prefix completes that module's members — the same
+        // qualified names `#help Module.member` documents
+        match word.Split '.' with
+        | [| head; _ |] when Map.containsKey head env.Modules ->
+            let memberPrefix = word.Substring(head.Length + 1)
+
+            let special =
+                Weir.Check.specialModuleMembers |> Map.tryFind head |> Option.defaultValue []
+
+            Seq.append (Map.keys env.Modules[head]) special
+            |> Seq.filter (fun m -> m.StartsWith memberPrefix)
+            |> Seq.distinct
+            |> Seq.map (fun m -> $"{head}.{m}")
+            |> Seq.sort
+            |> List.ofSeq
+        | _ ->
+            helpNames env
+            |> List.filter (fun n -> n.StartsWith word && n <> word)
+            |> List.distinct
+            |> List.sort
     else
 
 

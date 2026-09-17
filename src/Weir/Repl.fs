@@ -1568,11 +1568,11 @@ let private helpDirective (te: TypeEnv) (arg: string) : string =
                 | [| m; mem |] when Map.containsKey m te.Modules ->
                     $"#help: {m} has no member '{mem}'{didYouMean mem (te.Modules[m] |> Map.keys)}"
                 | _ ->
-                    let pool =
-                        Seq.concat
-                            [ te.Modules |> Map.keys |> Seq.cast<string>
-                              te.Values |> Map.keys |> Seq.filter Types.isUserName
-                              te.Types |> Map.keys |> Seq.cast<string> ]
+                    // the documentable universe, ONE source shared with the
+                    // #help-arg completion slot [D:help-arg-complete] — so
+                    // what #help documents and what #help <TAB> offers, and
+                    // the did-you-mean over misses, cannot drift
+                    let pool = Complete.helpNames te
 
                     $"#help: unknown name '{name}'{didYouMean name pool}"
 
