@@ -2303,7 +2303,10 @@ let resolver (typeEnv: TypeEnv) : Parser.Resolver =
       IsCommandCallable = fun n -> Builtins.commandCallable.Contains n
       IsExternal = Extern.exists
       ExternalNames = (fun () -> Extern.names () :> seq<string>)
-      BareHome = fun n -> Map.tryFind n Builtins.bareAliasHomes }
+      BareHome = (fun n -> Map.tryFind n Builtins.bareAliasHomes)
+      // scripts/fmt/CLI carry no aliases (REPL-only) — the REPL overrides
+      // this field with its session alias table [D:command-head-alias]
+      AliasHead = fun _ -> None }
 
 let private located (path: string) (lineNo: int) (msg: string) : string =
     let msg =

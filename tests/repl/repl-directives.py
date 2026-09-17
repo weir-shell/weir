@@ -70,6 +70,33 @@ if "still-here" not in t:
 t = piped("#time\n#quit\n")
 if "unknown directive '#time'" not in t:
     failures.append(f"an unknown directive must say so: {t[-200:]!r}")
+# the #sig/#schema parenthetical is noise for an unrelated typo — gone
+if "#sig" in t or "#schema" in t:
+    failures.append(f"an unrelated typo must NOT carry the #sig/#schema tail: {t[-200:]!r}")
+
+# --- a FILE directive at the REPL gets its own redirect, not the flood
+t = piped("#sig\n#quit\n")
+if "file directive" not in t or "no effect in the REPL" not in t:
+    failures.append(f"#sig at the REPL must redirect (file directive): {t[-200:]!r}")
+t = piped("#schema\n#quit\n")
+if "file directive" not in t:
+    failures.append(f"#schema at the REPL must redirect (file directive): {t[-200:]!r}")
+
+# --- #alias [D:command-head-alias] is a RECOGNIZED directive ----------
+# bare #alias lists (empty session -> the teaching line); a live add
+# echoes; #help lists it; the single-hop rule rejects an alias-of-alias
+t = piped("#alias\n#quit\n")
+if "unknown directive" in t:
+    failures.append(f"#alias must be a recognized directive: {t[-200:]!r}")
+t = piped("#alias k = kubectl\n#alias\n#quit\n")
+if "alias k = kubectl" not in t:
+    failures.append(f"a live #alias must add and a bare #alias must list it: {t[-200:]!r}")
+t = piped("#alias k = kubectl\n#alias kk = k\n#quit\n")
+if "single-hop" not in t:
+    failures.append(f"a live alias-of-alias must be rejected (single-hop): {t[-200:]!r}")
+t = piped("#help\n#quit\n")
+if "#alias" not in t:
+    failures.append(f"#help must list #alias: {t[-300:]!r}")
 
 # --- comment-only lines: silent no-ops; trailing comments work --------
 t = piped("//just a comment\n/// a doc\nprint \"after\"\n#quit\n")
@@ -280,4 +307,4 @@ if failures:
         print("repl-directives FAIL:", f)
     sys.exit(1)
 
-print("repl-directives: #help x3 (one source), #quit + Ctrl+D, :q retired, comments no-op, #echo cap (report/set/all/teach, tty live, piped pinned), empty-prompt Tab offers directives, constructor not a head")
+print("repl-directives: #help x3 (one source), #quit + Ctrl+D, :q retired, comments no-op, #echo cap (report/set/all/teach, tty live, piped pinned), unknown-directive message trimmed (#sig/#schema redirect), #alias recognized (list/add/single-hop/help), empty-prompt Tab offers directives, constructor not a head")

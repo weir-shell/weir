@@ -166,6 +166,14 @@ to its last form; injected `#infer` types come out as ordinary
 any surviving statement that still references session-only state (a
 `let x = it`) is dropped and `#save` prints a note counting them.
 
+`#save` also DESUGARS [command-head aliases](#alias-command-head-aliases):
+the saved script has no alias table, so each kept line's command HEAD
+is rewritten back to the real invocation — `let pods = k get po` saves
+as `let pods = kubectl get po`, a kept `kb overlays/prod` as `kustomize
+build overlays/prod`. The rewrite is span-based and head-only, so a `k`
+in a string or an argument is untouched. The output is alias-free and
+checks clean.
+
 ## The prompt and the colors
 
 The prompt reddens after an entry that errors, and clears on the
@@ -210,16 +218,52 @@ levels, same parsing), and `echoCap` (the `#echo` cap's persistent
 form — it wins over the config file's `echoElems`). A typo'd key
 gets a did-you-mean; values cannot run commands.
 
-Aliases are functions — `let pu () = …` already takes params and
-spans lines, so there is no separate alias concept; calling a
-nullary one costs `()`.
+A `let pu () = …` is a nullary FUNCTION, not a command-head alias:
+it takes params and spans lines, but calling it costs `()` and it
+does not accept bare argv. When you want a short HEAD that carries
+argv straight through — `k get po` — reach for `#alias` below.
 
 Loading is all-or-nothing: a broken init prints its located weir
 error plus `init: NOT loaded`, and the session starts with none of
 it — safe precisely because nothing in the file can run. A missing
 init is silent; a loaded one reports one line
-(`init: 3 name(s) from …`). `#help` on an init name shows its `///`
-doc.
+(`init: 3 name(s), 2 alias(es) from …`). `#help` on an init name
+shows its `///` doc.
+
+## `#alias`: command-head aliases
+
+A `#alias` maps a short name to a program and a fixed prefix of
+arguments, consulted ONLY in command-head position. Declare them in
+`init.weir` (the canonical place), one per line:
+
+```text
+#alias k  = kubectl
+#alias kb = kustomize build
+```
+
+Now `k get po -o yaml` runs `kubectl get po -o yaml`, and `kb
+overlays/prod` runs `kustomize build overlays/prod` — the fixed
+prefix is inserted after the exe, your argv appended. This is a
+RESOLUTION-table entry, not a textual macro: your argv stays typed
+argv, so `k get $x` passes `$x` as ONE argument (the injection law
+holds), and a `k` in a string, a variable, or an argument is
+untouched — only the HEAD token, only in command-head position.
+
+The resolution order is **alias table → PATH**, and the `^`
+force-PATH sigil skips the table: with `#alias ls = ls --color`, a
+bare `ls x` runs `ls --color x` and `^ls x` runs the real `ls x`.
+Aliases are **single-hop** — the target is a program, never another
+alias (an alias-of-alias is rejected at load). The target need not
+exist when defined (like bash); a malformed `#alias` line is a loud
+init error (init is all-or-nothing).
+
+Aliases are **REPL-only**: scripts and `-e` never load `init.weir`,
+so their command resolution is unchanged and an alias name there is
+an ordinary unknown command. `#save` [desugars](#save-distill-the-session-to-a-script)
+aliases, so a saved script is alias-free.
+
+A live `#alias` works at the prompt too (bare `#alias` lists the
+table), but `init.weir` is the canonical home.
 
 ## Multi-line editing
 

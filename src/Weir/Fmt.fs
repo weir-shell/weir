@@ -498,6 +498,73 @@ let qualifyBareAliases (r: Parser.Resolver) (line: string) : string =
                     acc)
             line
 
+// collect COMMAND-HEAD spans and their head names [D:command-head-alias]:
+// an ECmd's head is the literal program name, and its token sits at the
+// ECmd span's start (length = the name). Only heads, never a name in an
+// argument or a string — so `k` as an argv word or inside `"k"` is
+// untouched.
+let collectCmdHeads (e: Expr) : (Span * string) list =
+    let acc = ResizeArray<Span * string>()
+
+    let rec walk (e: Expr) =
+        (match e.Kind with
+         | ECmd(prog, _, _) ->
+             let headSpan =
+                 { Start = e.Span.Start
+                   End =
+                     { e.Span.Start with
+                         Col = e.Span.Start.Col + prog.Length } }
+
+             acc.Add(headSpan, prog)
+         | _ -> ())
+
+        exprChildren e |> List.iter walk
+
+    walk e
+    List.ofSeq acc
+
+// DESUGAR command-head aliases for `#save` [D:command-head-alias]: rewrite
+// each command HEAD that is an alias back to its real invocation (exe +
+// fixed prefix args), span-based, so the saved script is alias-free and
+// `weir check` clean. Mirrors `qualifyBareAliases`' discipline exactly.
+//
+// The resolver `r` must resolve alias NAMES as external heads (so `k get
+// po` parses as an ECmd) WITHOUT rewriting them (AliasHead = None), so the
+// head keeps its source name and span; `aliasOf` supplies the desugaring.
+// A single physical line; parse failure -> unchanged.
+let desugarAliasHeads (r: Parser.Resolver) (aliasOf: string -> (string * string list) option) (line: string) : string =
+    match Parser.parseLineFull r line with
+    | Error _ -> line
+    | Ok stmt ->
+        let heads =
+            Parser.stmtExprs stmt
+            |> List.collect collectCmdHeads
+            // right-to-left so earlier column offsets stay valid
+            |> List.sortByDescending (fun (sp, _) -> sp.Start.Col)
+
+        heads
+        |> List.fold
+            (fun (acc: string) (sp, name) ->
+                let col = sp.Start.Col - 1 // 1-based -> 0-based
+
+                if
+                    col >= 0
+                    && col + name.Length <= acc.Length
+                    && acc.Substring(col, name.Length) = name
+                then
+                    match aliasOf name with
+                    | Some(exe, prefix) ->
+                        let replacement =
+                            match prefix with
+                            | [] -> exe
+                            | _ -> exe + " " + String.concat " " prefix
+
+                        acc.Substring(0, col) + replacement + acc.Substring(col + name.Length)
+                    | None -> acc
+                else
+                    acc)
+            line
+
 let formatFile (checkOnly: bool) (path: string) : int =
     if not (System.IO.File.Exists path) then
         System.Console.Error.WriteLine $"weir: no such script: {path}"

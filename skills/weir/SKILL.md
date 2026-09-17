@@ -1432,7 +1432,13 @@ type Bad = C of int
   and named `let` bindings (real multi-line source preserved, bare
   aliases qualified), dedups a redeclared name to its last form, drops
   the scratch echoes, and GUARANTEES the file `weir check`s clean
-  (an `it`-referencing binding is dropped with a note). Both are REPL
+  (an `it`-referencing binding is dropped with a note). The init file
+  (`weir/init.weir`) also takes `#alias name = cmd [args...]` lines
+  [D:command-head-alias] — a REPL-only command-head alias (`#alias k =
+  kubectl` makes `k get po` run `kubectl get po`, argv bare and
+  injection-safe; `^k` forces PATH; single-hop), and `#save` desugars
+  alias heads back to the real invocation so the saved file is
+  alias-free. Aliases never reach scripts or `-e`. All REPL
   scaffolding — see docs/repl.md.
 
 ```weir

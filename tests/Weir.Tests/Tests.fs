@@ -144,7 +144,8 @@ let private cmdResolver: Weir.Parser.Resolver =
       IsCommandCallable = fun n -> Weir.Builtins.commandCallable.Contains n
       IsExternal = fun p -> fakeExternals.Contains p || p = "./build.sh"
       ExternalNames = (fun () -> fakeExternals)
-      BareHome = fun _ -> None }
+      BareHome = (fun _ -> None)
+      AliasHead = fun _ -> None }
 
 // Windows: parse-only fixtures resolve coreutils heads (echo, sh,
 // grep ...) through the REAL resolver, and those are cmd BUILTINS or
@@ -189,7 +190,8 @@ let private realResolver: Weir.Parser.Resolver =
       IsCommandCallable = fun n -> Weir.Builtins.commandCallable.Contains n
       IsExternal = Weir.Extern.exists
       ExternalNames = (fun () -> Weir.Extern.names () :> seq<string>)
-      BareHome = fun n -> Map.tryFind n Weir.Builtins.bareAliasHomes }
+      BareHome = (fun n -> Map.tryFind n Weir.Builtins.bareAliasHomes)
+      AliasHead = fun _ -> None }
 
 let private parseCmd input =
     match Weir.Parser.parseLine cmdResolver input with
@@ -5863,7 +5865,8 @@ let blockLetCmdTests =
                     IsCommandCallable = fun _ -> false
                     IsExternal = fun n -> n = "echo"
                     ExternalNames = (fun () -> Seq.empty)
-                    BareHome = fun _ -> None }
+                    BareHome = (fun _ -> None)
+                    AliasHead = fun _ -> None }
 
               match Weir.Parser.parseLine r "let f x = let w = echo alpha \"in\" beta |> Seq.head in w" with
               | Ok _ -> ()
@@ -8686,7 +8689,8 @@ let multilineLambdaTests =
                     IsCommandCallable = (fun _ -> false)
                     IsExternal = (fun n -> n = "echo")
                     ExternalNames = (fun () -> Seq.empty)
-                    BareHome = fun _ -> None }
+                    BareHome = (fun _ -> None)
+                    AliasHead = fun _ -> None }
 
               match
                   Weir.Parser.parseLine r "let out = xs |> Seq.map (fun k -> let g = echo tag in g |> Seq.length)"
@@ -11864,7 +11868,8 @@ let offsideTests =
                     IsCommandCallable = fun _ -> false
                     IsExternal = fun _ -> false
                     ExternalNames = (fun () -> Seq.empty)
-                    BareHome = fun _ -> None }
+                    BareHome = (fun _ -> None)
+                    AliasHead = fun _ -> None }
 
               match Weir.Parser.parseLineFull r "type P = | Pulled | upToDate | Join of string" with
               | Error f ->
@@ -11962,7 +11967,8 @@ let offsideTests =
                     IsCommandCallable = (fun _ -> false)
                     IsExternal = (fun _ -> false)
                     ExternalNames = (fun () -> Seq.empty)
-                    BareHome = fun _ -> None }
+                    BareHome = (fun _ -> None)
+                    AliasHead = fun _ -> None }
 
               let rGit =
                   { rNone with
@@ -18298,7 +18304,7 @@ let unusedBindingTests =
 // pins mirror the e2e cell but exercise the pure core directly, so a
 // regression in dedup/drop/protect is caught without driving a session.
 let private distill (defs: (string * string) list) : string list * int =
-    Weir.Repl.distillDefs realResolver defs
+    Weir.Repl.distillDefs realResolver (fun _ -> None) defs
 
 // the distilled lines must themselves weir-check clean — the
 // acceptance-defining guarantee, asserted at the unit seam
@@ -18389,6 +18395,123 @@ let replSaveDistillTests =
               let joined = String.concat "\n" lines
               Expect.stringContains joined "type A" "A survives"
               Expect.stringContains joined "type B" "B survives"
+          } ]
+
+// ---- command-head aliases [D:command-head-alias] ---------------------
+// the alias table maps a short head to (real exe, fixed prefix args),
+// REPL-only, consulted ONLY in command-head position and BEFORE PATH;
+// `^` skips it and it is single-hop by construction.
+
+let private aliasTable: Map<string, string * string list> =
+    Map.ofList [ ("k", ("kubectl", [])); ("kb", ("kustomize", [ "build" ])); ("ls", ("ls", [ "--color" ])) ]
+
+let private aliasOf n = Map.tryFind n aliasTable
+
+// a resolver with the alias table wired into AliasHead, mirroring the
+// REPL's `resolver`. `git` stands in as a definitely-present external.
+let private aliasResolver: Weir.Parser.Resolver =
+    { realResolver with AliasHead = aliasOf }
+
+let private parseWith (r: Weir.Parser.Resolver) input =
+    match Weir.Parser.parseLine r input with
+    | Ok(SExpr e)
+    | Ok(SCmd e) -> Ok(show e)
+    | Ok other -> Error $"unexpected: {other}"
+    | Error msg -> Error $"parse failed: {msg}"
+
+let aliasTests =
+    testList
+        "command-head aliases [D:command-head-alias]"
+        [ test "(a) a head alias resolves to its exe; the rest stays bare argv" {
+              // k get po -o yaml  ->  ECmd(kubectl, [get; po; -o; yaml])
+              match parseWith aliasResolver "k get po -o yaml" with
+              | Ok s ->
+                  Expect.stringContains s "kubectl" "the head becomes the real exe"
+                  Expect.isFalse (s.Contains "\"k\"") "the alias name 'k' is gone from the head"
+              | Error e -> failtest e
+          }
+          test "(b) prefix args are inserted after the exe, before user argv" {
+              // kb overlays/prod  ->  ECmd(kustomize, [build; overlays/prod])
+              match parseWith aliasResolver "kb overlays/prod" with
+              | Ok s ->
+                  Expect.stringContains s "kustomize" "the exe"
+                  Expect.stringContains s "build" "the fixed prefix arg"
+                  Expect.stringContains s "overlays/prod" "the user arg, after the prefix"
+                  // build precedes overlays/prod
+                  Expect.isTrue
+                      (s.IndexOf "build" < s.IndexOf "overlays/prod")
+                      "the prefix arg comes before the user arg"
+              | Error e -> failtest e
+          }
+          test "(c) injection-safety: `k $x` passes the splice as ONE argv entry" {
+              // the alias is a resolution-table entry, NOT a re-lex: a
+              // single splice stays a single argument.
+              match Weir.Parser.parseLine aliasResolver "k get $x" with
+              | Ok(SCmd { Kind = ECmd("kubectl", args, _) })
+              | Ok(SExpr { Kind = ECmd("kubectl", args, _) }) ->
+                  // args: get (literal), then the ONE splice $x
+                  Expect.equal (List.length args) 2 "exactly two argv entries: 'get' and the single splice"
+              | Ok other -> failtest $"expected an ECmd headed by kubectl, got {other}"
+              | Error e -> failtest $"parse failed: {e}"
+          }
+          test "(d) `^` bypasses the alias table (forces the real PATH binary)" {
+              // ^git is a real external; the ^ forces PATH and the alias
+              // table is never consulted. A shadowing alias `ls = ls
+              // --color` is bypassed by `^ls` — NO prefix injected.
+              match Weir.Parser.parseLine aliasResolver "^ls x" with
+              | Ok(SCmd { Kind = ECmd("ls", args, _) })
+              | Ok(SExpr { Kind = ECmd("ls", args, _) }) ->
+                  Expect.equal (List.length args) 1 "just the user arg — no --color prefix (bypassed)"
+              | Ok other -> failtest $"expected a bare ls ECmd, got {other}"
+              | Error e -> failtest $"parse failed: {e}"
+          }
+          test "(e) an alias applies to the HEAD only — a name in argv is untouched" {
+              // `git k` : k in ARGUMENT position is a plain word, not resolved
+              match Weir.Parser.parseLine aliasResolver "git add k" with
+              | Ok(SCmd { Kind = ECmd("git", _, _) })
+              | Ok(SExpr { Kind = ECmd("git", _, _) }) ->
+                  let s = (parseWith aliasResolver "git add k") |> function | Ok v -> v | Error e -> e
+                  Expect.stringContains s "\"k\"" "the argv 'k' stays a literal string, not kubectl"
+                  Expect.isFalse (s.Contains "kubectl") "no head-rewrite in argument position"
+              | Ok other -> failtest $"expected a git ECmd, got {other}"
+              | Error e -> failtest $"parse failed: {e}"
+          }
+          test "(f) REPL-only: the base script resolver carries no aliases" {
+              // realResolver (no AliasHead) — `k` is not a known external,
+              // so it never resolves as an aliased command head.
+              match Weir.Parser.parseLine realResolver "k get po" with
+              | Ok(SCmd { Kind = ECmd("kubectl", _, _) })
+              | Ok(SExpr { Kind = ECmd("kubectl", _, _) }) -> failtest "an alias leaked into the base resolver"
+              | _ -> () // unbound / not-a-command is the correct outcome
+          }
+          test "(g) #save DESUGAR: a kept `let = k …` saves as the real invocation" {
+              let lines, _ = Weir.Repl.distillDefs realResolver aliasOf [ ("pods", "let pods = k get po -o json") ]
+              let joined = String.concat "\n" lines
+              Expect.stringContains joined "kubectl get po -o json" $"the head is desugared: {lines}"
+              Expect.isFalse (joined.Contains "= k ") "no bare alias head remains"
+              Expect.isTrue (distilledChecks lines) "the desugared file checks clean (alias-free)"
+          }
+          test "(h) #save DESUGAR: prefix args are reinserted for a kept `kb`-headed let" {
+              let lines, _ =
+                  Weir.Repl.distillDefs realResolver aliasOf [ ("m", "let m = kb overlays/prod") ]
+
+              let joined = String.concat "\n" lines
+              Expect.stringContains joined "kustomize build overlays/prod" $"exe + prefix + argv: {lines}"
+              Expect.isTrue (distilledChecks lines) "and it checks clean"
+          }
+          test "(i) #save DESUGAR is span-based: a string spelling the alias is untouched" {
+              let lines, _ =
+                  Weir.Repl.distillDefs realResolver aliasOf [ ("s", "let s = \"k is a letter\"") ]
+
+              let joined = String.concat "\n" lines
+              Expect.stringContains joined "\"k is a letter\"" $"the string literal is left intact: {lines}"
+              Expect.isFalse (joined.Contains "kubectl") "no rewrite inside a string"
+          }
+          test "(j) parse: a malformed #alias line is rejected; a well-formed one parses" {
+              Expect.isTrue (Weir.Repl.parseAliasLineForTest "k = kubectl" |> Result.isOk) "well-formed"
+              Expect.isTrue (Weir.Repl.parseAliasLineForTest "kb = kustomize build" |> Result.isOk) "with prefix"
+              Expect.isTrue (Weir.Repl.parseAliasLineForTest "= kubectl" |> Result.isError) "no name"
+              Expect.isTrue (Weir.Repl.parseAliasLineForTest "k" |> Result.isError) "no ="
           } ]
 
 [<Tests>]
@@ -18546,6 +18669,7 @@ let allTests =
           districtTests
           unusedBindingTests
           replSaveDistillTests
+          aliasTests
           indexerTests
           envLoadTests
           parallelTests
