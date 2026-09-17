@@ -2582,8 +2582,40 @@ let completionTests =
               Expect.isFalse (List.contains "head" (suggest "#he" 1)) "the general pool stays out"
               // mid-line '#' is not a directive slot
               Expect.isFalse (List.contains "help" (suggest "ls # he" 5)) "line-head only"
-              // the ARGUMENT of #help completes from the general pool
-              Expect.contains (suggest "#help Se" 6) "Seq" "modules complete in the arg slot"
+          }
+          test "the `#help <arg>` slot completes the documentable universe [D:help-arg-complete]" {
+              // an #infer-injected type lives ONLY in env.Types — the general
+              // pool never surfaced it, so `#help Patatas` documented it while
+              // `#help Pat<TAB>` offered only Path (module) / Patch (a ctor).
+              // The slot offers helpNames (modules + user forms + TYPES), bare.
+              let envP = env |> declare "type Patatas = { spuds: int }"
+              let ask text pos = Weir.Complete.suggest envP text pos
+
+              let pat = ask "#help Pat" 6
+              Expect.contains pat "Patatas" "the injected type is now completable"
+              // a stable module/type sibling still surfaces (not asserting an
+              // exact list — a PATH exec would make that brittle)
+              Expect.isFalse (List.isEmpty pat) "the slot fires"
+              // bare names (so the editor yields `#help Patatas`, not doubled)
+              Expect.isFalse (pat |> List.exists (fun c -> c.StartsWith "#")) "candidates are bare"
+
+              // modules AND types complete here — Contains, never an exact list
+              let se = ask "#help Se" 6
+              Expect.contains se "Seq" "a module"
+              Expect.contains se "Secret" "another module"
+              Expect.contains (ask "#help Si" 6) "Size" "…and another module"
+
+              // the `#he` directiveSlot is unaffected — still the directive
+              Expect.equal (suggest "#he" 1) [ "help" ] "directiveSlot stays as-is"
+
+              // NO general-position leak: a bare `Pat` at expression head does
+              // not newly offer type names (the fix is scoped to the slot)
+              Expect.isFalse
+                  (List.contains "Patatas" (Weir.Complete.suggest envP "Pat" 0))
+                  "types do not leak into the general/head pool"
+
+              // a `Module.` prefix mirrors #help's dotted member help
+              Expect.contains (ask "#help Seq.ma" 6) "Seq.map" "qualified members complete"
           }
           test "the `with ` slot offers the source record's fields [D:with-slot]" {
               let text = "{ Http.defaults with "
