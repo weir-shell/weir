@@ -19,6 +19,22 @@
   and the drafted type still reads the sample (the readers tolerate
   an undeclared key). The e2e drafted-type diagnostic recast onto the
   remaining un-checkable class: a DUPLICATE JSON key.
+- **The release pipeline uploads with retry and refuses incomplete
+  releases.** v0.0.40 published with 5 of 10 assets: `gh release
+  create` hit a transient HTTP 500 mid-asset-upload, a manual recovery
+  re-created the release with what had survived, the draft review
+  missed it — and a published release is immutable, so v0.0.40 stays
+  incomplete forever (missing `weir-v0.0.40-win-arm64.exe`,
+  `SHA256SUMS`, `install.sh`, `install.ps1`, `grammar-manifest.json`;
+  install from v0.0.39 or this release). Now the draft is created with
+  NO assets, uploads run separately with 3 retries and `--clobber` (a
+  500-ghost cannot block a retry), and `ci/release-assets.weir` — the
+  one copy of the expected-asset list — fails the publish job on any
+  missing, part-uploaded, or empty asset before a human sees the
+  draft. `ci/release-published.weir` runs the same completeness check
+  against the newest published release on every CI run, so an
+  incomplete published release stays red on main until the next
+  release supersedes it.
 
 ## v0.0.40
 
