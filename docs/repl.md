@@ -22,6 +22,12 @@ commands. Two behaviours worth naming:
   `raw |> from yaml Pod |> _.` , `… |> (fun row -> row.`  — the same
   as a bound `r.`. This is the payoff of `#infer`: a typed record's
   fields surface wherever the value flows.
+- **`#help <name>` completes what it documents.** `#help Pat<TAB>`
+  offers every name `#help` can document with that prefix — modules,
+  types (an `#infer`'d type included), and top-level forms; a
+  `#help Module.<TAB>` completes that module's members. The offered
+  set and the documented set are one, so a type you can `#help` is a
+  type you can Tab.
 
 Completion never runs anything — a directory read or a cached PATH
 lookup at most.
@@ -115,16 +121,19 @@ guessing: an empty array (`seq<string>` default), a null field
 The same inference is a builtin — `sample |> Json.inferShape |> print`
 (and `Yaml.inferShape`) returns the declaration text outside the REPL.
 
-## `#save`: the session to a script
+## `#save`: distill the session to a script
 
-`#save <path>` writes the session's accepted statement lines to a
-runnable `.weir` file, auto-qualifying bare aliases (`map` →
-`Seq.map`, `startsWith` → `Str.startsWith`) and formatting the
-result — so `#infer` to explore, `#save` to keep. Errored lines
-drop; injected `#infer` types come out as ordinary `type` decls; a
-bare non-unit expression echo (a glance) is saved as a `let _rN = …`
-discard so the strict unused-binding law is satisfied. The saved
-file `weir check`s clean.
+`#save <path>` DISTILLS the session to its reusable definitions — a
+session is scratch; `#save` crystallizes what you'll keep. It writes
+the `type` decls and named `let` bindings (with their real
+multi-line source — a heredoc keeps its newlines), auto-qualifying
+bare aliases (`map` → `Seq.map`, `startsWith` → `Str.startsWith`)
+and formatting the result — so `#infer` to explore, `#save` to keep.
+The bare-echo scratch (a glance) drops; a redeclared name is deduped
+to its last form; injected `#infer` types come out as ordinary
+`type` decls. The written file is GUARANTEED to `weir check` clean —
+any surviving statement that still references session-only state (a
+`let x = it`) is dropped and `#save` prints a note counting them.
 
 ## The prompt and the colors
 

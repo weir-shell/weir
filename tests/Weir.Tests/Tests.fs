@@ -1422,6 +1422,31 @@ let boundaryTests =
                   | other -> failtest $"expected EYaml under the let, got {other}"
               | other -> failtest $"unexpected assembly: {other}"
           }
+          test "a command line ending in `yaml` is argv, not an armed district [D:yaml-district]" {
+              // the reported bug: `-o yaml`/`--format yaml` are everyday
+              // argv; the district arm must NOT fire for them, so the
+              // line assembles clean (no armed-district demand for a
+              // block below) and check == run at the ASSEMBLY boundary.
+              // Assert the assembly VERDICT (armed-error vs clean), never
+              // a PATH completion — these are command-shaped lines.
+              let assemblesClean line =
+                  match Weir.Script.assemble [ 1, line ] with
+                  | Ok [ ll ] -> Expect.equal ll.Text line $"'{line}' assembles as one plain command line, unarmed"
+                  | Ok other -> failtest $"'{line}': expected one logical line, got {other}"
+                  | Error e -> failtest $"'{line}' must not arm a district: {e}"
+
+              assemblesClean "echo -o yaml"
+              assemblesClean "kubectl get po -o yaml"
+              assemblesClean "docker x --format yaml"
+              assemblesClean "echo a b yaml"
+
+              // and the district STILL arms for the real forms: a bare
+              // `= yaml` with no block below is the armed-district error
+              // (proves the arm fires, the block demand included)
+              match Weir.Script.assemble [ 1, "let d = yaml" ] with
+              | Error e -> Expect.stringContains e "indented block" "a bare `= yaml` arms and demands its block"
+              | Ok other -> failtest $"expected the armed-district error, got {other}"
+          }
           test "Yaml.parse: the typeless read — structure whole, scalars self-type [D:yaml-nodes]" {
               expectValue
                   "[\"replicas: 3\"; \"name: web\"; \"live: true\"] |> Yaml.parse"
@@ -1483,6 +1508,24 @@ let boundaryTests =
               Expect.isTrue (Weir.Parser.isYamlMarkerPiece "let d = yaml schema=k8s") "schema= still arms"
               Expect.isFalse (Weir.Parser.isYamlMarkerPiece "run patch") "a command ending in patch stays a command"
               Expect.isFalse (Weir.Parser.isYamlMarkerPiece "xs |> to yaml patch") "to yaml never arms"
+          }
+          test "the marker arms TOKEN-PRECISELY: bare `yaml` or a `= yaml` RHS, never argv [D:yaml-district]" {
+              // arms: the two legitimate shapes
+              Expect.isTrue (Weir.Parser.isYamlMarkerPiece "yaml") "bare yaml arms (next-line form)"
+              Expect.isTrue (Weir.Parser.isYamlMarkerPiece "let d = yaml") "a let RHS arms"
+              Expect.isTrue (Weir.Parser.isYamlMarkerPiece "d = yaml") "an assignment RHS arms"
+              // does NOT arm: `yaml` preceded by argv — the everyday
+              // `-o yaml`/`--format yaml` ops lines, a trailing bare word
+              Expect.isFalse (Weir.Parser.isYamlMarkerPiece "echo -o yaml") "-o yaml is argv, not a marker"
+              Expect.isFalse (Weir.Parser.isYamlMarkerPiece "kubectl get po -o yaml") "kubectl -o yaml is a command"
+              Expect.isFalse (Weir.Parser.isYamlMarkerPiece "docker x --format yaml") "--format yaml is argv"
+              Expect.isFalse (Weir.Parser.isYamlMarkerPiece "echo a b yaml") "a trailing bare word after argv is a command"
+              // the to/from adapters are subsumed by the `= yaml` rule
+              Expect.isFalse (Weir.Parser.isYamlMarkerPiece "foo | to yaml") "to yaml never arms"
+              Expect.isFalse (Weir.Parser.isYamlMarkerPiece "data |> from yaml T") "from yaml never arms"
+              // `>= yaml`/`== yaml`: the token before yaml is `>=`/`==`, not `=`
+              Expect.isFalse (Weir.Parser.isYamlMarkerPiece "x >= yaml") ">= yaml does not arm"
+              Expect.isFalse (Weir.Parser.isYamlMarkerPiece "x == yaml") "== yaml does not arm"
           }
           test "YamlPatch is a built-in type name — undeclarable [D:yaml-nodes]" {
               match Weir.Check.checkDecl env (parseDecl "type YamlPatch = { x: int }") with
@@ -2582,8 +2625,40 @@ let completionTests =
               Expect.isFalse (List.contains "head" (suggest "#he" 1)) "the general pool stays out"
               // mid-line '#' is not a directive slot
               Expect.isFalse (List.contains "help" (suggest "ls # he" 5)) "line-head only"
-              // the ARGUMENT of #help completes from the general pool
-              Expect.contains (suggest "#help Se" 6) "Seq" "modules complete in the arg slot"
+          }
+          test "the `#help <arg>` slot completes the documentable universe [D:help-arg-complete]" {
+              // an #infer-injected type lives ONLY in env.Types — the general
+              // pool never surfaced it, so `#help Patatas` documented it while
+              // `#help Pat<TAB>` offered only Path (module) / Patch (a ctor).
+              // The slot offers helpNames (modules + user forms + TYPES), bare.
+              let envP = env |> declare "type Patatas = { spuds: int }"
+              let ask text pos = Weir.Complete.suggest envP text pos
+
+              let pat = ask "#help Pat" 6
+              Expect.contains pat "Patatas" "the injected type is now completable"
+              // a stable module/type sibling still surfaces (not asserting an
+              // exact list — a PATH exec would make that brittle)
+              Expect.isFalse (List.isEmpty pat) "the slot fires"
+              // bare names (so the editor yields `#help Patatas`, not doubled)
+              Expect.isFalse (pat |> List.exists (fun c -> c.StartsWith "#")) "candidates are bare"
+
+              // modules AND types complete here — Contains, never an exact list
+              let se = ask "#help Se" 6
+              Expect.contains se "Seq" "a module"
+              Expect.contains se "Secret" "another module"
+              Expect.contains (ask "#help Si" 6) "Size" "…and another module"
+
+              // the `#he` directiveSlot is unaffected — still the directive
+              Expect.equal (suggest "#he" 1) [ "help" ] "directiveSlot stays as-is"
+
+              // NO general-position leak: a bare `Pat` at expression head does
+              // not newly offer type names (the fix is scoped to the slot)
+              Expect.isFalse
+                  (List.contains "Patatas" (Weir.Complete.suggest envP "Pat" 0))
+                  "types do not leak into the general/head pool"
+
+              // a `Module.` prefix mirrors #help's dotted member help
+              Expect.contains (ask "#help Seq.ma" 6) "Seq.map" "qualified members complete"
           }
           test "the `with ` slot offers the source record's fields [D:with-slot]" {
               let text = "{ Http.defaults with "
@@ -17973,6 +18048,105 @@ let unusedBindingTests =
                   "used private member"
           } ]
 
+// ---- #save DISTILL [D:repl-save] -------------------------------------
+// the distill seam: transcript survivors (a `TDef` name + physical
+// source) through qualify -> dedup(last) -> the check guarantee. The
+// pins mirror the e2e cell but exercise the pure core directly, so a
+// regression in dedup/drop/protect is caught without driving a session.
+let private distill (defs: (string * string) list) : string list * int =
+    Weir.Repl.distillDefs realResolver defs
+
+// the distilled lines must themselves weir-check clean — the
+// acceptance-defining guarantee, asserted at the unit seam
+let private distilledChecks (lines: string list) : bool =
+    if List.isEmpty lines then
+        true
+    else
+        let diags, _, _, _ = Weir.Script.analyzeLines "#save-test" lines
+        not (diags |> List.exists (fun d -> d.Severity = "error"))
+
+let replSaveDistillTests =
+    testList
+        "#save distill [D:repl-save]"
+        [ test "(a) the guarantee: a distilled session weir-checks clean" {
+              let lines, _ =
+                  distill
+                      [ ("Endpoint", "type Endpoint = {\n    host: string\n    port: int\n}")
+                        ("manifest", "let manifest = <<<\n    apiVersion: v1\n    kind: Pod")
+                        ("gobeldy", "let gobeldy = it") ]
+
+              Expect.isTrue (distilledChecks lines) $"the distilled file must check clean: {lines}"
+          }
+          test "(b) DEDUP: a redeclared type is kept ONCE, in its LAST form" {
+              let lines, dropped =
+                  distill [ ("Color", "type Color = Red | Green"); ("Color", "type Color = Red | Green | Blue") ]
+
+              let joined = String.concat "\n" lines
+              let occurrences = lines |> List.filter (fun l -> l.Contains "type Color") |> List.length
+              Expect.equal occurrences 1 $"one surviving Color decl: {lines}"
+              Expect.stringContains joined "Blue" "the LAST form survives"
+              Expect.equal dropped 0 "a dedup is not a session-only drop"
+          }
+          test "(c) a self-contained heredoc body is PRESERVED across newlines (not flattened)" {
+              let lines, _ =
+                  distill [ ("manifest", "let manifest = <<<\n    apiVersion: v1\n    kind: Pod\n    name: web") ]
+
+              let joined = String.concat "\n" lines
+              // the body rides as real newlines, NOT the assembler's sentinel
+              Expect.isFalse (joined.Contains "\x1d" || joined.Contains "\x1f") "no join sentinel leaked"
+              Expect.stringContains joined "apiVersion: v1" "the first body line"
+              Expect.stringContains joined "name: web" "the last body line"
+              Expect.isTrue (lines |> List.length >= 4) $"the heredoc spans several physical lines: {lines}"
+              Expect.isTrue (distilledChecks lines) "and it still checks"
+          }
+          test "(d) DROP: a bare it-referencing binding is removed, with the note count" {
+              let lines, dropped =
+                  distill [ ("keep", "let keep = \"hi\""); ("gobeldy", "let gobeldy = it") ]
+
+              let joined = String.concat "\n" lines
+              Expect.isFalse (joined.Contains "gobeldy") $"the it-binding is dropped: {lines}"
+              Expect.equal dropped 1 "one session-only drop is counted for the note"
+              Expect.isTrue (distilledChecks lines) "the survivor checks clean"
+          }
+          test "(e) a self-contained named let is KEPT (protected, not dropped)" {
+              // an unused-but-self-contained binding is the product of a
+              // session, not scratch — the guarantee protects it (a
+              // `_`-prefix) rather than dropping it, and does NOT count it
+              let lines, dropped = distill [ ("greeting", "let greeting = \"hello\"") ]
+              let joined = String.concat "\n" lines
+              Expect.stringContains joined "\"hello\"" $"the value survives: {lines}"
+              Expect.equal dropped 0 "a self-contained binding is not a session-only drop"
+              Expect.isTrue (distilledChecks lines) "and it checks clean"
+          }
+          test "(f) PROTECT is surgical: a binder a later survivor reads keeps its name" {
+              // the chained-session shape: `base` is read by `total`, only
+              // `total` is unread. Protecting EVERY binder would rename
+              // `base` under its reader's feet (`let _base` + `let _total =
+              // base |> …` — `base` then resolves as a phantom command), so
+              // only the binder the unused finding names takes the `_`
+              let lines, dropped =
+                  distill
+                      [ ("base", "let base = [\"10\"; \"20\"]")
+                        ("total", "let total = base |> Seq.map Str.toInt |> Seq.sum") ]
+
+              let joined = String.concat "\n" lines
+              Expect.stringContains joined "let base" $"the read binder keeps its name: {lines}"
+              Expect.stringContains joined "let _total" "the unread tail is protected, not dropped"
+              Expect.equal dropped 0 "nothing referenced session-only state"
+              Expect.isTrue (distilledChecks lines) "and it checks clean"
+          }
+          test "a bare alias is qualified (map -> Seq.map) in a survivor" {
+              let lines, _ = distill [ ("picked", "let picked = [\"a\"] |> map (Str.toUpper)") ]
+              let joined = String.concat "\n" lines
+              Expect.stringContains joined "Seq.map" $"the bare alias is qualified: {lines}"
+          }
+          test "dedup keys on the name, not the text: two unrelated types both survive" {
+              let lines, _ = distill [ ("A", "type A = X | Y"); ("B", "type B = P | Q") ]
+              let joined = String.concat "\n" lines
+              Expect.stringContains joined "type A" "A survives"
+              Expect.stringContains joined "type B" "B survives"
+          } ]
+
 [<Tests>]
 let allTests =
     testList
@@ -18127,6 +18301,7 @@ let allTests =
           sigilTests
           districtTests
           unusedBindingTests
+          replSaveDistillTests
           indexerTests
           envLoadTests
           parallelTests

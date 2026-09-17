@@ -1382,7 +1382,10 @@ type Bad = C of int
   renders as a block scalar automatically. A `yaml` BLOCK is a
   checked template: `let d = yaml` + an indented
   YAML block (canonical: the marker on the binding line; fmt
-  rewrites the next-line spelling); `$name`/`$(expr)` splice VALUES (never text — no
+  rewrites the next-line spelling). Arming is token-precise: a bare
+  `yaml` or a `= yaml` RHS arms; `yaml` as a command ARGUMENT stays
+  argv (`kubectl get po -o yaml`, `--format yaml` are commands, not
+  districts). `$name`/`$(expr)` splice VALUES (never text — no
   injection is possible), a `None` splice omits its entry, and
   `for (k, v) in pairs` under a mapping yields dynamic keys (under a
   sequence, items). `yaml schema=<name>` on the marker line validates
@@ -1419,9 +1422,13 @@ type Bad = C of int
   singularised; empty-array/null/heterogeneous cases ride as `//`
   notes). The REPL's `#infer <source> from <json|jsonl|yaml> as <Name>`
   directive also INJECTS the drafted types into the session (so
-  `from json <Name>` and field completion light up); `#save` dumps a
-  session to a runnable script. Both are REPL scaffolding — see
-  docs/repl.md.
+  `from json <Name>` and field completion light up); `#save <path>`
+  DISTILLS a session to a runnable script — it keeps the `type` decls
+  and named `let` bindings (real multi-line source preserved, bare
+  aliases qualified), dedups a redeclared name to its last form, drops
+  the scratch echoes, and GUARANTEES the file `weir check`s clean
+  (an `it`-referencing binding is dropped with a note). Both are REPL
+  scaffolding — see docs/repl.md.
 
 ```weir
 let sample = ["{\"id\": 1, \"tags\": [\"a\"]}"]
