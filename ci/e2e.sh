@@ -930,6 +930,24 @@ echo "$infout" | grep -qF "dropped 1 line(s) that referenced session-only state"
   || fail "#save did not print the dropped-count note: $infout"
 echo "e2e ok: #save DISTILLS a messy session to a checking .weir (dedup, drop it, note)"
 
+# --- #infer drafted-type diagnostic (2026-09-17) [D:infer-diagnostic] --
+# when a DRAFTED type fails to check for ANY reason, the diagnostic must
+# name the line:col within the drafted text AND show the offending line
+# with a caret — the drafted text is weir's own synthesis, so the user
+# must see WHICH generated field is bad. A leading-digit JSON key drafts a
+# field weir rejects (the sibling agent owns the root-cause fix; this pins
+# the DIAGNOSTIC quality). The directive prints to stdout, so the piped
+# REPL surfaces it — no pty needed.
+idout=$(printf '%s\n%s\n%s\n' \
+  'let js = ["{\"1a\": 2}"]' \
+  '#infer js from json as PodsJson' \
+  '#quit' | $BIN 2>&1)
+echo "$idout" | grep -qF "a drafted type did not check at line 2, col " \
+  || fail "#infer diagnostic lost its line:col: $idout"
+echo "$idout" | grep -qF "1a: int" || fail "#infer diagnostic lost the offending-line snippet: $idout"
+echo "$idout" | grep -qF "^" || fail "#infer diagnostic lost the caret: $idout"
+echo "e2e ok: a failing #infer drafted type prints line:col + a caret'd snippet of the bad field"
+
 # --- piped REPL multi-line assembly (2026-09-16) [D:repl-multiline] ----
 # a REDIRECTED REPL (printf … | weir) reads physical lines but must
 # ASSEMBLE a statement that spans several — heredoc, a multi-line `type`,
@@ -1879,6 +1897,23 @@ WEOF
     [ -n "$cpline" ] && [ "$cpline" -gt 900 ] || fail "a captured reifier must not stream (appeared at ${cpline}ms): $cout"
 
     echo "e2e ok: streaming echo — partials flush live (REPL + script), the bare statement's bytes are the child's own, redirected byte-identical, reifiers capture"
+
+    # ---- let-echo truncation teaching consistency [D:echo-teaching-consistency] ----
+    # a `let`-bound over-cap UNFORCED seq<string> must carry the SAME
+    # unforced-hint teaching the bare-expression echo shows — and it must
+    # be VISIBLE (printed AFTER the lines, not scrolled off the top). The
+    # old shape printed `xs : seq<string> ={hint}` FIRST (a dangling ' ='
+    # too); the fix prints the lines, then `xs : seq<string> (hint)` last.
+    # `nats |> Seq.map show` is a deterministic unforced seq<string> — no
+    # PATH executable. tty-only path (redirected uses the batched form),
+    # so this rides the pty instrument.
+    tout=$(printf 'SLEEP 400\nSEND let xs = nats |> Seq.map (fun n -> show n)\\r\nSLEEP 1500\nSEND #quit\\r\n' | python3 "$ptyrun" 8 "$BIN")
+    echo "$tout" | grep -qF 'seq<string> (first 100 of an unforced' \
+      || fail "the let-bound unforced seq echo lost its teaching (or it is not on the meta line): $tout"
+    # the dangling ' =' is gone: the meta reads `: seq<string> (…)`, never `: seq<string> =`
+    echo "$tout" | grep -qF 'seq<string> =' \
+      && fail "the let-echo meta still renders a dangling ' =' before the truncation hint: $tout"
+    echo "e2e ok: a let-bound truncated seq echoes the unforced teaching, visible and without a dangling '='"
 
     # ---- colour from the child [D:colour-inherit] ----------------------
     # THE motivating pins: a bare statement at a tty sees isatty TRUE

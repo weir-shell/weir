@@ -443,6 +443,13 @@ let private printTable (lines: string list) =
 let private echoMeta (s: string) =
     Console.WriteLine(Types.Color.dim Types.Color.onStdout.Value s)
 
+// the `let`-echo meta line [D:echo-teaching-consistency]: name, type, and
+// the SAME truncation-teaching tail the bare-expression echo carries — one
+// spelling so a clipped `let` bind can never look like it silently dropped
+// data (the tail is printed AFTER the lines, so it stays visible)
+let letEchoMeta (name: string) (ty: Ty) (hint: string option) : string =
+    $"{name} : {formatTy ty}{Eval.echoTail hint}"
+
 // the live terminal width for the table clamp — piped echoes never
 // tabulate, so None only guards the resize/console-less edge
 let private termWidth () =
@@ -1391,13 +1398,18 @@ let private evalCheckedBody (state: State) (chk: Script.CheckedStatement) : Stat
                          Eval.echoTable cap (termWidth ()) ev)
                 with
                 | Some(lines, hint) ->
-                    let tail = Eval.echoTail hint
-                    echoMeta $"{name} : {formatTy te.Ty} ={tail}"
+                    // the lines/table FIRST, the meta+teaching LAST
+                    // [D:echo-teaching-consistency]: a truncation footer
+                    // printed before 100 lines scrolls off the top, so a
+                    // clipped `let` bind looked like it silently dropped
+                    // data — the bare-expression echo already prints the
+                    // footer last (visible), and the two arms must agree
+                    (if te.Ty = TSeq TStr then
+                         lines |> List.iter Console.WriteLine
+                     else
+                         printTable lines)
 
-                    if te.Ty = TSeq TStr then
-                        lines |> List.iter Console.WriteLine
-                    else
-                        printTable lines
+                    echoMeta (letEchoMeta name te.Ty hint)
                 | None ->
                     let rendered, hint = Eval.echoValue cap ev
                     let tail = Eval.echoTail hint
@@ -1717,6 +1729,28 @@ let private evalSource (state: State) (source: string) : Result<string list, str
                     Error $"#infer: evaluating the source raised: {ex.Message}"
 
 /// inject the decl TEXT (multi-line `type` blocks) into the session,
+/// the drafted-type diagnostic [D:infer-diagnostic]: the drafted text is
+/// weir's OWN synthesis, so a check failure is a generated-field bug the
+/// user must SEE — number the drafted lines and render the offending one
+/// with a caret, the same shape weir's normal parse/type errors use
+/// (line:col + snippet), so the user can tell WHICH generated field is bad.
+let formatDraftedDiag (physical: string list) (d: Script.StmtDiag) : string =
+    let line = physical |> List.tryItem (d.PhysLine - 1) |> Option.defaultValue ""
+
+    let caretWidth =
+        match d.PhysEnd with
+        | Some(el, ec) when el = d.PhysLine -> max 1 (ec - d.PhysCol)
+        | _ -> 1
+
+    let caret = String(' ', max 0 (d.PhysCol - 1)) + String('^', caretWidth)
+    let on = Types.Color.onStdout.Value
+
+    String.concat
+        "\n"
+        [ $"#infer: a drafted type did not check at line {d.PhysLine}, col {d.PhysCol}: {d.Message}"
+          "  " + line
+          "  " + Types.Color.red on caret ]
+
 /// returning the new state and the ordered list of defined type names.
 /// Reuses the assembler + checkStatement — the multiline submission path.
 let private injectDecls (state: State) (declText: string list) : Result<State * string list, string> =
@@ -1740,7 +1774,7 @@ let private injectDecls (state: State) (declText: string list) : Result<State * 
                 match
                     Script.checkStatement false None (fun _ -> resolver st) Script.scriptOnlyImport st.TypeEnv ll
                 with
-                | Error d -> Error $"#infer: a drafted type did not check: {d.Message}"
+                | Error d -> Error(formatDraftedDiag physical d)
                 | Ok chk ->
                     match chk.Kind with
                     | Script.KType decl ->

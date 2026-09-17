@@ -15,6 +15,28 @@
   the quote (`File.read "./x<TAB>`), the completion lands inside it —
   no second quote is added; a directory keeps its trailing `/` within
   the quotes. Completion still runs nothing — a directory read at most.
+### Fixed
+
+- **A truncated `let`-bound seq echo now shows the same unforced
+  teaching as a bare echo — visibly.** Echoing a `seq<string>` value
+  showed a footer `: seq<string> (first 100 of an unforced seq —
+  Seq.force to echo everything)` at the BOTTOM, where you'd see it. But
+  `let xs = <over-100-line command>` printed that footer FIRST and the
+  100 lines after it, so the teaching scrolled off the top and the bind
+  looked like it had silently dropped data — and the footer rendered a
+  dangling ` =` before the parenthetical. The `let` echo now prints the
+  lines (or table) first and the `name : type (hint)` footer last,
+  identical in shape and ordering to the bare-expression echo. A forced
+  seq still echoes whole with no teaching; the piped/`-e` surface is
+  unchanged.
+- **A failing `#infer` drafted type now points at the bad field.** When
+  a type `#infer` drafts from a sample fails to check for any reason,
+  the message was opaque — `#infer: a drafted type did not check:
+  Expecting: ':'` with no location and no snippet. It now reports the
+  `line:col` within the drafted text and prints the offending drafted
+  line with a caret under the column (the same rendering weir uses for
+  ordinary parse and type errors), so you can see which generated field
+  is wrong.
 
 ## v0.0.38
 

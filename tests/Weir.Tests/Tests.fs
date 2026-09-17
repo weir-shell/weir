@@ -5448,6 +5448,86 @@ let replEchoTests =
 
               let s200 = String.replicate 200 "x"
               Expect.equal (Weir.Eval.formatValue (VStr s200)) ("\"" + s200 + "\"") "show never clips strings"
+          }
+          test "a let-bound truncated seq<string> echo carries the SAME unforced teaching as the bare echo [D:echo-teaching-consistency]" {
+              // an unforced, over-cap seq<string> — the command-backed
+              // `let` bind's echo shape, synthesized deterministically so
+              // no PATH executable is asserted
+              let unforced = VSeq(Seq.init 12 (fun i -> VStr(string i)))
+
+              // the bare-expression echo's teaching (echoLines' hint)
+              let _, bareHint = Weir.Eval.echoLines (Some 10) unforced |> Option.get
+              Expect.equal bareHint (Some(Weir.Eval.unforcedHint 10)) "the bare echo teaches the unforced clip"
+
+              // the let-echo meta line carries that SAME tail — the fix's
+              // invariant: a clipped `let` bind never looks like it
+              // silently dropped data
+              let meta = Weir.Repl.letEchoMeta "xs" (TSeq TStr) bareHint
+
+              Expect.equal
+                  meta
+                  $"xs : seq<string>{Weir.Eval.echoTail bareHint}"
+                  "the let meta ends in the unforced teaching, same tail the bare echo shows"
+
+              Expect.stringContains meta "first 10 of an unforced seq" "the teaching is visible in the let meta"
+          }
+          test "a forced-seq let echo shows NO teaching and all elements (unchanged) [D:echo-rule]" {
+              let forced = VSeq([ for i in 1..12 -> VStr(string i) ] :> seq<Weir.Eval.Value>)
+
+              // forced: echoLines returns every line and NO hint
+              let lines, hint = Weir.Eval.echoLines (Some 10) forced |> Option.get
+              Expect.equal (List.length lines) 12 "all twelve elements, the cap never clips a forced seq"
+              Expect.equal hint None "forced carries no teaching"
+
+              // the let meta then has an EMPTY tail — no dangling teaching
+              let meta = Weir.Repl.letEchoMeta "xs" (TSeq TStr) hint
+              Expect.equal meta "xs : seq<string>" "no teaching, no trailing parenthetical"
+          }
+          test "a failing #infer drafted type surfaces line:col + an offending-line snippet [D:infer-diagnostic]" {
+              // a deliberately un-checkable drafted type: a leading-digit
+              // field name weir rejects — number the drafted lines and
+              // check the physical statement, then render its diagnostic
+              let drafted = [ "type PodsJson = {"; "    1a: int"; "}" ]
+
+              let numbered =
+                  drafted
+                  |> List.mapi (fun i l -> i + 1, l)
+                  |> List.filter (fun (_, raw) -> Weir.Script.classifyLine raw <> Weir.Script.LineKind.CommentOnly)
+                  |> List.map (fun (n, raw) -> n, Weir.Script.stripComment raw)
+
+              let lls =
+                  match Weir.Script.assemble numbered with
+                  | Ok lls -> lls
+                  | Error m -> failtest $"drafted did not assemble: {m}"
+
+              let ll = List.exactlyOne lls
+
+              let d =
+                  match
+                      Weir.Script.checkStatement
+                          false
+                          None
+                          Weir.Script.resolver
+                          Weir.Script.scriptOnlyImport
+                          Weir.Builtins.typeEnvStrict
+                          ll
+                  with
+                  | Error d -> d
+                  | Ok _ -> failtest "expected the drafted type to FAIL the check"
+
+              let rendered = Weir.Script.stripAnsi (Weir.Repl.formatDraftedDiag drafted d)
+
+              // the offending drafted line is the second physical line
+              Expect.equal d.PhysLine 2 "the error points at the drafted field line, not the header"
+              Expect.stringContains rendered "at line 2, col " "line:col is surfaced"
+              Expect.stringContains rendered "1a: int" "the offending drafted line is shown as a snippet"
+              Expect.stringContains rendered "^" "a caret marks the column"
+
+              // the caret sits UNDER the reported column (snippet indented by 2)
+              let snippetLines = rendered.Split('\n')
+              let caretLine = snippetLines |> Array.find (fun l -> l.Trim() |> Seq.forall (fun c -> c = '^'))
+              let caretCol = caretLine.IndexOf '^'
+              Expect.equal caretCol (2 + d.PhysCol - 1) "the caret lands under the error column in the 2-space-indented snippet"
           } ]
 
 let replColorTests =
