@@ -930,24 +930,52 @@ echo "$infout" | grep -qF "dropped 1 line(s) that referenced session-only state"
   || fail "#save did not print the dropped-count note: $infout"
 echo "e2e ok: #save DISTILLS a messy session to a checking .weir (dedup, drop it, note)"
 
-# --- #infer drafted-type diagnostic (2026-09-17) [D:infer-diagnostic] --
+# --- #infer drafted-type diagnostic (recast 2026-09-17) [D:infer-diagnostic]/[D:infer-wire-sanitize] --
 # when a DRAFTED type fails to check for ANY reason, the diagnostic must
 # name the line:col within the drafted text AND show the offending line
 # with a caret — the drafted text is weir's own synthesis, so the user
-# must see WHICH generated field is bad. A KEYWORD JSON key drafts a
-# field weir rejects (non-identifier keys are Wire-sanitized away now,
-# so a keyword is the remaining un-checkable class; this pins the
-# DIAGNOSTIC quality). The directive prints to stdout, so the piped
-# REPL surfaces it — no pty needed.
+# must see WHICH generated part is bad. KEYWORD keys sanitize now
+# ([<Wire "in">] inField — the old {"in": 2} fixture CHECKS and is the
+# POSITIVE below), so the remaining un-checkable class is a DUPLICATE
+# key: legal JSON, both occurrences draft the SAME clean field, and a
+# record refuses a duplicate field. That class drives the diagnostic.
+# The directive prints to stdout, so the piped REPL surfaces it — no
+# pty needed.
 idout=$(printf '%s\n%s\n%s\n' \
-  'let js = ["{\"in\": 2}"]' \
+  'let js = ["{\"a\": 1, \"a\": 2}"]' \
   '#infer js from json as PodsJson' \
   '#quit' | $BIN 2>&1)
-echo "$idout" | grep -qF "a drafted type did not check at line 2, col " \
+echo "$idout" | grep -qF "a drafted type did not check at line 1, col 1: duplicate field 'a'" \
   || fail "#infer diagnostic lost its line:col: $idout"
-echo "$idout" | grep -qF "in: int" || fail "#infer diagnostic lost the offending-line snippet: $idout"
+echo "$idout" | grep -qF "type PodsJson = {" || fail "#infer diagnostic lost the offending-line snippet: $idout"
 echo "$idout" | grep -qF "^" || fail "#infer diagnostic lost the caret: $idout"
-echo "e2e ok: a failing #infer drafted type prints line:col + a caret'd snippet of the bad field"
+echo "e2e ok: a failing #infer drafted type prints line:col + a caret'd snippet (duplicate-key class)"
+
+# the POSITIVE the old fixture became [D:infer-wire-sanitize]: a KEYWORD
+# key infers to a [<Wire>]'d field on the parser's own repair spelling
+# (in -> inField) — the draft CHECKS and READS the sample
+inpos=$(printf '%s\n%s\n%s\n%s\n%s\n' \
+  'let js = ["{\"in\": 2}"]' \
+  '#infer js from json as InJson' \
+  'let v = js |> from json InJson' \
+  'print $"read={v.inField}"' \
+  '#quit' | $BIN 2>&1)
+echo "$inpos" | grep -qF "defined: InJson (1 type)" || fail "a keyword key must draft a checking type: $inpos"
+echo "$inpos" | grep -qF "read=2" || fail "the Wire'd keyword-key field must READ the sample: $inpos"
+
+# an EMPTY-STRING key [D:infer-wire-sanitize]: no field name can spell
+# it and [<Wire>] refuses an empty wire key, so the sanitizer DROPS it
+# with a printed note — and the draft still reads the sample (the
+# readers tolerate an undeclared key)
+ekout=$(printf '%s\n%s\n%s\n%s\n%s\n' \
+  'let ek = ["{\"\": 1, \"a\": 2}"]' \
+  '#infer ek from json as EmptyKey' \
+  'let w = ek |> from json EmptyKey' \
+  'print $"a={w.a}"' \
+  '#quit' | $BIN 2>&1)
+echo "$ekout" | grep -qF "empty-string key" || fail "the empty-key drop must print its note: $ekout"
+echo "$ekout" | grep -qF "a=2" || fail "the draft must read around the dropped empty key: $ekout"
+echo "e2e ok: a keyword key rides [<Wire>] and reads; an empty-string key drops loudly and reads around"
 
 # --- piped REPL multi-line assembly (2026-09-16) [D:repl-multiline] ----
 # a REDIRECTED REPL (printf … | weir) reads physical lines but must

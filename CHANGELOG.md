@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.0.41
+
+### Fixed
+
+- **`#infer` sanitizes KEYWORD keys and the empty-string key** — the
+  two [D:infer-wire-sanitize] residuals closed. A keyword JSON/YAML
+  key (`{"in": 2}` — `let`, `match`, `fun`, …) passed the
+  char-class-only identifier test and drafted `in: int`, which the
+  parser rejects in field position (probe-pinned: EVERY keyword is);
+  it now rides `[<Wire "in">]` over the parser's own repair spelling
+  (`inField`), collision-deduped, and the draft checks AND reads. The
+  reserved set is the parser's own `Parser.keywords`, threaded in as a
+  parameter — the hand-copied three-word set is gone, so the set
+  cannot drift. An empty-string key (`{"": 1}`) drafted `[<Wire "">]`,
+  which the checker refuses ("expects the wire key as a string") and
+  no field name can spell — it is now DROPPED with a printed note,
+  and the drafted type still reads the sample (the readers tolerate
+  an undeclared key). The e2e drafted-type diagnostic recast onto the
+  remaining un-checkable class: a DUPLICATE JSON key.
+
 ## v0.0.40
 
 ### Added

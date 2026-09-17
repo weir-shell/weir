@@ -150,18 +150,23 @@ guessing: an empty array (`seq<string>` default), a null field
 The same inference is a builtin — `sample |> Json.inferShape |> print`
 (and `Yaml.inferShape`) returns the declaration text outside the REPL.
 
-When a DRAFTED type fails to check — the sample carried a key weir
-cannot spell as a field, say — `#infer` does not stop at "a drafted
-type did not check". The drafted text is weir's own synthesis, so the
-diagnostic names the `line:col` WITHIN the drafted type and prints the
-offending line with a caret, the same shape a normal parse or type
-error uses:
+A key weir cannot spell as a field name never breaks the draft: a
+non-identifier or KEYWORD key rides `[<Wire "the-key">]` over a
+derived identifier (`k8s-app`→`k8sApp`, `in`→`inField` — the parser
+rejects every keyword in field position), and an empty-string key —
+which a field name cannot spell and `[<Wire>]` refuses to carry — is
+DROPPED with a printed note (reading tolerates the extra key). When a
+drafted type still fails to check — the sample carried the same key
+twice, say — `#infer` does not stop at "a drafted type did not
+check". The drafted text is weir's own synthesis, so the diagnostic
+names the `line:col` WITHIN the drafted type and prints the offending
+line with a caret, the same shape a normal parse or type error uses:
 
 ```
 weir> #infer sample from json as Pods
-#infer: a drafted type did not check at line 2, col 5: Expecting: identifier or '[<'
-      1a: int
-      ^
+#infer: a drafted type did not check at line 1, col 1: duplicate field 'a'
+  type Pods = {
+  ^
 ```
 
 You can see exactly which generated field is wrong and fix the sample

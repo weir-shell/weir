@@ -2040,7 +2040,7 @@ let private inferDirective (state: State) (rest: string) : State =
                     Console.WriteLine msg
                     state
                 | Ok lines ->
-                    match Infer.infer fmt name lines with
+                    match Infer.infer Parser.keywords fmt name lines with
                     | Error msg ->
                         Console.WriteLine msg
                         state

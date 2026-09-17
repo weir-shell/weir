@@ -3980,7 +3980,7 @@ let private inferShapeImpl (fmt: Infer.Format) : Value =
         match v with
         | VSeq items ->
             let lines = items |> Seq.map asString
-            VStr(Infer.inferShapeText fmt "Root" lines)
+            VStr(Infer.inferShapeText Parser.keywords fmt "Root" lines)
         | v -> unreachable $"the checker rejects 'inferShape' on {formatValue v}")
 
 let private yamlModuleMembers: (string * Ty * Value) list =
