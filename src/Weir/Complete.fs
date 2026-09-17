@@ -329,6 +329,14 @@ let suggestScoped (env: TypeEnv) (binderScope: string) (text: string) (wordStart
 
     let before = text.Substring(0, min wordStart text.Length).TrimEnd()
 
+    // the word butts against an OPEN quote [D:repl-path-quote]: a
+    // completion word inside a string literal has no space before it —
+    // wordStartAt stops at the `"` (not a word char), so the char at
+    // wordStart-1 is the opening quote. `File.read "./w<TAB>` completes
+    // WITHIN the quotes; the path-quoting below must not add a second.
+    let insideOpenQuote =
+        wordStart > 0 && wordStart <= text.Length && text[wordStart - 1] = '"'
+
     // session directives complete at a line-head '#' [D:repl-directives]:
     // '#' is not a word char to the editor, so the word starts AFTER it
     // — `#he` used to complete to `head` (the '#' ignored), `#` listed
@@ -539,9 +547,37 @@ let suggestScoped (env: TypeEnv) (binderScope: string) (text: string) (wordStart
                                     // reasoning)
                                     | None -> Some [])
 
+        // EXPRESSION-position path completion QUOTES [D:repl-path-quote]:
+        // a bare filesystem path is not a valid weir expression, so
+        // `File.read ./x<TAB>` must yield `File.read "./x"` (a string
+        // literal parses; a bare path does not). The distinction is the
+        // slot's, reusing the existing head/argv machinery: a COMMAND-argv
+        // path stays BARE (`cat ./x`, `ls ./dir`, `./script`), and a path a
+        // builtin's string PARAMETER wants (File.read/cd/Path.*) — or one in
+        // plain expression furniture (after `=`, a `|>` stage, a `(`) — gets
+        // quoted. An already-OPEN quote never doubles: the completion lands
+        // inside it. A directory keeps its trailing `/` inside the quotes.
+        let expressionSlot (before: string) : bool =
+            pathParamAt before
+            || (let stmt =
+                    let i = max (before.LastIndexOf Weir.Parser.sibSep) (before.LastIndexOf '\n')
+                    (if i >= 0 then before.Substring(i + 1) else before)
+
+                stmt.Contains "|>"
+                || stmt.Contains " = "
+                || stmt.Contains '('
+                || stmt.Contains '[')
+
+        let quoteFor (before: string) (candidates: string list) : string list =
+            if not insideOpenQuote && expressionSlot before then
+                candidates |> List.map (fun c -> "\"" + c + "\"")
+            else
+                candidates
+
         if word.StartsWith "~" || word.Contains '/' then
-            // an explicit path word — filesystem entries [D:repl-quality]
-            filesystemComplete word
+            // an explicit path word — filesystem entries [D:repl-quality],
+            // quoted where the slot is an expression [D:repl-path-quote]
+            filesystemComplete word |> quoteFor before
         elif commandArgvPosition env before then
             // argv position [D:complete-argv]: paths, nothing else — the
             // pool, fields, and members are expression furniture
@@ -560,6 +596,12 @@ let suggestScoped (env: TypeEnv) (binderScope: string) (text: string) (wordStart
                     else
                         None)
 
+            // this branch fires for a BARE word (no `/`) at a builtin path
+            // param — it stays UNQUOTED [D:repl-path-quote]: `cd w`/`File.copy
+            // … dst` complete the bare stem (the [D:path-param-completion]
+            // pins), and a string BINDING here IS already a valid expression.
+            // An EXPLICIT path word (`File.read ./x`, with a `/` or `~`) took
+            // the quoting branch above before reaching here.
             (filesystemComplete word @ stringBindings)
             |> List.filter (fun c -> c.StartsWith word && c <> word)
             |> List.distinct

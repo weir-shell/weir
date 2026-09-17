@@ -23,6 +23,11 @@ type Shape =
     | SSeq of Shape
     // seq<string * X> — an open mapping (labels/annotations)
     | SPairs of Shape
+    // the opaque `Yaml` NODE [D:yaml-empty-flow]: a field whose shape is
+    // undecided (e.g. #infer's empty-mapping fallback) reads structure
+    // whole into the public Yaml union — the read sibling of the write
+    // side, which already renders Yaml nodes directly
+    | SNode
     // a TAGGED union [D:wire-unions]: the tag field picks the case;
     // cases carry (name, tagValue, payload record shape option); other
     // is the [<Other>] fallback (name, carries-the-tag-string)
@@ -252,6 +257,19 @@ let private parseScalar (lineNo: int) (raw: string) : Result<Node, string> =
     | Ok None -> Ok(NNull lineNo)
     | Ok(Some(text, quoted)) -> Ok(NScalar(text, quoted, lineNo))
 
+// the ONLY flow forms the block-only subset admits [D:yaml-empty-flow]:
+// the EMPTY collections `{}` and `[]` (inner whitespace tolerated),
+// unambiguous at zero elements where the Norway/ambiguity class that
+// justifies block-only cannot fire. Populated flow stays rejected by
+// scalarCore's teaching. `{}` → empty mapping, `[]` → empty sequence.
+let private emptyFlow (lineNo: int) (raw: string) : Node option =
+    match raw.Trim() with
+    | "{}" -> Some(NMap([], lineNo))
+    | "[]" -> Some(NSeq([], lineNo))
+    | t when t.StartsWith "{" && t.EndsWith "}" && t.Substring(1, t.Length - 2).Trim() = "" -> Some(NMap([], lineNo))
+    | t when t.StartsWith "[" && t.EndsWith "]" && t.Substring(1, t.Length - 2).Trim() = "" -> Some(NSeq([], lineNo))
+    | _ -> None
+
 // split `key: value` / `key:` at the first unquoted `: ` (or `:` at EOL);
 // keys may be plain (k8s dotted/slashed labels) or quoted
 let splitKey (lineNo: int) (s: string) : (string * string) option =
@@ -436,6 +454,28 @@ let rec private parseBlock
                 $"line {n2}: this line is inside the block scalar's extent but outside its content (a dedented line above it ended the block)"
         | None -> blockScalar rawSrc no parentIndent keep
 
+    // is the (content) line at `k` a block-sequence item at exactly
+    // `col`? kubectl's zero-indent form puts a sequence at the SAME
+    // column as its parent mapping key
+    let isSeqAt (col: int) (k: int) =
+        k < fin
+        && indentOf (snd lines[k]) = col
+        && (let b = (snd lines[k]).Substring col
+            b.StartsWith "- " || b.TrimEnd() = "-")
+
+    // the extent of a same-indent block sequence starting at `k`: the
+    // run of lines at indent >= col, stopping at the first line that
+    // dedents below `col` (a sibling mapping key sits at exactly `col`
+    // but is NOT a `- ` line, so it too begins the sequence's parse —
+    // the sequence loop itself stops on the first non-`- ` line at col)
+    let seqExtent (col: int) (k: int) =
+        let mutable e = k + 1
+
+        while e < fin && (indentOf (snd lines[e]) > col || isSeqAt col e) do
+            e <- e + 1
+
+        e
+
     if start >= fin then
         Ok(
             NNull(
@@ -485,6 +525,20 @@ let rec private parseBlock
                                     // the item is the nested block below (or null)
                                     parseBlock rawSrc lines (i + 1) j (indent + 2)
                                 else
+                                    match (if j = i + 1 then emptyFlow no inline' else None) with
+                                    | Some node ->
+                                        // an empty flow collection as a sequence item
+                                        Ok node
+                                    | None when
+                                        // POPULATED flow in item position: `- {a: 1}`
+                                        // would otherwise be mis-split into a compact
+                                        // map key `{a` — route it to the scalar path so
+                                        // the block-only teaching fires [D:yaml-empty-flow]
+                                        (let t = inline'.Trim() in t.StartsWith "{" || t.StartsWith "[")
+                                        ->
+                                        parseScalar no inline'
+                                    | None ->
+
                                     match splitKey no inline' with
                                     | Some _ ->
                                         // compact map item: `- key: v` — the first
@@ -533,13 +587,23 @@ let rec private parseBlock
                                     while j < fin && indentOf (snd lines[j]) > indent do
                                         j <- j + 1
 
+                                    // a valueless key followed by a block sequence at
+                                    // the SAME indent (kubectl's zero-indent form): the
+                                    // sequence IS the value — consume its whole extent
+                                    let seqValue =
+                                        rest.Trim() = "" && j = i + 1 && isSeqAt indent (i + 1)
+
+                                    let jSeq = if seqValue then seqExtent indent (i + 1) else j
+
                                     let valueR =
                                         match blockHeader rest with
                                         | Some(Error msg) -> Error $"line {no}: {msg}"
                                         | Some(Ok keep) -> blockValue no indent keep i j
                                         | None ->
 
-                                            if rest.Trim() = "" then
+                                            if seqValue then
+                                                parseBlock rawSrc lines (i + 1) jSeq indent
+                                            elif rest.Trim() = "" then
                                                 if j > i + 1 then
                                                     parseBlock rawSrc lines (i + 1) j (indentOf (snd lines[i + 1]))
                                                 else
@@ -547,11 +611,13 @@ let rec private parseBlock
                                             elif j > i + 1 then
                                                 Error $"line {no}: '{key}' has both an inline value and a nested block"
                                             else
-                                                parseScalar no rest
+                                                match emptyFlow no rest with
+                                                | Some node -> Ok node
+                                                | None -> parseScalar no rest
 
                                     match valueR with
                                     | Error e -> Error e
-                                    | Ok v -> entries j ((key, v) :: acc) (seen.Add key)
+                                    | Ok v -> entries jSeq ((key, v) :: acc) (seen.Add key)
 
                 entries start [] Set.empty |> Result.map (fun es -> NMap(es, firstNo))
             | None ->
@@ -564,7 +630,9 @@ let rec private parseBlock
                     if fin > start + 1 then
                         Error $"line {firstNo}: expected 'key:' or '- ' at this indentation"
                     else
-                        parseScalar firstNo firstBody
+                        match emptyFlow firstNo firstBody with
+                        | Some node -> Ok node
+                        | None -> parseScalar firstNo firstBody
 
 /// parse numbered raw lines into DOCUMENTS (`---` separated, indent-0
 /// separators only; a leading `---` is allowed)

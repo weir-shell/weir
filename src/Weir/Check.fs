@@ -1415,6 +1415,9 @@ let rec private yamlShape (span: Span) (env: TypeEnv) (seen: Set<string>) (ty: T
     | TFloat -> Ok Yaml.SFloat
     | TStr -> Ok Yaml.SStr
     | TBool -> Ok Yaml.SBool
+    // the opaque `Yaml` NODE reads structure whole [D:yaml-empty-flow] —
+    // the read sibling of yamlableOut's `Yaml`-renders-directly case
+    | TNamed("Yaml", []) -> Ok Yaml.SNode
     | TNamed("Option", [ TNamed("Option", _) ]) -> err span "Option<Option<…>> has no yaml reading; flatten the type"
     | TNamed("Option", [ inner ]) -> yamlShape span env seen inner |> Result.map Yaml.SOpt
     | TSeq(TTuple [ TStr; v ]) -> yamlShape span env seen v |> Result.map Yaml.SPairs

@@ -1333,6 +1333,41 @@ let private fromAdapter
 // shape-directed conversion: the checker packed the resolved target tree;
 // every error carries the node's LINE (the owned parser's positions —
 // the bar YamlDotNet's messages missed)
+// the typeless scalar/node rules [D:yaml-nodes] — pure, dependency-free,
+// so both the typed `Yaml`-field read (yamlConvert's SNode) and the
+// district/Yaml.parse path share the ONE machine
+let yamlScalarValue (raw: string) (quoted: bool) : Value =
+    // the ONE typeless scalar rule — the district and Yaml.parse agree
+    // by construction [D:yaml-nodes]
+    if not quoted && raw = "" then
+        VUnion("YNull", None)
+    elif not quoted && (raw = "true" || raw = "false") then
+        VUnion("YBool", Some(VBool(raw = "true")))
+    else
+        match (if quoted then (false, 0L) else System.Int64.TryParse raw) with
+        | true, n -> VUnion("YInt", Some(VInt n))
+        | _ ->
+            // unquoted float-shaped literals self-type [D:floats-boundaries]
+            // — `cpu: 1.5` must not render as "1.5" (the int precedent;
+            // parseFloat refuses non-finite so nan/inf text stays string)
+            match (if quoted then Error "" else parseFloat raw) with
+            | Ok f -> VUnion("YFloat", Some(VFloat f))
+            | Error _ -> VUnion("YStr", Some(VStr raw))
+
+let rec yamlNodeValue (node: Yaml.Node) : Value =
+    // the typeless read [D:yaml-nodes]: parsed structure into the public
+    // Yaml union — no tombstone or patch ctor can EVER come from here
+    match node with
+    | Yaml.NNull _ -> VUnion("YNull", None)
+    | Yaml.NBlock(text, _) -> VUnion("YStr", Some(VStr text))
+    | Yaml.NScalar(raw, quoted, _) -> yamlScalarValue raw quoted
+    | Yaml.NSeq(items, _) -> VUnion("YSeq", Some(VSeq(items |> List.map yamlNodeValue |> List.toSeq)))
+    | Yaml.NMap(entries, _) ->
+        VUnion(
+            "YMap",
+            Some(VSeq(entries |> List.map (fun (k, v) -> VTuple [ VStr k; yamlNodeValue v ]) |> List.toSeq))
+        )
+
 let rec private yamlConvert (shape: Yaml.Shape) (node: Yaml.Node) : Value =
     match shape, node with
     | Yaml.SOpt _, Yaml.NNull _ -> VUnion("None", None)
@@ -1438,6 +1473,9 @@ let rec private yamlConvert (shape: Yaml.Shape) (node: Yaml.Node) : Value =
             |> List.toSeq
         )
     | Yaml.SPairs _, Yaml.NNull _ -> VSeq Seq.empty
+    // the opaque `Yaml` field reads structure whole [D:yaml-empty-flow] —
+    // an empty `{}` is YMap [], an empty `[]` is YSeq [], any node rides
+    | Yaml.SNode, n -> yamlNodeValue n
     | shape, node ->
         let want =
             match shape with
@@ -1450,6 +1488,7 @@ let rec private yamlConvert (shape: Yaml.Shape) (node: Yaml.Node) : Value =
             | Yaml.SSeq _ -> "a sequence"
             | Yaml.SPairs _ -> "a mapping"
             | Yaml.SOpt _ -> "an optional value"
+            | Yaml.SNode -> "a yaml node"
 
         let got =
             match node with
@@ -1590,6 +1629,10 @@ let rec private yamlRender
     | VUnion("YFloat", Some(VFloat f)) -> Inline(formatFloat f)
     | VUnion("YBool", Some(VBool b)) -> Inline(if b then "true" else "false")
     | VUnion("YNull", None) -> Inline ""
+    // empty Yaml collections render as the empty flow forms so they
+    // round-trip [D:yaml-empty-flow] — a bare `key:` reads back as null
+    | VUnion("YSeq", Some(VSeq items)) when Seq.isEmpty items -> Inline "[]"
+    | VUnion("YMap", Some(VSeq pairs)) when Seq.isEmpty pairs -> Inline "{}"
     | VUnion("YSeq", Some(VSeq items)) -> Block(renderSeq (List.ofSeq items))
     | VUnion("YMap", Some(VSeq pairs)) ->
         Block(
@@ -3220,38 +3263,6 @@ and private liftYaml (v: Value) : Value option =
         // the sortBy posture: a polymorphic splice's law is enforced HERE
         failwith
             $"yaml splice: got {formatValue v}; splices take string/int/float/bool, a Yaml node, Option of one, or a seq of those"
-
-and yamlScalarValue (raw: string) (quoted: bool) : Value =
-    // the ONE typeless scalar rule — the district and Yaml.parse agree
-    // by construction [D:yaml-nodes]
-    if not quoted && raw = "" then
-        VUnion("YNull", None)
-    elif not quoted && (raw = "true" || raw = "false") then
-        VUnion("YBool", Some(VBool(raw = "true")))
-    else
-        match (if quoted then (false, 0L) else System.Int64.TryParse raw) with
-        | true, n -> VUnion("YInt", Some(VInt n))
-        | _ ->
-            // unquoted float-shaped literals self-type [D:floats-boundaries]
-            // — `cpu: 1.5` must not render as "1.5" (the int precedent;
-            // parseFloat refuses non-finite so nan/inf text stays string)
-            match (if quoted then Error "" else parseFloat raw) with
-            | Ok f -> VUnion("YFloat", Some(VFloat f))
-            | Error _ -> VUnion("YStr", Some(VStr raw))
-
-and yamlNodeValue (node: Yaml.Node) : Value =
-    // the typeless read [D:yaml-nodes]: parsed structure into the public
-    // Yaml union — no tombstone or patch ctor can EVER come from here
-    match node with
-    | Yaml.NNull _ -> VUnion("YNull", None)
-    | Yaml.NBlock(text, _) -> VUnion("YStr", Some(VStr text))
-    | Yaml.NScalar(raw, quoted, _) -> yamlScalarValue raw quoted
-    | Yaml.NSeq(items, _) -> VUnion("YSeq", Some(VSeq(items |> List.map yamlNodeValue |> List.toSeq)))
-    | Yaml.NMap(entries, _) ->
-        VUnion(
-            "YMap",
-            Some(VSeq(entries |> List.map (fun (k, v) -> VTuple [ VStr k; yamlNodeValue v ]) |> List.toSeq))
-        )
 
 and private evalYamlTpl (env: Env) (tpl: Check.TypedYamlTpl) : Value =
     match tpl with

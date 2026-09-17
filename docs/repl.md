@@ -28,6 +28,13 @@ commands. Two behaviours worth naming:
   `#help Module.<TAB>` completes that module's members. The offered
   set and the documented set are one, so a type you can `#help` is a
   type you can Tab.
+- **A path completes quoted in an expression, bare as a command
+  argument.** `File.read ./x<TAB>` yields `File.read "./x"` — a bare
+  path is not a valid weir expression, so the completion is a string
+  literal that parses. In command-argv position (`cat ./x`, `ls ./dir`)
+  the path stays bare, the way argv wants it. If you already opened the
+  quote (`File.read "./x<TAB>`), the completion lands inside it — no
+  second quote; a directory keeps its trailing `/` within the quotes.
 
 Completion never runs anything — a directory read or a cached PATH
 lookup at most.
@@ -43,6 +50,13 @@ At a terminal, the echo presents a value by its shape:
 
 The type footer sits below in every case, along with a sentence
 noting when a seq is unforced. `NO_COLOR` strips the dressing.
+
+A `let` binding echoes the same way — the value's lines (or table)
+first, then a `name : type` footer that carries the very same
+unforced sentence a bare echo shows. The footer sits BELOW the lines
+in both, so a truncated bind can never look like it silently dropped
+data: you see the clip, then the sentence telling you it was clipped
+and how to see the rest (`Seq.force`).
 
 ## The echo is a glance, not the output
 
@@ -120,6 +134,23 @@ guessing: an empty array (`seq<string>` default), a null field
 (`Option<string>`), a heterogeneous array (first element, "verify").
 The same inference is a builtin — `sample |> Json.inferShape |> print`
 (and `Yaml.inferShape`) returns the declaration text outside the REPL.
+
+When a DRAFTED type fails to check — the sample carried a key weir
+cannot spell as a field, say — `#infer` does not stop at "a drafted
+type did not check". The drafted text is weir's own synthesis, so the
+diagnostic names the `line:col` WITHIN the drafted type and prints the
+offending line with a caret, the same shape a normal parse or type
+error uses:
+
+```
+weir> #infer sample from json as Pods
+#infer: a drafted type did not check at line 2, col 5: Expecting: identifier or '[<'
+      1a: int
+      ^
+```
+
+You can see exactly which generated field is wrong and fix the sample
+(or hand-edit once you `#save`).
 
 ## `#save`: distill the session to a script
 

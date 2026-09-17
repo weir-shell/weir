@@ -216,6 +216,13 @@ let rec private shapeOf (reg: Registry) (desired: string) (parentStem: string) (
         // a null field cannot be inferred — Option<string> + a note
         reg.AddNote $"a null value under '{desired}' — inferred Option<string> (edit if the real type is known)"
         "Option<string>"
+    | IObj [] ->
+        // an EMPTY mapping [D:yaml-empty-flow] (`{}` — kubectl's
+        // resources/securityContext/…): no fields, no shape to name.
+        // Mirror the empty-array posture: the opaque `Yaml` + a note,
+        // never a silently-empty record.
+        reg.AddNote $"an empty mapping under '{desired}' — no fields to infer, kept as opaque Yaml (edit if the real shape is known)"
+        "Yaml"
     | IObj fields ->
         // the collision prefix is the ENCLOSING record's stem: a `spec`
         // under `pod` disambiguates to `PodSpec`. So each field's child
@@ -264,17 +271,88 @@ let rec private shapeOf (reg: Registry) (desired: string) (parentStem: string) (
 
 // ---- the public surface -----------------------------------------------
 
-// a wire key that is a reserved word rides the [<Wire>] attribute on a
-// legal field name [D:wire-keys]; every other json/yaml key is already a
-// legal field name and stays verbatim
-let private reservedWireKeys = set [ "type"; "to"; "from" ]
+// a wire key that a weir field name cannot spell rides the [<Wire>]
+// attribute on a legal identifier [D:wire-keys]/[D:infer-wire-sanitize]:
+// reserved words AND keys that are not valid weir identifiers (k8s
+// labels: `k8s-app`, `node.kubernetes.io/os`, `helm.sh/chart`). A key
+// that IS a legal, non-reserved identifier stays verbatim — zero churn.
+let private reservedWords = set [ "type"; "to"; "from" ]
 
-let private sanitizeFieldName (f: string) : string =
-    match f with
-    | "type" -> "kind"
-    | "to" -> "target"
-    | "from" -> "source"
-    | other -> other
+let private isIdentStart c = System.Char.IsLetter c || c = '_'
+let private isIdentCont c = System.Char.IsLetterOrDigit c || c = '_'
+
+/// a key weir can spell as a field name AS-IS: a legal identifier that
+/// is not a reserved word
+let private isCleanFieldName (f: string) : bool =
+    f.Length > 0
+    && isIdentStart f[0]
+    && f |> Seq.forall isIdentCont
+    && not (Set.contains f reservedWords)
+
+/// derive a valid weir identifier from an arbitrary wire key: camelCase
+/// the alnum segments (split on every non-alnum run), lower the first
+/// segment, capitalize the rest — `k8s-app`→`k8sApp`,
+/// `node.kubernetes.io/os`→`nodeKubernetesIoOs`. A leading digit (or an
+/// all-symbol key) gets an `f` prefix so it starts with a letter.
+let private toIdent (key: string) : string =
+    let segs =
+        key.Split([| for c in key do
+                         if not (System.Char.IsLetterOrDigit c) then c |])
+        |> Array.filter (fun s -> s <> "")
+
+    let camel =
+        segs
+        |> Array.mapi (fun i s ->
+            if i = 0 then
+                string (System.Char.ToLowerInvariant s[0]) + s.Substring 1
+            else
+                string (System.Char.ToUpperInvariant s[0]) + s.Substring 1)
+        |> String.concat ""
+
+    let camel =
+        // the reserved-word landings keep their historical spellings so
+        // existing pins do not churn
+        match key with
+        | "type" -> "kind"
+        | "to" -> "target"
+        | "from" -> "source"
+        | _ -> camel
+
+    if camel = "" || not (isIdentStart camel[0]) then "f" + camel else camel
+
+/// a record's fields as (fieldName, wireKeyOrNone, ty): clean keys keep
+/// their name and carry no wire attribute; others sanitize to a deduped
+/// valid identifier and carry [<Wire "key">]. Dedup is deterministic:
+/// CLEAN keys (the user's own spellings) reserve their names FIRST, then
+/// sanitized names take the next free `base`/`base2`/`base3`… — so a
+/// sanitized key never steals a clean field's name.
+let private resolveFieldNames (fields: (string * string) list) : (string * string option * string) list =
+    let used = System.Collections.Generic.HashSet<string>()
+
+    // pass 1: clean keys reserve their exact names
+    for (key, _) in fields do
+        if isCleanFieldName key then
+            used.Add key |> ignore
+
+    // pass 2: emit in order; sanitized keys disambiguate around the
+    // reserved clean names and each other
+    fields
+    |> List.map (fun (key, ty) ->
+        if isCleanFieldName key then
+            key, None, ty
+        else
+            let baseName = toIdent key
+
+            let name =
+                if used.Add baseName then
+                    baseName
+                else
+                    let mutable n = 2
+                    while not (used.Add(baseName + string n)) do
+                        n <- n + 1
+                    baseName + string n
+
+            name, Some key, ty)
 
 /// the inferred DECLARATIONS + printed notes, for a sample already lowered
 /// to an INode with a chosen top name. A top OBJECT is the named record;
@@ -299,13 +377,14 @@ let inferDecls (topName: string) (node: INode) : string list * Note list =
         reg.Decls
         |> List.map (fun (name, fields) ->
             let body =
-                fields
-                |> List.map (fun (f, t) ->
-                    // a reserved word key rides the wire attribute
-                    if Set.contains f reservedWireKeys then
-                        $"    [<Wire \"{f}\">]\n    {sanitizeFieldName f}: {t}"
-                    else
-                        $"    {f}: {t}")
+                resolveFieldNames fields
+                |> List.map (fun (fname, wire, t) ->
+                    // a key weir cannot spell as a field name rides the
+                    // wire attribute over a sanitized identifier
+                    // [D:infer-wire-sanitize]
+                    match wire with
+                    | Some k -> $"    [<Wire \"{k}\">]\n    {fname}: {t}"
+                    | None -> $"    {fname}: {t}")
                 |> String.concat "\n"
 
             $"type {name} = {{\n{body}\n}}")

@@ -1913,6 +1913,116 @@ let boundaryTests =
                   "left of the block scalar's content indentation"
                   "left-of-content line named"
           }
+          test "zero-indent block sequences read: kubectl's same-column form, nested; malformed still errors [D:yaml-seq]" {
+              let docOf lines' =
+                  match Weir.Yaml.parseDocs (lines' |> List.mapi (fun i l -> i + 1, l)) with
+                  | Ok [ d ] -> d
+                  | other -> failtest $"parse: {other}"
+
+              // a valueless mapping key whose block sequence sits at the
+              // SAME column (kubectl's zero-indent form): the sequence IS
+              // the value, with the compact `- key: v` first entry
+              match docOf [ "items:"; "- apiVersion: v1"; "  kind: Pod" ] with
+              | Weir.Yaml.NMap([ ("items", Weir.Yaml.NSeq([ Weir.Yaml.NMap(fields, _) ], _)) ], _) ->
+                  Expect.equal
+                      (fields |> List.map fst)
+                      [ "apiVersion"; "kind" ]
+                      "the same-column seq is items' value; the compact dash entry parses"
+              | other -> failtest $"zero-indent seq did not become items' value: {other}"
+
+              // both indent styles read to the SAME node — the read side
+              // accepts kubectl's flush form and the classic indented form
+              Expect.equal
+                  (docOf [ "items:"; "- a: 1"; "- a: 2" ])
+                  (docOf [ "items:"; "  - a: 1"; "  - a: 2" ])
+                  "flush and indented block sequences read equal"
+
+              // nested: a seq item's map contains its OWN same-column seq
+              match docOf [ "items:"; "- metadata:"; "    ownerReferences:"; "    - apiVersion: apps/v1"; "      kind: ReplicaSet" ] with
+              | Weir.Yaml.NMap([ ("items",
+                                  Weir.Yaml.NSeq([ Weir.Yaml.NMap([ ("metadata",
+                                                                     Weir.Yaml.NMap([ ("ownerReferences", Weir.Yaml.NSeq([ Weir.Yaml.NMap(inner, _) ], _)) ], _)) ], _) ], _)) ], _) ->
+                  Expect.equal
+                      (inner |> List.map fst)
+                      [ "apiVersion"; "kind" ]
+                      "a same-column ownerReferences seq nested under metadata reads"
+              | other -> failtest $"nested zero-indent seq failed: {other}"
+
+              // a zero-indent seq followed by a SIBLING mapping key: the
+              // sequence's extent stops at the sibling
+              match docOf [ "items:"; "- a: 1"; "kind: List" ] with
+              | Weir.Yaml.NMap([ ("items", Weir.Yaml.NSeq(_, _)); ("kind", Weir.Yaml.NScalar("List", _, _)) ], _) -> ()
+              | other -> failtest $"sibling key after a zero-indent seq: {other}"
+
+              // the regression: a GENUINE inline-value + nested-block (the
+              // nested block is MORE indented, not a same-column seq) STILL
+              // errors — the fix must not swallow this
+              match Weir.Yaml.parseDocs ([ "k: value"; "  nested: x" ] |> List.mapi (fun i l -> i + 1, l)) with
+              | Error e -> Expect.stringContains e "has both an inline value and a nested block" "malformed inline+block still fires"
+              | Ok d -> failtest $"malformed input must error, got {d}"
+          }
+          test "empty flow collections read: {} and [] as values (map + seq position); populated flow still rejects [D:yaml-empty-flow]" {
+              let docOf lines' =
+                  match Weir.Yaml.parseDocs (lines' |> List.mapi (fun i l -> i + 1, l)) with
+                  | Ok [ d ] -> d
+                  | other -> failtest $"parse: {other}"
+
+              // `{}` → the empty mapping, `[]` → the empty sequence, as a
+              // MAP value (inner whitespace tolerated)
+              match docOf [ "resources: {}"; "args: []"; "sc: { }" ] with
+              | Weir.Yaml.NMap([ ("resources", Weir.Yaml.NMap([], _))
+                                 ("args", Weir.Yaml.NSeq([], _))
+                                 ("sc", Weir.Yaml.NMap([], _)) ], _) -> ()
+              | other -> failtest $"empty flow as map values: {other}"
+
+              // and as a SEQUENCE item
+              match docOf [ "- {}"; "- []" ] with
+              | Weir.Yaml.NSeq([ Weir.Yaml.NMap([], _); Weir.Yaml.NSeq([], _) ], _) -> ()
+              | other -> failtest $"empty flow as seq items: {other}"
+
+              // the NARROW exception: POPULATED flow STILL rejects with the
+              // block-only teaching — the ambiguity that justifies it fires
+              // at one-or-more elements, in both map and seq position
+              let errOf lines' =
+                  match Weir.Yaml.parseDocs (lines' |> List.mapi (fun i l -> i + 1, l)) with
+                  | Error e -> e
+                  | Ok d -> failtest $"expected an error, got {d}"
+
+              Expect.stringContains (errOf [ "m: {a: 1}" ]) "flow style is outside the yaml subset" "populated flow map rejects"
+              Expect.stringContains (errOf [ "s: [1, 2]" ]) "flow style is outside the yaml subset" "populated flow seq rejects"
+              Expect.stringContains (errOf [ "- {a: 1}" ]) "flow style is outside the yaml subset" "populated flow in seq item rejects"
+          }
+          test "#infer sanitizes non-identifier keys: [<Wire>] over a valid ident; clean keys stay bare; collisions dedupe [D:infer-wire-sanitize]" {
+              let inferStr (v: Value) =
+                  match v with
+                  | VStr s -> s
+                  | v -> failtest $"expected a string, got {formatValue v}"
+
+              // a k8s label object: hyphen/dot/slash keys weir cannot spell
+              // as field names ride [<Wire>] over a camelCased identifier;
+              // the already-legal key stays bare with NO attribute
+              let out =
+                  inferStr (run "Json.inferShape [\"{\\\"k8s-app\\\":\\\"a\\\",\\\"node.kubernetes.io/os\\\":\\\"b\\\",\\\"clean\\\":\\\"c\\\"}\"]")
+
+              Expect.stringContains out "[<Wire \"k8s-app\">]" "the dirty key carries its wire attribute"
+              Expect.stringContains out "k8sApp: string" "the sanitized identifier is a legal field name"
+              Expect.stringContains out "nodeKubernetesIoOs: string" "dots and slashes camelCase into one identifier"
+              Expect.stringContains out "clean: string" "an already-legal key stays a bare field"
+              Expect.isFalse (out.Contains "clean\">]") "a clean key carries NO wire attribute"
+
+              // a collision: `aB` (clean) reserves its name; the two dirty
+              // keys that would also land on `aB` take `aB2`/`aB3`
+              let col = inferStr (run "Json.inferShape [\"{\\\"a-b\\\":\\\"1\\\",\\\"a.b\\\":\\\"2\\\",\\\"aB\\\":\\\"3\\\"}\"]")
+
+              Expect.stringContains col "aB2: string" "the first colliding sanitized key disambiguates"
+              Expect.stringContains col "aB3: string" "the second colliding sanitized key disambiguates"
+              Expect.stringContains col "\n    aB: string" "the clean key keeps its bare name"
+
+              // the historical reserved-word landings are unchanged
+              let ty = inferStr (run "Json.inferShape [\"{\\\"type\\\":\\\"x\\\"}\"]")
+              Expect.stringContains ty "[<Wire \"type\">]" "a reserved word still rides Wire"
+              Expect.stringContains ty "kind: string" "type still lands on 'kind'"
+          }
           test "block scalars render: the form follows the value, both directions [D:block-scalars]" {
               // no policy exists: | MEANS ends-with-one-newline, |- means
               // ends-with-none — read and write agree by construction
@@ -2727,7 +2837,61 @@ let completionTests =
 
               suggest "/etc/hos" 0 |> ignore
               suggest "cd" 0 |> ignore
+              suggest "File.read ./e" 10 |> ignore
               Expect.isFalse (System.IO.File.Exists marker) "completion must not execute"
+          }
+          test "expression-position path completion quotes; command-argv stays bare [D:repl-path-quote]" {
+              skipOnWindows ()
+              // a bare filesystem path is not a valid weir expression, so a
+              // path completed as a FUNCTION argument must come back quoted —
+              // otherwise the line the editor builds fails to parse on Enter.
+              let d =
+                  System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-pq-{System.Guid.NewGuid():N}")
+
+              System.IO.Directory.CreateDirectory(System.IO.Path.Combine(d, "sub"))
+              |> ignore
+
+              System.IO.File.WriteAllText(System.IO.Path.Combine(d, "note.txt"), "x")
+              let dir = d.Replace("\\", "/")
+
+              try
+                  let ask (line: string) =
+                      suggest line (Weir.Complete.wordStartAt line line.Length)
+
+                  // (a) after a function head the completion is QUOTED and the
+                  // line it produces PARSES — a bare path would not
+                  let fnLine = "File.read " + dir + "/n"
+                  let fnGot = ask fnLine
+                  Expect.equal (List.length fnGot) 1 "one match"
+                  Expect.isTrue (fnGot.Head.StartsWith "\"") "the expression-slot path is quoted"
+                  Expect.isTrue (fnGot.Head.EndsWith "note.txt\"") "…around the real entry"
+
+                  // the produced line parses (a bare path would be a parse error)
+                  let ws = Weir.Complete.wordStartAt fnLine fnLine.Length
+                  let produced = fnLine.Substring(0, ws) + fnGot.Head
+
+                  match Weir.Parser.parseExpr produced with
+                  | Ok _ -> ()
+                  | Error e -> failtestf "the completed line must parse: %s -> %s" produced e
+
+                  // (b) command-argv stays BARE — cat takes an unquoted argv path
+                  let argvGot = ask ("cat " + dir + "/n")
+                  Expect.equal (List.length argvGot) 1 "one match"
+                  Expect.isFalse (argvGot.Head.StartsWith "\"") "an argv path is never quoted"
+                  Expect.isTrue (argvGot.Head.EndsWith "note.txt") "the bare entry"
+
+                  // (c) completing INSIDE an already-open quote does NOT double
+                  let inQuote = ask ("File.read \"" + dir + "/n")
+                  Expect.equal (List.length inQuote) 1 "one match"
+                  Expect.isFalse (inQuote.Head.StartsWith "\"") "no second opening quote inside the string"
+                  Expect.isTrue (inQuote.Head.EndsWith "note.txt") "the entry lands inside the quotes"
+
+                  // (d) a DIRECTORY keeps its trailing '/' — inside the quotes
+                  let dirGot = ask ("File.read " + dir + "/s")
+                  Expect.equal (List.length dirGot) 1 "one match"
+                  Expect.equal dirGot.Head ("\"" + dir + "/sub/\"") "trailing slash survives inside the quotes"
+              finally
+                  System.IO.Directory.Delete(d, true)
           }
           test "command argv completes paths, never fields — and an unbound scrutinee offers NOTHING [D:complete-argv]" {
               let sug (t: string) =
@@ -5394,6 +5558,86 @@ let replEchoTests =
 
               let s200 = String.replicate 200 "x"
               Expect.equal (Weir.Eval.formatValue (VStr s200)) ("\"" + s200 + "\"") "show never clips strings"
+          }
+          test "a let-bound truncated seq<string> echo carries the SAME unforced teaching as the bare echo [D:echo-teaching-consistency]" {
+              // an unforced, over-cap seq<string> — the command-backed
+              // `let` bind's echo shape, synthesized deterministically so
+              // no PATH executable is asserted
+              let unforced = VSeq(Seq.init 12 (fun i -> VStr(string i)))
+
+              // the bare-expression echo's teaching (echoLines' hint)
+              let _, bareHint = Weir.Eval.echoLines (Some 10) unforced |> Option.get
+              Expect.equal bareHint (Some(Weir.Eval.unforcedHint 10)) "the bare echo teaches the unforced clip"
+
+              // the let-echo meta line carries that SAME tail — the fix's
+              // invariant: a clipped `let` bind never looks like it
+              // silently dropped data
+              let meta = Weir.Repl.letEchoMeta "xs" (TSeq TStr) bareHint
+
+              Expect.equal
+                  meta
+                  $"xs : seq<string>{Weir.Eval.echoTail bareHint}"
+                  "the let meta ends in the unforced teaching, same tail the bare echo shows"
+
+              Expect.stringContains meta "first 10 of an unforced seq" "the teaching is visible in the let meta"
+          }
+          test "a forced-seq let echo shows NO teaching and all elements (unchanged) [D:echo-rule]" {
+              let forced = VSeq([ for i in 1..12 -> VStr(string i) ] :> seq<Weir.Eval.Value>)
+
+              // forced: echoLines returns every line and NO hint
+              let lines, hint = Weir.Eval.echoLines (Some 10) forced |> Option.get
+              Expect.equal (List.length lines) 12 "all twelve elements, the cap never clips a forced seq"
+              Expect.equal hint None "forced carries no teaching"
+
+              // the let meta then has an EMPTY tail — no dangling teaching
+              let meta = Weir.Repl.letEchoMeta "xs" (TSeq TStr) hint
+              Expect.equal meta "xs : seq<string>" "no teaching, no trailing parenthetical"
+          }
+          test "a failing #infer drafted type surfaces line:col + an offending-line snippet [D:infer-diagnostic]" {
+              // a deliberately un-checkable drafted type: a leading-digit
+              // field name weir rejects — number the drafted lines and
+              // check the physical statement, then render its diagnostic
+              let drafted = [ "type PodsJson = {"; "    1a: int"; "}" ]
+
+              let numbered =
+                  drafted
+                  |> List.mapi (fun i l -> i + 1, l)
+                  |> List.filter (fun (_, raw) -> Weir.Script.classifyLine raw <> Weir.Script.LineKind.CommentOnly)
+                  |> List.map (fun (n, raw) -> n, Weir.Script.stripComment raw)
+
+              let lls =
+                  match Weir.Script.assemble numbered with
+                  | Ok lls -> lls
+                  | Error m -> failtest $"drafted did not assemble: {m}"
+
+              let ll = List.exactlyOne lls
+
+              let d =
+                  match
+                      Weir.Script.checkStatement
+                          false
+                          None
+                          Weir.Script.resolver
+                          Weir.Script.scriptOnlyImport
+                          Weir.Builtins.typeEnvStrict
+                          ll
+                  with
+                  | Error d -> d
+                  | Ok _ -> failtest "expected the drafted type to FAIL the check"
+
+              let rendered = Weir.Script.stripAnsi (Weir.Repl.formatDraftedDiag drafted d)
+
+              // the offending drafted line is the second physical line
+              Expect.equal d.PhysLine 2 "the error points at the drafted field line, not the header"
+              Expect.stringContains rendered "at line 2, col " "line:col is surfaced"
+              Expect.stringContains rendered "1a: int" "the offending drafted line is shown as a snippet"
+              Expect.stringContains rendered "^" "a caret marks the column"
+
+              // the caret sits UNDER the reported column (snippet indented by 2)
+              let snippetLines = rendered.Split('\n')
+              let caretLine = snippetLines |> Array.find (fun l -> l.Trim() |> Seq.forall (fun c -> c = '^'))
+              let caretCol = caretLine.IndexOf '^'
+              Expect.equal caretCol (2 + d.PhysCol - 1) "the caret lands under the error column in the 2-space-indented snippet"
           } ]
 
 let replColorTests =

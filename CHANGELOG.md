@@ -1,5 +1,80 @@
 # Changelog
 
+## v0.0.39
+
+### Added
+
+- **REPL path completion quotes in an expression, stays bare as a
+  command argument.** Tab-completing a filesystem path after a function
+  head — `File.read ./weir-pods.yaml<TAB>` — used to insert the bare
+  path (`File.read ./weir-pods.yaml`), which then failed to parse on
+  Enter: a bare path is not a valid weir expression. The completion is
+  now a string literal — `File.read "./weir-pods.yaml"` — which parses.
+  The distinction is the slot's: a COMMAND-argv path (`cat ./x`,
+  `ls ./dir`) stays BARE, the way argv wants it. If you already opened
+  the quote (`File.read "./x<TAB>`), the completion lands inside it —
+  no second quote is added; a directory keeps its trailing `/` within
+  the quotes. Completion still runs nothing — a directory read at most.
+
+### Fixed
+
+- **A truncated `let`-bound seq echo now shows the same unforced
+  teaching as a bare echo — visibly.** Echoing a `seq<string>` value
+  showed a footer `: seq<string> (first 100 of an unforced seq —
+  Seq.force to echo everything)` at the BOTTOM, where you'd see it. But
+  `let xs = <over-100-line command>` printed that footer FIRST and the
+  100 lines after it, so the teaching scrolled off the top and the bind
+  looked like it had silently dropped data — and the footer rendered a
+  dangling ` =` before the parenthetical. The `let` echo now prints the
+  lines (or table) first and the `name : type (hint)` footer last,
+  identical in shape and ordering to the bare-expression echo. A forced
+  seq still echoes whole with no teaching; the piped/`-e` surface is
+  unchanged.
+- **A failing `#infer` drafted type now points at the bad field.** When
+  a type `#infer` drafts from a sample fails to check for any reason,
+  the message was opaque — `#infer: a drafted type did not check:
+  Expecting: ':'` with no location and no snippet. It now reports the
+  `line:col` within the drafted text and prints the offending drafted
+  line with a caret under the column (the same rendering weir uses for
+  ordinary parse and type errors), so you can see which generated field
+  is wrong.
+
+- **The owned YAML subset now reads kubectl's zero-indent block
+  sequences.** A block sequence written at the SAME column as its parent
+  mapping key — the form `kubectl get -o yaml` (and most k8s tooling)
+  emits, `items:` / `- apiVersion: v1` flush-left under the key — failed
+  with `'- apiVersion' has both an inline value and a nested block`: the
+  parser only consumed more-indented lines as a valueless key's value,
+  so a same-column sequence was reparsed as sibling mapping keys. A
+  valueless key followed by a `- ` sequence at its own indent now takes
+  that sequence as its value, top-level and nested (a sequence item's
+  map containing its own same-column sequence, e.g. `metadata:` →
+  `ownerReferences:`). The classic indented-dash style still reads, and
+  the two styles read to the same value. A genuinely malformed inline
+  value plus a more-indented nested block still errors.
+- **Empty flow collections `{}` and `[]` are now read as values.** Real
+  kubectl output is full of `resources: {}`, `securityContext: {}`,
+  `emptyDir: {}`, `lastState: {}` (and occasionally `[]`); the block-only
+  subset rejected all flow style, so a real List would not `from yaml`.
+  The two EMPTY forms (inner whitespace tolerated) are now the narrow
+  exception — unambiguous at zero elements — in both map-value and
+  sequence-item position: `{}` reads the empty mapping, `[]` the empty
+  sequence, and both render back so they round-trip. POPULATED flow
+  (`{a: 1}`, `[1, 2]`) still rejects with the block-only teaching. An
+  opaque `Yaml` field now reads structure whole, so `#infer`'s empty-`{}`
+  fallback is readable.
+- **`#infer` sanitizes keys weir cannot spell as field names.** JSON/YAML
+  keys emitted verbatim as field names — k8s labels like `k8s-app`,
+  `pod-template-hash`, `node.kubernetes.io/os`, `app.kubernetes.io/instance` —
+  drafted a `type` that would not parse (`Expecting: ':'`). A key that is
+  not a legal, non-reserved weir identifier now camelCases into a valid
+  identifier (`k8s-app` → `k8sApp`, `node.kubernetes.io/os` →
+  `nodeKubernetesIoOs`) and rides a `[<Wire "original-key">]` attribute
+  the readers honor; a clean key stays bare with no attribute; two keys
+  colliding on one identifier disambiguate deterministically
+  (`aB`/`aB2`/`aB3`). The drafted type now CHECKS and READS the real
+  data, JSON and YAML alike.
+
 ## v0.0.38
 
 ### Fixed
