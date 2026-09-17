@@ -38,6 +38,28 @@
 
 ### Fixed
 
+- **REPL Tab completes record fields through a pipe.** A record piped
+  into `_.` or a lambda param — `x |> from yaml T |> _.`, `r |> _.`,
+  `x |> … |> (fun row -> row.` — offered no fields (or, for the lambda,
+  every declared record's fields, unioned). The completer only unwrapped
+  a `seq` element and gave up on a scalar record, but `from yaml T`
+  yields one document, not a sequence. It now types the value flowing
+  into the position — a `seq` still unwraps to its element, a scalar
+  record surfaces its own fields — so `#infer`'s payoff (a typed record
+  → field completion) lands in the pipe positions people actually use.
+- **Tab on an empty prompt no longer dumps the universe.** A fresh Tab
+  used to return over a thousand candidates — every PATH executable plus
+  every module, keyword and constructor, sorted — because the empty
+  prefix matched everything. It now offers the session directives,
+  `#help` first, so a bare Tab teaches the REPL's affordances instead.
+  A prefix (`Fi`, `Wr`) filters as before, and a Tab in argument
+  position still lists the directory.
+- **Union-case constructors are no longer offered as statement heads.**
+  `WriteFile`, `Some`, `Get`, `Bearer` and the other constructors leaked
+  into head completion, but a constructor as a statement head is a
+  discarded value (a check error). They are subtracted from the head
+  pool while staying available in expression and argument positions,
+  where they are valid.
 - **`$<<<` heredocs now dedent byte-identically to plain `<<<`.** The
   interpolated form over-stripped leading whitespace, flattening
   deeper-indented lines to column 0, while `<<<` correctly preserved
