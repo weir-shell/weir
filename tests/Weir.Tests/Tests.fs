@@ -1913,6 +1913,116 @@ let boundaryTests =
                   "left of the block scalar's content indentation"
                   "left-of-content line named"
           }
+          test "zero-indent block sequences read: kubectl's same-column form, nested; malformed still errors [D:yaml-seq]" {
+              let docOf lines' =
+                  match Weir.Yaml.parseDocs (lines' |> List.mapi (fun i l -> i + 1, l)) with
+                  | Ok [ d ] -> d
+                  | other -> failtest $"parse: {other}"
+
+              // a valueless mapping key whose block sequence sits at the
+              // SAME column (kubectl's zero-indent form): the sequence IS
+              // the value, with the compact `- key: v` first entry
+              match docOf [ "items:"; "- apiVersion: v1"; "  kind: Pod" ] with
+              | Weir.Yaml.NMap([ ("items", Weir.Yaml.NSeq([ Weir.Yaml.NMap(fields, _) ], _)) ], _) ->
+                  Expect.equal
+                      (fields |> List.map fst)
+                      [ "apiVersion"; "kind" ]
+                      "the same-column seq is items' value; the compact dash entry parses"
+              | other -> failtest $"zero-indent seq did not become items' value: {other}"
+
+              // both indent styles read to the SAME node — the read side
+              // accepts kubectl's flush form and the classic indented form
+              Expect.equal
+                  (docOf [ "items:"; "- a: 1"; "- a: 2" ])
+                  (docOf [ "items:"; "  - a: 1"; "  - a: 2" ])
+                  "flush and indented block sequences read equal"
+
+              // nested: a seq item's map contains its OWN same-column seq
+              match docOf [ "items:"; "- metadata:"; "    ownerReferences:"; "    - apiVersion: apps/v1"; "      kind: ReplicaSet" ] with
+              | Weir.Yaml.NMap([ ("items",
+                                  Weir.Yaml.NSeq([ Weir.Yaml.NMap([ ("metadata",
+                                                                     Weir.Yaml.NMap([ ("ownerReferences", Weir.Yaml.NSeq([ Weir.Yaml.NMap(inner, _) ], _)) ], _)) ], _) ], _)) ], _) ->
+                  Expect.equal
+                      (inner |> List.map fst)
+                      [ "apiVersion"; "kind" ]
+                      "a same-column ownerReferences seq nested under metadata reads"
+              | other -> failtest $"nested zero-indent seq failed: {other}"
+
+              // a zero-indent seq followed by a SIBLING mapping key: the
+              // sequence's extent stops at the sibling
+              match docOf [ "items:"; "- a: 1"; "kind: List" ] with
+              | Weir.Yaml.NMap([ ("items", Weir.Yaml.NSeq(_, _)); ("kind", Weir.Yaml.NScalar("List", _, _)) ], _) -> ()
+              | other -> failtest $"sibling key after a zero-indent seq: {other}"
+
+              // the regression: a GENUINE inline-value + nested-block (the
+              // nested block is MORE indented, not a same-column seq) STILL
+              // errors — the fix must not swallow this
+              match Weir.Yaml.parseDocs ([ "k: value"; "  nested: x" ] |> List.mapi (fun i l -> i + 1, l)) with
+              | Error e -> Expect.stringContains e "has both an inline value and a nested block" "malformed inline+block still fires"
+              | Ok d -> failtest $"malformed input must error, got {d}"
+          }
+          test "empty flow collections read: {} and [] as values (map + seq position); populated flow still rejects [D:yaml-empty-flow]" {
+              let docOf lines' =
+                  match Weir.Yaml.parseDocs (lines' |> List.mapi (fun i l -> i + 1, l)) with
+                  | Ok [ d ] -> d
+                  | other -> failtest $"parse: {other}"
+
+              // `{}` → the empty mapping, `[]` → the empty sequence, as a
+              // MAP value (inner whitespace tolerated)
+              match docOf [ "resources: {}"; "args: []"; "sc: { }" ] with
+              | Weir.Yaml.NMap([ ("resources", Weir.Yaml.NMap([], _))
+                                 ("args", Weir.Yaml.NSeq([], _))
+                                 ("sc", Weir.Yaml.NMap([], _)) ], _) -> ()
+              | other -> failtest $"empty flow as map values: {other}"
+
+              // and as a SEQUENCE item
+              match docOf [ "- {}"; "- []" ] with
+              | Weir.Yaml.NSeq([ Weir.Yaml.NMap([], _); Weir.Yaml.NSeq([], _) ], _) -> ()
+              | other -> failtest $"empty flow as seq items: {other}"
+
+              // the NARROW exception: POPULATED flow STILL rejects with the
+              // block-only teaching — the ambiguity that justifies it fires
+              // at one-or-more elements, in both map and seq position
+              let errOf lines' =
+                  match Weir.Yaml.parseDocs (lines' |> List.mapi (fun i l -> i + 1, l)) with
+                  | Error e -> e
+                  | Ok d -> failtest $"expected an error, got {d}"
+
+              Expect.stringContains (errOf [ "m: {a: 1}" ]) "flow style is outside the yaml subset" "populated flow map rejects"
+              Expect.stringContains (errOf [ "s: [1, 2]" ]) "flow style is outside the yaml subset" "populated flow seq rejects"
+              Expect.stringContains (errOf [ "- {a: 1}" ]) "flow style is outside the yaml subset" "populated flow in seq item rejects"
+          }
+          test "#infer sanitizes non-identifier keys: [<Wire>] over a valid ident; clean keys stay bare; collisions dedupe [D:infer-wire-sanitize]" {
+              let inferStr (v: Value) =
+                  match v with
+                  | VStr s -> s
+                  | v -> failtest $"expected a string, got {formatValue v}"
+
+              // a k8s label object: hyphen/dot/slash keys weir cannot spell
+              // as field names ride [<Wire>] over a camelCased identifier;
+              // the already-legal key stays bare with NO attribute
+              let out =
+                  inferStr (run "Json.inferShape [\"{\\\"k8s-app\\\":\\\"a\\\",\\\"node.kubernetes.io/os\\\":\\\"b\\\",\\\"clean\\\":\\\"c\\\"}\"]")
+
+              Expect.stringContains out "[<Wire \"k8s-app\">]" "the dirty key carries its wire attribute"
+              Expect.stringContains out "k8sApp: string" "the sanitized identifier is a legal field name"
+              Expect.stringContains out "nodeKubernetesIoOs: string" "dots and slashes camelCase into one identifier"
+              Expect.stringContains out "clean: string" "an already-legal key stays a bare field"
+              Expect.isFalse (out.Contains "clean\">]") "a clean key carries NO wire attribute"
+
+              // a collision: `aB` (clean) reserves its name; the two dirty
+              // keys that would also land on `aB` take `aB2`/`aB3`
+              let col = inferStr (run "Json.inferShape [\"{\\\"a-b\\\":\\\"1\\\",\\\"a.b\\\":\\\"2\\\",\\\"aB\\\":\\\"3\\\"}\"]")
+
+              Expect.stringContains col "aB2: string" "the first colliding sanitized key disambiguates"
+              Expect.stringContains col "aB3: string" "the second colliding sanitized key disambiguates"
+              Expect.stringContains col "\n    aB: string" "the clean key keeps its bare name"
+
+              // the historical reserved-word landings are unchanged
+              let ty = inferStr (run "Json.inferShape [\"{\\\"type\\\":\\\"x\\\"}\"]")
+              Expect.stringContains ty "[<Wire \"type\">]" "a reserved word still rides Wire"
+              Expect.stringContains ty "kind: string" "type still lands on 'kind'"
+          }
           test "block scalars render: the form follows the value, both directions [D:block-scalars]" {
               // no policy exists: | MEANS ends-with-one-newline, |- means
               // ends-with-none — read and write agree by construction

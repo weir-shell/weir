@@ -37,6 +37,43 @@
   line with a caret under the column (the same rendering weir uses for
   ordinary parse and type errors), so you can see which generated field
   is wrong.
+### Fixed
+
+- **The owned YAML subset now reads kubectl's zero-indent block
+  sequences.** A block sequence written at the SAME column as its parent
+  mapping key — the form `kubectl get -o yaml` (and most k8s tooling)
+  emits, `items:` / `- apiVersion: v1` flush-left under the key — failed
+  with `'- apiVersion' has both an inline value and a nested block`: the
+  parser only consumed more-indented lines as a valueless key's value,
+  so a same-column sequence was reparsed as sibling mapping keys. A
+  valueless key followed by a `- ` sequence at its own indent now takes
+  that sequence as its value, top-level and nested (a sequence item's
+  map containing its own same-column sequence, e.g. `metadata:` →
+  `ownerReferences:`). The classic indented-dash style still reads, and
+  the two styles read to the same value. A genuinely malformed inline
+  value plus a more-indented nested block still errors.
+- **Empty flow collections `{}` and `[]` are now read as values.** Real
+  kubectl output is full of `resources: {}`, `securityContext: {}`,
+  `emptyDir: {}`, `lastState: {}` (and occasionally `[]`); the block-only
+  subset rejected all flow style, so a real List would not `from yaml`.
+  The two EMPTY forms (inner whitespace tolerated) are now the narrow
+  exception — unambiguous at zero elements — in both map-value and
+  sequence-item position: `{}` reads the empty mapping, `[]` the empty
+  sequence, and both render back so they round-trip. POPULATED flow
+  (`{a: 1}`, `[1, 2]`) still rejects with the block-only teaching. An
+  opaque `Yaml` field now reads structure whole, so `#infer`'s empty-`{}`
+  fallback is readable.
+- **`#infer` sanitizes keys weir cannot spell as field names.** JSON/YAML
+  keys emitted verbatim as field names — k8s labels like `k8s-app`,
+  `pod-template-hash`, `node.kubernetes.io/os`, `app.kubernetes.io/instance` —
+  drafted a `type` that would not parse (`Expecting: ':'`). A key that is
+  not a legal, non-reserved weir identifier now camelCases into a valid
+  identifier (`k8s-app` → `k8sApp`, `node.kubernetes.io/os` →
+  `nodeKubernetesIoOs`) and rides a `[<Wire "original-key">]` attribute
+  the readers honor; a clean key stays bare with no attribute; two keys
+  colliding on one identifier disambiguate deterministically
+  (`aB`/`aB2`/`aB3`). The drafted type now CHECKS and READS the real
+  data, JSON and YAML alike.
 
 ## v0.0.38
 

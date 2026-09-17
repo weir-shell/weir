@@ -5521,6 +5521,176 @@ printf 'type H = { host: string }\nlet hs = ["- host: a"; "- host: b"] |> from y
 out=$($BIN "$ydir/seqdoc.weir")
 expect "from yaml seq<T> reads a top-level sequence document" "a
 b" "$out"
+
+# [D:yaml-seq]/[D:yaml-empty-flow] zero-indent block sequences +
+# empty flow collections — kubectl's form: a block sequence at the SAME
+# column as its parent mapping key, plus `{}`/`[]` empty flow values
+# (resources/securityContext/emptyDir/lastState). A real
+# `kubectl get -o yaml` List (nested zero-indent seqs throughout:
+# items/ownerReferences/containers/args/env/ports/volumeMounts/volumes/
+# tolerations/conditions/containerStatuses, compact `- key: v` first
+# entry, empty `{}` values) reads and infers clean end-to-end.
+cat > "$ydir/kubectl-list.yaml" <<'YEOF'
+apiVersion: v1
+items:
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: nginx-7d5c8f9b4-abcde
+    namespace: default
+    labels:
+      app: nginx
+      pod-template-hash: 7d5c8f9b4
+      app.kubernetes.io/instance: nginx
+    ownerReferences:
+    - apiVersion: apps/v1
+      kind: ReplicaSet
+      name: nginx-7d5c8f9b4
+      controller: true
+  spec:
+    containers:
+    - name: nginx
+      image: nginx:1.25
+      args:
+      - --debug
+      - --port=8080
+      env:
+      - name: TZ
+        value: UTC
+      ports:
+      - containerPort: 80
+        protocol: TCP
+      resources: {}
+      volumeMounts:
+      - name: config
+        mountPath: /etc/nginx
+      securityContext: {}
+    tolerations:
+    - key: node.kubernetes.io/not-ready
+      operator: Exists
+      effect: NoExecute
+      tolerationSeconds: 300
+    volumes:
+    - name: cache
+      emptyDir: {}
+  status:
+    phase: Running
+    conditions:
+    - type: Ready
+      status: "True"
+    containerStatuses:
+    - name: nginx
+      ready: true
+      restartCount: 0
+      lastState: {}
+kind: List
+YEOF
+cat > "$ydir/infer.weir" <<'WEOF'
+type Owner = { apiVersion: string; kind: string; name: string; controller: bool }
+type Meta = { name: string; namespace: string; labels: seq<string * string>; ownerReferences: seq<Owner> }
+type Env = { name: string; value: string }
+type Port = { containerPort: int; protocol: string }
+type Mount = { name: string; mountPath: string }
+type Container = { name: string; image: string; args: seq<string>; env: seq<Env>; ports: seq<Port>; resources: Yaml; volumeMounts: seq<Mount>; securityContext: Yaml }
+type Tol = { key: string; operator: string; effect: string; tolerationSeconds: int }
+type Volume = { name: string; emptyDir: Yaml }
+type Cond = { [<Wire "type">] kind: string; status: string }
+type CStat = { name: string; ready: bool; restartCount: int; lastState: Yaml }
+type Spec = { containers: seq<Container>; tolerations: seq<Tol>; volumes: seq<Volume> }
+type Status = { phase: string; conditions: seq<Cond>; containerStatuses: seq<CStat> }
+type Item = { apiVersion: string; kind: string; metadata: Meta; spec: Spec; status: Status }
+type List = { apiVersion: string; items: seq<Item>; kind: string }
+let text = File.read "kubectl-list.yaml" |> Seq.force
+let lst = text |> from yaml List
+print $"items: {show (Seq.length lst.items)} kind: {lst.kind}"
+let pod = lst.items |> Seq.head
+let c = pod.spec.containers |> Seq.head
+print $"container: {c.name} args: {show (Seq.length c.args)} port: {show (Seq.head c.ports).containerPort}"
+print $"owner: {(Seq.head pod.metadata.ownerReferences).kind}"
+print $"resources: {show c.resources}"
+WEOF
+out=$(cd "$ydir" && $BIN infer.weir)
+expect "a real kubectl List (zero-indent block seqs, nested) reads on the AOT binary" "items: 1 kind: List" "$out"
+expect "nested zero-indent seqs inside a seq item's map read (containers/args/ports)" "container: nginx args: 2 port: 80" "$out"
+expect "a same-indent ownerReferences seq under metadata reads" "owner: ReplicaSet" "$out"
+expect "an empty flow {} reads into a Yaml field as YMap []" "resources: YMap ([])" "$out"
+
+# the real file INFERS clean end-to-end: zero-indent seqs + empty flow
+# together, empty {} → opaque Yaml with a note (never a silent shape)
+cat > "$ydir/inferdecl.weir" <<'WEOF'
+let text = File.read "kubectl-list.yaml" |> Seq.force
+print (Yaml.inferShape text)
+WEOF
+out=$(cd "$ydir" && $BIN inferdecl.weir)
+echo "$out" | grep -qF "resources: Yaml" || fail "empty {} must infer as opaque Yaml: $out"
+echo "$out" | grep -qF "an empty mapping under 'Resources'" || fail "empty {} must print a note: $out"
+echo "$out" | grep -qi "not valid YAML" && fail "the real kubectl List must infer clean: $out" || true
+# the k8s label keys weir cannot spell as fields ride [<Wire>] over a
+# sanitized identifier [D:infer-wire-sanitize] — the draft must CHECK
+echo "$out" | grep -qF '[<Wire "pod-template-hash">]' || fail "a dirty label key must draft a Wire attr: $out"
+echo "$out" | grep -qF 'podTemplateHash' || fail "the sanitized field name must appear: $out"
+echo "$out" | grep -qF 'k8s-app: string' && fail "a non-identifier key must NOT appear bare as a field: $out" || true
+
+# key sanitization end-to-end [D:infer-wire-sanitize]: infer a labels
+# object with hyphen/dot/slash keys, then the DRAFTED type must both
+# CHECK and READ the real data through from yaml (Wire honored on read)
+cat > "$ydir/labels.yaml" <<'YEOF'
+labels:
+  k8s-app: web
+  node.kubernetes.io/os: linux
+  app.kubernetes.io/instance: nginx
+  clean: yes
+YEOF
+cat > "$ydir/draft.weir" <<'WEOF'
+let text = File.read "labels.yaml" |> Seq.force
+print (Yaml.inferShape text)
+WEOF
+draft=$(cd "$ydir" && $BIN draft.weir)
+# assemble a program from the drafted decls + a read that touches each field
+{
+  echo "$draft" | grep -v '^// note'
+  echo 'let text = File.read "labels.yaml" |> Seq.force'
+  echo 'let r = text |> from yaml Root'
+  echo 'print $"{r.labels.k8sApp} {r.labels.nodeKubernetesIoOs} {r.labels.appKubernetesIoInstance} {r.labels.clean}"'
+} > "$ydir/roundtrip.weir"
+out=$(cd "$ydir" && $BIN roundtrip.weir 2>&1)
+expect "the inferred type with [<Wire>] on dirty keys CHECKS and READS real data" "web linux nginx yes" "$out"
+
+# empty flow forms, both positions: {} → empty mapping, [] → empty seq
+printf 'type R = { m: Yaml; s: seq<string> }\nlet r = ["m: {}"; "s: []"] |> from yaml R\nprint $"{show r.m} {show (Seq.length r.s)}"\n' > "$ydir/ef.weir"
+out=$($BIN "$ydir/ef.weir")
+expect "empty flow as map values: {} → YMap [], [] → empty seq" "YMap ([]) 0" "$out"
+printf 'let d = ["- {}"; "- []"] |> Yaml.parse\nprint (show d)\n' > "$ydir/efseq.weir"
+out=$($BIN "$ydir/efseq.weir")
+expect "empty flow as sequence items parses ({} → YMap [], [] → YSeq [])" "YSeq ([YMap ([]); YSeq ([])])" "$out"
+
+# empty flow ROUNDTRIPS: {} renders back as {}, reads back as YMap []
+printf 'type R = { m: Yaml }\nlet r = ["m: {}"] |> from yaml R\nlet back = r |> to yaml\nback |> Seq.iter print\nlet r2 = back |> from yaml R\nprint (show r2.m)\n' > "$ydir/efrt.weir"
+out=$($BIN "$ydir/efrt.weir")
+expect "an empty {} round-trips: renders {} and reads back YMap []" 'm: {}
+YMap ([])' "$out"
+
+# POPULATED flow STAYS rejected — the ambiguity that justifies block-only
+# fires at one-or-more elements; only the empty forms are the exception
+printf 'type R = { m: Yaml }\nlet r = ["m: {a: 1}"] |> from yaml R\nprint (show r.m)\n' > "$ydir/pop.weir"
+out=$($BIN "$ydir/pop.weir" 2>&1 || true)
+expect "populated flow {a: 1} still rejects with the subset teaching" "flow style is outside the yaml subset" "$out"
+printf 'type R = { s: Yaml }\nlet r = ["s: [1, 2]"] |> from yaml R\nprint (show r.s)\n' > "$ydir/pop2.weir"
+out=$($BIN "$ydir/pop2.weir" 2>&1 || true)
+expect "populated flow [1, 2] still rejects with the subset teaching" "flow style is outside the yaml subset" "$out"
+
+# the two block-sequence styles are read-equal: same map value whether
+# the seq sits at the parent key's column (kubectl) or indented under it
+printf 'type P = { name: string }\ntype R = { items: seq<P> }\nlet flat = ["items:"; "- name: a"; "- name: b"] |> from yaml R\nlet nest = ["items:"; "  - name: a"; "  - name: b"] |> from yaml R\nprint $"{show (Seq.length flat.items)} {show (Seq.length nest.items)}"\n' > "$ydir/styles.weir"
+out=$($BIN "$ydir/styles.weir")
+expect "both block-sequence indent styles read to the same value" "2 2" "$out"
+
+# a GENUINELY malformed inline-value-plus-nested-block still errors: the
+# nested block is more-indented (not a same-indent sequence)
+printf 'type D = { k: string }\nlet d = ["k: value"; "  nested: x"] |> from yaml D\nprint d.k\n' > "$ydir/mal.weir"
+out=$($BIN "$ydir/mal.weir" 2>&1 || true)
+expect "a real inline-value + nested-block still errors (not a zero-indent seq)" "'k' has both an inline value and a nested block" "$out"
+echo "e2e ok: yaml zero-indent block sequences + empty flow {}/[] — kubectl List reads/infers clean end-to-end, both styles read-equal, empty flow round-trips, populated flow + malformed still error"
 rm -rf "$ydir"
 
 # ---- the yaml district [D:yaml-district] ----------------------------------

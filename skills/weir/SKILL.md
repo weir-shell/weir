@@ -1359,7 +1359,12 @@ type Bad = C of int
   ONE document (a mapping) -> `T`; `from yaml seq<T>` reads one
   top-level SEQUENCE document -> `seq<T>` (nested records, seqs,
   `seq<string * string>` for labels, `Option`; bool is EXACTLY
-  true/false; anchors/flow rejected). `from yaml stream T` reads a
+  true/false; anchors rejected). A block sequence reads in BOTH indent
+  styles — indented under its key OR at the SAME column as its key
+  (kubectl's `items:` / `- apiVersion: v1` flush-left form). Only the
+  EMPTY flow collections `{}` and `[]` are read (into an empty
+  mapping/seq, or an opaque `Yaml` field) — POPULATED flow (`{a: 1}`,
+  `[1, 2]`) still rejects. `from yaml stream T` reads a
   `---` STREAM — N documents, EACH as T -> `seq<T>` [D:wire-unions];
   the heterogeneous bundle (a k8s apply file) is `from yaml stream
   KDoc` over a tagged union — stream is the cardinality, the union
