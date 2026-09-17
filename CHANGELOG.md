@@ -15,6 +15,7 @@
   the quote (`File.read "./x<TAB>`), the completion lands inside it —
   no second quote is added; a directory keeps its trailing `/` within
   the quotes. Completion still runs nothing — a directory read at most.
+
 ### Fixed
 
 - **A truncated `let`-bound seq echo now shows the same unforced
@@ -37,7 +38,6 @@
   line with a caret under the column (the same rendering weir uses for
   ordinary parse and type errors), so you can see which generated field
   is wrong.
-### Fixed
 
 - **The owned YAML subset now reads kubectl's zero-indent block
   sequences.** A block sequence written at the SAME column as its parent
