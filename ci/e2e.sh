@@ -934,17 +934,18 @@ echo "e2e ok: #save DISTILLS a messy session to a checking .weir (dedup, drop it
 # when a DRAFTED type fails to check for ANY reason, the diagnostic must
 # name the line:col within the drafted text AND show the offending line
 # with a caret — the drafted text is weir's own synthesis, so the user
-# must see WHICH generated field is bad. A leading-digit JSON key drafts a
-# field weir rejects (the sibling agent owns the root-cause fix; this pins
-# the DIAGNOSTIC quality). The directive prints to stdout, so the piped
+# must see WHICH generated field is bad. A KEYWORD JSON key drafts a
+# field weir rejects (non-identifier keys are Wire-sanitized away now,
+# so a keyword is the remaining un-checkable class; this pins the
+# DIAGNOSTIC quality). The directive prints to stdout, so the piped
 # REPL surfaces it — no pty needed.
 idout=$(printf '%s\n%s\n%s\n' \
-  'let js = ["{\"1a\": 2}"]' \
+  'let js = ["{\"in\": 2}"]' \
   '#infer js from json as PodsJson' \
   '#quit' | $BIN 2>&1)
 echo "$idout" | grep -qF "a drafted type did not check at line 2, col " \
   || fail "#infer diagnostic lost its line:col: $idout"
-echo "$idout" | grep -qF "1a: int" || fail "#infer diagnostic lost the offending-line snippet: $idout"
+echo "$idout" | grep -qF "in: int" || fail "#infer diagnostic lost the offending-line snippet: $idout"
 echo "$idout" | grep -qF "^" || fail "#infer diagnostic lost the caret: $idout"
 echo "e2e ok: a failing #infer drafted type prints line:col + a caret'd snippet of the bad field"
 
