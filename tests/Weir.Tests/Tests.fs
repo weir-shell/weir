@@ -1422,6 +1422,31 @@ let boundaryTests =
                   | other -> failtest $"expected EYaml under the let, got {other}"
               | other -> failtest $"unexpected assembly: {other}"
           }
+          test "a command line ending in `yaml` is argv, not an armed district [D:yaml-district]" {
+              // the reported bug: `-o yaml`/`--format yaml` are everyday
+              // argv; the district arm must NOT fire for them, so the
+              // line assembles clean (no armed-district demand for a
+              // block below) and check == run at the ASSEMBLY boundary.
+              // Assert the assembly VERDICT (armed-error vs clean), never
+              // a PATH completion — these are command-shaped lines.
+              let assemblesClean line =
+                  match Weir.Script.assemble [ 1, line ] with
+                  | Ok [ ll ] -> Expect.equal ll.Text line $"'{line}' assembles as one plain command line, unarmed"
+                  | Ok other -> failtest $"'{line}': expected one logical line, got {other}"
+                  | Error e -> failtest $"'{line}' must not arm a district: {e}"
+
+              assemblesClean "echo -o yaml"
+              assemblesClean "kubectl get po -o yaml"
+              assemblesClean "docker x --format yaml"
+              assemblesClean "echo a b yaml"
+
+              // and the district STILL arms for the real forms: a bare
+              // `= yaml` with no block below is the armed-district error
+              // (proves the arm fires, the block demand included)
+              match Weir.Script.assemble [ 1, "let d = yaml" ] with
+              | Error e -> Expect.stringContains e "indented block" "a bare `= yaml` arms and demands its block"
+              | Ok other -> failtest $"expected the armed-district error, got {other}"
+          }
           test "Yaml.parse: the typeless read — structure whole, scalars self-type [D:yaml-nodes]" {
               expectValue
                   "[\"replicas: 3\"; \"name: web\"; \"live: true\"] |> Yaml.parse"
@@ -1483,6 +1508,24 @@ let boundaryTests =
               Expect.isTrue (Weir.Parser.isYamlMarkerPiece "let d = yaml schema=k8s") "schema= still arms"
               Expect.isFalse (Weir.Parser.isYamlMarkerPiece "run patch") "a command ending in patch stays a command"
               Expect.isFalse (Weir.Parser.isYamlMarkerPiece "xs |> to yaml patch") "to yaml never arms"
+          }
+          test "the marker arms TOKEN-PRECISELY: bare `yaml` or a `= yaml` RHS, never argv [D:yaml-district]" {
+              // arms: the two legitimate shapes
+              Expect.isTrue (Weir.Parser.isYamlMarkerPiece "yaml") "bare yaml arms (next-line form)"
+              Expect.isTrue (Weir.Parser.isYamlMarkerPiece "let d = yaml") "a let RHS arms"
+              Expect.isTrue (Weir.Parser.isYamlMarkerPiece "d = yaml") "an assignment RHS arms"
+              // does NOT arm: `yaml` preceded by argv — the everyday
+              // `-o yaml`/`--format yaml` ops lines, a trailing bare word
+              Expect.isFalse (Weir.Parser.isYamlMarkerPiece "echo -o yaml") "-o yaml is argv, not a marker"
+              Expect.isFalse (Weir.Parser.isYamlMarkerPiece "kubectl get po -o yaml") "kubectl -o yaml is a command"
+              Expect.isFalse (Weir.Parser.isYamlMarkerPiece "docker x --format yaml") "--format yaml is argv"
+              Expect.isFalse (Weir.Parser.isYamlMarkerPiece "echo a b yaml") "a trailing bare word after argv is a command"
+              // the to/from adapters are subsumed by the `= yaml` rule
+              Expect.isFalse (Weir.Parser.isYamlMarkerPiece "foo | to yaml") "to yaml never arms"
+              Expect.isFalse (Weir.Parser.isYamlMarkerPiece "data |> from yaml T") "from yaml never arms"
+              // `>= yaml`/`== yaml`: the token before yaml is `>=`/`==`, not `=`
+              Expect.isFalse (Weir.Parser.isYamlMarkerPiece "x >= yaml") ">= yaml does not arm"
+              Expect.isFalse (Weir.Parser.isYamlMarkerPiece "x == yaml") "== yaml does not arm"
           }
           test "YamlPatch is a built-in type name — undeclarable [D:yaml-nodes]" {
               match Weir.Check.checkDecl env (parseDecl "type YamlPatch = { x: int }") with
