@@ -1419,9 +1419,13 @@ type Bad = C of int
   singularised; empty-array/null/heterogeneous cases ride as `//`
   notes). The REPL's `#infer <source> from <json|jsonl|yaml> as <Name>`
   directive also INJECTS the drafted types into the session (so
-  `from json <Name>` and field completion light up); `#save` dumps a
-  session to a runnable script. Both are REPL scaffolding — see
-  docs/repl.md.
+  `from json <Name>` and field completion light up); `#save <path>`
+  DISTILLS a session to a runnable script — it keeps the `type` decls
+  and named `let` bindings (real multi-line source preserved, bare
+  aliases qualified), dedups a redeclared name to its last form, drops
+  the scratch echoes, and GUARANTEES the file `weir check`s clean
+  (an `it`-referencing binding is dropped with a note). Both are REPL
+  scaffolding — see docs/repl.md.
 
 ```weir
 let sample = ["{\"id\": 1, \"tags\": [\"a\"]}"]
