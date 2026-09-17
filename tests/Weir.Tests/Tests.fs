@@ -2731,7 +2731,7 @@ let completionTests =
               // replacement yields `#help` — never `##help` or `head`
               // the closed set is the one source Complete.sessionDirectives
               // — the '#'-slot and the empty-prompt head both read it
-              Expect.equal (suggest "#" 1) [ "echo"; "help"; "infer"; "quit"; "save" ] "the closed set"
+              Expect.equal (suggest "#" 1) [ "echo"; "find"; "help"; "infer"; "quit"; "save" ] "the closed set"
               Expect.equal (suggest "#he" 1) [ "help" ] "the prefix filters"
               Expect.equal (suggest "#q" 1) [ "quit" ] ""
               Expect.isFalse (List.contains "head" (suggest "#he" 1)) "the general pool stays out"
@@ -3148,7 +3148,7 @@ let completionTests =
               // `suggest "" 0` used to return 1130 (954 PATH execs + the
               // universe) via `StartsWith ""`. A fresh Tab now teaches the
               // REPL's affordances, `#help` first.
-              Expect.equal (suggest "" 0) [ "#help"; "#echo"; "#infer"; "#save"; "#quit" ] "the curated directive set"
+              Expect.equal (suggest "" 0) [ "#help"; "#find"; "#echo"; "#infer"; "#save"; "#quit" ] "the curated directive set"
 
               // filtered completion is unaffected (a real prefix at a head).
               // Assert only environment-stable facts: the `File` MODULE is
@@ -18514,6 +18514,79 @@ let aliasTests =
               Expect.isTrue (Weir.Repl.parseAliasLineForTest "k" |> Result.isError) "no ="
           } ]
 
+let helpUxTests =
+    testList
+        "help glance + #find [D:help-glance] [D:help-find]"
+        [ test "(a) module blurbs are COMPLETE, two ways (the gen-lexical pattern)" {
+              // every derived REPL module has a blurb (a new module without
+              // one fails loud), and every blurb names a live module (a
+              // retired module cannot leave a stale line behind)
+              let mods = Weir.Builtins.typeEnv.Modules |> Map.keys |> Set.ofSeq
+              let blurbed = Weir.Builtins.moduleBlurbs |> Map.keys |> Set.ofSeq
+
+              Expect.equal
+                  (Set.difference mods blurbed)
+                  Set.empty
+                  "module(s) missing a blurb — add to Builtins.moduleBlurbs"
+
+              Expect.equal
+                  (Set.difference blurbed mods)
+                  Set.empty
+                  "blurb(s) for retired module(s) — remove from Builtins.moduleBlurbs"
+
+              for KeyValue(m, b) in Weir.Builtins.moduleBlurbs do
+                  Expect.isTrue (b.Trim() <> "") $"the blurb for {m} is non-empty"
+          }
+          test "(b) #help Module: ONE member per line, name + the doc's first line" {
+              let t = Weir.Repl.helpTextForTest "Option"
+              let lines = t.Split '\n'
+
+              Expect.isTrue
+                  (lines |> Array.exists (fun l -> l.StartsWith "  bind " && l.Contains "Apply a function"))
+                  $"the bind row carries its glance: {t}"
+
+              Expect.isTrue
+                  (lines
+                   |> Array.exists (fun l -> l.StartsWith "  defaultValue " && l.Contains "The Some value"))
+                  "the defaultValue row carries its glance"
+
+              let memberRows = lines |> Array.filter (fun l -> l.StartsWith "  ") |> Array.length
+              Expect.equal memberRows 7 "one row per member, exactly"
+          }
+          test "(c) bare #help: modules one per line with blurbs; #find is listed" {
+              let t = Weir.Repl.helpTextForTest ""
+              Expect.stringContains t "#find" "#find is in the directive list"
+
+              Expect.isTrue
+                  (t.Split '\n'
+                   |> Array.exists (fun l -> l.TrimStart().StartsWith "Seq " && l.Contains "lazy sequence"))
+                  $"the Seq line carries its blurb: {t}"
+          }
+          test "(d) #find fallback: case-insensitive substring, deterministic (the piped path)" {
+              let t = Weir.Repl.findFallbackForTest "SHA256"
+              Expect.stringContains t "Str.sha256" "matches by member name, case-insensitively"
+              Expect.stringContains t "File.sha256" "all homes surface"
+              Expect.stringContains t "Bytes.sha256" "all homes surface (Bytes)"
+              Expect.stringContains (Weir.Repl.findFallbackForTest "zzznotathing") "no matches" "a miss says so"
+              Expect.stringContains (Weir.Repl.findFallbackForTest "") "#find <query>" "bare #find teaches usage"
+          }
+          test "(e) the candidate lines are the one help source: modules + members" {
+              let cs = Weir.Repl.findCandidatesForTest ()
+
+              Expect.contains cs "Option — presence and absence: map, bind, defaults" "a module line is name — blurb"
+
+              Expect.isTrue
+                  (cs |> List.exists (fun l -> l.StartsWith "Option.defaultValue — "))
+                  "a member line is Module.member — glance"
+          }
+          test "(f) the headless doc render prints the exact #help text (one source)" {
+              Expect.equal (Weir.Repl.replDocText "Option") (Weir.Repl.helpTextForTest "Option") "same bytes"
+              Expect.equal (Weir.Repl.replDocText "Seq.collect") (Weir.Repl.helpTextForTest "Seq.collect") "member too"
+          }
+          test "(g) #find Tab-completes: sessionDirectives carries it" {
+              Expect.contains Weir.Complete.sessionDirectives "find" "find is a session directive"
+          } ]
+
 [<Tests>]
 let allTests =
     testList
@@ -18670,6 +18743,7 @@ let allTests =
           unusedBindingTests
           replSaveDistillTests
           aliasTests
+          helpUxTests
           indexerTests
           envLoadTests
           parallelTests

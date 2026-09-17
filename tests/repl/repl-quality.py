@@ -77,6 +77,25 @@ else:
     elif "--height" in argv and argv.index("--no-extended") > argv.index("--height"):
         failures.append(f"--no-extended must precede config flags (last-flag-wins override): {argv}")
 
+# --- 2b. #find via the SAME stub fzf [D:help-find]: candidates feed in,
+# the selection's first field prints its #help answer, and the argv
+# carries --no-extended plus a --preview that runs the binary's own
+# headless doc render (--repl-doc) — never `weir` assumed on PATH ---
+out2b = run_repl({"XDG_STATE_HOME": d2 + "/state", "XDG_CONFIG_HOME": d2 + "/cfg",
+                  "PATH": d2 + "/bin:" + os.environ["PATH"]},
+                 [('#find opt\r', 0.8), ('#quit\r', 0.3)])
+# the stub selects the first candidate line ("Args — …"), so the module's
+# member glance prints (the exact #help Args rendering)
+if "Args (" not in out2b or "members" not in out2b:
+    failures.append(f"#find (fzf stub) selection must print the #help rendering: {out2b!r}")
+argv2b = open(d2 + "/bin/argv.txt").read()
+if "--no-extended" not in argv2b:
+    failures.append(f"#find's fzf invocation must carry --no-extended: {argv2b}")
+if "--preview" not in argv2b or "--repl-doc" not in argv2b:
+    failures.append(f"#find must wire a --preview through --repl-doc: {argv2b}")
+if "--query opt" not in argv2b:
+    failures.append(f"#find's initial query must pass as fzf --query: {argv2b}")
+
 # --- 3. Ctrl+R fallback (fzf absent): minimal reverse substring search ---
 d3 = tempfile.mkdtemp()
 out3 = run_repl({"XDG_STATE_HOME": d3 + "/state", "XDG_CONFIG_HOME": d3 + "/cfg",
@@ -90,4 +109,4 @@ if failures:
     for f in failures:
         print("repl-quality FAIL:", f)
     sys.exit(1)
-print("repl-quality: history (XDG/dedup/0600), Ctrl+R fzf-stub + minimal fallback hold")
+print("repl-quality: history (XDG/dedup/0600), Ctrl+R fzf-stub + minimal fallback, #find fzf-stub (--no-extended + --repl-doc preview) hold")

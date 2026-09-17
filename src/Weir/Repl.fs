@@ -1602,22 +1602,53 @@ let private evalChecked (state: State) (chk: Script.CheckedStatement) : State =
             Console.TreatControlCAsInput <- true
             Term.reassert ()
 
-let private flowNames (indent: string) (width: int) (words: string list) : string =
-    let sb = Text.StringBuilder()
-    let mutable col = indent.Length
+// ---- the #help glance [D:help-glance]: one name per line, each with
+// the FIRST LINE of its one-source doc (builtinDocs / moduleBlurbs),
+// clipped to the terminal — glanceable by construction. Piped output
+// uses a FIXED width so the byte surface stays deterministic.
+let private glanceWidth () =
+    if Console.IsOutputRedirected then
+        100
+    else
+        try
+            max 40 Console.WindowWidth
+        with _ ->
+            100
 
-    for w in words do
-        if col > indent.Length && col + 1 + w.Length > width then
-            sb.Append('\n').Append(indent) |> ignore
-            col <- indent.Length
-        elif col > indent.Length then
-            sb.Append ' ' |> ignore
-            col <- col + 1
+let private clipTo (width: int) (s: string) : string =
+    if s.Length <= width then s else s.Substring(0, width - 1) + "…"
 
-        sb.Append w |> ignore
-        col <- col + w.Length
+/// a member's glance: the first line of its builtinDocs Summary — the
+/// same text hover and `#help Module.member` lead with, never a copy
+let private memberGlance (qualified: string) : string =
+    match Map.tryFind qualified Builtins.builtinDocs with
+    | Some d -> (d.Summary.Split '\n')[0]
+    | None -> ""
 
-    sb.ToString()
+/// a module's member names — completion's source (the module map plus
+/// the bespoke checker arms), the same derivation `#help Module` shows
+let private moduleMembersOf (te: TypeEnv) (name: string) : string list =
+    Seq.append
+        (te.Modules
+         |> Map.tryFind name
+         |> Option.map (fun m -> Map.keys m :> seq<string>)
+         |> Option.defaultValue Seq.empty)
+        (Check.specialModuleMembers |> Map.tryFind name |> Option.defaultValue [])
+    |> Seq.distinct
+    |> Seq.sort
+    |> List.ofSeq
+
+/// pad names into a two-column glance table, one entry per line
+let private glanceTable (width: int) (rows: (string * string) list) : string =
+    let pad = 2 + (rows |> List.fold (fun w (n, _) -> max w n.Length) 0)
+
+    rows
+    |> List.map (fun (n, g) ->
+        if g = "" then
+            "  " + n
+        else
+            clipTo width ("  " + n.PadRight pad + g))
+    |> String.concat "\n"
 
 /// ONE SOURCE [D:repl-directives]: the hover's own composition — the
 /// annotated signature (formatSignature over the builtinDocs params)
@@ -1647,11 +1678,20 @@ let mutable private initDocs: Map<string, string list> = Map.empty
 let private helpDirective (te: TypeEnv) (arg: string) : string =
     match arg.Trim() with
     | "" ->
-        let mods = te.Modules |> Map.keys |> Seq.sort |> List.ofSeq
+        // modules one per line with their one-source blurb [D:help-glance];
+        // a module missing from moduleBlurbs renders bare (the completeness
+        // unit pin fails loud, the render never does)
+        let mods =
+            te.Modules
+            |> Map.keys
+            |> Seq.sort
+            |> Seq.map (fun m -> m, (Builtins.moduleBlurbs |> Map.tryFind m |> Option.defaultValue ""))
+            |> List.ofSeq
 
         "Directives:\n"
         + "  #help                 // this list\n"
         + "  #help <name>          // documentation for a module or member\n"
+        + "  #find [query]         // fuzzy-search modules and members (fzf + live preview)\n"
         + "  #echo [<n> | all]     // the unforced-echo cap (default 100); bare reports;\n"
         + "                        //   all = no cap — an INFINITE seq will hang (Ctrl+C)\n"
         + "  #infer [<src>] from <json|jsonl|yaml> as <Name>\n"
@@ -1659,21 +1699,19 @@ let private helpDirective (te: TypeEnv) (arg: string) : string =
         + "  #save <path>          // dump the session's accepted lines to a runnable .weir\n"
         + "  #alias [name = cmd …] // bare lists; a command-head alias (init.weir is canonical)\n"
         + "  #quit                 // leave the REPL (Ctrl+D works too)\n\n"
-        + "Modules: "
-        + flowNames "         " 72 mods
+        + "Modules:\n"
+        + glanceTable (glanceWidth ()) mods
     | name when Map.containsKey name te.Modules ->
         // members from COMPLETION'S source — the module map plus the
-        // bespoke checker arms — never a copy
-        let members =
-            Seq.append
-                (te.Modules[name] |> Map.keys)
-                (Check.specialModuleMembers |> Map.tryFind name |> Option.defaultValue [])
-            |> Seq.distinct
-            |> Seq.sort
-            |> List.ofSeq
+        // bespoke checker arms — never a copy; each with its doc's first
+        // line from builtinDocs, the one member-text source [D:help-glance]
+        let members = moduleMembersOf te name
 
-        $"{name} ({List.length members} members):\n  "
-        + flowNames "  " 72 members
+        let rows =
+            members |> List.map (fun m -> m, memberGlance $"{name}.{m}")
+
+        $"{name} ({List.length members} members):\n"
+        + glanceTable (glanceWidth ()) rows
         + $"\n\n#help {name}.<member> shows one member's doc"
     | name when (Check.ctorOwners te name |> List.length) > 1 ->
         // the checker refuses this name [D:ambiguous-ctor]; answering with one
@@ -1716,6 +1754,123 @@ let private helpDirective (te: TypeEnv) (arg: string) : string =
                     let pool = Complete.helpNames te
 
                     $"#help: unknown name '{name}'{didYouMean name pool}"
+
+/// the headless doc render [D:help-find]: `weir --repl-doc <name>`
+/// prints the EXACT `#help <name>` text for weir's own builtin surface
+/// to stdout — read-only, no user code, no eval. #find's fzf --preview
+/// is the caller; the e2e pin holds the byte equality.
+let replDocText (name: string) : string =
+    helpDirective initial.TypeEnv name
+
+// ---- #find [D:help-find]: fuzzy help search over ONE candidate set —
+// every module (`Seq — blurb`) and every member (`Seq.map — glance`),
+// the same sources #help renders, never a second copy. fzf at a tty
+// (with a live --preview via the headless doc render); a minimal
+// substring fallback otherwise [D:repl-quality] — never an "install
+// fzf" message. Piped sessions always take the fallback (deterministic).
+
+let private findCandidates (te: TypeEnv) : string list =
+    [ for m in te.Modules |> Map.keys |> Seq.sort do
+          let blurb = Builtins.moduleBlurbs |> Map.tryFind m |> Option.defaultValue ""
+          yield (if blurb = "" then m else $"{m} — {blurb}")
+
+          for mem in moduleMembersOf te m do
+              let g = memberGlance $"{m}.{mem}"
+              yield (if g = "" then $"{m}.{mem}" else $"{m}.{mem} — {g}") ]
+
+/// the fallback (and the piped behavior): case-insensitive substring
+/// filter over the candidate lines — name and glance text both match
+let private findFallback (te: TypeEnv) (query: string) : string =
+    if query = "" then
+        "#find <query> — fuzzy-search modules and members (interactive with fzf at a tty; a substring filter otherwise)"
+    else
+        let w = glanceWidth ()
+
+        let hits =
+            findCandidates te
+            |> List.filter (fun l -> l.Contains(query, StringComparison.OrdinalIgnoreCase))
+
+        if List.isEmpty hits then
+            $"#find: no matches for '{query}'"
+        else
+            hits |> List.map (clipTo w) |> String.concat "\n"
+
+/// the fzf path: feed the candidates, `{1}` (the name field) previews
+/// via the running binary's own --repl-doc, selection prints the exact
+/// `#help <name>` answer. Cancel (130/Esc) prints nothing.
+let private findFzf (te: TypeEnv) (query: string) : string option =
+    try
+        let psi = Diagnostics.ProcessStartInfo "fzf"
+
+        // candidate names carry weir glyphs' MODULE dots only, but the
+        // same ruling as Ctrl+R holds: literal fuzzy matching is the
+        // correct default, and last-flag-wins lets finderFlags restore
+        // `--extended` [D:repl-quality]
+        psi.ArgumentList.Add "--no-extended"
+
+        // the live preview: the running binary renders its own docs
+        // headlessly — never assume `weir` is on PATH
+        let exe =
+            match Environment.ProcessPath with
+            | null -> "weir"
+            | p -> p
+
+        psi.ArgumentList.Add "--preview"
+        psi.ArgumentList.Add("\"" + exe + "\" --repl-doc {1}")
+
+        for f in config.FinderFlags do
+            psi.ArgumentList.Add f
+
+        if query <> "" then
+            psi.ArgumentList.Add "--query"
+            psi.ArgumentList.Add query
+
+        psi.RedirectStandardInput <- true
+        psi.RedirectStandardOutput <- true
+        psi.UseShellExecute <- false // fzf draws its UI on /dev/tty directly
+
+        use p = Diagnostics.Process.Start psi
+
+        for line in findCandidates te do
+            p.StandardInput.WriteLine line
+
+        p.StandardInput.Close()
+        let sel = p.StandardOutput.ReadToEnd().TrimEnd('\n', '\r')
+        p.WaitForExit()
+
+        // pop the kitty keyboard stack unconditionally — the same
+        // unkillable-child guard Ctrl+R's fzf spawn carries [D:binary-echo]
+        if not Console.IsOutputRedirected then
+            Console.Out.Write "\x1b[<u"
+            Console.Out.Flush()
+
+        if p.ExitCode = 0 && sel <> "" then
+            // the name is the first whitespace-delimited field ({1} for
+            // the preview, the same split here)
+            Some((sel.Split ' ')[0])
+        else
+            None
+    with _ ->
+        None
+
+let private findDirective (te: TypeEnv) (query: string) =
+    let interactive =
+        not Console.IsInputRedirected
+        && not Console.IsOutputRedirected
+        && Extern.exists "fzf"
+
+    if interactive then
+        match findFzf te query with
+        | Some name -> Console.WriteLine(helpDirective te name)
+        | None -> () // cancel: no output, the session continues
+    else
+        Console.WriteLine(findFallback te query)
+
+/// test seams [D:help-find] (the parseAliasLineForTest precedent): the
+/// deterministic pieces, against the builtin session env
+let helpTextForTest (arg: string) : string = helpDirective initial.TypeEnv arg
+let findFallbackForTest (query: string) : string = findFallback initial.TypeEnv query
+let findCandidatesForTest () : string list = findCandidates initial.TypeEnv
 
 // ---- #infer [D:repl-infer]: draft named types from a sample ----------
 // The directive OWNS its parse (string-match, like #help): split the
@@ -2193,6 +2348,9 @@ let rec private loop (state: State) =
         elif t = "#help" || t.StartsWith "#help " then
             Console.WriteLine(helpDirective state.TypeEnv (t.Substring 5))
             loop state
+        elif t = "#find" || t.StartsWith "#find " then
+            findDirective state.TypeEnv ((t.Substring 5).Trim())
+            loop state
         elif t = "#echo" || t.StartsWith "#echo " then
             // the echo cap [D:echo-cap]: bare reports (FSI's #time
             // convention), a count sets, `all` uncaps — the footgun is
@@ -2258,7 +2416,10 @@ let rec private loop (state: State) =
                 elif word = "#sig" || word = "#schema" then
                     $"{word} is a file directive, read at check time — it has no effect in the REPL"
                 else
-                    $"unknown directive '{word}' — #help lists them"
+                    // the did-you-mean pool is the dispatch's ONE source
+                    // (Complete.sessionDirectives) [D:repl-directives]
+                    let pool = Complete.sessionDirectives |> List.map (fun d -> "#" + d)
+                    $"unknown directive '{word}' — #help lists them{didYouMean word pool}"
             )
 
             loop state

@@ -35,6 +35,36 @@ t = piped("#help Seq\n#quit\n")
 if "collect" not in t or "members" not in t:
     failures.append(f"#help Seq must list the module's members: {t[-200:]!r}")
 
+# --- the glance [D:help-glance]: one member per line with its doc's
+# first line; bare #help gives every module a blurb line ----------------
+t = piped("#help Option\n#quit\n")
+lines = t.splitlines()
+if not any(l.strip().startswith("bind") and "Apply a function" in l for l in lines):
+    failures.append(f"#help Option must glance bind's doc on its own line: {t[-400:]!r}")
+if not any(l.strip().startswith("defaultValue") and "The Some value" in l for l in lines):
+    failures.append(f"#help Option must glance defaultValue's doc: {t[-400:]!r}")
+
+t = piped("#help\n#quit\n")
+if not any("Seq" in l and "lazy sequence" in l for l in t.splitlines()):
+    failures.append(f"bare #help must blurb each module (Seq — lazy sequence …): {t[-400:]!r}")
+if "#find" not in t:
+    failures.append(f"#help must list #find: {t[-400:]!r}")
+
+# --- #find [D:help-find]: piped sessions take the deterministic
+# fallback (substring, case-insensitive); bare #find teaches usage -----
+t = piped("#find sha256\n#quit\n")
+for want in ("Str.sha256", "File.sha256", "Bytes.sha256"):
+    if want not in t:
+        failures.append(f"#find sha256 (piped fallback) must list {want}: {t[-400:]!r}")
+t = piped("#find\n#quit\n")
+if "#find <query>" not in t:
+    failures.append(f"bare #find must teach usage (never an install-fzf message): {t[-300:]!r}")
+if "install" in t.lower():
+    failures.append(f"#find must NEVER say to install fzf: {t[-300:]!r}")
+t = piped("#find zzznotathing\n#quit\n")
+if "no matches" not in t:
+    failures.append(f"#find with no hits must say so: {t[-300:]!r}")
+
 t = piped("#help Seq.collect\n#quit\n")
 if "Seq.collect (f:" not in t:
     failures.append(f"#help member must render the annotated signature: {t[-200:]!r}")
@@ -307,4 +337,4 @@ if failures:
         print("repl-directives FAIL:", f)
     sys.exit(1)
 
-print("repl-directives: #help x3 (one source), #quit + Ctrl+D, :q retired, comments no-op, #echo cap (report/set/all/teach, tty live, piped pinned), unknown-directive message trimmed (#sig/#schema redirect), #alias recognized (list/add/single-hop/help), empty-prompt Tab offers directives, constructor not a head")
+print("repl-directives: #help x3 (one source), glance rendering (member + module blurbs), #find fallback (substring/usage/no-match), #quit + Ctrl+D, :q retired, comments no-op, #echo cap (report/set/all/teach, tty live, piped pinned), unknown-directive message trimmed (#sig/#schema redirect), #alias recognized (list/add/single-hop/help), empty-prompt Tab offers directives, constructor not a head")

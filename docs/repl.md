@@ -78,15 +78,30 @@ ones. Piped output keeps its own fixed surface regardless.
 
 ## Help
 
-`#help` lists the directives and the modules. `#help Seq` lists one
-module's members — a question FSI cannot answer. `#help Seq.collect`
-shows one member's doc, rendered from the same source hover uses, so
-the two cannot disagree.
+`#help` lists the directives and the modules — one module per line
+with a one-line blurb. `#help Seq` lists one module's members the
+same way: one per line, each with the first line of its doc, clipped
+to the terminal — a glanceable answer FSI cannot give. `#help
+Seq.collect` shows one member's full doc, rendered from the same
+source hover uses, so the two cannot disagree; the glance is that
+doc's first line, so it cannot drift either.
+
+`#find [query]` searches all of it fuzzily. Every module
+(`Seq — blurb`) and every member (`Seq.map — glance`) feeds fzf
+(when installed, at a tty) with a **live preview** of the
+highlighted name's full doc; Enter prints the `#help` answer for the
+selection, Esc returns to the prompt with nothing. Without fzf — or
+piped — `#find query` is a case-insensitive substring filter over
+the same lines: deterministic, and never an "install fzf" message.
+The preview runs the session's own binary headlessly
+(`weir --repl-doc <name>` prints the exact `#help <name>` bytes —
+builtin docs only, nothing evaluated).
 
 The `#` prefix marks a line addressed to the tooling rather than the
 language. File directives (`#sig`, `#schema`) are read at check
 time; session directives (`#help`, `#quit`) run now. One glyph, two
-lifetimes.
+lifetimes — the [reference table](reference/lexical.md#directives)
+maps every directive to its context.
 
 ## The last result: `it`
 
@@ -291,3 +306,27 @@ still open (a heredoc body, a multi-line `type`, an offside
 `if`/`match` block, a leading-`|>` pipeline), so a pasted or scripted
 block runs as one statement. A single statement per line is unchanged,
 and a directive is always one line.
+
+## weir and fzf
+
+fzf is optional everywhere — every touchpoint has a built-in
+fallback, and nothing ever tells you to install it. When it is on
+PATH:
+
+- **<kbd>Ctrl+R</kbd>** history search runs through fzf (fallback: a
+  minimal reverse substring search).
+- **`#find`** is fuzzy help search with a live doc preview
+  (fallback: a substring filter over the same candidate lines).
+- **fzf-class tools compose in ordinary pipelines** — an interactive
+  picker draws on /dev/tty while stdio pipes, so `git branch | fzf`
+  just works; when the selection AND the cancel code are both data,
+  reach for `cmd | complete`
+  ([guide](GUIDE.md#exit-codes-from-command-to-value)).
+- **`finderFlags`** in the [config](tooling.md#configuration) tunes
+  the invocation (`--height 40% --reverse` by default) for both fzf
+  touchpoints.
+
+One caveat is handled for you: weir's glyphs (`^`, `|`, `$`, `!`)
+are fzf extended-search *operators*, so weir passes `--no-extended`
+first — literal fuzzy matching over code and names. fzf is
+last-flag-wins, so `finderFlags = ["--extended"]` restores it.

@@ -1438,8 +1438,12 @@ type Bad = C of int
   kubectl` makes `k get po` run `kubectl get po`, argv bare and
   injection-safe; `^k` forces PATH; single-hop), and `#save` desugars
   alias heads back to the real invocation so the saved file is
-  alias-free. Aliases never reach scripts or `-e`. All REPL
-  scaffolding — see docs/repl.md.
+  alias-free. Aliases never reach scripts or `-e`. At the prompt,
+  `#help <Module>` glances one member per line (name + its doc's
+  first line) and `#find [query]` fuzzy-searches modules and members
+  [D:help-find] (fzf with a live doc preview at a tty; a substring
+  fallback piped/without fzf). All REPL scaffolding — see
+  docs/repl.md.
 
 ```weir
 let sample = ["{\"id\": 1, \"tags\": [\"a\"]}"]

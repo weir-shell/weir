@@ -5510,6 +5510,26 @@ if [ "$IS_WINDOWS" != "1" ]; then
     rm -rf "$acfg" "$astub"
 fi
 
+# ---- help glance + #find [D:help-glance] [D:help-find] --------------------
+# the headless doc render is the ONE #help source: `weir --repl-doc X`
+# must print byte-identically to the piped `#help X` answer (prompts
+# stripped) — the pin that keeps #find's fzf preview and the prompt's
+# own answer from drifting.
+hdir=$(mkweirtmp)
+$BIN --repl-doc Option > "$hdir/headless.txt" || fail "--repl-doc Option must succeed"
+printf '#help Option\n#quit\n' | $BIN | sed -e 's/^weir> //' -e '/^weir>/d' > "$hdir/prompted.txt"
+diff -u "$hdir/headless.txt" "$hdir/prompted.txt" >/dev/null \
+    || fail "--repl-doc must print the exact #help bytes: $(diff "$hdir/headless.txt" "$hdir/prompted.txt" | head -5)"
+# the directive reference table [D:help-find]: docs/reference/lexical.md
+# names EVERY dispatched directive across its three contexts (the
+# gen-lexical spirit — a new directive without a table row fails here)
+for d in help find echo infer save quit alias session sig schema; do
+    grep -q "\`#$d\`" "$(dirname "$0")/../docs/reference/lexical.md" \
+        || fail "docs/reference/lexical.md directive table is missing #$d"
+done
+rm -rf "$hdir"
+echo "e2e ok: --repl-doc == #help bytes (one source); lexical.md names every directive"
+
 # ---- for/do: the general effect loop [D:for-do] ---------------------------
 fdir=$(mkweirtmp)
 # the natural shell shape: a bare command body over a real external

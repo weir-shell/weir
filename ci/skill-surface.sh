@@ -20,15 +20,17 @@ OMIT="$(dirname "$0")/skill-omitted.txt"
 surface=$(mktemp)
 trap 'rm -f "$surface"' EXIT
 
+# the glance rendering [D:help-glance] is one NAME per line, name first —
+# $1 is the module (bare #help) or the member (#help Module); the blurb
+# and glance text after it never enter the surface
 mods=$(printf '#help\n#quit\n' | "$BIN" 2>/dev/null | sed 's/^weir> //' \
-    | awk '/^Modules:/{sub(/^Modules:/,""); f=1} f{print; if (!/[A-Za-z]$/ && NR>1) exit}' \
-    | tr -s ' \n' '  ')
+    | awk '/^Modules:$/{f=1; next} f && /^  [A-Za-z]/{print $1} f && !/^  /{exit}')
 
 for m in $mods; do
     printf '#help %s\n#quit\n' "$m" | "$BIN" 2>/dev/null | sed 's/^weir> //' \
         | awk -v m="$m" '
             /^'"$m"' \([0-9]+ members\):/ { f=1; next }
-            f && /^  / { for (i=1;i<=NF;i++) print m "." $i; next }
+            f && /^  / { print m "." $1; next }
             f { exit }'
 done > "$surface"
 

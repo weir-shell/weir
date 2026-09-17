@@ -294,16 +294,27 @@ if !true then print "x" // '!' is not negation — write 'not true'
 ## Directives
 
 A `#` line is addressed to the tooling, not the language — one
-glyph, two lifetimes:
+glyph, two lifetimes: read at check time, or run now. The "now"
+side has two homes — the REPL's init file, read once at startup,
+and the prompt itself — so every directive lives in exactly one of
+three contexts:
 
-- **session** directives run now, in the REPL: `#help`, `#quit`,
-  `#echo`
-- **file** directives are read at check time: `#sig`, `#schema` —
-  and `#session`, read from the REPL's init file only
+| directive | purpose | context |
+|---|---|---|
+| `#sig` | bind a command signature file | script file, read at check time |
+| `#schema` | the yaml-district schema contract (spelled `schema=` on the marker line today) | script file, read at check time |
+| `#session` | session settings: cwd, env, echo cap, log level | init.weir, read once at startup |
+| `#alias` | a command-head alias (`#alias k = kubectl`) | init.weir (canonical; live at the prompt too) |
+| `#help` | the directives, the modules, one member's doc | REPL prompt, runs now |
+| `#find` | fuzzy help search (fzf + live preview; substring fallback) | REPL prompt, runs now |
+| `#echo` | the unforced-echo cap | REPL prompt, runs now |
+| `#infer` | draft named types from a JSON/YAML sample | REPL prompt, runs now |
+| `#save` | distill the session to a runnable script | REPL prompt, runs now |
+| `#quit` | leave the REPL | REPL prompt, runs now |
 
-The [REPL manual](../repl.md) covers the session set and the init
-file; [signatures](../tooling.md#command-signatures) the rest of
-the file set.
+The [REPL manual](../repl.md) covers the prompt set and the init
+file; [signatures](../tooling.md#command-signatures) and
+[schemas](../tooling.md#yaml-schemas) the check-time set.
 
 ## Attributes
 

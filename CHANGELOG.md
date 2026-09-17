@@ -4,6 +4,30 @@
 
 ### Added
 
+- **`#help` is glanceable.** `#help <Module>` lists one member per
+  line — the name plus the FIRST LINE of its doc (the same builtinDocs
+  source hover and `#help Module.member` read, so the glance cannot
+  drift), clipped to the terminal. Bare `#help` gives every module a
+  one-line blurb (`Seq — lazy sequence pipeline ops: map, where, fold,
+  pmap`) from a new one-source table (`moduleBlurbs`), completeness
+  unit-pinned two ways against the derived module list — a new module
+  without a blurb fails loud.
+- **`#find [query]` — fuzzy help search.** Every module (`Seq — blurb`)
+  and every member (`Seq.map — glance`) feeds fzf at a tty, with a
+  LIVE PREVIEW of the highlighted name's full doc; Enter prints the
+  exact `#help` answer for the selection, Esc returns quietly. The
+  preview runs the session's own binary headlessly — a new
+  `weir --repl-doc <name>` prints the exact `#help <name>` bytes
+  (builtin docs only, nothing evaluated; byte-equality e2e-pinned).
+  Without fzf, or piped, `#find query` is a deterministic
+  case-insensitive substring filter over the same candidate lines —
+  never an "install fzf" message. `--no-extended` leads the fzf argv
+  as in Ctrl+R (weir glyphs are fzf operators; `finderFlags` can
+  restore `--extended`), `#find` Tab-completes with the other session
+  directives, and a typo'd directive now gets a did-you-mean from the
+  same one-source list. `docs/reference/lexical.md` gained the
+  consolidated directive table (script file / init.weir / prompt —
+  the three contexts), gated in e2e so a new directive cannot skip it.
 - **`#alias name = cmd [args...]` — command-head aliases, REPL-only.**
   A short head maps to a real program and a fixed prefix of arguments,
   consulted ONLY in command-head position and BEFORE PATH. Declare them

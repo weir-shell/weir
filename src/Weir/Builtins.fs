@@ -5343,6 +5343,42 @@ let reifierSurface (name: string) : string option =
 let renderBuiltinDoc (d: BuiltinDoc) : string =
     [ Some d.Summary; d.Example; d.Pointer ] |> List.choose id |> String.concat "\n"
 
+// ---- module blurbs [D:help-glance] -----------------------------------
+// ONE terse line per module for the bare-#help glance and the #find
+// candidate lines — builtinDocs' sibling, same out-of-band posture.
+// COMPLETENESS is unit-pinned two ways against typeEnv.Modules (the
+// gen-lexical pattern): a new module without a blurb fails loud, and a
+// blurb for a retired module fails too.
+let moduleBlurbs: Map<string, string> =
+    Map.ofList
+        [ "Args", "typed argv — flags, subcommands, defaults from a record"
+          "Bytes", "the non-text value: base64, sha256, UTF-8 bridges"
+          "Dir", "directory operations: create, list, move, delete, stat"
+          "Duration", "spans of time: literals, arithmetic, parse/show, sleep"
+          "Env", "environment variables: one, a typed record, a dotenv file"
+          "File", "file operations: read, write, copy, hash, secrets"
+          "Float", "finite floats: convert, round, near-compare, parse"
+          "Frontier", "the bounded worklist fold Graph and Tree derive from"
+          "Graph", "reachability over a neighbor function, cycle-safe"
+          "Http", "HTTP requests: one record, one runner, typed auth"
+          "Instant", "points on the UTC timeline: now, parse, compare"
+          "Json", "JSON helpers: inferShape drafts type decls from a sample"
+          "Log", "levelled diagnostics to stderr (WEIR_LOG selects)"
+          "Map", "immutable string-keyed maps: get, add, pairs"
+          "Net", "network probes: portOpen"
+          "Option", "presence and absence: map, bind, defaults"
+          "Path", "path text and discovery: join, confine, glob, temp dirs"
+          "Plan", "plan/apply: preview a plan's ops before applying"
+          "Poll", "poll's options record: defaults"
+          "Proc", "scoped process handles: pid, running, tail, wait, stop"
+          "Retry", "retry's options record: defaults"
+          "Secret", "rendering-masked values: of, map, reveal"
+          "Seq", "lazy sequence pipeline ops: map, where, fold, pmap"
+          "Size", "byte sizes: binary-unit literals, arithmetic, parse"
+          "Str", "string ops: trim, split, match, encode, hash"
+          "Tree", "parent-first effect walks over discovered children"
+          "Yaml", "YAML nodes: parse, merge (strategic patch), inferShape" ]
+
 // the ALLOWLIST [D:bare-allowlist]: only these modules contribute bare
 // aliases to the REPL. Inverted from a blocklist after
 // three collisions (Secret.map stole bare `map` — 22 unrelated tests
