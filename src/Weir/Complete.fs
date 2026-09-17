@@ -19,6 +19,13 @@ let unsuggestedKeywords =
 
 let private keywords = Weir.Parser.keywords - unsuggestedKeywords |> Set.toList
 
+// the SESSION DIRECTIVES, one source [D:repl-directives] — the set the
+// REPL's dispatch string-matches (Repl.fs) and #help documents, `#help`
+// first. Both completion slots read this: the line-head '#' slot (bare
+// names — the editor's word starts after the '#') and the empty-prompt
+// head [D:empty-prompt-directives] (the '#'-prefixed teaching set).
+let sessionDirectives = [ "help"; "echo"; "infer"; "save"; "quit" ]
+
 let private recordFields (env: TypeEnv) (ty: Ty) : (string * Ty) list option =
     match ty with
     | TNamed(n, _) ->
@@ -57,6 +64,13 @@ let private withHoles (env: TypeEnv) (e: Weir.Ast.Expr) : TypeEnv =
                 Values = Map.add n sch te.Values })
         env
 
+// the TYPE FLOWING INTO this position: the type of the value the pipe
+// carries to the completion word. A `seq` unwraps to its element (the
+// `_.`/lambda-param over each row); a SCALAR flows through as itself —
+// `from yaml T` yields one document `TNamed(name,[])`, not a seq, so a
+// record piped into `_.`/`r |> _.` must type to the record, not `None`.
+// The sole caller routes through `recordFields`, which returns `None`
+// for a non-record, so the catch-all offers nothing where nothing fits.
 let private pipelineElemTy (env: TypeEnv) (text: string) : Ty option =
     match text.LastIndexOf '|' with
     | -1 -> None
@@ -72,7 +86,7 @@ let private pipelineElemTy (env: TypeEnv) (text: string) : Ty option =
             | Ok te ->
                 match te.Ty with
                 | TSeq elem -> Some elem
-                | _ -> None
+                | t -> Some t
             | Error _ -> None
 
 /// text ENDS AT THE CURSOR (both callers truncate — the LSP's `upto`,
@@ -311,7 +325,7 @@ let suggestScoped (env: TypeEnv) (binderScope: string) (text: string) (wordStart
         raw.TrimStart() = "#"
 
     if directiveSlot then
-        [ "echo"; "help"; "quit" ] |> List.filter (fun d -> d.StartsWith word)
+        sessionDirectives |> List.filter (fun d -> d.StartsWith word) |> List.sort
     else
 
 
@@ -666,6 +680,15 @@ let suggestScoped (env: TypeEnv) (binderScope: string) (text: string) (wordStart
                 "stream" :: names
             else
                 names
+        elif word = "" && before = "" then
+            // an EMPTY prompt at a statement head [D:empty-prompt-directives]:
+            // `StartsWith ""` used to match the WHOLE pool — 954 PATH execs +
+            // the modules/keywords/constructors universe, sorted, unusable. A
+            // fresh Tab now teaches the REPL's affordances instead: the session
+            // directives, `#help` first (which itself lists the modules and
+            // members). The argv-position empty Tab is unaffected — its cwd
+            // listing is useful, and it keys on `before` being non-empty below.
+            sessionDirectives |> List.map (fun d -> "#" + d)
         else
             // command HEADS at a statement head (before is empty): PATH
             // executables + command-callable builtins join the name pool; in
@@ -690,7 +713,27 @@ let suggestScoped (env: TypeEnv) (binderScope: string) (text: string) (wordStart
                 else
                     []
 
-            (List.ofSeq (Map.keys env.Values |> Seq.filter Types.isUserName)
+            // a union-case CONSTRUCTOR never starts a statement
+            // [D:constructors-not-heads]: `WriteFile …`/`Bearer …` as a head
+            // is a discarded value (a check error). They pass isUserName, so
+            // the pool can't tell one from a function — subtract them AT THE
+            // STATEMENT HEAD (before empty) only, derived from env.Types'
+            // Union cases (the one source). An expression/argument position
+            // (before non-empty — a list literal, a `let … in`) keeps them,
+            // where a constructor is valid.
+            let unionCases =
+                if before = "" then
+                    env.Types
+                    |> Map.toList
+                    |> List.collect (fun (_, def) ->
+                        match def with
+                        | Union u -> u.Cases |> List.map fst
+                        | Record _ -> [])
+                    |> Set.ofList
+                else
+                    Set.empty
+
+            (List.ofSeq (Map.keys env.Values |> Seq.filter Types.isUserName |> Seq.filter (unionCases.Contains >> not))
              @ List.ofSeq (Map.keys env.Modules)
              @ keywords
              @ extra)

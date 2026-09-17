@@ -2574,7 +2574,9 @@ let completionTests =
           test "a line-head '#' completes the session directives, bare [D:repl-directives]" {
               // bare names: the editor's word starts AFTER the '#', so
               // replacement yields `#help` — never `##help` or `head`
-              Expect.equal (suggest "#" 1) [ "echo"; "help"; "quit" ] "the closed set"
+              // the closed set is the one source Complete.sessionDirectives
+              // — the '#'-slot and the empty-prompt head both read it
+              Expect.equal (suggest "#" 1) [ "echo"; "help"; "infer"; "quit"; "save" ] "the closed set"
               Expect.equal (suggest "#he" 1) [ "help" ] "the prefix filters"
               Expect.equal (suggest "#q" 1) [ "quit" ] ""
               Expect.isFalse (List.contains "head" (suggest "#he" 1)) "the general pool stays out"
@@ -2852,6 +2854,80 @@ let completionTests =
               let text = "[\"x\"] |> from json "
               Expect.contains (suggest text text.Length) "FileRow" ""
               Expect.contains (suggest text text.Length) "EnvVar" ""
+          }
+          test "record fields complete through a pipe: scalar record, bound record, lambda param [D:hole-completion]" {
+              // [D:repl-quality] pipelineElemTy: `from yaml T` yields a
+              // SCALAR record (one document, not a seq), and a bound record
+              // piped into `_.` carries itself — both must type to the
+              // record. The seq-only unwrap returned None and no fields
+              // surfaced. The one arm — the type flowing into the position —
+              // fixes the scalar, the bound-record pipe, and the lambda-param
+              // pipe (its prefix now types to the record before the fallback).
+              let renv =
+                  env
+                  |> declare "type Test2 = { some: int }"
+                  |> fun e ->
+                      { e with
+                          Values = Map.add "r" (generalize (TNamed("Test2", []))) e.Values }
+
+              // the word starts where the editor's word-scan lands (a
+              // dotted `_.`/`row.` is one word to `wordStartAt`)
+              let sg (t: string) =
+                  Weir.Complete.suggest renv t (Weir.Complete.wordStartAt t t.Length)
+
+              // FIX: a scalar record from `from yaml T` piped into `_.`
+              Expect.equal (sg "src |> from yaml Test2 |> _.") [ "_.some" ] "scalar-record pipe into _."
+
+              // FIX: a bound record piped into `_.`
+              Expect.equal (sg "r |> _.") [ "_.some" ] "bound record into _."
+
+              // FIX: the lambda param over a scalar-record pipe (was the
+              // noisy all-declared-fields fallback; now resolves precisely)
+              Expect.equal
+                  (sg "src |> from yaml Test2 |> (fun row -> row.")
+                  [ "row.some" ]
+                  "lambda param over the scalar-record pipe"
+
+              // UNCHANGED (the seq unwrap): `Seq.map _.` and its lambda twin
+              // over a seq of records still complete
+              let renvSeq =
+                  { renv with
+                      Values = Map.add "xs" (generalize (TSeq(TNamed("Test2", [])))) renv.Values }
+
+              let sgs (t: string) =
+                  Weir.Complete.suggest renvSeq t (Weir.Complete.wordStartAt t t.Length)
+
+              Expect.equal (sgs "xs |> Seq.map _.") [ "_.some" ] "seq element via Seq.map _."
+              Expect.equal (sgs "xs |> Seq.map (fun elt -> elt.") [ "elt.some" ] "seq element via the lambda param"
+
+              // CONTROL: a non-record element still offers nothing
+              Expect.equal (sgs "src |> Seq.map (fun e -> e.") [] "a string element offers no fields"
+          }
+          test "the empty prompt offers the session directives, not the flood [D:empty-prompt-directives]" {
+              // `suggest "" 0` used to return 1130 (954 PATH execs + the
+              // universe) via `StartsWith ""`. A fresh Tab now teaches the
+              // REPL's affordances, `#help` first.
+              Expect.equal (suggest "" 0) [ "#help"; "#echo"; "#infer"; "#save"; "#quit" ] "the curated directive set"
+
+              // filtered completion is unaffected (a real prefix at a head)
+              Expect.equal (suggest "Fi" 0) [ "File"; "FileCheck-21" ] "a real prefix still filters normally"
+          }
+          test "a union-case constructor is not a statement head [D:constructors-not-heads]" {
+              // `WriteFile …` as a head is a discarded value (a check error) —
+              // constructors are subtracted from the head pool, kept in
+              // expression/argument positions.
+              let heads = suggest "Wr" 0
+              Expect.isFalse (List.contains "WriteFile" heads) "WriteFile (an Op ctor) is not a head"
+
+              // a function bare-name still completes at a head
+              Expect.contains (suggest "wh" 0) "where" "a function bare-name still heads"
+
+              // WriteFile / Some still complete in an argument/expression slot
+              let atHead (t: string) =
+                  suggest t (Weir.Complete.wordStartAt t t.Length)
+
+              Expect.contains (atHead "let x = 1 in [Wr") "WriteFile" "the ctor completes in an expression position"
+              Expect.contains (atHead "let y = [Som") "Some" "Some completes in an expression position"
           } ]
 
 let rowTests =
