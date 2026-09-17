@@ -7,6 +7,25 @@ echo back, and tab completion and history behave as you'd expect.
 the same. This page is the REPL's manual; the tour lives in the
 [guide](GUIDE.md#the-repl).
 
+## Tab completion
+
+Tab completes the word under the cursor: module members, record
+fields, keywords, bindings, and — at a statement head — the callable
+commands. Two behaviours worth naming:
+
+- **An empty prompt lists the session directives** (`#help` first),
+  not the whole world. A bare Tab is a teaching Tab — `#help` itself
+  lists the modules and members. Start typing and the usual filtered
+  pool returns; a Tab in argument position still lists the directory.
+- **Record fields complete through a pipe.** A record piped into `_.`
+  or a lambda param completes its fields — `r |> _.`,
+  `raw |> from yaml Pod |> _.` , `… |> (fun row -> row.`  — the same
+  as a bound `r.`. This is the payoff of `#infer`: a typed record's
+  fields surface wherever the value flows.
+
+Completion never runs anything — a directory read or a cached PATH
+lookup at most.
+
 ## What the echo shows
 
 At a terminal, the echo presents a value by its shape:
