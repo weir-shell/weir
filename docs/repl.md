@@ -22,6 +22,12 @@ commands. Two behaviours worth naming:
   `raw |> from yaml Pod |> _.` , `… |> (fun row -> row.`  — the same
   as a bound `r.`. This is the payoff of `#infer`: a typed record's
   fields surface wherever the value flows.
+- **`#help <name>` completes what it documents.** `#help Pat<TAB>`
+  offers every name `#help` can document with that prefix — modules,
+  types (an `#infer`'d type included), and top-level forms; a
+  `#help Module.<TAB>` completes that module's members. The offered
+  set and the documented set are one, so a type you can `#help` is a
+  type you can Tab.
 
 Completion never runs anything — a directory read or a cached PATH
 lookup at most.

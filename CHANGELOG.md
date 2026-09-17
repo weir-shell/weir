@@ -4,6 +4,12 @@
 
 ### Fixed
 
+- **`#help <TAB>` now completes session types (and modules and forms).**
+  `#help Patatas` documented an `#infer`'d type fine, but `#help Pat<TAB>`
+  offered only `Path` and `Patch` — never `Patatas`, because the argument
+  completed against the general pool, which never surfaces `env.Types`
+  names. The `#help` argument now completes the same set `#help` can
+  document, so an injected type is completable, not just documentable.
 - **REPL Tab completes record fields through a pipe.** A record piped
   into `_.` or a lambda param — `x |> from yaml T |> _.`, `r |> _.`,
   `x |> … |> (fun row -> row.` — offered no fields (or, for the lambda,
