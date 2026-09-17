@@ -221,6 +221,14 @@ let main argv =
         // on Windows too — the dump is diffed against a committed file
         Console.Out.Write(Weir.Repl.docsJson () + "\n")
         0
+    // the headless doc render [D:help-find]: the exact `#help <name>`
+    // text for the builtin surface — #find's fzf --preview runs it per
+    // highlighted line. Read-only (no user code, no eval); deliberately
+    // absent from the usage text (an internal seam, lightly documented
+    // in docs/repl.md).
+    | [ "--repl-doc"; name ] ->
+        Console.WriteLine(Weir.Repl.replDocText name)
+        0
     | [ "--version" ] ->
         // the build stamp [D:masking-mechanized] — <tag>+<hash>; the
         // harness gates read the hash (the part after the last '+') and

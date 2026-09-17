@@ -212,11 +212,58 @@ module private Term =
 
             t.Start()
 
-type private State = { TypeEnv: TypeEnv; Values: Eval.Env }
+// a command-head alias [D:command-head-alias]: (real exe, fixed prefix
+// args). Single-hop by construction — the exe is a real program name,
+// never another alias (define-time resolution rejects alias-of-alias).
+type private Alias = { Exe: string; Prefix: string list }
+
+/// parse a `#alias name = cmd [args...]` directive line [D:command-head-alias].
+/// The head token maps to (exe, prefix args); argv is split on whitespace
+/// (a fixed prefix is literal words — no quoting/typed-argv machinery: an
+/// alias is a resolution-table entry, not a script line). Returns the name
+/// and its target, or a message. Single-hop is enforced later against the
+/// whole table.
+let private parseAliasLine (body: string) : Result<string * Alias, string> =
+    // body is the text AFTER `#alias`
+    match
+        body.Trim()
+        |> fun s -> System.Text.RegularExpressions.Regex.Match(s, @"^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$")
+    with
+    | m when m.Success ->
+        let name = m.Groups.[1].Value
+
+        let rhsWords =
+            m.Groups.[2].Value.Split([| ' '; '\t' |], StringSplitOptions.RemoveEmptyEntries)
+            |> Array.toList
+
+        match rhsWords with
+        | [] -> Error "#alias needs a target: '#alias name = command [args...]'"
+        | exe :: prefix ->
+            // `#alias ls = ls` (or `= ls --color`) is a legal shadow (bash
+            // allows it), bypassable with `^ls` — register as-is
+            Ok(name, { Exe = exe; Prefix = prefix })
+    | _ -> Error "malformed #alias — usage: '#alias name = command [args...]' (e.g. '#alias k = kubectl')"
+
+/// a test seam over parseAliasLine [D:command-head-alias]: the private
+/// Alias record is flattened to a public (exe, prefix) pair so unit tests
+/// can assert on the parse without the module-private type
+let parseAliasLineForTest (body: string) : Result<string * (string * string list), string> =
+    parseAliasLine body |> Result.map (fun (n, a) -> (n, (a.Exe, a.Prefix)))
+
+type private State =
+    { TypeEnv: TypeEnv
+      Values: Eval.Env
+      // REPL-only, populated from init.weir's #alias lines (and a live
+      // `#alias` at the prompt). Consulted ONLY in command-head position,
+      // before PATH; never threaded to scripts/-e.
+      Aliases: Map<string, Alias> }
 
 let private initial =
     let typeEnv, valueEnv = Prelude.extend Builtins.typeEnv Builtins.valueEnv
-    { TypeEnv = typeEnv; Values = valueEnv }
+
+    { TypeEnv = typeEnv
+      Values = valueEnv
+      Aliases = Map.empty }
 
 let private currentEnv = ref initial.TypeEnv
 
@@ -1284,7 +1331,15 @@ let private printWarnings (state: State) (te: Check.TypedExpr) =
         Console.WriteLine(Types.Color.yellow Types.Color.onStdout.Value (underline w.Span))
         Console.WriteLine(Check.formatWarning w))
 
-let private resolver (state: State) : Parser.Resolver = Script.resolver state.TypeEnv
+let private resolver (state: State) : Parser.Resolver =
+    { Script.resolver state.TypeEnv with
+        // the session alias table beats PATH in command-head position
+        // [D:command-head-alias]; `^` skips it (parser-side). Single-hop:
+        // the stored Exe is a real program, never another alias name.
+        AliasHead =
+            fun n ->
+                Map.tryFind n state.Aliases
+                |> Option.map (fun a -> (a.Exe, a.Prefix)) }
 
 let private printHint (state: State) (line: string) =
     Diagnose.hint
@@ -1308,10 +1363,11 @@ let private bindIt (ty: Ty) (v: Eval.Value) (env: State) : State =
     if ty = TUnit then
         env
     else
-        { TypeEnv =
-            { env.TypeEnv with
-                Values = Map.add "it" (Types.generalize ty) env.TypeEnv.Values }
-          Values = Map.add "it" v env.Values }
+        { env with
+            TypeEnv =
+                { env.TypeEnv with
+                    Values = Map.add "it" (Types.generalize ty) env.TypeEnv.Values }
+            Values = Map.add "it" v env.Values }
 
 // the Ok-side rendering, shared by the single-line and multiline
 // submission paths [D:repl-multiline]
@@ -1334,8 +1390,9 @@ let private evalCheckedBody (state: State) (chk: Script.CheckedStatement) : Stat
         else
             Console.WriteLine $"type {decl.Name} declared"
 
-        { TypeEnv = chk.Env
-          Values = ctors |> List.fold (fun vs (n, v) -> Map.add n v vs) state.Values }
+        { state with
+            TypeEnv = chk.Env
+            Values = ctors |> List.fold (fun vs (n, v) -> Map.add n v vs) state.Values }
     | Script.KLetPat(pat, schemes, te) ->
         printWarnings state te
 
@@ -1348,8 +1405,9 @@ let private evalCheckedBody (state: State) (chk: Script.CheckedStatement) : Stat
             for n, sch in schemes do
                 Console.WriteLine $"{n} : {formatTy sch.Ty}"
 
-            { TypeEnv = chk.Env
-              Values = bindings |> List.fold (fun vs (n, v) -> Map.add n v vs) state.Values }
+            { state with
+                TypeEnv = chk.Env
+                Values = bindings |> List.fold (fun vs (n, v) -> Map.add n v vs) state.Values }
          with
          | Eval.ExitRequest _ -> reraise ()
          | ex ->
@@ -1415,8 +1473,9 @@ let private evalCheckedBody (state: State) (chk: Script.CheckedStatement) : Stat
                     let tail = Eval.echoTail hint
                     Console.WriteLine $"{name} : {formatTy te.Ty} = {rendered}{tail}"
 
-            { TypeEnv = chk.Env
-              Values = Map.add name v state.Values }
+            { state with
+                TypeEnv = chk.Env
+                Values = Map.add name v state.Values }
             |> bindIt te.Ty v
          with
          | Eval.ExitRequest _ -> reraise ()
@@ -1543,22 +1602,53 @@ let private evalChecked (state: State) (chk: Script.CheckedStatement) : State =
             Console.TreatControlCAsInput <- true
             Term.reassert ()
 
-let private flowNames (indent: string) (width: int) (words: string list) : string =
-    let sb = Text.StringBuilder()
-    let mutable col = indent.Length
+// ---- the #help glance [D:help-glance]: one name per line, each with
+// the FIRST LINE of its one-source doc (builtinDocs / moduleBlurbs),
+// clipped to the terminal — glanceable by construction. Piped output
+// uses a FIXED width so the byte surface stays deterministic.
+let private glanceWidth () =
+    if Console.IsOutputRedirected then
+        100
+    else
+        try
+            max 40 Console.WindowWidth
+        with _ ->
+            100
 
-    for w in words do
-        if col > indent.Length && col + 1 + w.Length > width then
-            sb.Append('\n').Append(indent) |> ignore
-            col <- indent.Length
-        elif col > indent.Length then
-            sb.Append ' ' |> ignore
-            col <- col + 1
+let private clipTo (width: int) (s: string) : string =
+    if s.Length <= width then s else s.Substring(0, width - 1) + "…"
 
-        sb.Append w |> ignore
-        col <- col + w.Length
+/// a member's glance: the first line of its builtinDocs Summary — the
+/// same text hover and `#help Module.member` lead with, never a copy
+let private memberGlance (qualified: string) : string =
+    match Map.tryFind qualified Builtins.builtinDocs with
+    | Some d -> (d.Summary.Split '\n')[0]
+    | None -> ""
 
-    sb.ToString()
+/// a module's member names — completion's source (the module map plus
+/// the bespoke checker arms), the same derivation `#help Module` shows
+let private moduleMembersOf (te: TypeEnv) (name: string) : string list =
+    Seq.append
+        (te.Modules
+         |> Map.tryFind name
+         |> Option.map (fun m -> Map.keys m :> seq<string>)
+         |> Option.defaultValue Seq.empty)
+        (Check.specialModuleMembers |> Map.tryFind name |> Option.defaultValue [])
+    |> Seq.distinct
+    |> Seq.sort
+    |> List.ofSeq
+
+/// pad names into a two-column glance table, one entry per line
+let private glanceTable (width: int) (rows: (string * string) list) : string =
+    let pad = 2 + (rows |> List.fold (fun w (n, _) -> max w n.Length) 0)
+
+    rows
+    |> List.map (fun (n, g) ->
+        if g = "" then
+            "  " + n
+        else
+            clipTo width ("  " + n.PadRight pad + g))
+    |> String.concat "\n"
 
 /// ONE SOURCE [D:repl-directives]: the hover's own composition — the
 /// annotated signature (formatSignature over the builtinDocs params)
@@ -1588,32 +1678,40 @@ let mutable private initDocs: Map<string, string list> = Map.empty
 let private helpDirective (te: TypeEnv) (arg: string) : string =
     match arg.Trim() with
     | "" ->
-        let mods = te.Modules |> Map.keys |> Seq.sort |> List.ofSeq
+        // modules one per line with their one-source blurb [D:help-glance];
+        // a module missing from moduleBlurbs renders bare (the completeness
+        // unit pin fails loud, the render never does)
+        let mods =
+            te.Modules
+            |> Map.keys
+            |> Seq.sort
+            |> Seq.map (fun m -> m, (Builtins.moduleBlurbs |> Map.tryFind m |> Option.defaultValue ""))
+            |> List.ofSeq
 
         "Directives:\n"
         + "  #help                 // this list\n"
         + "  #help <name>          // documentation for a module or member\n"
+        + "  #find [query]         // fuzzy-search modules and members (fzf + live preview)\n"
         + "  #echo [<n> | all]     // the unforced-echo cap (default 100); bare reports;\n"
         + "                        //   all = no cap — an INFINITE seq will hang (Ctrl+C)\n"
         + "  #infer [<src>] from <json|jsonl|yaml> as <Name>\n"
         + "                        //   draft named types from a sample (src defaults to 'it')\n"
         + "  #save <path>          // dump the session's accepted lines to a runnable .weir\n"
+        + "  #alias [name = cmd …] // bare lists; a command-head alias (init.weir is canonical)\n"
         + "  #quit                 // leave the REPL (Ctrl+D works too)\n\n"
-        + "Modules: "
-        + flowNames "         " 72 mods
+        + "Modules:\n"
+        + glanceTable (glanceWidth ()) mods
     | name when Map.containsKey name te.Modules ->
         // members from COMPLETION'S source — the module map plus the
-        // bespoke checker arms — never a copy
-        let members =
-            Seq.append
-                (te.Modules[name] |> Map.keys)
-                (Check.specialModuleMembers |> Map.tryFind name |> Option.defaultValue [])
-            |> Seq.distinct
-            |> Seq.sort
-            |> List.ofSeq
+        // bespoke checker arms — never a copy; each with its doc's first
+        // line from builtinDocs, the one member-text source [D:help-glance]
+        let members = moduleMembersOf te name
 
-        $"{name} ({List.length members} members):\n  "
-        + flowNames "  " 72 members
+        let rows =
+            members |> List.map (fun m -> m, memberGlance $"{name}.{m}")
+
+        $"{name} ({List.length members} members):\n"
+        + glanceTable (glanceWidth ()) rows
         + $"\n\n#help {name}.<member> shows one member's doc"
     | name when (Check.ctorOwners te name |> List.length) > 1 ->
         // the checker refuses this name [D:ambiguous-ctor]; answering with one
@@ -1656,6 +1754,123 @@ let private helpDirective (te: TypeEnv) (arg: string) : string =
                     let pool = Complete.helpNames te
 
                     $"#help: unknown name '{name}'{didYouMean name pool}"
+
+/// the headless doc render [D:help-find]: `weir --repl-doc <name>`
+/// prints the EXACT `#help <name>` text for weir's own builtin surface
+/// to stdout — read-only, no user code, no eval. #find's fzf --preview
+/// is the caller; the e2e pin holds the byte equality.
+let replDocText (name: string) : string =
+    helpDirective initial.TypeEnv name
+
+// ---- #find [D:help-find]: fuzzy help search over ONE candidate set —
+// every module (`Seq — blurb`) and every member (`Seq.map — glance`),
+// the same sources #help renders, never a second copy. fzf at a tty
+// (with a live --preview via the headless doc render); a minimal
+// substring fallback otherwise [D:repl-quality] — never an "install
+// fzf" message. Piped sessions always take the fallback (deterministic).
+
+let private findCandidates (te: TypeEnv) : string list =
+    [ for m in te.Modules |> Map.keys |> Seq.sort do
+          let blurb = Builtins.moduleBlurbs |> Map.tryFind m |> Option.defaultValue ""
+          yield (if blurb = "" then m else $"{m} — {blurb}")
+
+          for mem in moduleMembersOf te m do
+              let g = memberGlance $"{m}.{mem}"
+              yield (if g = "" then $"{m}.{mem}" else $"{m}.{mem} — {g}") ]
+
+/// the fallback (and the piped behavior): case-insensitive substring
+/// filter over the candidate lines — name and glance text both match
+let private findFallback (te: TypeEnv) (query: string) : string =
+    if query = "" then
+        "#find <query> — fuzzy-search modules and members (interactive with fzf at a tty; a substring filter otherwise)"
+    else
+        let w = glanceWidth ()
+
+        let hits =
+            findCandidates te
+            |> List.filter (fun l -> l.Contains(query, StringComparison.OrdinalIgnoreCase))
+
+        if List.isEmpty hits then
+            $"#find: no matches for '{query}'"
+        else
+            hits |> List.map (clipTo w) |> String.concat "\n"
+
+/// the fzf path: feed the candidates, `{1}` (the name field) previews
+/// via the running binary's own --repl-doc, selection prints the exact
+/// `#help <name>` answer. Cancel (130/Esc) prints nothing.
+let private findFzf (te: TypeEnv) (query: string) : string option =
+    try
+        let psi = Diagnostics.ProcessStartInfo "fzf"
+
+        // candidate names carry weir glyphs' MODULE dots only, but the
+        // same ruling as Ctrl+R holds: literal fuzzy matching is the
+        // correct default, and last-flag-wins lets finderFlags restore
+        // `--extended` [D:repl-quality]
+        psi.ArgumentList.Add "--no-extended"
+
+        // the live preview: the running binary renders its own docs
+        // headlessly — never assume `weir` is on PATH
+        let exe =
+            match Environment.ProcessPath with
+            | null -> "weir"
+            | p -> p
+
+        psi.ArgumentList.Add "--preview"
+        psi.ArgumentList.Add("\"" + exe + "\" --repl-doc {1}")
+
+        for f in config.FinderFlags do
+            psi.ArgumentList.Add f
+
+        if query <> "" then
+            psi.ArgumentList.Add "--query"
+            psi.ArgumentList.Add query
+
+        psi.RedirectStandardInput <- true
+        psi.RedirectStandardOutput <- true
+        psi.UseShellExecute <- false // fzf draws its UI on /dev/tty directly
+
+        use p = Diagnostics.Process.Start psi
+
+        for line in findCandidates te do
+            p.StandardInput.WriteLine line
+
+        p.StandardInput.Close()
+        let sel = p.StandardOutput.ReadToEnd().TrimEnd('\n', '\r')
+        p.WaitForExit()
+
+        // pop the kitty keyboard stack unconditionally — the same
+        // unkillable-child guard Ctrl+R's fzf spawn carries [D:binary-echo]
+        if not Console.IsOutputRedirected then
+            Console.Out.Write "\x1b[<u"
+            Console.Out.Flush()
+
+        if p.ExitCode = 0 && sel <> "" then
+            // the name is the first whitespace-delimited field ({1} for
+            // the preview, the same split here)
+            Some((sel.Split ' ')[0])
+        else
+            None
+    with _ ->
+        None
+
+let private findDirective (te: TypeEnv) (query: string) =
+    let interactive =
+        not Console.IsInputRedirected
+        && not Console.IsOutputRedirected
+        && Extern.exists "fzf"
+
+    if interactive then
+        match findFzf te query with
+        | Some name -> Console.WriteLine(helpDirective te name)
+        | None -> () // cancel: no output, the session continues
+    else
+        Console.WriteLine(findFallback te query)
+
+/// test seams [D:help-find] (the parseAliasLineForTest precedent): the
+/// deterministic pieces, against the builtin session env
+let helpTextForTest (arg: string) : string = helpDirective initial.TypeEnv arg
+let findFallbackForTest (query: string) : string = findFallback initial.TypeEnv query
+let findCandidatesForTest () : string list = findCandidates initial.TypeEnv
 
 // ---- #infer [D:repl-infer]: draft named types from a sample ----------
 // The directive OWNS its parse (string-match, like #help): split the
@@ -1784,8 +1999,9 @@ let private injectDecls (state: State) (declText: string list) : Result<State * 
                             | DRecord _ -> []
 
                         let st' =
-                            { TypeEnv = chk.Env
-                              Values = ctors |> List.fold (fun vs (n, v) -> Map.add n v vs) st.Values }
+                            { st with
+                                TypeEnv = chk.Env
+                                Values = ctors |> List.fold (fun vs (n, v) -> Map.add n v vs) st.Values }
 
                         go st' (decl.Name :: defined) tail
                     | _ -> Error "#infer: a drafted statement was not a type declaration"
@@ -2028,12 +2244,28 @@ let rec private guaranteeChecks (kept: DistillStmt list) (dropped: int) : Distil
 // (the `TDef` name + physical source) through qualify -> dedup -> the
 // check guarantee. Returns the final qualified lines (pre-format) and the
 // count of statements dropped by the check guarantee.
-let distillDefs (r: Parser.Resolver) (defs: (string * string) list) : string list * int =
-    // qualify each block line-by-line (a multi-line heredoc/type keeps
-    // its real newlines; qualification is per physical line)
+let distillDefs
+    (r: Parser.Resolver)
+    (aliasOf: string -> (string * string list) option)
+    (defs: (string * string) list)
+    : string list * int =
+    // a resolver that parses alias NAMES as external heads (so an aliased
+    // command line parses to an ECmd) but never rewrites them, so the head
+    // keeps its source name and span for the desugar [D:command-head-alias]
+    let desugarR =
+        { r with
+            IsExternal = (fun n -> r.IsExternal n || (aliasOf n).IsSome)
+            AliasHead = fun _ -> None }
+
+    // qualify bare module aliases, THEN desugar command-head aliases (both
+    // per physical line, span-based; a multi-line heredoc/type keeps its
+    // real newlines)
+    let rewrite (line: string) =
+        line |> Fmt.qualifyBareAliases r |> Fmt.desugarAliasHeads desugarR aliasOf
+
     let qualified =
         [ for (name, physText) in defs ->
-              let lines = physText.Split '\n' |> Array.toList |> List.map (Fmt.qualifyBareAliases r)
+              let lines = physText.Split '\n' |> Array.toList |> List.map rewrite
               { Key = name; Lines = lines } ]
 
     let deduped = dedupLast qualified
@@ -2058,7 +2290,11 @@ let private saveDirective (state: State) (path: string) : unit =
                 "#save: nothing to save yet — the session has no definitions (a type or a named let binding)"
         else
             let r = resolver state
-            let distilled, dropped = distillDefs r defs
+
+            let aliasOf n =
+                Map.tryFind n state.Aliases |> Option.map (fun a -> (a.Exe, a.Prefix))
+
+            let distilled, dropped = distillDefs r aliasOf defs
 
             let note () =
                 if dropped > 0 then
@@ -2112,6 +2348,9 @@ let rec private loop (state: State) =
         elif t = "#help" || t.StartsWith "#help " then
             Console.WriteLine(helpDirective state.TypeEnv (t.Substring 5))
             loop state
+        elif t = "#find" || t.StartsWith "#find " then
+            findDirective state.TypeEnv ((t.Substring 5).Trim())
+            loop state
         elif t = "#echo" || t.StartsWith "#echo " then
             // the echo cap [D:echo-cap]: bare reports (FSI's #time
             // convention), a count sets, `all` uncaps — the footgun is
@@ -2139,14 +2378,48 @@ let rec private loop (state: State) =
         elif t = "#save" || t.StartsWith "#save " then
             saveDirective state (t.Substring(5).Trim())
             loop state
+        elif t = "#alias" || t.StartsWith "#alias " then
+            // a live command-head alias [D:command-head-alias]. init.weir is
+            // the canonical place; a bare `#alias` LISTS the table, a
+            // `#alias name = cmd …` adds one (same single-hop rule)
+            let body = t.Substring(6)
+
+            if body.Trim() = "" then
+                if Map.isEmpty state.Aliases then
+                    Console.WriteLine "no aliases — declare them in the init file (weir/init.weir) or here: #alias k = kubectl"
+                else
+                    for KeyValue(name, a) in state.Aliases do
+                        let tgt = String.concat " " (a.Exe :: a.Prefix)
+                        Console.WriteLine $"#alias {name} = {tgt}"
+
+                loop state
+            else
+                match parseAliasLine body with
+                | Error msg ->
+                    Console.WriteLine msg
+                    loop state
+                | Ok(name, alias) when alias.Exe <> name && Map.containsKey alias.Exe state.Aliases ->
+                    Console.WriteLine
+                        $"#alias {name} = {alias.Exe} …: an alias resolves to a program, not to another alias ('{alias.Exe}' is itself an alias) — aliases are single-hop"
+
+                    loop state
+                | Ok(name, alias) ->
+                    let tgt = String.concat " " (alias.Exe :: alias.Prefix)
+                    Console.WriteLine $"alias {name} = {tgt}"
+                    loop { state with Aliases = Map.add name alias state.Aliases }
         else
             let word = t.Split(' ').[0]
 
             Console.WriteLine(
                 if word = "#session" then
                     "#session is read from the init file at startup (config dir, weir/init.weir) — edit it and restart"
+                elif word = "#sig" || word = "#schema" then
+                    $"{word} is a file directive, read at check time — it has no effect in the REPL"
                 else
-                    $"unknown directive '{word}' — #help lists them (#sig and #schema are file directives, read at check time)"
+                    // the did-you-mean pool is the dispatch's ONE source
+                    // (Complete.sessionDirectives) [D:repl-directives]
+                    let pool = Complete.sessionDirectives |> List.map (fun d -> "#" + d)
+                    $"unknown directive '{word}' — #help lists them{didYouMean word pool}"
             )
 
             loop state
@@ -2330,9 +2603,12 @@ let private initDiag (path: string) (line: int) (col: int) (srcLine: string) (ms
 let private splitSessionBlock
     (path: string)
     (lines: string[])
-    : Result<(int * string) list * (int * string) list, unit> =
+    : Result<(int * string) list * (int * string) list * (int * string) list, unit> =
     let mutable fields: (int * string) list = []
     let mutable rest: (int * string) list = []
+    // #alias directive lines, collected with their (1-based) line number;
+    // the text is what follows `#alias` [D:command-head-alias]
+    let mutable aliases: (int * string) list = []
     let mutable inBlock = false
     let mutable seen = false
     let mutable failed = false
@@ -2341,7 +2617,13 @@ let private splitSessionBlock
         let l = lines.[i]
         let t = l.Trim()
 
-        if not inBlock && t.StartsWith "#session" then
+        if not inBlock && (t = "#alias" || t.StartsWith "#alias ") then
+            // a top-level directive line; kept out of the declaration
+            // stream and replaced by a blank so declaration diagnostics keep
+            // their real positions (the #session discipline)
+            aliases <- (i + 1, t.Substring("#alias".Length)) :: aliases
+            rest <- (i + 1, "") :: rest
+        elif not inBlock && t.StartsWith "#session" then
             if seen then
                 initDiag path (i + 1) 1 l "a second #session block — the init takes one"
                 failed <- true
@@ -2387,7 +2669,7 @@ let private splitSessionBlock
     if failed then
         Error()
     else
-        Ok(List.rev fields, List.rev rest)
+        Ok(List.rev fields, List.rev rest, List.rev aliases)
 
 let private applySessionField
     (path: string)
@@ -2487,7 +2769,7 @@ let private loadInit (baseState: State) : State =
 
         match splitSessionBlock path lines with
         | Error() -> notLoaded ()
-        | Ok(fieldLines, declLines) ->
+        | Ok(fieldLines, declLines, aliasLines) ->
             let checkAll (lls: Script.LogicalLine list) (tenv: TypeEnv) =
                 let rec go env acc rest =
                     match rest with
@@ -2503,6 +2785,52 @@ let private loadInit (baseState: State) : State =
 
             let reportDiag (ll: Script.LogicalLine) (d: Script.StmtDiag) =
                 initDiag path d.PhysLine d.PhysCol (srcLine d.PhysLine) d.Message
+
+            // the #alias table [D:command-head-alias] — a malformed line is
+            // a LOUD init error (all-or-nothing), and a define-time
+            // alias-of-alias is REJECTED (single-hop by construction: the
+            // stored Exe is always a real program, never a table name)
+            let aliasTable: Result<Map<string, Alias>, unit> =
+                let mutable tbl: Map<string, Alias> = Map.empty
+                let mutable failed = false
+
+                for (lineNo, body) in aliasLines do
+                    if not failed then
+                        match parseAliasLine body with
+                        | Error msg ->
+                            initDiag path lineNo 1 (srcLine lineNo) msg
+                            failed <- true
+                        | Ok(name, alias) -> tbl <- Map.add name alias tbl
+
+                if failed then
+                    Error()
+                else
+                    // single-hop: reject any alias whose target is itself an
+                    // alias name — an alias resolves to a binary, never to
+                    // another alias
+                    let mutable bad = None
+
+                    for (lineNo, body) in aliasLines do
+                        if bad.IsNone then
+                            match parseAliasLine body with
+                            // a self-shadow (`#alias ls = ls --color`) targets
+                            // the REAL binary, bypassable with `^ls` — legal.
+                            // Only a target naming a DIFFERENT alias is rejected.
+                            | Ok(name, alias) when alias.Exe <> name && Map.containsKey alias.Exe tbl ->
+                                bad <- Some(lineNo, name, alias.Exe)
+                            | _ -> ()
+
+                    match bad with
+                    | Some(lineNo, name, exe) ->
+                        initDiag
+                            path
+                            lineNo
+                            1
+                            (srcLine lineNo)
+                            $"#alias {name} = {exe} …: an alias resolves to a program, not to another alias ('{exe}' is itself an alias) — aliases are single-hop"
+
+                        Error()
+                    | None -> Ok tbl
 
             // the #session fields first — settings before names
             let fieldsOutcome =
@@ -2563,6 +2891,10 @@ let private loadInit (baseState: State) : State =
             if not fieldsOutcome then
                 notLoaded ()
             else
+
+            match aliasTable with
+            | Error() -> notLoaded ()
+            | Ok aliasMap ->
                 // the declarations — the module rule, applied to the prompt
                 match Script.assemble declLines with
                 | Error msg ->
@@ -2669,10 +3001,18 @@ let private loadInit (baseState: State) : State =
 
                                 initDocs <- docs
 
-                                if names > 0 || not (List.isEmpty fieldLines) then
-                                    Console.Error.WriteLine $"init: {names} name(s) from {path}"
+                                if names > 0 || not (List.isEmpty fieldLines) || not (Map.isEmpty aliasMap) then
+                                    let aliasNote =
+                                        if Map.isEmpty aliasMap then
+                                            ""
+                                        else
+                                            $", {Map.count aliasMap} alias(es)"
 
-                                { TypeEnv = tenv; Values = venv }
+                                    Console.Error.WriteLine $"init: {names} name(s){aliasNote} from {path}"
+
+                                { TypeEnv = tenv
+                                  Values = venv
+                                  Aliases = aliasMap }
 
 let run () =
     if not Console.IsInputRedirected then

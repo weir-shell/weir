@@ -5449,6 +5449,87 @@ expect "a script ignores the REPL config entirely (even a broken one)" "scripts-
 rm -f "$CFGHOME/weir/config.json"
 rm -rf "$cfgdir"
 
+# ---- command-head aliases [D:command-head-alias] -----------------------
+# an init.weir #alias line maps a short head to (exe, prefix args),
+# consulted BEFORE PATH in command-head position, REPL-only. Stubs on
+# PATH echo their argv so resolution is asserted without a real tool.
+# Skipped on Windows (the .bat stubs quote argv differently — the POSIX
+# half proves the resolution law).
+if [ "$IS_WINDOWS" != "1" ]; then
+    acfg=$(mkweirtmp)
+    astub=$(mkweirtmp)
+    printf '#!/bin/sh\necho "kubectl-argv:$*"\n' > "$astub/kubectl" && chmod +x "$astub/kubectl"
+    printf '#!/bin/sh\necho "kustomize-argv:$*"\n' > "$astub/kustomize" && chmod +x "$astub/kustomize"
+    printf '#!/bin/sh\necho "realls-argv:$*"\n' > "$astub/ls" && chmod +x "$astub/ls"
+    mkdir -p "$acfg/weir"
+    printf '#alias k  = kubectl\n#alias kb = kustomize build\n#alias ls = ls --color\n' > "$acfg/weir/init.weir"
+
+    # (a) a head alias resolves; the rest stays bare argv
+    out=$(printf 'k get po -o yaml\n#quit\n' | PATH="$astub:$PATH" XDG_CONFIG_HOME="$acfg" $BIN 2>/dev/null)
+    expect "an alias resolves the head; argv stays bare" "kubectl-argv:get po -o yaml" "$out"
+
+    # (b) prefix args insert after the exe, before user argv
+    out=$(printf 'kb overlays/prod\n#quit\n' | PATH="$astub:$PATH" XDG_CONFIG_HOME="$acfg" $BIN 2>/dev/null)
+    expect "a prefix-args alias inserts the fixed prefix" "kustomize-argv:build overlays/prod" "$out"
+
+    # (c) injection-safety: a splice passes as ONE argv entry (the stub's
+    # $* joins with spaces, so a single spliced value shows whole)
+    out=$(printf 'let x = "a b"\nk get $x\n#quit\n' | PATH="$astub:$PATH" XDG_CONFIG_HOME="$acfg" $BIN 2>/dev/null)
+    expect "a spliced value stays ONE argument through an alias" "kubectl-argv:get a b" "$out"
+
+    # (d) ^ bypasses the shadowing alias — real ls, NO --color prefix
+    out=$(printf '^ls xarg\n#quit\n' | PATH="$astub:$PATH" XDG_CONFIG_HOME="$acfg" $BIN 2>/dev/null)
+    expect "^ forces PATH, bypassing the alias table" "realls-argv:xarg" "$out"
+    echo "$out" | grep -qF -- "--color" && fail "^ls must NOT carry the alias prefix: $out"
+
+    # (e) REPL-only: a SCRIPT using an alias errors unknown-command (no leak)
+    printf 'k get po\n' > "$acfg/uses-alias.weir"
+    out=$(PATH="$astub:$PATH" XDG_CONFIG_HOME="$acfg" $BIN "$acfg/uses-alias.weir" 2>&1 || true)
+    echo "$out" | grep -qF "unbound variable 'k'" || fail "a script must not see aliases (no leak): $out"
+
+    # (f) a malformed #alias is a LOUD init error (all-or-nothing)
+    printf '#alias = kubectl\n' > "$acfg/weir/init.weir"
+    out=$(printf '#quit\n' | PATH="$astub:$PATH" XDG_CONFIG_HOME="$acfg" $BIN 2>&1 || true)
+    echo "$out" | grep -qF "malformed #alias" || fail "a malformed #alias must be a loud init error: $out"
+    echo "$out" | grep -qF "NOT loaded" || fail "a malformed init is all-or-nothing: $out"
+
+    # (g) an alias-of-alias is rejected at define time (single-hop)
+    printf '#alias k = kubectl\n#alias kk = k\n' > "$acfg/weir/init.weir"
+    out=$(printf '#quit\n' | PATH="$astub:$PATH" XDG_CONFIG_HOME="$acfg" $BIN 2>&1 || true)
+    echo "$out" | grep -qF "single-hop" || fail "an alias-of-alias must be rejected: $out"
+
+    # (h) #save DESUGARS alias heads: the saved script is alias-free and checks
+    printf '#alias k  = kubectl\n#alias kb = kustomize build\n' > "$acfg/weir/init.weir"
+    out=$(printf 'let pods = k get po -o json\nlet note = "k is a letter"\n#save %s/saved.weir\n#quit\n' "$acfg" \
+        | PATH="$astub:$PATH" XDG_CONFIG_HOME="$acfg" $BIN 2>/dev/null)
+    echo "$out" | grep -qF "#save: wrote" || fail "#save must write with aliases active: $out"
+    grep -qF "kubectl get po -o json" "$acfg/saved.weir" || fail "#save must desugar the alias head: $(cat "$acfg/saved.weir")"
+    grep -qF '"k is a letter"' "$acfg/saved.weir" || fail "#save desugar must leave a string spelling the alias untouched: $(cat "$acfg/saved.weir")"
+    PATH="$astub:$PATH" $BIN check "$acfg/saved.weir" || fail "the desugared #save output must check clean: $(cat "$acfg/saved.weir")"
+    echo "e2e ok: #alias resolves head->exe (+prefix), injection-safe, ^-bypass, REPL-only, malformed=loud, single-hop, #save desugars alias-free"
+    rm -rf "$acfg" "$astub"
+fi
+
+# ---- help glance + #find [D:help-glance] [D:help-find] --------------------
+# the headless doc render is the ONE #help source: `weir --repl-doc X`
+# must print byte-identically to the piped `#help X` answer (prompts
+# stripped) — the pin that keeps #find's fzf preview and the prompt's
+# own answer from drifting.
+hdir=$(mkweirtmp)
+$BIN --repl-doc Option > "$hdir/headless.txt" || fail "--repl-doc Option must succeed"
+printf '#help Option\n#quit\n' | $BIN | sed -e 's/^weir> //' -e '/^weir>/d' > "$hdir/prompted.txt"
+diff -u "$hdir/headless.txt" "$hdir/prompted.txt" >/dev/null \
+    || fail "--repl-doc must print the exact #help bytes: $(diff "$hdir/headless.txt" "$hdir/prompted.txt" | head -5)"
+# the directive reference table [D:help-find]: docs/reference/lexical.md
+# names EVERY dispatched directive across its three contexts (the
+# gen-lexical spirit — a new directive without a table row fails here)
+for d in help find echo infer save quit alias session sig schema; do
+    grep -q "\`#$d\`" "$(dirname "$0")/../docs/reference/lexical.md" \
+        || fail "docs/reference/lexical.md directive table is missing #$d"
+done
+rm -rf "$hdir"
+echo "e2e ok: --repl-doc == #help bytes (one source); lexical.md names every directive"
+
 # ---- for/do: the general effect loop [D:for-do] ---------------------------
 fdir=$(mkweirtmp)
 # the natural shell shape: a bare command body over a real external

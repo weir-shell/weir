@@ -119,7 +119,8 @@ let weirVerdict (src: string) : Verdict =
               IsCommandCallable = Weir.Builtins.commandCallable.Contains
               IsExternal = fun _ -> false
               ExternalNames = (fun () -> Seq.empty)
-              BareHome = fun _ -> None }
+              BareHome = (fun _ -> None)
+              AliasHead = fun _ -> None }
 
         // the unused-binding law rides the mirror [D:unused-bindings] — the
         // mirror replicates the runner's check phase, whole-file laws included

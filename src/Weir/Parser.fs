@@ -76,7 +76,13 @@ type Resolver =
       ExternalNames: unit -> seq<string>
       // a bare module member's home (where -> Seq) [D:bare-partition]:
       // the strict-context teaching names the qualified spelling
-      BareHome: string -> string option }
+      BareHome: string -> string option
+      // a command-head alias [D:command-head-alias], REPL-only: a short
+      // name -> (real exe, fixed prefix args). Consulted ONLY in
+      // command-head position and BEFORE PATH; the `^` sigil skips it.
+      // Single-hop by construction (the table stores exes, never aliases).
+      // Scripts/-e supply the always-None resolver, so aliases never leak.
+      AliasHead: string -> (string * string list) option }
 
 // Sigil interiors ($(...) / !(...)) need the resolver inside the
 // expression grammar, which is otherwise resolver-free. parseLine sets
@@ -87,7 +93,8 @@ let private ambientResolver =
           IsCommandCallable = (fun _ -> false)
           IsExternal = (fun _ -> false)
           ExternalNames = (fun () -> Seq.empty)
-          BareHome = fun _ -> None })
+          BareHome = (fun _ -> None)
+          AliasHead = fun _ -> None })
 
 // Block-let command RHS [D:block-let-cmd][D:statement-lets]:
 // context-derived — TRUE along the spine a top-level let's RHS
@@ -3546,6 +3553,10 @@ let private cmdArg = cmdArgWith false
 type private HeadKind =
     | ExternalHead
     | BuiltinHead
+    // a command-head alias resolved to (real exe, fixed prefix args)
+    // [D:command-head-alias]: the ECmd fold swaps the head to the exe and
+    // PREPENDS the prefix as literal argv (before the user's own args)
+    | AliasedHead of exe: string * prefix: string list
 
 let private commandSegment
     (builtinHeads: bool)
@@ -3600,10 +3611,18 @@ let private commandSegment
                     fail
                         "'[' is command mode here (a district or sigil interior takes command lines); feed a value into a command with a value-headed pipeline bound outside the block — `let out = xs | prog`"
             elif forced.IsSome then
+                // ^ forces PATH: the alias table is skipped [D:command-head-alias]
                 if r.IsExternal w then
                     preturn (ExternalHead, w, span)
                 else
                     failFatally $"command not found: {w}{didYouMean w (r.ExternalNames())}"
+            elif isIdentLike w && (r.AliasHead w).IsSome then
+                // the alias table is consulted BEFORE builtins and PATH, so
+                // an alias shadowing a real name (`#alias ls = ls --color`)
+                // wins here and `^ls` (above) is the bypass [D:command-head-alias]
+                match r.AliasHead w with
+                | Some(exe, prefix) -> preturn (AliasedHead(exe, prefix), w, span)
+                | None -> ifail "not an alias"
             elif builtinHeads && isIdentLike w && r.IsCommandCallable w then
                 preturn (BuiltinHead, w, span)
             elif isIdentLike w && (keywords.Contains w || r.IsKnown w) then
@@ -3642,6 +3661,16 @@ let private commandSegment
         match kind with
         | ExternalHead ->
             { Kind = ECmd(prog, args, sigilEnv)
+              Span = fullSpan }
+        | AliasedHead(exe, prefix) ->
+            // swap the head to the real exe, PREPEND the fixed prefix as
+            // literal argv words; the user's argv stays typed and unchanged
+            // (`k get $x` still passes $x as ONE arg) [D:command-head-alias].
+            // Prefix words carry the head's own span (source-free, but
+            // located at the alias head for diagnostics).
+            let prefixArgs = prefix |> List.map (fun a -> { Kind = EStr a; Span = span })
+
+            { Kind = ECmd(exe, prefixArgs @ args, sigilEnv)
               Span = fullSpan }
         | BuiltinHead ->
             let headVar = { Kind = EVar prog; Span = span }
@@ -4441,7 +4470,8 @@ let private noExternals =
       IsCommandCallable = fun _ -> false
       IsExternal = fun _ -> false
       ExternalNames = (fun () -> Seq.empty)
-      BareHome = fun _ -> None }
+      BareHome = (fun _ -> None)
+      AliasHead = fun _ -> None }
 
 // Structured failure: the position travels as DATA
 // [D:structured-parse-failure]. Message text is unchanged; Col is

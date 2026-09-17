@@ -1,5 +1,77 @@
 # Changelog
 
+## v0.0.40
+
+### Added
+
+- **`#help` is glanceable.** `#help <Module>` lists one member per
+  line — the name plus the FIRST LINE of its doc (the same builtinDocs
+  source hover and `#help Module.member` read, so the glance cannot
+  drift), clipped to the terminal. Bare `#help` gives every module a
+  one-line blurb (`Seq — lazy sequence pipeline ops: map, where, fold,
+  pmap`) from a new one-source table (`moduleBlurbs`), completeness
+  unit-pinned two ways against the derived module list — a new module
+  without a blurb fails loud.
+- **`#find [query]` — fuzzy help search.** Every module (`Seq — blurb`)
+  and every member (`Seq.map — glance`) feeds fzf at a tty, with a
+  LIVE PREVIEW of the highlighted name's full doc; Enter prints the
+  exact `#help` answer for the selection, Esc returns quietly. The
+  preview runs the session's own binary headlessly — a new
+  `weir --repl-doc <name>` prints the exact `#help <name>` bytes
+  (builtin docs only, nothing evaluated; byte-equality e2e-pinned).
+  Without fzf, or piped, `#find query` is a deterministic
+  case-insensitive substring filter over the same candidate lines —
+  never an "install fzf" message. `--no-extended` leads the fzf argv
+  as in Ctrl+R (weir glyphs are fzf operators; `finderFlags` can
+  restore `--extended`), `#find` Tab-completes with the other session
+  directives, and a typo'd directive now gets a did-you-mean from the
+  same one-source list. `docs/reference/lexical.md` gained the
+  consolidated directive table (script file / init.weir / prompt —
+  the three contexts), gated in e2e so a new directive cannot skip it.
+- **`#alias name = cmd [args...]` — command-head aliases, REPL-only.**
+  A short head maps to a real program and a fixed prefix of arguments,
+  consulted ONLY in command-head position and BEFORE PATH. Declare them
+  in `init.weir` (the canonical place), one per line:
+
+  ```text
+  #alias k  = kubectl
+  #alias kb = kustomize build
+  ```
+
+  Now `k get po -o yaml` runs `kubectl get po -o yaml` and `kb
+  overlays/prod` runs `kustomize build overlays/prod` — the fixed
+  prefix is inserted after the exe, your argv appended. It is a
+  RESOLUTION-table entry, not a textual macro: your argv stays typed
+  argv, so `k get $x` passes `$x` as ONE argument (the injection law
+  holds), and only the HEAD token in command-head position is rewritten
+  — a `k` in a string, a variable, or an argument is untouched. The
+  resolution order is **alias table → PATH**, and the `^` force-PATH
+  sigil skips the table, so a shadowing alias (`#alias ls = ls
+  --color`) is bypassable with `^ls`. Aliases are **single-hop** (the
+  target is a program, never another alias — an alias-of-alias is
+  rejected at load) and **REPL-only**: scripts and `-e` never load
+  `init.weir`, so their command resolution is unchanged and an alias
+  name there is an ordinary unknown command. The target need not exist
+  when defined (like bash); a malformed `#alias` line is a loud init
+  error (init stays all-or-nothing). A live `#alias` works at the
+  prompt too (bare `#alias` lists the table), but `init.weir` is the
+  canonical home.
+- **`#save` desugars aliases.** The saved script has no alias table, so
+  each kept line's command HEAD is span-rewritten back to the real
+  invocation — `let pods = k get po` saves as `let pods = kubectl get
+  po`, a kept `kb overlays/prod` as `kustomize build overlays/prod`.
+  The rewrite is head-only (a `k` in a string is untouched), and the
+  output is alias-free and `weir check` clean.
+
+### Changed
+
+- **The unknown-directive message dropped its `#sig`/`#schema`
+  parenthetical.** It was noise for an unrelated typo (a bare `#` or
+  `#time` does not care about file directives). Now `#sig`/`#schema`
+  at the REPL get their own "file directive, read at check time — no
+  effect in the REPL" redirect (mirroring `#session`'s), and the
+  generic catch-all is just `unknown directive '…' — #help lists them`.
+
 ## v0.0.39
 
 ### Added
