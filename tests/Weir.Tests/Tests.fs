@@ -2909,8 +2909,15 @@ let completionTests =
               // REPL's affordances, `#help` first.
               Expect.equal (suggest "" 0) [ "#help"; "#echo"; "#infer"; "#save"; "#quit" ] "the curated directive set"
 
-              // filtered completion is unaffected (a real prefix at a head)
-              Expect.equal (suggest "Fi" 0) [ "File"; "FileCheck-21" ] "a real prefix still filters normally"
+              // filtered completion is unaffected (a real prefix at a head).
+              // Assert only environment-stable facts: the `File` MODULE is
+              // offered and every candidate matches the prefix — never a
+              // specific PATH binary (those vary per machine: a dev box has
+              // LLVM's FileCheck-21, a CI runner does not)
+              let fi = suggest "Fi" 0
+              Expect.contains fi "File" "the File module is offered for prefix Fi"
+              Expect.isTrue (fi |> List.forall (fun c -> c.StartsWith "Fi")) "every candidate matches the prefix"
+              Expect.isFalse (List.contains "#help" fi) "a real prefix does not fall into the empty-prompt directive set"
           }
           test "a union-case constructor is not a statement head [D:constructors-not-heads]" {
               // `WriteFile …` as a head is a discarded value (a check error) —
