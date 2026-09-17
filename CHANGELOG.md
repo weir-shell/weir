@@ -1,15 +1,42 @@
 # Changelog
 
-## v0.0.37
+## v0.0.38
 
 ### Fixed
 
+- **A command line ending in `yaml` is argv, not a district marker.**
+  `kubectl get po -o yaml`, `docker … --format yaml` — everyday ops
+  commands whose last word is `yaml` — failed at assembly with
+  "line-end 'yaml' needs an indented block below it", misread as arming
+  a `yaml` district. The marker now arms token-precisely: only a bare
+  `yaml` (the next-line form) or a `= yaml` assignment RHS
+  (`let d = yaml`) arms; `yaml` preceded by argv (`-o yaml`,
+  `--format yaml`, a trailing bare word) stays a command. `weir check`
+  and `weir <file>` agree — the check gap is closed.
+- **`#save` now distills a session to its checkable definitions.** The
+  old `#save` dumped the raw transcript: a multi-line heredoc came out
+  flattened onto one line by the assembler's join sentinel (an `illegal
+  control character` parse error), a redeclared `type` was written twice
+  (`dup-type`), and `let x = it` was saved though `it` is REPL-only
+  (unbound in a script) — so the "runnable" file did not `weir check`.
+  `#save` now DISTILLS (option B — a session is scratch; `#save`
+  crystallizes definitions): it keeps `type` decls and self-contained
+  named `let` bindings with their REAL multi-line source, DEDUPS a
+  redeclared name to its last form (survivor order preserved), and DROPS
+  the bare-echo scratch. The written file is GUARANTEED to check clean —
+  any surviving statement that still references session-only state (a
+  `let x = it`) is removed and `#save` prints a dropped-count note.
 - **`#help <TAB>` now completes session types (and modules and forms).**
   `#help Patatas` documented an `#infer`'d type fine, but `#help Pat<TAB>`
   offered only `Path` and `Patch` — never `Patatas`, because the argument
   completed against the general pool, which never surfaces `env.Types`
   names. The `#help` argument now completes the same set `#help` can
   document, so an injected type is completable, not just documentable.
+
+## v0.0.37
+
+### Fixed
+
 - **REPL Tab completes record fields through a pipe.** A record piped
   into `_.` or a lambda param — `x |> from yaml T |> _.`, `r |> _.`,
   `x |> … |> (fun row -> row.` — offered no fields (or, for the lambda,
