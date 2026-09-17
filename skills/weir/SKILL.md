@@ -1382,7 +1382,10 @@ type Bad = C of int
   renders as a block scalar automatically. A `yaml` BLOCK is a
   checked template: `let d = yaml` + an indented
   YAML block (canonical: the marker on the binding line; fmt
-  rewrites the next-line spelling); `$name`/`$(expr)` splice VALUES (never text — no
+  rewrites the next-line spelling). Arming is token-precise: a bare
+  `yaml` or a `= yaml` RHS arms; `yaml` as a command ARGUMENT stays
+  argv (`kubectl get po -o yaml`, `--format yaml` are commands, not
+  districts). `$name`/`$(expr)` splice VALUES (never text — no
   injection is possible), a `None` splice omits its entry, and
   `for (k, v) in pairs` under a mapping yields dynamic keys (under a
   sequence, items). `yaml schema=<name>` on the marker line validates

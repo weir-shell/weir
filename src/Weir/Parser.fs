@@ -335,9 +335,20 @@ let isYamlMarkerPiece (piece: string) =
         else
             go <- false
 
-    (core = "yaml" || core.EndsWith " yaml")
-    && not (core.EndsWith "to yaml")
-    && not (core.EndsWith "from yaml")
+    // TOKEN-PRECISE arming [D:yaml-district]: a district marker is only
+    // ever a BARE `yaml` (the next-line form) or an assignment RHS
+    // (`let d = yaml`). `yaml` preceded by ARGV — `-o yaml`,
+    // `--format yaml`, a trailing bare word — is a command, not a
+    // marker. So the residue arms iff its tokens are EXACTLY ["yaml"]
+    // or its last two are EXACTLY ["="; "yaml"]. This subsumes the
+    // `to yaml`/`from yaml` adapters (["to";"yaml"]/["from";"yaml"] are
+    // not `= yaml`) and excludes `>= yaml`/`== yaml` (the token before
+    // `yaml` is `>=`/`==`, never `=`).
+    let toks = core.Split(' ')
+    let n = toks.Length
+
+    (n = 1 && toks[0] = "yaml")
+    || (n >= 2 && toks[n - 1] = "yaml" && toks[n - 2] = "=")
 
 /// the marker suffix's LENGTH in a marker piece — `yaml` plus its
 /// modifiers (`patch`, `by=`, `schema=`); the REPL colorizer's tint
