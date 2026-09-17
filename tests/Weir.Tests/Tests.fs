@@ -18005,6 +18005,105 @@ let unusedBindingTests =
                   "used private member"
           } ]
 
+// ---- #save DISTILL [D:repl-save] -------------------------------------
+// the distill seam: transcript survivors (a `TDef` name + physical
+// source) through qualify -> dedup(last) -> the check guarantee. The
+// pins mirror the e2e cell but exercise the pure core directly, so a
+// regression in dedup/drop/protect is caught without driving a session.
+let private distill (defs: (string * string) list) : string list * int =
+    Weir.Repl.distillDefs realResolver defs
+
+// the distilled lines must themselves weir-check clean — the
+// acceptance-defining guarantee, asserted at the unit seam
+let private distilledChecks (lines: string list) : bool =
+    if List.isEmpty lines then
+        true
+    else
+        let diags, _, _, _ = Weir.Script.analyzeLines "#save-test" lines
+        not (diags |> List.exists (fun d -> d.Severity = "error"))
+
+let replSaveDistillTests =
+    testList
+        "#save distill [D:repl-save]"
+        [ test "(a) the guarantee: a distilled session weir-checks clean" {
+              let lines, _ =
+                  distill
+                      [ ("Endpoint", "type Endpoint = {\n    host: string\n    port: int\n}")
+                        ("manifest", "let manifest = <<<\n    apiVersion: v1\n    kind: Pod")
+                        ("gobeldy", "let gobeldy = it") ]
+
+              Expect.isTrue (distilledChecks lines) $"the distilled file must check clean: {lines}"
+          }
+          test "(b) DEDUP: a redeclared type is kept ONCE, in its LAST form" {
+              let lines, dropped =
+                  distill [ ("Color", "type Color = Red | Green"); ("Color", "type Color = Red | Green | Blue") ]
+
+              let joined = String.concat "\n" lines
+              let occurrences = lines |> List.filter (fun l -> l.Contains "type Color") |> List.length
+              Expect.equal occurrences 1 $"one surviving Color decl: {lines}"
+              Expect.stringContains joined "Blue" "the LAST form survives"
+              Expect.equal dropped 0 "a dedup is not a session-only drop"
+          }
+          test "(c) a self-contained heredoc body is PRESERVED across newlines (not flattened)" {
+              let lines, _ =
+                  distill [ ("manifest", "let manifest = <<<\n    apiVersion: v1\n    kind: Pod\n    name: web") ]
+
+              let joined = String.concat "\n" lines
+              // the body rides as real newlines, NOT the assembler's sentinel
+              Expect.isFalse (joined.Contains "\x1d" || joined.Contains "\x1f") "no join sentinel leaked"
+              Expect.stringContains joined "apiVersion: v1" "the first body line"
+              Expect.stringContains joined "name: web" "the last body line"
+              Expect.isTrue (lines |> List.length >= 4) $"the heredoc spans several physical lines: {lines}"
+              Expect.isTrue (distilledChecks lines) "and it still checks"
+          }
+          test "(d) DROP: a bare it-referencing binding is removed, with the note count" {
+              let lines, dropped =
+                  distill [ ("keep", "let keep = \"hi\""); ("gobeldy", "let gobeldy = it") ]
+
+              let joined = String.concat "\n" lines
+              Expect.isFalse (joined.Contains "gobeldy") $"the it-binding is dropped: {lines}"
+              Expect.equal dropped 1 "one session-only drop is counted for the note"
+              Expect.isTrue (distilledChecks lines) "the survivor checks clean"
+          }
+          test "(e) a self-contained named let is KEPT (protected, not dropped)" {
+              // an unused-but-self-contained binding is the product of a
+              // session, not scratch — the guarantee protects it (a
+              // `_`-prefix) rather than dropping it, and does NOT count it
+              let lines, dropped = distill [ ("greeting", "let greeting = \"hello\"") ]
+              let joined = String.concat "\n" lines
+              Expect.stringContains joined "\"hello\"" $"the value survives: {lines}"
+              Expect.equal dropped 0 "a self-contained binding is not a session-only drop"
+              Expect.isTrue (distilledChecks lines) "and it checks clean"
+          }
+          test "(f) PROTECT is surgical: a binder a later survivor reads keeps its name" {
+              // the chained-session shape: `base` is read by `total`, only
+              // `total` is unread. Protecting EVERY binder would rename
+              // `base` under its reader's feet (`let _base` + `let _total =
+              // base |> …` — `base` then resolves as a phantom command), so
+              // only the binder the unused finding names takes the `_`
+              let lines, dropped =
+                  distill
+                      [ ("base", "let base = [\"10\"; \"20\"]")
+                        ("total", "let total = base |> Seq.map Str.toInt |> Seq.sum") ]
+
+              let joined = String.concat "\n" lines
+              Expect.stringContains joined "let base" $"the read binder keeps its name: {lines}"
+              Expect.stringContains joined "let _total" "the unread tail is protected, not dropped"
+              Expect.equal dropped 0 "nothing referenced session-only state"
+              Expect.isTrue (distilledChecks lines) "and it checks clean"
+          }
+          test "a bare alias is qualified (map -> Seq.map) in a survivor" {
+              let lines, _ = distill [ ("picked", "let picked = [\"a\"] |> map (Str.toUpper)") ]
+              let joined = String.concat "\n" lines
+              Expect.stringContains joined "Seq.map" $"the bare alias is qualified: {lines}"
+          }
+          test "dedup keys on the name, not the text: two unrelated types both survive" {
+              let lines, _ = distill [ ("A", "type A = X | Y"); ("B", "type B = P | Q") ]
+              let joined = String.concat "\n" lines
+              Expect.stringContains joined "type A" "A survives"
+              Expect.stringContains joined "type B" "B survives"
+          } ]
+
 [<Tests>]
 let allTests =
     testList
@@ -18159,6 +18258,7 @@ let allTests =
           sigilTests
           districtTests
           unusedBindingTests
+          replSaveDistillTests
           indexerTests
           envLoadTests
           parallelTests

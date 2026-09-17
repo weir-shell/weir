@@ -17,37 +17,106 @@ let private prompt = "weir> "
 let mutable private lastErrored = false
 
 // the session TRANSCRIPT [D:repl-save]: the ACCEPTED statements, in
-// order, that `#save` dumps to a runnable .weir file. A statement lands
-// here only after it CHECKS and EVALUATES clean (errored lines drop).
-// `NeedsDiscard` is TRUE for a NON-UNIT expression/command echo: at the
-// prompt the value was only glanced, but a strict script's
-// unused-binding law refuses a discarded value — so `#save` WRAPS it as
-// `let _N = <expr>` (the deliberate-discard escape), which both reads
-// the bindings it references (no orphaned `let`) and is itself
-// unused-exempt. `let`/`type`/unit statements save verbatim. Directives
-// never record; #infer records the DRAFTED type decls (session
-// declarations) instead of the directive line.
-type private TranscriptLine = { Text: string; NeedsDiscard: bool }
+// order, that `#save` DISTILLS into a runnable .weir file (option B — a
+// session is scratch; #save crystallizes its definitions and guarantees
+// the output `weir check`s clean). A statement lands here only after it
+// CHECKS and EVALUATES clean (errored lines drop).
+//
+// `PhysText` is the statement's REAL physical source — a multi-line
+// heredoc/`type`/binding carries its newlines + indentation, NOT the
+// assembler's control-char-joined logical line (`ll.Text`), so a kept
+// definition round-trips through `weir check`. `Kind` classifies the
+// statement so #save can KEEP definitions and DROP scratch:
+//   - `TDef name` — a `type` decl or a NAMED `let` binding (a real
+//     binder, not `_`-prefixed / a `_r<n>` discard). #save keeps these,
+//     deduping by name (last wins), and checks each survivor.
+//   - `TDiscard` — a non-unit expression/command echo (bare scratch).
+//     Dropped; it never carried reuse value.
+//   - `TOther` — a unit statement (an effect echo). Dropped from the
+//     distilled file (a session's effects are not definitions).
+// Directives never record; #infer records the DRAFTED type decls (each a
+// `TDef`) instead of the directive line.
+type private TranscriptKind =
+    | TDef of name: string
+    | TDiscard
+    | TOther
+
+type private TranscriptLine =
+    { Text: string
+      PhysText: string
+      Kind: TranscriptKind }
 
 let private transcript = System.Collections.Generic.List<TranscriptLine>()
 
-let private recordLine (text: string) =
-    transcript.Add { Text = text; NeedsDiscard = false }
+// record a KEPT definition (type or named let) with its physical source
+let private recordDef (name: string) (physText: string) (text: string) =
+    transcript.Add
+        { Text = text
+          PhysText = physText
+          Kind = TDef name }
 
-let private recordDiscard (text: string) =
-    transcript.Add { Text = text; NeedsDiscard = true }
+// record a bare non-unit echo — scratch, dropped by #save
+let private recordDiscard (physText: string) (text: string) =
+    transcript.Add
+        { Text = text
+          PhysText = physText
+          Kind = TDiscard }
 
-// how an accepted statement RECORDS [D:repl-save]: a `let`/`type`/unit
-// statement saves verbatim (`Some false`); a non-unit expression/command
-// echo saves WRAPPED as a discard (`Some true`); a module/import/sig
-// never records (`None`).
-let private recordKind (chk: Script.CheckedStatement) : bool option =
+// record a unit statement — an effect echo, dropped by #save
+let private recordOther (physText: string) (text: string) =
+    transcript.Add
+        { Text = text
+          PhysText = physText
+          Kind = TOther }
+
+// the PHYSICAL source of a logical line [D:repl-save]: a multi-line
+// statement (a heredoc, a `type` decl, a block let) assembled `ll.Text`
+// with the group-separator sentinel — unparseable in a file. Every
+// segment carries its physical line number, so the real source is those
+// lines, in order, from the dedented `srcLines` the submission built.
+// One physical line (the REPL's common case) is just its own text.
+let private physicalSource (srcLines: string[]) (ll: Script.LogicalLine) : string =
+    let lineNos =
+        [ for (_, lineNo, _) in ll.Segments -> lineNo ]
+        |> List.append [ ll.Head ]
+        |> List.distinct
+        |> List.sort
+        |> List.filter (fun n -> n >= 1 && n <= srcLines.Length)
+
+    match lineNos with
+    | [] -> ll.Text
+    | _ -> lineNos |> List.map (fun n -> srcLines[n - 1]) |> String.concat "\n"
+
+// how an accepted statement RECORDS [D:repl-save]: a `type` decl or a
+// NAMED `let` binds a definition (`Some (TDef name)`); a `_`-prefixed or
+// `_r<n>` discard binder is scratch (`Some TDiscard` — it carried no
+// reuse value); a non-unit expression/command echo is scratch too
+// (`Some TDiscard`); a unit statement is an effect echo (`Some TOther`);
+// a module/import/sig never records (`None`).
+//
+// a named binder is a real name — not `_` and not `_`-prefixed (the
+// deliberate-discard escape and the REPL's own `_r<n>` scratch both lead
+// with `_`, so both drop from the distilled file)
+let private isNamedBinder (name: string) =
+    name <> "" && not (name.StartsWith "_")
+
+let private recordKind (chk: Script.CheckedStatement) : TranscriptKind option =
     match chk.Kind with
-    | Script.KLet _
-    | Script.KLetPat _
-    | Script.KType _ -> Some false
+    | Script.KLet(name, _, _) -> Some(if isNamedBinder name then TDef name else TDiscard)
+    | Script.KLetPat(_, schemes, _) ->
+        // a destructuring binds several names (the schemes list); keep it
+        // as a definition when ANY binder is real (the line reads its RHS
+        // once). dedup keys on the FIRST real name — a destructuring is
+        // rarely reshadowed whole, and the check-guarantee catches any
+        // survivor that still fails
+        let names = schemes |> List.map fst
+
+        match names |> List.filter isNamedBinder with
+        | first :: _ -> Some(TDef first)
+        | [] -> Some TDiscard
+    | Script.KType decl -> Some(TDef decl.Name)
     | Script.KCmd te
-    | Script.KExpr te -> Some(te.Ty <> TUnit)
+    | Script.KExpr te -> Some(if te.Ty = TUnit then TOther else TDiscard)
     | Script.KModule _
     | Script.KImport _
     | Script.KSig _ -> None
@@ -1732,12 +1801,19 @@ let private inferDirective (state: State) (rest: string) : State =
                             state
                         | Ok(state', defined) ->
                             // the drafted types are session declarations —
-                            // record the CLEAN multi-line text (not the
-                            // assembler's control-char-joined logical line)
-                            // so #save carries runnable `type` decls
+                            // record each as a `TDef` carrying its CLEAN
+                            // multi-line text (not the assembler's
+                            // control-char-joined logical line) so #save
+                            // distills runnable `type` decls, deduped by name
                             for d in decls do
-                                for physLine in d.Split '\n' do
-                                    recordLine physLine
+                                // "type <Name> = …" — the name keys dedup
+                                let declName =
+                                    match d.Trim().Split([| ' '; '\n' |]) with
+                                    | [| _typeKw; nm |] -> nm
+                                    | arr when arr.Length >= 2 -> arr[1]
+                                    | _ -> ""
+
+                                recordDef declName d d
 
                             let count = List.length defined
 
@@ -1749,54 +1825,237 @@ let private inferDirective (state: State) (rest: string) : State =
 
                             state'
 
-// ---- #save [D:repl-save]: the session to a runnable script -----------
-// Writes the ACCEPTED statement lines (the transcript — errored lines
-// already dropped) to <path> as a .weir script, AUTO-QUALIFYING bare
-// aliases (map -> Seq.map, startsWith -> Str.startsWith) via the exact
-// bareAliasHomes map the checker uses, then running the result through
-// `fmt`. Injected #infer types come out as ordinary `type` decls (they
-// are already session declarations in the transcript). Directives never
-// record; a bare non-unit expression echo never records — so the saved
-// script obeys the strict unused-binding law and `weir check` passes.
+// ---- #save [D:repl-save]: DISTILL the session to a runnable script ----
+// Option B: a REPL session is scratch; `#save <path>` crystallizes its
+// reusable DEFINITIONS and GUARANTEES the written file `weir check`s
+// clean. It KEEPS `type` decls and NAMED `let` bindings (the transcript's
+// `TDef`s — carrying their real multi-line source), DROPS the bare-echo
+// scratch and unit effect echoes, DEDUPS a re-declared name to its LAST
+// definition (survivor order preserved), then AUTO-QUALIFIES bare aliases
+// (map -> Seq.map) and formats. The CHECK GUARANTEE is the last gate: a
+// survivor that still does not check — a named binding whose RHS
+// references session-only state (`let gobeldy = it`), or one left unused
+// once its consumers dropped — is removed, and #save prints a
+// dropped-count note. Injected #infer types are ordinary `type` decls.
+
+// one distilled STATEMENT: its dedup key (a type/binder name) and its
+// physical source lines (already qualified)
+type private DistillStmt = { Key: string; Lines: string list }
+
+// DEDUP by key, keeping the LAST definition, preserving survivor order.
+// A re-declared `type Color`/rebound `let x` keeps only its final form.
+let private dedupLast (stmts: DistillStmt list) : DistillStmt list =
+    let lastIdx =
+        stmts
+        |> List.mapi (fun i s -> s.Key, i)
+        |> List.fold (fun m (k, i) -> Map.add k i m) Map.empty
+
+    stmts |> List.mapi (fun i s -> i, s) |> List.filter (fun (i, s) -> Map.find s.Key lastIdx = i) |> List.map snd
+
+// a `cmd-not-found` diagnostic that names the REPL-only `it` [D:repl-it]:
+// `it` can NEVER be a real script command (a warning at check time, but
+// in a distilled file it is always a session-only reference), so #save
+// treats it as a DROP trigger — the `let x = it` the guarantee must
+// remove. The message is `command not found on PATH: it{. hint | — …}`,
+// so a `PATH: it` followed by a word boundary is the exact signal.
+let private namesSessionIt (d: Script.Diagnostic) : bool =
+    d.Code = "cmd-not-found"
+    && (let marker = "command not found on PATH: it"
+
+        d.Message.StartsWith marker
+        && (d.Message.Length = marker.Length
+            || (let c = d.Message[marker.Length] in c = '.' || c = ' ')))
+
+// the distill-fatal diagnostics for a candidate file, [] when clean.
+// Line-split each block, assemble the file, analyze it (the synthetic
+// path is used only for import resolution — none here — and messages).
+// Distill-fatal = any error-severity diagnostic OR a session-only `it`
+// reference (a warning the guarantee still must act on).
+let private candidateErrors (stmts: DistillStmt list) : Script.Diagnostic list =
+    let lines = stmts |> List.collect (fun s -> s.Lines)
+
+    if List.isEmpty lines then
+        []
+    else
+        let diags, _, _, _ = Script.analyzeLines "#save" lines
+        diags |> List.filter (fun d -> d.Severity = "error" || namesSessionIt d)
+
+let private candidateChecks (stmts: DistillStmt list) : bool = candidateErrors stmts |> List.isEmpty
+
+// PROTECT a self-contained-but-unused named `let` [D:repl-save]: the
+// unused-binding law refuses a top-level `let x = <<<…>>>` that nothing
+// reads, but a distilled DEFINITION is the product, not scratch — so it
+// is KEPT, its binder `_`-prefixed (the deliberate-discard escape, which
+// the law exempts) rather than dropped. This is NOT a session-only-state
+// drop and is NOT counted. A `type` decl never needs this (types do not
+// trip unused-binding). Only the FIRST line carries the binder.
+let private protectUnusedLet (s: DistillStmt) : DistillStmt =
+    match s.Lines with
+    | first :: rest ->
+        let t = first.TrimStart()
+        let indent = first.Substring(0, first.Length - t.Length)
+
+        if t.StartsWith "let " then
+            let afterLet = t.Substring 4
+            let binder = afterLet.Split([| ' '; '=' |]).[0]
+
+            if binder <> "" && not (binder.StartsWith "_") then
+                { s with
+                    Lines = (indent + "let _" + afterLet) :: rest }
+            else
+                s
+        else
+            s
+    | [] -> s
+
+// THE CHECK GUARANTEE [D:repl-save]: return the survivors that check
+// clean, plus the count DROPPED for referencing session-only state. Two
+// moves, in order:
+//   1. PROTECT — if the only errors are unused-binding, `_`-prefix those
+//      named lets (a self-contained definition is kept, not dropped) and
+//      recheck. Not counted as a drop.
+//   2. DROP — otherwise remove the LAST survivor whose removal lets the
+//      rest check (falling back to the last survivor for progress), the
+//      one that referenced session-only state (`it`, an unbound name).
+// A binding used only by a LATER survivor is kept (the whole-file check
+// sees the forward reference). The loop always shrinks the candidate set
+// or resolves the unused set, so it terminates.
+// which survivor OWNS a candidate-file line? blocks are concatenated in
+// order, each contributing `Lines.Length` physical lines — so a running
+// offset maps a 1-based file line to the survivor index containing it.
+let private ownerOf (kept: DistillStmt list) (fileLine: int) : int option =
+    let rec go idx offset rest =
+        match rest with
+        | [] -> None
+        | (s: DistillStmt) :: tail ->
+            let n = s.Lines.Length
+
+            if fileLine >= offset + 1 && fileLine <= offset + n then
+                Some idx
+            else
+                go (idx + 1) (offset + n) tail
+
+    go 0 0 kept
+
+let rec private guaranteeChecks (kept: DistillStmt list) (dropped: int) : DistillStmt list * int =
+    let errs = candidateErrors kept
+
+    if List.isEmpty errs then
+        kept, dropped
+    else
+        match kept with
+        | [] -> [], dropped
+        | _ ->
+            // the survivors OWNING a session-only-state error (an `it`
+            // reference, an unbound name) — these are DROPPED with a note.
+            // A bare unused-binding is NOT here: it means a self-contained
+            // definition nothing reads, which is PROTECTED, not dropped.
+            let sessionErrs = errs |> List.filter (fun d -> not (d.Code = "unused-binding"))
+
+            let ownersToDrop =
+                sessionErrs |> List.choose (fun d -> ownerOf kept d.Line) |> List.distinct
+
+            match ownersToDrop with
+            | _ :: _ ->
+                let kept' =
+                    kept
+                    |> List.mapi (fun j s -> j, s)
+                    |> List.filter (fun (j, _) -> not (List.contains j ownersToDrop))
+                    |> List.map snd
+
+                guaranteeChecks kept' (dropped + List.length ownersToDrop)
+            | [] ->
+                // only unused-binding errors remain — PROTECT exactly the
+                // lets the findings point at (a definition is the product,
+                // kept not dropped) and recheck. SURGICAL by necessity: a
+                // binder a LATER survivor reads is not unused, and renaming
+                // it would orphan its readers into phantom commands
+                // (`let _base = …` + `let _total = base |> …` — the rename
+                // broke the chain the session built). If nothing could be
+                // protected (a block-local finding, an already-`_` binder),
+                // drop the finding's owner for progress.
+                let unusedOwners =
+                    errs |> List.choose (fun d -> ownerOf kept d.Line) |> List.distinct
+
+                let protectedSet =
+                    kept
+                    |> List.mapi (fun j s -> if List.contains j unusedOwners then protectUnusedLet s else s)
+
+                if protectedSet <> kept then
+                    guaranteeChecks protectedSet dropped
+                else
+                    let victim =
+                        unusedOwners |> List.tryHead |> Option.defaultValue (List.length kept - 1)
+
+                    let kept' =
+                        kept |> List.mapi (fun j s -> j, s) |> List.filter (fun (j, _) -> j <> victim) |> List.map snd
+
+                    guaranteeChecks kept' (dropped + 1)
+
+// the distill core, exposed as a seam for tests: transcript survivors
+// (the `TDef` name + physical source) through qualify -> dedup -> the
+// check guarantee. Returns the final qualified lines (pre-format) and the
+// count of statements dropped by the check guarantee.
+let distillDefs (r: Parser.Resolver) (defs: (string * string) list) : string list * int =
+    // qualify each block line-by-line (a multi-line heredoc/type keeps
+    // its real newlines; qualification is per physical line)
+    let qualified =
+        [ for (name, physText) in defs ->
+              let lines = physText.Split '\n' |> Array.toList |> List.map (Fmt.qualifyBareAliases r)
+              { Key = name; Lines = lines } ]
+
+    let deduped = dedupLast qualified
+    let survivors, dropped = guaranteeChecks deduped 0
+    (survivors |> List.collect (fun s -> s.Lines)), dropped
+
 let private saveDirective (state: State) (path: string) : unit =
     if path = "" then
         Console.WriteLine "#save <path> — a destination path is required (e.g. #save explore.weir)"
-    elif transcript.Count = 0 then
-        Console.WriteLine "#save: nothing to save yet — the session has no accepted statements"
     else
-        let r = resolver state
-        let mutable discardN = 0
+        // KEEP only definitions (types + named lets); DROP scratch echoes
+        // and unit effect echoes
+        let defs =
+            [ for entry in transcript do
+                  match entry.Kind with
+                  | TDef name -> yield (name, entry.PhysText)
+                  | TDiscard
+                  | TOther -> () ]
 
-        let qualified =
-            [ for entry in transcript ->
-                  let q = Fmt.qualifyBareAliases r entry.Text
+        if List.isEmpty defs then
+            Console.WriteLine
+                "#save: nothing to save yet — the session has no definitions (a type or a named let binding)"
+        else
+            let r = resolver state
+            let distilled, dropped = distillDefs r defs
 
-                  if entry.NeedsDiscard then
-                      discardN <- discardN + 1
-                      // the deliberate-discard escape: a `_`-prefixed name
-                      // is unused-exempt, and reading it keeps every binding
-                      // it references alive (no orphaned `let`)
-                      $"let _r{discardN} = {q}"
-                  else
-                      q ]
+            let note () =
+                if dropped > 0 then
+                    Console.WriteLine
+                        $"#save: dropped {dropped} line(s) that referenced session-only state (e.g. it) — bind a self-contained value to keep it"
 
-        match Fmt.formatLines qualified with
-        | Error msg ->
-            // the qualified lines still failed to format — write them raw
-            // rather than lose the session, and say what happened
-            Console.WriteLine $"#save: formatting failed ({msg}); writing unformatted"
+            if List.isEmpty distilled then
+                note ()
+                Console.WriteLine "#save: nothing left to save after distilling — every definition referenced session-only state"
+            else
+                match Fmt.formatLines distilled with
+                | Error msg ->
+                    // the distilled lines still failed to format — write them
+                    // raw rather than lose the session, and say what happened
+                    Console.WriteLine $"#save: formatting failed ({msg}); writing unformatted"
 
-            try
-                File.WriteAllLines(path, qualified)
-                Console.WriteLine $"#save: wrote {qualified.Length} line(s) to {path} (unformatted)"
-            with ex ->
-                Console.WriteLine $"#save: could not write {path}: {ex.Message}"
-        | Ok formatted ->
-            try
-                File.WriteAllLines(path, formatted)
-                Console.WriteLine $"#save: wrote {List.length formatted} line(s) to {path}"
-            with ex ->
-                Console.WriteLine $"#save: could not write {path}: {ex.Message}"
+                    try
+                        File.WriteAllLines(path, distilled)
+                        note ()
+                        Console.WriteLine $"#save: wrote {distilled.Length} line(s) to {path} (unformatted)"
+                    with ex ->
+                        Console.WriteLine $"#save: could not write {path}: {ex.Message}"
+                | Ok formatted ->
+                    try
+                        File.WriteAllLines(path, formatted)
+                        note ()
+                        Console.WriteLine $"#save: wrote {List.length formatted} line(s) to {path}"
+                    with ex ->
+                        Console.WriteLine $"#save: could not write {path}: {ex.Message}"
 
 let rec private loop (state: State) =
     currentEnv.Value <- state.TypeEnv
@@ -1927,9 +2186,16 @@ let rec private loop (state: State) =
                             let st' = evalChecked st chk
 
                             (if not lastErrored then
+                                 // carry the REAL physical source (newlines +
+                                 // indentation), not the sentinel-joined
+                                 // `ll.Text` — a kept heredoc/type must
+                                 // round-trip through `weir check` [D:repl-save]
+                                 let phys = physicalSource srcLines ll
+
                                  match recordKind chk with
-                                 | Some true -> recordDiscard ll.Text
-                                 | Some false -> recordLine ll.Text
+                                 | Some(TDef name) -> recordDef name phys ll.Text
+                                 | Some TDiscard -> recordDiscard phys ll.Text
+                                 | Some TOther -> recordOther phys ll.Text
                                  | None -> ())
 
                             st')
@@ -1990,9 +2256,11 @@ let rec private loop (state: State) =
                 let next = evalChecked state chk
 
                 (if not lastErrored then
+                     // a single-line entry: physical source IS its own text
                      match recordKind chk with
-                     | Some true -> recordDiscard ll.Text
-                     | Some false -> recordLine ll.Text
+                     | Some(TDef name) -> recordDef name ll.Text ll.Text
+                     | Some TDiscard -> recordDiscard ll.Text ll.Text
+                     | Some TOther -> recordOther ll.Text ll.Text
                      | None -> ())
 
                 next

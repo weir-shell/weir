@@ -121,16 +121,19 @@ guessing: an empty array (`seq<string>` default), a null field
 The same inference is a builtin — `sample |> Json.inferShape |> print`
 (and `Yaml.inferShape`) returns the declaration text outside the REPL.
 
-## `#save`: the session to a script
+## `#save`: distill the session to a script
 
-`#save <path>` writes the session's accepted statement lines to a
-runnable `.weir` file, auto-qualifying bare aliases (`map` →
-`Seq.map`, `startsWith` → `Str.startsWith`) and formatting the
-result — so `#infer` to explore, `#save` to keep. Errored lines
-drop; injected `#infer` types come out as ordinary `type` decls; a
-bare non-unit expression echo (a glance) is saved as a `let _rN = …`
-discard so the strict unused-binding law is satisfied. The saved
-file `weir check`s clean.
+`#save <path>` DISTILLS the session to its reusable definitions — a
+session is scratch; `#save` crystallizes what you'll keep. It writes
+the `type` decls and named `let` bindings (with their real
+multi-line source — a heredoc keeps its newlines), auto-qualifying
+bare aliases (`map` → `Seq.map`, `startsWith` → `Str.startsWith`)
+and formatting the result — so `#infer` to explore, `#save` to keep.
+The bare-echo scratch (a glance) drops; a redeclared name is deduped
+to its last form; injected `#infer` types come out as ordinary
+`type` decls. The written file is GUARANTEED to `weir check` clean —
+any surviving statement that still references session-only state (a
+`let x = it`) is dropped and `#save` prints a note counting them.
 
 ## The prompt and the colors
 
