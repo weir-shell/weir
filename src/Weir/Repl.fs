@@ -1965,16 +1965,31 @@ let rec private guaranteeChecks (kept: DistillStmt list) (dropped: int) : Distil
 
                 guaranteeChecks kept' (dropped + List.length ownersToDrop)
             | [] ->
-                // only unused-binding errors remain — PROTECT the named
-                // lets (a definition is the product, kept not dropped) and
-                // recheck. If nothing could be protected, drop the last
-                // survivor for progress (should not happen for a `type`).
-                let protectedSet = kept |> List.map protectUnusedLet
+                // only unused-binding errors remain — PROTECT exactly the
+                // lets the findings point at (a definition is the product,
+                // kept not dropped) and recheck. SURGICAL by necessity: a
+                // binder a LATER survivor reads is not unused, and renaming
+                // it would orphan its readers into phantom commands
+                // (`let _base = …` + `let _total = base |> …` — the rename
+                // broke the chain the session built). If nothing could be
+                // protected (a block-local finding, an already-`_` binder),
+                // drop the finding's owner for progress.
+                let unusedOwners =
+                    errs |> List.choose (fun d -> ownerOf kept d.Line) |> List.distinct
+
+                let protectedSet =
+                    kept
+                    |> List.mapi (fun j s -> if List.contains j unusedOwners then protectUnusedLet s else s)
 
                 if protectedSet <> kept then
                     guaranteeChecks protectedSet dropped
                 else
-                    let kept' = kept |> List.rev |> List.tail |> List.rev
+                    let victim =
+                        unusedOwners |> List.tryHead |> Option.defaultValue (List.length kept - 1)
+
+                    let kept' =
+                        kept |> List.mapi (fun j s -> j, s) |> List.filter (fun (j, _) -> j <> victim) |> List.map snd
+
                     guaranteeChecks kept' (dropped + 1)
 
 // the distill core, exposed as a seam for tests: transcript survivors

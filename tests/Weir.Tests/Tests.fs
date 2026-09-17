@@ -18043,6 +18043,23 @@ let replSaveDistillTests =
               Expect.equal dropped 0 "a self-contained binding is not a session-only drop"
               Expect.isTrue (distilledChecks lines) "and it checks clean"
           }
+          test "(f) PROTECT is surgical: a binder a later survivor reads keeps its name" {
+              // the chained-session shape: `base` is read by `total`, only
+              // `total` is unread. Protecting EVERY binder would rename
+              // `base` under its reader's feet (`let _base` + `let _total =
+              // base |> …` — `base` then resolves as a phantom command), so
+              // only the binder the unused finding names takes the `_`
+              let lines, dropped =
+                  distill
+                      [ ("base", "let base = [\"10\"; \"20\"]")
+                        ("total", "let total = base |> Seq.map Str.toInt |> Seq.sum") ]
+
+              let joined = String.concat "\n" lines
+              Expect.stringContains joined "let base" $"the read binder keeps its name: {lines}"
+              Expect.stringContains joined "let _total" "the unread tail is protected, not dropped"
+              Expect.equal dropped 0 "nothing referenced session-only state"
+              Expect.isTrue (distilledChecks lines) "and it checks clean"
+          }
           test "a bare alias is qualified (map -> Seq.map) in a survivor" {
               let lines, _ = distill [ ("picked", "let picked = [\"a\"] |> map (Str.toUpper)") ]
               let joined = String.concat "\n" lines
