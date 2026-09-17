@@ -7580,6 +7580,18 @@ imsg=$(printf '%s\n' "$gsums" | grep -q " $missing\$" || echo "no embedded check
 [ "$imsg" = "no embedded checksum for $missing" ] || fail "a missing checksum entry must be named, got: $imsg"
 echo "e2e ok: install missing-checksum entry is named; present entry verifies"
 
+# ---- release-assets argv boundary [D:release-assets] ------------------------
+# the completeness check itself needs the live API (the release publish
+# job and ci/release-published.weir run it there); OFFLINE, pin the argv
+# boundary: --tag is required (strict Args.load — no request is ever made
+# without it), and --help exits 0. No network test is invented here.
+if raout=$("$BIN" "$ROOT/ci/release-assets.weir" 2>&1); then
+    fail "release-assets.weir without --tag must refuse, said: $raout"
+fi
+echo "$raout" | grep -qF -- "--tag" || fail "release-assets.weir must name the missing --tag flag: $raout"
+"$BIN" "$ROOT/ci/release-assets.weir" --help > /dev/null || fail "release-assets.weir --help must exit 0"
+echo "e2e ok: release-assets.weir argv boundary (missing --tag refuses; --help exits 0)"
+
 # ---- the reference dump is current [D:reference] --------------------------
 # site/src/data/reference.json is GENERATED from builtinDocs (weir
 # docs-json) — the same one source #help and hover read. The committed

@@ -4,7 +4,13 @@
 # freshness gate runs strict (WEIR_REQUIRE_CLEAN=1 — a release never
 # builds from a dirty tree) and the conflict-marker gate rides e2e.
 # Draft-then-publish: a human sees the artifact list before it is
-# public (it catches a missing platform).
+# public — but the human review MISSED v0.0.40's missing assets (a
+# transient 500 mid-upload + a partial manual recovery shipped 5 of 10
+# assets, immutably), so completeness is MACHINE-checked
+# [D:release-assets]: the draft is created with NO assets, uploads run
+# in a retry loop, and ci/release-assets.weir — the ONE copy of the
+# expected-asset list — fails the publish job on any incomplete draft
+# before a human can review it.
 name: release
 
 on:
@@ -166,13 +172,48 @@ jobs:
             hit {print}
           ' CHANGELOG.md > notes.md
           [ -s notes.md ] || { echo "empty changelog section for ${{ github.ref_name }} — the gate should have caught this" >&2; exit 1; }
-      - name: draft release
+      # create SPLIT from upload [D:release-assets]: v0.0.40's
+      # `gh release create <assets...>` hit a transient HTTP 500
+      # mid-asset-upload and the manual recovery re-created the release
+      # with 5 of 10 assets. The create now carries NO assets; the
+      # uploads below retry on their own.
+      - name: draft release (no assets — uploads are separate, retried)
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "${{ github.ref_name }}" \
             --draft \
             --title "weir ${{ github.ref_name }}" \
-            --notes-file notes.md \
-            dist/weir-* dist/SHA256SUMS dist/install.sh dist/install.ps1 \
-            editors/grammar-manifest.json
+            --notes-file notes.md
+      # 3 attempts with backoff; --clobber on EVERY attempt (harmless on
+      # the first) so a 500-ghost — an asset created server-side that
+      # never finished uploading — cannot block the retry. The asset set
+      # here must match the expected list in ci/release-assets.weir (the
+      # one source); the verify step below enforces exactly that, so any
+      # drift fails loud.
+      - name: upload assets (retry x3 with backoff, --clobber)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for attempt in 1 2 3; do
+            if gh release upload "${{ github.ref_name }}" --clobber \
+                 dist/weir-* dist/SHA256SUMS dist/install.sh dist/install.ps1 \
+                 editors/grammar-manifest.json; then
+              exit 0
+            fi
+            if [ "$attempt" -lt 3 ]; then
+              echo "upload attempt $attempt failed; backing off $((attempt * 20))s" >&2
+              sleep $((attempt * 20))
+            fi
+          done
+          echo "asset upload failed after 3 attempts" >&2
+          exit 1
+      # the completeness gate [D:release-assets]: every expected asset
+      # present, state == uploaded, non-empty — the job goes RED before
+      # any human sees a reviewable-looking but incomplete draft.
+      # GH_TOKEN so the draft is visible to the API; the just-built
+      # linux-x64 binary runs the script (the gen-install pattern above).
+      - name: verify the draft carries every expected asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: dist/weir-${{ github.ref_name }}-linux-x64 ci/release-assets.weir --tag "${{ github.ref_name }}"

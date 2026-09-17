@@ -1,0 +1,120 @@
+#!/usr/bin/env weir
+// Release ASSET COMPLETENESS [D:release-assets]: v0.0.40 published with
+// 5 of 10 assets — `gh release create` hit a transient HTTP 500
+// mid-asset-upload, the manual recovery re-created the release with
+// what had survived, the draft review missed it, and a PUBLISHED
+// release is immutable: nothing repaired it, v0.0.41 superseded. This
+// check makes the class visible by machine: every expected asset must
+// be PRESENT, state == "uploaded", and non-empty.
+//
+// The expected-asset list's ONE copy lives HERE — release.yml's upload
+// step and ci/release-published.weir both defer to this script rather
+// than restate the list.
+//
+//   ci/release-assets.weir --tag v0.0.41
+//
+// Auth: GH_TOKEN/GITHUB_TOKEN when set (a DRAFT is invisible to the
+// anonymous API — release.yml's gate passes the job token); anonymous
+// otherwise (published releases on a public repo read fine).
+
+type Cli = {
+    /// the release tag to verify, e.g. v0.0.41
+    tag: string
+}
+
+let cli = Args.load Cli
+
+let repo = "weir-shell/weir"
+
+// the canonical expected-asset set: 6 platform binaries + checksums +
+// the two pinned installers + the grammar manifest — 10 assets
+let expected =
+    [ $"weir-{cli.tag}-linux-x64"
+      $"weir-{cli.tag}-linux-arm64"
+      $"weir-{cli.tag}-osx-arm64"
+      $"weir-{cli.tag}-osx-x64"
+      $"weir-{cli.tag}-win-x64.exe"
+      $"weir-{cli.tag}-win-arm64.exe"
+      "SHA256SUMS"
+      "install.sh"
+      "install.ps1"
+      "grammar-manifest.json" ]
+
+let token = Env.get "GH_TOKEN" |> Option.orElse (Env.get "GITHUB_TOKEN")
+
+// a transient 5xx retries (the preflight pattern); a 4xx is a fact
+let send url =
+    let req = Http.get url
+    let authed =
+        match token with
+        | Some t -> { req with auth = Bearer (Secret.of t) }
+        | None -> req
+    retry attempts=3 delay=5s
+        Http.send authed
+    until r
+        r.status < 500
+
+type Asset = { name: string; state: string; size: int }
+type Release = { tag_name: string; draft: bool; assets: seq<Asset> }
+
+// GET /releases/tags/<tag> answers PUBLISHED releases only — a DRAFT
+// 404s there even authenticated — so on 404 fall back to LISTING
+// releases: drafts ride the list when the token can see them.
+let byTag = send $"https://api.github.com/repos/{repo}/releases/tags/{cli.tag}"
+
+let rel =
+    if byTag.status == 200 then
+        byTag.body |> from json Release
+    elif byTag.status == 404 then
+        let listResp = send $"https://api.github.com/repos/{repo}/releases?per_page=100"
+        if listResp.status <> 200 then
+            fail $"releases list answered {listResp.status} — the API refused the query (rate limit on shared egress? set GH_TOKEN/GITHUB_TOKEN, or retry)"
+        match listResp.body |> from json seq<Release> |> Seq.tryFind (fun r -> r.tag_name == cli.tag) with
+        | Some r -> r
+        | None ->
+            match token with
+            | Some _ -> fail $"no release (drafts included) carries tag {cli.tag} — the release job never created one, or it was deleted"
+            | None -> fail $"no PUBLISHED release carries tag {cli.tag} — a DRAFT is invisible anonymously; set GH_TOKEN/GITHUB_TOKEN to check a draft"
+    else
+        fail $"releases/tags/{cli.tag} answered {byTag.status} — the API refused the query (rate limit on shared egress? set GH_TOKEN/GITHUB_TOKEN, or retry)"
+
+let assets = rel.assets |> Seq.force
+
+// present AND finished AND non-empty: a 500 can leave a GHOST asset —
+// created server-side, state never reaching "uploaded" — and a ghost
+// looks present in a name-only scan
+let verdict name =
+    match assets |> Seq.tryFind (fun a -> a.name == name) with
+    | None -> (name, false, "MISSING")
+    | Some a when a.state <> "uploaded" -> (name, false, $"state '{a.state}' — a 500-ghost: created, never finished uploading")
+    | Some a when a.size == 0 -> (name, false, "0 bytes")
+    | Some _ -> (name, true, "")
+
+let checks = expected |> Seq.map verdict |> Seq.force
+
+print $"release {cli.tag} (draft: {rel.draft}) — {assets |> Seq.length} asset(s) on the release, {expected |> Seq.length} expected:"
+
+checks
+    |> Seq.iter (fun (name, ok, detail) -> print (if ok then $"  ok: {name}" else $"  FAIL: {name} — {detail}"))
+
+let extras =
+    assets
+    |> Seq.map (fun a -> a.name)
+    |> Seq.where (fun n -> not (Seq.contains n expected))
+    |> Seq.force
+
+if not (Seq.isEmpty extras) then
+    let extraNames = extras |> Str.join ", "
+    print $"  note: unexpected asset(s) on the release: {extraNames}"
+
+let missing =
+    checks
+    |> Seq.where (fun (_, ok, _) -> not ok)
+    |> Seq.map (fun (n, _, _) -> n)
+    |> Seq.force
+
+if not (Seq.isEmpty missing) then
+    let missingNames = missing |> Str.join ", "
+    fail $"{cli.tag} is INCOMPLETE — {missing |> Seq.length} of {expected |> Seq.length} expected asset(s) missing or bad: {missingNames}. If this release is still a DRAFT, re-run the upload step (gh release upload {cli.tag} --clobber <assets>); if it is PUBLISHED it is immutable [D:tag-immutability] — fix forward: cut and publish the next release"
+
+print $"{cli.tag}: all {expected |> Seq.length} expected assets present, uploaded, non-empty"
