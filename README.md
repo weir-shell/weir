@@ -60,9 +60,9 @@ HTTP and YAML — is in [docs/GUIDE.md](docs/GUIDE.md).
   surprise.
 - **Fast.** One static binary, millisecond start.
 - **Cross-platform.** Linux, macOS, and Windows.
-- **Editor and CLI tooling.** `weir check [--json]`, an LSP
-  (diagnostics, hover, completion, semantic tokens), and a REPL with
-  completion and history — the editor shows exactly the errors the
+- **Editor and CLI tooling.** `weir check [--json]`, `weir fmt`, an
+  LSP (diagnostics, hover, completion, semantic tokens), and a REPL
+  with completion and history — the editor shows exactly the errors the
   runner would raise. The VS Code extension is on the
   [Marketplace](https://marketplace.visualstudio.com/items?itemName=weir-shell.weir)
   and [Open VSX](https://open-vsx.org/extension/weir-shell/weir);
