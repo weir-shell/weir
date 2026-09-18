@@ -380,6 +380,21 @@ print (Str.toUtf8 "x") // print refuses Bytes; Bytes.toBase64 is the exit
   is one pipeline: `Str.rmatchAll pat text |> Seq.map Seq.head |>
   Seq.distinct` (all matches → contents → dedup); pipe a match through
   a tool with `| sha256sum`.
+- Field splitting [D:str-fields]: `Str.fields s : seq<string>` splits
+  on whitespace RUNS and never yields an empty piece (leading/trailing
+  whitespace produces nothing; a blank or empty string is the empty
+  seq) — awk's default splitting, trim's whitespace class. The column
+  idiom, replacing `Str.rmatchAll @"(\S+)" l |> Seq.map Seq.head`:
+
+```weir
+"weir-7d9f   1/1   Running   0   12m" |> Str.fields |> Seq.item 1 |> print
+```
+
+  `Str.rsplit pat s : seq<string>` splits on every regex match —
+  `Str.split`'s empties law (adjacent matches and edges yield `""`),
+  capture groups never add pieces; a bad pattern raises like the
+  rmatch family. `Str.rsplit @"\s*,\s*" "a , b,c"` is the
+  trim-as-you-split spelling.
 - Split at the FIRST separator, tail INTACT [D:split-once]:
   `Str.splitOnce sep s : (string, string)` — Rust's split_once shape;
   raises when the separator is absent; `Str.trySplitOnce` is the
@@ -1063,7 +1078,11 @@ print x
   `Env.vars` sorts the same way. `name` is for MATCHING and display,
   `path` for handing to `File.*` — name derives from path, never the
   reverse (a later `cd` makes name→path ambiguous), which is why both
-  ride the row. `^ls` forces the external. Builtins WITHOUT a
+  ride the row. `^ls` forces the external — use `^` only at a REAL
+  conflict (a binding/alias shadows the tool you mean); a head that
+  checks bare has no conflict, and a habitual `^` degrades the signal
+  (the checker catches future shadowing loudly — expression mode, not
+  a silent tool swap). Builtins WITHOUT a
   qualified spelling (`cd`, `pwd`, `print`, `printerr`, `show`,
   `exit`, `fail`, `into`, `not`, `fst`, `snd`, `nats`) are RESERVED
   binder names [D:reserve-builtins] — a binding would shadow them for
@@ -1333,10 +1352,13 @@ type Bad = C of int
 ```
   The field law is RECURSIVE: a field is a scalar (`int`, `float`,
   `string`, `bool`), an `Option` of an admitted type, a record whose
-  fields are all admitted, a `seq` of an admitted type, or a
-  `Map<string, T>` of one — so `{ entityids: Entity }`,
-  `{ items: seq<Item> }`, and an ID-keyed `{ documents: Map<string,
-  Doc> }` all read. A `Map`'s keys are DATA, not schema, and strings
+  fields are all admitted, a `seq` of an admitted type, a
+  `seq<string * T>` mapping (an object whose keys are DATA — k8s
+  `data`/`labels`: reads as pairs in document order, writes back as
+  ONE object; an empty mapping writes `[]` and reads back empty), or
+  a `Map<string, T>` of one — so `{ entityids: Entity }`,
+  `{ items: seq<Item> }`, `{ labels: seq<string * string> }`, and an
+  ID-keyed `{ documents: Map<string, Doc> }` all read. A `Map`'s keys are DATA, not schema, and strings
   ONLY (JSON object keys ARE strings; `Map<int, …>` teaches). The
   whole document can be the map: `from json Map<string, T>` (the
   adapter slot's third form; `{| … |}` composes in the value slot;
@@ -1424,14 +1446,19 @@ type Bad = C of int
   refuse (a patch is partial); `Yaml.parse` can never produce a
   tombstone (parsed text is data). The file round-trip is composition:
   `File.read f |> Yaml.parse |> Yaml.merge p |> to yaml |> File.write f`.
-- `Json.inferShape`/`Yaml.inferShape : seq<string> -> string` draft
-  named `type` declarations from a SAMPLE [D:repl-infer] — the
-  `weir add schema` category (external structure → a declaration you
-  own and edit), NOT check-time inference (check never evaluates,
-  `from json`/`from yaml` never sniff). It returns the declaration TEXT
-  (top record `Root`; nested records auto-named, seq elements
-  singularised; empty-array/null/heterogeneous cases ride as `//`
-  notes). The REPL's `#infer <source> from <json|jsonl|yaml> as <Name>`
+- `Json.inferShape`/`Yaml.inferShape`/`Table.inferShape : seq<string>
+  -> string` draft named `type` declarations from a SAMPLE
+  [D:repl-infer] — the `weir add schema` category (external structure
+  → a declaration you own and edit), NOT check-time inference (check
+  never evaluates, `from json`/`from yaml`/`from table` never sniff).
+  It returns the declaration TEXT (top record `Root`; nested records
+  auto-named, seq elements singularised; array elements MERGE — a key
+  absent in some elements drafts `Option`; an object whose keys are
+  data — one value shape with mostly non-identifier keys, differing
+  key sets across sibling elements, or an empty `{}` — drafts the
+  `seq<string * _>` mapping; a table drafts the flat ROW record per
+  column [D:from-table]; empty-array/null/type-conflict cases ride as
+  `//` notes). The REPL's `#infer <source> from <json|jsonl|yaml|table> as <Name>`
   directive also INJECTS the drafted types into the session (so
   `from json <Name>` and field completion light up); `#save <path>`
   DISTILLS a session to a runnable script — it keeps the `type` decls
@@ -1493,6 +1520,41 @@ let refs =
     |> from xml Proj
     |> _.refs
 refs |> Seq.iter (fun r -> print r.Include)
+```
+- ALIGNED TABLES are a read-only typed boundary [D:from-table]:
+  `from table T` reads kubectl/docker-style output — one header row,
+  aligned data rows — into row records, yielding `seq<T>`
+  (`kubectl get po |> from table Pod`). The first non-blank line is
+  the HEADER; columns slice at HEADER OFFSETS, never whitespace runs,
+  so a spaced value (`Up 2 hours`) survives; a header boundary is a
+  run of 2+ SPACES — a single interior space stays inside one header
+  (`CONTAINER ID` is ONE column; both tools pad with 3 spaces). A
+  field matches its header by normalized name, case-insensitively on
+  the alphanumerics (`podTemplateHash` reads `POD-TEMPLATE-HASH`);
+  `[<Wire "HEADER">]` matches a raw header verbatim. Cells trim and
+  type by the field — `string`/`int`/`float`/`bool`, and an `Option`
+  field reads an EMPTY cell or exactly `<none>` (the kubectl idiom)
+  as None; a required field refuses an absent cell naming the Option
+  repair. Extra columns are ignored, blank lines skip, a header-only
+  table is the empty seq, and every error is located (a missing
+  column lists the headers seen; a bad cell carries line and column).
+  Rows are already plural — no `seq`/`stream`/`Map` wrap — and there
+  is NO `to table` (the REPL's record echo already renders tables
+  for display). `table` stays an ordinary identifier elsewhere.
+  `#infer <src> from table as Pod` / `sample |> Table.inferShape`
+  draft the row record from a live sample (per-column type scan;
+  `Option` + a note where a column has empty/`<none>` cells; the
+  value reads as `seq<Pod>`).
+
+```weir
+type Pod = { name: string; status: string; restarts: int; node: Option<string> }
+let pods =
+    [ "NAME    STATUS    RESTARTS   NODE"
+      "web-1   Running   0          k3d-a"
+      "db-0    Pending   3          <none>" ]
+    |> from table Pod
+pods |> Seq.where (fun p -> p.restarts > 0) |> Seq.iter (fun p -> print p.name)
+print (show (pods |> Seq.head |> _.node))
 ```
 - `<<<` / `$<<<` heredoc blocks [D:text-block]: line-end `<<<` opens
   the PLAIN multiline literal — every byte below the marker is
@@ -2041,6 +2103,7 @@ not the teaching.
 - `Float`: `abs` `average` `near` `ofInt` `parse` `round` `sum` `toInt` `tryParse`
 - `Instant`: `epochMs` `now` `ofEpochMs` `parse` `parseWith` `tryParse` `tryParseWith`
 - `Json`: `inferShape`
+- `Table`: `inferShape`
 - `Yaml`: `parse` `merge` `inferShape`
 - `Http`: `defaults` `delete` `fetch` `get` `head` `options` `patch` `post` `put` `query` `send` `withQuery`
 - `Log`: `debug` `debugWith` `info` `infoWith` `trace` `traceWith` `warn` `warnWith`
@@ -2056,4 +2119,4 @@ not the teaching.
 - `Seq`: `append` `average` `choose` `chunkBySize` `collect` `concat` `contains` `countBy` `distinct` `distinctBy` `except` `exactlyOne` `exists` `find` `fold` `forall` `force` `groupBy` `head` `indexed` `isEmpty` `item` `iter` `last` `length` `map` `max` `maxBy` `min` `minBy` `pairwise` `pfirst` `pfirstWith` `pick` `piter` `piterWith` `pmap` `pmapWith` `range` `reduce` `replicate` `rev` `scan` `skip` `skipWhile` `sort` `sortBy` `sortByDescending` `sortDescending` `sum` `take` `takeWhile` `tryExactlyOne` `tryFind` `tryHead` `tryItem` `tryLast` `tryPick` `where` `windowed` `zip`
 - `Bytes`: `fromBase64` `length` `sha256` `toBase64` `tryFromBase64`
 - `Size`: `average` `bytes` `parse` `sum` `toBytes` `tryParse`
-- `Str`: `contains` `endsWith` `fromBase64` `isMatch` `join` `length` `replace` `rmatch` `rmatchAll` `sha256` `split` `splitOnce` `startsWith` `sub` `toBase64` `toInt` `toLower` `toUpper` `toUtf8` `trim` `trimEnd` `trimStart` `tryFromBase64` `tryFromUtf8` `tryIndexOf` `trySplitOnce` `tryToInt` `fromUtf8`
+- `Str`: `contains` `endsWith` `fields` `fromBase64` `isMatch` `join` `length` `replace` `rmatch` `rmatchAll` `rsplit` `sha256` `split` `splitOnce` `startsWith` `sub` `toBase64` `toInt` `toLower` `toUpper` `toUtf8` `trim` `trimEnd` `trimStart` `tryFromBase64` `tryFromUtf8` `tryIndexOf` `trySplitOnce` `tryToInt` `fromUtf8`

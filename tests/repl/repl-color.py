@@ -224,9 +224,33 @@ hs2 = run({"NO_COLOR": "1"}, ["#help Yaml.inferShape\r"])
 if "Yaml.inferShape (lines: seq<string>) : string" not in ANSI.sub("", hs2):
     failures.append(f"NO_COLOR must keep the plain signature spelling: {hs2[-400:]!r}")
 
+# --- the let-RHS is a head slot [D:let-rhs-head]: the RHS head carries
+# the SAME live verdict as the statement head — a known binding bold,
+# an unknown red, `^` forced to PATH; a session alias is a known head
+# at BOTH positions and `^` skips the table [D:command-head-alias].
+# The buffer cancels with Ctrl+C (the paint is the probe, no Enter) ----
+lr1 = run({}, ["let x = print 1", "\x03"])
+if "\x1b[1mprint\x1b[0m" not in lr1:
+    failures.append("a known binding at the let-RHS must paint the head bold")
+lr2 = run({}, ["let x = zzznope arg", "\x03"])
+if not re.search(r"\x1b\[31mzzznope\x1b\[0m", lr2):
+    failures.append("an unresolved let-RHS head must paint red")
+lr3 = run({}, ["let x = ^zzznope", "\x03"])
+if not re.search(r"\x1b\[31mzzznope\x1b\[0m", lr3):
+    failures.append("a ^-forced let-RHS head resolves by PATH only (red when absent)")
+lr4 = run({}, ["#alias kzz9 = print\r", "kzz9 hi", "\x03"])
+if "\x1b[1mkzz9\x1b[0m" not in lr4:
+    failures.append("an alias head must paint known-bold at the statement head")
+lr5 = run({}, ["#alias kzz9 = print\r", "let x = kzz9 hi", "\x03"])
+if "\x1b[1mkzz9\x1b[0m" not in lr5:
+    failures.append("an alias head must paint known-bold at the let-RHS")
+lr6 = run({}, ["#alias kzz9 = print\r", "^kzz9", "\x03"])
+if "\x1b[1mkzz9\x1b[0m" in lr6:
+    failures.append("^ must skip the alias table (PATH membership decides)")
+
 if failures:
     for f in failures:
         print("repl-color FAIL:", f)
     sys.exit(1)
 
-print("repl-color: lexical spans, head verdicts, NO_COLOR+TERM=dumb hold, check reports on stdout (tty-colored, redirect-plain), table dressing (bold header/dim rule, NO_COLOR plain), status prompt (red on error, plain on success/reified), help code spans (cyan at a tty, literal under NO_COLOR), help signature+example tint (colorizer palette at a tty, plain under NO_COLOR)")
+print("repl-color: lexical spans, head verdicts, NO_COLOR+TERM=dumb hold, check reports on stdout (tty-colored, redirect-plain), table dressing (bold header/dim rule, NO_COLOR plain), status prompt (red on error, plain on success/reified), help code spans (cyan at a tty, literal under NO_COLOR), help signature+example tint (colorizer palette at a tty, plain under NO_COLOR), let-RHS head verdicts (known bold / unknown red / ^-PATH / alias known at both slots)")

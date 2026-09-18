@@ -586,7 +586,7 @@
         {
           "name": "inferShape",
           "signature": "Json.inferShape (lines: seq\u003Cstring\u003E) : string",
-          "summary": "Draft named \u0060type\u0060 declarations from a JSON sample \u2014 the composable core of \u0060#infer\u0060: returns the declaration text (top record named Root; nested records auto-named by field, seq elements singularised; notes for empty arrays, null fields and heterogeneous arrays ride as \u0060//\u0060 lines). It drafts what the sample has; you edit the emitted types. Not check-time inference (the value is a runtime sample).",
+          "summary": "Draft named \u0060type\u0060 declarations from a JSON sample \u2014 the composable core of \u0060#infer\u0060: returns the declaration text (top record named Root; nested records auto-named by field, seq elements singularised; array elements merge, a key absent in some elements drafts Option; a data-keyed object \u2014 one value shape with mostly non-identifier keys, differing sibling key sets, or an empty {} \u2014 drafts the open mapping seq\u003Cstring * _\u003E; notes ride as \u0060//\u0060 lines). It drafts what the sample has; you edit the emitted types. Not check-time inference (the value is a runtime sample).",
           "example": "print (Json.inferShape [\u0022{\\\u0022id\\\u0022: 1, \\\u0022name\\\u0022: \\\u0022x\\\u0022}\u0022])",
           "pointer": "the \u0060weir add schema\u0060 category: external structure -\u003E a declaration you own; check and \u0060from json\u0060 stay untouched."
         }
@@ -1529,6 +1529,13 @@
           "pointer": null
         },
         {
+          "name": "fields",
+          "signature": "Str.fields (s: string) : seq\u003Cstring\u003E",
+          "summary": "Split on whitespace runs into fields \u2014 never an empty piece (a blank or empty string is the empty seq; trim\u0027s whitespace class).",
+          "example": "\u0022NAME   READY  1/1\u0022 |\u003E Str.fields |\u003E Seq.force",
+          "pointer": null
+        },
+        {
           "name": "fromBase64",
           "signature": "Str.fromBase64 (s: string) : string",
           "summary": "Decode standard base64 (padded or unpadded) to text; raises on invalid input or when the bytes are not valid UTF-8 (never U\u002BFFFD corruption).",
@@ -1585,6 +1592,13 @@
           "pointer": null
         },
         {
+          "name": "rsplit",
+          "signature": "Str.rsplit (pattern: string) (s: string) : seq\u003Cstring\u003E",
+          "summary": "Split on every regex match; split\u0027s empties law (adjacent matches and edges yield \u0022\u0022), and capture groups never add pieces.",
+          "example": "Str.rsplit @\u0022\\s*,\\s*\u0022 \u0022a , b,c\u0022 |\u003E Seq.force",
+          "pointer": null
+        },
+        {
           "name": "sha256",
           "signature": "Str.sha256 (s: string) : string",
           "summary": "The SHA-256 digest of the string\u0027s UTF-8 bytes, lowercase hex (sha256sum parity). sha256 only for now.",
@@ -1594,7 +1608,7 @@
         {
           "name": "split",
           "signature": "Str.split (sep: string) (s: string) : seq\u003Cstring\u003E",
-          "summary": "Split on a separator into a sequence.",
+          "summary": "Split on a separator into a sequence; empty pieces kept (adjacent separators and edges yield \u0022\u0022 \u2014 rsplit follows the same law).",
           "example": "Str.split \u0022,\u0022 \u0022a,b,c\u0022 |\u003E Seq.force",
           "pointer": null
         },
@@ -1713,6 +1727,18 @@
       ]
     },
     {
+      "name": "Table",
+      "members": [
+        {
+          "name": "inferShape",
+          "signature": "Table.inferShape (lines: seq\u003Cstring\u003E) : string",
+          "summary": "Draft the row \u0060type\u0060 declaration from an aligned-table sample (kubectl/docker style) \u2014 the composable core of \u0060#infer \u2026 from table\u0060: per-column token scan over the data rows (all-int -\u003E int, else float/bool by token, else string; a column with empty/\u0060\u003Cnone\u003E\u0060 cells -\u003E Option with a note); headers sanitize to field names, \u0060[\u003CWire\u003E]\u0060 carries a header the name cannot recover; a note says the value reads as seq\u003CRoot\u003E. You edit the emitted type. Not check-time inference (the value is a runtime sample).",
+          "example": "print (Table.inferShape [\u0022NAME   RESTARTS\u0022; \u0022web-1  0\u0022])",
+          "pointer": "the \u0060weir add schema\u0060 category: external structure -\u003E a declaration you own; check and \u0060from table\u0060 stay untouched."
+        }
+      ]
+    },
+    {
       "name": "Tree",
       "members": [
         {
@@ -1730,7 +1756,7 @@
         {
           "name": "inferShape",
           "signature": "Yaml.inferShape (lines: seq\u003Cstring\u003E) : string",
-          "summary": "Draft named \u0060type\u0060 declarations from a YAML sample \u2014 the composable core of \u0060#infer\u0060: returns the declaration text (top record named Root; nested records auto-named; notes for empty/null/heterogeneous fields ride as \u0060//\u0060 lines). It drafts what the sample has; you edit the emitted types. Not check-time inference (the value is a runtime sample).",
+          "summary": "Draft named \u0060type\u0060 declarations from a YAML sample \u2014 the composable core of \u0060#infer\u0060: returns the declaration text (top record named Root; nested records auto-named; array elements merge, a key absent in some elements drafts Option; a data-keyed object \u2014 one value shape with mostly non-identifier keys, differing sibling key sets, or an empty {} \u2014 drafts the open mapping seq\u003Cstring * _\u003E; notes ride as \u0060//\u0060 lines). It drafts what the sample has; you edit the emitted types. Not check-time inference (the value is a runtime sample).",
           "example": "let sample = \u003C\u003C\u003C\n    name: web\n    port: 8080\nprint (Yaml.inferShape sample)",
           "pointer": "the \u0060weir add schema\u0060 category: external structure -\u003E a declaration you own; check and \u0060from yaml\u0060 stay untouched."
         },
@@ -1828,6 +1854,13 @@
       "summary": "Parse a JSON line stream \u2014 one document per element (NDJSON, the shape \u0060to jsonl\u0060 writes) \u2014 into declared records.",
       "example": null,
       "pointer": "a pipe stage: xs |\u003E from jsonl Config."
+    },
+    {
+      "name": "from table",
+      "signature": null,
+      "summary": "Read aligned column output (kubectl/docker style: one header row, aligned data rows) into declared row records \u2014 yields seq\u003CT\u003E. Columns slice at header offsets, never whitespace runs, so a spaced value (\u0060Up 2 hours\u0060) survives; a header boundary is a run of 2\u002B spaces (\u0060CONTAINER ID\u0060 is one column). A field matches its header by normalized name, case-insensitively (\u0060podTemplateHash\u0060 reads \u0060POD-TEMPLATE-HASH\u0060); \u0060[\u003CWire \u0022HEADER\u0022\u003E]\u0060 matches a raw header verbatim. Cells trim and type by the field (string/int/float/bool); an Option field reads an empty or \u0060\u003Cnone\u003E\u0060 cell as None. Extra columns are ignored; blank lines skip; errors carry line and column. There is no \u0060to table\u0060.",
+      "example": null,
+      "pointer": "a pipe stage: kubectl get po |\u003E from table Pod."
     },
     {
       "name": "from xml",

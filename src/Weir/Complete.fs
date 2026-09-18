@@ -204,6 +204,80 @@ let wordStartAt (text: string) (pos: int) : int =
     else
         i
 
+// the topLet binder up to its `=`, lexically [D:let-rhs-head] — the
+// shape whose RHS the grammar grants command mode (topLet's
+// command-first RHS; a destructuring let's RHS is expression-only).
+// Subset, stated (the pathParamAt precedent): identifier and `()`
+// params only — a parenthesized/record param pattern falls through,
+// and a keyword in a binder slot is the letKeywordGuard's error, not
+// a head slot. `let pure` leads legally; a lone `pure` does not bind.
+let private letBinder =
+    System.Text.RegularExpressions.Regex @"^let\s+(?:[A-Za-z_]\w*|\(\s*\))(?:\s+(?:[A-Za-z_]\w*|\(\s*\)))*\s*="
+
+/// the text AFTER a top-level let binder's `=`, or None when `stmt`
+/// does not open with one
+let private letRhsCut (stmt: string) : string option =
+    let m = letBinder.Match stmt
+
+    if not m.Success then
+        None
+    else
+        let names =
+            match
+                m.Value.TrimEnd([| '='; ' '; '\t' |]).Split([| ' '; '\t'; '('; ')' |], System.StringSplitOptions.RemoveEmptyEntries)
+                |> Array.toList
+            with
+            | "let" :: "pure" :: (_ :: _ as rest) -> rest
+            | "let" :: rest -> rest
+            | _ -> []
+
+        if
+            not names.IsEmpty
+            && names |> List.forall (Weir.Parser.keywords.Contains >> not)
+        then
+            Some(stmt.Substring m.Length)
+        else
+            None
+
+// the command HEAD SLOT, one source [D:let-rhs-head]: where a live
+// head verdict and the head-completion pool apply — the statement
+// start, and a top-level let's RHS. BOTH surfaces read this predicate
+// (the Tab pool here, the live colorizer in Script.colorizeRepl), so
+// tint and completion cannot disagree about where a head stands. The
+// two head flavours stay distinct for the colorizer's red: an unknown
+// UPPERCASE statement head would fail ([D:constructors-not-heads]),
+// the same word at the let-RHS is a legal constructor application.
+[<RequireQualifiedAccess>]
+type HeadSlot =
+    | No
+    | Stmt
+    | LetRhs
+    /// behind the `^` force-PATH sigil at a head slot: PATH only
+    | Forced
+
+/// the slot verdict for the word starting right after `before`
+/// [D:let-rhs-head]. Statement head = an EMPTY statement prefix,
+/// deliberately untrimmed: the colorizer's continuation lines (a yaml
+/// district body among them) must not read as heads, while the
+/// completer's own TrimEnd already collapses a whitespace prefix.
+let headSlotAt (before: string) : HeadSlot =
+    let stmt =
+        let i = max (before.LastIndexOf Weir.Parser.sibSep) (before.LastIndexOf '\n')
+        if i >= 0 then before.Substring(i + 1) else before
+
+    let core, forced =
+        if stmt.EndsWith "^" then
+            stmt.Substring(0, stmt.Length - 1), true
+        else
+            stmt, false
+
+    if core = "" then
+        if forced then HeadSlot.Forced else HeadSlot.Stmt
+    else
+        match letRhsCut (core.TrimStart()) with
+        | Some rest when rest.Trim() = "" -> if forced then HeadSlot.Forced else HeadSlot.LetRhs
+        | _ -> HeadSlot.No
+
 // a word in command ARGV completes as a PATH [D:complete-argv]: after
 // a literal command head everything is an argv word — fields, members,
 // and the keyword pool are expression furniture (`micro publish.`
@@ -215,6 +289,27 @@ let private commandArgvPosition (env: TypeEnv) (before: string) : bool =
     let stmt =
         let i = max (before.LastIndexOf Weir.Parser.sibSep) (before.LastIndexOf '\n')
         (if i >= 0 then before.Substring(i + 1) else before).TrimStart()
+
+    // a top-level let's RHS is a first-class command position
+    // [D:let-rhs-head]: strip the binder and judge the remainder
+    // exactly as a statement — argv after the RHS head follows the
+    // statement-head rule. A yaml district marker RHS keeps the OLD
+    // path (the ` = ` disqualifier below): `let d = yaml …` is form,
+    // not a command, and its schema=/modifier slots sit later in the
+    // chain [D:yaml-schemas]
+    let stmt =
+        match letRhsCut stmt with
+        | Some rest when
+            (let r = rest.Trim()
+
+             not (
+                 Weir.Parser.isYamlMarkerPiece r
+                 || (r.EndsWith "schema="
+                     && Weir.Parser.isYamlMarkerPiece (r.Substring(0, r.Length - 7).TrimEnd()))
+             ))
+            ->
+            rest.TrimStart()
+        | _ -> stmt
 
     // |> and a spaced = are expression furniture — `xs |> from` is a
     // pipeline whose head happens to be unbound, not a command
@@ -320,7 +415,17 @@ let private lexicallyBound (name: string) (text: string) : bool =
 // the binder SCOPE can be wider than the completion text: the LSP
 // completes one line but its binders (a let's params two lines up)
 // live in the whole document [D:complete-argv]
-let suggestScoped (env: TypeEnv) (binderScope: string) (text: string) (wordStart: int) : string list =
+// `aliasHeads` [D:command-head-alias]: the session's alias names — they
+// resolve in command-head position only, so they join exactly the
+// head-slot pool (never argv, never the `^`-forced PATH pool: the
+// sigil skips the table). Scripts and the LSP pass none (REPL-only).
+let suggestScopedWith
+    (aliasHeads: Set<string>)
+    (env: TypeEnv)
+    (binderScope: string)
+    (text: string)
+    (wordStart: int)
+    : string list =
     let word =
         if wordStart >= text.Length then
             ""
@@ -578,6 +683,12 @@ let suggestScoped (env: TypeEnv) (binderScope: string) (text: string) (wordStart
             // an explicit path word — filesystem entries [D:repl-quality],
             // quoted where the slot is an expression [D:repl-path-quote]
             filesystemComplete word |> quoteFor before
+        elif headSlotAt before = HeadSlot.Forced && word <> "" then
+            // the `^`-forced head [D:let-rhs-head]: the sigil skips
+            // bindings and the alias table, so the pool is exactly the
+            // PATH cache — bare (the word starts after the sigil), at
+            // the statement head and the let-RHS alike
+            Extern.names () |> Set.filter (fun n -> n.StartsWith word && n <> word) |> Set.toList
         elif commandArgvPosition env before then
             // argv position [D:complete-argv]: paths, nothing else — the
             // pool, fields, and members are expression furniture
@@ -787,10 +898,11 @@ let suggestScoped (env: TypeEnv) (binderScope: string) (text: string) (wordStart
             // listing is useful, and it keys on `before` being non-empty below.
             sessionDirectives |> List.map (fun d -> "#" + d)
         else
-            // command HEADS at a statement head (before is empty): PATH
-            // executables + command-callable builtins join the name pool; in
-            // argv position (before non-empty) cwd files join instead — the
-            // two interactive contexts completion could not serve before
+            // command HEADS at a head slot (the statement head and the
+            // let-RHS, headSlotAt's verdict [D:let-rhs-head]): PATH
+            // executables + command-callable builtins join the name pool;
+            // in argv position cwd files join instead — the two
+            // interactive contexts completion could not serve before
             // [D:repl-quality]
             let cwdEntries () =
                 try
@@ -803,12 +915,20 @@ let suggestScoped (env: TypeEnv) (binderScope: string) (text: string) (wordStart
                     []
 
             let extra =
-                if before = "" then
-                    (Extern.names () |> Set.toList) @ (Builtins.commandCallable |> Set.toList)
-                elif word <> "" then
-                    cwdEntries ()
-                else
-                    []
+                match headSlotAt before with
+                | (HeadSlot.Stmt | HeadSlot.LetRhs) when word <> "" ->
+                    // both head slots take the SAME pool [D:let-rhs-head]:
+                    // the statement head and the let-RHS — PATH, the
+                    // command-callable builtins, and the session's alias
+                    // heads [D:command-head-alias]. An empty word at the
+                    // let-RHS stays pool-only (the empty-prompt rationale
+                    // — never the 900-name dump); the empty statement
+                    // head routed to the directive teaching above
+                    (Extern.names () |> Set.toList)
+                    @ (Builtins.commandCallable |> Set.toList)
+                    @ (aliasHeads |> Set.toList)
+                | _ when word <> "" -> cwdEntries ()
+                | _ -> []
 
             // a union-case CONSTRUCTOR never starts a statement
             // [D:constructors-not-heads]: `WriteFile …`/`Bearer …` as a head
@@ -838,6 +958,96 @@ let suggestScoped (env: TypeEnv) (binderScope: string) (text: string) (wordStart
             |> List.distinct
             |> List.sort
 
+/// the LSP's entry: no session aliases (scripts never see the table)
+let suggestScoped (env: TypeEnv) (binderScope: string) (text: string) (wordStart: int) : string list =
+    suggestScopedWith Set.empty env binderScope text wordStart
+
+// value-aware MAP-KEY completion [D:value-key-complete]: an open
+// map's keys are DATA (`data: seq<string * string>` from #infer), so
+// no static pool can know them — but the session's Values table can.
+// Inside the OPEN string literal keying a pipe-form Map lookup
+// (get/tryGet/has — the Map surface's lookup members), when the
+// receiver is a BARE session binding (`it` included) whose stored
+// value is a map or a MATERIALIZED pair-seq, the value's own keys
+// complete. Reading the table is peeking, never evaluating: an
+// unforced seq offers NOTHING (pulling a command-backed seq would run
+// its command — the never-executes law's sharp edge), and a pipeline
+// receiver (`cm |> from json … |> _.data |> Map.tryGet "`) offers
+// nothing (its value would need evaluating; bind first — `let d = …`
+// — and the keys complete). Once the lookup shape is detected the
+// slot is CLAIMED: keys or nothing, never the general pool (a keyword
+// inside a key literal is the wrong-suggestion class). Pipe-form
+// only, stated: in the applied spelling (`Map.get "k" m`) the
+// receiver FOLLOWS the key, so nothing exists to peek at while the
+// literal is typed. Subset, stated: the literal scan is a naive quote
+// count — an escaped quote in the key falls outside it (the slot then
+// does not fire). The completion inserts the key bare, inside the
+// quotes — the user owns the closer, the path-in-quotes convention
+// [D:repl-path-quote].
+let private mapLookupHead =
+    System.Text.RegularExpressions.Regex @"^(.*?)\s*\|>\s*Map\.(?:get|tryGet|has)$"
+
+let private valueKeySlot (values: Map<string, Weir.Eval.Value>) (text: string) (wordStart: int) : string list option =
+    let segStart =
+        max (text.LastIndexOf Weir.Parser.sibSep) (text.LastIndexOf '\n') + 1
+
+    let seg = text.Substring segStart
+    let qi = seg.LastIndexOf '"'
+
+    if qi < 0 || (seg |> Seq.filter ((=) '"') |> Seq.length) % 2 = 0 then
+        None
+    else
+        let head =
+            let h = seg.Substring(0, qi).Trim()
+
+            // the let-RHS is the same slot [D:let-rhs-head]: strip the
+            // binder and judge the remainder as a statement
+            match letRhsCut h with
+            | Some rest -> rest.Trim()
+            | None -> h
+
+        let m = mapLookupHead.Match head
+
+        if not m.Success then
+            None
+        else
+            let recv = m.Groups[1].Value.Trim()
+
+            let keys =
+                if System.Text.RegularExpressions.Regex.IsMatch(recv, @"^[A-Za-z_]\w*$") then
+                    match Map.tryFind recv values with
+                    | Some(Weir.Eval.VMap entries) -> Map.keys entries |> List.ofSeq
+                    | Some(Weir.Eval.VSeq items) ->
+                        // the one materialization probe — forced offers,
+                        // unforced offers nothing [D:value-key-complete]
+                        match Weir.Eval.forcedItems items with
+                        | Some list ->
+                            let pairKeys =
+                                list
+                                |> List.choose (function
+                                    | Weir.Eval.VTuple [ Weir.Eval.VStr k; _ ] -> Some k
+                                    | _ -> None)
+
+                            if pairKeys.Length = list.Length then pairKeys else []
+                        | None -> []
+                    | _ -> []
+                else
+                    []
+
+            let literal = text.Substring(segStart + qi + 1)
+            let word = if wordStart >= text.Length then "" else text.Substring wordStart
+            // the candidate must EXTEND the typed word [D:complete-argv]:
+            // the literal may reach left of the word (a space inside a
+            // typed key) — strip that stem from each offered key
+            let stem = literal.Substring(0, literal.Length - word.Length)
+
+            keys
+            |> List.filter (fun k -> k.StartsWith literal && k <> literal && not (k.Contains '"'))
+            |> List.map (fun k -> k.Substring stem.Length)
+            |> List.distinct
+            |> List.sort
+            |> Some
+
 // Error-recovery completion [D:repair-completion]: the caller
 // REPAIRS the broken statement (dangling
 // `.prefix` blanked, closers appended) and this types the repaired
@@ -847,6 +1057,21 @@ let suggestScoped (env: TypeEnv) (binderScope: string) (text: string) (wordStart
 /// the single-text entry: the completion text IS the binder scope
 /// (the REPL's one logical line)
 let suggest (env: TypeEnv) (text: string) (wordStart: int) : string list = suggestScoped env text text wordStart
+
+/// the REPL's entry: the session's alias heads join the head-slot
+/// pool [D:command-head-alias], and the session VALUES feed the
+/// map-key slot [D:value-key-complete] — keys when the slot claims,
+/// the general machinery otherwise
+let suggestSession
+    (aliasHeads: Set<string>)
+    (values: Map<string, Weir.Eval.Value>)
+    (env: TypeEnv)
+    (text: string)
+    (wordStart: int)
+    : string list =
+    match valueKeySlot values text wordStart with
+    | Some candidates -> candidates
+    | None -> suggestScopedWith aliasHeads env text text wordStart
 
 let fieldsAtRepaired
     (parse: string -> Result<Weir.Ast.Stmt, string>)

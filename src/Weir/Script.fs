@@ -2003,7 +2003,6 @@ let colorizeRepl (isKnown: string -> bool) (line: string) : string =
 
         // token pass over the code region
         let mutable i = 0
-        let mutable headSeen = false
         // the within KIND paints as part of the form [D:within-kinds]
         let mutable prevWord = ""
         // the mode tint [D:semantic-tokens]: an external head arms
@@ -2024,32 +2023,46 @@ let colorizeRepl (isKnown: string -> bool) (line: string) : string =
                 let word = line.Substring(start, i - start)
 
                 let code =
-                    if Weir.Parser.keywords.Contains word then
-                        // keywords: BLUE — the red family (31/35 render
-                        // near-identically in some themes) is reserved for
-                        // exactly one signal: a head that would fail
-                        Some "34"
-                    elif prevWord = "within" && Ast.withinKinds |> List.exists (fun k -> k.Name = word) then
-                        Some "34" // the kind is form, not a name [D:within-kinds]
-                    elif (prevWord = "from" || prevWord = "to") && Builtins.allAdapterNames.Contains word then
-                        Some "34" // the adapter is form, not a name [D:form-word-hover]
-                    elif not headSeen && start = 0 then
-                        // the fish trick: the head resolves live
-                        if isKnown word then
+                    // the head SLOT is Complete's one predicate
+                    // [D:let-rhs-head]: the statement head and the
+                    // let-RHS take the same verdict — tint and Tab
+                    // cannot disagree about where a head stands
+                    match Complete.headSlotAt (line.Substring(0, start)) with
+                    | Complete.HeadSlot.Forced ->
+                        // ^head: PATH only — `^x` names a program,
+                        // never a keyword, a form, or an alias
+                        Some(if Extern.exists word then "34" else "31")
+                    | slot ->
+                        if Weir.Parser.keywords.Contains word then
+                            // keywords: BLUE — the red family (31/35 render
+                            // near-identically in some themes) is reserved for
+                            // exactly one signal: a head that would fail
+                            Some "34"
+                        elif prevWord = "within" && Ast.withinKinds |> List.exists (fun k -> k.Name = word) then
+                            Some "34" // the kind is form, not a name [D:within-kinds]
+                        elif (prevWord = "from" || prevWord = "to") && Builtins.allAdapterNames.Contains word then
+                            Some "34" // the adapter is form, not a name [D:form-word-hover]
+                        elif slot <> Complete.HeadSlot.No && isKnown word then
+                            // the fish trick: the head resolves live
                             Some "1" // known: bold
-                        elif Extern.exists word then
+                        elif slot <> Complete.HeadSlot.No && Extern.exists word then
                             cmdMode <- true
                             Some "1;34" // PATH: bold blue
+                        elif slot = Complete.HeadSlot.Stmt then
+                            Some "31" // unresolved statement head: red
+                        elif Char.IsUpper word[0] then
+                            // the casing law: types/ctors/modules — at the
+                            // let-RHS an unknown uppercase head is a legal
+                            // constructor application, never red
+                            // [D:constructors-not-heads]
+                            Some "33"
+                        elif slot = Complete.HeadSlot.LetRhs then
+                            Some "31" // unresolved lowercase RHS head: red
+                        elif cmdMode then
+                            Some "2" // argv words: dim (inert data)
                         else
-                            Some "31" // unresolved: red
-                    elif Char.IsUpper word[0] then
-                        Some "33" // the casing law: types/ctors/modules
-                    elif cmdMode then
-                        Some "2" // argv words: dim (inert data)
-                    else
-                        None
+                            None
 
-                headSeen <- true
                 prevWord <- word
 
                 match code with
@@ -2098,19 +2111,6 @@ let colorizeRepl (isKnown: string -> bool) (line: string) : string =
 
             for j in codeTrimmed.Length - markerLen .. codeTrimmed.Length - 1 do
                 codes[j] <- Some "36"
-
-        // ^ls: the forced head resolves against PATH only
-        if line.Length > 1 && line[0] = '^' && isIdentStart line[1] then
-            let mutable e = 1
-
-            while e < line.Length && isIdentCont line[e] do
-                e <- e + 1
-
-            let word = line.Substring(1, e - 1)
-            let c = if Extern.exists word then "34" else "31"
-
-            for j in 1 .. e - 1 do
-                codes[j] <- Some c
 
         // emit: group adjacent same-code chars into spans
         let sb = System.Text.StringBuilder()

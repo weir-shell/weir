@@ -884,10 +884,46 @@ out=$($BIN -e 'print "visible"')
 [ "$out" = "visible" ] || fail "print in -e must emit exactly the line, no unit trailer (got: $out)"
 echo "e2e ok: unit is invisible in -e"
 
+# unit stays invisible on the PIPED surface (its bytes are pinned) —
+# the tty echoes `() : unit` since the FSI-parity ruling [D:repl-it],
+# pinned in tests/repl/repl-it-streamed.py
 out=$(printf 'print "hi"\nlet u = ()\nu\n#quit\n' | $BIN)
 echo "$out" | grep -qF "hi" || fail "REPL print lost its output"
-if echo "$out" | grep -qF "() : unit"; then fail "unit leaked into REPL display"; fi
-echo "e2e ok: unit is invisible in the REPL"
+if echo "$out" | grep -qF "() : unit"; then fail "unit leaked into the piped REPL display"; fi
+echo "e2e ok: unit is invisible in the piped REPL"
+
+# --- the it-rebinding matrix, FSI parity (2026-09-18) [D:repl-it] ------
+# EXPRESSIONS and COMMANDS rebind `it` — always, unit included; a `let`
+# does NOT (FSI: `let o = 10;;` binds no it); a directive leaves it; a
+# fresh session's `it` is unbound. These cells pin the piped value path;
+# the streamed (tty) half — it := () and the misuse teach — lives in
+# tests/repl/repl-it-streamed.py.
+out=$(printf '5\nit\n#quit\n' | $BIN)
+[ "$(echo "$out" | grep -cF '5 : int')" = "2" ] || fail "a non-unit expression must rebind it: $out"
+out=$(printf 'print "hi"\n(it, 1)\n#quit\n' | $BIN)
+echo "$out" | grep -qF '((), 1) : unit * int' || fail "a unit expression must rebind it := (): $out"
+out=$(printf 'let o = 10\nit\n#quit\n' | $BIN)
+echo "$out" | grep -qF "unbound variable 'it'" || fail "a let must not rebind it (FSI parity): $out"
+out=$(printf '7\n#echo\nit\n#quit\n' | $BIN)
+[ "$(echo "$out" | grep -cF '7 : int')" = "2" ] || fail "a directive must leave it untouched: $out"
+echo "e2e ok: the it-rebinding matrix — expr/command always (unit included), let never, directive inert [D:repl-it]"
+
+# --- the function-value echo, piped spelling (2026-09-18) [D:repl-fn-echo]
+# a named builtin echoes the plain #help signature + glance; a session
+# function echoes name : scheme + its definition line; an anonymous
+# closure keeps <fun> : ty — vars normalized ('a1 -> 'a2 reads 'a -> 'b)
+out=$(printf 'Seq.map\n#quit\n' | $BIN)
+echo "$out" | grep -qF "Seq.map (f: 'a -> 'b) (xs: seq<'a>) : seq<'b>" || fail "Seq.map must echo the #help signature: $out"
+echo "$out" | grep -qF "Apply a function to every element, lazily." || fail "Seq.map must echo the doc's first line: $out"
+out=$(printf 'find\n#quit\n' | $BIN)
+echo "$out" | grep -qF "Seq.find (pred: 'a -> bool) (xs: seq<'a>) : 'a" || fail "a bare alias must echo its qualified home: $out"
+out=$(printf 'let f x = x + 1\nf\n#quit\n' | $BIN)
+echo "$out" | grep -qF "f : int -> int" || fail "a session function must echo name : scheme: $out"
+# piped stdin is not echoed, so the definition line in the output IS the echo's
+echo "$out" | grep -qF "let f x = x + 1" || fail "a session function must echo its recorded definition line: $out"
+out=$(printf 'fun x -> x\n#quit\n' | $BIN)
+echo "$out" | grep -qF "<fun> : 'a -> 'a" || fail "an anonymous closure keeps <fun> : ty, vars normalized: $out"
+echo "e2e ok: the function-value echo — builtin mini-help, session def line, anonymous <fun> [D:repl-fn-echo]"
 
 # --- #infer / it / #save DISTILL round-trip (2026-09-17) [D:repl-save] -
 # #save DISTILLS a session to its checkable DEFINITIONS (option B): it
@@ -898,8 +934,11 @@ echo "e2e ok: unit is invisible in the REPL"
 # plus the multi-line heredoc/type distill, is pinned. The piped
 # multi-line assembly is pinned in its own cell below.
 infdir=$(mkweirtmp)
-infout=$(printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' \
+# the bare `sample` echo binds `it` for the no-source #infer — a `let`
+# no longer does (FSI parity [D:repl-it])
+infout=$(printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' \
   'let sample = ["{\"items\": [{\"name\": \"a\", \"port\": 8080}], \"count\": 1}"]' \
+  'sample' \
   '#infer from json as Root' \
   'sample |> from json Root |> _.items |> map _.name |> Seq.length' \
   'type Mode = Fast | Slow' \
@@ -1016,6 +1055,124 @@ echo "$asout" | grep -qF "#infer: 'Secret' is a built-in type" || fail "a builti
 echo "$asout" | grep -qF "pick another 'as' name" || fail "the refusal must carry the teaching: $asout"
 echo "$asout" | grep -qF "defined:" && fail "a refused 'as'-name must define nothing: $asout" || true
 echo "e2e ok: '#infer … as Secret' refuses loudly (the builtin wins every use; pick another name)"
+
+# --- #infer array-element merge + open mappings (2026-09-18) [D:repl-infer] --
+# the real-kubectl failure this closes: `kubectl get cm -o json` — every
+# ConfigMap's `data` carries its own keys, so a first-element-only draft
+# died reading item 2 ("missing field 'items[2].data.networkYml'").
+# Array elements MERGE (a key absent in some items drafts Option) and a
+# data-keyed object drafts as the open mapping seq<string * string> —
+# the draft reads the WHOLE list, per-item data as pairs.
+cmdir=$(mkweirtmp)
+cat > "$cmdir/cmlist.json" <<'JEOF'
+{
+    "apiVersion": "v1",
+    "items": [
+        {
+            "apiVersion": "v1",
+            "data": {
+                "Corefile": ".:53 {\n    errors\n    cache 30\n}"
+            },
+            "kind": "ConfigMap",
+            "metadata": {
+                "creationTimestamp": "2026-09-01T10:00:00Z",
+                "name": "coredns",
+                "namespace": "kube-system",
+                "resourceVersion": "231",
+                "uid": "5c3f2a1b-0001-4b6e-9a51-aaaaaaaaaaaa"
+            }
+        },
+        {
+            "apiVersion": "v1",
+            "data": {
+                "mode": "flat",
+                "network.yml": "nodes: 3\nsubnet: 10.42.0.0/16"
+            },
+            "kind": "ConfigMap",
+            "metadata": {
+                "annotations": {
+                    "kubectl.kubernetes.io/last-applied-configuration": "{\"apiVersion\":\"v1\",\"kind\":\"ConfigMap\"}"
+                },
+                "creationTimestamp": "2026-09-02T08:30:00Z",
+                "name": "network-config",
+                "namespace": "default",
+                "resourceVersion": "482",
+                "uid": "5c3f2a1b-0002-4b6e-9a51-bbbbbbbbbbbb"
+            }
+        },
+        {
+            "apiVersion": "v1",
+            "data": {
+                "ca.crt": "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----"
+            },
+            "kind": "ConfigMap",
+            "metadata": {
+                "creationTimestamp": "2026-09-01T10:00:05Z",
+                "name": "kube-root-ca.crt",
+                "namespace": "default",
+                "resourceVersion": "12",
+                "uid": "5c3f2a1b-0003-4b6e-9a51-cccccccccccc"
+            }
+        }
+    ],
+    "kind": "List",
+    "metadata": {
+        "resourceVersion": "482"
+    }
+}
+JEOF
+cmout=$(printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n' \
+  "let cm = File.read \"$cmdir/cmlist.json\" |> Seq.force" \
+  '#infer cm from json as ConfigMapList' \
+  'let v = cm |> from json ConfigMapList' \
+  'print (v |> _.metadata.resourceVersion)' \
+  'let hit = v.items |> Seq.head |> _.data |> Seq.tryFind (fun (k, _) -> k == "Corefile")' \
+  'print (match hit with | Some (k, _) -> $"hit={k}" | None -> "miss")' \
+  '#quit' | $BIN 2>&1)
+echo "$cmout" | grep -qF "ConfigMapList" || fail "#infer must define the as-named type: $cmout"
+echo "$cmout" | grep -qF "note: 'items.data' carries different keys across the array's elements" \
+  || fail "the open-map merge note must print: $cmout"
+echo "$cmout" | grep -qF "note: 'annotations' has mostly non-identifier keys" \
+  || fail "the annotations map note must print: $cmout"
+echo "$cmout" | grep -qF "482" || fail "the merged draft must READ the whole list (metadata.resourceVersion): $cmout"
+echo "$cmout" | grep -qF "hit=Corefile" || fail "per-item data must read as pairs (Seq.tryFind): $cmout"
+echo "e2e ok: #infer merges ConfigMapList items; data reads as an open mapping via from json"
+
+# the yaml twin: the same merge + mapping rules through from yaml
+cat > "$cmdir/cmlist.yaml" <<'YEOF'
+apiVersion: v1
+items:
+- apiVersion: v1
+  data:
+    Corefile: ".:53"
+  kind: ConfigMap
+  metadata:
+    name: coredns
+    namespace: kube-system
+- apiVersion: v1
+  data:
+    network.yml: "nodes: 3"
+    mode: flat
+  kind: ConfigMap
+  metadata:
+    annotations:
+      kubectl.kubernetes.io/last-applied-configuration: "{}"
+    name: network-config
+    namespace: default
+kind: List
+YEOF
+cmyout=$(printf '%s\n%s\n%s\n%s\n%s\n' \
+  "let cmy = File.read \"$cmdir/cmlist.yaml\" |> Seq.force" \
+  '#infer cmy from yaml as CmListY' \
+  'let vy = cmy |> from yaml CmListY' \
+  'let hy = vy.items |> Seq.skip 1 |> Seq.head |> _.data |> Seq.tryFind (fun (k, _) -> k == "network.yml")' \
+  'print (match hy with | Some (_, c) -> $"content={c}" | None -> "miss")' \
+  '#quit' | $BIN 2>&1)
+echo "$cmyout" | grep -qF "note: 'items.data' carries different keys across the array's elements" \
+  || fail "the yaml twin must print the open-map merge note: $cmyout"
+echo "$cmyout" | grep -qF "content=nodes: 3" || fail "the yaml twin must read per-item data as pairs: $cmyout"
+echo "e2e ok: the yaml twin merges items and reads data as an open mapping"
+rm -rf "$cmdir"
 
 # --- piped REPL multi-line assembly (2026-09-16) [D:repl-multiline] ----
 # a REDIRECTED REPL (printf … | weir) reads physical lines but must
@@ -1324,7 +1481,7 @@ PYADP
 
     # --- REPL line editor under a pty (2026-07-21) ---------------------
     if [ "$IS_WINDOWS" = "1" ]; then
-        echo "e2e SKIP: the six pty REPL harnesses — python has no pty on Windows (the REPL itself is exercised by the Windows hand-run checklist)"
+        echo "e2e SKIP: the pty REPL harnesses — python has no pty on Windows (the REPL itself is exercised by the Windows hand-run checklist)"
     else
     python3 "$(dirname "$0")/../tests/repl/repl-wordnav.py" "$BIN" || fail "repl word navigation"
     echo "e2e ok: repl Ctrl+Left/Right word navigation"
@@ -1341,14 +1498,17 @@ PYADP
     python3 "$(dirname "$0")/../tests/repl/cooked-trap.py" "$BIN" || fail "cooked trap / echo-once"
     echo "e2e ok: repl cooked-trap (one child run per echo, Enter survives a slow child)"
 
-    python3 "$(dirname "$0")/../tests/repl/repl-it-streamed.py" "$BIN" || fail "streamed-statement it teach"
-    echo "e2e ok: repl streamed statement — honest meta (not bound to it), targeted unbound-it teach, let/fresh/piped unchanged [D:repl-it]"
+    python3 "$(dirname "$0")/../tests/repl/repl-it-streamed.py" "$BIN" || fail "it FSI-parity / function echo"
+    echo "e2e ok: it FSI-parity — streamed binds (), misuse teaches the capture, functions echo mini-help [D:repl-it] [D:repl-fn-echo]"
 
     python3 "$(dirname "$0")/../tests/repl/repl-directives.py" "$BIN" || fail "repl directives"
     echo "e2e ok: repl directives (#help x3, #quit, :q retired, comments no-op, #echo cap)"
 
     python3 "$(dirname "$0")/../tests/repl/repl-pathquote.py" "$BIN" || fail "repl path-quote completion"
     echo "e2e ok: repl path completion quotes in expression position, bare in command-argv [D:repl-path-quote]"
+
+    python3 "$(dirname "$0")/../tests/repl/repl-mapkeys.py" "$BIN" || fail "repl map-key completion"
+    echo "e2e ok: repl map-key completion — a bound value's keys inside a Map lookup literal; a pipeline receiver stays silent [D:value-key-complete]"
 
     python3 "$(dirname "$0")/../tests/repl/repl-multiline.py" "$BIN" || fail "repl multiline editor"
     fi
@@ -3474,6 +3634,71 @@ xto=$($BIN -e '[1] |> to xml' 2>&1) && fail "to xml must not exist" || true
 echo "$xto" | grep -qF "XML is read-only" || fail "to xml refusal teaches: $xto"
 echo "e2e ok: from xml — real .csproj groups/refs, stripped xmlns, no to xml"
 rm -rf "$xdir"
+
+# from table [D:from-table]: the aligned-table boundary on a REAL file —
+# a kubectl-shaped fixture (tabwriter reality: 3-space padding, spaced
+# values, <none>) read into typed rows; the header-offset law is the
+# spaced STATUS value surviving as one cell. Wire hits a raw header;
+# Option reads <none>/empty as None; errors carry line + column.
+tdir=$(mkweirtmp)
+cat > "$tdir/pods.txt" <<'TEOF'
+NAME    READY   STATUS             RESTARTS   NOMINATED NODE
+web-1   1/1     Running            0          k3d-agent-0
+db-0    1/2     CrashLoopBackOff   3          <none>
+TEOF
+cat > "$tdir/table.weir" <<'WEOF'
+type Pod = {
+    name: string
+    ready: string
+    status: string
+    [<Wire "RESTARTS">]
+    restarts: int
+    nominatedNode: Option<string>
+}
+let pods = File.read "pods.txt" |> from table Pod
+print $"{pods |> Seq.length} pods"
+pods |> Seq.where (fun p -> p.restarts > 0) |> Seq.iter (fun p -> print $"{p.name} {p.status}")
+pods |> Seq.iter (fun p -> print $"{p.nominatedNode}")
+WEOF
+tout=$(cd "$tdir" && $BIN table.weir)
+expect "from table: rows read typed from a real file" "2 pods" "$tout"
+expect "from table: a spaced value is ONE cell (header offsets, not whitespace)" "db-0 CrashLoopBackOff" "$tout"
+echo "$tout" | grep -qF 'Some "k3d-agent-0"' || fail "from table: two-word header + Option value: $tout"
+echo "$tout" | grep -qF "None" || fail "from table: <none> reads as None: $tout"
+# a bad cell errors located: row line + column offset + header name
+terr=$(cd "$tdir" && $BIN -e 'type P = { name: string; restarts: int }
+["NAME   RESTARTS"; "n1     often"] |> from table P |> Seq.length |> show' 2>&1) && fail "a bad int cell must raise" || true
+echo "$terr" | grep -qF "from table: line 2, col 8: column 'RESTARTS': expected int, got 'often'" \
+  || fail "from table cell error lost its location: $terr"
+# a missing declared column names itself and the headers seen
+tmiss=$($BIN -e 'type P = { name: string; ip: string }
+["NAME   AGE"; "n1     2d"] |> from table P |> Seq.length |> show' 2>&1) && fail "a missing column must raise" || true
+echo "$tmiss" | grep -qF "missing column 'ip' for field 'ip' — headers seen: NAME, AGE" \
+  || fail "from table missing-column error lost its inventory: $tmiss"
+# no write side, and the word stays an ordinary identifier
+tto=$($BIN -e 'type P = { a: int }
+[{ a = 1 }] |> to table' 2>&1) && fail "to table must not exist" || true
+echo "$tto" | grep -qF "the table boundary is read-only" || fail "to table refusal teaches: $tto"
+tid=$($BIN -e 'let table = 5
+show (table + 1)') || fail "'table' must stay bindable"
+echo "$tid" | grep -qF '"6"' || fail "'table' as an identifier: $tid"
+echo "e2e ok: from table — header-offset slicing, Wire + Option/<none>, located errors, no to table, 'table' unreserved"
+rm -rf "$tdir"
+
+# --- #infer from table [D:from-table]: the REPL drafts the row record
+# from an aligned sample, injects it, and the typed read lights up in
+# the SAME session; the as-name guard still refuses a builtin landing
+tinf=$(printf '%s\n%s\n%s\n%s\n%s\n' \
+  'let tsample = ["NAME    STATUS    RESTARTS"; "web-1   Running   0"; "db-0    Pending   3"]' \
+  '#infer tsample from table as Pod' \
+  'tsample |> from table Pod |> Seq.where (fun p -> p.restarts > 0) |> Seq.map (fun p -> p.name) |> Seq.length |> show' \
+  '#infer tsample from table as Yaml' \
+  '#quit' | $BIN)
+echo "$tinf" | grep -qF "defined: Pod (1 type)" || fail "#infer from table did not define the row type: $tinf"
+echo "$tinf" | grep -qF "read the value as 'seq<Pod>'" || fail "#infer from table lost the seq note: $tinf"
+echo "$tinf" | grep -qF '"1" : string' || fail "the injected type must read typed rows: $tinf"
+echo "$tinf" | grep -qF "'Yaml' is a built-in type" || fail "the as-name guard must refuse a builtin landing: $tinf"
+echo "e2e ok: #infer from table — drafts, injects, reads in one session; the as-name guard holds"
 
 # structural walks [D:structural-walk]: Graph.reach over a dep graph
 # (cycle-safe, breadth-first, each node once) and Tree.walk's
@@ -5793,18 +6018,22 @@ let text = File.read "kubectl-list.yaml" |> Seq.force
 print (Yaml.inferShape text)
 WEOF
 out=$(cd "$ydir" && $BIN inferdecl.weir)
-echo "$out" | grep -qF "resources: Yaml" || fail "empty {} must infer as opaque Yaml: $out"
+# MOVED PINS [D:repl-infer]: an empty {} is an open map with zero
+# entries (the opaque-Yaml draft could not cross the json boundary),
+# and the dirty-keyed labels object drafts as the mapping — its keys
+# are data, so no [<Wire>] rides at all
+echo "$out" | grep -qF "resources: seq<string * string>" || fail "empty {} must infer as the empty open mapping: $out"
 echo "$out" | grep -qF "an empty mapping under 'Resources'" || fail "empty {} must print a note: $out"
 echo "$out" | grep -qi "not valid YAML" && fail "the real kubectl List must infer clean: $out" || true
-# the k8s label keys weir cannot spell as fields ride [<Wire>] over a
-# sanitized identifier [D:infer-wire-sanitize] — the draft must CHECK
-echo "$out" | grep -qF '[<Wire "pod-template-hash">]' || fail "a dirty label key must draft a Wire attr: $out"
-echo "$out" | grep -qF 'podTemplateHash' || fail "the sanitized field name must appear: $out"
+echo "$out" | grep -qF "labels: seq<string * string>" || fail "the dirty-keyed labels must draft as a mapping: $out"
+echo "$out" | grep -qF "'labels' has mostly non-identifier keys" || fail "the labels map note must print: $out"
+echo "$out" | grep -qF 'pod-template-hash' && fail "a mapping's keys are data — no label key belongs in the draft: $out" || true
 echo "$out" | grep -qF 'k8s-app: string' && fail "a non-identifier key must NOT appear bare as a field: $out" || true
 
-# key sanitization end-to-end [D:infer-wire-sanitize]: infer a labels
-# object with hyphen/dot/slash keys, then the DRAFTED type must both
-# CHECK and READ the real data through from yaml (Wire honored on read)
+# the open-map draft end-to-end [D:repl-infer] (MOVED PIN — this cell
+# pinned the [<Wire>]'d record draft): a labels object with hyphen/dot/
+# slash keys over one value shape drafts as the MAPPING, and the draft
+# READS the real data through from yaml as pairs — keys stay data
 cat > "$ydir/labels.yaml" <<'YEOF'
 labels:
   k8s-app: web
@@ -5817,15 +6046,22 @@ let text = File.read "labels.yaml" |> Seq.force
 print (Yaml.inferShape text)
 WEOF
 draft=$(cd "$ydir" && $BIN draft.weir)
-# assemble a program from the drafted decls + a read that touches each field
+echo "$draft" | grep -qF 'labels: seq<string * string>' || fail "the dirty-keyed labels must draft as a mapping: $draft"
+echo "$draft" | grep -qF 'Wire' && fail "mapping keys are data — no [<Wire>] belongs in the draft: $draft" || true
+# assemble a program from the drafted decls + a pair lookup per key
 {
   echo "$draft" | grep -v '^// note'
   echo 'let text = File.read "labels.yaml" |> Seq.force'
   echo 'let r = text |> from yaml Root'
-  echo 'print $"{r.labels.k8sApp} {r.labels.nodeKubernetesIoOs} {r.labels.appKubernetesIoInstance} {r.labels.clean}"'
+  echo 'let v k = r.labels |> Seq.tryFind (fun (p, _) -> p == k) |> Option.map snd |> Option.defaultValue "?"'
+  echo 'let a = v "k8s-app"'
+  echo 'let b = v "node.kubernetes.io/os"'
+  echo 'let c = v "app.kubernetes.io/instance"'
+  echo 'let d = v "clean"'
+  echo 'print $"{a} {b} {c} {d}"'
 } > "$ydir/roundtrip.weir"
 out=$(cd "$ydir" && $BIN roundtrip.weir 2>&1)
-expect "the inferred type with [<Wire>] on dirty keys CHECKS and READS real data" "web linux nginx yes" "$out"
+expect "the inferred open-mapping draft CHECKS and READS real label data as pairs" "web linux nginx yes" "$out"
 
 # empty flow forms, both positions: {} → empty mapping, [] → empty seq
 printf 'type R = { m: Yaml; s: seq<string> }\nlet r = ["m: {}"; "s: []"] |> from yaml R\nprint $"{show r.m} {show (Seq.length r.s)}"\n' > "$ydir/ef.weir"
@@ -7671,6 +7907,21 @@ if ! diff "$refdump/reference.json" "$ROOT/site/src/data/reference.json" > /dev/
     fail "site/src/data/reference.json differs from this binary's dump — content drift means regenerate (weir docs-json > site/src/data/reference.json); byte-only drift (CR bytes above) means a platform newline leak [D:lf-output]"
 fi
 echo "e2e ok: reference dump current (docs-json == committed site data)"
+
+# ---- Str.fields: the piped-column idiom on the shipped binary [D:str-fields]
+# a kubectl-shaped fixture piped into a script that reads Self.stdin —
+# whitespace runs collapse, so column 2 is Seq.item 1, no regex
+sfdir=$(mkweirtmp)
+cat > "$sfdir/cols.weir" <<'EOF'
+Self.stdin
+|> Seq.skip 1
+|> Seq.map (fun l -> l |> Str.fields |> Seq.item 1)
+|> Str.join ","
+|> print
+EOF
+sfout=$(printf 'NAME        READY   STATUS    RESTARTS   AGE\nweir-7d9f   1/1     Running   0          12m\nsite-abc1   2/2     Running   1          3h\n' | "$BIN" "$sfdir/cols.weir")
+[ "$sfout" = "1/1,2/2" ] || fail "Str.fields column extraction from piped fixture: got '$sfout'"
+echo "e2e ok: Str.fields extracts the READY column from piped fixture lines (whitespace runs, no empties)"
 
 # ---- the CLI page is byte-pinned against --help ---------------------------
 # docs/cli.md quotes the usage block verbatim; a new subcommand or flag

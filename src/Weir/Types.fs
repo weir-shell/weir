@@ -178,6 +178,53 @@ let formatSignatureWith (st: SigStyle) (name: string) (paramNames: string list) 
 let formatSignature (name: string) (paramNames: string list) (ty: Ty) : string =
     formatSignatureWith plainSigStyle name paramNames ty
 
+/// ECHO var normalization [D:repl-fn-echo]: the checker's fresh names
+/// ('a1, 'a2, 'b3…) rename to 'a, 'b, … in first-appearance order —
+/// DISPLAY ONLY, for the echo's `: ty` metadata. SHARED by exactly two
+/// consumers: the REPL echo meta lines and the `-e` last-statement echo
+/// (formatEchoTy below is their one spelling). Type ERRORS, hover, and
+/// `#help` signatures keep their own formatting untouched — errors name
+/// the checker's internal vars, #help renders canonical schemes already.
+/// Row-var NAMES never render (formatTy shows `{ fields; .. }`), so only
+/// TVar names rename; nested row FIELDS recurse.
+let normalizeEchoVars (ty: Ty) : Ty =
+    let mapping = System.Collections.Generic.Dictionary<string, string>()
+
+    let renameVar (v: string) : string =
+        match mapping.TryGetValue v with
+        | true, r -> r
+        | _ ->
+            let i = mapping.Count
+
+            let r =
+                if i < 26 then
+                    string (char (int 'a' + i))
+                else
+                    // beyond 'z (never seen in practice): 'a1, 'b1, …
+                    $"{char (int 'a' + i % 26)}{i / 26}"
+
+            mapping[v] <- r
+            r
+
+    let rec go (t: Ty) : Ty =
+        match t with
+        | TVar v -> TVar(renameVar v)
+        | TFun(a, b) ->
+            // domain first — left-to-right first appearance
+            let a' = go a
+            TFun(a', go b)
+        | TSeq e -> TSeq(go e)
+        | TTuple ts -> TTuple(List.map go ts)
+        | TNamed(n, args) -> TNamed(n, List.map go args)
+        | TRowVar(r, fields) -> TRowVar(r, fields |> List.map (fun (f, ft) -> f, go ft))
+        | t -> t
+
+    go ty
+
+/// the one echo type spelling [D:repl-fn-echo] — normalizeEchoVars
+/// composed with formatTy; every echo meta line renders through it
+let formatEchoTy (ty: Ty) : string = formatTy (normalizeEchoVars ty)
+
 let rec tyVars (ty: Ty) : Set<string> =
     match ty with
     | TVar v -> Set.singleton v

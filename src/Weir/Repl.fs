@@ -17,20 +17,37 @@ let private prompt = "weir> "
 let mutable private lastErrored = false
 
 // the streamed-statement latch [D:repl-it]: Some <source text> while the
-// LAST evaluated statement took the inherit path [D:colour-inherit] — the
-// child wrote the terminal itself, weir never held the bytes, so `it` did
-// NOT bind. Any other evaluated statement clears it; a check error or a
-// directive leaves it (the very next line may be the `it` that needs the
-// teach). Read by the unbound-`it` arm and the streamed meta line.
+// CURRENT `it` binding came from a streamed statement (the inherit path
+// [D:colour-inherit] — the child wrote the terminal itself, weir never
+// held the bytes, so `it` bound `()`, FSI-parity). Any other
+// expression/command REBINDS `it` and clears it; a `let`, a `type`, a
+// directive, or a check error leaves it (`it` is still the stream's
+// unit). Read by the misuse teach: a type error on a line that USES the
+// unit-bound `it` appends the capture repair with the command verbatim.
 let mutable private lastStreamed: string option = None
+
+// the session's live ALIAS NAMES [D:command-head-alias]: a ref like
+// currentEnv (the loop refreshes both), read by the one membership
+// below and the Tab pool — the alias TABLE itself stays in State
+let private currentAliasNames: Set<string> ref = ref Set.empty
+
+// the session VALUES ride the same way [D:value-key-complete]: the
+// map-key completion slot PEEKS at a bound value's keys — a table
+// read, never an evaluation
+let private currentVals: Eval.Env ref = ref Map.empty
 
 // the session resolver's verdict [D:repl-color]: ONE membership feeding
 // the live prompt's head tint AND the #help example tint [D:help-tint]
-// — values, modules, and the command-callable externs, never two lists
-let private knownIn (env: TypeEnv) (n: string) : bool =
+// — values, modules, the command-callable externs, and the session's
+// alias heads [D:command-head-alias] — never two lists
+let private knownInWith (aliases: Set<string>) (env: TypeEnv) (n: string) : bool =
     Map.containsKey n env.Values
     || Map.containsKey n env.Modules
     || Builtins.commandCallable.Contains n
+    || aliases.Contains n
+
+let private knownIn (env: TypeEnv) : string -> bool =
+    knownInWith currentAliasNames.Value env
 
 // the session TRANSCRIPT [D:repl-save]: the ACCEPTED statements, in
 // order, that `#save` DISTILLS into a runnable .weir file (option B — a
@@ -511,29 +528,28 @@ let private echoMeta (s: string) =
 // spelling so a clipped `let` bind can never look like it silently dropped
 // data (the tail is printed AFTER the lines, so it stays visible)
 let letEchoMeta (name: string) (ty: Ty) (hint: string option) : string =
-    $"{name} : {formatTy ty}{Eval.echoTail hint}"
+    $"{name} : {formatEchoTy ty}{Eval.echoTail hint}"
 
-// the inherited-statement meta line [D:repl-it]: the statement STREAMED —
-// the child wrote the terminal, weir never held the bytes — so unlike
-// every other value echo, `it` did not bind; the meta says so instead of
-// looking like a value landed
-let streamedEchoMeta (ty: Ty) : string =
-    $": {formatTy ty} (streamed — not bound to 'it'; let x = … captures)"
-
-// the unbound-`it` teach after a streamed statement [D:repl-it]: the
-// generic unbound error reads as a regression there; the repair is
-// re-typing the command as a `let` (the value path captures, and a let
-// binds `it` too). The command text rides verbatim when it is one clean
-// physical line; sentinel-joined (assembled) source falls back to the
-// generic spelling.
-let streamedItTeach (source: string option) : string list =
+// the misuse repair after a streamed statement [D:repl-it]: `it` is
+// unit-bound (the stream's `()`), so using it where unit fails the check
+// is a located TYPE error — this line rides after it, naming the repair
+// (re-type the command as a `let`; the value path captures). The command
+// text rides verbatim when it is one clean physical line;
+// sentinel-joined (assembled) source falls back to the generic spelling.
+// The standing per-command teaching this replaced (v0.0.43's streamed
+// parenthetical) taught on every command — noise; the teach now fires
+// only at the misuse.
+let streamedItRepair (source: string option) : string =
     let cmd =
         match source with
         | Some s when s.Trim() <> "" && not (s |> Seq.exists Char.IsControl) -> s.Trim()
         | _ -> "<the command>"
 
-    [ "unbound variable 'it' — the last command streamed to the terminal; weir never held its output"
-      $"to capture (and bind 'it'): let x = {cmd}" ]
+    $"to capture: let x = {cmd}"
+
+// does the source use `it` as a word? — the misuse-teach gate [D:repl-it]
+let private referencesIt (source: string) : bool =
+    Text.RegularExpressions.Regex.IsMatch(source, @"\bit\b")
 
 // the live terminal width for the table clamp — piped echoes never
 // tabulate, so None only guards the resize/console-less edge
@@ -1157,7 +1173,16 @@ let private readLineTty () : string option =
             // it must not leak into the word (the mid-line receipt: the
             // typed closer ` })` became part of the prefix and killed
             // every match); insertion below re-attaches the tail
-            let suggestions = Complete.suggest currentEnv.Value (text.Substring(0, col)) ws
+            let suggestions =
+                // the session entry: alias heads join the head-slot pool
+                // [D:command-head-alias]; the session values feed the
+                // map-key slot [D:value-key-complete]
+                Complete.suggestSession
+                    currentAliasNames.Value
+                    currentVals.Value
+                    currentEnv.Value
+                    (text.Substring(0, col))
+                    ws
 
             (match suggestions with
              | [] -> ()
@@ -1365,6 +1390,136 @@ let private printWarnings (state: State) (te: Check.TypedExpr) =
         Console.WriteLine(Types.Color.yellow Types.Color.onStdout.Value (underline w.Span))
         Console.WriteLine(Check.formatWarning w))
 
+// ---- the #help glance sources [D:help-glance], defined HERE because the
+// function-value echo [D:repl-fn-echo] composes from the SAME pieces —
+// one renderer for #help and the echo, never a second copy.
+
+let private glanceWidth () =
+    if Console.IsOutputRedirected then
+        100
+    else
+        try
+            max 40 Console.WindowWidth
+        with _ ->
+            100
+
+let private clipTo (width: int) (s: string) : string =
+    if s.Length <= width then s else s.Substring(0, width - 1) + "…"
+
+/// a member's glance: the first line of its builtinDocs Summary — the
+/// same text hover and `#help Module.member` lead with, never a copy
+let private memberGlance (qualified: string) : string =
+    match Map.tryFind qualified Builtins.builtinDocs with
+    | Some d -> (d.Summary.Split '\n')[0]
+    | None -> ""
+
+// ---- the tty help render [D:help-tint] -------------------------------
+// A doc's `code` spans tint cyan at a colored tty, the backticks
+// themselves dropped — the span reads as code, not markdown source.
+// ONE function, called by every REPL help print (the #help dispatch,
+// #find's selection and fallback) AND the function-value echo's glance
+// line [D:repl-fn-echo]; replDocText and piped output keep the literal
+// backticks (the pinned byte surface — and the stripped tty, NO_COLOR /
+// TERM=dumb, falls back to that spelling so the span boundary is never
+// lost). The signature line and the Example block tint upstream, at
+// composition (memberHelp's colour flag) — this regex never has to
+// re-parse what helpDirective already knew.
+let private codeSpanRe = Text.RegularExpressions.Regex @"`([^`\n]+)`"
+
+/// the transform with the colour gate explicit — the unit pins' seam
+let renderHelpText (color: bool) (s: string) : string =
+    if color then
+        codeSpanRe.Replace(s, (fun m -> Types.Color.cyan true m.Groups[1].Value))
+    else
+        s
+
+// ---- the function-value echo [D:repl-fn-echo]: a bare expression
+// evaluating to a FUNCTION renders a mini-help instead of the opaque
+// `<builtin> : ty` / `<fun> : ty` line.
+//   - a BUILTIN named by an identifier (a bare alias like `find`
+//     resolves to its home, `Seq.find`): the tinted signature + the
+//     doc's first line — EXACTLY the #help composition
+//     (formatSignatureWith + the glance source), one renderer; piped
+//     keeps the plain spelling (the byte discipline).
+//   - a SESSION-DEFINED function named bare: `name : <normalized
+//     scheme>` + a dim second line with its recorded definition's FIRST
+//     physical line (the #save transcript keeps per-name physical
+//     source; a redefinition shows the LAST accepted), clipped to
+//     width, `…` when the definition is multi-line.
+//   - anonymous/composed closures: `<fun>`/`<builtin>` `: ty` as
+//     before — nothing to name; vars normalized only.
+
+/// the LAST accepted definition's first physical line for a session
+/// name, plus whether the definition spans more lines
+let private lastDefLine (name: string) : (string * bool) option =
+    seq { transcript.Count - 1 .. -1 .. 0 }
+    |> Seq.tryPick (fun i ->
+        let t = transcript[i]
+
+        match t.Kind with
+        | TDef n when n = name ->
+            let lines = t.PhysText.Split '\n'
+            Some(lines[0], lines.Length > 1)
+        | _ -> None)
+
+/// the deterministic composition, seamed for the unit pins: the lines a
+/// named function value echoes, or None (the caller falls back to the
+/// plain value echo). `defLine` is the transcript lookup, injected so
+/// the pins need no live session.
+let functionEchoLines
+    (color: bool)
+    (width: int)
+    (te: TypeEnv)
+    (defLine: string -> (string * bool) option)
+    (name: string)
+    : string list option =
+    // a bare alias echoes as its home — the qualified spelling is the
+    // one #help documents [D:bare-partition]
+    let qualified =
+        if name.Contains "." then name
+        elif Builtins.bareAliases.Contains name then
+            match Map.tryFind name Builtins.bareAliasHomes with
+            | Some m -> $"{m}.{name}"
+            | None -> name
+        else
+            name
+
+    let schemeOf (n: string) =
+        match n.Split '.' with
+        | [| m; mem |] -> te.Modules |> Map.tryFind m |> Option.bind (Map.tryFind mem)
+        | _ -> Map.tryFind n te.Values
+
+    match Map.tryFind qualified Builtins.builtinDocs, schemeOf qualified with
+    | Some d, Some sch ->
+        // the #help composition: the annotated signature + the glance
+        let style = if color then sigTintStyle else plainSigStyle
+
+        Some
+            [ formatSignatureWith style qualified d.Params sch.Ty
+              renderHelpText color (memberGlance qualified) ]
+    | _ ->
+        match Map.tryFind name te.Values, defLine name with
+        | Some sch, Some(first, multi) ->
+            let def = if multi then first + " …" else first
+
+            Some
+                [ $"{name} : {formatEchoTy sch.Ty}"
+                  Types.Color.dim color (clipTo width def) ]
+        | _ -> None
+
+/// the live wrapper: keys on the VALUE being a function and the
+/// expression being a plain name — anything else declines
+let private functionEcho (env: TypeEnv) (te: Check.TypedExpr) (v: Eval.Value) : string list option =
+    match v with
+    | Eval.VClosure _
+    | Eval.VClosurePat _
+    | Eval.VBuiltin _ ->
+        match te.Kind with
+        | Check.TEVar name when Types.isUserName name ->
+            functionEchoLines Types.Color.onStdout.Value (glanceWidth ()) env lastDefLine name
+        | _ -> None
+    | _ -> None
+
 let private resolver (state: State) : Parser.Resolver =
     { Script.resolver state.TypeEnv with
         // the session alias table beats PATH in command-head position
@@ -1385,29 +1540,30 @@ let private printHint (state: State) (line: string) =
         line
     |> Option.iter (fun h -> Console.WriteLine $"hint: {h}")
 
-// the LAST-RESULT binding [D:repl-it]: every REPL line that produces a
-// value (an expression, a command, or a `let` RHS — the echo path) also
-// binds it to the session name `it`, ghci's convention. `_` is taken
+// the LAST-RESULT binding [D:repl-it], FSI-parity (user-ruled reversal):
+// EXPRESSIONS and COMMANDS rebind `it` — always, unit included (a
+// streamed bare command binds `it := ()`; a unit expression likewise). A
+// `let` does NOT rebind (FSI: `let o = 10;;` binds no it); a directive
+// leaves `it` untouched; a fresh session's `it` is unbound. `_` is taken
 // (the `_.field` lambda shorthand and the `let _ =` discard), so `it` is
 // the spelling; it collides with nothing and is REPL-only (scripts/-e
-// never see it, like the bare aliases). A unit statement or a directive
-// leaves `it` untouched. Both the TypeEnv scheme AND the value bind, so
-// the next line both checks and evaluates against `it`.
+// never see it, like the bare aliases). Both the TypeEnv scheme AND the
+// value bind, so the next line both checks and evaluates against `it`.
+// Rebinding clears the streamed latch — `it` is no longer the stream's
+// unit (the streamed arm re-sets it after this).
 let private bindIt (ty: Ty) (v: Eval.Value) (env: State) : State =
-    if ty = TUnit then
-        env
-    else
-        { env with
-            TypeEnv =
-                { env.TypeEnv with
-                    Values = Map.add "it" (Types.generalize ty) env.TypeEnv.Values }
-            Values = Map.add "it" v env.Values }
+    lastStreamed <- None
+
+    { env with
+        TypeEnv =
+            { env.TypeEnv with
+                Values = Map.add "it" (Types.generalize ty) env.TypeEnv.Values }
+        Values = Map.add "it" v env.Values }
 
 // the Ok-side rendering, shared by the single-line and multiline
 // submission paths [D:repl-multiline]
 let private evalCheckedBody (source: string) (state: State) (chk: Script.CheckedStatement) : State =
     lastErrored <- false
-    lastStreamed <- None
 
     match chk.Kind with
     | Script.KType decl ->
@@ -1438,7 +1594,7 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
             // one destructuring line reports each binding on its
             // own line — matching what two lets would have shown
             for n, sch in schemes do
-                Console.WriteLine $"{n} : {formatTy sch.Ty}"
+                Console.WriteLine $"{n} : {formatEchoTy sch.Ty}"
 
             { state with
                 TypeEnv = chk.Env
@@ -1506,12 +1662,13 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
                 | None ->
                     let rendered, hint = Eval.echoValue cap ev
                     let tail = Eval.echoTail hint
-                    Console.WriteLine $"{name} : {formatTy te.Ty} = {rendered}{tail}"
+                    Console.WriteLine $"{name} : {formatEchoTy te.Ty} = {rendered}{tail}"
 
+            // a `let` binds its NAME only — it does not rebind `it`
+            // (FSI parity, user-ruled) [D:repl-it]
             { state with
                 TypeEnv = chk.Env
                 Values = Map.add name v state.Values }
-            |> bindIt te.Ty v
          with
          | Eval.ExitRequest _ -> reraise ()
          | ex ->
@@ -1537,9 +1694,17 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
             (try
                 Console.Out.Flush()
                 Eval.inheritCommandStatement state.Values te
-                echoMeta (streamedEchoMeta te.Ty)
+                // the plain meta — the v0.0.43 streamed parenthetical
+                // REVERTED (a standing teach on every command was
+                // noise); the teach now fires only at misuse, via the
+                // latch below [D:repl-it]
+                echoMeta $": {formatEchoTy te.Ty}"
+                // FSI parity: the streamed statement binds `it := ()` —
+                // weir never held the bytes, so unit is the truth; the
+                // latch remembers the command for the misuse repair
+                let st = bindIt TUnit Eval.VUnit state
                 lastStreamed <- Some source
-                state
+                st
              with
              | Eval.ExitRequest _ -> reraise ()
              | ex ->
@@ -1563,31 +1728,44 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
                         else
                             echoCap
 
-                    match
-                        (if Console.IsOutputRedirected then
-                             None
-                         elif Eval.echoBinary cap ev then
-                             Some(
-                                 [],
-                                 Some
-                                     "binary output — the echo refuses a terminal; redirect to a file, or print deliberately"
-                             )
-                         elif te.Ty = TSeq TStr then
-                             Eval.echoLines cap ev
-                         else
-                             Eval.echoTable cap (termWidth ()) ev)
-                    with
-                    | Some(lines, hint) ->
-                        (if te.Ty = TSeq TStr then
-                             lines |> List.iter Console.WriteLine
-                         else
-                             printTable lines)
-
-                        echoMeta $": {formatTy te.Ty}{Eval.echoTail hint}"
+                    match functionEcho state.TypeEnv te ev with
+                    // a named function value echoes its mini-help
+                    // [D:repl-fn-echo] — never the opaque `<fun>` line
+                    | Some lines -> lines |> List.iter Console.WriteLine
                     | None ->
-                        let rendered, hint = Eval.echoValue cap ev
-                        let tail = Eval.echoTail hint
-                        Console.WriteLine $"{rendered} : {formatTy te.Ty}{tail}"
+
+                        match
+                            (if Console.IsOutputRedirected then
+                                 None
+                             elif Eval.echoBinary cap ev then
+                                 Some(
+                                     [],
+                                     Some
+                                         "binary output — the echo refuses a terminal; redirect to a file, or print deliberately"
+                                 )
+                             elif te.Ty = TSeq TStr then
+                                 Eval.echoLines cap ev
+                             else
+                                 Eval.echoTable cap (termWidth ()) ev)
+                        with
+                        | Some(lines, hint) ->
+                            (if te.Ty = TSeq TStr then
+                                 lines |> List.iter Console.WriteLine
+                             else
+                                 printTable lines)
+
+                            echoMeta $": {formatEchoTy te.Ty}{Eval.echoTail hint}"
+                        | None ->
+                            let rendered, hint = Eval.echoValue cap ev
+                            let tail = Eval.echoTail hint
+                            Console.WriteLine $"{rendered} : {formatEchoTy te.Ty}{tail}"
+                elif not Console.IsOutputRedirected then
+                    // FSI parity [D:repl-it]: a unit expression/command
+                    // rebinds `it := ()`, and the tty echo SAYS so —
+                    // `it` after a streamed command shows `() : unit`,
+                    // never an error. The piped surface stays silent
+                    // (its bytes are pinned: unit is invisible there).
+                    Console.WriteLine "() : unit"
 
                 bindIt te.Ty ev state
              with
@@ -1609,6 +1787,32 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
         // [D:module-signatures]
         state
 
+/// the it-matrix seam [D:repl-it]: fold statements through the real
+/// check+eval path against a fresh session and answer `it`'s bound type
+/// (None = unbound). Echo output is swallowed — these pins assert the
+/// BINDING; the pty battery pins the rendering (and the tty-only
+/// streamed arm, which a redirected test process cannot reach).
+let itSchemeForTest (statements: string list) : string option =
+    let old = Console.Out
+    Console.SetOut TextWriter.Null
+
+    try
+        let final =
+            statements
+            |> List.fold
+                (fun st line ->
+                    let ll = Script.singleLine (Script.stripComment line)
+
+                    match
+                        Script.checkStatement false None (fun _ -> resolver st) Script.scriptOnlyImport st.TypeEnv ll
+                    with
+                    | Ok chk -> evalCheckedBody line st chk
+                    | Error _ -> st)
+                initial
+
+        Map.tryFind "it" final.TypeEnv.Values |> Option.map (fun sch -> formatTy sch.Ty)
+    finally
+        Console.SetOut old
 
 // ---- session directives [D:repl-directives] -------------------------
 // '#' is the prefix for everything addressed to the TOOLING: file
@@ -1641,25 +1845,9 @@ let private evalChecked (source: string) (state: State) (chk: Script.CheckedStat
 // ---- the #help glance [D:help-glance]: one name per line, each with
 // the FIRST LINE of its one-source doc (builtinDocs / moduleBlurbs),
 // clipped to the terminal — glanceable by construction. Piped output
-// uses a FIXED width so the byte surface stays deterministic.
-let private glanceWidth () =
-    if Console.IsOutputRedirected then
-        100
-    else
-        try
-            max 40 Console.WindowWidth
-        with _ ->
-            100
-
-let private clipTo (width: int) (s: string) : string =
-    if s.Length <= width then s else s.Substring(0, width - 1) + "…"
-
-/// a member's glance: the first line of its builtinDocs Summary — the
-/// same text hover and `#help Module.member` lead with, never a copy
-let private memberGlance (qualified: string) : string =
-    match Map.tryFind qualified Builtins.builtinDocs with
-    | Some d -> (d.Summary.Split '\n')[0]
-    | None -> ""
+// uses a FIXED width so the byte surface stays deterministic. The
+// glance sources (glanceWidth/clipTo/memberGlance) live ABOVE the eval
+// path now — the function-value echo shares them [D:repl-fn-echo].
 
 /// a module's member names — completion's source (the module map plus
 /// the bespoke checker arms), the same derivation `#help Module` shows
@@ -1747,7 +1935,7 @@ let private helpDirective (color: bool) (te: TypeEnv) (arg: string) : string =
         + "  #find [query]         // fuzzy-search modules and members (fzf + live preview)\n"
         + "  #echo [<n> | all]     // the unforced-echo cap (default 100); bare reports;\n"
         + "                        //   all = no cap — an infinite seq will hang (Ctrl+C)\n"
-        + "  #infer [<src>] from <json|jsonl|yaml> as <Name>\n"
+        + "  #infer [<src>] from <json|jsonl|yaml|table> as <Name>\n"
         + "                        //   draft named types from a sample (src defaults to 'it')\n"
         + "  #save <path>          // dump the session's accepted lines to a runnable .weir\n"
         + "  #alias [name = cmd …] // bare lists; a command-head alias (init.weir is canonical)\n"
@@ -1815,25 +2003,8 @@ let private helpDirective (color: bool) (te: TypeEnv) (arg: string) : string =
 let replDocText (name: string) : string =
     helpDirective false initial.TypeEnv name
 
-// ---- the tty help render [D:help-tint] -------------------------------
-// A doc's `code` spans tint cyan at a colored tty, the backticks
-// themselves dropped — the span reads as code, not markdown source.
-// ONE function, called by every REPL help print (the #help dispatch,
-// #find's selection and fallback); replDocText and piped output keep
-// the literal backticks (the pinned byte surface — and the stripped
-// tty, NO_COLOR / TERM=dumb, falls back to that spelling so the span
-// boundary is never lost). The signature line and the Example block
-// tint upstream, at composition (memberHelp's colour flag) — this
-// regex never has to re-parse what helpDirective already knew.
-let private codeSpanRe = Text.RegularExpressions.Regex @"`([^`\n]+)`"
-
-/// the transform with the colour gate explicit — the unit pins' seam
-let renderHelpText (color: bool) (s: string) : string =
-    if color then
-        codeSpanRe.Replace(s, (fun m -> Types.Color.cyan true m.Groups[1].Value))
-    else
-        s
-
+// the tty help render moved above the eval path (the function-value
+// echo shares it) [D:help-tint] [D:repl-fn-echo]
 let private renderHelp (s: string) : string =
     renderHelpText Types.Color.onStdout.Value s
 
@@ -1958,6 +2129,10 @@ let helpTintedForTest (arg: string) : string =
 /// the example tint's resolver, exposed so the pins can call the input
 /// colorizer with the SAME verdict the help render uses [D:help-tint]
 let knownForTest: string -> bool = knownIn initial.TypeEnv
+
+/// the alias-aware membership's seam [D:command-head-alias]: the pins
+/// call the ONE membership with an explicit alias set — no ref poking
+let knownWithAliasesForTest (aliases: Set<string>) : string -> bool = knownInWith aliases initial.TypeEnv
 let findFallbackForTest (query: string) : string = findFallback initial.TypeEnv query
 let findCandidatesForTest () : string list = findCandidates initial.TypeEnv
 
@@ -1977,7 +2152,7 @@ let private parseInfer (rest: string) : Result<string * string * string, string>
     let asIdx = rest.LastIndexOf " as "
 
     if asIdx < 0 then
-        Error "#infer <source> from <json|jsonl|yaml> as <Name> — missing 'as <Name>'"
+        Error "#infer <source> from <json|jsonl|yaml|table> as <Name> — missing 'as <Name>'"
     else
         let head = rest.Substring(0, asIdx)
         let name = rest.Substring(asIdx + 4).Trim()
@@ -1990,7 +2165,7 @@ let private parseInfer (rest: string) : Result<string * string * string, string>
                 let fmt = head.TrimStart().Substring(5).Trim()
                 Ok("", fmt, name)
             else
-                Error "#infer <source> from <json|jsonl|yaml> as <Name> — missing 'from <format>'"
+                Error "#infer <source> from <json|jsonl|yaml|table> as <Name> — missing 'from <format>'"
         else
             let source = head.Substring(0, fromIdx).Trim()
             let fmt = head.Substring(fromIdx + 6).Trim()
@@ -2015,7 +2190,17 @@ let private evalSource (state: State) (source: string) : Result<string list, str
         | None -> Error "#infer: the source must be an expression that produces seq<string>"
         | Some te ->
             if te.Ty <> TSeq TStr then
-                Error $"#infer: the source has type {formatTy te.Ty}; the adapter needs seq<string> (a captured JSON/YAML sample)"
+                // the streamed-`it` misuse teach rides here too
+                // [D:repl-it]: `#infer it from yaml` after a streamed
+                // command reads a unit `it` — append the capture repair
+                let repair =
+                    if te.Ty = TUnit && lastStreamed.IsSome && referencesIt source then
+                        "\n" + streamedItRepair lastStreamed
+                    else
+                        ""
+
+                Error
+                    $"#infer: the source has type {formatTy te.Ty}; the adapter needs seq<string> (a captured JSON/YAML sample){repair}"
             else
                 try
                     match Eval.eval state.Values te with
@@ -2431,6 +2616,10 @@ let private saveDirective (state: State) (path: string) : unit =
 
 let rec private loop (state: State) =
     currentEnv.Value <- state.TypeEnv
+    // the alias names ride along [D:command-head-alias]: the head tint
+    // and the Tab pool read the ref, never a second table
+    currentAliasNames.Value <- Set.ofSeq (Map.keys state.Aliases)
+    currentVals.Value <- state.Values
 
     match readInput () with
     | null -> ()
@@ -2590,6 +2779,12 @@ let rec private loop (state: State) =
                                     $"type error: {d.Message}"
                             )
 
+                            // the streamed-`it` misuse teach, the
+                            // multiline arm's copy of the single-line
+                            // append [D:repl-it]
+                            (if not d.Parse && lastStreamed.IsSome && referencesIt ll.Text then
+                                 Console.WriteLine(streamedItRepair lastStreamed))
+
                             st
                         | Ok chk ->
                             let st' = evalChecked ll.Text st chk
@@ -2637,20 +2832,6 @@ let rec private loop (state: State) =
                 Console.WriteLine $"parse error: {d.Message}"
                 printHint state line
                 state
-            // the streamed-statement trap [D:repl-it]: the previous
-            // statement inherited the terminal [D:colour-inherit], so no
-            // value landed and `it` is unbound — the generic error (with
-            // its did-you-mean) reads as a regression; teach the `let`
-            // capture instead. The closing quote in the needle keeps
-            // 'iterations' and friends on the generic path.
-            | Error d when lastStreamed.IsSome && d.Message.StartsWith "unbound variable 'it'" ->
-                lastErrored <- true
-
-                d.Span
-                |> Option.iter (underline >> Types.Color.red Types.Color.onStdout.Value >> Console.WriteLine)
-
-                streamedItTeach lastStreamed |> List.iter Console.WriteLine
-                state
             | Error d ->
                 lastErrored <- true
 
@@ -2666,6 +2847,15 @@ let rec private loop (state: State) =
                                Origin = None }
                      )
                  | None -> Console.WriteLine d.Message)
+
+                // the streamed-`it` misuse teach [D:repl-it]: `it` is
+                // unit-bound after a streamed statement (the latch holds
+                // the command), so using it where unit fails the check
+                // is a located type error — append the capture repair
+                // with the command verbatim. Fresh-session unbound `it`
+                // keeps the plain error (no latch, no repair).
+                (if not d.Parse && lastStreamed.IsSome && referencesIt line then
+                     Console.WriteLine(streamedItRepair lastStreamed))
 
                 // hint only where the pre-pipeline REPL hinted (expression
                 // and let forms; type/binder-pattern errors stayed bare)

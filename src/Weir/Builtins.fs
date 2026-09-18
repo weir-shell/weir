@@ -515,6 +515,33 @@ let private rmatchAllImpl: Value =
                 )
             | _ -> unreachable "the checker rejects 'rmatchAll' on these arguments"))
 
+// rsplit [D:str-fields]: split on every regex match — split's empties
+// law verbatim (adjacent matches and edges yield empty pieces).
+// Between-match pieces ONLY: capture groups never interleave (Go's
+// regexp Split, not .NET's Regex.Split wart). A bad pattern raises in
+// the r-family's error class (compiledOrRaise).
+let private rsplitImpl: Value =
+    VBuiltin(fun patV ->
+        VBuiltin(fun subjectV ->
+            match patV, subjectV with
+            | VStr pat, VStr s ->
+                let re = compiledOrRaise pat
+
+                VSeq(
+                    seq {
+                        let mutable pos = 0
+                        let mutable m = re.Match s
+
+                        while m.Success do
+                            yield VStr(s.Substring(pos, m.Index - pos))
+                            pos <- m.Index + m.Length
+                            m <- m.NextMatch()
+
+                        yield VStr(s.Substring pos)
+                    }
+                )
+            | _ -> unreachable "the checker rejects 'rsplit' on these arguments"))
+
 // Path.glob [D:path-glob] — the standard subset (`*` within-segment,
 // `**` cross-segment, `?`, `[abc]`/`[!abc]`), bash's laws: `*` never
 // matches dotfiles (a `.`-leading segment does); sorted per level
@@ -773,6 +800,20 @@ let private splitImpl: Value =
             match sep, subject with
             | VStr sep, VStr s -> VSeq(s.Split sep |> Seq.map VStr)
             | _ -> unreachable "the checker rejects 'split' on these arguments"))
+
+// field splitting [D:str-fields]: whitespace RUNS delimit and empties
+// never appear — POSIX field splitting, Go's strings.Fields. The
+// whitespace class is trim's (Char.IsWhiteSpace: a null separator
+// array means "split on whitespace" by String.Split's own contract).
+let private fieldsImpl: Value =
+    VBuiltin(fun v ->
+        match v with
+        | VStr s ->
+            VSeq(
+                s.Split((null: char array), System.StringSplitOptions.RemoveEmptyEntries)
+                |> Seq.map VStr
+            )
+        | v -> unreachable $"the checker rejects 'fields' on {formatValue v}")
 
 // split at the FIRST occurrence, tail INTACT [D:split-once] — Rust's
 // split_once shape (Go's Cut, Python's partition are the same
@@ -1812,6 +1853,7 @@ let private strMembers: (string * Ty * Value) list =
       "toLower", TFun(TStr, TStr), str1 "toLower" (fun s -> s.ToLowerInvariant())
       "toUpper", TFun(TStr, TStr), str1 "toUpper" (fun s -> s.ToUpperInvariant())
       "split", TFun(TStr, TFun(TStr, TSeq TStr)), splitImpl
+      "fields", TFun(TStr, TSeq TStr), fieldsImpl
       "splitOnce", TFun(TStr, TFun(TStr, TTuple [ TStr; TStr ])), splitOnceImpl
       "trySplitOnce", TFun(TStr, TFun(TStr, TNamed("Option", [ TTuple [ TStr; TStr ] ]))), trySplitOnceImpl
       "join", TFun(TStr, TFun(TSeq TStr, TStr)), joinImpl
@@ -1880,7 +1922,8 @@ let private strMembers: (string * Ty * Value) list =
       "tryIndexOf", TFun(TStr, TFun(TStr, TNamed("Option", [ TInt ]))), tryIndexOfImpl
       "isMatch", TFun(TStr, TFun(TStr, TBool)), isMatchImpl
       "rmatch", TFun(TStr, TFun(TStr, TNamed("Option", [ TSeq TStr ]))), rmatchImpl
-      "rmatchAll", TFun(TStr, TFun(TStr, TSeq(TSeq TStr))), rmatchAllImpl ]
+      "rmatchAll", TFun(TStr, TFun(TStr, TSeq(TSeq TStr))), rmatchAllImpl
+      "rsplit", TFun(TStr, TFun(TStr, TSeq TStr)), rsplitImpl ]
 
 // Path — string surgery over paths, System.IO.Path underneath.
 // extension keeps the dot and is "" when there is none; dir is "" at
@@ -3995,6 +4038,9 @@ let private yamlModuleMembers: (string * Ty * Value) list =
 let private jsonModuleMembers: (string * Ty * Value) list =
     [ "inferShape", TFun(TSeq TStr, TStr), inferShapeImpl Infer.Json ]
 
+let private tableModuleMembers: (string * Ty * Value) list =
+    [ "inferShape", TFun(TSeq TStr, TStr), inferShapeImpl Infer.Table ]
+
 let private moduleTable: (string * (string * Ty * Value) list) list =
     [ "Seq", seqMembers
       "Str", strMembers
@@ -4003,6 +4049,7 @@ let private moduleTable: (string * (string * Ty * Value) list) list =
       "Tree", treeMembers
       "Yaml", yamlModuleMembers
       "Json", jsonModuleMembers
+      "Table", tableModuleMembers
       "Map", mapMembers
       "Instant", instantMembers
       "Proc", procMembers
@@ -4667,8 +4714,17 @@ let builtinDocs: Map<string, BuiltinDoc> =
           (bd "Uppercase (invariant culture)." (Some "Str.toUpper \"abc\"") None
            |> named [ "s" ])
           "Str.split",
-          (bd "Split on a separator into a sequence." (Some "Str.split \",\" \"a,b,c\" |> Seq.force") None
+          (bd
+              "Split on a separator into a sequence; empty pieces kept (adjacent separators and edges yield \"\" — rsplit follows the same law)."
+              (Some "Str.split \",\" \"a,b,c\" |> Seq.force")
+              None
            |> named [ "sep"; "s" ])
+          "Str.fields",
+          (bd
+              "Split on whitespace runs into fields — never an empty piece (a blank or empty string is the empty seq; trim's whitespace class)."
+              (Some "\"NAME   READY  1/1\" |> Str.fields |> Seq.force")
+              None
+           |> named [ "s" ])
           "Str.splitOnce",
           (bd
               "Split at the first occurrence into (before, after) — the tail stays intact, separators and all; raises when the separator is absent (trySplitOnce is the Option twin)."
@@ -4749,6 +4805,12 @@ let builtinDocs: Map<string, BuiltinDoc> =
           bd
               "Every regex match's groups, as a sequence of sequences."
               (Some "Str.rmatchAll \"[0-9]+\" \"a1b2\" |> Seq.force")
+              None
+          |> named [ "pattern"; "s" ]
+          "Str.rsplit",
+          bd
+              "Split on every regex match; split's empties law (adjacent matches and edges yield \"\"), and capture groups never add pieces."
+              (Some "Str.rsplit @\"\\s*,\\s*\" \"a , b,c\" |> Seq.force")
               None
           |> named [ "pattern"; "s" ]
 
@@ -5243,6 +5305,11 @@ let builtinDocs: Map<string, BuiltinDoc> =
               "Parse one XML document (a .csproj/.slnx or any XML) into a declared record — read-only. The root element is the record; a field name matches a child element by local name (a default xmlns is stripped); [<Attr>] reads an attribute, [<Elem \"X\">] a repeated child, a nested record a child element. Every leaf is text: fields are string, Option<string>, a record, or a seq of one (declare a number as string, convert with Str.toInt). There is no `to xml`."
               None
               (Some "a pipe stage: File.read \"App.csproj\" |> from xml Proj.")
+          "from table",
+          bd
+              "Read aligned column output (kubectl/docker style: one header row, aligned data rows) into declared row records — yields seq<T>. Columns slice at header offsets, never whitespace runs, so a spaced value (`Up 2 hours`) survives; a header boundary is a run of 2+ spaces (`CONTAINER ID` is one column). A field matches its header by normalized name, case-insensitively (`podTemplateHash` reads `POD-TEMPLATE-HASH`); `[<Wire \"HEADER\">]` matches a raw header verbatim. Cells trim and type by the field (string/int/float/bool); an Option field reads an empty or `<none>` cell as None. Extra columns are ignored; blank lines skip; errors carry line and column. There is no `to table`."
+              None
+              (Some "a pipe stage: kubectl get po |> from table Pod.")
           "Yaml.parse",
           (bd
               "Parse one YAML document (the strict subset) into Yaml nodes — the typeless read: structure is held whole, undeclared keys included, where `from yaml T` would drop them. Scalars self-type exactly as district scalars do (unquoted true/3/1.5 -> YBool/YInt/YFloat; quoted or block -> YStr; empty -> YNull)."
@@ -5258,15 +5325,21 @@ let builtinDocs: Map<string, BuiltinDoc> =
            |> named [ "patch"; "doc" ])
           "Yaml.inferShape",
           (bd
-              "Draft named `type` declarations from a YAML sample — the composable core of `#infer`: returns the declaration text (top record named Root; nested records auto-named; notes for empty/null/heterogeneous fields ride as `//` lines). It drafts what the sample has; you edit the emitted types. Not check-time inference (the value is a runtime sample)."
+              "Draft named `type` declarations from a YAML sample — the composable core of `#infer`: returns the declaration text (top record named Root; nested records auto-named; array elements merge, a key absent in some elements drafts Option; a data-keyed object — one value shape with mostly non-identifier keys, differing sibling key sets, or an empty {} — drafts the open mapping seq<string * _>; notes ride as `//` lines). It drafts what the sample has; you edit the emitted types. Not check-time inference (the value is a runtime sample)."
               (Some "let sample = <<<\n    name: web\n    port: 8080\nprint (Yaml.inferShape sample)")
               (Some "the `weir add schema` category: external structure -> a declaration you own; check and `from yaml` stay untouched.")
            |> named [ "lines" ])
           "Json.inferShape",
           (bd
-              "Draft named `type` declarations from a JSON sample — the composable core of `#infer`: returns the declaration text (top record named Root; nested records auto-named by field, seq elements singularised; notes for empty arrays, null fields and heterogeneous arrays ride as `//` lines). It drafts what the sample has; you edit the emitted types. Not check-time inference (the value is a runtime sample)."
+              "Draft named `type` declarations from a JSON sample — the composable core of `#infer`: returns the declaration text (top record named Root; nested records auto-named by field, seq elements singularised; array elements merge, a key absent in some elements drafts Option; a data-keyed object — one value shape with mostly non-identifier keys, differing sibling key sets, or an empty {} — drafts the open mapping seq<string * _>; notes ride as `//` lines). It drafts what the sample has; you edit the emitted types. Not check-time inference (the value is a runtime sample)."
               (Some "print (Json.inferShape [\"{\\\"id\\\": 1, \\\"name\\\": \\\"x\\\"}\"])")
               (Some "the `weir add schema` category: external structure -> a declaration you own; check and `from json` stay untouched.")
+           |> named [ "lines" ])
+          "Table.inferShape",
+          (bd
+              "Draft the row `type` declaration from an aligned-table sample (kubectl/docker style) — the composable core of `#infer … from table`: per-column token scan over the data rows (all-int -> int, else float/bool by token, else string; a column with empty/`<none>` cells -> Option with a note); headers sanitize to field names, `[<Wire>]` carries a header the name cannot recover; a note says the value reads as seq<Root>. You edit the emitted type. Not check-time inference (the value is a runtime sample)."
+              (Some "print (Table.inferShape [\"NAME   RESTARTS\"; \"web-1  0\"])")
+              (Some "the `weir add schema` category: external structure -> a declaration you own; check and `from table` stay untouched.")
            |> named [ "lines" ])
 
           // ---- reifiers: turn a command chain into a value [D:exit-reifiers].
@@ -5389,6 +5462,7 @@ let moduleBlurbs: Map<string, string> =
           "Seq", "lazy sequence pipeline ops: map, where, fold, pmap"
           "Size", "byte sizes: binary-unit literals, arithmetic, parse"
           "Str", "string ops: trim, split, match, encode, hash"
+          "Table", "aligned-table helpers: inferShape drafts a row type from a sample"
           "Tree", "parent-first effect walks over discovered children"
           "Yaml", "YAML nodes: parse, merge (strategic patch), inferShape" ]
 

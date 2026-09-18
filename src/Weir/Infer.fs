@@ -13,6 +13,11 @@ open System
 // so the walker and the auto-naming pass are written once. Scalars carry
 // no value (inference wants the TYPE, not the datum); objects keep field
 // ORDER (declaration order is wire order — the record-order law).
+// IOpt and IMap are MERGE verdicts [D:repl-infer], produced only by the
+// array-element merge and the open-map detection below — the adapters
+// never emit them: a key absent in some elements is IOpt (drafts
+// Option), an object whose keys are data is IMap (drafts the mapping
+// seq<string * V>).
 type INode =
     | IStr
     | IInt
@@ -21,6 +26,8 @@ type INode =
     | INull
     | IObj of (string * INode) list
     | IArr of INode list
+    | IOpt of INode
+    | IMap of INode
 
 // a printed NOTE [D:repl-infer]: the inference's honesty channel — every
 // place the sample cannot decide (empty array, null field, heterogeneous
@@ -245,10 +252,108 @@ type private Registry(taken: Set<string>) =
             order.Add(candidate, fields)
             candidate
 
-// the first element that is not null decides an array's element shape;
-// a following DIFFERENT object shape flags heterogeneity (verify note)
-let private firstNonNull (xs: INode list) : INode option =
-    xs |> List.tryFind (fun x -> x <> INull)
+let private isIdentStart c = System.Char.IsLetter c || c = '_'
+let private isIdentCont c = System.Char.IsLetterOrDigit c || c = '_'
+
+// a key with identifier SHAPE (the grammar only — a reserved word still
+// counts: `type:` is a schema key on real wires, so keywords never vote
+// an object into a mapping) [D:repl-infer]
+let private isIdentShaped (k: string) : bool =
+    k.Length > 0 && isIdentStart k[0] && k |> Seq.forall isIdentCont
+
+/// Option is a MERGE verdict, never nested and never over null: an
+/// absent-or-null key wraps once; a further merge folds into the wrap
+let private iopt (n: INode) : INode =
+    match n with
+    | INull -> INull
+    | IOpt _ -> n
+    | _ -> IOpt n
+
+// THE OPEN-MAP DETECTION LAW [D:repl-infer], value half: an object's
+// entries carry ONE value shape — every value structurally identical,
+// none null, at least one entry. Without one value type there is no V
+// to write in seq<string * V>, so the object stays a record.
+let private uniformValue (vals: INode list) : INode option =
+    match vals |> List.distinct with
+    | [ v ] when v <> INull -> Some v
+    | _ -> None
+
+// THE OPEN-MAP DETECTION LAW [D:repl-infer], key half (a): the keys look
+// like DATA — a MAJORITY (strictly more than half) would need [<Wire>]
+// sanitization, i.e. are not identifier-shaped (k8s labels/annotations:
+// dots, slashes, dashes). Both halves must hold. The other trigger, (b),
+// lives in the merge: sibling elements of one array carrying DIFFERENT
+// key sets for the same object. An object with identifier-shaped keys
+// identical across elements is schema, never a mapping.
+let private detectOpenMap (fields: (string * INode) list) : INode option =
+    match uniformValue (fields |> List.map snd) with
+    | Some v when 2 * (fields |> List.filter (fst >> isIdentShaped >> not) |> List.length) > List.length fields -> Some v
+    | _ -> None
+
+// ---- the array-element merge [D:repl-infer] ---------------------------
+// The element type is the UNION of every element's shape: object key
+// sets union (a key absent in some elements drafts Option); a key whose
+// sibling key sets DIFFER under one uniform value shape is an open map
+// (detection half b); a genuine TYPE CONFLICT keeps the FIRST element's
+// shape with a printed verify note (never a silent guess). `path` is the
+// wire-key path from the array's own key down — the note's address.
+
+let rec private mergeTwo (note: Note -> unit) (path: string) (a: INode) (b: INode) : INode =
+    match a, b with
+    | a, b when a = b -> a
+    | INull, b -> iopt b
+    | a, INull -> iopt a
+    | IOpt x, IOpt y -> iopt (mergeTwo note path x y)
+    | IOpt x, y -> iopt (mergeTwo note path x y)
+    | x, IOpt y -> iopt (mergeTwo note path x y)
+    | IObj xs, IObj ys -> mergeObjs note path xs ys
+    // an established map verdict absorbs a sibling's entries — the
+    // VALUES merge; a conflicting value keeps the map's (the first-wins
+    // rule, one level in)
+    | IMap v, IObj fs -> IMap(fs |> List.fold (fun acc (_, fv) -> mergeTwo note path acc fv) v)
+    | IObj fs, IMap v -> IMap(fs |> List.fold (fun acc (_, fv) -> mergeTwo note path acc fv) v)
+    | IMap x, IMap y -> IMap(mergeTwo note path x y)
+    // arrays pool their elements; the enclosing seq walk merges the pool
+    | IArr xs, IArr ys -> IArr(xs @ ys)
+    | a, _ ->
+        note $"a heterogeneous array at '{path}' — kept the first element's type; verify the rest"
+        a
+
+and private mergeObjs (note: Note -> unit) (path: string) (xs: (string * INode) list) (ys: (string * INode) list) : INode =
+    let kx = xs |> List.map fst |> Set.ofList
+    let ky = ys |> List.map fst |> Set.ofList
+
+    match (if kx <> ky then uniformValue ((xs @ ys) |> List.map snd) else None) with
+    | Some v ->
+        // detection half (b): differing sibling key sets, one value
+        // shape — the keys are data [D:repl-infer]
+        note $"'{path}' carries different keys across the array's elements — its keys are data, drafted as an open mapping seq<string * _>"
+        IMap v
+    | None ->
+        // the record merge: union of keys in first-seen order; a shared
+        // key merges recursively, a one-sided key drafts Option
+        let ym = Map.ofList ys
+
+        let fromX =
+            xs
+            |> List.map (fun (k, xv) ->
+                match Map.tryFind k ym with
+                | Some yv -> k, mergeTwo note $"{path}.{k}" xv yv
+                | None -> k, iopt xv)
+
+        let fromY =
+            ys
+            |> List.filter (fun (k, _) -> not (Set.contains k kx))
+            |> List.map (fun (k, yv) -> k, iopt yv)
+
+        IObj(fromX @ fromY)
+
+/// merge every non-null element of an array into ONE element shape (null
+/// elements never decide a shape — the adapters' existing posture)
+let private mergeElems (note: Note -> unit) (path: string) (items: INode list) : INode option =
+    match items |> List.filter ((<>) INull) with
+    | [] -> None
+    | first :: rest -> Some(rest |> List.fold (mergeTwo note path) first)
 
 // `srcKey` is the wire key (or top name) that produced `desired` — the
 // shadow note names the user's own spelling, not the derived stem
@@ -262,63 +367,73 @@ let rec private shapeOf (reg: Registry) (desired: string) (srcKey: string) (pare
         // a null field cannot be inferred — Option<string> + a note
         reg.AddNote $"a null value under '{desired}' — inferred Option<string> (edit if the real type is known)"
         "Option<string>"
+    | IOpt inner ->
+        // a merge verdict: the key is absent (or null) in some of the
+        // array's elements [D:repl-infer]
+        $"Option<{shapeOf reg desired srcKey parentStem inner}>"
+    | IMap v ->
+        // a merge verdict (detection half b) — the note fired at the
+        // merge; here the value shape renders [D:repl-infer]
+        $"seq<string * {shapeOf reg (capitalize (singularize (identStem desired))) srcKey parentStem v}>"
     | IObj [] ->
         // an EMPTY mapping [D:yaml-empty-flow] (`{}` — kubectl's
-        // resources/securityContext/…): no fields, no shape to name.
-        // Mirror the empty-array posture: the opaque `Yaml` + a note,
-        // never a silently-empty record.
-        reg.AddNote $"an empty mapping under '{desired}' — no fields to infer, kept as opaque Yaml (edit if the real shape is known)"
-        "Yaml"
+        // resources/securityContext/…): an open map with zero entries —
+        // no evidence for V, so string, said aloud (the empty-array
+        // posture; the mapping shape reads on BOTH wire boundaries,
+        // which an opaque Yaml field does not)
+        reg.AddNote $"an empty mapping under '{desired}' — no entries to infer, drafted as seq<string * string> (edit if the real shape is known)"
+        "seq<string * string>"
     | IObj fields ->
-        // an EMPTY-STRING key is unspellable BOTH ways
-        // [D:infer-wire-sanitize]: a field name cannot be empty and
-        // [<Wire>] refuses an empty wire key — so the key is DROPPED
-        // from the draft, loudly (the readers tolerate an undeclared
-        // key, so the drafted type still reads the sample)
-        let spellable = fields |> List.filter (fun (k, _) -> k <> "")
+        match detectOpenMap fields with
+        | Some v ->
+            // THE OPEN-MAP LAW, detection half (a) [D:repl-infer]: one
+            // value shape + a majority of non-identifier keys — the keys
+            // are data (k8s labels/annotations), so the draft is the
+            // mapping, not a [<Wire>]-riddled record; mapping keys need
+            // no sanitizing, an empty-string key included
+            reg.AddNote $"'{srcKey}' has mostly non-identifier keys — its keys are data, drafted as an open mapping seq<string * _>"
+            $"seq<string * {shapeOf reg (capitalize (singularize (identStem desired))) srcKey parentStem v}>"
+        | None ->
+            // an EMPTY-STRING key is unspellable BOTH ways
+            // [D:infer-wire-sanitize]: a field name cannot be empty and
+            // [<Wire>] refuses an empty wire key — so the key is DROPPED
+            // from the draft, loudly (the readers tolerate an undeclared
+            // key, so the drafted type still reads the sample)
+            let spellable = fields |> List.filter (fun (k, _) -> k <> "")
 
-        if List.length spellable < List.length fields then
-            reg.AddNote
-                $"an empty-string key under '{desired}' — no field name can spell it and [<Wire>] refuses an empty wire key, so the key is DROPPED from the draft (reading tolerates the extra key)"
+            if List.length spellable < List.length fields then
+                reg.AddNote
+                    $"an empty-string key under '{desired}' — no field name can spell it and [<Wire>] refuses an empty wire key, so the key is DROPPED from the draft (reading tolerates the extra key)"
 
-        match spellable with
-        | [] ->
-            // nothing spellable remains — the opaque-Yaml posture (the
-            // empty-mapping arm above); the drop note already fired
-            "Yaml"
-        | spellable ->
-            // the collision prefix is the ENCLOSING record's stem: a `spec`
-            // under `pod` disambiguates to `PodSpec`. So each field's child
-            // carries THIS record's stem as its parentStem, not the field's.
-            let thisStem = identStem desired
+            match spellable with
+            | [] ->
+                // nothing spellable remains — the opaque-Yaml posture (the
+                // record path's dead end; the drop note already fired)
+                "Yaml"
+            | spellable ->
+                // the collision prefix is the ENCLOSING record's stem: a
+                // `spec` under `pod` disambiguates to `PodSpec`. So each
+                // field's child carries THIS record's stem as its
+                // parentStem, not the field's.
+                let thisStem = identStem desired
 
-            let rendered =
-                spellable
-                |> List.map (fun (k, v) ->
-                    let childDesired = capitalize (identStem k)
-                    k, shapeOf reg childDesired k thisStem v)
+                let rendered =
+                    spellable
+                    |> List.map (fun (k, v) ->
+                        let childDesired = capitalize (identStem k)
+                        k, shapeOf reg childDesired k thisStem v)
 
-            reg.Claim desired srcKey parentStem rendered
+                reg.Claim desired srcKey parentStem rendered
     | IArr items ->
         match items with
         | [] ->
             reg.AddNote $"an empty array under '{desired}' — element type unknown, inferred seq<string> (edit if known)"
             "seq<string>"
         | _ ->
-            // heterogeneity: object elements whose field SETS differ
-            let objSigs =
-                items
-                |> List.choose (fun x ->
-                    match x with
-                    | IObj fs -> Some(fs |> List.map fst |> List.sort)
-                    | _ -> None)
-                |> List.distinct
-
-            if objSigs.Length > 1 then
-                reg.AddNote
-                    $"a heterogeneous array under '{desired}' — inferred from the first element only; verify the rest"
-
-            match firstNonNull items with
+            // ARRAY ELEMENTS MERGE [D:repl-infer]: the element type is
+            // the union of every element's shape — absent keys draft
+            // Option, conflicts keep the first with a verify note
+            match mergeElems reg.AddNote srcKey items with
             | None ->
                 reg.AddNote $"an all-null array under '{desired}' — inferred seq<Option<string>> (edit if known)"
                 "seq<Option<string>>"
@@ -344,16 +459,10 @@ let rec private shapeOf (reg: Registry) (desired: string) (srcKey: string) (pare
 // (Weir.Parser.keywords), threaded in by every caller because Parser
 // compiles after this file — one source, never a hand copy, no drift.
 
-let private isIdentStart c = System.Char.IsLetter c || c = '_'
-let private isIdentCont c = System.Char.IsLetterOrDigit c || c = '_'
-
 /// a key weir can spell as a field name AS-IS: a legal identifier that
 /// is not a reserved word
 let private isCleanFieldName (reserved: Set<string>) (f: string) : bool =
-    f.Length > 0
-    && isIdentStart f[0]
-    && f |> Seq.forall isIdentCont
-    && not (Set.contains f reserved)
+    isIdentShaped f && not (Set.contains f reserved)
 
 /// derive a valid weir identifier from an arbitrary wire key: camelCase
 /// the alnum segments (split on every non-alnum run), lower the first
@@ -441,12 +550,29 @@ let inferDecls (reserved: Set<string>) (taken: Set<string>) (topName: string) (n
 
     (match node with
      | IArr items ->
-         reg.AddNote $"the sample's top level is an array — '{topName}' names the element; read it as 'seq<{topName}>'"
+         match mergeElems reg.AddNote topName items with
+         | None ->
+             reg.AddNote
+                 $"the sample's top level is an array — '{topName}' names the element; read it as 'seq<{topName}>'"
 
-         match firstNonNull items with
-         | None -> reg.AddNote "an empty top-level array — element type unknown"
-         | Some elem -> shapeOf reg topName topName (identStem topName) elem |> ignore
-     | IObj _ -> shapeOf reg topName topName (identStem topName) node |> ignore
+             reg.AddNote "an empty top-level array — element type unknown"
+         | Some elem ->
+             let ty = shapeOf reg topName topName (identStem topName) elem
+
+             // a top-level array of open mappings claims no record — the
+             // read spelling is the note's job [D:repl-infer]
+             if ty.StartsWith "seq<string * " then
+                 reg.AddNote $"the sample's top level is an array of open mappings — nothing to name; read it as 'seq<{ty}>'"
+             else
+                 reg.AddNote
+                     $"the sample's top level is an array — '{topName}' names the element; read it as 'seq<{topName}>'"
+     | IObj _ ->
+         let ty = shapeOf reg topName topName (identStem topName) node
+
+         // a top-level object detected as an open map claims no record —
+         // its keys are data, so there is nothing to name [D:repl-infer]
+         if ty.StartsWith "seq<string * " then
+             reg.AddNote $"the sample's top level is an open mapping — nothing to name; read it as '{ty}'"
      | _ ->
          // a top-level scalar has no record to declare
          reg.AddNote "the sample's top level is a scalar — nothing to name; #infer drafts record shapes")
@@ -470,25 +596,159 @@ let inferDecls (reserved: Set<string>) (taken: Set<string>) (topName: string) (n
 
     decls, reg.Notes
 
+// ---- the aligned-table drafting arm [D:from-table] --------------------
+// A table never lowers to INode: Option-ness is a PER-COLUMN merge over
+// every row (any empty/`<none>` cell), which the first-element walker
+// cannot see — so the column scan lives here and Table.fs owns the text
+// model (columns, cells, match keys).
+
+/// derive a field name from a table HEADER: split on non-alnum runs,
+/// lowercase the ALL-CAPS segments (headers shout), camel-join —
+/// `NAME`→name, `POD-TEMPLATE-HASH`→podTemplateHash, `CONTAINER ID`→
+/// containerId. Reserved-word landings keep toIdent's historical
+/// spellings (`TYPE`→kind); the rest take the `Field` suffix repair.
+let private tableFieldName (reserved: Set<string>) (header: string) : string =
+    let segs =
+        System.Text.RegularExpressions.Regex.Split(header, "[^A-Za-z0-9]+")
+        |> Array.filter (fun s -> s <> "")
+
+    let camel =
+        segs
+        |> Array.map (fun s ->
+            if s |> Seq.forall (fun c -> not (Char.IsLower c)) then
+                s.ToLowerInvariant()
+            else
+                s)
+        |> Array.mapi (fun i s ->
+            if i = 0 then
+                string (Char.ToLowerInvariant s[0]) + s.Substring 1
+            else
+                string (Char.ToUpperInvariant s[0]) + s.Substring 1)
+        |> String.concat ""
+
+    let camel =
+        match camel with
+        | "type" -> "kind"
+        | "to" -> "target"
+        | "from" -> "source"
+        | c -> c
+
+    let camel =
+        if camel = "" || not (isIdentStart camel[0]) then "f" + camel else camel
+
+    if Set.contains camel reserved then camel + "Field" else camel
+
+let private tableIntRx = System.Text.RegularExpressions.Regex "^-?[0-9]+$"
+
+let private tableFloatRx =
+    System.Text.RegularExpressions.Regex "^-?[0-9]+\.[0-9]+([eE][-+]?[0-9]+)?$|^-?[0-9]+[eE][-+]?[0-9]+$"
+
+/// draft the ROW record from a table sample [D:from-table]: per-column
+/// token scan over the data rows (all-int → int, else float/bool by
+/// token, else string); ANY empty/`<none>` cell → Option<T> + a note;
+/// a note says the value reads as seq<Name> (the bare-top-array
+/// precedent). The `as` name is the caller's own — the taken-name
+/// guard is the caller's refusal, exactly as inferDecls' top name.
+let private tableDecls (reserved: Set<string>) (topName: string) (lines: string seq) : Result<string list * Note list, string> =
+    let numbered = lines |> Seq.mapi (fun i l -> i + 1, l) |> List.ofSeq
+
+    match Table.parse numbered with
+    | Error e -> Error $"#infer: {e}"
+    | Ok(cols, rows) ->
+        let notes = ResizeArray<Note>()
+        notes.Add $"a table reads rows — '{topName}' names the row; read the value as 'seq<{topName}>'"
+
+        if rows.IsEmpty then
+            notes.Add "no data rows under the header — every column drafted string; verify against a fuller sample"
+
+        let used = System.Collections.Generic.HashSet<string>()
+
+        let fields =
+            cols
+            |> List.mapi (fun i c ->
+                let cells =
+                    rows |> List.map (fun (_, cs) -> if i < List.length cs then cs[i] else "")
+
+                let vals = cells |> List.filter (fun s -> not (Table.isAbsent s))
+
+                let tyText =
+                    if rows.IsEmpty then
+                        "string"
+                    elif vals.IsEmpty then
+                        notes.Add $"column '{c.Header}' has no values — drafted Option<string> (edit if the real type is known)"
+                        "Option<string>"
+                    else
+                        let scanned =
+                            if vals |> List.forall tableIntRx.IsMatch then
+                                "int"
+                            elif vals |> List.forall (fun v -> tableIntRx.IsMatch v || tableFloatRx.IsMatch v) then
+                                "float"
+                            elif vals |> List.forall (fun v -> v = "true" || v = "false") then
+                                "bool"
+                            else
+                                "string"
+
+                        if List.length vals < List.length cells then
+                            notes.Add $"column '{c.Header}' has empty/<none> cells — drafted Option<{scanned}>"
+                            $"Option<{scanned}>"
+                        else
+                            scanned
+
+                let baseName = tableFieldName reserved c.Header
+
+                let name =
+                    if used.Add baseName then
+                        baseName
+                    else
+                        let mutable n = 2
+
+                        while not (used.Add(baseName + string n)) do
+                            n <- n + 1
+
+                        baseName + string n
+
+                // the Wire decision is the READ-side recovery test: a
+                // field whose normalized name still matches the header
+                // needs no attribute; anything lossier carries the raw
+                // header verbatim [D:from-table]
+                let wire = if Table.matchKey name = Table.matchKey c.Header then None else Some c.Header
+
+                name, wire, tyText)
+
+        let body =
+            fields
+            |> List.map (fun (fname, wire, t) ->
+                match wire with
+                | Some k -> $"    [<Wire \"{k}\">]\n    {fname}: {t}"
+                | None -> $"    {fname}: {t}")
+            |> String.concat "\n"
+
+        Ok([ $"type {topName} = {{\n{body}\n}}" ], List.ofSeq notes)
+
 // ---- format dispatch --------------------------------------------------
 
 type Format =
     | Json
     | Jsonl
     | Yaml
+    | Table
 
 let parseFormat (s: string) : Result<Format, string> =
     match s.Trim() with
     | "json" -> Ok Json
     | "jsonl" -> Ok Jsonl
     | "yaml" -> Ok Yaml
-    | other -> Error $"#infer: unknown format '{other}' — use json, jsonl, or yaml"
+    | "table" -> Ok Table
+    | other -> Error $"#infer: unknown format '{other}' — use json, jsonl, yaml, or table"
 
 let nodeOf (fmt: Format) (lines: string seq) : Result<INode, string> =
     match fmt with
     | Json -> jsonNode lines
     | Jsonl -> jsonlNode lines
     | Yaml -> yamlNode lines
+    // a table never lowers to a document node [D:from-table] — `infer`
+    // dispatches it to the per-column scan before reaching here
+    | Table -> Error "#infer: a table drafts per column, not from a document node"
 
 /// the whole pipeline for a chosen format + name: lines -> decls + notes
 let infer
@@ -498,7 +758,14 @@ let infer
     (topName: string)
     (lines: string seq)
     : Result<string list * Note list, string> =
-    nodeOf fmt lines |> Result.map (fun node -> inferDecls reserved taken topName node)
+    match fmt with
+    | Table ->
+        // the top name is the CALLER'S choice (the REPL refuses builtin
+        // landings), and a flat row drafts no nested types — `taken`
+        // has nothing left to guard here
+        ignore taken
+        tableDecls reserved topName lines
+    | fmt -> nodeOf fmt lines |> Result.map (fun node -> inferDecls reserved taken topName node)
 
 /// the composable BUILTIN body: sample lines -> declaration TEXT (the
 /// notes ride as trailing `//` comment lines so the one-string return

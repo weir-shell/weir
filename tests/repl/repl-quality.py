@@ -105,8 +105,23 @@ out3 = run_repl({"XDG_STATE_HOME": d3 + "/state", "XDG_CONFIG_HOME": d3 + "/cfg"
 if "103" not in out3:
     failures.append(f"Ctrl+R fallback did not recall '3 + 100' by substring: {out3!r}")
 
+# --- 4. Tab at the let-RHS head slot [D:let-rhs-head]: the head pool
+# serves the RHS and the completion INSERTS at the RHS word. A session
+# alias is the candidate (unique by construction; nothing asserts a
+# PATH executable) — statement head and let-RHS both offer it
+# [D:command-head-alias] ---
+d4 = tempfile.mkdtemp()
+out4 = run_repl({"XDG_STATE_HOME": d4 + "/state", "XDG_CONFIG_HOME": d4 + "/cfg"},
+                [("#alias qqxzz = print\r", 0.4),
+                 ("let x = qqx\t", 0.6), ("\x03", 0.3),
+                 ("qqx\t", 0.6), ("\x03", 0.3), ("#quit\r", 0.3)])
+if "let x = qqxzz" not in out4:
+    failures.append(f"Tab at the let-RHS head must insert the alias head: {out4[-400:]!r}")
+if "weir> qqxzz" not in out4:
+    failures.append(f"Tab at the statement head must offer the alias too: {out4[-400:]!r}")
+
 if failures:
     for f in failures:
         print("repl-quality FAIL:", f)
     sys.exit(1)
-print("repl-quality: history (XDG/dedup/0600), Ctrl+R fzf-stub + minimal fallback, #find fzf-stub (--no-extended + --repl-doc preview) hold")
+print("repl-quality: history (XDG/dedup/0600), Ctrl+R fzf-stub + minimal fallback, #find fzf-stub (--no-extended + --repl-doc preview), let-RHS head Tab (alias inserts at the RHS and the statement head) hold")

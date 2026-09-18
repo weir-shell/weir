@@ -2124,25 +2124,37 @@ let boundaryTests =
                   | VStr s -> s
                   | v -> failtest $"expected a string, got {formatValue v}"
 
-              // a k8s label object: hyphen/dot/slash keys weir cannot spell
-              // as field names ride [<Wire>] over a camelCased identifier;
-              // the already-legal key stays bare with NO attribute
+              // MOVED PIN [D:repl-infer]: uniform dirty-key objects draft
+              // the open MAPPING now, so the record sanitizer is pinned on
+              // a MIXED-value object (map detection needs one value shape)
+              // — hyphen/dot/slash keys ride [<Wire>] over a camelCased
+              // identifier; the already-legal key stays bare
               let out =
-                  inferStr (run "Json.inferShape [\"{\\\"k8s-app\\\":\\\"a\\\",\\\"node.kubernetes.io/os\\\":\\\"b\\\",\\\"clean\\\":\\\"c\\\"}\"]")
+                  inferStr (run "Json.inferShape [\"{\\\"k8s-app\\\":\\\"a\\\",\\\"node.kubernetes.io/os\\\":2,\\\"clean\\\":\\\"c\\\"}\"]")
 
               Expect.stringContains out "[<Wire \"k8s-app\">]" "the dirty key carries its wire attribute"
               Expect.stringContains out "k8sApp: string" "the sanitized identifier is a legal field name"
-              Expect.stringContains out "nodeKubernetesIoOs: string" "dots and slashes camelCase into one identifier"
+              Expect.stringContains out "nodeKubernetesIoOs: int" "dots and slashes camelCase into one identifier"
               Expect.stringContains out "clean: string" "an already-legal key stays a bare field"
               Expect.isFalse (out.Contains "clean\">]") "a clean key carries NO wire attribute"
 
+              // the UNIFORM dirty-key object is the open mapping — keys
+              // are data, no [<Wire>] rides at all [D:repl-infer]
+              let map =
+                  inferStr (run "Json.inferShape [\"{\\\"labels\\\":{\\\"k8s-app\\\":\\\"a\\\",\\\"node.kubernetes.io/os\\\":\\\"b\\\",\\\"clean\\\":\\\"c\\\"}}\"]")
+
+              Expect.stringContains map "labels: seq<string * string>" "the label object drafts as the mapping"
+              Expect.isFalse (map.Contains "Wire") "mapping keys are data — no wire attribute is drafted"
+              Expect.stringContains map "mostly non-identifier keys" "the map note rides as a // line"
+
               // a collision: `aB` (clean) reserves its name; the two dirty
-              // keys that would also land on `aB` take `aB2`/`aB3`
-              let col = inferStr (run "Json.inferShape [\"{\\\"a-b\\\":\\\"1\\\",\\\"a.b\\\":\\\"2\\\",\\\"aB\\\":\\\"3\\\"}\"]")
+              // keys that would also land on `aB` take `aB2`/`aB3` (the
+              // int value keeps the object off the map path)
+              let col = inferStr (run "Json.inferShape [\"{\\\"a-b\\\":\\\"1\\\",\\\"a.b\\\":\\\"2\\\",\\\"aB\\\":3}\"]")
 
               Expect.stringContains col "aB2: string" "the first colliding sanitized key disambiguates"
               Expect.stringContains col "aB3: string" "the second colliding sanitized key disambiguates"
-              Expect.stringContains col "\n    aB: string" "the clean key keeps its bare name"
+              Expect.stringContains col "\n    aB: int" "the clean key keeps its bare name"
 
               // the historical reserved-word landings are unchanged
               let ty = inferStr (run "Json.inferShape [\"{\\\"type\\\":\\\"x\\\"}\"]")
@@ -2945,6 +2957,176 @@ let completionTests =
           test "command heads: a command-callable builtin completes at a statement head [D:repl-quality]" {
               // at a head (before empty) the command-callable set joins the pool
               Expect.contains (suggest "c" 0) "cd" "cd is command-callable at a head"
+          }
+          test "command heads: the let-RHS is a head slot [D:let-rhs-head]" {
+              // the topLet RHS admits command mode, so its head takes the
+              // SAME pool the statement head does — the command-callable
+              // pin mirrored (never a PATH executable, the CI lesson)
+              Expect.contains (suggest "let x = c" 8) "cd" "cd completes at the let-RHS head"
+              // params keep the slot (`let f a b = <head>` is command-first too)
+              Expect.contains (suggest "let f a b = c" 12) "cd" "a paramful binder keeps the slot"
+              Expect.contains (suggest "let pure f = c" 13) "cd" "the pure modifier keeps the slot"
+              // an empty word at the let-RHS stays pool-only — never the
+              // whole PATH dump (the empty-prompt rationale). PATH-ONLY
+              // names (no binding/module/keyword shares the spelling) are
+              // the discriminator — a pool name may legitimately coincide
+              // with an executable
+              let pathOnly =
+                  Weir.Extern.names ()
+                  |> Set.filter (fun n ->
+                      not (Map.containsKey n env.Values)
+                      && not (Map.containsKey n env.Modules)
+                      && not (Weir.Parser.keywords.Contains n))
+
+              Expect.isTrue
+                  (suggest "let x = " 8 |> List.forall (pathOnly.Contains >> not))
+                  "no PATH dump on an empty RHS word"
+
+              // a destructuring let's RHS is EXPRESSION-only (SLetPat, no
+              // command mode) — the head extras stay out (PATH-only names
+              // as the discriminator; the pool may share spellings)
+              Expect.isTrue
+                  (suggest "let (a, b) = c" 13 |> List.forall (pathOnly.Contains >> not))
+                  "a pattern binder is not a head slot"
+          }
+          test "a binding head at the let-RHS keeps the general pool [D:let-rhs-head]" {
+              // `let y = map wh…` is expression mode (bindings-beat-PATH):
+              // the argv gate must not fire, so keywords/bindings still offer
+              let got = suggest "let y = map wh" 12
+              Expect.contains got "when" "keywords stay in expression mode"
+              Expect.contains got "where" "…and bindings"
+          }
+          test "argv after a let-RHS command head follows the statement rule [D:let-rhs-head]" {
+              // the binder strips and the remainder judges exactly as a
+              // statement — paths, nothing else (the complete-argv gate)
+              let sug (t: string) = suggest t (t.LastIndexOf ' ' + 1)
+              let argv: string list = sug "let x = micro Weir.Tests."
+              Expect.isTrue (argv |> List.contains "Weir.Tests.dll") "a real relative path completes in RHS argv"
+              Expect.isFalse (argv |> List.exists (fun c -> c.EndsWith ".bytes")) "no fields in RHS argv"
+              // the unbound-scrutinee D5 pin holds unchanged: a DOTTED
+              // RHS head is not argv, and offers nothing
+              Expect.equal (sug "let x = publish.") [] "unbound dotted head after ="
+          }
+          test "the ^-forced head completes PATH-only — statement head and let-RHS [D:let-rhs-head]" {
+              // the pool is a SUBSET of the PATH cache (asserting any one
+              // executable would be brittle); the general pool's keywords
+              // and bindings never enter behind the sigil
+              let path = Weir.Extern.names ()
+              let atStmt = suggest "^ma" 1
+              let atRhs = suggest "let x = ^ma" 9
+              Expect.isTrue (atStmt |> List.forall path.Contains) "statement-head ^ pool is PATH only"
+              Expect.isTrue (atRhs |> List.forall path.Contains) "let-RHS ^ pool is PATH only"
+              Expect.equal atRhs atStmt "one slot, one pool"
+          }
+          test "headSlotAt: the one head-slot predicate both surfaces read [D:let-rhs-head]" {
+              let slot = Weir.Complete.headSlotAt
+              Expect.equal (slot "") Weir.Complete.HeadSlot.Stmt "statement head"
+              Expect.equal (slot "let x =") Weir.Complete.HeadSlot.LetRhs "let-RHS (completer's trimmed prefix)"
+              Expect.equal (slot "let x = ") Weir.Complete.HeadSlot.LetRhs "let-RHS (colorizer's raw prefix)"
+              Expect.equal (slot "^") Weir.Complete.HeadSlot.Forced "^ at the statement head"
+              Expect.equal (slot "let x = ^") Weir.Complete.HeadSlot.Forced "^ at the let-RHS"
+              Expect.equal (slot "let x = k") Weir.Complete.HeadSlot.No "past the head word"
+              Expect.equal (slot "echo ") Weir.Complete.HeadSlot.No "argv is not a head slot"
+              Expect.equal (slot "let x = f ") Weir.Complete.HeadSlot.No "RHS argv is not a head slot"
+              Expect.equal (slot "  ") Weir.Complete.HeadSlot.No "an indented word is NOT a head to the colorizer (district bodies)"
+              Expect.equal (slot "let (a, b) = ") Weir.Complete.HeadSlot.No "a pattern binder's RHS is expression-only"
+              Expect.equal (slot "let for = ") Weir.Complete.HeadSlot.No "a keyword binder is the guard's error, not a slot"
+              Expect.equal (slot "let x == ") Weir.Complete.HeadSlot.No "== is not a binder's ="
+          }
+          test "session alias heads: known at both head slots, completable, ^-bypassed [D:command-head-alias]" {
+              // the ONE membership [D:repl-color] gains the alias table's
+              // names: `#alias k = kubectl` makes `k` a known head — at
+              // the statement head AND the let-RHS — through the same
+              // verdict fn the live repaint uses
+              let known = Weir.Repl.knownWithAliasesForTest (Set.ofList [ "k" ])
+              Expect.isTrue (known "k") "an alias head is known"
+              Expect.isFalse (Weir.Repl.knownForTest "k") "…and only via the alias set"
+
+              let colorize = Weir.Script.colorizeRepl known
+              Expect.stringContains (colorize "k get pod -A") "\x1b[1mk\x1b[0m" "alias head bold at the statement head"
+              Expect.stringContains (colorize "let x = k get pod") "\x1b[1mk\x1b[0m" "alias head bold at the let-RHS"
+              // the ^ sigil SKIPS the table [D:command-head-alias]: `^k`
+              // is a PATH lookup of literal `k` — the alias must not
+              // paint it (PATH-membership decides; no `k` binary here
+              // means red, and never bold)
+              Expect.isFalse (colorize "^k ls" |> _.Contains("\x1b[1mk\x1b[0m")) "^k ignores the alias"
+              Expect.isFalse (colorize "let x = ^k ls" |> _.Contains("\x1b[1mk\x1b[0m")) "^k ignores the alias at the RHS"
+
+              // completion: the alias name joins the head pool at both
+              // slots (alias-to-anything — nothing asserts a PATH exe),
+              // never the ^-forced PATH pool
+              let ask = Weir.Complete.suggestSession (Set.ofList [ "kzz" ]) Map.empty env
+              Expect.contains (ask "kz" 0) "kzz" "alias completes at the statement head"
+              Expect.contains (ask "let x = kz" 8) "kzz" "alias completes at the let-RHS head"
+              Expect.isFalse (List.contains "kzz" (ask "^kz" 1)) "the ^ pool skips the alias table"
+              Expect.isFalse (List.contains "kzz" (ask "let x = ^kz" 9)) "…at the RHS too"
+          }
+          test "map-key completion: a bound value's keys inside a Map lookup literal [D:value-key-complete]" {
+              // the stored value's OWN keys complete inside the open key
+              // literal of a pipe-form Map lookup — reading the Values
+              // table is peeking, never evaluating
+              let vals: Map<string, Value> =
+                  Map.ofList
+                      [ "d", VMap(Map.ofList [ "CoreCount", VStr "4"; "Corge", VStr "g"; "Zone", VStr "b" ])
+                        "ps", VSeq([ VTuple [ VStr "CoreCount"; VStr "4" ]; VTuple [ VStr "Zone"; VStr "b" ] ]: Value list)
+                        "lazyPs",
+                        VSeq(Seq.init 2 (fun i -> VTuple [ VStr $"K{i}"; VStr "v" ]))
+                        "n", VInt 1L ]
+
+              let ask (line: string) =
+                  Weir.Complete.suggestSession Set.empty vals env line (Weir.Complete.wordStartAt line line.Length)
+
+              // a VMap binding: prefix-filtered, sorted, closes nothing
+              Expect.equal (ask "d |> Map.tryGet \"Cor") [ "CoreCount"; "Corge" ] "map keys, prefix-filtered and sorted"
+              Expect.equal (ask "d |> Map.get \"Zo") [ "Zone" ] "Map.get is the same lookup slot"
+              Expect.equal (ask "d |> Map.has \"Zo") [ "Zone" ] "Map.has too"
+              Expect.equal (ask "d |> Map.tryGet \"") [ "CoreCount"; "Corge"; "Zone" ] "an empty literal offers every key"
+
+              // a MATERIALIZED pair-seq offers exactly as a map does
+              Expect.equal (ask "ps |> Map.tryGet \"Cor") [ "CoreCount" ] "a materialized pair-seq offers its keys"
+
+              // the let-RHS spelling is the same slot [D:let-rhs-head]
+              Expect.equal (ask "let x = d |> Map.tryGet \"Cor") [ "CoreCount"; "Corge" ] "the let-RHS form completes"
+
+              // `it` is an ordinary Values entry — the receiver rule admits it
+              let itVals = Map.add "it" vals["d"] Map.empty
+
+              Expect.equal
+                  (Weir.Complete.suggestSession Set.empty itVals env "it |> Map.tryGet \"Cor" 18)
+                  [ "CoreCount"; "Corge" ]
+                  "it as receiver, when materialized"
+
+              // the bind-first law: a PIPELINE receiver would need evaluating
+              // — the slot claims and offers NOTHING (never the general pool)
+              Expect.equal (ask "d |> Seq.map fst |> Map.tryGet \"Cor") [] "a pipeline receiver offers nothing"
+
+              // the never-executes law's sharp edge: an UNFORCED seq is not
+              // pulled — nothing offers
+              Expect.equal (ask "lazyPs |> Map.tryGet \"K") [] "an unforced receiver offers nothing"
+
+              // a non-map binding and an unbound receiver claim silently too
+              Expect.equal (ask "n |> Map.tryGet \"x") [] "a non-map receiver offers nothing"
+              Expect.equal (ask "ghost |> Map.tryGet \"x") [] "an unbound receiver offers nothing"
+
+              // the applied spelling has no receiver at the cursor — the
+              // slot does not fire (pipe-form only, stated)
+              Expect.isFalse
+                  (ask "Map.tryGet \"Cor" |> List.contains "CoreCount")
+                  "the applied spelling offers no keys"
+          }
+          test "map-key completion leaves non-lookup string positions alone [D:value-key-complete]" {
+              skipOnWindows ()
+              // a path literal still path-completes — the slot only claims
+              // the lookup shape
+              let vals: Map<string, Value> =
+                  Map.ofList [ "d", VMap(Map.ofList [ "etc", VStr "x" ]) ]
+
+              let line = "File.read \"/etc/hos"
+
+              let hits =
+                  Weir.Complete.suggestSession Set.empty vals env line (Weir.Complete.wordStartAt line line.Length)
+
+              Expect.isTrue (hits |> List.exists (fun p -> p.Contains "host")) $"path-in-quotes still path-completes: {hits}"
           }
           test "path completion: an explicit path lists the directory [D:repl-quality]" {
               skipOnWindows ()
@@ -4239,6 +4421,52 @@ let stringTests =
               // the Option twin, and absence as None
               expectValue "Str.trySplitOnce \"=\" \"k=v\"" (VUnion("Some", Some(VTuple [ VStr "k"; VStr "v" ])))
               expectValue "Str.trySplitOnce \"=\" \"none\"" (VUnion("None", None))
+          }
+          test "Str.fields: whitespace runs collapse, empties never appear [D:str-fields]" {
+              // tabs and spaces mixed — one whitespace class (trim's)
+              Expect.equal
+                  (run "Str.fields \" a\\t b  c\\t\\t\"" |> forceSeq)
+                  [ VStr "a"; VStr "b"; VStr "c" ]
+                  "runs collapse; leading and trailing whitespace produce nothing"
+
+              // the no-empties law's degenerate ends
+              expectValue "Str.fields \"\" |> Seq.isEmpty" (VBool true)
+              expectValue "Str.fields \" \\t \" |> Seq.isEmpty" (VBool true)
+          }
+          test "acceptance: a kubectl-style column via Str.fields [D:str-fields]" {
+              // the spelling this member retires:
+              // l |> Str.rmatchAll @"(\S+)" |> Seq.map Seq.head
+              expectValue
+                  "\"weir-7d9f4c   1/1   Running   0   12m\" |> Str.fields |> Seq.item 1"
+                  (VStr "1/1")
+          }
+          test "Str.rsplit: split on every regex match, split's empties law [D:str-fields]" {
+              // the shared law, pinned as an equality: on a literal-shaped
+              // pattern the two splitters answer identically (empties kept)
+              Expect.equal
+                  (run "Str.rsplit \",\" \"a,,b\"" |> forceSeq)
+                  (run "Str.split \",\" \"a,,b\"" |> forceSeq)
+                  "one empties law, two splitters"
+
+              Expect.equal (run "Str.rsplit \",\" \"\"" |> forceSeq) [ VStr "" ] "the empty subject mirrors split"
+
+              // a multi-char pattern: the whole match is the separator
+              Expect.equal
+                  (run "Str.rsplit @\"\\s*,\\s*\" \"a , b,c\"" |> forceSeq)
+                  [ VStr "a"; VStr "b"; VStr "c" ]
+                  "the match spans the run"
+
+              // capture groups never add pieces (the between-match law)
+              Expect.equal
+                  (run "Str.rsplit \"(,)\" \"a,b\"" |> forceSeq)
+                  [ VStr "a"; VStr "b" ]
+                  "groups do not interleave"
+
+              // a bad pattern raises in the r-family's error class
+              let msg =
+                  Expect.throwsC (fun () -> run "Str.rsplit \"[unclosed\" \"x\"" |> ignore) id |> _.Message
+
+              Expect.stringStarts msg "invalid regex:" "the rmatch family's raise"
           }
           test "Str.length and toInt" {
               expectValue "Str.length \"abc\"" (VInt 3)
@@ -5719,32 +5947,104 @@ let replEchoTests =
               let meta = Weir.Repl.letEchoMeta "xs" (TSeq TStr) hint
               Expect.equal meta "xs : seq<string>" "no teaching, no trailing parenthetical"
           }
-          test "the inherited-statement meta says the bytes streamed and 'it' did not bind [D:repl-it]" {
-              let meta = Weir.Repl.streamedEchoMeta (TSeq TStr)
-
+          test "the streamed-it misuse repair carries the command verbatim [D:repl-it]" {
               Expect.equal
-                  meta
-                  ": seq<string> (streamed — not bound to 'it'; let x = … captures)"
-                  "the meta states the truth: streamed, not bound, and the capturing spelling"
-          }
-          test "the unbound-it teach after a streamed statement carries the command verbatim [D:repl-it]" {
-              let lines = Weir.Repl.streamedItTeach (Some "kubectl get po -A -o yaml")
-
-              Expect.equal
-                  lines
-                  [ "unbound variable 'it' — the last command streamed to the terminal; weir never held its output"
-                    "to capture (and bind 'it'): let x = kubectl get po -A -o yaml" ]
-                  "two lines: the honest error, then the copyable let"
+                  (Weir.Repl.streamedItRepair (Some "kubectl get po -A -o yaml"))
+                  "to capture: let x = kubectl get po -A -o yaml"
+                  "one line: the copyable let with the recorded command"
 
               // a sentinel-joined (assembled) or empty source cannot ride a
               // one-line suggestion — the generic spelling instead
               for src in [ Some "cmd\u0001more"; Some "   "; None ] do
-                  let generic = Weir.Repl.streamedItTeach src
-
                   Expect.stringContains
-                      (List.item 1 generic)
+                      (Weir.Repl.streamedItRepair src)
                       "let x = <the command>"
                       "unclean source falls back to the generic spelling"
+          }
+          test "the it-rebinding matrix, FSI parity [D:repl-it]" {
+              // fresh session: unbound
+              Expect.equal (Weir.Repl.itSchemeForTest []) None "fresh session — it unbound"
+
+              // a non-unit expression rebinds
+              Expect.equal (Weir.Repl.itSchemeForTest [ "5" ]) (Some "int") "a non-unit expression binds it"
+
+              // a unit expression rebinds — unit included, FSI's rule
+              Expect.equal (Weir.Repl.itSchemeForTest [ "print \"x\"" ]) (Some "unit") "a unit expression binds it := ()"
+
+              // a `let` does NOT rebind — `let o = 10` binds no it
+              Expect.equal (Weir.Repl.itSchemeForTest [ "let o = 10" ]) None "a let binds its name, never it"
+
+              // and a later `let` leaves an earlier binding standing
+              Expect.equal
+                  (Weir.Repl.itSchemeForTest [ "5"; "let o = 10" ])
+                  (Some "int")
+                  "a let leaves the previous it untouched"
+          }
+          test "the echo normalizes type-var display: 'a1 -> 'a2 renders 'a -> 'b [D:repl-fn-echo]" {
+              Expect.equal (formatEchoTy (TFun(TVar "a1", TVar "a2"))) "'a -> 'b" "fresh names rename in order"
+
+              Expect.equal
+                  (formatEchoTy (TFun(TVar "a2", TFun(TVar "a2", TVar "b7"))))
+                  "'a -> 'a -> 'b"
+                  "a repeated var keeps one name"
+
+              Expect.equal
+                  (formatEchoTy (TFun(TSeq(TVar "a1"), TSeq TStr)))
+                  "seq<'a> -> seq<string>"
+                  "concrete types are untouched"
+          }
+          test "a builtin function value echoes the #help composition — one source, string-equal [D:repl-fn-echo]" {
+              let te = Weir.Builtins.typeEnv
+
+              let lines =
+                  Weir.Repl.functionEchoLines false 100 te (fun _ -> None) "Seq.map" |> Option.get
+
+              let d = Map.find "Seq.map" Weir.Builtins.builtinDocs
+              let sch = te.Modules["Seq"]["map"]
+
+              Expect.equal
+                  lines
+                  [ formatSignature "Seq.map" d.Params sch.Ty; (d.Summary.Split '\n')[0] ]
+                  "signature from formatSignature, glance from the doc's first line — the #help pieces exactly"
+          }
+          test "a bare-alias function value echoes its qualified home [D:repl-fn-echo]" {
+              let lines =
+                  Weir.Repl.functionEchoLines false 100 Weir.Builtins.typeEnv (fun _ -> None) "find"
+                  |> Option.get
+
+              Expect.isTrue (lines[0].StartsWith "Seq.find") "the bare alias names its home"
+          }
+          test "a session-defined function echoes its name, normalized scheme, and recorded definition line [D:repl-fn-echo]" {
+              let te =
+                  { Weir.Builtins.typeEnv with
+                      Values = Map.add "f" (Weir.Types.generalize (TFun(TInt, TInt))) Weir.Builtins.typeEnv.Values }
+
+              let defs n =
+                  if n = "f" then Some("let f x = x + 1", false) else None
+
+              Expect.equal
+                  (Weir.Repl.functionEchoLines false 100 te defs "f")
+                  (Some [ "f : int -> int"; "let f x = x + 1" ])
+                  "name : scheme, then the definition's first physical line"
+
+              // a multi-line definition clips to its first line + …
+              let te2 =
+                  { Weir.Builtins.typeEnv with
+                      Values = Map.add "g" (Weir.Types.generalize (TFun(TVar "a1", TVar "a2"))) Weir.Builtins.typeEnv.Values }
+
+              let defs2 n =
+                  if n = "g" then Some("let g x =", true) else None
+
+              Expect.equal
+                  (Weir.Repl.functionEchoLines false 100 te2 defs2 "g")
+                  (Some [ "g : 'a -> 'b"; "let g x = …" ])
+                  "multi-line shows the first line with an ellipsis; vars normalize"
+          }
+          test "an unnamed function value declines the mini-help — the plain echo stands [D:repl-fn-echo]" {
+              Expect.equal
+                  (Weir.Repl.functionEchoLines false 100 Weir.Builtins.typeEnv (fun _ -> None) "nosuchname")
+                  None
+                  "nothing to name — the caller falls back to <fun>/<builtin> : ty"
           }
           test "a failing #infer drafted type surfaces line:col + an offending-line snippet [D:infer-diagnostic]" {
               // a deliberately un-checkable drafted type: a leading-digit
@@ -7336,7 +7636,7 @@ let adapterFormTests =
               match Weir.Lsp.hoverType lines 2 22 with
               | Some h ->
                   Expect.stringContains h "from <adapter>" "the form"
-                  Expect.stringContains h "json, jsonl, xml, yaml" "every from-adapter, derived (xml reads, never writes)"
+                  Expect.stringContains h "json, jsonl, table, xml, yaml" "every from-adapter, derived (xml and table read, never write)"
               | None -> failtest "from must answer"
 
               let t = [ "let back = rows |> to yaml" ]
@@ -7358,13 +7658,13 @@ let adapterFormTests =
               | None -> failtest "the adapter word must still hover"
           }
           test "completion after `from `/`to ` is direction-aware and offers NOTHING else" {
-              Expect.equal (sug "xs |> from ") [ "json"; "jsonl"; "xml"; "yaml" ] "every from-adapter (xml reads)"
+              Expect.equal (sug "xs |> from ") [ "json"; "jsonl"; "table"; "xml"; "yaml" ] "every from-adapter (xml and table read)"
               Expect.equal (sug "xs |> from j") [ "json"; "jsonl" ] "prefix-filtered"
               Expect.equal (sug "xs |> to ") [ "json"; "jsonl"; "yaml" ] "every to-adapter (no to xml)"
-              Expect.isFalse (sug "xs |> into " = [ "json"; "jsonl"; "xml"; "yaml" ]) "boundary: into is not from"
+              Expect.isFalse (sug "xs |> into " = [ "json"; "jsonl"; "table"; "xml"; "yaml" ]) "boundary: into is not from"
           }
           test "the adapter lists derive from the one source (builtinDocs keys), never a parallel table" {
-              Expect.equal (Weir.Builtins.adapterNames "from") [ "json"; "jsonl"; "xml"; "yaml" ] "from (xml reads)"
+              Expect.equal (Weir.Builtins.adapterNames "from") [ "json"; "jsonl"; "table"; "xml"; "yaml" ] "from (xml and table read)"
               Expect.equal (Weir.Builtins.adapterNames "to") [ "json"; "jsonl"; "yaml" ] "to (no to xml)"
           }
           test "`from`/`to` inside a string or comment are data — no discovery hover [D:form-word-hover]" {
@@ -18877,6 +19177,251 @@ let helpUxTests =
               Expect.isFalse (doc.Contains "\x1b") "no ANSI in the piped bytes"
           } ]
 
+let fromTableTests =
+    // the aligned-table boundary [D:from-table]: fixtures build by
+    // PADDED WIDTHS so header offsets and cell offsets agree by
+    // construction — the tabwriter reality both kubectl and docker emit
+    let row (ws: int list) (cs: string list) =
+        (List.zip ws cs |> List.map (fun (w, c: string) -> c.PadRight w) |> String.concat "")
+            .TrimEnd()
+
+    let tenv =
+        env
+        |> declare "type TPod = { name: string; ready: string; status: string; restarts: int; age: string }"
+        |> declare "type TCtr = { containerId: string; status: string; command: string }"
+        |> declare
+            "type TNode = { name: string; [<Wire \"ROLES\">] roles: Option<string>; cpu: Option<float>; ready: bool; podTemplateHash: string }"
+        |> declare "type TReq = { name: string; restarts: int }"
+        |> declare "type TBadSeq = { name: seq<string> }"
+        |> declare "type TBadOpt = { name: Option<seq<int>> }"
+        |> declare "type TUni = A of int | B"
+
+    let checkOkT input =
+        match typecheck tenv (parse input) with
+        | Ok te -> te
+        | Error terr -> failtest $"expected Ok, got: {formatError terr}"
+
+    let checkErrT input =
+        match typecheck tenv (parse input) with
+        | Ok te -> failtest $"expected a type error, got {formatTy te.Ty}"
+        | Error terr -> terr
+
+    let runT (overrides: (string * Value) list) input =
+        let vals = overrides |> List.fold (fun vs (n, v) -> Map.add n v vs) valueEnv
+        eval vals (checkOkT input)
+
+    let podWidths = [ 8; 8; 19; 11; 0 ]
+
+    let podSample =
+        VSeq
+            [ VStr(row podWidths [ "NAME"; "READY"; "STATUS"; "RESTARTS"; "AGE" ])
+              VStr(row podWidths [ "web-1"; "1/1"; "Running"; "0"; "2d1h" ])
+              VStr ""
+              VStr(row podWidths [ "db-0"; "1/2"; "CrashLoopBackOff"; "3"; "5h" ]) ]
+
+    testList
+        "from table [D:from-table]"
+        [ test "header-offset slicing reads kubectl-shaped rows; blank lines skip; the type is seq<T>" {
+              let te = checkOkT "src |> from table TPod"
+              Expect.equal te.Ty (TSeq(TNamed("TPod", []))) "from table T : seq<string> -> seq<T>"
+
+              Expect.equal
+                  (runT [ "src", podSample ] "src |> from table TPod")
+                  (VSeq
+                      [ VRecord(
+                            "TPod",
+                            [ "name", VStr "web-1"
+                              "ready", VStr "1/1"
+                              "status", VStr "Running"
+                              "restarts", VInt 0L
+                              "age", VStr "2d1h" ]
+                        )
+                        VRecord(
+                            "TPod",
+                            [ "name", VStr "db-0"
+                              "ready", VStr "1/2"
+                              "status", VStr "CrashLoopBackOff"
+                              "restarts", VInt 3L
+                              "age", VStr "5h" ]
+                        ) ])
+                  "columns slice at header offsets; int cells convert; blank interior lines skip"
+          }
+          test "a two-word single-space header is ONE column; spaced values and a spaced last column survive" {
+              // docker's reality: `CONTAINER ID` is one header (single
+              // space), columns pad with 3+ spaces, STATUS holds
+              // `Up 2 hours` and the last column runs to end of line
+              let ws = [ 15; 15; 0 ]
+
+              let sample =
+                  VSeq
+                      [ VStr(row ws [ "CONTAINER ID"; "STATUS"; "COMMAND" ])
+                        VStr(row ws [ "3f4e5d6a7b8c"; "Up 2 hours"; "/bin/sh -c run" ]) ]
+
+              Expect.equal
+                  (runT [ "src", sample ] "src |> from table TCtr")
+                  (VSeq
+                      [ VRecord(
+                            "TCtr",
+                            [ "containerId", VStr "3f4e5d6a7b8c"
+                              "status", VStr "Up 2 hours"
+                              "command", VStr "/bin/sh -c run" ]
+                        ) ])
+                  "a single space stays inside one header; offsets, not whitespace runs, bound the cells"
+          }
+          test "matching: Wire hits the raw header verbatim; normalized names match case-insensitively; Option reads empty and <none>; extra columns are ignored" {
+              let ws = [ 8; 22; 8; 8; 8; 19; 0 ]
+
+              let sample =
+                  VSeq
+                      [ VStr(row ws [ "NAME"; "POD-TEMPLATE-HASH"; "ROLES"; "CPU"; "READY"; "EXTRA"; "AGE" ])
+                        VStr(row ws [ "n1"; "abc123"; "worker"; "1.5"; "true"; "ignored"; "9d" ])
+                        VStr(row ws [ "n2"; "def456"; "<none>"; ""; "false"; "ignored"; "9d" ]) ]
+
+              Expect.equal
+                  (runT [ "src", sample ] "src |> from table TNode")
+                  (VSeq
+                      [ VRecord(
+                            "TNode",
+                            [ "name", VStr "n1"
+                              "roles", VUnion("Some", Some(VStr "worker"))
+                              "cpu", VUnion("Some", Some(VFloat 1.5))
+                              "ready", VBool true
+                              "podTemplateHash", VStr "abc123" ]
+                        )
+                        VRecord(
+                            "TNode",
+                            [ "name", VStr "n2"
+                              "roles", VUnion("None", None)
+                              "cpu", VUnion("None", None)
+                              "ready", VBool false
+                              "podTemplateHash", VStr "def456" ]
+                        ) ])
+                  "the kubectl idioms: <none>/empty read None under Option; undeclared columns cost nothing"
+          }
+          test "runtime errors are located, each teaching" {
+              // a missing declared column names itself AND the headers seen
+              let missing =
+                  Expect.throwsC
+                      (fun () ->
+                          runT
+                              [ "src", VSeq [ VStr "NAME   AGE"; VStr "n1     1d" ] ]
+                              "src |> from table TReq"
+                          |> ignore)
+                      id
+
+              Expect.stringContains
+                  missing.Message
+                  "from table: missing column 'restarts' for field 'restarts' — headers seen: NAME, AGE"
+                  "the absent column and the header inventory"
+
+              // a cell that fails its field's type carries line and col
+              let badInt =
+                  Expect.throwsC
+                      (fun () ->
+                          runT
+                              [ "src", VSeq [ VStr "NAME   RESTARTS"; VStr "n1     often" ] ]
+                              "src |> from table TReq"
+                          |> ignore)
+                      id
+
+              Expect.stringContains
+                  badInt.Message
+                  "from table: line 2, col 8: column 'RESTARTS': expected int, got 'often'"
+                  "row line + column offset + header name"
+
+              // a required field refuses an absent cell, naming Option
+              let absent =
+                  Expect.throwsC
+                      (fun () ->
+                          runT
+                              [ "src", VSeq [ VStr "NAME   RESTARTS"; VStr "n1" ] ]
+                              "src |> from table TReq"
+                          |> ignore)
+                      id
+
+              Expect.stringContains
+                  absent.Message
+                  "an empty cell — declare Option<int> to read it as None"
+                  "absence has a typed spelling; the error names it"
+
+              // duplicate normalized headers cannot be told apart
+              let dup =
+                  Expect.throwsC
+                      (fun () ->
+                          runT
+                              [ "src", VSeq [ VStr "POD-TEMPLATE-HASH   PODTEMPLATEHASH"; VStr "a  b" ] ]
+                              "src |> from table TReq"
+                          |> ignore)
+                      id
+
+              Expect.stringContains
+                  dup.Message
+                  "columns 'POD-TEMPLATE-HASH' and 'PODTEMPLATEHASH' match the same name"
+                  "the match key is the normalized form, so a dup is unanswerable"
+
+              // no header at all
+              let emptyIn =
+                  Expect.throwsC
+                      (fun () -> runT [ "src", VSeq [ VStr ""; VStr "   " ] ] "src |> from table TReq" |> ignore)
+                      id
+
+              Expect.stringContains
+                  emptyIn.Message
+                  "from table: empty input — expected a header row"
+                  "nothing to slice by"
+          }
+          test "a header-only table reads as the empty seq (docker ps with nothing running)" {
+              Expect.equal
+                  (runT [ "src", VSeq [ VStr "NAME   RESTARTS" ] ] "src |> from table TReq |> Seq.length")
+                  (VInt 0L)
+                  "a header with no rows is an answer, not an error"
+          }
+          test "check-time laws: flat scalar rows only; no seq/stream/Map wrap; no union; no to table" {
+              Expect.stringContains
+                  (checkErrT "src |> from table TBadSeq").Message
+                  "field 'name': type seq<string> is not admitted; table cells are string, int, float, bool, or Option of one"
+                  "a cell is one aligned column's text"
+
+              Expect.stringContains
+                  (checkErrT "src |> from table TBadOpt").Message
+                  "a table cell reads Option of a scalar, not Option<seq<int>>"
+                  ""
+
+              Expect.stringContains
+                  (checkErrT "src |> from table seq<TPod>").Message
+                  "'from table TPod' already yields seq<TPod> — write from table TPod"
+                  "the jsonl precedent"
+
+              Expect.stringContains
+                  (checkErrT "src |> from table stream TPod").Message
+                  "'from table stream' does not exist — a table is already rows"
+                  ""
+
+              Expect.stringContains
+                  (checkErrT "src |> from table Map<string, TPod>").Message
+                  "a table reads rows, not a keyed object"
+                  ""
+
+              Expect.stringContains
+                  (checkErrT "src |> from table TUni").Message
+                  "'from table' needs a row record; 'TUni' is a union — a table row has no tag convention"
+                  ""
+
+              Expect.stringContains
+                  (checkErrT "src |> from table").Message
+                  "'from table' needs a row record name, e.g. from table Pod"
+                  ""
+
+              Expect.stringContains
+                  (checkErrT "[1] |> to table").Message
+                  "'to table' does not exist — the table boundary is read-only ('from table T'); write JSON or YAML instead"
+                  "no write side in v1"
+          }
+          test "'table' stays an ordinary identifier outside adapter position" {
+              // the adapter-word law: `json` binds, and so does `table`
+              Expect.equal (run "let table = 5 in table + 1") (VInt 6L) "no new reserved word"
+          } ]
+
 [<Tests>]
 let allTests =
     testList
@@ -18922,6 +19467,7 @@ let allTests =
           lsSortTests
           recordKeysTests
           yamlSeqTests
+          fromTableTests
           anonRecordTests
           anonLiteralTests
           mapStringTests
