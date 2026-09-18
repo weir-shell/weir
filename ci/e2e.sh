@@ -7801,6 +7801,21 @@ if ! diff "$refdump/reference.json" "$ROOT/site/src/data/reference.json" > /dev/
 fi
 echo "e2e ok: reference dump current (docs-json == committed site data)"
 
+# ---- Str.fields: the piped-column idiom on the shipped binary [D:str-fields]
+# a kubectl-shaped fixture piped into a script that reads Self.stdin —
+# whitespace runs collapse, so column 2 is Seq.item 1, no regex
+sfdir=$(mkweirtmp)
+cat > "$sfdir/cols.weir" <<'EOF'
+Self.stdin
+|> Seq.skip 1
+|> Seq.map (fun l -> l |> Str.fields |> Seq.item 1)
+|> Str.join ","
+|> print
+EOF
+sfout=$(printf 'NAME        READY   STATUS    RESTARTS   AGE\nweir-7d9f   1/1     Running   0          12m\nsite-abc1   2/2     Running   1          3h\n' | "$BIN" "$sfdir/cols.weir")
+[ "$sfout" = "1/1,2/2" ] || fail "Str.fields column extraction from piped fixture: got '$sfout'"
+echo "e2e ok: Str.fields extracts the READY column from piped fixture lines (whitespace runs, no empties)"
+
 # ---- the CLI page is byte-pinned against --help ---------------------------
 # docs/cli.md quotes the usage block verbatim; a new subcommand or flag
 # must move the page in the same commit as the binary.
