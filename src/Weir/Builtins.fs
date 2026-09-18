@@ -515,6 +515,33 @@ let private rmatchAllImpl: Value =
                 )
             | _ -> unreachable "the checker rejects 'rmatchAll' on these arguments"))
 
+// rsplit [D:str-fields]: split on every regex match — split's empties
+// law verbatim (adjacent matches and edges yield empty pieces).
+// Between-match pieces ONLY: capture groups never interleave (Go's
+// regexp Split, not .NET's Regex.Split wart). A bad pattern raises in
+// the r-family's error class (compiledOrRaise).
+let private rsplitImpl: Value =
+    VBuiltin(fun patV ->
+        VBuiltin(fun subjectV ->
+            match patV, subjectV with
+            | VStr pat, VStr s ->
+                let re = compiledOrRaise pat
+
+                VSeq(
+                    seq {
+                        let mutable pos = 0
+                        let mutable m = re.Match s
+
+                        while m.Success do
+                            yield VStr(s.Substring(pos, m.Index - pos))
+                            pos <- m.Index + m.Length
+                            m <- m.NextMatch()
+
+                        yield VStr(s.Substring pos)
+                    }
+                )
+            | _ -> unreachable "the checker rejects 'rsplit' on these arguments"))
+
 // Path.glob [D:path-glob] — the standard subset (`*` within-segment,
 // `**` cross-segment, `?`, `[abc]`/`[!abc]`), bash's laws: `*` never
 // matches dotfiles (a `.`-leading segment does); sorted per level
@@ -773,6 +800,20 @@ let private splitImpl: Value =
             match sep, subject with
             | VStr sep, VStr s -> VSeq(s.Split sep |> Seq.map VStr)
             | _ -> unreachable "the checker rejects 'split' on these arguments"))
+
+// field splitting [D:str-fields]: whitespace RUNS delimit and empties
+// never appear — POSIX field splitting, Go's strings.Fields. The
+// whitespace class is trim's (Char.IsWhiteSpace: a null separator
+// array means "split on whitespace" by String.Split's own contract).
+let private fieldsImpl: Value =
+    VBuiltin(fun v ->
+        match v with
+        | VStr s ->
+            VSeq(
+                s.Split((null: char array), System.StringSplitOptions.RemoveEmptyEntries)
+                |> Seq.map VStr
+            )
+        | v -> unreachable $"the checker rejects 'fields' on {formatValue v}")
 
 // split at the FIRST occurrence, tail INTACT [D:split-once] — Rust's
 // split_once shape (Go's Cut, Python's partition are the same
@@ -1812,6 +1853,7 @@ let private strMembers: (string * Ty * Value) list =
       "toLower", TFun(TStr, TStr), str1 "toLower" (fun s -> s.ToLowerInvariant())
       "toUpper", TFun(TStr, TStr), str1 "toUpper" (fun s -> s.ToUpperInvariant())
       "split", TFun(TStr, TFun(TStr, TSeq TStr)), splitImpl
+      "fields", TFun(TStr, TSeq TStr), fieldsImpl
       "splitOnce", TFun(TStr, TFun(TStr, TTuple [ TStr; TStr ])), splitOnceImpl
       "trySplitOnce", TFun(TStr, TFun(TStr, TNamed("Option", [ TTuple [ TStr; TStr ] ]))), trySplitOnceImpl
       "join", TFun(TStr, TFun(TSeq TStr, TStr)), joinImpl
@@ -1880,7 +1922,8 @@ let private strMembers: (string * Ty * Value) list =
       "tryIndexOf", TFun(TStr, TFun(TStr, TNamed("Option", [ TInt ]))), tryIndexOfImpl
       "isMatch", TFun(TStr, TFun(TStr, TBool)), isMatchImpl
       "rmatch", TFun(TStr, TFun(TStr, TNamed("Option", [ TSeq TStr ]))), rmatchImpl
-      "rmatchAll", TFun(TStr, TFun(TStr, TSeq(TSeq TStr))), rmatchAllImpl ]
+      "rmatchAll", TFun(TStr, TFun(TStr, TSeq(TSeq TStr))), rmatchAllImpl
+      "rsplit", TFun(TStr, TFun(TStr, TSeq TStr)), rsplitImpl ]
 
 // Path — string surgery over paths, System.IO.Path underneath.
 // extension keeps the dot and is "" when there is none; dir is "" at
@@ -4667,8 +4710,17 @@ let builtinDocs: Map<string, BuiltinDoc> =
           (bd "Uppercase (invariant culture)." (Some "Str.toUpper \"abc\"") None
            |> named [ "s" ])
           "Str.split",
-          (bd "Split on a separator into a sequence." (Some "Str.split \",\" \"a,b,c\" |> Seq.force") None
+          (bd
+              "Split on a separator into a sequence; empty pieces kept (adjacent separators and edges yield \"\" — rsplit follows the same law)."
+              (Some "Str.split \",\" \"a,b,c\" |> Seq.force")
+              None
            |> named [ "sep"; "s" ])
+          "Str.fields",
+          (bd
+              "Split on whitespace runs into fields — never an empty piece (a blank or empty string is the empty seq; trim's whitespace class)."
+              (Some "\"NAME   READY  1/1\" |> Str.fields |> Seq.force")
+              None
+           |> named [ "s" ])
           "Str.splitOnce",
           (bd
               "Split at the first occurrence into (before, after) — the tail stays intact, separators and all; raises when the separator is absent (trySplitOnce is the Option twin)."
@@ -4749,6 +4801,12 @@ let builtinDocs: Map<string, BuiltinDoc> =
           bd
               "Every regex match's groups, as a sequence of sequences."
               (Some "Str.rmatchAll \"[0-9]+\" \"a1b2\" |> Seq.force")
+              None
+          |> named [ "pattern"; "s" ]
+          "Str.rsplit",
+          bd
+              "Split on every regex match; split's empties law (adjacent matches and edges yield \"\"), and capture groups never add pieces."
+              (Some "Str.rsplit @\"\\s*,\\s*\" \"a , b,c\" |> Seq.force")
               None
           |> named [ "pattern"; "s" ]
 
