@@ -2124,25 +2124,37 @@ let boundaryTests =
                   | VStr s -> s
                   | v -> failtest $"expected a string, got {formatValue v}"
 
-              // a k8s label object: hyphen/dot/slash keys weir cannot spell
-              // as field names ride [<Wire>] over a camelCased identifier;
-              // the already-legal key stays bare with NO attribute
+              // MOVED PIN [D:repl-infer]: uniform dirty-key objects draft
+              // the open MAPPING now, so the record sanitizer is pinned on
+              // a MIXED-value object (map detection needs one value shape)
+              // — hyphen/dot/slash keys ride [<Wire>] over a camelCased
+              // identifier; the already-legal key stays bare
               let out =
-                  inferStr (run "Json.inferShape [\"{\\\"k8s-app\\\":\\\"a\\\",\\\"node.kubernetes.io/os\\\":\\\"b\\\",\\\"clean\\\":\\\"c\\\"}\"]")
+                  inferStr (run "Json.inferShape [\"{\\\"k8s-app\\\":\\\"a\\\",\\\"node.kubernetes.io/os\\\":2,\\\"clean\\\":\\\"c\\\"}\"]")
 
               Expect.stringContains out "[<Wire \"k8s-app\">]" "the dirty key carries its wire attribute"
               Expect.stringContains out "k8sApp: string" "the sanitized identifier is a legal field name"
-              Expect.stringContains out "nodeKubernetesIoOs: string" "dots and slashes camelCase into one identifier"
+              Expect.stringContains out "nodeKubernetesIoOs: int" "dots and slashes camelCase into one identifier"
               Expect.stringContains out "clean: string" "an already-legal key stays a bare field"
               Expect.isFalse (out.Contains "clean\">]") "a clean key carries NO wire attribute"
 
+              // the UNIFORM dirty-key object is the open mapping — keys
+              // are data, no [<Wire>] rides at all [D:repl-infer]
+              let map =
+                  inferStr (run "Json.inferShape [\"{\\\"labels\\\":{\\\"k8s-app\\\":\\\"a\\\",\\\"node.kubernetes.io/os\\\":\\\"b\\\",\\\"clean\\\":\\\"c\\\"}}\"]")
+
+              Expect.stringContains map "labels: seq<string * string>" "the label object drafts as the mapping"
+              Expect.isFalse (map.Contains "Wire") "mapping keys are data — no wire attribute is drafted"
+              Expect.stringContains map "mostly non-identifier keys" "the map note rides as a // line"
+
               // a collision: `aB` (clean) reserves its name; the two dirty
-              // keys that would also land on `aB` take `aB2`/`aB3`
-              let col = inferStr (run "Json.inferShape [\"{\\\"a-b\\\":\\\"1\\\",\\\"a.b\\\":\\\"2\\\",\\\"aB\\\":\\\"3\\\"}\"]")
+              // keys that would also land on `aB` take `aB2`/`aB3` (the
+              // int value keeps the object off the map path)
+              let col = inferStr (run "Json.inferShape [\"{\\\"a-b\\\":\\\"1\\\",\\\"a.b\\\":\\\"2\\\",\\\"aB\\\":3}\"]")
 
               Expect.stringContains col "aB2: string" "the first colliding sanitized key disambiguates"
               Expect.stringContains col "aB3: string" "the second colliding sanitized key disambiguates"
-              Expect.stringContains col "\n    aB: string" "the clean key keeps its bare name"
+              Expect.stringContains col "\n    aB: int" "the clean key keeps its bare name"
 
               // the historical reserved-word landings are unchanged
               let ty = inferStr (run "Json.inferShape [\"{\\\"type\\\":\\\"x\\\"}\"]")

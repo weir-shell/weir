@@ -97,10 +97,12 @@ let probes =
               // null field
               let _, n2 = Infer.inferDecls Parser.keywords takenBase "T" (Infer.IObj [ "v", Infer.INull ])
               Expect.isTrue (n2 |> List.exists (fun n -> n.Contains "null value")) "null note"
-              // heterogeneous array
+              // heterogeneous = a TYPE CONFLICT for one key across the
+              // array's elements [D:repl-infer] — differing key SETS are
+              // the merge's ordinary work, never a note
               let het =
                   Infer.IObj
-                      [ "xs", Infer.IArr [ Infer.IObj [ "a", Infer.IInt ]; Infer.IObj [ "b", Infer.IStr ] ] ]
+                      [ "xs", Infer.IArr [ Infer.IObj [ "a", Infer.IInt ]; Infer.IObj [ "a", Infer.IStr ] ] ]
 
               let _, n3 = Infer.inferDecls Parser.keywords takenBase "T" het
               Expect.isTrue (n3 |> List.exists (fun n -> n.Contains "heterogeneous")) "heterogeneous note"
@@ -298,9 +300,28 @@ let inferRules =
                   Expect.equal (runFile script) 0 "the draft reads the sample, dropped key tolerated"
           }
 
-          test "an object of ONLY an empty key falls to the opaque posture" {
+          test "an object of ONLY an empty key is an open map — mapping keys are data, '' included" {
+              // MOVED PIN [D:repl-infer]: the empty key is unspellable as
+              // a FIELD, but a mapping's keys are data — the map detection
+              // (one value shape, every key non-identifier) outranks the
+              // drop rule, so nothing is dropped and nothing goes opaque
               let decls, notes =
                   Infer.inferDecls Parser.keywords takenBase "T" (Infer.IObj [ "m", Infer.IObj [ "", Infer.IInt ] ])
+
+              Expect.stringContains (String.concat "\n" decls) "m: seq<string * int>" "the open map, value shape kept"
+              Expect.isTrue (notes |> List.exists (fun n -> n.Contains "non-identifier keys")) "the map note fires"
+              Expect.isFalse (notes |> List.exists (fun n -> n.Contains "empty-string key")) "no drop — the key is data"
+          }
+
+          test "the record path still goes opaque when ONLY empty keys remain and values conflict" {
+              // the map detection needs ONE value shape — without it the
+              // record path drops the unspellable keys and lands opaque
+              let decls, notes =
+                  Infer.inferDecls
+                      Parser.keywords
+                      takenBase
+                      "T"
+                      (Infer.IObj [ "m", Infer.IObj [ "", Infer.IInt; "", Infer.IStr ] ])
 
               Expect.stringContains (String.concat "\n" decls) "m: Yaml" "nothing spellable remains — opaque Yaml"
               Expect.isTrue (notes |> List.exists (fun n -> n.Contains "empty-string key")) "the drop note fires"
@@ -435,6 +456,195 @@ let inferRules =
                   System.Text.RegularExpressions.Regex.Matches(out, "type VolumeSecret = \\{").Count
 
               Expect.equal count 1 "one renamed type, deduped"
+          }
+
+          test "array elements MERGE: a key absent in some elements drafts Option, silently [D:repl-infer]" {
+              let out, notes =
+                  match Infer.infer Parser.keywords takenBase Infer.Json "Root" [ "{\"items\": [{\"a\": 1}, {\"a\": 2, \"b\": \"x\"}]}" ] with
+                  | Ok(decls, notes) -> String.concat "\n" decls, notes
+                  | Error e -> failtestf "infer failed: %s" e
+
+              Expect.stringContains out "a: int" "the shared key keeps its shape"
+              Expect.stringContains out "b: Option<string>" "the one-sided key drafts Option"
+
+              Expect.isFalse
+                  (notes |> List.exists (fun n -> n.Contains "heterogeneous"))
+                  "differing key SETS are the merge's ordinary work — no note"
+          }
+
+          test "a TYPE CONFLICT across elements keeps the first + the verify note [D:repl-infer]" {
+              match Infer.infer Parser.keywords takenBase Infer.Json "Root" [ "{\"xs\": [{\"p\": 1}, {\"p\": \"s\"}]}" ] with
+              | Error e -> failtestf "infer failed: %s" e
+              | Ok(decls, notes) ->
+                  Expect.stringContains (String.concat "\n" decls) "p: int" "the first element's type wins"
+
+                  Expect.isTrue
+                      (notes
+                       |> List.exists (fun n ->
+                           n.Contains "a heterogeneous array at 'xs.p'"
+                           && n.Contains "kept the first element's type; verify the rest"))
+                      "the verify note names the conflicting key's path"
+          }
+
+          test "open map (a): a majority of non-identifier keys over ONE value shape [D:repl-infer]" {
+              let out, notes =
+                  match Infer.infer Parser.keywords takenBase Infer.Json "Root" [ "{\"labels\": {\"k8s-app\": \"w\", \"helm.sh/chart\": \"c\", \"app\": \"x\"}}" ] with
+                  | Ok(decls, notes) -> String.concat "\n" decls, notes
+                  | Error e -> failtestf "infer failed: %s" e
+
+              Expect.stringContains out "labels: seq<string * string>" "the mapping draft"
+              Expect.isFalse (out.Contains "Wire") "mapping keys are data — nothing rides [<Wire>]"
+
+              Expect.isTrue
+                  (notes
+                   |> List.exists (fun n ->
+                       n.Contains "'labels' has mostly non-identifier keys"
+                       && n.Contains "drafted as an open mapping seq<string * _>"))
+                  "the map note, pinned wording"
+
+              // NOT a map without value uniformity: the same keys over
+              // mixed value shapes stay a [<Wire>]'d record
+              match Infer.infer Parser.keywords takenBase Infer.Json "Root" [ "{\"labels\": {\"k8s-app\": \"w\", \"helm.sh/chart\": 2, \"app\": \"x\"}}" ] with
+              | Error e -> failtestf "infer failed: %s" e
+              | Ok(decls, _) ->
+                  Expect.stringContains (String.concat "\n" decls) "[<Wire \"k8s-app\">]" "mixed values keep the record path"
+          }
+
+          test "open map (b): sibling elements carrying DIFFERENT key sets [D:repl-infer]" {
+              let sample =
+                  "{\"items\": [{\"data\": {\"Corefile\": \"x\"}}, {\"data\": {\"networkYml\": \"y\", \"mode\": \"z\"}}]}"
+
+              match Infer.infer Parser.keywords takenBase Infer.Json "CmList" [ sample ] with
+              | Error e -> failtestf "infer failed: %s" e
+              | Ok(decls, notes) ->
+                  Expect.stringContains (String.concat "\n" decls) "data: seq<string * string>" "the mapping draft"
+
+                  Expect.isTrue
+                      (notes
+                       |> List.exists (fun n ->
+                           n.Contains "'items.data' carries different keys across the array's elements"
+                           && n.Contains "drafted as an open mapping seq<string * _>"))
+                      "the map note, pinned wording"
+          }
+
+          test "metadata zero-movement: identifier-uniform objects stay records [D:repl-infer]" {
+              // identifier keys, IDENTICAL across elements — schema, never
+              // a mapping, even though every value shares one shape
+              let sample =
+                  "{\"items\": [{\"metadata\": {\"name\": \"a\", \"namespace\": \"x\"}}, {\"metadata\": {\"name\": \"b\", \"namespace\": \"y\"}}]}"
+
+              match Infer.infer Parser.keywords takenBase Infer.Json "PodList" [ sample ] with
+              | Error e -> failtestf "infer failed: %s" e
+              | Ok(decls, _) ->
+                  let out = String.concat "\n" decls
+                  Expect.stringContains out "type Metadata = {" "metadata stays a named record"
+                  Expect.stringContains out "\n    name: string" "plain required fields"
+                  Expect.stringContains out "\n    namespace: string" "no Option, no mapping — zero movement"
+                  Expect.isFalse (out.Contains "metadata: seq<") "never a mapping"
+          }
+
+          test "an empty {} drafts seq<string * string> and READS on both boundaries [D:yaml-empty-flow]" {
+              // json draft + note
+              match Infer.infer Parser.keywords takenBase Infer.Json "Spec" [ "{\"resources\": {}}" ] with
+              | Error e -> failtestf "infer failed: %s" e
+              | Ok(decls, notes) ->
+                  Expect.stringContains (String.concat "\n" decls) "resources: seq<string * string>" "the empty map draft"
+
+                  Expect.isTrue
+                      (notes
+                       |> List.exists (fun n ->
+                           n.Contains "an empty mapping under 'Resources'"
+                           && n.Contains "drafted as seq<string * string>"))
+                      "the empty-map note, pinned wording"
+
+                  // the draft READS its own sample through BOTH adapters —
+                  // the opaque-Yaml draft could not cross the json boundary
+                  let script =
+                      decls
+                      @ [ "let j = [\"{\\\"resources\\\": {}}\"] |> from json Spec"
+                          "if not (j.resources |> Seq.isEmpty) then fail \"json empty {} did not read empty\""
+                          "let y = [\"resources: {}\"] |> from yaml Spec"
+                          "if not (y.resources |> Seq.isEmpty) then fail \"yaml empty {} did not read empty\"" ]
+
+                  Expect.equal (runFile script) 0 "the empty-mapping draft reads via from json AND from yaml"
+          }
+
+          test "the json mapping ROUNDTRIP: an object reads as pairs, writes back as an object [D:repl-infer]" {
+              let script =
+                  [ "type Meta = {"
+                    "    name: string"
+                    "    labels: seq<string * string>"
+                    "}"
+                    "let m = [\"{\\\"name\\\": \\\"web\\\", \\\"labels\\\": {\\\"k8s-app\\\": \\\"w\\\", \\\"tier\\\": \\\"fe\\\"}}\"] |> from json Meta"
+                    "let app = m.labels |> Seq.tryFind (fun (k, _) -> k == \"k8s-app\")"
+                    "if app <> Some ((\"k8s-app\", \"w\")) then fail \"the pair did not read\""
+                    "let out = m |> to json |> Seq.exactlyOne"
+                    "if not (Str.contains \"\\\"labels\\\":{\\\"k8s-app\\\":\\\"w\\\"\" out) then fail $\"the mapping did not write as an object: {out}\""
+                    "let rt = [out] |> from json Meta"
+                    "if (rt.labels |> Seq.length) <> 2 then fail \"the roundtrip lost pairs\""
+                    // the EMPTY mapping writes [] and reads back empty —
+                    // the writer's own empty spelling, tolerated on read
+                    "let e = [\"{\\\"name\\\": \\\"x\\\", \\\"labels\\\": {}}\"] |> from json Meta"
+                    "let eout = e |> to json |> Seq.exactlyOne"
+                    "if not (Str.contains \"\\\"labels\\\":[]\" eout) then fail $\"empty mapping spelling moved: {eout}\""
+                    "let ert = [eout] |> from json Meta"
+                    "if not (ert.labels |> Seq.isEmpty) then fail \"the empty roundtrip broke\"" ]
+
+              Expect.equal (runFile script) 0 "the json mapping roundtrip holds, empty included"
+          }
+
+          test "the merged ConfigMapList draft reads its own sample end-to-end [D:repl-infer]" {
+              let sample =
+                  "{\"apiVersion\": \"v1\", \"kind\": \"ConfigMapList\", \"metadata\": {\"resourceVersion\": \"123\"}, "
+                  + "\"items\": [{\"metadata\": {\"name\": \"coredns\"}, \"data\": {\"Corefile\": \".:53\"}}, "
+                  + "{\"metadata\": {\"name\": \"net\", \"annotations\": {\"a.b/c\": \"1\", \"d.e/f\": \"2\"}}, \"data\": {\"network.yml\": \"nodes: 3\"}}]}"
+
+              match Infer.infer Parser.keywords takenBase Infer.Json "CmList" [ sample ] with
+              | Error e -> failtestf "infer failed: %s" e
+              | Ok(decls, _) ->
+                  let out = String.concat "\n" decls
+                  Expect.stringContains out "data: seq<string * string>" "the per-item data mapping"
+                  Expect.stringContains out "annotations: Option<seq<string * string>>" "merged-Option annotations, itself a mapping"
+
+                  let escaped = sample.Replace("\"", "\\\"")
+
+                  let script =
+                      decls
+                      @ [ $"let v = [\"{escaped}\"] |> from json CmList"
+                          "if v.metadata.resourceVersion <> \"123\" then fail \"the list metadata did not read\""
+                          "let hit = v.items |> Seq.head |> _.data |> Seq.tryFind (fun (k, _) -> k == \"Corefile\")"
+                          "if hit == None then fail \"Corefile did not read as a pair\"" ]
+
+                  Expect.equal (runFile script) 0 "the merged draft reads the sample"
+          }
+
+          test "the yaml twin: the merged data mapping reads through from yaml [D:repl-infer]" {
+              let sample =
+                  [ "items:"
+                    "- metadata:"
+                    "    name: a"
+                    "  data:"
+                    "    Corefile: x"
+                    "- metadata:"
+                    "    name: b"
+                    "  data:"
+                    "    network.yml: y"
+                    "    mode: flat" ]
+
+              match Infer.infer Parser.keywords takenBase Infer.Yaml "CmList" sample with
+              | Error e -> failtestf "yaml infer failed: %s" e
+              | Ok(decls, _) ->
+                  Expect.stringContains (String.concat "\n" decls) "data: seq<string * string>" "the yaml data mapping"
+
+                  let lit = sample |> List.map (fun l -> "\"" + l + "\"") |> String.concat "; "
+
+                  let script =
+                      decls
+                      @ [ $"let v = [{lit}] |> from yaml CmList"
+                          "let hit = v.items |> Seq.skip 1 |> Seq.head |> _.data |> Seq.tryFind (fun (k, _) -> k == \"network.yml\")"
+                          "if hit <> Some ((\"network.yml\", \"y\")) then fail \"the yaml pair did not read\"" ]
+
+                  Expect.equal (runFile script) 0 "the yaml twin reads the merged draft"
           } ]
 
 // #save's bare-alias qualifier [D:repl-save]: span-based, string-safe
