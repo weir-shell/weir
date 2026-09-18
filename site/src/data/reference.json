@@ -586,7 +586,7 @@
         {
           "name": "inferShape",
           "signature": "Json.inferShape (lines: seq\u003Cstring\u003E) : string",
-          "summary": "Draft named \u0060type\u0060 declarations from a JSON sample \u2014 the composable core of \u0060#infer\u0060: returns the declaration text (top record named Root; nested records auto-named by field, seq elements singularised; array elements MERGE, a key absent in some elements drafts Option; a data-keyed object \u2014 one value shape with mostly non-identifier keys, differing sibling key sets, or an empty {} \u2014 drafts the open mapping seq\u003Cstring * _\u003E; notes ride as \u0060//\u0060 lines). It drafts what the sample has; you edit the emitted types. Not check-time inference (the value is a runtime sample).",
+          "summary": "Draft named \u0060type\u0060 declarations from a JSON sample \u2014 the composable core of \u0060#infer\u0060: returns the declaration text (top record named Root; nested records auto-named by field, seq elements singularised; array elements merge, a key absent in some elements drafts Option; a data-keyed object \u2014 one value shape with mostly non-identifier keys, differing sibling key sets, or an empty {} \u2014 drafts the open mapping seq\u003Cstring * _\u003E; notes ride as \u0060//\u0060 lines). It drafts what the sample has; you edit the emitted types. Not check-time inference (the value is a runtime sample).",
           "example": "print (Json.inferShape [\u0022{\\\u0022id\\\u0022: 1, \\\u0022name\\\u0022: \\\u0022x\\\u0022}\u0022])",
           "pointer": "the \u0060weir add schema\u0060 category: external structure -\u003E a declaration you own; check and \u0060from json\u0060 stay untouched."
         }
@@ -1730,7 +1730,7 @@
         {
           "name": "inferShape",
           "signature": "Yaml.inferShape (lines: seq\u003Cstring\u003E) : string",
-          "summary": "Draft named \u0060type\u0060 declarations from a YAML sample \u2014 the composable core of \u0060#infer\u0060: returns the declaration text (top record named Root; nested records auto-named; array elements MERGE, a key absent in some elements drafts Option; a data-keyed object \u2014 one value shape with mostly non-identifier keys, differing sibling key sets, or an empty {} \u2014 drafts the open mapping seq\u003Cstring * _\u003E; notes ride as \u0060//\u0060 lines). It drafts what the sample has; you edit the emitted types. Not check-time inference (the value is a runtime sample).",
+          "summary": "Draft named \u0060type\u0060 declarations from a YAML sample \u2014 the composable core of \u0060#infer\u0060: returns the declaration text (top record named Root; nested records auto-named; array elements merge, a key absent in some elements drafts Option; a data-keyed object \u2014 one value shape with mostly non-identifier keys, differing sibling key sets, or an empty {} \u2014 drafts the open mapping seq\u003Cstring * _\u003E; notes ride as \u0060//\u0060 lines). It drafts what the sample has; you edit the emitted types. Not check-time inference (the value is a runtime sample).",
           "example": "let sample = \u003C\u003C\u003C\n    name: web\n    port: 8080\nprint (Yaml.inferShape sample)",
           "pointer": "the \u0060weir add schema\u0060 category: external structure -\u003E a declaration you own; check and \u0060from yaml\u0060 stay untouched."
         },

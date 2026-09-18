@@ -5258,13 +5258,13 @@ let builtinDocs: Map<string, BuiltinDoc> =
            |> named [ "patch"; "doc" ])
           "Yaml.inferShape",
           (bd
-              "Draft named `type` declarations from a YAML sample — the composable core of `#infer`: returns the declaration text (top record named Root; nested records auto-named; array elements MERGE, a key absent in some elements drafts Option; a data-keyed object — one value shape with mostly non-identifier keys, differing sibling key sets, or an empty {} — drafts the open mapping seq<string * _>; notes ride as `//` lines). It drafts what the sample has; you edit the emitted types. Not check-time inference (the value is a runtime sample)."
+              "Draft named `type` declarations from a YAML sample — the composable core of `#infer`: returns the declaration text (top record named Root; nested records auto-named; array elements merge, a key absent in some elements drafts Option; a data-keyed object — one value shape with mostly non-identifier keys, differing sibling key sets, or an empty {} — drafts the open mapping seq<string * _>; notes ride as `//` lines). It drafts what the sample has; you edit the emitted types. Not check-time inference (the value is a runtime sample)."
               (Some "let sample = <<<\n    name: web\n    port: 8080\nprint (Yaml.inferShape sample)")
               (Some "the `weir add schema` category: external structure -> a declaration you own; check and `from yaml` stay untouched.")
            |> named [ "lines" ])
           "Json.inferShape",
           (bd
-              "Draft named `type` declarations from a JSON sample — the composable core of `#infer`: returns the declaration text (top record named Root; nested records auto-named by field, seq elements singularised; array elements MERGE, a key absent in some elements drafts Option; a data-keyed object — one value shape with mostly non-identifier keys, differing sibling key sets, or an empty {} — drafts the open mapping seq<string * _>; notes ride as `//` lines). It drafts what the sample has; you edit the emitted types. Not check-time inference (the value is a runtime sample)."
+              "Draft named `type` declarations from a JSON sample — the composable core of `#infer`: returns the declaration text (top record named Root; nested records auto-named by field, seq elements singularised; array elements merge, a key absent in some elements drafts Option; a data-keyed object — one value shape with mostly non-identifier keys, differing sibling key sets, or an empty {} — drafts the open mapping seq<string * _>; notes ride as `//` lines). It drafts what the sample has; you edit the emitted types. Not check-time inference (the value is a runtime sample)."
               (Some "print (Json.inferShape [\"{\\\"id\\\": 1, \\\"name\\\": \\\"x\\\"}\"])")
               (Some "the `weir add schema` category: external structure -> a declaration you own; check and `from json` stay untouched.")
            |> named [ "lines" ])
