@@ -6017,7 +6017,7 @@ let replEchoTests =
           test "a session-defined function echoes its name, normalized scheme, and recorded definition line [D:repl-fn-echo]" {
               let te =
                   { Weir.Builtins.typeEnv with
-                      Values = Map.add "f" (Types.generalize (TFun(TInt, TInt))) Weir.Builtins.typeEnv.Values }
+                      Values = Map.add "f" (Weir.Types.generalize (TFun(TInt, TInt))) Weir.Builtins.typeEnv.Values }
 
               let defs n =
                   if n = "f" then Some("let f x = x + 1", false) else None
@@ -6030,7 +6030,7 @@ let replEchoTests =
               // a multi-line definition clips to its first line + …
               let te2 =
                   { Weir.Builtins.typeEnv with
-                      Values = Map.add "g" (Types.generalize (TFun(TVar "a1", TVar "a2"))) Weir.Builtins.typeEnv.Values }
+                      Values = Map.add "g" (Weir.Types.generalize (TFun(TVar "a1", TVar "a2"))) Weir.Builtins.typeEnv.Values }
 
               let defs2 n =
                   if n = "g" then Some("let g x =", true) else None

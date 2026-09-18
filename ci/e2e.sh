@@ -884,10 +884,46 @@ out=$($BIN -e 'print "visible"')
 [ "$out" = "visible" ] || fail "print in -e must emit exactly the line, no unit trailer (got: $out)"
 echo "e2e ok: unit is invisible in -e"
 
+# unit stays invisible on the PIPED surface (its bytes are pinned) —
+# the tty echoes `() : unit` since the FSI-parity ruling [D:repl-it],
+# pinned in tests/repl/repl-it-streamed.py
 out=$(printf 'print "hi"\nlet u = ()\nu\n#quit\n' | $BIN)
 echo "$out" | grep -qF "hi" || fail "REPL print lost its output"
-if echo "$out" | grep -qF "() : unit"; then fail "unit leaked into REPL display"; fi
-echo "e2e ok: unit is invisible in the REPL"
+if echo "$out" | grep -qF "() : unit"; then fail "unit leaked into the piped REPL display"; fi
+echo "e2e ok: unit is invisible in the piped REPL"
+
+# --- the it-rebinding matrix, FSI parity (2026-09-18) [D:repl-it] ------
+# EXPRESSIONS and COMMANDS rebind `it` — always, unit included; a `let`
+# does NOT (FSI: `let o = 10;;` binds no it); a directive leaves it; a
+# fresh session's `it` is unbound. These cells pin the piped value path;
+# the streamed (tty) half — it := () and the misuse teach — lives in
+# tests/repl/repl-it-streamed.py.
+out=$(printf '5\nit\n#quit\n' | $BIN)
+[ "$(echo "$out" | grep -cF '5 : int')" = "2" ] || fail "a non-unit expression must rebind it: $out"
+out=$(printf 'print "hi"\n(it, 1)\n#quit\n' | $BIN)
+echo "$out" | grep -qF '((), 1) : unit * int' || fail "a unit expression must rebind it := (): $out"
+out=$(printf 'let o = 10\nit\n#quit\n' | $BIN)
+echo "$out" | grep -qF "unbound variable 'it'" || fail "a let must not rebind it (FSI parity): $out"
+out=$(printf '7\n#echo\nit\n#quit\n' | $BIN)
+[ "$(echo "$out" | grep -cF '7 : int')" = "2" ] || fail "a directive must leave it untouched: $out"
+echo "e2e ok: the it-rebinding matrix — expr/command always (unit included), let never, directive inert [D:repl-it]"
+
+# --- the function-value echo, piped spelling (2026-09-18) [D:repl-fn-echo]
+# a named builtin echoes the plain #help signature + glance; a session
+# function echoes name : scheme + its definition line; an anonymous
+# closure keeps <fun> : ty — vars normalized ('a1 -> 'a2 reads 'a -> 'b)
+out=$(printf 'Seq.map\n#quit\n' | $BIN)
+echo "$out" | grep -qF "Seq.map (f: 'a -> 'b) (xs: seq<'a>) : seq<'b>" || fail "Seq.map must echo the #help signature: $out"
+echo "$out" | grep -qF "Apply a function to every element, lazily." || fail "Seq.map must echo the doc's first line: $out"
+out=$(printf 'find\n#quit\n' | $BIN)
+echo "$out" | grep -qF "Seq.find (pred: 'a -> bool) (xs: seq<'a>) : 'a" || fail "a bare alias must echo its qualified home: $out"
+out=$(printf 'let f x = x + 1\nf\n#quit\n' | $BIN)
+echo "$out" | grep -qF "f : int -> int" || fail "a session function must echo name : scheme: $out"
+# piped stdin is not echoed, so the definition line in the output IS the echo's
+echo "$out" | grep -qF "let f x = x + 1" || fail "a session function must echo its recorded definition line: $out"
+out=$(printf 'fun x -> x\n#quit\n' | $BIN)
+echo "$out" | grep -qF "<fun> : 'a -> 'a" || fail "an anonymous closure keeps <fun> : ty, vars normalized: $out"
+echo "e2e ok: the function-value echo — builtin mini-help, session def line, anonymous <fun> [D:repl-fn-echo]"
 
 # --- #infer / it / #save DISTILL round-trip (2026-09-17) [D:repl-save] -
 # #save DISTILLS a session to its checkable DEFINITIONS (option B): it
@@ -1459,8 +1495,8 @@ PYADP
     python3 "$(dirname "$0")/../tests/repl/cooked-trap.py" "$BIN" || fail "cooked trap / echo-once"
     echo "e2e ok: repl cooked-trap (one child run per echo, Enter survives a slow child)"
 
-    python3 "$(dirname "$0")/../tests/repl/repl-it-streamed.py" "$BIN" || fail "streamed-statement it teach"
-    echo "e2e ok: repl streamed statement — honest meta (not bound to it), targeted unbound-it teach, let/fresh/piped unchanged [D:repl-it]"
+    python3 "$(dirname "$0")/../tests/repl/repl-it-streamed.py" "$BIN" || fail "it FSI-parity / function echo"
+    echo "e2e ok: it FSI-parity — streamed binds (), misuse teaches the capture, functions echo mini-help [D:repl-it] [D:repl-fn-echo]"
 
     python3 "$(dirname "$0")/../tests/repl/repl-directives.py" "$BIN" || fail "repl directives"
     echo "e2e ok: repl directives (#help x3, #quit, :q retired, comments no-op, #echo cap)"

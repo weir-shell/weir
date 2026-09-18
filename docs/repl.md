@@ -67,10 +67,23 @@ At a terminal, the echo presents a value by its shape:
 - a seq of records — as a table: bold header, dim rule, clamped to
   the terminal width (the widest column absorbs the clip)
 - a seq of strings — as its lines
+- a named function — as a mini-help (below)
 - anything else — as the literal
 
 The type footer sits below in every case, along with a sentence
-noting when a seq is unforced. `NO_COLOR` strips the dressing.
+noting when a seq is unforced. `NO_COLOR` strips the dressing. Type
+variables in the footer read `'a`, `'b`, … — the display form; error
+messages keep the checker's own names.
+
+A bare expression that evaluates to a **named function** echoes what
+`#help` would answer, composed from the same sources:
+
+- a builtin — its qualified signature plus the doc's first line
+  (`find` names its home, `Seq.find`)
+- a function you defined in the session — `name : scheme` plus a dim
+  line showing the definition's first physical line (a redefinition
+  shows the last accepted)
+- an anonymous or composed closure — `<fun> : ty`, nothing to name
 
 A `let` binding echoes the same way — the value's lines (or table)
 first, then a `name : type` footer that carries the very same
@@ -136,26 +149,36 @@ maps every directive to its context.
 
 ## The last result: `it`
 
-Every line that produces a value binds it to `it` — an expression, a
-command, or a `let` RHS (the echo path). So a pipeline you just
-built is one word away:
+Expressions and commands rebind `it` — always, unit included (FSI's
+law). So a pipeline you just built is one word away:
 
 ```
 weir> kubectl get po -o json |> from json Pods |> _.items
 weir> it |> Seq.map _.name
 ```
 
-`it` is REPL-only (scripts and `-e` never see it, like the bare
-aliases). A unit statement or a directive leaves `it` untouched. The
-spelling is `it` deliberately: `_` is taken (the `_.field` shorthand
-and the `let _ =` discard), so it cannot be the last result — `it`
-(ghci's convention) collides with nothing.
+A `let` binds its name and nothing else — `let o = 10` leaves `it`
+alone, exactly as F# Interactive's `let o = 10;;` binds no `it`. A
+directive never touches it; a fresh session's `it` is unbound. `it`
+is REPL-only (scripts and `-e` never see it, like the bare aliases).
+The spelling is `it` deliberately: `_` is taken (the `_.field`
+shorthand and the `let _ =` discard), so it cannot be the last
+result — `it` (FSI's and ghci's convention) collides with nothing.
 
-One statement produces output but no value: a bare command at a tty
-streams straight to the terminal (the colour-inherit path — weir
-never holds the bytes), so `it` does not bind there. The meta line
-says so, and `let pods = kubectl get po` is the capturing spelling —
-a `let` binds `it` too.
+A bare command at a tty streams straight to the terminal (the
+colour-inherit path — weir never holds the bytes), so its value is
+`()` and that is what `it` binds. Using that unit `it` where a value
+is needed is an ordinary type error, and the error appends the
+repair with the streamed command verbatim:
+
+```
+weir> kubectl get po -A -o yaml
+…the pods, live…
+: seq<string>
+weir> #infer it from yaml as Pods
+#infer: the source has type unit; the adapter needs seq<string> (a captured JSON/YAML sample)
+to capture: let x = kubectl get po -A -o yaml
+```
 
 ## `#infer`: draft types from a sample
 
