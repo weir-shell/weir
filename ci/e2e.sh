@@ -934,8 +934,11 @@ echo "e2e ok: the function-value echo — builtin mini-help, session def line, a
 # plus the multi-line heredoc/type distill, is pinned. The piped
 # multi-line assembly is pinned in its own cell below.
 infdir=$(mkweirtmp)
-infout=$(printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' \
+# the bare `sample` echo binds `it` for the no-source #infer — a `let`
+# no longer does (FSI parity [D:repl-it])
+infout=$(printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' \
   'let sample = ["{\"items\": [{\"name\": \"a\", \"port\": 8080}], \"count\": 1}"]' \
+  'sample' \
   '#infer from json as Root' \
   'sample |> from json Root |> _.items |> map _.name |> Seq.length' \
   'type Mode = Fast | Slow' \
