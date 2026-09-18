@@ -374,25 +374,47 @@ let vendorFile
 
 // ---- the JSON Schema subset [D:yaml-schemas] -------------------------------
 
-// corpus-measured (six real k8s standalone-strict schemas): IN — type
-// (string or array-of-strings, the nullable spelling), properties,
-// required, items, additionalProperties (bool or schema), enum, and
-// oneOf RESTRICTED to scalar-type alternatives (every corpus occurrence
-// is the IntOrString idiom). Annotations accepted and ignored:
-// description, format, title, $schema, x-*. EVERYTHING else rejects
-// with a teaching error naming the keyword and its JSON path — $ref's
-// teaching names the standalone variants (refs inlined at publish).
+// corpus-measured (six real k8s standalone-strict schemas), then grown
+// for the raw k8s OpenAPI shape [D:schema-types]: IN — type (string or
+// array-of-strings, the nullable spelling), properties, required,
+// items, additionalProperties (bool or schema), enum, oneOf RESTRICTED
+// to scalar-type alternatives (every corpus occurrence is the
+// IntOrString idiom), anyOf (all-scalar folds like oneOf; otherwise the
+// alternatives are kept as SChoice — first-variant for the generator,
+// unvalidated for the district), `nullable: true` (the OpenAPI 3.0
+// spelling), allOf of ONE schema plus annotations (the k8s
+// $ref-with-description idiom), and IN-DOCUMENT $ref
+// (#/definitions/<name>, #/$defs/<name>, #/components/schemas/<name>)
+// resolved against ROOT-level holders. Annotations accepted and
+// ignored: description, format, title, $schema, x-*. EVERYTHING else
+// rejects with a teaching error naming the keyword and its JSON path —
+// a cross-file $ref's teaching names the standalone variants (refs
+// inlined at publish).
 type Schema =
     | SAny
     | SScalar of kinds: Set<string> // "string" | "integer" | "number" | "boolean" | "null"
     | SEnum of values: string list
     | SObject of props: (string * Schema) list * required: string list * additional: AdditionalProps
     | SArray of items: Schema
+    // an in-document reference, resolved via SchemaDoc.Defs — the NAME
+    // is kept (the generator mints type names from it) [D:schema-types]
+    | SRef of name: string
+    // a general anyOf: alternatives in document order [D:schema-types]
+    | SChoice of Schema list
+    // `nullable: true` on a non-scalar (a scalar folds "null" into its
+    // kind set instead) [D:schema-types]
+    | SNullable of Schema
 
 and AdditionalProps =
     | Closed
     | OpenProps
     | Vals of Schema
+
+/// a parsed schema DOCUMENT: the root shape plus the root-level shared
+/// definitions in-document $ref resolves against [D:schema-types]
+type SchemaDoc =
+    { Root: Schema
+      Defs: Map<string, Schema> }
 
 let private annotationKeys =
     set
@@ -408,17 +430,38 @@ let private rejectedTeaching (path: string) (kw: string) : string =
     let where = if path = "" then "the schema root" else path
 
     match kw with
-    | "$ref"
     | "$defs"
-    | "definitions" ->
-        $"at {where}: '{kw}' is outside the schema subset — add the STANDALONE variant of this schema instead (refs inlined at publish; kubernetes-json-schema ships both)"
-    | "allOf"
-    | "anyOf"
+    | "definitions"
+    | "components" ->
+        $"at {where}: '{kw}' holds shared definitions at the schema ROOT only — in-document $ref resolves against the root holders"
     | "not"
     | "if"
     | "then"
     | "else" -> $"at {where}: '{kw}' (schema composition) is outside the subset — zero uses in the measured corpus"
     | _ -> $"at {where}: '{kw}' is outside the schema subset (it joins when a corpus needs it)"
+
+/// the in-document $ref forms the subset resolves [D:schema-types]:
+/// #/definitions/<name>, #/$defs/<name>, #/components/schemas/<name> —
+/// one segment, JSON-pointer unescaped (~1 → /, ~0 → ~)
+let private refTarget (r: string) : string option =
+    [ "#/definitions/"; "#/$defs/"; "#/components/schemas/" ]
+    |> List.tryPick (fun prefix ->
+        if r.StartsWith prefix then
+            let rest = r.Substring prefix.Length
+
+            if rest <> "" && not (rest.Contains "/") then
+                Some(rest.Replace("~1", "/").Replace("~0", "~"))
+            else
+                None
+        else
+            None)
+
+/// an allOf member that carries ONLY annotations (description, x-*, …)
+/// contributes no shape — the k8s idiom wraps one $ref with one of these
+let private annotationOnly (el: Text.Json.JsonElement) : bool =
+    el.ValueKind = Text.Json.JsonValueKind.Object
+    && el.EnumerateObject()
+       |> Seq.forall (fun p -> annotationKeys.Contains p.Name || p.Name.StartsWith "x-")
 
 let rec private parseNode (path: string) (el: Text.Json.JsonElement) : Result<Schema, string> =
     let where = if path = "" then "the schema root" else path
@@ -426,7 +469,8 @@ let rec private parseNode (path: string) (el: Text.Json.JsonElement) : Result<Sc
     if el.ValueKind <> Text.Json.JsonValueKind.Object then
         Error $"at {where}: a schema node must be an object"
     else
-        // reject unknown keywords FIRST, so the teaching names them
+        // reject unknown keywords FIRST, so the teaching names them; the
+        // definition HOLDERS are known at the ROOT only [D:schema-types]
         let mutable rejection = None
 
         for p in el.EnumerateObject() do
@@ -440,6 +484,11 @@ let rec private parseNode (path: string) (el: Text.Json.JsonElement) : Result<Sc
                 || k = "additionalProperties"
                 || k = "enum"
                 || k = "oneOf"
+                || k = "anyOf"
+                || k = "allOf"
+                || k = "$ref"
+                || k = "nullable"
+                || (path = "" && (k = "definitions" || k = "$defs" || k = "components"))
                 || annotationKeys.Contains k
                 || k.StartsWith "x-"
 
@@ -455,6 +504,17 @@ let rec private parseNode (path: string) (el: Text.Json.JsonElement) : Result<Sc
                 | true, v -> Some v
                 | _ -> None
 
+            // `nullable: true` (the OpenAPI 3.0 spelling) folds into a
+            // scalar's kind set; anything else wraps [D:schema-types]
+            let applyNullable (r: Result<Schema, string>) =
+                match getProp "nullable" with
+                | Some n when n.ValueKind = Text.Json.JsonValueKind.True ->
+                    r
+                    |> Result.map (function
+                        | SScalar kinds -> SScalar(Set.add "null" kinds)
+                        | s -> SNullable s)
+                | _ -> r
+
             let typeKinds =
                 match getProp "type" with
                 | None -> None
@@ -463,49 +523,129 @@ let rec private parseNode (path: string) (el: Text.Json.JsonElement) : Result<Sc
                     Some(t.EnumerateArray() |> Seq.map (fun e -> e.GetString()) |> Set.ofSeq)
                 | Some _ -> Some Set.empty
 
-            match getProp "enum" with
-            | Some e ->
-                let values =
-                    e.EnumerateArray()
-                    |> Seq.map (fun v ->
-                        match v.ValueKind with
-                        | Text.Json.JsonValueKind.String -> v.GetString()
-                        | _ -> v.GetRawText())
-                    |> List.ofSeq
+            // the scalar-alternatives fold shared by oneOf and anyOf —
+            // the IntOrString idiom in both its spellings
+            let scalarAlts (alts: Text.Json.JsonElement) =
+                let kinds =
+                    alts.EnumerateArray()
+                    |> Seq.collect (fun alt ->
+                        match alt.TryGetProperty "type" with
+                        | true, t when t.ValueKind = Text.Json.JsonValueKind.String -> [ t.GetString() ]
+                        | true, t when t.ValueKind = Text.Json.JsonValueKind.Array ->
+                            t.EnumerateArray() |> Seq.map (fun e -> e.GetString()) |> List.ofSeq
+                        | _ -> [ "?" ])
+                    |> Set.ofSeq
 
-                Ok(SEnum values)
+                if kinds.Contains "?" || kinds.Contains "object" || kinds.Contains "array" then
+                    None
+                else
+                    Some(SScalar kinds)
+
+            match getProp "$ref" with
+            | Some r when r.ValueKind = Text.Json.JsonValueKind.String ->
+                // a $ref node IS the reference — siblings are annotations
+                // (draft-4 semantics, the k8s shape) [D:schema-types]
+                let raw = r.GetString()
+
+                (match refTarget raw with
+                 | Some name -> Ok(SRef name)
+                 | None ->
+                     Error
+                         $"at {where}: '$ref' \"{raw}\" does not point into this document — in-document refs only (#/definitions/<name>, #/$defs/<name>, #/components/schemas/<name>); for cross-file refs add a bundled or standalone variant of the schema")
+                |> applyNullable
+            | Some _ -> Error $"at {where}: '$ref' must be a string"
             | None ->
 
-                match getProp "oneOf" with
-                | Some alts ->
-                    // the IntOrString idiom: every alternative must be scalar-typed
-                    let kinds =
-                        alts.EnumerateArray()
-                        |> Seq.collect (fun alt ->
-                            match alt.TryGetProperty "type" with
-                            | true, t when t.ValueKind = Text.Json.JsonValueKind.String -> [ t.GetString() ]
-                            | true, t when t.ValueKind = Text.Json.JsonValueKind.Array ->
-                                t.EnumerateArray() |> Seq.map (fun e -> e.GetString()) |> List.ofSeq
-                            | _ -> [ "?" ])
-                        |> Set.ofSeq
+                match getProp "allOf" with
+                | Some members ->
+                    // ONE schema plus annotations flattens (the k8s
+                    // $ref-with-description idiom); anything else stays
+                    // outside the subset [D:schema-types]
+                    let substantive =
+                        members.EnumerateArray()
+                        |> Seq.filter (fun m -> not (annotationOnly m))
+                        |> List.ofSeq
 
-                    if kinds.Contains "?" || kinds.Contains "object" || kinds.Contains "array" then
-                        Error
-                            $"at {where}: 'oneOf' is supported only over scalar type alternatives (the IntOrString idiom) — general composition is outside the subset"
-                    else
-                        Ok(SScalar kinds)
+                    (match substantive with
+                     | [ one ] -> parseNode (path + "allOf.") one
+                     | _ ->
+                         Error
+                             $"at {where}: 'allOf' is supported as ONE schema plus annotations (the k8s $ref-with-description idiom) — general composition is outside the subset")
+                    |> applyNullable
                 | None ->
 
-                    match typeKinds with
-                    | Some kinds when kinds.Contains "object" || (kinds.IsEmpty && getProp("properties").IsSome) ->
-                        objectNode path el getProp
-                    | None when (getProp "properties").IsSome -> objectNode path el getProp
-                    | Some kinds when kinds.Contains "array" ->
-                        match getProp "items" with
-                        | Some items -> parseNode (path + "items.") items |> Result.map SArray
-                        | None -> Ok(SArray SAny)
-                    | Some kinds when not kinds.IsEmpty -> Ok(SScalar kinds)
-                    | _ -> Ok SAny
+                    match getProp "enum" with
+                    | Some e ->
+                        let values =
+                            e.EnumerateArray()
+                            |> Seq.map (fun v ->
+                                match v.ValueKind with
+                                | Text.Json.JsonValueKind.String -> v.GetString()
+                                | _ -> v.GetRawText())
+                            |> List.ofSeq
+
+                        applyNullable (Ok(SEnum values))
+                    | None ->
+
+                        match getProp "oneOf" with
+                        | Some alts ->
+                            // the IntOrString idiom: every alternative must be scalar-typed
+                            (match scalarAlts alts with
+                             | Some s -> Ok s
+                             | None ->
+                                 Error
+                                     $"at {where}: 'oneOf' is supported only over scalar type alternatives (the IntOrString idiom) — general composition is outside the subset")
+                            |> applyNullable
+                        | None ->
+
+                            match getProp "anyOf" with
+                            | Some alts ->
+                                // all-scalar folds like oneOf; otherwise the
+                                // alternatives are KEPT — first-variant for the
+                                // generator, unvalidated for the district
+                                // [D:schema-types]
+                                (match scalarAlts alts with
+                                 | Some s -> Ok s
+                                 | None ->
+                                     alts.EnumerateArray()
+                                     |> Seq.indexed
+                                     |> Seq.fold
+                                         (fun acc (i, alt) ->
+                                             match acc with
+                                             | Error e -> Error e
+                                             | Ok list ->
+                                                 parseNode (path + $"anyOf[{i}].") alt
+                                                 |> Result.map (fun s -> s :: list))
+                                         (Ok [])
+                                     |> Result.map (List.rev >> SChoice))
+                                |> applyNullable
+                            | None ->
+
+                                // `type: ["object","null"]` / `["array","null"]`
+                                // wrap like `nullable: true` does — the null
+                                // spelling follows the value [D:schema-types]
+                                let nullListed =
+                                    match typeKinds with
+                                    | Some ks -> ks.Contains "null"
+                                    | None -> false
+
+                                let wrapNullListed (r: Result<Schema, string>) =
+                                    if nullListed then Result.map SNullable r else r
+
+                                (match typeKinds with
+                                 | Some kinds when
+                                     kinds.Contains "object" || (kinds.IsEmpty && getProp("properties").IsSome)
+                                     ->
+                                     objectNode path el getProp |> wrapNullListed
+                                 | None when (getProp "properties").IsSome -> objectNode path el getProp
+                                 | Some kinds when kinds.Contains "array" ->
+                                     (match getProp "items" with
+                                      | Some items -> parseNode (path + "items.") items |> Result.map SArray
+                                      | None -> Ok(SArray SAny))
+                                     |> wrapNullListed
+                                 | Some kinds when not kinds.IsEmpty -> Ok(SScalar kinds)
+                                 | _ -> Ok SAny)
+                                |> applyNullable
 
 and private objectNode (path: string) (el: Text.Json.JsonElement) (getProp: string -> Text.Json.JsonElement option) =
     let required =
@@ -543,15 +683,92 @@ and private objectNode (path: string) (el: Text.Json.JsonElement) (getProp: stri
 
         props |> Result.map (fun props -> SObject(props, required, additional))
 
-/// parse a vendored schema file's text into the subset tree; errors
-/// carry the schema NAME and the JSON path of the offending keyword.
-let parseSchema (name: string) (text: string) : Result<Schema, string> =
+// every SRef a tree reaches — the parse-time resolution check's walk
+let rec private refsOf (s: Schema) : string list =
+    match s with
+    | SRef n -> [ n ]
+    | SObject(props, _, additional) ->
+        (props |> List.collect (snd >> refsOf))
+        @ (match additional with
+           | Vals v -> refsOf v
+           | _ -> [])
+    | SArray items -> refsOf items
+    | SNullable inner -> refsOf inner
+    | SChoice alts -> alts |> List.collect refsOf
+    | SAny
+    | SScalar _
+    | SEnum _ -> []
+
+/// parse a vendored schema file's text into the subset tree — the root
+/// shape plus the ROOT-level definition holders (definitions / $defs /
+/// components.schemas) in-document $ref resolves against; every $ref is
+/// checked to resolve HERE, so consumers never meet a dangling name.
+/// Errors carry the schema NAME and the JSON path of the offender.
+let parseSchema (name: string) (text: string) : Result<SchemaDoc, string> =
     try
         use doc = Text.Json.JsonDocument.Parse text
+        let root = doc.RootElement
 
-        parseNode "" doc.RootElement |> Result.mapError (fun e -> $"schema {name}: {e}")
+        let holders =
+            if root.ValueKind <> Text.Json.JsonValueKind.Object then
+                []
+            else
+                [ (match root.TryGetProperty "definitions" with
+                   | true, h -> Some h
+                   | _ -> None)
+                  (match root.TryGetProperty "$defs" with
+                   | true, h -> Some h
+                   | _ -> None)
+                  (match root.TryGetProperty "components" with
+                   | true, c ->
+                       match c.TryGetProperty "schemas" with
+                       | true, h -> Some h
+                       | _ -> None
+                   | _ -> None) ]
+                |> List.choose id
+                |> List.filter (fun h -> h.ValueKind = Text.Json.JsonValueKind.Object)
+
+        let defs =
+            holders
+            |> List.collect (fun h -> h.EnumerateObject() |> List.ofSeq)
+            |> List.fold
+                (fun acc p ->
+                    match acc with
+                    | Error e -> Error e
+                    | Ok m ->
+                        parseNode $"definitions.{p.Name}." p.Value
+                        |> Result.map (fun s -> Map.add p.Name s m))
+                (Ok Map.empty)
+
+        (match defs with
+         | Error e -> Error e
+         | Ok defs ->
+             match parseNode "" root with
+             | Error e -> Error e
+             | Ok rootSchema ->
+                 let dangling =
+                     (refsOf rootSchema @ (defs |> Map.toList |> List.collect (snd >> refsOf)))
+                     |> List.tryFind (fun n -> not (Map.containsKey n defs))
+
+                 match dangling with
+                 | Some n ->
+                     Error $"'$ref' to '{n}' does not resolve — no such definition in the document's root holders"
+                 | None -> Ok { Root = rootSchema; Defs = defs })
+        |> Result.mapError (fun e -> $"schema {name}: {e}")
     with ex ->
         Error $"schema {name}: not valid JSON — {ex.Message}"
+
+/// follow a chain of PURE refs to a shape (a ref-to-a-ref); a ref CYCLE
+/// with no shape in between lands on SAny — validation relaxes, the
+/// generator notes [D:schema-types]
+let rec deref (defs: Map<string, Schema>) (seen: Set<string>) (s: Schema) : Schema =
+    match s with
+    | SRef n when Set.contains n seen -> SAny
+    | SRef n ->
+        match Map.tryFind n defs with
+        | Some t -> deref defs (Set.add n seen) t
+        | None -> SAny
+    | s -> s
 
 /// `additionalProperties: false` present ANYWHERE in the document — a
 /// schema without one cannot fire unknown-field checks [D:yaml-schemas];
@@ -974,14 +1191,31 @@ let private enumText (values: string list) =
         let shown = vs |> List.truncate 6 |> String.concat ", "
         $"one of {shown} (+{List.length vs - 6} more)"
 
-let rec validateTpl (name: string) (path: string) (schema: Schema) (tpl: Check.TypedYamlTpl) : (Span * string) list =
+let rec validateTpl
+    (name: string)
+    (defs: Map<string, Schema>)
+    (path: string)
+    (schema: Schema)
+    (tpl: Check.TypedYamlTpl)
+    : (Span * string) list =
     let child k = if path = "" then k else path + "." + k
 
     match schema, tpl with
     | SAny, _ -> []
     // unreachable: patch x schema= refuses at check [D:yaml-nodes]
     | _, Check.TYtDrop _ -> []
-    | _, Check.TYtSplice te -> spliceCheck name path schema te
+    | _, Check.TYtSplice te -> spliceCheck name defs path schema te
+    // an in-document ref validates against its target; a pure ref cycle
+    // derefs to SAny (the template drives every other recursion, so it
+    // always terminates) [D:schema-types]
+    | SRef _, tpl -> validateTpl name defs path (deref defs Set.empty schema) tpl
+    // a general anyOf is UNVALIDATED — a value legal under any variant
+    // must not error, and the checker picks no variant (stated
+    // relaxation, never a false positive) [D:schema-types]
+    | SChoice _, _ -> []
+    // nullable: a null scalar passes; anything else validates the inner
+    | SNullable _, Check.TYtScalar(raw, quoted, _) when literalKind raw quoted = "null" -> []
+    | SNullable inner, tpl -> validateTpl name defs path inner tpl
     | SObject(props, required, additional), Check.TYtMap(entries, mspan) ->
         let hasDynamic =
             entries
@@ -1001,17 +1235,17 @@ let rec validateTpl (name: string) (path: string) (schema: Schema) (tpl: Check.T
             |> List.collect (function
                 | Check.TYtPair(Check.TYtKeyLit(k, kspan), v) ->
                     match props |> List.tryFind (fun (p, _) -> p = k) with
-                    | Some(_, sub) -> validateTpl name (child k) sub v
+                    | Some(_, sub) -> validateTpl name defs (child k) sub v
                     | None ->
                         match additional with
-                        | Vals s -> validateTpl name (child k) s v
+                        | Vals s -> validateTpl name defs (child k) s v
                         | OpenProps -> []
                         | Closed -> [ kspan, $"schema {name}: unknown field '{k}'{atPath path}{didYouMean k props}" ]
                 | Check.TYtPair(Check.TYtKeySplice _, v) ->
                     // a dynamic key: unknowable at check; its VALUE still
                     // checks when the schema constrains all values
                     match additional with
-                    | Vals s -> validateTpl name path s v
+                    | Vals s -> validateTpl name defs path s v
                     | _ -> []
                 | Check.TYtForEntries(_, _, body) -> entryErrors body)
 
@@ -1031,9 +1265,9 @@ let rec validateTpl (name: string) (path: string) (schema: Schema) (tpl: Check.T
         let rec itemErrors (es: Check.TypedYamlTplItem list) =
             es
             |> List.collect (function
-                | Check.TYtItem t -> validateTpl name path items t
+                | Check.TYtItem t -> validateTpl name defs path items t
                 // unreachable: patch x schema= refuses at check [D:yaml-nodes]
-                | Check.TYtDropItem(t, _) -> validateTpl name path items t
+                | Check.TYtDropItem(t, _) -> validateTpl name defs path items t
                 | Check.TYtForItems(_, _, body) -> itemErrors body)
 
         itemErrors elems
@@ -1068,13 +1302,25 @@ let rec validateTpl (name: string) (path: string) (schema: Schema) (tpl: Check.T
     | SEnum _, Check.TYtSeq(_, span) ->
         [ span, $"schema {name}: {fieldName path} expects a scalar (enum), got a collection" ]
 
-and private spliceCheck (name: string) (path: string) (schema: Schema) (te: Check.TypedExpr) : (Span * string) list =
+and private spliceCheck
+    (name: string)
+    (defs: Map<string, Schema>)
+    (path: string)
+    (schema: Schema)
+    (te: Check.TypedExpr)
+    : (Span * string) list =
     // value validation WHERE TYPES PERMIT: the splice's weir type is
     // all the checker can see. Yaml-typed and unresolved splices skip;
     // enum constraints on splices skip (stated).
     match schema with
     | SAny
     | SEnum _ -> []
+    // the ref resolves; a general anyOf skips; nullable checks the
+    // inner (a splice's Option-ness already unwraps in tyKind)
+    // [D:schema-types]
+    | SRef _ -> spliceCheck name defs path (deref defs Set.empty schema) te
+    | SChoice _ -> []
+    | SNullable inner -> spliceCheck name defs path inner te
     | SScalar kinds ->
         match te.Ty with
         | TSeq _ ->

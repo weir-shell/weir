@@ -2280,7 +2280,7 @@ let boundaryTests =
 
               let propsReq =
                   match ok with
-                  | Ok(Weir.Contracts.SObject(props, req, Weir.Contracts.Closed)) -> List.map fst props, req
+                  | Ok { Root = Weir.Contracts.SObject(props, req, Weir.Contracts.Closed) } -> List.map fst props, req
                   | other -> failtest $"expected SObject, got {other}"
 
               Expect.equal (fst propsReq) [ "n"; "e"; "u" ] "props in order"
@@ -2291,12 +2291,24 @@ let boundaryTests =
                   | Error e -> e
                   | Ok s -> failtest $"expected rejection, got {s}"
 
+              // an in-document $ref is IN the subset now [D:schema-types];
+              // a dangling one still refuses, naming the resolution law
               Expect.stringContains
                   (errOf """{ "$ref": "#/definitions/x" }""")
-                  "add the STANDALONE variant"
-                  "$ref teaching names the way out"
+                  "does not resolve"
+                  "a dangling in-document $ref refuses at parse"
 
-              Expect.stringContains (errOf """{ "allOf": [] }""") "composition" "allOf rejected"
+              Expect.stringContains
+                  (errOf """{ "$ref": "_definitions.json#/definitions/x" }""")
+                  "standalone"
+                  "a cross-file $ref teaching names the way out"
+
+              Expect.stringContains (errOf """{ "allOf": [] }""") "composition" "empty allOf rejected"
+
+              Expect.stringContains
+                  (errOf """{ "allOf": [{ "type": "string" }, { "type": "object" }] }""")
+                  "composition"
+                  "allOf of two substantive schemas rejected"
 
               Expect.stringContains
                   (errOf """{ "type": "object", "properties": { "p": { "pattern": "^x" } } }""")
@@ -2307,6 +2319,98 @@ let boundaryTests =
                   (errOf """{ "oneOf": [{ "type": "object" }] }""")
                   "IntOrString"
                   "oneOf restricted to scalar alternatives"
+          }
+          test
+              "contracts: the subset's k8s-OpenAPI growth — $ref/defs, allOf-of-one, anyOf, nullable [D:schema-types]" {
+              let parsed src =
+                  match Weir.Contracts.parseSchema "t" src with
+                  | Ok d -> d
+                  | Error e -> failtest e
+
+              // in-document $ref resolves against the root holders; allOf
+              // of one-ref-plus-annotations flattens to the ref
+              let doc =
+                  parsed
+                      """{ "definitions": { "io.k8s.Meta": { "type": "object", "properties": { "name": { "type": "string" } } } },
+                           "type": "object",
+                           "properties": { "metadata": { "allOf": [{ "$ref": "#/definitions/io.k8s.Meta" }, { "description": "annotation-only" }] } } }"""
+
+              let metaProp =
+                  match doc.Root with
+                  | Weir.Contracts.SObject([ ("metadata", sub) ], [], _) -> sub
+                  | other -> failtest $"expected one metadata prop, got {other}"
+
+              Expect.equal metaProp (Weir.Contracts.SRef "io.k8s.Meta") "allOf-of-one-ref flattens to the ref"
+              Expect.isTrue (Map.containsKey "io.k8s.Meta" doc.Defs) "the root holder collects"
+
+              // $defs and components.schemas are the same holder, and a
+              // JSON-pointer escape unescapes in the ref name
+              let d2 =
+                  parsed """{ "$defs": { "a~b": { "type": "integer" } }, "$ref": "#/$defs/a~0b" }"""
+
+              Expect.equal d2.Root (Weir.Contracts.SRef "a~b") "the pointer unescapes"
+
+              let d3 =
+                  parsed
+                      """{ "components": { "schemas": { "P": { "type": "object" } } }, "$ref": "#/components/schemas/P" }"""
+
+              Expect.equal d3.Root (Weir.Contracts.SRef "P") "components.schemas is a holder"
+
+              // anyOf: all-scalar folds (the IntOrString idiom, k8s's
+              // OpenAPI spelling); mixed alternatives KEEP as SChoice
+              let folded =
+                  match (parsed """{ "anyOf": [{ "type": "integer" }, { "type": "string" }] }""").Root with
+                  | Weir.Contracts.SScalar kinds -> kinds
+                  | other -> failtest $"expected the scalar fold, got {other}"
+
+              Expect.equal folded (Set.ofList [ "integer"; "string" ]) "anyOf all-scalar folds"
+
+              let choice =
+                  match (parsed """{ "anyOf": [{ "type": "object" }, { "type": "string" }] }""").Root with
+                  | Weir.Contracts.SChoice [ Weir.Contracts.SObject _; Weir.Contracts.SScalar _ ] -> true
+                  | _ -> false
+
+              Expect.isTrue choice "mixed anyOf keeps SChoice in document order"
+
+              // the nullable spellings: type-array on a scalar folds into
+              // the kind set; `nullable: true` folds the same way; a
+              // nullable OBJECT (either spelling) wraps
+              let kindsOf src =
+                  match (parsed src).Root with
+                  | Weir.Contracts.SScalar kinds -> kinds
+                  | other -> failtest $"expected SScalar, got {other}"
+
+              Expect.isTrue ((kindsOf """{ "type": ["string", "null"] }""").Contains "null") "type-array null"
+
+              Expect.isTrue
+                  ((kindsOf """{ "type": "string", "nullable": true }""").Contains "null")
+                  "nullable: true folds into the kind set"
+
+              let wrapped src =
+                  match (parsed src).Root with
+                  | Weir.Contracts.SNullable(Weir.Contracts.SObject _) -> true
+                  | _ -> false
+
+              Expect.isTrue (wrapped """{ "type": "object", "nullable": true }""") "nullable object wraps"
+              Expect.isTrue (wrapped """{ "type": ["object", "null"] }""") "type-array null object wraps"
+
+              // a pure ref cycle derefs to SAny — validation relaxes,
+              // nothing loops
+              let cyc =
+                  parsed
+                      """{ "definitions": { "a": { "$ref": "#/definitions/b" }, "b": { "$ref": "#/definitions/a" } }, "$ref": "#/definitions/a" }"""
+
+              Expect.equal (Weir.Contracts.deref cyc.Defs Set.empty cyc.Root) Weir.Contracts.SAny "ref cycle lands on SAny"
+
+              // the holders are ROOT-only — a nested one names the law
+              let nested =
+                  match
+                      Weir.Contracts.parseSchema "t" """{ "type": "object", "properties": { "p": { "definitions": {} } } }"""
+                  with
+                  | Error e -> e
+                  | Ok _ -> failtest "expected rejection"
+
+              Expect.stringContains nested "ROOT" "nested holder teaching"
           }
           test
               "district mid-line #: the five cases — comment cut, quoted/hole/glued data, block bytes [D:district-hash]" {

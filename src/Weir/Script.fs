@@ -4023,9 +4023,9 @@ let resolveSchemaFile (path: string) (name: string) : Result<string * string, st
 
 let schemaDiagnostics (path: string) (pairs: (LogicalLine * CheckedStatement) list) : Diagnostic list =
     let cache =
-        System.Collections.Generic.Dictionary<string, Result<Contracts.Schema, string>>()
+        System.Collections.Generic.Dictionary<string, Result<Contracts.SchemaDoc, string>>()
 
-    let loadSchema (name: string) : Result<Contracts.Schema, string> =
+    let loadSchema (name: string) : Result<Contracts.SchemaDoc, string> =
         match cache.TryGetValue name with
         | true, r -> r
         | _ ->
@@ -4074,7 +4074,9 @@ let schemaDiagnostics (path: string) (pairs: (LogicalLine * CheckedStatement) li
 
             match loadSchema name with
             | Error e -> [ mk dspan e ]
-            | Ok schema -> Contracts.validateTpl name "" schema tpl |> List.map (fun (sp, m) -> mk sp m)))
+            | Ok doc ->
+                Contracts.validateTpl name doc.Defs "" doc.Root tpl
+                |> List.map (fun (sp, m) -> mk sp m)))
 
 // ---- external contracts: command signatures [D:command-signatures] --------
 // a loaded signature's checkable surface. Subs: kebab-cased subcommand
