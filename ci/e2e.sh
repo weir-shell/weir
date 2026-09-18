@@ -977,6 +977,46 @@ echo "$ekout" | grep -qF "empty-string key" || fail "the empty-key drop must pri
 echo "$ekout" | grep -qF "a=2" || fail "the draft must read around the dropped empty key: $ekout"
 echo "e2e ok: a keyword key rides [<Wire>] and reads; an empty-string key drops loudly and reads around"
 
+# --- #infer taken-name guard (2026-09-18) [D:repl-infer] ---------------
+# a k8s secret VOLUME's `secret:` sub-object desires the name `Secret` —
+# a TAKEN name (the builtin): the old draft injected `type Secret` that
+# every `secret: Secret` field bypassed for the PRIMITIVE, so `from yaml`
+# refused ("a Secret must not cross"). The derived name now parent-
+# prefixes (VolumeSecret), loudly, and the draft reads the fixture clean.
+ivdir=$(mktemp -d)
+cat > "$ivdir/pod-volumes.yaml" <<'YEOF'
+volumes:
+- name: creds
+  secret:
+    secretName: app-creds
+    defaultMode: 420
+YEOF
+ivout=$(printf '%s\n%s\n%s\n%s\n%s\n%s\n' \
+  "let raw = File.read \"$ivdir/pod-volumes.yaml\" |> Seq.force" \
+  '#infer raw from yaml as PodSpec' \
+  'let vol = raw |> from yaml PodSpec |> _.volumes |> Seq.head' \
+  'print vol.secret.secretName' \
+  'print (show vol.secret.defaultMode)' \
+  '#quit' | $BIN 2>&1)
+echo "$ivout" | grep -qF "defined: VolumeSecret, Volume, PodSpec (3 types)" \
+  || fail "the secret volume must draft VolumeSecret (parent-prefixed off the taken name): $ivout"
+echo "$ivout" | grep -qF "note: 'secret' would shadow the existing type 'Secret' — drafted as 'VolumeSecret'" \
+  || fail "the taken-name rename must print its note: $ivout"
+echo "$ivout" | grep -qF "app-creds" || fail "the renamed draft must READ the secret volume: $ivout"
+echo "$ivout" | grep -qF "420" || fail "the renamed draft must read the volume's int field: $ivout"
+echo "e2e ok: a k8s secret volume infers around the builtin Secret (VolumeSecret, noted) and reads clean"
+
+# the 'as'-NAME colliding with a builtin refuses with the teaching — the
+# user chose the name, so renaming it silently would be worse
+asout=$(printf '%s\n%s\n%s\n' \
+  'let js = ["{\"x\": 1}"]' \
+  '#infer js from json as Secret' \
+  '#quit' | $BIN 2>&1)
+echo "$asout" | grep -qF "#infer: 'Secret' is a built-in type" || fail "a builtin 'as'-name must refuse: $asout"
+echo "$asout" | grep -qF "pick another 'as' name" || fail "the refusal must carry the teaching: $asout"
+echo "$asout" | grep -qF "defined:" && fail "a refused 'as'-name must define nothing: $asout" || true
+echo "e2e ok: '#infer … as Secret' refuses loudly (the builtin wins every use; pick another name)"
+
 # --- piped REPL multi-line assembly (2026-09-16) [D:repl-multiline] ----
 # a REDIRECTED REPL (printf … | weir) reads physical lines but must
 # ASSEMBLE a statement that spans several — heredoc, a multi-line `type`,
