@@ -166,6 +166,15 @@ guessing: an empty array (`seq<string>` default), a null field
 The same inference is a builtin — `sample |> Json.inferShape |> print`
 (and `Yaml.inferShape`) returns the declaration text outside the REPL.
 
+A derived type name never lands on a name the session already
+resolves — a builtin (`Secret`, `Yaml`, `Duration`, …) or a type you
+declared. A k8s volume's `secret:` sub-object would draft
+`type Secret`, and every `secret: Secret` field would then bypass it
+for the builtin (the redaction type — `from yaml` refuses to cross
+it); the draft parent-prefixes instead (`VolumeSecret`) and prints a
+note naming the rename. The `as` name is YOURS, so it is never
+renamed: `#infer … as Secret` refuses and asks you to pick another.
+
 A key weir cannot spell as a field name never breaks the draft: a
 non-identifier or KEYWORD key rides `[<Wire "the-key">]` over a
 derived identifier (`k8s-app`→`k8sApp`, `in`→`inField` — the parser

@@ -18,6 +18,21 @@
 
 ## v0.0.42
 
+### Fixed
+
+- **`#infer` derived names dodge taken type names.** A drafted type
+  landing on a name the session already resolves was
+  injected-and-shadowed: a k8s volume's `secret:` sub-object drafted
+  `type Secret`, every `secret: Secret` field resolved to the builtin
+  redaction type instead, and `from json`/`from yaml` refused with
+  "a Secret must not cross" (a prelude name like `Yaml` died earlier,
+  at injection). A derived name colliding with any in-scope type —
+  primitive spelling, prelude/builtin nominal, or session-declared —
+  now parent-prefixes (`VolumeSecret`) with a printed note naming the
+  rename; same-shape dedup between inferred types is unchanged. The
+  `as` name stays the user's: one that collides with a builtin
+  refuses with a teaching instead of being renamed silently.
+
 ### Changed
 
 - **Help renders its code spans at a tty.** `#help`/`#find` docs'
