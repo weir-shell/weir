@@ -1529,6 +1529,13 @@
           "pointer": null
         },
         {
+          "name": "fields",
+          "signature": "Str.fields (s: string) : seq\u003Cstring\u003E",
+          "summary": "Split on whitespace runs into fields \u2014 never an empty piece (a blank or empty string is the empty seq; trim\u0027s whitespace class).",
+          "example": "\u0022NAME   READY  1/1\u0022 |\u003E Str.fields |\u003E Seq.force",
+          "pointer": null
+        },
+        {
           "name": "fromBase64",
           "signature": "Str.fromBase64 (s: string) : string",
           "summary": "Decode standard base64 (padded or unpadded) to text; raises on invalid input or when the bytes are not valid UTF-8 (never U\u002BFFFD corruption).",
@@ -1585,6 +1592,13 @@
           "pointer": null
         },
         {
+          "name": "rsplit",
+          "signature": "Str.rsplit (pattern: string) (s: string) : seq\u003Cstring\u003E",
+          "summary": "Split on every regex match; split\u0027s empties law (adjacent matches and edges yield \u0022\u0022), and capture groups never add pieces.",
+          "example": "Str.rsplit @\u0022\\s*,\\s*\u0022 \u0022a , b,c\u0022 |\u003E Seq.force",
+          "pointer": null
+        },
+        {
           "name": "sha256",
           "signature": "Str.sha256 (s: string) : string",
           "summary": "The SHA-256 digest of the string\u0027s UTF-8 bytes, lowercase hex (sha256sum parity). sha256 only for now.",
@@ -1594,7 +1608,7 @@
         {
           "name": "split",
           "signature": "Str.split (sep: string) (s: string) : seq\u003Cstring\u003E",
-          "summary": "Split on a separator into a sequence.",
+          "summary": "Split on a separator into a sequence; empty pieces kept (adjacent separators and edges yield \u0022\u0022 \u2014 rsplit follows the same law).",
           "example": "Str.split \u0022,\u0022 \u0022a,b,c\u0022 |\u003E Seq.force",
           "pointer": null
         },
