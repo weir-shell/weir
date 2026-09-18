@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.0.43
+
+### Fixed
+
+- **A streamed REPL statement no longer looks like it bound `it`.** A
+  bare command at a tty streams straight to the terminal (the
+  colour-inherit path — weir never holds the bytes), so `it` does not
+  bind — but the meta line read a bare `: seq<string>`, as if a value
+  landed, and the next `it` errored with the generic unbound message.
+  The meta now says `: seq<string> (streamed — not bound to 'it';
+  let x = … captures)`, and an `it` right after a streamed statement
+  gets a targeted teach naming the repair with the command verbatim:
+  `to capture (and bind 'it'): let x = kubectl get po -A -o yaml`. A
+  fresh session's `it` keeps the ordinary error; the piped REPL's
+  byte surface is unchanged (a piped bare command still binds `it`).
+
 ## v0.0.42
 
 ### Changed

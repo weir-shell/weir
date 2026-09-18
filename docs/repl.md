@@ -126,6 +126,12 @@ spelling is `it` deliberately: `_` is taken (the `_.field` shorthand
 and the `let _ =` discard), so it cannot be the last result — `it`
 (ghci's convention) collides with nothing.
 
+One statement produces output but no value: a bare command at a tty
+streams straight to the terminal (the colour-inherit path — weir
+never holds the bytes), so `it` does not bind there. The meta line
+says so, and `let pods = kubectl get po` is the capturing spelling —
+a `let` binds `it` too.
+
 ## `#infer`: draft types from a sample
 
 Exploring an unknown JSON/YAML blob means hand-transcribing its

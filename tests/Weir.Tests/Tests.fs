@@ -5595,6 +5595,33 @@ let replEchoTests =
               let meta = Weir.Repl.letEchoMeta "xs" (TSeq TStr) hint
               Expect.equal meta "xs : seq<string>" "no teaching, no trailing parenthetical"
           }
+          test "the inherited-statement meta says the bytes streamed and 'it' did not bind [D:repl-it]" {
+              let meta = Weir.Repl.streamedEchoMeta (TSeq TStr)
+
+              Expect.equal
+                  meta
+                  ": seq<string> (streamed — not bound to 'it'; let x = … captures)"
+                  "the meta states the truth: streamed, not bound, and the capturing spelling"
+          }
+          test "the unbound-it teach after a streamed statement carries the command verbatim [D:repl-it]" {
+              let lines = Weir.Repl.streamedItTeach (Some "kubectl get po -A -o yaml")
+
+              Expect.equal
+                  lines
+                  [ "unbound variable 'it' — the last command streamed to the terminal; weir never held its output"
+                    "to capture (and bind 'it'): let x = kubectl get po -A -o yaml" ]
+                  "two lines: the honest error, then the copyable let"
+
+              // a sentinel-joined (assembled) or empty source cannot ride a
+              // one-line suggestion — the generic spelling instead
+              for src in [ Some "cmd\u0001more"; Some "   "; None ] do
+                  let generic = Weir.Repl.streamedItTeach src
+
+                  Expect.stringContains
+                      (List.item 1 generic)
+                      "let x = <the command>"
+                      "unclean source falls back to the generic spelling"
+          }
           test "a failing #infer drafted type surfaces line:col + an offending-line snippet [D:infer-diagnostic]" {
               // a deliberately un-checkable drafted type: a leading-digit
               // field name weir rejects — number the drafted lines and

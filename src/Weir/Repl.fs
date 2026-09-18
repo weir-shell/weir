@@ -16,6 +16,14 @@ let private prompt = "weir> "
 // everywhere counts prompt.Length — the tint is zero-width.
 let mutable private lastErrored = false
 
+// the streamed-statement latch [D:repl-it]: Some <source text> while the
+// LAST evaluated statement took the inherit path [D:colour-inherit] — the
+// child wrote the terminal itself, weir never held the bytes, so `it` did
+// NOT bind. Any other evaluated statement clears it; a check error or a
+// directive leaves it (the very next line may be the `it` that needs the
+// teach). Read by the unbound-`it` arm and the streamed meta line.
+let mutable private lastStreamed: string option = None
+
 // the session TRANSCRIPT [D:repl-save]: the ACCEPTED statements, in
 // order, that `#save` DISTILLS into a runnable .weir file (option B — a
 // session is scratch; #save crystallizes its definitions and guarantees
@@ -496,6 +504,28 @@ let private echoMeta (s: string) =
 // data (the tail is printed AFTER the lines, so it stays visible)
 let letEchoMeta (name: string) (ty: Ty) (hint: string option) : string =
     $"{name} : {formatTy ty}{Eval.echoTail hint}"
+
+// the inherited-statement meta line [D:repl-it]: the statement STREAMED —
+// the child wrote the terminal, weir never held the bytes — so unlike
+// every other value echo, `it` did not bind; the meta says so instead of
+// looking like a value landed
+let streamedEchoMeta (ty: Ty) : string =
+    $": {formatTy ty} (streamed — not bound to 'it'; let x = … captures)"
+
+// the unbound-`it` teach after a streamed statement [D:repl-it]: the
+// generic unbound error reads as a regression there; the repair is
+// re-typing the command as a `let` (the value path captures, and a let
+// binds `it` too). The command text rides verbatim when it is one clean
+// physical line; sentinel-joined (assembled) source falls back to the
+// generic spelling.
+let streamedItTeach (source: string option) : string list =
+    let cmd =
+        match source with
+        | Some s when s.Trim() <> "" && not (s |> Seq.exists Char.IsControl) -> s.Trim()
+        | _ -> "<the command>"
+
+    [ "unbound variable 'it' — the last command streamed to the terminal; weir never held its output"
+      $"to capture (and bind 'it'): let x = {cmd}" ]
 
 // the live terminal width for the table clamp — piped echoes never
 // tabulate, so None only guards the resize/console-less edge
@@ -1371,8 +1401,9 @@ let private bindIt (ty: Ty) (v: Eval.Value) (env: State) : State =
 
 // the Ok-side rendering, shared by the single-line and multiline
 // submission paths [D:repl-multiline]
-let private evalCheckedBody (state: State) (chk: Script.CheckedStatement) : State =
+let private evalCheckedBody (source: string) (state: State) (chk: Script.CheckedStatement) : State =
     lastErrored <- false
+    lastStreamed <- None
 
     match chk.Kind with
     | Script.KType decl ->
@@ -1502,7 +1533,8 @@ let private evalCheckedBody (state: State) (chk: Script.CheckedStatement) : Stat
             (try
                 Console.Out.Flush()
                 Eval.inheritCommandStatement state.Values te
-                echoMeta $": {formatTy te.Ty}"
+                echoMeta (streamedEchoMeta te.Ty)
+                lastStreamed <- Some source
                 state
              with
              | Eval.ExitRequest _ -> reraise ()
@@ -1585,7 +1617,7 @@ let private evalCheckedBody (state: State) (chk: Script.CheckedStatement) : Stat
 // path's exact behaviour) — weir itself survives via the cancel
 // registration in setupLineEditor. The finally closes the eval->prompt
 // window; both no-op when there is no tty (piped REPL, Windows).
-let private evalChecked (state: State) (chk: Script.CheckedStatement) : State =
+let private evalChecked (source: string) (state: State) (chk: Script.CheckedStatement) : State =
     // the PROPERTY is the load-bearing half [D:repl-isig]: .NET re-applies
     // ITS OWN terminal notion when a child spawns (probed: a raw tcsetattr
     // sticks for ~10ms and the child still sees -isig), so the notion must
@@ -1596,7 +1628,7 @@ let private evalChecked (state: State) (chk: Script.CheckedStatement) : State =
         Term.restoreCooked ()
 
     try
-        evalCheckedBody state chk
+        evalCheckedBody source state chk
     finally
         if ttyEval then
             Console.TreatControlCAsInput <- true
@@ -2508,7 +2540,7 @@ let rec private loop (state: State) =
 
                             st
                         | Ok chk ->
-                            let st' = evalChecked st chk
+                            let st' = evalChecked ll.Text st chk
 
                             (if not lastErrored then
                                  // carry the REAL physical source (newlines +
@@ -2553,6 +2585,20 @@ let rec private loop (state: State) =
                 Console.WriteLine $"parse error: {d.Message}"
                 printHint state line
                 state
+            // the streamed-statement trap [D:repl-it]: the previous
+            // statement inherited the terminal [D:colour-inherit], so no
+            // value landed and `it` is unbound — the generic error (with
+            // its did-you-mean) reads as a regression; teach the `let`
+            // capture instead. The closing quote in the needle keeps
+            // 'iterations' and friends on the generic path.
+            | Error d when lastStreamed.IsSome && d.Message.StartsWith "unbound variable 'it'" ->
+                lastErrored <- true
+
+                d.Span
+                |> Option.iter (underline >> Types.Color.red Types.Color.onStdout.Value >> Console.WriteLine)
+
+                streamedItTeach lastStreamed |> List.iter Console.WriteLine
+                state
             | Error d ->
                 lastErrored <- true
 
@@ -2578,7 +2624,7 @@ let rec private loop (state: State) =
 
                 state
             | Ok chk ->
-                let next = evalChecked state chk
+                let next = evalChecked ll.Text state chk
 
                 (if not lastErrored then
                      // a single-line entry: physical source IS its own text

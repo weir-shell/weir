@@ -1301,6 +1301,9 @@ PYADP
     python3 "$(dirname "$0")/../tests/repl/cooked-trap.py" "$BIN" || fail "cooked trap / echo-once"
     echo "e2e ok: repl cooked-trap (one child run per echo, Enter survives a slow child)"
 
+    python3 "$(dirname "$0")/../tests/repl/repl-it-streamed.py" "$BIN" || fail "streamed-statement it teach"
+    echo "e2e ok: repl streamed statement — honest meta (not bound to it), targeted unbound-it teach, let/fresh/piped unchanged [D:repl-it]"
+
     python3 "$(dirname "$0")/../tests/repl/repl-directives.py" "$BIN" || fail "repl directives"
     echo "e2e ok: repl directives (#help x3, #quit, :q retired, comments no-op, #echo cap)"
 
