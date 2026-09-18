@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.0.42
+
+### Changed
+
+- **Help renders its code spans at a tty.** `#help`/`#find` docs'
+  `` `code` `` spans now print tinted (the colorizer's cyan) with the
+  backticks themselves dropped — the span reads as code, not markdown
+  source. One renderer covers every REPL help surface. Piped output
+  and `NO_COLOR`/`TERM=dumb` keep the literal backticks: the piped
+  byte surface (and `--repl-doc` equality) is unchanged, and a
+  stripped terminal never loses the span boundary.
+- **Help copy drops uppercase emphasis.** Doc strings shouted for
+  stress (`It DRAFTS what the sample has`, `NOT check-time
+  inference`, `READ-ONLY`, …); the corpus — builtin docs, module
+  blurbs, attribute docs, the directive list — is rewritten in normal
+  case, syntax depictions (`KEY=value`) moved into code spans, and a
+  unit pin now rejects any non-acronym all-caps word in user-rendered
+  prose (real acronyms live on a commented allowlist beside the pin).
+  The `init: NOT loaded` teaching line is now `init: not loaded`.
+
 ## v0.0.41
 
 ### Fixed

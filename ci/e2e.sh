@@ -5519,7 +5519,7 @@ if [ "$IS_WINDOWS" != "1" ]; then
     printf '#alias = kubectl\n' > "$acfg/weir/init.weir"
     out=$(printf '#quit\n' | PATH="$astub:$PATH" XDG_CONFIG_HOME="$acfg" $BIN 2>&1 || true)
     echo "$out" | grep -qF "malformed #alias" || fail "a malformed #alias must be a loud init error: $out"
-    echo "$out" | grep -qF "NOT loaded" || fail "a malformed init is all-or-nothing: $out"
+    echo "$out" | grep -qF "not loaded" || fail "a malformed init is all-or-nothing: $out"
 
     # (g) an alias-of-alias is rejected at define time (single-hop)
     printf '#alias k = kubectl\n#alias kk = k\n' > "$acfg/weir/init.weir"
@@ -7704,7 +7704,7 @@ iout=$(printf '#help hi
 #quit
 ' | XDG_CONFIG_HOME="$initcfg" XDG_STATE_HOME="$initcfg/state" "$BIN" 2>&1)
 echo "$iout" | grep -qF "unknown #session key 'echoCpa'. Did you mean 'echoCap'?" || fail "init typo key lost its did-you-mean"
-echo "$iout" | grep -qF "init: NOT loaded" || fail "broken init must say NOT loaded"
+echo "$iout" | grep -qF "init: not loaded" || fail "broken init must say not loaded"
 echo "$iout" | grep -qF "unknown name 'hi'" || fail "all-or-nothing broke: a binding survived a failed init"
 # a RAISING value fails the load LOCATED, never as a .NET trace: both
 # eval sites (a #session field's value and a plain let) run user code at
@@ -7722,7 +7722,7 @@ iout=$(printf '#help hi
 ' | XDG_CONFIG_HOME="$initcfg" XDG_STATE_HOME="$initcfg/state" "$BIN" 2>&1)
 echo "$iout" | grep -qF "File.read: no such file:" || fail "a raising #session value must report its own error: $iout"
 echo "$iout" | grep -qE "init\.weir:2:" || fail "the raising #session value must be LOCATED at its line: $iout"
-echo "$iout" | grep -qF "init: NOT loaded" || fail "a raising #session value must not load"
+echo "$iout" | grep -qF "init: not loaded" || fail "a raising #session value must not load"
 echo "$iout" | grep -qF "unknown name 'hi'" || fail "all-or-nothing broke after a raising #session value"
 echo "$iout" | grep -qF "Unhandled exception" && fail "a raising #session value dumped a .NET trace: $iout" || true
 
@@ -7735,7 +7735,7 @@ iout=$(printf '#help hi
 ' | XDG_CONFIG_HOME="$initcfg" XDG_STATE_HOME="$initcfg/state" "$BIN" 2>&1)
 echo "$iout" | grep -qF "File.read: no such file:" || fail "a raising init let must report its own error: $iout"
 echo "$iout" | grep -qE "init\.weir:1:" || fail "the raising let must be LOCATED at its line: $iout"
-echo "$iout" | grep -qF "init: NOT loaded" || fail "a raising init let must not load"
+echo "$iout" | grep -qF "init: not loaded" || fail "a raising init let must not load"
 echo "$iout" | grep -qF "unknown name 'hi'" || fail "all-or-nothing broke after a raising init let"
 echo "$iout" | grep -qF "Unhandled exception" && fail "a raising init let dumped a .NET trace: $iout" || true
 

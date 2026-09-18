@@ -1693,7 +1693,7 @@ let private helpDirective (te: TypeEnv) (arg: string) : string =
         + "  #help <name>          // documentation for a module or member\n"
         + "  #find [query]         // fuzzy-search modules and members (fzf + live preview)\n"
         + "  #echo [<n> | all]     // the unforced-echo cap (default 100); bare reports;\n"
-        + "                        //   all = no cap — an INFINITE seq will hang (Ctrl+C)\n"
+        + "                        //   all = no cap — an infinite seq will hang (Ctrl+C)\n"
         + "  #infer [<src>] from <json|jsonl|yaml> as <Name>\n"
         + "                        //   draft named types from a sample (src defaults to 'it')\n"
         + "  #save <path>          // dump the session's accepted lines to a runnable .weir\n"
@@ -1761,6 +1761,26 @@ let private helpDirective (te: TypeEnv) (arg: string) : string =
 /// is the caller; the e2e pin holds the byte equality.
 let replDocText (name: string) : string =
     helpDirective initial.TypeEnv name
+
+// ---- the tty help render [D:help-tint] -------------------------------
+// A doc's `code` spans tint cyan at a colored tty, the backticks
+// themselves dropped — the span reads as code, not markdown source.
+// ONE function, called by every REPL help print (the #help dispatch,
+// #find's selection and fallback); replDocText and piped output keep
+// the literal backticks (the pinned byte surface — and the stripped
+// tty, NO_COLOR / TERM=dumb, falls back to that spelling so the span
+// boundary is never lost).
+let private codeSpanRe = Text.RegularExpressions.Regex @"`([^`\n]+)`"
+
+/// the transform with the colour gate explicit — the unit pins' seam
+let renderHelpText (color: bool) (s: string) : string =
+    if color then
+        codeSpanRe.Replace(s, (fun m -> Types.Color.cyan true m.Groups[1].Value))
+    else
+        s
+
+let private renderHelp (s: string) : string =
+    renderHelpText Types.Color.onStdout.Value s
 
 // ---- #find [D:help-find]: fuzzy help search over ONE candidate set —
 // every module (`Seq — blurb`) and every member (`Seq.map — glance`),
@@ -1861,10 +1881,10 @@ let private findDirective (te: TypeEnv) (query: string) =
 
     if interactive then
         match findFzf te query with
-        | Some name -> Console.WriteLine(helpDirective te name)
+        | Some name -> Console.WriteLine(renderHelp (helpDirective te name))
         | None -> () // cancel: no output, the session continues
     else
-        Console.WriteLine(findFallback te query)
+        Console.WriteLine(renderHelp (findFallback te query))
 
 /// test seams [D:help-find] (the parseAliasLineForTest precedent): the
 /// deterministic pieces, against the builtin session env
@@ -2346,7 +2366,7 @@ let rec private loop (state: State) =
         if t = "#quit" then
             ()
         elif t = "#help" || t.StartsWith "#help " then
-            Console.WriteLine(helpDirective state.TypeEnv (t.Substring 5))
+            Console.WriteLine(renderHelp (helpDirective state.TypeEnv (t.Substring 5)))
             loop state
         elif t = "#find" || t.StartsWith "#find " then
             findDirective state.TypeEnv ((t.Substring 5).Trim())
@@ -2764,7 +2784,7 @@ let private loadInit (baseState: State) : State =
             if n >= 1 && n <= lines.Length then lines.[n - 1] else ""
 
         let notLoaded () =
-            Console.Error.WriteLine $"init: NOT loaded ({path}) — the session starts without it"
+            Console.Error.WriteLine $"init: not loaded ({path}) — the session starts without it"
             baseState
 
         match splitSessionBlock path lines with

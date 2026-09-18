@@ -71,6 +71,14 @@ if "Seq.collect (f:" not in t:
 if "flatten" not in t:
     failures.append(f"#help member must render the hover doc text: {t[-200:]!r}")
 
+# piped #help is the pinned byte surface [D:help-tint]: literal
+# backticks, zero ANSI — the tty tint must not move these bytes
+t = piped("#help Yaml.merge\n#quit\n")
+if "`yaml patch`" not in t:
+    failures.append(f"piped #help must keep the literal backticks: {t[-300:]!r}")
+if "\x1b[" in t:
+    failures.append("piped #help must carry zero ANSI")
+
 # a name the CHECKER would refuse must not get a confident hover: #help and
 # the checker read one ownership function [D:ambiguous-ctor]
 t = piped("type B = C\ntype Z = C\n#help C\n#quit\n")

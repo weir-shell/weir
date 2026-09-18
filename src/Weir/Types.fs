@@ -429,6 +429,9 @@ module Color =
     // faint — the table's rule/ellipsis and the echo footers
     // [D:table-polish]: metadata recedes, cells stay untinted data
     let dim on s = wrap on "2" s
+    // help text's `code` spans [D:help-tint]: the colorizer's number/
+    // sigil tint reused, so "reads as code" is one colour everywhere
+    let cyan on s = wrap on "36" s
 
 // the waiting indicator [D:waiting-indicator]: whoever owns the terminal
 // and is working draws the progress — so it wraps ONLY weir's own
