@@ -5731,11 +5731,20 @@ items:
     conditions:
     - type: Ready
       status: "True"
+      message: 'Pod was rejected: The node had condition: [DiskPressure]. '
+    - type: PodScheduled
+      status: "False"
+      message: "0/3 nodes are available: 3 Insufficient memory.
+        preemption: not eligible."
     containerStatuses:
     - name: nginx
       ready: true
       restartCount: 0
       lastState: {}
+    message: 'The node was low on resource: ephemeral-storage. Threshold quantity:
+      25462616238, available: 24515828Ki. Container was using 54204Ki,
+      request is 0. '
+    reason: Evicted
 kind: List
 YEOF
 cat > "$ydir/infer.weir" <<'WEOF'
@@ -5747,10 +5756,10 @@ type Mount = { name: string; mountPath: string }
 type Container = { name: string; image: string; args: seq<string>; env: seq<Env>; ports: seq<Port>; resources: Yaml; volumeMounts: seq<Mount>; securityContext: Yaml }
 type Tol = { key: string; operator: string; effect: string; tolerationSeconds: int }
 type Volume = { name: string; emptyDir: Yaml }
-type Cond = { [<Wire "type">] kind: string; status: string }
+type Cond = { [<Wire "type">] kind: string; status: string; message: string }
 type CStat = { name: string; ready: bool; restartCount: int; lastState: Yaml }
 type Spec = { containers: seq<Container>; tolerations: seq<Tol>; volumes: seq<Volume> }
-type Status = { phase: string; conditions: seq<Cond>; containerStatuses: seq<CStat> }
+type Status = { phase: string; conditions: seq<Cond>; containerStatuses: seq<CStat>; message: string; reason: string }
 type Item = { apiVersion: string; kind: string; metadata: Meta; spec: Spec; status: Status }
 type List = { apiVersion: string; items: seq<Item>; kind: string }
 let text = File.read "kubectl-list.yaml" |> Seq.force
@@ -5761,12 +5770,21 @@ let c = pod.spec.containers |> Seq.head
 print $"container: {c.name} args: {show (Seq.length c.args)} port: {show (Seq.head c.ports).containerPort}"
 print $"owner: {(Seq.head pod.metadata.ownerReferences).kind}"
 print $"resources: {show c.resources}"
+print $"cond: {(Seq.head pod.status.conditions).message}"
+print $"sched: {(pod.status.conditions |> Seq.skip 1 |> Seq.head).message}"
+print $"evict: {pod.status.message}"
 WEOF
 out=$(cd "$ydir" && $BIN infer.weir)
 expect "a real kubectl List (zero-indent block seqs, nested) reads on the AOT binary" "items: 1 kind: List" "$out"
 expect "nested zero-indent seqs inside a seq item's map read (containers/args/ports)" "container: nginx args: 2 port: 80" "$out"
 expect "a same-indent ownerReferences seq under metadata reads" "owner: ReplicaSet" "$out"
 expect "an empty flow {} reads into a Yaml field as YMap []" "resources: YMap ([])" "$out"
+# [D:quoted-fold] the kubectl message forms: single-line quoted with
+# colons inside, and the multi-line quoted continuation (single AND
+# double quoted) — the fold is one space per break
+expect "a single-line quoted message with colons reads" "cond: Pod was rejected: The node had condition: [DiskPressure]. " "$out"
+expect "a multi-line DOUBLE-quoted message folds to one line" "sched: 0/3 nodes are available: 3 Insufficient memory. preemption: not eligible." "$out"
+expect "a multi-line single-quoted eviction message folds to one line" "evict: The node was low on resource: ephemeral-storage. Threshold quantity: 25462616238, available: 24515828Ki. Container was using 54204Ki, request is 0. " "$out"
 
 # the real file INFERS clean end-to-end: zero-indent seqs + empty flow
 # together, empty {} → opaque Yaml with a note (never a silent shape)

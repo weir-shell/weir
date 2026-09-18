@@ -72,7 +72,11 @@ duplicate keys last-win; `to json` writes the object back.
 
 `from yaml T` reads with the same admission rules; quoting
 disambiguates scalars (`rate: 1.5` is a number, `"1.5"` a string —
-both directions). `from yaml stream T` reads a `---`-separated
+both directions). A quoted scalar may continue on deeper-indented
+lines (kubectl's long `message:` values): the closing quote ends it,
+each line break folds to a single space, an empty continuation line
+becomes a newline, and the folded value stays a string.
+`from yaml stream T` reads a `---`-separated
 stream — N documents, each as `T`, so the heterogeneous bundle (a
 kubernetes apply file) is `from yaml stream KDoc` over a tagged
 union: the stream word is the cardinality, the union the

@@ -1384,7 +1384,13 @@ type Bad = C of int
   Literal block scalars `|`/`|-` are in the subset (folded `>` and
   `|+` reject): `|` MEANS ends-with-one-newline, `|-` ends-with-none —
   the form follows the value both directions, and a multiline string
-  renders as a block scalar automatically. A `yaml` BLOCK is a
+  renders as a block scalar automatically. A QUOTED scalar may
+  continue on deeper-indented lines (kubectl's long `message:`
+  values), both quote styles: the closing quote ends it, each line
+  break folds to a single space, an empty continuation line becomes
+  a newline, and the folded value is still a STRING wherever it
+  lands (quotedness keeps the Norway law). Read side only — weir
+  never writes the multi-line quoted form. A `yaml` BLOCK is a
   checked template: `let d = yaml` + an indented
   YAML block (canonical: the marker on the binding line; fmt
   rewrites the next-line spelling). Arming is token-precise: a bare

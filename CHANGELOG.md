@@ -57,6 +57,26 @@
   prose (real acronyms live on a commented allowlist beside the pin).
   The `init: NOT loaded` teaching line is now `init: not loaded`.
 
+### Fixed
+
+- **Multi-line quoted scalars read** [D:quoted-fold]. `kubectl get po
+  -A -o yaml` evicted-pod `message:` values — a quoted scalar whose
+  closing quote sits on a later, deeper-indented line — errored
+  `'message' has both an inline value and a nested block` (the
+  continuation lines were taken for a nested block). The yaml subset
+  now reads multi-line single- and double-quoted scalars with YAML's
+  flow folding, PyYAML-refereed: a line break folds to one space,
+  each empty continuation line contributes a newline, continuation
+  indentation strips, and trailing space before the closing quote is
+  content. `''` and the double-quote escape set work across lines (a
+  `\`-escaped line break is not in the subset); the continuation
+  lines belong to the scalar — map-value and sequence-item position,
+  any depth, zero-indent sequences included. Unterminated quotes
+  error at the opening line in the unclosed family; content after the
+  closing quote errors at its own line. Quotedness stays load-bearing
+  across the fold (a folded `no` is still a string), and the write
+  side is untouched — weir never emits the multi-line quoted form.
+
 ## v0.0.41
 
 ### Fixed

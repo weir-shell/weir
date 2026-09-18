@@ -1994,6 +1994,130 @@ let boundaryTests =
               Expect.stringContains (errOf [ "s: [1, 2]" ]) "flow style is outside the yaml subset" "populated flow seq rejects"
               Expect.stringContains (errOf [ "- {a: 1}" ]) "flow style is outside the yaml subset" "populated flow in seq item rejects"
           }
+          test "multi-line quoted scalars read: flow folding, both quote styles, both positions [D:quoted-fold]" {
+              let docOf lines' =
+                  match Weir.Yaml.parseDocs (lines' |> List.mapi (fun i l -> i + 1, l)) with
+                  | Ok [ d ] -> d
+                  | other -> failtest $"parse: {other}"
+
+              let scalarOf d =
+                  match d with
+                  | Weir.Yaml.NMap([ (_, Weir.Yaml.NScalar(t, q, _)) ], _) -> t, q
+                  | other -> failtest $"expected one scalar entry, got {other}"
+
+              // the folding law (PyYAML-refereed set): one break folds to
+              // ONE SPACE; each empty continuation line contributes a
+              // NEWLINE; continuation indentation strips; trailing space
+              // before the closing quote is content
+              Expect.equal (scalarOf (docOf [ "k: 'a"; "  b'" ])) ("a b", true) "one break folds to a space"
+              Expect.equal (scalarOf (docOf [ "k: 'a"; ""; "  b'" ])) ("a\nb", true) "an empty line folds to a newline"
+              Expect.equal (scalarOf (docOf [ "k: 'a"; ""; ""; "  b'" ])) ("a\n\nb", true) "two empty lines, two newlines"
+              Expect.equal (scalarOf (docOf [ "k: 'trail"; "  end. '" ])) ("trail end. ", true) "trailing space inside the quote survives"
+              Expect.equal (scalarOf (docOf [ "k: 'it''s"; "  ok, it''s'" ])) ("it's ok, it's", true) "'' escapes mid-continuation"
+              // double-quoted: the single-line escape set extends across
+              // the fold (a \-escaped line break is NOT in the subset)
+              Expect.equal (scalarOf (docOf [ "k: \"a\\n x"; "  b\"" ])) ("a\n x b", true) "double-quoted folds, escapes resolve"
+
+              // the kubectl message form: colons inside, deeper continuations
+              Expect.equal
+                  (scalarOf (
+                      docOf
+                          [ "k: 'The node was low on resource: ephemeral-storage. Threshold quantity:"
+                            "    25462616238, available: 24515828Ki. '" ]
+                  ))
+                  ("The node was low on resource: ephemeral-storage. Threshold quantity: 25462616238, available: 24515828Ki. ", true)
+                  "the kubectl eviction message reads"
+
+              // sequence-item position; the plain sibling stays plain
+              match docOf [ "- 'a: x"; "  b'"; "- two" ] with
+              | Weir.Yaml.NSeq([ Weir.Yaml.NScalar("a: x b", true, 1); Weir.Yaml.NScalar("two", false, _) ], _) -> ()
+              | other -> failtest $"seq-item multiline: {other}"
+
+              // zero-indent-nested position: kubectl's List shape, the
+              // continuation consumed by the scalar, the sibling key intact
+              match docOf [ "items:"; "- status:"; "    message: 'a:"; "      b'"; "    reason: Evicted"; "kind: List" ] with
+              | Weir.Yaml.NMap([ ("items",
+                                  Weir.Yaml.NSeq([ Weir.Yaml.NMap([ ("status",
+                                                                     Weir.Yaml.NMap([ ("message", Weir.Yaml.NScalar("a: b", true, _))
+                                                                                      ("reason", Weir.Yaml.NScalar("Evicted", false, _)) ],
+                                                                                    _)) ],
+                                                                  _) ],
+                                                 _))
+                                 ("kind", Weir.Yaml.NScalar("List", false, _)) ],
+                                _) -> ()
+              | other -> failtest $"zero-indent nested multiline: {other}"
+
+              // the errors: unterminated (dedent or EOF before the close)
+              // names the OPENING line in the unclosed family; content
+              // after the closing quote names ITS line; a deeper line
+              // past the close has no owner
+              let errOf lines' =
+                  match Weir.Yaml.parseDocs (lines' |> List.mapi (fun i l -> i + 1, l)) with
+                  | Error e -> e
+                  | Ok d -> failtest $"expected an error, got {d}"
+
+              Expect.stringContains
+                  (errOf [ "a: 1"; "k: 'x"; "  y"; "z: 1" ])
+                  "line 2: unclosed single-quoted scalar"
+                  "a dedent before the close errors at the opening line"
+
+              Expect.stringContains (errOf [ "k: \"x" ]) "line 1: unclosed double-quoted scalar" "EOF before the close, same family"
+
+              Expect.stringContains
+                  (errOf [ "k: 'x"; "  y' junk" ])
+                  "line 2: content after the closing '"
+                  "content after the close errors with its line"
+
+              Expect.stringContains
+                  (errOf [ "k: 'x"; "  y'"; "  z: 1" ])
+                  "line 3: this line sits inside the quoted scalar's indentation but after its closing quote"
+                  "a deeper line past the close is named"
+          }
+          test "multi-line quoted: Norway stays string; the write side keeps its own spelling and roundtrips [D:quoted-fold]" {
+              let env2 = env |> declare "type QKV = { k: string }"
+
+              let evalStr prog =
+                  match Weir.Parser.parseStmt prog with
+                  | Ok(SExpr e) ->
+                      match Weir.Check.typecheck env2 e with
+                      | Ok te -> Weir.Eval.eval valueEnv te
+                      | Error terr -> failtest (formatError terr)
+                  | other -> failtest $"unexpected: {other}"
+
+              // the read holds the FOLDED content
+              Expect.equal
+                  (evalStr "([\"k: 'a: b\"; \"  c\"; \"\"; \"  d '\"] |> from yaml QKV).k")
+                  (VStr "a: b c\nd ")
+                  "the string field holds the folded content"
+
+              // `to yaml` re-emits weir's OWN spelling — the block scalar
+              // for a multiline string [D:block-scalars], never a
+              // multi-line QUOTED form — and reading that back yields the
+              // same string
+              Expect.equal
+                  (evalStr "let d = [\"k: 'a: b\"; \"  c\"; \"\"; \"  d '\"] |> from yaml QKV in d |> to yaml |> Seq.force |> show")
+                  (VStr "[\"k: |-\"; \"  a: b c\"; \"  d \"]")
+                  "the write side's own spelling, unchanged"
+
+              Expect.equal
+                  (evalStr
+                      "let d = [\"k: 'a: b\"; \"  c\"; \"\"; \"  d '\"] |> from yaml QKV in (d |> to yaml |> from yaml QKV).k == d.k")
+                  (VBool true)
+                  "the roundtrip pin"
+
+              // the Norway law across the fold: a folded quoted no-like
+              // value is a STRING even at a bool field
+              let env3 = env |> declare "type QB = { k: bool }"
+
+              match Weir.Parser.parseStmt "([\"k: 'no\"; \"  way'\"] |> from yaml QB).k" with
+              | Ok(SExpr e) ->
+                  match Weir.Check.typecheck env3 e with
+                  | Ok te ->
+                      let ex = Expect.throwsC (fun () -> Weir.Eval.eval valueEnv te |> ignore) id
+                      Expect.stringContains ex.Message "a quoted scalar is a string" "quotedness stays load-bearing across the fold"
+                  | Error terr -> failtest (formatError terr)
+              | other -> failtest $"unexpected: {other}"
+          }
           test "#infer sanitizes non-identifier keys: [<Wire>] over a valid ident; clean keys stay bare; collisions dedupe [D:infer-wire-sanitize]" {
               let inferStr (v: Value) =
                   match v with
