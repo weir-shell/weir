@@ -36,6 +36,19 @@ behaviours worth naming:
   `#help Module.<TAB>` completes that module's members. The offered
   set and the documented set are one, so a type you can `#help` is a
   type you can Tab.
+- **A bound map completes its keys.** An open map's keys are data
+  (`data: seq<string * string>` from `#infer`), so completion reads
+  them from the value you already hold: inside the open key literal
+  of a pipe-form `Map.get`/`Map.tryGet`/`Map.has` —
+  `d |> Map.tryGet "Cor<TAB>` — the receiver binding's own keys
+  complete, prefix-filtered, inside the quotes (you own the closer).
+  The receiver must be a bare session binding (`it` counts) whose
+  value is already materialized — a map, or a forced pair-seq. The
+  boundary is peek-versus-evaluate: a pipeline receiver
+  (`cm |> from json … |> _.data |> Map.tryGet "`) completes nothing,
+  because knowing its keys would mean running the pipeline — bind it
+  first (`let d = …`) and the keys complete; an unforced seq is never
+  pulled for the same reason.
 - **A path completes quoted in an expression, bare as a command
   argument.** `File.read ./x<TAB>` yields `File.read "./x"` — a bare
   path is not a valid weir expression, so the completion is a string
