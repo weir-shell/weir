@@ -6592,7 +6592,8 @@ cat > "$gtdir/proj/sub/tpl.weir" <<'WEOF'
 let d = yaml schema=pod
     apiVerison: v1
     spec:
-        containers: []
+        containers:
+            - name: app
 
 d |> to yaml |> print
 WEOF
