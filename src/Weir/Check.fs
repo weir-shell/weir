@@ -1111,7 +1111,7 @@ let rec private spine (e: Expr) : Expr * Expr list =
 // offending field from the top — a recursive law's failures are deep
 // and a category list alone will not find them.
 let private jsonAdmittedSet =
-    "json fields are int, float, string, bool, Option of an admitted type, a record of admitted fields, seq of an admitted type, or Map<string, T> of one"
+    "json fields are int, float, string, bool, Option of an admitted type, a record of admitted fields, seq of an admitted type, a seq<string * T> mapping, or Map<string, T> of one"
 
 let rec private jsonAdmitted
     (span: Span)
@@ -1155,6 +1155,10 @@ let rec private jsonAdmitted
     | TNamed("Option", [ TNamed("Option", _) ]) ->
         err span $"{at}Option<Option<…>> has no JSON reading; flatten the type"
     | TNamed("Option", [ inner ]) -> jsonAdmitted span env seen path inner
+    // the open MAPPING seq<string * V> — yaml's [D:yaml-v1] pair-seq law
+    // at the json boundary [D:repl-infer]: a JSON object whose keys are
+    // data reads/writes as pairs, admitted iff V is
+    | TSeq(TTuple [ TStr; v ]) -> jsonAdmitted span env seen path v
     | TSeq elem -> jsonAdmitted span env seen path elem
     // the ID-keyed object [D:map-string]: Map<string, T> is a JSON
     // object whose keys are data — admitted iff T is
@@ -1315,6 +1319,8 @@ let rec wireRenamesOf (env: TypeEnv) (ty: Ty) : Map<string, Map<string, string>>
 and private jsonDefsClosure (env: TypeEnv) (acc: Map<string, RecordDef>) (ty: Ty) : Map<string, RecordDef> =
     match ty with
     | TNamed("Option", [ inner ]) -> jsonDefsClosure env acc inner
+    // the mapping's VALUE type carries the defs [D:repl-infer]
+    | TSeq(TTuple [ TStr; inner ]) -> jsonDefsClosure env acc inner
     | TSeq elem -> jsonDefsClosure env acc elem
     | TNamed("Map", [ TStr; inner ]) -> jsonDefsClosure env acc inner
     | TNamed(n, []) when not (acc.ContainsKey n) ->
@@ -1341,6 +1347,8 @@ and private jsonDefsClosure (env: TypeEnv) (acc: Map<string, RecordDef>) (ty: Ty
 let rec private jsonUnionsClosure (env: TypeEnv) (acc: Map<string, UnionDef>) (ty: Ty) : Map<string, UnionDef> =
     match ty with
     | TNamed("Option", [ inner ]) -> jsonUnionsClosure env acc inner
+    // the mapping's VALUE type carries the unions [D:repl-infer]
+    | TSeq(TTuple [ TStr; inner ]) -> jsonUnionsClosure env acc inner
     | TSeq elem -> jsonUnionsClosure env acc elem
     | TNamed("Map", [ TStr; inner ]) -> jsonUnionsClosure env acc inner
     | TNamed(n, []) when not (acc.ContainsKey n) ->

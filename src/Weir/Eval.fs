@@ -830,12 +830,33 @@ let private jsonLine
 
             writer.WriteEndObject()
         | VSeq items ->
-            // a nested array [D:recursive-fields] — elements recurse;
-            // an Option element writes null for None (an array slot
-            // cannot be omitted; null reads back as None)
-            writer.WriteStartArray()
-            items |> Seq.iter write
-            writer.WriteEndArray()
+            // a non-empty pair-seq is ONE OBJECT (the seq<string * _>
+            // law, `to yaml`'s twin [D:repl-infer]); any other seq is a
+            // nested array [D:recursive-fields] — elements recurse; an
+            // Option element writes null for None (an array slot cannot
+            // be omitted; null reads back as None). An EMPTY mapping
+            // writes [] — value-directed, the yaml writer's own posture.
+            let items = List.ofSeq items
+
+            let asPairs =
+                items
+                |> List.map (fun i ->
+                    match i with
+                    | VTuple [ VStr k; v ] -> Some(k, v)
+                    | _ -> None)
+
+            if not items.IsEmpty && asPairs |> List.forall Option.isSome then
+                writer.WriteStartObject()
+
+                for (k, v) in asPairs |> List.map Option.get do
+                    writer.WritePropertyName k
+                    write v
+
+                writer.WriteEndObject()
+            else
+                writer.WriteStartArray()
+                items |> Seq.iter write
+                writer.WriteEndArray()
         | VMap entries ->
             // an OBJECT, keys sorted by construction [D:map-string] —
             // the round-trip's write half
@@ -956,6 +977,28 @@ let private jsonDoc
                 VUnion("None", None)
             else
                 VUnion("Some", Some(readValue name inner prop))
+        | TSeq(TTuple [ TStr; v ]) ->
+            // the open MAPPING (yaml's seq<string * _> law at the json
+            // boundary [D:repl-infer]): a JSON object whose keys are DATA
+            // reads as pairs in document order. An empty ARRAY is the
+            // EMPTY mapping — the writer's own empty spelling (a pair-seq
+            // with no pairs has no object evidence), so the roundtrip
+            // holds; a populated array still refuses.
+            if
+                prop.ValueKind = System.Text.Json.JsonValueKind.Array
+                && prop.GetArrayLength() = 0
+            then
+                VSeq Seq.empty
+            elif prop.ValueKind <> System.Text.Json.JsonValueKind.Object then
+                failwith
+                    $"{who}: field '{name}' expected an object ({formatTy ty}), got {jsonKindName prop.ValueKind} in: {shown}"
+            else
+                // forced before the document disposes
+                prop.EnumerateObject()
+                |> Seq.map (fun p -> VTuple [ VStr p.Name; readValue $"{name}[\"{p.Name}\"]" v p.Value ])
+                |> List.ofSeq
+                |> List.toSeq
+                |> VSeq
         | TSeq elem ->
             if prop.ValueKind <> System.Text.Json.JsonValueKind.Array then
                 failwith
