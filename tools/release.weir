@@ -25,7 +25,7 @@ let confirm msg =
 
 // ---- 1. preflight: refuse before anything mutates -------------------------
 print $"== preflight for {cli.tag} =="
-let pf = ^weir tools/release-preflight.weir --tag (cli.tag) | complete
+let pf = weir tools/release-preflight.weir --tag (cli.tag) | complete
 pf.stdout |> Seq.iter print
 
 if pf.exitCode <> 0 then
@@ -50,7 +50,7 @@ print $"tagged and pushed {cli.tag} — the gated release flow is running"
 print "the release flow builds a DRAFT — review its asset list, then publish it."
 
 let publishedNow () =
-    let r = ^weir ci/release-published.weir | complete
+    let r = weir ci/release-published.weir | complete
 
     if r.exitCode == 0 then
         true

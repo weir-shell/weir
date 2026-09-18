@@ -37,9 +37,9 @@ let subDetail teaching r =
     let said = r.stderr |> Seq.append r.stdout |> Str.join " | "
     if r.exitCode == 0 then "" else $"{teaching}; the check said: {said}"
 
-let changelogRes = ^weir ci/changelog-check.weir --tag (cli.tag) | complete
-let grammarRes = ^weir ci/grammar-currency.weir | complete
-let zedPinRes = ^weir ci/zed-rev-current.weir | complete
+let changelogRes = weir ci/changelog-check.weir --tag (cli.tag) | complete
+let grammarRes = weir ci/grammar-currency.weir | complete
+let zedPinRes = weir ci/zed-rev-current.weir | complete
 
 // -- the grammar repo must NOT already target the new tag --------------------
 // (its TARGET bump belongs AFTER the release publishes; pushing it early
