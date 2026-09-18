@@ -380,6 +380,21 @@ print (Str.toUtf8 "x") // print refuses Bytes; Bytes.toBase64 is the exit
   is one pipeline: `Str.rmatchAll pat text |> Seq.map Seq.head |>
   Seq.distinct` (all matches → contents → dedup); pipe a match through
   a tool with `| sha256sum`.
+- Field splitting [D:str-fields]: `Str.fields s : seq<string>` splits
+  on whitespace RUNS and never yields an empty piece (leading/trailing
+  whitespace produces nothing; a blank or empty string is the empty
+  seq) — awk's default splitting, trim's whitespace class. The column
+  idiom, replacing `Str.rmatchAll @"(\S+)" l |> Seq.map Seq.head`:
+
+```weir
+"weir-7d9f   1/1   Running   0   12m" |> Str.fields |> Seq.item 1 |> print
+```
+
+  `Str.rsplit pat s : seq<string>` splits on every regex match —
+  `Str.split`'s empties law (adjacent matches and edges yield `""`),
+  capture groups never add pieces; a bad pattern raises like the
+  rmatch family. `Str.rsplit @"\s*,\s*" "a , b,c"` is the
+  trim-as-you-split spelling.
 - Split at the FIRST separator, tail INTACT [D:split-once]:
   `Str.splitOnce sep s : (string, string)` — Rust's split_once shape;
   raises when the separator is absent; `Str.trySplitOnce` is the
@@ -2062,4 +2077,4 @@ not the teaching.
 - `Seq`: `append` `average` `choose` `chunkBySize` `collect` `concat` `contains` `countBy` `distinct` `distinctBy` `except` `exactlyOne` `exists` `find` `fold` `forall` `force` `groupBy` `head` `indexed` `isEmpty` `item` `iter` `last` `length` `map` `max` `maxBy` `min` `minBy` `pairwise` `pfirst` `pfirstWith` `pick` `piter` `piterWith` `pmap` `pmapWith` `range` `reduce` `replicate` `rev` `scan` `skip` `skipWhile` `sort` `sortBy` `sortByDescending` `sortDescending` `sum` `take` `takeWhile` `tryExactlyOne` `tryFind` `tryHead` `tryItem` `tryLast` `tryPick` `where` `windowed` `zip`
 - `Bytes`: `fromBase64` `length` `sha256` `toBase64` `tryFromBase64`
 - `Size`: `average` `bytes` `parse` `sum` `toBytes` `tryParse`
-- `Str`: `contains` `endsWith` `fromBase64` `isMatch` `join` `length` `replace` `rmatch` `rmatchAll` `sha256` `split` `splitOnce` `startsWith` `sub` `toBase64` `toInt` `toLower` `toUpper` `toUtf8` `trim` `trimEnd` `trimStart` `tryFromBase64` `tryFromUtf8` `tryIndexOf` `trySplitOnce` `tryToInt` `fromUtf8`
+- `Str`: `contains` `endsWith` `fields` `fromBase64` `isMatch` `join` `length` `replace` `rmatch` `rmatchAll` `rsplit` `sha256` `split` `splitOnce` `startsWith` `sub` `toBase64` `toInt` `toLower` `toUpper` `toUtf8` `trim` `trimEnd` `trimStart` `tryFromBase64` `tryFromUtf8` `tryIndexOf` `trySplitOnce` `tryToInt` `fromUtf8`
