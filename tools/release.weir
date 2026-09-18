@@ -42,12 +42,29 @@ git push origin (cli.tag)
 print $"tagged and pushed {cli.tag} — the gated release flow is running"
 
 // ---- 3. wait for the publish (drafts do not count) -------------------------
-// the release workflow builds four binaries then a human clicks publish;
-// poll the stable-release gate until it names this tag
-print "waiting for the release to PUBLISH (draft + your publish click)..."
+// the release workflow builds the binaries then a human clicks publish.
+// The human SAYS when: the timed poll of the live gate proved
+// unreliable, so each confirm runs the gate ONCE — a not-yet verdict
+// shows itself and asks again; anything but yes aborts. The prompt is
+// what blocks; the poll interval never paces the wait.
+print "the release flow builds a DRAFT — review its asset list, then publish it."
 
-poll timeout=45m interval=30s
-    ^weir ci/release-published.weir | succeeds
+let publishedNow () =
+    let r = ^weir ci/release-published.weir | complete
+
+    if r.exitCode == 0 then
+        true
+    else
+        r.stdout |> Seq.iter print
+        r.stderr |> Seq.iter printerr
+        print "the gate says not published yet (verdicts above) — publish (or give the API a moment) and confirm again"
+        false
+
+poll timeout=8h interval=1s
+    if confirm $"have you PUBLISHED {cli.tag}?" then
+        publishedNow ()
+    else
+        fail "aborted — remember: the publish (and the grammar bump after it) is still owed"
 
 print $"{cli.tag} is published"
 
