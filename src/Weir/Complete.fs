@@ -204,6 +204,79 @@ let wordStartAt (text: string) (pos: int) : int =
     else
         i
 
+// the topLet binder up to its `=`, lexically [D:let-rhs-head] — the
+// shape whose RHS the grammar grants command mode (topLet's
+// command-first RHS; a destructuring let's RHS is expression-only).
+// Subset, stated (the pathParamAt precedent): identifier and `()`
+// params only — a parenthesized/record param pattern falls through,
+// and a keyword in a binder slot is the letKeywordGuard's error, not
+// a head slot. `let pure` leads legally; a lone `pure` does not bind.
+let private letBinder =
+    System.Text.RegularExpressions.Regex @"^let\s+(?:[A-Za-z_]\w*|\(\s*\))(?:\s+(?:[A-Za-z_]\w*|\(\s*\)))*\s*="
+
+/// the text AFTER a top-level let binder's `=`, or None when `stmt`
+/// does not open with one
+let private letRhsCut (stmt: string) : string option =
+    let m = letBinder.Match stmt
+
+    if not m.Success then
+        None
+    else
+        let names =
+            match
+                m.Value.TrimEnd([| '='; ' '; '\t' |]).Split([| ' '; '\t'; '('; ')' |], System.StringSplitOptions.RemoveEmptyEntries)
+                |> Array.toList
+            with
+            | "let" :: "pure" :: (_ :: _ as rest) -> rest
+            | "let" :: rest -> rest
+            | _ -> []
+
+        if
+            not names.IsEmpty
+            && names |> List.forall (Weir.Parser.keywords.Contains >> not)
+        then
+            Some(stmt.Substring m.Length)
+        else
+            None
+
+// the command HEAD SLOT, one source [D:let-rhs-head]: where a live
+// head verdict and the head-completion pool apply — the statement
+// start, and a top-level let's RHS. BOTH surfaces read this predicate
+// (the Tab pool here, the live colorizer in Script.colorizeRepl), so
+// tint and completion cannot disagree about where a head stands.
+[<RequireQualifiedAccess>]
+type HeadSlot =
+    | No
+    | Head
+    /// behind the `^` force-PATH sigil at a head slot: PATH only
+    | Forced
+
+/// the slot verdict for the word starting right after `before`
+/// [D:let-rhs-head]. Statement head = an EMPTY statement prefix,
+/// deliberately untrimmed: the colorizer's continuation lines (a yaml
+/// district body among them) must not read as heads, while the
+/// completer's own TrimEnd already collapses a whitespace prefix.
+let headSlotAt (before: string) : HeadSlot =
+    let stmt =
+        let i = max (before.LastIndexOf Weir.Parser.sibSep) (before.LastIndexOf '\n')
+        if i >= 0 then before.Substring(i + 1) else before
+
+    let core, forced =
+        if stmt.EndsWith "^" then
+            stmt.Substring(0, stmt.Length - 1), true
+        else
+            stmt, false
+
+    let isHead =
+        core = ""
+        || (match letRhsCut (core.TrimStart()) with
+            | Some rest -> rest.Trim() = ""
+            | None -> false)
+
+    if not isHead then HeadSlot.No
+    elif forced then HeadSlot.Forced
+    else HeadSlot.Head
+
 // a word in command ARGV completes as a PATH [D:complete-argv]: after
 // a literal command head everything is an argv word — fields, members,
 // and the keyword pool are expression furniture (`micro publish.`
@@ -215,6 +288,15 @@ let private commandArgvPosition (env: TypeEnv) (before: string) : bool =
     let stmt =
         let i = max (before.LastIndexOf Weir.Parser.sibSep) (before.LastIndexOf '\n')
         (if i >= 0 then before.Substring(i + 1) else before).TrimStart()
+
+    // a top-level let's RHS is a first-class command position
+    // [D:let-rhs-head]: strip the binder and judge the remainder
+    // exactly as a statement — argv after the RHS head follows the
+    // statement-head rule
+    let stmt =
+        match letRhsCut stmt with
+        | Some rest -> rest.TrimStart()
+        | None -> stmt
 
     // |> and a spaced = are expression furniture — `xs |> from` is a
     // pipeline whose head happens to be unbound, not a command
@@ -578,6 +660,12 @@ let suggestScoped (env: TypeEnv) (binderScope: string) (text: string) (wordStart
             // an explicit path word — filesystem entries [D:repl-quality],
             // quoted where the slot is an expression [D:repl-path-quote]
             filesystemComplete word |> quoteFor before
+        elif headSlotAt before = HeadSlot.Forced && word <> "" then
+            // the `^`-forced head [D:let-rhs-head]: the sigil skips
+            // bindings and the alias table, so the pool is exactly the
+            // PATH cache — bare (the word starts after the sigil), at
+            // the statement head and the let-RHS alike
+            Extern.names () |> Set.filter (fun n -> n.StartsWith word && n <> word) |> Set.toList
         elif commandArgvPosition env before then
             // argv position [D:complete-argv]: paths, nothing else — the
             // pool, fields, and members are expression furniture
@@ -787,10 +875,11 @@ let suggestScoped (env: TypeEnv) (binderScope: string) (text: string) (wordStart
             // listing is useful, and it keys on `before` being non-empty below.
             sessionDirectives |> List.map (fun d -> "#" + d)
         else
-            // command HEADS at a statement head (before is empty): PATH
-            // executables + command-callable builtins join the name pool; in
-            // argv position (before non-empty) cwd files join instead — the
-            // two interactive contexts completion could not serve before
+            // command HEADS at a head slot (the statement head and the
+            // let-RHS, headSlotAt's verdict [D:let-rhs-head]): PATH
+            // executables + command-callable builtins join the name pool;
+            // in argv position cwd files join instead — the two
+            // interactive contexts completion could not serve before
             // [D:repl-quality]
             let cwdEntries () =
                 try
@@ -803,7 +892,12 @@ let suggestScoped (env: TypeEnv) (binderScope: string) (text: string) (wordStart
                     []
 
             let extra =
-                if before = "" then
+                if headSlotAt before = HeadSlot.Head && word <> "" then
+                    // both head slots take the SAME pool [D:let-rhs-head]:
+                    // the statement head and the let-RHS. An empty word at
+                    // the let-RHS stays pool-only (the empty-prompt
+                    // rationale — never the 900-name dump); the empty
+                    // statement head routed to the directive teaching above
                     (Extern.names () |> Set.toList) @ (Builtins.commandCallable |> Set.toList)
                 elif word <> "" then
                     cwdEntries ()
