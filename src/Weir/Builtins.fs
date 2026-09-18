@@ -3980,7 +3980,7 @@ let private inferShapeImpl (fmt: Infer.Format) : Value =
         match v with
         | VSeq items ->
             let lines = items |> Seq.map asString
-            VStr(Infer.inferShapeText fmt "Root" lines)
+            VStr(Infer.inferShapeText Parser.keywords fmt "Root" lines)
         | v -> unreachable $"the checker rejects 'inferShape' on {formatValue v}")
 
 let private yamlModuleMembers: (string * Ty * Value) list =
@@ -4625,8 +4625,9 @@ let builtinDocs: Map<string, BuiltinDoc> =
           (bd
               "Stop with a message and exit code 1."
               None
+              // the divergence claim is [D:fail-bottom]'s
               (Some
-                  "message-carrying; `exit n` is the bare-code spelling. Diverges (`string -> 'a`): a failing arm sits opposite a value arm [D:fail-bottom].")
+                  "message-carrying; `exit n` is the bare-code spelling. Diverges (`string -> 'a`): a failing arm sits opposite a value arm.")
            |> named [ "message" ])
           "exit", (bd "Exit the process with a status code." None None |> named [ "code" ])
           "prompt",
@@ -5253,13 +5254,13 @@ let builtinDocs: Map<string, BuiltinDoc> =
            |> named [ "patch"; "doc" ])
           "Yaml.inferShape",
           (bd
-              "Draft named `type` declarations from a YAML sample — the composable core of `#infer` [D:repl-infer]: returns the declaration TEXT (top record named Root; nested records auto-named; notes for empty/null/heterogeneous fields ride as `//` lines). It DRAFTS what the sample has; you edit the emitted types. NOT check-time inference (the value is a runtime sample)."
+              "Draft named `type` declarations from a YAML sample — the composable core of `#infer`: returns the declaration TEXT (top record named Root; nested records auto-named; notes for empty/null/heterogeneous fields ride as `//` lines). It DRAFTS what the sample has; you edit the emitted types. NOT check-time inference (the value is a runtime sample)."
               (Some "let sample = <<<\n    name: web\n    port: 8080\nprint (Yaml.inferShape sample)")
               (Some "the `weir add schema` category: external structure -> a declaration you own; check and `from yaml` stay untouched.")
            |> named [ "lines" ])
           "Json.inferShape",
           (bd
-              "Draft named `type` declarations from a JSON sample — the composable core of `#infer` [D:repl-infer]: returns the declaration TEXT (top record named Root; nested records auto-named by field, seq elements singularised; notes for empty arrays, null fields and heterogeneous arrays ride as `//` lines). It DRAFTS what the sample has; you edit the emitted types. NOT check-time inference (the value is a runtime sample)."
+              "Draft named `type` declarations from a JSON sample — the composable core of `#infer`: returns the declaration TEXT (top record named Root; nested records auto-named by field, seq elements singularised; notes for empty arrays, null fields and heterogeneous arrays ride as `//` lines). It DRAFTS what the sample has; you edit the emitted types. NOT check-time inference (the value is a runtime sample)."
               (Some "print (Json.inferShape [\"{\\\"id\\\": 1, \\\"name\\\": \\\"x\\\"}\"])")
               (Some "the `weir add schema` category: external structure -> a declaration you own; check and `from json` stay untouched.")
            |> named [ "lines" ])

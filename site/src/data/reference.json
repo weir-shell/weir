@@ -586,7 +586,7 @@
         {
           "name": "inferShape",
           "signature": "Json.inferShape (lines: seq\u003Cstring\u003E) : string",
-          "summary": "Draft named \u0060type\u0060 declarations from a JSON sample \u2014 the composable core of \u0060#infer\u0060 [D:repl-infer]: returns the declaration TEXT (top record named Root; nested records auto-named by field, seq elements singularised; notes for empty arrays, null fields and heterogeneous arrays ride as \u0060//\u0060 lines). It DRAFTS what the sample has; you edit the emitted types. NOT check-time inference (the value is a runtime sample).",
+          "summary": "Draft named \u0060type\u0060 declarations from a JSON sample \u2014 the composable core of \u0060#infer\u0060: returns the declaration TEXT (top record named Root; nested records auto-named by field, seq elements singularised; notes for empty arrays, null fields and heterogeneous arrays ride as \u0060//\u0060 lines). It DRAFTS what the sample has; you edit the emitted types. NOT check-time inference (the value is a runtime sample).",
           "example": "print (Json.inferShape [\u0022{\\\u0022id\\\u0022: 1, \\\u0022name\\\u0022: \\\u0022x\\\u0022}\u0022])",
           "pointer": "the \u0060weir add schema\u0060 category: external structure -\u003E a declaration you own; check and \u0060from json\u0060 stay untouched."
         }
@@ -1730,7 +1730,7 @@
         {
           "name": "inferShape",
           "signature": "Yaml.inferShape (lines: seq\u003Cstring\u003E) : string",
-          "summary": "Draft named \u0060type\u0060 declarations from a YAML sample \u2014 the composable core of \u0060#infer\u0060 [D:repl-infer]: returns the declaration TEXT (top record named Root; nested records auto-named; notes for empty/null/heterogeneous fields ride as \u0060//\u0060 lines). It DRAFTS what the sample has; you edit the emitted types. NOT check-time inference (the value is a runtime sample).",
+          "summary": "Draft named \u0060type\u0060 declarations from a YAML sample \u2014 the composable core of \u0060#infer\u0060: returns the declaration TEXT (top record named Root; nested records auto-named; notes for empty/null/heterogeneous fields ride as \u0060//\u0060 lines). It DRAFTS what the sample has; you edit the emitted types. NOT check-time inference (the value is a runtime sample).",
           "example": "let sample = \u003C\u003C\u003C\n    name: web\n    port: 8080\nprint (Yaml.inferShape sample)",
           "pointer": "the \u0060weir add schema\u0060 category: external structure -\u003E a declaration you own; check and \u0060from yaml\u0060 stay untouched."
         },
@@ -1806,7 +1806,7 @@
       "signature": "fail (message: string) : \u0027a",
       "summary": "Stop with a message and exit code 1.",
       "example": null,
-      "pointer": "message-carrying; \u0060exit n\u0060 is the bare-code spelling. Diverges (\u0060string -\u003E \u0027a\u0060): a failing arm sits opposite a value arm [D:fail-bottom]."
+      "pointer": "message-carrying; \u0060exit n\u0060 is the bare-code spelling. Diverges (\u0060string -\u003E \u0027a\u0060): a failing arm sits opposite a value arm."
     },
     {
       "name": "force",

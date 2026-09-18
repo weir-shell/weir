@@ -1,5 +1,45 @@
 # Changelog
 
+## v0.0.41
+
+### Fixed
+
+- **`#infer` sanitizes KEYWORD keys and the empty-string key** — the
+  two [D:infer-wire-sanitize] residuals closed. A keyword JSON/YAML
+  key (`{"in": 2}` — `let`, `match`, `fun`, …) passed the
+  char-class-only identifier test and drafted `in: int`, which the
+  parser rejects in field position (probe-pinned: EVERY keyword is);
+  it now rides `[<Wire "in">]` over the parser's own repair spelling
+  (`inField`), collision-deduped, and the draft checks AND reads. The
+  reserved set is the parser's own `Parser.keywords`, threaded in as a
+  parameter — the hand-copied three-word set is gone, so the set
+  cannot drift. An empty-string key (`{"": 1}`) drafted `[<Wire "">]`,
+  which the checker refuses ("expects the wire key as a string") and
+  no field name can spell — it is now DROPPED with a printed note,
+  and the drafted type still reads the sample (the readers tolerate
+  an undeclared key). The e2e drafted-type diagnostic recast onto the
+  remaining un-checkable class: a DUPLICATE JSON key.
+- **The release pipeline uploads with retry and refuses incomplete
+  releases.** v0.0.40 published with 5 of 10 assets: `gh release
+  create` hit a transient HTTP 500 mid-asset-upload, a manual recovery
+  re-created the release with what had survived, the draft review
+  missed it — and a published release is immutable, so v0.0.40 stays
+  incomplete forever (missing `weir-v0.0.40-win-arm64.exe`,
+  `SHA256SUMS`, `install.sh`, `install.ps1`, `grammar-manifest.json`;
+  install from v0.0.39 or this release). Now the draft is created with
+  NO assets, uploads run separately with 3 retries and `--clobber` (a
+  500-ghost cannot block a retry), and `ci/release-assets.weir` — the
+  one copy of the expected-asset list — fails the publish job on any
+  missing, part-uploaded, or empty asset before a human sees the
+  draft. `ci/release-published.weir` runs the same completeness check
+  against the newest published release on every CI run, so an
+  incomplete published release stays red on main until the next
+  release supersedes it.
+  A permanently-incomplete release is acknowledged in
+  `ci/release-known-incomplete.yaml` (reason required, swept: a
+  listed-but-complete release fails as stale), so the standing CI
+  check cannot stay red blocking its own supersede.
+
 ## v0.0.40
 
 ### Added

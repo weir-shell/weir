@@ -50,6 +50,36 @@ if rel.status == 200 then
     let latest = (rel.body |> from json {| tag_name: string |}).tag_name
     if latest == newest then
         print $"releases/latest is {latest} — the newest stable tag is published"
+        // published is necessary, not SUFFICIENT [D:release-assets]:
+        // v0.0.40 published with 5 of 10 assets (a transient 500
+        // mid-upload + a partial manual recovery slipped past the draft
+        // review), and a published release is immutable. The expected
+        // asset list's ONE copy lives in ci/release-assets.weir —
+        // invoked here, never restated. A KNOWN-incomplete release is
+        // acknowledged in ci/release-known-incomplete.yaml (the
+        // skill-omitted pattern: an entry carries its reason and is
+        // SWEPT — listed-but-complete fails as stale) so a permanent
+        // red cannot block the superseding release's own PR; a NEW
+        // incomplete release still fails here.
+        let knownIncomplete =
+            (File.read "ci/release-known-incomplete.yaml"
+             |> from yaml {| known: seq<{| tag: string; reason: string |}> |})
+                .known
+            |> Seq.force
+
+        // the stale sweep: an acknowledged release must ACTUALLY be
+        // incomplete, or the entry is rot and fails loudly
+        for e in knownIncomplete do
+            let sweep = ^weir ci/release-assets.weir --tag (e.tag) | complete
+            if sweep.exitCode == 0 then
+                fail $"ci/release-known-incomplete.yaml lists {e.tag} ('{e.reason}') but that release IS complete — stale entry, remove it"
+
+        match knownIncomplete |> Seq.tryFind (fun e -> e.tag == latest) with
+        | Some e ->
+            print $"releases/latest {latest} is KNOWN-incomplete ({e.reason}) — acknowledged in ci/release-known-incomplete.yaml; immutable, superseded by the next complete release"
+        | None ->
+            ^weir ci/release-assets.weir --tag $latest | orFail $"releases/latest {latest} is published but INCOMPLETE (verdicts above) — a published release is immutable, so nothing repairs {latest} in place: fix forward, cut and publish release vNEXT (the supersede path) and acknowledge {latest} in ci/release-known-incomplete.yaml"
+
         exit 0
     fail $"releases/latest is {latest} but the newest stable tag is {newest} — that tag was pushed and never PUBLISHED, and the installers silently keep serving {latest}. If its draft exists: gh release edit {newest} --draft=false (or the Releases page); if the release run never built (a red gate), fix and re-release — or burn the tag by cutting the next one"
 

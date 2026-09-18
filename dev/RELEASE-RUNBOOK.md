@@ -79,8 +79,15 @@ site workflow's manual channel.
    window `release-published check` goes RED on main — a stable tag
    exists, nothing published. That is the gate's failing direction
    observed live; publishing clears it.
-4. Review the draft: asset list complete (six binaries, SHA256SUMS,
-   install.sh, install.ps1), notes correct.
+4. Review the draft: notes correct. Asset COMPLETENESS is machine
+   checked [D:release-assets]: the publish job runs
+   `ci/release-assets.weir --tag <tag>` — the one expected-asset list
+   (six binaries, SHA256SUMS, install.sh, install.ps1,
+   grammar-manifest.json), every asset present, uploaded, non-empty —
+   and fails before the draft is reviewable if anything is missing.
+   Do not publish from a red publish job (the v0.0.40 burn: a
+   transient 500 mid-upload plus a partial manual recovery shipped
+   5 of 10 assets past this human review, immutably).
 5. Publish (NOT prerelease). The site deploys to production; the
    post-deploy check asserts weir.sh serves the released tag, and
    `site staleness check` guards it on every CI run thereafter.

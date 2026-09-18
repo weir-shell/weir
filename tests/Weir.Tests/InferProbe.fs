@@ -86,23 +86,23 @@ let probes =
 
           test "P4: note paths fire for empty/null/heterogeneous" {
               // empty array
-              let _, n1 = Infer.inferDecls "T" (Infer.IObj [ "xs", Infer.IArr [] ])
+              let _, n1 = Infer.inferDecls Parser.keywords "T" (Infer.IObj [ "xs", Infer.IArr [] ])
               Expect.isTrue (n1 |> List.exists (fun n -> n.Contains "empty array")) "empty-array note"
               // null field
-              let _, n2 = Infer.inferDecls "T" (Infer.IObj [ "v", Infer.INull ])
+              let _, n2 = Infer.inferDecls Parser.keywords "T" (Infer.IObj [ "v", Infer.INull ])
               Expect.isTrue (n2 |> List.exists (fun n -> n.Contains "null value")) "null note"
               // heterogeneous array
               let het =
                   Infer.IObj
                       [ "xs", Infer.IArr [ Infer.IObj [ "a", Infer.IInt ]; Infer.IObj [ "b", Infer.IStr ] ] ]
 
-              let _, n3 = Infer.inferDecls "T" het
+              let _, n3 = Infer.inferDecls Parser.keywords "T" het
               Expect.isTrue (n3 |> List.exists (fun n -> n.Contains "heterogeneous")) "heterogeneous note"
           } ]
 
 // render the inferred declarations to ONE string for substring pins
 let private renderJson (topName: string) (json: string) : string =
-    match Infer.infer Infer.Json topName [ json ] with
+    match Infer.infer Parser.keywords Infer.Json topName [ json ] with
     | Ok(decls, _) -> String.concat "\n" decls
     | Error e -> failtestf "infer failed: %s" e
 
@@ -121,6 +121,19 @@ let private checksAfterInject (decls: string list) (useLine: string) : Result<un
     match err with
     | Some m -> Error m
     | None -> Ok()
+
+// run a full multi-line program from a temp file; returns its exit code
+// (0 = clean) — the in-process read/write ROUNDTRIP driver
+let private runFile (lines: string list) : int =
+    let path =
+        System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-infer-{System.Guid.NewGuid():N}.weir")
+
+    System.IO.File.WriteAllLines(path, lines)
+
+    try
+        Script.run path []
+    finally
+        System.IO.File.Delete path
 
 [<Tests>]
 let inferRules =
@@ -182,8 +195,113 @@ let inferRules =
               Expect.stringContains out "kind: string" "legal field name"
           }
 
+          test "PROBE PIN: the parser rejects EVERY keyword in field position [D:infer-wire-sanitize]" {
+              // the sanitizer's reserved set IS Parser.keywords — this pin
+              // holds field-name legality to that set: if the parser ever
+              // accepts a keyword as a field name (or the set moves), it
+              // fails HERE, not by silent drift in #infer's drafts
+              for kw in Parser.keywords do
+                  match injectBlock preludeTypeEnv $"type T = {{ {kw}: int }}" with
+                  | Ok _ ->
+                      failtestf
+                          "'%s' checked as a field name — field-name legality widened; revisit the sanitizer's reserved set"
+                          kw
+                  | Error m -> Expect.stringContains m "keyword" $"'{kw}' refuses AS a keyword"
+
+              // the control: a non-keyword word checks in field position
+              match injectBlock preludeTypeEnv "type T = { json: int }" with
+              | Ok _ -> ()
+              | Error m -> failtestf "the control field name must check: %s" m
+          }
+
+          test "keyword key rides [<Wire>] on the parser's repair spelling [D:infer-wire-sanitize]" {
+              let out = renderJson "T" "{\"in\": 2, \"match\": \"x\"}"
+              Expect.stringContains out "[<Wire \"in\">]" "the keyword key carries its wire attribute"
+              Expect.stringContains out "inField: int" "'in' lands on the parser's own repair name"
+              Expect.stringContains out "[<Wire \"match\">]" "every keyword sanitizes, not just type/to/from"
+              Expect.stringContains out "matchField: string" "'match' likewise"
+          }
+
+          test "EVERY keyword key drafts a type that CHECKS [D:infer-wire-sanitize]" {
+              let sample =
+                  Parser.keywords
+                  |> Seq.mapi (fun i k -> $"\"{k}\": {i}")
+                  |> String.concat ", "
+
+              match Infer.infer Parser.keywords Infer.Json "Kw" [ "{" + sample + "}" ] with
+              | Error e -> failtestf "infer failed: %s" e
+              | Ok(decls, _) ->
+                  match checksAfterInject decls "[\"{\\\"in\\\": 0}\"] |> from json Kw |> _.inField |> print" with
+                  | Ok() -> ()
+                  | Error m -> failtestf "the all-keywords draft must check: %s" m
+          }
+
+          test "keyword key ROUNDTRIP: the draft checks, READS and WRITES the wire key [D:infer-wire-sanitize]" {
+              match Infer.infer Parser.keywords Infer.Json "InTy" [ "{\"in\": 2}" ] with
+              | Error e -> failtestf "infer failed: %s" e
+              | Ok(decls, _) ->
+                  let script =
+                      decls
+                      @ [ "let v = [\"{\\\"in\\\": 2}\"] |> from json InTy"
+                          "if v.inField <> 2 then fail \"the wire'd field did not read\""
+                          "let out = v |> to json |> Seq.exactlyOne"
+                          "if not (Str.contains \"\\\"in\\\":\" out) then fail \"the wire key did not write back\"" ]
+
+                  Expect.equal (runFile script) 0 "the drafted type reads and writes {\"in\": 2}"
+          }
+
+          test "the yaml twin: a keyword key sanitizes through the shared walker [D:infer-wire-sanitize]" {
+              match Infer.infer Parser.keywords Infer.Yaml "Y" [ "in: 2"; "clean: x" ] with
+              | Error e -> failtestf "yaml infer failed: %s" e
+              | Ok(decls, _) ->
+                  let out = String.concat "\n" decls
+                  Expect.stringContains out "[<Wire \"in\">]" "the yaml keyword key carries its wire attribute"
+                  Expect.stringContains out "inField: int" "and lands on the repair name"
+                  Expect.stringContains out "clean: string" "the clean yaml key stays bare"
+          }
+
+          test "collision: a clean 'inField' beside the keyword 'in' dedupes deterministically [D:infer-wire-sanitize]" {
+              let out = renderJson "T" "{\"inField\": 1, \"in\": 2}"
+              Expect.stringContains out "\n    inField: int" "the clean key keeps its bare name"
+              Expect.stringContains out "inField2: int" "the keyword-derived name dedupes around it"
+              Expect.stringContains out "[<Wire \"in\">]" "and still carries the wire key"
+          }
+
+          test "empty-string key: DROPPED with a note; the draft checks and reads around it [D:infer-wire-sanitize]" {
+              // [<Wire "">] refuses at check ('expects the wire key as a
+              // string') and a field name cannot be empty — the machinery
+              // cannot address an empty key, so the sanitizer drops it
+              // LOUDLY and the readers' extra-key tolerance carries the rest
+              match Infer.infer Parser.keywords Infer.Json "Ek" [ "{\"\": 1, \"a\": 2}" ] with
+              | Error e -> failtestf "infer failed: %s" e
+              | Ok(decls, notes) ->
+                  let out = String.concat "\n" decls
+                  Expect.stringContains out "a: int" "the spellable key stays"
+                  Expect.isFalse (out.Contains "Wire \"\"") "no empty wire key is ever drafted"
+                  Expect.isFalse (out.Contains "f: int") "no orphan field is drafted for the dropped key"
+
+                  Expect.isTrue
+                      (notes |> List.exists (fun n -> n.Contains "empty-string key"))
+                      "the drop is loud, never silent"
+
+                  let script =
+                      decls
+                      @ [ "let v = [\"{\\\"\\\": 1, \\\"a\\\": 2}\"] |> from json Ek"
+                          "if v.a <> 2 then fail \"the draft did not read around the dropped key\"" ]
+
+                  Expect.equal (runFile script) 0 "the draft reads the sample, dropped key tolerated"
+          }
+
+          test "an object of ONLY an empty key falls to the opaque posture" {
+              let decls, notes =
+                  Infer.inferDecls Parser.keywords "T" (Infer.IObj [ "m", Infer.IObj [ "", Infer.IInt ] ])
+
+              Expect.stringContains (String.concat "\n" decls) "m: Yaml" "nothing spellable remains — opaque Yaml"
+              Expect.isTrue (notes |> List.exists (fun n -> n.Contains "empty-string key")) "the drop note fires"
+          }
+
           test "round-trip: inferred decls check, and 'from json' lights up" {
-              match Infer.infer Infer.Json "Cfg" [ "{\"host\": \"h\", \"port\": 8080}" ] with
+              match Infer.infer Parser.keywords Infer.Json "Cfg" [ "{\"host\": \"h\", \"port\": 8080}" ] with
               | Error e -> failtestf "infer failed: %s" e
               | Ok(decls, _) ->
                   match checksAfterInject decls "[\"{}\"] |> from json Cfg |> _.port |> print" with
@@ -192,7 +310,7 @@ let inferRules =
           }
 
           test "top-level array names the element" {
-              match Infer.infer Infer.Json "User" [ "[{\"id\": 1}]" ] with
+              match Infer.infer Parser.keywords Infer.Json "User" [ "[{\"id\": 1}]" ] with
               | Ok(decls, notes) ->
                   Expect.stringContains (String.concat "\n" decls) "type User = {" "element named User"
                   Expect.isTrue (notes |> List.exists (fun n -> n.Contains "array")) "array note"

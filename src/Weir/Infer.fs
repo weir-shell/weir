@@ -224,18 +224,35 @@ let rec private shapeOf (reg: Registry) (desired: string) (parentStem: string) (
         reg.AddNote $"an empty mapping under '{desired}' — no fields to infer, kept as opaque Yaml (edit if the real shape is known)"
         "Yaml"
     | IObj fields ->
-        // the collision prefix is the ENCLOSING record's stem: a `spec`
-        // under `pod` disambiguates to `PodSpec`. So each field's child
-        // carries THIS record's stem as its parentStem, not the field's.
-        let thisStem = identStem desired
+        // an EMPTY-STRING key is unspellable BOTH ways
+        // [D:infer-wire-sanitize]: a field name cannot be empty and
+        // [<Wire>] refuses an empty wire key — so the key is DROPPED
+        // from the draft, loudly (the readers tolerate an undeclared
+        // key, so the drafted type still reads the sample)
+        let spellable = fields |> List.filter (fun (k, _) -> k <> "")
 
-        let rendered =
-            fields
-            |> List.map (fun (k, v) ->
-                let childDesired = capitalize (identStem k)
-                k, shapeOf reg childDesired thisStem v)
+        if List.length spellable < List.length fields then
+            reg.AddNote
+                $"an empty-string key under '{desired}' — no field name can spell it and [<Wire>] refuses an empty wire key, so the key is DROPPED from the draft (reading tolerates the extra key)"
 
-        reg.Claim desired parentStem rendered
+        match spellable with
+        | [] ->
+            // nothing spellable remains — the opaque-Yaml posture (the
+            // empty-mapping arm above); the drop note already fired
+            "Yaml"
+        | spellable ->
+            // the collision prefix is the ENCLOSING record's stem: a `spec`
+            // under `pod` disambiguates to `PodSpec`. So each field's child
+            // carries THIS record's stem as its parentStem, not the field's.
+            let thisStem = identStem desired
+
+            let rendered =
+                spellable
+                |> List.map (fun (k, v) ->
+                    let childDesired = capitalize (identStem k)
+                    k, shapeOf reg childDesired thisStem v)
+
+            reg.Claim desired parentStem rendered
     | IArr items ->
         match items with
         | [] ->
@@ -273,28 +290,31 @@ let rec private shapeOf (reg: Registry) (desired: string) (parentStem: string) (
 
 // a wire key that a weir field name cannot spell rides the [<Wire>]
 // attribute on a legal identifier [D:wire-keys]/[D:infer-wire-sanitize]:
-// reserved words AND keys that are not valid weir identifiers (k8s
-// labels: `k8s-app`, `node.kubernetes.io/os`, `helm.sh/chart`). A key
-// that IS a legal, non-reserved identifier stays verbatim — zero churn.
-let private reservedWords = set [ "type"; "to"; "from" ]
+// KEYWORD keys (`in`, `let`, `match`, … — the parser rejects EVERY
+// keyword in field position, probe-pinned) AND keys that are not valid
+// weir identifiers (k8s labels: `k8s-app`, `node.kubernetes.io/os`,
+// `helm.sh/chart`). A key that IS a legal, non-reserved identifier
+// stays verbatim — zero churn. The reserved set is the PARSER'S OWN
+// (Weir.Parser.keywords), threaded in by every caller because Parser
+// compiles after this file — one source, never a hand copy, no drift.
 
 let private isIdentStart c = System.Char.IsLetter c || c = '_'
 let private isIdentCont c = System.Char.IsLetterOrDigit c || c = '_'
 
 /// a key weir can spell as a field name AS-IS: a legal identifier that
 /// is not a reserved word
-let private isCleanFieldName (f: string) : bool =
+let private isCleanFieldName (reserved: Set<string>) (f: string) : bool =
     f.Length > 0
     && isIdentStart f[0]
     && f |> Seq.forall isIdentCont
-    && not (Set.contains f reservedWords)
+    && not (Set.contains f reserved)
 
 /// derive a valid weir identifier from an arbitrary wire key: camelCase
 /// the alnum segments (split on every non-alnum run), lower the first
 /// segment, capitalize the rest — `k8s-app`→`k8sApp`,
 /// `node.kubernetes.io/os`→`nodeKubernetesIoOs`. A leading digit (or an
 /// all-symbol key) gets an `f` prefix so it starts with a letter.
-let private toIdent (key: string) : string =
+let private toIdent (reserved: Set<string>) (key: string) : string =
     let segs =
         key.Split([| for c in key do
                          if not (System.Char.IsLetterOrDigit c) then c |])
@@ -318,7 +338,13 @@ let private toIdent (key: string) : string =
         | "from" -> "source"
         | _ -> camel
 
-    if camel = "" || not (isIdentStart camel[0]) then "f" + camel else camel
+    let camel =
+        if camel = "" || not (isIdentStart camel[0]) then "f" + camel else camel
+
+    // any OTHER reserved word (`in`, `let`, `match`, …) — or a camel
+    // result that LANDS on one (`in-` camelizes to `in`) — takes the
+    // parser's own repair spelling: `in` → `inField`
+    if Set.contains camel reserved then camel + "Field" else camel
 
 /// a record's fields as (fieldName, wireKeyOrNone, ty): clean keys keep
 /// their name and carry no wire attribute; others sanitize to a deduped
@@ -326,22 +352,22 @@ let private toIdent (key: string) : string =
 /// CLEAN keys (the user's own spellings) reserve their names FIRST, then
 /// sanitized names take the next free `base`/`base2`/`base3`… — so a
 /// sanitized key never steals a clean field's name.
-let private resolveFieldNames (fields: (string * string) list) : (string * string option * string) list =
+let private resolveFieldNames (reserved: Set<string>) (fields: (string * string) list) : (string * string option * string) list =
     let used = System.Collections.Generic.HashSet<string>()
 
     // pass 1: clean keys reserve their exact names
     for (key, _) in fields do
-        if isCleanFieldName key then
+        if isCleanFieldName reserved key then
             used.Add key |> ignore
 
     // pass 2: emit in order; sanitized keys disambiguate around the
     // reserved clean names and each other
     fields
     |> List.map (fun (key, ty) ->
-        if isCleanFieldName key then
+        if isCleanFieldName reserved key then
             key, None, ty
         else
-            let baseName = toIdent key
+            let baseName = toIdent reserved key
 
             let name =
                 if used.Add baseName then
@@ -357,7 +383,9 @@ let private resolveFieldNames (fields: (string * string) list) : (string * strin
 /// the inferred DECLARATIONS + printed notes, for a sample already lowered
 /// to an INode with a chosen top name. A top OBJECT is the named record;
 /// a top ARRAY (or jsonl) names the ELEMENT (the user writes seq<Name>).
-let inferDecls (topName: string) (node: INode) : string list * Note list =
+/// `reserved` is the parser's own keyword set (Weir.Parser.keywords) —
+/// threaded in because Parser compiles after this file.
+let inferDecls (reserved: Set<string>) (topName: string) (node: INode) : string list * Note list =
     let reg = Registry()
 
     (match node with
@@ -377,7 +405,7 @@ let inferDecls (topName: string) (node: INode) : string list * Note list =
         reg.Decls
         |> List.map (fun (name, fields) ->
             let body =
-                resolveFieldNames fields
+                resolveFieldNames reserved fields
                 |> List.map (fun (fname, wire, t) ->
                     // a key weir cannot spell as a field name rides the
                     // wire attribute over a sanitized identifier
@@ -412,15 +440,15 @@ let nodeOf (fmt: Format) (lines: string seq) : Result<INode, string> =
     | Yaml -> yamlNode lines
 
 /// the whole pipeline for a chosen format + name: lines -> decls + notes
-let infer (fmt: Format) (topName: string) (lines: string seq) : Result<string list * Note list, string> =
-    nodeOf fmt lines |> Result.map (fun node -> inferDecls topName node)
+let infer (reserved: Set<string>) (fmt: Format) (topName: string) (lines: string seq) : Result<string list * Note list, string> =
+    nodeOf fmt lines |> Result.map (fun node -> inferDecls reserved topName node)
 
 /// the composable BUILTIN body: sample lines -> declaration TEXT (the
 /// notes ride as trailing `//` comment lines so the one-string return
 /// stays honest outside the REPL). Raises on a parse failure, the
 /// builtin-raise convention.
-let inferShapeText (fmt: Format) (topName: string) (lines: string seq) : string =
-    match infer fmt topName lines with
+let inferShapeText (reserved: Set<string>) (fmt: Format) (topName: string) (lines: string seq) : string =
+    match infer reserved fmt topName lines with
     | Error msg -> failwith msg
     | Ok(decls, notes) ->
         let noteLines = notes |> List.map (fun n -> $"// note: {n}")
