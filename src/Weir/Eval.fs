@@ -367,8 +367,10 @@ let procTailLine (h: ProcHandle) : string =
 // forced it; the ceiling is scrollback, which is theirs); an UNFORCED
 // one shows the first N and names the lever that WORKS and renders
 // identically — Seq.force. Forced-ness is the materialized-collection
-// probe (the same one that used to print real counts).
-let private forcedItems (items: seq<Value>) : Value list option =
+// probe (the same one that used to print real counts); the REPL's
+// map-key completion peeks through the same probe, so echo and
+// completion agree about what "forced" means [D:value-key-complete].
+let forcedItems (items: seq<Value>) : Value list option =
     match items with
     | :? (Value list) as l -> Some l
     | :? System.Collections.Generic.ICollection<Value> as c -> Some(List.ofSeq c)
