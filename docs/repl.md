@@ -88,9 +88,13 @@ doc's first line, so it cannot drift either.
 
 At a tty the docs' `` `code` `` spans render tinted, the backticks
 themselves dropped — the span reads as code, not markdown source.
-Piped, or under `NO_COLOR`/`TERM=dumb`, the literal backticks stay:
-the byte surface is unchanged and the span boundary survives the
-stripping.
+The signature line and the example block tint too: the signature
+structurally (name bold, types in the casing-law yellow, punctuation
+dim) and the example through the REPL's own input colorizer — an
+example is weir code, so it renders exactly like the line you would
+type at the prompt. Piped, or under `NO_COLOR`/`TERM=dumb`, none of
+it fires: the literal backticks stay, the byte surface is unchanged
+and the span boundary survives the stripping.
 
 `#find [query]` searches all of it fuzzily. Every module
 (`Seq — blurb`) and every member (`Seq.map — glance`) feeds fzf
@@ -126,6 +130,12 @@ spelling is `it` deliberately: `_` is taken (the `_.field` shorthand
 and the `let _ =` discard), so it cannot be the last result — `it`
 (ghci's convention) collides with nothing.
 
+One statement produces output but no value: a bare command at a tty
+streams straight to the terminal (the colour-inherit path — weir
+never holds the bytes), so `it` does not bind there. The meta line
+says so, and `let pods = kubectl get po` is the capturing spelling —
+a `let` binds `it` too.
+
 ## `#infer`: draft types from a sample
 
 Exploring an unknown JSON/YAML blob means hand-transcribing its
@@ -155,6 +165,15 @@ guessing: an empty array (`seq<string>` default), a null field
 (`Option<string>`), a heterogeneous array (first element, "verify").
 The same inference is a builtin — `sample |> Json.inferShape |> print`
 (and `Yaml.inferShape`) returns the declaration text outside the REPL.
+
+A derived type name never lands on a name the session already
+resolves — a builtin (`Secret`, `Yaml`, `Duration`, …) or a type you
+declared. A k8s volume's `secret:` sub-object would draft
+`type Secret`, and every `secret: Secret` field would then bypass it
+for the builtin (the redaction type — `from yaml` refuses to cross
+it); the draft parent-prefixes instead (`VolumeSecret`) and prints a
+note naming the rename. The `as` name is YOURS, so it is never
+renamed: `#infer … as Secret` refuses and asks you to pick another.
 
 A key weir cannot spell as a field name never breaks the draft: a
 non-identifier or KEYWORD key rides `[<Wire "the-key">]` over a

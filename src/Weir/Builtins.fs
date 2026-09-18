@@ -3980,7 +3980,11 @@ let private inferShapeImpl (fmt: Infer.Format) : Value =
         match v with
         | VSeq items ->
             let lines = items |> Seq.map asString
-            VStr(Infer.inferShapeText Parser.keywords fmt "Root" lines)
+            // the builtin's BASELINE taken set [D:repl-infer]: no session
+            // env here, so builtin + prelude nominals (registered by
+            // prelude-close, populated by call time) + the primitives
+            let taken = Infer.takenTypeNames Check.builtinTypeNames.Keys
+            VStr(Infer.inferShapeText Parser.keywords taken fmt "Root" lines)
         | v -> unreachable $"the checker rejects 'inferShape' on {formatValue v}")
 
 let private yamlModuleMembers: (string * Ty * Value) list =
@@ -5341,8 +5345,16 @@ let reifierSurface (name: string) : string option =
 
 /// the hover/completion text: summary, then example, then pointer — each
 /// on its own line, in the order half 1 renders after the type.
-let renderBuiltinDoc (d: BuiltinDoc) : string =
-    [ Some d.Summary; d.Example; d.Pointer ] |> List.choose id |> String.concat "\n"
+/// `tintCode` is the caller's tint for the Example — an example is weir
+/// CODE, so the REPL's tty render passes its own input colorizer
+/// [D:help-tint] (Script compiles after this file, hence the seam); id
+/// keeps today's bytes (hover, piped, --repl-doc).
+let renderBuiltinDocWith (tintCode: string -> string) (d: BuiltinDoc) : string =
+    [ Some d.Summary; d.Example |> Option.map tintCode; d.Pointer ]
+    |> List.choose id
+    |> String.concat "\n"
+
+let renderBuiltinDoc (d: BuiltinDoc) : string = renderBuiltinDocWith id d
 
 // ---- module blurbs [D:help-glance] -----------------------------------
 // ONE terse line per module for the bare-#help glance and the #find

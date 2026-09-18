@@ -16,6 +16,22 @@ let private prompt = "weir> "
 // everywhere counts prompt.Length — the tint is zero-width.
 let mutable private lastErrored = false
 
+// the streamed-statement latch [D:repl-it]: Some <source text> while the
+// LAST evaluated statement took the inherit path [D:colour-inherit] — the
+// child wrote the terminal itself, weir never held the bytes, so `it` did
+// NOT bind. Any other evaluated statement clears it; a check error or a
+// directive leaves it (the very next line may be the `it` that needs the
+// teach). Read by the unbound-`it` arm and the streamed meta line.
+let mutable private lastStreamed: string option = None
+
+// the session resolver's verdict [D:repl-color]: ONE membership feeding
+// the live prompt's head tint AND the #help example tint [D:help-tint]
+// — values, modules, and the command-callable externs, never two lists
+let private knownIn (env: TypeEnv) (n: string) : bool =
+    Map.containsKey n env.Values
+    || Map.containsKey n env.Modules
+    || Builtins.commandCallable.Contains n
+
 // the session TRANSCRIPT [D:repl-save]: the ACCEPTED statements, in
 // order, that `#save` DISTILLS into a runnable .weir file (option B — a
 // session is scratch; #save crystallizes its definitions and guarantees
@@ -497,6 +513,28 @@ let private echoMeta (s: string) =
 let letEchoMeta (name: string) (ty: Ty) (hint: string option) : string =
     $"{name} : {formatTy ty}{Eval.echoTail hint}"
 
+// the inherited-statement meta line [D:repl-it]: the statement STREAMED —
+// the child wrote the terminal, weir never held the bytes — so unlike
+// every other value echo, `it` did not bind; the meta says so instead of
+// looking like a value landed
+let streamedEchoMeta (ty: Ty) : string =
+    $": {formatTy ty} (streamed — not bound to 'it'; let x = … captures)"
+
+// the unbound-`it` teach after a streamed statement [D:repl-it]: the
+// generic unbound error reads as a regression there; the repair is
+// re-typing the command as a `let` (the value path captures, and a let
+// binds `it` too). The command text rides verbatim when it is one clean
+// physical line; sentinel-joined (assembled) source falls back to the
+// generic spelling.
+let streamedItTeach (source: string option) : string list =
+    let cmd =
+        match source with
+        | Some s when s.Trim() <> "" && not (s |> Seq.exists Char.IsControl) -> s.Trim()
+        | _ -> "<the command>"
+
+    [ "unbound variable 'it' — the last command streamed to the terminal; weir never held its output"
+      $"to capture (and bind 'it'): let x = {cmd}" ]
+
 // the live terminal width for the table clamp — piped echoes never
 // tabulate, so None only guards the resize/console-less edge
 let private termWidth () =
@@ -840,11 +878,7 @@ let private readLineTty () : string option =
         out.Append "\x1b[J" |> ignore
 
         let env = currentEnv.Value
-
-        let isKnown n =
-            Map.containsKey n env.Values
-            || Map.containsKey n env.Modules
-            || Builtins.commandCallable.Contains n
+        let isKnown = knownIn env
 
         let mutable totalRows = 0
 
@@ -1371,8 +1405,9 @@ let private bindIt (ty: Ty) (v: Eval.Value) (env: State) : State =
 
 // the Ok-side rendering, shared by the single-line and multiline
 // submission paths [D:repl-multiline]
-let private evalCheckedBody (state: State) (chk: Script.CheckedStatement) : State =
+let private evalCheckedBody (source: string) (state: State) (chk: Script.CheckedStatement) : State =
     lastErrored <- false
+    lastStreamed <- None
 
     match chk.Kind with
     | Script.KType decl ->
@@ -1502,7 +1537,8 @@ let private evalCheckedBody (state: State) (chk: Script.CheckedStatement) : Stat
             (try
                 Console.Out.Flush()
                 Eval.inheritCommandStatement state.Values te
-                echoMeta $": {formatTy te.Ty}"
+                echoMeta (streamedEchoMeta te.Ty)
+                lastStreamed <- Some source
                 state
              with
              | Eval.ExitRequest _ -> reraise ()
@@ -1585,7 +1621,7 @@ let private evalCheckedBody (state: State) (chk: Script.CheckedStatement) : Stat
 // path's exact behaviour) — weir itself survives via the cancel
 // registration in setupLineEditor. The finally closes the eval->prompt
 // window; both no-op when there is no tty (piped REPL, Windows).
-let private evalChecked (state: State) (chk: Script.CheckedStatement) : State =
+let private evalChecked (source: string) (state: State) (chk: Script.CheckedStatement) : State =
     // the PROPERTY is the load-bearing half [D:repl-isig]: .NET re-applies
     // ITS OWN terminal notion when a child spawns (probed: a raw tcsetattr
     // sticks for ~10ms and the child still sees -isig), so the notion must
@@ -1596,7 +1632,7 @@ let private evalChecked (state: State) (chk: Script.CheckedStatement) : State =
         Term.restoreCooked ()
 
     try
-        evalCheckedBody state chk
+        evalCheckedBody source state chk
     finally
         if ttyEval then
             Console.TreatControlCAsInput <- true
@@ -1653,7 +1689,24 @@ let private glanceTable (width: int) (rows: (string * string) list) : string =
 /// ONE SOURCE [D:repl-directives]: the hover's own composition — the
 /// annotated signature (formatSignature over the builtinDocs params)
 /// plus renderBuiltinDoc. A hover improvement lifts #help for free.
-let private memberHelp (te: TypeEnv) (name: string) : string option =
+/// `color` [D:help-tint]: at a tty the signature tints STRUCTURALLY at
+/// composition (sigTintStyle — the input colorizer's palette) and the
+/// Example renders through Script.colorizeRepl itself — an example is
+/// weir code, so the live prompt and #help share one brain; false is
+/// the pinned piped/--repl-doc byte surface, untouched.
+let private memberHelp (color: bool) (te: TypeEnv) (name: string) : string option =
+    let style = if color then sigTintStyle else plainSigStyle
+    let fmtSig = formatSignatureWith style
+
+    let tintExample: string -> string =
+        if color then
+            fun ex ->
+                ex.Split '\n'
+                |> Array.map (Script.colorizeRepl (knownIn te))
+                |> String.concat "\n"
+        else
+            id
+
     let schemeOf (n: string) =
         match n.Split '.' with
         | [| m; mem |] -> te.Modules |> Map.tryFind m |> Option.bind (Map.tryFind mem)
@@ -1663,11 +1716,11 @@ let private memberHelp (te: TypeEnv) (name: string) : string option =
     | Some d, sch ->
         let sigLine =
             sch
-            |> Option.map (fun s -> formatSignature name d.Params s.Ty + "\n\n")
+            |> Option.map (fun s -> fmtSig name d.Params s.Ty + "\n\n")
             |> Option.defaultValue ""
 
-        Some(sigLine + Builtins.renderBuiltinDoc d)
-    | None, Some sch -> Some(formatSignature name [] sch.Ty)
+        Some(sigLine + Builtins.renderBuiltinDocWith tintExample d)
+    | None, Some sch -> Some(fmtSig name [] sch.Ty)
     | None, None -> None
 
 // the init file's /// docs [D:repl-init]: position-keyed attachments
@@ -1675,7 +1728,7 @@ let private memberHelp (te: TypeEnv) (name: string) : string option =
 // with its doc — and a failed init leaves this EMPTY, never stale
 let mutable private initDocs: Map<string, string list> = Map.empty
 
-let private helpDirective (te: TypeEnv) (arg: string) : string =
+let private helpDirective (color: bool) (te: TypeEnv) (arg: string) : string =
     match arg.Trim() with
     | "" ->
         // modules one per line with their one-source blurb [D:help-glance];
@@ -1719,7 +1772,7 @@ let private helpDirective (te: TypeEnv) (arg: string) : string =
         let owners = Check.ctorOwners te name |> String.concat ", "
         $"'{name}' is an ambiguous constructor; it is declared by: {owners} — rename one of the cases"
     | name ->
-        match memberHelp te name with
+        match memberHelp color te name with
         | Some h ->
             (match Map.tryFind name initDocs with
              | Some doc -> h + "\n" + (doc |> String.concat "\n")
@@ -1760,7 +1813,7 @@ let private helpDirective (te: TypeEnv) (arg: string) : string =
 /// to stdout — read-only, no user code, no eval. #find's fzf --preview
 /// is the caller; the e2e pin holds the byte equality.
 let replDocText (name: string) : string =
-    helpDirective initial.TypeEnv name
+    helpDirective false initial.TypeEnv name
 
 // ---- the tty help render [D:help-tint] -------------------------------
 // A doc's `code` spans tint cyan at a colored tty, the backticks
@@ -1769,7 +1822,9 @@ let replDocText (name: string) : string =
 // #find's selection and fallback); replDocText and piped output keep
 // the literal backticks (the pinned byte surface — and the stripped
 // tty, NO_COLOR / TERM=dumb, falls back to that spelling so the span
-// boundary is never lost).
+// boundary is never lost). The signature line and the Example block
+// tint upstream, at composition (memberHelp's colour flag) — this
+// regex never has to re-parse what helpDirective already knew.
 let private codeSpanRe = Text.RegularExpressions.Regex @"`([^`\n]+)`"
 
 /// the transform with the colour gate explicit — the unit pins' seam
@@ -1781,6 +1836,11 @@ let renderHelpText (color: bool) (s: string) : string =
 
 let private renderHelp (s: string) : string =
     renderHelpText Types.Color.onStdout.Value s
+
+/// the one tty #help pipeline — composition-time tint (signature,
+/// example) and the prose span pass share a single colour gate
+let private renderHelpDirective (te: TypeEnv) (arg: string) : string =
+    renderHelp (helpDirective Types.Color.onStdout.Value te arg)
 
 // ---- #find [D:help-find]: fuzzy help search over ONE candidate set —
 // every module (`Seq — blurb`) and every member (`Seq.map — glance`),
@@ -1881,14 +1941,23 @@ let private findDirective (te: TypeEnv) (query: string) =
 
     if interactive then
         match findFzf te query with
-        | Some name -> Console.WriteLine(renderHelp (helpDirective te name))
+        | Some name -> Console.WriteLine(renderHelpDirective te name)
         | None -> () // cancel: no output, the session continues
     else
         Console.WriteLine(renderHelp (findFallback te query))
 
 /// test seams [D:help-find] (the parseAliasLineForTest precedent): the
 /// deterministic pieces, against the builtin session env
-let helpTextForTest (arg: string) : string = helpDirective initial.TypeEnv arg
+let helpTextForTest (arg: string) : string = helpDirective false initial.TypeEnv arg
+
+/// the tty pipeline with the gate forced on [D:help-tint] — the unit
+/// pins' seam for the composed tint (signature, example, prose spans)
+let helpTintedForTest (arg: string) : string =
+    renderHelpText true (helpDirective true initial.TypeEnv arg)
+
+/// the example tint's resolver, exposed so the pins can call the input
+/// colorizer with the SAME verdict the help render uses [D:help-tint]
+let knownForTest: string -> bool = knownIn initial.TypeEnv
 let findFallbackForTest (query: string) : string = findFallback initial.TypeEnv query
 let findCandidatesForTest () : string list = findCandidates initial.TypeEnv
 
@@ -2054,13 +2123,28 @@ let private inferDirective (state: State) (rest: string) : State =
             elif name = "" || not (Char.IsUpper name[0]) then
                 Console.WriteLine $"#infer: the type name '{name}' must start with an uppercase letter"
                 state
+            elif Set.contains name (Infer.takenTypeNames Check.builtinTypeNames.Keys) then
+                // the 'as'-name is the USER'S choice [D:repl-infer]: a
+                // builtin name could never be referenced (the builtin
+                // wins every use), and renaming their choice silently
+                // would be worse — refuse with the teaching
+                Console.WriteLine
+                    $"#infer: '{name}' is a built-in type — a drafted '{name}' could never be referenced (the built-in wins every use); pick another 'as' name"
+
+                state
             else
                 match evalSource state sourceExpr with
                 | Error msg ->
                     Console.WriteLine msg
                     state
                 | Ok lines ->
-                    match Infer.infer Parser.keywords fmt name lines with
+                    // derived names dodge EVERY name the session already
+                    // resolves [D:repl-infer] — a taken landing would be
+                    // injected-and-shadowed, never usable
+                    let taken =
+                        Infer.takenTypeNames (Seq.append Check.builtinTypeNames.Keys (Map.keys state.TypeEnv.Types))
+
+                    match Infer.infer Parser.keywords taken fmt name lines with
                     | Error msg ->
                         Console.WriteLine msg
                         state
@@ -2366,7 +2450,7 @@ let rec private loop (state: State) =
         if t = "#quit" then
             ()
         elif t = "#help" || t.StartsWith "#help " then
-            Console.WriteLine(renderHelp (helpDirective state.TypeEnv (t.Substring 5)))
+            Console.WriteLine(renderHelpDirective state.TypeEnv (t.Substring 5))
             loop state
         elif t = "#find" || t.StartsWith "#find " then
             findDirective state.TypeEnv ((t.Substring 5).Trim())
@@ -2508,7 +2592,7 @@ let rec private loop (state: State) =
 
                             st
                         | Ok chk ->
-                            let st' = evalChecked st chk
+                            let st' = evalChecked ll.Text st chk
 
                             (if not lastErrored then
                                  // carry the REAL physical source (newlines +
@@ -2553,6 +2637,20 @@ let rec private loop (state: State) =
                 Console.WriteLine $"parse error: {d.Message}"
                 printHint state line
                 state
+            // the streamed-statement trap [D:repl-it]: the previous
+            // statement inherited the terminal [D:colour-inherit], so no
+            // value landed and `it` is unbound — the generic error (with
+            // its did-you-mean) reads as a regression; teach the `let`
+            // capture instead. The closing quote in the needle keeps
+            // 'iterations' and friends on the generic path.
+            | Error d when lastStreamed.IsSome && d.Message.StartsWith "unbound variable 'it'" ->
+                lastErrored <- true
+
+                d.Span
+                |> Option.iter (underline >> Types.Color.red Types.Color.onStdout.Value >> Console.WriteLine)
+
+                streamedItTeach lastStreamed |> List.iter Console.WriteLine
+                state
             | Error d ->
                 lastErrored <- true
 
@@ -2578,7 +2676,7 @@ let rec private loop (state: State) =
 
                 state
             | Ok chk ->
-                let next = evalChecked state chk
+                let next = evalChecked ll.Text state chk
 
                 (if not lastErrored then
                      // a single-line entry: physical source IS its own text

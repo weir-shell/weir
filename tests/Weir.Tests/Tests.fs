@@ -1994,6 +1994,130 @@ let boundaryTests =
               Expect.stringContains (errOf [ "s: [1, 2]" ]) "flow style is outside the yaml subset" "populated flow seq rejects"
               Expect.stringContains (errOf [ "- {a: 1}" ]) "flow style is outside the yaml subset" "populated flow in seq item rejects"
           }
+          test "multi-line quoted scalars read: flow folding, both quote styles, both positions [D:quoted-fold]" {
+              let docOf lines' =
+                  match Weir.Yaml.parseDocs (lines' |> List.mapi (fun i l -> i + 1, l)) with
+                  | Ok [ d ] -> d
+                  | other -> failtest $"parse: {other}"
+
+              let scalarOf d =
+                  match d with
+                  | Weir.Yaml.NMap([ (_, Weir.Yaml.NScalar(t, q, _)) ], _) -> t, q
+                  | other -> failtest $"expected one scalar entry, got {other}"
+
+              // the folding law (PyYAML-refereed set): one break folds to
+              // ONE SPACE; each empty continuation line contributes a
+              // NEWLINE; continuation indentation strips; trailing space
+              // before the closing quote is content
+              Expect.equal (scalarOf (docOf [ "k: 'a"; "  b'" ])) ("a b", true) "one break folds to a space"
+              Expect.equal (scalarOf (docOf [ "k: 'a"; ""; "  b'" ])) ("a\nb", true) "an empty line folds to a newline"
+              Expect.equal (scalarOf (docOf [ "k: 'a"; ""; ""; "  b'" ])) ("a\n\nb", true) "two empty lines, two newlines"
+              Expect.equal (scalarOf (docOf [ "k: 'trail"; "  end. '" ])) ("trail end. ", true) "trailing space inside the quote survives"
+              Expect.equal (scalarOf (docOf [ "k: 'it''s"; "  ok, it''s'" ])) ("it's ok, it's", true) "'' escapes mid-continuation"
+              // double-quoted: the single-line escape set extends across
+              // the fold (a \-escaped line break is NOT in the subset)
+              Expect.equal (scalarOf (docOf [ "k: \"a\\n x"; "  b\"" ])) ("a\n x b", true) "double-quoted folds, escapes resolve"
+
+              // the kubectl message form: colons inside, deeper continuations
+              Expect.equal
+                  (scalarOf (
+                      docOf
+                          [ "k: 'The node was low on resource: ephemeral-storage. Threshold quantity:"
+                            "    25462616238, available: 24515828Ki. '" ]
+                  ))
+                  ("The node was low on resource: ephemeral-storage. Threshold quantity: 25462616238, available: 24515828Ki. ", true)
+                  "the kubectl eviction message reads"
+
+              // sequence-item position; the plain sibling stays plain
+              match docOf [ "- 'a: x"; "  b'"; "- two" ] with
+              | Weir.Yaml.NSeq([ Weir.Yaml.NScalar("a: x b", true, 1); Weir.Yaml.NScalar("two", false, _) ], _) -> ()
+              | other -> failtest $"seq-item multiline: {other}"
+
+              // zero-indent-nested position: kubectl's List shape, the
+              // continuation consumed by the scalar, the sibling key intact
+              match docOf [ "items:"; "- status:"; "    message: 'a:"; "      b'"; "    reason: Evicted"; "kind: List" ] with
+              | Weir.Yaml.NMap([ ("items",
+                                  Weir.Yaml.NSeq([ Weir.Yaml.NMap([ ("status",
+                                                                     Weir.Yaml.NMap([ ("message", Weir.Yaml.NScalar("a: b", true, _))
+                                                                                      ("reason", Weir.Yaml.NScalar("Evicted", false, _)) ],
+                                                                                    _)) ],
+                                                                  _) ],
+                                                 _))
+                                 ("kind", Weir.Yaml.NScalar("List", false, _)) ],
+                                _) -> ()
+              | other -> failtest $"zero-indent nested multiline: {other}"
+
+              // the errors: unterminated (dedent or EOF before the close)
+              // names the OPENING line in the unclosed family; content
+              // after the closing quote names ITS line; a deeper line
+              // past the close has no owner
+              let errOf lines' =
+                  match Weir.Yaml.parseDocs (lines' |> List.mapi (fun i l -> i + 1, l)) with
+                  | Error e -> e
+                  | Ok d -> failtest $"expected an error, got {d}"
+
+              Expect.stringContains
+                  (errOf [ "a: 1"; "k: 'x"; "  y"; "z: 1" ])
+                  "line 2: unclosed single-quoted scalar"
+                  "a dedent before the close errors at the opening line"
+
+              Expect.stringContains (errOf [ "k: \"x" ]) "line 1: unclosed double-quoted scalar" "EOF before the close, same family"
+
+              Expect.stringContains
+                  (errOf [ "k: 'x"; "  y' junk" ])
+                  "line 2: content after the closing '"
+                  "content after the close errors with its line"
+
+              Expect.stringContains
+                  (errOf [ "k: 'x"; "  y'"; "  z: 1" ])
+                  "line 3: this line sits inside the quoted scalar's indentation but after its closing quote"
+                  "a deeper line past the close is named"
+          }
+          test "multi-line quoted: Norway stays string; the write side keeps its own spelling and roundtrips [D:quoted-fold]" {
+              let env2 = env |> declare "type QKV = { k: string }"
+
+              let evalStr prog =
+                  match Weir.Parser.parseStmt prog with
+                  | Ok(SExpr e) ->
+                      match Weir.Check.typecheck env2 e with
+                      | Ok te -> Weir.Eval.eval valueEnv te
+                      | Error terr -> failtest (formatError terr)
+                  | other -> failtest $"unexpected: {other}"
+
+              // the read holds the FOLDED content
+              Expect.equal
+                  (evalStr "([\"k: 'a: b\"; \"  c\"; \"\"; \"  d '\"] |> from yaml QKV).k")
+                  (VStr "a: b c\nd ")
+                  "the string field holds the folded content"
+
+              // `to yaml` re-emits weir's OWN spelling — the block scalar
+              // for a multiline string [D:block-scalars], never a
+              // multi-line QUOTED form — and reading that back yields the
+              // same string
+              Expect.equal
+                  (evalStr "let d = [\"k: 'a: b\"; \"  c\"; \"\"; \"  d '\"] |> from yaml QKV in d |> to yaml |> Seq.force |> show")
+                  (VStr "[\"k: |-\"; \"  a: b c\"; \"  d \"]")
+                  "the write side's own spelling, unchanged"
+
+              Expect.equal
+                  (evalStr
+                      "let d = [\"k: 'a: b\"; \"  c\"; \"\"; \"  d '\"] |> from yaml QKV in (d |> to yaml |> from yaml QKV).k == d.k")
+                  (VBool true)
+                  "the roundtrip pin"
+
+              // the Norway law across the fold: a folded quoted no-like
+              // value is a STRING even at a bool field
+              let env3 = env |> declare "type QB = { k: bool }"
+
+              match Weir.Parser.parseStmt "([\"k: 'no\"; \"  way'\"] |> from yaml QB).k" with
+              | Ok(SExpr e) ->
+                  match Weir.Check.typecheck env3 e with
+                  | Ok te ->
+                      let ex = Expect.throwsC (fun () -> Weir.Eval.eval valueEnv te |> ignore) id
+                      Expect.stringContains ex.Message "a quoted scalar is a string" "quotedness stays load-bearing across the fold"
+                  | Error terr -> failtest (formatError terr)
+              | other -> failtest $"unexpected: {other}"
+          }
           test "#infer sanitizes non-identifier keys: [<Wire>] over a valid ident; clean keys stay bare; collisions dedupe [D:infer-wire-sanitize]" {
               let inferStr (v: Value) =
                   match v with
@@ -5594,6 +5718,33 @@ let replEchoTests =
               // the let meta then has an EMPTY tail — no dangling teaching
               let meta = Weir.Repl.letEchoMeta "xs" (TSeq TStr) hint
               Expect.equal meta "xs : seq<string>" "no teaching, no trailing parenthetical"
+          }
+          test "the inherited-statement meta says the bytes streamed and 'it' did not bind [D:repl-it]" {
+              let meta = Weir.Repl.streamedEchoMeta (TSeq TStr)
+
+              Expect.equal
+                  meta
+                  ": seq<string> (streamed — not bound to 'it'; let x = … captures)"
+                  "the meta states the truth: streamed, not bound, and the capturing spelling"
+          }
+          test "the unbound-it teach after a streamed statement carries the command verbatim [D:repl-it]" {
+              let lines = Weir.Repl.streamedItTeach (Some "kubectl get po -A -o yaml")
+
+              Expect.equal
+                  lines
+                  [ "unbound variable 'it' — the last command streamed to the terminal; weir never held its output"
+                    "to capture (and bind 'it'): let x = kubectl get po -A -o yaml" ]
+                  "two lines: the honest error, then the copyable let"
+
+              // a sentinel-joined (assembled) or empty source cannot ride a
+              // one-line suggestion — the generic spelling instead
+              for src in [ Some "cmd\u0001more"; Some "   "; None ] do
+                  let generic = Weir.Repl.streamedItTeach src
+
+                  Expect.stringContains
+                      (List.item 1 generic)
+                      "let x = <the command>"
+                      "unclean source falls back to the generic spelling"
           }
           test "a failing #infer drafted type surfaces line:col + an offending-line snippet [D:infer-diagnostic]" {
               // a deliberately un-checkable drafted type: a leading-digit
@@ -18688,6 +18839,41 @@ let helpUxTests =
               let doc = Weir.Repl.replDocText "Yaml.merge"
               Expect.equal (Weir.Repl.renderHelpText false doc) doc "color off is byte-identity"
               Expect.stringContains doc "`yaml patch`" "the literal span spelling is the piped surface"
+              Expect.isFalse (doc.Contains "\x1b") "no ANSI in the piped bytes"
+          }
+          test "(j) tty signature tints structurally [D:help-tint]: name bold, types yellow, punctuation dim" {
+              let t = Weir.Repl.helpTintedForTest "Yaml.inferShape"
+
+              Expect.equal
+                  (t.Split '\n').[0]
+                  ("\x1b[1mYaml.inferShape\x1b[0m \x1b[2m(\x1b[0mlines\x1b[2m: \x1b[0m\x1b[33mseq<string>\x1b[0m\x1b[2m)\x1b[0m\x1b[2m : \x1b[0m\x1b[33mstring\x1b[0m")
+                  "the composed signature carries the input colorizer's palette"
+
+              // the style IS the colorizer's palette — Color functions, not
+              // restated codes; a hardcoded escape here would let them drift
+              Expect.equal (Weir.Types.sigTintStyle.Name "n") (Weir.Types.Color.bold true "n") "name = the head tint"
+              Expect.equal (Weir.Types.sigTintStyle.Ty "t") (Weir.Types.Color.yellow true "t") "types = the casing-law tint"
+              Expect.equal (Weir.Types.sigTintStyle.Punct "p") (Weir.Types.Color.dim true "p") "punctuation = dim"
+          }
+          test "(k) the example block IS the input colorizer's render [D:help-tint] — one brain" {
+              let ex = Weir.Builtins.builtinDocs["Yaml.inferShape"].Example |> Option.get
+
+              let expected =
+                  ex.Split '\n'
+                  |> Array.map (Weir.Script.colorizeRepl Weir.Repl.knownForTest)
+                  |> String.concat "\n"
+
+              Expect.stringContains
+                  (Weir.Repl.helpTintedForTest "Yaml.inferShape")
+                  expected
+                  "the tty example is colorizeRepl's own output, line for line"
+
+              Expect.isTrue (expected.Contains "\x1b[") "the pin is vacuous unless the example actually tints"
+          }
+          test "(l) piped signature and example carry zero ANSI (the pinned bytes)" {
+              let doc = Weir.Repl.replDocText "Yaml.inferShape"
+              Expect.stringContains doc "Yaml.inferShape (lines: seq<string>) : string" "the plain signature spelling"
+              Expect.stringContains doc "print (Yaml.inferShape sample)" "the plain example spelling"
               Expect.isFalse (doc.Contains "\x1b") "no ANSI in the piped bytes"
           } ]
 

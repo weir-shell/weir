@@ -977,6 +977,46 @@ echo "$ekout" | grep -qF "empty-string key" || fail "the empty-key drop must pri
 echo "$ekout" | grep -qF "a=2" || fail "the draft must read around the dropped empty key: $ekout"
 echo "e2e ok: a keyword key rides [<Wire>] and reads; an empty-string key drops loudly and reads around"
 
+# --- #infer taken-name guard (2026-09-18) [D:repl-infer] ---------------
+# a k8s secret VOLUME's `secret:` sub-object desires the name `Secret` —
+# a TAKEN name (the builtin): the old draft injected `type Secret` that
+# every `secret: Secret` field bypassed for the PRIMITIVE, so `from yaml`
+# refused ("a Secret must not cross"). The derived name now parent-
+# prefixes (VolumeSecret), loudly, and the draft reads the fixture clean.
+ivdir=$(mkweirtmp)
+cat > "$ivdir/pod-volumes.yaml" <<'YEOF'
+volumes:
+- name: creds
+  secret:
+    secretName: app-creds
+    defaultMode: 420
+YEOF
+ivout=$(printf '%s\n%s\n%s\n%s\n%s\n%s\n' \
+  "let raw = File.read \"$ivdir/pod-volumes.yaml\" |> Seq.force" \
+  '#infer raw from yaml as PodSpec' \
+  'let vol = raw |> from yaml PodSpec |> _.volumes |> Seq.head' \
+  'print vol.secret.secretName' \
+  'print (show vol.secret.defaultMode)' \
+  '#quit' | $BIN 2>&1)
+echo "$ivout" | grep -qF "defined: VolumeSecret, Volume, PodSpec (3 types)" \
+  || fail "the secret volume must draft VolumeSecret (parent-prefixed off the taken name): $ivout"
+echo "$ivout" | grep -qF "note: 'secret' would shadow the existing type 'Secret' — drafted as 'VolumeSecret'" \
+  || fail "the taken-name rename must print its note: $ivout"
+echo "$ivout" | grep -qF "app-creds" || fail "the renamed draft must READ the secret volume: $ivout"
+echo "$ivout" | grep -qF "420" || fail "the renamed draft must read the volume's int field: $ivout"
+echo "e2e ok: a k8s secret volume infers around the builtin Secret (VolumeSecret, noted) and reads clean"
+
+# the 'as'-NAME colliding with a builtin refuses with the teaching — the
+# user chose the name, so renaming it silently would be worse
+asout=$(printf '%s\n%s\n%s\n' \
+  'let js = ["{\"x\": 1}"]' \
+  '#infer js from json as Secret' \
+  '#quit' | $BIN 2>&1)
+echo "$asout" | grep -qF "#infer: 'Secret' is a built-in type" || fail "a builtin 'as'-name must refuse: $asout"
+echo "$asout" | grep -qF "pick another 'as' name" || fail "the refusal must carry the teaching: $asout"
+echo "$asout" | grep -qF "defined:" && fail "a refused 'as'-name must define nothing: $asout" || true
+echo "e2e ok: '#infer … as Secret' refuses loudly (the builtin wins every use; pick another name)"
+
 # --- piped REPL multi-line assembly (2026-09-16) [D:repl-multiline] ----
 # a REDIRECTED REPL (printf … | weir) reads physical lines but must
 # ASSEMBLE a statement that spans several — heredoc, a multi-line `type`,
@@ -1300,6 +1340,9 @@ PYADP
 
     python3 "$(dirname "$0")/../tests/repl/cooked-trap.py" "$BIN" || fail "cooked trap / echo-once"
     echo "e2e ok: repl cooked-trap (one child run per echo, Enter survives a slow child)"
+
+    python3 "$(dirname "$0")/../tests/repl/repl-it-streamed.py" "$BIN" || fail "streamed-statement it teach"
+    echo "e2e ok: repl streamed statement — honest meta (not bound to it), targeted unbound-it teach, let/fresh/piped unchanged [D:repl-it]"
 
     python3 "$(dirname "$0")/../tests/repl/repl-directives.py" "$BIN" || fail "repl directives"
     echo "e2e ok: repl directives (#help x3, #quit, :q retired, comments no-op, #echo cap)"
@@ -5688,11 +5731,20 @@ items:
     conditions:
     - type: Ready
       status: "True"
+      message: 'Pod was rejected: The node had condition: [DiskPressure]. '
+    - type: PodScheduled
+      status: "False"
+      message: "0/3 nodes are available: 3 Insufficient memory.
+        preemption: not eligible."
     containerStatuses:
     - name: nginx
       ready: true
       restartCount: 0
       lastState: {}
+    message: 'The node was low on resource: ephemeral-storage. Threshold quantity:
+      25462616238, available: 24515828Ki. Container was using 54204Ki,
+      request is 0. '
+    reason: Evicted
 kind: List
 YEOF
 cat > "$ydir/infer.weir" <<'WEOF'
@@ -5704,10 +5756,10 @@ type Mount = { name: string; mountPath: string }
 type Container = { name: string; image: string; args: seq<string>; env: seq<Env>; ports: seq<Port>; resources: Yaml; volumeMounts: seq<Mount>; securityContext: Yaml }
 type Tol = { key: string; operator: string; effect: string; tolerationSeconds: int }
 type Volume = { name: string; emptyDir: Yaml }
-type Cond = { [<Wire "type">] kind: string; status: string }
+type Cond = { [<Wire "type">] kind: string; status: string; message: string }
 type CStat = { name: string; ready: bool; restartCount: int; lastState: Yaml }
 type Spec = { containers: seq<Container>; tolerations: seq<Tol>; volumes: seq<Volume> }
-type Status = { phase: string; conditions: seq<Cond>; containerStatuses: seq<CStat> }
+type Status = { phase: string; conditions: seq<Cond>; containerStatuses: seq<CStat>; message: string; reason: string }
 type Item = { apiVersion: string; kind: string; metadata: Meta; spec: Spec; status: Status }
 type List = { apiVersion: string; items: seq<Item>; kind: string }
 let text = File.read "kubectl-list.yaml" |> Seq.force
@@ -5718,12 +5770,21 @@ let c = pod.spec.containers |> Seq.head
 print $"container: {c.name} args: {show (Seq.length c.args)} port: {show (Seq.head c.ports).containerPort}"
 print $"owner: {(Seq.head pod.metadata.ownerReferences).kind}"
 print $"resources: {show c.resources}"
+print $"cond: {(Seq.head pod.status.conditions).message}"
+print $"sched: {(pod.status.conditions |> Seq.skip 1 |> Seq.head).message}"
+print $"evict: {pod.status.message}"
 WEOF
 out=$(cd "$ydir" && $BIN infer.weir)
 expect "a real kubectl List (zero-indent block seqs, nested) reads on the AOT binary" "items: 1 kind: List" "$out"
 expect "nested zero-indent seqs inside a seq item's map read (containers/args/ports)" "container: nginx args: 2 port: 80" "$out"
 expect "a same-indent ownerReferences seq under metadata reads" "owner: ReplicaSet" "$out"
 expect "an empty flow {} reads into a Yaml field as YMap []" "resources: YMap ([])" "$out"
+# [D:quoted-fold] the kubectl message forms: single-line quoted with
+# colons inside, and the multi-line quoted continuation (single AND
+# double quoted) — the fold is one space per break
+expect "a single-line quoted message with colons reads" "cond: Pod was rejected: The node had condition: [DiskPressure]. " "$out"
+expect "a multi-line DOUBLE-quoted message folds to one line" "sched: 0/3 nodes are available: 3 Insufficient memory. preemption: not eligible." "$out"
+expect "a multi-line single-quoted eviction message folds to one line" "evict: The node was low on resource: ephemeral-storage. Threshold quantity: 25462616238, available: 24515828Ki. Container was using 54204Ki, request is 0. " "$out"
 
 # the real file INFERS clean end-to-end: zero-indent seqs + empty flow
 # together, empty {} → opaque Yaml with a note (never a silent shape)

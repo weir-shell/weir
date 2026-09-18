@@ -313,6 +313,126 @@ let splitKey (lineNo: int) (s: string) : (string * string) option =
 
         if key = "" then None else Some(key, s.Substring(found + 1))
 
+// ---- multi-line quoted flow scalars [D:quoted-fold] ------------------------
+
+// find the CLOSING quote in a fragment already inside a quoted scalar:
+// double skips backslash escapes, single treats '' as the escaped
+// quote — the scan that decides where the value ends
+let private closeQuoteAt (dq: bool) (s: string) : int option =
+    let mutable i = 0
+    let mutable found = -1
+
+    while found < 0 && i < s.Length do
+        let c = s[i]
+
+        if dq then
+            if c = '\\' then i <- i + 2
+            elif c = '"' then found <- i
+            else i <- i + 1
+        elif c = '\'' then
+            if i + 1 < s.Length && s[i + 1] = '\'' then
+                i <- i + 2
+            else
+                found <- i
+        else
+            i <- i + 1
+
+    if found < 0 then None else Some found
+
+/// a quoted scalar whose closing quote sits on a LATER line
+/// [D:quoted-fold]. Continuation lines come from the RAW source (blank
+/// lines and `#`-shaped lines are bytes inside the quotes, exactly the
+/// block-scalar rule) and are CONSUMED by the scalar. YAML's flow
+/// folding: a line break folds to one space, each empty continuation
+/// line to one newline; continuation indentation strips (lines must sit
+/// right of the owning key/dash column); trailing space before the
+/// closing quote is content. Escapes resolve AFTER folding through
+/// scalarCore — one machine — so `''` and the double-quote escape set
+/// work mid-continuation (a `\`-escaped line break is NOT supported).
+/// Returns the node and the last raw line consumed.
+let private multilineQuoted
+    (raw: (int * string)[])
+    (openNo: int)
+    (parentIndent: int)
+    (afterQuote: string)
+    (dq: bool)
+    : Result<Node * int, string> =
+    let q = if dq then "\"" else "'"
+    let kind = if dq then "double" else "single"
+
+    let unterminated =
+        Error
+            $"line {openNo}: unclosed {kind}-quoted scalar — the closing {q} must appear before the block dedents to the key's column"
+
+    let segs = ResizeArray<string>()
+    let mutable i = 0
+
+    while i < raw.Length && fst raw[i] <= openNo do
+        i <- i + 1
+
+    let mutable frag = afterQuote
+    let mutable fragNo = openNo
+    let mutable result = None
+
+    while Option.isNone result do
+        match closeQuoteAt dq frag with
+        | Some idx ->
+            // content before the quote is verbatim (trailing space kept);
+            // the closing quote ends the value — anything after it on
+            // the line is an error, not a second value
+            if frag.Substring(idx + 1).Trim() <> "" then
+                result <-
+                    Some(Error $"line {fragNo}: content after the closing {q} — the quoted value ends at its closing quote")
+            else
+                segs.Add(frag.Substring(0, idx))
+                result <- Some(Ok fragNo)
+        | None ->
+            // a break follows: trailing whitespace folds away
+            segs.Add(frag.TrimEnd())
+
+            if i >= raw.Length then
+                result <- Some unterminated
+            else
+                let no, line = raw[i]
+                let l = (line.TrimEnd '\r')
+
+                if l.Trim() = "" then
+                    frag <- ""
+                    fragNo <- no
+                    i <- i + 1
+                elif indentOf l <= parentIndent then
+                    result <- Some unterminated
+                else
+                    frag <- l.TrimStart()
+                    fragNo <- no
+                    i <- i + 1
+
+    match result with
+    | Some(Error e) -> Error e
+    | Some(Ok lastNo) ->
+        // the fold: one break = one space; k empty lines = k newlines
+        let sb = System.Text.StringBuilder(segs[0])
+        let mutable pendingNl = 0
+
+        for k in 1 .. segs.Count - 1 do
+            if k < segs.Count - 1 && segs[k] = "" then
+                pendingNl <- pendingNl + 1
+            else
+                sb.Append(if pendingNl > 0 then String.replicate pendingNl "\n" else " ")
+                |> ignore
+
+                sb.Append segs[k] |> ignore
+                pendingNl <- 0
+
+        // escapes resolve through scalarCore on the re-wrapped body —
+        // safe because an unescaped closing quote cannot survive the
+        // scan into the fold
+        match scalarCore (q + sb.ToString() + q) with
+        | Ok(Some(text, _)) -> Ok(NScalar(text, true, openNo), lastNo)
+        | Ok None -> Ok(NScalar("", true, openNo), lastNo)
+        | Error msg -> Error $"line {openNo}: {msg}"
+    | None -> Error "unreachable: the scan loop exits only via Some"
+
 // ---- block scalars [D:block-scalars] --------------------------------------
 
 /// classify a value slot as a block scalar header: Ok keep? for `|`/`|-`,
@@ -454,6 +574,32 @@ let rec private parseBlock
                 $"line {n2}: this line is inside the block scalar's extent but outside its content (a dedented line above it ended the block)"
         | None -> blockScalar rawSrc no parentIndent keep
 
+    // a quoted value whose closing quote sits on a later line
+    // [D:quoted-fold]: the continuation lines belong to the SCALAR and
+    // must never reach the block parser. None = not that form — the
+    // single-line paths rule (a closed scalar, the other teachings,
+    // scalarCore's own unclosed error when no continuation exists)
+    let quotedValue (no: int) (parentIndent: int) (i: int) (j: int) (s: string) : Result<Node, string> option =
+        let t = s.Trim()
+        let dq = t.StartsWith "\""
+
+        if not (dq || t.StartsWith "'") then
+            None
+        else
+            match scalarCore s with
+            | Ok _ -> None
+            | Error msg when not (msg.StartsWith "unclosed") -> None
+            | Error _ ->
+                match multilineQuoted rawSrc no parentIndent (t.Substring 1) dq with
+                | Error e -> Some(Error e)
+                | Ok(node, lastNo) ->
+                    // the extent guard, as blockValue's: a deeper line
+                    // AFTER the closing quote has no owner
+                    match lines[i + 1 .. j - 1] |> Array.tryFind (fun (n2, _) -> n2 > lastNo) with
+                    | Some(n2, _) ->
+                        Some(Error $"line {n2}: this line sits inside the quoted scalar's indentation but after its closing quote")
+                    | None -> Some(Ok node)
+
     // is the (content) line at `k` a block-sequence item at exactly
     // `col`? kubectl's zero-indent form puts a sequence at the SAME
     // column as its parent mapping key
@@ -550,10 +696,13 @@ let rec private parseBlock
 
                                         parseBlock rawSrc shifted 0 shifted.Length (indent + 2)
                                     | None ->
-                                        if j > i + 1 then
-                                            Error $"line {no}: a scalar sequence item cannot have a nested block"
-                                        else
-                                            parseScalar no inline'
+                                        match quotedValue no indent i j inline' with
+                                        | Some r -> r
+                                        | None ->
+                                            if j > i + 1 then
+                                                Error $"line {no}: a scalar sequence item cannot have a nested block"
+                                            else
+                                                parseScalar no inline'
 
                         match itemR with
                         | Error e -> Error e
@@ -608,12 +757,17 @@ let rec private parseBlock
                                                     parseBlock rawSrc lines (i + 1) j (indentOf (snd lines[i + 1]))
                                                 else
                                                     Ok(NNull no)
-                                            elif j > i + 1 then
-                                                Error $"line {no}: '{key}' has both an inline value and a nested block"
                                             else
-                                                match emptyFlow no rest with
-                                                | Some node -> Ok node
-                                                | None -> parseScalar no rest
+                                                match quotedValue no indent i j rest with
+                                                | Some r -> r
+                                                | None ->
+                                                    if j > i + 1 then
+                                                        Error
+                                                            $"line {no}: '{key}' has both an inline value and a nested block"
+                                                    else
+                                                        match emptyFlow no rest with
+                                                        | Some node -> Ok node
+                                                        | None -> parseScalar no rest
 
                                     match valueR with
                                     | Error e -> Error e

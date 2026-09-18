@@ -1,5 +1,61 @@
 # Changelog
 
+## v0.0.43
+
+### Changed
+
+- **The help tint covers the signature line and the example block.**
+  `#help`'s signature renders structurally at a tty — name bold, types
+  in the colorizer's own yellow, punctuation dim — and the example
+  block goes through the live prompt's colorizer itself, so the two
+  can never drift. Piped output, `--repl-doc`, and `NO_COLOR` keep
+  the plain bytes.
+
+### Fixed
+
+- **A streamed REPL statement no longer looks like it bound `it`.** A
+  bare command at a tty streams straight to the terminal (the
+  colour-inherit path — weir never holds the bytes), so `it` does not
+  bind — but the meta line read a bare `: seq<string>`, as if a value
+  landed, and the next `it` errored with the generic unbound message.
+  The meta now says `: seq<string> (streamed — not bound to 'it';
+  let x = … captures)`, and an `it` right after a streamed statement
+  gets a targeted teach naming the repair with the command verbatim:
+  `to capture (and bind 'it'): let x = kubectl get po -A -o yaml`. A
+  fresh session's `it` keeps the ordinary error; the piped REPL's
+  byte surface is unchanged (a piped bare command still binds `it`).
+
+- **`#infer` derived names dodge taken type names.** A drafted type
+  landing on a name the session already resolves was
+  injected-and-shadowed: a k8s volume's `secret:` sub-object drafted
+  `type Secret`, every `secret: Secret` field resolved to the builtin
+  redaction type instead, and `from json`/`from yaml` refused with
+  "a Secret must not cross" (a prelude name like `Yaml` died earlier,
+  at injection). A derived name colliding with any in-scope type —
+  primitive spelling, prelude/builtin nominal, or session-declared —
+  now parent-prefixes (`VolumeSecret`) with a printed note naming the
+  rename; same-shape dedup between inferred types is unchanged. The
+  `as` name stays the user's: one that collides with a builtin
+  refuses with a teaching instead of being renamed silently.
+
+- **Multi-line quoted scalars read.** `kubectl get po
+  -A -o yaml` evicted-pod `message:` values — a quoted scalar whose
+  closing quote sits on a later, deeper-indented line — errored
+  `'message' has both an inline value and a nested block` (the
+  continuation lines were taken for a nested block). The yaml subset
+  now reads multi-line single- and double-quoted scalars with YAML's
+  flow folding, PyYAML-refereed: a line break folds to one space,
+  each empty continuation line contributes a newline, continuation
+  indentation strips, and trailing space before the closing quote is
+  content. `''` and the double-quote escape set work across lines (a
+  `\`-escaped line break is not in the subset); the continuation
+  lines belong to the scalar — map-value and sequence-item position,
+  any depth, zero-indent sequences included. Unterminated quotes
+  error at the opening line in the unclosed family; content after the
+  closing quote errors at its own line. Quotedness stays load-bearing
+  across the fold (a folded `no` is still a string), and the write
+  side is untouched — weir never emits the multi-line quoted form.
+
 ## v0.0.42
 
 ### Changed
