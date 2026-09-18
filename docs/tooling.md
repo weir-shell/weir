@@ -23,6 +23,7 @@ usage: weir                                    the REPL
        weir add sig <tool>                     generate a command signature from the installed binary
        weir add schema <url> --as <name>       fetch an external contract, lock it
        weir add module <src>//<file>@<ref> --as <name>  vendor a remote module, lock it
+       weir gen types --schema <name>          generate weir types from a locked schema
        weir restore                            re-materialize the lock's artifacts
        weir verify                             vendored contracts vs the lock
        weir --version                          the build stamp
@@ -66,6 +67,9 @@ These maintain the [`.weir/` tree](#project-layout-weir):
   `.weir/schemas/`, lock it ([schemas](#yaml-schemas)).
 - `weir add module <src>//<file>@<ref> --as <name>` — vendor a remote
   module into `.weir/modules/`, lock it ([modules](#remote-modules)).
+- `weir gen types --schema <name>` — generate weir `type` declarations
+  from a locked schema into `.weir/types/<name>.weir`
+  ([types from a schema](#types-from-a-schema)).
 - `weir restore` — re-materialize everything the lock records,
   hash-verified — absent files are fetched, and a present-but-modified
   URL artifact is repaired by refetching (the lock is the intent). The
@@ -186,6 +190,59 @@ The schema validates what the checker can see. The teaching version
 — templates, block scalars, splices-as-nodes — lives in the
 [guide](GUIDE.md#commands-and-processes).
 
+### Types from a schema
+
+The same locked schema can generate the `from json`/`from yaml` types
+for you — the contract-grade sibling of the REPL's
+[`#infer`](repl.md#infer-draft-types-from-a-sample):
+
+```text
+weir gen types --schema pod [--as Pod] [--out <path>|-]
+```
+
+This reads the vendored `.weir/schemas/pod.json` (never the network),
+turns it into a declaration-only weir module at `.weir/types/pod.weir`,
+and prints the import line. `#infer` drafts from a sample and can only
+see what the sample had — a container without `env` in the next run
+breaks the drafted type; the schema carries the facts no sample can:
+a member of `required` generates a plain field, anything else
+generates `Option<…>`, `additionalProperties` generates the
+`seq<string * V>` mapping, and `$ref` definition names become type
+names (`io.k8s.api.core.v1.PodSpec` → `PodSpec`).
+
+The mapping rules, each deliberate: nullable spellings
+(`type: [.., "null"]` / `nullable: true`) fold into `Option`;
+`allOf` of one-ref-plus-annotations flattens (the k8s idiom); an
+`enum` generates `string` plus a `//` note listing the values (string
+unions are a stated follow-up); `anyOf` takes the first variant with
+a verify note; a self-referential definition stays opaque (`Yaml`)
+with a note — every place the schema could not decide is a `// note:`
+line in the file, never a silent guess. Field names ride the same
+`[<Wire>]` sanitizer `#infer` uses, so a `type:` key generates
+`[<Wire "type">] kind`.
+
+The generated file is **user-owned**: edit it freely — nothing
+regenerates it behind you (the signatures posture); re-running
+`weir gen types` is the explicit refresh, and it overwrites. It is
+deliberately **not locked**: `add`'s invariant is
+artifact-plus-lock-entry together, and this module is yours after
+generation — its provenance header records the schema name and lock
+hash instead. Generation is deterministic (the same locked schema
+produces byte-identical output) and validated before writing: the
+emitted module runs through the real checker, and a schema producing
+unrepresentable weir refuses with the reason (nothing lands).
+
+Import it anywhere under the project — the `weir:` namespace resolves
+vendored modules first, then generated types:
+
+```text
+import "weir:pod" as Pod
+let p = kubectl get pod web -o json |> from json Pod
+```
+
+(Type names resolve bare across the import boundary, so the adapter
+slot takes `Pod`, not `Pod.Pod`.)
+
 ## Remote modules
 
 Share code across repos by vendoring it — a fetch, not a package
@@ -250,6 +307,7 @@ one directory:
   sigs/<tool>.weir   # command signatures (weir add sig)
   schemas/<name>.json# JSON schemas (weir add schema)
   modules/<name>.weir# vendored modules (weir add module)
+  types/<name>.weir  # generated, user-owned type modules (weir gen types — not locked)
 ```
 
 A script finds its `.weir/` by walking up from its own directory to

@@ -226,7 +226,11 @@ reads as `seq<Name>`.
 
 The output is ordinary `type` decls you own and edit — this is the
 `weir add schema` category, not check-time inference (`check` never
-evaluates; `from json` never sniffs). Array elements MERGE: the
+evaluates; `from json` never sniffs). When the shape has a published
+JSON Schema, generate the types from the CONTRACT instead:
+[`weir gen types`](tooling.md#types-from-a-schema) reads a locked
+schema and knows what no sample can — `required` vs optional,
+`additionalProperties`, the definition names. Array elements MERGE: the
 element type is the union of every element's keys, a key absent in
 some elements drafts `Option<T>` — one sample of a k8s List sees the
 optional fields its items disagree on. Where the sample still cannot

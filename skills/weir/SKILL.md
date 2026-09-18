@@ -1449,6 +1449,19 @@ type Bad = C of int
   refuse (a patch is partial); `Yaml.parse` can never produce a
   tombstone (parsed text is data). The file round-trip is composition:
   `File.read f |> Yaml.parse |> Yaml.merge p |> to yaml |> File.write f`.
+- The typed-boundary TIERING [D:schema-types]: `#infer`/`inferShape`
+  SCAFFOLD from a sample (they see only what the sample had); a
+  published JSON Schema is a CONTRACT — `weir gen types --schema
+  <name>` (CLI, after `weir add schema … --as <name>`) generates a
+  user-owned decl-only module at `.weir/types/<name>.weir` from the
+  locked schema, where `required` decides plain-vs-`Option`,
+  `additionalProperties` becomes the `seq<string * V>` mapping, and
+  `$ref` definition names become type names; import it with
+  `import "weir:<name>" as X` (type names resolve bare in the
+  adapter slot). `from table` stays the tier for tools with no
+  schema at all. The generated file is yours — regeneration is an
+  explicit re-run, and every place the schema could not decide is a
+  `// note:` line, never a silent guess.
 - `Json.inferShape`/`Yaml.inferShape`/`Table.inferShape : seq<string>
   -> string` draft named `type` declarations from a SAMPLE
   [D:repl-infer] — the `weir add schema` category (external structure
