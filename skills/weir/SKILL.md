@@ -1078,7 +1078,11 @@ print x
   `Env.vars` sorts the same way. `name` is for MATCHING and display,
   `path` for handing to `File.*` — name derives from path, never the
   reverse (a later `cd` makes name→path ambiguous), which is why both
-  ride the row. `^ls` forces the external. Builtins WITHOUT a
+  ride the row. `^ls` forces the external — use `^` only at a REAL
+  conflict (a binding/alias shadows the tool you mean); a head that
+  checks bare has no conflict, and a habitual `^` degrades the signal
+  (the checker catches future shadowing loudly — expression mode, not
+  a silent tool swap). Builtins WITHOUT a
   qualified spelling (`cd`, `pwd`, `print`, `printerr`, `show`,
   `exit`, `fail`, `into`, `not`, `fst`, `snd`, `nats`) are RESERVED
   binder names [D:reserve-builtins] — a binding would shadow them for
