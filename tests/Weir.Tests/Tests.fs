@@ -2412,6 +2412,145 @@ let boundaryTests =
 
               Expect.stringContains nested "ROOT" "nested holder teaching"
           }
+          test "schema-types: the mapping rules, pinned one by one [D:schema-types]" {
+              let gen src =
+                  match Weir.Contracts.parseSchema "t" src with
+                  | Error e -> failtest e
+                  | Ok doc ->
+                      match Weir.SchemaTypes.moduleText Weir.Parser.keywords Set.empty "t" None "0123456789abcdef" "http://src" doc with
+                      | Ok g -> g
+                      | Error e -> failtest e
+
+              let g =
+                  gen
+                      """{ "type": "object",
+                           "required": ["name", "deadline"],
+                           "properties": {
+                             "name": { "type": "string" },
+                             "image": { "type": "string" },
+                             "deadline": { "type": ["integer", "null"] },
+                             "hostIP": { "type": "string", "nullable": true },
+                             "labels": { "type": "object", "additionalProperties": { "type": "string" } },
+                             "phase": { "type": "string", "enum": ["Pending", "Running"] },
+                             "port": { "anyOf": [{ "type": "integer" }, { "type": "string" }] },
+                             "type": { "type": "string" },
+                             "replicas": { "type": "integer" },
+                             "ratio": { "type": "number" },
+                             "ready": { "type": "boolean" } } }"""
+
+              // required member → plain field; absent from required → Option
+              Expect.stringContains g.Text "\n    name: string\n" "required string stays plain"
+              Expect.stringContains g.Text "image: Option<string>" "optional → Option — the fact no sample carries"
+              // type ["X","null"] and nullable: true → Option, never doubled
+              Expect.stringContains g.Text "deadline: Option<int>" "the type-array null spelling → Option<int>, wrapped once"
+              Expect.stringContains g.Text "hostIP: Option<string>" "nullable: true → Option"
+              // additionalProperties object → the open mapping
+              Expect.stringContains g.Text "labels: Option<seq<string * string>>" "additionalProperties → seq<string * V>"
+              // enum → string + a note listing the values
+              Expect.stringContains g.Text "phase: Option<string>" "enum drafts string"
+              Expect.stringContains g.Text "an enum of 'Pending', 'Running'" "the enum note lists the values"
+              // anyOf scalar alternatives → string + the convert note
+              Expect.stringContains g.Text "port: Option<string>" "IntOrString drafts string"
+              Expect.stringContains g.Text "allows integer/string" "the IntOrString note names both kinds"
+              // a keyword wire key rides the sanitizer
+              Expect.stringContains g.Text "[<Wire \"type\">]\n    kind: Option<string>" "keyword keys ride [<Wire>]"
+              // scalars
+              Expect.stringContains g.Text "replicas: Option<int>" "integer → int"
+              Expect.stringContains g.Text "ratio: Option<float>" "number → float"
+              Expect.stringContains g.Text "ready: Option<bool>" "boolean → bool"
+              // fields are ALPHABETICAL by wire key — the determinism law
+              let namePos = g.Text.IndexOf "\n    name:"
+              let imagePos = g.Text.IndexOf "\n    image:"
+              Expect.isTrue (imagePos < namePos && imagePos > 0) "fields sort alphabetically"
+          }
+          test "schema-types: refs name types, allOf flattens, arrays nest, cycles keep opaque [D:schema-types]" {
+              let genAs asName src =
+                  match Weir.Contracts.parseSchema "t" src with
+                  | Error e -> failtest e
+                  | Ok doc ->
+                      Weir.SchemaTypes.moduleText Weir.Parser.keywords Set.empty "k8s-pod" asName "0123456789abcdef" "http://src" doc
+
+              let podSrc =
+                  """{ "$ref": "#/definitions/io.k8s.api.core.v1.Pod",
+                       "definitions": {
+                         "io.k8s.api.core.v1.Pod": {
+                           "type": "object", "required": ["spec"],
+                           "properties": {
+                             "metadata": { "allOf": [{ "$ref": "#/definitions/io.k8s.apimachinery.pkg.apis.meta.v1.ObjectMeta" }, { "description": "std" }] },
+                             "spec": { "$ref": "#/definitions/io.k8s.api.core.v1.PodSpec" } } },
+                         "io.k8s.apimachinery.pkg.apis.meta.v1.ObjectMeta": {
+                           "type": "object", "properties": { "name": { "type": "string" } } },
+                         "io.k8s.api.core.v1.PodSpec": {
+                           "type": "object", "required": ["containers"],
+                           "properties": { "containers": { "type": "array", "items": { "$ref": "#/definitions/io.k8s.api.core.v1.Container" } } } },
+                         "io.k8s.api.core.v1.Container": {
+                           "type": "object", "required": ["name"],
+                           "properties": { "name": { "type": "string" }, "env": { "type": "array", "items": { "type": "string" } } } } } }"""
+
+              let g =
+                  match genAs None podSrc with
+                  | Ok g -> g
+                  | Error e -> failtest e
+
+              // a $ref's definition key names the type by its LAST segment
+              Expect.stringContains g.Text "type PodSpec = {" "def name → last dot-segment"
+              Expect.stringContains g.Text "type Container = {" "container named from its def"
+              // allOf of one-ref-plus-annotations flattens to the ref
+              Expect.stringContains g.Text "metadata: Option<ObjectMeta>" "allOf-of-one-ref flattens; optional wraps"
+              // array of refs
+              Expect.stringContains g.Text "containers: seq<Container>" "required array of refs"
+              Expect.stringContains g.Text "env: Option<seq<string>>" "optional scalar array"
+              // the top name defaults to the root ref's stem; --as overrides
+              Expect.equal g.TopType "Pod" "root ref names the top"
+              Expect.stringContains g.Text "module K8sPod" "module name derives from the schema name"
+
+              let g2 =
+                  match genAs (Some "Manifest") podSrc with
+                  | Ok g -> g
+                  | Error e -> failtest e
+
+              Expect.equal g2.TopType "Manifest" "--as names the top type"
+              Expect.stringContains g2.Text "type Manifest = {" "--as lands on the declaration"
+
+              // DETERMINISM: same locked schema → byte-identical output
+              let g3 =
+                  match genAs None podSrc with
+                  | Ok g -> g
+                  | Error e -> failtest e
+
+              Expect.equal g3.Text g.Text "generate twice, byte-equal"
+
+              // a CYCLE (JSONSchemaProps' shape) keeps the opaque posture
+              let cyc =
+                  match
+                      genAs
+                          None
+                          """{ "$ref": "#/definitions/Props",
+                               "definitions": { "Props": { "type": "object", "properties": {
+                                 "name": { "type": "string" },
+                                 "items": { "type": "array", "items": { "$ref": "#/definitions/Props" } } } } } }"""
+                  with
+                  | Ok g -> g
+                  | Error e -> failtest e
+
+              Expect.stringContains cyc.Text "items: Option<seq<Yaml>>" "a self-ref field keeps opaque Yaml"
+              Expect.stringContains cyc.Text "self-referential" "the cycle note fires"
+
+              // UNREPRESENTABLE top level REFUSES with the located reason
+              let refusal =
+                  match genAs None """{ "type": "string" }""" with
+                  | Error e -> e
+                  | Ok g -> failtest $"expected a refusal, got {g.Text}"
+
+              Expect.stringContains refusal "no record to generate" "a scalar top refuses, teaching"
+
+              let mapTop =
+                  match genAs None """{ "type": "object", "additionalProperties": { "type": "string" } }""" with
+                  | Error e -> e
+                  | Ok g -> failtest $"expected a refusal, got {g.Text}"
+
+              Expect.stringContains mapTop "seq<string * string>" "an open-mapping top names the direct read spelling"
+          }
           test
               "district mid-line #: the five cases — comment cut, quoted/hole/glued data, block bytes [D:district-hash]" {
               let asm lines' =
