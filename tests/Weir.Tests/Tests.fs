@@ -5947,32 +5947,104 @@ let replEchoTests =
               let meta = Weir.Repl.letEchoMeta "xs" (TSeq TStr) hint
               Expect.equal meta "xs : seq<string>" "no teaching, no trailing parenthetical"
           }
-          test "the inherited-statement meta says the bytes streamed and 'it' did not bind [D:repl-it]" {
-              let meta = Weir.Repl.streamedEchoMeta (TSeq TStr)
-
+          test "the streamed-it misuse repair carries the command verbatim [D:repl-it]" {
               Expect.equal
-                  meta
-                  ": seq<string> (streamed — not bound to 'it'; let x = … captures)"
-                  "the meta states the truth: streamed, not bound, and the capturing spelling"
-          }
-          test "the unbound-it teach after a streamed statement carries the command verbatim [D:repl-it]" {
-              let lines = Weir.Repl.streamedItTeach (Some "kubectl get po -A -o yaml")
-
-              Expect.equal
-                  lines
-                  [ "unbound variable 'it' — the last command streamed to the terminal; weir never held its output"
-                    "to capture (and bind 'it'): let x = kubectl get po -A -o yaml" ]
-                  "two lines: the honest error, then the copyable let"
+                  (Weir.Repl.streamedItRepair (Some "kubectl get po -A -o yaml"))
+                  "to capture: let x = kubectl get po -A -o yaml"
+                  "one line: the copyable let with the recorded command"
 
               // a sentinel-joined (assembled) or empty source cannot ride a
               // one-line suggestion — the generic spelling instead
               for src in [ Some "cmd\u0001more"; Some "   "; None ] do
-                  let generic = Weir.Repl.streamedItTeach src
-
                   Expect.stringContains
-                      (List.item 1 generic)
+                      (Weir.Repl.streamedItRepair src)
                       "let x = <the command>"
                       "unclean source falls back to the generic spelling"
+          }
+          test "the it-rebinding matrix, FSI parity [D:repl-it]" {
+              // fresh session: unbound
+              Expect.equal (Weir.Repl.itSchemeForTest []) None "fresh session — it unbound"
+
+              // a non-unit expression rebinds
+              Expect.equal (Weir.Repl.itSchemeForTest [ "5" ]) (Some "int") "a non-unit expression binds it"
+
+              // a unit expression rebinds — unit included, FSI's rule
+              Expect.equal (Weir.Repl.itSchemeForTest [ "print \"x\"" ]) (Some "unit") "a unit expression binds it := ()"
+
+              // a `let` does NOT rebind — `let o = 10` binds no it
+              Expect.equal (Weir.Repl.itSchemeForTest [ "let o = 10" ]) None "a let binds its name, never it"
+
+              // and a later `let` leaves an earlier binding standing
+              Expect.equal
+                  (Weir.Repl.itSchemeForTest [ "5"; "let o = 10" ])
+                  (Some "int")
+                  "a let leaves the previous it untouched"
+          }
+          test "the echo normalizes type-var display: 'a1 -> 'a2 renders 'a -> 'b [D:repl-fn-echo]" {
+              Expect.equal (formatEchoTy (TFun(TVar "a1", TVar "a2"))) "'a -> 'b" "fresh names rename in order"
+
+              Expect.equal
+                  (formatEchoTy (TFun(TVar "a2", TFun(TVar "a2", TVar "b7"))))
+                  "'a -> 'a -> 'b"
+                  "a repeated var keeps one name"
+
+              Expect.equal
+                  (formatEchoTy (TFun(TSeq(TVar "a1"), TSeq TStr)))
+                  "seq<'a> -> seq<string>"
+                  "concrete types are untouched"
+          }
+          test "a builtin function value echoes the #help composition — one source, string-equal [D:repl-fn-echo]" {
+              let te = Weir.Builtins.typeEnv
+
+              let lines =
+                  Weir.Repl.functionEchoLines false 100 te (fun _ -> None) "Seq.map" |> Option.get
+
+              let d = Map.find "Seq.map" Weir.Builtins.builtinDocs
+              let sch = te.Modules["Seq"]["map"]
+
+              Expect.equal
+                  lines
+                  [ formatSignature "Seq.map" d.Params sch.Ty; (d.Summary.Split '\n')[0] ]
+                  "signature from formatSignature, glance from the doc's first line — the #help pieces exactly"
+          }
+          test "a bare-alias function value echoes its qualified home [D:repl-fn-echo]" {
+              let lines =
+                  Weir.Repl.functionEchoLines false 100 Weir.Builtins.typeEnv (fun _ -> None) "find"
+                  |> Option.get
+
+              Expect.isTrue (lines[0].StartsWith "Seq.find") "the bare alias names its home"
+          }
+          test "a session-defined function echoes its name, normalized scheme, and recorded definition line [D:repl-fn-echo]" {
+              let te =
+                  { Weir.Builtins.typeEnv with
+                      Values = Map.add "f" (Types.generalize (TFun(TInt, TInt))) Weir.Builtins.typeEnv.Values }
+
+              let defs n =
+                  if n = "f" then Some("let f x = x + 1", false) else None
+
+              Expect.equal
+                  (Weir.Repl.functionEchoLines false 100 te defs "f")
+                  (Some [ "f : int -> int"; "let f x = x + 1" ])
+                  "name : scheme, then the definition's first physical line"
+
+              // a multi-line definition clips to its first line + …
+              let te2 =
+                  { Weir.Builtins.typeEnv with
+                      Values = Map.add "g" (Types.generalize (TFun(TVar "a1", TVar "a2"))) Weir.Builtins.typeEnv.Values }
+
+              let defs2 n =
+                  if n = "g" then Some("let g x =", true) else None
+
+              Expect.equal
+                  (Weir.Repl.functionEchoLines false 100 te2 defs2 "g")
+                  (Some [ "g : 'a -> 'b"; "let g x = …" ])
+                  "multi-line shows the first line with an ellipsis; vars normalize"
+          }
+          test "an unnamed function value declines the mini-help — the plain echo stands [D:repl-fn-echo]" {
+              Expect.equal
+                  (Weir.Repl.functionEchoLines false 100 Weir.Builtins.typeEnv (fun _ -> None) "nosuchname")
+                  None
+                  "nothing to name — the caller falls back to <fun>/<builtin> : ty"
           }
           test "a failing #infer drafted type surfaces line:col + an offending-line snippet [D:infer-diagnostic]" {
               // a deliberately un-checkable drafted type: a leading-digit
