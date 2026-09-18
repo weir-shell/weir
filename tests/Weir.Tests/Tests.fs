@@ -18538,7 +18538,7 @@ let helpUxTests =
                   Expect.isTrue (b.Trim() <> "") $"the blurb for {m} is non-empty"
           }
           test "(a2) user-rendered text carries NO ledger citations" {
-              // [D:key] is the ledger's address space, not user vocabulary
+              // a decision citation is the ledger's address space, not user vocabulary
               // — a doc string reaches #help/hover/#find verbatim, so a
               // citation there is archaeology leaking. Comments are the
               // citations' home; the docs are enumerable, so pin them all.
