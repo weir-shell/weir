@@ -10,6 +10,12 @@ open Weir.Types
 let private preludeTypeEnv, _preludeValueEnv =
     Weir.Prelude.extend Weir.Builtins.typeEnv Weir.Builtins.valueEnv
 
+// the REAL taken set a fresh session starts from [D:repl-infer] — the
+// existing drafting pins below run against it, so they double as the
+// zero-movement guarantee: no builtin hit, no renaming
+let private takenBase: Set<string> =
+    Infer.takenTypeNames (Seq.append Check.builtinTypeNames.Keys (Map.keys preludeTypeEnv.Types))
+
 // probe 1: session TypeEnv injection — a `type` line checked through the
 // same path the REPL uses produces a new env whose `from json <Name>`
 // checks. We drive checkStatement exactly as Repl.fs does.
@@ -86,23 +92,23 @@ let probes =
 
           test "P4: note paths fire for empty/null/heterogeneous" {
               // empty array
-              let _, n1 = Infer.inferDecls Parser.keywords "T" (Infer.IObj [ "xs", Infer.IArr [] ])
+              let _, n1 = Infer.inferDecls Parser.keywords takenBase "T" (Infer.IObj [ "xs", Infer.IArr [] ])
               Expect.isTrue (n1 |> List.exists (fun n -> n.Contains "empty array")) "empty-array note"
               // null field
-              let _, n2 = Infer.inferDecls Parser.keywords "T" (Infer.IObj [ "v", Infer.INull ])
+              let _, n2 = Infer.inferDecls Parser.keywords takenBase "T" (Infer.IObj [ "v", Infer.INull ])
               Expect.isTrue (n2 |> List.exists (fun n -> n.Contains "null value")) "null note"
               // heterogeneous array
               let het =
                   Infer.IObj
                       [ "xs", Infer.IArr [ Infer.IObj [ "a", Infer.IInt ]; Infer.IObj [ "b", Infer.IStr ] ] ]
 
-              let _, n3 = Infer.inferDecls Parser.keywords "T" het
+              let _, n3 = Infer.inferDecls Parser.keywords takenBase "T" het
               Expect.isTrue (n3 |> List.exists (fun n -> n.Contains "heterogeneous")) "heterogeneous note"
           } ]
 
 // render the inferred declarations to ONE string for substring pins
 let private renderJson (topName: string) (json: string) : string =
-    match Infer.infer Parser.keywords Infer.Json topName [ json ] with
+    match Infer.infer Parser.keywords takenBase Infer.Json topName [ json ] with
     | Ok(decls, _) -> String.concat "\n" decls
     | Error e -> failtestf "infer failed: %s" e
 
@@ -228,7 +234,7 @@ let inferRules =
                   |> Seq.mapi (fun i k -> $"\"{k}\": {i}")
                   |> String.concat ", "
 
-              match Infer.infer Parser.keywords Infer.Json "Kw" [ "{" + sample + "}" ] with
+              match Infer.infer Parser.keywords takenBase Infer.Json "Kw" [ "{" + sample + "}" ] with
               | Error e -> failtestf "infer failed: %s" e
               | Ok(decls, _) ->
                   match checksAfterInject decls "[\"{\\\"in\\\": 0}\"] |> from json Kw |> _.inField |> print" with
@@ -237,7 +243,7 @@ let inferRules =
           }
 
           test "keyword key ROUNDTRIP: the draft checks, READS and WRITES the wire key [D:infer-wire-sanitize]" {
-              match Infer.infer Parser.keywords Infer.Json "InTy" [ "{\"in\": 2}" ] with
+              match Infer.infer Parser.keywords takenBase Infer.Json "InTy" [ "{\"in\": 2}" ] with
               | Error e -> failtestf "infer failed: %s" e
               | Ok(decls, _) ->
                   let script =
@@ -251,7 +257,7 @@ let inferRules =
           }
 
           test "the yaml twin: a keyword key sanitizes through the shared walker [D:infer-wire-sanitize]" {
-              match Infer.infer Parser.keywords Infer.Yaml "Y" [ "in: 2"; "clean: x" ] with
+              match Infer.infer Parser.keywords takenBase Infer.Yaml "Y" [ "in: 2"; "clean: x" ] with
               | Error e -> failtestf "yaml infer failed: %s" e
               | Ok(decls, _) ->
                   let out = String.concat "\n" decls
@@ -272,7 +278,7 @@ let inferRules =
               // string') and a field name cannot be empty — the machinery
               // cannot address an empty key, so the sanitizer drops it
               // LOUDLY and the readers' extra-key tolerance carries the rest
-              match Infer.infer Parser.keywords Infer.Json "Ek" [ "{\"\": 1, \"a\": 2}" ] with
+              match Infer.infer Parser.keywords takenBase Infer.Json "Ek" [ "{\"\": 1, \"a\": 2}" ] with
               | Error e -> failtestf "infer failed: %s" e
               | Ok(decls, notes) ->
                   let out = String.concat "\n" decls
@@ -294,14 +300,14 @@ let inferRules =
 
           test "an object of ONLY an empty key falls to the opaque posture" {
               let decls, notes =
-                  Infer.inferDecls Parser.keywords "T" (Infer.IObj [ "m", Infer.IObj [ "", Infer.IInt ] ])
+                  Infer.inferDecls Parser.keywords takenBase "T" (Infer.IObj [ "m", Infer.IObj [ "", Infer.IInt ] ])
 
               Expect.stringContains (String.concat "\n" decls) "m: Yaml" "nothing spellable remains — opaque Yaml"
               Expect.isTrue (notes |> List.exists (fun n -> n.Contains "empty-string key")) "the drop note fires"
           }
 
           test "round-trip: inferred decls check, and 'from json' lights up" {
-              match Infer.infer Parser.keywords Infer.Json "Cfg" [ "{\"host\": \"h\", \"port\": 8080}" ] with
+              match Infer.infer Parser.keywords takenBase Infer.Json "Cfg" [ "{\"host\": \"h\", \"port\": 8080}" ] with
               | Error e -> failtestf "infer failed: %s" e
               | Ok(decls, _) ->
                   match checksAfterInject decls "[\"{}\"] |> from json Cfg |> _.port |> print" with
@@ -310,11 +316,125 @@ let inferRules =
           }
 
           test "top-level array names the element" {
-              match Infer.infer Parser.keywords Infer.Json "User" [ "[{\"id\": 1}]" ] with
+              match Infer.infer Parser.keywords takenBase Infer.Json "User" [ "[{\"id\": 1}]" ] with
               | Ok(decls, notes) ->
                   Expect.stringContains (String.concat "\n" decls) "type User = {" "element named User"
                   Expect.isTrue (notes |> List.exists (fun n -> n.Contains "array")) "array note"
               | Error e -> failtestf "infer failed: %s" e
+          }
+
+          test "PROBE PIN: the parser eats the primitive spellings in FIELD position — a decl under one is injected-and-shadowed [D:repl-infer]" {
+              // the taken set's primitive completion holds exactly because
+              // `secret: Secret` in a drafted decl means the PRIMITIVE,
+              // whatever the session injects under that name — if the
+              // parser ever lets a session decl win here, this fails and
+              // takenTypeNames must be revisited
+              for prim in [ TDur; TInstant; TSize; TBytes; TSecret ] do
+                  let name = formatTy prim
+
+                  Expect.isTrue
+                      (Set.contains name (Infer.takenTypeNames []))
+                      $"'{name}' completes the taken set even with no live names"
+
+                  match Parser.parseStmt $"type Probe = {{ p: {name} }}" with
+                  | Result.Ok(Ast.SType decl) ->
+                      match decl.Body with
+                      | Ast.DRecord [ (_, ty, _) ] ->
+                          Expect.equal ty prim $"'{name}' in field position is the primitive"
+                      | other -> failtestf "unexpected decl body: %A" other
+                  | other -> failtestf "unexpected parse: %A" other
+
+              // the shadow is REAL end-to-end: the decl injects, then a
+              // record carrying the field refuses the Secret wire crossing
+              match injectBlock preludeTypeEnv "type Secret = {\n    secretName: string\n}" with
+              | Error m -> failtestf "the shadowed decl still injects (probe assumption): %s" m
+              | Ok env1 ->
+                  match injectBlock env1 "type V = {\n    secret: Secret\n}" with
+                  | Error m -> failtestf "the carrying decl checks: %s" m
+                  | Ok env2 ->
+                      match injectBlock env2 "let v = [\"{}\"] |> from json V" with
+                      | Ok _ -> failtest "reading a shadowed 'secret: Secret' field must refuse — the builtin won the reference"
+                      | Error m -> Expect.stringContains m "Secret must not cross" "the primitive wins the field use"
+          }
+
+          test "a 'secret' sub-object dodges the builtin: VolumeSecret drafted, noted, and the draft READS the sample [D:repl-infer]" {
+              let sample = "{\"volumes\": [{\"name\": \"x\", \"secret\": {\"secretName\": \"s\"}}]}"
+
+              match Infer.infer Parser.keywords takenBase Infer.Json "PodList" [ sample ] with
+              | Error e -> failtestf "infer failed: %s" e
+              | Ok(decls, notes) ->
+                  let out = String.concat "\n" decls
+                  Expect.stringContains out "type VolumeSecret = {" "the colliding name parent-prefixes"
+                  Expect.stringContains out "secret: VolumeSecret" "the field types as the renamed decl"
+                  Expect.isFalse (out.Contains "type Secret = {") "no drafted decl lands on the builtin name"
+
+                  Expect.isTrue
+                      (notes
+                       |> List.exists (fun n ->
+                           n.Contains "'secret' would shadow the existing type 'Secret'"
+                           && n.Contains "'VolumeSecret'"))
+                      "the rename is loud, never silent"
+
+                  let script =
+                      decls
+                      @ [ "let s = [\"{\\\"volumes\\\": [{\\\"name\\\": \\\"x\\\", \\\"secret\\\": {\\\"secretName\\\": \\\"s\\\"}}]}\"]"
+                          "let v = s |> from json PodList"
+                          "if (v.volumes |> Seq.head).secret.secretName <> \"s\" then fail \"the renamed draft did not read\"" ]
+
+                  Expect.equal (runFile script) 0 "the drafted types read the user's sample end-to-end"
+          }
+
+          test "the yaml twin: a secret volume drafts VolumeSecret and READS through from yaml [D:repl-infer]" {
+              let sample = [ "volumes:"; "- name: x"; "  secret:"; "    secretName: s" ]
+
+              match Infer.infer Parser.keywords takenBase Infer.Yaml "PodList" sample with
+              | Error e -> failtestf "yaml infer failed: %s" e
+              | Ok(decls, notes) ->
+                  let out = String.concat "\n" decls
+                  Expect.stringContains out "type VolumeSecret = {" "the shared walker renames for yaml too"
+                  Expect.stringContains out "secret: VolumeSecret" "the field types as the renamed decl"
+                  Expect.isTrue (notes |> List.exists (fun n -> n.Contains "would shadow")) "the note fires"
+
+                  let script =
+                      decls
+                      @ [ "let s = [\"volumes:\"; \"- name: x\"; \"  secret:\"; \"    secretName: s\"]"
+                          "let v = s |> from yaml PodList"
+                          "if (v.volumes |> Seq.head).secret.secretName <> \"s\" then fail \"the yaml draft did not read\"" ]
+
+                  Expect.equal (runFile script) 0 "the yaml draft reads the sample end-to-end"
+          }
+
+          test "a 'yaml' field dodges the prelude type: RootYaml drafted, and the draft checks + reads [D:repl-infer]" {
+              // before the guard this died at injection — checkDecl
+              // refuses a registered builtin name ('Yaml' is a built-in
+              // type), so #infer errored instead of drafting
+              match Infer.infer Parser.keywords takenBase Infer.Json "Root" [ "{\"yaml\": {\"a\": 1}}" ] with
+              | Error e -> failtestf "infer failed: %s" e
+              | Ok(decls, notes) ->
+                  let out = String.concat "\n" decls
+                  Expect.stringContains out "type RootYaml = {" "parent-prefixed off the top name"
+                  Expect.stringContains out "yaml: RootYaml" "the field types as the renamed decl"
+
+                  Expect.isTrue
+                      (notes
+                       |> List.exists (fun n -> n.Contains "'yaml' would shadow the existing type 'Yaml'"))
+                      "the note fires"
+
+                  match checksAfterInject decls "[\"{\\\"yaml\\\": {\\\"a\\\": 1}}\"] |> from json Root |> _.yaml |> _.a |> print" with
+                  | Ok() -> ()
+                  | Error m -> failtestf "the renamed draft must check and read: %s" m
+          }
+
+          test "same-shape dedup survives the rename: two secret volumes share ONE VolumeSecret [D:repl-infer]" {
+              let out =
+                  renderJson
+                      "PodList"
+                      "{\"volumes\": [{\"name\": \"a\", \"secret\": {\"secretName\": \"x\"}}, {\"name\": \"b\", \"secret\": {\"secretName\": \"y\"}}]}"
+
+              let count =
+                  System.Text.RegularExpressions.Regex.Matches(out, "type VolumeSecret = \\{").Count
+
+              Expect.equal count 1 "one renamed type, deduped"
           } ]
 
 // #save's bare-alias qualifier [D:repl-save]: span-based, string-safe

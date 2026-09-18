@@ -3980,7 +3980,11 @@ let private inferShapeImpl (fmt: Infer.Format) : Value =
         match v with
         | VSeq items ->
             let lines = items |> Seq.map asString
-            VStr(Infer.inferShapeText Parser.keywords fmt "Root" lines)
+            // the builtin's BASELINE taken set [D:repl-infer]: no session
+            // env here, so builtin + prelude nominals (registered by
+            // prelude-close, populated by call time) + the primitives
+            let taken = Infer.takenTypeNames Check.builtinTypeNames.Keys
+            VStr(Infer.inferShapeText Parser.keywords taken fmt "Root" lines)
         | v -> unreachable $"the checker rejects 'inferShape' on {formatValue v}")
 
 let private yamlModuleMembers: (string * Ty * Value) list =

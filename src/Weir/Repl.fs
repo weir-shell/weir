@@ -2123,13 +2123,28 @@ let private inferDirective (state: State) (rest: string) : State =
             elif name = "" || not (Char.IsUpper name[0]) then
                 Console.WriteLine $"#infer: the type name '{name}' must start with an uppercase letter"
                 state
+            elif Set.contains name (Infer.takenTypeNames Check.builtinTypeNames.Keys) then
+                // the 'as'-name is the USER'S choice [D:repl-infer]: a
+                // builtin name could never be referenced (the builtin
+                // wins every use), and renaming their choice silently
+                // would be worse — refuse with the teaching
+                Console.WriteLine
+                    $"#infer: '{name}' is a built-in type — a drafted '{name}' could never be referenced (the built-in wins every use); pick another 'as' name"
+
+                state
             else
                 match evalSource state sourceExpr with
                 | Error msg ->
                     Console.WriteLine msg
                     state
                 | Ok lines ->
-                    match Infer.infer Parser.keywords fmt name lines with
+                    // derived names dodge EVERY name the session already
+                    // resolves [D:repl-infer] — a taken landing would be
+                    // injected-and-shadowed, never usable
+                    let taken =
+                        Infer.takenTypeNames (Seq.append Check.builtinTypeNames.Keys (Map.keys state.TypeEnv.Types))
+
+                    match Infer.infer Parser.keywords taken fmt name lines with
                     | Error msg ->
                         Console.WriteLine msg
                         state

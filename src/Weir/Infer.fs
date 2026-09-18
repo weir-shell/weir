@@ -152,14 +152,36 @@ let private singularize (s: string) : string =
     else
         s
 
+// ---- the taken-name guard ---------------------------------------------
+// A drafted type must never LAND on a type name the session already
+// resolves [D:repl-infer]: `type Secret = { … }` injects, but every
+// `secret: Secret` annotation still resolves to the PRIMITIVE (the
+// parser eats Secret/Duration/Instant/Size/Bytes before any declared
+// type), and a registered builtin name (Yaml, Option, Retry, …) refuses
+// at checkDecl — either way the draft is shadowed or dead. Callers
+// thread the LIVE name set (env Types keys, Check.builtinTypeNames —
+// both compile after this file, the Parser.keywords precedent); the
+// primitive spellings are completed HERE from the renderer
+// (Types.formatTy), so no name is hand-spelled.
+
+/// the taken type-name set for a draft: the caller's live names
+/// (session Types keys and/or the registered builtin nominals)
+/// completed with the parser's primitive spellings
+let takenTypeNames (liveNames: string seq) : Set<string> =
+    [ Types.TDur; Types.TInstant; Types.TSize; Types.TBytes; Types.TSecret ]
+    |> List.map Types.formatTy
+    |> Set.ofList
+    |> Set.union (Set.ofSeq liveNames)
+
 // ---- the walker + naming pass -----------------------------------------
 // The registry disambiguates: a desired name maps to the shapes claimed
 // under it. Same field-name SAME shape dedups to one type; same name
-// DIFFERENT shape parent-prefixes (PodSpec / ContainerSpec). Children
+// DIFFERENT shape — or a name the environment already holds (`taken`) —
+// parent-prefixes (PodSpec / ContainerSpec, VolumeSecret). Children
 // resolve BEFORE their parent references them (bottom-up), so a field's
 // rendered type already carries the child's final name.
 
-type private Registry() =
+type private Registry(taken: Set<string>) =
     // desiredName -> list of (structural signature, finalName, fields)
     let claimed = System.Collections.Generic.Dictionary<string, ResizeArray<string * string * (string * string) list>>()
     // emission order preserved: finalName -> fields (rendered), in insert order
@@ -171,42 +193,66 @@ type private Registry() =
     member _.Decls = List.ofSeq order
 
     /// claim a record type for an object with `fields` (rendered field
-    /// types), desiring `desired`, whose parent stem is `parentStem`.
-    /// Returns the FINAL type name to reference.
-    member _.Claim (desired: string) (parentStem: string) (fields: (string * string) list) : string =
+    /// types), desiring `desired` (derived from the wire key `srcKey`),
+    /// whose parent stem is `parentStem`. Returns the FINAL type name
+    /// to reference.
+    member this.Claim (desired: string) (srcKey: string) (parentStem: string) (fields: (string * string) list) : string =
         let sign =
             fields
             |> List.sortBy fst
             |> List.map (fun (n, t) -> $"{n}:{t}")
             |> String.concat ";"
 
-        match claimed.TryGetValue desired with
-        | true, bucket ->
-            match bucket |> Seq.tryFind (fun (s, _, _) -> s = sign) with
-            | Some(_, fin, _) -> fin // DEDUP: same name, same shape
-            | None ->
-                // COLLISION: same name, different shape — parent-prefix
-                let candidate =
-                    let pfx = capitalize parentStem + desired
-                    if pfx <> desired && not (bucket |> Seq.exists (fun (_, f, _) -> f = pfx)) then pfx
-                    else desired + string (bucket.Count + 1)
+        let bucket =
+            match claimed.TryGetValue desired with
+            | true, b -> b
+            | _ ->
+                let b = ResizeArray<_>()
+                claimed[desired] <- b
+                b
 
-                bucket.Add(sign, candidate, fields)
-                order.Add(candidate, fields)
-                candidate
-        | _ ->
-            let bucket = ResizeArray<_>()
-            bucket.Add(sign, desired, fields)
-            claimed[desired] <- bucket
-            order.Add(desired, fields)
-            desired
+        match bucket |> Seq.tryFind (fun (s, _, _) -> s = sign) with
+        | Some(_, fin, _) -> fin // DEDUP: same name, same shape
+        | None ->
+            // a name is unusable when a sibling claim holds it OR the
+            // environment does — a taken landing would be shadowed
+            let inUse n =
+                Set.contains n taken || bucket |> Seq.exists (fun (_, f, _) -> f = n)
+
+            let candidate =
+                if bucket.Count = 0 && not (Set.contains desired taken) then
+                    desired
+                else
+                    // COLLISION (same name different shape, or taken by
+                    // the environment) — parent-prefix, numeric fallback
+                    let pfx = capitalize parentStem + desired
+
+                    if pfx <> desired && not (inUse pfx) then
+                        pfx
+                    else
+                        let mutable n = max 2 (bucket.Count + 1)
+
+                        while inUse (desired + string n) do
+                            n <- n + 1
+
+                        desired + string n
+
+            if Set.contains desired taken then
+                // the never-guess-silently convention [D:repl-infer]
+                this.AddNote $"'{srcKey}' would shadow the existing type '{desired}' — drafted as '{candidate}'"
+
+            bucket.Add(sign, candidate, fields)
+            order.Add(candidate, fields)
+            candidate
 
 // the first element that is not null decides an array's element shape;
 // a following DIFFERENT object shape flags heterogeneity (verify note)
 let private firstNonNull (xs: INode list) : INode option =
     xs |> List.tryFind (fun x -> x <> INull)
 
-let rec private shapeOf (reg: Registry) (desired: string) (parentStem: string) (node: INode) : string =
+// `srcKey` is the wire key (or top name) that produced `desired` — the
+// shadow note names the user's own spelling, not the derived stem
+let rec private shapeOf (reg: Registry) (desired: string) (srcKey: string) (parentStem: string) (node: INode) : string =
     match node with
     | IStr -> "string"
     | IInt -> "int"
@@ -250,9 +296,9 @@ let rec private shapeOf (reg: Registry) (desired: string) (parentStem: string) (
                 spellable
                 |> List.map (fun (k, v) ->
                     let childDesired = capitalize (identStem k)
-                    k, shapeOf reg childDesired thisStem v)
+                    k, shapeOf reg childDesired k thisStem v)
 
-            reg.Claim desired parentStem rendered
+            reg.Claim desired srcKey parentStem rendered
     | IArr items ->
         match items with
         | [] ->
@@ -283,7 +329,7 @@ let rec private shapeOf (reg: Registry) (desired: string) (parentStem: string) (
                 // seq FIELD (parentStem), so two same-named seqs under
                 // different parents disambiguate.
                 let elemDesired = capitalize (singularize (identStem desired))
-                let inner = shapeOf reg elemDesired parentStem elem
+                let inner = shapeOf reg elemDesired srcKey parentStem elem
                 $"seq<{inner}>"
 
 // ---- the public surface -----------------------------------------------
@@ -383,10 +429,15 @@ let private resolveFieldNames (reserved: Set<string>) (fields: (string * string)
 /// the inferred DECLARATIONS + printed notes, for a sample already lowered
 /// to an INode with a chosen top name. A top OBJECT is the named record;
 /// a top ARRAY (or jsonl) names the ELEMENT (the user writes seq<Name>).
-/// `reserved` is the parser's own keyword set (Weir.Parser.keywords) —
-/// threaded in because Parser compiles after this file.
-let inferDecls (reserved: Set<string>) (topName: string) (node: INode) : string list * Note list =
-    let reg = Registry()
+/// `reserved` is the parser's own keyword set (Weir.Parser.keywords);
+/// `taken` is the in-scope type-name set (takenTypeNames over the live
+/// env) that derived names must dodge — both threaded in because their
+/// sources compile after this file.
+let inferDecls (reserved: Set<string>) (taken: Set<string>) (topName: string) (node: INode) : string list * Note list =
+    // the top name is the CALLER'S choice, exempt from the guard: the
+    // REPL refuses a builtin 'as'-name outright, and re-inferring under
+    // a session name re-declares it (the REPL's redeclare semantics)
+    let reg = Registry(Set.remove topName taken)
 
     (match node with
      | IArr items ->
@@ -394,8 +445,8 @@ let inferDecls (reserved: Set<string>) (topName: string) (node: INode) : string 
 
          match firstNonNull items with
          | None -> reg.AddNote "an empty top-level array — element type unknown"
-         | Some elem -> shapeOf reg topName (identStem topName) elem |> ignore
-     | IObj _ -> shapeOf reg topName (identStem topName) node |> ignore
+         | Some elem -> shapeOf reg topName topName (identStem topName) elem |> ignore
+     | IObj _ -> shapeOf reg topName topName (identStem topName) node |> ignore
      | _ ->
          // a top-level scalar has no record to declare
          reg.AddNote "the sample's top level is a scalar — nothing to name; #infer drafts record shapes")
@@ -440,15 +491,21 @@ let nodeOf (fmt: Format) (lines: string seq) : Result<INode, string> =
     | Yaml -> yamlNode lines
 
 /// the whole pipeline for a chosen format + name: lines -> decls + notes
-let infer (reserved: Set<string>) (fmt: Format) (topName: string) (lines: string seq) : Result<string list * Note list, string> =
-    nodeOf fmt lines |> Result.map (fun node -> inferDecls reserved topName node)
+let infer
+    (reserved: Set<string>)
+    (taken: Set<string>)
+    (fmt: Format)
+    (topName: string)
+    (lines: string seq)
+    : Result<string list * Note list, string> =
+    nodeOf fmt lines |> Result.map (fun node -> inferDecls reserved taken topName node)
 
 /// the composable BUILTIN body: sample lines -> declaration TEXT (the
 /// notes ride as trailing `//` comment lines so the one-string return
 /// stays honest outside the REPL). Raises on a parse failure, the
 /// builtin-raise convention.
-let inferShapeText (reserved: Set<string>) (fmt: Format) (topName: string) (lines: string seq) : string =
-    match infer reserved fmt topName lines with
+let inferShapeText (reserved: Set<string>) (taken: Set<string>) (fmt: Format) (topName: string) (lines: string seq) : string =
+    match infer reserved taken fmt topName lines with
     | Error msg -> failwith msg
     | Ok(decls, notes) ->
         let noteLines = notes |> List.map (fun n -> $"// note: {n}")
