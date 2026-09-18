@@ -2,6 +2,63 @@
 
 ## v0.0.44
 
+### Added
+
+- **`Str.fields` and `Str.rsplit` — the shell's field splitting, as
+  members.** `Str.fields s` splits on whitespace runs and never
+  yields an empty piece (leading/trailing whitespace produces
+  nothing; a blank or empty string is the empty seq) — POSIX field
+  splitting with trim's whitespace class, so the kubectl-column
+  idiom is `line |> Str.fields |> Seq.item 1` instead of
+  `Str.rmatchAll @"(\S+)" line |> Seq.map Seq.head`. `Str.rsplit
+  pat s` splits on every regex match, pattern-first like the rest
+  of the r-family: `Str.split`'s empties law verbatim (adjacent
+  matches and edges yield `""`), capture groups never add pieces,
+  and a bad pattern raises like `rmatch`.
+
+- **Tab completes a bound map's keys.** With open maps first-class,
+  keys are data — no static pool can offer them. The REPL now reads
+  them from the value you already hold: inside the open key literal
+  of a pipe-form `Map.get`/`Map.tryGet`/`Map.has`,
+  `d |> Map.tryGet "Cor<TAB>` completes the bound value's own keys,
+  prefix-filtered, inside the quotes (no closing quote is added —
+  the path-in-quotes convention). The receiver must be a bare session
+  binding (`it` counts) whose value is already materialized — a map
+  or a forced pair-seq. Completion still never runs anything: a
+  pipeline receiver would need evaluating, so it completes nothing
+  (bind first — `let d = …` — and the keys complete), and an
+  unforced seq is never pulled.
+
+- **`from table T` reads aligned column output.** The shape `kubectl`
+  and `docker` print — one header row, aligned data rows — reads into
+  declared row records: `kubectl get po |> from table Pod` yields
+  `seq<Pod>`. Columns slice at header offsets, never whitespace runs,
+  so a spaced value (`Up 2 hours`) survives; a header boundary is a
+  run of two or more spaces, so `CONTAINER ID` stays one column (both
+  tools pad columns with three spaces). Fields match headers by
+  normalized name, case-insensitively (`podTemplateHash` reads
+  `POD-TEMPLATE-HASH`); `[<Wire "HEADER">]` matches a raw header
+  verbatim. Cells trim and type by the declared field
+  (string/int/float/bool); an `Option` field reads an empty or
+  `<none>` cell as `None`, and a required field refuses an absent
+  cell naming the `Option` repair. Extra columns are ignored, blank
+  lines skip, a header-only table is the empty seq, and every error
+  is located — a missing column lists the headers seen, a bad cell
+  carries its row line and column. Read-only: there is no `to table`.
+  `table` stays an ordinary identifier outside adapter position.
+
+- **`#infer … from table as Pod` drafts the row record.** The REPL
+  directive (and its composable core, `Table.inferShape`) scans a live
+  sample per column — all-int columns draft `int`, float/bool by
+  token, else `string`; a column with empty/`<none>` cells drafts
+  `Option` with a note — and prints that the value reads as
+  `seq<Pod>`. Headers sanitize to field names with `[<Wire>]` where
+  the spelling needs it, the taken-name guard included.
+
+  Note for the release flow: the external tree-sitter-weir grammar
+  needs the matching `table` adapter bump before the next release —
+  the grammar-currency gate will go red until it lands.
+
 ### Changed
 
 - **`#infer` merges array elements.** A drafted element type was the
@@ -33,6 +90,58 @@
   mappings read and roundtrip on both wire formats. An empty mapping
   writes `[]` and reads back empty — the roundtrip holds; `Map`,
   `jsonl`, and every existing shape are unchanged.
+
+- **`it` follows F# Interactive: expressions and commands always
+  rebind it; `let` never does.** Every expression and command
+  statement now binds `it` — unit included: a streamed bare command
+  binds `it := ()` (weir never held the bytes, so unit is the truth)
+  and the tty echoes `() : unit` for unit statements; a `let` binds
+  its name and nothing else (`let o = 10` binds no `it`, FSI's own
+  rule — previously the `let` RHS bound it and unit statements left
+  it alone). Directives still leave `it` untouched and a fresh
+  session's `it` stays unbound. The v0.0.43 streamed parenthetical
+  (`(streamed — not bound to 'it'; let x = … captures)`) reverts to
+  the plain `: seq<string>` — a standing teach on every command was
+  noise. The teach now fires only at misuse: using the unit-bound
+  `it` where unit fails the check (`#infer it from yaml`,
+  `it |> map …`) appends the capture repair to the located type
+  error, with the recorded command verbatim — `to capture: let x =
+  kubectl get po -A -o yaml`. The piped REPL's byte surface is
+  unchanged (a piped bare command still binds the value; unit stays
+  invisible there).
+
+- **A named function value echoes a mini-help.** A bare expression
+  evaluating to a function no longer echoes the opaque `<builtin> :
+  ty` / `<fun> : ty`. A builtin (a bare alias like `find` included —
+  it names its home, `Seq.find`) echoes the qualified signature plus
+  the doc's first line, composed from the exact `#help` sources; a
+  session-defined function echoes `name : scheme` plus a dim line
+  with its definition's first physical line (a redefinition shows
+  the last accepted; multi-line definitions clip with an ellipsis).
+  Anonymous and composed closures keep `<fun> : ty`. Echo type
+  metadata also normalizes type-variable display — `'a1 -> 'a2`
+  reads `'a -> 'b` (the REPL echo and the `-e` echo; error messages
+  keep the checker's names).
+
+### Fixed
+
+- **The `let`-RHS is a head slot — tint, completion, and aliases.**
+  `let svc = kubect` typed at the prompt got no live head tint and no
+  head completion, though the RHS has been a first-class command
+  position all along. Both surfaces now read ONE position predicate:
+  the RHS head tints by the session verdict exactly as a statement
+  head does (known bold, PATH bold-blue with dim argv, unresolved
+  red — an unknown uppercase RHS head stays casing-yellow: `let n =
+  Some 42` is a constructor, not a failing command), and Tab at the
+  RHS offers the statement head's pool (PATH executables, the
+  command-callable builtins, bindings and keywords), with argv after
+  the RHS head completing as directory entries like any command argv.
+  The `^` force-PATH sigil now completes too — PATH names only, at
+  the statement head and the RHS alike. Folded in from a live report:
+  session `#alias` names were missing from the known-head membership
+  everywhere — after `#alias k = kubectl`, `k get po` painted `k`
+  red; alias heads are now known (tint) and offered (Tab) at both
+  head slots, and `^k` still bypasses the table on both surfaces.
 
 ## v0.0.43
 
