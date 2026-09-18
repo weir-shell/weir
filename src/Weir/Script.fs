@@ -2030,7 +2030,7 @@ let colorizeRepl (isKnown: string -> bool) (line: string) : string =
                     match Complete.headSlotAt (line.Substring(0, start)) with
                     | Complete.HeadSlot.Forced ->
                         // ^head: PATH only — `^x` names a program,
-                        // never a keyword or a form
+                        // never a keyword, a form, or an alias
                         Some(if Extern.exists word then "34" else "31")
                     | slot ->
                         if Weir.Parser.keywords.Contains word then
@@ -2042,17 +2042,22 @@ let colorizeRepl (isKnown: string -> bool) (line: string) : string =
                             Some "34" // the kind is form, not a name [D:within-kinds]
                         elif (prevWord = "from" || prevWord = "to") && Builtins.allAdapterNames.Contains word then
                             Some "34" // the adapter is form, not a name [D:form-word-hover]
-                        elif slot = Complete.HeadSlot.Head then
+                        elif slot <> Complete.HeadSlot.No && isKnown word then
                             // the fish trick: the head resolves live
-                            if isKnown word then
-                                Some "1" // known: bold
-                            elif Extern.exists word then
-                                cmdMode <- true
-                                Some "1;34" // PATH: bold blue
-                            else
-                                Some "31" // unresolved: red
+                            Some "1" // known: bold
+                        elif slot <> Complete.HeadSlot.No && Extern.exists word then
+                            cmdMode <- true
+                            Some "1;34" // PATH: bold blue
+                        elif slot = Complete.HeadSlot.Stmt then
+                            Some "31" // unresolved statement head: red
                         elif Char.IsUpper word[0] then
-                            Some "33" // the casing law: types/ctors/modules
+                            // the casing law: types/ctors/modules — at the
+                            // let-RHS an unknown uppercase head is a legal
+                            // constructor application, never red
+                            // [D:constructors-not-heads]
+                            Some "33"
+                        elif slot = Complete.HeadSlot.LetRhs then
+                            Some "31" // unresolved lowercase RHS head: red
                         elif cmdMode then
                             Some "2" // argv words: dim (inert data)
                         else

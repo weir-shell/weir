@@ -2958,6 +2958,109 @@ let completionTests =
               // at a head (before empty) the command-callable set joins the pool
               Expect.contains (suggest "c" 0) "cd" "cd is command-callable at a head"
           }
+          test "command heads: the let-RHS is a head slot [D:let-rhs-head]" {
+              // the topLet RHS admits command mode, so its head takes the
+              // SAME pool the statement head does — the command-callable
+              // pin mirrored (never a PATH executable, the CI lesson)
+              Expect.contains (suggest "let x = c" 8) "cd" "cd completes at the let-RHS head"
+              // params keep the slot (`let f a b = <head>` is command-first too)
+              Expect.contains (suggest "let f a b = c" 12) "cd" "a paramful binder keeps the slot"
+              Expect.contains (suggest "let pure f = c" 13) "cd" "the pure modifier keeps the slot"
+              // an empty word at the let-RHS stays pool-only — never the
+              // whole PATH dump (the empty-prompt rationale). PATH-ONLY
+              // names (no binding/module/keyword shares the spelling) are
+              // the discriminator — a pool name may legitimately coincide
+              // with an executable
+              let pathOnly =
+                  Weir.Extern.names ()
+                  |> Set.filter (fun n ->
+                      not (Map.containsKey n env.Values)
+                      && not (Map.containsKey n env.Modules)
+                      && not (Weir.Parser.keywords.Contains n))
+
+              Expect.isTrue
+                  (suggest "let x = " 8 |> List.forall (pathOnly.Contains >> not))
+                  "no PATH dump on an empty RHS word"
+
+              // a destructuring let's RHS is EXPRESSION-only (SLetPat, no
+              // command mode) — the head extras stay out (PATH-only names
+              // as the discriminator; the pool may share spellings)
+              Expect.isTrue
+                  (suggest "let (a, b) = c" 13 |> List.forall (pathOnly.Contains >> not))
+                  "a pattern binder is not a head slot"
+          }
+          test "a binding head at the let-RHS keeps the general pool [D:let-rhs-head]" {
+              // `let y = map wh…` is expression mode (bindings-beat-PATH):
+              // the argv gate must not fire, so keywords/bindings still offer
+              let got = suggest "let y = map wh" 12
+              Expect.contains got "when" "keywords stay in expression mode"
+              Expect.contains got "where" "…and bindings"
+          }
+          test "argv after a let-RHS command head follows the statement rule [D:let-rhs-head]" {
+              // the binder strips and the remainder judges exactly as a
+              // statement — paths, nothing else (the complete-argv gate)
+              let sug (t: string) = suggest t (t.LastIndexOf ' ' + 1)
+              let argv: string list = sug "let x = micro Weir.Tests."
+              Expect.isTrue (argv |> List.contains "Weir.Tests.dll") "a real relative path completes in RHS argv"
+              Expect.isFalse (argv |> List.exists (fun c -> c.EndsWith ".bytes")) "no fields in RHS argv"
+              // the unbound-scrutinee D5 pin holds unchanged: a DOTTED
+              // RHS head is not argv, and offers nothing
+              Expect.equal (sug "let x = publish.") [] "unbound dotted head after ="
+          }
+          test "the ^-forced head completes PATH-only — statement head and let-RHS [D:let-rhs-head]" {
+              // the pool is a SUBSET of the PATH cache (asserting any one
+              // executable would be brittle); the general pool's keywords
+              // and bindings never enter behind the sigil
+              let path = Weir.Extern.names ()
+              let atStmt = suggest "^ma" 1
+              let atRhs = suggest "let x = ^ma" 9
+              Expect.isTrue (atStmt |> List.forall path.Contains) "statement-head ^ pool is PATH only"
+              Expect.isTrue (atRhs |> List.forall path.Contains) "let-RHS ^ pool is PATH only"
+              Expect.equal atRhs atStmt "one slot, one pool"
+          }
+          test "headSlotAt: the one head-slot predicate both surfaces read [D:let-rhs-head]" {
+              let slot = Weir.Complete.headSlotAt
+              Expect.equal (slot "") Weir.Complete.HeadSlot.Stmt "statement head"
+              Expect.equal (slot "let x =") Weir.Complete.HeadSlot.LetRhs "let-RHS (completer's trimmed prefix)"
+              Expect.equal (slot "let x = ") Weir.Complete.HeadSlot.LetRhs "let-RHS (colorizer's raw prefix)"
+              Expect.equal (slot "^") Weir.Complete.HeadSlot.Forced "^ at the statement head"
+              Expect.equal (slot "let x = ^") Weir.Complete.HeadSlot.Forced "^ at the let-RHS"
+              Expect.equal (slot "let x = k") Weir.Complete.HeadSlot.No "past the head word"
+              Expect.equal (slot "echo ") Weir.Complete.HeadSlot.No "argv is not a head slot"
+              Expect.equal (slot "let x = f ") Weir.Complete.HeadSlot.No "RHS argv is not a head slot"
+              Expect.equal (slot "  ") Weir.Complete.HeadSlot.No "an indented word is NOT a head to the colorizer (district bodies)"
+              Expect.equal (slot "let (a, b) = ") Weir.Complete.HeadSlot.No "a pattern binder's RHS is expression-only"
+              Expect.equal (slot "let for = ") Weir.Complete.HeadSlot.No "a keyword binder is the guard's error, not a slot"
+              Expect.equal (slot "let x == ") Weir.Complete.HeadSlot.No "== is not a binder's ="
+          }
+          test "session alias heads: known at both head slots, completable, ^-bypassed [D:command-head-alias]" {
+              // the ONE membership [D:repl-color] gains the alias table's
+              // names: `#alias k = kubectl` makes `k` a known head — at
+              // the statement head AND the let-RHS — through the same
+              // verdict fn the live repaint uses
+              let known = Weir.Repl.knownWithAliasesForTest (Set.ofList [ "k" ])
+              Expect.isTrue (known "k") "an alias head is known"
+              Expect.isFalse (Weir.Repl.knownForTest "k") "…and only via the alias set"
+
+              let colorize = Weir.Script.colorizeRepl known
+              Expect.stringContains (colorize "k get pod -A") "\x1b[1mk\x1b[0m" "alias head bold at the statement head"
+              Expect.stringContains (colorize "let x = k get pod") "\x1b[1mk\x1b[0m" "alias head bold at the let-RHS"
+              // the ^ sigil SKIPS the table [D:command-head-alias]: `^k`
+              // is a PATH lookup of literal `k` — the alias must not
+              // paint it (PATH-membership decides; no `k` binary here
+              // means red, and never bold)
+              Expect.isFalse (colorize "^k ls" |> _.Contains("\x1b[1mk\x1b[0m")) "^k ignores the alias"
+              Expect.isFalse (colorize "let x = ^k ls" |> _.Contains("\x1b[1mk\x1b[0m")) "^k ignores the alias at the RHS"
+
+              // completion: the alias name joins the head pool at both
+              // slots (alias-to-anything — nothing asserts a PATH exe),
+              // never the ^-forced PATH pool
+              let ask = Weir.Complete.suggestSession (Set.ofList [ "kzz" ]) env
+              Expect.contains (ask "kz" 0) "kzz" "alias completes at the statement head"
+              Expect.contains (ask "let x = kz" 8) "kzz" "alias completes at the let-RHS head"
+              Expect.isFalse (List.contains "kzz" (ask "^kz" 1)) "the ^ pool skips the alias table"
+              Expect.isFalse (List.contains "kzz" (ask "let x = ^kz" 9)) "…at the RHS too"
+          }
           test "path completion: an explicit path lists the directory [D:repl-quality]" {
               skipOnWindows ()
               // /etc/hos* exists on every Linux box; a `/`-word is a path

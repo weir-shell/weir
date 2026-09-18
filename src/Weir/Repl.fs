@@ -24,13 +24,23 @@ let mutable private lastErrored = false
 // teach). Read by the unbound-`it` arm and the streamed meta line.
 let mutable private lastStreamed: string option = None
 
+// the session's live ALIAS NAMES [D:command-head-alias]: a ref like
+// currentEnv (the loop refreshes both), read by the one membership
+// below and the Tab pool — the alias TABLE itself stays in State
+let private currentAliasNames: Set<string> ref = ref Set.empty
+
 // the session resolver's verdict [D:repl-color]: ONE membership feeding
 // the live prompt's head tint AND the #help example tint [D:help-tint]
-// — values, modules, and the command-callable externs, never two lists
-let private knownIn (env: TypeEnv) (n: string) : bool =
+// — values, modules, the command-callable externs, and the session's
+// alias heads [D:command-head-alias] — never two lists
+let private knownInWith (aliases: Set<string>) (env: TypeEnv) (n: string) : bool =
     Map.containsKey n env.Values
     || Map.containsKey n env.Modules
     || Builtins.commandCallable.Contains n
+    || aliases.Contains n
+
+let private knownIn (env: TypeEnv) : string -> bool =
+    knownInWith currentAliasNames.Value env
 
 // the session TRANSCRIPT [D:repl-save]: the ACCEPTED statements, in
 // order, that `#save` DISTILLS into a runnable .weir file (option B — a
@@ -1157,7 +1167,10 @@ let private readLineTty () : string option =
             // it must not leak into the word (the mid-line receipt: the
             // typed closer ` })` became part of the prefix and killed
             // every match); insertion below re-attaches the tail
-            let suggestions = Complete.suggest currentEnv.Value (text.Substring(0, col)) ws
+            let suggestions =
+                // the session entry [D:command-head-alias]: alias heads
+                // join the head-slot pool
+                Complete.suggestSession currentAliasNames.Value currentEnv.Value (text.Substring(0, col)) ws
 
             (match suggestions with
              | [] -> ()
@@ -1958,6 +1971,10 @@ let helpTintedForTest (arg: string) : string =
 /// the example tint's resolver, exposed so the pins can call the input
 /// colorizer with the SAME verdict the help render uses [D:help-tint]
 let knownForTest: string -> bool = knownIn initial.TypeEnv
+
+/// the alias-aware membership's seam [D:command-head-alias]: the pins
+/// call the ONE membership with an explicit alias set — no ref poking
+let knownWithAliasesForTest (aliases: Set<string>) : string -> bool = knownInWith aliases initial.TypeEnv
 let findFallbackForTest (query: string) : string = findFallback initial.TypeEnv query
 let findCandidatesForTest () : string list = findCandidates initial.TypeEnv
 
@@ -2431,6 +2448,9 @@ let private saveDirective (state: State) (path: string) : unit =
 
 let rec private loop (state: State) =
     currentEnv.Value <- state.TypeEnv
+    // the alias names ride along [D:command-head-alias]: the head tint
+    // and the Tab pool read the ref, never a second table
+    currentAliasNames.Value <- Set.ofSeq (Map.keys state.Aliases)
 
     match readInput () with
     | null -> ()
