@@ -35,6 +35,10 @@
   against the newest published release on every CI run, so an
   incomplete published release stays red on main until the next
   release supersedes it.
+  A permanently-incomplete release is acknowledged in
+  `ci/release-known-incomplete.yaml` (reason required, swept: a
+  listed-but-complete release fails as stale), so the standing CI
+  check cannot stay red blocking its own supersede.
 
 ## v0.0.40
 

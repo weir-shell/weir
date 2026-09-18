@@ -1,0 +1,9 @@
+# Releases that published INCOMPLETE and are immutable [D:release-assets]
+# — acknowledged so the standing check does not stay red forever (a red
+# that blocks the superseding release's own PR is the check eating its
+# repair). SWEPT BOTH WAYS by ci/release-published.weir: an entry whose
+# release is actually complete FAILS as stale; an incomplete release
+# NOT listed here still fails.
+known:
+- tag: v0.0.40
+  reason: published with 5 of 10 assets — transient 500 mid-upload + partial manual recovery slipped past draft review; superseded by v0.0.41
