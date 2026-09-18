@@ -1311,6 +1311,91 @@ let private xmlDoc
     | TopRec d -> objRowXml "" d root
     | TopUnion _ -> unreachable "the checker admits only records at the XML boundary"
 
+// ---- the aligned-table boundary [D:from-table] ----------------------------
+
+/// read header-aligned rows (kubectl/docker style) under the DECLARED row
+/// record [D:from-table]: the first non-blank line is the header; columns
+/// slice by HEADER OFFSETS (a header boundary is a run of 2+ spaces, so
+/// `CONTAINER ID` stays one column), never whitespace runs — a cell value
+/// with spaces survives. Each field reads its column: [<Wire "…">] matches
+/// the raw header verbatim, otherwise the normalized names match
+/// (case-insensitive, alphanumerics only). Option reads an empty or
+/// `<none>` cell as None; extra columns are ignored; blank lines skip.
+let private tableRows (who: string) (def: RecordDef) (lines: string list) : Value =
+    match Table.parse (lines |> List.mapi (fun i l -> i + 1, l)) with
+    | Error e -> failwith $"{who}: {e}"
+    | Ok(cols, rows) ->
+        let colArr = List.toArray cols
+        let headers = cols |> List.map (fun c -> c.Header) |> String.concat ", "
+
+        // resolve each declared field to its column ONCE, before any row
+        let fieldCols =
+            def.Fields
+            |> List.map (fun (fname, fty) ->
+                let wire = Types.wireName def fname
+
+                let hit =
+                    if wire <> fname then
+                        // the Wire law: the attribute names the raw header
+                        colArr |> Array.tryFindIndex (fun c -> c.Header = wire)
+                    else
+                        colArr
+                        |> Array.tryFindIndex (fun c -> Table.matchKey c.Header = Table.matchKey fname)
+
+                match hit with
+                | Some i -> fname, fty, i
+                | None ->
+                    let want = if wire <> fname then $"'{wire}'" else $"'{fname}'"
+                    failwith $"{who}: missing column {want} for field '{fname}' — headers seen: {headers}")
+
+        let cellValue (line: int) (col: Table.Column) (ty: Ty) (raw: string) : Value =
+            let at = $"{who}: line {line}, col {col.Start + 1}: column '{col.Header}'"
+
+            let scalar (t: Ty) (s: string) =
+                match t with
+                | TStr -> VStr s
+                | TInt ->
+                    match System.Int64.TryParse s with
+                    | true, n -> VInt n
+                    | _ -> failwith $"{at}: expected int, got '{s}'"
+                | TFloat ->
+                    match parseFloat s with
+                    | Ok f -> VFloat f
+                    | Error _ -> failwith $"{at}: expected float, got '{s}'"
+                | TBool ->
+                    if s = "true" then VBool true
+                    elif s = "false" then VBool false
+                    else failwith $"{at}: expected bool (exactly true/false), got '{s}'"
+                | t -> unreachable $"the checker restricts table cells to scalars: {formatTy t}"
+
+            match ty with
+            | TNamed("Option", [ inner ]) ->
+                if Table.isAbsent raw then
+                    VUnion("None", None)
+                else
+                    VUnion("Some", Some(scalar inner raw))
+            | t ->
+                if Table.isAbsent raw then
+                    let shownCell = if raw = "" then "an empty cell" else $"a '{raw}' cell"
+                    failwith $"{at}: {shownCell} — declare Option<{formatTy t}> to read it as None"
+                else
+                    scalar t raw
+
+        VSeq(
+            rows
+            |> List.map (fun (n, cs) ->
+                let cellArr = List.toArray cs
+
+                VRecord(
+                    def.Name,
+                    fieldCols
+                    |> List.map (fun (fname, fty, i) ->
+                        let raw = if i < cellArr.Length then cellArr[i] else ""
+                        fname, cellValue n colArr[i] fty raw)
+                ))
+            |> List.toSeq
+        )
+
 let private fromAdapter
     (fmt: string)
     (seqOf: bool)
@@ -1370,6 +1455,24 @@ let private fromAdapter
                     failwith "from xml: empty input — expected one XML document"
 
                 xmlDoc "from xml" top defs (jsonSnippet text) text
+            | v -> unreachable $"the checker rejects 'from' on {formatValue v}")
+    // header-aligned rows -> seq<T> [D:from-table]: the header must be
+    // read before any row slices, so the input materializes here
+    | "table" ->
+        VBuiltin(fun v ->
+            match v with
+            | VSeq lines ->
+                let strs =
+                    lines
+                    |> Seq.map (fun l ->
+                        match l with
+                        | VStr s -> s
+                        | v -> unreachable $"the checker rejects 'from' on non-string elements: {formatValue v}")
+                    |> List.ofSeq
+
+                match top with
+                | TopRec def -> tableRows "from table" def strs
+                | TopUnion _ -> unreachable "the checker admits only records at the table boundary"
             | v -> unreachable $"the checker rejects 'from' on {formatValue v}")
     | f -> unreachable $"the checker rejects unknown format '{f}'"
 

@@ -19177,6 +19177,251 @@ let helpUxTests =
               Expect.isFalse (doc.Contains "\x1b") "no ANSI in the piped bytes"
           } ]
 
+let fromTableTests =
+    // the aligned-table boundary [D:from-table]: fixtures build by
+    // PADDED WIDTHS so header offsets and cell offsets agree by
+    // construction — the tabwriter reality both kubectl and docker emit
+    let row (ws: int list) (cs: string list) =
+        (List.zip ws cs |> List.map (fun (w, c: string) -> c.PadRight w) |> String.concat "")
+            .TrimEnd()
+
+    let tenv =
+        env
+        |> declare "type TPod = { name: string; ready: string; status: string; restarts: int; age: string }"
+        |> declare "type TCtr = { containerId: string; status: string; command: string }"
+        |> declare
+            "type TNode = { name: string; [<Wire \"ROLES\">] roles: Option<string>; cpu: Option<float>; ready: bool; podTemplateHash: string }"
+        |> declare "type TReq = { name: string; restarts: int }"
+        |> declare "type TBadSeq = { name: seq<string> }"
+        |> declare "type TBadOpt = { name: Option<seq<int>> }"
+        |> declare "type TUni = A of int | B"
+
+    let checkOkT input =
+        match typecheck tenv (parse input) with
+        | Ok te -> te
+        | Error terr -> failtest $"expected Ok, got: {formatError terr}"
+
+    let checkErrT input =
+        match typecheck tenv (parse input) with
+        | Ok te -> failtest $"expected a type error, got {formatTy te.Ty}"
+        | Error terr -> terr
+
+    let runT (overrides: (string * Value) list) input =
+        let vals = overrides |> List.fold (fun vs (n, v) -> Map.add n v vs) valueEnv
+        eval vals (checkOkT input)
+
+    let podWidths = [ 8; 8; 19; 11; 0 ]
+
+    let podSample =
+        VSeq
+            [ VStr(row podWidths [ "NAME"; "READY"; "STATUS"; "RESTARTS"; "AGE" ])
+              VStr(row podWidths [ "web-1"; "1/1"; "Running"; "0"; "2d1h" ])
+              VStr ""
+              VStr(row podWidths [ "db-0"; "1/2"; "CrashLoopBackOff"; "3"; "5h" ]) ]
+
+    testList
+        "from table [D:from-table]"
+        [ test "header-offset slicing reads kubectl-shaped rows; blank lines skip; the type is seq<T>" {
+              let te = checkOkT "src |> from table TPod"
+              Expect.equal te.Ty (TSeq(TNamed("TPod", []))) "from table T : seq<string> -> seq<T>"
+
+              Expect.equal
+                  (runT [ "src", podSample ] "src |> from table TPod")
+                  (VSeq
+                      [ VRecord(
+                            "TPod",
+                            [ "name", VStr "web-1"
+                              "ready", VStr "1/1"
+                              "status", VStr "Running"
+                              "restarts", VInt 0L
+                              "age", VStr "2d1h" ]
+                        )
+                        VRecord(
+                            "TPod",
+                            [ "name", VStr "db-0"
+                              "ready", VStr "1/2"
+                              "status", VStr "CrashLoopBackOff"
+                              "restarts", VInt 3L
+                              "age", VStr "5h" ]
+                        ) ])
+                  "columns slice at header offsets; int cells convert; blank interior lines skip"
+          }
+          test "a two-word single-space header is ONE column; spaced values and a spaced last column survive" {
+              // docker's reality: `CONTAINER ID` is one header (single
+              // space), columns pad with 3+ spaces, STATUS holds
+              // `Up 2 hours` and the last column runs to end of line
+              let ws = [ 15; 15; 0 ]
+
+              let sample =
+                  VSeq
+                      [ VStr(row ws [ "CONTAINER ID"; "STATUS"; "COMMAND" ])
+                        VStr(row ws [ "3f4e5d6a7b8c"; "Up 2 hours"; "/bin/sh -c run" ]) ]
+
+              Expect.equal
+                  (runT [ "src", sample ] "src |> from table TCtr")
+                  (VSeq
+                      [ VRecord(
+                            "TCtr",
+                            [ "containerId", VStr "3f4e5d6a7b8c"
+                              "status", VStr "Up 2 hours"
+                              "command", VStr "/bin/sh -c run" ]
+                        ) ])
+                  "a single space stays inside one header; offsets, not whitespace runs, bound the cells"
+          }
+          test "matching: Wire hits the raw header verbatim; normalized names match case-insensitively; Option reads empty and <none>; extra columns are ignored" {
+              let ws = [ 8; 22; 8; 8; 8; 19; 0 ]
+
+              let sample =
+                  VSeq
+                      [ VStr(row ws [ "NAME"; "POD-TEMPLATE-HASH"; "ROLES"; "CPU"; "READY"; "EXTRA"; "AGE" ])
+                        VStr(row ws [ "n1"; "abc123"; "worker"; "1.5"; "true"; "ignored"; "9d" ])
+                        VStr(row ws [ "n2"; "def456"; "<none>"; ""; "false"; "ignored"; "9d" ]) ]
+
+              Expect.equal
+                  (runT [ "src", sample ] "src |> from table TNode")
+                  (VSeq
+                      [ VRecord(
+                            "TNode",
+                            [ "name", VStr "n1"
+                              "roles", VUnion("Some", Some(VStr "worker"))
+                              "cpu", VUnion("Some", Some(VFloat 1.5))
+                              "ready", VBool true
+                              "podTemplateHash", VStr "abc123" ]
+                        )
+                        VRecord(
+                            "TNode",
+                            [ "name", VStr "n2"
+                              "roles", VUnion("None", None)
+                              "cpu", VUnion("None", None)
+                              "ready", VBool false
+                              "podTemplateHash", VStr "def456" ]
+                        ) ])
+                  "the kubectl idioms: <none>/empty read None under Option; undeclared columns cost nothing"
+          }
+          test "runtime errors are located, each teaching" {
+              // a missing declared column names itself AND the headers seen
+              let missing =
+                  Expect.throwsC
+                      (fun () ->
+                          runT
+                              [ "src", VSeq [ VStr "NAME   AGE"; VStr "n1     1d" ] ]
+                              "src |> from table TReq"
+                          |> ignore)
+                      id
+
+              Expect.stringContains
+                  missing.Message
+                  "from table: missing column 'restarts' for field 'restarts' — headers seen: NAME, AGE"
+                  "the absent column and the header inventory"
+
+              // a cell that fails its field's type carries line and col
+              let badInt =
+                  Expect.throwsC
+                      (fun () ->
+                          runT
+                              [ "src", VSeq [ VStr "NAME   RESTARTS"; VStr "n1     often" ] ]
+                              "src |> from table TReq"
+                          |> ignore)
+                      id
+
+              Expect.stringContains
+                  badInt.Message
+                  "from table: line 2, col 8: column 'RESTARTS': expected int, got 'often'"
+                  "row line + column offset + header name"
+
+              // a required field refuses an absent cell, naming Option
+              let absent =
+                  Expect.throwsC
+                      (fun () ->
+                          runT
+                              [ "src", VSeq [ VStr "NAME   RESTARTS"; VStr "n1" ] ]
+                              "src |> from table TReq"
+                          |> ignore)
+                      id
+
+              Expect.stringContains
+                  absent.Message
+                  "an empty cell — declare Option<int> to read it as None"
+                  "absence has a typed spelling; the error names it"
+
+              // duplicate normalized headers cannot be told apart
+              let dup =
+                  Expect.throwsC
+                      (fun () ->
+                          runT
+                              [ "src", VSeq [ VStr "POD-TEMPLATE-HASH   PODTEMPLATEHASH"; VStr "a  b" ] ]
+                              "src |> from table TReq"
+                          |> ignore)
+                      id
+
+              Expect.stringContains
+                  dup.Message
+                  "columns 'POD-TEMPLATE-HASH' and 'PODTEMPLATEHASH' match the same name"
+                  "the match key is the normalized form, so a dup is unanswerable"
+
+              // no header at all
+              let emptyIn =
+                  Expect.throwsC
+                      (fun () -> runT [ "src", VSeq [ VStr ""; VStr "   " ] ] "src |> from table TReq" |> ignore)
+                      id
+
+              Expect.stringContains
+                  emptyIn.Message
+                  "from table: empty input — expected a header row"
+                  "nothing to slice by"
+          }
+          test "a header-only table reads as the empty seq (docker ps with nothing running)" {
+              Expect.equal
+                  (runT [ "src", VSeq [ VStr "NAME   RESTARTS" ] ] "src |> from table TReq |> Seq.length")
+                  (VInt 0L)
+                  "a header with no rows is an answer, not an error"
+          }
+          test "check-time laws: flat scalar rows only; no seq/stream/Map wrap; no union; no to table" {
+              Expect.stringContains
+                  (checkErrT "src |> from table TBadSeq").Message
+                  "field 'name': type seq<string> is not admitted; table cells are string, int, float, bool, or Option of one"
+                  "a cell is one aligned column's text"
+
+              Expect.stringContains
+                  (checkErrT "src |> from table TBadOpt").Message
+                  "a table cell reads Option of a scalar, not Option<seq<int>>"
+                  ""
+
+              Expect.stringContains
+                  (checkErrT "src |> from table seq<TPod>").Message
+                  "'from table TPod' already yields seq<TPod> — write from table TPod"
+                  "the jsonl precedent"
+
+              Expect.stringContains
+                  (checkErrT "src |> from table stream TPod").Message
+                  "'from table stream' does not exist — a table is already rows"
+                  ""
+
+              Expect.stringContains
+                  (checkErrT "src |> from table Map<string, TPod>").Message
+                  "a table reads rows, not a keyed object"
+                  ""
+
+              Expect.stringContains
+                  (checkErrT "src |> from table TUni").Message
+                  "'from table' needs a row record; 'TUni' is a union — a table row has no tag convention"
+                  ""
+
+              Expect.stringContains
+                  (checkErrT "src |> from table").Message
+                  "'from table' needs a row record name, e.g. from table Pod"
+                  ""
+
+              Expect.stringContains
+                  (checkErrT "[1] |> to table").Message
+                  "'to table' does not exist — the table boundary is read-only ('from table T'); write JSON or YAML instead"
+                  "no write side in v1"
+          }
+          test "'table' stays an ordinary identifier outside adapter position" {
+              // the adapter-word law: `json` binds, and so does `table`
+              Expect.equal (run "let table = 5 in table + 1") (VInt 6L) "no new reserved word"
+          } ]
+
 [<Tests>]
 let allTests =
     testList
@@ -19222,6 +19467,7 @@ let allTests =
           lsSortTests
           recordKeysTests
           yamlSeqTests
+          fromTableTests
           anonRecordTests
           anonLiteralTests
           mapStringTests

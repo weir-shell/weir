@@ -1291,6 +1291,27 @@ let private xmlableRecord (span: Span) (env: TypeEnv) (def: RecordDef) : Result<
         xmlFieldOk span def name ty name
         |> Result.bind (fun () -> xmlAdmitted span env [ def.Name ] name ty))
 
+// the aligned-table boundary [D:from-table]: a row is FLAT — each field
+// reads one column's cell, so the admitted set is the scalars and Option
+// of one (an empty or `<none>` cell reads as None). No nested records,
+// seqs, or Maps: a cell is one aligned column's text.
+let private tableAdmittedSet =
+    "table cells are string, int, float, bool, or Option of one — each field reads one aligned column's cell"
+
+let private tableableRecord (span: Span) (def: RecordDef) : Result<unit, TypeError> =
+    allOk def.Fields (fun (name, ty) ->
+        match ty with
+        | TStr
+        | TInt
+        | TFloat
+        | TBool
+        | TNamed("Option", [ TStr | TInt | TFloat | TBool ]) -> Ok()
+        | TNamed("Option", [ inner ]) ->
+            err
+                span
+                $"field '{name}': a table cell reads Option of a scalar, not Option<{formatTy inner}> — {tableAdmittedSet}"
+        | ty -> err span $"field '{name}': type {formatTy ty} is not admitted; {tableAdmittedSet}")
+
 // the defs a shape reaches, for the reader [D:recursive-fields]: eval
 // converts nested objects without an env, so the closure rides the
 // typed node (the yamlShape pattern, by table instead of by tree)
@@ -3134,6 +3155,14 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                 // 'to xml' (writing wants element order, namespaces, and a
                 // schema weir does not carry)
                 return! err toExpr.Span "'to xml' does not exist — XML is read-only ('from xml T'); write JSON or YAML instead"
+            | "table", _ ->
+                // the table boundary reads only [D:from-table] — the REPL
+                // already renders records as a table for display; a
+                // machine-readable write is JSON or YAML
+                return!
+                    err
+                        toExpr.Span
+                        "'to table' does not exist — the table boundary is read-only ('from table T'); write JSON or YAML instead"
             | fmt, _ -> return! err toExpr.Span $"unknown output format '{fmt}'; available: json, jsonl, yaml"
         }
     | EPipe(arg, ({ Kind = ECmd _ } as cmdExpr)) ->
@@ -3621,7 +3650,10 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
             do!
                 // the stream cardinality word is YAML's [D:wire-unions] —
                 // json's stream form is the thing literally named jsonl
-                if streamOf && fmt <> "yaml" then
+                if streamOf && fmt = "table" then
+                    let n = defaultArg tyName "Row"
+                    err expr.Span $"'from table stream' does not exist — a table is already rows; write from table {n}"
+                elif streamOf && fmt <> "yaml" then
                     let n = defaultArg tyName "T"
 
                     err
@@ -3643,6 +3675,13 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                 elif mapOf && fmt = "yaml" then
                     let n = defaultArg tyName "T"
                     err expr.Span $"'from yaml' does not take Map<string, {n}> yet — 'from json' does"
+                elif fmt = "table" && seqOf then
+                    // the jsonl precedent: rows are already plural
+                    let n = defaultArg tyName "Row"
+                    err expr.Span $"'from table {n}' already yields seq<{n}> — write from table {n}"
+                elif fmt = "table" && mapOf then
+                    let n = defaultArg tyName "Row"
+                    err expr.Span $"a table reads rows, not a keyed object — write from table {n} (it yields seq<{n}>)"
                 elif fmt = "xml" && (seqOf || mapOf || streamOf) then
                     // XML has a single root element [D:from-xml] — no seq /
                     // stream / Map wrap; a repeated child is a seq< > FIELD
@@ -3776,7 +3815,31 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                     return! err expr.Span $"'from xml' needs a record; '{name}' is a union — XML has no tagged-union reading"
                 | None -> return! err expr.Span $"unknown type '{name}'{didYouMean name (Map.keys env.Types)}"
             | "xml", None -> return! err expr.Span "'from xml' needs a record name, e.g. from xml Project"
-            | fmt, _ -> return! err expr.Span $"unknown format '{fmt}'; available: json, jsonl, yaml, xml"
+            // from table T reads aligned column output (kubectl/docker
+            // style) -> seq<T> [D:from-table]: the first non-blank line
+            // is the header, columns slice by header offsets, each field
+            // reads its column's cell (Wire matches the raw header
+            // verbatim; otherwise the normalized names match). Flat rows
+            // only; rows are already plural, so no seq/stream/Map wrap.
+            | "table", Some name ->
+                match typeDefFor env name with
+                | Some(Record def) when def.Params.IsEmpty ->
+                    do! tableableRecord expr.Span def
+
+                    return
+                        { Kind = TEFrom("table", TopRec def, Map.ofList [ def.Name, def ], Map.empty, false, false)
+                          Ty = TFun(TSeq TStr, TSeq(TNamed(name, [])))
+                          Span = expr.Span }
+                | Some(Record _) -> return! err expr.Span $"'from table' needs a monomorphic record; '{name}' is generic"
+                | Some(Union _) ->
+                    return!
+                        err
+                            expr.Span
+                            $"'from table' needs a row record; '{name}' is a union — a table row has no tag convention"
+                | None -> return! err expr.Span $"unknown type '{name}'{didYouMean name (Map.keys env.Types)}"
+            | "table", None ->
+                return! err expr.Span "'from table' needs a row record name, e.g. from table Pod — it yields seq<Pod>"
+            | fmt, _ -> return! err expr.Span $"unknown format '{fmt}'; available: json, jsonl, yaml, xml, table"
         }
     | ETo _ -> err expr.Span "'to json' / 'to yaml' can only be used as a pipe stage, e.g. xs |> to json"
     | EYaml(tpl, schema, patchBy) ->
