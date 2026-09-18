@@ -1333,10 +1333,13 @@ type Bad = C of int
 ```
   The field law is RECURSIVE: a field is a scalar (`int`, `float`,
   `string`, `bool`), an `Option` of an admitted type, a record whose
-  fields are all admitted, a `seq` of an admitted type, or a
-  `Map<string, T>` of one — so `{ entityids: Entity }`,
-  `{ items: seq<Item> }`, and an ID-keyed `{ documents: Map<string,
-  Doc> }` all read. A `Map`'s keys are DATA, not schema, and strings
+  fields are all admitted, a `seq` of an admitted type, a
+  `seq<string * T>` mapping (an object whose keys are DATA — k8s
+  `data`/`labels`: reads as pairs in document order, writes back as
+  ONE object; an empty mapping writes `[]` and reads back empty), or
+  a `Map<string, T>` of one — so `{ entityids: Entity }`,
+  `{ items: seq<Item> }`, `{ labels: seq<string * string> }`, and an
+  ID-keyed `{ documents: Map<string, Doc> }` all read. A `Map`'s keys are DATA, not schema, and strings
   ONLY (JSON object keys ARE strings; `Map<int, …>` teaches). The
   whole document can be the map: `from json Map<string, T>` (the
   adapter slot's third form; `{| … |}` composes in the value slot;
@@ -1430,8 +1433,11 @@ type Bad = C of int
   own and edit), NOT check-time inference (check never evaluates,
   `from json`/`from yaml` never sniff). It returns the declaration TEXT
   (top record `Root`; nested records auto-named, seq elements
-  singularised; empty-array/null/heterogeneous cases ride as `//`
-  notes). The REPL's `#infer <source> from <json|jsonl|yaml> as <Name>`
+  singularised; array elements MERGE — a key absent in some elements
+  drafts `Option`; an object whose keys are data — one value shape
+  with mostly non-identifier keys, differing key sets across sibling
+  elements, or an empty `{}` — drafts the `seq<string * _>` mapping;
+  empty-array/null/type-conflict cases ride as `//` notes). The REPL's `#infer <source> from <json|jsonl|yaml> as <Name>`
   directive also INJECTS the drafted types into the session (so
   `from json <Name>` and field completion light up); `#save <path>`
   DISTILLS a session to a runnable script — it keeps the `type` decls

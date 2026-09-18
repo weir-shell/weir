@@ -159,10 +159,28 @@ the ELEMENT: you write `seq<Name>`.
 
 The output is ordinary `type` decls you own and edit — this is the
 `weir add schema` category, not check-time inference (`check` never
-evaluates; `from json` never sniffs). A single sample cannot see
-optional/absent fields, so `#infer` PRINTS notes rather than
-guessing: an empty array (`seq<string>` default), a null field
-(`Option<string>`), a heterogeneous array (first element, "verify").
+evaluates; `from json` never sniffs). Array elements MERGE: the
+element type is the union of every element's keys, a key absent in
+some elements drafts `Option<T>` — one sample of a k8s List sees the
+optional fields its items disagree on. Where the sample still cannot
+decide, `#infer` PRINTS notes rather than guessing: an empty array
+(`seq<string>` default), a null field (`Option<string>`), a genuine
+type conflict for one key across elements (the first element's type,
+"verify").
+
+An object whose keys are DATA drafts as the open mapping
+`seq<string * V>` instead of a record, with a note. The detection:
+its values share ONE shape, and either a majority of its keys are
+not identifier-shaped (k8s `labels`/`annotations` — dots, slashes,
+dashes; a reserved word like `type` still counts as
+identifier-shaped) or its key sets differ across the array's sibling
+elements (a ConfigMap's `data`). Mapping keys are data, so no
+`[<Wire>]` is drafted — read them as pairs
+(`cm.data |> Seq.tryFind (fun (k, _) -> k == "Corefile")`); both
+`from json` and `from yaml` speak the shape. An object with
+identifier keys identical across elements — `metadata` — stays a
+record. An empty `{}` is an open map with zero entries: it drafts
+`seq<string * string>` with a note (no evidence for V, so string).
 The same inference is a builtin — `sample |> Json.inferShape |> print`
 (and `Yaml.inferShape`) returns the declaration text outside the REPL.
 
@@ -175,7 +193,9 @@ it); the draft parent-prefixes instead (`VolumeSecret`) and prints a
 note naming the rename. The `as` name is YOURS, so it is never
 renamed: `#infer … as Secret` refuses and asks you to pick another.
 
-A key weir cannot spell as a field name never breaks the draft: a
+A key weir cannot spell as a field name never breaks the draft — and
+an object the open-map detection claims never needs one: its keys
+are data, not fields. On the RECORD path (mixed value shapes) a
 non-identifier or KEYWORD key rides `[<Wire "the-key">]` over a
 derived identifier (`k8s-app`→`k8sApp`, `in`→`inField` — the parser
 rejects every keyword in field position), and an empty-string key —

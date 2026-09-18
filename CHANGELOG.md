@@ -1,5 +1,39 @@
 # Changelog
 
+## v0.0.44
+
+### Changed
+
+- **`#infer` merges array elements.** A drafted element type was the
+  first element's shape only, so real kubectl lists died on read
+  (`kubectl get cm -o json` → `missing field 'items[2].data.networkYml'`
+  — every ConfigMap's `data` carries its own keys). The element type
+  is now the UNION of all elements: a key absent in some elements
+  drafts `Option<T>`; a genuine type conflict for one key keeps the
+  first element's type with a printed verify note. Differing key sets
+  across elements are ordinary now — no note.
+
+- **`#infer` drafts data-keyed objects as open mappings.** An object
+  whose entries carry one value shape and whose keys look like data —
+  a majority of non-identifier keys (k8s `labels`/`annotations`), or
+  key sets that differ across the array's sibling elements (a
+  ConfigMap's `data`) — drafts as `seq<string * V>` with a note
+  instead of a `[<Wire>]`-riddled record. Mapping keys are data, so
+  no wire attribute is drafted; `metadata`-shaped objects (identifier
+  keys, identical across elements) stay records. An empty `{}` is an
+  open map with zero entries and drafts `seq<string * string>` with a
+  note — the old opaque `Yaml` draft could not cross the json
+  boundary, so a json-sourced draft carrying `resources: {}` checked
+  but never read.
+
+- **`from json`/`to json` speak the `seq<string * T>` mapping.** The
+  yaml boundary's pair-seq law, now on json too: a field (or nested
+  position) typed `seq<string * T>` reads a JSON object as pairs in
+  document order and writes back as one object, so the drafted
+  mappings read and roundtrip on both wire formats. An empty mapping
+  writes `[]` and reads back empty — the roundtrip holds; `Map`,
+  `jsonl`, and every existing shape are unchanged.
+
 ## v0.0.43
 
 ### Changed
