@@ -10,8 +10,16 @@ the same. This page is the REPL's manual; the tour lives in the
 ## Tab completion
 
 Tab completes the word under the cursor: module members, record
-fields, keywords, bindings, and — at a statement head — the callable
-commands. Two behaviours worth naming:
+fields, keywords, bindings, and — at a head slot — the callable
+commands. A head slot is the statement start *or a top-level `let`'s
+RHS*: `let svc = kubect<TAB>` completes the command exactly as a bare
+`kubect<TAB>` does, the words after that head complete as argv
+(directory entries, nothing else), and the live head tint follows the
+same rule — `let svc = kubectl …` paints its RHS head by the session
+verdict. Session [aliases](#alias-command-head-aliases) are known
+heads at both slots (tint and Tab); a `^`-led head completes against
+PATH alone — the sigil skips bindings and the alias table. Two
+behaviours worth naming:
 
 - **An empty prompt lists the session directives** (`#help` first),
   not the whole world. A bare Tab is a teaching Tab — `#help` itself
