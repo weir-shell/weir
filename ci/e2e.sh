@@ -162,6 +162,29 @@ else
 fi
 chmod 755 "$pwdir/lockdir"
 
+# ---- possible re-enumeration warning [D:reenum-warning] --------------------
+# a command-backed seq pulled twice warns at the second pull, naming
+# the command and the repair — and the warning never gates: check
+# exits 0. The forced twin is silent.
+redir=$(mkweirtmp)
+cat > "$redir/twice.weir" <<'WEOF'
+let files = git ls-files
+print $"{files |> Seq.length}"
+files |> Seq.iter print
+WEOF
+out=$($BIN check "$redir/twice.weir" 2>&1) || fail "a warning-only file must exit 0: $out"
+echo "$out" | grep -qF "warning [re-enumeration]: possible re-enumeration: 'files' is command-backed and unforced — each pull re-runs 'git ls-files'; snapshot one run: let files = git ls-files |> Seq.force" \
+  || fail "the re-enumeration warning with command and repair: $out"
+echo "$out" | grep -q "twice.weir:3:1" || fail "located at the SECOND pull: $out"
+cat > "$redir/forced.weir" <<'WEOF'
+let files = git ls-files |> Seq.force
+print $"{files |> Seq.length}"
+files |> Seq.iter print
+WEOF
+fout=$($BIN check "$redir/forced.weir" 2>&1) || fail "forced must check clean: $fout"
+echo "$fout" | grep -q "re-enumeration" && fail "a forced binding must not warn: $fout" || true
+echo "e2e ok: re-enumeration warning on the second pull, exit 0; Seq.force silences it"
+
 # walk candidates: exit codes exact; File.readSecret (never covered); Dir.copy success
 pw2=$(mkweirtmp)
 rc=0; $BIN -e 'exit 4' >/dev/null 2>&1 || rc=$?
@@ -2146,6 +2169,17 @@ WEOF
     echo "$tout" | grep -qF 'seq<string> =' \
       && fail "the let-echo meta still renders a dangling ' =' before the truncation hint: $tout"
     echo "e2e ok: a let-bound truncated seq echoes the unforced teaching, visible and without a dangling '='"
+
+    # ---- the binding echo states seq state [D:reenum-warning] ----------
+    # a command-backed unforced bind says it re-runs; a materialized
+    # bind says frozen; the pure-lazy nats cell above stays unannotated
+    # (its teaching grep pins the meta with no state joined)
+    rsout=$(printf 'SLEEP 400\nSEND let pods = sh -c "echo one"\\r\nSLEEP 1200\nSEND let snap = ["a"; "b"]\\r\nSLEEP 800\nSEND #quit\\r\n' | python3 "$ptyrun" 10 "$BIN")
+    echo "$rsout" | grep -qF 'pods : seq<string> (command-backed — re-runs on each use)' \
+      || fail "the command-backed unforced bind must state the re-run hazard: $rsout"
+    echo "$rsout" | grep -qF 'snap : seq<string> (frozen)' \
+      || fail "a materialized bind must state frozen: $rsout"
+    echo "e2e ok: the binding echo states seq state (re-runs / frozen)"
 
     # ---- colour from the child [D:colour-inherit] ----------------------
     # THE motivating pins: a bare statement at a tty sees isatty TRUE

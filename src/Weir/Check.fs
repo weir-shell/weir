@@ -5975,3 +5975,147 @@ let warnings (te: TypedExpr) : Warning list =
 
     walk te
     List.ofSeq acc
+
+// ---- possible re-enumeration [D:reenum-warning] ---------------------------
+// A command-backed seq re-runs its command on every pull; a binding
+// enumerated at two or more sites without a visible force is the lazy
+// re-run hazard. The RHS judgement is the module weak-purity walk
+// (runsCommandT — the [D:modules-v1] rule, moved here so the checker
+// and the loader share one spelling): eager positions only, STOPS at
+// lambdas — a command in a lambda body is deferred, so a param-ful
+// `let f r = git …` is a function, not a command-backed value.
+
+let rec runsCommandT (te: TypedExpr) : bool =
+    match te.Kind with
+    | TECmd _ -> true
+    | TELambda _
+    | TELambdaPat _ -> false
+    | _ -> childExprs te |> List.exists runsCommandT
+
+/// the first command on the RHS's eager spine, rendered for a message:
+/// literal argv words as written, splices as $name / $@name, computed
+/// words elided
+let rec private firstCommand (te: TypedExpr) : TypedExpr option =
+    match te.Kind with
+    | TECmd _ -> Some te
+    | TELambda _
+    | TELambdaPat _ -> None
+    | _ -> childExprs te |> List.tryPick firstCommand
+
+let private renderCommand (te: TypedExpr) : string =
+    match te.Kind with
+    | TECmd(prog, args, _) ->
+        let word (a: TypedExpr) =
+            match a.Kind with
+            | TEStr s -> s
+            | TEInt n -> string n
+            | TEBool b -> (if b then "true" else "false")
+            | TEVar n -> "$" + n
+            | TESplat { Kind = TEVar n } -> "$@" + n
+            | _ -> "…"
+
+        String.concat " " (prog :: (args |> List.map word))
+    | _ -> "…"
+
+// the recognized visibly-materialized tails [D:reenum-warning] — the
+// closed set, judged at the RHS tail (through let-in bodies): a
+// `|> Seq.force` tail, an applied `Seq.force …` head (the comprehension
+// desugars to exactly this), and the eager list literal. Anything else
+// — branch arms included — reads as unforced, which is the stated
+// over-approximation the word "possible" carries.
+let rec private forcedTail (te: TypedExpr) : bool =
+    let isForce (f: TypedExpr) =
+        match f.Kind with
+        // a builtin module member types as TEVar "Module.member"
+        | TEVar "Seq.force" -> true
+        // the comprehension's own desugar ([for x in xs -> e])
+        | TEVar "|seqForce" -> true
+        | _ -> false
+
+    match te.Kind with
+    | TEList _ -> true
+    | TEPipe(_, f) -> isForce f
+    | TEApp(f, _) -> isForce f
+    | TELet(_, _, _, b)
+    | TELetPat(_, _, b) -> forcedTail b
+    | _ -> false
+
+/// Some (rendered command) when a binding RHS is a command-backed seq
+/// with no visibly-materialized tail — the re-enumeration hazard's
+/// subject [D:reenum-warning]
+let commandBackedUnforced (te: TypedExpr) : string option =
+    match te.Ty with
+    | TSeq _ when runsCommandT te && not (forcedTail te) -> firstCommand te |> Option.map renderCommand
+    | _ -> None
+
+type ReenumEvent =
+    // a block-local binder qualified — joins the tracked set for its body
+    | ReenumBind of id: int * name: string * cmd: string
+    // an enumerating use of a tracked binding, at its site
+    | ReenumUse of id: int * name: string * span: Span
+
+/// enumerating uses of tracked (command-backed, unforced) bindings in
+/// one statement tree, source order, shadow-aware. Conservative and
+/// stated: EVERY read of the name counts as a possible pull — piped,
+/// an adapter/for source, an argv splice, printed/echoed, or passed as
+/// an argument (a callee may pull) — EXCEPT a plain alias (`let y = x`,
+/// the whole RHS): binding alone does not enumerate, and the alias name
+/// is not tracked onward. Block-local lets that qualify join the
+/// tracked set for their own body (fresh ids from the caller's well).
+let reenumEvents (nextId: unit -> int) (tracked0: Map<string, int>) (root: TypedExpr) : ReenumEvent list =
+    let acc = ResizeArray<ReenumEvent>()
+
+    let removeAll (names: string list) (m: Map<string, int>) =
+        names |> List.fold (fun m n -> Map.remove n m) m
+
+    let rec walk (tracked: Map<string, int>) (te: TypedExpr) : unit =
+        match te.Kind with
+        | TEVar n ->
+            match Map.tryFind n tracked with
+            | Some id -> acc.Add(ReenumUse(id, n, te.Span))
+            | None -> ()
+        | TELet(n, _, v, b) ->
+            // the alias rule: a whole-RHS bare name does not pull
+            (match v.Kind with
+             | TEVar _ -> ()
+             | _ -> walk tracked v)
+
+            let trackedB =
+                match commandBackedUnforced v with
+                | Some cmd ->
+                    let id = nextId ()
+                    acc.Add(ReenumBind(id, n, cmd))
+                    Map.add n id tracked
+                | None -> Map.remove n tracked
+
+            walk trackedB b
+        | TELetPat(pat, v, b) ->
+            walk tracked v
+            walk (removeAll (patNameSpans pat |> List.map fst) tracked) b
+        | TELambda(p, _, b) -> walk (Map.remove p tracked) b
+        | TELambdaPat(pat, b) -> walk (removeAll (patNameSpans pat |> List.map fst) tracked) b
+        | TEMatch(s, arms) ->
+            walk tracked s
+
+            for pat, g, b in arms do
+                let t' = removeAll (patNameSpans pat |> List.map fst) tracked
+                g |> Option.iter (walk t')
+                walk t' b
+        | TERetry(_, o, w, b, u) ->
+            walk tracked o
+            w |> Option.iter (walk tracked)
+            walk tracked b
+            u |> Option.iter (fun (n, pred) -> walk (Map.remove n tracked) pred)
+        | TEWithin(_, binder, a, o, b) ->
+            a |> Option.iter (walk tracked)
+            o |> Option.iter (walk tracked)
+
+            walk
+                (match binder with
+                 | Some n -> Map.remove n tracked
+                 | None -> tracked)
+                b
+        | _ -> childExprs te |> List.iter (walk tracked)
+
+    walk tracked0 root
+    List.ofSeq acc

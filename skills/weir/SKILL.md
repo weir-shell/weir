@@ -823,7 +823,8 @@ print (Option.flatten (Some None) |> Option.defaultValue 0)
 - `Seq.force` materializes (consume to completion, eager in-memory;
   STRICT — not for infinite seqs). When to force, four customers:
   REUSE (a command-backed seq re-runs its process per enumeration —
-  force once, consume twice); TIMING (a lazy `ls` enumerated after a
+  force once, consume twice; `weir check` WARNS on the second pull of
+  an unforced command-backed binding — advisory, exit stays 0); TIMING (a lazy `ls` enumerated after a
   `cd` sees the new directory; force pins the data NOW); GLOB's cd
   seam (`Path.glob` resolves relative patterns at ENUMERATION —
   force pins the batch before a `cd`); and the non-customer: a

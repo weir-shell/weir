@@ -5926,7 +5926,7 @@ let replEchoTests =
               // the let-echo meta line carries that SAME tail — the fix's
               // invariant: a clipped `let` bind never looks like it
               // silently dropped data
-              let meta = Weir.Repl.letEchoMeta "xs" (TSeq TStr) bareHint
+              let meta = Weir.Repl.letEchoMeta "xs" (TSeq TStr) None bareHint
 
               Expect.equal
                   meta
@@ -5943,9 +5943,60 @@ let replEchoTests =
               Expect.equal (List.length lines) 12 "all twelve elements, the cap never clips a forced seq"
               Expect.equal hint None "forced carries no teaching"
 
-              // the let meta then has an EMPTY tail — no dangling teaching
-              let meta = Weir.Repl.letEchoMeta "xs" (TSeq TStr) hint
+              // the let meta with no state then has an EMPTY tail — no
+              // dangling teaching (the state annotation is the caller's,
+              // via letSeqState — the frozen pin below)
+              let meta = Weir.Repl.letEchoMeta "xs" (TSeq TStr) None hint
               Expect.equal meta "xs : seq<string>" "no teaching, no trailing parenthetical"
+          }
+          test "the let echo states the bound seq's state — the exact spellings [D:reenum-warning]" {
+              // the meta seam: state alone, hint alone, both (one
+              // parenthetical, state first), neither
+              Expect.equal
+                  (Weir.Repl.letEchoMeta "pods" (TSeq TStr) (Some "command-backed — re-runs on each use") None)
+                  "pods : seq<string> (command-backed — re-runs on each use)"
+                  "the hazard annotation, exact bytes"
+
+              Expect.equal
+                  (Weir.Repl.letEchoMeta "pods" (TSeq TStr) (Some "frozen") None)
+                  "pods : seq<string> (frozen)"
+                  "the resolution annotation, exact bytes"
+
+              Expect.equal
+                  (Weir.Repl.letEchoMeta "pods" (TSeq TStr) (Some "frozen") (Some "extra"))
+                  "pods : seq<string> (frozen; extra)"
+                  "state and teaching share one parenthetical, state first"
+
+              Expect.equal (Weir.Repl.letEchoMeta "pods" (TSeq TStr) None None) "pods : seq<string>" "silence is the default"
+          }
+          test "letSeqState: the one probe decides frozen; command-backed only speaks unforced [D:reenum-warning]" {
+              let sp: Weir.Ast.Span =
+                  { Start = { Line = 1; Col = 1 }
+                    End = { Line = 1; Col = 2 } }
+
+              let cmdTe: Weir.Check.TypedExpr =
+                  { Kind = Weir.Check.TECmd("kubectl", [], None)
+                    Ty = TSeq TStr
+                    Span = sp }
+
+              let pureTe: Weir.Check.TypedExpr =
+                  { Kind = Weir.Check.TEVar "nats"
+                    Ty = TSeq TInt
+                    Span = sp }
+
+              let unforced = Weir.Eval.VSeq(Seq.delay (fun () -> Seq.empty))
+              let forced = Weir.Eval.VSeq([ Weir.Eval.VStr "a" ] :> seq<Weir.Eval.Value>)
+
+              Expect.equal
+                  (Weir.Repl.letSeqState cmdTe unforced)
+                  (Some "command-backed — re-runs on each use")
+                  "command-backed unforced states the hazard"
+
+              Expect.equal (Weir.Repl.letSeqState cmdTe forced) (Some "frozen") "forced states the resolution, command or not"
+
+              Expect.equal (Weir.Repl.letSeqState pureTe unforced) None "a pure lazy seq stays silent"
+
+              Expect.equal (Weir.Repl.letSeqState pureTe (Weir.Eval.VInt 3L)) None "a non-seq value carries no state"
           }
           test "the streamed-it misuse repair carries the command verbatim [D:repl-it]" {
               Expect.equal
@@ -18760,6 +18811,158 @@ let unusedBindingTests =
                   "used private member"
           } ]
 
+let reenumWarningTests =
+    // possible re-enumeration [D:reenum-warning]: a command-backed,
+    // unforced seq binding enumerated at two or more sites warns at the
+    // second and later sites — advisory (warning severity, check still
+    // exits 0), conservative, and stated
+    let allOf (lines: string list) =
+        let ds, _, _, _ = Weir.Script.analyzeLines "re.weir" lines
+        ds
+
+    let diagsOf (lines: string list) =
+        allOf lines |> List.filter (fun d -> d.Code = "re-enumeration")
+
+    let silent (lines: string list) (label: string) =
+        Expect.isEmpty
+            (diagsOf lines)
+            $"{label}: expected no re-enumeration warning, got {diagsOf lines |> List.map _.Message}"
+
+    testList
+        "possible re-enumeration [D:reenum-warning]"
+        [ test "the warning fires on the SECOND enumerating use — exact text, command and repair included" {
+              match
+                  diagsOf
+                      [ "let pods = git ls-files"
+                        "print $\"{pods |> Seq.length}\""
+                        "pods |> Seq.iter print" ]
+              with
+              | [ d ] ->
+                  Expect.equal (d.Line, d.Col) (3, 1) "located at the second use"
+                  Expect.equal d.Severity "warning" "advisory, never a gate"
+
+                  Expect.equal
+                      d.Message
+                      ("possible re-enumeration: 'pods' is command-backed and unforced — "
+                       + "each pull re-runs 'git ls-files'; snapshot one run: let pods = git ls-files |> Seq.force")
+                      "the exact sentence: the hazard, the command, the repair"
+              | other -> failtest $"expected one warning, got {other |> List.map (fun d -> d.Message)}"
+          }
+          test "warning severity is exit-0's substance: no error-severity diagnostic rides along" {
+              let ds =
+                  allOf
+                      [ "let pods = git ls-files"
+                        "print $\"{pods |> Seq.length}\""
+                        "pods |> Seq.iter print" ]
+
+              Expect.isFalse (ds |> List.exists (fun d -> d.Severity = "error")) "check exits 0 on a warning-only file"
+          }
+          test "second AND later: three pulls warn twice (never the first)" {
+              let ds =
+                  diagsOf
+                      [ "let pods = git ls-files"
+                        "pods |> Seq.iter print"
+                        "print $\"{pods |> Seq.length}\""
+                        "print $\"{pods |> Seq.sort |> Seq.length}\"" ]
+
+              Expect.equal (ds |> List.map (fun d -> d.Line)) [ 3; 4 ] "the first pull is the binding's point"
+          }
+          test "a single enumerating use is silent" {
+              silent [ "let pods = git ls-files"; "pods |> Seq.iter print" ] "single use"
+          }
+          test "the recognized-forced set: a Seq.force tail is silent" {
+              silent
+                  [ "let pods = git ls-files |> Seq.force"
+                    "print $\"{pods |> Seq.length}\""
+                    "pods |> Seq.iter print" ]
+                  "piped force tail"
+
+              silent
+                  [ "let pods = Seq.force $(git ls-files)"
+                    "print $\"{pods |> Seq.length}\""
+                    "pods |> Seq.iter print" ]
+                  "applied force head"
+          }
+          test "the recognized-forced set: the eager list literal and the comprehension are silent" {
+              silent
+                  [ "let xs = [$(git ls-files) |> Seq.length]"
+                    "print $\"{xs |> Seq.length}\""
+                    "xs |> Seq.iter (fun n -> print (show n))" ]
+                  "eager literal"
+
+              silent
+                  [ "let xs = [for f in $(git ls-files) -> f]"
+                    "print $\"{xs |> Seq.length}\""
+                    "xs |> Seq.iter print" ]
+                  "comprehension (its desugar ends in the force)"
+          }
+          test "a pure lazy seq is silent — command-backed only" {
+              silent
+                  [ "let xs = [1; 2; 3] |> Seq.map (fun n -> n * 2)"
+                    "print $\"{xs |> Seq.length}\""
+                    "print $\"{xs |> Seq.sum}\"" ]
+                  "pure lazy"
+          }
+          test "a | complete binding is silent — the record is already captured" {
+              silent
+                  [ "let r = git status | complete"
+                    "print $\"{r.exitCode}\""
+                    "print $\"{r.exitCode}\"" ]
+                  "complete record"
+          }
+          test "an argv splat counts as a pull — spawning expands the seq" {
+              match diagsOf [ "let files = git ls-files"; "git add $@files"; "git add $@files" ] with
+              | [ d ] ->
+                  Expect.equal d.Line 3 "the second splat"
+                  Expect.stringContains d.Message "re-runs 'git ls-files'" "the command named"
+              | other -> failtest $"expected one warning, got {other |> List.map (fun d -> d.Message)}"
+          }
+          test "the alias rule, classified: a whole-RHS bare name neither pulls nor carries tracking" {
+              // pods pulls once, the alias binds without pulling, and the
+              // alias's own single pull is not tracked — the stated gap
+              silent
+                  [ "let pods = git ls-files"
+                    "let extra = pods"
+                    "pods |> Seq.iter print"
+                    "extra |> Seq.iter print" ]
+                  "alias"
+          }
+          test "a block-local binding warns inside its own body, generic repair" {
+              match
+                  diagsOf
+                      [ "let f () ="
+                        "    let inner = git ls-files"
+                        "    print $\"{inner |> Seq.length}\""
+                        "    inner |> Seq.iter print"
+                        ""
+                        "f ()" ]
+              with
+              | [ d ] ->
+                  Expect.equal d.Line 4 "the second local pull"
+                  Expect.stringContains
+                      d.Message
+                      "add '|> Seq.force' at the binding"
+                      "no clean one-line source — the generic repair"
+              | other -> failtest $"expected one warning, got {other |> List.map (fun d -> d.Message)}"
+          }
+          test "a rebinding consumes the old tracking; its RHS pull counts once" {
+              // the second statement's RHS reads the OUTER pods (one
+              // pull); the rebound name is a plain pipeline, untracked
+              silent
+                  [ "let pods = git ls-files"
+                    "let pods = pods |> Seq.where (Str.contains \"a\")"
+                    "pods |> Seq.iter print" ]
+                  "read-through rebind"
+          }
+          test "POISON: an errored statement suppresses the advisory pass" {
+              silent
+                  [ "let pods = git ls-files"
+                    "pods |> Seq.iter print"
+                    "pods |> Seq.iter print"
+                    "print (\"a\" + 1)" ]
+                  "one real error beats advisory noise"
+          } ]
+
 // ---- #save DISTILL [D:repl-save] -------------------------------------
 // the distill seam: transcript survivors (a `TDef` name + physical
 // source) through qualify -> dedup(last) -> the check guarantee. The
@@ -19588,6 +19791,7 @@ let allTests =
           sigilTests
           districtTests
           unusedBindingTests
+          reenumWarningTests
           replSaveDistillTests
           aliasTests
           helpUxTests

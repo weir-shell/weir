@@ -526,9 +526,38 @@ let private echoMeta (s: string) =
 // the `let`-echo meta line [D:echo-teaching-consistency]: name, type, and
 // the SAME truncation-teaching tail the bare-expression echo carries — one
 // spelling so a clipped `let` bind can never look like it silently dropped
-// data (the tail is printed AFTER the lines, so it stays visible)
-let letEchoMeta (name: string) (ty: Ty) (hint: string option) : string =
-    $"{name} : {formatEchoTy ty}{Eval.echoTail hint}"
+// data (the tail is printed AFTER the lines, so it stays visible).
+// The meta also states the bound seq's STATE [D:reenum-warning]: a
+// command-backed unforced seq re-runs its command on each use and the
+// echo says so; a materialized one is frozen; a pure lazy seq stays
+// unannotated — silence is the default, only the hazard and its
+// resolution speak. Both ride the one parenthetical, the state joined
+// before the truncation teaching.
+let letEchoMeta (name: string) (ty: Ty) (state: string option) (hint: string option) : string =
+    let tail =
+        match state, hint with
+        | Some s, Some h -> Some $"{s}; {h}"
+        | Some s, None -> Some s
+        | None, h -> h
+
+    $"{name} : {formatEchoTy ty}{Eval.echoTail tail}"
+
+/// the bound seq's state for the meta line [D:reenum-warning]: the
+/// forcedItems probe (the one source echo and completion already share)
+/// decides frozen; an unforced value is annotated only when its RHS is
+/// command-backed (the weak-purity walk). Display only, tty-only — the
+/// piped meta bytes are pinned surface and never carry it.
+let letSeqState (te: Check.TypedExpr) (v: Eval.Value) : string option =
+    match v with
+    | Eval.VSeq items ->
+        match Eval.forcedItems items with
+        | Some _ -> Some "frozen"
+        | None ->
+            if Check.runsCommandT te then
+                Some "command-backed — re-runs on each use"
+            else
+                None
+    | _ -> None
 
 // the misuse repair after a streamed statement [D:repl-it]: `it` is
 // unit-bound (the stream's `()`), so using it where unit fails the check
@@ -1658,7 +1687,7 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
                      else
                          printTable lines)
 
-                    echoMeta (letEchoMeta name te.Ty hint)
+                    echoMeta (letEchoMeta name te.Ty (letSeqState te v) hint)
                 | None ->
                     let rendered, hint = Eval.echoValue cap ev
                     let tail = Eval.echoTail hint

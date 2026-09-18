@@ -2,6 +2,27 @@
 
 ## v0.0.45
 
+### Added
+
+- **The checker warns on possible re-enumeration.** A `let` whose RHS
+  is a command-backed seq with no visible force (`|> Seq.force`, an
+  applied `Seq.force`, an eager literal or a comprehension) re-runs
+  its command on every pull. When such a binding is enumerated at two
+  or more sites, `weir check` now warns at the second and later
+  sites — naming the command and the one-line repair
+  (`snapshot one run: let pods = kubectl get po -A |> Seq.force`).
+  Advisory: warning severity, exit stays 0, and the LSP shows it as a
+  squiggle. Conservative and stated: any read of the name counts as a
+  possible pull (argv splats included); a plain alias
+  (`let y = pods`) does not.
+
+- **The REPL binding echo states the bound seq's state.** At a tty,
+  `let pods = kubectl get po -A` now echoes
+  `pods : seq<string> (command-backed — re-runs on each use)`, and a
+  materialized bind echoes `(frozen)` — the same forcedItems probe
+  the echo and completion already share. A pure lazy seq stays
+  unannotated. Display only; the piped surface is unchanged.
+
 ### Fixed
 
 - **The operator partial-application teach no longer offers two
