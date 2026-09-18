@@ -17699,6 +17699,17 @@ let operatorValueTests =
               Expect.stringContains m "fun x -> v > x" "the backwards reading, shown"
               Expect.stringContains m "fun x -> x > v" "the likely-intended direction, shown"
           }
+          test "partial-application teach: a commutative op offers the directions as alternatives" {
+              let m = (checkErr "[1; 2] |> Seq.map ((==) 1)").Message
+              Expect.stringContains m "fun x -> x == v (or fun x -> v == x)" "== is symmetric — the or-form holds"
+          }
+          test "partial-application teach: a non-commutative op says the directions differ" {
+              let m = (checkErr "[1; 2] |> Seq.map ((-) 1)").Message
+              Expect.stringContains m "fun x -> x - v and fun x -> v - x differ" "- has no or-form"
+              let m2 = (checkErr "[1; 2] |> Seq.map ((<) 1)").Message
+              Expect.stringContains m2 "fun x -> x < v and fun x -> v < x differ" "< has no or-form"
+              Expect.isFalse (m2.Contains "(or ") "the or-form must never reach a non-commutative op"
+          }
           test "the refused set refuses with reasons; sigils cannot be caught" {
               let perr (src: string) =
                   match Weir.Parser.parseLine realResolver src with

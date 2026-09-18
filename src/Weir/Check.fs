@@ -2601,13 +2601,30 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
         // operator reads backwards — (>) 10 would mean fun x -> 10 > x,
         // which is exactly the direction authors get wrong (the
         // field-predicates exploration's evidence). The teaching shows
-        // both spellings so the direction is chosen, not guessed.
+        // both spellings so the direction is chosen, not guessed — and
+        // offers them as interchangeable ONLY for a commutative op.
         match head.Kind with
         | EOpValue op ->
+            // the commutative set: ops where fun x -> x op v and
+            // fun x -> v op x are the SAME function at every type the
+            // checker could see here (== and <> are symmetric; * is
+            // scalar multiplication at all its overloads, both operand
+            // orders admitted). + is excluded: it concatenates strings
+            // by context and the operand type is unknown at this
+            // refusal site. When in doubt, out — a wrong "differ" is
+            // merely verbose, a wrong "or" teaches the wrong function.
+            let commutative = [ "=="; "<>"; "*" ]
+
+            let directions =
+                if List.contains op commutative then
+                    $"write the lambda with its direction explicit: fun x -> x {op} v (or fun x -> v {op} x)"
+                else
+                    $"write the direction you mean: fun x -> x {op} v and fun x -> v {op} x differ"
+
             err
                 head.Span
                 ($"an operator cannot be partially applied — ({op}) v would mean fun x -> v {op} x, "
-                 + $"which reads backwards; write the lambda with its direction explicit: fun x -> x {op} v (or fun x -> v {op} x)")
+                 + $"which reads backwards; {directions}")
         | _ ->
 
             // the WRAP-IT hint [D:district-retirement]: a bare command in an

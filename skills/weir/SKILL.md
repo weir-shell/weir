@@ -858,7 +858,9 @@ print (Option.flatten (Some None) |> Option.defaultValue 0)
   context resolves the overload (`(+)` sums floats/strings/Durations/
   Sizes where the elements say so). Admitted: `+ - * / > < >= <= ==
   <>`. Partial application REFUSES (`(>) 10` reads backwards — the
-  message shows both lambda directions); `(&&)`/`(||)` refuse (a value
+  message shows both lambda directions, as interchangeable only for
+  a commutative op (`==`, `<>`, `*`); for the rest it says the
+  directions differ); `(&&)`/`(||)` refuse (a value
   cannot short-circuit); the pipes and `>>`/`<<` refuse (grammar /
   already the composed function).
 - Match-or-skip over a stream is `Seq.choose` (lazy, qualified-only):

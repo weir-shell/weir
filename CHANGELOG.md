@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.0.45
+
+### Fixed
+
+- **The operator partial-application teach no longer offers two
+  different functions as interchangeable.** `(op) v` still refuses;
+  for a commutative operator (`==`, `<>`, `*`) the message keeps
+  both lambda spellings as alternatives, and for every other
+  operator it now says the directions differ (`fun x -> x - v and
+  fun x -> v - x differ`) instead of the `(or …)` form. `+` takes
+  the differ-form too: it concatenates strings by context, and the
+  operand type is not known at the refusal site.
+
 ## v0.0.44
 
 ### Added
