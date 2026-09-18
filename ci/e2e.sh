@@ -1442,7 +1442,7 @@ PYADP
 
     # --- REPL line editor under a pty (2026-07-21) ---------------------
     if [ "$IS_WINDOWS" = "1" ]; then
-        echo "e2e SKIP: the six pty REPL harnesses — python has no pty on Windows (the REPL itself is exercised by the Windows hand-run checklist)"
+        echo "e2e SKIP: the pty REPL harnesses — python has no pty on Windows (the REPL itself is exercised by the Windows hand-run checklist)"
     else
     python3 "$(dirname "$0")/../tests/repl/repl-wordnav.py" "$BIN" || fail "repl word navigation"
     echo "e2e ok: repl Ctrl+Left/Right word navigation"
@@ -1467,6 +1467,9 @@ PYADP
 
     python3 "$(dirname "$0")/../tests/repl/repl-pathquote.py" "$BIN" || fail "repl path-quote completion"
     echo "e2e ok: repl path completion quotes in expression position, bare in command-argv [D:repl-path-quote]"
+
+    python3 "$(dirname "$0")/../tests/repl/repl-mapkeys.py" "$BIN" || fail "repl map-key completion"
+    echo "e2e ok: repl map-key completion — a bound value's keys inside a Map lookup literal; a pipeline receiver stays silent [D:value-key-complete]"
 
     python3 "$(dirname "$0")/../tests/repl/repl-multiline.py" "$BIN" || fail "repl multiline editor"
     fi
