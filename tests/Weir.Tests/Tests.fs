@@ -18716,6 +18716,41 @@ let helpUxTests =
               Expect.equal (Weir.Repl.renderHelpText false doc) doc "color off is byte-identity"
               Expect.stringContains doc "`yaml patch`" "the literal span spelling is the piped surface"
               Expect.isFalse (doc.Contains "\x1b") "no ANSI in the piped bytes"
+          }
+          test "(j) tty signature tints structurally [D:help-tint]: name bold, types yellow, punctuation dim" {
+              let t = Weir.Repl.helpTintedForTest "Yaml.inferShape"
+
+              Expect.equal
+                  (t.Split '\n').[0]
+                  ("\x1b[1mYaml.inferShape\x1b[0m \x1b[2m(\x1b[0mlines\x1b[2m: \x1b[0m\x1b[33mseq<string>\x1b[0m\x1b[2m)\x1b[0m\x1b[2m : \x1b[0m\x1b[33mstring\x1b[0m")
+                  "the composed signature carries the input colorizer's palette"
+
+              // the style IS the colorizer's palette — Color functions, not
+              // restated codes; a hardcoded escape here would let them drift
+              Expect.equal (Weir.Types.sigTintStyle.Name "n") (Weir.Types.Color.bold true "n") "name = the head tint"
+              Expect.equal (Weir.Types.sigTintStyle.Ty "t") (Weir.Types.Color.yellow true "t") "types = the casing-law tint"
+              Expect.equal (Weir.Types.sigTintStyle.Punct "p") (Weir.Types.Color.dim true "p") "punctuation = dim"
+          }
+          test "(k) the example block IS the input colorizer's render [D:help-tint] — one brain" {
+              let ex = Weir.Builtins.builtinDocs["Yaml.inferShape"].Example |> Option.get
+
+              let expected =
+                  ex.Split '\n'
+                  |> Array.map (Weir.Script.colorizeRepl Weir.Repl.knownForTest)
+                  |> String.concat "\n"
+
+              Expect.stringContains
+                  (Weir.Repl.helpTintedForTest "Yaml.inferShape")
+                  expected
+                  "the tty example is colorizeRepl's own output, line for line"
+
+              Expect.isTrue (expected.Contains "\x1b[") "the pin is vacuous unless the example actually tints"
+          }
+          test "(l) piped signature and example carry zero ANSI (the pinned bytes)" {
+              let doc = Weir.Repl.replDocText "Yaml.inferShape"
+              Expect.stringContains doc "Yaml.inferShape (lines: seq<string>) : string" "the plain signature spelling"
+              Expect.stringContains doc "print (Yaml.inferShape sample)" "the plain example spelling"
+              Expect.isFalse (doc.Contains "\x1b") "no ANSI in the piped bytes"
           } ]
 
 [<Tests>]

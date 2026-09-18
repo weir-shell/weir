@@ -79,6 +79,16 @@ if "`yaml patch`" not in t:
 if "\x1b[" in t:
     failures.append("piped #help must carry zero ANSI")
 
+# the signature line and example block are part of that pinned surface
+# [D:help-tint]: piped they stay the plain spelling, zero ANSI
+t = piped("#help Yaml.inferShape\n#quit\n")
+if "Yaml.inferShape (lines: seq<string>) : string" not in t:
+    failures.append(f"piped #help must keep the plain signature: {t[-300:]!r}")
+if "print (Yaml.inferShape sample)" not in t:
+    failures.append(f"piped #help must keep the plain example: {t[-300:]!r}")
+if "\x1b[" in t:
+    failures.append("piped #help signature/example must carry zero ANSI")
+
 # a name the CHECKER would refuse must not get a confident hover: #help and
 # the checker read one ownership function [D:ambiguous-ctor]
 t = piped("type B = C\ntype Z = C\n#help C\n#quit\n")

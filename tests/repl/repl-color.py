@@ -207,9 +207,26 @@ ht2 = run({"NO_COLOR": "1"}, ["#help Yaml.merge\r"])
 if "`yaml patch`" not in ANSI.sub("", ht2):
     failures.append(f"NO_COLOR help must keep the literal backticks: {ht2[-300:]!r}")
 
+# --- the signature line and example block tint too [D:help-tint]: the
+# signature structurally (name bold, types in the casing-law yellow —
+# the input colorizer's palette), the example through the input
+# colorizer itself; the probes pick spans the typed echo cannot fake
+# (the echo colorizes per-token, never `Yaml.inferShape` dotted-whole,
+# and nobody typed `print` or `seq<string>`) ---------------------------
+hs = run({}, ["#help Yaml.inferShape\r"])
+if "\x1b[1mYaml.inferShape\x1b[0m" not in hs:
+    failures.append(f"the signature name must render bold at a tty: {hs[-400:]!r}")
+if "\x1b[33mseq<string>\x1b[0m" not in hs:
+    failures.append(f"a signature type must tint the casing-law yellow: {hs[-400:]!r}")
+if "\x1b[1mprint\x1b[0m" not in hs:
+    failures.append(f"the example head must carry the colorizer's known-head bold: {hs[-400:]!r}")
+hs2 = run({"NO_COLOR": "1"}, ["#help Yaml.inferShape\r"])
+if "Yaml.inferShape (lines: seq<string>) : string" not in ANSI.sub("", hs2):
+    failures.append(f"NO_COLOR must keep the plain signature spelling: {hs2[-400:]!r}")
+
 if failures:
     for f in failures:
         print("repl-color FAIL:", f)
     sys.exit(1)
 
-print("repl-color: lexical spans, head verdicts, NO_COLOR+TERM=dumb hold, check reports on stdout (tty-colored, redirect-plain), table dressing (bold header/dim rule, NO_COLOR plain), status prompt (red on error, plain on success/reified), help code spans (cyan at a tty, literal under NO_COLOR)")
+print("repl-color: lexical spans, head verdicts, NO_COLOR+TERM=dumb hold, check reports on stdout (tty-colored, redirect-plain), table dressing (bold header/dim rule, NO_COLOR plain), status prompt (red on error, plain on success/reified), help code spans (cyan at a tty, literal under NO_COLOR), help signature+example tint (colorizer palette at a tty, plain under NO_COLOR)")

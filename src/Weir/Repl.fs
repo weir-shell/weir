@@ -24,6 +24,14 @@ let mutable private lastErrored = false
 // teach). Read by the unbound-`it` arm and the streamed meta line.
 let mutable private lastStreamed: string option = None
 
+// the session resolver's verdict [D:repl-color]: ONE membership feeding
+// the live prompt's head tint AND the #help example tint [D:help-tint]
+// — values, modules, and the command-callable externs, never two lists
+let private knownIn (env: TypeEnv) (n: string) : bool =
+    Map.containsKey n env.Values
+    || Map.containsKey n env.Modules
+    || Builtins.commandCallable.Contains n
+
 // the session TRANSCRIPT [D:repl-save]: the ACCEPTED statements, in
 // order, that `#save` DISTILLS into a runnable .weir file (option B — a
 // session is scratch; #save crystallizes its definitions and guarantees
@@ -870,11 +878,7 @@ let private readLineTty () : string option =
         out.Append "\x1b[J" |> ignore
 
         let env = currentEnv.Value
-
-        let isKnown n =
-            Map.containsKey n env.Values
-            || Map.containsKey n env.Modules
-            || Builtins.commandCallable.Contains n
+        let isKnown = knownIn env
 
         let mutable totalRows = 0
 
@@ -1685,7 +1689,24 @@ let private glanceTable (width: int) (rows: (string * string) list) : string =
 /// ONE SOURCE [D:repl-directives]: the hover's own composition — the
 /// annotated signature (formatSignature over the builtinDocs params)
 /// plus renderBuiltinDoc. A hover improvement lifts #help for free.
-let private memberHelp (te: TypeEnv) (name: string) : string option =
+/// `color` [D:help-tint]: at a tty the signature tints STRUCTURALLY at
+/// composition (sigTintStyle — the input colorizer's palette) and the
+/// Example renders through Script.colorizeRepl itself — an example is
+/// weir code, so the live prompt and #help share one brain; false is
+/// the pinned piped/--repl-doc byte surface, untouched.
+let private memberHelp (color: bool) (te: TypeEnv) (name: string) : string option =
+    let style = if color then sigTintStyle else plainSigStyle
+    let fmtSig = formatSignatureWith style
+
+    let tintExample: string -> string =
+        if color then
+            fun ex ->
+                ex.Split '\n'
+                |> Array.map (Script.colorizeRepl (knownIn te))
+                |> String.concat "\n"
+        else
+            id
+
     let schemeOf (n: string) =
         match n.Split '.' with
         | [| m; mem |] -> te.Modules |> Map.tryFind m |> Option.bind (Map.tryFind mem)
@@ -1695,11 +1716,11 @@ let private memberHelp (te: TypeEnv) (name: string) : string option =
     | Some d, sch ->
         let sigLine =
             sch
-            |> Option.map (fun s -> formatSignature name d.Params s.Ty + "\n\n")
+            |> Option.map (fun s -> fmtSig name d.Params s.Ty + "\n\n")
             |> Option.defaultValue ""
 
-        Some(sigLine + Builtins.renderBuiltinDoc d)
-    | None, Some sch -> Some(formatSignature name [] sch.Ty)
+        Some(sigLine + Builtins.renderBuiltinDocWith tintExample d)
+    | None, Some sch -> Some(fmtSig name [] sch.Ty)
     | None, None -> None
 
 // the init file's /// docs [D:repl-init]: position-keyed attachments
@@ -1707,7 +1728,7 @@ let private memberHelp (te: TypeEnv) (name: string) : string option =
 // with its doc — and a failed init leaves this EMPTY, never stale
 let mutable private initDocs: Map<string, string list> = Map.empty
 
-let private helpDirective (te: TypeEnv) (arg: string) : string =
+let private helpDirective (color: bool) (te: TypeEnv) (arg: string) : string =
     match arg.Trim() with
     | "" ->
         // modules one per line with their one-source blurb [D:help-glance];
@@ -1751,7 +1772,7 @@ let private helpDirective (te: TypeEnv) (arg: string) : string =
         let owners = Check.ctorOwners te name |> String.concat ", "
         $"'{name}' is an ambiguous constructor; it is declared by: {owners} — rename one of the cases"
     | name ->
-        match memberHelp te name with
+        match memberHelp color te name with
         | Some h ->
             (match Map.tryFind name initDocs with
              | Some doc -> h + "\n" + (doc |> String.concat "\n")
@@ -1792,7 +1813,7 @@ let private helpDirective (te: TypeEnv) (arg: string) : string =
 /// to stdout — read-only, no user code, no eval. #find's fzf --preview
 /// is the caller; the e2e pin holds the byte equality.
 let replDocText (name: string) : string =
-    helpDirective initial.TypeEnv name
+    helpDirective false initial.TypeEnv name
 
 // ---- the tty help render [D:help-tint] -------------------------------
 // A doc's `code` spans tint cyan at a colored tty, the backticks
@@ -1801,7 +1822,9 @@ let replDocText (name: string) : string =
 // #find's selection and fallback); replDocText and piped output keep
 // the literal backticks (the pinned byte surface — and the stripped
 // tty, NO_COLOR / TERM=dumb, falls back to that spelling so the span
-// boundary is never lost).
+// boundary is never lost). The signature line and the Example block
+// tint upstream, at composition (memberHelp's colour flag) — this
+// regex never has to re-parse what helpDirective already knew.
 let private codeSpanRe = Text.RegularExpressions.Regex @"`([^`\n]+)`"
 
 /// the transform with the colour gate explicit — the unit pins' seam
@@ -1813,6 +1836,11 @@ let renderHelpText (color: bool) (s: string) : string =
 
 let private renderHelp (s: string) : string =
     renderHelpText Types.Color.onStdout.Value s
+
+/// the one tty #help pipeline — composition-time tint (signature,
+/// example) and the prose span pass share a single colour gate
+let private renderHelpDirective (te: TypeEnv) (arg: string) : string =
+    renderHelp (helpDirective Types.Color.onStdout.Value te arg)
 
 // ---- #find [D:help-find]: fuzzy help search over ONE candidate set —
 // every module (`Seq — blurb`) and every member (`Seq.map — glance`),
@@ -1913,14 +1941,23 @@ let private findDirective (te: TypeEnv) (query: string) =
 
     if interactive then
         match findFzf te query with
-        | Some name -> Console.WriteLine(renderHelp (helpDirective te name))
+        | Some name -> Console.WriteLine(renderHelpDirective te name)
         | None -> () // cancel: no output, the session continues
     else
         Console.WriteLine(renderHelp (findFallback te query))
 
 /// test seams [D:help-find] (the parseAliasLineForTest precedent): the
 /// deterministic pieces, against the builtin session env
-let helpTextForTest (arg: string) : string = helpDirective initial.TypeEnv arg
+let helpTextForTest (arg: string) : string = helpDirective false initial.TypeEnv arg
+
+/// the tty pipeline with the gate forced on [D:help-tint] — the unit
+/// pins' seam for the composed tint (signature, example, prose spans)
+let helpTintedForTest (arg: string) : string =
+    renderHelpText true (helpDirective true initial.TypeEnv arg)
+
+/// the example tint's resolver, exposed so the pins can call the input
+/// colorizer with the SAME verdict the help render uses [D:help-tint]
+let knownForTest: string -> bool = knownIn initial.TypeEnv
 let findFallbackForTest (query: string) : string = findFallback initial.TypeEnv query
 let findCandidatesForTest () : string list = findCandidates initial.TypeEnv
 
@@ -2398,7 +2435,7 @@ let rec private loop (state: State) =
         if t = "#quit" then
             ()
         elif t = "#help" || t.StartsWith "#help " then
-            Console.WriteLine(renderHelp (helpDirective state.TypeEnv (t.Substring 5)))
+            Console.WriteLine(renderHelpDirective state.TypeEnv (t.Substring 5))
             loop state
         elif t = "#find" || t.StartsWith "#find " then
             findDirective state.TypeEnv ((t.Substring 5).Trim())

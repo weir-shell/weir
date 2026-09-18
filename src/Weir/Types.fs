@@ -120,13 +120,24 @@ let drainAnonDefs () : (string * (string * Ty) list) list =
     pendingAnonDefs.Value.Clear()
     xs
 
+/// per-part styling for the annotated signature [D:help-tint]: the tty
+/// help render tints name/types/punctuation structurally at composition;
+/// plain (id everywhere) is the hover and piped spelling — ONE
+/// composition, never a second signature formatter
+type SigStyle =
+    { Name: string -> string
+      Ty: string -> string
+      Punct: string -> string }
+
+let plainSigStyle: SigStyle = { Name = id; Ty = id; Punct = id }
+
 /// the annotated DECLARATION form for hover [D:annotated-signature]:
 /// `name (p1: t1) (p2: t2) : result`, decomposing `ty` by the given
 /// parameter names (the arrow tail beyond the named params is the
 /// result). Valid F# declaration syntax — claims nothing false. Zero
 /// names -> `name : ty`, no empty parens. The plain arrow `formatTy`
 /// stays the fallback (unnamed values) and the truth for type errors.
-let formatSignature (name: string) (paramNames: string list) (ty: Ty) : string =
+let formatSignatureWith (st: SigStyle) (name: string) (paramNames: string list) (ty: Ty) : string =
     // presentation guards [D:sig-render]: an internal sentinel
     // quantifier ('__print) renders as plain 'a — the accepted set is
     // the member's prose, and a double-underscore name is not a type a
@@ -152,17 +163,20 @@ let formatSignature (name: string) (paramNames: string list) (ty: Ty) : string =
         | _ -> [], t
 
     match split paramNames ty with
-    | [], _ -> $"{name} : {formatTy ty}"
+    | [], _ -> st.Name name + st.Punct " : " + st.Ty(formatTy ty)
     | ps, result ->
         let rendered =
             ps
             |> List.map (fun (n, t) ->
                 match t with
-                | TUnit -> "()"
-                | _ -> $"({n}: {formatTy t})")
+                | TUnit -> st.Punct "()"
+                | _ -> st.Punct "(" + n + st.Punct ": " + st.Ty(formatTy t) + st.Punct ")")
             |> String.concat " "
 
-        $"{name} {rendered} : {formatTy result}"
+        st.Name name + " " + rendered + st.Punct " : " + st.Ty(formatTy result)
+
+let formatSignature (name: string) (paramNames: string list) (ty: Ty) : string =
+    formatSignatureWith plainSigStyle name paramNames ty
 
 let rec tyVars (ty: Ty) : Set<string> =
     match ty with
@@ -432,6 +446,15 @@ module Color =
     // help text's `code` spans [D:help-tint]: the colorizer's number/
     // sigil tint reused, so "reads as code" is one colour everywhere
     let cyan on s = wrap on "36" s
+
+// the tty signature style [D:help-tint]: the input colorizer's own
+// palette — name bold (the known-head tint), types in the casing-law
+// yellow (33), punctuation dim — so a #help signature reads like the
+// line the user types; plainSigStyle stays the hover/piped byte surface
+let sigTintStyle: SigStyle =
+    { Name = Color.bold true
+      Ty = Color.yellow true
+      Punct = Color.dim true }
 
 // the waiting indicator [D:waiting-indicator]: whoever owns the terminal
 // and is working draws the progress — so it wraps ONLY weir's own
