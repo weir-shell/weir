@@ -2175,8 +2175,12 @@ WEOF
     # bind says frozen; the pure-lazy nats cell above stays unannotated
     # (its teaching grep pins the meta with no state joined)
     rsout=$(printf 'SLEEP 400\nSEND let pods = sh -c "echo one"\\r\nSLEEP 1200\nSEND let snap = ["a"; "b"]\\r\nSLEEP 800\nSEND #quit\\r\n' | python3 "$ptyrun" 10 "$BIN")
-    echo "$rsout" | grep -qF 'pods : seq<string> (command-backed — re-runs on each use)' \
+    # the harness echoes a bytes repr, so the em-dash rides as \xe2\x80\x94 —
+    # pin the ASCII halves around it
+    echo "$rsout" | grep -qF 'pods : seq<string> (command-backed' \
       || fail "the command-backed unforced bind must state the re-run hazard: $rsout"
+    echo "$rsout" | grep -qF 're-runs on each use)' \
+      || fail "the hazard annotation names the re-run: $rsout"
     echo "$rsout" | grep -qF 'snap : seq<string> (frozen)' \
       || fail "a materialized bind must state frozen: $rsout"
     echo "e2e ok: the binding echo states seq state (re-runs / frozen)"
