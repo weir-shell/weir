@@ -11067,7 +11067,7 @@ let scannerTests =
               // stopped consulting it, this test still passed)
               match Weir.Script.assemble [ 1, "if c then !"; 2, "    git pull" ] with
               | Error e ->
-                  Expect.stringContains e "the line-end ! district retired" "the teaching fires"
+                  Expect.stringContains e "not a district marker" "the teaching fires"
                   Expect.stringContains e "within env vars" "and names the env-overlay repair"
               | Ok _ -> failtest "a retired marker must be an assembly error"
           }
@@ -11212,7 +11212,7 @@ let childEnvTests =
                     [ 1, "let f x ="; 2, "    !e"; 3, "        git pull"; 4, "    printerr \"OK\"" ]
                     [ 1, "let f x ="; 2, "    !"; 3, "        git pull"; 4, "    printerr \"OK\"" ] ] do
                   match Weir.Script.assemble fixture with
-                  | Error msg -> Expect.stringContains msg "district retired" ""
+                  | Error msg -> Expect.stringContains msg "not a district marker" ""
                   | other -> failtest $"unexpected: {other}"
           }
           test "fromFile: single quotes are shell-literal ($ allowed)" {
@@ -12339,13 +12339,13 @@ let districtTests =
         [ test "the line-end ! marker teaches its retirement" {
               match Weir.Script.assemble [ 1, "if go then !"; 2, "    git pull" ] with
               | Error msg ->
-                  Expect.stringContains msg "district retired" "the teaching, not an expecting-list"
+                  Expect.stringContains msg "not a district marker" "the teaching, not an expecting-list"
                   Expect.stringContains msg "within env" "the overlay pointer"
               | other -> failtest $"unexpected: {other}"
           }
           test "the !name marker teaches identically" {
               match Weir.Script.assemble [ 1, "if go then !e"; 2, "    git pull" ] with
-              | Error msg -> Expect.stringContains msg "district retired" ""
+              | Error msg -> Expect.stringContains msg "not a district marker" ""
               | other -> failtest $"unexpected: {other}"
           }
           test "the arming spelling replaces it: bare commands under if assemble and check" {
@@ -18536,6 +18536,25 @@ let helpUxTests =
 
               for KeyValue(m, b) in Weir.Builtins.moduleBlurbs do
                   Expect.isTrue (b.Trim() <> "") $"the blurb for {m} is non-empty"
+          }
+          test "(a2) user-rendered text carries NO ledger citations" {
+              // [D:key] is the ledger's address space, not user vocabulary
+              // — a doc string reaches #help/hover/#find verbatim, so a
+              // citation there is archaeology leaking. Comments are the
+              // citations' home; the docs are enumerable, so pin them all.
+              for KeyValue(name, d) in Weir.Builtins.builtinDocs do
+                  Expect.isFalse (d.Summary.Contains "[D:") $"{name}: summary cites the ledger"
+
+                  match d.Pointer with
+                  | Some p -> Expect.isFalse (p.Contains "[D:") $"{name}: pointer cites the ledger"
+                  | None -> ()
+
+                  match d.Example with
+                  | Some e -> Expect.isFalse (e.Contains "[D:") $"{name}: example cites the ledger"
+                  | None -> ()
+
+              for KeyValue(m, b) in Weir.Builtins.moduleBlurbs do
+                  Expect.isFalse (b.Contains "[D:") $"{m}: blurb cites the ledger"
           }
           test "(b) #help Module: ONE member per line, name + the doc's first line" {
               let t = Weir.Repl.helpTextForTest "Option"

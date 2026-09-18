@@ -637,7 +637,7 @@ if go then !
     sh -c "echo x"
 WEOF
 rerr=$($BIN check "$distdir/old.weir" 2>&1) && fail "the retired spelling must error" || true
-echo "$rerr" | grep -qF "district retired" || fail "retirement teaching: $rerr"
+echo "$rerr" | grep -qF "not a district marker" || fail "retirement teaching: $rerr"
 echo "e2e ok: the retired ! spelling teaches [D:district-retirement]"
 
 cat > "$distdir/span.weir" <<'WEOF'

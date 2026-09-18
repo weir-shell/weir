@@ -991,7 +991,7 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
     match retiredHit with
     | Some n ->
         Error
-            $"line {n}: the line-end ! district retired [D:district-retirement] — commands are ordinary statements now (drop the !); for an env overlay over a block, use `within env vars`"
+            $"line {n}: a line-end '!' is not a district marker — commands are ordinary statements (drop the !); for an env overlay over a block, use `within env vars`"
     | None ->
         let noBody letLine =
             Error
