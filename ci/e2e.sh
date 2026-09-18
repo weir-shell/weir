@@ -3635,6 +3635,56 @@ echo "$xto" | grep -qF "XML is read-only" || fail "to xml refusal teaches: $xto"
 echo "e2e ok: from xml — real .csproj groups/refs, stripped xmlns, no to xml"
 rm -rf "$xdir"
 
+# from table [D:from-table]: the aligned-table boundary on a REAL file —
+# a kubectl-shaped fixture (tabwriter reality: 3-space padding, spaced
+# values, <none>) read into typed rows; the header-offset law is the
+# spaced STATUS value surviving as one cell. Wire hits a raw header;
+# Option reads <none>/empty as None; errors carry line + column.
+tdir=$(mkweirtmp)
+cat > "$tdir/pods.txt" <<'TEOF'
+NAME    READY   STATUS             RESTARTS   NOMINATED NODE
+web-1   1/1     Running            0          k3d-agent-0
+db-0    1/2     CrashLoopBackOff   3          <none>
+TEOF
+cat > "$tdir/table.weir" <<'WEOF'
+type Pod = {
+    name: string
+    ready: string
+    status: string
+    [<Wire "RESTARTS">]
+    restarts: int
+    nominatedNode: Option<string>
+}
+let pods = File.read "pods.txt" |> from table Pod
+print $"{pods |> Seq.length} pods"
+pods |> Seq.where (fun p -> p.restarts > 0) |> Seq.iter (fun p -> print $"{p.name} {p.status}")
+pods |> Seq.iter (fun p -> print $"{p.nominatedNode}")
+WEOF
+tout=$(cd "$tdir" && $BIN table.weir)
+expect "from table: rows read typed from a real file" "2 pods" "$tout"
+expect "from table: a spaced value is ONE cell (header offsets, not whitespace)" "db-0 CrashLoopBackOff" "$tout"
+echo "$tout" | grep -qF 'Some "k3d-agent-0"' || fail "from table: two-word header + Option value: $tout"
+echo "$tout" | grep -qF "None" || fail "from table: <none> reads as None: $tout"
+# a bad cell errors located: row line + column offset + header name
+terr=$(cd "$tdir" && $BIN -e 'type P = { name: string; restarts: int }
+["NAME   RESTARTS"; "n1     often"] |> from table P |> Seq.length |> show' 2>&1) && fail "a bad int cell must raise" || true
+echo "$terr" | grep -qF "from table: line 2, col 8: column 'RESTARTS': expected int, got 'often'" \
+  || fail "from table cell error lost its location: $terr"
+# a missing declared column names itself and the headers seen
+tmiss=$($BIN -e 'type P = { name: string; ip: string }
+["NAME   AGE"; "n1     2d"] |> from table P |> Seq.length |> show' 2>&1) && fail "a missing column must raise" || true
+echo "$tmiss" | grep -qF "missing column 'ip' for field 'ip' — headers seen: NAME, AGE" \
+  || fail "from table missing-column error lost its inventory: $tmiss"
+# no write side, and the word stays an ordinary identifier
+tto=$($BIN -e 'type P = { a: int }
+[{ a = 1 }] |> to table' 2>&1) && fail "to table must not exist" || true
+echo "$tto" | grep -qF "the table boundary is read-only" || fail "to table refusal teaches: $tto"
+tid=$($BIN -e 'let table = 5
+show (table + 1)') || fail "'table' must stay bindable"
+echo "$tid" | grep -qF '"6"' || fail "'table' as an identifier: $tid"
+echo "e2e ok: from table — header-offset slicing, Wire + Option/<none>, located errors, no to table, 'table' unreserved"
+rm -rf "$tdir"
+
 # structural walks [D:structural-walk]: Graph.reach over a dep graph
 # (cycle-safe, breadth-first, each node once) and Tree.walk's
 # parent-before-child effect order — the two laws, pinned in the binary
