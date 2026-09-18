@@ -4252,6 +4252,52 @@ let stringTests =
               expectValue "Str.trySplitOnce \"=\" \"k=v\"" (VUnion("Some", Some(VTuple [ VStr "k"; VStr "v" ])))
               expectValue "Str.trySplitOnce \"=\" \"none\"" (VUnion("None", None))
           }
+          test "Str.fields: whitespace runs collapse, empties never appear [D:str-fields]" {
+              // tabs and spaces mixed — one whitespace class (trim's)
+              Expect.equal
+                  (run "Str.fields \" a\\t b  c\\t\\t\"" |> forceSeq)
+                  [ VStr "a"; VStr "b"; VStr "c" ]
+                  "runs collapse; leading and trailing whitespace produce nothing"
+
+              // the no-empties law's degenerate ends
+              expectValue "Str.fields \"\" |> Seq.isEmpty" (VBool true)
+              expectValue "Str.fields \" \\t \" |> Seq.isEmpty" (VBool true)
+          }
+          test "acceptance: a kubectl-style column via Str.fields [D:str-fields]" {
+              // the spelling this member retires:
+              // l |> Str.rmatchAll @"(\S+)" |> Seq.map Seq.head
+              expectValue
+                  "\"weir-7d9f4c   1/1   Running   0   12m\" |> Str.fields |> Seq.item 1"
+                  (VStr "1/1")
+          }
+          test "Str.rsplit: split on every regex match, split's empties law [D:str-fields]" {
+              // the shared law, pinned as an equality: on a literal-shaped
+              // pattern the two splitters answer identically (empties kept)
+              Expect.equal
+                  (run "Str.rsplit \",\" \"a,,b\"" |> forceSeq)
+                  (run "Str.split \",\" \"a,,b\"" |> forceSeq)
+                  "one empties law, two splitters"
+
+              Expect.equal (run "Str.rsplit \",\" \"\"" |> forceSeq) [ VStr "" ] "the empty subject mirrors split"
+
+              // a multi-char pattern: the whole match is the separator
+              Expect.equal
+                  (run "Str.rsplit @\"\\s*,\\s*\" \"a , b,c\"" |> forceSeq)
+                  [ VStr "a"; VStr "b"; VStr "c" ]
+                  "the match spans the run"
+
+              // capture groups never add pieces (the between-match law)
+              Expect.equal
+                  (run "Str.rsplit \"(,)\" \"a,b\"" |> forceSeq)
+                  [ VStr "a"; VStr "b" ]
+                  "groups do not interleave"
+
+              // a bad pattern raises in the r-family's error class
+              let msg =
+                  Expect.throwsC (fun () -> run "Str.rsplit \"[unclosed\" \"x\"" |> ignore) id |> _.Message
+
+              Expect.stringStarts msg "invalid regex:" "the rmatch family's raise"
+          }
           test "Str.length and toInt" {
               expectValue "Str.length \"abc\"" (VInt 3)
               expectValue "toInt \"42\" + 1" (VInt 43)
