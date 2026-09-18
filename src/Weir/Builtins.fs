@@ -5301,6 +5301,11 @@ let builtinDocs: Map<string, BuiltinDoc> =
               "Parse one XML document (a .csproj/.slnx or any XML) into a declared record — read-only. The root element is the record; a field name matches a child element by local name (a default xmlns is stripped); [<Attr>] reads an attribute, [<Elem \"X\">] a repeated child, a nested record a child element. Every leaf is text: fields are string, Option<string>, a record, or a seq of one (declare a number as string, convert with Str.toInt). There is no `to xml`."
               None
               (Some "a pipe stage: File.read \"App.csproj\" |> from xml Proj.")
+          "from table",
+          bd
+              "Read aligned column output (kubectl/docker style: one header row, aligned data rows) into declared row records — yields seq<T>. Columns slice at header offsets, never whitespace runs, so a spaced value (`Up 2 hours`) survives; a header boundary is a run of 2+ spaces (`CONTAINER ID` is one column). A field matches its header by normalized name, case-insensitively (`podTemplateHash` reads `POD-TEMPLATE-HASH`); [<Wire \"HEADER\">] matches a raw header verbatim. Cells trim and type by the field (string/int/float/bool); an Option field reads an empty or `<none>` cell as None. Extra columns are ignored; blank lines skip; errors carry line and column. There is no `to table`."
+              None
+              (Some "a pipe stage: kubectl get po |> from table Pod.")
           "Yaml.parse",
           (bd
               "Parse one YAML document (the strict subset) into Yaml nodes — the typeless read: structure is held whole, undeclared keys included, where `from yaml T` would drop them. Scalars self-type exactly as district scalars do (unquoted true/3/1.5 -> YBool/YInt/YFloat; quoted or block -> YStr; empty -> YNull)."

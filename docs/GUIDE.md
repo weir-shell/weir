@@ -19,7 +19,8 @@ Five properties, in the order they matter:
    effect. Bash tells you about your mistake halfway through making it.
 2. **Every boundary is typed data.** Command output pipes through
    `|> from json T` into a record with the fields you declared, not
-   string soup — `from jsonl`/`from yaml`/`from xml` cover the wire,
+   string soup — `from jsonl`/`from yaml`/`from xml`/`from table`
+   cover the wire,
    `Args.load` types argv and derives `--help`, `Env.load` types the
    environment, and the `Regex` match pattern covers everything
    line-shaped. YAML you did *not* declare edits structurally
@@ -1361,6 +1362,33 @@ numeric field is declared `string` and converted (`Str.toInt`), which
 the checker teaches rather than guessing a convention XML lacks. The
 top level is a single root, so there is no `from xml seq<T>` (a repeat
 is a `seq< >` field), and no `to xml`: the boundary is read-only.
+
+**Aligned tables read typed too.** `from table T` reads the shape
+`kubectl` and `docker` print — one header row, aligned data rows —
+into row records, yielding `seq<T>`. Columns slice at *header
+offsets*, never whitespace runs, so `Up 2 hours` stays one cell; a
+header boundary is a run of two or more spaces, so `CONTAINER ID` is
+one column. Fields match headers by normalized name
+(`podTemplateHash` reads `POD-TEMPLATE-HASH`; `[<Wire "HEADER">]`
+matches verbatim); cells type by the field, and an `Option` field
+reads an empty or `<none>` cell as `None`:
+
+```weir
+type Pod = { name: string; status: string; restarts: int }
+
+let pods =
+    [ "NAME    STATUS    RESTARTS   AGE"
+      "web-1   Running   0          2d1h"
+      "db-0    Pending   3          5h" ]
+    |> from table Pod
+
+pods |> Seq.where (fun p -> p.restarts > 0) |> Seq.iter (fun p -> print p.name)
+```
+
+In a live script that is `kubectl get po |> from table Pod` — and
+`#infer it from table as Pod` in the REPL drafts the record for you.
+Extra columns are ignored, errors carry line and column, and there is
+no `to table`: read-only, like XML.
 
 **Editing YAML you did not fully declare.** `from yaml T` drops
 undeclared fields — right for reading, destructive for a rewrite. The

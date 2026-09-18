@@ -4,6 +4,7 @@
     "from": [
       "json",
       "jsonl",
+      "table",
       "xml",
       "yaml"
     ],

@@ -1,10 +1,10 @@
 # Adapters
 
 `from` reads a wire format into a declared shape; `to` writes one.
-Three formats each way (`json`, `jsonl`, `yaml` in; `json`, `jsonl`,
-`yaml` out). Neither guesses: `from json T` reads one document
-however many lines it spans; `from jsonl T` reads one document per
-line and yields `seq<T>`.
+Three formats go both ways (`json`, `jsonl`, `yaml`); two more read
+only (`xml`, `table`). Neither direction guesses: `from json T` reads
+one document however many lines it spans; `from jsonl T` reads one
+document per line and yields `seq<T>`.
 
 ```weir
 type Peer = { host: string; port: int }
@@ -126,6 +126,47 @@ fits only `string`/`Option<string>`, `[<Elem>]` only a `seq`, and the
 top level is one root element — there is no `from xml seq<T>` (a
 repeated child is a `seq< >` field). XML is read-only: there is no
 `to xml`.
+
+## Aligned tables
+
+`from table T` reads aligned column output — the shape `kubectl` and
+`docker` print: one header row, aligned data rows — into declared row
+records, yielding `seq<T>`. The first non-blank line is the header;
+columns slice at *header offsets*, never whitespace runs, so a value
+with spaces (`Up 2 hours`, a free-text last column) survives intact. A
+header boundary is a run of two or more spaces — a single interior
+space stays inside one header, so `CONTAINER ID` is one column (both
+tools pad columns with three spaces).
+
+```weir
+type Pod = { name: string; status: string; restarts: int; node: Option<string> }
+let pods =
+    [ "NAME    STATUS    RESTARTS   NODE"
+      "web-1   Running   0          k3d-a"
+      "db-0    Pending   3          <none>" ]
+    |> from table Pod
+pods |> Seq.iter (fun p -> print $"{p.name}: {p.status} ({show p.restarts} restarts)")
+```
+
+A field matches its header by normalized name, case-insensitively on
+the alphanumerics — `name` reads `NAME`, `podTemplateHash` reads
+`POD-TEMPLATE-HASH`; `[<Wire "HEADER">]` matches a raw header
+verbatim. Cells trim and type by the declared field (`string`, `int`,
+`float`, `bool`); an `Option` field reads an empty cell or a cell
+that is exactly `<none>` (the kubectl idiom) as `None`, and a
+required field refuses an absent cell naming the `Option` repair.
+Extra columns are ignored (the extra-keys precedent), blank lines
+skip, and a header-only table is the empty seq (`docker ps` with
+nothing running). Errors are located: a missing declared column names
+itself and lists the headers seen; a cell that fails its type carries
+the row line and column. Rows are already plural — no
+`seq`/`stream`/`Map` wrap — and the boundary is read-only: there is
+no `to table`.
+
+`#infer <src> from table as Pod` (or `sample |> Table.inferShape`)
+drafts the row record from a live sample — per-column type scanning,
+`Option` where a column has empty/`<none>` cells, and a note that
+the value reads as `seq<Pod>`.
 
 ## Editing YAML: `Yaml.parse` and `yaml patch`
 

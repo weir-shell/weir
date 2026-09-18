@@ -1844,6 +1844,13 @@
       "pointer": "a pipe stage: xs |\u003E from jsonl Config."
     },
     {
+      "name": "from table",
+      "signature": null,
+      "summary": "Read aligned column output (kubectl/docker style: one header row, aligned data rows) into declared row records \u2014 yields seq\u003CT\u003E. Columns slice at header offsets, never whitespace runs, so a spaced value (\u0060Up 2 hours\u0060) survives; a header boundary is a run of 2\u002B spaces (\u0060CONTAINER ID\u0060 is one column). A field matches its header by normalized name, case-insensitively (\u0060podTemplateHash\u0060 reads \u0060POD-TEMPLATE-HASH\u0060); [\u003CWire \u0022HEADER\u0022\u003E] matches a raw header verbatim. Cells trim and type by the field (string/int/float/bool); an Option field reads an empty or \u0060\u003Cnone\u003E\u0060 cell as None. Extra columns are ignored; blank lines skip; errors carry line and column. There is no \u0060to table\u0060.",
+      "example": null,
+      "pointer": "a pipe stage: kubectl get po |\u003E from table Pod."
+    },
+    {
       "name": "from xml",
       "signature": null,
       "summary": "Parse one XML document (a .csproj/.slnx or any XML) into a declared record \u2014 read-only. The root element is the record; a field name matches a child element by local name (a default xmlns is stripped); [\u003CAttr\u003E] reads an attribute, [\u003CElem \u0022X\u0022\u003E] a repeated child, a nested record a child element. Every leaf is text: fields are string, Option\u003Cstring\u003E, a record, or a seq of one (declare a number as string, convert with Str.toInt). There is no \u0060to xml\u0060.",

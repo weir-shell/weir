@@ -1515,6 +1515,41 @@ let refs =
     |> _.refs
 refs |> Seq.iter (fun r -> print r.Include)
 ```
+- ALIGNED TABLES are a read-only typed boundary [D:from-table]:
+  `from table T` reads kubectl/docker-style output — one header row,
+  aligned data rows — into row records, yielding `seq<T>`
+  (`kubectl get po |> from table Pod`). The first non-blank line is
+  the HEADER; columns slice at HEADER OFFSETS, never whitespace runs,
+  so a spaced value (`Up 2 hours`) survives; a header boundary is a
+  run of 2+ SPACES — a single interior space stays inside one header
+  (`CONTAINER ID` is ONE column; both tools pad with 3 spaces). A
+  field matches its header by normalized name, case-insensitively on
+  the alphanumerics (`podTemplateHash` reads `POD-TEMPLATE-HASH`);
+  `[<Wire "HEADER">]` matches a raw header verbatim. Cells trim and
+  type by the field — `string`/`int`/`float`/`bool`, and an `Option`
+  field reads an EMPTY cell or exactly `<none>` (the kubectl idiom)
+  as None; a required field refuses an absent cell naming the Option
+  repair. Extra columns are ignored, blank lines skip, a header-only
+  table is the empty seq, and every error is located (a missing
+  column lists the headers seen; a bad cell carries line and column).
+  Rows are already plural — no `seq`/`stream`/`Map` wrap — and there
+  is NO `to table` (the REPL's record echo already renders tables
+  for display). `table` stays an ordinary identifier elsewhere.
+  `#infer <src> from table as Pod` / `sample |> Table.inferShape`
+  draft the row record from a live sample (per-column type scan;
+  `Option` + a note where a column has empty/`<none>` cells; the
+  value reads as `seq<Pod>`).
+
+```weir
+type Pod = { name: string; status: string; restarts: int; node: Option<string> }
+let pods =
+    [ "NAME    STATUS    RESTARTS   NODE"
+      "web-1   Running   0          k3d-a"
+      "db-0    Pending   3          <none>" ]
+    |> from table Pod
+pods |> Seq.where (fun p -> p.restarts > 0) |> Seq.iter (fun p -> print p.name)
+print (show (pods |> Seq.head |> _.node))
+```
 - `<<<` / `$<<<` heredoc blocks [D:text-block]: line-end `<<<` opens
   the PLAIN multiline literal — every byte below the marker is
   content (`$` and `{` included), interior blank lines and deeper
