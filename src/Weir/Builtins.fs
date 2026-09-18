@@ -4087,12 +4087,12 @@ let builtinDocs: Map<string, BuiltinDoc> =
           // OWN head, never `within pure`
           "pure",
           bd
-              "A purity assertion for an indented block: the body must reach NO effect (filesystem, command, network, environment, console, clock) — a reachable effect is a check error naming the offender. Opt-in only: weir stays effect-normal, and code outside a pure region is never gated."
+              "A purity assertion for an indented block: the body must reach no effect (filesystem, command, network, environment, console, clock) — a reachable effect is a check error naming the offender. Opt-in only: weir stays effect-normal, and code outside a pure region is never gated."
               (Some "pure 1 + 1")
               (Some "the binding spelling is the `let pure` modifier; unknown callables (a function param, an import's member) forfeit purity — the judgement may refuse, it never lies")
           "let pure",
           bd
-              "The purity MODIFIER — weir's first post-let modifier: `let pure f x = …` asserts the binding's whole body reaches no effect, and an impure body is a check error. Desugars to a body-spanning pure block; the binding hovers with the (pure) badge."
+              "The purity modifier — weir's first post-let modifier: `let pure f x = …` asserts the binding's whole body reaches no effect, and an impure body is a check error. Desugars to a body-spanning pure block; the binding hovers with the (pure) badge."
               (Some "let pure double n = n * 2")
               (Some "#help pure has the block form and the effect families")
           // ---- Instant: the UTC point [D:instant] ----
@@ -4572,7 +4572,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
            |> named [ "keyOf"; "seed"; "step"; "frontier" ])
           "Graph.reach",
           (bd
-              "Every node reachable from a start node, breadth-first, each once (cycles and diamonds are safe — the key dedups). The neighbor function IS the graph; nothing is materialized up front."
+              "Every node reachable from a start node, breadth-first, each once (cycles and diamonds are safe — the key dedups). The neighbor function is the graph; nothing is materialized up front."
               (Some "Graph.reach (fun n -> show n) (fun n -> if n < 3 then [n + 1] else []) 1")
               None
            |> named [ "keyOf"; "neighbors"; "start" ])
@@ -4632,7 +4632,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
           "exit", (bd "Exit the process with a status code." None None |> named [ "code" ])
           "prompt",
           (bd
-              "Write a message to STDERR and read one line from stdin (interactive input; a piped stdout stays data). EOF refuses — no phantom input. Self.stdin stays the STREAM reading (one enumeration; the two compose per-line vs whole-stream)."
+              "Write a message to stderr and read one line from stdin (interactive input; a piped stdout stays data). EOF refuses — no phantom input. Self.stdin stays the stream reading (one enumeration; the two compose per-line vs whole-stream)."
               None
               (Some "let name = prompt \"your name?\" — interactive; in tests, pipe the answer in.")
            |> named [ "message" ])
@@ -4673,7 +4673,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
            |> named [ "sep"; "s" ])
           "Str.trySplitOnce",
           (bd
-              "splitOnce's Option twin: Some (before, after) at the first occurrence, None when the separator is absent — the KEY=VALUE parser's shape."
+              "splitOnce's Option twin: Some (before, after) at the first occurrence, None when the separator is absent — the `KEY=VALUE` parser's shape."
               (Some "match Str.trySplitOnce \"=\" \"key=val\" with | Some (k, v) -> print k | None -> print \"no\"")
               None
            |> named [ "sep"; "s" ])
@@ -4978,7 +4978,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
           (bd "Build EnvVar records from name/value tuples." (Some "Env.ofPairs [(\"K\", \"V\")] |> Seq.force") None
            |> named [ "pairs" ])
           "Env.fromFile",
-          (bd "Read `.env` lines (KEY=value) as EnvVar records." None None
+          (bd "Read `.env` lines (`KEY=value`) as EnvVar records." None None
            |> named [ "path" ])
           "Env.load",
           bd
@@ -5106,7 +5106,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
            |> named [ "plan" ])
           "Plan.apply",
           (bd
-              "Perform a plan's ops through the normal builtins, in capture order. STOPS at the first failing op (prior ops stay done); NOT transactional — no rollback (that is the IaC line weir does not cross). Refused inside a `plan` block."
+              "Perform a plan's ops through the normal builtins, in capture order. Stops at the first failing op (prior ops stay done); not transactional — no rollback (that is the IaC line weir does not cross). Refused inside a `plan` block."
               None
               None
            |> named [ "plan" ])
@@ -5236,31 +5236,31 @@ let builtinDocs: Map<string, BuiltinDoc> =
               (Some "a pipe stage: deployment |> to yaml.")
           "from xml",
           bd
-              "Parse one XML document (a .csproj/.slnx or any XML) into a declared record — READ-ONLY. The root element is the record; a field name matches a child element by local name (a default xmlns is stripped); [<Attr>] reads an attribute, [<Elem \"X\">] a repeated child, a nested record a child element. Every leaf is text: fields are string, Option<string>, a record, or a seq of one (declare a number as string, convert with Str.toInt). There is no `to xml`."
+              "Parse one XML document (a .csproj/.slnx or any XML) into a declared record — read-only. The root element is the record; a field name matches a child element by local name (a default xmlns is stripped); [<Attr>] reads an attribute, [<Elem \"X\">] a repeated child, a nested record a child element. Every leaf is text: fields are string, Option<string>, a record, or a seq of one (declare a number as string, convert with Str.toInt). There is no `to xml`."
               None
               (Some "a pipe stage: File.read \"App.csproj\" |> from xml Proj.")
           "Yaml.parse",
           (bd
-              "Parse one YAML document (the strict subset) into Yaml nodes — the TYPELESS read: structure is held whole, undeclared keys included, where `from yaml T` would drop them. Scalars self-type exactly as district scalars do (unquoted true/3/1.5 -> YBool/YInt/YFloat; quoted or block -> YStr; empty -> YNull)."
+              "Parse one YAML document (the strict subset) into Yaml nodes — the typeless read: structure is held whole, undeclared keys included, where `from yaml T` would drop them. Scalars self-type exactly as district scalars do (unquoted true/3/1.5 -> YBool/YInt/YFloat; quoted or block -> YStr; empty -> YNull)."
               (Some "[\"replicas: 3\"] |> Yaml.parse")
               None
            |> named [ "lines" ])
           "Yaml.merge",
           (bd
-              "Apply a `yaml patch` district to a document: the patch's STRUCTURE is the address (maps upsert recursively; seqs append-if-absent, or upsert/remove by the marker line's by=<key>; scalars replace; a `$-` tombstone removes the key or matching item). Orderless and idempotent; the merged document renders with `to yaml`."
+              "Apply a `yaml patch` district to a document: the patch's structure is the address (maps upsert recursively; seqs append-if-absent, or upsert/remove by the marker line's by=<key>; scalars replace; a `$-` tombstone removes the key or matching item). Orderless and idempotent; the merged document renders with `to yaml`."
               None
               (Some
                   "let p = yaml patch by=name (indented patch lines) — then File.read f |> Yaml.parse |> Yaml.merge p |> to yaml |> File.write f.")
            |> named [ "patch"; "doc" ])
           "Yaml.inferShape",
           (bd
-              "Draft named `type` declarations from a YAML sample — the composable core of `#infer`: returns the declaration TEXT (top record named Root; nested records auto-named; notes for empty/null/heterogeneous fields ride as `//` lines). It DRAFTS what the sample has; you edit the emitted types. NOT check-time inference (the value is a runtime sample)."
+              "Draft named `type` declarations from a YAML sample — the composable core of `#infer`: returns the declaration text (top record named Root; nested records auto-named; notes for empty/null/heterogeneous fields ride as `//` lines). It drafts what the sample has; you edit the emitted types. Not check-time inference (the value is a runtime sample)."
               (Some "let sample = <<<\n    name: web\n    port: 8080\nprint (Yaml.inferShape sample)")
               (Some "the `weir add schema` category: external structure -> a declaration you own; check and `from yaml` stay untouched.")
            |> named [ "lines" ])
           "Json.inferShape",
           (bd
-              "Draft named `type` declarations from a JSON sample — the composable core of `#infer`: returns the declaration TEXT (top record named Root; nested records auto-named by field, seq elements singularised; notes for empty arrays, null fields and heterogeneous arrays ride as `//` lines). It DRAFTS what the sample has; you edit the emitted types. NOT check-time inference (the value is a runtime sample)."
+              "Draft named `type` declarations from a JSON sample — the composable core of `#infer`: returns the declaration text (top record named Root; nested records auto-named by field, seq elements singularised; notes for empty arrays, null fields and heterogeneous arrays ride as `//` lines). It drafts what the sample has; you edit the emitted types. Not check-time inference (the value is a runtime sample)."
               (Some "print (Json.inferShape [\"{\\\"id\\\": 1, \\\"name\\\": \\\"x\\\"}\"])")
               (Some "the `weir add schema` category: external structure -> a declaration you own; check and `from json` stay untouched.")
            |> named [ "lines" ])
@@ -5310,7 +5310,7 @@ let attrDocs: Map<string, string> =
           "Wire",
           "[<Wire \"key\">] — the field's (or tagged case's) wire key, when it differs from the weir name (json/yaml/env)"
           "Tag",
-          "[<Tag \"field\">] — marks a union as WIRE-TAGGED: the named field discriminates the case at the json/yaml boundary"
+          "[<Tag \"field\">] — marks a union as wire-tagged: the named field discriminates the case at the json/yaml boundary"
           "Other",
           "[<Other>] — the open-world fallback case: wire tags matching no declared case land here (carries the raw tag as a string, or nothing)" ]
 

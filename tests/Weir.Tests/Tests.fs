@@ -7690,7 +7690,7 @@ let semanticTokenTests =
 
               Expect.isTrue
                   (Weir.Lsp.hoverType attrLines 2 4
-                   |> Option.exists (fun s -> s.Contains "WIRE-TAGGED"))
+                   |> Option.exists (fun s -> s.Contains "wire-tagged"))
                   "Tag hovers its meaning"
 
               Expect.isTrue
@@ -18556,6 +18556,72 @@ let helpUxTests =
               for KeyValue(m, b) in Weir.Builtins.moduleBlurbs do
                   Expect.isFalse (b.Contains "[D:") $"{m}: blurb cites the ledger"
           }
+          test "(a3) user-rendered prose carries no shouting caps" {
+              // uppercase emphasis is not house style for user-facing text
+              // (the a2 posture: docs are enumerable, so pin the class).
+              // An all-caps word (3+ uppercase letters) in doc prose is
+              // either rewritten in normal case or a real acronym — the
+              // allowlist below, one line per addition with its reason.
+              // Backtick spans are code quoting identifiers/syntax and are
+              // exempt; so are underscore names (WEIR_LOG-style env vars).
+              // Examples are executable code, not prose — out of scope.
+              let allowed =
+                  Set
+                      [ "JSON" // wire formats
+                        "YAML"
+                        "XML"
+                        "NDJSON" // newline-delimited JSON, `jsonl`'s long name
+                        "UTF-8" // encodings and character notation
+                        "U+FFFD" // the replacement character
+                        "NUL" // the byte / device name
+                        "ISO" // ISO 8601
+                        "UTC"
+                        "RFC" // RFC 10008
+                        "SHA-256" // hash algorithm
+                        "HTTP" // protocol + methods
+                        "GET"
+                        "QUERY"
+                        "TCP"
+                        "URL"
+                        "EOF" // end of file
+                        "FIFO" // Frontier.fold's queue discipline
+                        "MIME" // MIME wrap (base64)
+                        "POSIX"
+                        "PATH" // the environment variable
+                        "REPL" // tool surfaces
+                        "TRACE" // WEIR_LOG level names, as the lines print them
+                        "DEBUG"
+                        "INFO"
+                        "WARN" ]
+
+              let codeSpan = System.Text.RegularExpressions.Regex @"`[^`\n]+`"
+
+              let capsWord =
+                  System.Text.RegularExpressions.Regex @"(?<![A-Za-z0-9])[A-Z][A-Z0-9_+-]+[A-Z0-9]"
+
+              let offenders (where: string) (s: string) =
+                  [ for m in capsWord.Matches(codeSpan.Replace(s, " ")) do
+                        let t = m.Value
+                        let uppers = t |> Seq.filter System.Char.IsUpper |> Seq.length
+
+                        if uppers >= 3 && not (t.Contains "_") && not (allowed.Contains t) then
+                            yield $"{where}: {t}" ]
+
+              let hits =
+                  [ for KeyValue(name, d) in Weir.Builtins.builtinDocs do
+                        yield! offenders $"{name} summary" d.Summary
+
+                        match d.Pointer with
+                        | Some p -> yield! offenders $"{name} pointer" p
+                        | None -> ()
+                    for KeyValue(m, b) in Weir.Builtins.moduleBlurbs do
+                        yield! offenders $"{m} blurb" b
+                    for KeyValue(a, doc) in Weir.Builtins.attrDocs do
+                        yield! offenders $"[<{a}>] doc" doc
+                    yield! offenders "bare #help" (Weir.Repl.helpTextForTest "") ]
+
+              Expect.equal hits [] "shouting caps in user-facing prose — rewrite, or allowlist a real acronym"
+          }
           test "(b) #help Module: ONE member per line, name + the doc's first line" {
               let t = Weir.Repl.helpTextForTest "Option"
               let lines = t.Split '\n'
@@ -18604,6 +18670,25 @@ let helpUxTests =
           }
           test "(g) #find Tab-completes: sessionDirectives carries it" {
               Expect.contains Weir.Complete.sessionDirectives "find" "find is a session directive"
+          }
+          test "(h) tty help render [D:help-tint]: code spans tint, backticks drop" {
+              let t = Weir.Repl.renderHelpText true "run `Seq.map` then `ls`"
+              Expect.equal t "run \x1b[36mSeq.map\x1b[0m then \x1b[36mls\x1b[0m" "both spans tint, no backticks"
+
+              // an unpaired backtick is not a span — left literal, never eaten
+              Expect.equal (Weir.Repl.renderHelpText true "a ` stray") "a ` stray" "stray backtick untouched"
+
+              // a span never crosses a line — the two halves stay literal
+              Expect.equal (Weir.Repl.renderHelpText true "a`\nb`c") "a`\nb`c" "no cross-line span"
+          }
+          test "(i) piped/stripped help keeps the literal backticks (the pinned bytes)" {
+              // color off (piped, NO_COLOR, TERM=dumb) is the identity:
+              // the doc bytes are the pinned surface, backticks included —
+              // when the tint is stripped, the span boundary must survive
+              let doc = Weir.Repl.replDocText "Yaml.merge"
+              Expect.equal (Weir.Repl.renderHelpText false doc) doc "color off is byte-identity"
+              Expect.stringContains doc "`yaml patch`" "the literal span spelling is the piped surface"
+              Expect.isFalse (doc.Contains "\x1b") "no ANSI in the piped bytes"
           } ]
 
 [<Tests>]

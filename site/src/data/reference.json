@@ -208,7 +208,7 @@
         {
           "name": "fromFile",
           "signature": "Env.fromFile (path: string) : seq\u003CEnvVar\u003E",
-          "summary": "Read \u0060.env\u0060 lines (KEY=value) as EnvVar records.",
+          "summary": "Read \u0060.env\u0060 lines (\u0060KEY=value\u0060) as EnvVar records.",
           "example": null,
           "pointer": null
         },
@@ -431,7 +431,7 @@
         {
           "name": "reach",
           "signature": "Graph.reach (keyOf: \u0027a -\u003E string) (neighbors: \u0027a -\u003E seq\u003C\u0027a\u003E) (start: \u0027a) : seq\u003C\u0027a\u003E",
-          "summary": "Every node reachable from a start node, breadth-first, each once (cycles and diamonds are safe \u2014 the key dedups). The neighbor function IS the graph; nothing is materialized up front.",
+          "summary": "Every node reachable from a start node, breadth-first, each once (cycles and diamonds are safe \u2014 the key dedups). The neighbor function is the graph; nothing is materialized up front.",
           "example": "Graph.reach (fun n -\u003E show n) (fun n -\u003E if n \u003C 3 then [n \u002B 1] else []) 1",
           "pointer": null
         }
@@ -586,7 +586,7 @@
         {
           "name": "inferShape",
           "signature": "Json.inferShape (lines: seq\u003Cstring\u003E) : string",
-          "summary": "Draft named \u0060type\u0060 declarations from a JSON sample \u2014 the composable core of \u0060#infer\u0060: returns the declaration TEXT (top record named Root; nested records auto-named by field, seq elements singularised; notes for empty arrays, null fields and heterogeneous arrays ride as \u0060//\u0060 lines). It DRAFTS what the sample has; you edit the emitted types. NOT check-time inference (the value is a runtime sample).",
+          "summary": "Draft named \u0060type\u0060 declarations from a JSON sample \u2014 the composable core of \u0060#infer\u0060: returns the declaration text (top record named Root; nested records auto-named by field, seq elements singularised; notes for empty arrays, null fields and heterogeneous arrays ride as \u0060//\u0060 lines). It drafts what the sample has; you edit the emitted types. Not check-time inference (the value is a runtime sample).",
           "example": "print (Json.inferShape [\u0022{\\\u0022id\\\u0022: 1, \\\u0022name\\\u0022: \\\u0022x\\\u0022}\u0022])",
           "pointer": "the \u0060weir add schema\u0060 category: external structure -\u003E a declaration you own; check and \u0060from json\u0060 stay untouched."
         }
@@ -875,7 +875,7 @@
         {
           "name": "apply",
           "signature": "Plan.apply (plan: Plan) : unit",
-          "summary": "Perform a plan\u0027s ops through the normal builtins, in capture order. STOPS at the first failing op (prior ops stay done); NOT transactional \u2014 no rollback (that is the IaC line weir does not cross). Refused inside a \u0060plan\u0060 block.",
+          "summary": "Perform a plan\u0027s ops through the normal builtins, in capture order. Stops at the first failing op (prior ops stay done); not transactional \u2014 no rollback (that is the IaC line weir does not cross). Refused inside a \u0060plan\u0060 block.",
           "example": null,
           "pointer": null
         },
@@ -1699,7 +1699,7 @@
         {
           "name": "trySplitOnce",
           "signature": "Str.trySplitOnce (sep: string) (s: string) : Option\u003Cstring * string\u003E",
-          "summary": "splitOnce\u0027s Option twin: Some (before, after) at the first occurrence, None when the separator is absent \u2014 the KEY=VALUE parser\u0027s shape.",
+          "summary": "splitOnce\u0027s Option twin: Some (before, after) at the first occurrence, None when the separator is absent \u2014 the \u0060KEY=VALUE\u0060 parser\u0027s shape.",
           "example": "match Str.trySplitOnce \u0022=\u0022 \u0022key=val\u0022 with | Some (k, v) -\u003E print k | None -\u003E print \u0022no\u0022",
           "pointer": null
         },
@@ -1730,21 +1730,21 @@
         {
           "name": "inferShape",
           "signature": "Yaml.inferShape (lines: seq\u003Cstring\u003E) : string",
-          "summary": "Draft named \u0060type\u0060 declarations from a YAML sample \u2014 the composable core of \u0060#infer\u0060: returns the declaration TEXT (top record named Root; nested records auto-named; notes for empty/null/heterogeneous fields ride as \u0060//\u0060 lines). It DRAFTS what the sample has; you edit the emitted types. NOT check-time inference (the value is a runtime sample).",
+          "summary": "Draft named \u0060type\u0060 declarations from a YAML sample \u2014 the composable core of \u0060#infer\u0060: returns the declaration text (top record named Root; nested records auto-named; notes for empty/null/heterogeneous fields ride as \u0060//\u0060 lines). It drafts what the sample has; you edit the emitted types. Not check-time inference (the value is a runtime sample).",
           "example": "let sample = \u003C\u003C\u003C\n    name: web\n    port: 8080\nprint (Yaml.inferShape sample)",
           "pointer": "the \u0060weir add schema\u0060 category: external structure -\u003E a declaration you own; check and \u0060from yaml\u0060 stay untouched."
         },
         {
           "name": "merge",
           "signature": "Yaml.merge (patch: YamlPatch) (doc: Yaml) : Yaml",
-          "summary": "Apply a \u0060yaml patch\u0060 district to a document: the patch\u0027s STRUCTURE is the address (maps upsert recursively; seqs append-if-absent, or upsert/remove by the marker line\u0027s by=\u003Ckey\u003E; scalars replace; a \u0060$-\u0060 tombstone removes the key or matching item). Orderless and idempotent; the merged document renders with \u0060to yaml\u0060.",
+          "summary": "Apply a \u0060yaml patch\u0060 district to a document: the patch\u0027s structure is the address (maps upsert recursively; seqs append-if-absent, or upsert/remove by the marker line\u0027s by=\u003Ckey\u003E; scalars replace; a \u0060$-\u0060 tombstone removes the key or matching item). Orderless and idempotent; the merged document renders with \u0060to yaml\u0060.",
           "example": null,
           "pointer": "let p = yaml patch by=name (indented patch lines) \u2014 then File.read f |\u003E Yaml.parse |\u003E Yaml.merge p |\u003E to yaml |\u003E File.write f."
         },
         {
           "name": "parse",
           "signature": "Yaml.parse (lines: seq\u003Cstring\u003E) : Yaml",
-          "summary": "Parse one YAML document (the strict subset) into Yaml nodes \u2014 the TYPELESS read: structure is held whole, undeclared keys included, where \u0060from yaml T\u0060 would drop them. Scalars self-type exactly as district scalars do (unquoted true/3/1.5 -\u003E YBool/YInt/YFloat; quoted or block -\u003E YStr; empty -\u003E YNull).",
+          "summary": "Parse one YAML document (the strict subset) into Yaml nodes \u2014 the typeless read: structure is held whole, undeclared keys included, where \u0060from yaml T\u0060 would drop them. Scalars self-type exactly as district scalars do (unquoted true/3/1.5 -\u003E YBool/YInt/YFloat; quoted or block -\u003E YStr; empty -\u003E YNull).",
           "example": "[\u0022replicas: 3\u0022] |\u003E Yaml.parse",
           "pointer": null
         }
@@ -1832,7 +1832,7 @@
     {
       "name": "from xml",
       "signature": null,
-      "summary": "Parse one XML document (a .csproj/.slnx or any XML) into a declared record \u2014 READ-ONLY. The root element is the record; a field name matches a child element by local name (a default xmlns is stripped); [\u003CAttr\u003E] reads an attribute, [\u003CElem \u0022X\u0022\u003E] a repeated child, a nested record a child element. Every leaf is text: fields are string, Option\u003Cstring\u003E, a record, or a seq of one (declare a number as string, convert with Str.toInt). There is no \u0060to xml\u0060.",
+      "summary": "Parse one XML document (a .csproj/.slnx or any XML) into a declared record \u2014 read-only. The root element is the record; a field name matches a child element by local name (a default xmlns is stripped); [\u003CAttr\u003E] reads an attribute, [\u003CElem \u0022X\u0022\u003E] a repeated child, a nested record a child element. Every leaf is text: fields are string, Option\u003Cstring\u003E, a record, or a seq of one (declare a number as string, convert with Str.toInt). There is no \u0060to xml\u0060.",
       "example": null,
       "pointer": "a pipe stage: File.read \u0022App.csproj\u0022 |\u003E from xml Proj."
     },
@@ -1846,7 +1846,7 @@
     {
       "name": "let pure",
       "signature": null,
-      "summary": "The purity MODIFIER \u2014 weir\u0027s first post-let modifier: \u0060let pure f x = \u2026\u0060 asserts the binding\u0027s whole body reaches no effect, and an impure body is a check error. Desugars to a body-spanning pure block; the binding hovers with the (pure) badge.",
+      "summary": "The purity modifier \u2014 weir\u0027s first post-let modifier: \u0060let pure f x = \u2026\u0060 asserts the binding\u0027s whole body reaches no effect, and an impure body is a check error. Desugars to a body-spanning pure block; the binding hovers with the (pure) badge.",
       "example": "let pure double n = n * 2",
       "pointer": "#help pure has the block form and the effect families"
     },
@@ -1888,14 +1888,14 @@
     {
       "name": "prompt",
       "signature": "prompt (message: string) : string",
-      "summary": "Write a message to STDERR and read one line from stdin (interactive input; a piped stdout stays data). EOF refuses \u2014 no phantom input. Self.stdin stays the STREAM reading (one enumeration; the two compose per-line vs whole-stream).",
+      "summary": "Write a message to stderr and read one line from stdin (interactive input; a piped stdout stays data). EOF refuses \u2014 no phantom input. Self.stdin stays the stream reading (one enumeration; the two compose per-line vs whole-stream).",
       "example": null,
       "pointer": "let name = prompt \u0022your name?\u0022 \u2014 interactive; in tests, pipe the answer in."
     },
     {
       "name": "pure",
       "signature": null,
-      "summary": "A purity assertion for an indented block: the body must reach NO effect (filesystem, command, network, environment, console, clock) \u2014 a reachable effect is a check error naming the offender. Opt-in only: weir stays effect-normal, and code outside a pure region is never gated.",
+      "summary": "A purity assertion for an indented block: the body must reach no effect (filesystem, command, network, environment, console, clock) \u2014 a reachable effect is a check error naming the offender. Opt-in only: weir stays effect-normal, and code outside a pure region is never gated.",
       "example": "pure 1 \u002B 1",
       "pointer": "the binding spelling is the \u0060let pure\u0060 modifier; unknown callables (a function param, an import\u0027s member) forfeit purity \u2014 the judgement may refuse, it never lies"
     },
