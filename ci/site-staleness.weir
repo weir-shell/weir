@@ -52,6 +52,24 @@ let latest = (rel.body |> from json Release).tag_name
 if not (latest |> Str.isMatch @"^v\d") then
     fail $"releases/latest is '{latest}' — not a weir release tag; an adjacent release stole latest. Repair: gh release edit {latest} --latest=false (and gh release edit <weir-tag> --latest); ext workflows must create releases with --latest=false"
 
+// a KNOWN-incomplete latest ([D:release-assets]) has no installers to
+// deploy — the site correctly keeps serving the newest COMPLETE
+// release, and demanding `latest` here would block its own supersede.
+// The stale sweep of the ledger is release-published.weir's job (one
+// owner); the next complete release retakes latest and the demand
+// resumes by itself.
+let knownIncomplete =
+    (File.read "ci/release-known-incomplete.yaml"
+     |> from yaml {| known: seq<{| tag: string; reason: string |}> |})
+        .known
+    |> Seq.force
+
+match knownIncomplete |> Seq.tryFind (fun e -> e.tag == latest) with
+| Some e ->
+    print $"releases/latest {latest} is known-incomplete ({e.reason}) — the site keeps serving the newest complete release; skipping the staleness demand"
+    exit 0
+| None -> ()
+
 // the site must serve an installer once a release exists — a 404 here IS
 // the dispatch-never-fired state, not a skippable condition. send, not
 // fetch: fetch's raise names only url+status, and this arm's job is the
