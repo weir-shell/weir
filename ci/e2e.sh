@@ -983,7 +983,7 @@ echo "e2e ok: a keyword key rides [<Wire>] and reads; an empty-string key drops 
 # every `secret: Secret` field bypassed for the PRIMITIVE, so `from yaml`
 # refused ("a Secret must not cross"). The derived name now parent-
 # prefixes (VolumeSecret), loudly, and the draft reads the fixture clean.
-ivdir=$(mktemp -d)
+ivdir=$(mkweirtmp)
 cat > "$ivdir/pod-volumes.yaml" <<'YEOF'
 volumes:
 - name: creds
