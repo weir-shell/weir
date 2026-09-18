@@ -53,6 +53,9 @@ let areaOfSrc p =
     | "src/Weir/Yaml.fs" -> Some "adapters"
     | "src/Weir/Http.fs" -> Some "adapters"
     | "src/Weir/Infer.fs" -> Some "adapters"
+    // the schema→types generator core [D:schema-types] — Infer's
+    // sibling: the other frontend of the one decl emitter
+    | "src/Weir/SchemaTypes.fs" -> Some "adapters"
     | "src/Weir/Table.fs" -> Some "adapters"
     | "src/Weir/Version.fs" -> Some "cli"
     | "src/Weir/Program.fs" -> Some "cli"
