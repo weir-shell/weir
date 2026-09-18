@@ -3438,7 +3438,19 @@ let private resolveImportPath (importingAbsPath: string) (path: string) : string
         let name = path.Substring 5
 
         match Contracts.findWeirDir dir with
-        | Ok wd -> IO.Path.GetFullPath(IO.Path.Combine(wd, "modules", name + ".weir"))
+        | Ok wd ->
+            let modPath = IO.Path.GetFullPath(IO.Path.Combine(wd, "modules", name + ".weir"))
+
+            if IO.File.Exists modPath then
+                modPath
+            else
+                // one namespace, two homes [D:schema-types]: vendored
+                // modules FIRST, then generated types (.weir/types/ —
+                // `weir gen types` output); a missing name still teaches
+                // through the modules path below
+                let typesPath = IO.Path.GetFullPath(IO.Path.Combine(wd, "types", name + ".weir"))
+
+                if IO.File.Exists typesPath then typesPath else modPath
         | Error _ ->
             // no .weir/ anywhere: a display path for the not-found teach
             IO.Path.GetFullPath(IO.Path.Combine(dir, ".weir", "modules", name + ".weir"))
@@ -3542,7 +3554,7 @@ let rec loadModuleCachedWith
             let n = path.Substring 5
 
             stmt
-                $"no vendored module '{n}' ({absPath}) — vendor it: weir add module <host>/<org>/<repo>//<file>@<ref> --as {n}"
+                $"no vendored module '{n}' ({absPath}) — vendor it: weir add module <host>/<org>/<repo>//<file>@<ref> --as {n} (a generated types module lands here via: weir gen types --schema {n})"
         else
             stmt $"cannot resolve import: no file at {absPath}"
     else
