@@ -195,9 +195,21 @@ rp3 = run({"NO_COLOR": "1"}, ["nope\r"])
 if "\x1b[31m" in rp3:
     failures.append("NO_COLOR must strip the status tint too")
 
+# --- the help tint [D:help-tint]: a doc's `code` span renders cyan at
+# a tty with the backticks themselves dropped; NO_COLOR falls back to
+# the literal spelling so the span boundary is never lost --------------
+ht = run({}, ["#help Yaml.merge\r"])
+if "\x1b[36myaml patch\x1b[0m" not in ht:
+    failures.append(f"a help code span must tint cyan at a tty: {ht[-300:]!r}")
+if "`yaml patch`" in ht:
+    failures.append("the tinted span must drop its backticks")
+ht2 = run({"NO_COLOR": "1"}, ["#help Yaml.merge\r"])
+if "`yaml patch`" not in ANSI.sub("", ht2):
+    failures.append(f"NO_COLOR help must keep the literal backticks: {ht2[-300:]!r}")
+
 if failures:
     for f in failures:
         print("repl-color FAIL:", f)
     sys.exit(1)
 
-print("repl-color: lexical spans, head verdicts, NO_COLOR+TERM=dumb hold, check reports on stdout (tty-colored, redirect-plain), table dressing (bold header/dim rule, NO_COLOR plain), status prompt (red on error, plain on success/reified)")
+print("repl-color: lexical spans, head verdicts, NO_COLOR+TERM=dumb hold, check reports on stdout (tty-colored, redirect-plain), table dressing (bold header/dim rule, NO_COLOR plain), status prompt (red on error, plain on success/reified), help code spans (cyan at a tty, literal under NO_COLOR)")

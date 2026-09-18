@@ -86,6 +86,12 @@ Seq.collect` shows one member's full doc, rendered from the same
 source hover uses, so the two cannot disagree; the glance is that
 doc's first line, so it cannot drift either.
 
+At a tty the docs' `` `code` `` spans render tinted, the backticks
+themselves dropped — the span reads as code, not markdown source.
+Piped, or under `NO_COLOR`/`TERM=dumb`, the literal backticks stay:
+the byte surface is unchanged and the span boundary survives the
+stripping.
+
 `#find [query]` searches all of it fuzzily. Every module
 (`Seq — blurb`) and every member (`Seq.map — glance`) feeds fzf
 (when installed, at a tty) with a **live preview** of the
@@ -244,7 +250,7 @@ does not accept bare argv. When you want a short HEAD that carries
 argv straight through — `k get po` — reach for `#alias` below.
 
 Loading is all-or-nothing: a broken init prints its located weir
-error plus `init: NOT loaded`, and the session starts with none of
+error plus `init: not loaded`, and the session starts with none of
 it — safe precisely because nothing in the file can run. A missing
 init is silent; a loaded one reports one line
 (`init: 3 name(s), 2 alias(es) from …`). `#help` on an init name
