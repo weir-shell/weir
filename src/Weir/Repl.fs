@@ -29,6 +29,11 @@ let mutable private lastStreamed: string option = None
 // below and the Tab pool — the alias TABLE itself stays in State
 let private currentAliasNames: Set<string> ref = ref Set.empty
 
+// the session VALUES ride the same way [D:value-key-complete]: the
+// map-key completion slot PEEKS at a bound value's keys — a table
+// read, never an evaluation
+let private currentVals: Eval.Env ref = ref Map.empty
+
 // the session resolver's verdict [D:repl-color]: ONE membership feeding
 // the live prompt's head tint AND the #help example tint [D:help-tint]
 // — values, modules, the command-callable externs, and the session's
@@ -1168,9 +1173,15 @@ let private readLineTty () : string option =
             // typed closer ` })` became part of the prefix and killed
             // every match); insertion below re-attaches the tail
             let suggestions =
-                // the session entry [D:command-head-alias]: alias heads
-                // join the head-slot pool
-                Complete.suggestSession currentAliasNames.Value currentEnv.Value (text.Substring(0, col)) ws
+                // the session entry: alias heads join the head-slot pool
+                // [D:command-head-alias]; the session values feed the
+                // map-key slot [D:value-key-complete]
+                Complete.suggestSession
+                    currentAliasNames.Value
+                    currentVals.Value
+                    currentEnv.Value
+                    (text.Substring(0, col))
+                    ws
 
             (match suggestions with
              | [] -> ()
@@ -2451,6 +2462,7 @@ let rec private loop (state: State) =
     // the alias names ride along [D:command-head-alias]: the head tint
     // and the Tab pool read the ref, never a second table
     currentAliasNames.Value <- Set.ofSeq (Map.keys state.Aliases)
+    currentVals.Value <- state.Values
 
     match readInput () with
     | null -> ()

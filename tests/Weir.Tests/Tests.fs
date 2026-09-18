@@ -3055,11 +3055,78 @@ let completionTests =
               // completion: the alias name joins the head pool at both
               // slots (alias-to-anything — nothing asserts a PATH exe),
               // never the ^-forced PATH pool
-              let ask = Weir.Complete.suggestSession (Set.ofList [ "kzz" ]) env
+              let ask = Weir.Complete.suggestSession (Set.ofList [ "kzz" ]) Map.empty env
               Expect.contains (ask "kz" 0) "kzz" "alias completes at the statement head"
               Expect.contains (ask "let x = kz" 8) "kzz" "alias completes at the let-RHS head"
               Expect.isFalse (List.contains "kzz" (ask "^kz" 1)) "the ^ pool skips the alias table"
               Expect.isFalse (List.contains "kzz" (ask "let x = ^kz" 9)) "…at the RHS too"
+          }
+          test "map-key completion: a bound value's keys inside a Map lookup literal [D:value-key-complete]" {
+              // the stored value's OWN keys complete inside the open key
+              // literal of a pipe-form Map lookup — reading the Values
+              // table is peeking, never evaluating
+              let vals: Map<string, Value> =
+                  Map.ofList
+                      [ "d", VMap(Map.ofList [ "CoreCount", VStr "4"; "Corge", VStr "g"; "Zone", VStr "b" ])
+                        "ps", VSeq([ VTuple [ VStr "CoreCount"; VStr "4" ]; VTuple [ VStr "Zone"; VStr "b" ] ]: Value list)
+                        "lazyPs",
+                        VSeq(Seq.init 2 (fun i -> VTuple [ VStr $"K{i}"; VStr "v" ]))
+                        "n", VInt 1L ]
+
+              let ask (line: string) =
+                  Weir.Complete.suggestSession Set.empty vals env line (Weir.Complete.wordStartAt line line.Length)
+
+              // a VMap binding: prefix-filtered, sorted, closes nothing
+              Expect.equal (ask "d |> Map.tryGet \"Cor") [ "CoreCount"; "Corge" ] "map keys, prefix-filtered and sorted"
+              Expect.equal (ask "d |> Map.get \"Zo") [ "Zone" ] "Map.get is the same lookup slot"
+              Expect.equal (ask "d |> Map.has \"Zo") [ "Zone" ] "Map.has too"
+              Expect.equal (ask "d |> Map.tryGet \"") [ "CoreCount"; "Corge"; "Zone" ] "an empty literal offers every key"
+
+              // a MATERIALIZED pair-seq offers exactly as a map does
+              Expect.equal (ask "ps |> Map.tryGet \"Cor") [ "CoreCount" ] "a materialized pair-seq offers its keys"
+
+              // the let-RHS spelling is the same slot [D:let-rhs-head]
+              Expect.equal (ask "let x = d |> Map.tryGet \"Cor") [ "CoreCount"; "Corge" ] "the let-RHS form completes"
+
+              // `it` is an ordinary Values entry — the receiver rule admits it
+              let itVals = Map.add "it" vals["d"] Map.empty
+
+              Expect.equal
+                  (Weir.Complete.suggestSession Set.empty itVals env "it |> Map.tryGet \"Cor" 18)
+                  [ "CoreCount"; "Corge" ]
+                  "it as receiver, when materialized"
+
+              // the bind-first law: a PIPELINE receiver would need evaluating
+              // — the slot claims and offers NOTHING (never the general pool)
+              Expect.equal (ask "d |> Seq.map fst |> Map.tryGet \"Cor") [] "a pipeline receiver offers nothing"
+
+              // the never-executes law's sharp edge: an UNFORCED seq is not
+              // pulled — nothing offers
+              Expect.equal (ask "lazyPs |> Map.tryGet \"K") [] "an unforced receiver offers nothing"
+
+              // a non-map binding and an unbound receiver claim silently too
+              Expect.equal (ask "n |> Map.tryGet \"x") [] "a non-map receiver offers nothing"
+              Expect.equal (ask "ghost |> Map.tryGet \"x") [] "an unbound receiver offers nothing"
+
+              // the applied spelling has no receiver at the cursor — the
+              // slot does not fire (pipe-form only, stated)
+              Expect.isFalse
+                  (ask "Map.tryGet \"Cor" |> List.contains "CoreCount")
+                  "the applied spelling offers no keys"
+          }
+          test "map-key completion leaves non-lookup string positions alone [D:value-key-complete]" {
+              skipOnWindows ()
+              // a path literal still path-completes — the slot only claims
+              // the lookup shape
+              let vals: Map<string, Value> =
+                  Map.ofList [ "d", VMap(Map.ofList [ "etc", VStr "x" ]) ]
+
+              let line = "File.read \"/etc/hos"
+
+              let hits =
+                  Weir.Complete.suggestSession Set.empty vals env line (Weir.Complete.wordStartAt line line.Length)
+
+              Expect.isTrue (hits |> List.exists (fun p -> p.Contains "host")) $"path-in-quotes still path-completes: {hits}"
           }
           test "path completion: an explicit path lists the directory [D:repl-quality]" {
               skipOnWindows ()

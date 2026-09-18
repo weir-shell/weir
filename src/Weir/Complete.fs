@@ -962,6 +962,92 @@ let suggestScopedWith
 let suggestScoped (env: TypeEnv) (binderScope: string) (text: string) (wordStart: int) : string list =
     suggestScopedWith Set.empty env binderScope text wordStart
 
+// value-aware MAP-KEY completion [D:value-key-complete]: an open
+// map's keys are DATA (`data: seq<string * string>` from #infer), so
+// no static pool can know them — but the session's Values table can.
+// Inside the OPEN string literal keying a pipe-form Map lookup
+// (get/tryGet/has — the Map surface's lookup members), when the
+// receiver is a BARE session binding (`it` included) whose stored
+// value is a map or a MATERIALIZED pair-seq, the value's own keys
+// complete. Reading the table is peeking, never evaluating: an
+// unforced seq offers NOTHING (pulling a command-backed seq would run
+// its command — the never-executes law's sharp edge), and a pipeline
+// receiver (`cm |> from json … |> _.data |> Map.tryGet "`) offers
+// nothing (its value would need evaluating; bind first — `let d = …`
+// — and the keys complete). Once the lookup shape is detected the
+// slot is CLAIMED: keys or nothing, never the general pool (a keyword
+// inside a key literal is the wrong-suggestion class). Pipe-form
+// only, stated: in the applied spelling (`Map.get "k" m`) the
+// receiver FOLLOWS the key, so nothing exists to peek at while the
+// literal is typed. Subset, stated: the literal scan is a naive quote
+// count — an escaped quote in the key falls outside it (the slot then
+// does not fire). The completion inserts the key bare, inside the
+// quotes — the user owns the closer, the path-in-quotes convention
+// [D:repl-path-quote].
+let private mapLookupHead =
+    System.Text.RegularExpressions.Regex @"^(.*?)\s*\|>\s*Map\.(?:get|tryGet|has)$"
+
+let private valueKeySlot (values: Map<string, Weir.Eval.Value>) (text: string) (wordStart: int) : string list option =
+    let segStart =
+        max (text.LastIndexOf Weir.Parser.sibSep) (text.LastIndexOf '\n') + 1
+
+    let seg = text.Substring segStart
+    let qi = seg.LastIndexOf '"'
+
+    if qi < 0 || (seg |> Seq.filter ((=) '"') |> Seq.length) % 2 = 0 then
+        None
+    else
+        let head =
+            let h = seg.Substring(0, qi).Trim()
+
+            // the let-RHS is the same slot [D:let-rhs-head]: strip the
+            // binder and judge the remainder as a statement
+            match letRhsCut h with
+            | Some rest -> rest.Trim()
+            | None -> h
+
+        let m = mapLookupHead.Match head
+
+        if not m.Success then
+            None
+        else
+            let recv = m.Groups[1].Value.Trim()
+
+            let keys =
+                if System.Text.RegularExpressions.Regex.IsMatch(recv, @"^[A-Za-z_]\w*$") then
+                    match Map.tryFind recv values with
+                    | Some(Weir.Eval.VMap entries) -> Map.keys entries |> List.ofSeq
+                    | Some(Weir.Eval.VSeq items) ->
+                        // the one materialization probe — forced offers,
+                        // unforced offers nothing [D:value-key-complete]
+                        match Weir.Eval.forcedItems items with
+                        | Some list ->
+                            let pairKeys =
+                                list
+                                |> List.choose (function
+                                    | Weir.Eval.VTuple [ Weir.Eval.VStr k; _ ] -> Some k
+                                    | _ -> None)
+
+                            if pairKeys.Length = list.Length then pairKeys else []
+                        | None -> []
+                    | _ -> []
+                else
+                    []
+
+            let literal = text.Substring(segStart + qi + 1)
+            let word = if wordStart >= text.Length then "" else text.Substring wordStart
+            // the candidate must EXTEND the typed word [D:complete-argv]:
+            // the literal may reach left of the word (a space inside a
+            // typed key) — strip that stem from each offered key
+            let stem = literal.Substring(0, literal.Length - word.Length)
+
+            keys
+            |> List.filter (fun k -> k.StartsWith literal && k <> literal && not (k.Contains '"'))
+            |> List.map (fun k -> k.Substring stem.Length)
+            |> List.distinct
+            |> List.sort
+            |> Some
+
 // Error-recovery completion [D:repair-completion]: the caller
 // REPAIRS the broken statement (dangling
 // `.prefix` blanked, closers appended) and this types the repaired
@@ -972,10 +1058,20 @@ let suggestScoped (env: TypeEnv) (binderScope: string) (text: string) (wordStart
 /// (the REPL's one logical line)
 let suggest (env: TypeEnv) (text: string) (wordStart: int) : string list = suggestScoped env text text wordStart
 
-/// the REPL's entry [D:command-head-alias]: the session's alias heads
-/// join the head-slot pool
-let suggestSession (aliasHeads: Set<string>) (env: TypeEnv) (text: string) (wordStart: int) : string list =
-    suggestScopedWith aliasHeads env text text wordStart
+/// the REPL's entry: the session's alias heads join the head-slot
+/// pool [D:command-head-alias], and the session VALUES feed the
+/// map-key slot [D:value-key-complete] — keys when the slot claims,
+/// the general machinery otherwise
+let suggestSession
+    (aliasHeads: Set<string>)
+    (values: Map<string, Weir.Eval.Value>)
+    (env: TypeEnv)
+    (text: string)
+    (wordStart: int)
+    : string list =
+    match valueKeySlot values text wordStart with
+    | Some candidates -> candidates
+    | None -> suggestScopedWith aliasHeads env text text wordStart
 
 let fieldsAtRepaired
     (parse: string -> Result<Weir.Ast.Stmt, string>)
