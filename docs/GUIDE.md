@@ -1390,6 +1390,25 @@ In a live script that is `kubectl get po |> from table Pod` — and
 Extra columns are ignored, errors carry line and column, and there is
 no `to table`: read-only, like XML.
 
+A real REPL session, end to end — clean up every evicted pod:
+
+```text
+weir> let pods = kubectl get po -A |> Seq.force
+weir> #infer pods from table as Pod
+weir> pods |> from table Pod
+       |> where (fun p -> p.status == "Evicted")
+       |> map (fun p -> p.name, p.namespace)
+       |> iter (fun (name, ns) -> kubectl delete po $name -n $ns)
+```
+
+The `Seq.force` is load-bearing: a command-backed `let` stores the
+lazy seq, so without it `#infer` would run `kubectl` once and
+`from table` would run it again — inferring from one cluster state
+and deleting from another. Forcing materializes a single run: the
+sample, the filter, and the delete targets are all the same bytes.
+Then the typed rows flow back out as argv — `$name` and `$ns` cross
+into a real command as exactly one word each.
+
 **Editing YAML you did not fully declare.** `from yaml T` drops
 undeclared fields — right for reading, destructive for a rewrite. The
 typeless pair holds the document whole: `Yaml.parse` reads one
