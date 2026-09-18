@@ -88,9 +88,13 @@ doc's first line, so it cannot drift either.
 
 At a tty the docs' `` `code` `` spans render tinted, the backticks
 themselves dropped — the span reads as code, not markdown source.
-Piped, or under `NO_COLOR`/`TERM=dumb`, the literal backticks stay:
-the byte surface is unchanged and the span boundary survives the
-stripping.
+The signature line and the example block tint too: the signature
+structurally (name bold, types in the casing-law yellow, punctuation
+dim) and the example through the REPL's own input colorizer — an
+example is weir code, so it renders exactly like the line you would
+type at the prompt. Piped, or under `NO_COLOR`/`TERM=dumb`, none of
+it fires: the literal backticks stay, the byte surface is unchanged
+and the span boundary survives the stripping.
 
 `#find [query]` searches all of it fuzzily. Every module
 (`Seq — blurb`) and every member (`Seq.map — glance`) feeds fzf

@@ -23,10 +23,16 @@
 - **Help renders its code spans at a tty.** `#help`/`#find` docs'
   `` `code` `` spans now print tinted (the colorizer's cyan) with the
   backticks themselves dropped — the span reads as code, not markdown
-  source. One renderer covers every REPL help surface. Piped output
-  and `NO_COLOR`/`TERM=dumb` keep the literal backticks: the piped
-  byte surface (and `--repl-doc` equality) is unchanged, and a
-  stripped terminal never loses the span boundary.
+  source. One renderer covers every REPL help surface. The signature
+  line and the example block tint too: the signature structurally at
+  composition (name bold, types in the casing-law yellow, punctuation
+  dim — the input colorizer's palette) and the example through the
+  REPL's own input colorizer, so an example renders exactly like the
+  line you would type at the prompt. Piped output and
+  `NO_COLOR`/`TERM=dumb` keep the literal backticks and the plain
+  signature/example spelling: the piped byte surface (and
+  `--repl-doc` equality) is unchanged, and a stripped terminal never
+  loses the span boundary.
 - **Help copy drops uppercase emphasis.** Doc strings shouted for
   stress (`It DRAFTS what the sample has`, `NOT check-time
   inference`, `READ-ONLY`, …); the corpus — builtin docs, module
