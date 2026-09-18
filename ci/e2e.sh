@@ -1017,6 +1017,124 @@ echo "$asout" | grep -qF "pick another 'as' name" || fail "the refusal must carr
 echo "$asout" | grep -qF "defined:" && fail "a refused 'as'-name must define nothing: $asout" || true
 echo "e2e ok: '#infer … as Secret' refuses loudly (the builtin wins every use; pick another name)"
 
+# --- #infer array-element merge + open mappings (2026-09-18) [D:repl-infer] --
+# the real-kubectl failure this closes: `kubectl get cm -o json` — every
+# ConfigMap's `data` carries its own keys, so a first-element-only draft
+# died reading item 2 ("missing field 'items[2].data.networkYml'").
+# Array elements MERGE (a key absent in some items drafts Option) and a
+# data-keyed object drafts as the open mapping seq<string * string> —
+# the draft reads the WHOLE list, per-item data as pairs.
+cmdir=$(mkweirtmp)
+cat > "$cmdir/cmlist.json" <<'JEOF'
+{
+    "apiVersion": "v1",
+    "items": [
+        {
+            "apiVersion": "v1",
+            "data": {
+                "Corefile": ".:53 {\n    errors\n    cache 30\n}"
+            },
+            "kind": "ConfigMap",
+            "metadata": {
+                "creationTimestamp": "2026-09-01T10:00:00Z",
+                "name": "coredns",
+                "namespace": "kube-system",
+                "resourceVersion": "231",
+                "uid": "5c3f2a1b-0001-4b6e-9a51-aaaaaaaaaaaa"
+            }
+        },
+        {
+            "apiVersion": "v1",
+            "data": {
+                "mode": "flat",
+                "network.yml": "nodes: 3\nsubnet: 10.42.0.0/16"
+            },
+            "kind": "ConfigMap",
+            "metadata": {
+                "annotations": {
+                    "kubectl.kubernetes.io/last-applied-configuration": "{\"apiVersion\":\"v1\",\"kind\":\"ConfigMap\"}"
+                },
+                "creationTimestamp": "2026-09-02T08:30:00Z",
+                "name": "network-config",
+                "namespace": "default",
+                "resourceVersion": "482",
+                "uid": "5c3f2a1b-0002-4b6e-9a51-bbbbbbbbbbbb"
+            }
+        },
+        {
+            "apiVersion": "v1",
+            "data": {
+                "ca.crt": "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----"
+            },
+            "kind": "ConfigMap",
+            "metadata": {
+                "creationTimestamp": "2026-09-01T10:00:05Z",
+                "name": "kube-root-ca.crt",
+                "namespace": "default",
+                "resourceVersion": "12",
+                "uid": "5c3f2a1b-0003-4b6e-9a51-cccccccccccc"
+            }
+        }
+    ],
+    "kind": "List",
+    "metadata": {
+        "resourceVersion": "482"
+    }
+}
+JEOF
+cmout=$(printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n' \
+  "let cm = File.read \"$cmdir/cmlist.json\" |> Seq.force" \
+  '#infer cm from json as ConfigMapList' \
+  'let v = cm |> from json ConfigMapList' \
+  'print (v |> _.metadata.resourceVersion)' \
+  'let hit = v.items |> Seq.head |> _.data |> Seq.tryFind (fun (k, _) -> k == "Corefile")' \
+  'print (match hit with | Some (k, _) -> $"hit={k}" | None -> "miss")' \
+  '#quit' | $BIN 2>&1)
+echo "$cmout" | grep -qF "ConfigMapList" || fail "#infer must define the as-named type: $cmout"
+echo "$cmout" | grep -qF "note: 'items.data' carries different keys across the array's elements" \
+  || fail "the open-map merge note must print: $cmout"
+echo "$cmout" | grep -qF "note: 'annotations' has mostly non-identifier keys" \
+  || fail "the annotations map note must print: $cmout"
+echo "$cmout" | grep -qF "482" || fail "the merged draft must READ the whole list (metadata.resourceVersion): $cmout"
+echo "$cmout" | grep -qF "hit=Corefile" || fail "per-item data must read as pairs (Seq.tryFind): $cmout"
+echo "e2e ok: #infer merges ConfigMapList items; data reads as an open mapping via from json"
+
+# the yaml twin: the same merge + mapping rules through from yaml
+cat > "$cmdir/cmlist.yaml" <<'YEOF'
+apiVersion: v1
+items:
+- apiVersion: v1
+  data:
+    Corefile: ".:53"
+  kind: ConfigMap
+  metadata:
+    name: coredns
+    namespace: kube-system
+- apiVersion: v1
+  data:
+    network.yml: "nodes: 3"
+    mode: flat
+  kind: ConfigMap
+  metadata:
+    annotations:
+      kubectl.kubernetes.io/last-applied-configuration: "{}"
+    name: network-config
+    namespace: default
+kind: List
+YEOF
+cmyout=$(printf '%s\n%s\n%s\n%s\n%s\n' \
+  "let cmy = File.read \"$cmdir/cmlist.yaml\" |> Seq.force" \
+  '#infer cmy from yaml as CmListY' \
+  'let vy = cmy |> from yaml CmListY' \
+  'let hy = vy.items |> Seq.skip 1 |> Seq.head |> _.data |> Seq.tryFind (fun (k, _) -> k == "network.yml")' \
+  'print (match hy with | Some (_, c) -> $"content={c}" | None -> "miss")' \
+  '#quit' | $BIN 2>&1)
+echo "$cmyout" | grep -qF "note: 'items.data' carries different keys across the array's elements" \
+  || fail "the yaml twin must print the open-map merge note: $cmyout"
+echo "$cmyout" | grep -qF "content=nodes: 3" || fail "the yaml twin must read per-item data as pairs: $cmyout"
+echo "e2e ok: the yaml twin merges items and reads data as an open mapping"
+rm -rf "$cmdir"
+
 # --- piped REPL multi-line assembly (2026-09-16) [D:repl-multiline] ----
 # a REDIRECTED REPL (printf … | weir) reads physical lines but must
 # ASSEMBLE a statement that spans several — heredoc, a multi-line `type`,
@@ -5793,18 +5911,22 @@ let text = File.read "kubectl-list.yaml" |> Seq.force
 print (Yaml.inferShape text)
 WEOF
 out=$(cd "$ydir" && $BIN inferdecl.weir)
-echo "$out" | grep -qF "resources: Yaml" || fail "empty {} must infer as opaque Yaml: $out"
+# MOVED PINS [D:repl-infer]: an empty {} is an open map with zero
+# entries (the opaque-Yaml draft could not cross the json boundary),
+# and the dirty-keyed labels object drafts as the mapping — its keys
+# are data, so no [<Wire>] rides at all
+echo "$out" | grep -qF "resources: seq<string * string>" || fail "empty {} must infer as the empty open mapping: $out"
 echo "$out" | grep -qF "an empty mapping under 'Resources'" || fail "empty {} must print a note: $out"
 echo "$out" | grep -qi "not valid YAML" && fail "the real kubectl List must infer clean: $out" || true
-# the k8s label keys weir cannot spell as fields ride [<Wire>] over a
-# sanitized identifier [D:infer-wire-sanitize] — the draft must CHECK
-echo "$out" | grep -qF '[<Wire "pod-template-hash">]' || fail "a dirty label key must draft a Wire attr: $out"
-echo "$out" | grep -qF 'podTemplateHash' || fail "the sanitized field name must appear: $out"
+echo "$out" | grep -qF "labels: seq<string * string>" || fail "the dirty-keyed labels must draft as a mapping: $out"
+echo "$out" | grep -qF "'labels' has mostly non-identifier keys" || fail "the labels map note must print: $out"
+echo "$out" | grep -qF 'pod-template-hash' && fail "a mapping's keys are data — no label key belongs in the draft: $out" || true
 echo "$out" | grep -qF 'k8s-app: string' && fail "a non-identifier key must NOT appear bare as a field: $out" || true
 
-# key sanitization end-to-end [D:infer-wire-sanitize]: infer a labels
-# object with hyphen/dot/slash keys, then the DRAFTED type must both
-# CHECK and READ the real data through from yaml (Wire honored on read)
+# the open-map draft end-to-end [D:repl-infer] (MOVED PIN — this cell
+# pinned the [<Wire>]'d record draft): a labels object with hyphen/dot/
+# slash keys over one value shape drafts as the MAPPING, and the draft
+# READS the real data through from yaml as pairs — keys stay data
 cat > "$ydir/labels.yaml" <<'YEOF'
 labels:
   k8s-app: web
@@ -5817,15 +5939,22 @@ let text = File.read "labels.yaml" |> Seq.force
 print (Yaml.inferShape text)
 WEOF
 draft=$(cd "$ydir" && $BIN draft.weir)
-# assemble a program from the drafted decls + a read that touches each field
+echo "$draft" | grep -qF 'labels: seq<string * string>' || fail "the dirty-keyed labels must draft as a mapping: $draft"
+echo "$draft" | grep -qF 'Wire' && fail "mapping keys are data — no [<Wire>] belongs in the draft: $draft" || true
+# assemble a program from the drafted decls + a pair lookup per key
 {
   echo "$draft" | grep -v '^// note'
   echo 'let text = File.read "labels.yaml" |> Seq.force'
   echo 'let r = text |> from yaml Root'
-  echo 'print $"{r.labels.k8sApp} {r.labels.nodeKubernetesIoOs} {r.labels.appKubernetesIoInstance} {r.labels.clean}"'
+  echo 'let v k = r.labels |> Seq.tryFind (fun (p, _) -> p == k) |> Option.map snd |> Option.defaultValue "?"'
+  echo 'let a = v "k8s-app"'
+  echo 'let b = v "node.kubernetes.io/os"'
+  echo 'let c = v "app.kubernetes.io/instance"'
+  echo 'let d = v "clean"'
+  echo 'print $"{a} {b} {c} {d}"'
 } > "$ydir/roundtrip.weir"
 out=$(cd "$ydir" && $BIN roundtrip.weir 2>&1)
-expect "the inferred type with [<Wire>] on dirty keys CHECKS and READS real data" "web linux nginx yes" "$out"
+expect "the inferred open-mapping draft CHECKS and READS real label data as pairs" "web linux nginx yes" "$out"
 
 # empty flow forms, both positions: {} → empty mapping, [] → empty seq
 printf 'type R = { m: Yaml; s: seq<string> }\nlet r = ["m: {}"; "s: []"] |> from yaml R\nprint $"{show r.m} {show (Seq.length r.s)}"\n' > "$ydir/ef.weir"
