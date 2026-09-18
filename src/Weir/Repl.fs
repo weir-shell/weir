@@ -1935,7 +1935,7 @@ let private helpDirective (color: bool) (te: TypeEnv) (arg: string) : string =
         + "  #find [query]         // fuzzy-search modules and members (fzf + live preview)\n"
         + "  #echo [<n> | all]     // the unforced-echo cap (default 100); bare reports;\n"
         + "                        //   all = no cap — an infinite seq will hang (Ctrl+C)\n"
-        + "  #infer [<src>] from <json|jsonl|yaml> as <Name>\n"
+        + "  #infer [<src>] from <json|jsonl|yaml|table> as <Name>\n"
         + "                        //   draft named types from a sample (src defaults to 'it')\n"
         + "  #save <path>          // dump the session's accepted lines to a runnable .weir\n"
         + "  #alias [name = cmd …] // bare lists; a command-head alias (init.weir is canonical)\n"
@@ -2152,7 +2152,7 @@ let private parseInfer (rest: string) : Result<string * string * string, string>
     let asIdx = rest.LastIndexOf " as "
 
     if asIdx < 0 then
-        Error "#infer <source> from <json|jsonl|yaml> as <Name> — missing 'as <Name>'"
+        Error "#infer <source> from <json|jsonl|yaml|table> as <Name> — missing 'as <Name>'"
     else
         let head = rest.Substring(0, asIdx)
         let name = rest.Substring(asIdx + 4).Trim()
@@ -2165,7 +2165,7 @@ let private parseInfer (rest: string) : Result<string * string * string, string>
                 let fmt = head.TrimStart().Substring(5).Trim()
                 Ok("", fmt, name)
             else
-                Error "#infer <source> from <json|jsonl|yaml> as <Name> — missing 'from <format>'"
+                Error "#infer <source> from <json|jsonl|yaml|table> as <Name> — missing 'from <format>'"
         else
             let source = head.Substring(0, fromIdx).Trim()
             let fmt = head.Substring(fromIdx + 6).Trim()

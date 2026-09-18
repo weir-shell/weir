@@ -1442,17 +1442,19 @@ type Bad = C of int
   refuse (a patch is partial); `Yaml.parse` can never produce a
   tombstone (parsed text is data). The file round-trip is composition:
   `File.read f |> Yaml.parse |> Yaml.merge p |> to yaml |> File.write f`.
-- `Json.inferShape`/`Yaml.inferShape : seq<string> -> string` draft
-  named `type` declarations from a SAMPLE [D:repl-infer] — the
-  `weir add schema` category (external structure → a declaration you
-  own and edit), NOT check-time inference (check never evaluates,
-  `from json`/`from yaml` never sniff). It returns the declaration TEXT
-  (top record `Root`; nested records auto-named, seq elements
-  singularised; array elements MERGE — a key absent in some elements
-  drafts `Option`; an object whose keys are data — one value shape
-  with mostly non-identifier keys, differing key sets across sibling
-  elements, or an empty `{}` — drafts the `seq<string * _>` mapping;
-  empty-array/null/type-conflict cases ride as `//` notes). The REPL's `#infer <source> from <json|jsonl|yaml> as <Name>`
+- `Json.inferShape`/`Yaml.inferShape`/`Table.inferShape : seq<string>
+  -> string` draft named `type` declarations from a SAMPLE
+  [D:repl-infer] — the `weir add schema` category (external structure
+  → a declaration you own and edit), NOT check-time inference (check
+  never evaluates, `from json`/`from yaml`/`from table` never sniff).
+  It returns the declaration TEXT (top record `Root`; nested records
+  auto-named, seq elements singularised; array elements MERGE — a key
+  absent in some elements drafts `Option`; an object whose keys are
+  data — one value shape with mostly non-identifier keys, differing
+  key sets across sibling elements, or an empty `{}` — drafts the
+  `seq<string * _>` mapping; a table drafts the flat ROW record per
+  column [D:from-table]; empty-array/null/type-conflict cases ride as
+  `//` notes). The REPL's `#infer <source> from <json|jsonl|yaml|table> as <Name>`
   directive also INJECTS the drafted types into the session (so
   `from json <Name>` and field completion light up); `#save <path>`
   DISTILLS a session to a runnable script — it keeps the `type` decls
@@ -2097,6 +2099,7 @@ not the teaching.
 - `Float`: `abs` `average` `near` `ofInt` `parse` `round` `sum` `toInt` `tryParse`
 - `Instant`: `epochMs` `now` `ofEpochMs` `parse` `parseWith` `tryParse` `tryParseWith`
 - `Json`: `inferShape`
+- `Table`: `inferShape`
 - `Yaml`: `parse` `merge` `inferShape`
 - `Http`: `defaults` `delete` `fetch` `get` `head` `options` `patch` `post` `put` `query` `send` `withQuery`
 - `Log`: `debug` `debugWith` `info` `infoWith` `trace` `traceWith` `warn` `warnWith`

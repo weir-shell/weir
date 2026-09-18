@@ -596,25 +596,159 @@ let inferDecls (reserved: Set<string>) (taken: Set<string>) (topName: string) (n
 
     decls, reg.Notes
 
+// ---- the aligned-table drafting arm [D:from-table] --------------------
+// A table never lowers to INode: Option-ness is a PER-COLUMN merge over
+// every row (any empty/`<none>` cell), which the first-element walker
+// cannot see — so the column scan lives here and Table.fs owns the text
+// model (columns, cells, match keys).
+
+/// derive a field name from a table HEADER: split on non-alnum runs,
+/// lowercase the ALL-CAPS segments (headers shout), camel-join —
+/// `NAME`→name, `POD-TEMPLATE-HASH`→podTemplateHash, `CONTAINER ID`→
+/// containerId. Reserved-word landings keep toIdent's historical
+/// spellings (`TYPE`→kind); the rest take the `Field` suffix repair.
+let private tableFieldName (reserved: Set<string>) (header: string) : string =
+    let segs =
+        System.Text.RegularExpressions.Regex.Split(header, "[^A-Za-z0-9]+")
+        |> Array.filter (fun s -> s <> "")
+
+    let camel =
+        segs
+        |> Array.map (fun s ->
+            if s |> Seq.forall (fun c -> not (Char.IsLower c)) then
+                s.ToLowerInvariant()
+            else
+                s)
+        |> Array.mapi (fun i s ->
+            if i = 0 then
+                string (Char.ToLowerInvariant s[0]) + s.Substring 1
+            else
+                string (Char.ToUpperInvariant s[0]) + s.Substring 1)
+        |> String.concat ""
+
+    let camel =
+        match camel with
+        | "type" -> "kind"
+        | "to" -> "target"
+        | "from" -> "source"
+        | c -> c
+
+    let camel =
+        if camel = "" || not (isIdentStart camel[0]) then "f" + camel else camel
+
+    if Set.contains camel reserved then camel + "Field" else camel
+
+let private tableIntRx = System.Text.RegularExpressions.Regex "^-?[0-9]+$"
+
+let private tableFloatRx =
+    System.Text.RegularExpressions.Regex "^-?[0-9]+\.[0-9]+([eE][-+]?[0-9]+)?$|^-?[0-9]+[eE][-+]?[0-9]+$"
+
+/// draft the ROW record from a table sample [D:from-table]: per-column
+/// token scan over the data rows (all-int → int, else float/bool by
+/// token, else string); ANY empty/`<none>` cell → Option<T> + a note;
+/// a note says the value reads as seq<Name> (the bare-top-array
+/// precedent). The `as` name is the caller's own — the taken-name
+/// guard is the caller's refusal, exactly as inferDecls' top name.
+let private tableDecls (reserved: Set<string>) (topName: string) (lines: string seq) : Result<string list * Note list, string> =
+    let numbered = lines |> Seq.mapi (fun i l -> i + 1, l) |> List.ofSeq
+
+    match Table.parse numbered with
+    | Error e -> Error $"#infer: {e}"
+    | Ok(cols, rows) ->
+        let notes = ResizeArray<Note>()
+        notes.Add $"a table reads rows — '{topName}' names the row; read the value as 'seq<{topName}>'"
+
+        if rows.IsEmpty then
+            notes.Add "no data rows under the header — every column drafted string; verify against a fuller sample"
+
+        let used = System.Collections.Generic.HashSet<string>()
+
+        let fields =
+            cols
+            |> List.mapi (fun i c ->
+                let cells =
+                    rows |> List.map (fun (_, cs) -> if i < List.length cs then cs[i] else "")
+
+                let vals = cells |> List.filter (fun s -> not (Table.isAbsent s))
+
+                let tyText =
+                    if rows.IsEmpty then
+                        "string"
+                    elif vals.IsEmpty then
+                        notes.Add $"column '{c.Header}' has no values — drafted Option<string> (edit if the real type is known)"
+                        "Option<string>"
+                    else
+                        let scanned =
+                            if vals |> List.forall tableIntRx.IsMatch then
+                                "int"
+                            elif vals |> List.forall (fun v -> tableIntRx.IsMatch v || tableFloatRx.IsMatch v) then
+                                "float"
+                            elif vals |> List.forall (fun v -> v = "true" || v = "false") then
+                                "bool"
+                            else
+                                "string"
+
+                        if List.length vals < List.length cells then
+                            notes.Add $"column '{c.Header}' has empty/<none> cells — drafted Option<{scanned}>"
+                            $"Option<{scanned}>"
+                        else
+                            scanned
+
+                let baseName = tableFieldName reserved c.Header
+
+                let name =
+                    if used.Add baseName then
+                        baseName
+                    else
+                        let mutable n = 2
+
+                        while not (used.Add(baseName + string n)) do
+                            n <- n + 1
+
+                        baseName + string n
+
+                // the Wire decision is the READ-side recovery test: a
+                // field whose normalized name still matches the header
+                // needs no attribute; anything lossier carries the raw
+                // header verbatim [D:from-table]
+                let wire = if Table.matchKey name = Table.matchKey c.Header then None else Some c.Header
+
+                name, wire, tyText)
+
+        let body =
+            fields
+            |> List.map (fun (fname, wire, t) ->
+                match wire with
+                | Some k -> $"    [<Wire \"{k}\">]\n    {fname}: {t}"
+                | None -> $"    {fname}: {t}")
+            |> String.concat "\n"
+
+        Ok([ $"type {topName} = {{\n{body}\n}}" ], List.ofSeq notes)
+
 // ---- format dispatch --------------------------------------------------
 
 type Format =
     | Json
     | Jsonl
     | Yaml
+    | Table
 
 let parseFormat (s: string) : Result<Format, string> =
     match s.Trim() with
     | "json" -> Ok Json
     | "jsonl" -> Ok Jsonl
     | "yaml" -> Ok Yaml
-    | other -> Error $"#infer: unknown format '{other}' — use json, jsonl, or yaml"
+    | "table" -> Ok Table
+    | other -> Error $"#infer: unknown format '{other}' — use json, jsonl, yaml, or table"
 
 let nodeOf (fmt: Format) (lines: string seq) : Result<INode, string> =
     match fmt with
     | Json -> jsonNode lines
     | Jsonl -> jsonlNode lines
     | Yaml -> yamlNode lines
+    // a table never lowers to a document node [D:from-table] — `infer`
+    // dispatches it to the per-column scan before reaching here
+    | Table -> Error "#infer: a table drafts per column, not from a document node"
 
 /// the whole pipeline for a chosen format + name: lines -> decls + notes
 let infer
@@ -624,7 +758,14 @@ let infer
     (topName: string)
     (lines: string seq)
     : Result<string list * Note list, string> =
-    nodeOf fmt lines |> Result.map (fun node -> inferDecls reserved taken topName node)
+    match fmt with
+    | Table ->
+        // the top name is the CALLER'S choice (the REPL refuses builtin
+        // landings), and a flat row drafts no nested types — `taken`
+        // has nothing left to guard here
+        ignore taken
+        tableDecls reserved topName lines
+    | fmt -> nodeOf fmt lines |> Result.map (fun node -> inferDecls reserved taken topName node)
 
 /// the composable BUILTIN body: sample lines -> declaration TEXT (the
 /// notes ride as trailing `//` comment lines so the one-string return

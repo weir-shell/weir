@@ -1727,6 +1727,18 @@
       ]
     },
     {
+      "name": "Table",
+      "members": [
+        {
+          "name": "inferShape",
+          "signature": "Table.inferShape (lines: seq\u003Cstring\u003E) : string",
+          "summary": "Draft the row \u0060type\u0060 declaration from an aligned-table sample (kubectl/docker style) \u2014 the composable core of \u0060#infer \u2026 from table\u0060: per-column token scan over the data rows (all-int -\u003E int, else float/bool by token, else string; a column with empty/\u0060\u003Cnone\u003E\u0060 cells -\u003E Option with a note); headers sanitize to field names, \u0060[\u003CWire\u003E]\u0060 carries a header the name cannot recover; a note says the value reads as seq\u003CRoot\u003E. You edit the emitted type. Not check-time inference (the value is a runtime sample).",
+          "example": "print (Table.inferShape [\u0022NAME   RESTARTS\u0022; \u0022web-1  0\u0022])",
+          "pointer": "the \u0060weir add schema\u0060 category: external structure -\u003E a declaration you own; check and \u0060from table\u0060 stay untouched."
+        }
+      ]
+    },
+    {
       "name": "Tree",
       "members": [
         {
@@ -1846,7 +1858,7 @@
     {
       "name": "from table",
       "signature": null,
-      "summary": "Read aligned column output (kubectl/docker style: one header row, aligned data rows) into declared row records \u2014 yields seq\u003CT\u003E. Columns slice at header offsets, never whitespace runs, so a spaced value (\u0060Up 2 hours\u0060) survives; a header boundary is a run of 2\u002B spaces (\u0060CONTAINER ID\u0060 is one column). A field matches its header by normalized name, case-insensitively (\u0060podTemplateHash\u0060 reads \u0060POD-TEMPLATE-HASH\u0060); [\u003CWire \u0022HEADER\u0022\u003E] matches a raw header verbatim. Cells trim and type by the field (string/int/float/bool); an Option field reads an empty or \u0060\u003Cnone\u003E\u0060 cell as None. Extra columns are ignored; blank lines skip; errors carry line and column. There is no \u0060to table\u0060.",
+      "summary": "Read aligned column output (kubectl/docker style: one header row, aligned data rows) into declared row records \u2014 yields seq\u003CT\u003E. Columns slice at header offsets, never whitespace runs, so a spaced value (\u0060Up 2 hours\u0060) survives; a header boundary is a run of 2\u002B spaces (\u0060CONTAINER ID\u0060 is one column). A field matches its header by normalized name, case-insensitively (\u0060podTemplateHash\u0060 reads \u0060POD-TEMPLATE-HASH\u0060); \u0060[\u003CWire \u0022HEADER\u0022\u003E]\u0060 matches a raw header verbatim. Cells trim and type by the field (string/int/float/bool); an Option field reads an empty or \u0060\u003Cnone\u003E\u0060 cell as None. Extra columns are ignored; blank lines skip; errors carry line and column. There is no \u0060to table\u0060.",
       "example": null,
       "pointer": "a pipe stage: kubectl get po |\u003E from table Pod."
     },

@@ -4038,6 +4038,9 @@ let private yamlModuleMembers: (string * Ty * Value) list =
 let private jsonModuleMembers: (string * Ty * Value) list =
     [ "inferShape", TFun(TSeq TStr, TStr), inferShapeImpl Infer.Json ]
 
+let private tableModuleMembers: (string * Ty * Value) list =
+    [ "inferShape", TFun(TSeq TStr, TStr), inferShapeImpl Infer.Table ]
+
 let private moduleTable: (string * (string * Ty * Value) list) list =
     [ "Seq", seqMembers
       "Str", strMembers
@@ -4046,6 +4049,7 @@ let private moduleTable: (string * (string * Ty * Value) list) list =
       "Tree", treeMembers
       "Yaml", yamlModuleMembers
       "Json", jsonModuleMembers
+      "Table", tableModuleMembers
       "Map", mapMembers
       "Instant", instantMembers
       "Proc", procMembers
@@ -5303,7 +5307,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
               (Some "a pipe stage: File.read \"App.csproj\" |> from xml Proj.")
           "from table",
           bd
-              "Read aligned column output (kubectl/docker style: one header row, aligned data rows) into declared row records — yields seq<T>. Columns slice at header offsets, never whitespace runs, so a spaced value (`Up 2 hours`) survives; a header boundary is a run of 2+ spaces (`CONTAINER ID` is one column). A field matches its header by normalized name, case-insensitively (`podTemplateHash` reads `POD-TEMPLATE-HASH`); [<Wire \"HEADER\">] matches a raw header verbatim. Cells trim and type by the field (string/int/float/bool); an Option field reads an empty or `<none>` cell as None. Extra columns are ignored; blank lines skip; errors carry line and column. There is no `to table`."
+              "Read aligned column output (kubectl/docker style: one header row, aligned data rows) into declared row records — yields seq<T>. Columns slice at header offsets, never whitespace runs, so a spaced value (`Up 2 hours`) survives; a header boundary is a run of 2+ spaces (`CONTAINER ID` is one column). A field matches its header by normalized name, case-insensitively (`podTemplateHash` reads `POD-TEMPLATE-HASH`); `[<Wire \"HEADER\">]` matches a raw header verbatim. Cells trim and type by the field (string/int/float/bool); an Option field reads an empty or `<none>` cell as None. Extra columns are ignored; blank lines skip; errors carry line and column. There is no `to table`."
               None
               (Some "a pipe stage: kubectl get po |> from table Pod.")
           "Yaml.parse",
@@ -5330,6 +5334,12 @@ let builtinDocs: Map<string, BuiltinDoc> =
               "Draft named `type` declarations from a JSON sample — the composable core of `#infer`: returns the declaration text (top record named Root; nested records auto-named by field, seq elements singularised; array elements merge, a key absent in some elements drafts Option; a data-keyed object — one value shape with mostly non-identifier keys, differing sibling key sets, or an empty {} — drafts the open mapping seq<string * _>; notes ride as `//` lines). It drafts what the sample has; you edit the emitted types. Not check-time inference (the value is a runtime sample)."
               (Some "print (Json.inferShape [\"{\\\"id\\\": 1, \\\"name\\\": \\\"x\\\"}\"])")
               (Some "the `weir add schema` category: external structure -> a declaration you own; check and `from json` stay untouched.")
+           |> named [ "lines" ])
+          "Table.inferShape",
+          (bd
+              "Draft the row `type` declaration from an aligned-table sample (kubectl/docker style) — the composable core of `#infer … from table`: per-column token scan over the data rows (all-int -> int, else float/bool by token, else string; a column with empty/`<none>` cells -> Option with a note); headers sanitize to field names, `[<Wire>]` carries a header the name cannot recover; a note says the value reads as seq<Root>. You edit the emitted type. Not check-time inference (the value is a runtime sample)."
+              (Some "print (Table.inferShape [\"NAME   RESTARTS\"; \"web-1  0\"])")
+              (Some "the `weir add schema` category: external structure -> a declaration you own; check and `from table` stay untouched.")
            |> named [ "lines" ])
 
           // ---- reifiers: turn a command chain into a value [D:exit-reifiers].
@@ -5452,6 +5462,7 @@ let moduleBlurbs: Map<string, string> =
           "Seq", "lazy sequence pipeline ops: map, where, fold, pmap"
           "Size", "byte sizes: binary-unit literals, arithmetic, parse"
           "Str", "string ops: trim, split, match, encode, hash"
+          "Table", "aligned-table helpers: inferShape drafts a row type from a sample"
           "Tree", "parent-first effect walks over discovered children"
           "Yaml", "YAML nodes: parse, merge (strategic patch), inferShape" ]
 

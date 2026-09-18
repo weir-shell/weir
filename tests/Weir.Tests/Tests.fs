@@ -7636,7 +7636,7 @@ let adapterFormTests =
               match Weir.Lsp.hoverType lines 2 22 with
               | Some h ->
                   Expect.stringContains h "from <adapter>" "the form"
-                  Expect.stringContains h "json, jsonl, xml, yaml" "every from-adapter, derived (xml reads, never writes)"
+                  Expect.stringContains h "json, jsonl, table, xml, yaml" "every from-adapter, derived (xml and table read, never write)"
               | None -> failtest "from must answer"
 
               let t = [ "let back = rows |> to yaml" ]
@@ -7658,13 +7658,13 @@ let adapterFormTests =
               | None -> failtest "the adapter word must still hover"
           }
           test "completion after `from `/`to ` is direction-aware and offers NOTHING else" {
-              Expect.equal (sug "xs |> from ") [ "json"; "jsonl"; "xml"; "yaml" ] "every from-adapter (xml reads)"
+              Expect.equal (sug "xs |> from ") [ "json"; "jsonl"; "table"; "xml"; "yaml" ] "every from-adapter (xml and table read)"
               Expect.equal (sug "xs |> from j") [ "json"; "jsonl" ] "prefix-filtered"
               Expect.equal (sug "xs |> to ") [ "json"; "jsonl"; "yaml" ] "every to-adapter (no to xml)"
-              Expect.isFalse (sug "xs |> into " = [ "json"; "jsonl"; "xml"; "yaml" ]) "boundary: into is not from"
+              Expect.isFalse (sug "xs |> into " = [ "json"; "jsonl"; "table"; "xml"; "yaml" ]) "boundary: into is not from"
           }
           test "the adapter lists derive from the one source (builtinDocs keys), never a parallel table" {
-              Expect.equal (Weir.Builtins.adapterNames "from") [ "json"; "jsonl"; "xml"; "yaml" ] "from (xml reads)"
+              Expect.equal (Weir.Builtins.adapterNames "from") [ "json"; "jsonl"; "table"; "xml"; "yaml" ] "from (xml and table read)"
               Expect.equal (Weir.Builtins.adapterNames "to") [ "json"; "jsonl"; "yaml" ] "to (no to xml)"
           }
           test "`from`/`to` inside a string or comment are data — no discovery hover [D:form-word-hover]" {

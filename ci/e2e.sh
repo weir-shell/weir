@@ -3685,6 +3685,21 @@ echo "$tid" | grep -qF '"6"' || fail "'table' as an identifier: $tid"
 echo "e2e ok: from table — header-offset slicing, Wire + Option/<none>, located errors, no to table, 'table' unreserved"
 rm -rf "$tdir"
 
+# --- #infer from table [D:from-table]: the REPL drafts the row record
+# from an aligned sample, injects it, and the typed read lights up in
+# the SAME session; the as-name guard still refuses a builtin landing
+tinf=$(printf '%s\n%s\n%s\n%s\n%s\n' \
+  'let tsample = ["NAME    STATUS    RESTARTS"; "web-1   Running   0"; "db-0    Pending   3"]' \
+  '#infer tsample from table as Pod' \
+  'tsample |> from table Pod |> Seq.where (fun p -> p.restarts > 0) |> Seq.map (fun p -> p.name) |> Seq.length |> show' \
+  '#infer tsample from table as Yaml' \
+  '#quit' | $BIN)
+echo "$tinf" | grep -qF "defined: Pod (1 type)" || fail "#infer from table did not define the row type: $tinf"
+echo "$tinf" | grep -qF "read the value as 'seq<Pod>'" || fail "#infer from table lost the seq note: $tinf"
+echo "$tinf" | grep -qF '"1" : string' || fail "the injected type must read typed rows: $tinf"
+echo "$tinf" | grep -qF "'Yaml' is a built-in type" || fail "the as-name guard must refuse a builtin landing: $tinf"
+echo "e2e ok: #infer from table — drafts, injects, reads in one session; the as-name guard holds"
+
 # structural walks [D:structural-walk]: Graph.reach over a dep graph
 # (cycle-safe, breadth-first, each node once) and Tree.walk's
 # parent-before-child effect order — the two laws, pinned in the binary

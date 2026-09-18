@@ -182,8 +182,9 @@ to capture: let x = kubectl get po -A -o yaml
 
 ## `#infer`: draft types from a sample
 
-Exploring an unknown JSON/YAML blob means hand-transcribing its
-shape. `#infer` drafts it from an evaluated sample:
+Exploring an unknown JSON/YAML blob (or a kubectl-style aligned
+table) means hand-transcribing its shape. `#infer` drafts it from an
+evaluated sample:
 
 ```
 weir> let raw = kubectl get po -o json
@@ -192,14 +193,17 @@ defined: Pods, Metadata, Status (3 types)
 weir> raw |> from json Pods |> _.items |> Seq.map _.⟨TAB⟩
 ```
 
-`#infer <source> from <json|jsonl|yaml> as <Name>` evaluates the
+`#infer <source> from <json|jsonl|yaml|table> as <Name>` evaluates the
 source ONCE, parses it by the named adapter, walks it to a set of
 named `type` declarations, and injects them into the session (as if
 you had typed them) — so `from json Pods` checks and field
 completion lights up. The source defaults to `it` when omitted
 (`#infer from json as Pods` reads the last result — the way to "pipe
 into" a directive). A bare top-level array (or `from jsonl`) names
-the ELEMENT: you write `seq<Name>`.
+the ELEMENT: you write `seq<Name>`. `from table` drafts the ROW
+record from the header and a per-column scan of the cells — a column
+with empty/`<none>` cells drafts `Option` with a note, and the value
+reads as `seq<Name>`.
 
 The output is ordinary `type` decls you own and edit — this is the
 `weir add schema` category, not check-time inference (`check` never
@@ -226,7 +230,8 @@ identifier keys identical across elements — `metadata` — stays a
 record. An empty `{}` is an open map with zero entries: it drafts
 `seq<string * string>` with a note (no evidence for V, so string).
 The same inference is a builtin — `sample |> Json.inferShape |> print`
-(and `Yaml.inferShape`) returns the declaration text outside the REPL.
+(and `Yaml.inferShape`, `Table.inferShape`) returns the declaration
+text outside the REPL.
 
 A derived type name never lands on a name the session already
 resolves — a builtin (`Secret`, `Yaml`, `Duration`, …) or a type you

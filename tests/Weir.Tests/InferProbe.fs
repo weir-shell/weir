@@ -700,3 +700,89 @@ let saveQualify =
               let diags, _, _, _ = Weir.Script.analyzeLines "saved.weir" saved
               Expect.isEmpty diags (sprintf "saved script checks clean; diags: %A" diags)
           } ]
+
+// ---- the table drafting arm [D:from-table] ----------------------------
+// `#infer … from table as Name` drafts the ROW record: header offsets
+// name the columns, a per-column token scan types them, empty/`<none>`
+// cells draft Option with a note, and a note says the value reads as
+// seq<Name>. The fixtures pad by width so header and cell offsets agree
+// by construction (the tabwriter reality).
+
+let private trow (ws: int list) (cs: string list) =
+    (List.zip ws cs |> List.map (fun (w, c: string) -> c.PadRight w) |> String.concat "")
+        .TrimEnd()
+
+let private inferTable (topName: string) (lines: string list) =
+    match Infer.infer Parser.keywords takenBase Infer.Table topName lines with
+    | Ok(decls, notes) -> String.concat "\n" decls, notes
+    | Error e -> failtestf "table infer failed: %s" e
+
+[<Tests>]
+let tableInferRules =
+    testList
+        "table infer rules [D:from-table]"
+        [ test "headers sanitize to field names; the per-column scan types them" {
+              let ws = [ 8; 22; 15; 11; 8; 8 ]
+
+              let out, notes =
+                  inferTable
+                      "Pod"
+                      [ trow ws [ "NAME"; "POD-TEMPLATE-HASH"; "CONTAINER ID"; "RESTARTS"; "CPU"; "READY" ]
+                        trow ws [ "web-1"; "abc"; "3f4e"; "0"; "1.5"; "true" ]
+                        trow ws [ "db-0"; "def"; "9a1b"; "3"; "2"; "false" ] ]
+
+              Expect.stringContains out "type Pod = {" "the as-name is the row type"
+              Expect.stringContains out "name: string" "NAME lowers to name"
+              Expect.stringContains out "podTemplateHash: string" "POD-TEMPLATE-HASH camels, no Wire needed (the match recovers it)"
+              Expect.stringContains out "containerId: string" "a two-word single-space header is one column"
+              Expect.stringContains out "restarts: int" "all-int column -> int"
+              Expect.stringContains out "cpu: float" "int-or-float tokens -> float"
+              Expect.stringContains out "ready: bool" "true/false column -> bool"
+              Expect.isFalse (out.Contains "[<Wire") "every header here recovers from its field name"
+
+              Expect.exists
+                  notes
+                  (fun n -> n.Contains "read the value as 'seq<Pod>'")
+                  "the rows-are-plural note (the bare-top-array precedent)"
+          }
+          test "a reserved-word header keeps the historical landing + Wire verbatim" {
+              let ws = [ 8; 8 ]
+
+              let out, _ =
+                  inferTable "Svc" [ trow ws [ "NAME"; "TYPE" ]; trow ws [ "web"; "ClusterIP" ] ]
+
+              Expect.stringContains out "[<Wire \"TYPE\">]\n    kind: string" "TYPE lands kind (toIdent's spelling) and carries the raw header"
+          }
+          test "empty/<none> cells draft Option with a note; an all-absent column drafts Option<string>" {
+              let ws = [ 8; 8; 8 ]
+
+              let out, notes =
+                  inferTable
+                      "Node"
+                      [ trow ws [ "NAME"; "AGE"; "ROLES" ]
+                        trow ws [ "n1"; "3"; "<none>" ]
+                        trow ws [ "n2"; ""; "<none>" ] ]
+
+              Expect.stringContains out "age: Option<int>" "one empty cell makes the int column Option"
+              Expect.stringContains out "roles: Option<string>" "an all-absent column has no evidence beyond string"
+              Expect.exists (notes) (fun n -> n.Contains "column 'AGE' has empty/<none> cells — drafted Option<int>") "the honesty note"
+              Expect.exists (notes) (fun n -> n.Contains "column 'ROLES' has no values") "the no-evidence note"
+          }
+          test "a header-only sample drafts all-string with one note" {
+              let out, notes = inferTable "Row" [ "NAME   AGE" ]
+              Expect.stringContains out "name: string" ""
+              Expect.stringContains out "age: string" ""
+              Expect.exists (notes) (fun n -> n.Contains "no data rows under the header") "verify-against-a-fuller-sample"
+          }
+          test "the drafted type checks and its from-table read checks (the injection round-trip)" {
+              let decl, _ =
+                  inferTable "Pod" [ "NAME   RESTARTS"; "web-1  0" ]
+
+              let saved =
+                  [ "let sample = [\"NAME   RESTARTS\"; \"web-1  0\"]" ]
+                  @ (decl.Split '\n' |> List.ofArray)
+                  @ [ "let _r = sample |> from table Pod |> Seq.map (fun p -> p.name) |> Seq.length" ]
+
+              let diags, _, _, _ = Weir.Script.analyzeLines "drafted.weir" saved
+              Expect.isEmpty diags (sprintf "the draft must check and read; diags: %A" diags)
+          } ]
