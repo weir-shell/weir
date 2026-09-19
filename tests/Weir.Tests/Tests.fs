@@ -18046,9 +18046,12 @@ let bareRuleTests =
               Expect.equal Weir.Builtins.bareAliases derived "bare-ness disagrees with the home count"
           }
           test "THE GATE: the collision set is PINNED — a new collision demotes a bare name, which is a decision" {
+              // `replicate` joined 2026-09 (Str.replicate beside
+              // Seq.replicate, the width-members batch): qualified-only
+              // everywhere now — the derived partition's own rule
               Expect.equal
                   Weir.Builtins.bareTwoHome
-                  (Set [ "contains"; "length" ])
+                  (Set [ "contains"; "length"; "replicate" ])
                   "the two-home scan moved: decide the new name (qualified-only), then update this pin"
           }
           test "no formerly-bare name lost its slot in the widening (the monotonicity check the plan demanded)" {
@@ -18585,6 +18588,182 @@ let bytesTests =
               finally
                   System.IO.File.Delete tmp
                   System.IO.File.Delete out
+          } ]
+
+// the port-driven member batch (v0.0.46) [D:width-members][D:seq-equal]
+// [D:bytes-hex][D:is-executable] — each gap cited from the asdf/acme
+// FINDINGS, each edge pinned; plus the two ports' diagnostic teachings
+let portMembersTests =
+    let diagsOf lines =
+        let diags, _, _, _ = Weir.Script.analyzeLines "pm.weir" lines
+        diags
+
+    let mustSay lines (needle: string) label =
+        Expect.exists
+            (diagsOf lines)
+            (fun d -> d.Message.Contains needle)
+            $"{label}: expected '{needle}', got {diagsOf lines |> List.map _.Message}"
+
+    let clean lines label =
+        Expect.isEmpty (diagsOf lines) $"{label}: expected clean, got {diagsOf lines |> List.map _.Message}"
+
+    testList
+        "port members (v0.0.46)"
+        [ test "Str.replicate: n copies concatenated; 0 empty; negative refuses (Seq.replicate's convention)" {
+              expectValue "Str.replicate 3 \"ab\"" (VStr "ababab")
+              expectValue "Str.replicate 0 \"ab\"" (VStr "")
+              expectValue "Str.replicate 2 \"\"" (VStr "")
+
+              let ex = Expect.throwsC (fun () -> run "Str.replicate (0 - 1) \"x\"" |> ignore) id
+              Expect.stringContains ex.Message "the count must be non-negative" "Seq.replicate's exact posture"
+          }
+          test "Str.padLeft/padRight: total width, spaces, already-longer unchanged (.NET Pad semantics)" {
+              expectValue "Str.padLeft 5 \"42\"" (VStr "   42")
+              expectValue "Str.padRight 5 \"42\"" (VStr "42   ")
+              expectValue "Str.padLeft 2 \"abcd\"" (VStr "abcd")
+              expectValue "Str.padRight 2 \"abcd\"" (VStr "abcd")
+              expectValue "Str.padLeft 4 \"\"" (VStr "    ")
+              expectValue "Str.padLeft 0 \"x\"" (VStr "x")
+
+              let ex = Expect.throwsC (fun () -> run "Str.padRight (0 - 2) \"x\"" |> ignore) id
+              Expect.stringContains ex.Message "the width must be non-negative" ""
+          }
+          test "Seq.equal: element-wise, length-sensitive" {
+              expectValue "[1; 2; 3] |> Seq.equal [1; 2; 3]" (VBool true)
+              expectValue "[1; 2; 3] |> Seq.equal [1; 2]" (VBool false)
+              expectValue "[1; 2] |> Seq.equal [1; 2; 3]" (VBool false)
+              expectValue "([] |> Seq.where (fun x -> x > 0)) |> Seq.equal []" (VBool true)
+              // the lossy-join trap the member closes: a separator inside
+              // an element fools join-then-compare, never Seq.equal
+              expectValue "[\"a;b\"] |> Seq.equal [\"a\"; \"b\"]" (VBool false)
+          }
+          test "Seq.equal is lazy-safe: short-circuits, never forces beyond need" {
+              // nats is infinite — lockstep stops where the finite side ends
+              expectValue "[0; 1] |> Seq.equal nats" (VBool false)
+              expectValue "nats |> Seq.equal [5]" (VBool false)
+          }
+          test "Seq.equal wears Seq.contains's Eq constraint" {
+              let terr = checkErr "Seq.equal [fun x -> x] [fun y -> y]"
+              Expect.stringContains terr.Message "==" "functions never compare"
+              Expect.stringContains (checkErr "[0.5] |> Seq.equal [0.5]").Message "Float.near" "floats name the epsilon door"
+          }
+          test "Bytes.fromHex/toHex: lowercase out, either case in, round-trips" {
+              expectValue "Bytes.fromHex \"0a1B\" |> Bytes.toHex" (VStr "0a1b")
+              expectValue "Bytes.fromHex \"\" |> Bytes.toHex" (VStr "")
+              expectValue "Str.toUtf8 \"hi\" |> Bytes.toHex" (VStr "6869")
+              expectValue "Bytes.fromHex (Bytes.sha256 (Str.toUtf8 \"x\")) |> Bytes.length" (VSize 32L)
+          }
+          test "Bytes.fromHex refuses odd length and non-hex, each teaching (fromBase64's posture)" {
+              let odd = Expect.throwsC (fun () -> run "Bytes.fromHex \"abc\"" |> ignore) id
+              Expect.stringContains odd.Message "odd-length hex" "the length half"
+              Expect.stringContains odd.Message "two hex digits" "the repair"
+
+              let bad = Expect.throwsC (fun () -> run "Bytes.fromHex \"zz\"" |> ignore) id
+              Expect.stringContains bad.Message "invalid hex" "the alphabet half"
+          }
+          test "Bytes.sub mirrors Str.sub: start, length, data last; out of range raises with detail" {
+              expectValue "Str.toUtf8 \"abcd\" |> Bytes.sub 1 2 |> Str.fromUtf8" (VStr "bc")
+              expectValue "Str.toUtf8 \"abcd\" |> Bytes.sub 0 0 |> Bytes.length" (VSize 0L)
+              expectValue "Str.toUtf8 \"abcd\" |> Bytes.sub 4 0 |> Bytes.length" (VSize 0L)
+
+              let ex =
+                  Expect.throwsC (fun () -> run "Str.toUtf8 \"abc\" |> Bytes.sub 2 9" |> ignore) id
+
+              Expect.stringContains ex.Message "out of bounds (start 2, length 9, byte length 3)" "Str.sub's detail shape"
+          }
+          test "Bytes.hmacSha256: key then message; RFC 4231 vectors" {
+              // TC1: key = 0x0b x 20, data "Hi There" — fromHex feeds the key
+              expectValue
+                  "Bytes.hmacSha256 (Bytes.fromHex \"0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b\") (Str.toUtf8 \"Hi There\") |> Bytes.toHex"
+                  (VStr "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7")
+              // the widely-pinned text vector
+              expectValue
+                  "Bytes.hmacSha256 (Str.toUtf8 \"key\") (Str.toUtf8 \"The quick brown fox jumps over the lazy dog\") |> Bytes.toHex"
+                  (VStr "f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8")
+          }
+          test "File.isExecutable: the owner x bit as a bool; missing raises; Windows answers by extension" {
+              let tmp = System.IO.Path.GetTempFileName()
+
+              try
+                  if System.OperatingSystem.IsWindows() then
+                      // the STATED posture: extension-based, no execute bit exists
+                      let cmd = tmp + ".cmd"
+                      System.IO.File.WriteAllText(cmd, "")
+
+                      try
+                          Expect.equal (runReal $"File.isExecutable \"{cmd.Replace('\\', '/')}\"") (VBool true) ".cmd"
+                          Expect.equal (runReal $"File.isExecutable \"{tmp.Replace('\\', '/')}\"") (VBool false) ".tmp"
+                      finally
+                          System.IO.File.Delete cmd
+                  else
+                      System.IO.File.SetUnixFileMode(tmp, System.IO.UnixFileMode.UserRead ||| System.IO.UnixFileMode.UserWrite)
+                      Expect.equal (runReal $"File.isExecutable \"{tmp}\"") (VBool false) "no x bit"
+
+                      System.IO.File.SetUnixFileMode(
+                          tmp,
+                          System.IO.UnixFileMode.UserRead
+                          ||| System.IO.UnixFileMode.UserWrite
+                          ||| System.IO.UnixFileMode.UserExecute
+                      )
+
+                      Expect.equal (runReal $"File.isExecutable \"{tmp}\"") (VBool true) "the owner x bit"
+
+                  let ex =
+                      Expect.throwsC (fun () -> runReal "File.isExecutable \"./no-such-path-zz\"" |> ignore) id
+
+                  Expect.stringContains ex.Message "no such path" "File.mode's absence posture"
+              finally
+                  System.IO.File.Delete tmp
+          }
+          // ---- the two ports' diagnostics, whole-script level ----------
+          test "a qualified case in pattern position teaches the bare law [D:bare-case-patterns]" {
+              mustSay
+                  [ "type Spec = System | Ref"
+                    "match System with"
+                    "| Spec.System -> print \"s\""
+                    "| _ -> print \"o\"" ]
+                  "a pattern names a case bare — write 'System', not 'Spec.System'"
+                  "the repair is spelled"
+          }
+          test "a qualified type in the adapter slot teaches the flat-import law [D:flat-import-types]" {
+              mustSay
+                  [ "let p = [\"{}\"] |> from json Acme.Pod"; "print \"x\"" ]
+                  "write 'Pod', not 'Acme.Pod'"
+                  "the repair is spelled"
+          }
+          test "a capture sigil x reifier teaches the in-parens spelling [D:exit-reifiers]" {
+              mustSay
+                  [ "let e = Env.ofPairs [(\"A\", \"1\")]"
+                    "let r = $e(sh -c \"x\") | complete"
+                    "print r.stdout" ]
+                  "$e(cmd | complete)"
+                  "the composed spelling is named"
+          }
+          test "a block-local binder piped into inside the same statement is NOT a phantom command [D:statement-lets]" {
+              // the acme false positive: pad is statement-local, and under
+              // check's assume-command rule every command-shaped word claims
+              // IsExternal — bindings beat PATH, block-locals included
+              clean
+                  [ "let f () ="
+                    "    let pad s = \"0\" + s"
+                    "    let ints = sh -c \"echo 1 2\" |> Seq.collect Str.fields"
+                    "    let x = ints |> Seq.item 0 |> pad"
+                    "    print x"
+                    "f ()" ]
+                  "block-local |> target"
+          }
+          test "a helper ending in exit discards with the polymorphic-cause teaching [D:exit-polymorphic]" {
+              mustSay
+                  [ "let runCmd name ="
+                    "    print name"
+                    "    exit 0"
+                    "runCmd \"where\"" ]
+                  "ends in exit or fail"
+                  "the cause is named"
+
+              match Weir.Script.discardError (TVar "a1") with
+              | Some m -> Expect.stringContains m "exit at the call site" "the repair is named"
+              | None -> failtest "an unresolved statement type still errors"
           } ]
 
 let versionStampTests =
@@ -19486,6 +19665,7 @@ let helpUxTests =
                         "UTC"
                         "RFC" // RFC 10008
                         "SHA-256" // hash algorithm
+                        "HMAC-SHA256" // keyed-hash mac, Bytes.hmacSha256's algorithm
                         "HTTP" // protocol + methods
                         "GET"
                         "QUERY"
@@ -19884,6 +20064,7 @@ let allTests =
     testList
         "Weir"
         [ versionStampTests
+          portMembersTests
           echoBinaryTests
           logLevelTests
           dxMessageTests
