@@ -8747,4 +8747,120 @@ echo "$out" | grep -qF "known-after-apply" || fail "the known-after-apply teachi
 echo "e2e ok: plan/apply — a known-after-apply read refuses (located)"
 rm -rf "$padir"
 
+# ---- within serve: the scoped HTTP listener [D:http-serve] -----------
+# The three primitives proven end-to-end against the AOT binary: a
+# routing handler (health/echo), incremental streaming (timestamped
+# arrivals), the concurrency ceiling (marker interleave), and clean
+# shutdown (the port frees — a second bind succeeds).
+svdir=$(mkweirtmp)
+svport=8471
+svport2=8472
+svport3=8473
+
+# (1) routing: /health -> 200 "ok"; /echo -> a query param echoed. The
+# server backgrounds itself in the SCOPE and drives its own client so
+# the port is torn down deterministically at block exit.
+cat > "$svdir/route.weir" <<WEOF
+let handler = fun req ->
+    match req.path with
+    | "/health" -> HttpServerResponse { status = 200; headers = []; body = Text "ok" }
+    | "/echo" ->
+        let name =
+            match Str.trySplitOnce "=" req.query with
+            | Some (_, v) -> v
+            | None -> "?"
+        HttpServerResponse { status = 200; headers = []; body = Text \$"hello {name}" }
+    | _ -> HttpServerResponse { status = 404; headers = []; body = Text "not found" }
+
+within serve srv = { port = $svport; maxConcurrent = 4 } handler
+    print \$"listening on {Server.port srv}"
+    poll timeout=8s interval=100ms
+        Net.portOpen $svport
+    let h = Http.fetch "http://127.0.0.1:$svport/health" |> Seq.head
+    print \$"health={h}"
+    let e = Http.fetch "http://127.0.0.1:$svport/echo?name=weir" |> Seq.head
+    print \$"echo={e}"
+print "closed"
+WEOF
+out=$($BIN "$svdir/route.weir" 2>&1) || {
+    probe=$(curl -s --max-time 2 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$svport/health" 2>/dev/null || echo "curl-failed")
+    fail "serve routing failed (bash-side probe of :$svport/health = $probe): $out"
+}
+echo "$out" | grep -qF "health=ok" || fail "serve /health must return ok: $out"
+echo "$out" | grep -qF "echo=hello weir" || fail "serve /echo must echo the query param: $out"
+echo "$out" | grep -qF "closed" || fail "serve scope must exit: $out"
+# clean shutdown: the port frees, a second bind on it succeeds
+sleep 0.5
+$BIN -e "Net.portOpen $svport" | grep -qF "false" || fail "serve no-orphan: port $svport still up after the scope"
+echo "e2e ok: within serve — routing (health/echo) + the port frees on exit"
+
+# (2) streaming: a 5-element Stream body with a delay between elements.
+# The client (curl -N, unbuffered) timestamps each arrival; we assert
+# the FIRST chunk lands well before the LAST — incremental, not
+# buffered-then-flushed. The capture is a standalone script (no nested
+# quote-escaping through the weir sh -c and the heredoc).
+cat > "$svdir/capture.sh" <<CAPEOF
+#!/bin/sh
+curl -sN --max-time 10 "http://127.0.0.1:$svport2/x" | while IFS= read -r line; do
+    [ -n "\$line" ] && echo "\$(date +%s.%N) \$line"
+done > "$svdir/arrivals.txt" 2>&1
+CAPEOF
+chmod +x "$svdir/capture.sh"
+cat > "$svdir/stream.weir" <<WEOF
+let handler = fun req ->
+    let elems = [1; 2; 3; 4; 5] |> Seq.map (fun i ->
+        Duration.sleep 300ms
+        \$"chunk-{i}")
+    HttpServerResponse { status = 200; headers = []; body = Stream elems }
+
+within serve srv = { port = $svport2; maxConcurrent = 4 } handler
+    poll timeout=8s interval=100ms
+        Net.portOpen $svport2
+    within proc client = sh "$svdir/capture.sh"
+        Duration.sleep 3000ms
+print "streamed"
+WEOF
+out=$($BIN "$svdir/stream.weir" 2>&1) || fail "serve streaming run failed: $out"
+echo "$out" | grep -qF "streamed" || fail "serve stream scope must exit: $out"
+# five data lines arrived
+nchunks=$(grep -c "chunk-" "$svdir/arrivals.txt" 2>/dev/null || echo 0)
+[ "$nchunks" -eq 5 ] || fail "serve stream: expected 5 chunks, got $nchunks ($(cat "$svdir/arrivals.txt" 2>/dev/null))"
+# incrementality: first arrival is >= 800ms before the last (5 elems x
+# 300ms spacing gives ~1.2s spread; 800ms is a slack floor that a
+# buffered-all-at-once server would fail)
+t_first=$(grep "chunk-1" "$svdir/arrivals.txt" | head -1 | awk '{print $1}')
+t_last=$(grep "chunk-5" "$svdir/arrivals.txt" | head -1 | awk '{print $1}')
+spread=$(awk -v a="$t_first" -v b="$t_last" 'BEGIN{printf "%.3f", b-a}')
+awk -v s="$spread" 'BEGIN{exit !(s >= 0.8)}' || fail "serve stream NOT incremental: chunk-1..chunk-5 spread was ${spread}s (< 0.8s means buffered) — arrivals: $(cat "$svdir/arrivals.txt")"
+echo "e2e ok: within serve — Stream body arrives INCREMENTALLY (chunk-1..chunk-5 spread ${spread}s)"
+
+# (3) concurrency ceiling: maxConcurrent=2, fire 4 slow requests, assert
+# only 2 handlers run at once via a start/end marker log. The ceiling
+# holds iff the log is start,start,end,end,start,start,end,end — never
+# four starts in a row.
+rm -f "$svdir/markers.txt"
+cat > "$svdir/conc.weir" <<WEOF
+let handler = fun req ->
+    let _m1 = sh -c "echo start >> $svdir/markers.txt" | complete
+    Duration.sleep 800ms
+    let _m2 = sh -c "echo end >> $svdir/markers.txt" | complete
+    HttpServerResponse { status = 200; headers = []; body = Text "done" }
+
+within serve srv = { port = $svport3; maxConcurrent = 2 } handler
+    poll timeout=8s interval=100ms
+        Net.portOpen $svport3
+    within proc load = sh -c "for i in 1 2 3 4; do curl -s --max-time 8 http://127.0.0.1:$svport3/slow & done; wait"
+        Duration.sleep 3000ms
+print "loaded"
+WEOF
+out=$($BIN "$svdir/conc.weir" 2>&1) || fail "serve concurrency run failed: $out"
+echo "$out" | grep -qF "loaded" || fail "serve conc scope must exit: $out"
+# the ceiling proof: the FIRST THREE markers must be start,start,end —
+# a third 'start' before any 'end' would mean 3+ concurrent (ceiling
+# broken). At maxConcurrent=2 the third line is always an 'end'.
+first3=$(head -3 "$svdir/markers.txt" 2>/dev/null | tr '\n' ',')
+[ "$first3" = "start,start,end," ] || fail "serve concurrency ceiling BROKEN: first 3 markers were '$first3' (expected 'start,start,end,') — markers: $(cat "$svdir/markers.txt" 2>/dev/null | tr '\n' ' ')"
+echo "e2e ok: within serve — concurrency ceiling holds (maxConcurrent=2 caps 4 requests at 2)"
+rm -rf "$svdir"
+
 echo "e2e battery: all green"
