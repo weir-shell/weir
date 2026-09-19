@@ -584,6 +584,45 @@ print $"{key} -> {value}"
   raise-by-default does not apply — failure becomes visible through
   `watch=` or `Proc.wait`, nowhere else. Nested scopes release LIFO.
   The command position takes splices and env sigils like any command;
+- A SCOPED HTTP LISTENER is `within serve srv = { port;
+  maxConcurrent } handler` + an indented block [D:http-serve]: the
+  socket lifetime IS the block — served until the scope exits
+  (normal, raise, SIGINT/SIGTERM) and CLOSED on every path, so the
+  port frees (a second bind then succeeds). Same no-orphan discipline
+  as `within proc`, port edition. The handler is a plain SYNCHRONOUS
+  `HttpServerRequest -> HttpServerResponse` function — no async
+  surface; the runtime multiplexes connections on tasks under it (the
+  `pmap`/`spawn` doctrine). It ROUTES on `req.path` with an ordinary
+  `match` — weir's union dispatch, not a routing framework.
+  `HttpServerRequest` carries `method`/`path`/`query` (the raw string,
+  no leading `?` — `Str.trySplitOnce "=" req.query`)/`headers` (pairs,
+  wire order)/`body` (request text; request-body streaming is out of
+  scope v1). The response `body` is an `HttpBody` — the SAME union the
+  `Http` client uses (`NoBody`/`Text`/`Json`), plus `Stream of
+  seq<string>`: the runtime PULLS and FLUSHES each element as produced
+  (chunked, SSE-shaped `data:` lines), so a lazy producer streams
+  incrementally — the client sees early elements before the seq ends.
+  `maxConcurrent` bounds handlers-at-once (the `pmapWith` law); excess
+  queues. The handle surface is `Server.port`/`Server.running` — no
+  `stop` (the scope IS the teardown). ONE type family: `HttpMethod`,
+  header pairs and the body union are shared client↔server; only the
+  records differ where the wire does (`path`+`query` not `url`, no
+  `auth`/`timeout`). BOUNDED OUT v1, each a stated non-goal: TLS
+  (reverse-proxy posture), a routing DSL, WebSockets (the study proved
+  them unneeded), request-body streaming, HTTP/2.
+
+```weir
+// the scope opens the socket and frees it on exit — this block binds
+// the handle, reads its port, and exits at once (no client needed)
+let handler = fun req ->
+    match req.path with
+    | "/health" -> HttpServerResponse { status = 200; headers = []; body = Text "ok" }
+    | "/stream" -> HttpServerResponse { status = 200; headers = []; body = Stream ["a"; "b"; "c"] }
+    | _ -> HttpServerResponse { status = 404; headers = []; body = Text "not found" }
+
+within serve srv = { port = 8410; maxConcurrent = 4 } handler
+    print $"listening on {Server.port srv}, open={Server.running srv}"
+```
 - A bare `within` (no kind) + `always` is the exit discipline alone
   [D:within-always]: the indented body runs, then the `always` block
   runs on EVERY exit — normal, `fail`, `exit n`, SIGINT/SIGTERM (not
@@ -2192,6 +2231,7 @@ not the teaching.
 - `Path`: `combine` `dir` `extension` `fileName` `glob` `newTempDir` `stem` `tempRoot` `under`
 - `Poll`: `defaults`
 - `Proc`: `pid` `running` `stop` `tail` `wait`
+- `Server`: `port` `running`
 - `Retry`: `defaults`
 - `Secret`: `map` `of` `reveal`
 - `Self`: `args` `entryPath` `pid` `scriptPath` `stdin` (script-only — absent in the REPL, so `#help` does not list it)

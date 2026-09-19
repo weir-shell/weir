@@ -60,6 +60,7 @@
     "env",
     "lock",
     "proc",
+    "serve",
     "tmp"
   ]
 }
