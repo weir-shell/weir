@@ -2558,7 +2558,7 @@ let private forExprBody =
                     mk (EPipe(source, mk (EApp(iter, mk (ELambdaPat(binder, body))))))
 
 // [for p in xs -> e] [D:for-do]: F#'s list comprehension, desugared to
-// `xs |> Seq.map (fun p -> e) |> Seq.force` -- Seq.force keeps the list
+// `xs |> Seq.map (fun p -> e) |> Seq.freeze` -- Seq.freeze keeps the list
 // literal's EAGERNESS contract. The desugar bypasses EList entirely, so
 // list-literal inference (the empty-list fresh var, element unification)
 // is untouched -- the session finding: same path as the statement form.
@@ -2576,14 +2576,14 @@ comprehensionLitRef.Value <-
         let mk k = { Kind = k; Span = span }
 
         let field name =
-            mk (EVar(if name = "map" then "|seqMap" else "|seqForce"))
+            mk (EVar(if name = "map" then "|seqMap" else "|seqFreeze"))
 
         // the PIPE shape [D:for-binder] — the comprehension's twin of the
         // statement form's fix: source first, so the binder types
         let mapped =
             mk (EPipe(source, mk (EApp(field "map", mk (ELambdaPat(binder, elem))))))
 
-        mk (EApp(field "force", mapped)))
+        mk (EApp(field "freeze", mapped)))
     .>> ws
 
 // ---- the yaml district [D:yaml-district] ---------------------------------

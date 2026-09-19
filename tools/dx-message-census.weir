@@ -155,7 +155,7 @@ let classify d entry =
 within tmp d
     print $"weir under test: {cli.bin}"
     print ""
-    let buckets = corpus |> Seq.map (fun e -> classify d e) |> Seq.force
+    let buckets = corpus |> Seq.map (fun e -> classify d e) |> Seq.freeze
 
     let count b = buckets |> Seq.where (fun x -> x == b) |> Seq.length
     let teaches = count "teaches"

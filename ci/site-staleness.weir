@@ -22,7 +22,7 @@ let repo = "weir-shell/weir"
 let tags =
     git tag -l "v*"
     |> Seq.where (fun t -> not (Str.contains "-" t))
-    |> Seq.force
+    |> Seq.freeze
 
 if Seq.isEmpty tags then
     print "no stable v* tag yet — nothing to check (pre-first-release; prerelease tags are exempt)"
@@ -62,7 +62,7 @@ let knownIncomplete =
     (File.read "ci/release-known-incomplete.yaml"
      |> from yaml {| known: seq<{| tag: string; reason: string |}> |})
         .known
-    |> Seq.force
+    |> Seq.freeze
 
 match knownIncomplete |> Seq.tryFind (fun e -> e.tag == latest) with
 | Some e ->
@@ -85,7 +85,7 @@ if site.status <> 200 then
 let tagLines =
     site.body
     |> Seq.choose (fun l -> Str.rmatch "TAG=\"([^\"]+)\"" l)
-    |> Seq.force
+    |> Seq.freeze
 
 if Seq.isEmpty tagLines then
     fail $"weir.sh/install.sh answers 200 but carries no TAG= line — the site is serving something that is not the installer (an SPA fallback page?) while release {latest} is published; check the deploy's installer fetch"
@@ -113,7 +113,7 @@ let livePages =
 for url in livePages do
     let page = Http.get url |> Http.send
     if page.status == 200 then
-        let hits = page.body |> Seq.where (Str.contains "cdn-cgi") |> Seq.force
+        let hits = page.body |> Seq.where (Str.contains "cdn-cgi") |> Seq.freeze
         if not (hits |> Seq.isEmpty) then
             hits |> Seq.iter printerr
             fail $"{url} serves cdn-cgi content — an edge feature is rewriting HTML between build and reader; turn it off in Cloudflare"

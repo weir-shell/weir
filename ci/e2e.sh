@@ -173,17 +173,17 @@ print $"{files |> Seq.length}"
 files |> Seq.iter print
 WEOF
 out=$($BIN check "$redir/twice.weir" 2>&1) || fail "a warning-only file must exit 0: $out"
-echo "$out" | grep -qF "warning [re-enumeration]: possible re-enumeration: 'files' is command-backed and unforced — each pull re-runs 'git ls-files'; snapshot one run: let files = git ls-files |> Seq.force" \
+echo "$out" | grep -qF "warning [re-enumeration]: possible re-enumeration: 'files' is command-backed and unforced — each pull re-runs 'git ls-files'; snapshot one run: let files = git ls-files |> Seq.freeze" \
   || fail "the re-enumeration warning with command and repair: $out"
 echo "$out" | grep -q "twice.weir:3:1" || fail "located at the SECOND pull: $out"
 cat > "$redir/forced.weir" <<'WEOF'
-let files = git ls-files |> Seq.force
+let files = git ls-files |> Seq.freeze
 print $"{files |> Seq.length}"
 files |> Seq.iter print
 WEOF
 fout=$($BIN check "$redir/forced.weir" 2>&1) || fail "forced must check clean: $fout"
 echo "$fout" | grep -q "re-enumeration" && fail "a forced binding must not warn: $fout" || true
-echo "e2e ok: re-enumeration warning on the second pull, exit 0; Seq.force silences it"
+echo "e2e ok: re-enumeration warning on the second pull, exit 0; Seq.freeze silences it"
 
 # walk candidates: exit codes exact; File.readSecret (never covered); Dir.copy success
 pw2=$(mkweirtmp)
@@ -555,7 +555,7 @@ let workers =
         let _cd = cd d
         pwd |> Seq.head)
 
-let ws = workers |> Seq.force
+let ws = workers |> Seq.freeze
 print (if ws |> Seq.head |> Str.endsWith "wa" then "w1-ok" else "w1-wrong")
 print (if ws |> Seq.last |> Str.endsWith "wb" then "w2-ok" else "w2-wrong")
 print (if pwd |> Seq.head |> Str.endsWith "home" then "parent-held" else "parent-moved")
@@ -1054,7 +1054,7 @@ volumes:
     defaultMode: 420
 YEOF
 ivout=$(printf '%s\n%s\n%s\n%s\n%s\n%s\n' \
-  "let raw = File.read \"$ivdir/pod-volumes.yaml\" |> Seq.force" \
+  "let raw = File.read \"$ivdir/pod-volumes.yaml\" |> Seq.freeze" \
   '#infer raw from yaml as PodSpec' \
   'let vol = raw |> from yaml PodSpec |> _.volumes |> Seq.head' \
   'print vol.secret.secretName' \
@@ -1145,7 +1145,7 @@ cat > "$cmdir/cmlist.json" <<'JEOF'
 }
 JEOF
 cmout=$(printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n' \
-  "let cm = File.read \"$cmdir/cmlist.json\" |> Seq.force" \
+  "let cm = File.read \"$cmdir/cmlist.json\" |> Seq.freeze" \
   '#infer cm from json as ConfigMapList' \
   'let v = cm |> from json ConfigMapList' \
   'print (v |> _.metadata.resourceVersion)' \
@@ -1185,7 +1185,7 @@ items:
 kind: List
 YEOF
 cmyout=$(printf '%s\n%s\n%s\n%s\n%s\n' \
-  "let cmy = File.read \"$cmdir/cmlist.yaml\" |> Seq.force" \
+  "let cmy = File.read \"$cmdir/cmlist.yaml\" |> Seq.freeze" \
   '#infer cmy from yaml as CmListY' \
   'let vy = cmy |> from yaml CmListY' \
   'let hy = vy.items |> Seq.skip 1 |> Seq.head |> _.data |> Seq.tryFind (fun (k, _) -> k == "network.yml")' \
@@ -2545,7 +2545,7 @@ let d = Path.newTempDir ()
 Dir.create $"{d}/sub"
 ["1"] |> File.write $"{d}/a.txt"
 ["2"] |> File.write $"{d}/sub/b.txt"
-Path.glob $"{d}/**/*.txt" |> Seq.force |> Seq.iter File.delete
+Path.glob $"{d}/**/*.txt" |> Seq.freeze |> Seq.iter File.delete
 print $"{Path.glob $"{d}/**/*.txt" |> Seq.length}"
 Dir.deleteAll d
 WEOF
@@ -2765,7 +2765,7 @@ echo "e2e ok: Unknown Error(s) joins the backtrack suppression (both ways)"
 
 # range slicing at the binary [D:range-slicing] — inclusive/clamping,
 # type-directed (str vs seq), with the from-end (^n) decline
-rgout=$($BIN -e 'let xs = [10; 20; 30; 40] in xs[1..2] |> Seq.force' 2>&1)
+rgout=$($BIN -e 'let xs = [10; 20; 30; 40] in xs[1..2] |> Seq.freeze' 2>&1)
 echo "$rgout" | grep -qF "20; 30" || fail "range slicing (inclusive) drifted: $rgout"
 strout=$($BIN -e '"abcdefghi"[3..7]' 2>&1)
 echo "$strout" | grep -qF "defgh" || fail "string slice drifted: $strout"
@@ -3042,7 +3042,7 @@ esac
 # prefix minus + sortByDescending (2026-07-21, loc.weir friction)
 out=$($BIN -e '2 * -3')
 expect "prefix minus at operand position" "-6 : int" "$out"
-out=$($BIN -e '[1; 3; 2] |> Seq.sortByDescending (fun x -> x) |> Seq.force')
+out=$($BIN -e '[1; 3; 2] |> Seq.sortByDescending (fun x -> x) |> Seq.freeze')
 expect "sortByDescending orders down" "[3; 2; 1]" "$out"
 
 # the squiggle sits ON the name, not the RHS (user report, 2026-07-21)
@@ -4628,10 +4628,10 @@ echo "e2e ok: the orphan error survives where it is true (no pending statement)"
 rm -rf "$bbdir"
 
 # the echo rule [D:echo-rule]: unforced caps with the lever that works;
-# forced echoes in full — Seq.force means something at the prompt now
+# forced echoes in full — Seq.freeze means something at the prompt now
 out=$(printf 'let xs = [1..100]\nxs\n' | $BIN 2>&1)
-echo "$out" | grep -qF "10; …] : seq<int> (first 10 of an unforced seq — Seq.force to echo everything)" || fail "the unforced echo names the honest lever: $out"
-out=$(printf '[1..12] |> Seq.force\n' | $BIN 2>&1)
+echo "$out" | grep -qF "10; …] : seq<int> (first 10 of an unforced seq — Seq.freeze to echo everything)" || fail "the unforced echo names the honest lever: $out"
+out=$(printf '[1..12] |> Seq.freeze\n' | $BIN 2>&1)
 echo "$out" | grep -qF "11; 12] : seq<int>" || fail "a forced seq echoes in full: $out"
 out=$($BIN -e '["a"; "b"; "c"; "d"; "e"; "f"; "g"; "h"; "i"; "j"; "k"]')
 echo "$out" | grep -qF "\"k\"] : seq<string>" || fail "a literal list is forced — full echo, no hint: $out"
@@ -5222,7 +5222,7 @@ match Path.glob "*.nope" with
 | [] -> print "no matches"
 | files -> files |> Seq.iter print
 
-let pinned = Path.glob "*.json" |> Seq.force
+let pinned = Path.glob "*.json" |> Seq.freeze
 cd src
 let after = Path.glob "*.json" |> Seq.length
 print $"lazy-sees-new-cwd: {after}"
@@ -5249,7 +5249,7 @@ else
 fi
 expect "glob: no matches is the empty seq (the match-[] idiom)" "no matches" "$out"
 expect "glob: the cd seam — lazy sees the new cwd" "lazy-sees-new-cwd: 0" "$out"
-expect "glob: Seq.force pins the answer before cd" "forced-pinned: 2" "$out"
+expect "glob: Seq.freeze pins the answer before cd" "forced-pinned: 2" "$out"
 
 # script-relative discovery: the scriptPath gate's payoff
 cat > "$pgdir/src/rel.weir" <<'WEOF'
@@ -5311,7 +5311,7 @@ spldir=$(mkweirtmp)
 
 # form 1: glob into git add, verified via git status output
 cat > "$spldir/add.weir" <<'WEOF'
-let files = Path.glob "*.txt" |> Seq.force
+let files = Path.glob "*.txt" |> Seq.freeze
 git add $@files
 git status --porcelain |> Seq.where (Str.startsWith "A ") |> Seq.iter print
 WEOF
@@ -6102,7 +6102,7 @@ type Spec = { containers: seq<Container>; tolerations: seq<Tol>; volumes: seq<Vo
 type Status = { phase: string; conditions: seq<Cond>; containerStatuses: seq<CStat>; message: string; reason: string }
 type Item = { apiVersion: string; kind: string; metadata: Meta; spec: Spec; status: Status }
 type List = { apiVersion: string; items: seq<Item>; kind: string }
-let text = File.read "kubectl-list.yaml" |> Seq.force
+let text = File.read "kubectl-list.yaml" |> Seq.freeze
 let lst = text |> from yaml List
 print $"items: {show (Seq.length lst.items)} kind: {lst.kind}"
 let pod = lst.items |> Seq.head
@@ -6129,7 +6129,7 @@ expect "a multi-line single-quoted eviction message folds to one line" "evict: T
 # the real file INFERS clean end-to-end: zero-indent seqs + empty flow
 # together, empty {} → opaque Yaml with a note (never a silent shape)
 cat > "$ydir/inferdecl.weir" <<'WEOF'
-let text = File.read "kubectl-list.yaml" |> Seq.force
+let text = File.read "kubectl-list.yaml" |> Seq.freeze
 print (Yaml.inferShape text)
 WEOF
 out=$(cd "$ydir" && $BIN inferdecl.weir)
@@ -6157,7 +6157,7 @@ labels:
   clean: yes
 YEOF
 cat > "$ydir/draft.weir" <<'WEOF'
-let text = File.read "labels.yaml" |> Seq.force
+let text = File.read "labels.yaml" |> Seq.freeze
 print (Yaml.inferShape text)
 WEOF
 draft=$(cd "$ydir" && $BIN draft.weir)
@@ -6166,7 +6166,7 @@ echo "$draft" | grep -qF 'Wire' && fail "mapping keys are data — no [<Wire>] b
 # assemble a program from the drafted decls + a pair lookup per key
 {
   echo "$draft" | grep -v '^// note'
-  echo 'let text = File.read "labels.yaml" |> Seq.force'
+  echo 'let text = File.read "labels.yaml" |> Seq.freeze'
   echo 'let r = text |> from yaml Root'
   echo 'let v k = r.labels |> Seq.tryFind (fun (p, _) -> p == k) |> Option.map snd |> Option.defaultValue "?"'
   echo 'let a = v "k8s-app"'
@@ -6384,9 +6384,9 @@ bomdir=$(mktemp -d)
 printf '\xEF\xBB\xBF<Project>\n</Project>\n' > "$bomdir/bom.csproj"
 printf '<Project>\n</Project>\n' > "$bomdir/plain.csproj"
 bom3() { od -An -tx1 -N3 "$1" | tr -d ' '; }
-(cd "$bomdir" && $BIN -e 'File.read "bom.csproj" |> Seq.force |> File.write "bom.csproj"') || fail "File.write round-trip raised on a BOM file"
+(cd "$bomdir" && $BIN -e 'File.read "bom.csproj" |> Seq.freeze |> File.write "bom.csproj"') || fail "File.write round-trip raised on a BOM file"
 [ "$(bom3 "$bomdir/bom.csproj")" = "efbbbf" ] || fail "File.write dropped an existing UTF-8 BOM"
-(cd "$bomdir" && $BIN -e 'File.read "plain.csproj" |> Seq.force |> File.write "plain.csproj"') || fail "File.write round-trip raised on a no-BOM file"
+(cd "$bomdir" && $BIN -e 'File.read "plain.csproj" |> Seq.freeze |> File.write "plain.csproj"') || fail "File.write round-trip raised on a no-BOM file"
 [ "$(bom3 "$bomdir/plain.csproj")" = "efbbbf" ] && fail "File.write must NOT add a BOM to a no-BOM file"
 (cd "$bomdir" && $BIN -e '["x"] |> File.write "new.txt"') || fail "File.write raised on a new file"
 [ "$(bom3 "$bomdir/new.txt")" = "efbbbf" ] && fail "File.write must NOT add a BOM to a new file"
@@ -7072,7 +7072,7 @@ let outs =
         within cd "TUMARK/work"
             $(weir -e $"print {show i}") |> Seq.head
     )
-    |> Seq.force
+    |> Seq.freeze
 let after = pwd |> Seq.head
 print (if before == after then "cwd-held" else "CWD-LEAKED")
 print (outs |> Seq.head)

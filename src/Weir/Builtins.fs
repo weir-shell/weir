@@ -315,7 +315,7 @@ let private toListImpl: Value =
         | VSeq items ->
             let materialized = List.ofSeq items
             VSeq(materialized :> seq<Value>)
-        | v -> unreachable $"the checker rejects 'force' on {formatValue v}")
+        | v -> unreachable $"the checker rejects 'freeze' on {formatValue v}")
 
 let completedDef: RecordDef =
     { Name = "Completed"
@@ -546,7 +546,7 @@ let private rsplitImpl: Value =
 // `**` cross-segment, `?`, `[abc]`/`[!abc]`), bash's laws: `*` never
 // matches dotfiles (a `.`-leading segment does); sorted per level
 // (deterministic output); LAZY against the cwd at ENUMERATION (the
-// cd seam — `|> Seq.force` pins the answer now); symlinked dirs
+// cd seam — `|> Seq.freeze` pins the answer now); symlinked dirs
 // NOT traversed by `**` (bash ≥4.3 globstar parity — loop-immune by
 // law; explicit segments still follow links); unreadable dirs
 // skipped (a pattern is discovery, not assertion); no matches = the
@@ -1780,7 +1780,7 @@ let private seqMembers: (string * Ty * Value) list =
       "exactlyOne", TFun(TSeq tA, tA), exactlyOneImpl
       "tryExactlyOne", TFun(TSeq tA, TNamed("Option", [ tA ])), tryExactlyOneImpl
       "sum", TFun(seqInt, TInt), sumImpl
-      "force", TFun(TSeq tA, TSeq tA), toListImpl
+      "freeze", TFun(TSeq tA, TSeq tA), toListImpl
       "tryHead", TFun(TSeq tA, TNamed("Option", [ tA ])), tryHeadImpl
       "tryFind", TFun(TFun(tA, TBool), TFun(TSeq tA, TNamed("Option", [ tA ]))), tryFindImpl
       "isEmpty", TFun(TSeq tA, TBool), isEmptyImpl
@@ -4323,16 +4323,16 @@ let builtinDocs: Map<string, BuiltinDoc> =
           "Map.pairs",
           bd
               "The entries as (key, value) pairs, key-sorted."
-              (Some "Map.ofPairs [(\"b\", 2); (\"a\", 1)] |> Map.pairs |> Seq.force")
+              (Some "Map.ofPairs [(\"b\", 2); (\"a\", 1)] |> Map.pairs |> Seq.freeze")
               None
           |> named [ "m" ]
           "Map.keys",
-          bd "The keys, sorted." (Some "Map.ofPairs [(\"b\", 2); (\"a\", 1)] |> Map.keys |> Seq.force") None
+          bd "The keys, sorted." (Some "Map.ofPairs [(\"b\", 2); (\"a\", 1)] |> Map.keys |> Seq.freeze") None
           |> named [ "m" ]
           "Map.values",
           bd
               "The values, in key-sorted order."
-              (Some "Map.ofPairs [(\"b\", 2); (\"a\", 1)] |> Map.values |> Seq.force")
+              (Some "Map.ofPairs [(\"b\", 2); (\"a\", 1)] |> Map.values |> Seq.freeze")
               None
           |> named [ "m" ]
           "Map.get",
@@ -4398,29 +4398,29 @@ let builtinDocs: Map<string, BuiltinDoc> =
           "Seq.map",
           bd
               "Apply a function to every element, lazily."
-              (Some "[1; 2; 3] |> Seq.map (fun x -> x + 1) |> Seq.force")
+              (Some "[1; 2; 3] |> Seq.map (fun x -> x + 1) |> Seq.freeze")
               None
           |> named [ "f"; "xs" ]
           "Seq.where",
           bd
               "Keep the elements a predicate accepts, lazily."
-              (Some "[1; 2; 3] |> Seq.where (fun x -> x > 1) |> Seq.force")
+              (Some "[1; 2; 3] |> Seq.where (fun x -> x > 1) |> Seq.freeze")
               None
           |> named [ "pred"; "xs" ]
           "Seq.choose",
           bd
               "Map and drop the None results in one lazy pass."
-              (Some "[1; 2; 3] |> Seq.choose (fun x -> if x > 1 then Some x else None) |> Seq.force")
+              (Some "[1; 2; 3] |> Seq.choose (fun x -> if x > 1 then Some x else None) |> Seq.freeze")
               None
           |> named [ "f"; "xs" ]
           "Seq.fold",
           bd "Left-fold: thread an accumulator through the elements." (Some "[1; 2; 3] |> Seq.fold (+) 0") None
           |> named [ "f"; "init"; "xs" ]
-          "Seq.force",
+          "Seq.freeze",
           bd
               "Materialize a lazy sequence, caching it."
-              (Some "[1; 2; 3] |> Seq.map (fun x -> x + 1) |> Seq.force")
-              (Some "force once, then reuse freely — it memoizes (the two customers: reuse and timing).")
+              (Some "[1; 2; 3] |> Seq.map (fun x -> x + 1) |> Seq.freeze")
+              (Some "freeze once, then reuse freely — it memoizes (the two customers: reuse and timing).")
           |> named [ "xs" ]
           "Seq.head",
           (bd "The first element (raises on empty)." (Some "Seq.head [1; 2; 3]") None
@@ -4453,10 +4453,10 @@ let builtinDocs: Map<string, BuiltinDoc> =
           (bd "The element at an index as an Option." (Some "[1; 2; 3] |> Seq.tryItem 0") None
            |> named [ "i"; "xs" ])
           "Seq.take",
-          (bd "The first n elements, lazily; pairs with Seq.skip." (Some "[1; 2; 3] |> Seq.take 2 |> Seq.force") None
+          (bd "The first n elements, lazily; pairs with Seq.skip." (Some "[1; 2; 3] |> Seq.take 2 |> Seq.freeze") None
            |> named [ "n"; "xs" ])
           "Seq.skip",
-          (bd "Drop the first n elements, keep the rest lazily." (Some "[1; 2; 3] |> Seq.skip 1 |> Seq.force") None
+          (bd "Drop the first n elements, keep the rest lazily." (Some "[1; 2; 3] |> Seq.skip 1 |> Seq.freeze") None
            |> named [ "n"; "xs" ])
           "Seq.length",
           (bd "Count the elements (forces the sequence)." (Some "Seq.length [1; 2; 3]") None
@@ -4483,18 +4483,18 @@ let builtinDocs: Map<string, BuiltinDoc> =
           (bd "True when every element satisfies a predicate." (Some "[1; 2; 3] |> Seq.forall (fun x -> x > 0)") None
            |> named [ "pred"; "xs" ])
           "Seq.distinct",
-          (bd "Drop duplicate elements, keeping first order." (Some "[1; 1; 2] |> Seq.distinct |> Seq.force") None
+          (bd "Drop duplicate elements, keeping first order." (Some "[1; 1; 2] |> Seq.distinct |> Seq.freeze") None
            |> named [ "xs" ])
           "Seq.append",
-          (bd "Concatenate two sequences, lazily." (Some "Seq.append [1; 2] [3; 4] |> Seq.force") None
+          (bd "Concatenate two sequences, lazily." (Some "Seq.append [1; 2] [3; 4] |> Seq.freeze") None
            |> named [ "xs"; "ys" ])
           "Seq.sortBy",
-          (bd "Order by a key projection." (Some "[3; 1; 2] |> Seq.sortBy (fun x -> x) |> Seq.force") None
+          (bd "Order by a key projection." (Some "[3; 1; 2] |> Seq.sortBy (fun x -> x) |> Seq.freeze") None
            |> named [ "key"; "xs" ])
           "Seq.sortByDescending",
           bd
               "Order by a key projection, descending."
-              (Some "[1; 3; 2] |> Seq.sortByDescending (fun x -> x) |> Seq.force")
+              (Some "[1; 3; 2] |> Seq.sortByDescending (fun x -> x) |> Seq.freeze")
               None
           |> named [ "key"; "xs" ]
           "Seq.iter",
@@ -4503,7 +4503,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
           "Seq.windowed",
           (bd
               "Sliding windows of size n, lazy (produced as the source is pulled; a short source yields the empty seq — no partial window; windows view the same memoized elements). Raises when n <= 0."
-              (Some "[1; 2; 3] |> Seq.windowed 2 |> Seq.map Seq.force |> Seq.force")
+              (Some "[1; 2; 3] |> Seq.windowed 2 |> Seq.map Seq.freeze |> Seq.freeze")
               None
            |> named [ "n"; "xs" ])
           "Seq.last",
@@ -4519,34 +4519,34 @@ let builtinDocs: Map<string, BuiltinDoc> =
               None
            |> named [ "xs" ])
           "Seq.pairwise",
-          (bd "Adjacent pairs: (e0,e1), (e1,e2), and so on." (Some "[1; 2; 3] |> Seq.pairwise |> Seq.force") None
+          (bd "Adjacent pairs: (e0,e1), (e1,e2), and so on." (Some "[1; 2; 3] |> Seq.pairwise |> Seq.freeze") None
            |> named [ "xs" ])
           "Seq.zip",
           bd
               "Pair two sequences element-wise, stopping at the shorter."
-              (Some "Seq.zip [1; 2] [3; 4] |> Seq.force")
+              (Some "Seq.zip [1; 2] [3; 4] |> Seq.freeze")
               None
           |> named [ "xs"; "ys" ]
           "Seq.range",
-          (bd "A lazy arithmetic range: start, step, stop." (Some "Seq.range 1 1 5 |> Seq.force") None
+          (bd "A lazy arithmetic range: start, step, stop." (Some "Seq.range 1 1 5 |> Seq.freeze") None
            |> named [ "start"; "step"; "stop" ])
           "Seq.groupBy",
           bd
               "Group elements by a key into (key, items) pairs — F#'s own shape; countBy/zip/pairwise speak the same tuples."
-              (Some "[1; 2; 3] |> Seq.groupBy (fun x -> x) |> Seq.force")
+              (Some "[1; 2; 3] |> Seq.groupBy (fun x -> x) |> Seq.freeze")
               None
           |> named [ "key"; "xs" ]
           // ---- the Seq-gaps cohort [D:seq-gaps] ----------------------
           "Seq.collect",
           bd
               "Map each element to a sequence and flatten, lazily (F#'s collect; flatMap elsewhere)."
-              (Some "[\"a<b\"; \"c\"] |> Seq.collect (Str.split \"<\") |> Seq.force")
+              (Some "[\"a<b\"; \"c\"] |> Seq.collect (Str.split \"<\") |> Seq.freeze")
               None
           |> named [ "f"; "xs" ]
           "Seq.concat",
           bd
               "Flatten a sequence of sequences, lazily (collect with the identity)."
-              (Some "[[1; 2]; [3]] |> Seq.concat |> Seq.force")
+              (Some "[[1; 2]; [3]] |> Seq.concat |> Seq.freeze")
               None
           |> named [ "xss" ]
           "Seq.find",
@@ -4558,43 +4558,43 @@ let builtinDocs: Map<string, BuiltinDoc> =
           "Seq.indexed",
           bd
               "Pair every element with its zero-based position, lazily — mapi/iteri are `indexed |> map`/`iter` over the tuple."
-              (Some "[\"a\"; \"b\"] |> Seq.indexed |> Seq.force")
+              (Some "[\"a\"; \"b\"] |> Seq.indexed |> Seq.freeze")
               None
           |> named [ "xs" ]
           "Seq.rev",
           bd
               "Reverse. Forces the whole input on the first pull (never an infinite seq)."
-              (Some "[1; 2; 3] |> Seq.rev |> Seq.force")
+              (Some "[1; 2; 3] |> Seq.rev |> Seq.freeze")
               None
           |> named [ "xs" ]
           "Seq.chunkBySize",
           bd
               "Split into consecutive chunks of at most n, lazily — the batching member (the last chunk may be short)."
-              (Some "[1; 2; 3; 4; 5] |> Seq.chunkBySize 2 |> Seq.map Seq.force |> Seq.force")
+              (Some "[1; 2; 3; 4; 5] |> Seq.chunkBySize 2 |> Seq.map Seq.freeze |> Seq.freeze")
               None
           |> named [ "n"; "xs" ]
           "Seq.takeWhile",
           bd
               "Elements while the predicate holds, lazily; stops at the first refusal."
-              (Some "[1; 2; 9; 1] |> Seq.takeWhile (fun x -> x < 5) |> Seq.force")
+              (Some "[1; 2; 9; 1] |> Seq.takeWhile (fun x -> x < 5) |> Seq.freeze")
               None
           |> named [ "pred"; "xs" ]
           "Seq.skipWhile",
           bd
               "Drop the leading run the predicate accepts, lazily; the rest streams whole."
-              (Some "[1; 2; 9; 1] |> Seq.skipWhile (fun x -> x < 5) |> Seq.force")
+              (Some "[1; 2; 9; 1] |> Seq.skipWhile (fun x -> x < 5) |> Seq.freeze")
               None
           |> named [ "pred"; "xs" ]
           "Seq.countBy",
           bd
               "Count elements per projected key as (key, count) pairs, first-seen key order; forces on the first pull."
-              (Some "[\"a\"; \"bb\"; \"c\"] |> Seq.countBy Str.length |> Seq.force")
+              (Some "[\"a\"; \"bb\"; \"c\"] |> Seq.countBy Str.length |> Seq.freeze")
               None
           |> named [ "key"; "xs" ]
           "Seq.distinctBy",
           bd
               "Keep the first element per projected key, lazily — distinct's projection twin."
-              (Some "[\"a\"; \"bb\"; \"cc\"] |> Seq.distinctBy Str.length |> Seq.force")
+              (Some "[\"a\"; \"bb\"; \"cc\"] |> Seq.distinctBy Str.length |> Seq.freeze")
               None
           |> named [ "key"; "xs" ]
           "Seq.reduce",
@@ -4606,7 +4606,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
           "Seq.scan",
           bd
               "Fold emitting every intermediate state, the seed first, lazily."
-              (Some "[1; 2; 3] |> Seq.scan (+) 0 |> Seq.force")
+              (Some "[1; 2; 3] |> Seq.scan (+) 0 |> Seq.freeze")
               None
           |> named [ "f"; "init"; "xs" ]
           "Seq.tryPick",
@@ -4624,13 +4624,13 @@ let builtinDocs: Map<string, BuiltinDoc> =
           "Seq.except",
           bd
               "Set difference: the source without the excluded values (exclusions first, source last; the exclusion set materializes on the first pull, the source streams)."
-              (Some "[1; 2; 3; 4] |> Seq.except [2; 4] |> Seq.force")
+              (Some "[1; 2; 3; 4] |> Seq.except [2; 4] |> Seq.freeze")
               None
           |> named [ "excluded"; "xs" ]
           "Seq.replicate",
           bd
               "n copies of one value, lazily (raises on a negative count)."
-              (Some "Seq.replicate 3 \"x\" |> Seq.force")
+              (Some "Seq.replicate 3 \"x\" |> Seq.freeze")
               None
           |> named [ "n"; "x" ]
           "Seq.max",
@@ -4654,13 +4654,13 @@ let builtinDocs: Map<string, BuiltinDoc> =
           "Seq.sort",
           bd
               "Sort ascending by the elements themselves (Ord); forces on the first pull."
-              (Some "[\"pear\"; \"apple\"] |> Seq.sort |> Seq.force")
+              (Some "[\"pear\"; \"apple\"] |> Seq.sort |> Seq.freeze")
               None
           |> named [ "xs" ]
           "Seq.sortDescending",
           bd
               "Sort descending by the elements themselves (Ord); forces on the first pull."
-              (Some "[1; 3; 2] |> Seq.sortDescending |> Seq.force")
+              (Some "[1; 3; 2] |> Seq.sortDescending |> Seq.freeze")
               None
           |> named [ "xs" ]
           "Seq.average",
@@ -4694,7 +4694,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
           "Seq.pmap",
           bd
               "Map in parallel across worker threads."
-              (Some "[1; 2; 3] |> Seq.pmap (fun x -> x + 1) |> Seq.force")
+              (Some "[1; 2; 3] |> Seq.pmap (fun x -> x + 1) |> Seq.freeze")
               (Some "ordered, eager, at most 64 workers; the first error by input order wins.")
           |> named [ "f"; "xs" ]
           "Seq.piter",
@@ -4706,7 +4706,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
           "Seq.pmapWith",
           bd
               "Seq.pmap with an explicit worker count — the sizing knob for rate-limited or memory-heavy arms."
-              (Some "[1; 2; 3] |> Seq.pmapWith 2 (fun x -> x + 1) |> Seq.force")
+              (Some "[1; 2; 3] |> Seq.pmapWith 2 (fun x -> x + 1) |> Seq.freeze")
               (Some "an explicit n is never reduced by nesting; pmap's default ladder is.")
           |> named [ "n"; "f"; "xs" ]
           "Seq.piterWith",
@@ -4798,7 +4798,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
           "show",
           (bd
               "Render a value to its string form — the same text an interpolation hole gives. Reach for it where a hole cannot go: point-free positions (Seq.map show) and Secrets (masked). Total; functions show opaquely."
-              (Some "[1; 2; 3] |> Seq.map show |> Seq.force")
+              (Some "[1; 2; 3] |> Seq.map show |> Seq.freeze")
               None
            |> named [ "value" ])
           "not", (bd "Boolean negation." (Some "not true") None |> named [ "b" ])
@@ -4808,8 +4808,8 @@ let builtinDocs: Map<string, BuiltinDoc> =
               (Some "cd \".\"")
               None
            |> named [ "path" ])
-          "force",
-          (bd "Materialize a lazy sequence, caching it (the bare Seq.force)." (Some "[1; 2; 3] |> force") None
+          "freeze",
+          (bd "Materialize a lazy sequence, caching it (the bare Seq.freeze)." (Some "[1; 2; 3] |> freeze") None
            |> named [ "xs" ])
           "fail",
           (bd
@@ -4855,13 +4855,13 @@ let builtinDocs: Map<string, BuiltinDoc> =
           "Str.split",
           (bd
               "Split on a separator into a sequence; empty pieces kept (adjacent separators and edges yield \"\" — rsplit follows the same law)."
-              (Some "Str.split \",\" \"a,b,c\" |> Seq.force")
+              (Some "Str.split \",\" \"a,b,c\" |> Seq.freeze")
               None
            |> named [ "sep"; "s" ])
           "Str.fields",
           (bd
               "Split on whitespace runs into fields — never an empty piece (a blank or empty string is the empty seq; trim's whitespace class)."
-              (Some "\"NAME   READY  1/1\" |> Str.fields |> Seq.force")
+              (Some "\"NAME   READY  1/1\" |> Str.fields |> Seq.freeze")
               None
            |> named [ "s" ])
           "Str.splitOnce",
@@ -4960,13 +4960,13 @@ let builtinDocs: Map<string, BuiltinDoc> =
           "Str.rmatchAll",
           bd
               "Every regex match's groups, as a sequence of sequences."
-              (Some "Str.rmatchAll \"[0-9]+\" \"a1b2\" |> Seq.force")
+              (Some "Str.rmatchAll \"[0-9]+\" \"a1b2\" |> Seq.freeze")
               None
           |> named [ "pattern"; "s" ]
           "Str.rsplit",
           bd
               "Split on every regex match; split's empties law (adjacent matches and edges yield \"\"), and capture groups never add pieces."
-              (Some "Str.rsplit @\"\\s*,\\s*\" \"a , b,c\" |> Seq.force")
+              (Some "Str.rsplit @\"\\s*,\\s*\" \"a , b,c\" |> Seq.freeze")
               None
           |> named [ "pattern"; "s" ]
 
@@ -5013,7 +5013,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
           "Path.glob",
           bd
               "Match a glob against the filesystem (lazy; globstar skips symlinks)."
-              (Some "Path.glob \"*.nope123\" |> Seq.force")
+              (Some "Path.glob \"*.nope123\" |> Seq.freeze")
               None
           |> named [ "pattern" ]
 
@@ -5198,12 +5198,12 @@ let builtinDocs: Map<string, BuiltinDoc> =
           "Env.get",
           (bd "A process environment variable as an Option." (Some "Env.get \"PATH\"") None
            |> named [ "name" ])
-          "Env.vars", bd "Every environment variable as EnvVar records." (Some "Env.vars |> Seq.force") None
+          "Env.vars", bd "Every environment variable as EnvVar records." (Some "Env.vars |> Seq.freeze") None
           "Env.pair",
           (bd "Build one EnvVar from a name and value." (Some "Env.pair \"K\" \"V\"") None
            |> named [ "name"; "value" ])
           "Env.ofPairs",
-          (bd "Build EnvVar records from name/value tuples." (Some "Env.ofPairs [(\"K\", \"V\")] |> Seq.force") None
+          (bd "Build EnvVar records from name/value tuples." (Some "Env.ofPairs [(\"K\", \"V\")] |> Seq.freeze") None
            |> named [ "pairs" ])
           "Env.fromFile",
           (bd "Read `.env` lines (`KEY=value`) as EnvVar records." None None
@@ -5834,7 +5834,7 @@ let internalAliases: (string * Ty * Value) list =
     [ for key, modName, field in
           [ "|seqIter", "Seq", "iter"
             "|seqMap", "Seq", "map"
-            "|seqForce", "Seq", "force"
+            "|seqFreeze", "Seq", "freeze"
             "|seqAppend", "Seq", "append"
             "|seqRange", "Seq", "range"
             "|seqItem", "Seq", "item"

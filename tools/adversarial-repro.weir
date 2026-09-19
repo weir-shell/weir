@@ -294,7 +294,7 @@ within tmp d
 
     let interopResults =
         if oracleReady then
-            interopPairs |> Seq.map (fun p -> interop d (fst p) (snd p)) |> Seq.force
+            interopPairs |> Seq.map (fun p -> interop d (fst p) (snd p)) |> Seq.freeze
         else
             print "  SKIPPED: python3 + PyYAML absent — F2c/F2d stay OPEN"
             print "  (the property is interop; weir cannot referee it, so absence is not a pass)"
@@ -355,7 +355,7 @@ within tmp d
           ("F5", f5) ]
         |> Seq.where (fun p -> not (snd p))
         |> Seq.map fst
-        |> Seq.force
+        |> Seq.freeze
 
     print ""
 

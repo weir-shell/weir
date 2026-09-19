@@ -206,7 +206,7 @@ within tmp work
                     fail $"node {i} has types {n.types}, expected {s.kind}"
                 { n with addresses = addressesOf s })
 
-        let network = { generated with networkId = netId; nodes = nodes |> Seq.force }
+        let network = { generated with networkId = netId; nodes = nodes |> Seq.freeze }
         let networkLines = network |> to yaml
 
         // The public half: peer ids and addresses only. Committed as-is and
@@ -224,7 +224,7 @@ within tmp work
 
         let assemble i signingOverride spec body =
             let parts = [networkBlock; commonBlock; accountBlock i signingOverride; listenBlock spec; body]
-            let lines = parts |> Seq.collect (fun p -> p) |> Seq.force
+            let lines = parts |> Seq.collect (fun p -> p) |> Seq.freeze
             let rendered = lines |> Yaml.parse |> to yaml |> Seq.length
             if rendered < 20 then
                 fail $"assembled config for {spec.name} does not look like a config ({rendered} lines)"

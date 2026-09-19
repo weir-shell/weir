@@ -17,14 +17,14 @@ let rowKeys =
         | Regex @"^\| ([a-z0-9-]+) \|" k -> Some k
         | _ -> None)
     |> Seq.where (fun k -> k <> "key")
-    |> Seq.force
+    |> Seq.freeze
 
 let sources =
     git ls-files
     |> Seq.where (fun f ->
         (Path.extension f == ".fs" && (Str.startsWith "src/" f || Str.startsWith "tests/" f))
         || f == "docs/DECISIONS.md")
-    |> Seq.force
+    |> Seq.freeze
 
 // in the index itself only ROW lines count: the header explains the
 // convention using `[D:key]` as an illustration, which is prose about the
@@ -43,12 +43,12 @@ let citations =
         citedLines f
         |> Seq.collect (fun line -> Str.rmatchAll @"\[D:([a-z0-9-]+)\]" line |> Seq.map Seq.head)
         |> Seq.map (fun k -> (f, k)))
-    |> Seq.force
+    |> Seq.freeze
 
 let dangling =
     citations
     |> Seq.where (fun c -> not (rowKeys |> Seq.contains (snd c)))
-    |> Seq.force
+    |> Seq.freeze
 
 print $"rows: {rowKeys |> Seq.length}  citations: {citations |> Seq.length}  distinct keys: {citations |> Seq.map snd |> Seq.distinct |> Seq.length}  files: {sources |> Seq.length}"
 

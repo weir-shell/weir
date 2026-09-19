@@ -108,7 +108,7 @@ it, by design):
   weir (measured 10/10); at the REPL the controlling pty's HUP reaps
   the foreground child even on `kill -9` (measured 0 orphans) — the
   SIGKILL carve-out is tighter there than the general wording.
-- **Capture is unbounded by design.** `| complete` and `Seq.force`
+- **Capture is unbounded by design.** `| complete` and `Seq.freeze`
   materialize their whole input in memory (`complete` holds one byte
   buffer + line offsets — ~2x the raw text in RSS, measured; a
   single capture caps at the ~2GB array bound). A child emitting

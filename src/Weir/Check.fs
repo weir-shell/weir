@@ -40,7 +40,7 @@ type ArgsTarget =
 // table, both lookup sites
 let private retiredMember (m: string) (field: string) : string option =
     match m, field with
-    | "Seq", "toList" -> Some "weir has no list type; 'Seq.force' is the materializer"
+    | "Seq", "toList" -> Some "weir has no list type; 'Seq.freeze' is the materializer"
     | "Option", "defaultTo" -> Some "renamed 'Option.defaultValue' (F# parity); a lazy default is 'Option.defaultWith'"
     // one operation, one name [D:seq-gaps]: the F# spelling wins where
     // one exists (collect), and the weir spelling keeps its seat (where)
@@ -66,7 +66,7 @@ let private retiredField (record: string) (field: string) : string option =
 
 let private retiredBare (name: string) : string option =
     match name with
-    | "toList" -> Some "weir has no list type; 'force' is the materializer"
+    | "toList" -> Some "weir has no list type; 'freeze' is the materializer"
     | "defaultTo" -> Some "renamed: use 'Option.defaultValue' (or 'Option.defaultWith' for a thunk)"
     | "first" -> Some "weir's first is 'Seq.take' (bare: 'take') — one name per operation"
     | _ -> None
@@ -6079,7 +6079,7 @@ let private renderCommand (te: TypedExpr) : string =
 
 // the recognized visibly-materialized tails [D:reenum-warning] — the
 // closed set, judged at the RHS tail (through let-in bodies): a
-// `|> Seq.force` tail, an applied `Seq.force …` head (the comprehension
+// `|> Seq.freeze` tail, an applied `Seq.freeze …` head (the comprehension
 // desugars to exactly this), and the eager list literal. Anything else
 // — branch arms included — reads as unforced, which is the stated
 // over-approximation the word "possible" carries.
@@ -6087,9 +6087,9 @@ let rec private forcedTail (te: TypedExpr) : bool =
     let isForce (f: TypedExpr) =
         match f.Kind with
         // a builtin module member types as TEVar "Module.member"
-        | TEVar "Seq.force" -> true
+        | TEVar "Seq.freeze" -> true
         // the comprehension's own desugar ([for x in xs -> e])
-        | TEVar "|seqForce" -> true
+        | TEVar "|seqFreeze" -> true
         | _ -> false
 
     match te.Kind with

@@ -556,7 +556,7 @@ print $"{key} -> {value}"
   Every arm runs even if one fails; the first error BY INPUT ORDER
   rethrows after the join. Workers fork the session:
   `cd` inside a worker is worker-local and gone at the join — force
-  worker output inside the worker (`Seq.head`/`Seq.force`) if its cd
+  worker output inside the worker (`Seq.head`/`Seq.freeze`) if its cd
   matters. The RACE is `xs |> Seq.pfirst (fun x -> ...)`: the first
   arm to SUCCEED wins, losers' spawned processes are tree-killed and
   their failures never surface (all-failed rethrows the first by
@@ -828,7 +828,7 @@ print (Option.flatten (Some None) |> Option.defaultValue 0)
   `delete` (empty only)/`deleteAll` (RECURSIVE, destructive)/`list`
   (full paths, sorted, both kinds; `Path.glob "**"` recurses)/`move`.
   Every failure names its path.
-- `Seq.force` materializes (consume to completion, eager in-memory;
+- `Seq.freeze` materializes (consume to completion, eager in-memory;
   STRICT — not for infinite seqs). When to force, four customers:
   REUSE (a command-backed seq re-runs its process per enumeration —
   force once, consume twice; `weir check` WARNS on the second pull of
@@ -1190,7 +1190,7 @@ ls |> Seq.where (fun f -> f.name |> Str.startsWith "lssort-") |> Seq.iter (fun f
   matching `ls` — a stated third position beside `**`'s
   skip-symlinked-dirs law and `File.*`'s follow-as-a-shell-does.
   Raises when absent, naming the resolved path — and a glob hit can
-  vanish before `stat` reaches it, the same TIMING seam `Seq.force`
+  vanish before `stat` reaches it, the same TIMING seam `Seq.freeze`
   documents for glob.
 
 ```weir
@@ -1273,7 +1273,7 @@ within tmp d
   per pull). Unbounded output is still unbounded — for gigabyte or
   endless children STREAM it (`|> Seq.iter`, `| File.write`) instead
   of capturing; the ceiling is the box, and a single capture caps at
-  ~2GB. `Seq.force` on decoded lines re-pays string overhead — force
+  ~2GB. `Seq.freeze` on decoded lines re-pays string overhead — force
   what you need, not the world.
 - Typed output: `... |> from json T` needs
   `type T = { field: ty; ... }` declared first (exact field set) — OR
@@ -1818,7 +1818,7 @@ let running =
         match c with
         | { State = "running"; Names = n } -> Some n
         | _ -> None)
-print (running |> Seq.force |> Seq.length)
+print (running |> Seq.freeze |> Seq.length)
 ```
 
 ```weir-error
@@ -1876,7 +1876,7 @@ print (f 1)
   `?`, `[abc]`/`[!abc]`. Bash's dotfile law: `*` skips dotfiles, a
   `.`-leading segment matches them. Sorted; relative patterns
   echo relative and resolve against the cwd AT ENUMERATION —
-  `|> Seq.force` pins the answer before a `cd`. No matches = the
+  `|> Seq.freeze` pins the answer before a `cd`. No matches = the
   empty seq (`match ... with | [] -> fail "no matches"`).
   Unreadable dirs skip (discovery, not assertion).
 - Editor mode-coloring (LSP semantic tokens) is for humans — agents

@@ -49,7 +49,7 @@ let prose =
 let missing =
     m.keywords
     |> Seq.where (fun k -> not (prose |> Str.isMatch $"(?<![\\w.]){k}(?![\\w])"))
-    |> Seq.force
+    |> Seq.freeze
 
 if not (Seq.isEmpty missing) then
     let names = missing |> Str.join ", "

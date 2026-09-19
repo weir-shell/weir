@@ -2266,7 +2266,7 @@ let private baseEnvs (scriptArgs: string list) (scriptPath: string) =
             Seq.delay (fun () ->
                 if consumed.Value then
                     failwith
-                        "Self.stdin is a live stream and was already consumed — bind ONE enumeration (let lines = Self.stdin |> Seq.force), or read a line per interaction with `prompt`"
+                        "Self.stdin is a live stream and was already consumed — bind ONE enumeration (let lines = Self.stdin |> Seq.freeze), or read a line per interaction with `prompt`"
 
                 consumed.Value <- true
 
@@ -3347,7 +3347,7 @@ type ReenumTracker() =
             | Check.ReenumBind(id, _, cmd) ->
                 // a block-local binder has no clean one-line source to
                 // ride the repair — the generic spelling instead
-                info[id] <- (cmd, "add '|> Seq.force' at the binding")
+                info[id] <- (cmd, "add '|> Seq.freeze' at the binding")
                 counts[id] <- 0
             | Check.ReenumUse(id, name, span) ->
                 let n =
@@ -3401,9 +3401,9 @@ type ReenumTracker() =
                     let src = ll.Text.Trim()
 
                     if src.StartsWith "let " && not (src |> Seq.exists System.Char.IsControl) then
-                        $"{src} |> Seq.force"
+                        $"{src} |> Seq.freeze"
                     else
-                        "add '|> Seq.force' at the binding"
+                        "add '|> Seq.freeze' at the binding"
 
                 info[id] <- (cmd, repair)
                 counts[id] <- 0

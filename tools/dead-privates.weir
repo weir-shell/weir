@@ -17,12 +17,12 @@
 // version stripped strings with a regex, swallowed real code, and reported
 // 35 false positives.
 
-let files = Path.glob "src/Weir/*.fs" |> Seq.force
+let files = Path.glob "src/Weir/*.fs" |> Seq.freeze
 
 let lines =
     files
     |> Seq.collect (fun f -> File.read f |> Seq.map (fun l -> (f, l)))
-    |> Seq.force
+    |> Seq.freeze
 
 // every identifier-shaped token in the tree, counted once
 let counts =
@@ -36,12 +36,12 @@ let defs =
     |> Seq.choose (function
         | (f, Regex @"^let (?:rec )?private (?:rec |inline )?([A-Za-z_][A-Za-z0-9_']*)" n) -> Some(f, n)
         | _ -> None)
-    |> Seq.force
+    |> Seq.freeze
 
 let dead =
     defs
     |> Seq.where (fun d -> (counts |> Map.tryGet (snd d) |> Option.defaultValue 0) <= 1)
-    |> Seq.force
+    |> Seq.freeze
 
 print $"private bindings: {defs |> Seq.length}   unreferenced: {dead |> Seq.length}"
 

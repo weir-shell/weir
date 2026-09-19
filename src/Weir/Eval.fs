@@ -366,7 +366,7 @@ let procTailLine (h: ProcHandle) : string =
 // the echo RULE [D:echo-rule]: a FORCED seq echoes in full (the user
 // forced it; the ceiling is scrollback, which is theirs); an UNFORCED
 // one shows the first N and names the lever that WORKS and renders
-// identically — Seq.force. Forced-ness is the materialized-collection
+// identically — Seq.freeze. Forced-ness is the materialized-collection
 // probe (the same one that used to print real counts); the REPL's
 // map-key completion peeks through the same probe, so echo and
 // completion agree about what "forced" means [D:value-key-complete].
@@ -379,7 +379,7 @@ let forcedItems (items: seq<Value>) : Value list option =
 /// the footer names the cap IN EFFECT [D:echo-cap] — a hardcoded count
 /// beside a configurable cap is the lying-message class
 let unforcedHint (cap: int) =
-    $"first {cap} of an unforced seq — Seq.force to echo everything"
+    $"first {cap} of an unforced seq — Seq.freeze to echo everything"
 
 // the piped/-e echo cap [D:echo-cap]: the SESSION cap is a tty-echo
 // concern (the REPL owns it, #echo moves it); the piped surface and -e

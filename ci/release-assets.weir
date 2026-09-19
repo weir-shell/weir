@@ -78,7 +78,7 @@ let rel =
     else
         fail $"releases/tags/{cli.tag} answered {byTag.status} — the API refused the query (rate limit on shared egress? set GH_TOKEN/GITHUB_TOKEN, or retry)"
 
-let assets = rel.assets |> Seq.force
+let assets = rel.assets |> Seq.freeze
 
 // present AND finished AND non-empty: a 500 can leave a GHOST asset —
 // created server-side, state never reaching "uploaded" — and a ghost
@@ -90,7 +90,7 @@ let verdict name =
     | Some a when a.size == 0 -> (name, false, "0 bytes")
     | Some _ -> (name, true, "")
 
-let checks = expected |> Seq.map verdict |> Seq.force
+let checks = expected |> Seq.map verdict |> Seq.freeze
 
 print $"release {cli.tag} (draft: {rel.draft}) — {assets |> Seq.length} asset(s) on the release, {expected |> Seq.length} expected:"
 
@@ -101,7 +101,7 @@ let extras =
     assets
     |> Seq.map (fun a -> a.name)
     |> Seq.where (fun n -> not (Seq.contains n expected))
-    |> Seq.force
+    |> Seq.freeze
 
 if not (Seq.isEmpty extras) then
     let extraNames = extras |> Str.join ", "
@@ -111,7 +111,7 @@ let missing =
     checks
     |> Seq.where (fun (_, ok, _) -> not ok)
     |> Seq.map (fun (n, _, _) -> n)
-    |> Seq.force
+    |> Seq.freeze
 
 if not (Seq.isEmpty missing) then
     let missingNames = missing |> Str.join ", "
