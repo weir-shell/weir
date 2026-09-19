@@ -6218,7 +6218,7 @@ let replEchoTests =
                     End = { Line = 1; Col = 2 } }
 
               let cmdTe: Weir.Check.TypedExpr =
-                  { Kind = Weir.Check.TECmd("kubectl", [], None)
+                  { Kind = Weir.Check.TECmd(Weir.Check.THeadLit "kubectl", [], None)
                     Ty = TSeq TStr
                     Span = sp }
 
