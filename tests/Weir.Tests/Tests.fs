@@ -10935,8 +10935,9 @@ let agentFindingsTests =
               match Weir.Parser.parseLine cmdResolver "$@(xs) -la" with
               | Error msg ->
                   Expect.stringContains msg "N words would be N heads" ""
-                  // the fix names the literal-head law, not retired builtins
-                  Expect.stringContains msg "branch the whole command line" ""
+                  // the fix names the dynamic-head spelling [D:dynamic-head],
+                  // not retired builtins
+                  Expect.stringContains msg "a dynamic one is ^$name" ""
               | Ok _ -> failtest "the head splat must reject"
 
               match Weir.Parser.parseLine cmdResolver "echo --flag=$@fs" with
