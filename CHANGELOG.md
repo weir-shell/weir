@@ -97,12 +97,12 @@
 ### Added
 
 - **The checker warns on possible re-enumeration.** A `let` whose RHS
-  is a command-backed seq with no visible force (`|> Seq.force`, an
-  applied `Seq.force`, an eager literal or a comprehension) re-runs
+  is a command-backed seq with no visible force (`|> Seq.freeze`, an
+  applied `Seq.freeze`, an eager literal or a comprehension) re-runs
   its command on every pull. When such a binding is enumerated at two
   or more sites, `weir check` now warns at the second and later
   sites — naming the command and the one-line repair
-  (`snapshot one run: let pods = kubectl get po -A |> Seq.force`).
+  (`snapshot one run: let pods = kubectl get po -A |> Seq.freeze`).
   Advisory: warning severity, exit stays 0, and the LSP shows it as a
   squiggle. Conservative and stated: any read of the name counts as a
   possible pull (argv splats included); a plain alias
@@ -157,6 +157,16 @@
   spelling: if the field is sometimes absent, declare it
   `Option<…>` — a type drafted from a sample only sees what the
   sample had.
+
+### Changed
+
+- **BREAKING: `Seq.force` is renamed `Seq.freeze` (bare alias
+  `force` → `freeze`); the old spelling is gone, no compatibility
+  alias.** "force" named the moment (evaluate now) and misleadingly
+  suggested repeatability; the durable property of the result is a
+  frozen snapshot — pulls never re-run. Migration:
+  `s/Seq.force/Seq.freeze/`, bare `force` → `freeze`. A stray old
+  spelling teaches the new name at both lookup sites.
 
 ### Fixed
 

@@ -41,6 +41,9 @@ type ArgsTarget =
 let private retiredMember (m: string) (field: string) : string option =
     match m, field with
     | "Seq", "toList" -> Some "weir has no list type; 'Seq.freeze' is the materializer"
+    // renamed [D:freeze-rename]: the durable fact is the frozen
+    // snapshot (pulls never re-run); 'force' named only the moment
+    | "Seq", "force" -> Some "renamed 'Seq.freeze' — the result is a frozen snapshot (pulls never re-run)"
     | "Option", "defaultTo" -> Some "renamed 'Option.defaultValue' (F# parity); a lazy default is 'Option.defaultWith'"
     // one operation, one name [D:seq-gaps]: the F# spelling wins where
     // one exists (collect), and the weir spelling keeps its seat (where)
@@ -67,6 +70,7 @@ let private retiredField (record: string) (field: string) : string option =
 let private retiredBare (name: string) : string option =
     match name with
     | "toList" -> Some "weir has no list type; 'freeze' is the materializer"
+    | "force" -> Some "renamed 'freeze' (bare; qualified: Seq.freeze) — the result is a frozen snapshot (pulls never re-run)"
     | "defaultTo" -> Some "renamed: use 'Option.defaultValue' (or 'Option.defaultWith' for a thunk)"
     | "first" -> Some "weir's first is 'Seq.take' (bare: 'take') — one name per operation"
     | _ -> None

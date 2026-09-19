@@ -9857,6 +9857,12 @@ let optionSweepTests =
               Expect.stringContains (checkErr "[1] |> toList").Message "'freeze' is the materializer" ""
               Expect.stringContains (checkErr "None |> Option.defaultTo 1").Message "Option.defaultValue" ""
 
+              // the rename teach [D:freeze-rename]: a stray old spelling
+              // names the new one at both lookup sites (edit distance is
+              // 4, so the generic did-you-mean could never carry this)
+              Expect.stringContains (checkErr "[1] |> Seq.force").Message "renamed 'Seq.freeze'" ""
+              Expect.stringContains (checkErr "[1] |> force").Message "renamed 'freeze'" ""
+
               // the collect reservation PAID OUT [D:seq-gaps]: the member
               // exists with F#'s semantics and no retirement text remains
               Expect.isFalse ((checkOk "[1] |> Seq.collect (fun x -> [x])").Ty = TUnit) "Seq.collect is a live member"
