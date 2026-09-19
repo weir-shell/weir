@@ -1892,12 +1892,22 @@ let private patCore =
                         failFatally
                             "Regex patterns take a LITERAL string; computed patterns live on the expression side (Str.isMatch / Str.rmatch)" ]
               elif Char.IsUpper w[0] then
-                  opt patAtom
-                  |>> fun arg ->
-                      let e = arg |> Option.map (fun a -> a.PSpan.End) |> Option.defaultValue span.End
+                  choice
+                      [ // a QUALIFIED case in pattern position [D:bare-case-patterns]
+                        // teaches the law instead of a bare expecting-list: the
+                        // scrutinee's type resolves the bare name, imported
+                        // unions included — the qualifier has no meaning here
+                        attempt (pchar '.' >>. identSpanned)
+                        >>= fun (m, _) ->
+                            failFatallyAtCol
+                                span.Start.Col
+                                $"a pattern names a case bare — write '{m}', not '{w}.{m}': the scrutinee's type resolves the case, imported unions included"
+                        opt patAtom
+                        |>> fun arg ->
+                            let e = arg |> Option.map (fun a -> a.PSpan.End) |> Option.defaultValue span.End
 
-                      { PKind = PCase(w, arg)
-                        PSpan = { Start = span.Start; End = e } }
+                            { PKind = PCase(w, arg)
+                              PSpan = { Start = span.Start; End = e } } ]
               else
                   preturn { PKind = PVar w; PSpan = span } ]
 
@@ -1943,6 +1953,18 @@ binderPatRef.Value <- commaPats
 let private anonShape, private anonShapeRef =
     createParserForwardedToRef<(string * Ty) list, unit> ()
 
+// a QUALIFIED type name in the adapter slot [D:flat-import-types]
+// teaches: an imported module's types resolve by their PLAIN name
+// (types live flat across the module boundary; the alias qualifies
+// values, never this slot) — same law as module signatures
+let private bareAdapterName (w: string) : Parser<string, unit> =
+    choice
+        [ attempt (pchar '.' >>. identSpanned)
+          >>= fun (m, _) ->
+              failFatally
+                  $"the adapter slot takes a bare record name — write '{m}', not '{w}.{m}': imported types resolve by their plain name (they live flat; the module alias qualifies values, not types here)"
+          preturn w ]
+
 let private fromExpr =
     spanned (
         keyword "from" >>. ident
@@ -1958,6 +1980,21 @@ let private fromExpr =
             // is reachable only INSIDE the shape's fields; the admitted
             // set stays closed)
             (anonShape |>> fun fs -> FromAnon fs, false)
+            // the qualified spelling is recognized WHOLE first, so the
+            // fatal fires OUTSIDE the slot's attempt (a fatal inside it
+            // demotes to a backtrack note) [D:flat-import-types]
+            <|> (attempt (
+                     identSpanned
+                     >>= fun (w, wspan) ->
+                         if Char.IsUpper w[0] && w <> "Map" then
+                             pchar '.' >>. identSpanned |>> fun (m, _) -> (w, wspan, m)
+                         else
+                             ifail "not a qualified slot name"
+                 )
+                 >>= fun (w, wspan, m) ->
+                     failFatallyAtCol
+                         wspan.Start.Col
+                         $"the adapter slot takes a bare record name — write '{m}', not '{w}.{m}': imported types resolve by their plain name (they live flat; the module alias qualifies values, not types here)")
             <|> attempt (
                 identSpanned
                 >>= fun (w, _) ->
@@ -1974,7 +2011,7 @@ let private fromExpr =
                                   <|> (identSpanned
                                        >>= fun (inner, _) ->
                                            if Char.IsUpper inner[0] then
-                                               preturn (FromName inner)
+                                               bareAdapterName inner |>> FromName
                                            else
                                                fail "a record name inside Map< >")))
                         |>> fun sh -> FromMap sh, false
@@ -1986,7 +2023,7 @@ let private fromExpr =
                              <|> (identSpanned
                                   >>= fun (inner, _) ->
                                       if Char.IsUpper inner[0] then
-                                          preturn (FromName inner)
+                                          bareAdapterName inner |>> FromName
                                       else
                                           fail "a record name inside seq< >"))
                         |>> fun sh -> sh, true
@@ -3918,6 +3955,20 @@ let private foldChain (h: Expr) (rest: ((string * Span) * Seg) list) : Result<Ex
                             |> List.fold (fun f a -> { Kind = EApp(f, a); Span = span }) headVar
 
                         Result.Ok applied
+                    // a capture sigil CLOSES its chain at the ')' — the
+                    // composition exists INSIDE the parens [D:exit-reifiers]:
+                    // teach the spelling, not just the law
+                    | ECapture inner ->
+                        let sigil =
+                            match inner.Kind with
+                            | ECmd(_, _, Some { Kind = EVar n })
+                            | EPipe(_, { Kind = ECmd(_, _, Some { Kind = EVar n }) }) -> "$" + n
+                            | _ -> "$"
+
+                        Result.Error(
+                            $"'{stageName}' must directly follow a single external command segment — the capture sigil closes its chain at the ')'; the reifier composes inside the parens: {sigil}(cmd | {stageName})",
+                            mspan
+                        )
                     // a reifier needs a SINGLE external segment [D:exit-reifiers]:
                     // a multi-external chain is rejected as always (no new law)
                     | _ -> Result.Error($"'{stageName}' must directly follow a single external command segment", mspan))
@@ -4541,27 +4592,69 @@ let stmtExprs (s: Stmt) : Expr list =
 // command-CHAIN mismatches; this catches the value-headed operator form,
 // anchored on the offending program name.
 let private pipeToCommand (r: Resolver) (root: Expr) : (Span * string option) option =
-    let rec cmdHead (e: Expr) =
+    let rec cmdHead (bound: Set<string>) (e: Expr) =
         match e.Kind with
-        | EVar n when r.IsExternal n && not (r.IsKnown n) ->
+        | EVar n when not (Set.contains n bound) && r.IsExternal n && not (r.IsKnown n) ->
             let teach =
                 r.BareHome n
                 |> Option.map (fun home ->
                     $"'{n}' is a bare module member — spell it '{home}.{n}' (bare names live in the REPL session)")
 
             Some(e.Span, teach)
-        | EApp(f, _) -> cmdHead f
+        | EApp(f, _) -> cmdHead bound f
         | _ -> None
 
-    let rec walk (e: Expr) =
-        match e.Kind with
-        | EPipe(_, rhs) ->
-            match cmdHead rhs with
-            | Some sp -> Some sp
-            | None -> exprChildren e |> List.tryPick walk
-        | _ -> exprChildren e |> List.tryPick walk
+    // STATEMENT-LOCAL binders are in scope for this walk [D:statement-lets]:
+    // a block-local `let pad …` inside a function body is not in the
+    // resolver's env (that map holds completed statements only), and
+    // under check's assume-command rule any command-shaped word claims
+    // IsExternal — so without tracking, `… |> pad` inside the same
+    // statement mis-reads as a program (the acme port's false positive).
+    // Bindings beat PATH, block-locals included.
+    let rec walk (bound: Set<string>) (e: Expr) =
+        let kids b = exprChildren e |> List.tryPick (walk b)
 
-    walk root
+        match e.Kind with
+        | ELet(n, _, v, body) ->
+            match walk bound v with
+            | Some hit -> Some hit
+            | None -> walk (Set.add n bound) body
+        | ELetPat(p, v, body) ->
+            match walk bound v with
+            | Some hit -> Some hit
+            | None -> walk (Set.union (Set.ofList (patLeafNames p)) bound) body
+        | ELambda(p, _, body) -> walk (Set.add p bound) body
+        | ELambdaPat(p, body) -> walk (Set.union (Set.ofList (patLeafNames p)) bound) body
+        | EMatch(scrut, arms) ->
+            match walk bound scrut with
+            | Some hit -> Some hit
+            | None ->
+                arms
+                |> List.tryPick (fun (p, guard, body) ->
+                    let armBound = Set.union (Set.ofList (patLeafNames p)) bound
+
+                    match guard |> Option.bind (walk armBound) with
+                    | Some hit -> Some hit
+                    | None -> walk armBound body)
+        | EWithin(_, binder, arg, opts, body) ->
+            let inner = binder |> Option.map fst |> Option.map (fun n -> Set.add n bound) |> Option.defaultValue bound
+
+            [ arg; opts ]
+            |> List.tryPick (Option.bind (walk bound))
+            |> Option.orElseWith (fun () -> walk inner body)
+        | ERetry(_, opts, watch, body, until) ->
+            [ Some opts; watch; Some body ]
+            |> List.tryPick (Option.bind (walk bound))
+            |> Option.orElseWith (fun () ->
+                until
+                |> Option.bind (fun ((n, _), pred) -> walk (Set.add n bound) pred))
+        | EPipe(_, rhs) ->
+            match cmdHead bound rhs with
+            | Some sp -> Some sp
+            | None -> kids bound
+        | _ -> kids bound
+
+    walk Set.empty root
 
 let parseLineFull (r: Resolver) (input: string) : Result<Stmt, ParseFailure> =
     ambientResolver.Value <- r

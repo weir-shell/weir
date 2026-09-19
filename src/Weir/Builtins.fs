@@ -926,6 +926,33 @@ let private substringImpl: Value =
                         VStr(s.Substring(st, ln))
                 | _ -> unreachable "the checker rejects 'substring' on these arguments")))
 
+// Str.replicate / padLeft / padRight [D:width-members]: the width
+// primitives every columnar CLI hand-rolled (the asdf port's receipt).
+// Negative counts/widths refuse like Seq.replicate — the one convention.
+let private strReplicateImpl: Value =
+    VBuiltin(fun nV ->
+        VBuiltin(fun sV ->
+            match nV, sV with
+            | VInt n, VStr s ->
+                if n < 0L then
+                    failwith $"Str.replicate: the count must be non-negative; got {n}"
+                else
+                    VStr(String.replicate (int n) s)
+            | _ -> unreachable "the checker rejects 'Str.replicate' on these arguments"))
+
+// .NET PadLeft/PadRight semantics, deliberately: width is the TOTAL
+// width, spaces pad, an already-longer string is unchanged
+let private padImpl (name: string) (f: int -> string -> string) : Value =
+    VBuiltin(fun wV ->
+        VBuiltin(fun sV ->
+            match wV, sV with
+            | VInt w, VStr s ->
+                if w < 0L then
+                    failwith $"Str.{name}: the width must be non-negative; got {w}"
+                else
+                    VStr(f (int w) s)
+            | _ -> unreachable $"the checker rejects 'Str.{name}' on these arguments"))
+
 let private defaultToImpl: Value =
     VBuiltin(fun fallback ->
         VBuiltin(fun opt ->
@@ -1339,6 +1366,29 @@ let private containsImpl: Value =
             match s with
             | VSeq items -> VBool(items |> Seq.exists (fun v -> v = needle))
             | v -> unreachable $"the checker rejects 'contains' on {formatValue v}"))
+
+// Seq.equal [D:seq-equal]: element-wise, length-sensitive, Eq on the
+// elements (Seq.contains's constraint mirrored). Lockstep enumeration
+// short-circuits at the first mismatch and never pulls beyond need —
+// the honest spelling of what a lossy join-then-compare approximates.
+let private seqEqualImpl: Value =
+    VBuiltin(fun a ->
+        VBuiltin(fun b ->
+            match a, b with
+            | VSeq xs, VSeq ys ->
+                use ex = xs.GetEnumerator()
+                use ey = ys.GetEnumerator()
+
+                let rec go () =
+                    let mx, my = ex.MoveNext(), ey.MoveNext()
+
+                    if mx <> my then false
+                    elif not mx then true
+                    elif ex.Current = ey.Current then go ()
+                    else false
+
+                VBool(go ())
+            | v, _ -> unreachable $"the checker rejects 'Seq.equal' on {formatValue v}"))
 
 // Seq.distinct [D:seq-distinct]: lazy, first-occurrence-wins,
 // remembers only what it has yielded; equality is the checker-vetted
@@ -1761,6 +1811,7 @@ let private seqMembers: (string * Ty * Value) list =
       "tryItem", TFun(TInt, TFun(TSeq tA, TNamed("Option", [ tA ]))), tryItemImpl
       "skip", TFun(TInt, TFun(TSeq tA, TSeq tA)), skipImpl
       "contains", TFun(tA, TFun(TSeq tA, TBool)), containsImpl
+      "equal", TFun(TSeq tA, TFun(TSeq tA, TBool)), seqEqualImpl
       "distinct", TFun(TSeq tA, TSeq tA), distinctImpl
       // pairs, F#'s own shape [D:groupby-pairs] — countBy/zip/pairwise
       // already speak tuples; the record was the lone deviation
@@ -1860,6 +1911,9 @@ let private strMembers: (string * Ty * Value) list =
       "replace", TFun(TStr, TFun(TStr, TFun(TStr, TStr))), replaceImpl
       "length", TFun(TStr, TInt), strLenImpl
       "sub", TFun(TInt, TFun(TInt, TFun(TStr, TStr))), substringImpl
+      "replicate", TFun(TInt, TFun(TStr, TStr)), strReplicateImpl
+      "padLeft", TFun(TInt, TFun(TStr, TStr)), padImpl "padLeft" (fun w (s: string) -> s.PadLeft(w, ' '))
+      "padRight", TFun(TInt, TFun(TStr, TStr)), padImpl "padRight" (fun w (s: string) -> s.PadRight(w, ' '))
       "toInt", TFun(TStr, TInt), toIntImpl
       "tryToInt", TFun(TStr, TNamed("Option", [ TInt ])), tryToIntImpl
       // sha256 ONLY [D:encoding-law]: md5 is broken (offering it invites
@@ -2595,6 +2649,37 @@ let private fsMoreFileMembers: (string * Ty * Value) list =
                   else
                       failwith $"File.mode: dangling symlink: {r} — no target to read a mode from"
           | v -> unreachable $"the checker rejects 'File.mode' on {formatValue v}")
+      "isExecutable",
+      // the mode string's 'x', as a bool [D:is-executable]: the OWNER
+      // execute bit (the bit an installer sets), replacing the stringly
+      // `File.mode |> Str.contains "x"`. Follows a symlink like mode;
+      // a missing path raises. WINDOWS POSTURE, stated not guessed
+      // [D:ls-truth]: there is no execute bit there — the answer is by
+      // extension (.exe/.bat/.cmd/.com), CreateProcess's own law.
+      TFun(TStr, TBool),
+      VBuiltin(fun v ->
+          match v with
+          | VStr p ->
+              let r = Session.resolve p
+
+              if not (System.IO.File.Exists r || System.IO.Directory.Exists r || FileInfo(r).Exists) then
+                  failwith $"File.isExecutable: no such path: {r}"
+
+              try
+                  let m = System.IO.File.GetUnixFileMode r
+                  VBool(m.HasFlag System.IO.UnixFileMode.UserExecute)
+              with
+              | :? System.PlatformNotSupportedException ->
+                  let ext = System.IO.Path.GetExtension(r).ToLowerInvariant()
+                  VBool(List.contains ext [ ".exe"; ".bat"; ".cmd"; ".com" ])
+              | :? System.IO.FileNotFoundException
+              | :? System.IO.DirectoryNotFoundException ->
+                  // the READ follows; existence does not [D:mode-existence]
+                  if isNull (FileInfo(r).LinkTarget) then
+                      failwith $"File.isExecutable: no such path: {r}"
+                  else
+                      failwith $"File.isExecutable: dangling symlink: {r} — no target to read a mode from"
+          | v -> unreachable $"the checker rejects 'File.isExecutable' on {formatValue v}")
       "readBytes",
       // the byte-faithful read [D:bytes]: File.read decodes leniently
       // and line-splits; this one does neither
@@ -3022,7 +3107,55 @@ let private bytesMembers: (string * Ty * Value) list =
       VBuiltin(fun v ->
           match v with
           | VBytes b -> VSize(int64 b.Length)
-          | v -> unreachable $"the checker rejects 'Bytes.length' on {formatValue v}") ]
+          | v -> unreachable $"the checker rejects 'Bytes.length' on {formatValue v}")
+      // hex, the crypto boundary's other text form [D:bytes-hex]:
+      // lowercase out (sha256/sha256sum parity), either case in;
+      // odd-length and non-hex refuse with the fromBase64 posture
+      "fromHex",
+      TFun(TStr, TBytes),
+      VBuiltin(fun v ->
+          match v with
+          | VStr s ->
+              if s.Length % 2 <> 0 then
+                  failwith $"Bytes.fromHex: odd-length hex ({s.Length} chars) — every byte is two hex digits"
+              else
+                  (try
+                      VBytes(System.Convert.FromHexString s)
+                   with _ ->
+                       failwith $"Bytes.fromHex: invalid hex: \"{s}\"")
+          | v -> unreachable $"the checker rejects 'Bytes.fromHex' on {formatValue v}")
+      "toHex",
+      TFun(TBytes, TStr),
+      VBuiltin(fun v ->
+          match v with
+          | VBytes b -> VStr(b |> Array.map (fun x -> x.ToString "x2") |> String.concat "")
+          | v -> unreachable $"the checker rejects 'Bytes.toHex' on {formatValue v}")
+      // Str.sub's exact shape on bytes [D:bytes-sub]: start, then
+      // length, data last; out of range raises with the same detail
+      "sub",
+      TFun(TInt, TFun(TInt, TFun(TBytes, TBytes))),
+      VBuiltin(fun start ->
+          VBuiltin(fun len ->
+              VBuiltin(fun subject ->
+                  match start, len, subject with
+                  | VInt st64, VInt ln64, VBytes b ->
+                      let st, ln = int st64, int ln64
+
+                      if st < 0 || ln < 0 || st + ln > b.Length then
+                          failwith $"Bytes.sub: out of bounds (start {st}, length {ln}, byte length {b.Length})"
+                      else
+                          VBytes(b[st .. st + ln - 1])
+                  | _ -> unreachable "the checker rejects 'Bytes.sub' on these arguments")))
+      // key -> message -> mac; .NET's own HMACSHA256, no reflection.
+      // A Secret key exits through Secret.reveal |> Str.toUtf8 —
+      // deliberate, the one Secret exit [D:secrets]
+      "hmacSha256",
+      TFun(TBytes, TFun(TBytes, TBytes)),
+      VBuiltin(fun keyV ->
+          VBuiltin(fun msgV ->
+              match keyV, msgV with
+              | VBytes key, VBytes msg -> VBytes(System.Security.Cryptography.HMACSHA256.HashData(key, msg))
+              | _ -> unreachable "the checker rejects 'Bytes.hmacSha256' on these arguments")) ]
 
 let private sizeMembers: (string * Ty * Value) list =
     [ "bytes",
@@ -4337,6 +4470,12 @@ let builtinDocs: Map<string, BuiltinDoc> =
           "Seq.contains",
           (bd "True when an element is present." (Some "Seq.contains 2 [1; 2; 3]") None
            |> named [ "x"; "xs" ])
+          "Seq.equal",
+          (bd
+              "Element-wise equality, length-sensitive (equatable elements — Seq.contains's constraint). Lockstep and short-circuiting: stops at the first mismatch, never pulls beyond need. The honest spelling of output-vs-expected — a join-then-compare is lossy when elements contain the separator."
+              (Some "[\"a\"; \"b\"] |> Seq.equal [\"a\"; \"b\"]")
+              None
+           |> named [ "xs"; "ys" ])
           "Seq.exists",
           (bd "True when any element satisfies a predicate." (Some "[1; 2; 3] |> Seq.exists (fun x -> x > 2)") None
            |> named [ "pred"; "xs" ])
@@ -4747,6 +4886,23 @@ let builtinDocs: Map<string, BuiltinDoc> =
           "Str.sub",
           (bd "A substring by start index and length." (Some "Str.sub 0 2 \"abc\"") None
            |> named [ "start"; "len"; "s" ])
+          "Str.replicate",
+          (bd "n copies of the string, concatenated (0 is the empty string; a negative count raises — Seq.replicate's rule)."
+              (Some "Str.replicate 3 \"ab\"")
+              None
+           |> named [ "n"; "s" ])
+          "Str.padLeft",
+          (bd
+              "Pad with spaces on the left to a total width; a string already at or past the width is unchanged (a negative width raises). The right-aligned column member."
+              (Some "Str.padLeft 5 \"42\"")
+              None
+           |> named [ "width"; "s" ])
+          "Str.padRight",
+          (bd
+              "Pad with spaces on the right to a total width; a string already at or past the width is unchanged (a negative width raises). The columnar-output member — printf \"%-15s\" made a function."
+              (Some "Str.padRight 6 \"name\"")
+              None
+           |> named [ "width"; "s" ])
           "Str.toInt",
           (bd "Parse an int (raises on a non-number)." (Some "Str.toInt \"42\"") None
            |> named [ "s" ])
@@ -4981,6 +5137,12 @@ let builtinDocs: Map<string, BuiltinDoc> =
               (Some "File.mode \".\" |> Option.defaultValue \"none\"")
               None
            |> named [ "path" ])
+          "File.isExecutable",
+          (bd
+              "True when the owner execute bit is set (the bit an installer sets) — File.mode's 'x' as a bool, replacing the stringly Str.contains \"x\". Follows a symlink like the other File.* queries; a missing path raises. On Windows there is no execute bit: the answer is by extension (.exe/.bat/.cmd/.com), a stated posture."
+              (Some "File.isExecutable \".\"")
+              None
+           |> named [ "path" ])
 
           // ---- Log [D:log-module]: STDERR always — stdout is DATA ----
           "Log.trace",
@@ -5200,6 +5362,29 @@ let builtinDocs: Map<string, BuiltinDoc> =
           (bd "The SHA-256 digest of the bytes, lowercase hex (sha256sum parity)." None None
            |> named [ "b" ])
           "Bytes.length", (bd "The byte count as a Size." None None |> named [ "b" ])
+          "Bytes.fromHex",
+          (bd
+              "Decode hex (either case) to Bytes; odd-length and non-hex input raise. The crypto sibling of Bytes.fromBase64 — fingerprints, moduli and EC points all travel as hex."
+              (Some "Bytes.fromHex \"0a1B\" |> Bytes.toHex")
+              None
+           |> named [ "s" ])
+          "Bytes.toHex",
+          (bd "Lowercase hex of the bytes (sha256's own rendering) — one unwrapped line."
+              (Some "Str.toUtf8 \"hi\" |> Bytes.toHex")
+              None
+           |> named [ "b" ])
+          "Bytes.sub",
+          (bd
+              "A byte slice by start index and length — Str.sub's exact shape on Bytes; out of range raises with the same detail."
+              (Some "Str.toUtf8 \"abcd\" |> Bytes.sub 1 2 |> Bytes.toHex")
+              None
+           |> named [ "start"; "len"; "b" ])
+          "Bytes.hmacSha256",
+          (bd
+              "HMAC-SHA256: key first, then message, the mac as Bytes. A Secret key exits via Secret.reveal |> Str.toUtf8 — deliberate, like every Secret exit."
+              (Some "Bytes.hmacSha256 (Str.toUtf8 \"key\") (Str.toUtf8 \"msg\") |> Bytes.toHex")
+              None
+           |> named [ "key"; "msg" ])
           "Size.bytes",
           (bd "A size of n bytes — the literal 512B, as a function." (Some "Size.bytes 512") None
            |> named [ "n" ])
@@ -5738,12 +5923,22 @@ let private eqExcept: Scheme =
       RowOrigins = Map.empty
       HoleDefaults = [] }
 
+// Seq.equal mirrors Seq.contains's Eq constraint [D:seq-equal] — the
+// element type must compare, so functions/seqs refuse at the use site
+let private eqSeqEqual: Scheme =
+    { Forall = Set.singleton "a"
+      Cs = Map [ "a", Set [ Cls.Eq ] ]
+      Ty = TFun(TSeq(TVar "a"), TFun(TSeq(TVar "a"), TBool))
+      RowOrigins = Map.empty
+      HoleDefaults = [] }
+
 // members whose signature is a CONSTRAINED scheme, not a plain
 // generalization — applied at the module map AND at the bare slot
 // [D:bare-partition]: a bare `sortBy` must keep its Ord key, or the
 // bare spelling would be laxer than the qualified one
 let private seqSchemeOverrides: (string * Scheme) list =
     [ "contains", Check.containsScheme
+      "equal", eqSeqEqual
       "distinct", Check.distinctScheme
       "sortBy", sortByScheme
       "sortByDescending", sortByScheme

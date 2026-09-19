@@ -2345,6 +2345,14 @@ let discardError (ty: Ty) : string option =
             $"this statement computes a {formatTy ty} and discards it — bind it, or pipe it to print"
             + " (for a plain listing, ^ls runs the real program)"
         )
+    // an UNRESOLVED statement type [D:exit-polymorphic]: nothing
+    // determines it — almost always a helper whose body ends in
+    // exit/fail (diverging, so polymorphic — never unit). A bare
+    // "computes a 'a1" names no cause; this names it and the repair.
+    | TVar _ as ty ->
+        Some(
+            $"this statement computes a {formatTy ty} and discards it — an unresolved type here usually means the helper ends in exit or fail, which makes it polymorphic, not unit: return the exit code and exit at the call site (exit (helper …)), or bind the value"
+        )
     | ty -> Some $"this statement computes a {formatTy ty} and discards it — bind it, or pipe it to print"
 
 // ---------------------------------------------------------------------------
