@@ -3413,7 +3413,11 @@ and eval (env: Env) (te: TypedExpr) : Value =
 
             // request primitives -> the HttpServerRequest Value the handler sees
             let requestValue (r: Serve.SReq) : Value =
-                let methodCase =
+                // HttpMethod is the closed client union [D:http-serve]; an
+                // exotic verb maps to Get — v1 handlers route on path, not
+                // verb (a stated simplicity, not a silent drop: the path
+                // and body are intact for a handler that cares)
+                let methodTag =
                     match r.Method.ToUpperInvariant() with
                     | "GET" -> "Get"
                     | "POST" -> "Post"
@@ -3422,13 +3426,6 @@ and eval (env: Env) (te: TypedExpr) : Value =
                     | "PATCH" -> "Patch"
                     | "HEAD" -> "Head"
                     | "OPTIONS" -> "Options"
-                    | other -> other // an exotic verb rides through as its own tag-less string is impossible; fall to Get-shaped below
-
-                // HttpMethod is a closed union; an unknown verb maps to Get
-                // (v1 handlers match on path, not verb — a stated simplicity)
-                let methodTag =
-                    match methodCase with
-                    | "Get" | "Post" | "Put" | "Delete" | "Patch" | "Head" | "Options" -> methodCase
                     | _ -> "Get"
 
                 VRecord(
