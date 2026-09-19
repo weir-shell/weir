@@ -5,7 +5,7 @@
 let counts =
     git ls-files
     |> Seq.map (fun f -> (f, File.read f |> Seq.length))
-    |> Seq.force
+    |> Seq.freeze
 
 let group f =
     match Path.extension f with

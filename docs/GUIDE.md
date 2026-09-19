@@ -493,10 +493,29 @@ let tagged = $"at {$(git log -1 "--format=%h") |> Seq.exactlyOne}"
 print tagged
 ```
 
-There is no syntax for a computed program name — branch the whole
-command line instead (`if hot then rg pat else grep pat`). And do
-not bind an `if`-effect block to a `let`: the binding is eagerly
-evaluated unit, and a bare `if` statement says what it means.
+To swap between two known tools, branch the whole command line
+(`if hot then rg pat else grep pat`). And do not bind an `if`-effect
+block to a `let`: the binding is eagerly evaluated unit, and a bare
+`if` statement says what it means.
+
+When the program itself is a runtime value — a plugin's callback
+script, a tool a lookup table chose, asdf-style `exec` dispatch —
+force it external with a dynamic head: `^$tool`. The value is one
+program and argv stays typed argv, so the computed-command shape that
+pushes shell scripts into `sh -c "$path …"` (and its injection class)
+never appears:
+
+```weir
+let plugin = "sh"
+let arg = "two words"
+^$plugin -c "printf 'dispatched %s\n' \"$1\"" cb $arg
+```
+
+The head value must be a `string` — a seq capture refuses with a
+teaching (bind and pick the line: `let tool = $(…) |> Seq.exactlyOne`,
+then `^$tool`). Resolution happens at run: check does not warn about
+a program it cannot know yet, and a missing program is a located run
+error naming the value.
 
 Splice values into argv with `$name` or `(expr)`. A spliced value is
 always exactly one argv entry, never re-split — which is why there is
@@ -943,17 +962,17 @@ match Path.glob "*.md" with
 | [] -> print "no docs here"
 | docs -> docs |> Seq.sortBy (fun s -> s) |> Seq.iter print
 
-let pinned = Path.glob "*.md" |> Seq.force
+let pinned = Path.glob "*.md" |> Seq.freeze
 print $"pinned: {pinned |> Seq.length}"
 ```
 
 A batch splats into a command with `$@` — N files become N argv
 words, nothing re-split:
 
-`git add $@(Path.glob "*.txt" |> Seq.force)`
+`git add $@(Path.glob "*.txt" |> Seq.freeze)`
 
 The seq is lazy, so relative patterns resolve against the cwd at the
-moment the seq is read — if a `cd` happens in between, `Seq.force`
+moment the seq is read — if a `cd` happens in between, `Seq.freeze`
 the batch first to fix it in place. For paths relative to the script
 itself rather than the cwd:
 
@@ -1387,7 +1406,7 @@ pods |> Seq.where (fun p -> p.restarts > 0) |> Seq.iter (fun p -> print p.name)
 
 In a live script that is `kubectl get po |> from table Pod` — and
 `#infer it from table as Pod` in the REPL drafts the record for you.
-Reading such a binding twice wants a `|> Seq.force` tail: each pull
+Reading such a binding twice wants a `|> Seq.freeze` tail: each pull
 of an unforced command-backed seq re-runs `kubectl`, and the checker
 warns if you skip it.
 Extra columns are ignored, errors carry line and column, and there is
@@ -1396,7 +1415,7 @@ no `to table`: read-only, like XML.
 A real REPL session, end to end — clean up every evicted pod:
 
 ```text
-weir> let pods = kubectl get po -A |> Seq.force
+weir> let pods = kubectl get po -A |> Seq.freeze
 weir> #infer pods from table as Pod
 weir> pods |> from table Pod
        |> where (fun p -> p.status == "Evicted")
@@ -1404,7 +1423,7 @@ weir> pods |> from table Pod
        |> iter (fun (name, ns) -> kubectl delete po $name -n $ns)
 ```
 
-The `Seq.force` is load-bearing: a command-backed `let` stores the
+The `Seq.freeze` is load-bearing: a command-backed `let` stores the
 lazy seq, so without it `#infer` would run `kubectl` once and
 `from table` would run it again — inferring from one cluster state
 and deleting from another. Forcing materializes a single run: the

@@ -42,7 +42,7 @@ Parallel fan-out over a seq: results in input order, every arm
 runs, and the first error by input order rethrows after the join:
 
 ```weir
-[30; 10; 20] |> Seq.pmap (fun ms -> ms * 2) |> Seq.force |> Seq.map show |> print
+[30; 10; 20] |> Seq.pmap (fun ms -> ms * 2) |> Seq.freeze |> Seq.map show |> print
 ```
 
 Workers fork the session — a `cd` or env change inside an arm is
@@ -52,7 +52,7 @@ domain); `Seq.pmapWith` / `Seq.piterWith` set it explicitly, and a
 degree below 1 raises naming the constraint:
 
 ```weir-error
-[1] |> Seq.pmapWith 0 (fun x -> x) |> Seq.force // degree must be >= 1
+[1] |> Seq.pmapWith 0 (fun x -> x) |> Seq.freeze // degree must be >= 1
 ```
 
 There is no async/await and there never will be — processes and

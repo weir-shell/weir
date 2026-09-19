@@ -169,7 +169,7 @@ within tmp d
           ("D7", d7) ]
         |> Seq.where (fun p -> not (snd p))
         |> Seq.map fst
-        |> Seq.force
+        |> Seq.freeze
 
     print ""
 

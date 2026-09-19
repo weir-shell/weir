@@ -40,7 +40,7 @@ let grammarText =
 let manifest = File.read "editors/grammar-manifest.json" |> from json Manifest
 
 let words pattern label =
-    let hits = Str.rmatchAll pattern grammarText |> Seq.force
+    let hits = Str.rmatchAll pattern grammarText |> Seq.freeze
 
     if Seq.isEmpty hits then
         fail $"cannot find the {label} rule in grammar.js — the extraction shape drifted from the grammar repo's ci/check.sh"
@@ -51,7 +51,7 @@ let words pattern label =
     |> Seq.map Seq.head
     |> Seq.distinct
     |> Seq.sort
-    |> Seq.force
+    |> Seq.freeze
 
 let gKinds = words "within_kind: _ => choice\\(([^)]+)\\)" "within_kind"
 let gAdapters = words "choice\\('to', 'from'\\), [^,]+, choice\\(([^)]+)\\)" "adapter"
@@ -60,20 +60,20 @@ let gKeywords = words "(?s)keyword: _ =>\\s*choice\\(([^)]+)\\)" "keyword"
 // the same contracts the grammar repo asserts: kinds and adapters are
 // exact sets; the manifest's keywords minus true/false (booleans live in
 // their own grammar rule) must all be present
-let mKinds = manifest.withinKinds |> Seq.sort |> Seq.force
+let mKinds = manifest.withinKinds |> Seq.sort |> Seq.freeze
 let mAdapters =
     Seq.append manifest.adapters.fromAdapters manifest.adapters.toAdapters
     |> Seq.distinct
     |> Seq.sort
-    |> Seq.force
+    |> Seq.freeze
 
 let mKeywords =
     manifest.keywords
     |> Seq.where (fun k -> k <> "true" && k <> "false")
-    |> Seq.force
+    |> Seq.freeze
 
 let missing =
-    mKeywords |> Seq.where (fun k -> not (gKeywords |> Seq.contains k)) |> Seq.force
+    mKeywords |> Seq.where (fun k -> not (gKeywords |> Seq.contains k)) |> Seq.freeze
 
 if Str.join "," gKinds <> Str.join "," mKinds then
     fail $"GRAMMAR STALE: within kinds diverge — grammar has [{Str.join ", " gKinds}], weir's manifest has [{Str.join ", " mKinds}]. Refresh weir-shell/tree-sitter-weir (grammar.js + regenerate) and push"

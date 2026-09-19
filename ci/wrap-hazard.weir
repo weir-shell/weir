@@ -39,7 +39,7 @@ let checkFile path =
 
     final.Count
 
-let files = [Path.glob "docs/**/*.md" |> Seq.force; ["CHANGELOG.md"]] |> Seq.collect (fun xs -> xs)
+let files = [Path.glob "docs/**/*.md" |> Seq.freeze; ["CHANGELOG.md"]] |> Seq.collect (fun xs -> xs)
 
 let total = files |> Seq.map checkFile |> Seq.fold (fun a n -> a + n) 0
 

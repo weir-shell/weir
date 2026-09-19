@@ -24,7 +24,7 @@ let changes =
         | Regex @"^(.)(.) (.*)$" (x, y, path) ->
             Some { staged = x <> " " && x <> "?"; unstaged = y <> " "; path = path }
         | _ -> None)
-    |> Seq.force
+    |> Seq.freeze
 
 // [] matches emptiness on the seq directly; cons is for when the
 // head is worth BINDING — a wildcard completes this one

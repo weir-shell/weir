@@ -21,7 +21,7 @@ let repo = "weir-shell/weir"
 let tags =
     git tag -l "v*"
     |> Seq.where (fun t -> not (Str.contains "-" t))
-    |> Seq.force
+    |> Seq.freeze
 
 if Seq.isEmpty tags then
     print "no stable v* tag yet — nothing to check (pre-first-release; prerelease tags are exempt)"
@@ -65,7 +65,7 @@ if rel.status == 200 then
             (File.read "ci/release-known-incomplete.yaml"
              |> from yaml {| known: seq<{| tag: string; reason: string |}> |})
                 .known
-            |> Seq.force
+            |> Seq.freeze
 
         // the stale sweep: an acknowledged release must ACTUALLY be
         // incomplete, or the entry is rot and fails loudly

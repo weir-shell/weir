@@ -23,10 +23,10 @@ let bumpLine line =
 
 let projects = git ls-files
     |> Seq.where (Str.endsWith ".csproj")
-    |> Seq.force
+    |> Seq.freeze
 
 for path in projects do
-    let lines = File.read path |> Seq.force
+    let lines = File.read path |> Seq.freeze
     if lines |> Seq.exists (Str.contains "<IsPackable>true</IsPackable>") then
         lines |> Seq.map bumpLine |> File.write path
         print path

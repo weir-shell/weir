@@ -173,17 +173,17 @@ print $"{files |> Seq.length}"
 files |> Seq.iter print
 WEOF
 out=$($BIN check "$redir/twice.weir" 2>&1) || fail "a warning-only file must exit 0: $out"
-echo "$out" | grep -qF "warning [re-enumeration]: possible re-enumeration: 'files' is command-backed and unforced — each pull re-runs 'git ls-files'; snapshot one run: let files = git ls-files |> Seq.force" \
+echo "$out" | grep -qF "warning [re-enumeration]: possible re-enumeration: 'files' is command-backed and unforced — each pull re-runs 'git ls-files'; snapshot one run: let files = git ls-files |> Seq.freeze" \
   || fail "the re-enumeration warning with command and repair: $out"
 echo "$out" | grep -q "twice.weir:3:1" || fail "located at the SECOND pull: $out"
 cat > "$redir/forced.weir" <<'WEOF'
-let files = git ls-files |> Seq.force
+let files = git ls-files |> Seq.freeze
 print $"{files |> Seq.length}"
 files |> Seq.iter print
 WEOF
 fout=$($BIN check "$redir/forced.weir" 2>&1) || fail "forced must check clean: $fout"
 echo "$fout" | grep -q "re-enumeration" && fail "a forced binding must not warn: $fout" || true
-echo "e2e ok: re-enumeration warning on the second pull, exit 0; Seq.force silences it"
+echo "e2e ok: re-enumeration warning on the second pull, exit 0; Seq.freeze silences it"
 
 # walk candidates: exit codes exact; File.readSecret (never covered); Dir.copy success
 pw2=$(mkweirtmp)
@@ -555,7 +555,7 @@ let workers =
         let _cd = cd d
         pwd |> Seq.head)
 
-let ws = workers |> Seq.force
+let ws = workers |> Seq.freeze
 print (if ws |> Seq.head |> Str.endsWith "wa" then "w1-ok" else "w1-wrong")
 print (if ws |> Seq.last |> Str.endsWith "wb" then "w2-ok" else "w2-wrong")
 print (if pwd |> Seq.head |> Str.endsWith "home" then "parent-held" else "parent-moved")
@@ -1054,7 +1054,7 @@ volumes:
     defaultMode: 420
 YEOF
 ivout=$(printf '%s\n%s\n%s\n%s\n%s\n%s\n' \
-  "let raw = File.read \"$ivdir/pod-volumes.yaml\" |> Seq.force" \
+  "let raw = File.read \"$ivdir/pod-volumes.yaml\" |> Seq.freeze" \
   '#infer raw from yaml as PodSpec' \
   'let vol = raw |> from yaml PodSpec |> _.volumes |> Seq.head' \
   'print vol.secret.secretName' \
@@ -1145,7 +1145,7 @@ cat > "$cmdir/cmlist.json" <<'JEOF'
 }
 JEOF
 cmout=$(printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n' \
-  "let cm = File.read \"$cmdir/cmlist.json\" |> Seq.force" \
+  "let cm = File.read \"$cmdir/cmlist.json\" |> Seq.freeze" \
   '#infer cm from json as ConfigMapList' \
   'let v = cm |> from json ConfigMapList' \
   'print (v |> _.metadata.resourceVersion)' \
@@ -1185,7 +1185,7 @@ items:
 kind: List
 YEOF
 cmyout=$(printf '%s\n%s\n%s\n%s\n%s\n' \
-  "let cmy = File.read \"$cmdir/cmlist.yaml\" |> Seq.force" \
+  "let cmy = File.read \"$cmdir/cmlist.yaml\" |> Seq.freeze" \
   '#infer cmy from yaml as CmListY' \
   'let vy = cmy |> from yaml CmListY' \
   'let hy = vy.items |> Seq.skip 1 |> Seq.head |> _.data |> Seq.tryFind (fun (k, _) -> k == "network.yml")' \
@@ -2545,7 +2545,7 @@ let d = Path.newTempDir ()
 Dir.create $"{d}/sub"
 ["1"] |> File.write $"{d}/a.txt"
 ["2"] |> File.write $"{d}/sub/b.txt"
-Path.glob $"{d}/**/*.txt" |> Seq.force |> Seq.iter File.delete
+Path.glob $"{d}/**/*.txt" |> Seq.freeze |> Seq.iter File.delete
 print $"{Path.glob $"{d}/**/*.txt" |> Seq.length}"
 Dir.deleteAll d
 WEOF
@@ -2765,7 +2765,7 @@ echo "e2e ok: Unknown Error(s) joins the backtrack suppression (both ways)"
 
 # range slicing at the binary [D:range-slicing] — inclusive/clamping,
 # type-directed (str vs seq), with the from-end (^n) decline
-rgout=$($BIN -e 'let xs = [10; 20; 30; 40] in xs[1..2] |> Seq.force' 2>&1)
+rgout=$($BIN -e 'let xs = [10; 20; 30; 40] in xs[1..2] |> Seq.freeze' 2>&1)
 echo "$rgout" | grep -qF "20; 30" || fail "range slicing (inclusive) drifted: $rgout"
 strout=$($BIN -e '"abcdefghi"[3..7]' 2>&1)
 echo "$strout" | grep -qF "defgh" || fail "string slice drifted: $strout"
@@ -3042,7 +3042,7 @@ esac
 # prefix minus + sortByDescending (2026-07-21, loc.weir friction)
 out=$($BIN -e '2 * -3')
 expect "prefix minus at operand position" "-6 : int" "$out"
-out=$($BIN -e '[1; 3; 2] |> Seq.sortByDescending (fun x -> x) |> Seq.force')
+out=$($BIN -e '[1; 3; 2] |> Seq.sortByDescending (fun x -> x) |> Seq.freeze')
 expect "sortByDescending orders down" "[3; 2; 1]" "$out"
 
 # the squiggle sits ON the name, not the RHS (user report, 2026-07-21)
@@ -4628,10 +4628,10 @@ echo "e2e ok: the orphan error survives where it is true (no pending statement)"
 rm -rf "$bbdir"
 
 # the echo rule [D:echo-rule]: unforced caps with the lever that works;
-# forced echoes in full — Seq.force means something at the prompt now
+# forced echoes in full — Seq.freeze means something at the prompt now
 out=$(printf 'let xs = [1..100]\nxs\n' | $BIN 2>&1)
-echo "$out" | grep -qF "10; …] : seq<int> (first 10 of an unforced seq — Seq.force to echo everything)" || fail "the unforced echo names the honest lever: $out"
-out=$(printf '[1..12] |> Seq.force\n' | $BIN 2>&1)
+echo "$out" | grep -qF "10; …] : seq<int> (first 10 of an unforced seq — Seq.freeze to echo everything)" || fail "the unforced echo names the honest lever: $out"
+out=$(printf '[1..12] |> Seq.freeze\n' | $BIN 2>&1)
 echo "$out" | grep -qF "11; 12] : seq<int>" || fail "a forced seq echoes in full: $out"
 out=$($BIN -e '["a"; "b"; "c"; "d"; "e"; "f"; "g"; "h"; "i"; "j"; "k"]')
 echo "$out" | grep -qF "\"k\"] : seq<string>" || fail "a literal list is forced — full echo, no hint: $out"
@@ -5222,7 +5222,7 @@ match Path.glob "*.nope" with
 | [] -> print "no matches"
 | files -> files |> Seq.iter print
 
-let pinned = Path.glob "*.json" |> Seq.force
+let pinned = Path.glob "*.json" |> Seq.freeze
 cd src
 let after = Path.glob "*.json" |> Seq.length
 print $"lazy-sees-new-cwd: {after}"
@@ -5249,7 +5249,7 @@ else
 fi
 expect "glob: no matches is the empty seq (the match-[] idiom)" "no matches" "$out"
 expect "glob: the cd seam — lazy sees the new cwd" "lazy-sees-new-cwd: 0" "$out"
-expect "glob: Seq.force pins the answer before cd" "forced-pinned: 2" "$out"
+expect "glob: Seq.freeze pins the answer before cd" "forced-pinned: 2" "$out"
 
 # script-relative discovery: the scriptPath gate's payoff
 cat > "$pgdir/src/rel.weir" <<'WEOF'
@@ -5311,7 +5311,7 @@ spldir=$(mkweirtmp)
 
 # form 1: glob into git add, verified via git status output
 cat > "$spldir/add.weir" <<'WEOF'
-let files = Path.glob "*.txt" |> Seq.force
+let files = Path.glob "*.txt" |> Seq.freeze
 git add $@files
 git status --porcelain |> Seq.where (Str.startsWith "A ") |> Seq.iter print
 WEOF
@@ -5844,6 +5844,83 @@ if [ "$IS_WINDOWS" != "1" ]; then
     rm -rf "$acfg" "$astub"
 fi
 
+# ---- dynamic command heads [D:dynamic-head] ----------------------------
+# ^$name / ^$(…) force-external a VALUE head: one program, resolved at
+# run, argv stays typed argv. Stubs echo their argv so injection safety
+# is asserted without a real tool. Skipped on Windows (POSIX stubs; the
+# unit pins carry the parse/check laws everywhere).
+if [ "$IS_WINDOWS" != "1" ]; then
+    dhdir=$(mkweirtmp)
+    printf '#!/bin/sh\necho "argc=$#"\nfor a in "$@"; do echo "arg:[$a]"; done\n' > "$dhdir/argprobe" && chmod +x "$dhdir/argprobe"
+    cp "$dhdir/argprobe" "$dhdir/spaced probe"
+
+    # (a) the head is a runtime value; args pass through typed
+    printf 'let tool = "%s/argprobe"\n^$tool one two\n' "$dhdir" > "$dhdir/a.weir"
+    out=$($BIN "$dhdir/a.weir")
+    expect "a dynamic head runs the value" "argc=2" "$out"
+
+    # (b) injection safety: a spliced arg with spaces stays ONE argv entry
+    printf 'let tool = "%s/argprobe"\nlet x = "a b; rm -rf /"\n^$tool $x\n' "$dhdir" > "$dhdir/b.weir"
+    out=$($BIN "$dhdir/b.weir")
+    expect "a spaced splice is one argument under a dynamic head" "arg:[a b; rm -rf /]" "$out"
+    echo "$out" | grep -qF "argc=1" || fail "injection: exactly one argv entry: $out"
+
+    # (c) a head value with spaces is ONE program, never re-lexed
+    printf 'let tool = "%s/spaced probe"\n^$tool hi\n' "$dhdir" > "$dhdir/c.weir"
+    out=$($BIN "$dhdir/c.weir")
+    expect "a spaced head value is one program" "arg:[hi]" "$out"
+
+    # (d) the seq-capture head refuses with the located bind-and-pick teaching
+    printf '^$(git branch) status\n' > "$dhdir/d.weir"
+    out=$($BIN check "$dhdir/d.weir" 2>&1 || true)
+    expect "a seq-capture head refuses with the teaching" "which line is it? bind and pick" "$out"
+    echo "$out" | grep -qF "d.weir:1:2" || fail "the refusal is located: $out"
+
+    # (e) a string-typed capture head runs (the Phase-0 free case)
+    printf '^$(printf %s/argprobe |> Seq.exactlyOne) go\n' "$dhdir" > "$dhdir/e.weir"
+    out=$($BIN "$dhdir/e.weir")
+    expect "a string-typed capture heads directly" "arg:[go]" "$out"
+
+    # (f) not-found is a located RUN error naming the value; check stays silent
+    printf 'let tool = "zz-no-such-prog"\n^$tool hi\n' > "$dhdir/f.weir"
+    $BIN check "$dhdir/f.weir" 2>&1 | grep -q "cmd-not-found" && fail "check must not warn on a dynamic head (run-time carve-out)"
+    out=$($BIN "$dhdir/f.weir" 2>&1 || true)
+    expect "not-found names the value at run" "command not found: zz-no-such-prog — the dynamic head ^\$tool resolves at run time" "$out"
+    echo "$out" | grep -qF "f.weir:2" || fail "the run error is located: $out"
+
+    # (g) composition: pipe, capture, reifier, env overlay
+    printf 'let tool = "%s/argprobe"\nlet r = ^$tool x | complete\nprint $"exit={r.exitCode}"\n' "$dhdir" > "$dhdir/g.weir"
+    out=$($BIN "$dhdir/g.weir")
+    expect "^\$tool | complete reifies" "exit=0" "$out"
+    printf 'let tool = "sh"\nlet e = Env.ofPairs [("DH_PROBE", "seen")]\nlet o = $e(^$tool -c "echo p=$DH_PROBE") |> Seq.exactlyOne\nprint o\n' > "$dhdir/h.weir"
+    out=$($BIN "$dhdir/h.weir")
+    expect "an env sigil overlays a dynamic head" "p=seen" "$out"
+
+    # (i) --can surfaces the dynamic head; --strict treats it as opaque
+    printf 'let tool = "%s/argprobe"\n^$tool hi\n' "$dhdir" > "$dhdir/i.weir"
+    out=$($BIN check --can "$dhdir/i.weir" 2>&1)
+    expect "--can names the dynamic head under runs" '^$tool (not statically known — a dynamic head resolves at run)' "$out"
+    echo "$out" | grep -qF "this report is incomplete: 1 opaque site" || fail "a dynamic head counts as an opaque site: $out"
+    strictrc=0
+    $BIN check --can --strict "$dhdir/i.weir" >/dev/null 2>&1 || strictrc=$?
+    [ "$strictrc" = "2" ] || fail "--strict must exit 2 on a dynamic head (got $strictrc)"
+
+    # (j) the fatal spellings teach: splat head, interpolated head
+    printf 'let xs = ["a"]\n^$@xs\n' > "$dhdir/j.weir"
+    out=$($BIN check "$dhdir/j.weir" 2>&1 || true)
+    expect "a splat cannot head (dynamic spelling)" "a splat cannot head a command" "$out"
+    printf 'let d = "x"\n^$"{d}/tool" run\n' > "$dhdir/k.weir"
+    out=$($BIN check "$dhdir/k.weir" 2>&1 || true)
+    expect "an interpolated head teaches bind-first" "bind it first" "$out"
+
+    # (l) zero movement: ^ls still forces the PATH binary
+    printf '^ls\n' > "$dhdir/l.weir"
+    $BIN "$dhdir/l.weir" > /dev/null || fail "^ls (literal force) must still run"
+
+    echo "e2e ok: dynamic heads run the value (argv typed, spaced head one program), refuse seq captures located, carve out resolution to run, compose (pipe/capture/complete/env), surface in --can/--strict"
+    rm -rf "$dhdir"
+fi
+
 # ---- help glance + #find [D:help-glance] [D:help-find] --------------------
 # the headless doc render is the ONE #help source: `weir --repl-doc X`
 # must print byte-identically to the piped `#help X` answer (prompts
@@ -6025,7 +6102,7 @@ type Spec = { containers: seq<Container>; tolerations: seq<Tol>; volumes: seq<Vo
 type Status = { phase: string; conditions: seq<Cond>; containerStatuses: seq<CStat>; message: string; reason: string }
 type Item = { apiVersion: string; kind: string; metadata: Meta; spec: Spec; status: Status }
 type List = { apiVersion: string; items: seq<Item>; kind: string }
-let text = File.read "kubectl-list.yaml" |> Seq.force
+let text = File.read "kubectl-list.yaml" |> Seq.freeze
 let lst = text |> from yaml List
 print $"items: {show (Seq.length lst.items)} kind: {lst.kind}"
 let pod = lst.items |> Seq.head
@@ -6052,7 +6129,7 @@ expect "a multi-line single-quoted eviction message folds to one line" "evict: T
 # the real file INFERS clean end-to-end: zero-indent seqs + empty flow
 # together, empty {} → opaque Yaml with a note (never a silent shape)
 cat > "$ydir/inferdecl.weir" <<'WEOF'
-let text = File.read "kubectl-list.yaml" |> Seq.force
+let text = File.read "kubectl-list.yaml" |> Seq.freeze
 print (Yaml.inferShape text)
 WEOF
 out=$(cd "$ydir" && $BIN inferdecl.weir)
@@ -6080,7 +6157,7 @@ labels:
   clean: yes
 YEOF
 cat > "$ydir/draft.weir" <<'WEOF'
-let text = File.read "labels.yaml" |> Seq.force
+let text = File.read "labels.yaml" |> Seq.freeze
 print (Yaml.inferShape text)
 WEOF
 draft=$(cd "$ydir" && $BIN draft.weir)
@@ -6089,7 +6166,7 @@ echo "$draft" | grep -qF 'Wire' && fail "mapping keys are data — no [<Wire>] b
 # assemble a program from the drafted decls + a pair lookup per key
 {
   echo "$draft" | grep -v '^// note'
-  echo 'let text = File.read "labels.yaml" |> Seq.force'
+  echo 'let text = File.read "labels.yaml" |> Seq.freeze'
   echo 'let r = text |> from yaml Root'
   echo 'let v k = r.labels |> Seq.tryFind (fun (p, _) -> p == k) |> Option.map snd |> Option.defaultValue "?"'
   echo 'let a = v "k8s-app"'
@@ -6307,9 +6384,9 @@ bomdir=$(mktemp -d)
 printf '\xEF\xBB\xBF<Project>\n</Project>\n' > "$bomdir/bom.csproj"
 printf '<Project>\n</Project>\n' > "$bomdir/plain.csproj"
 bom3() { od -An -tx1 -N3 "$1" | tr -d ' '; }
-(cd "$bomdir" && $BIN -e 'File.read "bom.csproj" |> Seq.force |> File.write "bom.csproj"') || fail "File.write round-trip raised on a BOM file"
+(cd "$bomdir" && $BIN -e 'File.read "bom.csproj" |> Seq.freeze |> File.write "bom.csproj"') || fail "File.write round-trip raised on a BOM file"
 [ "$(bom3 "$bomdir/bom.csproj")" = "efbbbf" ] || fail "File.write dropped an existing UTF-8 BOM"
-(cd "$bomdir" && $BIN -e 'File.read "plain.csproj" |> Seq.force |> File.write "plain.csproj"') || fail "File.write round-trip raised on a no-BOM file"
+(cd "$bomdir" && $BIN -e 'File.read "plain.csproj" |> Seq.freeze |> File.write "plain.csproj"') || fail "File.write round-trip raised on a no-BOM file"
 [ "$(bom3 "$bomdir/plain.csproj")" = "efbbbf" ] && fail "File.write must NOT add a BOM to a no-BOM file"
 (cd "$bomdir" && $BIN -e '["x"] |> File.write "new.txt"') || fail "File.write raised on a new file"
 [ "$(bom3 "$bomdir/new.txt")" = "efbbbf" ] && fail "File.write must NOT add a BOM to a new file"
@@ -6995,7 +7072,7 @@ let outs =
         within cd "TUMARK/work"
             $(weir -e $"print {show i}") |> Seq.head
     )
-    |> Seq.force
+    |> Seq.freeze
 let after = pwd |> Seq.head
 print (if before == after then "cwd-held" else "CWD-LEAKED")
 print (outs |> Seq.head)

@@ -237,7 +237,7 @@ segs = pty_session(
     ]
 )
 # the acceptance: 29 unforced lines fit under the default cap — no
-# Seq.force, no clip sentence ("l29" is a RESULT spelling; the typed
+# Seq.freeze, no clip sentence ("l29" is a RESULT spelling; the typed
 # line never contains it)
 if "l29" not in segs[0] or "first" in segs[0]:
     failures.append(f"29 lines must echo whole under the default cap: {segs[0][-300:]!r}")

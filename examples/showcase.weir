@@ -216,7 +216,7 @@ let hits =
         match l with
         | Regex @"ok (\d+) (\S+)" (code, path) -> Some (code, path)
         | _ -> None)
-    |> Seq.force
+    |> Seq.freeze
 
 hits |> Seq.iter (fun (c, p) -> print $"{c} <- {p}")
 
@@ -326,7 +326,7 @@ within tmp scratch
     print $"file roundtrip: {back |> Seq.length} lines in {Path.fileName store}"
     // xs[0] raises out of range (it IS Seq.item 0); tryItem asks instead
     print $"first back: {back[0]}; missing 99th: {back |> Seq.tryItem 99}"
-    let txts = Path.glob (Path.combine scratch "*.txt") |> Seq.force
+    let txts = Path.glob (Path.combine scratch "*.txt") |> Seq.freeze
     print $"glob sees {txts |> Seq.length} txt file(s); stem = {Path.stem store}"
     // File.size is a `Size`, not an int: binary units, comparable directly
     // (`> 10MiB` needs no arithmetic), which is why the row carries the type

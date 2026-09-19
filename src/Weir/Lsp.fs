@@ -240,8 +240,12 @@ let semanticTokensFor (lines: string list) : (int * int * int * int) list =
 
     let rec walk (ll: Script.LogicalLine) (te: Check.TypedExpr) =
         (match te.Kind with
-         | Check.TECmd(prog, args, _) ->
-             emitHead ll te.Span.Start.Col prog
+         | Check.TECmd(head, args, _) ->
+             (match head with
+              | Check.THeadLit prog -> emitHead ll te.Span.Start.Col prog
+              // a dynamic head tokens as its splice [D:dynamic-head]
+              | Check.THeadDyn(_, he) -> emitArg ll he)
+
              args |> List.iter (emitArg ll)
          | Check.TEApp({ Kind = Check.TEApp(inner,
                                             { Kind = Check.TEStr prog
@@ -728,7 +732,7 @@ let rec private cmdSurfaceAt (jcol: int) (te: Check.TypedExpr) : (string * int *
     | Some r -> Some r
     | None when te.Span.Start.Col <= jcol && jcol < te.Span.End.Col ->
         (match te.Kind with
-         | Check.TECmd(prog, args, _) ->
+         | Check.TECmd(Check.THeadLit prog, args, _) ->
              Some(
                  prog,
                  te.Span.Start.Col,

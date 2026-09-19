@@ -279,7 +279,7 @@ The complete set:
 | `$(...)` | expression | capture a command chain's output |
 | `!(...)` | expression | run a command chain: stream, raise on nonzero |
 | `$e(...)` / `!e(...)` | expression | the same, under the env overlay bound to `e` |
-| `^cmd` | command head | force the PATH program over a weir builtin |
+| `^cmd` / `^$name` | command head | force-external: a literal head, or a `$`-spliced value head |
 | `_.field` | expression | field-access shorthand (`fun x -> x.field`) |
 | `_[i]` | expression | index shorthand (`fun x -> x[i]`) |
 | `_` | patterns | the wildcard |

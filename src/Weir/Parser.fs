@@ -1892,12 +1892,22 @@ let private patCore =
                         failFatally
                             "Regex patterns take a LITERAL string; computed patterns live on the expression side (Str.isMatch / Str.rmatch)" ]
               elif Char.IsUpper w[0] then
-                  opt patAtom
-                  |>> fun arg ->
-                      let e = arg |> Option.map (fun a -> a.PSpan.End) |> Option.defaultValue span.End
+                  choice
+                      [ // a QUALIFIED case in pattern position [D:qualified-name-teach]
+                        // teaches the law instead of a bare expecting-list: the
+                        // scrutinee's type resolves the bare name, imported
+                        // unions included — the qualifier has no meaning here
+                        attempt (pchar '.' >>. identSpanned)
+                        >>= fun (m, _) ->
+                            failFatallyAtCol
+                                span.Start.Col
+                                $"a pattern names a case bare — write '{m}', not '{w}.{m}': the scrutinee's type resolves the case, imported unions included"
+                        opt patAtom
+                        |>> fun arg ->
+                            let e = arg |> Option.map (fun a -> a.PSpan.End) |> Option.defaultValue span.End
 
-                      { PKind = PCase(w, arg)
-                        PSpan = { Start = span.Start; End = e } }
+                            { PKind = PCase(w, arg)
+                              PSpan = { Start = span.Start; End = e } } ]
               else
                   preturn { PKind = PVar w; PSpan = span } ]
 
@@ -1943,6 +1953,18 @@ binderPatRef.Value <- commaPats
 let private anonShape, private anonShapeRef =
     createParserForwardedToRef<(string * Ty) list, unit> ()
 
+// a QUALIFIED type name in the adapter slot [D:qualified-name-teach]
+// teaches: an imported module's types resolve by their PLAIN name
+// (types live flat across the module boundary; the alias qualifies
+// values, never this slot) — same law as module signatures
+let private bareAdapterName (w: string) : Parser<string, unit> =
+    choice
+        [ attempt (pchar '.' >>. identSpanned)
+          >>= fun (m, _) ->
+              failFatally
+                  $"the adapter slot takes a bare record name — write '{m}', not '{w}.{m}': imported types resolve by their plain name (they live flat; the module alias qualifies values, not types here)"
+          preturn w ]
+
 let private fromExpr =
     spanned (
         keyword "from" >>. ident
@@ -1958,6 +1980,21 @@ let private fromExpr =
             // is reachable only INSIDE the shape's fields; the admitted
             // set stays closed)
             (anonShape |>> fun fs -> FromAnon fs, false)
+            // the qualified spelling is recognized WHOLE first, so the
+            // fatal fires OUTSIDE the slot's attempt (a fatal inside it
+            // demotes to a backtrack note) [D:qualified-name-teach]
+            <|> (attempt (
+                     identSpanned
+                     >>= fun (w, wspan) ->
+                         if Char.IsUpper w[0] && w <> "Map" then
+                             pchar '.' >>. identSpanned |>> fun (m, _) -> (w, wspan, m)
+                         else
+                             ifail "not a qualified slot name"
+                 )
+                 >>= fun (w, wspan, m) ->
+                     failFatallyAtCol
+                         wspan.Start.Col
+                         $"the adapter slot takes a bare record name — write '{m}', not '{w}.{m}': imported types resolve by their plain name (they live flat; the module alias qualifies values, not types here)")
             <|> attempt (
                 identSpanned
                 >>= fun (w, _) ->
@@ -1974,7 +2011,7 @@ let private fromExpr =
                                   <|> (identSpanned
                                        >>= fun (inner, _) ->
                                            if Char.IsUpper inner[0] then
-                                               preturn (FromName inner)
+                                               bareAdapterName inner |>> FromName
                                            else
                                                fail "a record name inside Map< >")))
                         |>> fun sh -> FromMap sh, false
@@ -1986,7 +2023,7 @@ let private fromExpr =
                              <|> (identSpanned
                                   >>= fun (inner, _) ->
                                       if Char.IsUpper inner[0] then
-                                          preturn (FromName inner)
+                                          bareAdapterName inner |>> FromName
                                       else
                                           fail "a record name inside seq< >"))
                         |>> fun sh -> sh, true
@@ -2521,7 +2558,7 @@ let private forExprBody =
                     mk (EPipe(source, mk (EApp(iter, mk (ELambdaPat(binder, body))))))
 
 // [for p in xs -> e] [D:for-do]: F#'s list comprehension, desugared to
-// `xs |> Seq.map (fun p -> e) |> Seq.force` -- Seq.force keeps the list
+// `xs |> Seq.map (fun p -> e) |> Seq.freeze` -- Seq.freeze keeps the list
 // literal's EAGERNESS contract. The desugar bypasses EList entirely, so
 // list-literal inference (the empty-list fresh var, element unification)
 // is untouched -- the session finding: same path as the statement form.
@@ -2539,14 +2576,14 @@ comprehensionLitRef.Value <-
         let mk k = { Kind = k; Span = span }
 
         let field name =
-            mk (EVar(if name = "map" then "|seqMap" else "|seqForce"))
+            mk (EVar(if name = "map" then "|seqMap" else "|seqFreeze"))
 
         // the PIPE shape [D:for-binder] — the comprehension's twin of the
         // statement form's fix: source first, so the binder types
         let mapped =
             mk (EPipe(source, mk (EApp(field "map", mk (ELambdaPat(binder, elem))))))
 
-        mk (EApp(field "force", mapped)))
+        mk (EApp(field "freeze", mapped)))
     .>> ws
 
 // ---- the yaml district [D:yaml-district] ---------------------------------
@@ -3557,6 +3594,9 @@ type private HeadKind =
     // [D:command-head-alias]: the ECmd fold swaps the head to the exe and
     // PREPENDS the prefix as literal argv (before the user's own args)
     | AliasedHead of exe: string * prefix: string list
+    // ^$name / ^$(…) — a force-external VALUE head [D:dynamic-head]:
+    // the program string resolves at RUN; argv stays typed argv
+    | DynamicHead of display: string * head: Expr
 
 let private commandSegment
     (builtinHeads: bool)
@@ -3564,7 +3604,24 @@ let private commandSegment
     (sigilEnv: Expr option)
     (r: Resolver)
     : Parser<Expr, unit> =
-    let head =
+    // ^$name / ^$(…) — the dynamic head [D:dynamic-head]: `^` gains a
+    // `$`-splice alternative beside the literal — a runtime string can
+    // never be a weir binding, so a dynamic head is necessarily external
+    // and `^` already says exactly that. The value is ONE program, never
+    // re-lexed; the fatal spellings (^$@, ^$", bare ^$) are guarded
+    // ahead of the segment so their teachings survive the backtrack.
+    let dynHead =
+        attempt (getPosition .>> pchar '^' .>> followedBy (pchar '$'))
+        >>= fun startP ->
+            (captureSigil |>> (fun e -> "$(…)", e)
+             <|> (spanned (pchar '$' >>. rawWord)
+                  |>> fun (n, sp) -> $"${n}", { Kind = EVar n; Span = sp }))
+            .>> ws
+            |>> fun (disp, e) ->
+                let span = { Start = pos startP; End = e.Span.End }
+                DynamicHead(disp, e), disp, span
+
+    let litHead =
         spanned (opt (pchar '^') .>>. cmdWord)
         // the machine boundary [D:yaml-district]: a head GLUED to the
         // sentinel can only be the assembler's yaml-district wrap
@@ -3632,9 +3689,32 @@ let private commandSegment
             else
                 ifail "not an external command"
 
+    let head = dynHead <|> litHead
+
+    // the fatal `^$` spellings [D:dynamic-head], guarded OUTSIDE the
+    // head attempt (the `$@`-head guard's mechanism) so the teachings
+    // survive the backtrack: a splat head, an interpolated head, and a
+    // bare `^$` each name their repair
+    let dynHeadGuards =
+        choice
+            [ getPosition .>> attempt (pstring "^$@")
+              >>= fun at ->
+                  failFatallyAt
+                      at
+                      "a splat cannot head a command (N words would be N heads) — a dynamic head takes one program: ^$name"
+              getPosition .>> attempt (pstring "^$" .>> followedBy (pchar '"'))
+              >>= fun at ->
+                  failFatallyAt
+                      at
+                      "an interpolated string cannot head a command — bind it first (let tool = $\"…\"), then run ^$tool"
+              getPosition
+              .>> attempt (pstring "^$" .>> notFollowedBy (satisfy (fun c -> isIdentStart c || c = '(')))
+              >>= fun at -> failFatallyAt at "'^$' needs a name or a capture — a dynamic head is ^$name or ^$(…)" ]
+
     // consume the trigger, then anchor back [D:anchor-before-read]: a
     // non-consuming fatal here merges the head alternative's expected-set
-    (getPosition .>> pstring "$@"
+    dynHeadGuards
+    <|> (getPosition .>> pstring "$@"
      >>= fun at ->
          fun stream ->
              // $@" is the F# reflex for interpolated-verbatim — teach the
@@ -3647,7 +3727,7 @@ let private commandSegment
              else
                  (failFatallyAt
                      at
-                     "a splat cannot head a command (N words would be N heads); a command head is a literal — branch the whole command line")
+                     "a splat cannot head a command (N words would be N heads); a command head is one program — a dynamic one is ^$name")
                      stream)
     <|> (attempt head .>>. many argP)
     |>> fun ((kind, prog, span), args) ->
@@ -3660,7 +3740,10 @@ let private commandSegment
 
         match kind with
         | ExternalHead ->
-            { Kind = ECmd(prog, args, sigilEnv)
+            { Kind = ECmd(HeadLit prog, args, sigilEnv)
+              Span = fullSpan }
+        | DynamicHead(disp, he) ->
+            { Kind = ECmd(HeadDyn(disp, he), args, sigilEnv)
               Span = fullSpan }
         | AliasedHead(exe, prefix) ->
             // swap the head to the real exe, PREPEND the fixed prefix as
@@ -3670,7 +3753,7 @@ let private commandSegment
             // located at the alias head for diagnostics).
             let prefixArgs = prefix |> List.map (fun a -> { Kind = EStr a; Span = span })
 
-            { Kind = ECmd(exe, prefixArgs @ args, sigilEnv)
+            { Kind = ECmd(HeadLit exe, prefixArgs @ args, sigilEnv)
               Span = fullSpan }
         | BuiltinHead ->
             let headVar = { Kind = EVar prog; Span = span }
@@ -3880,8 +3963,15 @@ let private foldChain (h: Expr) (rest: ((string * Span) * Seg) list) : Result<Ex
                             | [] -> { Kind = EList []; Span = acc.Span }
                             | first :: rest -> rest |> List.fold seqAppend first
 
+                    // a dynamic head rides the desugar as EDynProg — typed
+                    // string-exactly at check, erased [D:dynamic-head]
+                    let progArgOf (h: CmdHead) (span: Span) =
+                        match h with
+                        | HeadLit prog -> { Kind = EStr prog; Span = span }
+                        | HeadDyn(disp, he) -> { Kind = EDynProg(disp, he); Span = he.Span }
+
                     match acc.Kind with
-                    | ECmd(prog, args, cenv) ->
+                    | ECmd(h, args, cenv) ->
                         let span = Span.union acc.Span mspan
 
                         // env sigils route through the *Env twins — the same
@@ -3893,7 +3983,7 @@ let private foldChain (h: Expr) (rest: ((string * Span) * Seg) list) : Result<Ex
                                   Span = mspan }
                             | None -> { Kind = EVar plainVar; Span = mspan }
 
-                        let progArg = { Kind = EStr prog; Span = acc.Span }
+                        let progArg = progArgOf h acc.Span
                         let argList = argvExpr args
 
                         let applied =
@@ -3907,10 +3997,10 @@ let private foldChain (h: Expr) (rest: ((string * Span) * Seg) list) : Result<Ex
                     // is a value: a command→command LHS is the multi-external
                     // case below, rejected as always (the family's single-segment
                     // rule, unchanged).
-                    | EPipe(stdinE, { Kind = ECmd(prog, args, None) }) when not (isCommandish stdinE) ->
+                    | EPipe(stdinE, { Kind = ECmd(h, args, None) }) when not (isCommandish stdinE) ->
                         let span = Span.union acc.Span mspan
                         let headVar = { Kind = EVar stdinVar; Span = mspan }
-                        let progArg = { Kind = EStr prog; Span = acc.Span }
+                        let progArg = progArgOf h acc.Span
                         let argList = argvExpr args
 
                         let applied =
@@ -3918,6 +4008,20 @@ let private foldChain (h: Expr) (rest: ((string * Span) * Seg) list) : Result<Ex
                             |> List.fold (fun f a -> { Kind = EApp(f, a); Span = span }) headVar
 
                         Result.Ok applied
+                    // a capture sigil CLOSES its chain at the ')' — the
+                    // composition exists INSIDE the parens [D:exit-reifiers]:
+                    // teach the spelling, not just the law
+                    | ECapture inner ->
+                        let sigil =
+                            match inner.Kind with
+                            | ECmd(_, _, Some { Kind = EVar n })
+                            | EPipe(_, { Kind = ECmd(_, _, Some { Kind = EVar n }) }) -> "$" + n
+                            | _ -> "$"
+
+                        Result.Error(
+                            $"'{stageName}' must directly follow a single external command segment — the capture sigil closes its chain at the ')'; the reifier composes inside the parens: {sigil}(cmd | {stageName})",
+                            mspan
+                        )
                     // a reifier needs a SINGLE external segment [D:exit-reifiers]:
                     // a multi-external chain is rejected as always (no new law)
                     | _ -> Result.Error($"'{stageName}' must directly follow a single external command segment", mspan))
@@ -4541,27 +4645,69 @@ let stmtExprs (s: Stmt) : Expr list =
 // command-CHAIN mismatches; this catches the value-headed operator form,
 // anchored on the offending program name.
 let private pipeToCommand (r: Resolver) (root: Expr) : (Span * string option) option =
-    let rec cmdHead (e: Expr) =
+    let rec cmdHead (bound: Set<string>) (e: Expr) =
         match e.Kind with
-        | EVar n when r.IsExternal n && not (r.IsKnown n) ->
+        | EVar n when not (Set.contains n bound) && r.IsExternal n && not (r.IsKnown n) ->
             let teach =
                 r.BareHome n
                 |> Option.map (fun home ->
                     $"'{n}' is a bare module member — spell it '{home}.{n}' (bare names live in the REPL session)")
 
             Some(e.Span, teach)
-        | EApp(f, _) -> cmdHead f
+        | EApp(f, _) -> cmdHead bound f
         | _ -> None
 
-    let rec walk (e: Expr) =
-        match e.Kind with
-        | EPipe(_, rhs) ->
-            match cmdHead rhs with
-            | Some sp -> Some sp
-            | None -> exprChildren e |> List.tryPick walk
-        | _ -> exprChildren e |> List.tryPick walk
+    // STATEMENT-LOCAL binders are in scope for this walk [D:statement-lets]:
+    // a block-local `let pad …` inside a function body is not in the
+    // resolver's env (that map holds completed statements only), and
+    // under check's assume-command rule any command-shaped word claims
+    // IsExternal — so without tracking, `… |> pad` inside the same
+    // statement mis-reads as a program (the acme port's false positive).
+    // Bindings beat PATH, block-locals included.
+    let rec walk (bound: Set<string>) (e: Expr) =
+        let kids b = exprChildren e |> List.tryPick (walk b)
 
-    walk root
+        match e.Kind with
+        | ELet(n, _, v, body) ->
+            match walk bound v with
+            | Some hit -> Some hit
+            | None -> walk (Set.add n bound) body
+        | ELetPat(p, v, body) ->
+            match walk bound v with
+            | Some hit -> Some hit
+            | None -> walk (Set.union (Set.ofList (patLeafNames p)) bound) body
+        | ELambda(p, _, body) -> walk (Set.add p bound) body
+        | ELambdaPat(p, body) -> walk (Set.union (Set.ofList (patLeafNames p)) bound) body
+        | EMatch(scrut, arms) ->
+            match walk bound scrut with
+            | Some hit -> Some hit
+            | None ->
+                arms
+                |> List.tryPick (fun (p, guard, body) ->
+                    let armBound = Set.union (Set.ofList (patLeafNames p)) bound
+
+                    match guard |> Option.bind (walk armBound) with
+                    | Some hit -> Some hit
+                    | None -> walk armBound body)
+        | EWithin(_, binder, arg, opts, body) ->
+            let inner = binder |> Option.map fst |> Option.map (fun n -> Set.add n bound) |> Option.defaultValue bound
+
+            [ arg; opts ]
+            |> List.tryPick (Option.bind (walk bound))
+            |> Option.orElseWith (fun () -> walk inner body)
+        | ERetry(_, opts, watch, body, until) ->
+            [ Some opts; watch; Some body ]
+            |> List.tryPick (Option.bind (walk bound))
+            |> Option.orElseWith (fun () ->
+                until
+                |> Option.bind (fun ((n, _), pred) -> walk (Set.add n bound) pred))
+        | EPipe(_, rhs) ->
+            match cmdHead bound rhs with
+            | Some sp -> Some sp
+            | None -> kids bound
+        | _ -> kids bound
+
+    walk Set.empty root
 
 let parseLineFull (r: Resolver) (input: string) : Result<Stmt, ParseFailure> =
     ambientResolver.Value <- r

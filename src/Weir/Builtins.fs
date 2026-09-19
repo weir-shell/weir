@@ -315,7 +315,7 @@ let private toListImpl: Value =
         | VSeq items ->
             let materialized = List.ofSeq items
             VSeq(materialized :> seq<Value>)
-        | v -> unreachable $"the checker rejects 'force' on {formatValue v}")
+        | v -> unreachable $"the checker rejects 'freeze' on {formatValue v}")
 
 let completedDef: RecordDef =
     { Name = "Completed"
@@ -546,7 +546,7 @@ let private rsplitImpl: Value =
 // `**` cross-segment, `?`, `[abc]`/`[!abc]`), bash's laws: `*` never
 // matches dotfiles (a `.`-leading segment does); sorted per level
 // (deterministic output); LAZY against the cwd at ENUMERATION (the
-// cd seam — `|> Seq.force` pins the answer now); symlinked dirs
+// cd seam — `|> Seq.freeze` pins the answer now); symlinked dirs
 // NOT traversed by `**` (bash ≥4.3 globstar parity — loop-immune by
 // law; explicit segments still follow links); unreadable dirs
 // skipped (a pattern is discovery, not assertion); no matches = the
@@ -925,6 +925,33 @@ let private substringImpl: Value =
                     else
                         VStr(s.Substring(st, ln))
                 | _ -> unreachable "the checker rejects 'substring' on these arguments")))
+
+// Str.replicate / padLeft / padRight [D:port-members]: the width
+// primitives every columnar CLI hand-rolled (the asdf port's receipt).
+// Negative counts/widths refuse like Seq.replicate — the one convention.
+let private strReplicateImpl: Value =
+    VBuiltin(fun nV ->
+        VBuiltin(fun sV ->
+            match nV, sV with
+            | VInt n, VStr s ->
+                if n < 0L then
+                    failwith $"Str.replicate: the count must be non-negative; got {n}"
+                else
+                    VStr(String.replicate (int n) s)
+            | _ -> unreachable "the checker rejects 'Str.replicate' on these arguments"))
+
+// .NET PadLeft/PadRight semantics, deliberately: width is the TOTAL
+// width, spaces pad, an already-longer string is unchanged
+let private padImpl (name: string) (f: int -> string -> string) : Value =
+    VBuiltin(fun wV ->
+        VBuiltin(fun sV ->
+            match wV, sV with
+            | VInt w, VStr s ->
+                if w < 0L then
+                    failwith $"Str.{name}: the width must be non-negative; got {w}"
+                else
+                    VStr(f (int w) s)
+            | _ -> unreachable $"the checker rejects 'Str.{name}' on these arguments"))
 
 let private defaultToImpl: Value =
     VBuiltin(fun fallback ->
@@ -1340,6 +1367,29 @@ let private containsImpl: Value =
             | VSeq items -> VBool(items |> Seq.exists (fun v -> v = needle))
             | v -> unreachable $"the checker rejects 'contains' on {formatValue v}"))
 
+// Seq.equal [D:port-members]: element-wise, length-sensitive, Eq on the
+// elements (Seq.contains's constraint mirrored). Lockstep enumeration
+// short-circuits at the first mismatch and never pulls beyond need —
+// the honest spelling of what a lossy join-then-compare approximates.
+let private seqEqualImpl: Value =
+    VBuiltin(fun a ->
+        VBuiltin(fun b ->
+            match a, b with
+            | VSeq xs, VSeq ys ->
+                use ex = xs.GetEnumerator()
+                use ey = ys.GetEnumerator()
+
+                let rec go () =
+                    let mx, my = ex.MoveNext(), ey.MoveNext()
+
+                    if mx <> my then false
+                    elif not mx then true
+                    elif ex.Current = ey.Current then go ()
+                    else false
+
+                VBool(go ())
+            | v, _ -> unreachable $"the checker rejects 'Seq.equal' on {formatValue v}"))
+
 // Seq.distinct [D:seq-distinct]: lazy, first-occurrence-wins,
 // remembers only what it has yielded; equality is the checker-vetted
 // structural `=` (Eq-constrained — functions/seqs rejected at use)
@@ -1730,7 +1780,7 @@ let private seqMembers: (string * Ty * Value) list =
       "exactlyOne", TFun(TSeq tA, tA), exactlyOneImpl
       "tryExactlyOne", TFun(TSeq tA, TNamed("Option", [ tA ])), tryExactlyOneImpl
       "sum", TFun(seqInt, TInt), sumImpl
-      "force", TFun(TSeq tA, TSeq tA), toListImpl
+      "freeze", TFun(TSeq tA, TSeq tA), toListImpl
       "tryHead", TFun(TSeq tA, TNamed("Option", [ tA ])), tryHeadImpl
       "tryFind", TFun(TFun(tA, TBool), TFun(TSeq tA, TNamed("Option", [ tA ]))), tryFindImpl
       "isEmpty", TFun(TSeq tA, TBool), isEmptyImpl
@@ -1761,6 +1811,7 @@ let private seqMembers: (string * Ty * Value) list =
       "tryItem", TFun(TInt, TFun(TSeq tA, TNamed("Option", [ tA ]))), tryItemImpl
       "skip", TFun(TInt, TFun(TSeq tA, TSeq tA)), skipImpl
       "contains", TFun(tA, TFun(TSeq tA, TBool)), containsImpl
+      "equal", TFun(TSeq tA, TFun(TSeq tA, TBool)), seqEqualImpl
       "distinct", TFun(TSeq tA, TSeq tA), distinctImpl
       // pairs, F#'s own shape [D:groupby-pairs] — countBy/zip/pairwise
       // already speak tuples; the record was the lone deviation
@@ -1860,6 +1911,9 @@ let private strMembers: (string * Ty * Value) list =
       "replace", TFun(TStr, TFun(TStr, TFun(TStr, TStr))), replaceImpl
       "length", TFun(TStr, TInt), strLenImpl
       "sub", TFun(TInt, TFun(TInt, TFun(TStr, TStr))), substringImpl
+      "replicate", TFun(TInt, TFun(TStr, TStr)), strReplicateImpl
+      "padLeft", TFun(TInt, TFun(TStr, TStr)), padImpl "padLeft" (fun w (s: string) -> s.PadLeft(w, ' '))
+      "padRight", TFun(TInt, TFun(TStr, TStr)), padImpl "padRight" (fun w (s: string) -> s.PadRight(w, ' '))
       "toInt", TFun(TStr, TInt), toIntImpl
       "tryToInt", TFun(TStr, TNamed("Option", [ TInt ])), tryToIntImpl
       // sha256 ONLY [D:encoding-law]: md5 is broken (offering it invites
@@ -2595,6 +2649,37 @@ let private fsMoreFileMembers: (string * Ty * Value) list =
                   else
                       failwith $"File.mode: dangling symlink: {r} — no target to read a mode from"
           | v -> unreachable $"the checker rejects 'File.mode' on {formatValue v}")
+      "isExecutable",
+      // the mode string's 'x', as a bool [D:port-members]: the OWNER
+      // execute bit (the bit an installer sets), replacing the stringly
+      // `File.mode |> Str.contains "x"`. Follows a symlink like mode;
+      // a missing path raises. WINDOWS POSTURE, stated not guessed
+      // [D:ls-truth]: there is no execute bit there — the answer is by
+      // extension (.exe/.bat/.cmd/.com), CreateProcess's own law.
+      TFun(TStr, TBool),
+      VBuiltin(fun v ->
+          match v with
+          | VStr p ->
+              let r = Session.resolve p
+
+              if not (System.IO.File.Exists r || System.IO.Directory.Exists r || FileInfo(r).Exists) then
+                  failwith $"File.isExecutable: no such path: {r}"
+
+              try
+                  let m = System.IO.File.GetUnixFileMode r
+                  VBool(m.HasFlag System.IO.UnixFileMode.UserExecute)
+              with
+              | :? System.PlatformNotSupportedException ->
+                  let ext = System.IO.Path.GetExtension(r).ToLowerInvariant()
+                  VBool(List.contains ext [ ".exe"; ".bat"; ".cmd"; ".com" ])
+              | :? System.IO.FileNotFoundException
+              | :? System.IO.DirectoryNotFoundException ->
+                  // the READ follows; existence does not [D:mode-existence]
+                  if isNull (FileInfo(r).LinkTarget) then
+                      failwith $"File.isExecutable: no such path: {r}"
+                  else
+                      failwith $"File.isExecutable: dangling symlink: {r} — no target to read a mode from"
+          | v -> unreachable $"the checker rejects 'File.isExecutable' on {formatValue v}")
       "readBytes",
       // the byte-faithful read [D:bytes]: File.read decodes leniently
       // and line-splits; this one does neither
@@ -3022,7 +3107,55 @@ let private bytesMembers: (string * Ty * Value) list =
       VBuiltin(fun v ->
           match v with
           | VBytes b -> VSize(int64 b.Length)
-          | v -> unreachable $"the checker rejects 'Bytes.length' on {formatValue v}") ]
+          | v -> unreachable $"the checker rejects 'Bytes.length' on {formatValue v}")
+      // hex, the crypto boundary's other text form [D:port-members]:
+      // lowercase out (sha256/sha256sum parity), either case in;
+      // odd-length and non-hex refuse with the fromBase64 posture
+      "fromHex",
+      TFun(TStr, TBytes),
+      VBuiltin(fun v ->
+          match v with
+          | VStr s ->
+              if s.Length % 2 <> 0 then
+                  failwith $"Bytes.fromHex: odd-length hex ({s.Length} chars) — every byte is two hex digits"
+              else
+                  (try
+                      VBytes(System.Convert.FromHexString s)
+                   with _ ->
+                       failwith $"Bytes.fromHex: invalid hex: \"{s}\"")
+          | v -> unreachable $"the checker rejects 'Bytes.fromHex' on {formatValue v}")
+      "toHex",
+      TFun(TBytes, TStr),
+      VBuiltin(fun v ->
+          match v with
+          | VBytes b -> VStr(b |> Array.map (fun x -> x.ToString "x2") |> String.concat "")
+          | v -> unreachable $"the checker rejects 'Bytes.toHex' on {formatValue v}")
+      // Str.sub's exact shape on bytes [D:port-members]: start, then
+      // length, data last; out of range raises with the same detail
+      "sub",
+      TFun(TInt, TFun(TInt, TFun(TBytes, TBytes))),
+      VBuiltin(fun start ->
+          VBuiltin(fun len ->
+              VBuiltin(fun subject ->
+                  match start, len, subject with
+                  | VInt st64, VInt ln64, VBytes b ->
+                      let st, ln = int st64, int ln64
+
+                      if st < 0 || ln < 0 || st + ln > b.Length then
+                          failwith $"Bytes.sub: out of bounds (start {st}, length {ln}, byte length {b.Length})"
+                      else
+                          VBytes(b[st .. st + ln - 1])
+                  | _ -> unreachable "the checker rejects 'Bytes.sub' on these arguments")))
+      // key -> message -> mac; .NET's own HMACSHA256, no reflection.
+      // A Secret key exits through Secret.reveal |> Str.toUtf8 —
+      // deliberate, the one Secret exit [D:secret]
+      "hmacSha256",
+      TFun(TBytes, TFun(TBytes, TBytes)),
+      VBuiltin(fun keyV ->
+          VBuiltin(fun msgV ->
+              match keyV, msgV with
+              | VBytes key, VBytes msg -> VBytes(System.Security.Cryptography.HMACSHA256.HashData(key, msg))
+              | _ -> unreachable "the checker rejects 'Bytes.hmacSha256' on these arguments")) ]
 
 let private sizeMembers: (string * Ty * Value) list =
     [ "bytes",
@@ -4190,16 +4323,16 @@ let builtinDocs: Map<string, BuiltinDoc> =
           "Map.pairs",
           bd
               "The entries as (key, value) pairs, key-sorted."
-              (Some "Map.ofPairs [(\"b\", 2); (\"a\", 1)] |> Map.pairs |> Seq.force")
+              (Some "Map.ofPairs [(\"b\", 2); (\"a\", 1)] |> Map.pairs |> Seq.freeze")
               None
           |> named [ "m" ]
           "Map.keys",
-          bd "The keys, sorted." (Some "Map.ofPairs [(\"b\", 2); (\"a\", 1)] |> Map.keys |> Seq.force") None
+          bd "The keys, sorted." (Some "Map.ofPairs [(\"b\", 2); (\"a\", 1)] |> Map.keys |> Seq.freeze") None
           |> named [ "m" ]
           "Map.values",
           bd
               "The values, in key-sorted order."
-              (Some "Map.ofPairs [(\"b\", 2); (\"a\", 1)] |> Map.values |> Seq.force")
+              (Some "Map.ofPairs [(\"b\", 2); (\"a\", 1)] |> Map.values |> Seq.freeze")
               None
           |> named [ "m" ]
           "Map.get",
@@ -4265,29 +4398,29 @@ let builtinDocs: Map<string, BuiltinDoc> =
           "Seq.map",
           bd
               "Apply a function to every element, lazily."
-              (Some "[1; 2; 3] |> Seq.map (fun x -> x + 1) |> Seq.force")
+              (Some "[1; 2; 3] |> Seq.map (fun x -> x + 1) |> Seq.freeze")
               None
           |> named [ "f"; "xs" ]
           "Seq.where",
           bd
               "Keep the elements a predicate accepts, lazily."
-              (Some "[1; 2; 3] |> Seq.where (fun x -> x > 1) |> Seq.force")
+              (Some "[1; 2; 3] |> Seq.where (fun x -> x > 1) |> Seq.freeze")
               None
           |> named [ "pred"; "xs" ]
           "Seq.choose",
           bd
               "Map and drop the None results in one lazy pass."
-              (Some "[1; 2; 3] |> Seq.choose (fun x -> if x > 1 then Some x else None) |> Seq.force")
+              (Some "[1; 2; 3] |> Seq.choose (fun x -> if x > 1 then Some x else None) |> Seq.freeze")
               None
           |> named [ "f"; "xs" ]
           "Seq.fold",
           bd "Left-fold: thread an accumulator through the elements." (Some "[1; 2; 3] |> Seq.fold (+) 0") None
           |> named [ "f"; "init"; "xs" ]
-          "Seq.force",
+          "Seq.freeze",
           bd
               "Materialize a lazy sequence, caching it."
-              (Some "[1; 2; 3] |> Seq.map (fun x -> x + 1) |> Seq.force")
-              (Some "force once, then reuse freely — it memoizes (the two customers: reuse and timing).")
+              (Some "[1; 2; 3] |> Seq.map (fun x -> x + 1) |> Seq.freeze")
+              (Some "freeze once, then reuse freely — it memoizes (the two customers: reuse and timing).")
           |> named [ "xs" ]
           "Seq.head",
           (bd "The first element (raises on empty)." (Some "Seq.head [1; 2; 3]") None
@@ -4320,10 +4453,10 @@ let builtinDocs: Map<string, BuiltinDoc> =
           (bd "The element at an index as an Option." (Some "[1; 2; 3] |> Seq.tryItem 0") None
            |> named [ "i"; "xs" ])
           "Seq.take",
-          (bd "The first n elements, lazily; pairs with Seq.skip." (Some "[1; 2; 3] |> Seq.take 2 |> Seq.force") None
+          (bd "The first n elements, lazily; pairs with Seq.skip." (Some "[1; 2; 3] |> Seq.take 2 |> Seq.freeze") None
            |> named [ "n"; "xs" ])
           "Seq.skip",
-          (bd "Drop the first n elements, keep the rest lazily." (Some "[1; 2; 3] |> Seq.skip 1 |> Seq.force") None
+          (bd "Drop the first n elements, keep the rest lazily." (Some "[1; 2; 3] |> Seq.skip 1 |> Seq.freeze") None
            |> named [ "n"; "xs" ])
           "Seq.length",
           (bd "Count the elements (forces the sequence)." (Some "Seq.length [1; 2; 3]") None
@@ -4337,6 +4470,12 @@ let builtinDocs: Map<string, BuiltinDoc> =
           "Seq.contains",
           (bd "True when an element is present." (Some "Seq.contains 2 [1; 2; 3]") None
            |> named [ "x"; "xs" ])
+          "Seq.equal",
+          (bd
+              "Element-wise equality, length-sensitive (equatable elements — Seq.contains's constraint). Lockstep and short-circuiting: stops at the first mismatch, never pulls beyond need. The honest spelling of output-vs-expected — a join-then-compare is lossy when elements contain the separator."
+              (Some "[\"a\"; \"b\"] |> Seq.equal [\"a\"; \"b\"]")
+              None
+           |> named [ "xs"; "ys" ])
           "Seq.exists",
           (bd "True when any element satisfies a predicate." (Some "[1; 2; 3] |> Seq.exists (fun x -> x > 2)") None
            |> named [ "pred"; "xs" ])
@@ -4344,18 +4483,18 @@ let builtinDocs: Map<string, BuiltinDoc> =
           (bd "True when every element satisfies a predicate." (Some "[1; 2; 3] |> Seq.forall (fun x -> x > 0)") None
            |> named [ "pred"; "xs" ])
           "Seq.distinct",
-          (bd "Drop duplicate elements, keeping first order." (Some "[1; 1; 2] |> Seq.distinct |> Seq.force") None
+          (bd "Drop duplicate elements, keeping first order." (Some "[1; 1; 2] |> Seq.distinct |> Seq.freeze") None
            |> named [ "xs" ])
           "Seq.append",
-          (bd "Concatenate two sequences, lazily." (Some "Seq.append [1; 2] [3; 4] |> Seq.force") None
+          (bd "Concatenate two sequences, lazily." (Some "Seq.append [1; 2] [3; 4] |> Seq.freeze") None
            |> named [ "xs"; "ys" ])
           "Seq.sortBy",
-          (bd "Order by a key projection." (Some "[3; 1; 2] |> Seq.sortBy (fun x -> x) |> Seq.force") None
+          (bd "Order by a key projection." (Some "[3; 1; 2] |> Seq.sortBy (fun x -> x) |> Seq.freeze") None
            |> named [ "key"; "xs" ])
           "Seq.sortByDescending",
           bd
               "Order by a key projection, descending."
-              (Some "[1; 3; 2] |> Seq.sortByDescending (fun x -> x) |> Seq.force")
+              (Some "[1; 3; 2] |> Seq.sortByDescending (fun x -> x) |> Seq.freeze")
               None
           |> named [ "key"; "xs" ]
           "Seq.iter",
@@ -4364,7 +4503,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
           "Seq.windowed",
           (bd
               "Sliding windows of size n, lazy (produced as the source is pulled; a short source yields the empty seq — no partial window; windows view the same memoized elements). Raises when n <= 0."
-              (Some "[1; 2; 3] |> Seq.windowed 2 |> Seq.map Seq.force |> Seq.force")
+              (Some "[1; 2; 3] |> Seq.windowed 2 |> Seq.map Seq.freeze |> Seq.freeze")
               None
            |> named [ "n"; "xs" ])
           "Seq.last",
@@ -4380,34 +4519,34 @@ let builtinDocs: Map<string, BuiltinDoc> =
               None
            |> named [ "xs" ])
           "Seq.pairwise",
-          (bd "Adjacent pairs: (e0,e1), (e1,e2), and so on." (Some "[1; 2; 3] |> Seq.pairwise |> Seq.force") None
+          (bd "Adjacent pairs: (e0,e1), (e1,e2), and so on." (Some "[1; 2; 3] |> Seq.pairwise |> Seq.freeze") None
            |> named [ "xs" ])
           "Seq.zip",
           bd
               "Pair two sequences element-wise, stopping at the shorter."
-              (Some "Seq.zip [1; 2] [3; 4] |> Seq.force")
+              (Some "Seq.zip [1; 2] [3; 4] |> Seq.freeze")
               None
           |> named [ "xs"; "ys" ]
           "Seq.range",
-          (bd "A lazy arithmetic range: start, step, stop." (Some "Seq.range 1 1 5 |> Seq.force") None
+          (bd "A lazy arithmetic range: start, step, stop." (Some "Seq.range 1 1 5 |> Seq.freeze") None
            |> named [ "start"; "step"; "stop" ])
           "Seq.groupBy",
           bd
               "Group elements by a key into (key, items) pairs — F#'s own shape; countBy/zip/pairwise speak the same tuples."
-              (Some "[1; 2; 3] |> Seq.groupBy (fun x -> x) |> Seq.force")
+              (Some "[1; 2; 3] |> Seq.groupBy (fun x -> x) |> Seq.freeze")
               None
           |> named [ "key"; "xs" ]
           // ---- the Seq-gaps cohort [D:seq-gaps] ----------------------
           "Seq.collect",
           bd
               "Map each element to a sequence and flatten, lazily (F#'s collect; flatMap elsewhere)."
-              (Some "[\"a<b\"; \"c\"] |> Seq.collect (Str.split \"<\") |> Seq.force")
+              (Some "[\"a<b\"; \"c\"] |> Seq.collect (Str.split \"<\") |> Seq.freeze")
               None
           |> named [ "f"; "xs" ]
           "Seq.concat",
           bd
               "Flatten a sequence of sequences, lazily (collect with the identity)."
-              (Some "[[1; 2]; [3]] |> Seq.concat |> Seq.force")
+              (Some "[[1; 2]; [3]] |> Seq.concat |> Seq.freeze")
               None
           |> named [ "xss" ]
           "Seq.find",
@@ -4419,43 +4558,43 @@ let builtinDocs: Map<string, BuiltinDoc> =
           "Seq.indexed",
           bd
               "Pair every element with its zero-based position, lazily — mapi/iteri are `indexed |> map`/`iter` over the tuple."
-              (Some "[\"a\"; \"b\"] |> Seq.indexed |> Seq.force")
+              (Some "[\"a\"; \"b\"] |> Seq.indexed |> Seq.freeze")
               None
           |> named [ "xs" ]
           "Seq.rev",
           bd
               "Reverse. Forces the whole input on the first pull (never an infinite seq)."
-              (Some "[1; 2; 3] |> Seq.rev |> Seq.force")
+              (Some "[1; 2; 3] |> Seq.rev |> Seq.freeze")
               None
           |> named [ "xs" ]
           "Seq.chunkBySize",
           bd
               "Split into consecutive chunks of at most n, lazily — the batching member (the last chunk may be short)."
-              (Some "[1; 2; 3; 4; 5] |> Seq.chunkBySize 2 |> Seq.map Seq.force |> Seq.force")
+              (Some "[1; 2; 3; 4; 5] |> Seq.chunkBySize 2 |> Seq.map Seq.freeze |> Seq.freeze")
               None
           |> named [ "n"; "xs" ]
           "Seq.takeWhile",
           bd
               "Elements while the predicate holds, lazily; stops at the first refusal."
-              (Some "[1; 2; 9; 1] |> Seq.takeWhile (fun x -> x < 5) |> Seq.force")
+              (Some "[1; 2; 9; 1] |> Seq.takeWhile (fun x -> x < 5) |> Seq.freeze")
               None
           |> named [ "pred"; "xs" ]
           "Seq.skipWhile",
           bd
               "Drop the leading run the predicate accepts, lazily; the rest streams whole."
-              (Some "[1; 2; 9; 1] |> Seq.skipWhile (fun x -> x < 5) |> Seq.force")
+              (Some "[1; 2; 9; 1] |> Seq.skipWhile (fun x -> x < 5) |> Seq.freeze")
               None
           |> named [ "pred"; "xs" ]
           "Seq.countBy",
           bd
               "Count elements per projected key as (key, count) pairs, first-seen key order; forces on the first pull."
-              (Some "[\"a\"; \"bb\"; \"c\"] |> Seq.countBy Str.length |> Seq.force")
+              (Some "[\"a\"; \"bb\"; \"c\"] |> Seq.countBy Str.length |> Seq.freeze")
               None
           |> named [ "key"; "xs" ]
           "Seq.distinctBy",
           bd
               "Keep the first element per projected key, lazily — distinct's projection twin."
-              (Some "[\"a\"; \"bb\"; \"cc\"] |> Seq.distinctBy Str.length |> Seq.force")
+              (Some "[\"a\"; \"bb\"; \"cc\"] |> Seq.distinctBy Str.length |> Seq.freeze")
               None
           |> named [ "key"; "xs" ]
           "Seq.reduce",
@@ -4467,7 +4606,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
           "Seq.scan",
           bd
               "Fold emitting every intermediate state, the seed first, lazily."
-              (Some "[1; 2; 3] |> Seq.scan (+) 0 |> Seq.force")
+              (Some "[1; 2; 3] |> Seq.scan (+) 0 |> Seq.freeze")
               None
           |> named [ "f"; "init"; "xs" ]
           "Seq.tryPick",
@@ -4485,13 +4624,13 @@ let builtinDocs: Map<string, BuiltinDoc> =
           "Seq.except",
           bd
               "Set difference: the source without the excluded values (exclusions first, source last; the exclusion set materializes on the first pull, the source streams)."
-              (Some "[1; 2; 3; 4] |> Seq.except [2; 4] |> Seq.force")
+              (Some "[1; 2; 3; 4] |> Seq.except [2; 4] |> Seq.freeze")
               None
           |> named [ "excluded"; "xs" ]
           "Seq.replicate",
           bd
               "n copies of one value, lazily (raises on a negative count)."
-              (Some "Seq.replicate 3 \"x\" |> Seq.force")
+              (Some "Seq.replicate 3 \"x\" |> Seq.freeze")
               None
           |> named [ "n"; "x" ]
           "Seq.max",
@@ -4515,13 +4654,13 @@ let builtinDocs: Map<string, BuiltinDoc> =
           "Seq.sort",
           bd
               "Sort ascending by the elements themselves (Ord); forces on the first pull."
-              (Some "[\"pear\"; \"apple\"] |> Seq.sort |> Seq.force")
+              (Some "[\"pear\"; \"apple\"] |> Seq.sort |> Seq.freeze")
               None
           |> named [ "xs" ]
           "Seq.sortDescending",
           bd
               "Sort descending by the elements themselves (Ord); forces on the first pull."
-              (Some "[1; 3; 2] |> Seq.sortDescending |> Seq.force")
+              (Some "[1; 3; 2] |> Seq.sortDescending |> Seq.freeze")
               None
           |> named [ "xs" ]
           "Seq.average",
@@ -4555,7 +4694,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
           "Seq.pmap",
           bd
               "Map in parallel across worker threads."
-              (Some "[1; 2; 3] |> Seq.pmap (fun x -> x + 1) |> Seq.force")
+              (Some "[1; 2; 3] |> Seq.pmap (fun x -> x + 1) |> Seq.freeze")
               (Some "ordered, eager, at most 64 workers; the first error by input order wins.")
           |> named [ "f"; "xs" ]
           "Seq.piter",
@@ -4567,7 +4706,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
           "Seq.pmapWith",
           bd
               "Seq.pmap with an explicit worker count — the sizing knob for rate-limited or memory-heavy arms."
-              (Some "[1; 2; 3] |> Seq.pmapWith 2 (fun x -> x + 1) |> Seq.force")
+              (Some "[1; 2; 3] |> Seq.pmapWith 2 (fun x -> x + 1) |> Seq.freeze")
               (Some "an explicit n is never reduced by nesting; pmap's default ladder is.")
           |> named [ "n"; "f"; "xs" ]
           "Seq.piterWith",
@@ -4659,7 +4798,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
           "show",
           (bd
               "Render a value to its string form — the same text an interpolation hole gives. Reach for it where a hole cannot go: point-free positions (Seq.map show) and Secrets (masked). Total; functions show opaquely."
-              (Some "[1; 2; 3] |> Seq.map show |> Seq.force")
+              (Some "[1; 2; 3] |> Seq.map show |> Seq.freeze")
               None
            |> named [ "value" ])
           "not", (bd "Boolean negation." (Some "not true") None |> named [ "b" ])
@@ -4669,8 +4808,8 @@ let builtinDocs: Map<string, BuiltinDoc> =
               (Some "cd \".\"")
               None
            |> named [ "path" ])
-          "force",
-          (bd "Materialize a lazy sequence, caching it (the bare Seq.force)." (Some "[1; 2; 3] |> force") None
+          "freeze",
+          (bd "Materialize a lazy sequence, caching it (the bare Seq.freeze)." (Some "[1; 2; 3] |> freeze") None
            |> named [ "xs" ])
           "fail",
           (bd
@@ -4716,13 +4855,13 @@ let builtinDocs: Map<string, BuiltinDoc> =
           "Str.split",
           (bd
               "Split on a separator into a sequence; empty pieces kept (adjacent separators and edges yield \"\" — rsplit follows the same law)."
-              (Some "Str.split \",\" \"a,b,c\" |> Seq.force")
+              (Some "Str.split \",\" \"a,b,c\" |> Seq.freeze")
               None
            |> named [ "sep"; "s" ])
           "Str.fields",
           (bd
               "Split on whitespace runs into fields — never an empty piece (a blank or empty string is the empty seq; trim's whitespace class)."
-              (Some "\"NAME   READY  1/1\" |> Str.fields |> Seq.force")
+              (Some "\"NAME   READY  1/1\" |> Str.fields |> Seq.freeze")
               None
            |> named [ "s" ])
           "Str.splitOnce",
@@ -4747,6 +4886,23 @@ let builtinDocs: Map<string, BuiltinDoc> =
           "Str.sub",
           (bd "A substring by start index and length." (Some "Str.sub 0 2 \"abc\"") None
            |> named [ "start"; "len"; "s" ])
+          "Str.replicate",
+          (bd "n copies of the string, concatenated (0 is the empty string; a negative count raises — Seq.replicate's rule)."
+              (Some "Str.replicate 3 \"ab\"")
+              None
+           |> named [ "n"; "s" ])
+          "Str.padLeft",
+          (bd
+              "Pad with spaces on the left to a total width; a string already at or past the width is unchanged (a negative width raises). The right-aligned column member."
+              (Some "Str.padLeft 5 \"42\"")
+              None
+           |> named [ "width"; "s" ])
+          "Str.padRight",
+          (bd
+              "Pad with spaces on the right to a total width; a string already at or past the width is unchanged (a negative width raises). The columnar-output member — printf \"%-15s\" made a function."
+              (Some "Str.padRight 6 \"name\"")
+              None
+           |> named [ "width"; "s" ])
           "Str.toInt",
           (bd "Parse an int (raises on a non-number)." (Some "Str.toInt \"42\"") None
            |> named [ "s" ])
@@ -4804,13 +4960,13 @@ let builtinDocs: Map<string, BuiltinDoc> =
           "Str.rmatchAll",
           bd
               "Every regex match's groups, as a sequence of sequences."
-              (Some "Str.rmatchAll \"[0-9]+\" \"a1b2\" |> Seq.force")
+              (Some "Str.rmatchAll \"[0-9]+\" \"a1b2\" |> Seq.freeze")
               None
           |> named [ "pattern"; "s" ]
           "Str.rsplit",
           bd
               "Split on every regex match; split's empties law (adjacent matches and edges yield \"\"), and capture groups never add pieces."
-              (Some "Str.rsplit @\"\\s*,\\s*\" \"a , b,c\" |> Seq.force")
+              (Some "Str.rsplit @\"\\s*,\\s*\" \"a , b,c\" |> Seq.freeze")
               None
           |> named [ "pattern"; "s" ]
 
@@ -4857,7 +5013,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
           "Path.glob",
           bd
               "Match a glob against the filesystem (lazy; globstar skips symlinks)."
-              (Some "Path.glob \"*.nope123\" |> Seq.force")
+              (Some "Path.glob \"*.nope123\" |> Seq.freeze")
               None
           |> named [ "pattern" ]
 
@@ -4981,6 +5137,12 @@ let builtinDocs: Map<string, BuiltinDoc> =
               (Some "File.mode \".\" |> Option.defaultValue \"none\"")
               None
            |> named [ "path" ])
+          "File.isExecutable",
+          (bd
+              "True when the owner execute bit is set (the bit an installer sets) — File.mode's 'x' as a bool, replacing the stringly Str.contains \"x\". Follows a symlink like the other File.* queries; a missing path raises. On Windows there is no execute bit: the answer is by extension (.exe/.bat/.cmd/.com), a stated posture."
+              (Some "File.isExecutable \".\"")
+              None
+           |> named [ "path" ])
 
           // ---- Log [D:log-module]: STDERR always — stdout is DATA ----
           "Log.trace",
@@ -5036,12 +5198,12 @@ let builtinDocs: Map<string, BuiltinDoc> =
           "Env.get",
           (bd "A process environment variable as an Option." (Some "Env.get \"PATH\"") None
            |> named [ "name" ])
-          "Env.vars", bd "Every environment variable as EnvVar records." (Some "Env.vars |> Seq.force") None
+          "Env.vars", bd "Every environment variable as EnvVar records." (Some "Env.vars |> Seq.freeze") None
           "Env.pair",
           (bd "Build one EnvVar from a name and value." (Some "Env.pair \"K\" \"V\"") None
            |> named [ "name"; "value" ])
           "Env.ofPairs",
-          (bd "Build EnvVar records from name/value tuples." (Some "Env.ofPairs [(\"K\", \"V\")] |> Seq.force") None
+          (bd "Build EnvVar records from name/value tuples." (Some "Env.ofPairs [(\"K\", \"V\")] |> Seq.freeze") None
            |> named [ "pairs" ])
           "Env.fromFile",
           (bd "Read `.env` lines (`KEY=value`) as EnvVar records." None None
@@ -5200,6 +5362,29 @@ let builtinDocs: Map<string, BuiltinDoc> =
           (bd "The SHA-256 digest of the bytes, lowercase hex (sha256sum parity)." None None
            |> named [ "b" ])
           "Bytes.length", (bd "The byte count as a Size." None None |> named [ "b" ])
+          "Bytes.fromHex",
+          (bd
+              "Decode hex (either case) to Bytes; odd-length and non-hex input raise. The crypto sibling of Bytes.fromBase64 — fingerprints, moduli and EC points all travel as hex."
+              (Some "Bytes.fromHex \"0a1B\" |> Bytes.toHex")
+              None
+           |> named [ "s" ])
+          "Bytes.toHex",
+          (bd "Lowercase hex of the bytes (sha256's own rendering) — one unwrapped line."
+              (Some "Str.toUtf8 \"hi\" |> Bytes.toHex")
+              None
+           |> named [ "b" ])
+          "Bytes.sub",
+          (bd
+              "A byte slice by start index and length — Str.sub's exact shape on Bytes; out of range raises with the same detail."
+              (Some "Str.toUtf8 \"abcd\" |> Bytes.sub 1 2 |> Bytes.toHex")
+              None
+           |> named [ "start"; "len"; "b" ])
+          "Bytes.hmacSha256",
+          (bd
+              "HMAC-SHA256: key first, then message, the mac as Bytes. A Secret key exits via Secret.reveal |> Str.toUtf8 — deliberate, like every Secret exit."
+              (Some "Bytes.hmacSha256 (Str.toUtf8 \"key\") (Str.toUtf8 \"msg\") |> Bytes.toHex")
+              None
+           |> named [ "key"; "msg" ])
           "Size.bytes",
           (bd "A size of n bytes — the literal 512B, as a function." (Some "Size.bytes 512") None
            |> named [ "n" ])
@@ -5649,7 +5834,7 @@ let internalAliases: (string * Ty * Value) list =
     [ for key, modName, field in
           [ "|seqIter", "Seq", "iter"
             "|seqMap", "Seq", "map"
-            "|seqForce", "Seq", "force"
+            "|seqFreeze", "Seq", "freeze"
             "|seqAppend", "Seq", "append"
             "|seqRange", "Seq", "range"
             "|seqItem", "Seq", "item"
@@ -5738,12 +5923,22 @@ let private eqExcept: Scheme =
       RowOrigins = Map.empty
       HoleDefaults = [] }
 
+// Seq.equal mirrors Seq.contains's Eq constraint [D:port-members] — the
+// element type must compare, so functions/seqs refuse at the use site
+let private eqSeqEqual: Scheme =
+    { Forall = Set.singleton "a"
+      Cs = Map [ "a", Set [ Cls.Eq ] ]
+      Ty = TFun(TSeq(TVar "a"), TFun(TSeq(TVar "a"), TBool))
+      RowOrigins = Map.empty
+      HoleDefaults = [] }
+
 // members whose signature is a CONSTRAINED scheme, not a plain
 // generalization — applied at the module map AND at the bare slot
 // [D:bare-partition]: a bare `sortBy` must keep its Ord key, or the
 // bare spelling would be laxer than the qualified one
 let private seqSchemeOverrides: (string * Scheme) list =
     [ "contains", Check.containsScheme
+      "equal", eqSeqEqual
       "distinct", Check.distinctScheme
       "sortBy", sortByScheme
       "sortByDescending", sortByScheme
