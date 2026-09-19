@@ -60,7 +60,27 @@
   answers by extension (`.exe`/`.bat`/`.cmd`/`.com`) — a stated
   posture, never a guess.
 
+### Changed
+
+- **BREAKING: `Seq.force` is renamed `Seq.freeze` (bare alias
+  `force` → `freeze`); the old spelling is gone, no compatibility
+  alias.** "force" named the moment (evaluate now) and misleadingly
+  suggested repeatability; the durable property of the result is a
+  frozen snapshot — pulls never re-run. Migration:
+  `s/Seq.force/Seq.freeze/`, bare `force` → `freeze`. A stray old
+  spelling teaches the new name at both lookup sites.
+
 ### Fixed
+
+- **The operator partial-application teach no longer offers two
+  different functions as interchangeable.** `(op) v` still refuses;
+  for a commutative operator (`==`, `<>`, `*`) the message keeps
+  both lambda spellings as alternatives, and for every other
+  operator it now says the directions differ (`fun x -> x - v and
+  fun x -> v - x differ`) instead of the `(or …)` form. `+` takes
+  the differ-form too: it concatenates strings by context, and the
+  operand type is not known at the refusal site.
+
 
 - **A qualified case in pattern position teaches the bare law.**
   `| Core.System ->` errored with a bare expecting-list; it now names
@@ -97,12 +117,12 @@
 ### Added
 
 - **The checker warns on possible re-enumeration.** A `let` whose RHS
-  is a command-backed seq with no visible force (`|> Seq.freeze`, an
-  applied `Seq.freeze`, an eager literal or a comprehension) re-runs
+  is a command-backed seq with no visible force (`|> Seq.force`, an
+  applied `Seq.force`, an eager literal or a comprehension) re-runs
   its command on every pull. When such a binding is enumerated at two
   or more sites, `weir check` now warns at the second and later
   sites — naming the command and the one-line repair
-  (`snapshot one run: let pods = kubectl get po -A |> Seq.freeze`).
+  (`snapshot one run: let pods = kubectl get po -A |> Seq.force`).
   Advisory: warning severity, exit stays 0, and the LSP shows it as a
   squiggle. Conservative and stated: any read of the name counts as a
   possible pull (argv splats included); a plain alias
@@ -157,27 +177,6 @@
   spelling: if the field is sometimes absent, declare it
   `Option<…>` — a type drafted from a sample only sees what the
   sample had.
-
-### Changed
-
-- **BREAKING: `Seq.force` is renamed `Seq.freeze` (bare alias
-  `force` → `freeze`); the old spelling is gone, no compatibility
-  alias.** "force" named the moment (evaluate now) and misleadingly
-  suggested repeatability; the durable property of the result is a
-  frozen snapshot — pulls never re-run. Migration:
-  `s/Seq.force/Seq.freeze/`, bare `force` → `freeze`. A stray old
-  spelling teaches the new name at both lookup sites.
-
-### Fixed
-
-- **The operator partial-application teach no longer offers two
-  different functions as interchangeable.** `(op) v` still refuses;
-  for a commutative operator (`==`, `<>`, `*`) the message keeps
-  both lambda spellings as alternatives, and for every other
-  operator it now says the directions differ (`fun x -> x - v and
-  fun x -> v - x differ`) instead of the `(or …)` form. `+` takes
-  the differ-form too: it concatenates strings by context, and the
-  operand type is not known at the refusal site.
 
 ## v0.0.44
 
