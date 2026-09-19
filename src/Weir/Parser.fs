@@ -3727,7 +3727,7 @@ let private commandSegment
              else
                  (failFatallyAt
                      at
-                     "a splat cannot head a command (N words would be N heads); a command head is a literal — branch the whole command line")
+                     "a splat cannot head a command (N words would be N heads); a command head is one program — a dynamic one is ^$name")
                      stream)
     <|> (attempt head .>>. many argP)
     |>> fun ((kind, prog, span), args) ->
