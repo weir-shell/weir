@@ -3341,6 +3341,11 @@ let private httpBodyOf (v: Value) : (string * string) option =
     // curl -d (which strips the newlines)
     | VUnion("Json", Some(VSeq lines)) -> Some("application/json", lines |> Seq.map asString |> String.concat "\n")
     | VUnion("Text", Some(VStr s)) -> Some("text/plain", s)
+    // Stream is the SERVER response's chunked case [D:http-serve]; on the
+    // CLIENT send path it MATERIALIZES (request-body streaming is out of
+    // scope v1) — the lines join like Json's, kept well-defined, never a
+    // crash
+    | VUnion("Stream", Some(VSeq lines)) -> Some("text/plain", lines |> Seq.map asString |> String.concat "\n")
     | v -> unreachable $"the checker rejects this body {formatValue v}"
 
 let private headerPairs (v: Value) : (string * string) list =
@@ -3715,6 +3720,24 @@ let private procMembers: (string * Ty * Value) list =
           Proc.stopTree (asProc "Proc.stop" v).Proc
           VUnit)
       "tail", TFun(procTy, TSeq TStr), VBuiltin(fun v -> VSeq(procTail (asProc "Proc.tail" v) |> List.map VStr)) ]
+
+// the scoped-listener surface [D:http-serve]: the handle is DATA — port
+// reads the bound port (a computed port is knowable), running reports
+// whether the socket is still open. The within-serve scope owns the
+// lifetime; there is no `stop` member (the scope IS the teardown, unlike
+// Proc where an early stop is meaningful).
+let private serverTy = TNamed("Server", [])
+
+let private asServer (who: string) (v: Value) : Serve.Handle =
+    match v with
+    | VServer h -> h
+    | v -> unreachable $"the checker rejects '{who}' on {formatValue v}"
+
+let private serverMembers: (string * Ty * Value) list =
+    [ "port", TFun(serverTy, TInt), VBuiltin(fun v -> VInt(int64 (asServer "Server.port" v).Port))
+      "running",
+      TFun(serverTy, TBool),
+      VBuiltin(fun v -> VBool(not (asServer "Server.running" v).Closed)) ]
 
 // Net [D:scoped-procs]: ONE readiness probe — poll's body. Remote
 // hosts on a receipt; localhost is the scoped-process pattern.
@@ -4186,6 +4209,7 @@ let private moduleTable: (string * (string * Ty * Value) list) list =
       "Map", mapMembers
       "Instant", instantMembers
       "Proc", procMembers
+      "Server", serverMembers
       "Net", netMembers
       "Path", pathMembers
       "Option", optionMembers
@@ -4387,6 +4411,13 @@ let builtinDocs: Map<string, BuiltinDoc> =
               None
               (Some "poll-watch failures carry this automatically")
           |> named [ "p" ]
+          // ---- Server: the scoped-listener handle [D:http-serve] ----
+          "Server.port",
+          bd "The port the listener bound." None (Some "within serve srv = { port = 8080; maxConcurrent = 4 } handler binds the handle; see #help within")
+          |> named [ "srv" ]
+          "Server.running",
+          bd "True while the listener is still open (the scope has not exited)." None None
+          |> named [ "srv" ]
           // ---- Net: readiness probes [D:scoped-procs] ----
           "Net.portOpen",
           bd
@@ -5642,6 +5673,7 @@ let moduleBlurbs: Map<string, string> =
           "Plan", "plan/apply: preview a plan's ops before applying"
           "Poll", "poll's options record: defaults"
           "Proc", "scoped process handles: pid, running, tail, wait, stop"
+          "Server", "scoped HTTP listener handles: port, running (see within serve)"
           "Retry", "retry's options record: defaults"
           "Secret", "rendering-masked values: of, map, reveal"
           "Seq", "lazy sequence pipeline ops: map, where, fold, pmap"

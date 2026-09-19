@@ -2213,6 +2213,30 @@ let private withinExprBody =
                                     |>> fun body ->
                                         { Kind = EWithin(wk.Id, Some(binder, bspan), Some cmdE, None, body)
                                           Span = { Start = pos p; End = body.Span.End } }
+                    | Ast.WithinServe ->
+                        // the scoped listener [D:http-serve]: binder `=`
+                        // then TWO atoms — a config record and a handler
+                        // lambda (`{ port = 8080 } handler`). Atoms, never
+                        // greedy exprs (the within-cd argument rule), so
+                        // the config and handler stay two words and the
+                        // body's first statement is not swallowed. arg =
+                        // config, opts = handler (the EWithin slots reused).
+                        identSpanned .>> ws .>> str_ws "="
+                        >>= fun (binder, bspan) ->
+                            (postfixAtom <?> "the server's config (a record; parenthesize a compound)")
+                            >>= fun cfgE ->
+                                (postfixAtom
+                                 <?> "the server's handler (HttpServerRequest -> HttpServerResponse; parenthesize a lambda)")
+                                >>= fun handlerE ->
+                                    (opt (str_ws ";" <|> str_ws sibSepStr))
+                                    >>. (withPatNames
+                                            { PKind = PVar binder; PSpan = bspan }
+                                            (withStmtLetCmd (withExprParen false seqExpr))
+                                         <?> "the scope's block")
+                                    |>> fun body ->
+                                        { Kind =
+                                            EWithin(wk.Id, Some(binder, bspan), Some cfgE, Some handlerE, body)
+                                          Span = { Start = pos p; End = body.Span.End } }
                     | Ast.WithinTmp ->
                         // a binding kind PRODUCES its resource: a binder, joining
                         // bindings-beat-PATH (the patLeafNames class, 5th site)

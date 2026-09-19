@@ -7720,18 +7720,19 @@ let withinKindsTests =
               Expect.equal (Weir.Lsp.hoverType t 1 13) (Some "string") "the binder is the dir path, not unit"
           }
           test "completion after `within ` offers the kinds and NOTHING else; a boundary non-match stays normal" {
-              Expect.equal (sug "within ") [ "tmp"; "cd"; "env"; "proc"; "lock" ] "the closed set"
+              Expect.equal (sug "within ") [ "tmp"; "cd"; "env"; "proc"; "serve"; "lock" ] "the closed set"
               Expect.equal (sug "within c") [ "cd" ] "prefix-filtered"
               Expect.equal (sug "within t") [ "tmp" ] ""
+              Expect.equal (sug "within se") [ "serve" ] "prefix-filtered to serve"
 
               Expect.isFalse
-                  (sug "notwithin " = [ "tmp"; "cd"; "env"; "proc"; "lock" ])
+                  (sug "notwithin " = [ "tmp"; "cd"; "env"; "proc"; "serve"; "lock" ])
                   "boundary: notwithin is not within"
 
               Expect.isFalse (sug "within cd " = [ "tmp"; "cd"; "env"; "proc" ]) "the arg slot is not the kind slot"
           }
           test "the teaching list derives from the table (a new kind cannot miss the message)" {
-              Expect.equal Weir.Ast.withinKindList "tmp, cd, env, proc, or lock" "derived, not hand-written"
+              Expect.equal Weir.Ast.withinKindList "tmp, cd, env, proc, serve, or lock" "derived, not hand-written"
           }
           test "a form word inside a STRING or a COMMENT is data, not a form — no hover [D:within-kinds]" {
               // the form hovers run before the silence guard, so the
@@ -18774,6 +18775,115 @@ let portMembersTests =
               | None -> failtest "an unresolved statement type still errors"
           } ]
 
+// within serve — the scoped HTTP listener [D:http-serve]. Unit pins for
+// the seams a unit test can reach: the parse/check contract (the head
+// form, the shared body union, the type errors) and the Serve leg's own
+// socket lifecycle (start/stop idempotency, the port frees). The three
+// primitives' RUNTIME behaviour (incremental stream, concurrency ceiling,
+// signal teardown) are the e2e battery's server cells — a listener needs
+// a real socket and a client process, out of a unit's reach.
+let serveTests =
+    let diagsOf lines =
+        let diags, _, _, _ = Weir.Script.analyzeLines "serve.weir" lines
+        diags
+
+    let clean lines label =
+        Expect.isEmpty (diagsOf lines) $"{label}: expected clean, got {diagsOf lines |> List.map _.Message}"
+
+    let mustSay lines (needle: string) label =
+        Expect.exists
+            (diagsOf lines)
+            (fun d -> d.Message.Contains needle)
+            $"{label}: expected '{needle}', got {diagsOf lines |> List.map _.Message}"
+
+    let okHandler =
+        "let h = fun req -> HttpServerResponse { status = 200; headers = []; body = Text \"ok\" }"
+
+    testList
+        "within serve [D:http-serve]"
+        [ test "the head form checks clean: binder = config record + handler, body sequences with lets" {
+              clean
+                  [ okHandler
+                    "within serve srv = { port = 8080; maxConcurrent = 4 } h"
+                    "    print $\"on {Server.port srv}\""
+                    "    let x = 1"
+                    "    print $\"{x}\"" ]
+                  "the canonical form"
+          }
+          test "an inline config record's ; does not hide the head (the assembler fix)" {
+              // { port = ...; maxConcurrent = ... } on the head line — the
+              // `;` must not defeat the body attach (endsInServeHead is
+              // `;`-blind, unlike isWithinHead's `;`-guarded path)
+              clean
+                  [ okHandler
+                    "within serve srv = { port = 8080; maxConcurrent = 2 } h"
+                    "    print \"up\""
+                    "    let y = 2"
+                    "    print $\"{y}\"" ]
+                  "inline-; config"
+          }
+          test "the binder is a Server handle: port/running typecheck, a bad member does not" {
+              clean
+                  [ okHandler
+                    "within serve srv = { port = 80; maxConcurrent = 1 } h"
+                    "    print $\"{Server.running srv}\"" ]
+                  "Server.running on the binder"
+
+              mustSay
+                  [ okHandler
+                    "within serve srv = { port = 80; maxConcurrent = 1 } h"
+                    "    print $\"{Proc.pid srv}\"" ]
+                  "expected Proc, got Server"
+                  "a Proc member on a Server binder is a type error"
+          }
+          test "the handler must be HttpServerRequest -> HttpServerResponse" {
+              // a wrong return type: a plain int handler names the expected
+              // response type — the server response (body: HttpBody) is NOT
+              // the client HttpResponse (body: seq<string>), the checker
+              // holds the boundary
+              mustSay
+                  [ "let bad = fun req -> 5"
+                    "within serve srv = { port = 80; maxConcurrent = 1 } bad"
+                    "    print \"ok\"" ]
+                  "HttpServerResponse"
+                  "an int-returning handler names the expected response type"
+          }
+          test "the config must be a ServerConfig record" {
+              mustSay
+                  [ okHandler
+                    "within serve srv = 8080 h"
+                    "    print \"ok\"" ]
+                  "ServerConfig"
+                  "a bare int config names the record"
+          }
+          test "the shared body union: Stream is a new case beside NoBody/Json/Text" {
+              clean
+                  [ "let h = fun req -> HttpServerResponse { status = 200; headers = []; body = Stream [\"a\"; \"b\"] }"
+                    "within serve srv = { port = 80; maxConcurrent = 1 } h"
+                    "    print \"ok\"" ]
+                  "a Stream response body"
+          }
+          test "Serve.start binds the port; stop frees it; stop is idempotent" {
+              let h = Weir.Serve.start 8199
+              Expect.equal h.Port 8199 "the handle carries the port"
+              Expect.isFalse h.Closed "open after start"
+
+              // a second bind on the held port fails (the socket is taken)
+              Expect.throwsC (fun () -> Weir.Serve.start 8199 |> ignore) (fun ex ->
+                  Expect.stringContains ex.Message "8199" "the bind error names the port")
+              |> ignore
+
+              Weir.Serve.stop h
+              Expect.isTrue h.Closed "closed after stop"
+              // idempotent: a second stop is benign
+              Weir.Serve.stop h
+
+              // the port frees — a fresh bind on it now succeeds
+              let h2 = Weir.Serve.start 8199
+              Expect.isFalse h2.Closed "the second bind succeeds after the first freed"
+              Weir.Serve.stop h2
+          } ]
+
 let versionStampTests =
     testList
         "Version stamp"
@@ -20147,6 +20257,7 @@ let allTests =
         "Weir"
         [ versionStampTests
           portMembersTests
+          serveTests
           echoBinaryTests
           logLevelTests
           dxMessageTests

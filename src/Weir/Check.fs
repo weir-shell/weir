@@ -4385,6 +4385,13 @@ and private withinContracts
                 match arg with
                 | Some a -> infer ctx env a |> Result.map Some
                 | None -> Ok None
+            // serve's arg is the CONFIG record [D:http-serve] — a
+            // ServerConfig `{ port; maxConcurrent }`; the handler rides
+            // opts (below), typed against the request->response function
+            | WithinServe ->
+                match arg with
+                | Some a -> check ctx env a (TNamed("ServerConfig", [])) |> Result.map Some
+                | None -> Ok None
             | WithinTmp -> Ok None
             // pure carries no resource [D:pure-stage1] — no arg, no
             // binder; its LAW is enforced by the checked-statement
@@ -4398,10 +4405,16 @@ and private withinContracts
             | WithinReadonly
             | WithinPlan -> Ok None
 
+        // opts is a Duration for lock (timeout=), the HANDLER function
+        // for serve [D:http-serve], and absent elsewhere — the kind
+        // decides its type, so a dropped node cannot masquerade
         let! topts =
-            match opts with
-            | Some o -> check ctx env o TDur |> Result.map Some
-            | None -> Ok None
+            match kind, opts with
+            | WithinServe, Some o ->
+                check ctx env o (TFun(TNamed("HttpServerRequest", []), TNamed("HttpServerResponse", [])))
+                |> Result.map Some
+            | _, Some o -> check ctx env o TDur |> Result.map Some
+            | _, None -> Ok None
 
         do!
             match binder with
@@ -4411,6 +4424,7 @@ and private withinContracts
         let binderTy =
             match kind with
             | WithinProc -> TNamed("Proc", [])
+            | WithinServe -> TNamed("Server", [])
             | WithinTmp
             | WithinCd
             | WithinEnv
@@ -5477,7 +5491,10 @@ let typecheckAgainstSig (env: TypeEnv) (sigTy: Ty) (expr: Expr) : Result<TypedEx
 // of captured Ops, but the value surface is the `Plan.*` members
 // (ops/preview/apply/isEmpty) plus `==` — never a field, so a user
 // `plan.ops` field-access is not offered. Def-less like Proc/YamlPatch.
-let deflessBuiltinNominals = [ "Proc"; "YamlPatch"; "Plan" ]
+// Server is def-less like Proc [D:http-serve]: its runtime rep is a
+// listener handle, its value surface the `Server.*` members (port), never
+// a field — so a user `srv.port` field-access is not offered.
+let deflessBuiltinNominals = [ "Proc"; "YamlPatch"; "Plan"; "Server" ]
 
 let rec private validateTy
     (env: TypeEnv)

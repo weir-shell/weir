@@ -48,6 +48,11 @@ type WithinKindId =
     | WithinCd
     | WithinEnv
     | WithinProc
+    // the scoped HTTP listener [D:http-serve]: the socket lifetime IS
+    // the block — served until the scope exits (normal, raise, SIGINT/
+    // SIGTERM), the listener closed on every path (the port frees).
+    // Binds a `Server` handle; takes a config atom + a handler atom.
+    | WithinServe
     | WithinLock
     // the purity assertion [D:pure-stage1] — the family's first
     // STANDALONE head: spelled `pure`, never `within pure`
@@ -100,6 +105,14 @@ let withinKinds: WithinKind list =
         Binds = true
         Standalone = false
         Doc = "a background process, tree-killed and reaped when the block exits" }
+      // the scoped HTTP listener [D:http-serve]: the socket lifetime IS
+      // the block, freed on every exit path (the no-orphan law, port
+      // edition). Binds a Server handle; a config atom + a handler atom.
+      { Id = WithinServe
+        Name = "serve"
+        Binds = true
+        Standalone = false
+        Doc = "an HTTP listener, served until the block exits and closed on every path (the port frees)" }
       // advisory file lock [D:within-lock] — the one kind whose
       // guarantee survives kill -9 (the kernel releases it)
       { Id = WithinLock

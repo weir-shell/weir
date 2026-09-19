@@ -82,6 +82,11 @@
     <!-- after Check: the schema validator walks the TYPED template;
          before Script: check-time schema resolution [D:contracts-spine] -->
     <Compile Include="Http.fs" />
+    <!-- the server twin of Http.fs [D:http-serve]: the listener leg,
+         primitives in/out, no Value dependency (Builtins translates).
+         After Http.fs so the shared boundary reads top-to-bottom;
+         before Eval, which the within-serve scope drives. -->
+    <Compile Include="Serve.fs" />
     <!-- before Builtins (Eval) and before Purity (Check): the ambient/
          mutation partition both ends consult [D:pure-stage2] -->
     <Compile Include="Effects.fs" />
