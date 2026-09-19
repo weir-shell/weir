@@ -1991,6 +1991,100 @@ if [ "$IS_WINDOWS" != "1" ]; then
 fi
 echo "e2e ok: always runs on normal exit, fail, exit n, SIGINT, SIGTERM"
 
+# ---- detached SIGINT tears down [D:signal-teardown] -------------------------
+# THE GAP (ring port finding #1): a shell backgrounding weir in a
+# NON-INTERACTIVE session (setsid, no job control) sets SIGINT to
+# SIG_IGN — the nohup convention — and .NET HONOURS an inherited
+# SIG_IGN, so PosixSignalRegistration never installs and a `kill -INT`
+# on a detached supervisor was a NO-OP: no scope unwind, `always`
+# cleanup skipped, children orphaned, only SIGKILL stopping it. The fix
+# resets SIGINT to SIG_DFL when there is NO controlling terminal (a
+# detached process has no terminal Ctrl+C to protect against), so the
+# registration binds and the SAME sweep the tty path runs fires. The
+# within-always cell above drives SIGINT under bash's job control (default
+# disposition); THIS cell drives it detached (setsid), the actual gap.
+# SIGTERM is never SIG_IGN'd — it already worked — so it is the twin.
+if [ "$IS_WINDOWS" != "1" ] && command -v setsid >/dev/null 2>&1 && command -v pgrep >/dev/null 2>&1; then
+    dtdir=$(mkweirtmp)
+    # a detached supervisor: a scoped child (reaped by the proc scope) and
+    # an `always` cleanup that writes a marker the sweep must reach
+    cat > "$dtdir/detached.weir" <<'WEOF'
+let marker = Self.args |> Seq.head
+within
+    within proc child = sh -c "sleep 98761"
+        Duration.sleep 60s
+always
+    ["cleaned-up"] |> File.write marker
+WEOF
+    $BIN check "$dtdir/detached.weir" >/dev/null 2>&1 || fail "detached-signal probe must check"
+
+    for pair in "INT:130" "TERM:143"; do
+        sig="${pair%%:*}"; want="${pair##*:}"
+        M="$dtdir/marker-$sig"
+        rm -f "$M"
+        pkill -f "sleep 98761" 2>/dev/null || true
+        # setsid = new session, no job control -> SIG_IGN on SIGINT is
+        # inherited exactly as the ring probe measured; </dev/null detaches
+        setsid "$BIN" "$dtdir/detached.weir" "$M" </dev/null >/dev/null 2>&1 &
+        wpid=$!
+        # wait for the scoped child to be live (the thing that must be reaped)
+        for _ in $(seq 1 40); do pgrep -f "sleep 98761" >/dev/null 2>&1 && break; sleep 0.2; done
+        kill -"$sig" "$wpid" 2>/dev/null || true
+        code=timeout
+        for _ in $(seq 1 40); do
+            # the || guards errexit: a signalled wait returns 130/143, which
+            # is the code under test, not a harness failure
+            if ! kill -0 "$wpid" 2>/dev/null; then code=0; wait "$wpid" 2>/dev/null || code=$?; break; fi
+            sleep 0.2
+        done
+        [ "$code" = "$want" ] || fail "detached SIG$sig must exit $want (got $code) — the teardown never ran"
+        [ "$(cat "$M" 2>/dev/null)" = "cleaned-up" ] || fail "detached SIG$sig must run the always cleanup"
+        sleep 0.3
+        left=$(pgrep -cf "sleep 98761" 2>/dev/null || true); left=${left:-0}
+        [ "$left" = "0" ] || fail "detached SIG$sig must reap the scoped child (orphans left: $left)"
+        pkill -f "sleep 98761" 2>/dev/null || true
+    done
+    echo "e2e ok: detached SIGINT/SIGTERM tear down — always cleanup runs, child reaped, exit 130/143"
+
+    # the double-signal escape [D:signal-teardown]: a SECOND signal DURING
+    # a slow teardown hard-exits (the shell's double-Ctrl+C), never wedging
+    # on a stuck cleanup. The always sleeps 20s; the second SIGINT must land
+    # the process in well under that, before the cleanup's "done" write.
+    cat > "$dtdir/slow.weir" <<'WEOF'
+let marker = Self.args |> Seq.head
+within
+    within proc child = sh -c "sleep 98761"
+        Duration.sleep 60s
+always
+    ["start"] |> File.write marker
+    Duration.sleep 20s
+    ["done"] |> File.write marker
+WEOF
+    $BIN check "$dtdir/slow.weir" >/dev/null 2>&1 || fail "double-signal probe must check"
+    DM="$dtdir/dmarker"
+    rm -f "$DM"
+    pkill -f "sleep 98761" 2>/dev/null || true
+    setsid "$BIN" "$dtdir/slow.weir" "$DM" </dev/null >/dev/null 2>&1 &
+    dpid=$!
+    for _ in $(seq 1 40); do pgrep -f "sleep 98761" >/dev/null 2>&1 && break; sleep 0.2; done
+    kill -INT "$dpid" 2>/dev/null || true          # first: enters the slow teardown
+    for _ in $(seq 1 25); do [ "$(cat "$DM" 2>/dev/null)" = "start" ] && break; sleep 0.2; done
+    [ "$(cat "$DM" 2>/dev/null)" = "start" ] || fail "the first SIGINT must enter the always cleanup"
+    kill -INT "$dpid" 2>/dev/null || true          # second: must hard-exit NOW
+    dcode=timeout
+    for _ in $(seq 1 25); do                        # 5s ceiling << the 20s cleanup
+        # || true guards errexit against the signalled exit code
+        if ! kill -0 "$dpid" 2>/dev/null; then dcode=0; wait "$dpid" 2>/dev/null || dcode=$?; break; fi
+        sleep 0.2
+    done
+    [ "$dcode" != "timeout" ] || fail "a second SIGINT must hard-exit, not wait out the cleanup"
+    [ "$(cat "$DM" 2>/dev/null)" != "done" ] || fail "the hard-exit must not let the slow cleanup finish"
+    pkill -f "sleep 98761" 2>/dev/null || true
+    echo "e2e ok: a second signal mid-teardown hard-exits (the double-Ctrl+C escape)"
+else
+    echo "e2e skip: detached-signal pins (POSIX + setsid + pgrep)"
+fi
+
 # Phase 0's measured answer, pinned [D:within-always]: exit n is an
 # ExitRequest RAISE — it unwinds through every scope finally (the tmp
 # dir is removed by the scope itself, not the hook), so always and exit
