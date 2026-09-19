@@ -1,9 +1,16 @@
 # Scopes
 
 `within` holds a resource for a block and releases it on every
-exit — normal completion, a raise, `exit n`, SIGINT and SIGTERM.
-`kill -9` of weir itself is the one exception (the lock is the one
-kind the kernel still releases). The block is an ordinary
+exit — normal completion, a raise, `exit n`, SIGINT and SIGTERM, at a
+tty AND detached (a `kill -INT`/`kill -TERM` on a `setsid` or
+backgrounded weir unwinds the same way, exiting 130/143; a second
+signal mid-teardown hard-exits — the double-Ctrl+C escape). Two
+carve-outs, both by design: `kill -9` of weir itself (the lock is the
+one kind the kernel still releases), and a weir backgrounded in an
+interactive shell (`weir … &`/`nohup`, which keeps a controlling
+terminal) inherits SIGINT ignored — the job-control nohup convention,
+so a terminal Ctrl+C does not reach it; send SIGTERM or `kill -INT`
+the pid directly. The block is an ordinary
 expression block: statements run, the last expression is the value;
 statement position works too.
 

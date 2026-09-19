@@ -610,8 +610,15 @@ print $"{key} -> {value}"
   backgrounding; compose inside `sh -c`); the block starts on the
   NEXT line (the command owns the rest of its own). THE NON-CLAIM,
   stated: normal exit, raise, SIGINT and SIGTERM all close every
-  scope; `kill -9` of weir itself cannot, by definition — no
-  userspace design closes that hole. AND THE MIRROR non-claim: the
+  scope — at a tty AND detached (a `kill -INT`/`kill -TERM` on a
+  `setsid`/backgrounded weir unwinds the same way, exit 130/143; a
+  second signal mid-teardown hard-exits, the double-Ctrl+C escape).
+  Two carve-outs, both by design: `kill -9` of weir itself cannot, by
+  definition — no userspace design closes that hole; and a weir
+  BACKGROUNDED IN AN INTERACTIVE SHELL (`weir … &`/`nohup`, which
+  keeps a controlling terminal) inherits SIGINT ignored — the
+  job-control nohup convention — so a terminal Ctrl+C does not reach
+  it (send SIGTERM, or `kill -INT` the pid directly). AND THE MIRROR non-claim: the
   tree-kill weir performs lands as SIGKILL on the CHILDREN too
   (measured: wait = 137), so `within proc` does not run your child's
   cleanup — a child that traps SIGTERM to flush state, remove a
