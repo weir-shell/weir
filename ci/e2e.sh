@@ -162,6 +162,29 @@ else
 fi
 chmod 755 "$pwdir/lockdir"
 
+# ---- possible re-enumeration warning [D:reenum-warning] --------------------
+# a command-backed seq pulled twice warns at the second pull, naming
+# the command and the repair — and the warning never gates: check
+# exits 0. The forced twin is silent.
+redir=$(mkweirtmp)
+cat > "$redir/twice.weir" <<'WEOF'
+let files = git ls-files
+print $"{files |> Seq.length}"
+files |> Seq.iter print
+WEOF
+out=$($BIN check "$redir/twice.weir" 2>&1) || fail "a warning-only file must exit 0: $out"
+echo "$out" | grep -qF "warning [re-enumeration]: possible re-enumeration: 'files' is command-backed and unforced — each pull re-runs 'git ls-files'; snapshot one run: let files = git ls-files |> Seq.force" \
+  || fail "the re-enumeration warning with command and repair: $out"
+echo "$out" | grep -q "twice.weir:3:1" || fail "located at the SECOND pull: $out"
+cat > "$redir/forced.weir" <<'WEOF'
+let files = git ls-files |> Seq.force
+print $"{files |> Seq.length}"
+files |> Seq.iter print
+WEOF
+fout=$($BIN check "$redir/forced.weir" 2>&1) || fail "forced must check clean: $fout"
+echo "$fout" | grep -q "re-enumeration" && fail "a forced binding must not warn: $fout" || true
+echo "e2e ok: re-enumeration warning on the second pull, exit 0; Seq.force silences it"
+
 # walk candidates: exit codes exact; File.readSecret (never covered); Dir.copy success
 pw2=$(mkweirtmp)
 rc=0; $BIN -e 'exit 4' >/dev/null 2>&1 || rc=$?
@@ -2146,6 +2169,21 @@ WEOF
     echo "$tout" | grep -qF 'seq<string> =' \
       && fail "the let-echo meta still renders a dangling ' =' before the truncation hint: $tout"
     echo "e2e ok: a let-bound truncated seq echoes the unforced teaching, visible and without a dangling '='"
+
+    # ---- the binding echo states seq state [D:reenum-warning] ----------
+    # a command-backed unforced bind says it re-runs; a materialized
+    # bind says frozen; the pure-lazy nats cell above stays unannotated
+    # (its teaching grep pins the meta with no state joined)
+    rsout=$(printf 'SLEEP 400\nSEND let pods = sh -c "echo one"\\r\nSLEEP 1200\nSEND let snap = ["a"; "b"]\\r\nSLEEP 800\nSEND #quit\\r\n' | python3 "$ptyrun" 10 "$BIN")
+    # the harness echoes a bytes repr, so the em-dash rides as \xe2\x80\x94 —
+    # pin the ASCII halves around it
+    echo "$rsout" | grep -qF 'pods : seq<string> (command-backed' \
+      || fail "the command-backed unforced bind must state the re-run hazard: $rsout"
+    echo "$rsout" | grep -qF 're-runs on each use)' \
+      || fail "the hazard annotation names the re-run: $rsout"
+    echo "$rsout" | grep -qF 'snap : seq<string> (frozen)' \
+      || fail "a materialized bind must state frozen: $rsout"
+    echo "e2e ok: the binding echo states seq state (re-runs / frozen)"
 
     # ---- colour from the child [D:colour-inherit] ----------------------
     # THE motivating pins: a bare statement at a tty sees isatty TRUE
@@ -6476,6 +6514,139 @@ kill $ctsrv2 2>/dev/null || true
 wait $ctsrv $ctsrv2 2>/dev/null || true
 echo "e2e ok: a no-strict schema warns at add time, naming the variant"
 rm -rf "$ctdir"
+
+# ---- schema→types: weir gen types [D:schema-types] -------------------------
+# a LOCKED schema becomes a user-owned decl-only module: required vs
+# optional BY SCHEMA FACT (the thing no #infer sample can carry), the
+# open mappings, the wire sanitizer — offline (reads the vendored file),
+# deterministic (byte-identical on re-run), add-validates (the emitted
+# module runs through the real checker before anything lands)
+gtdir=$(mkweirtmp)
+mkdir -p "$gtdir/serve" "$gtdir/proj"
+cp "$(dirname "$0")/../tests/fixtures/pod-v1-trimmed.json" "$gtdir/serve/"
+printf '{ "type": "string" }' > "$gtdir/serve/scalar.json"
+gtport=$((18960 + RANDOM % 2000))
+python3 -m http.server $gtport --bind 127.0.0.1 --directory "$gtdir/serve" >/dev/null 2>&1 &
+gtsrv=$!
+awaitHttp "http://127.0.0.1:$gtport/pod-v1-trimmed.json" || { kill $gtsrv 2>/dev/null || true; fail "the gen-types schema server never came up"; }
+( cd "$gtdir/proj" && git init -q . )
+
+# the widened subset: a $ref-heavy k8s document (definitions, allOf,
+# anyOf IntOrString, nullable, x-kubernetes-*) vendors clean
+( cd "$gtdir/proj" && $BIN add schema http://127.0.0.1:$gtport/pod-v1-trimmed.json --as pod ) | grep -q "added schema pod" || fail "add schema on the ref-heavy pod fixture"
+( cd "$gtdir/proj" && $BIN add schema http://127.0.0.1:$gtport/scalar.json --as scalar ) >/dev/null || fail "add schema scalar"
+kill $gtsrv 2>/dev/null || true
+wait $gtsrv 2>/dev/null || true
+
+# generation is OFFLINE from here — the server is gone
+out=$( cd "$gtdir/proj" && $BIN gen types --schema pod )
+echo "$out" | grep -q "generated .*types.*pod\.weir" || fail "gen types announces the file: $out"
+echo "$out" | grep -qF 'import it:  import "weir:pod" as Pod' || fail "the import line teaches use: $out"
+test -f "$gtdir/proj/.weir/types/pod.weir" || fail "the generated module exists"
+grep -qF "type Pod = {" "$gtdir/proj/.weir/types/pod.weir" || fail "the root ref names the top type"
+grep -qF "env: Option<seq<" "$gtdir/proj/.weir/types/pod.weir" || fail "env is Option BY SCHEMA FACT — absent from required"
+grep -qF "labels: Option<seq<string * string>>" "$gtdir/proj/.weir/types/pod.weir" || fail "labels generate the open mapping"
+grep -qF "containers: seq<Container>" "$gtdir/proj/.weir/types/pod.weir" || fail "the required array stays plain"
+grep -qF "an enum of 'Pending', 'Running'" "$gtdir/proj/.weir/types/pod.weir" || fail "the enum note lists the values"
+echo "e2e ok: gen types — required/optional by schema fact, mappings, enum notes"
+
+# DETERMINISM: same locked schema → byte-identical output; and the
+# output is fmt-canonical
+cp "$gtdir/proj/.weir/types/pod.weir" "$gtdir/gen1.weir"
+( cd "$gtdir/proj" && $BIN gen types --schema pod ) >/dev/null
+cmp -s "$gtdir/proj/.weir/types/pod.weir" "$gtdir/gen1.weir" || fail "gen types must be byte-deterministic"
+cp "$gtdir/proj/.weir/types/pod.weir" "$gtdir/fmtprobe.weir"
+$BIN fmt --check "$gtdir/fmtprobe.weir" || fail "the generated module must be fmt-canonical"
+echo "e2e ok: gen types is byte-deterministic and fmt-canonical"
+
+# THE ACCEPTANCE (the pain #infer cannot fix): a container WITHOUT env
+# reads clean because the SCHEMA said env is optional; labels read as
+# the mapping — through the weir: import, in a nested dir
+mkdir -p "$gtdir/proj/sub"
+cat > "$gtdir/proj/sub/pod.json" <<'JEOF'
+{"apiVersion":"v1","kind":"Pod","metadata":{"name":"web","labels":{"app":"web","tier.example.com/zone":"eu"}},"spec":{"containers":[{"name":"app","image":"nginx","env":[{"name":"MODE","value":"prod"}]},{"name":"sidecar","image":"busybox"}]},"status":{"phase":"Running"}}
+JEOF
+cat > "$gtdir/proj/sub/use.weir" <<'WEOF'
+import "weir:pod" as Pod
+
+let pod = File.read "pod.json" |> from json Pod
+
+for c in pod.spec.containers do
+    let envs = c.env |> Option.map Seq.length |> Option.defaultValue 0
+    print $"{c.name}:{envs}"
+
+pod.metadata
+    |> Option.iter (fun m ->
+        m.labels |> Option.iter (Seq.iter (fun (k, v) -> print $"{k}={v}")))
+WEOF
+$BIN check "$gtdir/proj/sub/use.weir" || fail "the generated module imports and checks"
+out=$( cd "$gtdir/proj/sub" && $BIN use.weir )
+echo "$out" | grep -qxF "app:1" || fail "the env-bearing container reads: $out"
+echo "$out" | grep -qxF "sidecar:0" || fail "THE acceptance: a container without env reads clean: $out"
+echo "$out" | grep -qxF "tier.example.com/zone=eu" || fail "labels read as the mapping, dirty keys included: $out"
+echo "e2e ok: THE ACCEPTANCE — schema → gen → import → env-less container reads; labels as mapping"
+
+# the district validator rides the same widened subset: a top-level
+# typo checks against the $ref-resolved Pod (additionalProperties:false)
+cat > "$gtdir/proj/sub/tpl.weir" <<'WEOF'
+let d = yaml schema=pod
+    apiVerison: v1
+    spec:
+        containers:
+            - name: app
+
+d |> to yaml |> print
+WEOF
+out=$($BIN check "$gtdir/proj/sub/tpl.weir" 2>&1 || true)
+echo "$out" | grep -qF "unknown field 'apiVerison'" || fail "schema= validates through the root ref: $out"
+echo "$out" | grep -qF "did you mean 'apiVersion'" || fail "did-you-mean through the ref: $out"
+echo "e2e ok: schema= district validation resolves in-document refs"
+
+# refusals, each teaching: an unrepresentable top level (nothing was
+# written), and a never-locked name
+out=$( cd "$gtdir/proj" && $BIN gen types --schema scalar 2>&1 ) && fail "a scalar-top schema must refuse" || true
+echo "$out" | grep -qF "no record to generate" || fail "the scalar-top refusal teaches: $out"
+test ! -e "$gtdir/proj/.weir/types/scalar.weir" || fail "a refused gen must write nothing"
+out=$( cd "$gtdir/proj" && $BIN gen types --schema nope 2>&1 ) && fail "an unlocked schema must refuse" || true
+echo "$out" | grep -qF "no locked schema 'nope' — add it: weir add schema <url> --as nope" || fail "the unlocked teach: $out"
+out=$( cd "$gtdir/proj" && $BIN gen types --schema pod --as lowercase 2>&1 ) && fail "a lowercase --as must refuse" || true
+echo "$out" | grep -qF "the casing law" || fail "--as teaches the casing law: $out"
+echo "e2e ok: gen types refusals — scalar top, unlocked name, lowercase --as"
+
+# --out -: stdout, nothing written; --as renames the top type
+( cd "$gtdir/proj" && $BIN gen types --schema pod --as Manifest --out - ) | grep -qF "type Manifest = {" || fail "--as + --out - streams the renamed module"
+
+# the missing-field teach [D:schema-types]: a REQUIRED field a document
+# lacks names the Option repair — the drafted-from-a-sample pain, said
+# at the failure
+cat > "$gtdir/proj/sub/teach.weir" <<'WEOF'
+type C = {
+    name: string
+    env: seq<string>
+}
+
+let c = ["{\"name\":\"x\"}"] |> from json C
+print c.name
+WEOF
+out=$( cd "$gtdir/proj/sub" && $BIN teach.weir 2>&1 ) && fail "the missing required field must raise" || true
+echo "$out" | grep -qF "missing field 'env'" || fail "the field is named: $out"
+echo "$out" | grep -qF "if the field is sometimes absent, declare it Option<seq<string>>" || fail "the Option repair rides the error: $out"
+echo "$out" | grep -qF "a type drafted from a sample only sees what the sample had" || fail "the sample teach: $out"
+# (yaml reads a MISSING seq as empty by its own law, so the yaml teach
+# pins on a missing scalar field)
+cat > "$gtdir/proj/sub/teachy.weir" <<'WEOF'
+type Y = {
+    name: string
+    image: string
+}
+
+let y = ["name: x"] |> from yaml Y
+print y.name
+WEOF
+out=$( cd "$gtdir/proj/sub" && $BIN teachy.weir 2>&1 ) && fail "the yaml missing field must raise" || true
+echo "$out" | grep -qF "if the field is sometimes absent, declare it Option<" || fail "the yaml twin teaches too: $out"
+echo "e2e ok: from json/yaml missing-field errors carry the Option repair"
+rm -rf "$gtdir"
 
 # ---- the Log module [D:log-module] -----------------------------------------
 # stderr always; WEIR_LOG selects; stdout is BYTE-IDENTICAL at every

@@ -119,14 +119,14 @@ let private yamlNode (lines: string seq) : Result<INode, string> =
 
 // ---- auto-naming helpers ----------------------------------------------
 
-let private capitalize (s: string) : string =
+let capitalize (s: string) : string =
     if s = "" then s
     else string (Char.ToUpperInvariant s[0]) + s.Substring 1
 
 // sanitize a wire key into an identifier stem: keep letters/digits/_,
 // split on the rest, camel-join. `metadata.name` / `kube-system` become
 // legible type stems; a leading digit is dropped from the head.
-let private identStem (key: string) : string =
+let identStem (key: string) : string =
     let parts =
         System.Text.RegularExpressions.Regex.Split(key, "[^A-Za-z0-9]+")
         |> Array.filter (fun p -> p <> "")
@@ -142,7 +142,7 @@ let private identStem (key: string) : string =
 /// BEST-EFFORT singularisation [D:repl-infer]: the seq-element namer.
 /// Conservative — when a word does not obviously pluralise (data, status,
 /// metadata, series) it is LEFT AS-IS, so the fallback is the field name.
-let private singularize (s: string) : string =
+let singularize (s: string) : string =
     let lower = s.ToLowerInvariant()
 
     // words that are already singular OR do not pluralise the -s way
@@ -188,7 +188,7 @@ let takenTypeNames (liveNames: string seq) : Set<string> =
 // resolve BEFORE their parent references them (bottom-up), so a field's
 // rendered type already carries the child's final name.
 
-type private Registry(taken: Set<string>) =
+type Registry(taken: Set<string>) =
     // desiredName -> list of (structural signature, finalName, fields)
     let claimed = System.Collections.Generic.Dictionary<string, ResizeArray<string * string * (string * string) list>>()
     // emission order preserved: finalName -> fields (rendered), in insert order
@@ -507,7 +507,7 @@ let private toIdent (reserved: Set<string>) (key: string) : string =
 /// CLEAN keys (the user's own spellings) reserve their names FIRST, then
 /// sanitized names take the next free `base`/`base2`/`base3`… — so a
 /// sanitized key never steals a clean field's name.
-let private resolveFieldNames (reserved: Set<string>) (fields: (string * string) list) : (string * string option * string) list =
+let resolveFieldNames (reserved: Set<string>) (fields: (string * string) list) : (string * string option * string) list =
     let used = System.Collections.Generic.HashSet<string>()
 
     // pass 1: clean keys reserve their exact names
@@ -534,6 +534,25 @@ let private resolveFieldNames (reserved: Set<string>) (fields: (string * string)
                     baseName + string n
 
             name, Some key, ty)
+
+/// render claimed records as `type` decls, house style — the ONE
+/// emitter tail, shared by #infer and the schema→types generator
+/// [D:schema-types] (field names ride the Wire sanitizer either way)
+let renderDecls (reserved: Set<string>) (decls: (string * (string * string) list) list) : string list =
+    decls
+    |> List.map (fun (name, fields) ->
+        let body =
+            resolveFieldNames reserved fields
+            |> List.map (fun (fname, wire, t) ->
+                // a key weir cannot spell as a field name rides the
+                // wire attribute over a sanitized identifier
+                // [D:infer-wire-sanitize]
+                match wire with
+                | Some k -> $"    [<Wire \"{k}\">]\n    {fname}: {t}"
+                | None -> $"    {fname}: {t}")
+            |> String.concat "\n"
+
+        $"type {name} = {{\n{body}\n}}")
 
 /// the inferred DECLARATIONS + printed notes, for a sample already lowered
 /// to an INode with a chosen top name. A top OBJECT is the named record;
@@ -577,24 +596,7 @@ let inferDecls (reserved: Set<string>) (taken: Set<string>) (topName: string) (n
          // a top-level scalar has no record to declare
          reg.AddNote "the sample's top level is a scalar — nothing to name; #infer drafts record shapes")
 
-    // render each claimed record as a `type` decl, house style
-    let decls =
-        reg.Decls
-        |> List.map (fun (name, fields) ->
-            let body =
-                resolveFieldNames reserved fields
-                |> List.map (fun (fname, wire, t) ->
-                    // a key weir cannot spell as a field name rides the
-                    // wire attribute over a sanitized identifier
-                    // [D:infer-wire-sanitize]
-                    match wire with
-                    | Some k -> $"    [<Wire \"{k}\">]\n    {fname}: {t}"
-                    | None -> $"    {fname}: {t}")
-                |> String.concat "\n"
-
-            $"type {name} = {{\n{body}\n}}")
-
-    decls, reg.Notes
+    renderDecls reserved reg.Decls, reg.Notes
 
 // ---- the aligned-table drafting arm [D:from-table] --------------------
 // A table never lowers to INode: Option-ness is a PER-COLUMN merge over

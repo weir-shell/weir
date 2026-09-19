@@ -86,6 +86,7 @@
          mutation partition both ends consult [D:pure-stage2] -->
     <Compile Include="Effects.fs" />
     <Compile Include="Contracts.fs" />
+    <Compile Include="SchemaTypes.fs" />
     <Compile Include="Parser.fs" />
     <Compile Include="Session.fs" />
     <Compile Include="Extern.fs" />

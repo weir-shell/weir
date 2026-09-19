@@ -92,6 +92,25 @@ in both, so a truncated bind can never look like it silently dropped
 data: you see the clip, then the sentence telling you it was clipped
 and how to see the rest (`Seq.force`).
 
+The binding footer also states the seq's state, tty-only:
+
+```
+weir> let pods = kubectl get po -A
+…the pods…
+pods : seq<string> (command-backed — re-runs on each use)
+weir> let snap = kubectl get po -A |> Seq.force
+…the pods…
+snap : seq<string> (frozen)
+```
+
+A command-backed unforced bind re-runs its command on every use —
+the annotation says so before it bites (the checker warns on the
+same hazard in a script: an unforced binding pulled twice). A
+materialized bind reads `(frozen)`; a pure lazy seq gets no
+annotation — only the hazard and its resolution speak. State and
+the truncation sentence share one parenthetical; the piped surface
+never carries the annotation.
+
 ## The echo is a glance, not the output
 
 Three output roles, three ways to ask:
@@ -207,7 +226,11 @@ reads as `seq<Name>`.
 
 The output is ordinary `type` decls you own and edit — this is the
 `weir add schema` category, not check-time inference (`check` never
-evaluates; `from json` never sniffs). Array elements MERGE: the
+evaluates; `from json` never sniffs). When the shape has a published
+JSON Schema, generate the types from the CONTRACT instead:
+[`weir gen types`](tooling.md#types-from-a-schema) reads a locked
+schema and knows what no sample can — `required` vs optional,
+`additionalProperties`, the definition names. Array elements MERGE: the
 element type is the union of every element's keys, a key absent in
 some elements drafts `Option<T>` — one sample of a k8s List sees the
 optional fields its items disagree on. Where the sample still cannot

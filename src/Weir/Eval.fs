@@ -1103,7 +1103,12 @@ let private jsonDoc
                 // Option's job, [] is not guessed)
                 | _ when not present ->
                     let wireNote = if wire <> name then $" (wire key \"{wire}\")" else ""
-                    failwith $"{who}: missing field '{shownName}'{wireNote} in: {shown}"
+
+                    // the Option repair rides the error (from-table's own
+                    // teach): a type drafted from a SAMPLE only sees what
+                    // the sample had [D:schema-types]
+                    failwith
+                        $"{who}: missing field '{shownName}'{wireNote} in: {shown} — if the field is sometimes absent, declare it Option<{formatTy ty}>; a type drafted from a sample only sees what the sample had"
                 | _ when isNull ->
                     failwith
                         $"{who}: field '{shownName}' is null; declare it Option<{formatTy ty}> to allow it, in: {shown}"
@@ -1583,7 +1588,9 @@ let rec private yamlConvert (shape: Yaml.Shape) (node: Yaml.Node) : Value =
                 | None, Yaml.SOpt _ -> fname, VUnion("None", None)
                 | None, Yaml.SSeq _ -> fname, VSeq Seq.empty
                 | None, Yaml.SPairs _ -> fname, VSeq Seq.empty
-                | None, _ -> failwith $"from yaml: line {line}: missing field '{fname}'{wireNote} in '{name}'"
+                | None, _ ->
+                    failwith
+                        $"from yaml: line {line}: missing field '{fname}'{wireNote} in '{name}' — if the field is sometimes absent, declare it Option<…>; a type drafted from a sample only sees what the sample had"
                 | Some(_, Yaml.NNull l), (Yaml.SInt | Yaml.SFloat | Yaml.SStr | Yaml.SBool | Yaml.SRec _) ->
                     failwith $"from yaml: line {l}: field '{fname}' is null; declare it Option<…> to allow it"
                 | Some(_, v), _ -> fname, yamlConvert fshape v)

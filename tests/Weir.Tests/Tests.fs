@@ -2280,7 +2280,7 @@ let boundaryTests =
 
               let propsReq =
                   match ok with
-                  | Ok(Weir.Contracts.SObject(props, req, Weir.Contracts.Closed)) -> List.map fst props, req
+                  | Ok { Root = Weir.Contracts.SObject(props, req, Weir.Contracts.Closed) } -> List.map fst props, req
                   | other -> failtest $"expected SObject, got {other}"
 
               Expect.equal (fst propsReq) [ "n"; "e"; "u" ] "props in order"
@@ -2291,12 +2291,24 @@ let boundaryTests =
                   | Error e -> e
                   | Ok s -> failtest $"expected rejection, got {s}"
 
+              // an in-document $ref is IN the subset now [D:schema-types];
+              // a dangling one still refuses, naming the resolution law
               Expect.stringContains
                   (errOf """{ "$ref": "#/definitions/x" }""")
-                  "add the STANDALONE variant"
-                  "$ref teaching names the way out"
+                  "does not resolve"
+                  "a dangling in-document $ref refuses at parse"
 
-              Expect.stringContains (errOf """{ "allOf": [] }""") "composition" "allOf rejected"
+              Expect.stringContains
+                  (errOf """{ "$ref": "_definitions.json#/definitions/x" }""")
+                  "standalone"
+                  "a cross-file $ref teaching names the way out"
+
+              Expect.stringContains (errOf """{ "allOf": [] }""") "composition" "empty allOf rejected"
+
+              Expect.stringContains
+                  (errOf """{ "allOf": [{ "type": "string" }, { "type": "object" }] }""")
+                  "composition"
+                  "allOf of two substantive schemas rejected"
 
               Expect.stringContains
                   (errOf """{ "type": "object", "properties": { "p": { "pattern": "^x" } } }""")
@@ -2307,6 +2319,237 @@ let boundaryTests =
                   (errOf """{ "oneOf": [{ "type": "object" }] }""")
                   "IntOrString"
                   "oneOf restricted to scalar alternatives"
+          }
+          test
+              "contracts: the subset's k8s-OpenAPI growth — $ref/defs, allOf-of-one, anyOf, nullable [D:schema-types]" {
+              let parsed src =
+                  match Weir.Contracts.parseSchema "t" src with
+                  | Ok d -> d
+                  | Error e -> failtest e
+
+              // in-document $ref resolves against the root holders; allOf
+              // of one-ref-plus-annotations flattens to the ref
+              let doc =
+                  parsed
+                      """{ "definitions": { "io.k8s.Meta": { "type": "object", "properties": { "name": { "type": "string" } } } },
+                           "type": "object",
+                           "properties": { "metadata": { "allOf": [{ "$ref": "#/definitions/io.k8s.Meta" }, { "description": "annotation-only" }] } } }"""
+
+              let metaProp =
+                  match doc.Root with
+                  | Weir.Contracts.SObject([ ("metadata", sub) ], [], _) -> sub
+                  | other -> failtest $"expected one metadata prop, got {other}"
+
+              Expect.equal metaProp (Weir.Contracts.SRef "io.k8s.Meta") "allOf-of-one-ref flattens to the ref"
+              Expect.isTrue (Map.containsKey "io.k8s.Meta" doc.Defs) "the root holder collects"
+
+              // $defs and components.schemas are the same holder, and a
+              // JSON-pointer escape unescapes in the ref name
+              let d2 =
+                  parsed """{ "$defs": { "a~b": { "type": "integer" } }, "$ref": "#/$defs/a~0b" }"""
+
+              Expect.equal d2.Root (Weir.Contracts.SRef "a~b") "the pointer unescapes"
+
+              let d3 =
+                  parsed
+                      """{ "components": { "schemas": { "P": { "type": "object" } } }, "$ref": "#/components/schemas/P" }"""
+
+              Expect.equal d3.Root (Weir.Contracts.SRef "P") "components.schemas is a holder"
+
+              // anyOf: all-scalar folds (the IntOrString idiom, k8s's
+              // OpenAPI spelling); mixed alternatives KEEP as SChoice
+              let folded =
+                  match (parsed """{ "anyOf": [{ "type": "integer" }, { "type": "string" }] }""").Root with
+                  | Weir.Contracts.SScalar kinds -> kinds
+                  | other -> failtest $"expected the scalar fold, got {other}"
+
+              Expect.equal folded (Set.ofList [ "integer"; "string" ]) "anyOf all-scalar folds"
+
+              let choice =
+                  match (parsed """{ "anyOf": [{ "type": "object" }, { "type": "string" }] }""").Root with
+                  | Weir.Contracts.SChoice [ Weir.Contracts.SObject _; Weir.Contracts.SScalar _ ] -> true
+                  | _ -> false
+
+              Expect.isTrue choice "mixed anyOf keeps SChoice in document order"
+
+              // the nullable spellings: type-array on a scalar folds into
+              // the kind set; `nullable: true` folds the same way; a
+              // nullable OBJECT (either spelling) wraps
+              let kindsOf src =
+                  match (parsed src).Root with
+                  | Weir.Contracts.SScalar kinds -> kinds
+                  | other -> failtest $"expected SScalar, got {other}"
+
+              Expect.isTrue ((kindsOf """{ "type": ["string", "null"] }""").Contains "null") "type-array null"
+
+              Expect.isTrue
+                  ((kindsOf """{ "type": "string", "nullable": true }""").Contains "null")
+                  "nullable: true folds into the kind set"
+
+              let wrapped src =
+                  match (parsed src).Root with
+                  | Weir.Contracts.SNullable(Weir.Contracts.SObject _) -> true
+                  | _ -> false
+
+              Expect.isTrue (wrapped """{ "type": "object", "nullable": true }""") "nullable object wraps"
+              Expect.isTrue (wrapped """{ "type": ["object", "null"] }""") "type-array null object wraps"
+
+              // a pure ref cycle derefs to SAny — validation relaxes,
+              // nothing loops
+              let cyc =
+                  parsed
+                      """{ "definitions": { "a": { "$ref": "#/definitions/b" }, "b": { "$ref": "#/definitions/a" } }, "$ref": "#/definitions/a" }"""
+
+              Expect.equal (Weir.Contracts.deref cyc.Defs Set.empty cyc.Root) Weir.Contracts.SAny "ref cycle lands on SAny"
+
+              // the holders are ROOT-only — a nested one names the law
+              let nested =
+                  match
+                      Weir.Contracts.parseSchema "t" """{ "type": "object", "properties": { "p": { "definitions": {} } } }"""
+                  with
+                  | Error e -> e
+                  | Ok _ -> failtest "expected rejection"
+
+              Expect.stringContains nested "ROOT" "nested holder teaching"
+          }
+          test "schema-types: the mapping rules, pinned one by one [D:schema-types]" {
+              let gen src =
+                  match Weir.Contracts.parseSchema "t" src with
+                  | Error e -> failtest e
+                  | Ok doc ->
+                      match Weir.SchemaTypes.moduleText Weir.Parser.keywords Set.empty "t" None "0123456789abcdef" "http://src" doc with
+                      | Ok g -> g
+                      | Error e -> failtest e
+
+              let g =
+                  gen
+                      """{ "type": "object",
+                           "required": ["name", "deadline"],
+                           "properties": {
+                             "name": { "type": "string" },
+                             "image": { "type": "string" },
+                             "deadline": { "type": ["integer", "null"] },
+                             "hostIP": { "type": "string", "nullable": true },
+                             "labels": { "type": "object", "additionalProperties": { "type": "string" } },
+                             "phase": { "type": "string", "enum": ["Pending", "Running"] },
+                             "port": { "anyOf": [{ "type": "integer" }, { "type": "string" }] },
+                             "type": { "type": "string" },
+                             "replicas": { "type": "integer" },
+                             "ratio": { "type": "number" },
+                             "ready": { "type": "boolean" } } }"""
+
+              // required member → plain field; absent from required → Option
+              Expect.stringContains g.Text "\n    name: string\n" "required string stays plain"
+              Expect.stringContains g.Text "image: Option<string>" "optional → Option — the fact no sample carries"
+              // type ["X","null"] and nullable: true → Option, never doubled
+              Expect.stringContains g.Text "deadline: Option<int>" "the type-array null spelling → Option<int>, wrapped once"
+              Expect.stringContains g.Text "hostIP: Option<string>" "nullable: true → Option"
+              // additionalProperties object → the open mapping
+              Expect.stringContains g.Text "labels: Option<seq<string * string>>" "additionalProperties → seq<string * V>"
+              // enum → string + a note listing the values
+              Expect.stringContains g.Text "phase: Option<string>" "enum drafts string"
+              Expect.stringContains g.Text "an enum of 'Pending', 'Running'" "the enum note lists the values"
+              // anyOf scalar alternatives → string + the convert note
+              Expect.stringContains g.Text "port: Option<string>" "IntOrString drafts string"
+              Expect.stringContains g.Text "allows integer/string" "the IntOrString note names both kinds"
+              // a keyword wire key rides the sanitizer
+              Expect.stringContains g.Text "[<Wire \"type\">]\n    kind: Option<string>" "keyword keys ride [<Wire>]"
+              // scalars
+              Expect.stringContains g.Text "replicas: Option<int>" "integer → int"
+              Expect.stringContains g.Text "ratio: Option<float>" "number → float"
+              Expect.stringContains g.Text "ready: Option<bool>" "boolean → bool"
+              // fields are ALPHABETICAL by wire key — the determinism law
+              let namePos = g.Text.IndexOf "\n    name:"
+              let imagePos = g.Text.IndexOf "\n    image:"
+              Expect.isTrue (imagePos < namePos && imagePos > 0) "fields sort alphabetically"
+          }
+          test "schema-types: refs name types, allOf flattens, arrays nest, cycles keep opaque [D:schema-types]" {
+              let genAs asName src =
+                  match Weir.Contracts.parseSchema "t" src with
+                  | Error e -> failtest e
+                  | Ok doc ->
+                      Weir.SchemaTypes.moduleText Weir.Parser.keywords Set.empty "k8s-pod" asName "0123456789abcdef" "http://src" doc
+
+              let podSrc =
+                  """{ "$ref": "#/definitions/io.k8s.api.core.v1.Pod",
+                       "definitions": {
+                         "io.k8s.api.core.v1.Pod": {
+                           "type": "object", "required": ["spec"],
+                           "properties": {
+                             "metadata": { "allOf": [{ "$ref": "#/definitions/io.k8s.apimachinery.pkg.apis.meta.v1.ObjectMeta" }, { "description": "std" }] },
+                             "spec": { "$ref": "#/definitions/io.k8s.api.core.v1.PodSpec" } } },
+                         "io.k8s.apimachinery.pkg.apis.meta.v1.ObjectMeta": {
+                           "type": "object", "properties": { "name": { "type": "string" } } },
+                         "io.k8s.api.core.v1.PodSpec": {
+                           "type": "object", "required": ["containers"],
+                           "properties": { "containers": { "type": "array", "items": { "$ref": "#/definitions/io.k8s.api.core.v1.Container" } } } },
+                         "io.k8s.api.core.v1.Container": {
+                           "type": "object", "required": ["name"],
+                           "properties": { "name": { "type": "string" }, "env": { "type": "array", "items": { "type": "string" } } } } } }"""
+
+              let g =
+                  match genAs None podSrc with
+                  | Ok g -> g
+                  | Error e -> failtest e
+
+              // a $ref's definition key names the type by its LAST segment
+              Expect.stringContains g.Text "type PodSpec = {" "def name → last dot-segment"
+              Expect.stringContains g.Text "type Container = {" "container named from its def"
+              // allOf of one-ref-plus-annotations flattens to the ref
+              Expect.stringContains g.Text "metadata: Option<ObjectMeta>" "allOf-of-one-ref flattens; optional wraps"
+              // array of refs
+              Expect.stringContains g.Text "containers: seq<Container>" "required array of refs"
+              Expect.stringContains g.Text "env: Option<seq<string>>" "optional scalar array"
+              // the top name defaults to the root ref's stem; --as overrides
+              Expect.equal g.TopType "Pod" "root ref names the top"
+              Expect.stringContains g.Text "module K8sPod" "module name derives from the schema name"
+
+              let g2 =
+                  match genAs (Some "Manifest") podSrc with
+                  | Ok g -> g
+                  | Error e -> failtest e
+
+              Expect.equal g2.TopType "Manifest" "--as names the top type"
+              Expect.stringContains g2.Text "type Manifest = {" "--as lands on the declaration"
+
+              // DETERMINISM: same locked schema → byte-identical output
+              let g3 =
+                  match genAs None podSrc with
+                  | Ok g -> g
+                  | Error e -> failtest e
+
+              Expect.equal g3.Text g.Text "generate twice, byte-equal"
+
+              // a CYCLE (JSONSchemaProps' shape) keeps the opaque posture
+              let cyc =
+                  match
+                      genAs
+                          None
+                          """{ "$ref": "#/definitions/Props",
+                               "definitions": { "Props": { "type": "object", "properties": {
+                                 "name": { "type": "string" },
+                                 "items": { "type": "array", "items": { "$ref": "#/definitions/Props" } } } } } }"""
+                  with
+                  | Ok g -> g
+                  | Error e -> failtest e
+
+              Expect.stringContains cyc.Text "items: Option<seq<Yaml>>" "a self-ref field keeps opaque Yaml"
+              Expect.stringContains cyc.Text "self-referential" "the cycle note fires"
+
+              // UNREPRESENTABLE top level REFUSES with the located reason
+              let refusal =
+                  match genAs None """{ "type": "string" }""" with
+                  | Error e -> e
+                  | Ok g -> failtest $"expected a refusal, got {g.Text}"
+
+              Expect.stringContains refusal "no record to generate" "a scalar top refuses, teaching"
+
+              let mapTop =
+                  match genAs None """{ "type": "object", "additionalProperties": { "type": "string" } }""" with
+                  | Error e -> e
+                  | Ok g -> failtest $"expected a refusal, got {g.Text}"
+
+              Expect.stringContains mapTop "seq<string * string>" "an open-mapping top names the direct read spelling"
           }
           test
               "district mid-line #: the five cases — comment cut, quoted/hole/glued data, block bytes [D:district-hash]" {
@@ -5926,7 +6169,7 @@ let replEchoTests =
               // the let-echo meta line carries that SAME tail — the fix's
               // invariant: a clipped `let` bind never looks like it
               // silently dropped data
-              let meta = Weir.Repl.letEchoMeta "xs" (TSeq TStr) bareHint
+              let meta = Weir.Repl.letEchoMeta "xs" (TSeq TStr) None bareHint
 
               Expect.equal
                   meta
@@ -5943,9 +6186,60 @@ let replEchoTests =
               Expect.equal (List.length lines) 12 "all twelve elements, the cap never clips a forced seq"
               Expect.equal hint None "forced carries no teaching"
 
-              // the let meta then has an EMPTY tail — no dangling teaching
-              let meta = Weir.Repl.letEchoMeta "xs" (TSeq TStr) hint
+              // the let meta with no state then has an EMPTY tail — no
+              // dangling teaching (the state annotation is the caller's,
+              // via letSeqState — the frozen pin below)
+              let meta = Weir.Repl.letEchoMeta "xs" (TSeq TStr) None hint
               Expect.equal meta "xs : seq<string>" "no teaching, no trailing parenthetical"
+          }
+          test "the let echo states the bound seq's state — the exact spellings [D:reenum-warning]" {
+              // the meta seam: state alone, hint alone, both (one
+              // parenthetical, state first), neither
+              Expect.equal
+                  (Weir.Repl.letEchoMeta "pods" (TSeq TStr) (Some "command-backed — re-runs on each use") None)
+                  "pods : seq<string> (command-backed — re-runs on each use)"
+                  "the hazard annotation, exact bytes"
+
+              Expect.equal
+                  (Weir.Repl.letEchoMeta "pods" (TSeq TStr) (Some "frozen") None)
+                  "pods : seq<string> (frozen)"
+                  "the resolution annotation, exact bytes"
+
+              Expect.equal
+                  (Weir.Repl.letEchoMeta "pods" (TSeq TStr) (Some "frozen") (Some "extra"))
+                  "pods : seq<string> (frozen; extra)"
+                  "state and teaching share one parenthetical, state first"
+
+              Expect.equal (Weir.Repl.letEchoMeta "pods" (TSeq TStr) None None) "pods : seq<string>" "silence is the default"
+          }
+          test "letSeqState: the one probe decides frozen; command-backed only speaks unforced [D:reenum-warning]" {
+              let sp: Weir.Ast.Span =
+                  { Start = { Line = 1; Col = 1 }
+                    End = { Line = 1; Col = 2 } }
+
+              let cmdTe: Weir.Check.TypedExpr =
+                  { Kind = Weir.Check.TECmd("kubectl", [], None)
+                    Ty = TSeq TStr
+                    Span = sp }
+
+              let pureTe: Weir.Check.TypedExpr =
+                  { Kind = Weir.Check.TEVar "nats"
+                    Ty = TSeq TInt
+                    Span = sp }
+
+              let unforced = Weir.Eval.VSeq(Seq.delay (fun () -> Seq.empty))
+              let forced = Weir.Eval.VSeq([ Weir.Eval.VStr "a" ] :> seq<Weir.Eval.Value>)
+
+              Expect.equal
+                  (Weir.Repl.letSeqState cmdTe unforced)
+                  (Some "command-backed — re-runs on each use")
+                  "command-backed unforced states the hazard"
+
+              Expect.equal (Weir.Repl.letSeqState cmdTe forced) (Some "frozen") "forced states the resolution, command or not"
+
+              Expect.equal (Weir.Repl.letSeqState pureTe unforced) None "a pure lazy seq stays silent"
+
+              Expect.equal (Weir.Repl.letSeqState pureTe (Weir.Eval.VInt 3L)) None "a non-seq value carries no state"
           }
           test "the streamed-it misuse repair carries the command verbatim [D:repl-it]" {
               Expect.equal
@@ -17699,6 +17993,17 @@ let operatorValueTests =
               Expect.stringContains m "fun x -> v > x" "the backwards reading, shown"
               Expect.stringContains m "fun x -> x > v" "the likely-intended direction, shown"
           }
+          test "partial-application teach: a commutative op offers the directions as alternatives" {
+              let m = (checkErr "[1; 2] |> Seq.map ((==) 1)").Message
+              Expect.stringContains m "fun x -> x == v (or fun x -> v == x)" "== is symmetric — the or-form holds"
+          }
+          test "partial-application teach: a non-commutative op says the directions differ" {
+              let m = (checkErr "[1; 2] |> Seq.map ((-) 1)").Message
+              Expect.stringContains m "fun x -> x - v and fun x -> v - x differ" "- has no or-form"
+              let m2 = (checkErr "[1; 2] |> Seq.map ((<) 1)").Message
+              Expect.stringContains m2 "fun x -> x < v and fun x -> v < x differ" "< has no or-form"
+              Expect.isFalse (m2.Contains "(or ") "the or-form must never reach a non-commutative op"
+          }
           test "the refused set refuses with reasons; sigils cannot be caught" {
               let perr (src: string) =
                   match Weir.Parser.parseLine realResolver src with
@@ -18749,6 +19054,158 @@ let unusedBindingTests =
                   "used private member"
           } ]
 
+let reenumWarningTests =
+    // possible re-enumeration [D:reenum-warning]: a command-backed,
+    // unforced seq binding enumerated at two or more sites warns at the
+    // second and later sites — advisory (warning severity, check still
+    // exits 0), conservative, and stated
+    let allOf (lines: string list) =
+        let ds, _, _, _ = Weir.Script.analyzeLines "re.weir" lines
+        ds
+
+    let diagsOf (lines: string list) =
+        allOf lines |> List.filter (fun d -> d.Code = "re-enumeration")
+
+    let silent (lines: string list) (label: string) =
+        Expect.isEmpty
+            (diagsOf lines)
+            $"{label}: expected no re-enumeration warning, got {diagsOf lines |> List.map _.Message}"
+
+    testList
+        "possible re-enumeration [D:reenum-warning]"
+        [ test "the warning fires on the SECOND enumerating use — exact text, command and repair included" {
+              match
+                  diagsOf
+                      [ "let pods = git ls-files"
+                        "print $\"{pods |> Seq.length}\""
+                        "pods |> Seq.iter print" ]
+              with
+              | [ d ] ->
+                  Expect.equal (d.Line, d.Col) (3, 1) "located at the second use"
+                  Expect.equal d.Severity "warning" "advisory, never a gate"
+
+                  Expect.equal
+                      d.Message
+                      ("possible re-enumeration: 'pods' is command-backed and unforced — "
+                       + "each pull re-runs 'git ls-files'; snapshot one run: let pods = git ls-files |> Seq.force")
+                      "the exact sentence: the hazard, the command, the repair"
+              | other -> failtest $"expected one warning, got {other |> List.map (fun d -> d.Message)}"
+          }
+          test "warning severity is exit-0's substance: no error-severity diagnostic rides along" {
+              let ds =
+                  allOf
+                      [ "let pods = git ls-files"
+                        "print $\"{pods |> Seq.length}\""
+                        "pods |> Seq.iter print" ]
+
+              Expect.isFalse (ds |> List.exists (fun d -> d.Severity = "error")) "check exits 0 on a warning-only file"
+          }
+          test "second AND later: three pulls warn twice (never the first)" {
+              let ds =
+                  diagsOf
+                      [ "let pods = git ls-files"
+                        "pods |> Seq.iter print"
+                        "print $\"{pods |> Seq.length}\""
+                        "print $\"{pods |> Seq.sort |> Seq.length}\"" ]
+
+              Expect.equal (ds |> List.map (fun d -> d.Line)) [ 3; 4 ] "the first pull is the binding's point"
+          }
+          test "a single enumerating use is silent" {
+              silent [ "let pods = git ls-files"; "pods |> Seq.iter print" ] "single use"
+          }
+          test "the recognized-forced set: a Seq.force tail is silent" {
+              silent
+                  [ "let pods = git ls-files |> Seq.force"
+                    "print $\"{pods |> Seq.length}\""
+                    "pods |> Seq.iter print" ]
+                  "piped force tail"
+
+              silent
+                  [ "let pods = Seq.force $(git ls-files)"
+                    "print $\"{pods |> Seq.length}\""
+                    "pods |> Seq.iter print" ]
+                  "applied force head"
+          }
+          test "the recognized-forced set: the eager list literal and the comprehension are silent" {
+              silent
+                  [ "let xs = [$(git ls-files) |> Seq.length]"
+                    "print $\"{xs |> Seq.length}\""
+                    "xs |> Seq.iter (fun n -> print (show n))" ]
+                  "eager literal"
+
+              silent
+                  [ "let xs = [for f in $(git ls-files) -> f]"
+                    "print $\"{xs |> Seq.length}\""
+                    "xs |> Seq.iter print" ]
+                  "comprehension (its desugar ends in the force)"
+          }
+          test "a pure lazy seq is silent — command-backed only" {
+              silent
+                  [ "let xs = [1; 2; 3] |> Seq.map (fun n -> n * 2)"
+                    "print $\"{xs |> Seq.length}\""
+                    "print $\"{xs |> Seq.sum}\"" ]
+                  "pure lazy"
+          }
+          test "a | complete binding is silent — the record is already captured" {
+              silent
+                  [ "let r = git status | complete"
+                    "print $\"{r.exitCode}\""
+                    "print $\"{r.exitCode}\"" ]
+                  "complete record"
+          }
+          test "an argv splat counts as a pull — spawning expands the seq" {
+              match diagsOf [ "let files = git ls-files"; "git add $@files"; "git add $@files" ] with
+              | [ d ] ->
+                  Expect.equal d.Line 3 "the second splat"
+                  Expect.stringContains d.Message "re-runs 'git ls-files'" "the command named"
+              | other -> failtest $"expected one warning, got {other |> List.map (fun d -> d.Message)}"
+          }
+          test "the alias rule, classified: a whole-RHS bare name neither pulls nor carries tracking" {
+              // pods pulls once, the alias binds without pulling, and the
+              // alias's own single pull is not tracked — the stated gap
+              silent
+                  [ "let pods = git ls-files"
+                    "let extra = pods"
+                    "pods |> Seq.iter print"
+                    "extra |> Seq.iter print" ]
+                  "alias"
+          }
+          test "a block-local binding warns inside its own body, generic repair" {
+              match
+                  diagsOf
+                      [ "let f () ="
+                        "    let inner = git ls-files"
+                        "    print $\"{inner |> Seq.length}\""
+                        "    inner |> Seq.iter print"
+                        ""
+                        "f ()" ]
+              with
+              | [ d ] ->
+                  Expect.equal d.Line 4 "the second local pull"
+                  Expect.stringContains
+                      d.Message
+                      "add '|> Seq.force' at the binding"
+                      "no clean one-line source — the generic repair"
+              | other -> failtest $"expected one warning, got {other |> List.map (fun d -> d.Message)}"
+          }
+          test "a rebinding consumes the old tracking; its RHS pull counts once" {
+              // the second statement's RHS reads the OUTER pods (one
+              // pull); the rebound name is a plain pipeline, untracked
+              silent
+                  [ "let pods = git ls-files"
+                    "let pods = pods |> Seq.where (Str.contains \"a\")"
+                    "pods |> Seq.iter print" ]
+                  "read-through rebind"
+          }
+          test "POISON: an errored statement suppresses the advisory pass" {
+              silent
+                  [ "let pods = git ls-files"
+                    "pods |> Seq.iter print"
+                    "pods |> Seq.iter print"
+                    "print (\"a\" + 1)" ]
+                  "one real error beats advisory noise"
+          } ]
+
 // ---- #save DISTILL [D:repl-save] -------------------------------------
 // the distill seam: transcript survivors (a `TDef` name + physical
 // source) through qualify -> dedup(last) -> the check guarantee. The
@@ -19577,6 +20034,7 @@ let allTests =
           sigilTests
           districtTests
           unusedBindingTests
+          reenumWarningTests
           replSaveDistillTests
           aliasTests
           helpUxTests

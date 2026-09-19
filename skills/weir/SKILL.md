@@ -823,7 +823,8 @@ print (Option.flatten (Some None) |> Option.defaultValue 0)
 - `Seq.force` materializes (consume to completion, eager in-memory;
   STRICT — not for infinite seqs). When to force, four customers:
   REUSE (a command-backed seq re-runs its process per enumeration —
-  force once, consume twice); TIMING (a lazy `ls` enumerated after a
+  force once, consume twice; `weir check` WARNS on the second pull of
+  an unforced command-backed binding — advisory, exit stays 0); TIMING (a lazy `ls` enumerated after a
   `cd` sees the new directory; force pins the data NOW); GLOB's cd
   seam (`Path.glob` resolves relative patterns at ENUMERATION —
   force pins the batch before a `cd`); and the non-customer: a
@@ -858,7 +859,9 @@ print (Option.flatten (Some None) |> Option.defaultValue 0)
   context resolves the overload (`(+)` sums floats/strings/Durations/
   Sizes where the elements say so). Admitted: `+ - * / > < >= <= ==
   <>`. Partial application REFUSES (`(>) 10` reads backwards — the
-  message shows both lambda directions); `(&&)`/`(||)` refuse (a value
+  message shows both lambda directions, as interchangeable only for
+  a commutative op (`==`, `<>`, `*`); for the rest it says the
+  directions differ); `(&&)`/`(||)` refuse (a value
   cannot short-circuit); the pipes and `>>`/`<<` refuse (grammar /
   already the composed function).
 - Match-or-skip over a stream is `Seq.choose` (lazy, qualified-only):
@@ -1446,6 +1449,19 @@ type Bad = C of int
   refuse (a patch is partial); `Yaml.parse` can never produce a
   tombstone (parsed text is data). The file round-trip is composition:
   `File.read f |> Yaml.parse |> Yaml.merge p |> to yaml |> File.write f`.
+- The typed-boundary TIERING [D:schema-types]: `#infer`/`inferShape`
+  SCAFFOLD from a sample (they see only what the sample had); a
+  published JSON Schema is a CONTRACT — `weir gen types --schema
+  <name>` (CLI, after `weir add schema … --as <name>`) generates a
+  user-owned decl-only module at `.weir/types/<name>.weir` from the
+  locked schema, where `required` decides plain-vs-`Option`,
+  `additionalProperties` becomes the `seq<string * V>` mapping, and
+  `$ref` definition names become type names; import it with
+  `import "weir:<name>" as X` (type names resolve bare in the
+  adapter slot). `from table` stays the tier for tools with no
+  schema at all. The generated file is yours — regeneration is an
+  explicit re-run, and every place the schema could not decide is a
+  `// note:` line, never a silent guess.
 - `Json.inferShape`/`Yaml.inferShape`/`Table.inferShape : seq<string>
   -> string` draft named `type` declarations from a SAMPLE
   [D:repl-infer] — the `weir add schema` category (external structure

@@ -1,5 +1,82 @@
 # Changelog
 
+## v0.0.45
+
+### Added
+
+- **The checker warns on possible re-enumeration.** A `let` whose RHS
+  is a command-backed seq with no visible force (`|> Seq.force`, an
+  applied `Seq.force`, an eager literal or a comprehension) re-runs
+  its command on every pull. When such a binding is enumerated at two
+  or more sites, `weir check` now warns at the second and later
+  sites — naming the command and the one-line repair
+  (`snapshot one run: let pods = kubectl get po -A |> Seq.force`).
+  Advisory: warning severity, exit stays 0, and the LSP shows it as a
+  squiggle. Conservative and stated: any read of the name counts as a
+  possible pull (argv splats included); a plain alias
+  (`let y = pods`) does not.
+
+- **The REPL binding echo states the bound seq's state.** At a tty,
+  `let pods = kubectl get po -A` now echoes
+  `pods : seq<string> (command-backed — re-runs on each use)`, and a
+  materialized bind echoes `(frozen)` — the same forcedItems probe
+  the echo and completion already share. A pure lazy seq stays
+  unannotated. Display only; the piped surface is unchanged.
+
+- **`weir gen types --schema <name>` — generate weir types from a
+  locked JSON Schema.** The locked `.weir/schemas/<name>.json` (from
+  `weir add schema`) becomes a declaration-only weir module at
+  `.weir/types/<name>.weir`, imported as `import "weir:<name>" as …`
+  (the `weir:` namespace now resolves vendored modules first, then
+  generated types). `#infer` drafts from a sample and can only see
+  what the sample had; the schema carries the facts no sample can —
+  a member of `required` generates a plain field, anything else
+  `Option<…>`, the nullable spellings (`type: [.., "null"]` /
+  `nullable: true`) fold into `Option`, `additionalProperties`
+  generates the `seq<string * V>` mapping, `$ref` definition names
+  become type names (`io.k8s.api.core.v1.PodSpec` → `PodSpec`,
+  parent-segment prefix on collision), an `enum` generates `string`
+  plus a `//` note listing the values, `anyOf` takes the first
+  variant with a verify note, and a self-referential definition
+  stays opaque (`Yaml`) with a note — never a silent guess. Field
+  names ride `#infer`'s own `[<Wire>]` sanitizer; the emitter is
+  shared, only the frontend differs. The generated file is
+  user-owned and deliberately unlocked: the provenance header
+  records the schema name and lock hash, regeneration is an
+  explicit re-run (`--as` names the top type, `--out` moves it,
+  `--out -` streams to stdout), output is byte-deterministic, and
+  the emitted module runs through the real checker before anything
+  lands — a schema producing unrepresentable weir refuses with the
+  reason.
+
+- **The schema subset reads the raw k8s OpenAPI shape.** `weir add
+  schema` (and `schema=` district validation) now accept in-document
+  `$ref` (`#/definitions/…`, `#/$defs/…`, `#/components/schemas/…`,
+  resolved against the root holders — a dangling ref refuses at
+  add), `allOf` of one schema plus annotations (the k8s
+  $ref-with-description idiom), `anyOf` (all-scalar folds like
+  `oneOf`'s IntOrString; mixed alternatives validate as unchecked),
+  and `nullable: true`. Cross-file `$ref` still teaches the
+  standalone variants; `not`/`if`/`then`/`else` stay outside the
+  subset.
+
+- **`from json`/`from yaml` missing-field errors teach the Option
+  repair.** `missing field 'env' …` now carries the from-table
+  spelling: if the field is sometimes absent, declare it
+  `Option<…>` — a type drafted from a sample only sees what the
+  sample had.
+
+### Fixed
+
+- **The operator partial-application teach no longer offers two
+  different functions as interchangeable.** `(op) v` still refuses;
+  for a commutative operator (`==`, `<>`, `*`) the message keeps
+  both lambda spellings as alternatives, and for every other
+  operator it now says the directions differ (`fun x -> x - v and
+  fun x -> v - x differ`) instead of the `(or …)` form. `+` takes
+  the differ-form too: it concatenates strings by context, and the
+  operand type is not known at the refusal site.
+
 ## v0.0.44
 
 ### Added

@@ -1,0 +1,263 @@
+{
+  "$schema": "http://json-schema.org/schema#",
+  "description": "Pod is a collection of containers that can run on a host. TRIMMED representative fixture: in-document $ref, allOf-of-one-ref, anyOf IntOrString, enum, nullable spellings, additionalProperties mappings, x-kubernetes-* annotations.",
+  "$ref": "#/definitions/io.k8s.api.core.v1.Pod",
+  "definitions": {
+    "io.k8s.api.core.v1.Pod": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "spec"
+      ],
+      "properties": {
+        "apiVersion": {
+          "type": "string",
+          "description": "APIVersion defines the versioned schema of this representation of an object."
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "Pod"
+          ]
+        },
+        "metadata": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/io.k8s.apimachinery.pkg.apis.meta.v1.ObjectMeta"
+            }
+          ],
+          "description": "Standard object's metadata."
+        },
+        "spec": {
+          "$ref": "#/definitions/io.k8s.api.core.v1.PodSpec"
+        },
+        "status": {
+          "$ref": "#/definitions/io.k8s.api.core.v1.PodStatus"
+        }
+      },
+      "x-kubernetes-group-version-kind": [
+        {
+          "group": "",
+          "kind": "Pod",
+          "version": "v1"
+        }
+      ]
+    },
+    "io.k8s.apimachinery.pkg.apis.meta.v1.ObjectMeta": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "namespace": {
+          "type": "string"
+        },
+        "labels": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "annotations": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "x-kubernetes-patch-strategy": "merge"
+        },
+        "creationTimestamp": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "io.k8s.api.core.v1.PodSpec": {
+      "type": "object",
+      "required": [
+        "containers"
+      ],
+      "properties": {
+        "containers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/io.k8s.api.core.v1.Container"
+          },
+          "x-kubernetes-patch-merge-key": "name"
+        },
+        "restartPolicy": {
+          "type": "string",
+          "enum": [
+            "Always",
+            "OnFailure",
+            "Never"
+          ]
+        },
+        "activeDeadlineSeconds": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64"
+        },
+        "nodeSelector": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "x-kubernetes-map-type": "atomic"
+        }
+      }
+    },
+    "io.k8s.api.core.v1.Container": {
+      "type": "object",
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "image": {
+          "type": "string"
+        },
+        "env": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/io.k8s.api.core.v1.EnvVar"
+          },
+          "x-kubernetes-patch-merge-key": "name"
+        },
+        "ports": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/io.k8s.api.core.v1.ContainerPort"
+          }
+        },
+        "livenessProbe": {
+          "$ref": "#/definitions/io.k8s.api.core.v1.Probe"
+        },
+        "tty": {
+          "type": "boolean"
+        }
+      }
+    },
+    "io.k8s.api.core.v1.EnvVar": {
+      "type": "object",
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "value": {
+          "type": "string"
+        }
+      }
+    },
+    "io.k8s.api.core.v1.ContainerPort": {
+      "type": "object",
+      "required": [
+        "containerPort"
+      ],
+      "properties": {
+        "containerPort": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "name": {
+          "type": "string"
+        },
+        "protocol": {
+          "type": "string",
+          "enum": [
+            "TCP",
+            "UDP",
+            "SCTP"
+          ]
+        }
+      }
+    },
+    "io.k8s.api.core.v1.Probe": {
+      "type": "object",
+      "properties": {
+        "httpGet": {
+          "$ref": "#/definitions/io.k8s.api.core.v1.HTTPGetAction"
+        },
+        "initialDelaySeconds": {
+          "type": "integer",
+          "format": "int32"
+        }
+      }
+    },
+    "io.k8s.api.core.v1.HTTPGetAction": {
+      "type": "object",
+      "required": [
+        "port"
+      ],
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "port": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "x-kubernetes-int-or-string": true
+        }
+      }
+    },
+    "io.k8s.api.core.v1.PodStatus": {
+      "type": "object",
+      "properties": {
+        "phase": {
+          "type": "string",
+          "enum": [
+            "Pending",
+            "Running",
+            "Succeeded",
+            "Failed",
+            "Unknown"
+          ]
+        },
+        "hostIP": {
+          "type": "string",
+          "nullable": true
+        },
+        "startTime": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "conditions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/io.k8s.api.core.v1.PodCondition"
+          }
+        }
+      }
+    },
+    "io.k8s.api.core.v1.PodCondition": {
+      "type": "object",
+      "required": [
+        "type",
+        "status"
+      ],
+      "properties": {
+        "type": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

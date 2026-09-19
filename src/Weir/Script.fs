@@ -3297,6 +3297,121 @@ type UnusedTracker() =
 
             (List.ofSeq found) @ flushed |> List.sortBy (fun f -> f.ULine, f.UCol)
 
+// ---- possible re-enumeration [D:reenum-warning]: whole-file threading -----
+// The hazard is a WHOLE-FILE judgement like the unused law (a second
+// pull may sit any number of statements later), so it applies
+// POST-FOLD in analyzeLines — check / --json / --can / the LSP all
+// inherit it; the REPL states the same hazard on its binding echo
+// instead. WARNING severity: advisory, never a gate — check still
+// exits 0. Poisoned (any errored statement) = silent, the unused law's
+// rule: one real error beats advisory noise.
+
+type ReenumFinding =
+    { RLine: int
+      RCol: int
+      REndCol: int
+      RMessage: string }
+
+type ReenumTracker() =
+    // top-level tracked binders: name -> id; id -> (command, repair)
+    let tracked = System.Collections.Generic.Dictionary<string, int>()
+    let info = System.Collections.Generic.Dictionary<int, string * string>()
+    let counts = System.Collections.Generic.Dictionary<int, int>()
+    let found = ResizeArray<ReenumFinding>()
+    let mutable nextId = 0
+    let mutable poisoned = false
+
+    let fresh () =
+        let id = nextId
+        nextId <- nextId + 1
+        id
+
+    /// walk one statement tree: count enumerating uses of the tracked
+    /// set (top-level and any qualifying block-locals), a warning at
+    /// the SECOND and later sites — the first pull is the binding's
+    /// point, the second is where the command silently runs again
+    let consume (ll: LogicalLine) (te: Check.TypedExpr) =
+        let tracked0 =
+            tracked |> Seq.map (fun kv -> kv.Key, kv.Value) |> Map.ofSeq
+
+        for ev in Check.reenumEvents fresh tracked0 te do
+            match ev with
+            | Check.ReenumBind(id, _, cmd) ->
+                // a block-local binder has no clean one-line source to
+                // ride the repair — the generic spelling instead
+                info[id] <- (cmd, "add '|> Seq.force' at the binding")
+                counts[id] <- 0
+            | Check.ReenumUse(id, name, span) ->
+                let n =
+                    (match counts.TryGetValue id with
+                     | true, c -> c
+                     | _ -> 0)
+                    + 1
+
+                counts[id] <- n
+
+                if n >= 2 then
+                    let cmd, repair = info[id]
+                    let l, c = translate ll span.Start.Col
+                    let _, ec = translate ll span.End.Col
+
+                    found.Add
+                        { RLine = l
+                          RCol = c
+                          REndCol = max (c + 1) ec
+                          RMessage =
+                            $"possible re-enumeration: '{name}' is command-backed and unforced — each pull re-runs '{cmd}'; snapshot one run: {repair}" }
+
+    member _.Poison() = poisoned <- true
+
+    member _.Feed (ll: LogicalLine) (chk: CheckedStatement) =
+        match chk.Kind with
+        | KType _
+        | KSig _
+        | KModule _
+        | KImport _ -> ()
+        | KLet(name, _, te) ->
+            // RHS uses first (a same-name rebind reads the OUTER binding
+            // — no `let rec` exists); the alias rule, classified: a
+            // whole-RHS bare name neither pulls nor carries the
+            // tracking onto the alias
+            (match te.Kind with
+             | Check.TEVar _ -> ()
+             | _ -> consume ll te)
+
+            tracked.Remove name |> ignore
+
+            match Check.commandBackedUnforced te with
+            | Some cmd ->
+                let id = fresh ()
+
+                // the repair rides the binding's own source when it is
+                // one clean line (the streamed-it precedent); assembled
+                // (sentinel-joined) text falls back to the generic
+                // spelling
+                let repair =
+                    let src = ll.Text.Trim()
+
+                    if src.StartsWith "let " && not (src |> Seq.exists System.Char.IsControl) then
+                        $"{src} |> Seq.force"
+                    else
+                        "add '|> Seq.force' at the binding"
+
+                info[id] <- (cmd, repair)
+                counts[id] <- 0
+                tracked[name] <- id
+            | None -> ()
+        | KLetPat(pat, _, te) ->
+            consume ll te
+
+            for n, _ in Check.patNameSpans pat do
+                tracked.Remove n |> ignore
+        | KCmd te
+        | KExpr te -> consume ll te
+
+    member _.Flush() : ReenumFinding list =
+        if poisoned then [] else List.ofSeq found
+
 // ---- the module loader [D:modules-v1] ------------------------------------
 // A module's OWN base env: builtins (strict) + prelude + Self, with
 // Self.scriptPath = the module's own path. Pure — no stdin/args/Session
@@ -3323,7 +3438,19 @@ let private resolveImportPath (importingAbsPath: string) (path: string) : string
         let name = path.Substring 5
 
         match Contracts.findWeirDir dir with
-        | Ok wd -> IO.Path.GetFullPath(IO.Path.Combine(wd, "modules", name + ".weir"))
+        | Ok wd ->
+            let modPath = IO.Path.GetFullPath(IO.Path.Combine(wd, "modules", name + ".weir"))
+
+            if IO.File.Exists modPath then
+                modPath
+            else
+                // one namespace, two homes [D:schema-types]: vendored
+                // modules FIRST, then generated types (.weir/types/ —
+                // `weir gen types` output); a missing name still teaches
+                // through the modules path below
+                let typesPath = IO.Path.GetFullPath(IO.Path.Combine(wd, "types", name + ".weir"))
+
+                if IO.File.Exists typesPath then typesPath else modPath
         | Error _ ->
             // no .weir/ anywhere: a display path for the not-found teach
             IO.Path.GetFullPath(IO.Path.Combine(dir, ".weir", "modules", name + ".weir"))
@@ -3348,12 +3475,9 @@ let private deriveModuleName (absPath: string) : string option =
 // [D:modules-v1]. Eager positions only, STOPS at lambdas: a command in a
 // lambda body is deferred, so a param-ful `let f r = git …` is a function,
 // not an import-time effect; only a paramless `let x = git …` is rejected.
-let rec runsCommandT (te: Check.TypedExpr) : bool =
-    match te.Kind with
-    | Check.TECmd _ -> true
-    | Check.TELambda _
-    | Check.TELambdaPat _ -> false
-    | _ -> Check.childExprs te |> List.exists runsCommandT
+// The walk lives in Check beside the re-enumeration machinery that
+// shares it [D:reenum-warning].
+let runsCommandT: Check.TypedExpr -> bool = Check.runsCommandT
 
 // buffer-over-disk [D:modules-v1]: when the LSP sets this, an imported file's
 // content is read through it (open editor buffers first, then disk) so an
@@ -3430,7 +3554,7 @@ let rec loadModuleCachedWith
             let n = path.Substring 5
 
             stmt
-                $"no vendored module '{n}' ({absPath}) — vendor it: weir add module <host>/<org>/<repo>//<file>@<ref> --as {n}"
+                $"no vendored module '{n}' ({absPath}) — vendor it: weir add module <host>/<org>/<repo>//<file>@<ref> --as {n} (a generated types module lands here via: weir gen types --schema {n})"
         else
             stmt $"cannot resolve import: no file at {absPath}"
     else
@@ -3911,9 +4035,9 @@ let resolveSchemaFile (path: string) (name: string) : Result<string * string, st
 
 let schemaDiagnostics (path: string) (pairs: (LogicalLine * CheckedStatement) list) : Diagnostic list =
     let cache =
-        System.Collections.Generic.Dictionary<string, Result<Contracts.Schema, string>>()
+        System.Collections.Generic.Dictionary<string, Result<Contracts.SchemaDoc, string>>()
 
-    let loadSchema (name: string) : Result<Contracts.Schema, string> =
+    let loadSchema (name: string) : Result<Contracts.SchemaDoc, string> =
         match cache.TryGetValue name with
         | true, r -> r
         | _ ->
@@ -3962,7 +4086,9 @@ let schemaDiagnostics (path: string) (pairs: (LogicalLine * CheckedStatement) li
 
             match loadSchema name with
             | Error e -> [ mk dspan e ]
-            | Ok schema -> Contracts.validateTpl name "" schema tpl |> List.map (fun (sp, m) -> mk sp m)))
+            | Ok doc ->
+                Contracts.validateTpl name doc.Defs "" doc.Root tpl
+                |> List.map (fun (sp, m) -> mk sp m)))
 
 // ---- external contracts: command signatures [D:command-signatures] --------
 // a loaded signature's checkable surface. Subs: kebab-cased subcommand
@@ -5161,6 +5287,11 @@ let analyzeLines
         // after the fold with the module's Signed set
         let unusedTracker = UnusedTracker()
 
+        // possible re-enumeration [D:reenum-warning]: fed per statement,
+        // flushed after the fold; modules skip (a command-running module
+        // `let` is already the module-rule error)
+        let reenumTracker = ReenumTracker()
+
         for ll in logicalLines do
             // ONE spelling for the head warning, shared by the Ok walk
             // (typed) and the Error walk (parse-level) below
@@ -5295,10 +5426,15 @@ let analyzeLines
                  | _ -> ())
 
                 unusedTracker.Feed ll chk
+
+                if not isModule then
+                    reenumTracker.Feed ll chk
+
                 stmts.Add(ll, chk)
                 tenv <- chk.Env
             | Error d ->
                 unusedTracker.Poison()
+                reenumTracker.Poison()
                 d.Warnings |> List.iter warn
 
                 // [PLAN-diagnostics-arc B5+B6]: an ERRORED statement
@@ -5456,6 +5592,20 @@ let analyzeLines
                    Severity = "error"
                    Code = "unused-binding"
                    Message = f.UMessage })
+
+        // the re-enumeration warning lands on the second and later
+        // enumerating uses [D:reenum-warning] — warning severity, so
+        // check still exits 0
+        (for f in reenumTracker.Flush() do
+            diags.Add
+                { File = path
+                  Line = f.RLine
+                  Col = f.RCol
+                  EndLine = Some f.RLine
+                  EndCol = Some f.REndCol
+                  Severity = "warning"
+                  Code = "re-enumeration"
+                  Message = f.RMessage })
 
         (let sigLoadDiags, sigInfos = loadSigs path sigDecls
 

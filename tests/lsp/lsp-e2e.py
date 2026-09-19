@@ -108,6 +108,19 @@ hover = read_msg()
 expect(hover["result"] and "seq<int>" in hover["result"]["contents"]["value"],
        f"hover should show seq<int>: {hover}")
 
+# a command-backed seq pulled twice -> the re-enumeration warning
+# arrives as a squiggle-grade diagnostic (severity 2, on the second
+# pull, naming the command) [D:reenum-warning]
+send({"jsonrpc": "2.0", "method": "textDocument/didChange",
+      "params": {"textDocument": {"uri": URI},
+                 "contentChanges": [{"text": 'let pods = git ls-files\nprint $"{pods |> Seq.length}"\npods |> Seq.iter print\n'}]}})
+diag = read_msg()
+rds = [d for d in diag["params"]["diagnostics"] if d.get("code") == "re-enumeration"]
+expect(len(rds) == 1 and rds[0]["severity"] == 2,
+       f"expected one warning-severity re-enumeration diagnostic: {diag}")
+expect(rds[0]["range"]["start"]["line"] == 2 and "re-runs 'git ls-files'" in rds[0]["message"],
+       f"the squiggle lands on the second pull, naming the command: {rds[0]}")
+
 # hover an INNER-let binder -> the bound VALUE's type, not the
 # enclosing let-in's body type [PLAN-diagnostics-arc A2]
 send({"jsonrpc": "2.0", "method": "textDocument/didChange",

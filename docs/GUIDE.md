@@ -1387,6 +1387,9 @@ pods |> Seq.where (fun p -> p.restarts > 0) |> Seq.iter (fun p -> print p.name)
 
 In a live script that is `kubectl get po |> from table Pod` — and
 `#infer it from table as Pod` in the REPL drafts the record for you.
+Reading such a binding twice wants a `|> Seq.force` tail: each pull
+of an unforced command-backed seq re-runs `kubectl`, and the checker
+warns if you skip it.
 Extra columns are ignored, errors carry line and column, and there is
 no `to table`: read-only, like XML.
 
