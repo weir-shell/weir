@@ -4,6 +4,26 @@
 
 ### Added
 
+- **Dynamic command heads: `^$name` / `^$(…)`.** The `^`
+  force-external head gains a `$`-splice alternative beside the
+  literal — a runtime string names the program, and argv stays typed
+  argv, so the computed-command shape that used to force
+  `sh -c "$path …"` (plugin callbacks, asdf-style `exec` dispatch,
+  lookup-table tools) runs injection-safe: `^$tool $userArg` passes
+  one entry per argument and a head value with spaces is one program,
+  never re-lexed. The value must be a `string`; a seq capture refuses
+  with a bind-and-pick teaching (`let tool = $(…) |> Seq.exactlyOne`,
+  then `^$tool`), while a string-typed capture
+  (`^$(… |> Seq.exactlyOne) args`) heads directly. Resolution moves
+  to run for exactly this head: `weir check` draws no cmd-not-found
+  diagnostic (there is nothing to look up yet), a missing program is
+  a located run error naming the value, and `weir check --can`
+  reports the head as not statically known, counted with the opaque
+  sites (`--strict` exits 2). Pipes, `$()` captures, the
+  `| complete` family, value-headed stdin and env sigils compose
+  exactly as with a literal head; `^$@xs` and `^$"…"` refuse with
+  teachings.
+
 - **Width members: `Str.replicate`, `Str.padLeft`, `Str.padRight`.**
   `Str.replicate n s` concatenates n copies (0 → empty; a negative
   count raises — Seq.replicate's convention). `padLeft`/`padRight`
