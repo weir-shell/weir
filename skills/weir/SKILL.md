@@ -1213,7 +1213,8 @@ Path.glob "*" |> Seq.map (File)
   drops nothing) — the typed replacement for bash's conditional-flag
   idiom. `$@` demands `seq<string>` exactly (a scalar or `seq<int>`
   is a check error naming the fix); it cannot head a command
-  (computed heads park) or join a word mid-construction
+  (the head is one program — `^$name` is the dynamic spelling
+  [D:dynamic-head]) or join a word mid-construction
   (`--flag=$@xs` — map the prefix on, or separate args).
 - No glob EXPANSION (`Path.glob` is the typed spelling — a
   function, not argv magic), no redirects, no `&&`, no `$VAR` env
