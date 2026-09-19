@@ -1,0 +1,2070 @@
+{
+  "modules": [
+    {
+      "name": "Args",
+      "members": [
+        {
+          "name": "flag",
+          "signature": "Args.flag (name: string) : string -\u003E bool",
+          "summary": "True when a --flag (or its short form) is present in argv.",
+          "example": "Args.flag \u0022verbose\u0022",
+          "pointer": null
+        },
+        {
+          "name": "value",
+          "signature": "Args.value (name: string) : Option\u003Cstring\u003E",
+          "summary": "The value of a --name option as an Option.",
+          "example": "Args.value \u0022name\u0022",
+          "pointer": null
+        }
+      ]
+    },
+    {
+      "name": "Bytes",
+      "members": [
+        {
+          "name": "fromBase64",
+          "signature": "Bytes.fromBase64 (s: string) : Bytes",
+          "summary": "Decode standard base64 (padded or unpadded) to Bytes; raises on malformed input. Use it for binary payloads; Str.fromBase64 is the text-only twin.",
+          "example": "Bytes.fromBase64 \u0022iVBORw0KGgo=\u0022",
+          "pointer": null
+        },
+        {
+          "name": "fromHex",
+          "signature": "Bytes.fromHex (s: string) : Bytes",
+          "summary": "Decode hex (either case) to Bytes; odd-length and non-hex input raise. The crypto sibling of Bytes.fromBase64 \u2014 fingerprints, moduli and EC points all travel as hex.",
+          "example": "Bytes.fromHex \u00220a1B\u0022 |\u003E Bytes.toHex",
+          "pointer": null
+        },
+        {
+          "name": "hmacSha256",
+          "signature": "Bytes.hmacSha256 (key: Bytes) (msg: Bytes) : Bytes",
+          "summary": "HMAC-SHA256: key first, then message, the mac as Bytes. A Secret key exits via Secret.reveal |\u003E Str.toUtf8 \u2014 deliberate, like every Secret exit.",
+          "example": "Bytes.hmacSha256 (Str.toUtf8 \u0022key\u0022) (Str.toUtf8 \u0022msg\u0022) |\u003E Bytes.toHex",
+          "pointer": null
+        },
+        {
+          "name": "length",
+          "signature": "Bytes.length (b: Bytes) : Size",
+          "summary": "The byte count as a Size.",
+          "example": null,
+          "pointer": null
+        },
+        {
+          "name": "sha256",
+          "signature": "Bytes.sha256 (b: Bytes) : string",
+          "summary": "The SHA-256 digest of the bytes, lowercase hex (sha256sum parity).",
+          "example": null,
+          "pointer": null
+        },
+        {
+          "name": "sub",
+          "signature": "Bytes.sub (start: int) (len: int) (b: Bytes) : Bytes",
+          "summary": "A byte slice by start index and length \u2014 Str.sub\u0027s exact shape on Bytes; out of range raises with the same detail.",
+          "example": "Str.toUtf8 \u0022abcd\u0022 |\u003E Bytes.sub 1 2 |\u003E Bytes.toHex",
+          "pointer": null
+        },
+        {
+          "name": "toBase64",
+          "signature": "Bytes.toBase64 (b: Bytes) : string",
+          "summary": "Base64 of the bytes \u2014 one unwrapped line; the way to carry bytes as text (print and the JSON/YAML boundaries refuse raw bytes).",
+          "example": null,
+          "pointer": null
+        },
+        {
+          "name": "toHex",
+          "signature": "Bytes.toHex (b: Bytes) : string",
+          "summary": "Lowercase hex of the bytes (sha256\u0027s own rendering) \u2014 one unwrapped line.",
+          "example": "Str.toUtf8 \u0022hi\u0022 |\u003E Bytes.toHex",
+          "pointer": null
+        },
+        {
+          "name": "tryFromBase64",
+          "signature": "Bytes.tryFromBase64 (s: string) : Option\u003CBytes\u003E",
+          "summary": "fromBase64 as an Option: None for malformed base64.",
+          "example": "Bytes.tryFromBase64 \u0022!!!\u0022",
+          "pointer": null
+        }
+      ]
+    },
+    {
+      "name": "Dir",
+      "members": [
+        {
+          "name": "copy",
+          "signature": "Dir.copy (src: string) (dst: string) : unit",
+          "summary": "Copy a directory and its contents \u2014 (src, dst); refuses an existing destination (Dir.deleteAll first to replace). Copying a directory means its contents: there is no non-recursive form.",
+          "example": "let d = Path.newTempDir ()\nDir.copy d $\u0022{d}-c\u0022\nDir.deleteAll d\nDir.deleteAll $\u0022{d}-c\u0022",
+          "pointer": null
+        },
+        {
+          "name": "create",
+          "signature": "Dir.create (path: string) : unit",
+          "summary": "Create a directory and its parents; succeeds silently when it already exists (idempotent \u2014 unlike the copy/move members, which refuse existing destinations).",
+          "example": "Dir.create (Path.tempRoot ())",
+          "pointer": null
+        },
+        {
+          "name": "delete",
+          "signature": "Dir.delete (path: string) : unit",
+          "summary": "Delete an empty directory (refuses a non-empty one, naming Dir.deleteAll; raises when absent).",
+          "example": "Dir.delete (Path.newTempDir ())",
+          "pointer": null
+        },
+        {
+          "name": "deleteAll",
+          "signature": "Dir.deleteAll (path: string) : unit",
+          "summary": "Delete the directory and everything under it, recursively. The destructive one \u2014 there is no undo.",
+          "example": "let d = Path.newTempDir ()\nDir.create $\u0022{d}/tree-a/tree-b\u0022\nDir.deleteAll d",
+          "pointer": null
+        },
+        {
+          "name": "exists",
+          "signature": "Dir.exists (path: string) : bool",
+          "summary": "True when the directory exists.",
+          "example": "Dir.exists \u0022.\u0022",
+          "pointer": null
+        },
+        {
+          "name": "list",
+          "signature": "Dir.list (path: string) : seq\u003Cstring\u003E",
+          "summary": "The directory\u0027s entries as full paths \u2014 files and directories both, sorted by name, eager. Filter with Seq.where \u002B File.exists/Dir.exists; use \u0060Path.glob \u0022**\u0022\u0060 for a recursive listing.",
+          "example": "let d = Path.newTempDir ()\nprint $\u0022{Dir.list d |\u003E Seq.length}\u0022\nDir.delete d",
+          "pointer": null
+        },
+        {
+          "name": "move",
+          "signature": "Dir.move (src: string) (dst: string) : unit",
+          "summary": "Move (rename) a directory \u2014 (src, dst); refuses an existing destination.",
+          "example": "let d = Path.newTempDir ()\nDir.move d $\u0022{d}-m\u0022\nDir.delete $\u0022{d}-m\u0022",
+          "pointer": null
+        },
+        {
+          "name": "stat",
+          "signature": "Dir.stat (path: string) : seq\u003CFileRow\u003E",
+          "summary": "The directory\u0027s entries as rows \u2014 Dir.list\u0027s seq\u003CFileRow\u003E form, ls\u0027s own rows over the named directory (ls reads the cwd; Dir.stat reads elsewhere). Sorted by name, eager.",
+          "example": "let d = Path.newTempDir ()\nprint $\u0022{Dir.stat d |\u003E Seq.length}\u0022\nDir.delete d",
+          "pointer": null
+        }
+      ]
+    },
+    {
+      "name": "Duration",
+      "members": [
+        {
+          "name": "average",
+          "signature": "Duration.average (xs: seq\u003CDuration\u003E) : Duration",
+          "summary": "The mean duration, truncated to whole milliseconds (raises on empty).",
+          "example": "[90s; 30s] |\u003E Duration.average",
+          "pointer": null
+        },
+        {
+          "name": "h",
+          "signature": "Duration.h (n: int) : Duration",
+          "summary": "A duration of n hours.",
+          "example": "Duration.h 2",
+          "pointer": null
+        },
+        {
+          "name": "m",
+          "signature": "Duration.m (n: int) : Duration",
+          "summary": "A duration of n minutes.",
+          "example": "Duration.m 5",
+          "pointer": null
+        },
+        {
+          "name": "ms",
+          "signature": "Duration.ms (n: int) : Duration",
+          "summary": "A duration of n milliseconds \u2014 the literal 500ms, as a function.",
+          "example": "Duration.ms 500",
+          "pointer": null
+        },
+        {
+          "name": "parse",
+          "signature": "Duration.parse (text: string) : Duration",
+          "summary": "Parse duration text \u2014 the shape show renders: 1h30m, 2.5s, 500ms (raises on anything else, including sub-millisecond precision).",
+          "example": "Duration.parse \u00221h30m\u0022",
+          "pointer": null
+        },
+        {
+          "name": "s",
+          "signature": "Duration.s (n: int) : Duration",
+          "summary": "A duration of n seconds.",
+          "example": "Duration.s 30",
+          "pointer": null
+        },
+        {
+          "name": "sleep",
+          "signature": "Duration.sleep (d: Duration) : unit",
+          "summary": "Block for the duration (zero returns immediately; a negative duration raises; OS timer granularity applies \u2014 ~15ms Windows, ~1ms Linux \u2014 so a small sleep is a floor, not a promise). Module-qualified on purpose: bare sleep stays the coreutils command.",
+          "example": "Duration.sleep 10ms",
+          "pointer": null
+        },
+        {
+          "name": "sum",
+          "signature": "Duration.sum (xs: seq\u003CDuration\u003E) : Duration",
+          "summary": "Sum durations.",
+          "example": "[90s; 30s] |\u003E Duration.sum",
+          "pointer": null
+        },
+        {
+          "name": "toMillis",
+          "signature": "Duration.toMillis (d: Duration) : int",
+          "summary": "The total milliseconds as an int (ratios, JSON fields).",
+          "example": "Duration.toMillis 2m",
+          "pointer": null
+        },
+        {
+          "name": "toSeconds",
+          "signature": "Duration.toSeconds (d: Duration) : float",
+          "summary": "The total seconds as a float, lossless (2500ms is 2.5).",
+          "example": "Duration.toSeconds 2500ms",
+          "pointer": null
+        },
+        {
+          "name": "tryParse",
+          "signature": "Duration.tryParse (text: string) : Option\u003CDuration\u003E",
+          "summary": "Duration.parse as an Option \u2014 None instead of the raise.",
+          "example": "Duration.tryParse \u0022not-a-duration\u0022",
+          "pointer": null
+        }
+      ]
+    },
+    {
+      "name": "Env",
+      "members": [
+        {
+          "name": "fromFile",
+          "signature": "Env.fromFile (path: string) : seq\u003CEnvVar\u003E",
+          "summary": "Read \u0060.env\u0060 lines (\u0060KEY=value\u0060) as EnvVar records.",
+          "example": null,
+          "pointer": null
+        },
+        {
+          "name": "get",
+          "signature": "Env.get (name: string) : Option\u003Cstring\u003E",
+          "summary": "A process environment variable as an Option.",
+          "example": "Env.get \u0022PATH\u0022",
+          "pointer": null
+        },
+        {
+          "name": "ofPairs",
+          "signature": "Env.ofPairs (pairs: seq\u003Cstring * string\u003E) : seq\u003CEnvVar\u003E",
+          "summary": "Build EnvVar records from name/value tuples.",
+          "example": "Env.ofPairs [(\u0022K\u0022, \u0022V\u0022)] |\u003E Seq.freeze",
+          "pointer": null
+        },
+        {
+          "name": "pair",
+          "signature": "Env.pair (name: string) (value: string) : EnvVar",
+          "summary": "Build one EnvVar from a name and value.",
+          "example": "Env.pair \u0022K\u0022 \u0022V\u0022",
+          "pointer": null
+        },
+        {
+          "name": "vars",
+          "signature": "Env.vars : seq\u003CEnvVar\u003E",
+          "summary": "Every environment variable as EnvVar records.",
+          "example": "Env.vars |\u003E Seq.freeze",
+          "pointer": null
+        }
+      ]
+    },
+    {
+      "name": "File",
+      "members": [
+        {
+          "name": "append",
+          "signature": "File.append (path: string) (lines: seq\u003Cstring\u003E) : unit",
+          "summary": "Append a sequence of lines to a file.",
+          "example": null,
+          "pointer": null
+        },
+        {
+          "name": "copy",
+          "signature": "File.copy (src: string) (dst: string) : unit",
+          "summary": "Copy src to dst \u2014 (src, dst), the universal convention (neither arg is \u0027the data\u0027, so data-last does not apply). refuses an existing destination (raises naming it); delete first to overwrite.",
+          "example": "let d = Path.newTempDir ()\n[\u0022x\u0022] |\u003E File.write $\u0022{d}/a.txt\u0022\nFile.copy $\u0022{d}/a.txt\u0022 $\u0022{d}/b.txt\u0022\nDir.deleteAll d",
+          "pointer": null
+        },
+        {
+          "name": "delete",
+          "signature": "File.delete (path: string) : unit",
+          "summary": "Delete a file (raises naming the path when absent). The explicit pre-step for an overwriting copy/move.",
+          "example": "let d = Path.newTempDir ()\n[\u0022x\u0022] |\u003E File.write $\u0022{d}/f.txt\u0022\nFile.delete $\u0022{d}/f.txt\u0022\nDir.delete d",
+          "pointer": null
+        },
+        {
+          "name": "exists",
+          "signature": "File.exists (path: string) : bool",
+          "summary": "True when a path exists.",
+          "example": "File.exists \u0022README.md\u0022",
+          "pointer": null
+        },
+        {
+          "name": "isExecutable",
+          "signature": "File.isExecutable (path: string) : bool",
+          "summary": "True when the owner execute bit is set (the bit an installer sets) \u2014 File.mode\u0027s \u0027x\u0027 as a bool, replacing the stringly Str.contains \u0022x\u0022. Follows a symlink like the other File.* queries; a missing path raises. On Windows there is no execute bit: the answer is by extension (.exe/.bat/.cmd/.com), a stated posture.",
+          "example": "File.isExecutable \u0022.\u0022",
+          "pointer": null
+        },
+        {
+          "name": "mode",
+          "signature": "File.mode (path: string) : Option\u003Cstring\u003E",
+          "summary": "The path\u0027s permissions as rwxr-xr-x-shaped text, an Option \u2014 None on Windows (there is no POSIX mode to report). The read follows a symlink, like the other File.* queries; existence does not \u2014 a dangling link raises naming the dangle. The typical use \u2014 checking for 0600 before File.readSecret: File.mode p == Some \u0022rw-------\u0022.",
+          "example": "File.mode \u0022.\u0022 |\u003E Option.defaultValue \u0022none\u0022",
+          "pointer": null
+        },
+        {
+          "name": "move",
+          "signature": "File.move (src: string) (dst: string) : unit",
+          "summary": "Move (rename) src to dst \u2014 (src, dst); refuses an existing destination.",
+          "example": "let d = Path.newTempDir ()\n[\u0022x\u0022] |\u003E File.write $\u0022{d}/a.txt\u0022\nFile.move $\u0022{d}/a.txt\u0022 $\u0022{d}/b.txt\u0022\nDir.deleteAll d",
+          "pointer": null
+        },
+        {
+          "name": "read",
+          "signature": "File.read (path: string) : seq\u003Cstring\u003E",
+          "summary": "Read a file\u0027s lines (eager \u2014 the whole file reads at the call).",
+          "example": null,
+          "pointer": null
+        },
+        {
+          "name": "readBytes",
+          "signature": "File.readBytes (path: string) : Bytes",
+          "summary": "Read a file\u0027s raw bytes \u2014 no decode, no line split (File.read substitutes U\u002BFFFD and splits; this is the byte-faithful read). Bounded and in-memory: stream big data to a sink instead.",
+          "example": null,
+          "pointer": null
+        },
+        {
+          "name": "readSecret",
+          "signature": "File.readSecret (path: string) : Secret",
+          "summary": "Read a file\u0027s whole content as a Secret (a mounted k8s/docker secret is a file); trailing newlines are trimmed.",
+          "example": null,
+          "pointer": null
+        },
+        {
+          "name": "sha256",
+          "signature": "File.sha256 (path: string) : string",
+          "summary": "The SHA-256 digest of a file\u0027s bytes, lowercase hex (sha256sum parity). Streams internally \u2014 never loads the file as a value.",
+          "example": null,
+          "pointer": null
+        },
+        {
+          "name": "size",
+          "signature": "File.size (path: string) : Size",
+          "summary": "The file\u0027s size as a Size \u2014 compare directly (File.size p \u003E 10MiB); Size.toBytes for the int. Raises when absent (the plain name asserts; a trySize is a park).",
+          "example": "let d = Path.newTempDir ()\nlet f = $\u0022{d}/a.txt\u0022\n[\u0022x\u0022] |\u003E File.write f\nprint $\u0022{File.size f}\u0022\nDir.deleteAll d",
+          "pointer": null
+        },
+        {
+          "name": "stat",
+          "signature": "File.stat (path: string) : FileRow",
+          "summary": "The path\u0027s FileRow \u2014 ls\u0027s own row for one path, so \u0060Path.glob ... |\u003E Seq.map File.stat\u0060 turns strings into rows. Describes the symlink itself (kind Symlink, target Some), not what it points at. Raises when absent \u2014 and a file found by glob can vanish before stat reaches it.",
+          "example": "let d = Path.newTempDir ()\nlet f = $\u0022{d}/a.txt\u0022\n[\u0022x\u0022] |\u003E File.write f\nprint (File.stat f).name\nDir.deleteAll d",
+          "pointer": null
+        },
+        {
+          "name": "write",
+          "signature": "File.write (path: string) (lines: seq\u003Cstring\u003E) : unit",
+          "summary": "Write a sequence of lines to a file (overwrites).",
+          "example": null,
+          "pointer": null
+        },
+        {
+          "name": "writeBytes",
+          "signature": "File.writeBytes (path: string) (bytes: Bytes) : unit",
+          "summary": "Write raw bytes to a file \u2014 the byte-faithful sink (File.write encodes lines and appends LF).",
+          "example": null,
+          "pointer": null
+        }
+      ]
+    },
+    {
+      "name": "Float",
+      "members": [
+        {
+          "name": "abs",
+          "signature": "Float.abs (f: float) : float",
+          "summary": "The absolute value.",
+          "example": "Float.abs (0.0 - 1.5)",
+          "pointer": null
+        },
+        {
+          "name": "average",
+          "signature": "Float.average (xs: seq\u003Cfloat\u003E) : float",
+          "summary": "The mean of floats (raises on empty; finite-only).",
+          "example": "[1.0; 2.0] |\u003E Float.average",
+          "pointer": null
+        },
+        {
+          "name": "near",
+          "signature": "Float.near (a: float) (b: float) (eps: float) : bool",
+          "summary": "True when a and b differ by at most eps \u2014 the equality idiom (floats do not join \u0027==\u0027).",
+          "example": "Float.near (0.1 \u002B 0.2) 0.3 1e-9",
+          "pointer": null
+        },
+        {
+          "name": "ofInt",
+          "signature": "Float.ofInt (n: int) : float",
+          "summary": "An int as a float \u2014 the explicit widening (weir never widens implicitly).",
+          "example": "Float.ofInt 3 / 2.0",
+          "pointer": null
+        },
+        {
+          "name": "parse",
+          "signature": "Float.parse (text: string) : float",
+          "summary": "Parse float text \u2014 the shape show renders (raises on anything else, including NaN/Infinity: weir floats are finite).",
+          "example": "Float.parse \u00221.5e-3\u0022",
+          "pointer": null
+        },
+        {
+          "name": "round",
+          "signature": "Float.round (f: float) : float",
+          "summary": "Round to the nearest whole, halves away from zero (2.5 rounds to 3.0).",
+          "example": "Float.round 2.5",
+          "pointer": null
+        },
+        {
+          "name": "sum",
+          "signature": "Float.sum (xs: seq\u003Cfloat\u003E) : float",
+          "summary": "Sum floats (the sum must stay finite \u2014 the floats law). Seq.sum stays seq\u003Cint\u003E; each numeric type owns its sum.",
+          "example": "[1.5; 2.5] |\u003E Float.sum",
+          "pointer": null
+        },
+        {
+          "name": "toInt",
+          "signature": "Float.toInt (f: float) : int",
+          "summary": "The integer part, truncating toward zero (raises outside the 64-bit range).",
+          "example": "Float.toInt 2.9",
+          "pointer": null
+        },
+        {
+          "name": "tryParse",
+          "signature": "Float.tryParse (text: string) : Option\u003Cfloat\u003E",
+          "summary": "Float.parse as an Option \u2014 None instead of the raise.",
+          "example": "Float.tryParse \u0022nope\u0022",
+          "pointer": null
+        }
+      ]
+    },
+    {
+      "name": "Frontier",
+      "members": [
+        {
+          "name": "fold",
+          "signature": "Frontier.fold (keyOf: \u0027a -\u003E string) (seed: \u0027b) (step: \u0027b -\u003E \u0027a -\u003E \u0027b * seq\u003C\u0027a\u003E) (frontier: seq\u003C\u0027a\u003E) : \u0027b",
+          "summary": "Fold over a graph discovered as it goes: take a node off the FIFO frontier, skip it if its key was seen, apply the step (new accumulator \u002B the node\u0027s children, which join the frontier), repeat until empty. Cycle-safe by the visited set; a 100000-step budget turns a non-finite walk into an error, never a hang. A \u0022\u0022 key opts a node out of dedup.",
+          "example": "[1] |\u003E Frontier.fold (fun n -\u003E show n) 0 (fun acc n -\u003E (acc \u002B n, if n \u003C 3 then [n \u002B 1] else []))",
+          "pointer": null
+        }
+      ]
+    },
+    {
+      "name": "Graph",
+      "members": [
+        {
+          "name": "reach",
+          "signature": "Graph.reach (keyOf: \u0027a -\u003E string) (neighbors: \u0027a -\u003E seq\u003C\u0027a\u003E) (start: \u0027a) : seq\u003C\u0027a\u003E",
+          "summary": "Every node reachable from a start node, breadth-first, each once (cycles and diamonds are safe \u2014 the key dedups). The neighbor function is the graph; nothing is materialized up front.",
+          "example": "Graph.reach (fun n -\u003E show n) (fun n -\u003E if n \u003C 3 then [n \u002B 1] else []) 1",
+          "pointer": null
+        }
+      ]
+    },
+    {
+      "name": "Http",
+      "members": [
+        {
+          "name": "defaults",
+          "signature": "Http.defaults : HttpRequest",
+          "summary": "The request template record: method = Get, empty url, NoAuth, no body, 30s timeout. \u0060Http.send { Http.defaults with url = u }\u0060. \u0060Http.get url\u0060 and the other method constructors return one of these.",
+          "example": null,
+          "pointer": null
+        },
+        {
+          "name": "delete",
+          "signature": "Http.delete (url: string) : HttpRequest",
+          "summary": "Constructor: a Delete request to the url.",
+          "example": null,
+          "pointer": null
+        },
+        {
+          "name": "fetch",
+          "signature": "Http.fetch (url: string) : seq\u003Cstring\u003E",
+          "summary": "The raising GET shorthand: takes a bare URL (never a request \u2014 a built request runs through Http.send), returns body only, raises on non-2xx naming the status (the \u0060curl -sf\u0060 / JS \u0060fetch(url)\u0060 analogue). Http.fetch raises where Http.send returns \u2014 two names, no boolean.",
+          "example": null,
+          "pointer": null
+        },
+        {
+          "name": "get",
+          "signature": "Http.get (url: string) : HttpRequest",
+          "summary": "A request constructor \u2014 returns an HttpRequest, makes no request: \u0060Http.get u\u0060 = \u0060{ Http.defaults with method = Get; url = u }\u0060; run it with Http.send. Add optionals with \u0060with\u0060: \u0060Http.send { Http.get u with auth = Bearer t }\u0060. The URL-in-body-out shorthand is Http.fetch.",
+          "example": "Http.get \u0022http://x/y\u0022",
+          "pointer": null
+        },
+        {
+          "name": "head",
+          "signature": "Http.head (url: string) : HttpRequest",
+          "summary": "Constructor: a Head request to the url.",
+          "example": null,
+          "pointer": null
+        },
+        {
+          "name": "options",
+          "signature": "Http.options (url: string) : HttpRequest",
+          "summary": "Constructor: an Options request to the url.",
+          "example": null,
+          "pointer": null
+        },
+        {
+          "name": "patch",
+          "signature": "Http.patch (url: string) : HttpRequest",
+          "summary": "Constructor: a Patch request to the url.",
+          "example": null,
+          "pointer": null
+        },
+        {
+          "name": "post",
+          "signature": "Http.post (url: string) : HttpRequest",
+          "summary": "Constructor: a Post request to the url (add body/auth with \u0060with\u0060).",
+          "example": null,
+          "pointer": null
+        },
+        {
+          "name": "put",
+          "signature": "Http.put (url: string) : HttpRequest",
+          "summary": "Constructor: a Put request to the url.",
+          "example": null,
+          "pointer": null
+        },
+        {
+          "name": "query",
+          "signature": "Http.query (url: string) : HttpRequest",
+          "summary": "Constructor: a QUERY request (RFC 10008) \u2014 idempotent, so \u0060retry\u0060 around it is safe by the method\u0027s definition. Almost nothing serves it yet; expect 405.",
+          "example": null,
+          "pointer": null
+        },
+        {
+          "name": "send",
+          "signature": "Http.send (request: HttpRequest) : HttpResponse",
+          "summary": "Run a request. Status is data (a 404 binds; only transport failure raises). A Json body carries \u0060to json\u0060 lines byte-exact; auth is a Secret-carrying union; show masks secrets.",
+          "example": null,
+          "pointer": null
+        },
+        {
+          "name": "withQuery",
+          "signature": "Http.withQuery (params: seq\u003Cstring * string\u003E) (base: string) : string",
+          "summary": "Append a percent-encoded query string to a url \u2014 params first, the url last (data-last: \u0060url |\u003E Http.withQuery [(k, v)]\u0060); keys and values are escaped, so a space or \u0060\u0026\u0060 cannot break the url. (not \u0060Http.query\u0060 the method constructor.)",
+          "example": "\u0022http://x/s\u0022 |\u003E Http.withQuery [(\u0022q\u0022, \u0022a b\u0022)]",
+          "pointer": null
+        }
+      ]
+    },
+    {
+      "name": "Instant",
+      "members": [
+        {
+          "name": "epochMs",
+          "signature": "Instant.epochMs (t: Instant) : int",
+          "summary": "Milliseconds since the Unix epoch, as an int \u2014 the interop escape (JSON fields, date \u002B%s%3N).",
+          "example": "Instant.parse \u00221970-01-01T00:00:01Z\u0022 |\u003E Instant.epochMs",
+          "pointer": null
+        },
+        {
+          "name": "now",
+          "signature": "Instant.now () : Instant",
+          "summary": "The current instant (UTC).",
+          "example": "Instant.now () \u003E Instant.parse \u00222020-01-01\u0022",
+          "pointer": null
+        },
+        {
+          "name": "ofEpochMs",
+          "signature": "Instant.ofEpochMs (ms: int) : Instant",
+          "summary": "The instant at an epoch-milliseconds int.",
+          "example": "Instant.ofEpochMs 0 |\u003E show",
+          "pointer": null
+        },
+        {
+          "name": "parse",
+          "signature": "Instant.parse (text: string) : Instant",
+          "summary": "An ISO 8601 timestamp (Z or a numeric offset, normalized to UTC; a bare date reads as midnight UTC). Raises on anything else \u2014 tryParse asks.",
+          "example": "Instant.parse \u00222026-08-14T12:00:00Z\u0022",
+          "pointer": null
+        },
+        {
+          "name": "parseWith",
+          "signature": "Instant.parseWith (format: string) (text: string) : Instant",
+          "summary": "Read a timestamp by a named format \u2014 %Y %m %d %e (1-2 digit day) %b (Jan..Dec) %H %M %S %f %z (%% literal), other text literal. Prefix semantics: a log line\u0027s tail rides free. No %z means UTC. Raises on mismatch, naming the position.",
+          "example": "Instant.parseWith \u0022%Y/%m/%d %H:%M:%S\u0022 \u00222026/08/14 09:15:00 GET /health\u0022",
+          "pointer": null
+        },
+        {
+          "name": "tryParse",
+          "signature": "Instant.tryParse (text: string) : Option\u003CInstant\u003E",
+          "summary": "Some instant, or None when the text is not ISO 8601.",
+          "example": "Instant.tryParse \u0022not-a-time\u0022",
+          "pointer": null
+        },
+        {
+          "name": "tryParseWith",
+          "signature": "Instant.tryParseWith (format: string) (text: string) : Option\u003CInstant\u003E",
+          "summary": "Some instant, or None when the line does not match (an unknown directive still raises \u2014 that is a format bug, not a data miss).",
+          "example": "Instant.tryParseWith \u0022%Y-%m-%d\u0022 \u0022no timestamp here\u0022",
+          "pointer": null
+        }
+      ]
+    },
+    {
+      "name": "Json",
+      "members": [
+        {
+          "name": "inferShape",
+          "signature": "Json.inferShape (lines: seq\u003Cstring\u003E) : string",
+          "summary": "Draft named \u0060type\u0060 declarations from a JSON sample \u2014 the composable core of \u0060#infer\u0060: returns the declaration text (top record named Root; nested records auto-named by field, seq elements singularised; array elements merge, a key absent in some elements drafts Option; a data-keyed object \u2014 one value shape with mostly non-identifier keys, differing sibling key sets, or an empty {} \u2014 drafts the open mapping seq\u003Cstring * _\u003E; notes ride as \u0060//\u0060 lines). It drafts what the sample has; you edit the emitted types. Not check-time inference (the value is a runtime sample).",
+          "example": "print (Json.inferShape [\u0022{\\\u0022id\\\u0022: 1, \\\u0022name\\\u0022: \\\u0022x\\\u0022}\u0022])",
+          "pointer": "the \u0060weir add schema\u0060 category: external structure -\u003E a declaration you own; check and \u0060from json\u0060 stay untouched."
+        }
+      ]
+    },
+    {
+      "name": "Log",
+      "members": [
+        {
+          "name": "debug",
+          "signature": "Log.debug (message: string) : unit",
+          "summary": "Write a DEBUG line to stderr; hidden unless WEIR_LOG=debug (or trace). Stdout is data \u2014 every Log member writes to stderr; there is no option to log to stdout.",
+          "example": "Log.debug \u0022cache miss\u0022",
+          "pointer": null
+        },
+        {
+          "name": "debugWith",
+          "signature": "Log.debugWith (thunk: unit -\u003E string) : unit",
+          "summary": "Log.debug\u0027s thunk twin: the message computes only when the level passes.",
+          "example": "Log.debugWith (fun () -\u003E \u0022expensive detail\u0022)",
+          "pointer": null
+        },
+        {
+          "name": "info",
+          "signature": "Log.info (message: string) : unit",
+          "summary": "Write an INFO line to stderr \u2014 shown by default (WEIR_LOG=level moves the threshold, case-insensitive; off silences).",
+          "example": "Log.info \u0022deploy starting\u0022",
+          "pointer": null
+        },
+        {
+          "name": "infoWith",
+          "signature": "Log.infoWith (thunk: unit -\u003E string) : unit",
+          "summary": "Log.info\u0027s thunk twin: the message computes only when the level passes.",
+          "example": "Log.infoWith (fun () -\u003E \u0022expensive detail\u0022)",
+          "pointer": null
+        },
+        {
+          "name": "trace",
+          "signature": "Log.trace (message: string) : unit",
+          "summary": "Write a TRACE line to stderr \u2014 the innermost-detail level, hidden unless WEIR_LOG=trace.",
+          "example": "Log.trace \u0022entering the retry loop\u0022",
+          "pointer": null
+        },
+        {
+          "name": "traceWith",
+          "signature": "Log.traceWith (thunk: unit -\u003E string) : unit",
+          "summary": "Log.trace\u0027s thunk twin: the message computes only when the level passes (a plain Log.trace evaluates its message either way \u2014 use the thunk form when building the message is expensive).",
+          "example": "Log.traceWith (fun () -\u003E \u0022expensive detail\u0022)",
+          "pointer": null
+        },
+        {
+          "name": "warn",
+          "signature": "Log.warn (message: string) : unit",
+          "summary": "Write a WARN line to stderr \u2014 the highest level, shown unless WEIR_LOG=off.",
+          "example": "Log.warn \u0022lockfile missing, regenerating\u0022",
+          "pointer": null
+        },
+        {
+          "name": "warnWith",
+          "signature": "Log.warnWith (thunk: unit -\u003E string) : unit",
+          "summary": "Log.warn\u0027s thunk twin: the message computes only when the level passes.",
+          "example": "Log.warnWith (fun () -\u003E \u0022expensive detail\u0022)",
+          "pointer": null
+        }
+      ]
+    },
+    {
+      "name": "Map",
+      "members": [
+        {
+          "name": "add",
+          "signature": "Map.add (key: string) (value: \u0027a) (m: Map\u003Cstring, \u0027a\u003E) : Map\u003Cstring, \u0027a\u003E",
+          "summary": "A new map with the entry set (replacing an existing key); the original is untouched.",
+          "example": "Map.ofPairs [(\u0022a\u0022, 1)] |\u003E Map.add \u0022k\u0022 5",
+          "pointer": null
+        },
+        {
+          "name": "count",
+          "signature": "Map.count (m: Map\u003Cstring, \u0027a\u003E) : int",
+          "summary": "The number of entries.",
+          "example": "Map.ofPairs [(\u0022aaa\u0022, 1)] |\u003E Map.count",
+          "pointer": null
+        },
+        {
+          "name": "get",
+          "signature": "Map.get (key: string) (m: Map\u003Cstring, \u0027a\u003E) : \u0027a",
+          "summary": "The value under a key (raises naming the key when absent \u2014 tryGet asks).",
+          "example": "Map.ofPairs [(\u0022aaa\u0022, 1)] |\u003E Map.get \u0022aaa\u0022",
+          "pointer": null
+        },
+        {
+          "name": "has",
+          "signature": "Map.has (key: string) (m: Map\u003Cstring, \u0027a\u003E) : bool",
+          "summary": "True when a key is present.",
+          "example": "Map.ofPairs [(\u0022aaa\u0022, 1)] |\u003E Map.has \u0022aaa\u0022",
+          "pointer": null
+        },
+        {
+          "name": "keys",
+          "signature": "Map.keys (m: Map\u003Cstring, \u0027a\u003E) : seq\u003Cstring\u003E",
+          "summary": "The keys, sorted.",
+          "example": "Map.ofPairs [(\u0022b\u0022, 2); (\u0022a\u0022, 1)] |\u003E Map.keys |\u003E Seq.freeze",
+          "pointer": null
+        },
+        {
+          "name": "ofPairs",
+          "signature": "Map.ofPairs (pairs: seq\u003Cstring * \u0027a\u003E) : Map\u003Cstring, \u0027a\u003E",
+          "summary": "Build a map from (key, value) pairs; duplicate keys last-win (the JSON boundary\u0027s law).",
+          "example": "Map.ofPairs [(\u0022a\u0022, 1); (\u0022b\u0022, 2)]",
+          "pointer": null
+        },
+        {
+          "name": "pairs",
+          "signature": "Map.pairs (m: Map\u003Cstring, \u0027a\u003E) : seq\u003Cstring * \u0027a\u003E",
+          "summary": "The entries as (key, value) pairs, key-sorted.",
+          "example": "Map.ofPairs [(\u0022b\u0022, 2); (\u0022a\u0022, 1)] |\u003E Map.pairs |\u003E Seq.freeze",
+          "pointer": null
+        },
+        {
+          "name": "remove",
+          "signature": "Map.remove (key: string) (m: Map\u003Cstring, \u0027a\u003E) : Map\u003Cstring, \u0027a\u003E",
+          "summary": "A new map without the key (absent is fine); the original is untouched.",
+          "example": "Map.ofPairs [(\u0022a\u0022, 1); (\u0022k\u0022, 2)] |\u003E Map.remove \u0022k\u0022",
+          "pointer": null
+        },
+        {
+          "name": "tryGet",
+          "signature": "Map.tryGet (key: string) (m: Map\u003Cstring, \u0027a\u003E) : Option\u003C\u0027a\u003E",
+          "summary": "Some value when the key is present, None when not.",
+          "example": "Map.ofPairs [(\u0022aaa\u0022, 1)] |\u003E Map.tryGet \u0022zzz\u0022",
+          "pointer": null
+        },
+        {
+          "name": "values",
+          "signature": "Map.values (m: Map\u003Cstring, \u0027a\u003E) : seq\u003C\u0027a\u003E",
+          "summary": "The values, in key-sorted order.",
+          "example": "Map.ofPairs [(\u0022b\u0022, 2); (\u0022a\u0022, 1)] |\u003E Map.values |\u003E Seq.freeze",
+          "pointer": null
+        }
+      ]
+    },
+    {
+      "name": "Net",
+      "members": [
+        {
+          "name": "portOpen",
+          "signature": "Net.portOpen (port: int) : bool",
+          "summary": "True when 127.0.0.1:\u003Cport\u003E accepts a TCP connection (250ms attempt) \u2014 poll\u0027s readiness check. Local ports only for now.",
+          "example": "Net.portOpen 1",
+          "pointer": null
+        }
+      ]
+    },
+    {
+      "name": "Option",
+      "members": [
+        {
+          "name": "bind",
+          "signature": "Option.bind (f: \u0027a -\u003E Option\u003C\u0027b\u003E) (opt: Option\u003C\u0027a\u003E) : Option\u003C\u0027b\u003E",
+          "summary": "Apply a function that itself returns an Option, flattening the result \u2014 the chain reaches through nested optionals.",
+          "example": "Some 5 |\u003E Option.bind (fun x -\u003E Some (x \u002B 1))",
+          "pointer": null
+        },
+        {
+          "name": "defaultValue",
+          "signature": "Option.defaultValue (fallback: \u0027a) (opt: Option\u003C\u0027a\u003E) : \u0027a",
+          "summary": "The Some value, or a fallback when None.",
+          "example": "Option.defaultValue 0 (Some 5)",
+          "pointer": null
+        },
+        {
+          "name": "defaultWith",
+          "signature": "Option.defaultWith (fallback: unit -\u003E \u0027a) (opt: Option\u003C\u0027a\u003E) : \u0027a",
+          "summary": "Like defaultValue, but the fallback is computed only when None.",
+          "example": "Option.defaultWith (fun () -\u003E 0) None",
+          "pointer": null
+        },
+        {
+          "name": "flatten",
+          "signature": "Option.flatten (opt: Option\u003COption\u003C\u0027a\u003E\u003E) : Option\u003C\u0027a\u003E",
+          "summary": "Collapse a nested Option\u003COption\u003CT\u003E\u003E into Option\u003CT\u003E (Some (Some x) -\u003E Some x; any None -\u003E None).",
+          "example": "Option.flatten (Some (Some 5))",
+          "pointer": null
+        },
+        {
+          "name": "iter",
+          "signature": "Option.iter (f: \u0027a -\u003E unit) (opt: Option\u003C\u0027a\u003E) : unit",
+          "summary": "Run a unit effect on the Some value; None runs nothing (a Some-only side effect with no match ceremony).",
+          "example": "Some \u0022x\u0022 |\u003E Option.iter print",
+          "pointer": null
+        },
+        {
+          "name": "map",
+          "signature": "Option.map (f: \u0027a -\u003E \u0027b) (opt: Option\u003C\u0027a\u003E) : Option\u003C\u0027b\u003E",
+          "summary": "Apply a function inside a Some, pass None through.",
+          "example": "Option.map (fun x -\u003E x \u002B 1) (Some 5)",
+          "pointer": null
+        },
+        {
+          "name": "orElse",
+          "signature": "Option.orElse (fallback: Option\u003C\u0027a\u003E) (opt: Option\u003C\u0027a\u003E) : Option\u003C\u0027a\u003E",
+          "summary": "The option itself when Some, else the fallback (fallback first, so it pipes data-last). Stays in Option \u2014 Option.defaultValue is the one that unwraps. The fallback is an ordinary argument, evaluated even when the option is Some.",
+          "example": "None |\u003E Option.orElse (Some 1)",
+          "pointer": null
+        }
+      ]
+    },
+    {
+      "name": "Path",
+      "members": [
+        {
+          "name": "combine",
+          "signature": "Path.combine (a: string) (b: string) : string",
+          "summary": "Join two path segments.",
+          "example": "Path.combine \u0022a\u0022 \u0022b\u0022",
+          "pointer": null
+        },
+        {
+          "name": "dir",
+          "signature": "Path.dir (path: string) : string",
+          "summary": "The directory part of a path.",
+          "example": "Path.dir \u0022a/b/c\u0022",
+          "pointer": null
+        },
+        {
+          "name": "extension",
+          "signature": "Path.extension (path: string) : string",
+          "summary": "The extension, including the dot.",
+          "example": "Path.extension \u0022a.txt\u0022",
+          "pointer": null
+        },
+        {
+          "name": "fileName",
+          "signature": "Path.fileName (path: string) : string",
+          "summary": "The final component of a path.",
+          "example": "Path.fileName \u0022a/b.txt\u0022",
+          "pointer": null
+        },
+        {
+          "name": "glob",
+          "signature": "Path.glob (pattern: string) : seq\u003Cstring\u003E",
+          "summary": "Match a glob against the filesystem (lazy; globstar skips symlinks).",
+          "example": "Path.glob \u0022*.nope123\u0022 |\u003E Seq.freeze",
+          "pointer": null
+        },
+        {
+          "name": "newTempDir",
+          "signature": "Path.newTempDir () : string",
+          "summary": "Create a fresh unique directory under the temp root and return its path (the same naming \u0060within tmp\u0060 uses). Cleanup is the caller\u0027s or the OS\u0027s \u2014 use \u0060within tmp dir\u0060 for removal on scope exit (which the exit hook also sweeps on Ctrl\u002BC/kill); a newTempDir directory outlives every scope and is never removed automatically.",
+          "example": "Path.newTempDir () |\u003E Str.startsWith (Path.tempRoot ())",
+          "pointer": null
+        },
+        {
+          "name": "normalize",
+          "signature": "Path.normalize (path: string) : string",
+          "summary": "Collapse \u0027.\u0027 and \u0027..\u0027 segments lexically \u2014 no filesystem touch, no cwd, symlinks never followed. combine keeps \u0027..\u0027 (paths you control), under refuses an escape (paths you do not); normalize is the third spelling, for the legitimate escape both siblings decline. A relative path keeps its leading \u0027..\u0027s; at an absolute root \u0027..\u0027 swallows.",
+          "example": "Path.normalize \u0022src/App/../Core/Core.csproj\u0022",
+          "pointer": null
+        },
+        {
+          "name": "stem",
+          "signature": "Path.stem (path: string) : string",
+          "summary": "The file name without its extension.",
+          "example": "Path.stem \u0022a/b.txt\u0022",
+          "pointer": null
+        },
+        {
+          "name": "tempRoot",
+          "signature": "Path.tempRoot () : string",
+          "summary": "The system temp directory (a pure query; no trailing separator, platform-native).",
+          "example": "Path.tempRoot ()",
+          "pointer": null
+        },
+        {
+          "name": "under",
+          "signature": "Path.under (base: string) (name: string) : string",
+          "summary": "The confining join: combine, normalise, then raise if the result escapes base \u2014 segment-wise, so uploads-evil is not under uploads. combine is for paths you control; under is for paths you do not. Purely textual (never follows symlinks or touches the disk); absolute and Windows-shaped second arguments refuse on every platform.",
+          "example": "Path.under (Path.tempRoot ()) \u0022a/b\u0022",
+          "pointer": null
+        }
+      ]
+    },
+    {
+      "name": "Plan",
+      "members": [
+        {
+          "name": "apply",
+          "signature": "Plan.apply (plan: Plan) : unit",
+          "summary": "Perform a plan\u0027s ops through the normal builtins, in capture order. Stops at the first failing op (prior ops stay done); not transactional \u2014 no rollback (that is the IaC line weir does not cross). Refused inside a \u0060plan\u0060 block.",
+          "example": null,
+          "pointer": null
+        },
+        {
+          "name": "isEmpty",
+          "signature": "Plan.isEmpty (plan: Plan) : bool",
+          "summary": "True when the plan captured no ops (a script that only read the world builds an empty plan).",
+          "example": null,
+          "pointer": null
+        },
+        {
+          "name": "ops",
+          "signature": "Plan.ops (plan: Plan) : seq\u003COp\u003E",
+          "summary": "The captured Ops of a plan, in capture order \u2014 the raw seq\u003COp\u003E for test and inspection (\u0060plan \u003Cblock\u003E == [WriteFile(p, c)]\u0060; the union is equatable/showable, Secrets masked).",
+          "example": null,
+          "pointer": null
+        },
+        {
+          "name": "preview",
+          "signature": "Plan.preview (plan: Plan) : seq\u003Cstring\u003E",
+          "summary": "A human render of a plan\u0027s ops, one line each \u2014 \u0027wrote nothing\u0027 yet (a plan performs no mutation; Plan.apply does). Secrets are masked.",
+          "example": null,
+          "pointer": null
+        }
+      ]
+    },
+    {
+      "name": "Poll",
+      "members": [
+        {
+          "name": "defaults",
+          "signature": "Poll.defaults : Poll",
+          "summary": "The poll template: timeout = 1m, interval = 1s.",
+          "example": null,
+          "pointer": null
+        }
+      ]
+    },
+    {
+      "name": "Proc",
+      "members": [
+        {
+          "name": "pid",
+          "signature": "Proc.pid (p: Proc) : int",
+          "summary": "The child\u0027s OS process id.",
+          "example": null,
+          "pointer": "within proc p = \u003Ccommand\u003E binds the handle; see #help within"
+        },
+        {
+          "name": "running",
+          "signature": "Proc.running (p: Proc) : bool",
+          "summary": "True while the child has not exited.",
+          "example": null,
+          "pointer": "poll watch=p checks this for you, with better errors"
+        },
+        {
+          "name": "stop",
+          "signature": "Proc.stop (p: Proc) : unit",
+          "summary": "Tree-kill and reap now, idempotent; the scope\u0027s exit is then a no-op.",
+          "example": null,
+          "pointer": null
+        },
+        {
+          "name": "tail",
+          "signature": "Proc.tail (p: Proc) : seq\u003Cstring\u003E",
+          "summary": "The child\u0027s last ~100 output lines (stderr first) from the spill \u2014 readable while it runs.",
+          "example": null,
+          "pointer": "poll-watch failures carry this automatically"
+        },
+        {
+          "name": "wait",
+          "signature": "Proc.wait (p: Proc) : int",
+          "summary": "Block until the child exits naturally; its exit code as data. The way to let a scoped process finish \u2014 the scope\u0027s own exit kills.",
+          "example": null,
+          "pointer": null
+        }
+      ]
+    },
+    {
+      "name": "Retry",
+      "members": [
+        {
+          "name": "defaults",
+          "signature": "Retry.defaults : Retry",
+          "summary": "The retry template: attempts = 5, delay = 1s, timeout = None. \u0060retry attempts=5\u0060 is \u0060retry { Retry.defaults with attempts = 5 }\u0060.",
+          "example": null,
+          "pointer": null
+        }
+      ]
+    },
+    {
+      "name": "Secret",
+      "members": [
+        {
+          "name": "map",
+          "signature": "Secret.map (f: string -\u003E string) (s: Secret) : Secret",
+          "summary": "Transform a secret\u0027s value, keeping it secret. \u0060Secret.map (fun t -\u003E \u0022Bearer \u0022 \u002B t)\u0060 stays secret where reveal-then-concat would not.",
+          "example": "Secret.map (fun t -\u003E \u0022Bearer \u0022 \u002B t) (Secret.of \u0022x\u0022)",
+          "pointer": null
+        },
+        {
+          "name": "of",
+          "signature": "Secret.of (s: string) : Secret",
+          "summary": "Mark a computed string (a generated token, a derived key) as secret. show renders ***; Secret.reveal is the only way back to the plain value.",
+          "example": "Secret.of \u0022hunter2\u0022",
+          "pointer": null
+        },
+        {
+          "name": "reveal",
+          "signature": "Secret.reveal (s: Secret) : string",
+          "summary": "The secret\u0027s plain value \u2014 the only way out of the Secret type. Every use (a header, a hash) is a deliberate reveal; audit the call sites.",
+          "example": "Secret.reveal (Secret.of \u0022x\u0022)",
+          "pointer": null
+        }
+      ]
+    },
+    {
+      "name": "Self",
+      "members": [
+        {
+          "name": "args",
+          "signature": "Self.args : seq\u003Cstring\u003E",
+          "summary": "The invoked script\u0027s argument vector (a process fact \u2014 the same in every module).",
+          "example": null,
+          "pointer": null
+        },
+        {
+          "name": "entryPath",
+          "signature": "Self.entryPath : string",
+          "summary": "The path of the invoked script (a process fact \u2014 the same in every module, unlike scriptPath).",
+          "example": null,
+          "pointer": null
+        },
+        {
+          "name": "pid",
+          "signature": "Self.pid : int",
+          "summary": "This process\u0027s id.",
+          "example": null,
+          "pointer": null
+        },
+        {
+          "name": "scriptPath",
+          "signature": "Self.scriptPath : string",
+          "summary": "The path of the file reading it \u2014 a module sees its own path.",
+          "example": null,
+          "pointer": null
+        },
+        {
+          "name": "stdin",
+          "signature": "Self.stdin : seq\u003Cstring\u003E",
+          "summary": "This process\u0027s standard input, as lazy lines (a process fact).",
+          "example": null,
+          "pointer": null
+        }
+      ]
+    },
+    {
+      "name": "Seq",
+      "members": [
+        {
+          "name": "append",
+          "signature": "Seq.append (xs: seq\u003C\u0027a\u003E) (ys: seq\u003C\u0027a\u003E) : seq\u003C\u0027a\u003E",
+          "summary": "Concatenate two sequences, lazily.",
+          "example": "Seq.append [1; 2] [3; 4] |\u003E Seq.freeze",
+          "pointer": null
+        },
+        {
+          "name": "average",
+          "signature": "Seq.average (xs: seq\u003Cint\u003E) : float",
+          "summary": "The mean of ints as a float (raises on empty \u2014 absence is Option\u0027s job). Float/Size/Duration own their means (Float.average \u2026).",
+          "example": "[1; 2] |\u003E Seq.average",
+          "pointer": null
+        },
+        {
+          "name": "choose",
+          "signature": "Seq.choose (f: \u0027a -\u003E Option\u003C\u0027b\u003E) (xs: seq\u003C\u0027a\u003E) : seq\u003C\u0027b\u003E",
+          "summary": "Map and drop the None results in one lazy pass.",
+          "example": "[1; 2; 3] |\u003E Seq.choose (fun x -\u003E if x \u003E 1 then Some x else None) |\u003E Seq.freeze",
+          "pointer": null
+        },
+        {
+          "name": "chunkBySize",
+          "signature": "Seq.chunkBySize (n: int) (xs: seq\u003C\u0027a\u003E) : seq\u003Cseq\u003C\u0027a\u003E\u003E",
+          "summary": "Split into consecutive chunks of at most n, lazily \u2014 the batching member (the last chunk may be short).",
+          "example": "[1; 2; 3; 4; 5] |\u003E Seq.chunkBySize 2 |\u003E Seq.map Seq.freeze |\u003E Seq.freeze",
+          "pointer": null
+        },
+        {
+          "name": "collect",
+          "signature": "Seq.collect (f: \u0027a -\u003E seq\u003C\u0027b\u003E) (xs: seq\u003C\u0027a\u003E) : seq\u003C\u0027b\u003E",
+          "summary": "Map each element to a sequence and flatten, lazily (F#\u0027s collect; flatMap elsewhere).",
+          "example": "[\u0022a\u003Cb\u0022; \u0022c\u0022] |\u003E Seq.collect (Str.split \u0022\u003C\u0022) |\u003E Seq.freeze",
+          "pointer": null
+        },
+        {
+          "name": "concat",
+          "signature": "Seq.concat (xss: seq\u003Cseq\u003C\u0027a\u003E\u003E) : seq\u003C\u0027a\u003E",
+          "summary": "Flatten a sequence of sequences, lazily (collect with the identity).",
+          "example": "[[1; 2]; [3]] |\u003E Seq.concat |\u003E Seq.freeze",
+          "pointer": null
+        },
+        {
+          "name": "contains",
+          "signature": "Seq.contains (x: \u0027a) (xs: seq\u003C\u0027a\u003E) : bool",
+          "summary": "True when an element is present.",
+          "example": "Seq.contains 2 [1; 2; 3]",
+          "pointer": null
+        },
+        {
+          "name": "countBy",
+          "signature": "Seq.countBy (key: \u0027a -\u003E \u0027b) (xs: seq\u003C\u0027a\u003E) : seq\u003C\u0027b * int\u003E",
+          "summary": "Count elements per projected key as (key, count) pairs, first-seen key order; forces on the first pull.",
+          "example": "[\u0022a\u0022; \u0022bb\u0022; \u0022c\u0022] |\u003E Seq.countBy Str.length |\u003E Seq.freeze",
+          "pointer": null
+        },
+        {
+          "name": "distinct",
+          "signature": "Seq.distinct (xs: seq\u003C\u0027a\u003E) : seq\u003C\u0027a\u003E",
+          "summary": "Drop duplicate elements, keeping first order.",
+          "example": "[1; 1; 2] |\u003E Seq.distinct |\u003E Seq.freeze",
+          "pointer": null
+        },
+        {
+          "name": "distinctBy",
+          "signature": "Seq.distinctBy (key: \u0027a -\u003E \u0027b) (xs: seq\u003C\u0027a\u003E) : seq\u003C\u0027a\u003E",
+          "summary": "Keep the first element per projected key, lazily \u2014 distinct\u0027s projection twin.",
+          "example": "[\u0022a\u0022; \u0022bb\u0022; \u0022cc\u0022] |\u003E Seq.distinctBy Str.length |\u003E Seq.freeze",
+          "pointer": null
+        },
+        {
+          "name": "equal",
+          "signature": "Seq.equal (xs: seq\u003C\u0027a\u003E) (ys: seq\u003C\u0027a\u003E) : bool",
+          "summary": "Element-wise equality, length-sensitive (equatable elements \u2014 Seq.contains\u0027s constraint). Lockstep and short-circuiting: stops at the first mismatch, never pulls beyond need. The honest spelling of output-vs-expected \u2014 a join-then-compare is lossy when elements contain the separator.",
+          "example": "[\u0022a\u0022; \u0022b\u0022] |\u003E Seq.equal [\u0022a\u0022; \u0022b\u0022]",
+          "pointer": null
+        },
+        {
+          "name": "exactlyOne",
+          "signature": "Seq.exactlyOne (xs: seq\u003C\u0027a\u003E) : \u0027a",
+          "summary": "The one element \u2014 a cardinality assertion: raises on none and on more (head silently accepts a second element, hiding a wrong-arity source). Use it for command output expected to be exactly one line.",
+          "example": "[\u0022one line\u0022] |\u003E Seq.exactlyOne |\u003E print",
+          "pointer": null
+        },
+        {
+          "name": "except",
+          "signature": "Seq.except (excluded: seq\u003C\u0027a\u003E) (xs: seq\u003C\u0027a\u003E) : seq\u003C\u0027a\u003E",
+          "summary": "Set difference: the source without the excluded values (exclusions first, source last; the exclusion set materializes on the first pull, the source streams).",
+          "example": "[1; 2; 3; 4] |\u003E Seq.except [2; 4] |\u003E Seq.freeze",
+          "pointer": null
+        },
+        {
+          "name": "exists",
+          "signature": "Seq.exists (pred: \u0027a -\u003E bool) (xs: seq\u003C\u0027a\u003E) : bool",
+          "summary": "True when any element satisfies a predicate.",
+          "example": "[1; 2; 3] |\u003E Seq.exists (fun x -\u003E x \u003E 2)",
+          "pointer": null
+        },
+        {
+          "name": "find",
+          "signature": "Seq.find (pred: \u0027a -\u003E bool) (xs: seq\u003C\u0027a\u003E) : \u0027a",
+          "summary": "The first element a predicate accepts (raises when none match \u2014 tryFind asks).",
+          "example": "[1; 5; 3] |\u003E Seq.find (fun x -\u003E x \u003E 2)",
+          "pointer": null
+        },
+        {
+          "name": "fold",
+          "signature": "Seq.fold (f: \u0027a -\u003E \u0027b -\u003E \u0027a) (init: \u0027a) (xs: seq\u003C\u0027b\u003E) : \u0027a",
+          "summary": "Left-fold: thread an accumulator through the elements.",
+          "example": "[1; 2; 3] |\u003E Seq.fold (\u002B) 0",
+          "pointer": null
+        },
+        {
+          "name": "forall",
+          "signature": "Seq.forall (pred: \u0027a -\u003E bool) (xs: seq\u003C\u0027a\u003E) : bool",
+          "summary": "True when every element satisfies a predicate.",
+          "example": "[1; 2; 3] |\u003E Seq.forall (fun x -\u003E x \u003E 0)",
+          "pointer": null
+        },
+        {
+          "name": "freeze",
+          "signature": "Seq.freeze (xs: seq\u003C\u0027a\u003E) : seq\u003C\u0027a\u003E",
+          "summary": "Materialize a lazy sequence, caching it.",
+          "example": "[1; 2; 3] |\u003E Seq.map (fun x -\u003E x \u002B 1) |\u003E Seq.freeze",
+          "pointer": "freeze once, then reuse freely \u2014 it memoizes (the two customers: reuse and timing)."
+        },
+        {
+          "name": "groupBy",
+          "signature": "Seq.groupBy (key: \u0027a -\u003E \u0027b) (xs: seq\u003C\u0027a\u003E) : seq\u003C\u0027b * seq\u003C\u0027a\u003E\u003E",
+          "summary": "Group elements by a key into (key, items) pairs \u2014 F#\u0027s own shape; countBy/zip/pairwise speak the same tuples.",
+          "example": "[1; 2; 3] |\u003E Seq.groupBy (fun x -\u003E x) |\u003E Seq.freeze",
+          "pointer": null
+        },
+        {
+          "name": "head",
+          "signature": "Seq.head (xs: seq\u003C\u0027a\u003E) : \u0027a",
+          "summary": "The first element (raises on empty).",
+          "example": "Seq.head [1; 2; 3]",
+          "pointer": null
+        },
+        {
+          "name": "indexed",
+          "signature": "Seq.indexed (xs: seq\u003C\u0027a\u003E) : seq\u003Cint * \u0027a\u003E",
+          "summary": "Pair every element with its zero-based position, lazily \u2014 mapi/iteri are \u0060indexed |\u003E map\u0060/\u0060iter\u0060 over the tuple.",
+          "example": "[\u0022a\u0022; \u0022b\u0022] |\u003E Seq.indexed |\u003E Seq.freeze",
+          "pointer": null
+        },
+        {
+          "name": "isEmpty",
+          "signature": "Seq.isEmpty (xs: seq\u003C\u0027a\u003E) : bool",
+          "summary": "True when the sequence has no elements.",
+          "example": "Seq.isEmpty [1; 2; 3]",
+          "pointer": null
+        },
+        {
+          "name": "item",
+          "signature": "Seq.item (i: int) (xs: seq\u003C\u0027a\u003E) : \u0027a",
+          "summary": "The element at a zero-based index (raises out of range).",
+          "example": "[1; 2; 3] |\u003E Seq.item 0",
+          "pointer": null
+        },
+        {
+          "name": "iter",
+          "signature": "Seq.iter (f: \u0027a -\u003E unit) (xs: seq\u003C\u0027a\u003E) : unit",
+          "summary": "Run a unit-returning effect over each element.",
+          "example": "[1; 2; 3] |\u003E Seq.iter (fun x -\u003E ())",
+          "pointer": null
+        },
+        {
+          "name": "last",
+          "signature": "Seq.last (xs: seq\u003C\u0027a\u003E) : \u0027a",
+          "summary": "The last element \u2014 asserts the source is non-empty (raises \u0027last: empty sequence\u0027; Seq.tryLast answers None instead), and forces the whole source by necessity: an infinite source does not return.",
+          "example": "[1; 2; 3] |\u003E Seq.last",
+          "pointer": null
+        },
+        {
+          "name": "length",
+          "signature": "Seq.length (xs: seq\u003C\u0027a\u003E) : int",
+          "summary": "Count the elements (forces the sequence).",
+          "example": "Seq.length [1; 2; 3]",
+          "pointer": null
+        },
+        {
+          "name": "map",
+          "signature": "Seq.map (f: \u0027a -\u003E \u0027b) (xs: seq\u003C\u0027a\u003E) : seq\u003C\u0027b\u003E",
+          "summary": "Apply a function to every element, lazily.",
+          "example": "[1; 2; 3] |\u003E Seq.map (fun x -\u003E x \u002B 1) |\u003E Seq.freeze",
+          "pointer": null
+        },
+        {
+          "name": "max",
+          "signature": "Seq.max (xs: seq\u003C\u0027a\u003E) : \u0027a",
+          "summary": "The largest element (Ord; raises on empty). One pass \u2014 no sort.",
+          "example": "Seq.max [3; 1; 2]",
+          "pointer": null
+        },
+        {
+          "name": "maxBy",
+          "signature": "Seq.maxBy (key: \u0027a -\u003E \u0027b) (xs: seq\u003C\u0027a\u003E) : \u0027a",
+          "summary": "The element whose projected key is largest (Ord on the key; raises on empty).",
+          "example": "[\u0022a\u0022; \u0022ccc\u0022] |\u003E Seq.maxBy Str.length",
+          "pointer": null
+        },
+        {
+          "name": "min",
+          "signature": "Seq.min (xs: seq\u003C\u0027a\u003E) : \u0027a",
+          "summary": "The smallest element (Ord; raises on empty). One pass \u2014 no sort.",
+          "example": "Seq.min [3; 1; 2]",
+          "pointer": null
+        },
+        {
+          "name": "minBy",
+          "signature": "Seq.minBy (key: \u0027a -\u003E \u0027b) (xs: seq\u003C\u0027a\u003E) : \u0027a",
+          "summary": "The element whose projected key is smallest (Ord on the key; raises on empty).",
+          "example": "[\u0022a\u0022; \u0022ccc\u0022] |\u003E Seq.minBy Str.length",
+          "pointer": null
+        },
+        {
+          "name": "pairwise",
+          "signature": "Seq.pairwise (xs: seq\u003C\u0027a\u003E) : seq\u003C\u0027a * \u0027a\u003E",
+          "summary": "Adjacent pairs: (e0,e1), (e1,e2), and so on.",
+          "example": "[1; 2; 3] |\u003E Seq.pairwise |\u003E Seq.freeze",
+          "pointer": null
+        },
+        {
+          "name": "pfirst",
+          "signature": "Seq.pfirst (f: \u0027a -\u003E \u0027b) (xs: seq\u003C\u0027a\u003E) : \u0027b",
+          "summary": "Race an arm over every element; the first success wins. Losers\u0027 spawned processes are tree-killed and their failures never surface. All arms failed rethrows the first error by input order; an empty sequence raises. A losing arm\u0027s failure is discarded \u2014 if only one arm can succeed, the others\u0027 errors are hidden, so a misconfigured fan-out still looks healthy.",
+          "example": "[3; 1; 2] |\u003E Seq.pfirst (fun n -\u003E n * 10)",
+          "pointer": "a race, not a retry: same fetch against N mirrors, first answer wins."
+        },
+        {
+          "name": "pfirstWith",
+          "signature": "Seq.pfirstWith (degree: int) (f: \u0027a -\u003E \u0027b) (xs: seq\u003C\u0027a\u003E) : \u0027b",
+          "summary": "Seq.pfirst at an explicit concurrency ceiling.",
+          "example": "[1; 2] |\u003E Seq.pfirstWith 2 (fun n -\u003E n)",
+          "pointer": null
+        },
+        {
+          "name": "pick",
+          "signature": "Seq.pick (f: \u0027a -\u003E Option\u003C\u0027b\u003E) (xs: seq\u003C\u0027a\u003E) : \u0027b",
+          "summary": "The first Some a chooser yields (raises when none \u2014 tryPick asks).",
+          "example": "[\u0022a\u0022; \u002212\u0022] |\u003E Seq.pick Str.tryToInt",
+          "pointer": null
+        },
+        {
+          "name": "piter",
+          "signature": "Seq.piter (f: \u0027a -\u003E unit) (xs: seq\u003C\u0027a\u003E) : unit",
+          "summary": "Run an effect over each element in parallel.",
+          "example": "[1; 2; 3] |\u003E Seq.piter (fun x -\u003E ())",
+          "pointer": "workers fork the session (worker-local cd, dies at join)."
+        },
+        {
+          "name": "piterWith",
+          "signature": "Seq.piterWith (n: int) (f: \u0027a -\u003E unit) (xs: seq\u003C\u0027a\u003E) : unit",
+          "summary": "Seq.piter with an explicit worker count.",
+          "example": "[1; 2; 3] |\u003E Seq.piterWith 2 (fun x -\u003E ())",
+          "pointer": "an explicit n is never reduced by nesting; piter\u0027s default ladder is."
+        },
+        {
+          "name": "pmap",
+          "signature": "Seq.pmap (f: \u0027a -\u003E \u0027b) (xs: seq\u003C\u0027a\u003E) : seq\u003C\u0027b\u003E",
+          "summary": "Map in parallel across worker threads.",
+          "example": "[1; 2; 3] |\u003E Seq.pmap (fun x -\u003E x \u002B 1) |\u003E Seq.freeze",
+          "pointer": "ordered, eager, at most 64 workers; the first error by input order wins."
+        },
+        {
+          "name": "pmapWith",
+          "signature": "Seq.pmapWith (n: int) (f: \u0027a -\u003E \u0027b) (xs: seq\u003C\u0027a\u003E) : seq\u003C\u0027b\u003E",
+          "summary": "Seq.pmap with an explicit worker count \u2014 the sizing knob for rate-limited or memory-heavy arms.",
+          "example": "[1; 2; 3] |\u003E Seq.pmapWith 2 (fun x -\u003E x \u002B 1) |\u003E Seq.freeze",
+          "pointer": "an explicit n is never reduced by nesting; pmap\u0027s default ladder is."
+        },
+        {
+          "name": "range",
+          "signature": "Seq.range (start: int) (step: int) (stop: int) : seq\u003Cint\u003E",
+          "summary": "A lazy arithmetic range: start, step, stop.",
+          "example": "Seq.range 1 1 5 |\u003E Seq.freeze",
+          "pointer": null
+        },
+        {
+          "name": "reduce",
+          "signature": "Seq.reduce (f: \u0027a -\u003E \u0027a -\u003E \u0027a) (xs: seq\u003C\u0027a\u003E) : \u0027a",
+          "summary": "Fold without a seed: the first element starts the accumulator (raises on empty \u2014 fold takes the seed).",
+          "example": "[1; 2; 3] |\u003E Seq.reduce (\u002B)",
+          "pointer": null
+        },
+        {
+          "name": "replicate",
+          "signature": "Seq.replicate (n: int) (x: \u0027a) : seq\u003C\u0027a\u003E",
+          "summary": "n copies of one value, lazily (raises on a negative count).",
+          "example": "Seq.replicate 3 \u0022x\u0022 |\u003E Seq.freeze",
+          "pointer": null
+        },
+        {
+          "name": "rev",
+          "signature": "Seq.rev (xs: seq\u003C\u0027a\u003E) : seq\u003C\u0027a\u003E",
+          "summary": "Reverse. Forces the whole input on the first pull (never an infinite seq).",
+          "example": "[1; 2; 3] |\u003E Seq.rev |\u003E Seq.freeze",
+          "pointer": null
+        },
+        {
+          "name": "scan",
+          "signature": "Seq.scan (f: \u0027a -\u003E \u0027b -\u003E \u0027a) (init: \u0027a) (xs: seq\u003C\u0027b\u003E) : seq\u003C\u0027a\u003E",
+          "summary": "Fold emitting every intermediate state, the seed first, lazily.",
+          "example": "[1; 2; 3] |\u003E Seq.scan (\u002B) 0 |\u003E Seq.freeze",
+          "pointer": null
+        },
+        {
+          "name": "skip",
+          "signature": "Seq.skip (n: int) (xs: seq\u003C\u0027a\u003E) : seq\u003C\u0027a\u003E",
+          "summary": "Drop the first n elements, keep the rest lazily.",
+          "example": "[1; 2; 3] |\u003E Seq.skip 1 |\u003E Seq.freeze",
+          "pointer": null
+        },
+        {
+          "name": "skipWhile",
+          "signature": "Seq.skipWhile (pred: \u0027a -\u003E bool) (xs: seq\u003C\u0027a\u003E) : seq\u003C\u0027a\u003E",
+          "summary": "Drop the leading run the predicate accepts, lazily; the rest streams whole.",
+          "example": "[1; 2; 9; 1] |\u003E Seq.skipWhile (fun x -\u003E x \u003C 5) |\u003E Seq.freeze",
+          "pointer": null
+        },
+        {
+          "name": "sort",
+          "signature": "Seq.sort (xs: seq\u003C\u0027a\u003E) : seq\u003C\u0027a\u003E",
+          "summary": "Sort ascending by the elements themselves (Ord); forces on the first pull.",
+          "example": "[\u0022pear\u0022; \u0022apple\u0022] |\u003E Seq.sort |\u003E Seq.freeze",
+          "pointer": null
+        },
+        {
+          "name": "sortBy",
+          "signature": "Seq.sortBy (key: \u0027a -\u003E \u0027b) (xs: seq\u003C\u0027a\u003E) : seq\u003C\u0027a\u003E",
+          "summary": "Order by a key projection.",
+          "example": "[3; 1; 2] |\u003E Seq.sortBy (fun x -\u003E x) |\u003E Seq.freeze",
+          "pointer": null
+        },
+        {
+          "name": "sortByDescending",
+          "signature": "Seq.sortByDescending (key: \u0027a -\u003E \u0027b) (xs: seq\u003C\u0027a\u003E) : seq\u003C\u0027a\u003E",
+          "summary": "Order by a key projection, descending.",
+          "example": "[1; 3; 2] |\u003E Seq.sortByDescending (fun x -\u003E x) |\u003E Seq.freeze",
+          "pointer": null
+        },
+        {
+          "name": "sortDescending",
+          "signature": "Seq.sortDescending (xs: seq\u003C\u0027a\u003E) : seq\u003C\u0027a\u003E",
+          "summary": "Sort descending by the elements themselves (Ord); forces on the first pull.",
+          "example": "[1; 3; 2] |\u003E Seq.sortDescending |\u003E Seq.freeze",
+          "pointer": null
+        },
+        {
+          "name": "sum",
+          "signature": "Seq.sum (xs: seq\u003Cint\u003E) : int",
+          "summary": "Add the elements of an int sequence.",
+          "example": "Seq.sum [1; 2; 3]",
+          "pointer": null
+        },
+        {
+          "name": "take",
+          "signature": "Seq.take (n: int) (xs: seq\u003C\u0027a\u003E) : seq\u003C\u0027a\u003E",
+          "summary": "The first n elements, lazily; pairs with Seq.skip.",
+          "example": "[1; 2; 3] |\u003E Seq.take 2 |\u003E Seq.freeze",
+          "pointer": null
+        },
+        {
+          "name": "takeWhile",
+          "signature": "Seq.takeWhile (pred: \u0027a -\u003E bool) (xs: seq\u003C\u0027a\u003E) : seq\u003C\u0027a\u003E",
+          "summary": "Elements while the predicate holds, lazily; stops at the first refusal.",
+          "example": "[1; 2; 9; 1] |\u003E Seq.takeWhile (fun x -\u003E x \u003C 5) |\u003E Seq.freeze",
+          "pointer": null
+        },
+        {
+          "name": "tryExactlyOne",
+          "signature": "Seq.tryExactlyOne (xs: seq\u003C\u0027a\u003E) : Option\u003C\u0027a\u003E",
+          "summary": "exactlyOne\u0027s Option twin: Some when the sequence has exactly one element, None on none or more.",
+          "example": "[42] |\u003E Seq.tryExactlyOne",
+          "pointer": null
+        },
+        {
+          "name": "tryFind",
+          "signature": "Seq.tryFind (pred: \u0027a -\u003E bool) (xs: seq\u003C\u0027a\u003E) : Option\u003C\u0027a\u003E",
+          "summary": "The first element a predicate accepts, as an Option.",
+          "example": "[1; 2; 3] |\u003E Seq.tryFind (fun x -\u003E x \u003E 1)",
+          "pointer": null
+        },
+        {
+          "name": "tryHead",
+          "signature": "Seq.tryHead (xs: seq\u003C\u0027a\u003E) : Option\u003C\u0027a\u003E",
+          "summary": "The first element as an Option, None when empty.",
+          "example": "Seq.tryHead [1; 2; 3]",
+          "pointer": null
+        },
+        {
+          "name": "tryItem",
+          "signature": "Seq.tryItem (i: int) (xs: seq\u003C\u0027a\u003E) : Option\u003C\u0027a\u003E",
+          "summary": "The element at an index as an Option.",
+          "example": "[1; 2; 3] |\u003E Seq.tryItem 0",
+          "pointer": null
+        },
+        {
+          "name": "tryLast",
+          "signature": "Seq.tryLast (xs: seq\u003C\u0027a\u003E) : Option\u003C\u0027a\u003E",
+          "summary": "The last element as an Option (None when empty) \u2014 the asking twin; forces the whole source.",
+          "example": "[] |\u003E Seq.tryLast",
+          "pointer": null
+        },
+        {
+          "name": "tryPick",
+          "signature": "Seq.tryPick (f: \u0027a -\u003E Option\u003C\u0027b\u003E) (xs: seq\u003C\u0027a\u003E) : Option\u003C\u0027b\u003E",
+          "summary": "The first Some a chooser yields, as an Option \u2014 choose-then-head in one pass.",
+          "example": "[\u0022a\u0022; \u002212\u0022] |\u003E Seq.tryPick Str.tryToInt",
+          "pointer": null
+        },
+        {
+          "name": "where",
+          "signature": "Seq.where (pred: \u0027a -\u003E bool) (xs: seq\u003C\u0027a\u003E) : seq\u003C\u0027a\u003E",
+          "summary": "Keep the elements a predicate accepts, lazily.",
+          "example": "[1; 2; 3] |\u003E Seq.where (fun x -\u003E x \u003E 1) |\u003E Seq.freeze",
+          "pointer": null
+        },
+        {
+          "name": "windowed",
+          "signature": "Seq.windowed (n: int) (xs: seq\u003C\u0027a\u003E) : seq\u003Cseq\u003C\u0027a\u003E\u003E",
+          "summary": "Sliding windows of size n, lazy (produced as the source is pulled; a short source yields the empty seq \u2014 no partial window; windows view the same memoized elements). Raises when n \u003C= 0.",
+          "example": "[1; 2; 3] |\u003E Seq.windowed 2 |\u003E Seq.map Seq.freeze |\u003E Seq.freeze",
+          "pointer": null
+        },
+        {
+          "name": "zip",
+          "signature": "Seq.zip (xs: seq\u003C\u0027a\u003E) (ys: seq\u003C\u0027b\u003E) : seq\u003C\u0027a * \u0027b\u003E",
+          "summary": "Pair two sequences element-wise, stopping at the shorter.",
+          "example": "Seq.zip [1; 2] [3; 4] |\u003E Seq.freeze",
+          "pointer": null
+        }
+      ]
+    },
+    {
+      "name": "Size",
+      "members": [
+        {
+          "name": "average",
+          "signature": "Size.average (xs: seq\u003CSize\u003E) : Size",
+          "summary": "The mean size, truncated to whole bytes (raises on empty).",
+          "example": "[1KiB; 3KiB] |\u003E Size.average",
+          "pointer": null
+        },
+        {
+          "name": "bytes",
+          "signature": "Size.bytes (n: int) : Size",
+          "summary": "A size of n bytes \u2014 the literal 512B, as a function.",
+          "example": "Size.bytes 512",
+          "pointer": null
+        },
+        {
+          "name": "parse",
+          "signature": "Size.parse (text: string) : Size",
+          "summary": "Parse size text: binary units at 1024 (1.5MiB), the SI spellings at powers of ten (1MB is 10^6 \u2014 the writer chose the unit), B for bytes; sub-byte precision raises.",
+          "example": "Size.parse \u00221.5MiB\u0022",
+          "pointer": null
+        },
+        {
+          "name": "sum",
+          "signature": "Size.sum (xs: seq\u003CSize\u003E) : Size",
+          "summary": "Sum sizes \u2014 total bytes as a Size.",
+          "example": "[1KiB; 512B] |\u003E Size.sum",
+          "pointer": null
+        },
+        {
+          "name": "toBytes",
+          "signature": "Size.toBytes (s: Size) : int",
+          "summary": "The total bytes as an int \u2014 the exact exit (show\u0027s rendering truncates to one decimal).",
+          "example": "Size.toBytes 2KiB",
+          "pointer": null
+        },
+        {
+          "name": "tryParse",
+          "signature": "Size.tryParse (text: string) : Option\u003CSize\u003E",
+          "summary": "Size.parse as an Option \u2014 None instead of the raise.",
+          "example": "Size.tryParse \u0022nope\u0022",
+          "pointer": null
+        }
+      ]
+    },
+    {
+      "name": "Str",
+      "members": [
+        {
+          "name": "contains",
+          "signature": "Str.contains (needle: string) (s: string) : bool",
+          "summary": "True when a substring is present.",
+          "example": "\u0022abc\u0022 |\u003E Str.contains \u0022b\u0022",
+          "pointer": null
+        },
+        {
+          "name": "endsWith",
+          "signature": "Str.endsWith (suffix: string) (s: string) : bool",
+          "summary": "True when the string ends with a suffix.",
+          "example": "\u0022abc\u0022 |\u003E Str.endsWith \u0022c\u0022",
+          "pointer": null
+        },
+        {
+          "name": "fields",
+          "signature": "Str.fields (s: string) : seq\u003Cstring\u003E",
+          "summary": "Split on whitespace runs into fields \u2014 never an empty piece (a blank or empty string is the empty seq; trim\u0027s whitespace class).",
+          "example": "\u0022NAME   READY  1/1\u0022 |\u003E Str.fields |\u003E Seq.freeze",
+          "pointer": null
+        },
+        {
+          "name": "fromBase64",
+          "signature": "Str.fromBase64 (s: string) : string",
+          "summary": "Decode standard base64 (padded or unpadded) to text; raises on invalid input or when the bytes are not valid UTF-8 (never U\u002BFFFD corruption).",
+          "example": "Str.fromBase64 \u0022Y2Fmw6k=\u0022",
+          "pointer": null
+        },
+        {
+          "name": "fromUtf8",
+          "signature": "Str.fromUtf8 (b: Bytes) : string",
+          "summary": "Decode Bytes as text; raises when the bytes are not valid UTF-8 or contain NUL \u2014 corrupt data never decodes silently.",
+          "example": null,
+          "pointer": null
+        },
+        {
+          "name": "isMatch",
+          "signature": "Str.isMatch (pattern: string) (subject: string) : bool",
+          "summary": "True when a regex matches anywhere in the string.",
+          "example": "Str.isMatch \u0022[0-9]\u002B\u0022 \u0022x42\u0022",
+          "pointer": null
+        },
+        {
+          "name": "join",
+          "signature": "Str.join (sep: string) (xs: seq\u003Cstring\u003E) : string",
+          "summary": "Join a sequence of strings with a separator.",
+          "example": "Str.join \u0022,\u0022 [\u0022a\u0022; \u0022b\u0022]",
+          "pointer": null
+        },
+        {
+          "name": "length",
+          "signature": "Str.length (s: string) : int",
+          "summary": "The number of characters.",
+          "example": "Str.length \u0022abc\u0022",
+          "pointer": null
+        },
+        {
+          "name": "padLeft",
+          "signature": "Str.padLeft (width: int) (s: string) : string",
+          "summary": "Pad with spaces on the left to a total width; a string already at or past the width is unchanged (a negative width raises). The right-aligned column member.",
+          "example": "Str.padLeft 5 \u002242\u0022",
+          "pointer": null
+        },
+        {
+          "name": "padRight",
+          "signature": "Str.padRight (width: int) (s: string) : string",
+          "summary": "Pad with spaces on the right to a total width; a string already at or past the width is unchanged (a negative width raises). The columnar-output member \u2014 printf \u0022%-15s\u0022 made a function.",
+          "example": "Str.padRight 6 \u0022name\u0022",
+          "pointer": null
+        },
+        {
+          "name": "replace",
+          "signature": "Str.replace (old: string) (new: string) (s: string) : string",
+          "summary": "Replace every occurrence of a substring.",
+          "example": "Str.replace \u0022a\u0022 \u0022b\u0022 \u0022aba\u0022",
+          "pointer": null
+        },
+        {
+          "name": "replicate",
+          "signature": "Str.replicate (n: int) (s: string) : string",
+          "summary": "n copies of the string, concatenated (0 is the empty string; a negative count raises \u2014 Seq.replicate\u0027s rule).",
+          "example": "Str.replicate 3 \u0022ab\u0022",
+          "pointer": null
+        },
+        {
+          "name": "rmatch",
+          "signature": "Str.rmatch (pattern: string) (s: string) : Option\u003Cseq\u003Cstring\u003E\u003E",
+          "summary": "The first regex match\u0027s groups as an Option of a sequence (positional groups; named \u0060(?\u003Cx\u003E...)\u0060 rejects \u2014 weir names captures at the binder).",
+          "example": "Str.rmatch \u0022([0-9]\u002B)\u0022 \u0022x42\u0022",
+          "pointer": null
+        },
+        {
+          "name": "rmatchAll",
+          "signature": "Str.rmatchAll (pattern: string) (s: string) : seq\u003Cseq\u003Cstring\u003E\u003E",
+          "summary": "Every regex match\u0027s groups, as a sequence of sequences.",
+          "example": "Str.rmatchAll \u0022[0-9]\u002B\u0022 \u0022a1b2\u0022 |\u003E Seq.freeze",
+          "pointer": null
+        },
+        {
+          "name": "rsplit",
+          "signature": "Str.rsplit (pattern: string) (s: string) : seq\u003Cstring\u003E",
+          "summary": "Split on every regex match; split\u0027s empties law (adjacent matches and edges yield \u0022\u0022), and capture groups never add pieces.",
+          "example": "Str.rsplit @\u0022\\s*,\\s*\u0022 \u0022a , b,c\u0022 |\u003E Seq.freeze",
+          "pointer": null
+        },
+        {
+          "name": "sha256",
+          "signature": "Str.sha256 (s: string) : string",
+          "summary": "The SHA-256 digest of the string\u0027s UTF-8 bytes, lowercase hex (sha256sum parity). sha256 only for now.",
+          "example": "Str.sha256 \u0022hello\u0022",
+          "pointer": null
+        },
+        {
+          "name": "split",
+          "signature": "Str.split (sep: string) (s: string) : seq\u003Cstring\u003E",
+          "summary": "Split on a separator into a sequence; empty pieces kept (adjacent separators and edges yield \u0022\u0022 \u2014 rsplit follows the same law).",
+          "example": "Str.split \u0022,\u0022 \u0022a,b,c\u0022 |\u003E Seq.freeze",
+          "pointer": null
+        },
+        {
+          "name": "splitOnce",
+          "signature": "Str.splitOnce (sep: string) (s: string) : string * string",
+          "summary": "Split at the first occurrence into (before, after) \u2014 the tail stays intact, separators and all; raises when the separator is absent (trySplitOnce is the Option twin).",
+          "example": "Str.splitOnce \u0022=\u0022 \u0022key=a=b\u0022 |\u003E snd |\u003E print",
+          "pointer": null
+        },
+        {
+          "name": "startsWith",
+          "signature": "Str.startsWith (prefix: string) (s: string) : bool",
+          "summary": "True when the string starts with a prefix.",
+          "example": "\u0022abc\u0022 |\u003E Str.startsWith \u0022a\u0022",
+          "pointer": null
+        },
+        {
+          "name": "sub",
+          "signature": "Str.sub (start: int) (len: int) (s: string) : string",
+          "summary": "A substring by start index and length.",
+          "example": "Str.sub 0 2 \u0022abc\u0022",
+          "pointer": null
+        },
+        {
+          "name": "toBase64",
+          "signature": "Str.toBase64 (s: string) : string",
+          "summary": "Base64 of the string\u0027s UTF-8 bytes \u2014 one unwrapped line (no 76-column MIME wrap, no -w0 tax).",
+          "example": "Str.toBase64 \u0022caf\u00E9\u0022",
+          "pointer": null
+        },
+        {
+          "name": "toInt",
+          "signature": "Str.toInt (s: string) : int",
+          "summary": "Parse an int (raises on a non-number).",
+          "example": "Str.toInt \u002242\u0022",
+          "pointer": null
+        },
+        {
+          "name": "toLower",
+          "signature": "Str.toLower (s: string) : string",
+          "summary": "Lowercase (invariant culture).",
+          "example": "Str.toLower \u0022ABC\u0022",
+          "pointer": null
+        },
+        {
+          "name": "toUpper",
+          "signature": "Str.toUpper (s: string) : string",
+          "summary": "Uppercase (invariant culture).",
+          "example": "Str.toUpper \u0022abc\u0022",
+          "pointer": null
+        },
+        {
+          "name": "toUtf8",
+          "signature": "Str.toUtf8 (s: string) : Bytes",
+          "summary": "The string\u0027s UTF-8 bytes as a Bytes value.",
+          "example": "Str.toUtf8 \u0022caf\u00E9\u0022",
+          "pointer": null
+        },
+        {
+          "name": "trim",
+          "signature": "Str.trim (s: string) : string",
+          "summary": "Drop leading and trailing whitespace.",
+          "example": "Str.trim \u0022  x  \u0022",
+          "pointer": null
+        },
+        {
+          "name": "trimEnd",
+          "signature": "Str.trimEnd (s: string) : string",
+          "summary": "Drop trailing whitespace.",
+          "example": "Str.trimEnd \u0022x  \u0022",
+          "pointer": null
+        },
+        {
+          "name": "trimStart",
+          "signature": "Str.trimStart (s: string) : string",
+          "summary": "Drop leading whitespace.",
+          "example": "Str.trimStart \u0022  x\u0022",
+          "pointer": null
+        },
+        {
+          "name": "tryFromBase64",
+          "signature": "Str.tryFromBase64 (s: string) : Option\u003Cstring\u003E",
+          "summary": "fromBase64 as an Option: None for malformed base64 and for valid-base64-of-non-text alike.",
+          "example": "Str.tryFromBase64 \u0022!!!\u0022",
+          "pointer": null
+        },
+        {
+          "name": "tryFromUtf8",
+          "signature": "Str.tryFromUtf8 (b: Bytes) : Option\u003Cstring\u003E",
+          "summary": "fromUtf8 as an Option: None for non-text bytes, NUL included.",
+          "example": null,
+          "pointer": null
+        },
+        {
+          "name": "tryIndexOf",
+          "signature": "Str.tryIndexOf (needle: string) (s: string) : Option\u003Cint\u003E",
+          "summary": "The index of a substring as an Option.",
+          "example": "Str.tryIndexOf \u0022b\u0022 \u0022abc\u0022",
+          "pointer": null
+        },
+        {
+          "name": "trySplitOnce",
+          "signature": "Str.trySplitOnce (sep: string) (s: string) : Option\u003Cstring * string\u003E",
+          "summary": "splitOnce\u0027s Option twin: Some (before, after) at the first occurrence, None when the separator is absent \u2014 the \u0060KEY=VALUE\u0060 parser\u0027s shape.",
+          "example": "match Str.trySplitOnce \u0022=\u0022 \u0022key=val\u0022 with | Some (k, v) -\u003E print k | None -\u003E print \u0022no\u0022",
+          "pointer": null
+        },
+        {
+          "name": "tryToInt",
+          "signature": "Str.tryToInt (s: string) : Option\u003Cint\u003E",
+          "summary": "Parse an int as an Option, None when it is not a number.",
+          "example": "Str.tryToInt \u002242\u0022",
+          "pointer": null
+        }
+      ]
+    },
+    {
+      "name": "Table",
+      "members": [
+        {
+          "name": "inferShape",
+          "signature": "Table.inferShape (lines: seq\u003Cstring\u003E) : string",
+          "summary": "Draft the row \u0060type\u0060 declaration from an aligned-table sample (kubectl/docker style) \u2014 the composable core of \u0060#infer \u2026 from table\u0060: per-column token scan over the data rows (all-int -\u003E int, else float/bool by token, else string; a column with empty/\u0060\u003Cnone\u003E\u0060 cells -\u003E Option with a note); headers sanitize to field names, \u0060[\u003CWire\u003E]\u0060 carries a header the name cannot recover; a note says the value reads as seq\u003CRoot\u003E. You edit the emitted type. Not check-time inference (the value is a runtime sample).",
+          "example": "print (Table.inferShape [\u0022NAME   RESTARTS\u0022; \u0022web-1  0\u0022])",
+          "pointer": "the \u0060weir add schema\u0060 category: external structure -\u003E a declaration you own; check and \u0060from table\u0060 stay untouched."
+        }
+      ]
+    },
+    {
+      "name": "Tree",
+      "members": [
+        {
+          "name": "walk",
+          "signature": "Tree.walk (step: \u0027a -\u003E seq\u003C\u0027a\u003E) (root: \u0027a) : unit",
+          "summary": "Walk a tree for effects, parent before children: the step runs each node\u0027s effect and returns its children (so a child\u0027s existence may depend on the parent\u0027s effect). No dedup \u2014 a cyclic structure wants Graph.reach or Frontier.fold; the step budget still bounds it.",
+          "example": "1 |\u003E Tree.walk (fun n -\u003E if n \u003C 3 then [n \u002B 1] else [])",
+          "pointer": null
+        }
+      ]
+    },
+    {
+      "name": "Yaml",
+      "members": [
+        {
+          "name": "inferShape",
+          "signature": "Yaml.inferShape (lines: seq\u003Cstring\u003E) : string",
+          "summary": "Draft named \u0060type\u0060 declarations from a YAML sample \u2014 the composable core of \u0060#infer\u0060: returns the declaration text (top record named Root; nested records auto-named; array elements merge, a key absent in some elements drafts Option; a data-keyed object \u2014 one value shape with mostly non-identifier keys, differing sibling key sets, or an empty {} \u2014 drafts the open mapping seq\u003Cstring * _\u003E; notes ride as \u0060//\u0060 lines). It drafts what the sample has; you edit the emitted types. Not check-time inference (the value is a runtime sample).",
+          "example": "let sample = \u003C\u003C\u003C\n    name: web\n    port: 8080\nprint (Yaml.inferShape sample)",
+          "pointer": "the \u0060weir add schema\u0060 category: external structure -\u003E a declaration you own; check and \u0060from yaml\u0060 stay untouched."
+        },
+        {
+          "name": "merge",
+          "signature": "Yaml.merge (patch: YamlPatch) (doc: Yaml) : Yaml",
+          "summary": "Apply a \u0060yaml patch\u0060 district to a document: the patch\u0027s structure is the address (maps upsert recursively; seqs append-if-absent, or upsert/remove by the marker line\u0027s by=\u003Ckey\u003E; scalars replace; a \u0060$-\u0060 tombstone removes the key or matching item). Orderless and idempotent; the merged document renders with \u0060to yaml\u0060.",
+          "example": null,
+          "pointer": "let p = yaml patch by=name (indented patch lines) \u2014 then File.read f |\u003E Yaml.parse |\u003E Yaml.merge p |\u003E to yaml |\u003E File.write f."
+        },
+        {
+          "name": "parse",
+          "signature": "Yaml.parse (lines: seq\u003Cstring\u003E) : Yaml",
+          "summary": "Parse one YAML document (the strict subset) into Yaml nodes \u2014 the typeless read: structure is held whole, undeclared keys included, where \u0060from yaml T\u0060 would drop them. Scalars self-type exactly as district scalars do (unquoted true/3/1.5 -\u003E YBool/YInt/YFloat; quoted or block -\u003E YStr; empty -\u003E YNull).",
+          "example": "[\u0022replicas: 3\u0022] |\u003E Yaml.parse",
+          "pointer": null
+        }
+      ]
+    }
+  ],
+  "forms": [
+    {
+      "name": "Completed",
+      "signature": null,
+      "summary": "A finished command: exitCode, stdout, stderr. You get one from \u0060| complete\u0060.",
+      "example": null,
+      "pointer": null
+    },
+    {
+      "name": "EnvVar",
+      "signature": null,
+      "summary": "A name/value environment pair. From \u0060Env.vars\u0060 / \u0060pair\u0060 / \u0060ofPairs\u0060 / \u0060fromFile\u0060.",
+      "example": null,
+      "pointer": null
+    },
+    {
+      "name": "FileRow",
+      "signature": null,
+      "summary": "A directory entry: name, kind (Regular | Directory | Symlink \u2014 a fact, not an answer), target (Some for a symlink, None otherwise \u2014 the one fact no File.* query answers), bytes (0 B for a directory), modified (the last-write Instant \u2014 the file\u0027s own fact, stable under binding; the table renders it relatively, show keeps ISO), hidden, path. From \u0060ls\u0060 \u2014 files and subdirectories, sorted by name (ordinal: case-sensitive, uppercase first; never the locale). name is for matching and display; path is for handing to File.* - name derives from path, never the reverse. Narrow facts are queries, not columns: File.mode for permissions.",
+      "example": null,
+      "pointer": null
+    },
+    {
+      "name": "cd",
+      "signature": "cd (path: string) : string",
+      "summary": "Change the session\u0027s directory, returning the old one (restore by binding: \u0060let prev = cd \u0022/tmp\u0022\u0060). A bare name applies a binding (\u0060cd target\u0060); \u0060~\u0060 expands; \u0060within cd\u0060 is the scoped spelling.",
+      "example": "cd \u0022.\u0022",
+      "pointer": null
+    },
+    {
+      "name": "complete",
+      "signature": null,
+      "summary": "Reify a command chain to a Completed record (exitCode, stdout, stderr).",
+      "example": null,
+      "pointer": "the reifier law: output goes where the meaning goes."
+    },
+    {
+      "name": "exit",
+      "signature": "exit (code: int) : \u0027a",
+      "summary": "Exit the process with a status code.",
+      "example": null,
+      "pointer": null
+    },
+    {
+      "name": "exitCode",
+      "signature": null,
+      "summary": "Reify a command to its integer exit code.",
+      "example": null,
+      "pointer": "the reifier law: the meaning is the code."
+    },
+    {
+      "name": "fail",
+      "signature": "fail (message: string) : \u0027a",
+      "summary": "Stop with a message and exit code 1.",
+      "example": null,
+      "pointer": "message-carrying; \u0060exit n\u0060 is the bare-code spelling. Diverges (\u0060string -\u003E \u0027a\u0060): a failing arm sits opposite a value arm."
+    },
+    {
+      "name": "freeze",
+      "signature": "freeze (xs: seq\u003C\u0027a\u003E) : seq\u003C\u0027a\u003E",
+      "summary": "Materialize a lazy sequence, caching it (the bare Seq.freeze).",
+      "example": "[1; 2; 3] |\u003E freeze",
+      "pointer": null
+    },
+    {
+      "name": "from json",
+      "signature": null,
+      "summary": "Parse one JSON document (any number of lines \u2014 a pretty-printed HTTP body pipes straight in) into a declared record. Fields are int/string/bool/float or Option of one; an Option field reads a missing key or null as None.",
+      "example": null,
+      "pointer": "a pipe stage: resp.body |\u003E from json Config."
+    },
+    {
+      "name": "from jsonl",
+      "signature": null,
+      "summary": "Parse a JSON line stream \u2014 one document per element (NDJSON, the shape \u0060to jsonl\u0060 writes) \u2014 into declared records.",
+      "example": null,
+      "pointer": "a pipe stage: xs |\u003E from jsonl Config."
+    },
+    {
+      "name": "from table",
+      "signature": null,
+      "summary": "Read aligned column output (kubectl/docker style: one header row, aligned data rows) into declared row records \u2014 yields seq\u003CT\u003E. Columns slice at header offsets, never whitespace runs, so a spaced value (\u0060Up 2 hours\u0060) survives; a header boundary is a run of 2\u002B spaces (\u0060CONTAINER ID\u0060 is one column). A field matches its header by normalized name, case-insensitively (\u0060podTemplateHash\u0060 reads \u0060POD-TEMPLATE-HASH\u0060); \u0060[\u003CWire \u0022HEADER\u0022\u003E]\u0060 matches a raw header verbatim. Cells trim and type by the field (string/int/float/bool); an Option field reads an empty or \u0060\u003Cnone\u003E\u0060 cell as None. Extra columns are ignored; blank lines skip; errors carry line and column. There is no \u0060to table\u0060.",
+      "example": null,
+      "pointer": "a pipe stage: kubectl get po |\u003E from table Pod."
+    },
+    {
+      "name": "from xml",
+      "signature": null,
+      "summary": "Parse one XML document (a .csproj/.slnx or any XML) into a declared record \u2014 read-only. The root element is the record; a field name matches a child element by local name (a default xmlns is stripped); [\u003CAttr\u003E] reads an attribute, [\u003CElem \u0022X\u0022\u003E] a repeated child, a nested record a child element. Every leaf is text: fields are string, Option\u003Cstring\u003E, a record, or a seq of one (declare a number as string, convert with Str.toInt). There is no \u0060to xml\u0060.",
+      "example": null,
+      "pointer": "a pipe stage: File.read \u0022App.csproj\u0022 |\u003E from xml Proj."
+    },
+    {
+      "name": "from yaml",
+      "signature": null,
+      "summary": "Parse YAML lines (the strict subset: block maps/sequences, scalars, # comments; --- multi-doc) into a declared record tree \u2014 nested records, seqs, seq\u003Cstring * _\u003E mappings, Option (missing/null reads None). Anchors, tags, and flow style are rejected.",
+      "example": null,
+      "pointer": "a pipe stage: lines |\u003E from yaml Deployment \u2014 yields seq\u003CDeployment\u003E, one per document."
+    },
+    {
+      "name": "let pure",
+      "signature": null,
+      "summary": "The purity modifier \u2014 weir\u0027s first post-let modifier: \u0060let pure f x = \u2026\u0060 asserts the binding\u0027s whole body reaches no effect, and an impure body is a check error. Desugars to a body-spanning pure block; the binding hovers with the (pure) badge.",
+      "example": "let pure double n = n * 2",
+      "pointer": "#help pure has the block form and the effect families"
+    },
+    {
+      "name": "not",
+      "signature": "not (b: bool) : bool",
+      "summary": "Boolean negation.",
+      "example": "not true",
+      "pointer": null
+    },
+    {
+      "name": "orFail",
+      "signature": null,
+      "summary": "Stream a command\u0027s output, raising with a message on a nonzero exit.",
+      "example": null,
+      "pointer": "the reifier law: output streams, the exit is the meaning."
+    },
+    {
+      "name": "poll",
+      "signature": null,
+      "summary": "retry\u0027s time-bounded twin: \u0060poll timeout=5m interval=10s\u0060 \u002B a readiness body. \u0060watch=\u003Cproc\u003E\u0060 fails fast when the scoped process dies (its last output rides the error) and stamps the watched state on a timeout.",
+      "example": "poll timeout=1s interval=1ms true",
+      "pointer": "the wait-for-ready shape: within proc srv = \u2026 then poll timeout=10s watch=srv \u002B Net.portOpen \u003Cport\u003E"
+    },
+    {
+      "name": "print",
+      "signature": "print (value: \u0027a) : unit",
+      "summary": "Write a value and a trailing newline to stdout. Takes a string, int, float, bool, or seq\u003Cstring\u003E (one line per element); for anything else, render through an interpolation hole ($\u0022{row}\u0022) or show.",
+      "example": "print \u0022hi\u0022",
+      "pointer": null
+    },
+    {
+      "name": "printerr",
+      "signature": "printerr (value: \u0027a) : unit",
+      "summary": "Write a value and a newline to stderr \u2014 diagnostics there, data on stdout. Same accepted set as print: string, int, float, bool, or seq\u003Cstring\u003E.",
+      "example": "printerr \u0022oops\u0022",
+      "pointer": null
+    },
+    {
+      "name": "prompt",
+      "signature": "prompt (message: string) : string",
+      "summary": "Write a message to stderr and read one line from stdin (interactive input; a piped stdout stays data). EOF refuses \u2014 no phantom input. Self.stdin stays the stream reading (one enumeration; the two compose per-line vs whole-stream).",
+      "example": null,
+      "pointer": "let name = prompt \u0022your name?\u0022 \u2014 interactive; in tests, pipe the answer in."
+    },
+    {
+      "name": "pure",
+      "signature": null,
+      "summary": "A purity assertion for an indented block: the body must reach no effect (filesystem, command, network, environment, console, clock) \u2014 a reachable effect is a check error naming the offender. Opt-in only: weir stays effect-normal, and code outside a pure region is never gated.",
+      "example": "pure 1 \u002B 1",
+      "pointer": "the binding spelling is the \u0060let pure\u0060 modifier; unknown callables (a function param, an import\u0027s member) forfeit purity \u2014 the judgement may refuse, it never lies"
+    },
+    {
+      "name": "retry",
+      "signature": null,
+      "summary": "Re-run a body until its predicate passes: \u0060retry attempts=5 delay=30s\u0060 \u002B an indented body. A bool body is the predicate; a value body takes \u0060until r\u0060 \u002B a predicate block and yields the value. Exhaustion raises; raises inside the body propagate (make failure data with | succeeds / | complete).",
+      "example": "retry attempts=2 delay=1ms true",
+      "pointer": "options are a record underneath: retry { Retry.defaults with attempts = 3 }"
+    },
+    {
+      "name": "show",
+      "signature": "show (value: \u0027a) : string",
+      "summary": "Render a value to its string form \u2014 the same text an interpolation hole gives. Reach for it where a hole cannot go: point-free positions (Seq.map show) and Secrets (masked). Total; functions show opaquely.",
+      "example": "[1; 2; 3] |\u003E Seq.map show |\u003E Seq.freeze",
+      "pointer": null
+    },
+    {
+      "name": "succeeds",
+      "signature": null,
+      "summary": "Reify a command to a bool: did it exit zero?",
+      "example": null,
+      "pointer": "the reifier law: the meaning is the verdict."
+    },
+    {
+      "name": "to json",
+      "signature": null,
+      "summary": "Render one value as one JSON document (minified, one line): a record is an object, a seq an array (forced \u2014 one line cannot stream). A None field omits its key (so from json reads it back as None).",
+      "example": null,
+      "pointer": "a pipe stage: payload |\u003E to json."
+    },
+    {
+      "name": "to jsonl",
+      "signature": null,
+      "summary": "Render a sequence to JSON lines \u2014 one document per element (NDJSON, the shape \u0060from jsonl\u0060 reads), lazily.",
+      "example": null,
+      "pointer": "a pipe stage: xs |\u003E to jsonl."
+    },
+    {
+      "name": "to yaml",
+      "signature": null,
+      "summary": "Render one value as one YAML document: a record is a mapping, a seq a sequence document, a pair-seq one mapping. \u0060to yaml stream\u0060 writes one document per element (the \u0060---\u0060 bundle). A None field omits its key; strings that could be mis-typed (no, 007, 1e5) are quoted.",
+      "example": null,
+      "pointer": "a pipe stage: deployment |\u003E to yaml."
+    },
+    {
+      "name": "within",
+      "signature": null,
+      "summary": "A scoped resource for an indented block, released on every exit (normal and raise): \u0060tmp\u0060 \u2014 a fresh directory, removed when the block exits; \u0060cd\u0060 \u2014 the working directory for the block, restored after; \u0060env\u0060 \u2014 an environment overlay for the block\u0027s children; \u0060proc\u0060 \u2014 a background process, tree-killed and reaped when the block exits; \u0060lock\u0060 \u2014 an advisory file lock, held for the block, released on every exit (kill -9 included).",
+      "example": "within tmp d\n    print d",
+      "pointer": "within proc srv = \u003Ccommand\u003E binds a Proc handle; the tree is killed and reaped at scope exit",
+      "kinds": [
+        {
+          "name": "tmp",
+          "doc": "a fresh directory, removed when the block exits"
+        },
+        {
+          "name": "cd",
+          "doc": "the working directory for the block, restored after"
+        },
+        {
+          "name": "env",
+          "doc": "an environment overlay for the block\u0027s children"
+        },
+        {
+          "name": "proc",
+          "doc": "a background process, tree-killed and reaped when the block exits"
+        },
+        {
+          "name": "lock",
+          "doc": "an advisory file lock, held for the block, released on every exit (kill -9 included)"
+        }
+      ]
+    }
+  ]
+}
