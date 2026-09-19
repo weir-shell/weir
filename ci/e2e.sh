@@ -5844,6 +5844,83 @@ if [ "$IS_WINDOWS" != "1" ]; then
     rm -rf "$acfg" "$astub"
 fi
 
+# ---- dynamic command heads [D:dynamic-head] ----------------------------
+# ^$name / ^$(…) force-external a VALUE head: one program, resolved at
+# run, argv stays typed argv. Stubs echo their argv so injection safety
+# is asserted without a real tool. Skipped on Windows (POSIX stubs; the
+# unit pins carry the parse/check laws everywhere).
+if [ "$IS_WINDOWS" != "1" ]; then
+    dhdir=$(mkweirtmp)
+    printf '#!/bin/sh\necho "argc=$#"\nfor a in "$@"; do echo "arg:[$a]"; done\n' > "$dhdir/argprobe" && chmod +x "$dhdir/argprobe"
+    cp "$dhdir/argprobe" "$dhdir/spaced probe"
+
+    # (a) the head is a runtime value; args pass through typed
+    printf 'let tool = "%s/argprobe"\n^$tool one two\n' "$dhdir" > "$dhdir/a.weir"
+    out=$($BIN "$dhdir/a.weir")
+    expect "a dynamic head runs the value" "argc=2" "$out"
+
+    # (b) injection safety: a spliced arg with spaces stays ONE argv entry
+    printf 'let tool = "%s/argprobe"\nlet x = "a b; rm -rf /"\n^$tool $x\n' "$dhdir" > "$dhdir/b.weir"
+    out=$($BIN "$dhdir/b.weir")
+    expect "a spaced splice is one argument under a dynamic head" "arg:[a b; rm -rf /]" "$out"
+    echo "$out" | grep -qF "argc=1" || fail "injection: exactly one argv entry: $out"
+
+    # (c) a head value with spaces is ONE program, never re-lexed
+    printf 'let tool = "%s/spaced probe"\n^$tool hi\n' "$dhdir" > "$dhdir/c.weir"
+    out=$($BIN "$dhdir/c.weir")
+    expect "a spaced head value is one program" "arg:[hi]" "$out"
+
+    # (d) the seq-capture head refuses with the located bind-and-pick teaching
+    printf '^$(git branch) status\n' > "$dhdir/d.weir"
+    out=$($BIN check "$dhdir/d.weir" 2>&1 || true)
+    expect "a seq-capture head refuses with the teaching" "which line is it? bind and pick" "$out"
+    echo "$out" | grep -qF "d.weir:1:2" || fail "the refusal is located: $out"
+
+    # (e) a string-typed capture head runs (the Phase-0 free case)
+    printf '^$(printf %s/argprobe |> Seq.exactlyOne) go\n' "$dhdir" > "$dhdir/e.weir"
+    out=$($BIN "$dhdir/e.weir")
+    expect "a string-typed capture heads directly" "arg:[go]" "$out"
+
+    # (f) not-found is a located RUN error naming the value; check stays silent
+    printf 'let tool = "zz-no-such-prog"\n^$tool hi\n' > "$dhdir/f.weir"
+    $BIN check "$dhdir/f.weir" 2>&1 | grep -q "cmd-not-found" && fail "check must not warn on a dynamic head (run-time carve-out)"
+    out=$($BIN "$dhdir/f.weir" 2>&1 || true)
+    expect "not-found names the value at run" "command not found: zz-no-such-prog — the dynamic head ^\$tool resolves at run time" "$out"
+    echo "$out" | grep -qF "f.weir:2" || fail "the run error is located: $out"
+
+    # (g) composition: pipe, capture, reifier, env overlay
+    printf 'let tool = "%s/argprobe"\nlet r = ^$tool x | complete\nprint $"exit={r.exitCode}"\n' "$dhdir" > "$dhdir/g.weir"
+    out=$($BIN "$dhdir/g.weir")
+    expect "^\$tool | complete reifies" "exit=0" "$out"
+    printf 'let tool = "sh"\nlet e = Env.ofPairs [("DH_PROBE", "seen")]\nlet o = $e(^$tool -c "echo p=$DH_PROBE") |> Seq.exactlyOne\nprint o\n' > "$dhdir/h.weir"
+    out=$($BIN "$dhdir/h.weir")
+    expect "an env sigil overlays a dynamic head" "p=seen" "$out"
+
+    # (i) --can surfaces the dynamic head; --strict treats it as opaque
+    printf 'let tool = "%s/argprobe"\n^$tool hi\n' "$dhdir" > "$dhdir/i.weir"
+    out=$($BIN check --can "$dhdir/i.weir" 2>&1)
+    expect "--can names the dynamic head under runs" '^$tool (not statically known — a dynamic head resolves at run)' "$out"
+    echo "$out" | grep -qF "this report is incomplete: 1 opaque site" || fail "a dynamic head counts as an opaque site: $out"
+    strictrc=0
+    $BIN check --can --strict "$dhdir/i.weir" >/dev/null 2>&1 || strictrc=$?
+    [ "$strictrc" = "2" ] || fail "--strict must exit 2 on a dynamic head (got $strictrc)"
+
+    # (j) the fatal spellings teach: splat head, interpolated head
+    printf 'let xs = ["a"]\n^$@xs\n' > "$dhdir/j.weir"
+    out=$($BIN check "$dhdir/j.weir" 2>&1 || true)
+    expect "a splat cannot head (dynamic spelling)" "a splat cannot head a command" "$out"
+    printf 'let d = "x"\n^$"{d}/tool" run\n' > "$dhdir/k.weir"
+    out=$($BIN check "$dhdir/k.weir" 2>&1 || true)
+    expect "an interpolated head teaches bind-first" "bind it first" "$out"
+
+    # (l) zero movement: ^ls still forces the PATH binary
+    printf '^ls\n' > "$dhdir/l.weir"
+    $BIN "$dhdir/l.weir" > /dev/null || fail "^ls (literal force) must still run"
+
+    echo "e2e ok: dynamic heads run the value (argv typed, spaced head one program), refuse seq captures located, carve out resolution to run, compose (pipe/capture/complete/env), surface in --can/--strict"
+    rm -rf "$dhdir"
+fi
+
 # ---- help glance + #find [D:help-glance] [D:help-find] --------------------
 # the headless doc render is the ONE #help source: `weir --repl-doc X`
 # must print byte-identically to the piped `#help X` answer (prompts

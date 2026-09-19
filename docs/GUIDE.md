@@ -493,10 +493,29 @@ let tagged = $"at {$(git log -1 "--format=%h") |> Seq.exactlyOne}"
 print tagged
 ```
 
-There is no syntax for a computed program name — branch the whole
-command line instead (`if hot then rg pat else grep pat`). And do
-not bind an `if`-effect block to a `let`: the binding is eagerly
-evaluated unit, and a bare `if` statement says what it means.
+To swap between two known tools, branch the whole command line
+(`if hot then rg pat else grep pat`). And do not bind an `if`-effect
+block to a `let`: the binding is eagerly evaluated unit, and a bare
+`if` statement says what it means.
+
+When the program itself is a runtime value — a plugin's callback
+script, a tool a lookup table chose, asdf-style `exec` dispatch —
+force it external with a dynamic head: `^$tool`. The value is one
+program and argv stays typed argv, so the computed-command shape that
+pushes shell scripts into `sh -c "$path …"` (and its injection class)
+never appears:
+
+```weir
+let plugin = "sh"
+let arg = "two words"
+^$plugin -c "printf 'dispatched %s\n' \"$1\"" cb $arg
+```
+
+The head value must be a `string` — a seq capture refuses with a
+teaching (bind and pick the line: `let tool = $(…) |> Seq.exactlyOne`,
+then `^$tool`). Resolution happens at run: check does not warn about
+a program it cannot know yet, and a missing program is a located run
+error naming the value.
 
 Splice values into argv with `$name` or `(expr)`. A spliced value is
 always exactly one argv entry, never re-split — which is why there is

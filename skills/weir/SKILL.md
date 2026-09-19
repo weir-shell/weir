@@ -2000,12 +2000,37 @@ print c.flag
   No `$NAME` expansion in commands — interpolate: `-H $"token {key}"`.
 - `//` mid-token is NOT a comment: bareword URLs (`https://...`) pass
   through; comments need line start or a preceding space.
-- Every command head is a LITERAL program name, resolved at check
-  time — there is no computed-head tier. Command lines run from
-  STATEMENT position; for a program in EXPRESSION position, capture
-  with `$(git status)` or a reifier (`| complete` etc.). To swap tools
-  by a runtime condition, branch the whole command line — `if hot then
-  rg pat else grep pat`.
+- Every command head is a LITERAL program name resolved at check
+  time, OR a `^$`-spliced VALUE head [D:dynamic-head]: `^$tool arg`
+  runs the program the string `tool` names — `^`'s force-external law
+  on a runtime string, resolved at RUN (check draws no cmd-not-found
+  there; a missing program is a located run error naming the value).
+  The value is ONE program, never re-lexed — a spaced head value is
+  one program, argv stays typed argv (no injection; the plugin/
+  callback dispatch shape without `sh -c`). It must be a string: a
+  seq capture refuses with the bind-and-pick teaching
+  (`let tool = $(…) |> Seq.exactlyOne`, then `^$tool`); a
+  string-typed capture (`^$(… |> Seq.exactlyOne)`) heads directly;
+  `^$@xs` and `^$"…"` refuse with teachings. Composes with pipes,
+  `$()`, reifiers and env sigils exactly as a literal head
+  (`^$tool build | complete`); `--can` reports it as not statically
+  known and `--strict` treats it like the other opaque sites.
+  Command lines run from STATEMENT position; for a program in
+  EXPRESSION position, capture with `$(git status)` or a reifier
+  (`| complete` etc.). To swap between two known tools by a runtime
+  condition, branch the whole command line — `if hot then rg pat
+  else grep pat`.
+
+```weir
+let tool = "printf"
+^$tool one-arg
+let r = ^$tool reified | complete
+print $"exit={r.exitCode}"
+```
+
+```weir-error
+^$(git branch) status // one program? bind and pick the line first
+```
 - `xs | prog args` [D:value-headed-pipe] pipes a weir seq into an
   external command's STDIN (data-last; stdout streams back as
   `seq<string>`; input pulls lazily, stdin closes at exhaustion):
