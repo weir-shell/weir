@@ -4119,7 +4119,7 @@ let commandModeTests =
           }
           test "single quotes carry embedded double quotes" {
               match parseCmd "grep 'a\"b' f" with
-              | { Kind = ECmd("grep", [ { Kind = EStr "a\"b" }; { Kind = EStr "f" } ], _) } -> ()
+              | { Kind = ECmd(HeadLit "grep", [ { Kind = EStr "a\"b" }; { Kind = EStr "f" } ], _) } -> ()
               | e -> failtest $"unexpected: {show e}"
           }
           test "dollar splices a binding" { expectCmd "git checkout $branch" "(cmd git \"checkout\" branch)" }
@@ -10697,7 +10697,7 @@ let agentFindingsTests =
         "Agent findings fixes"
         [ test "let RHS admits command mode" {
               match Weir.Parser.parseLine cmdResolver "let files = git status" with
-              | Ok(SLet("files", { Kind = ECmd("git", _, _) })) -> ()
+              | Ok(SLet("files", { Kind = ECmd(HeadLit "git", _, _) })) -> ()
               | other -> failtest $"expected SLet with a command RHS, got {other}"
           }
           test "let RHS: known names stay expression mode" {
@@ -10725,18 +10725,18 @@ let agentFindingsTests =
           }
           test "let RHS: quoted in passes to the command" {
               match Weir.Parser.parseLine cmdResolver "let x = grep \"in\" f" with
-              | Ok(SLet("x", { Kind = ECmd("grep", [ _; _ ], _) })) -> ()
+              | Ok(SLet("x", { Kind = ECmd(HeadLit "grep", [ _; _ ], _) })) -> ()
               | other -> failtest $"expected grep with two args, got {other}"
           }
           test "statement-head commands keep bareword in" {
               match Weir.Parser.parseLine cmdResolver "git log in h" with
-              | Ok(SCmd { Kind = ECmd("git", args, _) }) -> Expect.hasLength args 3 "log, in, h"
+              | Ok(SCmd { Kind = ECmd(HeadLit "git", args, _) }) -> Expect.hasLength args 3 "log, in, h"
               | other -> failtest $"expected a command statement, got {other}"
           }
           // param-ful command RHS [D:paramful-rhs]
           test "param-ful let takes a command RHS (curried under the params)" {
               match Weir.Parser.parseLine cmdResolver "let f r = git log $r" with
-              | Ok(SLet("f", { Kind = ELambda("r", _, { Kind = ECmd("git", _, _) }) })) -> ()
+              | Ok(SLet("f", { Kind = ELambda("r", _, { Kind = ECmd(HeadLit "git", _, _) }) })) -> ()
               | other -> failtest $"expected a lambda over a command, got {other}"
           }
           test "params shadow PATH in their own RHS (the law's regression pin)" {
@@ -11516,7 +11516,7 @@ let paramSugarTests =
           test
               "params now take a command RHS (the rule this pin used to state REVERSED by PLAN-paramful-rhs; splice-default-last removed the soundness bar)" {
               match Weir.Parser.parseLine cmdResolver "let f x = git status" with
-              | Ok(SLet(_, { Kind = ELambda(_, _, { Kind = ECmd("git", _, _) }) })) -> ()
+              | Ok(SLet(_, { Kind = ELambda(_, _, { Kind = ECmd(HeadLit "git", _, _) }) })) -> ()
               | other -> failtest $"expected a command RHS under the param, got {other}"
           }
           test "unit and PARENTHESIZED pattern params legal (binders session completed the arc)" {
@@ -11870,19 +11870,19 @@ let childEnvTests =
               match Weir.Parser.parseLine realResolver "let x = $e(git status)" with
               // ECapture wraps: $() asserts capture in every position
               // [D:district-retirement]
-              | Ok(SLet("x", { Kind = ECapture { Kind = ECmd("git", _, Some { Kind = EVar "e" }) } })) -> ()
+              | Ok(SLet("x", { Kind = ECapture { Kind = ECmd(HeadLit "git", _, Some { Kind = EVar "e" }) } })) -> ()
               | other -> failtest $"unexpected: {other}"
           }
           test "env sigil: !e(...) is chain-with-env |> print" {
               match Weir.Parser.parseLine realResolver "!e(git status)" with
-              | Ok(SExpr { Kind = EPipe({ Kind = ECmd("git", _, Some _) }, { Kind = EVar "|print" }) }) -> ()
+              | Ok(SExpr { Kind = EPipe({ Kind = ECmd(HeadLit "git", _, Some _) }, { Kind = EVar "|print" }) }) -> ()
               | other -> failtest $"unexpected: {other}"
           }
           test "env sigil: every segment in the chain gets the env" {
               match Weir.Parser.parseLine realResolver "let x = $e(git log | grep x)" with
               | Ok(SLet("x",
-                        { Kind = ECapture { Kind = EPipe({ Kind = ECmd("git", _, Some _) },
-                                                         { Kind = ECmd("grep", _, Some _) }) } })) -> ()
+                        { Kind = ECapture { Kind = EPipe({ Kind = ECmd(HeadLit "git", _, Some _) },
+                                                         { Kind = ECmd(HeadLit "grep", _, Some _) }) } })) -> ()
               | other -> failtest $"unexpected: {other}"
           }
           test "env sigil x complete: routes through completedEnv" {
@@ -12926,7 +12926,7 @@ let siblingSentinelTests =
               | Ok(SLet("f",
                         { Kind = ELambda("t",
                                          _,
-                                         { Kind = ESeq({ Kind = EPipe({ Kind = ECmd("git", _, _) },
+                                         { Kind = ESeq({ Kind = EPipe({ Kind = ECmd(HeadLit "git", _, _) },
                                                                       { Kind = EVar "|print" }) },
                                                        _) }) })) -> ()
               | other -> failtest $"expected ESeq(armed cmd, ...), got: {other}"
@@ -12957,7 +12957,7 @@ let siblingSentinelTests =
               // the whole reason B beat A — a user-typed ';' on one line
               // is STILL a command with a ';' argv word that warns
               match Weir.Parser.parseLine cmdResolver "git status ; echo hi" with
-              | Ok(SCmd({ Kind = ECmd("git", args, _) })) ->
+              | Ok(SCmd({ Kind = ECmd(HeadLit "git", args, _) })) ->
                   Expect.isTrue
                       (args |> List.exists (fun a -> a.Kind = EStr ";"))
                       "the ';' is a bareword arg, not a separator"
@@ -13039,12 +13039,12 @@ let sigilTests =
         "Command sigils"
         [ test "capture sigil parses to the command chain (realResolver)" {
               match Weir.Parser.parseLine realResolver "let b = $(git branch) |> Seq.length" with
-              | Ok(SLet("b", { Kind = EPipe({ Kind = ECapture { Kind = ECmd("git", _, _) } }, _) })) -> ()
+              | Ok(SLet("b", { Kind = EPipe({ Kind = ECapture { Kind = ECmd(HeadLit "git", _, _) } }, _) })) -> ()
               | other -> failtest $"unexpected: {other}"
           }
           test "effect sigil desugars to chain |> print" {
               match Weir.Parser.parseLine realResolver "!(git status)" with
-              | Ok(SExpr { Kind = EPipe({ Kind = ECmd("git", _, _) }, { Kind = EVar "|print" }) }) -> ()
+              | Ok(SExpr { Kind = EPipe({ Kind = ECmd(HeadLit "git", _, _) }, { Kind = EVar "|print" }) }) -> ()
               | other -> failtest $"unexpected: {other}"
           }
           test "sigils x interpolation: holes never open command mode" {
@@ -16404,7 +16404,7 @@ let matchArmCommandTests =
         [ test "an arm body is a command chain; a following arm does not swallow it" {
               // the boundary: `| _ ->` ends the first arm's chain
               match (armBodyOf "match 1 with | 1 -> echo hi | _ -> print \"no\"").Kind with
-              | ECmd("echo", _, _) -> ()
+              | ECmd(HeadLit "echo", _, _) -> ()
               | other -> failtest $"expected the arm body to be a command, got {other}"
           }
           test "a statement-position match with command arms checks clean (arms stream)" {
@@ -19534,8 +19534,8 @@ let aliasTests =
               // the alias is a resolution-table entry, NOT a re-lex: a
               // single splice stays a single argument.
               match Weir.Parser.parseLine aliasResolver "k get $x" with
-              | Ok(SCmd { Kind = ECmd("kubectl", args, _) })
-              | Ok(SExpr { Kind = ECmd("kubectl", args, _) }) ->
+              | Ok(SCmd { Kind = ECmd(HeadLit "kubectl", args, _) })
+              | Ok(SExpr { Kind = ECmd(HeadLit "kubectl", args, _) }) ->
                   // args: get (literal), then the ONE splice $x
                   Expect.equal (List.length args) 2 "exactly two argv entries: 'get' and the single splice"
               | Ok other -> failtest $"expected an ECmd headed by kubectl, got {other}"
@@ -19546,8 +19546,8 @@ let aliasTests =
               // table is never consulted. A shadowing alias `ls = ls
               // --color` is bypassed by `^ls` — NO prefix injected.
               match Weir.Parser.parseLine aliasResolver "^ls x" with
-              | Ok(SCmd { Kind = ECmd("ls", args, _) })
-              | Ok(SExpr { Kind = ECmd("ls", args, _) }) ->
+              | Ok(SCmd { Kind = ECmd(HeadLit "ls", args, _) })
+              | Ok(SExpr { Kind = ECmd(HeadLit "ls", args, _) }) ->
                   Expect.equal (List.length args) 1 "just the user arg — no --color prefix (bypassed)"
               | Ok other -> failtest $"expected a bare ls ECmd, got {other}"
               | Error e -> failtest $"parse failed: {e}"
@@ -19555,8 +19555,8 @@ let aliasTests =
           test "(e) an alias applies to the HEAD only — a name in argv is untouched" {
               // `git k` : k in ARGUMENT position is a plain word, not resolved
               match Weir.Parser.parseLine aliasResolver "git add k" with
-              | Ok(SCmd { Kind = ECmd("git", _, _) })
-              | Ok(SExpr { Kind = ECmd("git", _, _) }) ->
+              | Ok(SCmd { Kind = ECmd(HeadLit "git", _, _) })
+              | Ok(SExpr { Kind = ECmd(HeadLit "git", _, _) }) ->
                   let s = (parseWith aliasResolver "git add k") |> function | Ok v -> v | Error e -> e
                   Expect.stringContains s "\"k\"" "the argv 'k' stays a literal string, not kubectl"
                   Expect.isFalse (s.Contains "kubectl") "no head-rewrite in argument position"
@@ -19567,8 +19567,8 @@ let aliasTests =
               // realResolver (no AliasHead) — `k` is not a known external,
               // so it never resolves as an aliased command head.
               match Weir.Parser.parseLine realResolver "k get po" with
-              | Ok(SCmd { Kind = ECmd("kubectl", _, _) })
-              | Ok(SExpr { Kind = ECmd("kubectl", _, _) }) -> failtest "an alias leaked into the base resolver"
+              | Ok(SCmd { Kind = ECmd(HeadLit "kubectl", _, _) })
+              | Ok(SExpr { Kind = ECmd(HeadLit "kubectl", _, _) }) -> failtest "an alias leaked into the base resolver"
               | _ -> () // unbound / not-a-command is the correct outcome
           }
           test "(g) #save DESUGAR: a kept `let = k …` saves as the real invocation" {
@@ -19599,6 +19599,80 @@ let aliasTests =
               Expect.isTrue (Weir.Repl.parseAliasLineForTest "kb = kustomize build" |> Result.isOk) "with prefix"
               Expect.isTrue (Weir.Repl.parseAliasLineForTest "= kubectl" |> Result.isError) "no name"
               Expect.isTrue (Weir.Repl.parseAliasLineForTest "k" |> Result.isError) "no ="
+          } ]
+
+// ---- dynamic command heads [D:dynamic-head] --------------------------
+// `^` gains a `$`-splice alternative: ^$name / ^$(…) force-external a
+// VALUE head — one program, string exactly, resolved at run; argv stays
+// typed argv, so the injection law holds for computed programs too.
+
+let dynamicHeadTests =
+    let checkOf lines =
+        let diags, _, _, _ = Weir.Script.analyzeLines "dynhead.weir" lines
+        diags
+
+    testList
+        "dynamic command heads [D:dynamic-head]"
+        [ test "(a) parse: ^$name heads a command; a spliced arg stays ONE argv entry" {
+              match Weir.Parser.parseLine realResolver "^$tool one $x" with
+              | Ok(SCmd { Kind = ECmd(HeadDyn("$tool", { Kind = EVar "tool" }), args, _) })
+              | Ok(SExpr { Kind = ECmd(HeadDyn("$tool", { Kind = EVar "tool" }), args, _) }) ->
+                  Expect.equal (List.length args) 2 "two argv entries: the literal and the single splice"
+              | Ok other -> failtest $"expected a dyn-headed ECmd, got {other}"
+              | Error e -> failtest $"parse failed: {e}"
+          }
+          test "(b) parse: ^$(…) heads a command with a capture value" {
+              match Weir.Parser.parseLine realResolver "^$(git branch |> Seq.exactlyOne) status" with
+              | Ok(SCmd { Kind = ECmd(HeadDyn("$(…)", { Kind = ECapture _ }), [ _ ], _) })
+              | Ok(SExpr { Kind = ECmd(HeadDyn("$(…)", { Kind = ECapture _ }), [ _ ], _) }) -> ()
+              | Ok other -> failtest $"expected a capture-headed ECmd, got {other}"
+              | Error e -> failtest $"parse failed: {e}"
+          }
+          test "(c) parse teachings: splat head, interpolated head, bare ^$" {
+              let perr input frag =
+                  match Weir.Parser.parseLine realResolver input with
+                  | Error m -> Expect.stringContains m frag $"the teaching for {input}"
+                  | Ok s -> failtest $"must refuse: {input} -> {s}"
+
+              perr "^$@xs" "a splat cannot head a command"
+              perr "^$\"{d}/tool\" run" "bind it first"
+              perr "^$%foo" "'^$' needs a name or a capture"
+          }
+          test "(d) check: a seq-capture head refuses with the bind-and-pick teaching" {
+              match checkOf [ "^$(git branch) status" ] with
+              | [ d ] ->
+                  Expect.equal d.Severity "error" "an error, not a warning"
+                  Expect.stringContains d.Message "bind and pick" "the teaching"
+              | ds -> failtest $"expected exactly the refusal, got {ds}"
+          }
+          test "(e) the run-time carve-out: a dyn head draws NO cmd-not-found diag, and the binding counts as read" {
+              Expect.isEmpty
+                  (checkOf [ "let tool = \"definitely-not-on-path-zz\""; "^$tool go" ])
+                  "resolution is the run's business; the head read keeps 'tool' used"
+          }
+          test "(f) reifiers compose: ^$tool | complete checks; the seq head refuses through the desugar too" {
+              Expect.isEmpty
+                  (checkOf
+                      [ "let tool = \"x\""
+                        "let r = ^$tool | complete"
+                        "print $\"{r.exitCode}\"" ])
+                  "the dyn head rides the reifier desugar"
+
+              match checkOf [ "let r = ^$(git branch) | complete"; "print $\"{r.exitCode}\"" ] with
+              | [ d ] -> Expect.stringContains d.Message "bind and pick" "the same teaching through EDynProg"
+              | ds -> failtest $"expected exactly the refusal, got {ds}"
+          }
+          test "(g) a non-string head refuses, naming the type" {
+              match checkOf [ "let n = 3"; "^$n x" ] with
+              | [ d ] -> Expect.stringContains d.Message "a dynamic head is a program name (string)" "the type law"
+              | ds -> failtest $"expected exactly the refusal, got {ds}"
+          }
+          test "(h) zero movement: ^ls still forces the literal PATH binary" {
+              match Weir.Parser.parseLine realResolver "^ls x" with
+              | Ok(SCmd { Kind = ECmd(HeadLit "ls", [ _ ], _) })
+              | Ok(SExpr { Kind = ECmd(HeadLit "ls", [ _ ], _) }) -> ()
+              | Ok other -> failtest $"expected the literal forced head, got {other}"
+              | Error e -> failtest $"parse failed: {e}"
           } ]
 
 let helpUxTests =
@@ -20218,6 +20292,7 @@ let allTests =
           reenumWarningTests
           replSaveDistillTests
           aliasTests
+          dynamicHeadTests
           helpUxTests
           indexerTests
           envLoadTests
