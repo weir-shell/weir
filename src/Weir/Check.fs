@@ -6074,7 +6074,7 @@ let private renderCommand (te: TypedExpr) : string =
             | TESplat { Kind = TEVar n } -> "$@" + n
             | _ -> "…"
 
-        String.concat " " (prog :: (args |> List.map word))
+        String.concat " " (theadDisplay prog :: (args |> List.map word))
     | _ -> "…"
 
 // the recognized visibly-materialized tails [D:reenum-warning] — the
