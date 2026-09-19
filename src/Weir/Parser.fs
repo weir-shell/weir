@@ -1893,7 +1893,7 @@ let private patCore =
                             "Regex patterns take a LITERAL string; computed patterns live on the expression side (Str.isMatch / Str.rmatch)" ]
               elif Char.IsUpper w[0] then
                   choice
-                      [ // a QUALIFIED case in pattern position [D:bare-case-patterns]
+                      [ // a QUALIFIED case in pattern position [D:qualified-name-teach]
                         // teaches the law instead of a bare expecting-list: the
                         // scrutinee's type resolves the bare name, imported
                         // unions included — the qualifier has no meaning here
@@ -1953,7 +1953,7 @@ binderPatRef.Value <- commaPats
 let private anonShape, private anonShapeRef =
     createParserForwardedToRef<(string * Ty) list, unit> ()
 
-// a QUALIFIED type name in the adapter slot [D:flat-import-types]
+// a QUALIFIED type name in the adapter slot [D:qualified-name-teach]
 // teaches: an imported module's types resolve by their PLAIN name
 // (types live flat across the module boundary; the alias qualifies
 // values, never this slot) — same law as module signatures
@@ -1982,7 +1982,7 @@ let private fromExpr =
             (anonShape |>> fun fs -> FromAnon fs, false)
             // the qualified spelling is recognized WHOLE first, so the
             // fatal fires OUTSIDE the slot's attempt (a fatal inside it
-            // demotes to a backtrack note) [D:flat-import-types]
+            // demotes to a backtrack note) [D:qualified-name-teach]
             <|> (attempt (
                      identSpanned
                      >>= fun (w, wspan) ->

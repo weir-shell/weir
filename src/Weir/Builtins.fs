@@ -926,7 +926,7 @@ let private substringImpl: Value =
                         VStr(s.Substring(st, ln))
                 | _ -> unreachable "the checker rejects 'substring' on these arguments")))
 
-// Str.replicate / padLeft / padRight [D:width-members]: the width
+// Str.replicate / padLeft / padRight [D:port-members]: the width
 // primitives every columnar CLI hand-rolled (the asdf port's receipt).
 // Negative counts/widths refuse like Seq.replicate — the one convention.
 let private strReplicateImpl: Value =
@@ -1367,7 +1367,7 @@ let private containsImpl: Value =
             | VSeq items -> VBool(items |> Seq.exists (fun v -> v = needle))
             | v -> unreachable $"the checker rejects 'contains' on {formatValue v}"))
 
-// Seq.equal [D:seq-equal]: element-wise, length-sensitive, Eq on the
+// Seq.equal [D:port-members]: element-wise, length-sensitive, Eq on the
 // elements (Seq.contains's constraint mirrored). Lockstep enumeration
 // short-circuits at the first mismatch and never pulls beyond need —
 // the honest spelling of what a lossy join-then-compare approximates.
@@ -2650,7 +2650,7 @@ let private fsMoreFileMembers: (string * Ty * Value) list =
                       failwith $"File.mode: dangling symlink: {r} — no target to read a mode from"
           | v -> unreachable $"the checker rejects 'File.mode' on {formatValue v}")
       "isExecutable",
-      // the mode string's 'x', as a bool [D:is-executable]: the OWNER
+      // the mode string's 'x', as a bool [D:port-members]: the OWNER
       // execute bit (the bit an installer sets), replacing the stringly
       // `File.mode |> Str.contains "x"`. Follows a symlink like mode;
       // a missing path raises. WINDOWS POSTURE, stated not guessed
@@ -3108,7 +3108,7 @@ let private bytesMembers: (string * Ty * Value) list =
           match v with
           | VBytes b -> VSize(int64 b.Length)
           | v -> unreachable $"the checker rejects 'Bytes.length' on {formatValue v}")
-      // hex, the crypto boundary's other text form [D:bytes-hex]:
+      // hex, the crypto boundary's other text form [D:port-members]:
       // lowercase out (sha256/sha256sum parity), either case in;
       // odd-length and non-hex refuse with the fromBase64 posture
       "fromHex",
@@ -3130,7 +3130,7 @@ let private bytesMembers: (string * Ty * Value) list =
           match v with
           | VBytes b -> VStr(b |> Array.map (fun x -> x.ToString "x2") |> String.concat "")
           | v -> unreachable $"the checker rejects 'Bytes.toHex' on {formatValue v}")
-      // Str.sub's exact shape on bytes [D:bytes-sub]: start, then
+      // Str.sub's exact shape on bytes [D:port-members]: start, then
       // length, data last; out of range raises with the same detail
       "sub",
       TFun(TInt, TFun(TInt, TFun(TBytes, TBytes))),
@@ -5923,7 +5923,7 @@ let private eqExcept: Scheme =
       RowOrigins = Map.empty
       HoleDefaults = [] }
 
-// Seq.equal mirrors Seq.contains's Eq constraint [D:seq-equal] — the
+// Seq.equal mirrors Seq.contains's Eq constraint [D:port-members] — the
 // element type must compare, so functions/seqs refuse at the use site
 let private eqSeqEqual: Scheme =
     { Forall = Set.singleton "a"

@@ -18590,8 +18590,8 @@ let bytesTests =
                   System.IO.File.Delete out
           } ]
 
-// the port-driven member batch (v0.0.46) [D:width-members][D:seq-equal]
-// [D:bytes-hex][D:is-executable] — each gap cited from the asdf/acme
+// the port-driven member batch (v0.0.46) [D:port-members] — each gap
+// cited from the asdf/acme
 // FINDINGS, each edge pinned; plus the two ports' diagnostic teachings
 let portMembersTests =
     let diagsOf lines =
@@ -18716,7 +18716,7 @@ let portMembersTests =
                   System.IO.File.Delete tmp
           }
           // ---- the two ports' diagnostics, whole-script level ----------
-          test "a qualified case in pattern position teaches the bare law [D:bare-case-patterns]" {
+          test "a qualified case in pattern position teaches the bare law [D:qualified-name-teach]" {
               mustSay
                   [ "type Spec = System | Ref"
                     "match System with"
@@ -18725,7 +18725,7 @@ let portMembersTests =
                   "a pattern names a case bare — write 'System', not 'Spec.System'"
                   "the repair is spelled"
           }
-          test "a qualified type in the adapter slot teaches the flat-import law [D:flat-import-types]" {
+          test "a qualified type in the adapter slot teaches the flat-import law [D:qualified-name-teach]" {
               mustSay
                   [ "let p = [\"{}\"] |> from json Acme.Pod"; "print \"x\"" ]
                   "write 'Pod', not 'Acme.Pod'"

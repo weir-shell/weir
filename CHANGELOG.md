@@ -1,5 +1,77 @@
 # Changelog
 
+## v0.0.46
+
+### Added
+
+- **Width members: `Str.replicate`, `Str.padLeft`, `Str.padRight`.**
+  `Str.replicate n s` concatenates n copies (0 → empty; a negative
+  count raises — Seq.replicate's convention). `padLeft`/`padRight`
+  pad with spaces to a TOTAL width, .NET Pad semantics: an
+  already-longer string is unchanged, a negative width raises. The
+  primitives every columnar CLI port hand-rolled (asdf's `current`,
+  `printf "%-15s"`). `replicate` now has two homes (Seq and Str), so
+  the bare REPL name retires — qualified-only, the derived
+  bare-partition rule.
+
+- **`Seq.equal : seq<'a> -> seq<'a> -> bool`.** Element-wise,
+  length-sensitive, Eq-constrained like `Seq.contains` (functions,
+  seqs and floats refuse at the use site, floats naming
+  `Float.near`). Lockstep and short-circuiting — never pulls beyond
+  need, so a finite seq compares safely against an infinite one. The
+  honest spelling of output-vs-expected; a join-then-compare is lossy
+  when elements contain the separator.
+
+- **Hex, slicing and HMAC on `Bytes`: `fromHex`/`toHex`, `sub`,
+  `hmacSha256`.** `toHex` emits lowercase (sha256 parity); `fromHex`
+  reads either case and refuses odd-length and non-hex input with
+  located teachings (fromBase64's posture). `Bytes.sub start len b`
+  is `Str.sub`'s exact shape on bytes, out-of-range raising with the
+  same detail. `Bytes.hmacSha256 key msg : Bytes` is .NET's
+  HMAC-SHA256 (key first, then message; RFC 4231 vectors pinned) — a
+  Secret key exits via `Secret.reveal |> Str.toUtf8`, deliberately.
+  Erases the ~70 hand-rolled hex/codec lines of the acme.sh port and
+  its External-Account-Binding openssl fallback.
+
+- **`File.isExecutable : string -> bool`.** The mode's OWNER execute
+  bit as a bool — replaces the stringly
+  `File.mode |> Str.contains "x"`. Follows a symlink and raises on a
+  missing path like `File.mode`; on Windows (no execute bit) it
+  answers by extension (`.exe`/`.bat`/`.cmd`/`.com`) — a stated
+  posture, never a guess.
+
+### Fixed
+
+- **A qualified case in pattern position teaches the bare law.**
+  `| Core.System ->` errored with a bare expecting-list; it now names
+  the repair — write `System`, not `Core.System`: the scrutinee's
+  type resolves the case, imported unions included.
+
+- **A qualified type in the adapter slot teaches the flat-import
+  law.** `from json Acme.Pod` errored unhelpfully; it now says write
+  `Pod`, not `Acme.Pod` — imported types resolve by their plain name
+  (the module alias qualifies values, not types in this slot).
+
+- **A capture sigil composed with a reifier names the spelling that
+  works.** `$e(cmd) | complete` still refuses (the sigil closes its
+  chain at the `)`), but the error now names the composition that
+  exists: `$e(cmd | complete)`.
+
+- **A block-local binder piped into inside the same statement is no
+  longer a phantom command.** Under check's assume-command rule,
+  `… |> pad` where `pad` is a `let` earlier in the same function body
+  mis-read as feeding a program (`'|>' applies functions; feed a
+  program with '|'`). The pipe-target walk now tracks
+  statement-local binders (lets, params, match/for/within binders) —
+  bindings beat PATH, block-locals included.
+
+- **A helper ending in `exit`/`fail` used as a statement names its
+  cause.** Such a helper infers a polymorphic return (diverging calls
+  are never unit), so using it as a statement was a bare
+  "computes a 'a1 and discards it". The discard error now explains
+  the polymorphism and both repairs: return the exit code and exit at
+  the call site, or bind the value.
+
 ## v0.0.45
 
 ### Added
