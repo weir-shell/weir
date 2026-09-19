@@ -236,7 +236,7 @@ outside the grammar), `let ... in` ↔ block lets (grammar has no
 inline `in` form yet), aligned ↔ Stroustrup/inline (aligned is
 generated as a base style but not flipped by a transform),
 `for p in xs do body` ↔ `xs |> Seq.iter (fun p -> body)` and
-`[for x in xs -> e]` ↔ `Seq.map`+force ([D:for-do]'s desugar-at-parse
+`[for x in xs -> e]` ↔ `Seq.map`+freeze ([D:for-do]'s desugar-at-parse
 claims — the grammar has no for production), and the yaml district's
 marker ↔ node-construction spellings (no yaml production).
 
