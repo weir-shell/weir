@@ -64,7 +64,7 @@ here without a docs edit.
 | reserved, no meaning | `mutable`, `rec` |
 | reserved to teach | `def`, `return`, `try`, `while` |
 
-`within` takes a kind word after it — `cd`, `env`, `lock`, `proc`, `tmp` — and the
+`within` takes a kind word after it — `cd`, `env`, `lock`, `proc`, `serve`, `tmp` — and the
 adapters read `from` `json`, `jsonl`, `table`, `xml`, `yaml` and write `to` `json`, `jsonl`, `yaml`;
 kind and adapter words are ordinary identifiers everywhere else.
 `pure` heads its own indented block (a purity assertion) and marks
