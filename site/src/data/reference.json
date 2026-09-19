@@ -251,7 +251,7 @@
           "name": "ofPairs",
           "signature": "Env.ofPairs (pairs: seq\u003Cstring * string\u003E) : seq\u003CEnvVar\u003E",
           "summary": "Build EnvVar records from name/value tuples.",
-          "example": "Env.ofPairs [(\u0022K\u0022, \u0022V\u0022)] |\u003E Seq.freeze",
+          "example": "Env.ofPairs [(\u0022K\u0022, \u0022V\u0022)] |\u003E Seq.force",
           "pointer": null
         },
         {
@@ -265,7 +265,7 @@
           "name": "vars",
           "signature": "Env.vars : seq\u003CEnvVar\u003E",
           "summary": "Every environment variable as EnvVar records.",
-          "example": "Env.vars |\u003E Seq.freeze",
+          "example": "Env.vars |\u003E Seq.force",
           "pointer": null
         }
       ]
@@ -723,7 +723,7 @@
           "name": "keys",
           "signature": "Map.keys (m: Map\u003Cstring, \u0027a\u003E) : seq\u003Cstring\u003E",
           "summary": "The keys, sorted.",
-          "example": "Map.ofPairs [(\u0022b\u0022, 2); (\u0022a\u0022, 1)] |\u003E Map.keys |\u003E Seq.freeze",
+          "example": "Map.ofPairs [(\u0022b\u0022, 2); (\u0022a\u0022, 1)] |\u003E Map.keys |\u003E Seq.force",
           "pointer": null
         },
         {
@@ -737,7 +737,7 @@
           "name": "pairs",
           "signature": "Map.pairs (m: Map\u003Cstring, \u0027a\u003E) : seq\u003Cstring * \u0027a\u003E",
           "summary": "The entries as (key, value) pairs, key-sorted.",
-          "example": "Map.ofPairs [(\u0022b\u0022, 2); (\u0022a\u0022, 1)] |\u003E Map.pairs |\u003E Seq.freeze",
+          "example": "Map.ofPairs [(\u0022b\u0022, 2); (\u0022a\u0022, 1)] |\u003E Map.pairs |\u003E Seq.force",
           "pointer": null
         },
         {
@@ -758,7 +758,7 @@
           "name": "values",
           "signature": "Map.values (m: Map\u003Cstring, \u0027a\u003E) : seq\u003C\u0027a\u003E",
           "summary": "The values, in key-sorted order.",
-          "example": "Map.ofPairs [(\u0022b\u0022, 2); (\u0022a\u0022, 1)] |\u003E Map.values |\u003E Seq.freeze",
+          "example": "Map.ofPairs [(\u0022b\u0022, 2); (\u0022a\u0022, 1)] |\u003E Map.values |\u003E Seq.force",
           "pointer": null
         }
       ]
@@ -864,7 +864,7 @@
           "name": "glob",
           "signature": "Path.glob (pattern: string) : seq\u003Cstring\u003E",
           "summary": "Match a glob against the filesystem (lazy; globstar skips symlinks).",
-          "example": "Path.glob \u0022*.nope123\u0022 |\u003E Seq.freeze",
+          "example": "Path.glob \u0022*.nope123\u0022 |\u003E Seq.force",
           "pointer": null
         },
         {
@@ -1074,7 +1074,7 @@
           "name": "append",
           "signature": "Seq.append (xs: seq\u003C\u0027a\u003E) (ys: seq\u003C\u0027a\u003E) : seq\u003C\u0027a\u003E",
           "summary": "Concatenate two sequences, lazily.",
-          "example": "Seq.append [1; 2] [3; 4] |\u003E Seq.freeze",
+          "example": "Seq.append [1; 2] [3; 4] |\u003E Seq.force",
           "pointer": null
         },
         {
@@ -1088,28 +1088,28 @@
           "name": "choose",
           "signature": "Seq.choose (f: \u0027a -\u003E Option\u003C\u0027b\u003E) (xs: seq\u003C\u0027a\u003E) : seq\u003C\u0027b\u003E",
           "summary": "Map and drop the None results in one lazy pass.",
-          "example": "[1; 2; 3] |\u003E Seq.choose (fun x -\u003E if x \u003E 1 then Some x else None) |\u003E Seq.freeze",
+          "example": "[1; 2; 3] |\u003E Seq.choose (fun x -\u003E if x \u003E 1 then Some x else None) |\u003E Seq.force",
           "pointer": null
         },
         {
           "name": "chunkBySize",
           "signature": "Seq.chunkBySize (n: int) (xs: seq\u003C\u0027a\u003E) : seq\u003Cseq\u003C\u0027a\u003E\u003E",
           "summary": "Split into consecutive chunks of at most n, lazily \u2014 the batching member (the last chunk may be short).",
-          "example": "[1; 2; 3; 4; 5] |\u003E Seq.chunkBySize 2 |\u003E Seq.map Seq.freeze |\u003E Seq.freeze",
+          "example": "[1; 2; 3; 4; 5] |\u003E Seq.chunkBySize 2 |\u003E Seq.map Seq.force |\u003E Seq.force",
           "pointer": null
         },
         {
           "name": "collect",
           "signature": "Seq.collect (f: \u0027a -\u003E seq\u003C\u0027b\u003E) (xs: seq\u003C\u0027a\u003E) : seq\u003C\u0027b\u003E",
           "summary": "Map each element to a sequence and flatten, lazily (F#\u0027s collect; flatMap elsewhere).",
-          "example": "[\u0022a\u003Cb\u0022; \u0022c\u0022] |\u003E Seq.collect (Str.split \u0022\u003C\u0022) |\u003E Seq.freeze",
+          "example": "[\u0022a\u003Cb\u0022; \u0022c\u0022] |\u003E Seq.collect (Str.split \u0022\u003C\u0022) |\u003E Seq.force",
           "pointer": null
         },
         {
           "name": "concat",
           "signature": "Seq.concat (xss: seq\u003Cseq\u003C\u0027a\u003E\u003E) : seq\u003C\u0027a\u003E",
           "summary": "Flatten a sequence of sequences, lazily (collect with the identity).",
-          "example": "[[1; 2]; [3]] |\u003E Seq.concat |\u003E Seq.freeze",
+          "example": "[[1; 2]; [3]] |\u003E Seq.concat |\u003E Seq.force",
           "pointer": null
         },
         {
@@ -1123,21 +1123,21 @@
           "name": "countBy",
           "signature": "Seq.countBy (key: \u0027a -\u003E \u0027b) (xs: seq\u003C\u0027a\u003E) : seq\u003C\u0027b * int\u003E",
           "summary": "Count elements per projected key as (key, count) pairs, first-seen key order; forces on the first pull.",
-          "example": "[\u0022a\u0022; \u0022bb\u0022; \u0022c\u0022] |\u003E Seq.countBy Str.length |\u003E Seq.freeze",
+          "example": "[\u0022a\u0022; \u0022bb\u0022; \u0022c\u0022] |\u003E Seq.countBy Str.length |\u003E Seq.force",
           "pointer": null
         },
         {
           "name": "distinct",
           "signature": "Seq.distinct (xs: seq\u003C\u0027a\u003E) : seq\u003C\u0027a\u003E",
           "summary": "Drop duplicate elements, keeping first order.",
-          "example": "[1; 1; 2] |\u003E Seq.distinct |\u003E Seq.freeze",
+          "example": "[1; 1; 2] |\u003E Seq.distinct |\u003E Seq.force",
           "pointer": null
         },
         {
           "name": "distinctBy",
           "signature": "Seq.distinctBy (key: \u0027a -\u003E \u0027b) (xs: seq\u003C\u0027a\u003E) : seq\u003C\u0027a\u003E",
           "summary": "Keep the first element per projected key, lazily \u2014 distinct\u0027s projection twin.",
-          "example": "[\u0022a\u0022; \u0022bb\u0022; \u0022cc\u0022] |\u003E Seq.distinctBy Str.length |\u003E Seq.freeze",
+          "example": "[\u0022a\u0022; \u0022bb\u0022; \u0022cc\u0022] |\u003E Seq.distinctBy Str.length |\u003E Seq.force",
           "pointer": null
         },
         {
@@ -1158,7 +1158,7 @@
           "name": "except",
           "signature": "Seq.except (excluded: seq\u003C\u0027a\u003E) (xs: seq\u003C\u0027a\u003E) : seq\u003C\u0027a\u003E",
           "summary": "Set difference: the source without the excluded values (exclusions first, source last; the exclusion set materializes on the first pull, the source streams).",
-          "example": "[1; 2; 3; 4] |\u003E Seq.except [2; 4] |\u003E Seq.freeze",
+          "example": "[1; 2; 3; 4] |\u003E Seq.except [2; 4] |\u003E Seq.force",
           "pointer": null
         },
         {
@@ -1190,17 +1190,17 @@
           "pointer": null
         },
         {
-          "name": "freeze",
-          "signature": "Seq.freeze (xs: seq\u003C\u0027a\u003E) : seq\u003C\u0027a\u003E",
+          "name": "force",
+          "signature": "Seq.force (xs: seq\u003C\u0027a\u003E) : seq\u003C\u0027a\u003E",
           "summary": "Materialize a lazy sequence, caching it.",
-          "example": "[1; 2; 3] |\u003E Seq.map (fun x -\u003E x \u002B 1) |\u003E Seq.freeze",
-          "pointer": "freeze once, then reuse freely \u2014 it memoizes (the two customers: reuse and timing)."
+          "example": "[1; 2; 3] |\u003E Seq.map (fun x -\u003E x \u002B 1) |\u003E Seq.force",
+          "pointer": "force once, then reuse freely \u2014 it memoizes (the two customers: reuse and timing)."
         },
         {
           "name": "groupBy",
           "signature": "Seq.groupBy (key: \u0027a -\u003E \u0027b) (xs: seq\u003C\u0027a\u003E) : seq\u003C\u0027b * seq\u003C\u0027a\u003E\u003E",
           "summary": "Group elements by a key into (key, items) pairs \u2014 F#\u0027s own shape; countBy/zip/pairwise speak the same tuples.",
-          "example": "[1; 2; 3] |\u003E Seq.groupBy (fun x -\u003E x) |\u003E Seq.freeze",
+          "example": "[1; 2; 3] |\u003E Seq.groupBy (fun x -\u003E x) |\u003E Seq.force",
           "pointer": null
         },
         {
@@ -1214,7 +1214,7 @@
           "name": "indexed",
           "signature": "Seq.indexed (xs: seq\u003C\u0027a\u003E) : seq\u003Cint * \u0027a\u003E",
           "summary": "Pair every element with its zero-based position, lazily \u2014 mapi/iteri are \u0060indexed |\u003E map\u0060/\u0060iter\u0060 over the tuple.",
-          "example": "[\u0022a\u0022; \u0022b\u0022] |\u003E Seq.indexed |\u003E Seq.freeze",
+          "example": "[\u0022a\u0022; \u0022b\u0022] |\u003E Seq.indexed |\u003E Seq.force",
           "pointer": null
         },
         {
@@ -1256,7 +1256,7 @@
           "name": "map",
           "signature": "Seq.map (f: \u0027a -\u003E \u0027b) (xs: seq\u003C\u0027a\u003E) : seq\u003C\u0027b\u003E",
           "summary": "Apply a function to every element, lazily.",
-          "example": "[1; 2; 3] |\u003E Seq.map (fun x -\u003E x \u002B 1) |\u003E Seq.freeze",
+          "example": "[1; 2; 3] |\u003E Seq.map (fun x -\u003E x \u002B 1) |\u003E Seq.force",
           "pointer": null
         },
         {
@@ -1291,7 +1291,7 @@
           "name": "pairwise",
           "signature": "Seq.pairwise (xs: seq\u003C\u0027a\u003E) : seq\u003C\u0027a * \u0027a\u003E",
           "summary": "Adjacent pairs: (e0,e1), (e1,e2), and so on.",
-          "example": "[1; 2; 3] |\u003E Seq.pairwise |\u003E Seq.freeze",
+          "example": "[1; 2; 3] |\u003E Seq.pairwise |\u003E Seq.force",
           "pointer": null
         },
         {
@@ -1333,21 +1333,21 @@
           "name": "pmap",
           "signature": "Seq.pmap (f: \u0027a -\u003E \u0027b) (xs: seq\u003C\u0027a\u003E) : seq\u003C\u0027b\u003E",
           "summary": "Map in parallel across worker threads.",
-          "example": "[1; 2; 3] |\u003E Seq.pmap (fun x -\u003E x \u002B 1) |\u003E Seq.freeze",
+          "example": "[1; 2; 3] |\u003E Seq.pmap (fun x -\u003E x \u002B 1) |\u003E Seq.force",
           "pointer": "ordered, eager, at most 64 workers; the first error by input order wins."
         },
         {
           "name": "pmapWith",
           "signature": "Seq.pmapWith (n: int) (f: \u0027a -\u003E \u0027b) (xs: seq\u003C\u0027a\u003E) : seq\u003C\u0027b\u003E",
           "summary": "Seq.pmap with an explicit worker count \u2014 the sizing knob for rate-limited or memory-heavy arms.",
-          "example": "[1; 2; 3] |\u003E Seq.pmapWith 2 (fun x -\u003E x \u002B 1) |\u003E Seq.freeze",
+          "example": "[1; 2; 3] |\u003E Seq.pmapWith 2 (fun x -\u003E x \u002B 1) |\u003E Seq.force",
           "pointer": "an explicit n is never reduced by nesting; pmap\u0027s default ladder is."
         },
         {
           "name": "range",
           "signature": "Seq.range (start: int) (step: int) (stop: int) : seq\u003Cint\u003E",
           "summary": "A lazy arithmetic range: start, step, stop.",
-          "example": "Seq.range 1 1 5 |\u003E Seq.freeze",
+          "example": "Seq.range 1 1 5 |\u003E Seq.force",
           "pointer": null
         },
         {
@@ -1361,63 +1361,63 @@
           "name": "replicate",
           "signature": "Seq.replicate (n: int) (x: \u0027a) : seq\u003C\u0027a\u003E",
           "summary": "n copies of one value, lazily (raises on a negative count).",
-          "example": "Seq.replicate 3 \u0022x\u0022 |\u003E Seq.freeze",
+          "example": "Seq.replicate 3 \u0022x\u0022 |\u003E Seq.force",
           "pointer": null
         },
         {
           "name": "rev",
           "signature": "Seq.rev (xs: seq\u003C\u0027a\u003E) : seq\u003C\u0027a\u003E",
           "summary": "Reverse. Forces the whole input on the first pull (never an infinite seq).",
-          "example": "[1; 2; 3] |\u003E Seq.rev |\u003E Seq.freeze",
+          "example": "[1; 2; 3] |\u003E Seq.rev |\u003E Seq.force",
           "pointer": null
         },
         {
           "name": "scan",
           "signature": "Seq.scan (f: \u0027a -\u003E \u0027b -\u003E \u0027a) (init: \u0027a) (xs: seq\u003C\u0027b\u003E) : seq\u003C\u0027a\u003E",
           "summary": "Fold emitting every intermediate state, the seed first, lazily.",
-          "example": "[1; 2; 3] |\u003E Seq.scan (\u002B) 0 |\u003E Seq.freeze",
+          "example": "[1; 2; 3] |\u003E Seq.scan (\u002B) 0 |\u003E Seq.force",
           "pointer": null
         },
         {
           "name": "skip",
           "signature": "Seq.skip (n: int) (xs: seq\u003C\u0027a\u003E) : seq\u003C\u0027a\u003E",
           "summary": "Drop the first n elements, keep the rest lazily.",
-          "example": "[1; 2; 3] |\u003E Seq.skip 1 |\u003E Seq.freeze",
+          "example": "[1; 2; 3] |\u003E Seq.skip 1 |\u003E Seq.force",
           "pointer": null
         },
         {
           "name": "skipWhile",
           "signature": "Seq.skipWhile (pred: \u0027a -\u003E bool) (xs: seq\u003C\u0027a\u003E) : seq\u003C\u0027a\u003E",
           "summary": "Drop the leading run the predicate accepts, lazily; the rest streams whole.",
-          "example": "[1; 2; 9; 1] |\u003E Seq.skipWhile (fun x -\u003E x \u003C 5) |\u003E Seq.freeze",
+          "example": "[1; 2; 9; 1] |\u003E Seq.skipWhile (fun x -\u003E x \u003C 5) |\u003E Seq.force",
           "pointer": null
         },
         {
           "name": "sort",
           "signature": "Seq.sort (xs: seq\u003C\u0027a\u003E) : seq\u003C\u0027a\u003E",
           "summary": "Sort ascending by the elements themselves (Ord); forces on the first pull.",
-          "example": "[\u0022pear\u0022; \u0022apple\u0022] |\u003E Seq.sort |\u003E Seq.freeze",
+          "example": "[\u0022pear\u0022; \u0022apple\u0022] |\u003E Seq.sort |\u003E Seq.force",
           "pointer": null
         },
         {
           "name": "sortBy",
           "signature": "Seq.sortBy (key: \u0027a -\u003E \u0027b) (xs: seq\u003C\u0027a\u003E) : seq\u003C\u0027a\u003E",
           "summary": "Order by a key projection.",
-          "example": "[3; 1; 2] |\u003E Seq.sortBy (fun x -\u003E x) |\u003E Seq.freeze",
+          "example": "[3; 1; 2] |\u003E Seq.sortBy (fun x -\u003E x) |\u003E Seq.force",
           "pointer": null
         },
         {
           "name": "sortByDescending",
           "signature": "Seq.sortByDescending (key: \u0027a -\u003E \u0027b) (xs: seq\u003C\u0027a\u003E) : seq\u003C\u0027a\u003E",
           "summary": "Order by a key projection, descending.",
-          "example": "[1; 3; 2] |\u003E Seq.sortByDescending (fun x -\u003E x) |\u003E Seq.freeze",
+          "example": "[1; 3; 2] |\u003E Seq.sortByDescending (fun x -\u003E x) |\u003E Seq.force",
           "pointer": null
         },
         {
           "name": "sortDescending",
           "signature": "Seq.sortDescending (xs: seq\u003C\u0027a\u003E) : seq\u003C\u0027a\u003E",
           "summary": "Sort descending by the elements themselves (Ord); forces on the first pull.",
-          "example": "[1; 3; 2] |\u003E Seq.sortDescending |\u003E Seq.freeze",
+          "example": "[1; 3; 2] |\u003E Seq.sortDescending |\u003E Seq.force",
           "pointer": null
         },
         {
@@ -1431,14 +1431,14 @@
           "name": "take",
           "signature": "Seq.take (n: int) (xs: seq\u003C\u0027a\u003E) : seq\u003C\u0027a\u003E",
           "summary": "The first n elements, lazily; pairs with Seq.skip.",
-          "example": "[1; 2; 3] |\u003E Seq.take 2 |\u003E Seq.freeze",
+          "example": "[1; 2; 3] |\u003E Seq.take 2 |\u003E Seq.force",
           "pointer": null
         },
         {
           "name": "takeWhile",
           "signature": "Seq.takeWhile (pred: \u0027a -\u003E bool) (xs: seq\u003C\u0027a\u003E) : seq\u003C\u0027a\u003E",
           "summary": "Elements while the predicate holds, lazily; stops at the first refusal.",
-          "example": "[1; 2; 9; 1] |\u003E Seq.takeWhile (fun x -\u003E x \u003C 5) |\u003E Seq.freeze",
+          "example": "[1; 2; 9; 1] |\u003E Seq.takeWhile (fun x -\u003E x \u003C 5) |\u003E Seq.force",
           "pointer": null
         },
         {
@@ -1487,21 +1487,21 @@
           "name": "where",
           "signature": "Seq.where (pred: \u0027a -\u003E bool) (xs: seq\u003C\u0027a\u003E) : seq\u003C\u0027a\u003E",
           "summary": "Keep the elements a predicate accepts, lazily.",
-          "example": "[1; 2; 3] |\u003E Seq.where (fun x -\u003E x \u003E 1) |\u003E Seq.freeze",
+          "example": "[1; 2; 3] |\u003E Seq.where (fun x -\u003E x \u003E 1) |\u003E Seq.force",
           "pointer": null
         },
         {
           "name": "windowed",
           "signature": "Seq.windowed (n: int) (xs: seq\u003C\u0027a\u003E) : seq\u003Cseq\u003C\u0027a\u003E\u003E",
           "summary": "Sliding windows of size n, lazy (produced as the source is pulled; a short source yields the empty seq \u2014 no partial window; windows view the same memoized elements). Raises when n \u003C= 0.",
-          "example": "[1; 2; 3] |\u003E Seq.windowed 2 |\u003E Seq.map Seq.freeze |\u003E Seq.freeze",
+          "example": "[1; 2; 3] |\u003E Seq.windowed 2 |\u003E Seq.map Seq.force |\u003E Seq.force",
           "pointer": null
         },
         {
           "name": "zip",
           "signature": "Seq.zip (xs: seq\u003C\u0027a\u003E) (ys: seq\u003C\u0027b\u003E) : seq\u003C\u0027a * \u0027b\u003E",
           "summary": "Pair two sequences element-wise, stopping at the shorter.",
-          "example": "Seq.zip [1; 2] [3; 4] |\u003E Seq.freeze",
+          "example": "Seq.zip [1; 2] [3; 4] |\u003E Seq.force",
           "pointer": null
         }
       ]
@@ -1574,7 +1574,7 @@
           "name": "fields",
           "signature": "Str.fields (s: string) : seq\u003Cstring\u003E",
           "summary": "Split on whitespace runs into fields \u2014 never an empty piece (a blank or empty string is the empty seq; trim\u0027s whitespace class).",
-          "example": "\u0022NAME   READY  1/1\u0022 |\u003E Str.fields |\u003E Seq.freeze",
+          "example": "\u0022NAME   READY  1/1\u0022 |\u003E Str.fields |\u003E Seq.force",
           "pointer": null
         },
         {
@@ -1651,14 +1651,14 @@
           "name": "rmatchAll",
           "signature": "Str.rmatchAll (pattern: string) (s: string) : seq\u003Cseq\u003Cstring\u003E\u003E",
           "summary": "Every regex match\u0027s groups, as a sequence of sequences.",
-          "example": "Str.rmatchAll \u0022[0-9]\u002B\u0022 \u0022a1b2\u0022 |\u003E Seq.freeze",
+          "example": "Str.rmatchAll \u0022[0-9]\u002B\u0022 \u0022a1b2\u0022 |\u003E Seq.force",
           "pointer": null
         },
         {
           "name": "rsplit",
           "signature": "Str.rsplit (pattern: string) (s: string) : seq\u003Cstring\u003E",
           "summary": "Split on every regex match; split\u0027s empties law (adjacent matches and edges yield \u0022\u0022), and capture groups never add pieces.",
-          "example": "Str.rsplit @\u0022\\s*,\\s*\u0022 \u0022a , b,c\u0022 |\u003E Seq.freeze",
+          "example": "Str.rsplit @\u0022\\s*,\\s*\u0022 \u0022a , b,c\u0022 |\u003E Seq.force",
           "pointer": null
         },
         {
@@ -1672,7 +1672,7 @@
           "name": "split",
           "signature": "Str.split (sep: string) (s: string) : seq\u003Cstring\u003E",
           "summary": "Split on a separator into a sequence; empty pieces kept (adjacent separators and edges yield \u0022\u0022 \u2014 rsplit follows the same law).",
-          "example": "Str.split \u0022,\u0022 \u0022a,b,c\u0022 |\u003E Seq.freeze",
+          "example": "Str.split \u0022,\u0022 \u0022a,b,c\u0022 |\u003E Seq.force",
           "pointer": null
         },
         {
@@ -1898,10 +1898,10 @@
       "pointer": "message-carrying; \u0060exit n\u0060 is the bare-code spelling. Diverges (\u0060string -\u003E \u0027a\u0060): a failing arm sits opposite a value arm."
     },
     {
-      "name": "freeze",
-      "signature": "freeze (xs: seq\u003C\u0027a\u003E) : seq\u003C\u0027a\u003E",
-      "summary": "Materialize a lazy sequence, caching it (the bare Seq.freeze).",
-      "example": "[1; 2; 3] |\u003E freeze",
+      "name": "force",
+      "signature": "force (xs: seq\u003C\u0027a\u003E) : seq\u003C\u0027a\u003E",
+      "summary": "Materialize a lazy sequence, caching it (the bare Seq.force).",
+      "example": "[1; 2; 3] |\u003E force",
       "pointer": null
     },
     {
@@ -2006,7 +2006,7 @@
       "name": "show",
       "signature": "show (value: \u0027a) : string",
       "summary": "Render a value to its string form \u2014 the same text an interpolation hole gives. Reach for it where a hole cannot go: point-free positions (Seq.map show) and Secrets (masked). Total; functions show opaquely.",
-      "example": "[1; 2; 3] |\u003E Seq.map show |\u003E Seq.freeze",
+      "example": "[1; 2; 3] |\u003E Seq.map show |\u003E Seq.force",
       "pointer": null
     },
     {
