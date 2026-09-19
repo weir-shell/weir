@@ -25,6 +25,9 @@ type Site = { File: string; Line: int; Col: int }
 
 type Fact =
     | Runs of prog: string
+    // a dynamic head [D:dynamic-head]: the program is a runtime VALUE —
+    // an unresolved external, counted with the opaque sites
+    | RunsDyn of display: string
     | OpaqueArg of interp: string
     | FsRead of member_: string * path: string option
     | FsWrite of member_: string * path: string option
@@ -142,15 +145,18 @@ let rec private walkExpr
     let mutable skipChildren = false
 
     (match te.Kind with
-     | TECmd(prog, args, envO) ->
-         add (Runs prog) te.Span
+     | TECmd(head, args, envO) ->
+         (match head with
+          | THeadLit prog ->
+              add (Runs prog) te.Span
 
-         if interpreters.Contains prog then
-             add (OpaqueArg prog) te.Span
+              if interpreters.Contains prog then
+                  add (OpaqueArg prog) te.Span
+          | THeadDyn(display, _) -> add (RunsDyn $"^{display}") te.Span)
 
          for a in args do
              match a.Ty with
-             | TSecret -> add (SecretArgv prog) a.Span
+             | TSecret -> add (SecretArgv(theadDisplay head)) a.Span
              | _ -> ()
 
          match envO with
@@ -277,12 +283,23 @@ let rec private walkExpr
                  elif h.EndsWith "Env" then 1
                  else 0
 
-             match argsOf te |> List.tryItem progSlot |> Option.bind literalStr with
-             | Some prog ->
-                 add (Runs prog) te.Span
+             match argsOf te |> List.tryItem progSlot with
+             | Some slot ->
+                 (match literalStr slot with
+                  | Some prog ->
+                      add (Runs prog) te.Span
 
-                 if interpreters.Contains prog then
-                     add (OpaqueArg prog) te.Span
+                      if interpreters.Contains prog then
+                          add (OpaqueArg prog) te.Span
+                  | None ->
+                      // a reified dynamic head [D:dynamic-head]: the prog
+                      // slot carries the head VALUE, not a literal
+                      let display =
+                          match slot.Kind with
+                          | TEVar n -> $"^${n}"
+                          | _ -> "^$(…)"
+
+                      add (RunsDyn display) te.Span)
              | None -> ()
          | _ -> ()
 
@@ -332,6 +349,7 @@ let private factLine (c: Cap) : string * string =
     // messages GROUP [D:can-report]
     match c.Fact with
     | Runs p -> "runs", p
+    | RunsDyn d -> "runs", $"{d} (not statically known — a dynamic head resolves at run)"
     | OpaqueArg i -> "opaque", $"{i} takes a program as its argument — not analyzed"
     | FsRead(m, Some p) -> "reads", $"{m} {p}"
     | FsRead(m, None) -> "reads", $"{m} (path not statically known)"
@@ -382,6 +400,7 @@ let private factClass (f: Fact) : Weir.Effects.EffectClass =
     // overlays for children, scoped procs, proc control, termination,
     // an argv-visible secret (rides a spawn), an opaque interpreter arg
     | Runs _
+    | RunsDyn _
     | OpaqueArg _
     | FsWrite _
     | TempWrite _
@@ -396,7 +415,9 @@ let opaqueCount (caps: Cap list) : int =
     caps
     |> List.sumBy (fun c ->
         match c.Fact with
-        | OpaqueArg _ -> 1
+        | OpaqueArg _
+        // a dynamic head is an unresolved external — --strict's business
+        | RunsDyn _ -> 1
         | _ -> 0)
 
 let renderHuman (script: string) (caps: Cap list) : string =
@@ -409,7 +430,7 @@ let renderHuman (script: string) (caps: Cap list) : string =
 
     if opaque > 0 then
         sb.AppendLine
-            $"  ⚠ this report is incomplete: {opaque} opaque site(s) — an interpreter's argument cannot be analyzed"
+            $"  ⚠ this report is incomplete: {opaque} opaque site(s) — an interpreter's argument or a dynamic head cannot be analyzed statically"
         |> ignore
 
     // opacity marks its runs line INLINE (the header carries the count;
@@ -499,6 +520,7 @@ let renderJson (script: string) (caps: Cap list) : string =
         let kind, detail =
             match c.Fact with
             | Runs p -> "runs", p
+            | RunsDyn d -> "runs-dynamic", d
             | OpaqueArg i -> "opaque", i
             | FsRead(m, p) -> "read", m + (p |> Option.map (fun x -> " " + x) |> Option.defaultValue "")
             | FsWrite(m, p) -> "write", m + (p |> Option.map (fun x -> " " + x) |> Option.defaultValue "")

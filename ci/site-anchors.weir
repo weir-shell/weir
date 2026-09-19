@@ -12,7 +12,7 @@ type Cli = {
 
 let cli = Args.load Cli
 
-let pages = Path.glob $"{cli.dist}/**/*.html" |> Seq.force
+let pages = Path.glob $"{cli.dist}/**/*.html" |> Seq.freeze
 
 if pages |> Seq.isEmpty then fail $"no html under {cli.dist} — build the site first"
 
@@ -22,9 +22,9 @@ let dupsOf page =
     |> Seq.countBy (fun x -> x)
     |> Seq.where (fun (_, n) -> n > 1)
     |> Seq.map (fun (i, n) -> $"{page}: id \"{i}\" x{n}")
-    |> Seq.force
+    |> Seq.freeze
 
-let dups = pages |> Seq.collect dupsOf |> Seq.force
+let dups = pages |> Seq.collect dupsOf |> Seq.freeze
 
 if not (dups |> Seq.isEmpty) then
     dups |> Seq.iter printerr

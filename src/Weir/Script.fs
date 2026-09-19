@@ -2266,7 +2266,7 @@ let private baseEnvs (scriptArgs: string list) (scriptPath: string) =
             Seq.delay (fun () ->
                 if consumed.Value then
                     failwith
-                        "Self.stdin is a live stream and was already consumed — bind ONE enumeration (let lines = Self.stdin |> Seq.force), or read a line per interaction with `prompt`"
+                        "Self.stdin is a live stream and was already consumed — bind ONE enumeration (let lines = Self.stdin |> Seq.freeze), or read a line per interaction with `prompt`"
 
                 consumed.Value <- true
 
@@ -2344,6 +2344,14 @@ let discardError (ty: Ty) : string option =
         Some(
             $"this statement computes a {formatTy ty} and discards it — bind it, or pipe it to print"
             + " (for a plain listing, ^ls runs the real program)"
+        )
+    // an UNRESOLVED statement type [D:exit-polymorphic]: nothing
+    // determines it — almost always a helper whose body ends in
+    // exit/fail (diverging, so polymorphic — never unit). A bare
+    // "computes a 'a1" names no cause; this names it and the repair.
+    | TVar _ as ty ->
+        Some(
+            $"this statement computes a {formatTy ty} and discards it — an unresolved type here usually means the helper ends in exit or fail, which makes it polymorphic, not unit: return the exit code and exit at the call site (exit (helper …)), or bind the value"
         )
     | ty -> Some $"this statement computes a {formatTy ty} and discards it — bind it, or pipe it to print"
 
@@ -2694,7 +2702,7 @@ let private checkStatementCore
 
                     let rec heads (e: Expr) =
                         (match e.Kind with
-                         | ECmd(prog, _, _) when not (Extern.exists prog) -> [ prog, e.Span ]
+                         | ECmd(HeadLit prog, _, _) when not (Extern.exists prog) -> [ prog, e.Span ]
                          | _ -> [])
                         @ (exprChildren e |> List.collect heads)
 
@@ -3339,7 +3347,7 @@ type ReenumTracker() =
             | Check.ReenumBind(id, _, cmd) ->
                 // a block-local binder has no clean one-line source to
                 // ride the repair — the generic spelling instead
-                info[id] <- (cmd, "add '|> Seq.force' at the binding")
+                info[id] <- (cmd, "add '|> Seq.freeze' at the binding")
                 counts[id] <- 0
             | Check.ReenumUse(id, name, span) ->
                 let n =
@@ -3393,9 +3401,9 @@ type ReenumTracker() =
                     let src = ll.Text.Trim()
 
                     if src.StartsWith "let " && not (src |> Seq.exists System.Char.IsControl) then
-                        $"{src} |> Seq.force"
+                        $"{src} |> Seq.freeze"
                     else
-                        "add '|> Seq.force' at the binding"
+                        "add '|> Seq.freeze' at the binding"
 
                 info[id] <- (cmd, repair)
                 counts[id] <- 0
@@ -4342,7 +4350,7 @@ let sigCmdDiagnostics
 
             let rec cmds (te: Check.TypedExpr) =
                 (match te.Kind with
-                 | Check.TECmd(prog, args, _) -> [ prog, args ]
+                 | Check.TECmd(Check.THeadLit prog, args, _) -> [ prog, args ]
                  | _ ->
                      // reified commands DESUGAR the ECmd away — the chain
                      // becomes a `|succeeded`-family builtin applied to the
@@ -5272,7 +5280,7 @@ let analyzeLines
 
         let rec cmdHeads (te: Check.TypedExpr) =
             (match te.Kind with
-             | Check.TECmd(prog, _, _) when not (Extern.exists prog) -> [ prog, te.Span ]
+             | Check.TECmd(Check.THeadLit prog, _, _) when not (Extern.exists prog) -> [ prog, te.Span ]
              | _ -> [])
             @ (Check.childExprs te |> List.collect cmdHeads)
 
@@ -5453,7 +5461,7 @@ let analyzeLines
                  | Ok stmt ->
                      let rec eheads (e: Expr) =
                          (match e.Kind with
-                          | ECmd(prog, _, _) when not (Extern.exists prog) -> [ prog, e.Span ]
+                          | ECmd(HeadLit prog, _, _) when not (Extern.exists prog) -> [ prog, e.Span ]
                           | _ -> [])
                          @ (exprChildren e |> List.collect eheads)
 

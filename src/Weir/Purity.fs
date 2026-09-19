@@ -174,7 +174,7 @@ let rec firstEffect (env: Map<string, bool>) (te: TypedExpr) : (Span * string) o
         go e
 
     match te.Kind with
-    | TECmd(prog, _, _) -> Some(te.Span, $"'{prog}' runs a command")
+    | TECmd(h, _, _) -> Some(te.Span, $"'{theadDisplay h}' runs a command")
     | TEWithin(kind, _, _, _, body) ->
         (match kind with
          // a nested pure/readonly region asserts, it does not touch —
@@ -290,7 +290,7 @@ let rec firstMutation (env: Map<string, bool>) (te: TypedExpr) : (Span * string)
     let mut (span: Span) (n: string) = Some(span, mutationPhrase n)
 
     match te.Kind with
-    | TECmd(prog, _, _) -> Some(te.Span, $"'{prog}' runs a command") // proc: mutation
+    | TECmd(h, _, _) -> Some(te.Span, $"'{theadDisplay h}' runs a command") // proc: mutation
     | TEWithin(kind, _, arg, opts, body) ->
         (match kind with
          // a nested pure/readonly region asserts, does not touch —
@@ -401,10 +401,10 @@ let rec firstMutation (env: Map<string, bool>) (te: TypedExpr) : (Span * string)
 let rec firstPlanRefusal (te: TypedExpr) : (Span * string) option =
     match te.Kind with
     // a command IS proc — the uncapturable spawn
-    | TECmd(prog, _, _) ->
+    | TECmd(h, _, _) ->
         Some(
             te.Span,
-            $"'{prog}' runs a command, and 'proc' is refused inside 'plan' — a spawned binary reads and writes opaquely, so its effects cannot be captured; plan covers weir-native mutation only (File/Dir/Http)"
+            $"'{theadDisplay h}' runs a command, and 'proc' is refused inside 'plan' — a spawned binary reads and writes opaquely, so its effects cannot be captured; plan covers weir-native mutation only (File/Dir/Http)"
         )
     // a nested plan composes: it handles its own refusals
     | TEWithin(WithinPlan, _, _, _, _) -> None

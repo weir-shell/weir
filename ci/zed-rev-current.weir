@@ -30,7 +30,7 @@ let cli = Args.load Cli
 let toml = File.read "editors/zed/extension.toml" |> Str.join "\n"
 
 let revHits =
-    Str.rmatchAll "rev = \"([0-9a-f]+)\"" toml |> Seq.force
+    Str.rmatchAll "rev = \"([0-9a-f]+)\"" toml |> Seq.freeze
 
 if Seq.isEmpty revHits then
     fail "editors/zed/extension.toml has no rev = \"...\" line — the grammar pin is gone"
@@ -114,7 +114,7 @@ let nodeNames =
     Str.rmatchAll "\"type\": *\"([A-Za-z_]+)\"" nodeTypesText
     |> Seq.map Seq.head
     |> Seq.distinct
-    |> Seq.force
+    |> Seq.freeze
 
 // scm comments run ; to end-of-line — stripped per line before the
 // node extraction, or comment prose like "(a query override)" collects
@@ -126,12 +126,12 @@ let queried =
     |> Str.rmatchAll "\\(([a-z_]+)[\\s)]"
     |> Seq.map Seq.head
     |> Seq.distinct
-    |> Seq.force
+    |> Seq.freeze
 
 let unknown =
     queried
     |> Seq.where (fun n -> not (nodeNames |> Seq.contains n))
-    |> Seq.force
+    |> Seq.freeze
 
 if not (Seq.isEmpty unknown) then
     fail $"ZED QUERIES BROKEN: highlights.scm names node(s) the grammar at {rev} does not have: [{Str.join ", " unknown}] — refresh languages/weir/highlights.scm from the grammar commit the rev pins"

@@ -1134,10 +1134,10 @@ let boundaryTests =
                   Expect.stringContains (show e) "(cmd git \"add\" f) |> |print" "the command body wraps as effect"
               | other -> failtest $"unexpected: {other}"
           }
-          test "the comprehension desugars to Seq.map |> Seq.force, bypassing EList [D:for-do]" {
+          test "the comprehension desugars to Seq.map |> Seq.freeze, bypassing EList [D:for-do]" {
               // the session finding: same desugar path as the statement form —
               // list-literal inference (empty-list var, unification) untouched
-              expectParse "[for x in xs -> x * 2]" "(|seqForce (xs |> (|seqMap (funpat x (* x 2)))))"
+              expectParse "[for x in xs -> x * 2]" "(|seqFreeze (xs |> (|seqMap (funpat x (* x 2)))))"
               Expect.equal (run "[for x in [1; 2; 3] -> x * 10]" |> forceSeq) [ VInt 10L; VInt 20L; VInt 30L ] ""
           }
           test "the for binder TYPES from its source — a constructor match resolves [D:for-binder]" {
@@ -2095,7 +2095,7 @@ let boundaryTests =
               // multi-line QUOTED form — and reading that back yields the
               // same string
               Expect.equal
-                  (evalStr "let d = [\"k: 'a: b\"; \"  c\"; \"\"; \"  d '\"] |> from yaml QKV in d |> to yaml |> Seq.force |> show")
+                  (evalStr "let d = [\"k: 'a: b\"; \"  c\"; \"\"; \"  d '\"] |> from yaml QKV in d |> to yaml |> Seq.freeze |> show")
                   (VStr "[\"k: |-\"; \"  a: b c\"; \"  d \"]")
                   "the write side's own spelling, unchanged"
 
@@ -4119,7 +4119,7 @@ let commandModeTests =
           }
           test "single quotes carry embedded double quotes" {
               match parseCmd "grep 'a\"b' f" with
-              | { Kind = ECmd("grep", [ { Kind = EStr "a\"b" }; { Kind = EStr "f" } ], _) } -> ()
+              | { Kind = ECmd(HeadLit "grep", [ { Kind = EStr "a\"b" }; { Kind = EStr "f" } ], _) } -> ()
               | e -> failtest $"unexpected: {show e}"
           }
           test "dollar splices a binding" { expectCmd "git checkout $branch" "(cmd git \"checkout\" branch)" }
@@ -4339,18 +4339,18 @@ let diagnoseTests =
 let session3Tests =
     testSequenced
     <| testList
-        "complete and force"
-        [ test "force snapshots a live query" {
+        "complete and freeze"
+        [ test "freeze snapshots a live query" {
               skipOnWindows ()
 
               try
                   expectValue
-                      "let p = pwd |> force in let d = cd \"/tmp\" in p |> take 1"
+                      "let p = pwd |> freeze in let d = cd \"/tmp\" in p |> take 1"
                       (VSeq [ VStr(System.IO.Directory.GetCurrentDirectory()) ])
               finally
                   Weir.Session.setCwd (System.IO.Directory.GetCurrentDirectory())
           }
-          test "force runs effects exactly once" {
+          test "freeze runs effects exactly once" {
               skipOnWindows ()
 
               let marker =
@@ -4358,25 +4358,25 @@ let session3Tests =
 
               try
                   runReal
-                      $"let s = $(sh -c \"echo x >> {marker}; echo line\") |> force in let a = s |> take 1 in let b = s |> take 1 in b"
+                      $"let s = $(sh -c \"echo x >> {marker}; echo line\") |> freeze in let a = s |> take 1 in let b = s |> take 1 in b"
                   |> forceSeq
                   |> ignore
 
-                  Expect.equal (File.ReadAllLines marker |> Array.length) 1 "one spawn with force"
+                  Expect.equal (File.ReadAllLines marker |> Array.length) 1 "one spawn with freeze"
 
                   File.Delete marker
 
                   let r =
                       runReal
-                          $"let s = $(sh -c \"echo x >> {marker}; echo line\") in let a = s |> take 1 |> force in let b = s |> take 1 |> force in b"
+                          $"let s = $(sh -c \"echo x >> {marker}; echo line\") in let a = s |> take 1 |> freeze in let b = s |> take 1 |> freeze in b"
 
                   r |> forceSeq |> ignore
-                  Expect.equal (File.ReadAllLines marker |> Array.length) 2 "two spawns without upfront force"
+                  Expect.equal (File.ReadAllLines marker |> Array.length) 2 "two spawns without upfront freeze"
               finally
                   if File.Exists marker then
                       File.Delete marker
           }
-          test "force is polymorphic" { expectValue "[1; 2] |> force |> sum" (VInt 3) }
+          test "freeze is polymorphic" { expectValue "[1; 2] |> freeze |> sum" (VInt 3) }
           test "head extracts the element" {
               expectValue "[1; 2] |> head" (VInt 1)
               expectValue "ls |> map _.name |> head" (VStr "a.txt")
@@ -6218,7 +6218,7 @@ let replEchoTests =
                     End = { Line = 1; Col = 2 } }
 
               let cmdTe: Weir.Check.TypedExpr =
-                  { Kind = Weir.Check.TECmd("kubectl", [], None)
+                  { Kind = Weir.Check.TECmd(Weir.Check.THeadLit "kubectl", [], None)
                     Ty = TSeq TStr
                     Span = sp }
 
@@ -8867,11 +8867,11 @@ let semanticTokenTests =
                           failtestf "the doc example for '%s' failed to run: %s\n%s" name ex e.Message
           }
           test "builtin docs: hover on a builtin shows its type first, then the doc [D:builtin-docs]" {
-              let lines = [ "let r = [1;2;3] |> Seq.map (fun x -> x + 1) |> Seq.force" ]
+              let lines = [ "let r = [1;2;3] |> Seq.map (fun x -> x + 1) |> Seq.freeze" ]
               let h = Weir.Lsp.hoverType lines 1 22 |> Option.defaultValue "" // on Seq.map
               Expect.stringContains h "->" "the type is present"
               Expect.stringContains h "every element" "the summary is present"
-              Expect.stringContains h "Seq.force" "the executable example is present"
+              Expect.stringContains h "Seq.freeze" "the executable example is present"
               Expect.isTrue (h.IndexOf "->" < h.IndexOf "every element") "type first, then doc"
           }
           test
@@ -9853,9 +9853,15 @@ let optionSweepTests =
               Expect.equal bodyPipe "within cd \"/d\" [\"x\"] | cat" "a body-indent pipe stays inside"
           }
           test "retired names teach their replacements [D:seq-force]" {
-              Expect.stringContains (checkErr "[1] |> Seq.toList").Message "'Seq.force' is the materializer" ""
-              Expect.stringContains (checkErr "[1] |> toList").Message "'force' is the materializer" ""
+              Expect.stringContains (checkErr "[1] |> Seq.toList").Message "'Seq.freeze' is the materializer" ""
+              Expect.stringContains (checkErr "[1] |> toList").Message "'freeze' is the materializer" ""
               Expect.stringContains (checkErr "None |> Option.defaultTo 1").Message "Option.defaultValue" ""
+
+              // the rename teach [D:freeze-rename]: a stray old spelling
+              // names the new one at both lookup sites (edit distance is
+              // 4, so the generic did-you-mean could never carry this)
+              Expect.stringContains (checkErr "[1] |> Seq.force").Message "renamed 'Seq.freeze'" ""
+              Expect.stringContains (checkErr "[1] |> force").Message "renamed 'freeze'" ""
 
               // the collect reservation PAID OUT [D:seq-gaps]: the member
               // exists with F#'s semantics and no retirement text remains
@@ -10527,7 +10533,7 @@ let depthGuardTests =
         "Depth guard"
         [ test "legitimate nesting is untouched (corpus max is ~11)" {
               expectValue (nestDeep "(" ")" 100 + " + 0") (VInt 1L)
-              expectValue "[[[1]]] |> Seq.take 1 |> Seq.force |> Seq.length" (VInt 1L)
+              expectValue "[[[1]]] |> Seq.take 1 |> Seq.freeze |> Seq.length" (VInt 1L)
           }
           test "at-ceiling parens: parse or a located diagnostic, never a crash (limit 500, stack-probed)" {
               // capacity between the stack probe's floor and the counted
@@ -10697,7 +10703,7 @@ let agentFindingsTests =
         "Agent findings fixes"
         [ test "let RHS admits command mode" {
               match Weir.Parser.parseLine cmdResolver "let files = git status" with
-              | Ok(SLet("files", { Kind = ECmd("git", _, _) })) -> ()
+              | Ok(SLet("files", { Kind = ECmd(HeadLit "git", _, _) })) -> ()
               | other -> failtest $"expected SLet with a command RHS, got {other}"
           }
           test "let RHS: known names stay expression mode" {
@@ -10725,18 +10731,18 @@ let agentFindingsTests =
           }
           test "let RHS: quoted in passes to the command" {
               match Weir.Parser.parseLine cmdResolver "let x = grep \"in\" f" with
-              | Ok(SLet("x", { Kind = ECmd("grep", [ _; _ ], _) })) -> ()
+              | Ok(SLet("x", { Kind = ECmd(HeadLit "grep", [ _; _ ], _) })) -> ()
               | other -> failtest $"expected grep with two args, got {other}"
           }
           test "statement-head commands keep bareword in" {
               match Weir.Parser.parseLine cmdResolver "git log in h" with
-              | Ok(SCmd { Kind = ECmd("git", args, _) }) -> Expect.hasLength args 3 "log, in, h"
+              | Ok(SCmd { Kind = ECmd(HeadLit "git", args, _) }) -> Expect.hasLength args 3 "log, in, h"
               | other -> failtest $"expected a command statement, got {other}"
           }
           // param-ful command RHS [D:paramful-rhs]
           test "param-ful let takes a command RHS (curried under the params)" {
               match Weir.Parser.parseLine cmdResolver "let f r = git log $r" with
-              | Ok(SLet("f", { Kind = ELambda("r", _, { Kind = ECmd("git", _, _) }) })) -> ()
+              | Ok(SLet("f", { Kind = ELambda("r", _, { Kind = ECmd(HeadLit "git", _, _) }) })) -> ()
               | other -> failtest $"expected a lambda over a command, got {other}"
           }
           test "params shadow PATH in their own RHS (the law's regression pin)" {
@@ -10935,8 +10941,9 @@ let agentFindingsTests =
               match Weir.Parser.parseLine cmdResolver "$@(xs) -la" with
               | Error msg ->
                   Expect.stringContains msg "N words would be N heads" ""
-                  // the fix names the literal-head law, not retired builtins
-                  Expect.stringContains msg "branch the whole command line" ""
+                  // the fix names the dynamic-head spelling [D:dynamic-head],
+                  // not retired builtins
+                  Expect.stringContains msg "a dynamic one is ^$name" ""
               | Ok _ -> failtest "the head splat must reject"
 
               match Weir.Parser.parseLine cmdResolver "echo --flag=$@fs" with
@@ -11516,7 +11523,7 @@ let paramSugarTests =
           test
               "params now take a command RHS (the rule this pin used to state REVERSED by PLAN-paramful-rhs; splice-default-last removed the soundness bar)" {
               match Weir.Parser.parseLine cmdResolver "let f x = git status" with
-              | Ok(SLet(_, { Kind = ELambda(_, _, { Kind = ECmd("git", _, _) }) })) -> ()
+              | Ok(SLet(_, { Kind = ELambda(_, _, { Kind = ECmd(HeadLit "git", _, _) }) })) -> ()
               | other -> failtest $"expected a command RHS under the param, got {other}"
           }
           test "unit and PARENTHESIZED pattern params legal (binders session completed the arc)" {
@@ -11625,7 +11632,7 @@ let showTests =
               // the constrained scheme (Session B) keeps it genuinely
               // generic — the element type resolves from data, and Show
               // rides until it does
-              expectValue "nats |> take 2 |> Seq.map show |> Seq.force |> Seq.length" (VInt 2L)
+              expectValue "nats |> take 2 |> Seq.map show |> Seq.freeze |> Seq.length" (VInt 2L)
 
               match (checkOk "Seq.map show").Ty with
               | TFun(TSeq(TVar _), TSeq TStr) -> ()
@@ -11689,7 +11696,7 @@ let seqAccessTests =
           }
           test "skip is lazy and raises past the end at enumeration" {
               expectValue "[1; 2; 3] |> Seq.skip 1 |> Seq.sum" (VInt 5L)
-              Expect.throws (fun () -> run "[1] |> Seq.skip 3 |> Seq.force" |> ignore) "F#-faithful raise"
+              Expect.throws (fun () -> run "[1] |> Seq.skip 3 |> Seq.freeze" |> ignore) "F#-faithful raise"
           }
           test "Args scanners read the script argv" {
               Weir.Session.ScriptArgs <- [ "-c"; "--out"; "r.txt" ]
@@ -11851,7 +11858,7 @@ let childEnvTests =
               System.IO.File.WriteAllLines(f, [ "A=1"; "B='sq val'"; "C=\"dq\" # note"; "# comment"; ""; "D=" ])
 
               let got =
-                  run ("Env.fromFile \"" + f + "\" |> Seq.map (fun e -> e.value) |> Seq.force")
+                  run ("Env.fromFile \"" + f + "\" |> Seq.map (fun e -> e.value) |> Seq.freeze")
                   |> forceSeq
 
               Expect.equal got [ VStr "1"; VStr "sq val"; VStr "dq"; VStr "" ] ""
@@ -11862,7 +11869,7 @@ let childEnvTests =
               System.IO.File.WriteAllLines(f, [ "GOOD=1"; "BAD=$HOME" ])
 
               let ex =
-                  Expect.throws (fun () -> run ("Env.fromFile \"" + f + "\" |> Seq.force") |> ignore) ""
+                  Expect.throws (fun () -> run ("Env.fromFile \"" + f + "\" |> Seq.freeze") |> ignore) ""
 
               System.IO.File.Delete f
           }
@@ -11870,19 +11877,19 @@ let childEnvTests =
               match Weir.Parser.parseLine realResolver "let x = $e(git status)" with
               // ECapture wraps: $() asserts capture in every position
               // [D:district-retirement]
-              | Ok(SLet("x", { Kind = ECapture { Kind = ECmd("git", _, Some { Kind = EVar "e" }) } })) -> ()
+              | Ok(SLet("x", { Kind = ECapture { Kind = ECmd(HeadLit "git", _, Some { Kind = EVar "e" }) } })) -> ()
               | other -> failtest $"unexpected: {other}"
           }
           test "env sigil: !e(...) is chain-with-env |> print" {
               match Weir.Parser.parseLine realResolver "!e(git status)" with
-              | Ok(SExpr { Kind = EPipe({ Kind = ECmd("git", _, Some _) }, { Kind = EVar "|print" }) }) -> ()
+              | Ok(SExpr { Kind = EPipe({ Kind = ECmd(HeadLit "git", _, Some _) }, { Kind = EVar "|print" }) }) -> ()
               | other -> failtest $"unexpected: {other}"
           }
           test "env sigil: every segment in the chain gets the env" {
               match Weir.Parser.parseLine realResolver "let x = $e(git log | grep x)" with
               | Ok(SLet("x",
-                        { Kind = ECapture { Kind = EPipe({ Kind = ECmd("git", _, Some _) },
-                                                         { Kind = ECmd("grep", _, Some _) }) } })) -> ()
+                        { Kind = ECapture { Kind = EPipe({ Kind = ECmd(HeadLit "git", _, Some _) },
+                                                         { Kind = ECmd(HeadLit "grep", _, Some _) }) } })) -> ()
               | other -> failtest $"unexpected: {other}"
           }
           test "env sigil x complete: routes through completedEnv" {
@@ -12926,7 +12933,7 @@ let siblingSentinelTests =
               | Ok(SLet("f",
                         { Kind = ELambda("t",
                                          _,
-                                         { Kind = ESeq({ Kind = EPipe({ Kind = ECmd("git", _, _) },
+                                         { Kind = ESeq({ Kind = EPipe({ Kind = ECmd(HeadLit "git", _, _) },
                                                                       { Kind = EVar "|print" }) },
                                                        _) }) })) -> ()
               | other -> failtest $"expected ESeq(armed cmd, ...), got: {other}"
@@ -12957,7 +12964,7 @@ let siblingSentinelTests =
               // the whole reason B beat A — a user-typed ';' on one line
               // is STILL a command with a ';' argv word that warns
               match Weir.Parser.parseLine cmdResolver "git status ; echo hi" with
-              | Ok(SCmd({ Kind = ECmd("git", args, _) })) ->
+              | Ok(SCmd({ Kind = ECmd(HeadLit "git", args, _) })) ->
                   Expect.isTrue
                       (args |> List.exists (fun a -> a.Kind = EStr ";"))
                       "the ';' is a bareword arg, not a separator"
@@ -13039,12 +13046,12 @@ let sigilTests =
         "Command sigils"
         [ test "capture sigil parses to the command chain (realResolver)" {
               match Weir.Parser.parseLine realResolver "let b = $(git branch) |> Seq.length" with
-              | Ok(SLet("b", { Kind = EPipe({ Kind = ECapture { Kind = ECmd("git", _, _) } }, _) })) -> ()
+              | Ok(SLet("b", { Kind = EPipe({ Kind = ECapture { Kind = ECmd(HeadLit "git", _, _) } }, _) })) -> ()
               | other -> failtest $"unexpected: {other}"
           }
           test "effect sigil desugars to chain |> print" {
               match Weir.Parser.parseLine realResolver "!(git status)" with
-              | Ok(SExpr { Kind = EPipe({ Kind = ECmd("git", _, _) }, { Kind = EVar "|print" }) }) -> ()
+              | Ok(SExpr { Kind = EPipe({ Kind = ECmd(HeadLit "git", _, _) }, { Kind = EVar "|print" }) }) -> ()
               | other -> failtest $"unexpected: {other}"
           }
           test "sigils x interpolation: holes never open command mode" {
@@ -13119,7 +13126,7 @@ let indexerTests =
         [ test "xs[i] desugars to Seq.item" { expectValue "[\"a\"; \"b\"][1]" (VStr "b") }
           test "chains and composes with fields and sigils" {
               expectValue "[[1; 2]; [3; 4]][1][0]" (VInt 3L)
-              expectValue "(ls |> Seq.force)[0].name" (VStr "a.txt")
+              expectValue "(ls |> Seq.freeze)[0].name" (VStr "a.txt")
           }
           test "the whitespace rule: space means application (F# 6 dotless precedent)" {
               expectValue "Seq.sum [1; 2]" (VInt 3L)
@@ -13538,7 +13545,7 @@ let fsMemberTests =
               run $"Dir.create \"{d}/sub\"" |> ignore // twice: the post-condition
               run $"[\"x\"] |> File.write \"{d}/a.txt\"" |> ignore
 
-              match run $"Dir.list \"{d}\" |> Seq.force" with
+              match run $"Dir.list \"{d}\" |> Seq.freeze" with
               | VSeq items ->
                   let got =
                       items
@@ -13898,7 +13905,7 @@ let secretTests =
               Expect.equal (run "show (Secret.of \"x\" == Secret.of \"y\")") (VStr "false") "unequal"
 
               Expect.stringContains
-                  (checkErr "[Secret.of \"x\"] |> Seq.sortBy (fun s -> s) |> Seq.force").Message
+                  (checkErr "[Secret.of \"x\"] |> Seq.sortBy (fun s -> s) |> Seq.freeze").Message
                   "cannot be ordered"
                   "Ord refused"
           }
@@ -14127,7 +14134,7 @@ let functionKeywordTests =
           }
           test "the choose idiom — the receipt's own shape" {
               expectValue
-                  "[\"a1\"; \"nope\"; \"b2\"] |> Seq.choose (function | Regex @\"([a-z])(\\d)\" (l, d) -> Some $\"{l}{d}\" | _ -> None) |> force"
+                  "[\"a1\"; \"nope\"; \"b2\"] |> Seq.choose (function | Regex @\"([a-z])(\\d)\" (l, d) -> Some $\"{l}{d}\" | _ -> None) |> freeze"
                   (VSeq [ VStr "a1"; VStr "b2" ])
           }
           test "the first | is optional, as in F#" {
@@ -15254,7 +15261,7 @@ let accessorTeachingTests =
               Expect.stringContains item "item: no element at index 5" "weir's text"
               Expect.isFalse (item.Contains "insufficient") "not FSharp.Core's"
 
-              let skip = msgOf "[1] |> Seq.skip 5 |> Seq.force"
+              let skip = msgOf "[1] |> Seq.skip 5 |> Seq.freeze"
               Expect.stringContains skip "skip: fewer than 5 elements" "weir's text"
               Expect.isFalse (skip.Contains "tried to skip") "not FSharp.Core's"
 
@@ -15601,7 +15608,7 @@ let pinsWalkTests =
         [ test "groupBy rejects non-scalar keys naming the set" {
               let m =
                   try
-                      run "[(fun x -> x)] |> Seq.groupBy (fun f -> f) |> Seq.force" |> ignore
+                      run "[(fun x -> x)] |> Seq.groupBy (fun f -> f) |> Seq.freeze" |> ignore
                       ""
                   with e ->
                       e.Message
@@ -16404,7 +16411,7 @@ let matchArmCommandTests =
         [ test "an arm body is a command chain; a following arm does not swallow it" {
               // the boundary: `| _ ->` ends the first arm's chain
               match (armBodyOf "match 1 with | 1 -> echo hi | _ -> print \"no\"").Kind with
-              | ECmd("echo", _, _) -> ()
+              | ECmd(HeadLit "echo", _, _) -> ()
               | other -> failtest $"expected the arm body to be a command, got {other}"
           }
           test "a statement-position match with command arms checks clean (arms stream)" {
@@ -16609,7 +16616,7 @@ let tasksUnderneathTests =
         "Parallel fan-out for I/O-bound arms [D:tasks-underneath]"
         [ test "input order is preserved (the contract, unchanged)" {
               expectValue
-                  "[1; 2; 3; 4; 5] |> Seq.pmap (fun x -> x * 10) |> Seq.force"
+                  "[1; 2; 3; 4; 5] |> Seq.pmap (fun x -> x * 10) |> Seq.freeze"
                   (VSeq [ VInt 10L; VInt 20L; VInt 30L; VInt 40L; VInt 50L ])
           }
           test "every arm runs; the FIRST error by INPUT ORDER rethrows after the join" {
@@ -16617,7 +16624,7 @@ let tasksUnderneathTests =
                   Expect.throwsC
                       (fun () ->
                           run
-                              "[1; 2; 3] |> Seq.pmap (fun x -> if x > 1 then Float.parse $\"{x}z\" else 0.5) |> Seq.force"
+                              "[1; 2; 3] |> Seq.pmap (fun x -> if x > 1 then Float.parse $\"{x}z\" else 0.5) |> Seq.freeze"
                           |> ignore)
                       id
 
@@ -16637,11 +16644,11 @@ let tasksUnderneathTests =
           }
           test "pmapWith takes an explicit ceiling; degree < 1 raises naming the constraint" {
               expectValue
-                  "[1; 2; 3] |> Seq.pmapWith 2 (fun x -> x + 1) |> Seq.force"
+                  "[1; 2; 3] |> Seq.pmapWith 2 (fun x -> x + 1) |> Seq.freeze"
                   (VSeq [ VInt 2L; VInt 3L; VInt 4L ])
 
               let ex =
-                  Expect.throwsC (fun () -> run "[1] |> Seq.pmapWith 0 (fun x -> x) |> Seq.force" |> ignore) id
+                  Expect.throwsC (fun () -> run "[1] |> Seq.pmapWith 0 (fun x -> x) |> Seq.freeze" |> ignore) id
 
               Expect.stringContains ex.Message "parallel degree must be at least 1" ""
           }
@@ -16863,7 +16870,7 @@ let floatBoundaryTests =
               let e = env |> declare "type FY = { rate: float; label: string }"
 
               let rendered =
-                  match Weir.Check.typecheck e (parse "{ rate = 1.5; label = \"1.5\" } |> to yaml |> Seq.force") with
+                  match Weir.Check.typecheck e (parse "{ rate = 1.5; label = \"1.5\" } |> to yaml |> Seq.freeze") with
                   | Ok te -> eval valueEnv te
                   | Error terr -> failtest terr.Message
 
@@ -17397,7 +17404,7 @@ let seqGapsTests =
         [ pullPin "collect" 3 "nats |> Seq.collect (fun x -> [x; x]) |> Seq.take 3"
           pullPin "concat" 3 "[nats] |> Seq.concat |> Seq.take 2"
           pullPin "indexed" 3 "nats |> Seq.indexed |> Seq.map (fun (i, x) -> i) |> Seq.take 2"
-          pullPin "chunkBySize" 4 "nats |> Seq.chunkBySize 3 |> Seq.take 1 |> Seq.map Seq.force"
+          pullPin "chunkBySize" 4 "nats |> Seq.chunkBySize 3 |> Seq.take 1 |> Seq.map Seq.freeze"
           pullPin "takeWhile" 4 "nats |> Seq.takeWhile (fun x -> x < 2)"
           pullPin "skipWhile" 4 "nats |> Seq.skipWhile (fun x -> x < 2) |> Seq.take 1"
           pullPin "scan" 3 "nats |> Seq.scan (fun acc x -> acc + x) 0 |> Seq.take 2"
@@ -17442,7 +17449,7 @@ let seqGapsTests =
               Expect.equal (msgOf "[1] |> Seq.chunkBySize 0") "chunkBySize: the chunk size must be positive; got 0" ""
 
               Expect.equal
-                  (msgOf "Seq.replicate (0 - 1) \"x\" |> Seq.force")
+                  (msgOf "Seq.replicate (0 - 1) \"x\" |> Seq.freeze")
                   "replicate: the count must be non-negative; got -1"
                   ""
           }
@@ -18046,15 +18053,19 @@ let bareRuleTests =
               Expect.equal Weir.Builtins.bareAliases derived "bare-ness disagrees with the home count"
           }
           test "THE GATE: the collision set is PINNED — a new collision demotes a bare name, which is a decision" {
+              // `replicate` joined 2026-09 (Str.replicate beside
+              // Seq.replicate, the width-members batch): qualified-only
+              // everywhere now — the derived partition's own rule
               Expect.equal
                   Weir.Builtins.bareTwoHome
-                  (Set [ "contains"; "length" ])
+                  (Set [ "contains"; "length"; "replicate" ])
                   "the two-home scan moved: decide the new name (qualified-only), then update this pin"
           }
           test "no formerly-bare name lost its slot in the widening (the monotonicity check the plan demanded)" {
               // `first` LEFT the set by RULING, not accident — the
               // retirement [D:first-retired] is the allowed exit this
-              // pin guards against happening silently
+              // pin guards against happening silently; `force` became
+              // `freeze` by the same door [D:freeze-rename]
               let before =
                   Set
                       [ "map"
@@ -18062,7 +18073,7 @@ let bareRuleTests =
                         "take"
                         "head"
                         "sum"
-                        "force"
+                        "freeze"
                         "collect"
                         "startsWith"
                         "endsWith"
@@ -18081,8 +18092,8 @@ let bareRuleTests =
           }
           test "a promoted name carries its CONSTRAINED scheme — bare sort/sortBy are exactly their qualified selves" {
               Expect.equal
-                  (run "[3; 1; 2] |> sortBy (fun x -> x) |> force")
-                  (run "[3; 1; 2] |> Seq.sortBy (fun x -> x) |> Seq.force")
+                  (run "[3; 1; 2] |> sortBy (fun x -> x) |> freeze")
+                  (run "[3; 1; 2] |> Seq.sortBy (fun x -> x) |> Seq.freeze")
                   ""
 
               let bare = (checkErr "[(fun x -> x)] |> sort").Message
@@ -18150,7 +18161,7 @@ let gapATests =
               expectValue "[1; 2] |> Seq.windowed 3 |> Seq.length" (VInt 0L)
 
               let ex =
-                  Expect.throwsC (fun () -> run "[1] |> Seq.windowed 0 |> Seq.force" |> ignore) id
+                  Expect.throwsC (fun () -> run "[1] |> Seq.windowed 0 |> Seq.freeze" |> ignore) id
 
               Expect.equal ex.Message "windowed: the window size must be positive; got 0" "exact"
           }
@@ -18585,6 +18596,182 @@ let bytesTests =
               finally
                   System.IO.File.Delete tmp
                   System.IO.File.Delete out
+          } ]
+
+// the port-driven member batch (v0.0.46) [D:port-members] — each gap
+// cited from the asdf/acme
+// FINDINGS, each edge pinned; plus the two ports' diagnostic teachings
+let portMembersTests =
+    let diagsOf lines =
+        let diags, _, _, _ = Weir.Script.analyzeLines "pm.weir" lines
+        diags
+
+    let mustSay lines (needle: string) label =
+        Expect.exists
+            (diagsOf lines)
+            (fun d -> d.Message.Contains needle)
+            $"{label}: expected '{needle}', got {diagsOf lines |> List.map _.Message}"
+
+    let clean lines label =
+        Expect.isEmpty (diagsOf lines) $"{label}: expected clean, got {diagsOf lines |> List.map _.Message}"
+
+    testList
+        "port members (v0.0.46)"
+        [ test "Str.replicate: n copies concatenated; 0 empty; negative refuses (Seq.replicate's convention)" {
+              expectValue "Str.replicate 3 \"ab\"" (VStr "ababab")
+              expectValue "Str.replicate 0 \"ab\"" (VStr "")
+              expectValue "Str.replicate 2 \"\"" (VStr "")
+
+              let ex = Expect.throwsC (fun () -> run "Str.replicate (0 - 1) \"x\"" |> ignore) id
+              Expect.stringContains ex.Message "the count must be non-negative" "Seq.replicate's exact posture"
+          }
+          test "Str.padLeft/padRight: total width, spaces, already-longer unchanged (.NET Pad semantics)" {
+              expectValue "Str.padLeft 5 \"42\"" (VStr "   42")
+              expectValue "Str.padRight 5 \"42\"" (VStr "42   ")
+              expectValue "Str.padLeft 2 \"abcd\"" (VStr "abcd")
+              expectValue "Str.padRight 2 \"abcd\"" (VStr "abcd")
+              expectValue "Str.padLeft 4 \"\"" (VStr "    ")
+              expectValue "Str.padLeft 0 \"x\"" (VStr "x")
+
+              let ex = Expect.throwsC (fun () -> run "Str.padRight (0 - 2) \"x\"" |> ignore) id
+              Expect.stringContains ex.Message "the width must be non-negative" ""
+          }
+          test "Seq.equal: element-wise, length-sensitive" {
+              expectValue "[1; 2; 3] |> Seq.equal [1; 2; 3]" (VBool true)
+              expectValue "[1; 2; 3] |> Seq.equal [1; 2]" (VBool false)
+              expectValue "[1; 2] |> Seq.equal [1; 2; 3]" (VBool false)
+              expectValue "([] |> Seq.where (fun x -> x > 0)) |> Seq.equal []" (VBool true)
+              // the lossy-join trap the member closes: a separator inside
+              // an element fools join-then-compare, never Seq.equal
+              expectValue "[\"a;b\"] |> Seq.equal [\"a\"; \"b\"]" (VBool false)
+          }
+          test "Seq.equal is lazy-safe: short-circuits, never forces beyond need" {
+              // nats is infinite — lockstep stops where the finite side ends
+              expectValue "[0; 1] |> Seq.equal nats" (VBool false)
+              expectValue "nats |> Seq.equal [5]" (VBool false)
+          }
+          test "Seq.equal wears Seq.contains's Eq constraint" {
+              let terr = checkErr "Seq.equal [fun x -> x] [fun y -> y]"
+              Expect.stringContains terr.Message "==" "functions never compare"
+              Expect.stringContains (checkErr "[0.5] |> Seq.equal [0.5]").Message "Float.near" "floats name the epsilon door"
+          }
+          test "Bytes.fromHex/toHex: lowercase out, either case in, round-trips" {
+              expectValue "Bytes.fromHex \"0a1B\" |> Bytes.toHex" (VStr "0a1b")
+              expectValue "Bytes.fromHex \"\" |> Bytes.toHex" (VStr "")
+              expectValue "Str.toUtf8 \"hi\" |> Bytes.toHex" (VStr "6869")
+              expectValue "Bytes.fromHex (Bytes.sha256 (Str.toUtf8 \"x\")) |> Bytes.length" (VSize 32L)
+          }
+          test "Bytes.fromHex refuses odd length and non-hex, each teaching (fromBase64's posture)" {
+              let odd = Expect.throwsC (fun () -> run "Bytes.fromHex \"abc\"" |> ignore) id
+              Expect.stringContains odd.Message "odd-length hex" "the length half"
+              Expect.stringContains odd.Message "two hex digits" "the repair"
+
+              let bad = Expect.throwsC (fun () -> run "Bytes.fromHex \"zz\"" |> ignore) id
+              Expect.stringContains bad.Message "invalid hex" "the alphabet half"
+          }
+          test "Bytes.sub mirrors Str.sub: start, length, data last; out of range raises with detail" {
+              expectValue "Str.toUtf8 \"abcd\" |> Bytes.sub 1 2 |> Str.fromUtf8" (VStr "bc")
+              expectValue "Str.toUtf8 \"abcd\" |> Bytes.sub 0 0 |> Bytes.length" (VSize 0L)
+              expectValue "Str.toUtf8 \"abcd\" |> Bytes.sub 4 0 |> Bytes.length" (VSize 0L)
+
+              let ex =
+                  Expect.throwsC (fun () -> run "Str.toUtf8 \"abc\" |> Bytes.sub 2 9" |> ignore) id
+
+              Expect.stringContains ex.Message "out of bounds (start 2, length 9, byte length 3)" "Str.sub's detail shape"
+          }
+          test "Bytes.hmacSha256: key then message; RFC 4231 vectors" {
+              // TC1: key = 0x0b x 20, data "Hi There" — fromHex feeds the key
+              expectValue
+                  "Bytes.hmacSha256 (Bytes.fromHex \"0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b\") (Str.toUtf8 \"Hi There\") |> Bytes.toHex"
+                  (VStr "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7")
+              // the widely-pinned text vector
+              expectValue
+                  "Bytes.hmacSha256 (Str.toUtf8 \"key\") (Str.toUtf8 \"The quick brown fox jumps over the lazy dog\") |> Bytes.toHex"
+                  (VStr "f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8")
+          }
+          test "File.isExecutable: the owner x bit as a bool; missing raises; Windows answers by extension" {
+              let tmp = System.IO.Path.GetTempFileName()
+
+              try
+                  if System.OperatingSystem.IsWindows() then
+                      // the STATED posture: extension-based, no execute bit exists
+                      let cmd = tmp + ".cmd"
+                      System.IO.File.WriteAllText(cmd, "")
+
+                      try
+                          Expect.equal (runReal $"File.isExecutable \"{cmd.Replace('\\', '/')}\"") (VBool true) ".cmd"
+                          Expect.equal (runReal $"File.isExecutable \"{tmp.Replace('\\', '/')}\"") (VBool false) ".tmp"
+                      finally
+                          System.IO.File.Delete cmd
+                  else
+                      System.IO.File.SetUnixFileMode(tmp, System.IO.UnixFileMode.UserRead ||| System.IO.UnixFileMode.UserWrite)
+                      Expect.equal (runReal $"File.isExecutable \"{tmp}\"") (VBool false) "no x bit"
+
+                      System.IO.File.SetUnixFileMode(
+                          tmp,
+                          System.IO.UnixFileMode.UserRead
+                          ||| System.IO.UnixFileMode.UserWrite
+                          ||| System.IO.UnixFileMode.UserExecute
+                      )
+
+                      Expect.equal (runReal $"File.isExecutable \"{tmp}\"") (VBool true) "the owner x bit"
+
+                  let ex =
+                      Expect.throwsC (fun () -> runReal "File.isExecutable \"./no-such-path-zz\"" |> ignore) id
+
+                  Expect.stringContains ex.Message "no such path" "File.mode's absence posture"
+              finally
+                  System.IO.File.Delete tmp
+          }
+          // ---- the two ports' diagnostics, whole-script level ----------
+          test "a qualified case in pattern position teaches the bare law [D:qualified-name-teach]" {
+              mustSay
+                  [ "type Spec = System | Ref"
+                    "match System with"
+                    "| Spec.System -> print \"s\""
+                    "| _ -> print \"o\"" ]
+                  "a pattern names a case bare — write 'System', not 'Spec.System'"
+                  "the repair is spelled"
+          }
+          test "a qualified type in the adapter slot teaches the flat-import law [D:qualified-name-teach]" {
+              mustSay
+                  [ "let p = [\"{}\"] |> from json Acme.Pod"; "print \"x\"" ]
+                  "write 'Pod', not 'Acme.Pod'"
+                  "the repair is spelled"
+          }
+          test "a capture sigil x reifier teaches the in-parens spelling [D:exit-reifiers]" {
+              mustSay
+                  [ "let e = Env.ofPairs [(\"A\", \"1\")]"
+                    "let r = $e(sh -c \"x\") | complete"
+                    "print r.stdout" ]
+                  "$e(cmd | complete)"
+                  "the composed spelling is named"
+          }
+          test "a block-local binder piped into inside the same statement is NOT a phantom command [D:statement-lets]" {
+              // the acme false positive: pad is statement-local, and under
+              // check's assume-command rule every command-shaped word claims
+              // IsExternal — bindings beat PATH, block-locals included
+              clean
+                  [ "let f () ="
+                    "    let pad s = \"0\" + s"
+                    "    let ints = sh -c \"echo 1 2\" |> Seq.collect Str.fields"
+                    "    let x = ints |> Seq.item 0 |> pad"
+                    "    print x"
+                    "f ()" ]
+                  "block-local |> target"
+          }
+          test "a helper ending in exit discards with the polymorphic-cause teaching [D:exit-polymorphic]" {
+              mustSay
+                  [ "let runCmd name ="
+                    "    print name"
+                    "    exit 0"
+                    "runCmd \"where\"" ]
+                  "ends in exit or fail"
+                  "the cause is named"
+
+              match Weir.Script.discardError (TVar "a1") with
+              | Some m -> Expect.stringContains m "exit at the call site" "the repair is named"
+              | None -> failtest "an unresolved statement type still errors"
           } ]
 
 let versionStampTests =
@@ -19087,7 +19274,7 @@ let reenumWarningTests =
                   Expect.equal
                       d.Message
                       ("possible re-enumeration: 'pods' is command-backed and unforced — "
-                       + "each pull re-runs 'git ls-files'; snapshot one run: let pods = git ls-files |> Seq.force")
+                       + "each pull re-runs 'git ls-files'; snapshot one run: let pods = git ls-files |> Seq.freeze")
                       "the exact sentence: the hazard, the command, the repair"
               | other -> failtest $"expected one warning, got {other |> List.map (fun d -> d.Message)}"
           }
@@ -19113,15 +19300,15 @@ let reenumWarningTests =
           test "a single enumerating use is silent" {
               silent [ "let pods = git ls-files"; "pods |> Seq.iter print" ] "single use"
           }
-          test "the recognized-forced set: a Seq.force tail is silent" {
+          test "the recognized-forced set: a Seq.freeze tail is silent" {
               silent
-                  [ "let pods = git ls-files |> Seq.force"
+                  [ "let pods = git ls-files |> Seq.freeze"
                     "print $\"{pods |> Seq.length}\""
                     "pods |> Seq.iter print" ]
                   "piped force tail"
 
               silent
-                  [ "let pods = Seq.force $(git ls-files)"
+                  [ "let pods = Seq.freeze $(git ls-files)"
                     "print $\"{pods |> Seq.length}\""
                     "pods |> Seq.iter print" ]
                   "applied force head"
@@ -19184,7 +19371,7 @@ let reenumWarningTests =
                   Expect.equal d.Line 4 "the second local pull"
                   Expect.stringContains
                       d.Message
-                      "add '|> Seq.force' at the binding"
+                      "add '|> Seq.freeze' at the binding"
                       "no clean one-line source — the generic repair"
               | other -> failtest $"expected one warning, got {other |> List.map (fun d -> d.Message)}"
           }
@@ -19355,8 +19542,8 @@ let aliasTests =
               // the alias is a resolution-table entry, NOT a re-lex: a
               // single splice stays a single argument.
               match Weir.Parser.parseLine aliasResolver "k get $x" with
-              | Ok(SCmd { Kind = ECmd("kubectl", args, _) })
-              | Ok(SExpr { Kind = ECmd("kubectl", args, _) }) ->
+              | Ok(SCmd { Kind = ECmd(HeadLit "kubectl", args, _) })
+              | Ok(SExpr { Kind = ECmd(HeadLit "kubectl", args, _) }) ->
                   // args: get (literal), then the ONE splice $x
                   Expect.equal (List.length args) 2 "exactly two argv entries: 'get' and the single splice"
               | Ok other -> failtest $"expected an ECmd headed by kubectl, got {other}"
@@ -19367,8 +19554,8 @@ let aliasTests =
               // table is never consulted. A shadowing alias `ls = ls
               // --color` is bypassed by `^ls` — NO prefix injected.
               match Weir.Parser.parseLine aliasResolver "^ls x" with
-              | Ok(SCmd { Kind = ECmd("ls", args, _) })
-              | Ok(SExpr { Kind = ECmd("ls", args, _) }) ->
+              | Ok(SCmd { Kind = ECmd(HeadLit "ls", args, _) })
+              | Ok(SExpr { Kind = ECmd(HeadLit "ls", args, _) }) ->
                   Expect.equal (List.length args) 1 "just the user arg — no --color prefix (bypassed)"
               | Ok other -> failtest $"expected a bare ls ECmd, got {other}"
               | Error e -> failtest $"parse failed: {e}"
@@ -19376,8 +19563,8 @@ let aliasTests =
           test "(e) an alias applies to the HEAD only — a name in argv is untouched" {
               // `git k` : k in ARGUMENT position is a plain word, not resolved
               match Weir.Parser.parseLine aliasResolver "git add k" with
-              | Ok(SCmd { Kind = ECmd("git", _, _) })
-              | Ok(SExpr { Kind = ECmd("git", _, _) }) ->
+              | Ok(SCmd { Kind = ECmd(HeadLit "git", _, _) })
+              | Ok(SExpr { Kind = ECmd(HeadLit "git", _, _) }) ->
                   let s = (parseWith aliasResolver "git add k") |> function | Ok v -> v | Error e -> e
                   Expect.stringContains s "\"k\"" "the argv 'k' stays a literal string, not kubectl"
                   Expect.isFalse (s.Contains "kubectl") "no head-rewrite in argument position"
@@ -19388,8 +19575,8 @@ let aliasTests =
               // realResolver (no AliasHead) — `k` is not a known external,
               // so it never resolves as an aliased command head.
               match Weir.Parser.parseLine realResolver "k get po" with
-              | Ok(SCmd { Kind = ECmd("kubectl", _, _) })
-              | Ok(SExpr { Kind = ECmd("kubectl", _, _) }) -> failtest "an alias leaked into the base resolver"
+              | Ok(SCmd { Kind = ECmd(HeadLit "kubectl", _, _) })
+              | Ok(SExpr { Kind = ECmd(HeadLit "kubectl", _, _) }) -> failtest "an alias leaked into the base resolver"
               | _ -> () // unbound / not-a-command is the correct outcome
           }
           test "(g) #save DESUGAR: a kept `let = k …` saves as the real invocation" {
@@ -19420,6 +19607,80 @@ let aliasTests =
               Expect.isTrue (Weir.Repl.parseAliasLineForTest "kb = kustomize build" |> Result.isOk) "with prefix"
               Expect.isTrue (Weir.Repl.parseAliasLineForTest "= kubectl" |> Result.isError) "no name"
               Expect.isTrue (Weir.Repl.parseAliasLineForTest "k" |> Result.isError) "no ="
+          } ]
+
+// ---- dynamic command heads [D:dynamic-head] --------------------------
+// `^` gains a `$`-splice alternative: ^$name / ^$(…) force-external a
+// VALUE head — one program, string exactly, resolved at run; argv stays
+// typed argv, so the injection law holds for computed programs too.
+
+let dynamicHeadTests =
+    let checkOf lines =
+        let diags, _, _, _ = Weir.Script.analyzeLines "dynhead.weir" lines
+        diags
+
+    testList
+        "dynamic command heads [D:dynamic-head]"
+        [ test "(a) parse: ^$name heads a command; a spliced arg stays ONE argv entry" {
+              match Weir.Parser.parseLine realResolver "^$tool one $x" with
+              | Ok(SCmd { Kind = ECmd(HeadDyn("$tool", { Kind = EVar "tool" }), args, _) })
+              | Ok(SExpr { Kind = ECmd(HeadDyn("$tool", { Kind = EVar "tool" }), args, _) }) ->
+                  Expect.equal (List.length args) 2 "two argv entries: the literal and the single splice"
+              | Ok other -> failtest $"expected a dyn-headed ECmd, got {other}"
+              | Error e -> failtest $"parse failed: {e}"
+          }
+          test "(b) parse: ^$(…) heads a command with a capture value" {
+              match Weir.Parser.parseLine realResolver "^$(git branch |> Seq.exactlyOne) status" with
+              | Ok(SCmd { Kind = ECmd(HeadDyn("$(…)", { Kind = ECapture _ }), [ _ ], _) })
+              | Ok(SExpr { Kind = ECmd(HeadDyn("$(…)", { Kind = ECapture _ }), [ _ ], _) }) -> ()
+              | Ok other -> failtest $"expected a capture-headed ECmd, got {other}"
+              | Error e -> failtest $"parse failed: {e}"
+          }
+          test "(c) parse teachings: splat head, interpolated head, bare ^$" {
+              let perr input frag =
+                  match Weir.Parser.parseLine realResolver input with
+                  | Error m -> Expect.stringContains m frag $"the teaching for {input}"
+                  | Ok s -> failtest $"must refuse: {input} -> {s}"
+
+              perr "^$@xs" "a splat cannot head a command"
+              perr "^$\"{d}/tool\" run" "bind it first"
+              perr "^$%foo" "'^$' needs a name or a capture"
+          }
+          test "(d) check: a seq-capture head refuses with the bind-and-pick teaching" {
+              match checkOf [ "^$(git branch) status" ] with
+              | [ d ] ->
+                  Expect.equal d.Severity "error" "an error, not a warning"
+                  Expect.stringContains d.Message "bind and pick" "the teaching"
+              | ds -> failtest $"expected exactly the refusal, got {ds}"
+          }
+          test "(e) the run-time carve-out: a dyn head draws NO cmd-not-found diag, and the binding counts as read" {
+              Expect.isEmpty
+                  (checkOf [ "let tool = \"definitely-not-on-path-zz\""; "^$tool go" ])
+                  "resolution is the run's business; the head read keeps 'tool' used"
+          }
+          test "(f) reifiers compose: ^$tool | complete checks; the seq head refuses through the desugar too" {
+              Expect.isEmpty
+                  (checkOf
+                      [ "let tool = \"x\""
+                        "let r = ^$tool | complete"
+                        "print $\"{r.exitCode}\"" ])
+                  "the dyn head rides the reifier desugar"
+
+              match checkOf [ "let r = ^$(git branch) | complete"; "print $\"{r.exitCode}\"" ] with
+              | [ d ] -> Expect.stringContains d.Message "bind and pick" "the same teaching through EDynProg"
+              | ds -> failtest $"expected exactly the refusal, got {ds}"
+          }
+          test "(g) a non-string head refuses, naming the type" {
+              match checkOf [ "let n = 3"; "^$n x" ] with
+              | [ d ] -> Expect.stringContains d.Message "a dynamic head is a program name (string)" "the type law"
+              | ds -> failtest $"expected exactly the refusal, got {ds}"
+          }
+          test "(h) zero movement: ^ls still forces the literal PATH binary" {
+              match Weir.Parser.parseLine realResolver "^ls x" with
+              | Ok(SCmd { Kind = ECmd(HeadLit "ls", [ _ ], _) })
+              | Ok(SExpr { Kind = ECmd(HeadLit "ls", [ _ ], _) }) -> ()
+              | Ok other -> failtest $"expected the literal forced head, got {other}"
+              | Error e -> failtest $"parse failed: {e}"
           } ]
 
 let helpUxTests =
@@ -19486,6 +19747,7 @@ let helpUxTests =
                         "UTC"
                         "RFC" // RFC 10008
                         "SHA-256" // hash algorithm
+                        "HMAC-SHA256" // keyed-hash mac, Bytes.hmacSha256's algorithm
                         "HTTP" // protocol + methods
                         "GET"
                         "QUERY"
@@ -19884,6 +20146,7 @@ let allTests =
     testList
         "Weir"
         [ versionStampTests
+          portMembersTests
           echoBinaryTests
           logLevelTests
           dxMessageTests
@@ -20037,6 +20300,7 @@ let allTests =
           reenumWarningTests
           replSaveDistillTests
           aliasTests
+          dynamicHeadTests
           helpUxTests
           indexerTests
           envLoadTests

@@ -366,7 +366,7 @@ let procTailLine (h: ProcHandle) : string =
 // the echo RULE [D:echo-rule]: a FORCED seq echoes in full (the user
 // forced it; the ceiling is scrollback, which is theirs); an UNFORCED
 // one shows the first N and names the lever that WORKS and renders
-// identically — Seq.force. Forced-ness is the materialized-collection
+// identically — Seq.freeze. Forced-ness is the materialized-collection
 // probe (the same one that used to print real counts); the REPL's
 // map-key completion peeks through the same probe, so echo and
 // completion agree about what "forced" means [D:value-key-complete].
@@ -379,7 +379,7 @@ let forcedItems (items: seq<Value>) : Value list option =
 /// the footer names the cap IN EFFECT [D:echo-cap] — a hardcoded count
 /// beside a configurable cap is the lying-message class
 let unforcedHint (cap: int) =
-    $"first {cap} of an unforced seq — Seq.force to echo everything"
+    $"first {cap} of an unforced seq — Seq.freeze to echo everything"
 
 // the piped/-e echo cap [D:echo-cap]: the SESSION cap is a tty-echo
 // concern (the REPL owns it, #echo moves it); the piped surface and -e
@@ -2581,6 +2581,27 @@ and argvOf (env: Env) (args: Check.TypedExpr list) : string list =
             | v -> unreachable $"the checker rejects '$@' on {formatValue v}"
         | _ -> [ eval env a |> scalarString "command argument" |> noNul "a command argument" ])
 
+// a dynamic head resolves at RUN [D:dynamic-head] — like `^literal`,
+// on the runtime string: no glob, no word-split, no re-lex. Not-found
+// raises a located error naming the value.
+and private progOf (env: Env) (h: Check.TCmdHead) : string =
+    match h with
+    | Check.THeadLit p -> p
+    | Check.THeadDyn(display, he) ->
+        let s =
+            match eval env he with
+            | VStr s -> s
+            | v -> unreachable $"the checker guarantees a string head; got {formatValue v}"
+
+        let s = noNul "a dynamic command head" s
+
+        if s = "" then
+            failwith $"the dynamic head ^{display} is empty — nothing to run"
+        elif not (Extern.exists s) then
+            failwith $"command not found: {s} — the dynamic head ^{display} resolves at run time"
+        else
+            s
+
 and eval (env: Env) (te: TypedExpr) : Value =
     match te.Kind with
     | TEInt n -> VInt(int64 n)
@@ -2739,7 +2760,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
     | TELambdaPat(pat, body) -> VClosurePat(pat, body, env)
     | TELambda(param, _, body) -> VClosure(param, body, env)
     | TEApp(fn, arg) -> apply (eval env fn) (eval env arg)
-    | TEPipe(arg, { Kind = TECmd(prog, cargs, cenvO) }) ->
+    | TEPipe(arg, { Kind = TECmd(chead, cargs, cenvO) }) ->
         // collect the COMMAND CHAIN left of this hop [D:byte-pipes]: a
         // command feeding a command is a raw byte hop (a hop makes no
         // value — [D:colour-inherit]'s rationale, completed); only the
@@ -2754,19 +2775,19 @@ and eval (env: Env) (te: TypedExpr) : Value =
 
         let rec collect (e: TypedExpr) (acc: Proc.Spec list) : TypedExpr option * Proc.Spec list =
             match e.Kind with
-            | TECmd(p2, a2, e2) ->
+            | TECmd(h2, a2, e2) ->
                 None,
-                { Proc.Prog = Proc.resolveProg p2
+                { Proc.Prog = Proc.resolveProg (progOf env h2)
                   Proc.Args = argvOf env a2
                   Proc.Env = overlayOf env e2
                   Proc.Input = None
                   Proc.Cwd = snapCwd
                   Proc.Ambient = snapAmb }
                 :: acc
-            | TEPipe(l, { Kind = TECmd(p2, a2, e2) }) ->
+            | TEPipe(l, { Kind = TECmd(h2, a2, e2) }) ->
                 collect
                     l
-                    ({ Proc.Prog = Proc.resolveProg p2
+                    ({ Proc.Prog = Proc.resolveProg (progOf env h2)
                        Proc.Args = argvOf env a2
                        Proc.Env = overlayOf env e2
                        Proc.Input = None
@@ -2796,7 +2817,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
             (match leftSpecs with
              | first :: rest -> { first with Proc.Input = stdin } :: rest
              | [] -> [])
-            @ [ { Proc.Prog = Proc.resolveProg prog
+            @ [ { Proc.Prog = Proc.resolveProg (progOf env chead)
                   Proc.Args = argvOf env cargs
                   Proc.Env = overlayOf env cenvO
                   Proc.Input = (if leftSpecs.IsEmpty then stdin else None)
@@ -2811,13 +2832,13 @@ and eval (env: Env) (te: TypedExpr) : Value =
     // newline ensured); ONLY timing differs, and only at a tty —
     // redirected output keeps the linesOf path untouched. Reifiers and
     // captures are unaffected by law (| complete is in-memory capture).
-    | TEPipe({ Kind = TECmd(prog, args, cenvO) }, { Kind = TEVar "|print" }) when
+    | TEPipe({ Kind = TECmd(head, args, cenvO) }, { Kind = TEVar "|print" }) when
         not (System.Console.IsOutputRedirected)
         ->
         let argv = argvOf env args
 
         let spec: Proc.Spec =
-            { Prog = Proc.resolveProg prog
+            { Prog = Proc.resolveProg (progOf env head)
               Args = argv
               Env = overlayOf env cenvO
               Input = None
@@ -2926,12 +2947,12 @@ and eval (env: Env) (te: TypedExpr) : Value =
             source
     | TEList items -> VSeq(items |> List.map (eval env))
     | TETuple items -> VTuple(items |> List.map (eval env))
-    | TECmd(prog, args, cenvO) ->
+    | TECmd(head, args, cenvO) ->
         let argv = argvOf env args
 
         // written-site ambient [D:ambient-capture], the lazy-spawn law
         let spec: Proc.Spec =
-            { Prog = Proc.resolveProg prog
+            { Prog = Proc.resolveProg (progOf env head)
               Args = argv
               Env = overlayOf env cenvO
               Input = None
@@ -3307,7 +3328,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
 
             let prog, argv, overlay =
                 match (argOf "proc").Kind with
-                | TECmd(prog, args, cenvO) -> prog, argvOf env args, overlayOf env cenvO
+                | TECmd(h, args, cenvO) -> progOf env h, argvOf env args, overlayOf env cenvO
                 | _ -> unreachable "the parser guarantees a command in the proc slot"
 
             let spill =
@@ -3509,8 +3530,8 @@ and apply (fn: Value) (arg: Value) : Value =
 /// and the inheriting spawn, so the two forms cannot drift
 let private commandStatementSpec (env: Env) (te: Check.TypedExpr) : Proc.Spec =
     match te.Kind with
-    | Check.TECmd(prog, args, cenvO) ->
-        { Prog = Proc.resolveProg prog
+    | Check.TECmd(head, args, cenvO) ->
+        { Prog = Proc.resolveProg (progOf env head)
           Args = argvOf env args
           Env = overlayOf env cenvO
           Input = None

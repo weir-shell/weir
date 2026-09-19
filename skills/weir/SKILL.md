@@ -47,7 +47,7 @@ stops being true fails the build.
   `where`, `sortBy`) exist in the REPL session ONLY, and the REPL's
   set is DERIVED [D:bare-partition]: every single-home member of
   `Seq`/`Str` is bare there; a name with two homes is qualified-only
-  everywhere — `contains` and `length`, the whole list. The qualified
+  everywhere — `contains`, `length` and `replicate`, the whole list. The qualified
   spelling always works. A bare name in a file errors naming the
   qualified spelling, and the LSP offers the rewrite as a code action.
 
@@ -347,7 +347,13 @@ print v
   text gate — that is the point), `Str.toUtf8`. Sinks:
   `File.writeBytes`, `Bytes.toBase64`, `Str.fromUtf8`/`tryFromUtf8`
   (the encoding law's gate: non-UTF-8 or NUL-bearing bytes raise/None).
-  Operations: `Bytes.sha256`, `Bytes.length : Size`, and
+  Operations: `Bytes.sha256`, `Bytes.length : Size`,
+  `Bytes.fromHex`/`Bytes.toHex` (lowercase out, either case in;
+  odd-length or non-hex raises — hex is the crypto boundary's other
+  text form), `Bytes.sub start len b` (Str.sub's exact shape on
+  bytes; out of range raises), `Bytes.hmacSha256 key msg : Bytes`
+  (key first, then message; a Secret key exits via
+  `Secret.reveal |> Str.toUtf8`, deliberately), and
   `File.sha256 path` (streams internally — hash a file without loading
   it). The capture law scopes the type: bounded and in-memory (~2GB
   cap); a gigabyte artifact is not a value. Laws: `==` is byte
@@ -364,6 +370,8 @@ print $"{b}"
 let png = Bytes.fromBase64 "iVBORw0KGgo="
 print (show (Bytes.length png))
 print (show (Str.tryFromUtf8 png))
+print (Bytes.toHex (Bytes.sub 1 2 b))
+print (Bytes.toHex (Bytes.hmacSha256 (Bytes.fromHex "0b0b") b))
 ```
 
 ```weir-error
@@ -548,7 +556,7 @@ print $"{key} -> {value}"
   Every arm runs even if one fails; the first error BY INPUT ORDER
   rethrows after the join. Workers fork the session:
   `cd` inside a worker is worker-local and gone at the join — force
-  worker output inside the worker (`Seq.head`/`Seq.force`) if its cd
+  worker output inside the worker (`Seq.head`/`Seq.freeze`) if its cd
   matters. The RACE is `xs |> Seq.pfirst (fun x -> ...)`: the first
   arm to SUCCEED wins, losers' spawned processes are tree-killed and
   their failures never surface (all-failed rethrows the first by
@@ -820,7 +828,7 @@ print (Option.flatten (Some None) |> Option.defaultValue 0)
   `delete` (empty only)/`deleteAll` (RECURSIVE, destructive)/`list`
   (full paths, sorted, both kinds; `Path.glob "**"` recurses)/`move`.
   Every failure names its path.
-- `Seq.force` materializes (consume to completion, eager in-memory;
+- `Seq.freeze` materializes (consume to completion, eager in-memory;
   STRICT — not for infinite seqs). When to force, four customers:
   REUSE (a command-backed seq re-runs its process per enumeration —
   force once, consume twice; `weir check` WARNS on the second pull of
@@ -912,6 +920,19 @@ refs
 - `let x = e in body` inline; in multi-line scripts an indented `let`
   line closes at the next line of the same indent (F# light syntax).
 - String/seq ops are data-last for piping: `Seq.where (Str.contains "err")`.
+- Width and repetition are members, not hand-rolled loops
+  [D:port-members]: `Str.replicate n s` (n copies concatenated;
+  0 → empty, negative raises — Seq.replicate's rule) and
+  `Str.padLeft w s` / `Str.padRight w s` (spaces to a TOTAL width;
+  an already-longer string is unchanged — .NET Pad semantics). The
+  columnar-output idiom, printf's `%-15s` made a function:
+
+```weir
+[("name", "weir"); ("kind", "language")]
+    |> Seq.iter (fun (k, v) -> print (Str.padRight 8 k + v))
+print (Str.padLeft 5 "42")
+print (Str.replicate 3 "-=")
+```
 - `>>`/`<<` compose functions (`Seq.map (Str.trim >> Str.toLower)`).
   `|>` and `>>` SHARE precedence (F#'s rule): `xs |> f >> g` is
   `(xs |> f) >> g` — parenthesize the composition, `xs |> (f >> g)`.
@@ -1075,7 +1096,11 @@ print x
   `File.mode p == Some "rw-------"`. The mode READ follows a symlink
   (the `File.*` rule); existence does not — a dangling link raises
   naming the dangle, agreeing with `File.stat`/`ls` about what
-  exists. Rows come back SORTED by name — ordinal, like
+  exists. `File.isExecutable p : bool` is the mode's owner execute
+  bit as a bool (the bit an installer sets — never substring-match
+  the mode text); it follows symlinks and raises on a missing path
+  like `File.mode`, and on Windows (no execute bit) it answers by
+  extension — `.exe`/`.bat`/`.cmd`/`.com`, a stated posture. Rows come back SORTED by name — ordinal, like
   `Dir.list`/`Path.glob` (case-sensitive, uppercase first; never the
   locale — coreutils inherits LC_COLLATE, weir does not), and
   `Env.vars` sorts the same way. `name` is for MATCHING and display,
@@ -1165,7 +1190,7 @@ ls |> Seq.where (fun f -> f.name |> Str.startsWith "lssort-") |> Seq.iter (fun f
   matching `ls` — a stated third position beside `**`'s
   skip-symlinked-dirs law and `File.*`'s follow-as-a-shell-does.
   Raises when absent, naming the resolved path — and a glob hit can
-  vanish before `stat` reaches it, the same TIMING seam `Seq.force`
+  vanish before `stat` reaches it, the same TIMING seam `Seq.freeze`
   documents for glob.
 
 ```weir
@@ -1188,7 +1213,8 @@ Path.glob "*" |> Seq.map (File)
   drops nothing) — the typed replacement for bash's conditional-flag
   idiom. `$@` demands `seq<string>` exactly (a scalar or `seq<int>`
   is a check error naming the fix); it cannot head a command
-  (computed heads park) or join a word mid-construction
+  (the head is one program — `^$name` is the dynamic spelling
+  [D:dynamic-head]) or join a word mid-construction
   (`--flag=$@xs` — map the prefix on, or separate args).
 - No glob EXPANSION (`Path.glob` is the typed spelling — a
   function, not argv magic), no redirects, no `&&`, no `$VAR` env
@@ -1247,7 +1273,7 @@ within tmp d
   per pull). Unbounded output is still unbounded — for gigabyte or
   endless children STREAM it (`|> Seq.iter`, `| File.write`) instead
   of capturing; the ceiling is the box, and a single capture caps at
-  ~2GB. `Seq.force` on decoded lines re-pays string overhead — force
+  ~2GB. `Seq.freeze` on decoded lines re-pays string overhead — force
   what you need, not the world.
 - Typed output: `... |> from json T` needs
   `type T = { field: ty; ... }` declared first (exact field set) — OR
@@ -1792,7 +1818,7 @@ let running =
         match c with
         | { State = "running"; Names = n } -> Some n
         | _ -> None)
-print (running |> Seq.force |> Seq.length)
+print (running |> Seq.freeze |> Seq.length)
 ```
 
 ```weir-error
@@ -1850,7 +1876,7 @@ print (f 1)
   `?`, `[abc]`/`[!abc]`. Bash's dotfile law: `*` skips dotfiles, a
   `.`-leading segment matches them. Sorted; relative patterns
   echo relative and resolve against the cwd AT ENUMERATION —
-  `|> Seq.force` pins the answer before a `cd`. No matches = the
+  `|> Seq.freeze` pins the answer before a `cd`. No matches = the
   empty seq (`match ... with | [] -> fail "no matches"`).
   Unreadable dirs skip (discovery, not assertion).
 - Editor mode-coloring (LSP semantic tokens) is for humans — agents
@@ -1882,7 +1908,12 @@ print (f 1)
   the end. `xs.[i]` (F#'s dotted indexer) is refused naming the dotless
   spelling [D:accessor-teaching].
   Membership: `Seq.contains x xs` (equatable elements),
-  `Seq.exists`/`Seq.forall` with predicates. Dedupe is
+  `Seq.exists`/`Seq.forall` with predicates. Whole-seq comparison is
+  `Seq.equal xs ys` [D:port-members] — element-wise, length-sensitive,
+  equatable elements; lockstep and short-circuiting (never pulls
+  beyond need, so a finite seq compares against an infinite one).
+  `==` stays undefined for seqs; `Seq.equal` is the spelling, and a
+  join-then-compare is the lossy approximation it retires. Dedupe is
   `Seq.distinct` (lazy, first occurrence wins, equatable elements —
   functions/seqs rejected at the use site).
 - Argv: `Args.load T` (script-only) — the typed front door. Three
@@ -1970,12 +2001,37 @@ print c.flag
   No `$NAME` expansion in commands — interpolate: `-H $"token {key}"`.
 - `//` mid-token is NOT a comment: bareword URLs (`https://...`) pass
   through; comments need line start or a preceding space.
-- Every command head is a LITERAL program name, resolved at check
-  time — there is no computed-head tier. Command lines run from
-  STATEMENT position; for a program in EXPRESSION position, capture
-  with `$(git status)` or a reifier (`| complete` etc.). To swap tools
-  by a runtime condition, branch the whole command line — `if hot then
-  rg pat else grep pat`.
+- Every command head is a LITERAL program name resolved at check
+  time, OR a `^$`-spliced VALUE head [D:dynamic-head]: `^$tool arg`
+  runs the program the string `tool` names — `^`'s force-external law
+  on a runtime string, resolved at RUN (check draws no cmd-not-found
+  there; a missing program is a located run error naming the value).
+  The value is ONE program, never re-lexed — a spaced head value is
+  one program, argv stays typed argv (no injection; the plugin/
+  callback dispatch shape without `sh -c`). It must be a string: a
+  seq capture refuses with the bind-and-pick teaching
+  (`let tool = $(…) |> Seq.exactlyOne`, then `^$tool`); a
+  string-typed capture (`^$(… |> Seq.exactlyOne)`) heads directly;
+  `^$@xs` and `^$"…"` refuse with teachings. Composes with pipes,
+  `$()`, reifiers and env sigils exactly as a literal head
+  (`^$tool build | complete`); `--can` reports it as not statically
+  known and `--strict` treats it like the other opaque sites.
+  Command lines run from STATEMENT position; for a program in
+  EXPRESSION position, capture with `$(git status)` or a reifier
+  (`| complete` etc.). To swap between two known tools by a runtime
+  condition, branch the whole command line — `if hot then rg pat
+  else grep pat`.
+
+```weir
+let tool = "printf"
+^$tool one-arg
+let r = ^$tool reified | complete
+print $"exit={r.exitCode}"
+```
+
+```weir-error
+^$(git branch) status // one program? bind and pick the line first
+```
 - `xs | prog args` [D:value-headed-pipe] pipes a weir seq into an
   external command's STDIN (data-last; stdout streams back as
   `seq<string>`; input pulls lazily, stdin closes at exhaustion):
@@ -2115,7 +2171,7 @@ not the teaching.
 - `Dir`: `copy` `create` `delete` `deleteAll` `exists` `list` `move` `stat`
 - `Duration`: `average` `h` `m` `ms` `parse` `s` `sleep` `sum` `toMillis` `toSeconds` `tryParse`
 - `Env`: `fromFile` `get` `load` `ofPairs` `pair` `vars`
-- `File`: `append` `copy` `delete` `exists` `move` `read` `readBytes` `readSecret` `sha256` `size` `write` `writeBytes`
+- `File`: `append` `copy` `delete` `exists` `isExecutable` `move` `read` `readBytes` `readSecret` `sha256` `size` `write` `writeBytes`
 - `Float`: `abs` `average` `near` `ofInt` `parse` `round` `sum` `toInt` `tryParse`
 - `Instant`: `epochMs` `now` `ofEpochMs` `parse` `parseWith` `tryParse` `tryParseWith`
 - `Json`: `inferShape`
@@ -2132,7 +2188,7 @@ not the teaching.
 - `Retry`: `defaults`
 - `Secret`: `map` `of` `reveal`
 - `Self`: `args` `entryPath` `pid` `scriptPath` `stdin` (script-only — absent in the REPL, so `#help` does not list it)
-- `Seq`: `append` `average` `choose` `chunkBySize` `collect` `concat` `contains` `countBy` `distinct` `distinctBy` `except` `exactlyOne` `exists` `find` `fold` `forall` `force` `groupBy` `head` `indexed` `isEmpty` `item` `iter` `last` `length` `map` `max` `maxBy` `min` `minBy` `pairwise` `pfirst` `pfirstWith` `pick` `piter` `piterWith` `pmap` `pmapWith` `range` `reduce` `replicate` `rev` `scan` `skip` `skipWhile` `sort` `sortBy` `sortByDescending` `sortDescending` `sum` `take` `takeWhile` `tryExactlyOne` `tryFind` `tryHead` `tryItem` `tryLast` `tryPick` `where` `windowed` `zip`
-- `Bytes`: `fromBase64` `length` `sha256` `toBase64` `tryFromBase64`
+- `Seq`: `append` `average` `choose` `chunkBySize` `collect` `concat` `contains` `countBy` `distinct` `distinctBy` `equal` `except` `exactlyOne` `exists` `find` `fold` `forall` `freeze` `groupBy` `head` `indexed` `isEmpty` `item` `iter` `last` `length` `map` `max` `maxBy` `min` `minBy` `pairwise` `pfirst` `pfirstWith` `pick` `piter` `piterWith` `pmap` `pmapWith` `range` `reduce` `replicate` `rev` `scan` `skip` `skipWhile` `sort` `sortBy` `sortByDescending` `sortDescending` `sum` `take` `takeWhile` `tryExactlyOne` `tryFind` `tryHead` `tryItem` `tryLast` `tryPick` `where` `windowed` `zip`
+- `Bytes`: `fromBase64` `fromHex` `hmacSha256` `length` `sha256` `sub` `toBase64` `toHex` `tryFromBase64`
 - `Size`: `average` `bytes` `parse` `sum` `toBytes` `tryParse`
-- `Str`: `contains` `endsWith` `fields` `fromBase64` `isMatch` `join` `length` `replace` `rmatch` `rmatchAll` `rsplit` `sha256` `split` `splitOnce` `startsWith` `sub` `toBase64` `toInt` `toLower` `toUpper` `toUtf8` `trim` `trimEnd` `trimStart` `tryFromBase64` `tryFromUtf8` `tryIndexOf` `trySplitOnce` `tryToInt` `fromUtf8`
+- `Str`: `contains` `endsWith` `fields` `fromBase64` `isMatch` `join` `length` `padLeft` `padRight` `replace` `replicate` `rmatch` `rmatchAll` `rsplit` `sha256` `split` `splitOnce` `startsWith` `sub` `toBase64` `toInt` `toLower` `toUpper` `toUtf8` `trim` `trimEnd` `trimStart` `tryFromBase64` `tryFromUtf8` `tryIndexOf` `trySplitOnce` `tryToInt` `fromUtf8`

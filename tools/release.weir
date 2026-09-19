@@ -84,7 +84,7 @@ let newRev = git -C (gdir) rev-parse HEAD |> Seq.exactlyOne
 let bumped =
     File.read "editors/zed/extension.toml"
     |> Seq.map (fun l -> if Str.startsWith "rev = " l then $"rev = \"{newRev}\"" else l)
-    |> Seq.force
+    |> Seq.freeze
 
 let highlightsSame =
     diff $"{gdir}/queries/highlights.scm" editors/zed/languages/weir/highlights.scm | succeeds

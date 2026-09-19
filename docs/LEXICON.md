@@ -170,12 +170,12 @@ stops at the buffer, not the end. Proved by pull-count pins, never by
 inspection. [D:value-headed-pipe]
 
 **Memoization vs materialization.** ⚠ The pair that caused real
-confusion. **Materialization** (`Seq.force`) runs a lazy seq to a concrete
+confusion. **Materialization** (`Seq.freeze`) runs a lazy seq to a concrete
 list *once* and returns it — total, so an infinite source never returns.
 **Memoization** (`Seq.cache`) wraps a seq so re-enumeration reuses computed
-elements without re-running the generator. `force` changes the type
+elements without re-running the generator. `freeze` changes the type
 (seq→list); `cache` keeps it (seq→seq). Retired names (`toList`) teach
-`force`. [D:seq-force] [D:seq-patterns]
+`freeze`. [D:seq-force] [D:seq-patterns]
 
 **Totality.** A function returns a result on every input — never
 crashes, hangs, or silently mis-executes. weir's checker/assembler are

@@ -29,8 +29,15 @@ Expression positions:
 - command-arg splices (`(expr)` in command mode — scalar-checked)
 - argv splat `$@name`/`$@(expr)` [D:argv-splat] — every command-arg
   position (statement, param-ful/block-let RHS, sigil interiors,
-  districts, env chains); REJECTED at the command head (computed-head
-  park) and mid-word (N words can't build one word)
+  districts, env chains); REJECTED at the command head (the head is
+  ONE program — `^$name` is the dynamic-head spelling) and mid-word
+  (N words can't build one word)
+- dynamic command head `^$name`/`^$(…)` [D:dynamic-head] — the head
+  VALUE position: string-exactly checked (checkDynHead; a seq capture
+  refuses with bind-and-pick), every command position (statement,
+  let-RHS, sigil interiors, proc slot, reified chains via the erased
+  EDynProg wrapper); `^$@`, `^$"…"`, and bare `^$` REJECTED with
+  teachings guarded ahead of the head attempt
 - sigil interiors are COMMAND grammar, not expression grammar — an
   expression form does not need a sigil pin unless it is also legal
   in command mode

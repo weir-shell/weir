@@ -90,7 +90,7 @@ first, then a `name : type` footer that carries the very same
 unforced sentence a bare echo shows. The footer sits BELOW the lines
 in both, so a truncated bind can never look like it silently dropped
 data: you see the clip, then the sentence telling you it was clipped
-and how to see the rest (`Seq.force`).
+and how to see the rest (`Seq.freeze`).
 
 The binding footer also states the seq's state, tty-only:
 
@@ -98,7 +98,7 @@ The binding footer also states the seq's state, tty-only:
 weir> let pods = kubectl get po -A
 …the pods…
 pods : seq<string> (command-backed — re-runs on each use)
-weir> let snap = kubectl get po -A |> Seq.force
+weir> let snap = kubectl get po -A |> Seq.freeze
 …the pods…
 snap : seq<string> (frozen)
 ```
@@ -116,7 +116,7 @@ never carries the annotation.
 Three output roles, three ways to ask:
 
 - the **glance** is the echo: bounded at 100 unforced elements by
-  default, so command-sized output fits without a `Seq.force`; long
+  default, so command-sized output fits without a `Seq.freeze`; long
   strings clip, and a hint names the cap in effect
 - the **read** is `|> print`: every element, one line each — for
   non-string seqs, `|> Seq.map show |> print`

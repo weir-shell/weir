@@ -44,7 +44,7 @@ exist, and the errors name the explicit conversions
 Lazy. Pipelines pull what they need; ranges are lazy generators;
 `[a; b; c]` literals are eager values. Re-enumerating a bound
 pipeline re-runs its effects — external commands included;
-`Seq.force` materializes once and is the standard escape. The
+`Seq.freeze` materializes once and is the standard escape. The
 checker warns when a command-backed binding with no visible force is
 enumerated at a second site (`possible re-enumeration`, advisory —
 `weir check` still exits 0). Command capture is `seq<string>`, one

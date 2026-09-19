@@ -232,7 +232,11 @@ and ExprKind =
     // CAPTURE in every position — the wrapper marks the chain so
     // statement arming never touches it; erased at check
     | ECapture of Expr
-    | ECmd of prog: string * args: Expr list * env: Expr option
+    | ECmd of head: CmdHead * args: Expr list * env: Expr option
+    // a dynamic head reified [D:dynamic-head]: the `|completed` family
+    // takes the program as a string ARGUMENT, so a `^$` head rides the
+    // desugar as this wrapper — typed string-exactly at check, erased
+    | EDynProg of display: string * head: Expr
     // $@xs / $@(expr) — N argv words [D:argv-splat]
     | ESplat of Expr
     // copy-and-update [D:record-update]: paths carry nested sugar
@@ -276,6 +280,18 @@ and YamlTplKey =
     // the key SPAN feeds schema validation's located errors [D:yaml-schemas]
     | YtKeyLit of string * span: Span
     | YtKeySplice of Expr
+
+// the command head [D:dynamic-head]: a literal program name (the argv
+// law's static case), or a `^$`-spliced VALUE resolved at run — display
+// is the source spelling ($name / $(…)) for messages
+and CmdHead =
+    | HeadLit of string
+    | HeadDyn of display: string * head: Expr
+
+let headDisplay (h: CmdHead) : string =
+    match h with
+    | HeadLit p -> p
+    | HeadDyn(d, _) -> $"^{d}"
 
 // [<Name arg>] attachment [D:attributes] — check-time, fully erased
 type AttrSpec =
@@ -411,7 +427,13 @@ let exprChildren (e: Expr) : Expr list =
     | ESeq(a, b) -> [ a; b ]
     | EList items -> items
     | ETuple items -> items
-    | ECmd(_, args, envO) -> args @ Option.toList envO
+    | ECmd(h, args, envO) ->
+        (match h with
+         | HeadDyn(_, e) -> [ e ]
+         | HeadLit _ -> [])
+        @ args
+        @ Option.toList envO
+    | EDynProg(_, e) -> [ e ]
     | ESplat e -> [ e ]
     | EUpdate(src, ups) -> src :: (ups |> List.map snd)
     | ERetry(_, opts, watch, body, until) ->
@@ -582,13 +604,14 @@ let rec sexpr (e: Expr) : string =
 
         $"(interp {body})"
     | ESplat e -> $"(splat {sexpr e})"
-    | ECmd(prog, [], None) -> $"(cmd {prog})"
-    | ECmd(prog, args, None) ->
+    | EDynProg(d, e) -> $"(dynprog {d} {sexpr e})"
+    | ECmd(h, [], None) -> $"(cmd {headDisplay h})"
+    | ECmd(h, args, None) ->
         let body = args |> List.map sexpr |> String.concat " "
-        $"(cmd {prog} {body})"
-    | ECmd(prog, args, Some envE) ->
+        $"(cmd {headDisplay h} {body})"
+    | ECmd(h, args, Some envE) ->
         let body = args |> List.map sexpr |> String.concat " "
-        $"(cmdenv {sexpr envE} {prog} {body})"
+        $"(cmdenv {sexpr envE} {headDisplay h} {body})"
     | EYaml(tpl, schema, patchBy) ->
         let s =
             match schema with

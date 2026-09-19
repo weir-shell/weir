@@ -61,7 +61,7 @@ print "unreached"
 
 - Glob expansion in argv — `Path.glob "src/**/*.c"` is a function
   returning a typed seq; splat a batch with
-  `git add $@(Path.glob "*.txt" |> Seq.force)`.
+  `git add $@(Path.glob "*.txt" |> Seq.freeze)`.
 - Redirects — `>`/`>>` pass through as literal argv words with a
   warning suggesting `cmd |> File.write "out.txt"`
   (`File.append` for `>>`).
@@ -145,7 +145,7 @@ echo $nope
 - Abbreviations and `alias` — weir has no rewriting layer; a short
   name is a `let`.
 - Globs expanding in argv — `Path.glob` is a function; splat a batch
-  with `git add $@(Path.glob "*.txt" |> Seq.force)`.
+  with `git add $@(Path.glob "*.txt" |> Seq.freeze)`.
 
 ## Coming from F#
 

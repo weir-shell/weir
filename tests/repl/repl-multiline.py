@@ -304,9 +304,9 @@ if "bytes =" not in p.stdout:
     failures.append(f"piped output must render records inline: {p.stdout!r}")
 
 # --- the echo rule [D:echo-rule]: forced tables render every row on a
-# tty; the unforced hint names Seq.force (never a rendering-changing
+# tty; the unforced hint names Seq.freeze (never a rendering-changing
 # pipe) — the pty half of the rule's pins
-keys = [("cd \"%s\"\r" % d, 0.5), ("ls |> Seq.force\r", 0.9)]
+keys = [("cd \"%s\"\r" % d, 0.5), ("ls |> Seq.freeze\r", 0.9)]
 t2, _ = run(keys)
 if "unforced" in t2:
     failures.append(f"a forced table must not carry the unforced hint: {t2[-300:]!r}")
@@ -316,7 +316,7 @@ if "pipe to" in t2:
 # --- the LINES form [D:echo-lines]: seq<string> presents as its lines
 # at a tty (footer keeps the type + the unforced sentence); other seq
 # types keep the literal; the PIPED surface keeps the literal exactly
-t3, _ = run([("[\"lineA\"; \"lineB\"] |> Seq.force\r", 0.9)])
+t3, _ = run([("[\"lineA\"; \"lineB\"] |> Seq.freeze\r", 0.9)])
 if "\nlineA" not in t3 or "\nlineB" not in t3:
     failures.append(f"a string seq must echo as LINES at a tty: {t3[-300:]!r}")
 if '"lineB"] : seq' in t3:  # the RESULT literal (typed-line echoes contain the input text)
@@ -324,7 +324,7 @@ if '"lineB"] : seq' in t3:  # the RESULT literal (typed-line echoes contain the 
 t4, _ = run([("[7; 8]\r", 0.9)])
 if "[7; 8] : seq<int>" not in t4:
     failures.append(f"other seq types keep the literal: {t4[-300:]!r}")
-p3 = subprocess.run([WEIR], input='["lineA"; "lineB"] |> Seq.force\n#quit\n', capture_output=True, text=True)
+p3 = subprocess.run([WEIR], input='["lineA"; "lineB"] |> Seq.freeze\n#quit\n', capture_output=True, text=True)
 if '["lineA"; "lineB"] : seq<string>' not in p3.stdout:
     failures.append(f"the piped surface keeps the literal byte-form: {p3.stdout!r}")
 

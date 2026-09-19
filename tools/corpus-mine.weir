@@ -49,7 +49,7 @@ let plausible src =
     let lines =
         Str.split "\n" src
         |> Seq.where (fun l -> Str.trim l <> "")
-        |> Seq.force
+        |> Seq.freeze
     let n = Seq.length lines
     if n == 0 then false
     elif n > 8 then false
@@ -57,10 +57,10 @@ let plausible src =
     else
         let toks =
             if wide then baseRejects
-            else Seq.append baseRejects waveRejects |> Seq.force
+            else Seq.append baseRejects waveRejects |> Seq.freeze
         let res =
             if wide then baseRejectRes
-            else Seq.append baseRejectRes waveRejectRes |> Seq.force
+            else Seq.append baseRejectRes waveRejectRes |> Seq.freeze
         if Seq.exists (fun t -> Str.contains t src) toks then false
         elif Seq.exists (fun r -> Str.isMatch r src) res then false
         else true
@@ -74,10 +74,10 @@ let snippets =
         let text = File.read f |> Str.join "\n"
         Str.rmatchAll pat text |> Seq.map Seq.head)
     |> Seq.fold (fun acc s -> Seq.append acc s) []
-    |> Seq.force
+    |> Seq.freeze
 
-let distinctSnips = snippets |> Seq.distinct |> Seq.force
-let kept = distinctSnips |> Seq.where plausible |> Seq.force
+let distinctSnips = snippets |> Seq.distinct |> Seq.freeze
+let kept = distinctSnips |> Seq.where plausible |> Seq.freeze
 
 kept
 |> Seq.iter (fun src ->

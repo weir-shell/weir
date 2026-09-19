@@ -103,9 +103,9 @@ let checkCommit c =
         print $"commit-area SKIP: {c} is a merge ({subject})"
         true
     else
-        let files = git show --format= --name-only $c |> Seq.where (fun f -> Str.trim f <> "") |> Seq.force
-        let srcAreas = files |> Seq.choose (fun f -> areaOfSrc f) |> Seq.force
-        let unmapped = srcAreas |> Seq.where (fun a -> a == "UNMAPPED") |> Seq.force
+        let files = git show --format= --name-only $c |> Seq.where (fun f -> Str.trim f <> "") |> Seq.freeze
+        let srcAreas = files |> Seq.choose (fun f -> areaOfSrc f) |> Seq.freeze
+        let unmapped = srcAreas |> Seq.where (fun a -> a == "UNMAPPED") |> Seq.freeze
 
         if not (Seq.isEmpty unmapped) then
             let names =
@@ -152,10 +152,10 @@ if cli.range == None && cli.commit == None then
 
 let commits =
     match cli.range with
-    | Some r -> $(git rev-list --no-merges $r) |> Seq.force
+    | Some r -> $(git rev-list --no-merges $r) |> Seq.freeze
     | None -> [cli.commit |> Option.defaultValue ""]
 
-let results = commits |> Seq.map (fun c -> checkCommit c) |> Seq.force
+let results = commits |> Seq.map (fun c -> checkCommit c) |> Seq.freeze
 
 if results |> Seq.exists (fun ok -> not ok) then
     exit 1

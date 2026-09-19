@@ -17,7 +17,7 @@ type Cli = {
 let cli = Args.load Cli
 
 let heading = $"## {cli.tag}"
-let lines = File.read "CHANGELOG.md" |> Seq.force
+let lines = File.read "CHANGELOG.md" |> Seq.freeze
 
 // EXACT match, because the workflow's awk extraction matches the line
 // exactly — the gate and the extractor must agree on one spelling, so a
@@ -37,7 +37,7 @@ let section =
     |> Seq.skip 1
     |> Seq.takeWhile (fun l -> not (Str.startsWith "## " l))
     |> Seq.where (fun l -> Str.trim l <> "")
-    |> Seq.force
+    |> Seq.freeze
 
 if Seq.isEmpty section then
     fail $"CHANGELOG.md '{heading}' section is EMPTY — a release with no notes is the tag-with-empty-notes state this gate exists to catch"
