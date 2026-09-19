@@ -3148,7 +3148,7 @@ let private bytesMembers: (string * Ty * Value) list =
                   | _ -> unreachable "the checker rejects 'Bytes.sub' on these arguments")))
       // key -> message -> mac; .NET's own HMACSHA256, no reflection.
       // A Secret key exits through Secret.reveal |> Str.toUtf8 —
-      // deliberate, the one Secret exit [D:secrets]
+      // deliberate, the one Secret exit [D:secret]
       "hmacSha256",
       TFun(TBytes, TFun(TBytes, TBytes)),
       VBuiltin(fun keyV ->

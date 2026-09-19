@@ -30,6 +30,20 @@
           "pointer": null
         },
         {
+          "name": "fromHex",
+          "signature": "Bytes.fromHex (s: string) : Bytes",
+          "summary": "Decode hex (either case) to Bytes; odd-length and non-hex input raise. The crypto sibling of Bytes.fromBase64 \u2014 fingerprints, moduli and EC points all travel as hex.",
+          "example": "Bytes.fromHex \u00220a1B\u0022 |\u003E Bytes.toHex",
+          "pointer": null
+        },
+        {
+          "name": "hmacSha256",
+          "signature": "Bytes.hmacSha256 (key: Bytes) (msg: Bytes) : Bytes",
+          "summary": "HMAC-SHA256: key first, then message, the mac as Bytes. A Secret key exits via Secret.reveal |\u003E Str.toUtf8 \u2014 deliberate, like every Secret exit.",
+          "example": "Bytes.hmacSha256 (Str.toUtf8 \u0022key\u0022) (Str.toUtf8 \u0022msg\u0022) |\u003E Bytes.toHex",
+          "pointer": null
+        },
+        {
           "name": "length",
           "signature": "Bytes.length (b: Bytes) : Size",
           "summary": "The byte count as a Size.",
@@ -44,10 +58,24 @@
           "pointer": null
         },
         {
+          "name": "sub",
+          "signature": "Bytes.sub (start: int) (len: int) (b: Bytes) : Bytes",
+          "summary": "A byte slice by start index and length \u2014 Str.sub\u0027s exact shape on Bytes; out of range raises with the same detail.",
+          "example": "Str.toUtf8 \u0022abcd\u0022 |\u003E Bytes.sub 1 2 |\u003E Bytes.toHex",
+          "pointer": null
+        },
+        {
           "name": "toBase64",
           "signature": "Bytes.toBase64 (b: Bytes) : string",
           "summary": "Base64 of the bytes \u2014 one unwrapped line; the way to carry bytes as text (print and the JSON/YAML boundaries refuse raw bytes).",
           "example": null,
+          "pointer": null
+        },
+        {
+          "name": "toHex",
+          "signature": "Bytes.toHex (b: Bytes) : string",
+          "summary": "Lowercase hex of the bytes (sha256\u0027s own rendering) \u2014 one unwrapped line.",
+          "example": "Str.toUtf8 \u0022hi\u0022 |\u003E Bytes.toHex",
           "pointer": null
         },
         {
@@ -271,6 +299,13 @@
           "signature": "File.exists (path: string) : bool",
           "summary": "True when a path exists.",
           "example": "File.exists \u0022README.md\u0022",
+          "pointer": null
+        },
+        {
+          "name": "isExecutable",
+          "signature": "File.isExecutable (path: string) : bool",
+          "summary": "True when the owner execute bit is set (the bit an installer sets) \u2014 File.mode\u0027s \u0027x\u0027 as a bool, replacing the stringly Str.contains \u0022x\u0022. Follows a symlink like the other File.* queries; a missing path raises. On Windows there is no execute bit: the answer is by extension (.exe/.bat/.cmd/.com), a stated posture.",
+          "example": "File.isExecutable \u0022.\u0022",
           "pointer": null
         },
         {
@@ -1106,6 +1141,13 @@
           "pointer": null
         },
         {
+          "name": "equal",
+          "signature": "Seq.equal (xs: seq\u003C\u0027a\u003E) (ys: seq\u003C\u0027a\u003E) : bool",
+          "summary": "Element-wise equality, length-sensitive (equatable elements \u2014 Seq.contains\u0027s constraint). Lockstep and short-circuiting: stops at the first mismatch, never pulls beyond need. The honest spelling of output-vs-expected \u2014 a join-then-compare is lossy when elements contain the separator.",
+          "example": "[\u0022a\u0022; \u0022b\u0022] |\u003E Seq.equal [\u0022a\u0022; \u0022b\u0022]",
+          "pointer": null
+        },
+        {
           "name": "exactlyOne",
           "signature": "Seq.exactlyOne (xs: seq\u003C\u0027a\u003E) : \u0027a",
           "summary": "The one element \u2014 a cardinality assertion: raises on none and on more (head silently accepts a second element, hiding a wrong-arity source). Use it for command output expected to be exactly one line.",
@@ -1571,10 +1613,31 @@
           "pointer": null
         },
         {
+          "name": "padLeft",
+          "signature": "Str.padLeft (width: int) (s: string) : string",
+          "summary": "Pad with spaces on the left to a total width; a string already at or past the width is unchanged (a negative width raises). The right-aligned column member.",
+          "example": "Str.padLeft 5 \u002242\u0022",
+          "pointer": null
+        },
+        {
+          "name": "padRight",
+          "signature": "Str.padRight (width: int) (s: string) : string",
+          "summary": "Pad with spaces on the right to a total width; a string already at or past the width is unchanged (a negative width raises). The columnar-output member \u2014 printf \u0022%-15s\u0022 made a function.",
+          "example": "Str.padRight 6 \u0022name\u0022",
+          "pointer": null
+        },
+        {
           "name": "replace",
           "signature": "Str.replace (old: string) (new: string) (s: string) : string",
           "summary": "Replace every occurrence of a substring.",
           "example": "Str.replace \u0022a\u0022 \u0022b\u0022 \u0022aba\u0022",
+          "pointer": null
+        },
+        {
+          "name": "replicate",
+          "signature": "Str.replicate (n: int) (s: string) : string",
+          "summary": "n copies of the string, concatenated (0 is the empty string; a negative count raises \u2014 Seq.replicate\u0027s rule).",
+          "example": "Str.replicate 3 \u0022ab\u0022",
           "pointer": null
         },
         {
