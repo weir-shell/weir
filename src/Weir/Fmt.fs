@@ -508,7 +508,9 @@ let collectCmdHeads (e: Expr) : (Span * string) list =
 
     let rec walk (e: Expr) =
         (match e.Kind with
-         | ECmd(prog, _, _) ->
+         // literal heads only — a dynamic head [D:dynamic-head] is
+         // never an alias, so #save leaves it untouched
+         | ECmd(HeadLit prog, _, _) ->
              let headSpan =
                  { Start = e.Span.Start
                    End =

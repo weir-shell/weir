@@ -2702,7 +2702,7 @@ let private checkStatementCore
 
                     let rec heads (e: Expr) =
                         (match e.Kind with
-                         | ECmd(prog, _, _) when not (Extern.exists prog) -> [ prog, e.Span ]
+                         | ECmd(HeadLit prog, _, _) when not (Extern.exists prog) -> [ prog, e.Span ]
                          | _ -> [])
                         @ (exprChildren e |> List.collect heads)
 
@@ -4350,7 +4350,7 @@ let sigCmdDiagnostics
 
             let rec cmds (te: Check.TypedExpr) =
                 (match te.Kind with
-                 | Check.TECmd(prog, args, _) -> [ prog, args ]
+                 | Check.TECmd(Check.THeadLit prog, args, _) -> [ prog, args ]
                  | _ ->
                      // reified commands DESUGAR the ECmd away — the chain
                      // becomes a `|succeeded`-family builtin applied to the
@@ -5280,7 +5280,7 @@ let analyzeLines
 
         let rec cmdHeads (te: Check.TypedExpr) =
             (match te.Kind with
-             | Check.TECmd(prog, _, _) when not (Extern.exists prog) -> [ prog, te.Span ]
+             | Check.TECmd(Check.THeadLit prog, _, _) when not (Extern.exists prog) -> [ prog, te.Span ]
              | _ -> [])
             @ (Check.childExprs te |> List.collect cmdHeads)
 
@@ -5461,7 +5461,7 @@ let analyzeLines
                  | Ok stmt ->
                      let rec eheads (e: Expr) =
                          (match e.Kind with
-                          | ECmd(prog, _, _) when not (Extern.exists prog) -> [ prog, e.Span ]
+                          | ECmd(HeadLit prog, _, _) when not (Extern.exists prog) -> [ prog, e.Span ]
                           | _ -> [])
                          @ (exprChildren e |> List.collect eheads)
 

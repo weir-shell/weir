@@ -152,7 +152,7 @@ and TypedKind =
         // `to yaml stream` [D:yaml-seq-doc]: one document per element
         stream: bool
     | TEList of items: TypedExpr list
-    | TECmd of prog: string * args: TypedExpr list * env: TypedExpr option
+    | TECmd of head: TCmdHead * args: TypedExpr list * env: TypedExpr option
     | TESplat of TypedExpr
     | TEUpdate of source: TypedExpr * updates: (string list * TypedExpr) list
     | TETuple of TypedExpr list
@@ -162,6 +162,13 @@ and TypedKind =
     // the yaml district's TYPED template [D:yaml-district]; patchBy
     // [D:yaml-nodes]: Some by = a `yaml patch` district (YamlPatch)
     | TEYaml of TypedYamlTpl * schema: string option * patchBy: string option option
+
+// the typed command head [D:dynamic-head]: literal, or a `^$`-spliced
+// value (string-typed) resolved at run — display keeps the source
+// spelling for messages
+and TCmdHead =
+    | THeadLit of string
+    | THeadDyn of display: string * head: TypedExpr
 
 and TypedYamlTpl =
     | TYtScalar of raw: string * quoted: bool * span: Ast.Span
@@ -185,6 +192,13 @@ and TypedYamlTplItem =
 and TypedYamlKey =
     | TYtKeyLit of string * span: Ast.Span
     | TYtKeySplice of TypedExpr
+
+/// a head's message name [D:dynamic-head]: the program, or the `^$`
+/// source spelling
+let theadDisplay (h: TCmdHead) : string =
+    match h with
+    | THeadLit p -> p
+    | THeadDyn(d, _) -> $"^{d}"
 
 type private ResultBuilder() =
     member _.Bind(r, f) = Result.bind f r
@@ -3883,7 +3897,12 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                   Ty = TNamed((if patchBy.IsSome then "YamlPatch" else "Yaml"), [])
                   Span = expr.Span }
         }
-    | ECmd(prog, args, envO) ->
+    | EDynProg(display, he) ->
+        // the reified spelling of a dynamic head [D:dynamic-head]: type
+        // the value string-exactly, then erase — the reifier builtin
+        // receives an ordinary string argument
+        checkDynHead ctx env display he
+    | ECmd(head, args, envO) ->
         result {
             // $@ demands seq<string> EXACTLY [D:argv-splat]; the twin
             // teachings point each mistake at its honest spelling
@@ -3942,8 +3961,18 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                         return Some te
                     }
 
+            // a dynamic head is ONE program [D:dynamic-head]: string
+            // exactly, never re-lexed; a seq capture refuses with the
+            // bind-and-pick teaching (which line would run?)
+            let! thead =
+                match head with
+                | HeadLit p -> Ok(THeadLit p)
+                | HeadDyn(display, he) ->
+                    checkDynHead ctx env display he
+                    |> Result.map (fun the -> THeadDyn(display, the))
+
             return
-                { Kind = TECmd(prog, List.rev targs, tenvO)
+                { Kind = TECmd(thead, List.rev targs, tenvO)
                   Ty = TSeq TStr
                   Span = expr.Span }
         }
@@ -4557,6 +4586,27 @@ and private check (ctx: Ctx) (env: TypeEnv) (expr: Expr) (expected: Ty) : Result
             return te
         }
 
+// the dynamic head's type law [D:dynamic-head]: string EXACTLY — the
+// value is one program, never re-lexed. A seq capture cannot answer
+// "which line is the program", so it refuses with the bind-and-pick
+// teaching instead of deciding implicitly.
+and private checkDynHead (ctx: Ctx) (env: TypeEnv) (display: string) (he: Expr) : Result<TypedExpr, TypeError> =
+    result {
+        let! the = infer ctx env he
+
+        match resolve ctx the.Ty with
+        | TStr -> return the
+        | TVar _ ->
+            do! bind ctx env he.Span TStr the.Ty
+            return the
+        | TSeq _ as t ->
+            return!
+                err
+                    he.Span
+                    $"a dynamic head runs one program, and ^{display} is {formatTy t} — which line is it? bind and pick (let tool = $(…) |> Seq.exactlyOne), then run ^$tool"
+        | t -> return! err he.Span $"a dynamic head is a program name (string); ^{display} is {formatTy t}"
+    }
+
 and private checkScalarSplice (ctx: Ctx) (env: TypeEnv) (site: SpliceSite) (arg: Expr) : Result<TypedExpr, TypeError> =
     result {
         let! targ = infer ctx env arg
@@ -4755,8 +4805,13 @@ let rec private finalizeExpr (ctx: Ctx) (te: TypedExpr) : TypedExpr =
         | TEYaml(tpl, schema, patchBy) -> TEYaml(finalizeYamlTpl ctx tpl, schema, patchBy)
         | TELetPat(p, v, b) -> TELetPat(p, finalizeExpr ctx v, finalizeExpr ctx b)
         | TELambdaPat(p, b) -> TELambdaPat(p, finalizeExpr ctx b)
-        | TECmd(prog, args, envO) ->
-            TECmd(prog, args |> List.map (finalizeExpr ctx), envO |> Option.map (finalizeExpr ctx))
+        | TECmd(head, args, envO) ->
+            let fhead =
+                match head with
+                | THeadLit _ -> head
+                | THeadDyn(d, he) -> THeadDyn(d, finalizeExpr ctx he)
+
+            TECmd(fhead, args |> List.map (finalizeExpr ctx), envO |> Option.map (finalizeExpr ctx))
         | TESplat e -> TESplat(finalizeExpr ctx e)
         | TEInterp parts ->
             TEInterp(
@@ -5059,7 +5114,12 @@ let childExprs (te: TypedExpr) : TypedExpr list =
     | TEAlways(b, c) -> [ b; c ]
     | TEList items -> items
     | TETuple items -> items
-    | TECmd(_, args, envO) -> args @ Option.toList envO
+    | TECmd(h, args, envO) ->
+        (match h with
+         | THeadDyn(_, e) -> [ e ]
+         | THeadLit _ -> [])
+        @ args
+        @ Option.toList envO
     | TESplat e -> [ e ]
     | TEUpdate(src, ups) -> src :: (ups |> List.map snd)
     | TEInterp parts ->

@@ -3594,6 +3594,9 @@ type private HeadKind =
     // [D:command-head-alias]: the ECmd fold swaps the head to the exe and
     // PREPENDS the prefix as literal argv (before the user's own args)
     | AliasedHead of exe: string * prefix: string list
+    // ^$name / ^$(…) — a force-external VALUE head [D:dynamic-head]:
+    // the program string resolves at RUN; argv stays typed argv
+    | DynamicHead of display: string * head: Expr
 
 let private commandSegment
     (builtinHeads: bool)
@@ -3601,7 +3604,24 @@ let private commandSegment
     (sigilEnv: Expr option)
     (r: Resolver)
     : Parser<Expr, unit> =
-    let head =
+    // ^$name / ^$(…) — the dynamic head [D:dynamic-head]: `^` gains a
+    // `$`-splice alternative beside the literal — a runtime string can
+    // never be a weir binding, so a dynamic head is necessarily external
+    // and `^` already says exactly that. The value is ONE program, never
+    // re-lexed; the fatal spellings (^$@, ^$", bare ^$) are guarded
+    // ahead of the segment so their teachings survive the backtrack.
+    let dynHead =
+        attempt (getPosition .>> pchar '^' .>> followedBy (pchar '$'))
+        >>= fun startP ->
+            (captureSigil |>> (fun e -> "$(…)", e)
+             <|> (spanned (pchar '$' >>. rawWord)
+                  |>> fun (n, sp) -> $"${n}", { Kind = EVar n; Span = sp }))
+            .>> ws
+            |>> fun (disp, e) ->
+                let span = { Start = pos startP; End = e.Span.End }
+                DynamicHead(disp, e), disp, span
+
+    let litHead =
         spanned (opt (pchar '^') .>>. cmdWord)
         // the machine boundary [D:yaml-district]: a head GLUED to the
         // sentinel can only be the assembler's yaml-district wrap
@@ -3669,9 +3689,32 @@ let private commandSegment
             else
                 ifail "not an external command"
 
+    let head = dynHead <|> litHead
+
+    // the fatal `^$` spellings [D:dynamic-head], guarded OUTSIDE the
+    // head attempt (the `$@`-head guard's mechanism) so the teachings
+    // survive the backtrack: a splat head, an interpolated head, and a
+    // bare `^$` each name their repair
+    let dynHeadGuards =
+        choice
+            [ getPosition .>> attempt (pstring "^$@")
+              >>= fun at ->
+                  failFatallyAt
+                      at
+                      "a splat cannot head a command (N words would be N heads) — a dynamic head takes one program: ^$name"
+              getPosition .>> attempt (pstring "^$" .>> followedBy (pchar '"'))
+              >>= fun at ->
+                  failFatallyAt
+                      at
+                      "an interpolated string cannot head a command — bind it first (let tool = $\"…\"), then run ^$tool"
+              getPosition
+              .>> attempt (pstring "^$" .>> notFollowedBy (satisfy (fun c -> isIdentStart c || c = '(')))
+              >>= fun at -> failFatallyAt at "'^$' needs a name or a capture — a dynamic head is ^$name or ^$(…)" ]
+
     // consume the trigger, then anchor back [D:anchor-before-read]: a
     // non-consuming fatal here merges the head alternative's expected-set
-    (getPosition .>> pstring "$@"
+    dynHeadGuards
+    <|> (getPosition .>> pstring "$@"
      >>= fun at ->
          fun stream ->
              // $@" is the F# reflex for interpolated-verbatim — teach the
@@ -3697,7 +3740,10 @@ let private commandSegment
 
         match kind with
         | ExternalHead ->
-            { Kind = ECmd(prog, args, sigilEnv)
+            { Kind = ECmd(HeadLit prog, args, sigilEnv)
+              Span = fullSpan }
+        | DynamicHead(disp, he) ->
+            { Kind = ECmd(HeadDyn(disp, he), args, sigilEnv)
               Span = fullSpan }
         | AliasedHead(exe, prefix) ->
             // swap the head to the real exe, PREPEND the fixed prefix as
@@ -3707,7 +3753,7 @@ let private commandSegment
             // located at the alias head for diagnostics).
             let prefixArgs = prefix |> List.map (fun a -> { Kind = EStr a; Span = span })
 
-            { Kind = ECmd(exe, prefixArgs @ args, sigilEnv)
+            { Kind = ECmd(HeadLit exe, prefixArgs @ args, sigilEnv)
               Span = fullSpan }
         | BuiltinHead ->
             let headVar = { Kind = EVar prog; Span = span }
@@ -3917,8 +3963,15 @@ let private foldChain (h: Expr) (rest: ((string * Span) * Seg) list) : Result<Ex
                             | [] -> { Kind = EList []; Span = acc.Span }
                             | first :: rest -> rest |> List.fold seqAppend first
 
+                    // a dynamic head rides the desugar as EDynProg — typed
+                    // string-exactly at check, erased [D:dynamic-head]
+                    let progArgOf (h: CmdHead) (span: Span) =
+                        match h with
+                        | HeadLit prog -> { Kind = EStr prog; Span = span }
+                        | HeadDyn(disp, he) -> { Kind = EDynProg(disp, he); Span = he.Span }
+
                     match acc.Kind with
-                    | ECmd(prog, args, cenv) ->
+                    | ECmd(h, args, cenv) ->
                         let span = Span.union acc.Span mspan
 
                         // env sigils route through the *Env twins — the same
@@ -3930,7 +3983,7 @@ let private foldChain (h: Expr) (rest: ((string * Span) * Seg) list) : Result<Ex
                                   Span = mspan }
                             | None -> { Kind = EVar plainVar; Span = mspan }
 
-                        let progArg = { Kind = EStr prog; Span = acc.Span }
+                        let progArg = progArgOf h acc.Span
                         let argList = argvExpr args
 
                         let applied =
@@ -3944,10 +3997,10 @@ let private foldChain (h: Expr) (rest: ((string * Span) * Seg) list) : Result<Ex
                     // is a value: a command→command LHS is the multi-external
                     // case below, rejected as always (the family's single-segment
                     // rule, unchanged).
-                    | EPipe(stdinE, { Kind = ECmd(prog, args, None) }) when not (isCommandish stdinE) ->
+                    | EPipe(stdinE, { Kind = ECmd(h, args, None) }) when not (isCommandish stdinE) ->
                         let span = Span.union acc.Span mspan
                         let headVar = { Kind = EVar stdinVar; Span = mspan }
-                        let progArg = { Kind = EStr prog; Span = acc.Span }
+                        let progArg = progArgOf h acc.Span
                         let argList = argvExpr args
 
                         let applied =
