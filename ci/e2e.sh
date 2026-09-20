@@ -8778,21 +8778,40 @@ within serve srv = { port = $svport; maxConcurrent = 4 } handler
         Net.portOpen $svport
     let h = Http.fetch "http://127.0.0.1:$svport/health" |> Seq.head
     print \$"health={h}"
+    let hl = Http.fetch "http://localhost:$svport/health" |> Seq.head
+    print \$"health-localhost={hl}"
     let e = Http.fetch "http://127.0.0.1:$svport/echo?name=weir" |> Seq.head
     print \$"echo={e}"
+    within proc probe = sh "$svdir/dualhost.sh"
+        Duration.sleep 2000ms
 print "closed"
 WEOF
+# the localhost fetch above (and the dual-host probe below) prove the
+# loopback-names fix [D:serve-loopback-names]: a Host: localhost request
+# reaches the handler, not .NET's prefix-miss 404 — on the SAME socket
+cat > "$svdir/dualhost.sh" <<DHEOF
+#!/bin/sh
+{
+    printf 'v4=%s\n' "\$(curl -s --max-time 4 "http://127.0.0.1:$svport/health")"
+    printf 'name=%s\n' "\$(curl -s --max-time 4 "http://localhost:$svport/health")"
+} > "$svdir/dualhost.txt" 2>&1
+DHEOF
+chmod +x "$svdir/dualhost.sh"
 out=$($BIN "$svdir/route.weir" 2>&1) || {
     probe=$(curl -s --max-time 2 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$svport/health" 2>/dev/null || echo "curl-failed")
     fail "serve routing failed (bash-side probe of :$svport/health = $probe): $out"
 }
 echo "$out" | grep -qF "health=ok" || fail "serve /health must return ok: $out"
+echo "$out" | grep -qF "health-localhost=ok" || fail "serve localhost Host must reach the handler, not a 404: $out"
 echo "$out" | grep -qF "echo=hello weir" || fail "serve /echo must echo the query param: $out"
 echo "$out" | grep -qF "closed" || fail "serve scope must exit: $out"
+# the bash-side dual-host referee: BOTH names returned the handler body
+grep -qF "v4=ok" "$svdir/dualhost.txt" || fail "serve 127.0.0.1 Host must return the handler body: $(cat "$svdir/dualhost.txt" 2>/dev/null)"
+grep -qF "name=ok" "$svdir/dualhost.txt" || fail "serve localhost Host must return the handler body (not .NET's 404): $(cat "$svdir/dualhost.txt" 2>/dev/null)"
 # clean shutdown: the port frees, a second bind on it succeeds
 sleep 0.5
 $BIN -e "Net.portOpen $svport" | grep -qF "false" || fail "serve no-orphan: port $svport still up after the scope"
-echo "e2e ok: within serve — routing (health/echo) + the port frees on exit"
+echo "e2e ok: within serve — routing (health/echo) reachable over BOTH 127.0.0.1 and localhost + the port frees on exit"
 
 # (2) streaming: a 5-element Stream body with a delay between elements.
 # The client (curl -N, unbuffered) timestamps each arrival; we assert

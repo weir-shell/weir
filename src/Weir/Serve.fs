@@ -57,19 +57,38 @@ type Handle =
 /// failure (a port already taken is the common one — the acceptance's
 /// "second bind succeeds after close" pins the inverse) [D:http-serve]
 let start (port: int) : Handle =
-    let l = new HttpListener()
     // loopback only — v1 is a reverse-proxy posture, no public bind,
-    // no TLS (TLS is the proxy's, a stated bounded-out) [D:http-serve]
-    l.Prefixes.Add($"http://127.0.0.1:{port}/")
+    // no TLS (TLS is the proxy's, a stated bounded-out) [D:http-serve].
+    // The loopback NAMES sit beside each other on the one port
+    // [D:serve-loopback-names]: a client saying Host: localhost must
+    // reach the handler, not .NET's prefix-miss 404 — a `+`/`*` bind
+    // would answer it but expose the server past loopback, the
+    // regression this refuses.
+    let v4 = [ $"http://127.0.0.1:{port}/"; $"http://localhost:{port}/" ]
+    // the ::1 name is GUARDED [D:serve-loopback-names]: a host with no
+    // IPv6 loopback makes Start() throw and DISPOSE the listener, so a
+    // failed start cannot reuse it — build once WITH ::1, and on failure
+    // build a fresh listener on the v4 names alone (an IPv6-less host
+    // still serves both 127.0.0.1 and localhost).
+    let build (prefixes: string list) =
+        let l = new HttpListener()
+
+        for p in prefixes do
+            l.Prefixes.Add p
+
+        l.Start()
+        l
 
     try
-        l.Start()
+        try
+            build (v4 @ [ $"http://[::1]:{port}/" ])
+        with :? HttpListenerException ->
+            build v4
     with :? HttpListenerException as ex ->
         // the bind failure in its own words — the port is the fact the
         // caller needs to reword ("address in use")
         failwith $"serve: cannot listen on 127.0.0.1:{port} — {ex.Message}"
-
-    { Listener = l; Port = port; Closed = false }
+    |> fun l -> { Listener = l; Port = port; Closed = false }
 
 /// close the listener idempotently — the scope-exit tail and the signal
 /// sweep share it, so a double close (finally after a signal) is benign.

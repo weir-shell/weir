@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.0.47
+
+### Fixed
+
+- **`within serve` reaches the handler over `localhost`, not just
+  `127.0.0.1`.** The scoped listener registered a prefix for
+  `127.0.0.1` only, so a client addressing the server as `localhost`
+  got .NET's built-in `404` before the weir handler ran (the
+  `Host: localhost` request did not match the `127.0.0.1` prefix). The
+  listener now registers the common loopback names beside each other on
+  the one port — `127.0.0.1`, `localhost`, and `[::1]` — so all three
+  reach the handler. The posture stays loopback: no `+`/`*`
+  all-interfaces bind, so the server is not exposed beyond loopback.
+  The `[::1]` name is guarded — a host without IPv6 loopback still
+  serves on the two IPv4 names. Bind, teardown, port-free, and
+  `Server.port`/`Server.running` are unchanged.
+
 ## v0.0.46
 
 ### Added
