@@ -18721,6 +18721,15 @@ let portMembersTests =
                       Expect.throwsC (fun () -> runReal "File.isExecutable \"./no-such-path-zz\"" |> ignore) id
 
                   Expect.stringContains ex.Message "no such path" "File.mode's absence posture"
+
+                  // "" is a no-such-path, not the cwd [D:isexecutable-empty]:
+                  // Session.resolve "" folds to the cwd (which exists and
+                  // carries the dir's x bit), so an unguarded read answered
+                  // true — it must raise the missing-path error instead
+                  let exEmpty =
+                      Expect.throwsC (fun () -> runReal "File.isExecutable \"\"" |> ignore) id
+
+                  Expect.stringContains exEmpty.Message "no such path" "the empty string raises like a missing path"
               finally
                   System.IO.File.Delete tmp
           }

@@ -17,6 +17,13 @@
   serves on the two IPv4 names. Bind, teardown, port-free, and
   `Server.port`/`Server.running` are unchanged.
 
+- **`File.isExecutable ""` raises instead of returning `true`.** An
+  empty string resolved to the current directory (which exists and
+  carries a directory's execute bit), so the query answered `true` for
+  a path that is not a path. `""` now raises the same located
+  `no such path` error a missing path raises. A real missing path still
+  raises, unchanged.
+
 ## v0.0.46
 
 ### Added

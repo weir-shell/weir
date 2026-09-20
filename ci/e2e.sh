@@ -2632,6 +2632,17 @@ else
     echo "e2e skip: FileRow symlink + mode referee (POSIX rows)"
 fi
 
+# File.isExecutable "" is a no-such-path, not the cwd [D:isexecutable-empty]:
+# Session.resolve "" folds to the cwd (which exists and carries the dir's
+# x bit), so an unguarded read answered `true` — it must raise the same
+# located missing-path error a real absent path raises, never true.
+ixout=$($BIN -e 'File.isExecutable ""' 2>&1) && fail "File.isExecutable \"\" must raise, got: $ixout" || true
+echo "$ixout" | grep -qF "no such path" || fail "File.isExecutable \"\" must raise no-such-path: $ixout"
+# the correct missing-path posture is UNCHANGED — a real absent path still raises
+ixmiss=$($BIN -e 'File.isExecutable "./no-such-path-zz"' 2>&1) && fail "File.isExecutable on a missing path must raise, got: $ixmiss" || true
+echo "$ixmiss" | grep -qF "no such path" || fail "File.isExecutable on a missing path must raise no-such-path: $ixmiss"
+echo "e2e ok: File.isExecutable \"\" raises like a missing path (the empty string is not the cwd)"
+
 # ---- filesystem members [D:fs-members] -------------------------------------
 fsdir=$(mkweirtmp)
 cat > "$fsdir/glob.weir" <<'WEOF'
