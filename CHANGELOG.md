@@ -24,6 +24,28 @@
   `no such path` error a missing path raises. A real missing path still
   raises, unchanged.
 
+- **`restore` and `verify` confine a lock entry's path to `.weir/`.** A
+  hand-edited or tampered lockfile whose entry recorded a path outside
+  the vendor directory (absolute, or `../`) made `restore` write and
+  `verify` read outside `.weir/` — `restore` crashed on the write. Each
+  entry's path is now confined per entry: a hostile one is a located
+  refusal naming the entry, while its benign siblings still restore.
+  `restore` overwrites only its own artifacts inside `.weir/`.
+
+- **`add schema --as` refuses a name that is not a plain name.** An
+  absolute or traversal `--as` name vendored the schema outside `.weir/`.
+  The plain-name rule `add module` already enforced is now shared by
+  `add schema`, `add module`, and `gen types`, refused before the fetch
+  with nothing written.
+
+- **An unreadable import is a located diagnostic, not a crash.** An
+  imported module that existed but could not be read (permissions) crashed
+  `check`, `check --json`, `check --can`, and the LSP. The import source
+  is now read once into a result: an unreadable file gives a located
+  `cannot read import` diagnostic (a missing file still says `no file
+  at …`), and the previous read-twice shape no longer races a file
+  deleted mid-check.
+
 ## v0.0.46
 
 ### Added

@@ -17,6 +17,69 @@ open System.IO
 open Weir.Ast
 open Weir.Types
 
+// ---- the path/name boundary [D:lockfile-confinement] -----------------------
+// A path that came from OUTSIDE (a lock entry, an `--as` name) is joined
+// with a base and then used; a hostile or fat-fingered value must not
+// reach a write/read outside `.weir/`. Two guards, ONE copy each — the
+// confining join (Path.under's lexical core, Session-free so it lives
+// here, before Builtins) and the plain-name validator (the rule
+// `add module` had inline, extracted so `add schema`/`sig`/`gen types`
+// share it).
+
+/// absolute/rooted on ANY platform — refused by shape, the safe
+/// direction (a script must confine identically on Linux and Windows).
+/// Mirrors Builtins.absoluteShaped [D:path-under]; kept here so the lock
+/// read (before Builtins) can confine.
+let private absoluteShapedPath (p: string) : bool =
+    p.StartsWith "/"
+    || p.StartsWith "\\"
+    || (p.Length >= 2 && System.Char.IsLetter p[0] && p[1] = ':')
+
+/// the CONFINING join, Path.under's lexical core [D:path-under]: join
+/// `rel` under an ALREADY-RESOLVED `root` and return the confined
+/// absolute path, or Error when `rel` escapes (absolute, or `..` past the
+/// base). Purely textual — GetFullPath never touches disk, so a symlink
+/// out is textually under (the same bound Path.under states). `root` is
+/// resolved by the caller (weirDir is already absolute).
+let confineUnder (root: string) (rel: string) : Result<string, string> =
+    if absoluteShapedPath rel then
+        Error $"'{rel}' is an absolute path — it must be a relative path under the base"
+    else
+        let baseDir = Path.TrimEndingDirectorySeparator(Path.GetFullPath root)
+        let joined = Path.GetFullPath(Path.Combine(baseDir, rel))
+        let sep = string Path.DirectorySeparatorChar
+        let prefix = if baseDir.EndsWith sep then baseDir else baseDir + sep
+
+        // SEGMENT-WISE, never prefix-string-wise (`/safe/uploads-evil`
+        // starts with `/safe/uploads` and is NOT under it)
+        if joined = baseDir || joined.StartsWith prefix then
+            Ok joined
+        else
+            Error $"'{rel}' escapes the base — it must stay under it"
+
+/// a vendored name safe as a FILE-NAME segment [D:lockfile-confinement]:
+/// the F14 guard at the argv crossing — no separators, no `..`, no
+/// leading dot, no absolute shape, so `--as` can only ever name a file
+/// directly inside its kind's directory. Hyphens ARE allowed (a schema
+/// name like `k8s-configmap` is legitimate); the stricter identifier
+/// rule an import ALIAS needs is `plainName`, layered on top by
+/// `add module`. This is the confinement floor every `--as` shares; the
+/// lock-read confinement is the defence in depth behind it.
+let vendorNameSafe (name: string) : bool =
+    name.Length > 0
+    && not (absoluteShapedPath name)
+    && not (name.Contains "..")
+    && not (name.StartsWith ".")
+    && name |> Seq.forall (fun c -> System.Char.IsLetterOrDigit c || c = '_' || c = '-' || c = '.')
+
+/// a plain NAME that can also be an import ALIAS: a letter, then
+/// letters/digits/_ — the rule `add module` enforces (its name becomes a
+/// module alias, so no hyphen, no dot). Stricter than vendorNameSafe.
+let plainName (name: string) : bool =
+    name.Length > 0
+    && System.Char.IsLetter name[0]
+    && name |> Seq.forall (fun c -> System.Char.IsLetterOrDigit c || c = '_')
+
 // ---- discovery -------------------------------------------------------------
 
 /// walk UP from `fromDir` to the first `.weir/`; stop there. Bounded by
@@ -63,6 +126,19 @@ type LockEntry =
       // generation time — denormalized from the file (hash-protected,
       // so they cannot drift apart) so verify needs no weir parser
       Version: string option }
+
+/// the CONFINED dest for a lock entry [D:lockfile-confinement] — every
+/// consumer (restore/verify/gen types) resolves an entry's Path through
+/// THIS, PER ENTRY: a hostile path (absolute, `..`) is a located refusal
+/// naming the entry, never a write/read outside `.weir/`. Per-entry, not
+/// whole-lock: a tampered entry does not strand the benign siblings — the
+/// hostile one refuses, the rest proceed.
+let entryDest (weirDir: string) (e: LockEntry) : Result<string, string> =
+    match confineUnder weirDir e.Path with
+    | Ok dest -> Ok dest
+    | Error _ ->
+        Error
+            $"{e.Kind} {e.Name}: the lock records path '{e.Path}', which escapes .weir/ — a lock entry must stay under the vendor directory; this lock was tampered with or hand-edited"
 
 let sha256Hex (bytes: byte[]) : string =
     use sha = Security.Cryptography.SHA256.Create()
@@ -892,7 +968,15 @@ let restore (weirDir: string) : Result<string list, string> =
         let results =
             entries
             |> List.map (fun e ->
-                let dest = Path.Combine(weirDir, e.Path)
+                // CONFINE PER ENTRY [D:lockfile-confinement]: a hostile
+                // path refuses HERE (located, naming the entry) and writes
+                // nothing; a benign sibling still restores. restore
+                // overwrites only its OWN artifacts inside .weir/, never a
+                // path outside it — the confinement makes "outside"
+                // unreachable [D:lockfile-confinement]
+                match entryDest weirDir e with
+                | Error refusal -> Error refusal
+                | Ok dest ->
 
                 // a PRESENT-BUT-MODIFIED url artifact is drift from the
                 // lock's intent — restore repairs it by refetching, the
@@ -1064,7 +1148,14 @@ let verify (resolve: string -> string) (weirDir: string) : Result<string list * 
         let findings = ResizeArray<VerifyFinding>()
 
         for e in entries do
-            let dest = Path.Combine(weirDir, e.Path)
+            // CONFINE PER ENTRY [D:lockfile-confinement]: verify must not
+            // READ outside .weir/ either — a hostile path is a MODIFIED-class
+            // finding naming the escape, never a read of the escaped file
+            match entryDest weirDir e with
+            | Error refusal ->
+                findings.Add(Modified(e, "escapes .weir/"))
+                lines.Add $"{refusal}"
+            | Ok dest ->
 
             match e.Kind with
             // the hash arm: vendored artifacts verify by content

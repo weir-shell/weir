@@ -3510,14 +3510,34 @@ let runsCommandT: Check.TypedExpr -> bool = Check.runsCommandT
 // disk (decision 14).
 let importSourceOverride: (string -> string list option) option ref = ref None
 
-let private readImportSource (absPath: string) : string list option =
+// the import read, ONCE into a Result [D:lockfile-confinement]: an
+// unreadable file (mode 000) crashed check because Exists-then-ReadAllLines
+// was unguarded, and the two-call shape (isNone then get) also raced a
+// file deleted between them. Absent -> None (today's "no file at …");
+// present-but-unreadable -> Error naming the path (a NEW located
+// diagnostic, never a crash). The buffer override (LSP) is absent-or-present
+// by its own contract, so it maps to Ok.
+type private ImportRead =
+    | ISource of string list
+    | IAbsent
+    | IUnreadable of string
+
+let private readImportSource (absPath: string) : ImportRead =
     match importSourceOverride.Value with
-    | Some f -> f absPath
+    | Some f ->
+        match f absPath with
+        | Some lines -> ISource lines
+        | None -> IAbsent
     | None ->
-        if IO.File.Exists absPath then
-            Some(IO.File.ReadAllLines absPath |> Array.toList)
-        else
-            None
+        try
+            ISource(IO.File.ReadAllLines absPath |> Array.toList)
+        with
+        | :? IO.FileNotFoundException
+        | :? IO.DirectoryNotFoundException -> IAbsent
+        | ex ->
+            // present but unreadable — permission denied, a directory in
+            // the path, an IO fault; name the path and the reason, located
+            IUnreadable ex.Message
 
 // resolve + check an imported module to a LoadedModule, or an ImportError.
 // THE GRAPH [D:modules-v1]: `cache` (normalized abs path -> module) checks a
@@ -3574,7 +3594,12 @@ let rec loadModuleCachedWith
         Ok
             { cached with
                 Alias = importAs |> Option.defaultValue cached.NaturalName }
-    elif (readImportSource absPath) |> Option.isNone then
+    else
+
+    // read the source ONCE [D:lockfile-confinement] — no Exists/read race,
+    // and present-but-unreadable is its own located diagnostic, not a crash
+    match readImportSource absPath with
+    | IAbsent ->
         if path.StartsWith "weir:" then
             let n = path.Substring 5
 
@@ -3582,8 +3607,8 @@ let rec loadModuleCachedWith
                 $"no vendored module '{n}' ({absPath}) — vendor it: weir add module <host>/<org>/<repo>//<file>@<ref> --as {n} (a generated types module lands here via: weir gen types --schema {n})"
         else
             stmt $"cannot resolve import: no file at {absPath}"
-    else
-        let rawLines = readImportSource absPath |> Option.get
+    | IUnreadable reason -> stmt $"cannot read import {absPath}: {reason}"
+    | ISource rawLines ->
         let body, bodyOffset, _ = scriptBody rawLines
 
         let assembled = body |> List.mapi (fun i l -> bodyOffset + i + 1, l) |> assemble // raw lines: assemble classifies/strips internally [D:content-bytes]
@@ -3839,8 +3864,9 @@ let rec replayModule (procFacts: (string * Eval.Value) list) (lm: LoadedModule) 
 /// the member count for the add's report line.
 let checkVendoredModule (absPath: string) : Result<int, string> =
     match readImportSource absPath with
-    | None -> Error $"cannot read {absPath}"
-    | Some raws ->
+    | IAbsent -> Error $"cannot read {absPath}"
+    | IUnreadable reason -> Error $"cannot read {absPath}: {reason}"
+    | ISource raws ->
         if raws |> List.exists (fun l -> l.StartsWith "import ") then
             Error
                 "the module imports — vendored modules are leaves for now (transitive vendoring is a current boundary, not a refusal of the idea): inline the dependency, or vendor both and import each"
@@ -4334,7 +4360,13 @@ let loadSigs (path: string) (decls: SigDecl list) : Diagnostic list * SigInfo li
 /// buffers first when the LSP is driving, else disk) — cross-file hover
 /// and definition read the TARGET file through the same channel
 /// [D:lsp-cross-file]
-let targetSourceLines (absPath: string) : string list option = readImportSource absPath
+let targetSourceLines (absPath: string) : string list option =
+    // hover/definition want present-or-not; an unreadable target is
+    // "no source to show", the same None as absent [D:lockfile-confinement]
+    match readImportSource absPath with
+    | ISource lines -> Some lines
+    | IAbsent
+    | IUnreadable _ -> None
 
 /// the signatures a file's #sig head declares, loaded; QUIET on load
 /// errors — diagnostics are analyzeLines' job [D:lsp-cross-file]

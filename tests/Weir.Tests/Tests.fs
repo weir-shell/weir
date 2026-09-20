@@ -10042,6 +10042,113 @@ let moduleTests =
           } ]
 
 
+let lockfileConfinementTests =
+    // Bundle A+B [D:lockfile-confinement]: a path from outside (a lock
+    // entry, an --as name) must not reach a write/read outside .weir/.
+    // The confining join and the plain-name validator are pure — probe
+    // them directly; the import-unreadable path (F2) goes through
+    // analyzeLines.
+    let mkEntry path : Weir.Contracts.LockEntry =
+        { Kind = "schema"
+          Name = "n"
+          Url = "http://x"
+          Sha256 = "0"
+          Path = path
+          Version = None }
+
+    testList
+        "lockfile path confinement [D:lockfile-confinement]"
+        [ test "confineUnder admits an inside path, refuses absolute and traversal" {
+              let root = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "weir-conf-root")
+
+              match Weir.Contracts.confineUnder root "schemas/x.json" with
+              | Ok dest -> Expect.stringContains dest "schemas" "an inside path resolves under the base"
+              | Error e -> failtest $"an inside path must confine: {e}"
+
+              // a legitimately-inside `a/b/../c` stays under
+              match Weir.Contracts.confineUnder root "a/b/../c.json" with
+              | Ok _ -> ()
+              | Error e -> failtest $"a normalising-but-inside path must confine: {e}"
+
+              // absolute, traversal-past-base, and (the classic bug) a
+              // sibling that shares the base as a string PREFIX all refuse
+              for bad in [ "/etc/passwd"; "../escape.json"; "../root-evil/x" ] do
+                  match Weir.Contracts.confineUnder root bad with
+                  | Ok d -> failtest $"'{bad}' must escape, got {d}"
+                  | Error _ -> ()
+          }
+          test "vendorNameSafe: a file-name segment (hyphens ok), separators/traversal/absolute refuse" {
+              // the schema-name floor — k8s-configmap is legitimate
+              for ok in [ "benign"; "k8s-configmap"; "a_b-2"; "v1.2"; "X" ] do
+                  Expect.isTrue (Weir.Contracts.vendorNameSafe ok) $"'{ok}' is a safe file name"
+
+              // only path-ESCAPING shapes refuse
+              for bad in [ ""; "a/b"; "a\\b"; "../x"; "/abs"; ".hidden"; "a b"; "a..b" ] do
+                  Expect.isFalse (Weir.Contracts.vendorNameSafe bad) $"'{bad}' escapes or is unsafe"
+          }
+          test "plainName: the stricter ALIAS rule — a letter then letters/digits/_ ; hyphen and dot refuse" {
+              for ok in [ "benign"; "myMod"; "a_b_2"; "X" ] do
+                  Expect.isTrue (Weir.Contracts.plainName ok) $"'{ok}' is a plain identifier"
+
+              // an import alias admits no hyphen/dot/separator
+              for bad in [ ""; "1x"; "a/b"; "../x"; "/abs"; "a.b"; "a-b"; "a b" ] do
+                  Expect.isFalse (Weir.Contracts.plainName bad) $"'{bad}' is not an alias-shaped name"
+          }
+          test "entryDest confines PER ENTRY — a hostile entry is a located refusal naming it" {
+              let root = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "weir-conf-root")
+
+              match Weir.Contracts.entryDest root (mkEntry "schemas/ok.json") with
+              | Ok _ -> ()
+              | Error e -> failtest $"a benign entry resolves: {e}"
+
+              match Weir.Contracts.entryDest root (mkEntry "../ESCAPE.json") with
+              | Ok d -> failtest $"a hostile entry must refuse, got {d}"
+              | Error msg ->
+                  Expect.stringContains msg "escapes .weir/" "the refusal names the escape"
+                  Expect.stringContains msg "../ESCAPE.json" "and the offending path"
+          }
+          test "an unreadable import is a LOCATED diagnostic, never a crash (F2)" {
+              // mode-000 on the imported file: check must give a located
+              // 'cannot read import' error, not throw (the old crash)
+              if System.OperatingSystem.IsWindows() then
+                  ()
+              else
+                  let dir =
+                      System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-f2-{System.Guid.NewGuid():N}")
+
+                  System.IO.Directory.CreateDirectory dir |> ignore
+
+                  try
+                      let modP = System.IO.Path.Combine(dir, "mod.weir")
+                      System.IO.File.WriteAllLines(modP, [ "module M"; "let f : int -> int"; "let f x = x + 1" ])
+                      let mainP = System.IO.Path.Combine(dir, "main.weir")
+                      System.IO.File.WriteAllLines(mainP, [ "import \"./mod.weir\" as M"; "print (show (M.f 1))" ])
+                      System.IO.File.SetUnixFileMode(modP, System.IO.UnixFileMode.None)
+
+                      let ds, _, _, _ =
+                          Weir.Script.analyzeLines mainP (List.ofArray (System.IO.File.ReadAllLines mainP))
+
+                      let errs = ds |> List.filter (fun d -> d.Severity = "error")
+
+                      Expect.isNonEmpty errs "an unreadable import produces a diagnostic"
+
+                      Expect.exists
+                          errs
+                          (fun d -> d.Message.Contains "cannot read import")
+                          "the located 'cannot read import' diagnostic, not a crash"
+                  finally
+                      try
+                          System.IO.File.SetUnixFileMode(
+                              System.IO.Path.Combine(dir, "mod.weir"),
+                              System.IO.UnixFileMode.UserRead ||| System.IO.UnixFileMode.UserWrite
+                          )
+
+                          System.IO.Directory.Delete(dir, true)
+                      with _ ->
+                          ()
+          } ]
+
+
 let scriptTests =
     testList
         "Script machinery"
@@ -20396,6 +20503,7 @@ let allTests =
           pipeAlignTests
           optionSweepTests
           moduleTests
+          lockfileConfinementTests
           moduleSignatureTests
           scriptTests
           multilineTests

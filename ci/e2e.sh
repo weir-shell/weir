@@ -6561,7 +6561,64 @@ out=$( cd "$ctdir/proj" && $BIN verify ) && fail "verify must exit 1 on absent" 
 echo "$out" | grep -q "ABSENT" || fail "absent named: $out"
 ( cd "$ctdir/proj" && $BIN restore ) | grep -q "restored" || fail "restore re-materializes from the lock"
 echo "e2e ok: weir verify distinguishes modified from absent; restore re-materializes"
+
+# ---- Bundle A+B: the lockfile path boundary [D:lockfile-confinement] --------
+# F14: an absolute/traversal `--as` name must refuse BEFORE the fetch,
+# writing nothing (the rule add module already had, now shared)
+mkdir -p "$ctdir/f14" && ( cd "$ctdir/f14" && git init -q . )
+f14abs="$ctdir/F14-ABSOLUTE.json"
+out=$( cd "$ctdir/f14" && $BIN add schema http://127.0.0.1:$ctport/configmap-v1.json --as "$f14abs" 2>&1 ) && fail "an absolute --as must refuse" || true
+echo "$out" | grep -qF "must be a plain file name" || fail "F14 absolute --as teaches the plain-name rule: $out"
+test ! -e "$f14abs" || fail "F14: an absolute --as must write nothing outside .weir/"
+out=$( cd "$ctdir/f14" && $BIN add schema http://127.0.0.1:$ctport/configmap-v1.json --as "../escape" 2>&1 ) && fail "a traversal --as must refuse" || true
+echo "$out" | grep -qF "must be a plain file name" || fail "F14 traversal --as teaches the plain-name rule: $out"
+test ! -e "$ctdir/f14/../escape.json" || fail "F14: a traversal --as must write nothing outside .weir/"
+echo "e2e ok: add schema refuses an absolute/traversal --as, writing nothing (F14)"
+
+# F1: a hostile lock (an entry pointing outside .weir/) refuses PER ENTRY
+# with a located diagnostic, restores the benign sibling, and writes
+# nothing outside .weir/. restore overwrites only its OWN artifacts
+# inside .weir/ [D:lockfile-confinement]
+f1repo="$ctdir/f1repo"
+mkdir -p "$f1repo/.weir"
+f1hash=$(sha256sum "$ctdir/serve/configmap-v1.json" | cut -d' ' -f1)
+f1esc="$ctdir/F1-ESCAPE.json"
+cat > "$f1repo/.weir/lock.json" <<F1EOF
+{ "schemaVersion": 1, "artifacts": [
+  {"kind":"schema","name":"benign","url":"http://127.0.0.1:$ctport/configmap-v1.json","sha256":"$f1hash","path":"schemas/benign.json"},
+  {"kind":"schema","name":"traversal","url":"http://127.0.0.1:$ctport/configmap-v1.json","sha256":"$f1hash","path":"../F1-TRAVERSAL.json"},
+  {"kind":"schema","name":"absolute","url":"http://127.0.0.1:$ctport/configmap-v1.json","sha256":"$f1hash","path":"$f1esc"}
+] }
+F1EOF
+out=$( cd "$f1repo" && $BIN restore 2>&1 ) && fail "restore on a hostile lock must exit nonzero" || true
+echo "$out" | grep -qF "escapes .weir/" || fail "F1: the hostile entry is a located refusal naming the escape: $out"
+test -f "$f1repo/.weir/schemas/benign.json" || fail "F1: the benign sibling must still restore"
+test ! -e "$f1esc" || fail "F1: an absolute lock path must not be written outside .weir/"
+test ! -e "$ctdir/F1-TRAVERSAL.json" || fail "F1: a traversal lock path must not be written outside .weir/"
+# verify refuses to READ outside .weir/ too — same located refusal
+out=$( cd "$f1repo" && $BIN verify 2>&1 ) && fail "verify on a hostile lock must exit nonzero" || true
+echo "$out" | grep -qF "escapes .weir/" || fail "F1: verify names the escape rather than reading it: $out"
+echo "e2e ok: a hostile lock refuses per entry (restore + verify), the benign sibling restores, nothing escapes (F1)"
+
 kill $ctsrv 2>/dev/null || true
+
+# F2: an unreadable file on the import path is a LOCATED diagnostic, never
+# a crash (mode 000; exit 1, not 134) [D:lockfile-confinement]
+if [ "$IS_WINDOWS" = "0" ]; then
+    f2dir=$(mkweirtmp)
+    printf 'module M\nlet f : int -> int\nlet f x = x + 1\n' > "$f2dir/mod.weir"
+    printf 'import "./mod.weir" as M\nprint (show (M.f 1))\n' > "$f2dir/main.weir"
+    chmod 000 "$f2dir/mod.weir"
+    f2rc=0
+    out=$($BIN check "$f2dir/main.weir" 2>&1) || f2rc=$?
+    chmod 644 "$f2dir/mod.weir"
+    [ "$f2rc" = "1" ] || fail "F2: an unreadable import must exit 1 (a located diagnostic), got $f2rc: $out"
+    echo "$out" | grep -qF "cannot read import" || fail "F2: the located 'cannot read import' diagnostic: $out"
+    rm -rf "$f2dir"
+    echo "e2e ok: an unreadable import is a located diagnostic, never a crash (F2)"
+else
+    echo "e2e skip: F2 unreadable-import (POSIX mode bits)"
+fi
 
 # check-time catches on the REAL schema: the typo (did-you-mean) and a
 # misplaced nesting (a field at the wrong level)
