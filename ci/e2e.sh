@@ -8886,6 +8886,70 @@ WEOF
 out=$($BIN "$padir/kaa.weir" 2>&1) && fail "a known-after-apply read must refuse" || true
 echo "$out" | grep -qF "known-after-apply" || fail "the known-after-apply teaching must fire: $out"
 echo "e2e ok: plan/apply — a known-after-apply read refuses (located)"
+
+# DA-01 [D:plan-parallel-refusal]: a parallel/race callback runs on a
+# worker thread WITHOUT the (thread-local) plan capture frame — a native
+# mutation there would escape capture and run FOR REAL. The combinator
+# must REFUSE at runtime before any worker is scheduled: no marker file.
+cat > "$padir/par.weir" <<WEOF
+let changes =
+    plan
+        [1] |> Seq.piterWith 1 (fun _ -> File.write "$padir/par-marker.txt" ["probe"])
+print \$"empty={changes |> Plan.isEmpty}"
+WEOF
+out=$($BIN "$padir/par.weir" 2>&1) && fail "a parallel combinator inside a plan must refuse" || true
+echo "$out" | grep -qF "'piterWith' is refused inside 'plan'" || fail "the parallel-in-plan refusal must fire: $out"
+[ -f "$padir/par-marker.txt" ] && fail "a worker wrote the marker despite the plan — capture escaped"
+echo "e2e ok: plan/apply — a parallel combinator inside a plan refuses (no worker ran)"
+
+# the same combinator OUTSIDE a plan still runs (the refusal is scoped)
+cat > "$padir/paro.weir" <<WEOF
+[1; 2; 3] |> Seq.piterWith 2 (fun n -> File.write \$"$padir/paro-{n}.txt" ["x"])
+print "ran"
+WEOF
+out=$($BIN "$padir/paro.weir" 2>&1) || fail "a parallel combinator OUTSIDE a plan must still run: $out"
+expect "the parallel combinator ran outside a plan" "ran" "$out"
+[ "$(ls "$padir"/paro-*.txt 2>/dev/null | wc -l)" -eq 3 ] || fail "the outside-plan parallel combinator did not write all arms"
+echo "e2e ok: plan/apply — a parallel combinator OUTSIDE a plan still runs"
+
+# DA-02 [D:plan-proc-runtime-guard]: the SYNTACTIC firstPlanRefusal cannot
+# follow a helper reference, so an indirect proc built inside a plan slips
+# past `check`. A runtime guard at the ONE spawn point refuses it: no
+# child process runs, no marker file. (Direct proc still refuses at check
+# above — belt and suspenders.)
+cat > "$padir/indirect.weir" <<WEOF
+let runMarker () =
+    let lines = sh -c "printf marker > $padir/proc-marker.txt"
+    lines |> Seq.length
+let changes =
+    plan
+        let _forced = runMarker ()
+        ()
+print \$"empty={changes |> Plan.isEmpty}"
+WEOF
+# it checks clean (the syntactic walk cannot see through the helper)...
+$BIN check "$padir/indirect.weir" >/dev/null 2>&1 || true
+# ...but REFUSES at runtime before the child spawns
+out=$($BIN "$padir/indirect.weir" 2>&1) && fail "an indirect proc inside a plan must refuse at runtime" || true
+echo "$out" | grep -qF "refused inside 'plan'" || fail "the runtime proc-in-plan guard must fire: $out"
+[ -f "$padir/proc-marker.txt" ] && fail "the indirect proc spawned despite the plan — the guard did not fire"
+echo "e2e ok: plan/apply — an indirect helper-wrapped proc refuses at runtime (no child ran)"
+
+# a native File.write reached THROUGH a serial helper still CAPTURES —
+# the runtime guard must not over-refuse weir-native mutations
+cat > "$padir/helperwrite.weir" <<WEOF
+let doWrite () =
+    File.write "$padir/helper-marker.txt" ["probe"]
+let changes =
+    plan
+        doWrite ()
+if changes |> Plan.isEmpty then fail "the helper's native write was not captured"
+print "captured"
+WEOF
+out=$($BIN "$padir/helperwrite.weir" 2>&1) || fail "a native write via a serial helper must still capture: $out"
+expect "the serial helper's native write is captured" "captured" "$out"
+[ -f "$padir/helper-marker.txt" ] && fail "the captured write ran to disk — over-captured"
+echo "e2e ok: plan/apply — a native write via a serial helper still captures (not over-refused)"
 rm -rf "$padir"
 
 # ---- within serve: the scoped HTTP listener [D:http-serve] -----------

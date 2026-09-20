@@ -4,6 +4,27 @@
 
 ### Fixed
 
+- **A parallel or race combinator inside a `plan` now refuses instead of
+  escaping capture.** `plan`'s mutation capture is thread-local, but
+  `Seq.pmap`/`pmapWith`/`piter`/`piterWith`/`pfirst`/`pfirstWith` run
+  their callbacks on worker threads that did not inherit the capture
+  frame — so a `File.write` (or any native mutation) inside a parallel
+  callback under `plan` executed for real while the plan reported empty.
+  The combinators now refuse on the calling thread before any worker is
+  scheduled, with a located error naming the combinator. The same
+  combinators outside a plan are unchanged, and a native mutation reached
+  through a *serial* helper still captures normally.
+
+- **An indirect process started inside a `plan` now refuses at runtime.**
+  The static plan check does not follow helper-function references, so a
+  helper that forced a command (e.g. `sh -c "…"`) spawned the process
+  for real during plan construction while the plan reported empty. The
+  process spawn point now refuses when a plan is capturing on the same
+  thread, with the same "proc refused inside plan" message. The direct
+  `sh -c` form still refuses at check time (belt and suspenders), and a
+  weir-native `File`/`Dir`/`Http` mutation reached through a helper still
+  captures — only process spawns are refused.
+
 - **`within serve` reaches the handler over `localhost`, not just
   `127.0.0.1`.** The scoped listener registered a prefix for
   `127.0.0.1` only, so a client addressing the server as `localhost`

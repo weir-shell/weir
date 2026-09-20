@@ -43,6 +43,16 @@ let private spawn
     (args: string list)
     (env: (string * string) list)
     : Process =
+    // runtime plan refusal [D:plan-proc-runtime-guard]: the syntactic
+    // firstPlanRefusal cannot follow a helper reference, so an indirect
+    // proc built inside a plan slipped through the checker and spawned
+    // for real. The helper runs on the capturing thread, so this
+    // thread-local guard is set — refuse here, the ONE spawn all
+    // process starts funnel through.
+    if Session.planGuardActive () then
+        failwith
+            $"'{prog}' runs a command, and 'proc' is refused inside 'plan' — a spawned binary reads and writes opaquely, so its effects cannot be captured; plan covers weir-native mutation only (File/Dir/Http)"
+
     let psi = ProcessStartInfo(prog)
 
     for a in args do

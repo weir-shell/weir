@@ -287,6 +287,11 @@ module PlanMode =
               Targets = System.Collections.Generic.HashSet() }
 
         stack.Value <- frame :: stack.Value
+        // mirror the frame push into Session's thread-local guard so the
+        // process spawn point (compiled before Eval) can refuse an
+        // indirect proc that firstPlanRefusal cannot follow through a
+        // helper [D:plan-proc-runtime-guard]
+        Session.enterPlanGuard ()
 
         try
             f ()
@@ -295,6 +300,8 @@ module PlanMode =
                 match stack.Value with
                 | _ :: rest -> rest
                 | [] -> []
+
+            Session.exitPlanGuard ()
 
         List.ofSeq frame.Ops
 

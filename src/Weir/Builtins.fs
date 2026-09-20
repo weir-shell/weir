@@ -1157,6 +1157,18 @@ let private defaultParallelCeiling (label: string) : int =
 
     c
 
+// the plan-capture refusal for parallel/race combinators
+// [D:plan-parallel-refusal]: PlanMode's capture frame is thread-local
+// (Eval), so a callback dispatched to a worker thread runs WITHOUT it
+// — a native mutation inside the arm would execute for real while the
+// plan reports empty. Refuse on the CALLING thread (where the frame IS
+// active) before any Task is scheduled; combinators outside a plan are
+// unaffected.
+let private refuseParallelInPlan (combinator: string) =
+    if PlanMode.active () then
+        failwith
+            $"'{combinator}' is refused inside 'plan' — its per-worker callbacks run on threads that do not inherit the plan's capture frame, so their effects cannot be captured; run parallel/race combinators outside the plan"
+
 let private runParallelWith (degree: int) (f: Value) (items: seq<Value>) : Value array =
     if degree < 1 then
         failwith $"parallel degree must be at least 1, got {degree}"
@@ -1287,7 +1299,9 @@ let private pfirstImpl: Value =
     VBuiltin(fun f ->
         VBuiltin(fun s ->
             match s with
-            | VSeq items -> runRaceWith (defaultParallelCeiling "pfirst") f items
+            | VSeq items ->
+                refuseParallelInPlan "pfirst"
+                runRaceWith (defaultParallelCeiling "pfirst") f items
             | v -> unreachable $"the checker rejects 'pfirst' on {formatValue v}"))
 
 let private pfirstWithImpl: Value =
@@ -1295,14 +1309,18 @@ let private pfirstWithImpl: Value =
         VBuiltin(fun f ->
             VBuiltin(fun s ->
                 match nv, s with
-                | VInt n, VSeq items -> runRaceWith (int n) f items
+                | VInt n, VSeq items ->
+                    refuseParallelInPlan "pfirstWith"
+                    runRaceWith (int n) f items
                 | v, _ -> unreachable $"the checker rejects 'pfirstWith' on {formatValue v}")))
 
 let private pmapImpl: Value =
     VBuiltin(fun f ->
         VBuiltin(fun s ->
             match s with
-            | VSeq items -> VSeq(runParallelWith (defaultParallelCeiling "pmap") f items :> seq<Value>)
+            | VSeq items ->
+                refuseParallelInPlan "pmap"
+                VSeq(runParallelWith (defaultParallelCeiling "pmap") f items :> seq<Value>)
             | v -> unreachable $"the checker rejects 'pmap' on {formatValue v}"))
 
 let private pmapWithImpl: Value =
@@ -1310,7 +1328,9 @@ let private pmapWithImpl: Value =
         VBuiltin(fun f ->
             VBuiltin(fun s ->
                 match nv, s with
-                | VInt n, VSeq items -> VSeq(runParallelWith (int n) f items :> seq<Value>)
+                | VInt n, VSeq items ->
+                    refuseParallelInPlan "pmapWith"
+                    VSeq(runParallelWith (int n) f items :> seq<Value>)
                 | v, _ -> unreachable $"the checker rejects 'pmapWith' on {formatValue v}")))
 
 let private piterWithImpl: Value =
@@ -1319,6 +1339,7 @@ let private piterWithImpl: Value =
             VBuiltin(fun s ->
                 match nv, s with
                 | VInt n, VSeq items ->
+                    refuseParallelInPlan "piterWith"
                     runParallelWith (int n) f items |> ignore
                     VUnit
                 | v, _ -> unreachable $"the checker rejects 'piterWith' on {formatValue v}")))
@@ -1328,6 +1349,7 @@ let private piterImpl: Value =
         VBuiltin(fun s ->
             match s with
             | VSeq items ->
+                refuseParallelInPlan "piter"
                 runParallelWith (defaultParallelCeiling "piter") f items |> ignore
                 VUnit
             | v -> unreachable $"the checker rejects 'piter' on {formatValue v}"))

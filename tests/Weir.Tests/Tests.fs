@@ -7773,6 +7773,146 @@ let planApplyTests =
               Expect.isTrue
                   (ds |> List.exists (fun d -> d.Message.Contains "plan takes a block"))
                   "the bare head teaches the block form"
+          }
+          // [D:plan-parallel-refusal] DA-01: PlanMode's capture frame is
+          // thread-local, so a parallel/race callback runs on a worker
+          // WITHOUT it — a native mutation would escape capture and run
+          // for real. The combinators refuse on the calling thread before
+          // any worker is scheduled. Assert the FILESYSTEM: no marker.
+          test "DA-01: piterWith inside a plan REFUSES before any worker writes a file" {
+              let dir = td ()
+              System.IO.Directory.CreateDirectory dir |> ignore
+              let marker = System.IO.Path.Combine(dir, "parallel-marker.txt")
+              let markerW = weirPath marker
+
+              try
+                  let code =
+                      runFile
+                          [ "let changes ="
+                            "    plan"
+                            $"        [1] |> Seq.piterWith 1 (fun _ -> File.write \"{markerW}\" [\"probe\"])"
+                            "print $\"empty={changes |> Plan.isEmpty}\"" ]
+
+                  Expect.notEqual code 0 "the plan refused the parallel combinator"
+                  Expect.isFalse (System.IO.File.Exists marker) "no worker wrote the marker"
+              finally
+                  System.IO.Directory.Delete(dir, true)
+          }
+          test "DA-01: piter / pmap / pfirst inside a plan each REFUSE (message pins), no file" {
+              // the refusal fires at runtime on the calling thread; `run`
+              // evaluates in-process so the located failwith is catchable
+              let refuses combinator body =
+                  Expect.throwsC
+                      (fun () -> run ("plan" + Weir.Parser.sibSepStr + body) |> ignore)
+                      (fun ex ->
+                          Expect.stringContains ex.Message $"'{combinator}' is refused inside 'plan'" $"{combinator} refuses")
+
+              // File.write to a never-existing path proves no worker ran:
+              // a captured write is a no-op, a refusal precedes any worker
+              refuses "piter" "[1; 2; 3; 4] |> Seq.piter (fun n -> File.write \"/tmp/weir-da01-never\" [\"x\"])"
+              refuses "pmap" "[1; 2] |> Seq.pmap (fun n -> File.write \"/tmp/weir-da01-never\" [\"x\"]) |> Seq.length"
+              refuses "pfirst" "[1; 2] |> Seq.pfirst (fun n -> File.write \"/tmp/weir-da01-never\" [\"x\"])"
+              refuses "piterWith" "[1] |> Seq.piterWith 1 (fun n -> File.write \"/tmp/weir-da01-never\" [\"x\"])"
+              refuses "pmapWith" "[1] |> Seq.pmapWith 1 (fun n -> File.write \"/tmp/weir-da01-never\" [\"x\"]) |> Seq.length"
+              refuses "pfirstWith" "[1] |> Seq.pfirstWith 1 (fun n -> File.write \"/tmp/weir-da01-never\" [\"x\"])"
+              Expect.isFalse (System.IO.File.Exists "/tmp/weir-da01-never") "no combinator wrote the marker"
+          }
+          test "DA-01: a nested plan's parallel combinator REFUSES too (filesystem)" {
+              let dir = td ()
+              System.IO.Directory.CreateDirectory dir |> ignore
+              let marker = System.IO.Path.Combine(dir, "nested.txt")
+              let markerW = weirPath marker
+
+              try
+                  let code =
+                      runFile
+                          [ "let changes ="
+                            "    plan"
+                            "        let inner ="
+                            "            plan"
+                            $"                [1] |> Seq.piter (fun _ -> File.write \"{markerW}\" [\"x\"])"
+                            "        print $\"inner empty={inner |> Plan.isEmpty}\""
+                            "print $\"outer empty={changes |> Plan.isEmpty}\"" ]
+
+                  Expect.notEqual code 0 "the nested plan refused the parallel combinator"
+                  Expect.isFalse (System.IO.File.Exists marker) "nothing written"
+              finally
+                  System.IO.Directory.Delete(dir, true)
+          }
+          test "DA-01: a callback that itself fails is never reached — the refusal precedes scheduling" {
+              // even a callback that WOULD raise must not run: the refusal
+              // is on the calling thread before any worker is scheduled
+              Expect.throwsC
+                  (fun () ->
+                      run ("plan" + Weir.Parser.sibSepStr + "[1] |> Seq.piter (fun n -> fail \"callback ran\")")
+                      |> ignore)
+                  (fun ex -> Expect.stringContains ex.Message "'piter' is refused inside 'plan'" "refused, not the callback's fail")
+          }
+          test "DA-01: a parallel combinator OUTSIDE a plan still runs" {
+              let dir = td ()
+              System.IO.Directory.CreateDirectory dir |> ignore
+              let d = weirPath dir
+
+              try
+                  let code =
+                      runFile
+                          [ $"[1; 2; 3] |> Seq.piterWith 2 (fun n -> File.write $\"{d}/out-{{n}}.txt\" [\"x\"])"
+                            "print \"ran\"" ]
+
+                  Expect.equal code 0 "the parallel combinator ran outside a plan"
+                  Expect.equal (System.IO.Directory.GetFiles dir).Length 3 "all three arms wrote"
+              finally
+                  System.IO.Directory.Delete(dir, true)
+          }
+          // [D:plan-proc-runtime-guard] DA-02: firstPlanRefusal is a
+          // syntactic walk that cannot follow a helper reference, so an
+          // indirect proc slips past the checker. A thread-local guard at
+          // the ONE spawn point refuses at runtime (the helper runs on the
+          // capturing thread). The syntactic diagnostic stays for usability.
+          test "DA-02: a helper-wrapped proc inside a plan REFUSES at runtime, no process runs" {
+              let dir = td ()
+              System.IO.Directory.CreateDirectory dir |> ignore
+              let marker = System.IO.Path.Combine(dir, "process-marker.txt")
+              let markerW = weirPath marker
+
+              try
+                  let code =
+                      runFile
+                          [ "let runMarker () ="
+                            $"    let lines = sh -c \"printf marker > {markerW}\""
+                            "    lines |> Seq.length"
+                            "let changes ="
+                            "    plan"
+                            "        let _forced = runMarker ()"
+                            "        ()"
+                            "print $\"empty={changes |> Plan.isEmpty}\"" ]
+
+                  Expect.notEqual code 0 "the plan refused the indirect proc"
+                  Expect.isFalse (System.IO.File.Exists marker) "no process ran (no marker)"
+              finally
+                  System.IO.Directory.Delete(dir, true)
+          }
+          test "DA-02: a native File.write reached THROUGH a serial helper still CAPTURES" {
+              let dir = td ()
+              System.IO.Directory.CreateDirectory dir |> ignore
+              let marker = System.IO.Path.Combine(dir, "helper-marker.txt")
+              let markerW = weirPath marker
+
+              try
+                  let code =
+                      runFile
+                          [ "let doWrite () ="
+                            $"    File.write \"{markerW}\" [\"probe\"]"
+                            "let changes ="
+                            "    plan"
+                            "        doWrite ()"
+                            "if changes |> Plan.isEmpty then fail \"the helper's write was not captured\""
+                            "print \"ok\"" ]
+
+                  Expect.equal code 0 "the serial helper's native write is captured (not over-refused)"
+                  Expect.isFalse (System.IO.File.Exists marker) "the captured write did not run"
+              finally
+                  System.IO.Directory.Delete(dir, true)
           } ]
 
 let withinKindsTests =
