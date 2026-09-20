@@ -211,6 +211,61 @@ let private sweepLiveTmpDirs () =
 /// it deletes LIVE within-tmp dirs, which is correct only when dying
 let replSurvivesSigint = ref false
 
+// libc, for the detached-SIGINT reset [D:signal-teardown]. `signal`
+// returns the PREVIOUS disposition; we peek-and-restore to convert an
+// inherited SIG_IGN to SIG_DFL without clobbering anything else. `open`/
+// `close` probe for a controlling terminal (/dev/tty).
+module private Libc =
+    open System.Runtime.InteropServices
+
+    // sighandler_t is a function pointer; SIG_DFL = 0, SIG_IGN = 1,
+    // SIG_ERR = -1 — the three sentinels are all we compare against, so
+    // nativeint carries them faithfully without a delegate marshal.
+    [<DllImport("libc", SetLastError = true)>]
+    extern nativeint signal(int signum, nativeint handler)
+
+    [<DllImport("libc", SetLastError = true)>]
+    extern int ``open``(string path, int flags)
+
+    [<DllImport("libc", SetLastError = true)>]
+    extern int close(int fd)
+
+    let SIG_DFL: nativeint = nativeint 0
+    let SIG_IGN: nativeint = nativeint 1
+    let SIGINT = 2
+    let O_RDWR = 2
+
+    /// true when the process has a controlling terminal — /dev/tty opens
+    /// only then (ENXIO otherwise). A `nohup weir &` KEEPS its tty, so
+    /// this is the gate that preserves the nohup convention.
+    let hasControllingTty () : bool =
+        let fd = ``open`` ("/dev/tty", O_RDWR)
+
+        if fd >= 0 then
+            close fd |> ignore
+            true
+        else
+            false
+
+    /// convert an inherited SIG_IGN on SIGINT to SIG_DFL, leaving every
+    /// other disposition untouched (peek by setting SIG_DFL, restore if
+    /// the previous was not SIG_IGN). Returns whether a reset happened.
+    let resetSigintIfIgnored () : bool =
+        let prev = signal (SIGINT, SIG_DFL)
+
+        if prev = SIG_IGN then
+            true // leave SIG_DFL in place — the registration can now bind
+        else
+            // not ignored: put the real disposition back untouched
+            signal (SIGINT, prev) |> ignore
+            false
+
+// a second signal DURING teardown hard-exits [D:signal-teardown] — the
+// shell's double-Ctrl+C escape, so a slow or stuck cleanup can never
+// wedge a supervisor. The first signal sets this and runs the sweep;
+// default termination then carries the conventional 130/143.
+let private tearingDown = ref 0
+
 let private installExitHook () =
     // NORMAL process exit — the pfirst exit-race customer: a background
     // loser killed mid-finally no longer leaks its dir
@@ -221,6 +276,21 @@ let private installExitHook () =
     // Windows takes Console.CancelKeyPress instead. After the handler,
     // default termination proceeds (Cancel stays false) — sweep, then die.
     if not (System.OperatingSystem.IsWindows()) then
+        // THE DETACHED-SIGINT RESET [D:signal-teardown]: a shell
+        // backgrounding weir in a non-interactive context sets SIGINT
+        // (and SIGQUIT) to SIG_IGN — the job-control nohup convention —
+        // and .NET HONOURS an inherited SIG_IGN, so PosixSignalRegistration
+        // never installs and a `kill -INT` on a detached supervisor is a
+        // no-op (only SIGKILL stops it, no scope unwind). We reset SIGINT
+        // to SIG_DFL ONLY when there is no controlling terminal: a truly
+        // detached process has no terminal Ctrl+C to protect against, so
+        // any SIGINT it receives is an explicit stop that must tear down.
+        // A `nohup weir &` KEEPS its tty and its SIG_IGN — terminal Ctrl+C
+        // still cannot kill it. The REPL is interactive (has a tty), so it
+        // never trips this and its [D:repl-isig] survival is untouched.
+        if not (replSurvivesSigint.Value) && not (Libc.hasControllingTty ()) then
+            Libc.resetSigintIfIgnored () |> ignore
+
         for posixSig in
             [ System.Runtime.InteropServices.PosixSignal.SIGINT
               System.Runtime.InteropServices.PosixSignal.SIGTERM ] do
@@ -231,11 +301,26 @@ let private installExitHook () =
                         // a SIGINT the REPL cancels is not a death —
                         // the dirs stay live [D:repl-isig]
                         if
-                            not (
-                                replSurvivesSigint.Value
-                                && ctx.Signal = System.Runtime.InteropServices.PosixSignal.SIGINT
-                            )
+                            replSurvivesSigint.Value
+                            && ctx.Signal = System.Runtime.InteropServices.PosixSignal.SIGINT
                         then
+                            ()
+                        // a SECOND signal mid-teardown hard-exits
+                        // [D:signal-teardown] — the double-Ctrl+C escape,
+                        // 130 for SIGINT / 143 for SIGTERM
+                        elif System.Threading.Interlocked.Exchange(tearingDown, 1) = 1 then
+                            let code =
+                                if ctx.Signal = System.Runtime.InteropServices.PosixSignal.SIGTERM then
+                                    143
+                                else
+                                    130
+
+                            System.Environment.Exit code
+                        else
+                            // first signal: run the one teardown, then let
+                            // default termination carry 130/143 (Cancel
+                            // stays false) — the SAME path a tty Ctrl+C and
+                            // a SIGTERM already take
                             sweepLiveTmpDirs ()
                 )
 

@@ -39,6 +39,10 @@ type Fact =
     | SecretLoad of what: string
     | SecretArgv of prog: string
     | ProcScope
+    // a scoped HTTP listener [D:http-serve]: binds a port and runs a
+    // handler per request — the network's LISTEN face, distinct from
+    // Network's client SENDs
+    | ServeScope of port: int option
     | ProcCtl of member_: string
     | Terminates of via: string
 
@@ -174,6 +178,9 @@ let rec private walkExpr
           | WithinProc ->
               add ProcScope te.Span
               add (TempWrite "the proc scope's spill files") te.Span
+          // the listener binds a port [D:http-serve]; the port literal is
+          // not statically read here (a record field), so None
+          | WithinServe -> add (ServeScope None) te.Span
           | WithinEnv ->
               let names = arg |> Option.bind (envNamesOf binds)
               add (EnvWrite("within env", names)) te.Span
@@ -365,6 +372,8 @@ let private factLine (c: Cap) : string * string =
     | SecretLoad w -> "secrets", $"loads {w}"
     | SecretArgv p -> "secrets", $"a Secret reaches the argv of {p} (visible in ps — weir does not hide argv)"
     | ProcScope -> "processes", "a scoped background process (within proc)"
+    | ServeScope(Some p) -> "network", $"an HTTP listener on port {p} (within serve)"
+    | ServeScope None -> "network", "an HTTP listener (within serve)"
     | ProcCtl m -> "processes", m
     | Terminates via -> "terminates", via
 
@@ -408,6 +417,7 @@ let private factClass (f: Fact) : Weir.Effects.EffectClass =
     | EnvWrite _
     | SecretArgv _
     | ProcScope
+    | ServeScope _
     | ProcCtl _
     | Terminates _ -> Weir.Effects.Mutation
 
@@ -537,6 +547,8 @@ let renderJson (script: string) (caps: Cap list) : string =
             | SecretLoad x -> "secret-load", x
             | SecretArgv p -> "secret-argv", p
             | ProcScope -> "proc-scope", "within proc"
+            | ServeScope(Some p) -> "serve-scope", $"within serve (port {p})"
+            | ServeScope None -> "serve-scope", "within serve"
             | ProcCtl m -> "proc-ctl", m
             | Terminates v -> "terminates", v
 

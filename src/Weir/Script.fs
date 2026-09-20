@@ -473,12 +473,16 @@ let isPlanHead (piece: string) : bool =
     afterLet = "plan"
     || afterLet.StartsWith "plan " && not (afterLet.Contains ";")
 
-// the proc head [D:scoped-procs]: its TAIL is a command line, so the
-// FIRST block statement must join at the machine boundary too — a
-// space join would feed it to the command's argv (the
-// sibling-sentinel's argument, applied one position earlier). Keyed
-// lexically like isWithinHead; the last segment is the dangling piece.
-let endsInProcHead (text: string) : bool =
+// the binder-head scanner [D:scoped-procs] [D:http-serve]: a `within
+// proc <b> =` / `within serve <b> =` head whose TAIL is a resource spec
+// (a command for proc, `{config} handler` atoms for serve), so the
+// FIRST block statement must join at the machine boundary too — a space
+// join would feed it to the tail (proc: the command's argv; serve: the
+// handler application). This scan is `;`-BLIND (it finds the marker
+// outside strings and checks only the binder-`=` shape), so an inline
+// record `;` in serve's config tail does NOT hide the head — the reason
+// serve routes through here and not isWithinHead's `;`-guarded path.
+let private endsInBinderHead (marker: string) (text: string) : bool =
     let lastSeg =
         match text.LastIndexOf Parser.sibSep with
         | -1 -> text
@@ -486,11 +490,8 @@ let endsInProcHead (text: string) : bool =
 
     // the head may sit mid-segment (behind a let, a lambda arrow, a
     // pipe) — find its LAST occurrence OUTSIDE strings (the one
-    // scanner), then require the binder-`=` shape; the command tail
-    // then runs to the segment's end, which is the thing a space join
-    // would feed to argv
-    let marker = "within proc "
-
+    // scanner), then require the binder-`=` shape; the tail then runs to
+    // the segment's end, which is the thing a space join would feed
     let lastStart =
         foldOutsideStrings
             (fun acc i _ ->
@@ -517,6 +518,14 @@ let endsInProcHead (text: string) : bool =
             rest.Substring(0, eq).Trim()
             |> Seq.forall (fun c -> System.Char.IsLetterOrDigit c || c = '_'))
 
+let endsInProcHead (text: string) : bool = endsInBinderHead "within proc " text
+
+// the serve head [D:http-serve]: same shape as proc's — a `within serve
+// <b> =` binder head whose block joins sentineled — routed through the
+// same `;`-blind scanner so an inline config record `{ a; b }` on the
+// head line does not defeat the body attach
+let endsInServeHead (text: string) : bool = endsInBinderHead "within serve " text
+
 let dangleOpensBlock (piece: string) : bool =
     let t = piece.TrimEnd()
 
@@ -533,6 +542,9 @@ let dangleOpensBlock (piece: string) : bool =
     || t.EndsWith " function"
     || t.EndsWith "(function"
     || isWithinHead t
+    // a serve head with an inline config `;` is `;`-blind here
+    // [D:http-serve] — isWithinHead's `;`-guard would hide it
+    || endsInServeHead t
     || isPureHead t
     // the plan head opens a statement block [D:plan-apply]
     || isPlanHead t
@@ -1422,7 +1434,10 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                                 { p with
                                                                     LL =
                                                                         applyJoin
-                                                                            (if endsInProcHead p.LL.Text then
+                                                                            (if
+                                                                                 endsInProcHead p.LL.Text
+                                                                                 || endsInServeHead p.LL.Text
+                                                                             then
                                                                                  JStmtSibling
                                                                              else
                                                                                  JSpace)
@@ -1621,6 +1636,7 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                                                 // at the sentinel) [D:until-argv-join]
                                                                                 (if
                                                                                      endsInProcHead ll.Text
+                                                                                     || endsInServeHead ll.Text
                                                                                      || isUntil
                                                                                      || isAlways
                                                                                  then
@@ -1704,7 +1720,8 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                                 rest, JIn
                                                             // a proc head's block joins sentineled even in
                                                             // the dangle position [D:scoped-procs]
-                                                            | _ when endsInProcHead ll.Text -> p.Lets, JStmtSibling
+                                                            | _ when endsInProcHead ll.Text || endsInServeHead ll.Text ->
+                                                                p.Lets, JStmtSibling
                                                             // the first line after a dangling head OPENS its
                                                             // body — a stale statement level from an earlier
                                                             // block must not sibling-capture it

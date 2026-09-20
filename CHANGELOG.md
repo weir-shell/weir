@@ -1,5 +1,63 @@
 # Changelog
 
+## v0.0.47
+
+### Added
+
+- **`within serve` — the scoped HTTP listener, weir's first server
+  surface.** `within serve srv = { port = 8080; maxConcurrent = 4 }
+  handler` opens a loopback listener for the block, runs a plain
+  synchronous handler (`HttpServerRequest -> HttpServerResponse`) per
+  request, and closes the socket on every exit — normal, raise,
+  SIGINT and SIGTERM — so the port frees (a second bind on it then
+  succeeds). Same no-orphan discipline as `within proc`, port edition:
+  the scope IS the lifetime. Three primitives, deliberately no more —
+  scoped by the ring protocol study, which proved this surface needs
+  no WebSockets (commands are request→response, pushes are SSE):
+    - **A scoped listener with a sync handler.** The handler matches
+      on `req.path` (weir's union/`match`, not a routing framework) and
+      returns a response record. Async-under-sync: the runtime
+      multiplexes connections on tasks; the handler surface stays
+      synchronous.
+    - **A streaming response body: `Stream of seq<string>`,** a new
+      case on the shared `HttpBody` union beside `NoBody`/`Json`/`Text`.
+      The runtime pulls and flushes each element as it is produced —
+      chunked, SSE-shaped `data:` lines — so a slow producer streams
+      incrementally (the client sees early elements before the seq
+      ends). The lazy-seq-streams-out precedent `print` sets, server
+      side.
+    - **A handler concurrency ceiling: `maxConcurrent` on the config,**
+      the `Seq.pmapWith` concurrency law on the scope — N handlers run
+      at once, excess queues.
+  One type family: `HttpMethod`, header pairs and the body union are
+  shared with the `Http` client; the server records differ only where
+  the wire differs (`HttpServerRequest` carries `path` + `query`, not a
+  `url`; no `auth`/`timeout` — client concerns; `HttpServerResponse`'s
+  `body` is an `HttpBody`, so `Stream` is expressible). The handle
+  surface is `Server.port` and `Server.running` (the scope is the
+  teardown — there is no `stop`). Bounded out of v1, each a stated
+  non-goal: TLS (a reverse-proxy posture), a routing DSL, WebSockets,
+  request-body streaming, HTTP/2.
+
+### Fixed
+
+- **Detached SIGINT now tears scopes down.** A `kill -INT` on a weir
+  backgrounded in a non-interactive session (`setsid`, a CI runner, a
+  systemd unit) was a no-op: scopes did not unwind, `always` cleanups
+  were skipped, `within proc` children orphaned, and only SIGKILL
+  stopped it. The cause: such a shell sets SIGINT to `SIG_IGN` before
+  exec (the job-control nohup convention) and .NET honours an
+  inherited `SIG_IGN`, so weir's signal handler never installed. A
+  detached weir (no controlling terminal) now resets SIGINT to its
+  default disposition, so SIGINT runs the same scope-unwind and
+  child-reap SIGTERM and a tty Ctrl+C always ran, exiting 130. A
+  second signal during teardown hard-exits (the double-Ctrl+C escape).
+  A `weir … &`/`nohup` in an interactive shell keeps its controlling
+  terminal and its ignored SIGINT unchanged — a terminal Ctrl+C still
+  does not reach it (send SIGTERM, or `kill -INT` the pid). SIGTERM
+  was already correct and is unchanged; POSIX only (Windows keeps
+  `Console.CancelKeyPress`).
+
 ## v0.0.46
 
 ### Added

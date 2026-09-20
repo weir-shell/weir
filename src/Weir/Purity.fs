@@ -92,6 +92,7 @@ let rec isPureExpr (env: Map<string, bool>) (te: TypedExpr) : bool =
          | WithinCd
          | WithinEnv
          | WithinProc
+         | WithinServe
          | WithinLock -> false)
     | TEEnvLoad _ -> false
     | TEArgsLoad _ -> false
@@ -189,6 +190,7 @@ let rec firstEffect (env: Map<string, bool>) (te: TypedExpr) : (Span * string) o
          | WithinCd
          | WithinEnv
          | WithinProc
+         | WithinServe
          | WithinLock -> Some(te.Span, $"'within {withinKindName kind}' scopes a resource"))
     | TEEnvLoad _ -> Some(te.Span, "'Env.load' reads the environment")
     | TEArgsLoad _ -> Some(te.Span, "'Args.load' reads the arguments")
@@ -313,6 +315,7 @@ let rec firstMutation (env: Map<string, bool>) (te: TypedExpr) : (Span * string)
          | WithinCd
          | WithinEnv
          | WithinProc
+         | WithinServe
          | WithinLock -> Some(te.Span, $"'within {withinKindName kind}' scopes a resource (external mutation)"))
     // Env.load/Args.load READ the environment/arguments — ambient input,
     // allowed; keep walking children (an argument could mutate)
@@ -460,6 +463,7 @@ let rec pureViolation (env: Map<string, bool>) (te: TypedExpr) : (Span * string)
          | WithinCd
          | WithinEnv
          | WithinProc
+         | WithinServe
          | WithinLock ->
              [ arg; opts ]
              |> List.choose id

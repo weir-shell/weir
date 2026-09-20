@@ -60,6 +60,10 @@ type Value =
     | VClosurePat of binder: Pattern * body: TypedExpr * env: Env
     | VBuiltin of (Value -> Value)
     | VProc of handle: ProcHandle
+    // a scoped listener handle [D:http-serve]: the live socket — identity
+    // IS the listener (reference equality); the within-serve scope owns
+    // the lifetime and closes it on every exit
+    | VServer of handle: Serve.Handle
 
     override this.Equals(other) =
         match other with
@@ -95,6 +99,7 @@ type Value =
             | VClosurePat(p1, b1, e1), VClosurePat(p2, b2, e2) -> p1 = p2 && b1 = b2 && obj.ReferenceEquals(e1, e2)
             | VBuiltin f, VBuiltin g -> obj.ReferenceEquals(f, g)
             | VProc a, VProc b -> obj.ReferenceEquals(a.Proc, b.Proc)
+            | VServer a, VServer b -> obj.ReferenceEquals(a.Listener, b.Listener)
             | _ -> false
         | _ -> false
 
@@ -119,6 +124,7 @@ type Value =
         | VClosurePat(p, _, _) -> hash p
         | VBuiltin f -> LanguagePrimitives.PhysicalHash f
         | VProc h -> hash ("proc", h.Proc.Id)
+        | VServer h -> hash ("server", h.Port)
 
 and Env = Map<string, Value>
 
@@ -241,6 +247,9 @@ let rec private formatWith (lim: RenderLimits) (depth: int) (v: Value) : string 
                     "exited"
 
             $"proc(pid={h.Proc.Id}, {state})"
+        | VServer h ->
+            let state = if h.Closed then "closed" else "listening"
+            $"server(port={h.Port}, {state})"
         | VUnit -> "()"
         | VTuple items -> "(" + (items |> List.map sub |> String.concat ", ") + ")"
 
@@ -3369,6 +3378,185 @@ and eval (env: Env) (te: TypedExpr) : Value =
                      ())
 
                 Session.deregisterTmpDir spill
+        | WithinServe ->
+            // the scoped listener [D:http-serve]: open the socket, serve on
+            // a pool of handler threads (the maxConcurrent ceiling — the
+            // pmapWith law on the scope), bind the handle, run the body,
+            // and at EVERY exit — normal, raise, SIGINT/SIGTERM — close the
+            // listener so the port frees. The signal path rides the same
+            // registerAlways backstop the bare within/always uses.
+            let binderName = binderOf "serve"
+
+            let cfg =
+                match eval env (argOf "serve") with
+                | VRecord(_, f) -> f
+                | v -> unreachable $"the checker rejects a serve config of {formatValue v}"
+
+            let port =
+                match recGet "port" cfg with
+                | VInt n -> int n
+                | v -> unreachable $"serve port {formatValue v}"
+
+            let maxConcurrent =
+                match recGet "maxConcurrent" cfg with
+                | VInt n -> int n
+                | v -> unreachable $"serve maxConcurrent {formatValue v}"
+
+            if maxConcurrent < 1 then
+                failwith $"serve: maxConcurrent is at least 1, got {maxConcurrent}"
+
+            // the handler closure, evaluated ONCE at scope entry
+            let handler =
+                match topts with
+                | Some h -> eval env h
+                | None -> unreachable "the parser gives within serve its handler"
+
+            // request primitives -> the HttpServerRequest Value the handler sees
+            let requestValue (r: Serve.SReq) : Value =
+                // HttpMethod is the closed client union [D:http-serve]; an
+                // exotic verb maps to Get — v1 handlers route on path, not
+                // verb (a stated simplicity, not a silent drop: the path
+                // and body are intact for a handler that cares)
+                let methodTag =
+                    match r.Method.ToUpperInvariant() with
+                    | "GET" -> "Get"
+                    | "POST" -> "Post"
+                    | "PUT" -> "Put"
+                    | "DELETE" -> "Delete"
+                    | "PATCH" -> "Patch"
+                    | "HEAD" -> "Head"
+                    | "OPTIONS" -> "Options"
+                    | _ -> "Get"
+
+                VRecord(
+                    "HttpServerRequest",
+                    [ "method", VUnion(methodTag, None)
+                      "path", VStr r.Path
+                      "query", VStr r.Query
+                      "headers", VSeq(r.Headers |> List.map (fun (k, v) -> VTuple [ VStr k; VStr v ]))
+                      "body", VStr r.Body ]
+                )
+
+            // the handler's HttpServerResponse Value -> response primitives.
+            // A Stream body stays a LAZY seq<Value> mapped to strings — pulled
+            // by Serve.writeResponse element-by-element (the incremental law)
+            let responseOf (v: Value) : Serve.SResp =
+                match v with
+                | VRecord("HttpServerResponse", f) ->
+                    let status =
+                        match recGet "status" f with
+                        | VInt n -> int n
+                        | bad -> unreachable $"serve status {formatValue bad}"
+
+                    let headers =
+                        match recGet "headers" f with
+                        | VSeq items ->
+                            [ for it in items do
+                                  match it with
+                                  | VTuple [ VStr k; VStr hv ] -> k, hv
+                                  | _ -> () ]
+                        | _ -> []
+
+                    let asString v =
+                        match v with
+                        | VStr s -> s
+                        | other -> formatValue other
+
+                    let body =
+                        match recGet "body" f with
+                        | VUnion("NoBody", None) -> Serve.RNoBody
+                        | VUnion("Text", Some(VStr s)) -> Serve.RText s
+                        | VUnion("Json", Some(VSeq lines)) ->
+                            Serve.RJson(lines |> Seq.map asString |> String.concat "\n")
+                        // the lazy body [D:http-serve]: keep it a seq, so
+                        // writeResponse pulls and flushes each element as
+                        // produced — a slow producer streams incrementally
+                        | VUnion("Stream", Some(VSeq lines)) -> Serve.RStream(lines |> Seq.map asString)
+                        | bad -> unreachable $"serve body {formatValue bad}"
+
+                    { Status = status
+                      Headers = headers
+                      Body = body }
+                | bad -> unreachable $"the checker rejects a serve response of {formatValue bad}"
+
+            let handle = Serve.start port
+
+            // the signal/hard-exit backstop [D:http-serve]: SIGINT/SIGTERM/
+            // ProcessExit sweep this, closing the socket exactly as the
+            // finally does on a managed exit — one close, idempotent
+            let hooked = Session.registerAlways (fun () -> Serve.stop handle)
+
+            // the handler concurrency ceiling [D:http-serve]: N in flight,
+            // excess queues — the pmapWith law, a SemaphoreSlim here
+            let gate = new System.Threading.SemaphoreSlim(maxConcurrent, maxConcurrent)
+            let parentCwd = Session.Cwd()
+            let inflight = System.Collections.Concurrent.ConcurrentDictionary<System.Threading.Thread, unit>()
+
+            // the accept loop on its OWN thread: it blocks in GetContext
+            // until a connection arrives or stop() closes the socket
+            // (accept then yields None and the loop ends). Each accepted
+            // request runs the handler under the gate on a worker thread.
+            let acceptLoop () =
+                let rec go () =
+                    match Serve.accept handle with
+                    | None -> () // the socket closed — shut down
+                    | Some ctx ->
+                        gate.Wait()
+
+                        let worker =
+                            System.Threading.Thread(fun () ->
+                                try
+                                    // fork the session like a pmap arm — the
+                                    // handler sees the scope's cwd, worker-local
+                                    Session.enterWorker parentCwd
+
+                                    try
+                                        let req = Serve.readRequest ctx
+                                        let resp = responseOf (apply handler (requestValue req))
+                                        Serve.writeResponse ctx resp
+                                    with _ ->
+                                        // a handler raise is a 500 — the server
+                                        // survives one bad request
+                                        (try
+                                            Serve.writeResponse
+                                                ctx
+                                                { Status = 500
+                                                  Headers = []
+                                                  Body = Serve.RText "internal error" }
+                                         with _ ->
+                                             ())
+                                finally
+                                    Session.exitWorker ()
+                                    gate.Release() |> ignore
+                                    inflight.TryRemove(System.Threading.Thread.CurrentThread) |> ignore)
+
+                        worker.IsBackground <- true
+                        inflight[worker] <- ()
+                        worker.Start()
+                        go ()
+
+                go ()
+
+            let loopThread =
+                System.Threading.Thread(System.Threading.ThreadStart acceptLoop)
+
+            loopThread.IsBackground <- true
+            loopThread.Start()
+
+            try
+                eval (Map.add binderName (VServer handle) env) body
+            finally
+                // close the socket — unblocks the accept loop's GetContext,
+                // frees the port; idempotent with the signal sweep
+                Serve.stop handle
+                Session.deregisterAlways hooked
+                // let the accept loop and any in-flight handlers settle
+                loopThread.Join 2000 |> ignore
+
+                for kv in inflight do
+                    kv.Key.Join 2000 |> ignore
+
+                gate.Dispose()
         | WithinTmp ->
             // kind tmp [D:within-scopes]: a fresh unique directory,
             // bound as the binder for the block; removed on EVERY exit —

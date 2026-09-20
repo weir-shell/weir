@@ -1507,6 +1507,25 @@
       ]
     },
     {
+      "name": "Server",
+      "members": [
+        {
+          "name": "port",
+          "signature": "Server.port (srv: Server) : int",
+          "summary": "The port the listener bound.",
+          "example": null,
+          "pointer": "within serve srv = { port = 8080; maxConcurrent = 4 } handler binds the handle; see #help within"
+        },
+        {
+          "name": "running",
+          "signature": "Server.running (srv: Server) : bool",
+          "summary": "True while the listener is still open (the scope has not exited).",
+          "example": null,
+          "pointer": null
+        }
+      ]
+    },
+    {
       "name": "Size",
       "members": [
         {
@@ -2040,7 +2059,7 @@
     {
       "name": "within",
       "signature": null,
-      "summary": "A scoped resource for an indented block, released on every exit (normal and raise): \u0060tmp\u0060 \u2014 a fresh directory, removed when the block exits; \u0060cd\u0060 \u2014 the working directory for the block, restored after; \u0060env\u0060 \u2014 an environment overlay for the block\u0027s children; \u0060proc\u0060 \u2014 a background process, tree-killed and reaped when the block exits; \u0060lock\u0060 \u2014 an advisory file lock, held for the block, released on every exit (kill -9 included).",
+      "summary": "A scoped resource for an indented block, released on every exit (normal and raise): \u0060tmp\u0060 \u2014 a fresh directory, removed when the block exits; \u0060cd\u0060 \u2014 the working directory for the block, restored after; \u0060env\u0060 \u2014 an environment overlay for the block\u0027s children; \u0060proc\u0060 \u2014 a background process, tree-killed and reaped when the block exits; \u0060serve\u0060 \u2014 an HTTP listener, served until the block exits and closed on every path (the port frees); \u0060lock\u0060 \u2014 an advisory file lock, held for the block, released on every exit (kill -9 included).",
       "example": "within tmp d\n    print d",
       "pointer": "within proc srv = \u003Ccommand\u003E binds a Proc handle; the tree is killed and reaped at scope exit",
       "kinds": [
@@ -2059,6 +2078,10 @@
         {
           "name": "proc",
           "doc": "a background process, tree-killed and reaped when the block exits"
+        },
+        {
+          "name": "serve",
+          "doc": "an HTTP listener, served until the block exits and closed on every path (the port frees)"
         },
         {
           "name": "lock",

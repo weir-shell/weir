@@ -1991,6 +1991,100 @@ if [ "$IS_WINDOWS" != "1" ]; then
 fi
 echo "e2e ok: always runs on normal exit, fail, exit n, SIGINT, SIGTERM"
 
+# ---- detached SIGINT tears down [D:signal-teardown] -------------------------
+# THE GAP (ring port finding #1): a shell backgrounding weir in a
+# NON-INTERACTIVE session (setsid, no job control) sets SIGINT to
+# SIG_IGN — the nohup convention — and .NET HONOURS an inherited
+# SIG_IGN, so PosixSignalRegistration never installs and a `kill -INT`
+# on a detached supervisor was a NO-OP: no scope unwind, `always`
+# cleanup skipped, children orphaned, only SIGKILL stopping it. The fix
+# resets SIGINT to SIG_DFL when there is NO controlling terminal (a
+# detached process has no terminal Ctrl+C to protect against), so the
+# registration binds and the SAME sweep the tty path runs fires. The
+# within-always cell above drives SIGINT under bash's job control (default
+# disposition); THIS cell drives it detached (setsid), the actual gap.
+# SIGTERM is never SIG_IGN'd — it already worked — so it is the twin.
+if [ "$IS_WINDOWS" != "1" ] && command -v setsid >/dev/null 2>&1 && command -v pgrep >/dev/null 2>&1; then
+    dtdir=$(mkweirtmp)
+    # a detached supervisor: a scoped child (reaped by the proc scope) and
+    # an `always` cleanup that writes a marker the sweep must reach
+    cat > "$dtdir/detached.weir" <<'WEOF'
+let marker = Self.args |> Seq.head
+within
+    within proc child = sh -c "sleep 98761"
+        Duration.sleep 60s
+always
+    ["cleaned-up"] |> File.write marker
+WEOF
+    $BIN check "$dtdir/detached.weir" >/dev/null 2>&1 || fail "detached-signal probe must check"
+
+    for pair in "INT:130" "TERM:143"; do
+        sig="${pair%%:*}"; want="${pair##*:}"
+        M="$dtdir/marker-$sig"
+        rm -f "$M"
+        pkill -f "sleep 98761" 2>/dev/null || true
+        # setsid = new session, no job control -> SIG_IGN on SIGINT is
+        # inherited exactly as the ring probe measured; </dev/null detaches
+        setsid "$BIN" "$dtdir/detached.weir" "$M" </dev/null >/dev/null 2>&1 &
+        wpid=$!
+        # wait for the scoped child to be live (the thing that must be reaped)
+        for _ in $(seq 1 40); do pgrep -f "sleep 98761" >/dev/null 2>&1 && break; sleep 0.2; done
+        kill -"$sig" "$wpid" 2>/dev/null || true
+        code=timeout
+        for _ in $(seq 1 40); do
+            # the || guards errexit: a signalled wait returns 130/143, which
+            # is the code under test, not a harness failure
+            if ! kill -0 "$wpid" 2>/dev/null; then code=0; wait "$wpid" 2>/dev/null || code=$?; break; fi
+            sleep 0.2
+        done
+        [ "$code" = "$want" ] || fail "detached SIG$sig must exit $want (got $code) — the teardown never ran"
+        [ "$(cat "$M" 2>/dev/null)" = "cleaned-up" ] || fail "detached SIG$sig must run the always cleanup"
+        sleep 0.3
+        left=$(pgrep -cf "sleep 98761" 2>/dev/null || true); left=${left:-0}
+        [ "$left" = "0" ] || fail "detached SIG$sig must reap the scoped child (orphans left: $left)"
+        pkill -f "sleep 98761" 2>/dev/null || true
+    done
+    echo "e2e ok: detached SIGINT/SIGTERM tear down — always cleanup runs, child reaped, exit 130/143"
+
+    # the double-signal escape [D:signal-teardown]: a SECOND signal DURING
+    # a slow teardown hard-exits (the shell's double-Ctrl+C), never wedging
+    # on a stuck cleanup. The always sleeps 20s; the second SIGINT must land
+    # the process in well under that, before the cleanup's "done" write.
+    cat > "$dtdir/slow.weir" <<'WEOF'
+let marker = Self.args |> Seq.head
+within
+    within proc child = sh -c "sleep 98761"
+        Duration.sleep 60s
+always
+    ["start"] |> File.write marker
+    Duration.sleep 20s
+    ["done"] |> File.write marker
+WEOF
+    $BIN check "$dtdir/slow.weir" >/dev/null 2>&1 || fail "double-signal probe must check"
+    DM="$dtdir/dmarker"
+    rm -f "$DM"
+    pkill -f "sleep 98761" 2>/dev/null || true
+    setsid "$BIN" "$dtdir/slow.weir" "$DM" </dev/null >/dev/null 2>&1 &
+    dpid=$!
+    for _ in $(seq 1 40); do pgrep -f "sleep 98761" >/dev/null 2>&1 && break; sleep 0.2; done
+    kill -INT "$dpid" 2>/dev/null || true          # first: enters the slow teardown
+    for _ in $(seq 1 25); do [ "$(cat "$DM" 2>/dev/null)" = "start" ] && break; sleep 0.2; done
+    [ "$(cat "$DM" 2>/dev/null)" = "start" ] || fail "the first SIGINT must enter the always cleanup"
+    kill -INT "$dpid" 2>/dev/null || true          # second: must hard-exit NOW
+    dcode=timeout
+    for _ in $(seq 1 25); do                        # 5s ceiling << the 20s cleanup
+        # || true guards errexit against the signalled exit code
+        if ! kill -0 "$dpid" 2>/dev/null; then dcode=0; wait "$dpid" 2>/dev/null || dcode=$?; break; fi
+        sleep 0.2
+    done
+    [ "$dcode" != "timeout" ] || fail "a second SIGINT must hard-exit, not wait out the cleanup"
+    [ "$(cat "$DM" 2>/dev/null)" != "done" ] || fail "the hard-exit must not let the slow cleanup finish"
+    pkill -f "sleep 98761" 2>/dev/null || true
+    echo "e2e ok: a second signal mid-teardown hard-exits (the double-Ctrl+C escape)"
+else
+    echo "e2e skip: detached-signal pins (POSIX + setsid + pgrep)"
+fi
+
 # Phase 0's measured answer, pinned [D:within-always]: exit n is an
 # ExitRequest RAISE — it unwinds through every scope finally (the tmp
 # dir is removed by the scope itself, not the hook), so always and exit
@@ -8652,5 +8746,121 @@ out=$($BIN "$padir/kaa.weir" 2>&1) && fail "a known-after-apply read must refuse
 echo "$out" | grep -qF "known-after-apply" || fail "the known-after-apply teaching must fire: $out"
 echo "e2e ok: plan/apply — a known-after-apply read refuses (located)"
 rm -rf "$padir"
+
+# ---- within serve: the scoped HTTP listener [D:http-serve] -----------
+# The three primitives proven end-to-end against the AOT binary: a
+# routing handler (health/echo), incremental streaming (timestamped
+# arrivals), the concurrency ceiling (marker interleave), and clean
+# shutdown (the port frees — a second bind succeeds).
+svdir=$(mkweirtmp)
+svport=8471
+svport2=8472
+svport3=8473
+
+# (1) routing: /health -> 200 "ok"; /echo -> a query param echoed. The
+# server backgrounds itself in the SCOPE and drives its own client so
+# the port is torn down deterministically at block exit.
+cat > "$svdir/route.weir" <<WEOF
+let handler = fun req ->
+    match req.path with
+    | "/health" -> HttpServerResponse { status = 200; headers = []; body = Text "ok" }
+    | "/echo" ->
+        let name =
+            match Str.trySplitOnce "=" req.query with
+            | Some (_, v) -> v
+            | None -> "?"
+        HttpServerResponse { status = 200; headers = []; body = Text \$"hello {name}" }
+    | _ -> HttpServerResponse { status = 404; headers = []; body = Text "not found" }
+
+within serve srv = { port = $svport; maxConcurrent = 4 } handler
+    print \$"listening on {Server.port srv}"
+    poll timeout=8s interval=100ms
+        Net.portOpen $svport
+    let h = Http.fetch "http://127.0.0.1:$svport/health" |> Seq.head
+    print \$"health={h}"
+    let e = Http.fetch "http://127.0.0.1:$svport/echo?name=weir" |> Seq.head
+    print \$"echo={e}"
+print "closed"
+WEOF
+out=$($BIN "$svdir/route.weir" 2>&1) || {
+    probe=$(curl -s --max-time 2 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$svport/health" 2>/dev/null || echo "curl-failed")
+    fail "serve routing failed (bash-side probe of :$svport/health = $probe): $out"
+}
+echo "$out" | grep -qF "health=ok" || fail "serve /health must return ok: $out"
+echo "$out" | grep -qF "echo=hello weir" || fail "serve /echo must echo the query param: $out"
+echo "$out" | grep -qF "closed" || fail "serve scope must exit: $out"
+# clean shutdown: the port frees, a second bind on it succeeds
+sleep 0.5
+$BIN -e "Net.portOpen $svport" | grep -qF "false" || fail "serve no-orphan: port $svport still up after the scope"
+echo "e2e ok: within serve — routing (health/echo) + the port frees on exit"
+
+# (2) streaming: a 5-element Stream body with a delay between elements.
+# The client (curl -N, unbuffered) timestamps each arrival; we assert
+# the FIRST chunk lands well before the LAST — incremental, not
+# buffered-then-flushed. The capture is a standalone script (no nested
+# quote-escaping through the weir sh -c and the heredoc).
+cat > "$svdir/capture.sh" <<CAPEOF
+#!/bin/sh
+curl -sN --max-time 10 "http://127.0.0.1:$svport2/x" | while IFS= read -r line; do
+    [ -n "\$line" ] && echo "\$(date +%s.%N) \$line"
+done > "$svdir/arrivals.txt" 2>&1
+CAPEOF
+chmod +x "$svdir/capture.sh"
+cat > "$svdir/stream.weir" <<WEOF
+let handler = fun req ->
+    let elems = [1; 2; 3; 4; 5] |> Seq.map (fun i ->
+        Duration.sleep 300ms
+        \$"chunk-{i}")
+    HttpServerResponse { status = 200; headers = []; body = Stream elems }
+
+within serve srv = { port = $svport2; maxConcurrent = 4 } handler
+    poll timeout=8s interval=100ms
+        Net.portOpen $svport2
+    within proc client = sh "$svdir/capture.sh"
+        Duration.sleep 3000ms
+print "streamed"
+WEOF
+out=$($BIN "$svdir/stream.weir" 2>&1) || fail "serve streaming run failed: $out"
+echo "$out" | grep -qF "streamed" || fail "serve stream scope must exit: $out"
+# five data lines arrived
+nchunks=$(grep -c "chunk-" "$svdir/arrivals.txt" 2>/dev/null || echo 0)
+[ "$nchunks" -eq 5 ] || fail "serve stream: expected 5 chunks, got $nchunks ($(cat "$svdir/arrivals.txt" 2>/dev/null))"
+# incrementality: first arrival is >= 800ms before the last (5 elems x
+# 300ms spacing gives ~1.2s spread; 800ms is a slack floor that a
+# buffered-all-at-once server would fail)
+t_first=$(grep "chunk-1" "$svdir/arrivals.txt" | head -1 | awk '{print $1}')
+t_last=$(grep "chunk-5" "$svdir/arrivals.txt" | head -1 | awk '{print $1}')
+spread=$(awk -v a="$t_first" -v b="$t_last" 'BEGIN{printf "%.3f", b-a}')
+awk -v s="$spread" 'BEGIN{exit !(s >= 0.8)}' || fail "serve stream NOT incremental: chunk-1..chunk-5 spread was ${spread}s (< 0.8s means buffered) — arrivals: $(cat "$svdir/arrivals.txt")"
+echo "e2e ok: within serve — Stream body arrives INCREMENTALLY (chunk-1..chunk-5 spread ${spread}s)"
+
+# (3) concurrency ceiling: maxConcurrent=2, fire 4 slow requests, assert
+# only 2 handlers run at once via a start/end marker log. The ceiling
+# holds iff the log is start,start,end,end,start,start,end,end — never
+# four starts in a row.
+rm -f "$svdir/markers.txt"
+cat > "$svdir/conc.weir" <<WEOF
+let handler = fun req ->
+    let _m1 = sh -c "echo start >> $svdir/markers.txt" | complete
+    Duration.sleep 800ms
+    let _m2 = sh -c "echo end >> $svdir/markers.txt" | complete
+    HttpServerResponse { status = 200; headers = []; body = Text "done" }
+
+within serve srv = { port = $svport3; maxConcurrent = 2 } handler
+    poll timeout=8s interval=100ms
+        Net.portOpen $svport3
+    within proc load = sh -c "for i in 1 2 3 4; do curl -s --max-time 8 http://127.0.0.1:$svport3/slow & done; wait"
+        Duration.sleep 3000ms
+print "loaded"
+WEOF
+out=$($BIN "$svdir/conc.weir" 2>&1) || fail "serve concurrency run failed: $out"
+echo "$out" | grep -qF "loaded" || fail "serve conc scope must exit: $out"
+# the ceiling proof: the FIRST THREE markers must be start,start,end —
+# a third 'start' before any 'end' would mean 3+ concurrent (ceiling
+# broken). At maxConcurrent=2 the third line is always an 'end'.
+first3=$(head -3 "$svdir/markers.txt" 2>/dev/null | tr '\n' ',')
+[ "$first3" = "start,start,end," ] || fail "serve concurrency ceiling BROKEN: first 3 markers were '$first3' (expected 'start,start,end,') — markers: $(cat "$svdir/markers.txt" 2>/dev/null | tr '\n' ' ')"
+echo "e2e ok: within serve — concurrency ceiling holds (maxConcurrent=2 caps 4 requests at 2)"
+rm -rf "$svdir"
 
 echo "e2e battery: all green"

@@ -707,6 +707,7 @@ form, is covered under Parallelism):
 | `within` … `always` | nothing — a body plus cleanup | runs the `always` block |
 | `within lock "path"` | an advisory file lock | releases it — the kernel does, even on `kill -9` |
 | `within proc h = cmd` | a background process | kills and reaps its tree |
+| `within serve s = cfg handler` | an HTTP listener | closes the socket — the port frees |
 
 A scratch tree composes the family: `Dir.create` for
 structure, `Path.glob` to find, `Dir.deleteAll` (the visibly-named
@@ -1510,6 +1511,34 @@ The timeout defaults to 30s — a request with no timeout is the
 classic CI hang. And `Http` types your request but does not vet your
 endpoint: SSRF and URL construction are yours
 ([SECURITY.md](../SECURITY.md)).
+
+### Serving: `within serve`
+
+The mirror of the client. `within serve` holds an HTTP listener for a
+block and closes the socket on every exit, so the port frees — the
+same scoped-lifetime discipline as `within proc`. The handler is a
+plain synchronous function that routes on `req.path` with a `match`;
+the response `body` is the shared `HttpBody` union, with `Stream of
+seq<string>` for a lazy body written chunked as it is produced:
+
+```weir-demo
+let handler = fun req ->
+    match req.path with
+    | "/health" -> HttpServerResponse { status = 200; headers = []; body = Text "ok" }
+    | "/events" -> HttpServerResponse { status = 200; headers = []; body = Stream (nats |> Seq.map show) }
+    | _ -> HttpServerResponse { status = 404; headers = []; body = Text "not found" }
+
+within serve srv = { port = 8080; maxConcurrent = 8 } handler
+    print $"serving on {Server.port srv}"
+    Duration.sleep 30s
+```
+
+`maxConcurrent` is the handler ceiling — the `Seq.pmapWith` law on the
+scope. `Server.port` and `Server.running` are the handle's whole
+surface; the scope is the teardown, so there is no `stop`. TLS,
+routing DSLs and WebSockets are deliberately out of scope — put a
+reverse proxy in front, `match` on the path, and reach for `Stream`
+(SSE) where you would have wanted a push channel.
 
 ## Secrets: tokens that cannot leak into logs
 

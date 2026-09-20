@@ -26,9 +26,24 @@ let source =
       // the typed request boundary [D:http] — field names are PUBLIC API
       "type HttpMethod = Get | Post | Put | Delete | Patch | Head | Options | Query"
       "type Auth = NoAuth | Bearer of Secret | Basic of string * Secret"
-      "type HttpBody = NoBody | Json of seq<string> | Text of string"
+      // the shared body union [D:http] [D:http-serve]: NoBody/Json/Text
+      // are the client-and-server cases; Stream is the SERVER response's
+      // lazy line source — pulled and written chunked as produced
+      // (SSE-shaped), the streaming precedent print sets, server-side. On
+      // the CLIENT send path a Stream body materializes (request-body
+      // streaming is out of scope v1).
+      "type HttpBody = NoBody | Json of seq<string> | Text of string | Stream of seq<string>"
       "type HttpRequest = { method: HttpMethod; url: string; auth: Auth; headers: seq<string * string>; secretHeaders: seq<string * Secret>; body: HttpBody; timeout: Duration; insecure: bool }"
       "type HttpResponse = { status: int; headers: seq<string * string>; body: seq<string> }"
+      // the SERVER boundary [D:http-serve] — the ring protocol study's
+      // minimal surface. One family: HttpMethod + header pairs + the body
+      // union are SHARED with the client; the server records differ where
+      // the wire differs (a path+query, not a url; no auth/timeout — those
+      // are client concerns). maxConcurrent is the handler ceiling, the
+      // pmapWith concurrency-law on the scope.
+      "type ServerConfig = { port: int; maxConcurrent: int }"
+      "type HttpServerRequest = { method: HttpMethod; path: string; query: string; headers: seq<string * string>; body: string }"
+      "type HttpServerResponse = { status: int; headers: seq<string * string>; body: HttpBody }"
       // the plan/apply Op union [D:plan-apply] — the user-visible,
       // equatable+showable reification of an external mutation captured
       // inside a `plan` block. Each arm mirrors a mutation builtin's
