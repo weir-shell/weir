@@ -6,6 +6,15 @@ weekly: self-correction rate (stranded = failures), fallback ranking
 skill lines and targeted hints).
 
 ## fallbacks
+- 2026-09-20 | multi-area review referees (tools/multi-repro.weir writes
+  them and drives them through `sh -c`) -> python | three of the
+  review's properties are about BYTES ON A SOCKET, which weir cannot
+  observe: a hand-built request line (an unrepresentable verb, duplicate
+  headers), a raw response read (is a chunked body properly TERMINATED
+  after a mid-stream raise), and a logging HTTP server that records what
+  weir's own client actually sent. `Http.serve`/`Http.send` can only
+  show weir's view of the wire, which is the thing under test. The pty
+  face (F13) used the repo's existing tests/pty/pty-run.py.
 - 2026-09-13 | commit-staging file-state slicing (one-off, not kept) ->
   python | splitting one 870KB Tests.fs working state into per-commit
   intermediate states by byte index is heavy text processing; nothing

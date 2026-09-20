@@ -1,0 +1,509 @@
+#!/usr/bin/env weir
+// Repro harness for dev/plans/PLAN-multi-area-review.md. Each probe prints OK
+// when its finding is FIXED and REPRODUCES otherwise, so one script is both
+// the bug report and the acceptance gate.
+//
+//     weir tools/multi-repro.weir --bin ./path/to/weir
+//
+// Probe labels match the plan's numbering exactly (F1-F11), so a fixer never
+// translates between the two documents.
+//
+// LOUD, in every direction:
+//   - a probe that fails to RUN counts as reproducing, never as a pass;
+//   - a MISSING INSTRUMENT (python3) is a named SKIP that keeps its finding
+//     OPEN — a SKIP is counted with the failures, because absence is never a
+//     pass;
+//   - "fixed" for a crash probe means exit 1, a LOCATED diagnostic. A crash
+//     (>= 128) is not a fix, so those probes test == 1, never <> n.
+//
+// Positive controls are INDEPENDENT OF EVERY FINDING'S STATE:
+//   - control-sees-broken: the verdict channel can report failure;
+//   - control-lock-benign: `restore` works at all, so F1's "nothing landed
+//     outside" cannot pass by restore being broken;
+//   - control-header-arrives: a benign header reaches the wire, so F3's and
+//     F11's "no forged/dropped header" cannot pass by headers never working;
+//   - control-pure-accepts: `pure` accepts the very body F6 fails on under
+//     `readonly`, so F6 cannot pass by the body being illegal everywhere.
+//
+// F12 (no request-body read timeout) and F13 (terminal escapes at a tty) are
+// deliberately NOT in this gate: one is measured with a CLOCK against a
+// no-liar control, the other with a pty. Both are recorded in the plan under
+// instrument honesty rather than half-automated here.
+//
+// Every command-running helper is a TOP-LEVEL function: a block `let` with a
+// command RHS loses its reifier off the topLet spine. Verdicts go to a FILE
+// because a `within` scope yields unit, so a probe cannot return its own bool.
+
+type Cli = {
+    /// the weir binary under test
+    [<Default "weir">]
+    bin: string
+}
+
+let cli = Args.load Cli
+
+// ---- instruments, probed rather than assumed --------------------------------
+
+let pyReady = sh -c "python3 -c 'import http.server, hashlib, socket' 2>/dev/null" | succeeds
+
+// F14 needs a real fetch. Egress may be allowlisted or absent: probe the exact
+// URL the probe uses, and treat unreachability as a SKIP that keeps F14 OPEN.
+let schemaUrl =
+    "https://raw.githubusercontent.com/yannh/kubernetes-json-schema/master/v1.28.0-standalone-strict/configmap-v1.json"
+
+let netReady = sh -c $"curl -sS -o /dev/null --max-time 20 '{schemaUrl}'" | succeeds
+
+// ---- referees (python is the stated escape for what weir cannot do) --------
+
+let rawOracle = <<<
+    import socket, sys
+    port, path = int(sys.argv[1]), sys.argv[2]
+    req = ("GET %s HTTP/1.1\r\nHost: 127.0.0.1:%d\r\nConnection: close\r\n\r\n" % (path, port)).encode()
+    s = socket.create_connection(("127.0.0.1", port), timeout=5)
+    s.sendall(req)
+    data = b""
+    while True:
+        try:
+            b = s.recv(65536)
+        except socket.timeout:
+            break
+        if not b:
+            break
+        data += b
+    s.close()
+    head, _, body = data.partition(b"\r\n\r\n")
+    print("STATUS " + (head.split(b"\r\n")[0].decode() if head else "none"))
+    print("HEADERS " + repr(head))
+    print("BODY " + repr(body))
+    print("TERMINATED " + str(body.endswith(b"0\r\n\r\n")))
+
+let reqOracle = <<<
+    import socket, sys
+    port = int(sys.argv[1])
+    raw = sys.stdin.buffer.read().replace(b"\n", b"\r\n")
+    s = socket.create_connection(("127.0.0.1", port), timeout=5)
+    s.sendall(raw)
+    data = b""
+    while True:
+        try:
+            b = s.recv(65536)
+        except socket.timeout:
+            break
+        if not b:
+            break
+        data += b
+    s.close()
+    head, _, body = data.partition(b"\r\n\r\n")
+    print("BODY " + repr(body))
+
+let logRefereeSrc = <<<
+    import http.server, threading, sys, time
+    LOG = sys.argv[1]
+    REDIR_TO = sys.argv[2]
+    def make(port):
+        class H(http.server.BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+            def _log(self):
+                with open(LOG, "a") as f:
+                    f.write("--- port=%d %s %s\n" % (port, self.command, self.path))
+                    for k, v in self.headers.items():
+                        f.write("    %s: %s\n" % (k, v))
+            def do_GET(self):
+                self._log()
+                if self.path == "/redir":
+                    self.send_response(302)
+                    self.send_header("Location", REDIR_TO)
+                    self.send_header("Content-Length", "1")
+                    self.end_headers()
+                    self.wfile.write(b"r")
+                else:
+                    body = b"arrived"
+                    self.send_response(200)
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+            do_POST = do_GET
+            def log_message(self, *a):
+                pass
+        return http.server.ThreadingHTTPServer(("127.0.0.1", port), H)
+    open(LOG, "w").close()
+    for p in (int(sys.argv[3]), int(sys.argv[4])):
+        threading.Thread(target=make(p).serve_forever, daemon=True).start()
+    print("referee up", flush=True)
+    time.sleep(float(sys.argv[5]))
+
+// ---- fixtures whose verdict the binary reaches on its own -------------------
+
+// F2: an unreadable file on the import path. FIXED = a located diagnostic
+// (exit 1). A crash (134) is not a fix, which is why this tests == 1.
+let f2importer p = $<<<
+    import "{p}" as M
+    print (show (M.f 1))
+
+let f2module = <<<
+    module M
+    let f : int -> int
+    let f x = x + 1
+
+// F5: a `for` body that reaches no effect, inside each gate. FIXED = clean.
+let f5pure = <<<
+    let pure noop x = ()
+
+    let a =
+        pure
+            for n in [1] do
+                noop n
+            "ok"
+
+    print a
+
+let f5readonly = <<<
+    let pure noop x = ()
+
+    let a =
+        readonly
+            for n in [1] do
+                noop n
+            "ok"
+
+    print a
+
+let f5plan = <<<
+    let pure noop x = ()
+
+    let p =
+        plan
+            for n in [1] do
+                noop n
+
+    print $"{p |> Plan.isEmpty}"
+
+// F6: the SAME statement types under `pure` and fails under `readonly`.
+let f6readonly = <<<
+    let noop x = ()
+
+    let b =
+        readonly
+            [1] |> Seq.iter noop
+            "ok"
+
+    print b
+
+let f6controlPure = <<<
+    let noop x = ()
+
+    let b =
+        pure
+            [1] |> Seq.iter noop
+            "ok"
+
+    print b
+
+// F7: a script that runs NO command must report no dynamic head and must
+// satisfy --strict.
+let f7 = <<<
+    for n in ["a"] do print n
+
+let controlBroken = <<<
+    print "BROKEN"
+
+// ---- the serve fixture: F8, F9, F10, F11 in one child ----------------------
+// The child owns the socket (a serve scope blocks), probes itself through the
+// referees, and prints one verdict line per finding.
+
+let serveFixture port dir = $<<<
+    let crlf = Str.fromBase64 "DQo="
+
+    let handler = fun req ->
+        match req.path with
+        | "/control" -> HttpServerResponse {{ status = 200; headers = [("X-Control", "present")]; body = Text "ok" }}
+        | "/crlf" -> HttpServerResponse {{ status = 200; headers = [("X-Crlf", "a" + crlf + "Injected: yes")]; body = Text "ok" }}
+        | "/half" ->
+            HttpServerResponse {{
+                status = 200
+                headers = []
+                body = Stream ([1; 2] |> Seq.map (fun i -> if i == 1 then "first" else fail "producer died"))
+            }}
+        | "/echo" ->
+            let hdrs = req.headers |> Seq.map (fun (k, v) -> $"{{k}}={{v}}") |> Str.join " "
+            HttpServerResponse {{ status = 200; headers = []; body = Text $"method={{show req.method}} hdrs={{hdrs}}" }}
+        | _ -> HttpServerResponse {{ status = 404; headers = []; body = Text "nf" }}
+
+    let raw path =
+        let r = sh -c $"python3 '{dir}/raw.py' {port} {{path}}" | complete
+        r.stdout |> Str.join " "
+
+    let send payload =
+        let r = sh -c $"printf '%s' '{{payload}}' | python3 '{dir}/req.py' {port}" | complete
+        r.stdout |> Str.join " "
+
+    within serve srv = {{ port = {port}; maxConcurrent = 4 }} handler
+        let ctl = raw "/control"
+        print (if ctl |> Str.contains "X-Control" then "control-header-arrives OK" else "control-header-arrives FAILED")
+
+        let dropped = raw "/crlf"
+        print (if dropped |> Str.contains "X-Crlf" then "F11 OK" else "F11 REPRODUCES (a header weir cannot send is silently dropped)")
+
+        let half = raw "/half"
+        let looksComplete = (half |> Str.contains "STATUS HTTP/1.1 200") && (half |> Str.contains "TERMINATED True")
+        print (if looksComplete then "F8 REPRODUCES (200 + proper terminator after a mid-stream raise)" else "F8 OK")
+
+        let verb = send "FROBNICATE /echo HTTP/1.1\nHost: 127.0.0.1:{port}\nConnection: close\n\n"
+        print (if verb |> Str.contains "method=Get" then "F9 REPRODUCES (an unrepresentable verb arrives as Get)" else "F9 OK")
+
+        let dup = send "GET /echo HTTP/1.1\nHost: 127.0.0.1:{port}\nX-D: one\nX-D: two\nX-D: three\nConnection: close\n\n"
+        let kept = (dup |> Str.contains "X-D=one") && (dup |> Str.contains "X-D=three")
+        print (if kept then "F10 OK" else "F10 REPRODUCES (duplicate request headers collapsed)")
+
+// ---- the HTTP client fixture: F3, F4 --------------------------------------
+
+let clientFixture portA = $<<<
+    let tok = Secret.of "SECRET-TOKEN-ABC"
+    let crlf = Str.fromBase64 "DQo="
+
+    let r1 = Http.send {{ Http.get "http://127.0.0.1:{portA}/dest" with headers = [("X-Evil", "a" + crlf + "Injected: yes")] }}
+    print $"F3-status {{r1.status}}"
+
+    let r2 = Http.send {{ Http.get "http://127.0.0.1:{portA}/dest" with headers = [("X-Benign", "present")] }}
+    print $"control-status {{r2.status}}"
+
+    let r3 = Http.send {{ Http.get "http://127.0.0.1:{portA}/redir" with secretHeaders = [("X-Api-Key", tok)] }}
+    print $"F4-status {{r3.status}}"
+
+// ---- the hostile lockfile --------------------------------------------------
+
+let lockLines hash port absTarget =
+    let one kind name path =
+        $"    {{\"kind\": \"{kind}\", \"name\": \"{name}\", \"url\": \"http://127.0.0.1:{port}/payload.json\", \"sha256\": \"{hash}\", \"path\": \"{path}\"}}"
+
+    [ "{"
+      "  \"schemaVersion\": 1,"
+      "  \"artifacts\": ["
+      one "schema" "benign" "schemas/benign.json" + ","
+      one "schema" "traversal" "../ESCAPED-TRAVERSAL.json" + ","
+      one "schema" "absolute" absTarget
+      "  ]"
+      "}" ]
+
+// ---- runners ---------------------------------------------------------------
+
+let runChild path =
+    let r = sh -c $"'{cli.bin}' '{path}' 2>&1" | complete
+    r
+
+let checkExit path =
+    let r = sh -c $"'{cli.bin}' check '{path}' >/dev/null 2>&1" | complete
+    r.exitCode
+
+let checkMerged path =
+    let r = sh -c $"'{cli.bin}' check '{path}' 2>&1" | complete
+    r
+
+let canOut path =
+    let r = sh -c $"'{cli.bin}' check --can '{path}' 2>&1" | complete
+    r
+
+let canStrictExit path =
+    let r = sh -c $"'{cli.bin}' check --can --strict '{path}' >/dev/null 2>&1" | complete
+    r.exitCode
+
+let restoreExit dir =
+    let r = sh -c $"cd '{dir}' && '{cli.bin}' restore >/dev/null 2>&1" | complete
+    r.exitCode
+
+let chmodTo mode path =
+    let r = sh -c $"chmod {mode} '{path}'" | complete
+    r.exitCode
+
+// ---- the verdict channel ---------------------------------------------------
+// A SKIP is recorded as not-fixed: a missing instrument keeps its finding open.
+
+let record vpath label verdict =
+    print $"  {label}: {verdict}"
+    File.append vpath [$"{label}: {verdict}"]
+
+let verdictOf ok fixedText brokenText = if ok then fixedText else brokenText
+
+// ---- probes ----------------------------------------------------------------
+
+let f1Probe d vpath =
+    let srvDir = $"{d}/srv"
+    let repo = $"{d}/repo"
+    let absTarget = $"{d}/ABSOLUTE-ESCAPE.json"
+    let travTarget = $"{d}/ESCAPED-TRAVERSAL.json"
+    Dir.create srvDir
+    Dir.create $"{repo}/.weir"
+    ["{\"payload\": 1}"] |> File.write $"{srvDir}/payload.json"
+    let hash = File.sha256 $"{srvDir}/payload.json"
+    lockLines hash "8531" absTarget |> File.write $"{repo}/.weir/lock.json"
+
+    within proc server = sh -c $"cd '{srvDir}' && python3 -m http.server 8531"
+        poll timeout=10s interval=200ms watch=server
+            Net.portOpen 8531
+
+        let rc = restoreExit repo
+        let escaped = File.exists travTarget || File.exists absTarget
+        let benignLanded = File.exists $"{repo}/.weir/schemas/benign.json"
+        record vpath "control-lock-benign" (verdictOf benignLanded "control OK (restore works)" "*** CONTROL FAILED")
+        record vpath "F1" (verdictOf (not escaped) "OK" $"REPRODUCES (bytes landed outside .weir/, restore exit {rc})")
+
+// F14: `add schema --as <name>` must refuse a name that is not a plain name —
+// the rule `add module` already enforces. The control is the plain name, so
+// "nothing escaped" cannot pass by `add` being broken.
+let addSchemaExit dir name =
+    let r = sh -c $"cd '{dir}' && '{cli.bin}' add schema '{schemaUrl}' --as '{name}' >/dev/null 2>&1" | complete
+    r.exitCode
+
+let f14Probe d vpath =
+    let repo = $"{d}/addrepo"
+    let absTarget = $"{d}/F14-ABSOLUTE-ESCAPE.json"
+    Dir.create repo
+    let ctlExit = addSchemaExit repo "plainname"
+    let ctlLanded = File.exists $"{repo}/.weir/schemas/plainname.json"
+    record vpath "control-add-works" (verdictOf (ctlExit == 0 && ctlLanded) "control OK (a plain name vendors inside)" "*** CONTROL FAILED")
+
+    let absExit = addSchemaExit repo absTarget
+    let escaped = File.exists absTarget
+    record vpath "F14" (verdictOf (not escaped && absExit <> 0) "OK" $"REPRODUCES (an absolute --as name vendored outside .weir/, add exit {absExit})")
+
+let f34Probe d vpath =
+    let refPath = $"{d}/referee.py"
+    let logPath = $"{d}/referee.log"
+    let fixturePath = $"{d}/client.weir"
+    logRefereeSrc |> File.write refPath
+    clientFixture "8533" |> File.write fixturePath
+
+    within proc referee = sh -c $"python3 '{refPath}' '{logPath}' 'http://127.0.0.1:8534/dest' 8533 8534 45"
+        poll timeout=10s interval=200ms watch=referee
+            Net.portOpen 8533
+
+        let child = runChild fixturePath
+        let logLines = File.read logPath |> Seq.freeze
+        let logText = logLines |> Str.join "\n"
+        let benignArrived = logText |> Str.contains "X-Benign"
+        let forged = logText |> Str.contains "Injected"
+        let crossed = logLines |> Seq.where (fun l -> l |> Str.contains "port=8534") |> Seq.length
+        let secretCrossed = (logText |> Str.contains "X-Api-Key") && crossed > 0
+
+        record vpath "control-header-arrives" (verdictOf benignArrived "control OK" "*** CONTROL FAILED")
+        record vpath "F3" (verdictOf (not forged) "OK" "REPRODUCES (a CRLF header value forged a second header on the wire)")
+        record vpath "F4" (verdictOf (not secretCrossed) "OK" "REPRODUCES (secretHeaders crossed to the redirect's origin)")
+
+        if child.exitCode <> 0 then
+            record vpath "F3/F4-fixture" $"REPRODUCES (the client fixture exited {child.exitCode})"
+
+let serveProbe d vpath =
+    rawOracle |> File.write $"{d}/raw.py"
+    reqOracle |> File.write $"{d}/req.py"
+    let fixturePath = $"{d}/serve.weir"
+    serveFixture "8535" d |> File.write fixturePath
+    let child = runChild fixturePath
+    let text = child.stdout |> Str.join "\n"
+
+    ["F8"; "F9"; "F10"; "F11"; "control-header-arrives"]
+    |> Seq.iter (fun label ->
+        let line = child.stdout |> Seq.tryFind (fun l -> l |> Str.startsWith label)
+        match line with
+        | Some l -> record vpath $"{label} (serve)" l
+        | None -> record vpath $"{label} (serve)" "REPRODUCES (the fixture printed no verdict)")
+
+    if child.exitCode <> 0 then
+        record vpath "serve-fixture" $"REPRODUCES (the fixture exited {child.exitCode})"
+    if text == "" then
+        record vpath "serve-fixture" "REPRODUCES (the fixture produced no output)"
+
+// ---- the gate --------------------------------------------------------------
+
+print "multi-area review — repro gate"
+print $"  binary: {cli.bin}"
+
+within tmp d
+    let vpath = $"{d}/verdicts"
+    [] |> File.write vpath
+
+    print ""
+    print "area C — the contracts supply chain"
+    if pyReady then f1Probe d vpath
+    if not pyReady then record vpath "F1" "SKIP (python3 missing) — the finding stays OPEN"
+    if netReady then f14Probe d vpath
+    if not netReady then record vpath "F14" "SKIP (the schema URL is unreachable) — the finding stays OPEN"
+
+    print ""
+    print "area E — the import path"
+    let modPath = $"{d}/f2mod.weir"
+    let impPath = $"{d}/f2imp.weir"
+    f2module |> File.write modPath
+    f2importer modPath |> File.write impPath
+    let _c1 = chmodTo "000" modPath
+    let f2exit = checkExit impPath
+    let _c2 = chmodTo "644" modPath
+    record vpath "F2" (verdictOf (f2exit == 1) "OK" $"REPRODUCES (check exit {f2exit}; a crash is not a fix)")
+
+    print ""
+    print "area B — the purity gates and the capability report"
+    let p5a = $"{d}/f5pure.weir"
+    let p5b = $"{d}/f5readonly.weir"
+    let p5c = $"{d}/f5plan.weir"
+    f5pure |> File.write p5a
+    f5readonly |> File.write p5b
+    f5plan |> File.write p5c
+    let r5a = checkMerged p5a
+    let r5b = checkMerged p5b
+    let r5c = checkMerged p5c
+    let f5ok = r5a.exitCode == 0 && r5b.exitCode == 0 && r5c.exitCode == 0
+    record vpath "F5" (verdictOf f5ok "OK" "REPRODUCES (a for body with no effect is refused by a gate)")
+
+    let leaked =
+        [r5a; r5b; r5c]
+        |> Seq.map (fun r -> r.stdout |> Str.join " ")
+        |> Seq.exists (fun t -> t |> Str.contains "|seqIter")
+    record vpath "F5-vocabulary" (verdictOf (not leaked) "OK" "REPRODUCES (a desugar key reached a user-facing message)")
+
+    let p6 = $"{d}/f6.weir"
+    let p6c = $"{d}/f6control.weir"
+    f6readonly |> File.write p6
+    f6controlPure |> File.write p6c
+    let f6exit = checkExit p6
+    let f6ctl = checkExit p6c
+    record vpath "control-pure-accepts" (verdictOf (f6ctl == 0) "control OK" "*** CONTROL FAILED")
+    record vpath "F6" (verdictOf (f6exit == 0) "OK" "REPRODUCES (readonly changes the typing of a piped unit statement)")
+
+    let p7 = $"{d}/f7.weir"
+    f7 |> File.write p7
+    let can = canOut p7
+    let phantom = (can.stdout |> Str.join "\n") |> Str.contains "not statically known"
+    let strictExit = canStrictExit p7
+    record vpath "F7" (verdictOf (not phantom && strictExit == 0) "OK" $"REPRODUCES (phantom dynamic head; --strict exit {strictExit})")
+
+    print ""
+    print "area A — the inbound socket"
+    if pyReady then serveProbe d vpath
+    if not pyReady then record vpath "F8-F11" "SKIP (python3 missing) — the findings stay OPEN"
+
+    print ""
+    print "area D — the HTTP client"
+    if pyReady then f34Probe d vpath
+    if not pyReady then record vpath "F3/F4" "SKIP (python3 missing) — the findings stay OPEN"
+
+    print ""
+    print "controls"
+    let cbPath = $"{d}/control-broken.weir"
+    controlBroken |> File.write cbPath
+    let cb = runChild cbPath
+    let cbSaid = cb.stdout |> Seq.tryHead |> Option.defaultValue ""
+    record vpath "control-sees-broken" (verdictOf (cbSaid == "BROKEN") "control OK (the channel can report failure)" "*** CONTROL FAILED")
+
+    print ""
+    let verdicts = File.read vpath |> Seq.freeze
+    let bad =
+        verdicts
+        |> Seq.where (fun l ->
+            (l |> Str.contains "REPRODUCES") || (l |> Str.contains "CONTROL FAILED") || (l |> Str.contains "SKIP"))
+        |> Seq.freeze
+
+    if bad |> Seq.isEmpty then
+        print "ALL FINDINGS FIXED"
+    else
+        print $"{bad |> Seq.length} line(s) still reproduce (a SKIP counts — absence is never a pass):"
+        bad |> Seq.iter (fun l -> print $"  {l}")
+        exit 1
