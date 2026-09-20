@@ -10149,6 +10149,116 @@ let lockfileConfinementTests =
           } ]
 
 
+let lockfileSymlinkConfinementTests =
+    // DA-04 [D:lockfile-symlink-confinement]: confineUnder is LEXICAL, so a
+    // lexically-clean path escapes through a symlinked component. entryDest
+    // now runs the real-path gate too — probe confineRealUnder directly
+    // (POSIX symlinks; skipped on Windows).
+    let mkEntry path : Weir.Contracts.LockEntry =
+        { Kind = "schema"
+          Name = "n"
+          Url = "http://x"
+          Sha256 = "0"
+          Path = path
+          Version = None }
+
+    testList
+        "lockfile symlink confinement [D:lockfile-symlink-confinement]"
+        [ test "entryDest refuses a symlinked INTERMEDIATE dir escaping .weir/ (DA-04)" {
+              if System.OperatingSystem.IsWindows() then
+                  ()
+              else
+                  let baseDir =
+                      System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-da04-{System.Guid.NewGuid():N}")
+
+                  let weirDir = System.IO.Path.Combine(baseDir, ".weir")
+                  let outside = System.IO.Path.Combine(baseDir, "OUTSIDE")
+                  System.IO.Directory.CreateDirectory weirDir |> ignore
+                  System.IO.Directory.CreateDirectory outside |> ignore
+
+                  try
+                      // .weir/schemas is a symlink to a dir OUTSIDE .weir/
+                      System.IO.Directory.CreateSymbolicLink(System.IO.Path.Combine(weirDir, "schemas"), outside)
+                      |> ignore
+
+                      // the lock path is lexically clean — no `..`, not absolute
+                      match Weir.Contracts.entryDest weirDir (mkEntry "schemas/marker.json") with
+                      | Ok d -> failtest $"a symlinked intermediate dir must refuse, got {d}"
+                      | Error msg ->
+                          Expect.stringContains msg "schema n" "the refusal names the entry"
+                          Expect.stringContains msg "escapes .weir/" "and names the escape"
+                  finally
+                      try
+                          System.IO.Directory.Delete(baseDir, true)
+                      with _ ->
+                          ()
+          }
+          test "confineRealUnder refuses a symlinked FINAL component escaping out" {
+              if System.OperatingSystem.IsWindows() then
+                  ()
+              else
+                  let baseDir =
+                      System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-da04b-{System.Guid.NewGuid():N}")
+
+                  let weirDir = System.IO.Path.Combine(baseDir, ".weir")
+                  let schemas = System.IO.Path.Combine(weirDir, "schemas")
+                  let outside = System.IO.Path.Combine(baseDir, "OUTSIDE")
+                  System.IO.Directory.CreateDirectory schemas |> ignore
+                  System.IO.Directory.CreateDirectory outside |> ignore
+
+                  try
+                      // the LEAF itself is a link pointing to a file outside
+                      let leak = System.IO.Path.Combine(outside, "leak.json")
+                      System.IO.File.WriteAllText(leak, "{}")
+                      let leaf = System.IO.Path.Combine(schemas, "marker.json")
+                      System.IO.File.CreateSymbolicLink(leaf, leak) |> ignore
+
+                      match Weir.Contracts.entryDest weirDir (mkEntry "schemas/marker.json") with
+                      | Ok d -> failtest $"a symlinked final component must refuse, got {d}"
+                      | Error msg -> Expect.stringContains msg "escapes .weir/" "the refusal names the escape"
+                  finally
+                      try
+                          System.IO.Directory.Delete(baseDir, true)
+                      with _ ->
+                          ()
+          }
+          test "a REAL .weir/schemas dir + a clean path still confines (not over-refused)" {
+              let baseDir =
+                  System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-da04c-{System.Guid.NewGuid():N}")
+
+              let weirDir = System.IO.Path.Combine(baseDir, ".weir")
+              System.IO.Directory.CreateDirectory(System.IO.Path.Combine(weirDir, "schemas")) |> ignore
+
+              try
+                  match Weir.Contracts.entryDest weirDir (mkEntry "schemas/marker.json") with
+                  | Ok _ -> ()
+                  | Error e -> failtest $"a real directory + clean path must confine: {e}"
+              finally
+                  try
+                      System.IO.Directory.Delete(baseDir, true)
+                  with _ ->
+                      ()
+          }
+          test "F1 absolute/`..` traversal is still refused (A+B behavior unchanged)" {
+              let baseDir =
+                  System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-da04d-{System.Guid.NewGuid():N}")
+
+              let weirDir = System.IO.Path.Combine(baseDir, ".weir")
+              System.IO.Directory.CreateDirectory weirDir |> ignore
+
+              try
+                  for bad in [ "../escape.json"; "/etc/passwd" ] do
+                      match Weir.Contracts.entryDest weirDir (mkEntry bad) with
+                      | Ok d -> failtest $"'{bad}' must still refuse, got {d}"
+                      | Error msg -> Expect.stringContains msg "escapes .weir/" "the lexical refusal is unchanged"
+              finally
+                  try
+                      System.IO.Directory.Delete(baseDir, true)
+                  with _ ->
+                      ()
+          } ]
+
+
 let scriptTests =
     testList
         "Script machinery"
@@ -20504,6 +20614,7 @@ let allTests =
           optionSweepTests
           moduleTests
           lockfileConfinementTests
+          lockfileSymlinkConfinementTests
           moduleSignatureTests
           scriptTests
           multilineTests

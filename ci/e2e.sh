@@ -6600,6 +6600,59 @@ out=$( cd "$f1repo" && $BIN verify 2>&1 ) && fail "verify on a hostile lock must
 echo "$out" | grep -qF "escapes .weir/" || fail "F1: verify names the escape rather than reading it: $out"
 echo "e2e ok: a hostile lock refuses per entry (restore + verify), the benign sibling restores, nothing escapes (F1)"
 
+# DA-04: confinement RESOLVES SYMLINKS [D:lockfile-symlink-confinement].
+# A lexically-clean lock path (no `..`, not absolute) still escapes when a
+# component on the way is a symlink OUT. POSIX-only (native symlinks).
+if [ "$IS_WINDOWS" = "0" ]; then
+    # (1) a symlinked INTERMEDIATE dir: .weir/schemas → OUTSIDE .weir/
+    darepo="$ctdir/da04repo"
+    daout="$ctdir/DA04-OUTSIDE"
+    mkdir -p "$darepo/.weir" "$daout"
+    ln -s "$daout" "$darepo/.weir/schemas"
+    cat > "$darepo/.weir/lock.json" <<DA04EOF
+{ "schemaVersion": 1, "artifacts": [
+  {"kind":"schema","name":"marker","url":"http://127.0.0.1:$ctport/configmap-v1.json","sha256":"$f1hash","path":"schemas/marker.json"}
+] }
+DA04EOF
+    out=$( cd "$darepo" && $BIN restore 2>&1 ) && fail "DA-04: restore through a symlinked .weir/schemas must exit nonzero" || true
+    echo "$out" | grep -qF "escapes .weir/" || fail "DA-04: a symlinked intermediate dir is a located refusal: $out"
+    test ! -e "$daout/marker.json" || fail "DA-04: nothing may be written outside .weir/ through the symlink"
+    echo "e2e ok: a symlinked .weir/schemas is refused on restore, nothing escapes (DA-04)"
+
+    # (2) a symlinked FINAL component: the leaf itself points OUT
+    da2repo="$ctdir/da04repo2"
+    da2out="$ctdir/DA04-OUTSIDE2"
+    mkdir -p "$da2repo/.weir/schemas" "$da2out"
+    printf 'x' > "$da2out/leak.json"
+    ln -s "$da2out/leak.json" "$da2repo/.weir/schemas/marker.json"
+    cat > "$da2repo/.weir/lock.json" <<DA04EOF2
+{ "schemaVersion": 1, "artifacts": [
+  {"kind":"schema","name":"marker","url":"http://127.0.0.1:$ctport/configmap-v1.json","sha256":"$f1hash","path":"schemas/marker.json"}
+] }
+DA04EOF2
+    out=$( cd "$da2repo" && $BIN restore 2>&1 ) && fail "DA-04: restore over a symlinked leaf must exit nonzero" || true
+    echo "$out" | grep -qF "escapes .weir/" || fail "DA-04: a symlinked final component is refused: $out"
+    test "$(cat "$da2out/leak.json")" = "x" || fail "DA-04: the symlinked leaf's target must not be overwritten"
+    # (3) verify must not READ through the symlinked leaf either
+    out=$( cd "$da2repo" && $BIN verify 2>&1 ) && fail "DA-04: verify through a symlinked leaf must exit nonzero" || true
+    echo "$out" | grep -qF "escapes .weir/" || fail "DA-04: verify names the escape rather than reading through it: $out"
+    echo "e2e ok: a symlinked final component is refused on restore/verify, its target untouched (DA-04)"
+
+    # (4) benign control: a REAL .weir/schemas dir + clean path still works
+    da3repo="$ctdir/da04repo3"
+    mkdir -p "$da3repo/.weir/schemas"
+    cat > "$da3repo/.weir/lock.json" <<DA04EOF3
+{ "schemaVersion": 1, "artifacts": [
+  {"kind":"schema","name":"benign","url":"http://127.0.0.1:$ctport/configmap-v1.json","sha256":"$f1hash","path":"schemas/benign.json"}
+] }
+DA04EOF3
+    out=$( cd "$da3repo" && $BIN restore 2>&1 ) || fail "DA-04 control: a real .weir/schemas must still restore: $out"
+    test -f "$da3repo/.weir/schemas/benign.json" || fail "DA-04 control: the benign artifact must land inside .weir/"
+    echo "e2e ok: a real .weir/schemas directory still restores — not over-refused (DA-04 control)"
+else
+    echo "e2e skip: DA-04 symlink-confinement (POSIX native symlinks)"
+fi
+
 kill $ctsrv 2>/dev/null || true
 
 # F2: an unreadable file on the import path is a LOCATED diagnostic, never

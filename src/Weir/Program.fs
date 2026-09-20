@@ -572,17 +572,35 @@ let main argv =
                                                      Console.Out.Write gen.Text
                                                      0
                                                  | out ->
-                                                     let dest, importPath =
+                                                     let dest, importPath, confineWrite =
                                                          match out with
-                                                         | Some p -> IO.Path.GetFullPath p, $"\"{p}\""
+                                                         // --out is a user-CHOSEN path (combine, not
+                                                         // under — the user controls it); the DEFAULT
+                                                         // .weir/types/ path is vendor-directory
+                                                         // territory and confines through a symlinked
+                                                         // `types` dir [D:lockfile-symlink-confinement]
+                                                         | Some p -> IO.Path.GetFullPath p, $"\"{p}\"", false
                                                          | None ->
                                                              IO.Path.Combine(weirDir, "types", name + ".weir"),
-                                                             $"\"weir:{name}\""
+                                                             $"\"weir:{name}\"",
+                                                             true
 
-                                                     IO.Directory.CreateDirectory(IO.Path.GetDirectoryName dest)
-                                                     |> ignore
+                                                     let writeRes =
+                                                         if confineWrite then
+                                                             Contracts.writeConfined
+                                                                 weirDir
+                                                                 dest
+                                                                 (Text.Encoding.UTF8.GetBytes gen.Text)
+                                                         else
+                                                             IO.Directory.CreateDirectory(IO.Path.GetDirectoryName dest)
+                                                             |> ignore
 
-                                                     IO.File.WriteAllText(dest, gen.Text)
+                                                             IO.File.WriteAllText(dest, gen.Text)
+                                                             Ok()
+
+                                                     match writeRes with
+                                                     | Error w -> fail1 w
+                                                     | Ok() ->
 
                                                      let notes =
                                                          if gen.NoteCount = 0 then
