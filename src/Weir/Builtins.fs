@@ -5867,15 +5867,11 @@ let internalAliases: (string * Ty * Value) list =
         |> List.find (fun (n, _, _) -> n = field)
         |> fun (_, ty, v) -> ty, v
 
-    [ for key, modName, field in
-          [ "|seqIter", "Seq", "iter"
-            "|seqMap", "Seq", "map"
-            "|seqFreeze", "Seq", "freeze"
-            "|seqAppend", "Seq", "append"
-            "|seqRange", "Seq", "range"
-            "|seqItem", "Seq", "item"
-            "|retryDefaults", "Retry", "defaults"
-            "|pollDefaults", "Poll", "defaults" ] do
+    // the (key, module, field) list is Effects.libraryDesugars — the ONE
+    // copy [D:desugar-namespace], read here to resolve each to its Value
+    // and by the Purity/Can/Effects classifiers to read a library key as
+    // its target member
+    [ for key, modName, field in Weir.Effects.libraryDesugars do
           let ty, v = m modName field
           key, ty, v ]
 

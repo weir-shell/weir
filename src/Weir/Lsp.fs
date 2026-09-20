@@ -746,7 +746,9 @@ let rec private cmdSurfaceAt (jcol: int) (te: Check.TypedExpr) : (string * int *
              let rec spine (e: Check.TypedExpr) acc =
                  match e.Kind with
                  | Check.TEApp(f, a) -> spine f (a :: acc)
-                 | Check.TEVar v when v.StartsWith "|" -> Some acc
+                 // the command-reifier spine only [D:desugar-namespace] — a
+                 // library desugar carries no program/argv to recover
+                 | Check.TEVar v when Weir.Effects.isCommandReifier v -> Some acc
                  | _ -> None
 
              match spine te [] with

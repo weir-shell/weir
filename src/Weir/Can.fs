@@ -272,7 +272,11 @@ let rec private walkExpr
              | k -> k
 
          match headOf te with
-         | TEVar h when h.StartsWith "|" ->
+         // only a COMMAND reifier is a spawn here [D:desugar-namespace]: a
+         // library desugar (|seqIter from `for`, |seqRange from a range)
+         // targets a plain member and adds NO capability — the phantom
+         // dynamic head a `for` loop used to report
+         | TEVar h when Weir.Effects.isCommandReifier h ->
              // the program's POSITION in the desugar, then literalness:
              // base twins take (prog, args); orFail's msg rides ahead;
              // the Env twins lead with the overlay; orFailedEnv has both.

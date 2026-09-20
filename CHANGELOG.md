@@ -59,6 +59,23 @@
   at …`), and the previous read-twice shape no longer races a file
   deleted mid-check.
 
+- **A `for` loop no longer trips `pure`, `readonly`, `plan`, or
+  `--strict`.** The `for` desugar targets a library member (`Seq.iter`),
+  but the effect classifiers treated every `|`-prefixed internal name as
+  a command — so a `for` body that reached no effect was refused inside
+  a `pure`/`readonly`/`plan` block, the internal desugar key leaked into
+  the refusal message, and each `for` added a phantom dynamic-head
+  capability that failed `--strict`. The classifiers now distinguish a
+  command reifier from a library desugar and read the latter as its
+  target member; no internal `|`-name reaches a user-facing message.
+
+- **A multi-statement `readonly` body parses.** A `readonly` block whose
+  body ran a unit statement before its result value space-joined the
+  statement onto its successor and mis-parsed (a spurious arity error),
+  because `readonly` was missing from the block-sentinel registration
+  that `pure` and `plan` have. `readonly` now sequences its statements
+  like `pure`; its mutation ceiling is unchanged.
+
 ## v0.0.46
 
 ### Added

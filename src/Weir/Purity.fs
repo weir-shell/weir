@@ -135,10 +135,15 @@ let rec isPureExpr (env: Map<string, bool>) (te: TypedExpr) : bool =
 // the ONE set both the partition and this teaching vocabulary read
 let private fsWriteMembers = Weir.Effects.fsWriteMembers
 
-let private effectPhrase (n: string) : string =
-    if n.StartsWith "|" then
-        $"'{n}' runs a command"
-    else
+let rec private effectPhrase (n: string) : string =
+    // a `|`-name is an internal desugar key that must never surface
+    // [D:desugar-namespace][D:user-language-messages]: a library desugar
+    // reads as its target member; a command reifier speaks as the command
+    // it runs, WITHOUT its key
+    match Weir.Effects.libraryDesugarTarget n with
+    | Some target -> effectPhrase target
+    | None when n.StartsWith "|" -> "this runs a command"
+    | None ->
         match n with
         | "print"
         | "printerr" -> $"'{n}' writes to the console"
@@ -423,8 +428,10 @@ let rec firstPlanRefusal (te: TypedExpr) : (Span * string) option =
                 te.Span,
                 "'Plan.apply' is refused inside 'plan' — a mutation cannot be coherently captured; build the plan here, apply it OUTSIDE the block"
             )
-        // the '|'-prefixed reifier desugar targets a spawn (proc)
-        | _ when n.StartsWith "|" ->
+        // a COMMAND reifier targets a spawn (proc) — refused; a LIBRARY
+        // desugar (|seqIter/…) targets a plain member and is captured like
+        // any weir-native op, never refused [D:desugar-namespace]
+        | _ when Weir.Effects.isCommandReifier n ->
             Some(
                 te.Span,
                 "a command reifier runs a command, and 'proc' is refused inside 'plan' — its effects cannot be captured; plan covers weir-native mutation only (File/Dir/Http)"

@@ -7156,6 +7156,37 @@ let pureRegionTests =
               let e = firstErr [ "let x ="; "    pure"; "        prompt \"q\""; "print x" ]
               Expect.stringContains e.Message "'prompt'" "prompt reads and writes — never pure"
           }
+          test "a pure for body reaching no effect is ACCEPTED [D:desugar-namespace] (F5)" {
+              // the for-desugar targets Seq.iter (a library member), not a
+              // command — a pure loop body must not refuse as a spawn
+              Expect.isEmpty
+                  (errsOf
+                      [ "let pure noop x = ()"
+                        "let a ="
+                        "    pure"
+                        "        for n in [1] do"
+                        "            noop n"
+                        "        \"ok\""
+                        "print a" ])
+                  "a pure for loop is pure"
+
+              // plan admits it too — a library desugar is captured, not refused
+              Expect.isEmpty
+                  (errsOf
+                      [ "let pure noop x = ()"
+                        "let p ="
+                        "    plan"
+                        "        for n in [1] do"
+                        "            noop n"
+                        "print $\"{p |> Plan.isEmpty}\"" ])
+                  "a library desugar in a plan block is not a proc refusal"
+
+              // but a REAL command in the for body still refuses, and the
+              // message speaks the command, never the |seqIter key
+              let e = firstErr [ "pure"; "    for n in [1] do"; "        echo hi" ]
+              Expect.stringContains e.Message "'echo' runs a command" "a real command still refuses"
+              Expect.isFalse (e.Message.Contains "|seqIter") "no desugar key in the message"
+          }
           test "union constructors are pure by construction — applied and partially applied [D:pure-stdin-ctors]" {
               Expect.isEmpty
                   (errsOf
@@ -7268,6 +7299,24 @@ let effectPartitionTests =
               // external mutation (changes the world)
               for n in [ "File.write"; "File.append"; "File.copy"; "Dir.create"; "Dir.delete"; "Dir.deleteAll"; "Proc.stop"; "print"; "printerr"; "Log.info"; "exit"; "Path.newTempDir" ] do
                   Expect.equal (Weir.Effects.effectClass n) (Some M) $"{n} is external mutation"
+          }
+          test "the |-name family split: library desugar vs command reifier [D:desugar-namespace]" {
+              // library desugars target a plain member (Seq.iter/…) — NOT
+              // commands, NOT effectful
+              for k in [ "|seqIter"; "|seqMap"; "|seqFreeze"; "|seqAppend"; "|seqRange"; "|seqItem"; "|retryDefaults"; "|pollDefaults" ] do
+                  Expect.isFalse (Weir.Effects.isCommandReifier k) $"{k} is a library desugar, not a command"
+                  Expect.isFalse (Weir.Effects.effectfulName k) $"{k} reads as its pure target member"
+                  Expect.equal (Weir.Effects.effectClass k) None $"{k} has no effect class"
+
+              // |seqIter resolves to its target member
+              Expect.equal (Weir.Effects.libraryDesugarTarget "|seqIter") (Some "Seq.iter") "the desugar names its target"
+              Expect.equal (Weir.Effects.libraryDesugarTarget "|orFailed") None "a command reifier is not a library desugar"
+
+              // command reifiers stay spawns (effectful, mutation)
+              for k in [ "|completed"; "|succeeded"; "|orFailed"; "|print"; "|exitCoded" ] do
+                  Expect.isTrue (Weir.Effects.isCommandReifier k) $"{k} targets a spawn"
+                  Expect.isTrue (Weir.Effects.effectfulName k) $"{k} is effectful"
+                  Expect.equal (Weir.Effects.effectClass k) (Some M) $"{k} is external mutation (a command)"
           }
           test "Http.send is method-dependent — effectClass alone cannot place it (None)" {
               Expect.equal (Weir.Effects.effectClass "Http.send") None "the name defers to the request value"
@@ -7395,6 +7444,61 @@ let readonlyBlockTests =
                         "            1 + 1"
                         "print $\"{x}\"" ])
                   "a pure island nests inside the looser ceiling"
+          }
+          test "a for body with no effect is ACCEPTED inside readonly [D:desugar-namespace] (F5)" {
+              // the |seqIter desugar is a LIBRARY member (Seq.iter), not a
+              // command — a pure for body must not be refused as a spawn
+              Expect.isEmpty
+                  (errsOf
+                      [ "let pure noop x = ()"
+                        "let a ="
+                        "    readonly"
+                        "        for n in [1] do"
+                        "            noop n"
+                        "        \"ok\""
+                        "print a" ])
+                  "a pure for loop reaches no effect — readonly admits it"
+          }
+          test "a multi-statement readonly body sentinels between statements [D:desugar-namespace] (F6)" {
+              // an earlier assumption that readonly's body is value-shaped
+              // space-joined a non-final statement onto its successor and
+              // mis-parsed it; a unit statement before the result now parses
+              Expect.isEmpty
+                  (errsOf
+                      [ "let noop x = ()"
+                        "let b ="
+                        "    readonly"
+                        "        [1] |> Seq.iter noop"
+                        "        \"ok\""
+                        "print b" ])
+                  "a non-final piped unit statement types under readonly, like pure"
+
+              // two consecutive unit statements before the result, too
+              Expect.isEmpty
+                  (errsOf
+                      [ "let noop x = ()"
+                        "let b ="
+                        "    readonly"
+                        "        noop 1"
+                        "        noop 2"
+                        "        \"ok\""
+                        "print b" ])
+                  "consecutive unit statements sequence, never space-join"
+          }
+          test "no |-desugar key reaches a readonly refusal message [D:desugar-namespace] (F5-vocabulary)" {
+              // a REAL effect in a for body still refuses — but the message
+              // speaks the effect, never the internal |seqIter key
+              let e =
+                  firstErr
+                      [ "let b ="
+                        "    readonly"
+                        "        for n in [1] do"
+                        "            File.write \"f\" [\"y\"]"
+                        "        \"ok\"" ]
+
+              Expect.stringContains e.Message "'File.write' writes the filesystem" "the real effect names itself"
+              Expect.isFalse (e.Message.Contains "|seqIter") "the desugar key never surfaces"
+              Expect.isFalse (e.Message.Contains "|") "no |-prefixed key in a user-facing message"
           }
           test "an unknown callable refuses — conservatism carries over" {
               let e = firstErr [ "let unknown g ="; "    readonly"; "        g 1" ]

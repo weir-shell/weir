@@ -7206,6 +7206,26 @@ out=$($BIN check --can "$candir/bad.weir" 2>&1) || badrc=$?
 echo "$out" | grep -qE "error" || fail "the check's own diagnostics print: $out"
 echo "$out" | grep -qF "capability" && fail "no report for a script that cannot run: $out" || true
 
+# F7 [D:desugar-namespace]: a `for` loop (the |seqIter desugar) must add
+# NO phantom dynamic head — a for-only script reports ZERO opaque sites,
+# and --strict exits 0 (the |-namespace split: a library desugar is not
+# a spawn)
+printf 'for n in ["a"] do print n\n' > "$candir/foronly.weir"
+forout=$($BIN check --can "$candir/foronly.weir" 2>&1) || fail "--can on a for-only script errored: $forout"
+echo "$forout" | grep -qF "opaque site" && fail "a for loop must add no opaque site (F7): $forout" || true
+echo "$forout" | grep -qF '^$' && fail "a for loop must not report a dynamic head (F7): $forout" || true
+$BIN check --can --strict "$candir/foronly.weir" >/dev/null 2>&1 || fail "--strict must exit 0 on a for-only script (F7)"
+# the --json opaque count is exactly 0
+$BIN check --can --json "$candir/foronly.weir" > "$candir/foronly.json" 2>&1 || fail "--json failed on the for-only script"
+python3 - "$candir/foronly.json" <<'PYFOR' || fail "a for-only script has 0 opaque sites (F7)"
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d["opaqueSites"] == 0, d["opaqueSites"]
+kinds = {c["kind"] for c in d["capabilities"]}
+assert "runs" not in kinds and "opaque" not in kinds, kinds
+PYFOR
+echo "e2e ok: a for loop adds no phantom dynamic head — 0 opaque sites, --strict exits 0 (F7)"
+
 rm -rf "$candir"
 echo "e2e ok: check --can (model line, opaque loud + --strict, literals, untaken branch, import transitive, secret-argv, json shape, failure suppresses)"
 

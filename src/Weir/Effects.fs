@@ -66,16 +66,57 @@ let effectfulQualified =
 
 let effectfulBare = Set [ "ls"; "glob"; "print"; "printerr"; "exit"; "prompt" ]
 
-/// is a name classified-effectful? (the |-prefixed reifier desugar
-/// targets a spawn [D:exit-reifiers])
-let effectfulName (n: string) =
+// the LIBRARY desugars [D:desugar-namespace]: `|`-prefixed keys that a
+// rewrite (for, ranges, retry/poll) targets at a PLAIN library member,
+// NOT a spawn — the other `|`-family (the command reifiers |completed
+// /|orFailed/|print/…) does target a command. Both wear the un-typeable
+// `|` prefix, so `StartsWith "|"` alone conflates them; a classifier
+// must consult THIS map and read the library key as its target member.
+// The ONE copy lives here (before both Builtins' alias registration and
+// the Purity/Can classifiers) so the sugar's meaning and its
+// classification cannot drift — Builtins.internalAliases resolves each
+// triple to its Value from the SAME list.
+let libraryDesugars: (string * string * string) list =
+    [ "|seqIter", "Seq", "iter"
+      "|seqMap", "Seq", "map"
+      "|seqFreeze", "Seq", "freeze"
+      "|seqAppend", "Seq", "append"
+      "|seqRange", "Seq", "range"
+      "|seqItem", "Seq", "item"
+      "|retryDefaults", "Retry", "defaults"
+      "|pollDefaults", "Poll", "defaults" ]
+
+// a `|`-desugar key → its qualified target member (Some "Seq.iter"),
+// or None when the name is not a library desugar (a command reifier, or
+// not a `|`-name at all). A classifier reads a library desugar AS this
+// target; a command reifier stays a spawn.
+let private libraryDesugarTargets: Map<string, string> =
+    libraryDesugars |> List.map (fun (k, m, f) -> k, $"{m}.{f}") |> Map.ofList
+
+let libraryDesugarTarget (n: string) : string option = libraryDesugarTargets.TryFind n
+
+/// the `|`-name family split [D:desugar-namespace]: a COMMAND reifier
+/// targets a spawn (effectful); a LIBRARY desugar targets a plain member
+/// (classified as that member, never as a command).
+let isCommandReifier (n: string) =
+    n.StartsWith "|" && not (libraryDesugarTargets.ContainsKey n)
+
+/// is a name classified-effectful? A command reifier targets a spawn
+/// [D:exit-reifiers]; a library desugar reads as its target member, so a
+/// pure library target (Seq.iter) is NOT effectful [D:desugar-namespace].
+let rec effectfulName (n: string) =
     if n.Contains "." then
         effectfulQualified.Contains n
         || (match n.Split '.' with
             | [| m; _ |] -> effectfulModules.Contains m
             | _ -> false)
     else
-        effectfulBare.Contains n || n.StartsWith "|"
+        match libraryDesugarTarget n with
+        | Some target ->
+            // read the desugar as its target member (Seq.iter is pure);
+            // the recursion terminates — a target is never a `|`-name
+            effectfulName target
+        | None -> effectfulBare.Contains n || isCommandReifier n
 
 // the filesystem WRITE members (File/Dir), the fs.write ∪ fs.delete
 // label's membership — the ONE source both effectClass (the partition)
@@ -109,8 +150,10 @@ let httpMethodClass (methodCase: string) : EffectClass =
 let effectClass (n: string) : EffectClass option =
     if not (effectfulName n) then
         None // a pure name has no class — the partition is over effects only
-    elif n.StartsWith "|" then
-        Some Mutation // the reifier desugar targets a spawn (proc)
+    elif isCommandReifier n then
+        Some Mutation // a COMMAND reifier targets a spawn (proc); a library
+    // desugar never reaches here — effectfulName already read it as its
+    // pure target [D:desugar-namespace]
     else
         match n with
         | "print"

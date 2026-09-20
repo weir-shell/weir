@@ -436,10 +436,10 @@ let isWithinHead (piece: string) : bool =
     afterLet = "within"
     || afterLet.StartsWith "within " && not (afterLet.Contains ";")
 
-// the standalone pure head [D:pure-stage1]: `pure` (bare, or behind
-// `let <name> =`) opens its block exactly as a within head does — the
-// same lexical rule, one word shorter (no kind, no args)
-let isPureHead (piece: string) : bool =
+// a standalone district head [D:pure-stage1]: a bare district keyword
+// (or one behind `let <name> =`) opens its block exactly as a within
+// head does — the same lexical rule, one word shorter (no kind, no args)
+let private isDistrictHead (keyword: string) (piece: string) : bool =
     let t = piece.Trim()
 
     let afterLet =
@@ -450,28 +450,23 @@ let isPureHead (piece: string) : bool =
         else
             t
 
-    afterLet = "pure"
-    || afterLet.StartsWith "pure " && not (afterLet.Contains ";")
+    afterLet = keyword
+    || afterLet.StartsWith(keyword + " ") && not (afterLet.Contains ";")
+
+let isPureHead (piece: string) : bool = isDistrictHead "pure" piece
+
+// the standalone readonly head [D:desugar-namespace]: readonly opens a
+// STATEMENT block exactly as pure does — a body may sequence unit
+// statements before its result value, so it needs the sibling sentinel
+// between them (an earlier assumption that "readonly's body is
+// value-shaped" space-joined a multi-statement body and mis-parsed it)
+let isReadonlyHead (piece: string) : bool = isDistrictHead "readonly" piece
 
 // the standalone plan head [D:plan-apply]: `plan` (bare, or behind
-// `let <name> =`) opens its block exactly as pure does — but a plan body
-// is a STATEMENT sequence (bare consecutive mutations, captured as Ops),
-// so unlike pure/readonly it genuinely NEEDS the sibling sentinel
-// between its statements (the reason it is registered in dangleOpensBlock
-// where readonly is not — readonly's body is value-shaped).
-let isPlanHead (piece: string) : bool =
-    let t = piece.Trim()
-
-    let afterLet =
-        if t.StartsWith "let " then
-            match t.IndexOf '=' with
-            | -1 -> t
-            | i -> t.Substring(i + 1).TrimStart()
-        else
-            t
-
-    afterLet = "plan"
-    || afterLet.StartsWith "plan " && not (afterLet.Contains ";")
+// `let <name> =`) opens its block exactly as pure/readonly do — a plan
+// body is a STATEMENT sequence (bare consecutive mutations, captured as
+// Ops), so it needs the sibling sentinel between its statements
+let isPlanHead (piece: string) : bool = isDistrictHead "plan" piece
 
 // the binder-head scanner [D:scoped-procs] [D:http-serve]: a `within
 // proc <b> =` / `within serve <b> =` head whose TAIL is a resource spec
@@ -546,6 +541,9 @@ let dangleOpensBlock (piece: string) : bool =
     // [D:http-serve] — isWithinHead's `;`-guard would hide it
     || endsInServeHead t
     || isPureHead t
+    // readonly opens a statement block too [D:desugar-namespace] — a
+    // multi-statement body sentinels between its statements, like pure
+    || isReadonlyHead t
     // the plan head opens a statement block [D:plan-apply]
     || isPlanHead t
     // retry/poll heads and the until binder line open their blocks
@@ -4409,7 +4407,9 @@ let sigCmdDiagnostics
                      let rec spine (e: Check.TypedExpr) (acc: Check.TypedExpr list) =
                          match e.Kind with
                          | Check.TEApp(f, a) -> spine f (a :: acc)
-                         | Check.TEVar n when n.StartsWith "|" -> Some(n, acc)
+                         // a COMMAND reifier carries (prog, argv) [D:desugar-namespace];
+                         // a library desugar does not — never recover a command from it
+                         | Check.TEVar n when Weir.Effects.isCommandReifier n -> Some(n, acc)
                          | _ -> None
 
                      match spine te [] with
