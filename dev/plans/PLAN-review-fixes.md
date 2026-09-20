@@ -123,6 +123,38 @@ unreadable import, never rc ≥ 128; a mode-000 fixture lands in e2e on BOTH the
 import path and the restore path; `generated:` entries stop reporting "present"
 without saying what was checked (the doc-level row).
 
+### AMENDMENT — DA-04: lexical `..`/absolute rejection is INSUFFICIENT for confinement (probe-confirmed 2026-09-20)
+
+Extends F1 (restore writes outside `.weir/`). The plan above confines the
+lockfile-derived destination with a *textual* `Path.under weirDir` check — a
+lexical rejection of `..` and absolute paths. That is NOT enough: a symlink
+inside `.weir` turns a lexically-clean relative path into a write outside the
+tree.
+
+CONFIRMED: a lock entry with the path `schemas/marker.json` (no `..`, not
+absolute — it passes any lexical `Path.under` check) combined with
+`.weir/schemas` symlinked to a directory OUTSIDE `.weir` → `weir restore`
+wrote the fetched artifact OUTSIDE `.weir`. The mechanism: `restore` computes
+`dest = Path.Combine(weirDir, e.Path)` then `File.WriteAllBytes dest …`
+(`Contracts.fs:895`, `:926–928`), and `File.WriteAllBytes` FOLLOWS the
+symlink; there is no realpath guard.
+
+REQUIREMENT change on Bundle A+B: confinement MUST be enforced at the ACTUAL
+filesystem operation, not by a textual `Path.under` check on the lock string.
+Either open a trusted root and perform handle-relative operations with
+link/reparse-point restrictions, or realpath-verify that the final target
+resolves under the resolved trusted root immediately before the write — and do
+the check on the path the write will actually touch. A preflight link check
+followed by an ordinary path write still leaves a TOCTOU replacement window
+(the symlink can be swapped between check and write), so the guard has to ride
+the same operation that writes. `Path.under` stays useful as a fast pre-reject,
+but it is not the confinement boundary.
+
+NOTE: this raises the F1 DONE-WHEN bar — "refuses per entry with a located
+diagnostic and writes nothing" must now hold against a symlinked `.weir`
+subdirectory, not only against `..`/absolute lock paths. Add a symlink-escape
+fixture to the restore e2e alongside the hostile-lock one.
+
 ## Bundle C — the HTTP header boundary, both directions
 
 Findings: **F3** (a CRLF in a request header value forges a second header on the
@@ -147,6 +179,40 @@ in the author's language; the referee log shows no forged header and no secret
 at the redirect origin; the pin asserts the REFUSAL, not merely the absence of
 the forged header (absence is also what a silent drop produces — the two must
 be distinguishable, which is the whole point of the bundle).
+
+### AMENDMENT — DA-05: the contract-fetch client is a SEPARATE client from `Http.send`, and it leaks credentials across a redirect (probe-confirmed 2026-09-20)
+
+Extends F4/S1 (secret headers survive a cross-origin redirect). The F4 fix
+targets `Http.send`'s `secretHeaders` path. But the contract-download client is
+a DIFFERENT client and is not covered by it: `fetchBytesWith`
+(`Contracts.fs:140`) uses a bare `new HttpClient()` — whose default handler has
+`AllowAutoRedirect = true` — and puts credentials in `DefaultRequestHeaders`.
+Auto-redirect on a credentialed client sends those headers to the redirect
+target.
+
+CONFIRMED via a faithful repro against a cross-origin 302 (127.0.0.1 →
+localhost, treated as a different origin): the GitLab `PRIVATE-TOKEN` header
+LEAKED to the redirect target; the GitHub `Authorization` header was stripped
+by the BCL (its built-in cross-origin credential drop covers `Authorization`
+only); and a control custom header also forwarded. So the exact header the
+GitLab contract path relies on is the one the BCL does not protect.
+
+REQUIREMENT change: the S1 cross-origin credential-drop policy must ALSO cover
+the contract-fetch path (GitLab `PRIVATE-TOKEN` in particular), not just
+`Http.send`. Concretely: disable auto-redirect on credentialed contract
+downloads (`AllowAutoRedirect = false`) and implement explicit bounded redirect
+handling that strips or refuses sensitive headers on an origin change — applied
+to BOTH the API-resolution request and the artifact-download request, since
+both carry the token. Fold this into Bundle C's F4 leg (it is the same policy,
+a second client), or state it as its own leg if the bless prefers — but it MUST
+share the F4 origin-comparison rule so the two credential channels do not
+disagree a third time.
+
+NOTE — remaining unproven precondition: attacker-reachability was NOT tested.
+The repro drives a redirect we control; it does not demonstrate that an
+attacker can induce a legitimate provider (GitLab/GitHub/a raw host) to 302 to
+an attacker-chosen host. Record that as the open precondition — the leak
+mechanism is proven, the end-to-end exploit path is not.
 
 ## Bundle D — `|` is two namespaces, and four classifiers test the prefix
 
