@@ -2662,7 +2662,11 @@ let private fsMoreFileMembers: (string * Ty * Value) list =
           | VStr p ->
               let r = Session.resolve p
 
-              if not (System.IO.File.Exists r || System.IO.Directory.Exists r || FileInfo(r).Exists) then
+              // "" is a no-such-path, not the cwd [D:isexecutable-empty]:
+              // Session.resolve "" folds to the cwd, which exists and
+              // carries the dir's x bit — the empty string must raise the
+              // same located error as a missing path, never answer true.
+              if p = "" || not (System.IO.File.Exists r || System.IO.Directory.Exists r || FileInfo(r).Exists) then
                   failwith $"File.isExecutable: no such path: {r}"
 
               try

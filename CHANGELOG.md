@@ -1,5 +1,29 @@
 # Changelog
 
+## v0.0.47
+
+### Fixed
+
+- **`within serve` reaches the handler over `localhost`, not just
+  `127.0.0.1`.** The scoped listener registered a prefix for
+  `127.0.0.1` only, so a client addressing the server as `localhost`
+  got .NET's built-in `404` before the weir handler ran (the
+  `Host: localhost` request did not match the `127.0.0.1` prefix). The
+  listener now registers the common loopback names beside each other on
+  the one port — `127.0.0.1`, `localhost`, and `[::1]` — so all three
+  reach the handler. The posture stays loopback: no `+`/`*`
+  all-interfaces bind, so the server is not exposed beyond loopback.
+  The `[::1]` name is guarded — a host without IPv6 loopback still
+  serves on the two IPv4 names. Bind, teardown, port-free, and
+  `Server.port`/`Server.running` are unchanged.
+
+- **`File.isExecutable ""` raises instead of returning `true`.** An
+  empty string resolved to the current directory (which exists and
+  carries a directory's execute bit), so the query answered `true` for
+  a path that is not a path. `""` now raises the same located
+  `no such path` error a missing path raises. A real missing path still
+  raises, unchanged.
+
 ## v0.0.46
 
 ### Added

@@ -18721,6 +18721,15 @@ let portMembersTests =
                       Expect.throwsC (fun () -> runReal "File.isExecutable \"./no-such-path-zz\"" |> ignore) id
 
                   Expect.stringContains ex.Message "no such path" "File.mode's absence posture"
+
+                  // "" is a no-such-path, not the cwd [D:isexecutable-empty]:
+                  // Session.resolve "" folds to the cwd (which exists and
+                  // carries the dir's x bit), so an unguarded read answered
+                  // true — it must raise the missing-path error instead
+                  let exEmpty =
+                      Expect.throwsC (fun () -> runReal "File.isExecutable \"\"" |> ignore) id
+
+                  Expect.stringContains exEmpty.Message "no such path" "the empty string raises like a missing path"
               finally
                   System.IO.File.Delete tmp
           }
@@ -18867,6 +18876,18 @@ let serveTests =
               let h = Weir.Serve.start 8199
               Expect.equal h.Port 8199 "the handle carries the port"
               Expect.isFalse h.Closed "open after start"
+
+              // the loopback NAMES are registered beside each other so a
+              // Host: localhost request reaches the handler, not .NET's
+              // prefix-miss 404 [D:serve-loopback-names]; the posture stays
+              // loopback — never a +/* all-interfaces bind
+              let prefixes = h.Listener.Prefixes |> List.ofSeq
+              Expect.contains prefixes "http://127.0.0.1:8199/" "the v4 loopback name"
+              Expect.contains prefixes "http://localhost:8199/" "the localhost name"
+
+              Expect.isFalse
+                  (prefixes |> List.exists (fun p -> p.Contains "+" || p.Contains "*"))
+                  "no all-interfaces bind — the loopback posture holds"
 
               // a second bind on the held port fails (the socket is taken)
               Expect.throwsC (fun () -> Weir.Serve.start 8199 |> ignore) (fun ex ->

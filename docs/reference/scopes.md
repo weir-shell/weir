@@ -101,6 +101,14 @@ frees. The scope is the lifetime, exactly as with `proc`; there is no
 `stop` member — `Server.port` and `Server.running` are the handle's
 whole surface.
 
+The listener accepts the common loopback names beside each other on the
+one port — `127.0.0.1`, `localhost`, and `[::1]` — so a client
+addressing the server by any of them reaches the handler (the `[::1]`
+name is dropped gracefully on a host without IPv6 loopback). It stays a
+loopback listener: it never binds all interfaces, so it is not
+reachable beyond loopback — put a reverse proxy in front for a public
+address.
+
 The handler routes on `req.path` with an ordinary `match` — weir's
 union dispatch, not a routing framework:
 
