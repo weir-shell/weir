@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.0.47
+## v0.0.46
 
 ### Added
 
@@ -38,29 +38,6 @@
   teardown — there is no `stop`). Bounded out of v1, each a stated
   non-goal: TLS (a reverse-proxy posture), a routing DSL, WebSockets,
   request-body streaming, HTTP/2.
-
-### Fixed
-
-- **Detached SIGINT now tears scopes down.** A `kill -INT` on a weir
-  backgrounded in a non-interactive session (`setsid`, a CI runner, a
-  systemd unit) was a no-op: scopes did not unwind, `always` cleanups
-  were skipped, `within proc` children orphaned, and only SIGKILL
-  stopped it. The cause: such a shell sets SIGINT to `SIG_IGN` before
-  exec (the job-control nohup convention) and .NET honours an
-  inherited `SIG_IGN`, so weir's signal handler never installed. A
-  detached weir (no controlling terminal) now resets SIGINT to its
-  default disposition, so SIGINT runs the same scope-unwind and
-  child-reap SIGTERM and a tty Ctrl+C always ran, exiting 130. A
-  second signal during teardown hard-exits (the double-Ctrl+C escape).
-  A `weir … &`/`nohup` in an interactive shell keeps its controlling
-  terminal and its ignored SIGINT unchanged — a terminal Ctrl+C still
-  does not reach it (send SIGTERM, or `kill -INT` the pid). SIGTERM
-  was already correct and is unchanged; POSIX only (Windows keeps
-  `Console.CancelKeyPress`).
-
-## v0.0.46
-
-### Added
 
 - **Dynamic command heads: `^$name` / `^$(…)`.** The `^`
   force-external head gains a `$`-splice alternative beside the
@@ -129,6 +106,23 @@
   spelling teaches the new name at both lookup sites.
 
 ### Fixed
+
+- **Detached SIGINT now tears scopes down.** A `kill -INT` on a weir
+  backgrounded in a non-interactive session (`setsid`, a CI runner, a
+  systemd unit) was a no-op: scopes did not unwind, `always` cleanups
+  were skipped, `within proc` children orphaned, and only SIGKILL
+  stopped it. The cause: such a shell sets SIGINT to `SIG_IGN` before
+  exec (the job-control nohup convention) and .NET honours an
+  inherited `SIG_IGN`, so weir's signal handler never installed. A
+  detached weir (no controlling terminal) now resets SIGINT to its
+  default disposition, so SIGINT runs the same scope-unwind and
+  child-reap SIGTERM and a tty Ctrl+C always ran, exiting 130. A
+  second signal during teardown hard-exits (the double-Ctrl+C escape).
+  A `weir … &`/`nohup` in an interactive shell keeps its controlling
+  terminal and its ignored SIGINT unchanged — a terminal Ctrl+C still
+  does not reach it (send SIGTERM, or `kill -INT` the pid). SIGTERM
+  was already correct and is unchanged; POSIX only (Windows keeps
+  `Console.CancelKeyPress`).
 
 - **The operator partial-application teach no longer offers two
   different functions as interchangeable.** `(op) v` still refuses;
