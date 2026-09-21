@@ -2,7 +2,64 @@
 
 ## v0.0.48
 
+### Added
+
+- **`HttpMethod` gains an `Other of string` case** for a well-formed but
+  unlisted request verb. A `within serve` handler can now route on a verb
+  the union does not name (`match req.method with | Other v -> …`) and
+  answer 405 by its own choice, instead of the verb being silently
+  reported as `Get`. On the client side a request built with `Other "…"`
+  sends that verb verbatim.
+
+- **`within serve`'s config gains an optional `bodyTimeout` field** that
+  bounds the request-body read (default 30s). A slow client dribbling its
+  body is refused with a 408 instead of parking a handler slot. Existing
+  `{ port; maxConcurrent }` configs are unchanged — omitting the field
+  keeps the 30s default.
+
+- **`Server.streamErrors`** — the designated channel for a streaming
+  failure. When a `Stream` response body's producer raises mid-flight,
+  its message is recorded on the handle rather than raised out of the
+  handler, so a monitoring loop can read `Server.streamErrors srv` and
+  learn its producer died (the failure used to be reported to nobody).
+
 ### Fixed
+
+- **An HTTP request method `within serve` cannot name no longer becomes
+  `Get`.** `TRACE`, `QUERY`, `FROBNICATE` and any other verb outside the
+  `HttpMethod` union all arrived at the handler as `Get`, so the read
+  path ran for a request that was not a GET and a handler could never
+  answer 405 for an unknown verb. `QUERY` now reads as `Query` (a case
+  the client side already had), a well-formed unlisted verb reads as
+  `Other v`, and a malformed method token (control chars, whitespace,
+  non-token bytes) is refused at the boundary with a 400 — while a
+  well-formed unknown verb a proxy may forward is preserved.
+
+- **A `Stream` response body whose producer raises mid-flight no longer
+  reports success to everyone.** The producer's failure used to still
+  emit a proper terminating chunk and a 200, so the client read a
+  complete stream and the script exited 0 — a silent truncation. The
+  failure is now surfaced to the script through `Server.streamErrors`
+  (the designated channel, not a raise out of the handler), and the
+  response is aborted. (The managed HttpListener emits the chunk
+  terminator even on abort and offers no AOT-safe way to suppress it, so
+  the wire-level truncation is best-effort on this platform; the
+  script-observable channel is the reliable signal.)
+
+- **`within serve` bounds the request-body read.** A client that declares
+  a large `Content-Length`, sends a few bytes and holds the socket used
+  to park a handler slot indefinitely. The read is now bounded by the new
+  `bodyTimeout` config field (default 30s) and exhaustion refuses the
+  request with a 408.
+
+- **Terminal escape sequences from data no longer reach the terminal
+  verbatim.** A filename or field carrying ANSI/OSC escapes, a bare ESC,
+  or other control bytes could clear the screen, set the window title,
+  leave the terminal coloured, or use a carriage return to hide the real
+  name. Tty-bound data renderers — `print`, command streaming, the REPL
+  echo and table, and error text — now render those bytes as a visible
+  `\xNN` escape. weir's own colouring is unaffected, and redirected
+  output (a pipe or file) stays byte-faithful.
 
 - **A `plan` now captures filesystem paths as absolute, bound to the
   directory where they were captured.** A plan stored the caller's
@@ -246,64 +303,7 @@
 
 ## v0.0.47
 
-### Added
-
-- **`HttpMethod` gains an `Other of string` case** for a well-formed but
-  unlisted request verb. A `within serve` handler can now route on a verb
-  the union does not name (`match req.method with | Other v -> …`) and
-  answer 405 by its own choice, instead of the verb being silently
-  reported as `Get`. On the client side a request built with `Other "…"`
-  sends that verb verbatim.
-
-- **`within serve`'s config gains an optional `bodyTimeout` field** that
-  bounds the request-body read (default 30s). A slow client dribbling its
-  body is refused with a 408 instead of parking a handler slot. Existing
-  `{ port; maxConcurrent }` configs are unchanged — omitting the field
-  keeps the 30s default.
-
-- **`Server.streamErrors`** — the designated channel for a streaming
-  failure. When a `Stream` response body's producer raises mid-flight,
-  its message is recorded on the handle rather than raised out of the
-  handler, so a monitoring loop can read `Server.streamErrors srv` and
-  learn its producer died (the failure used to be reported to nobody).
-
 ### Fixed
-
-- **An HTTP request method `within serve` cannot name no longer becomes
-  `Get`.** `TRACE`, `QUERY`, `FROBNICATE` and any other verb outside the
-  `HttpMethod` union all arrived at the handler as `Get`, so the read
-  path ran for a request that was not a GET and a handler could never
-  answer 405 for an unknown verb. `QUERY` now reads as `Query` (a case
-  the client side already had), a well-formed unlisted verb reads as
-  `Other v`, and a malformed method token (control chars, whitespace,
-  non-token bytes) is refused at the boundary with a 400 — while a
-  well-formed unknown verb a proxy may forward is preserved.
-
-- **A `Stream` response body whose producer raises mid-flight no longer
-  reports success to everyone.** The producer's failure used to still
-  emit a proper terminating chunk and a 200, so the client read a
-  complete stream and the script exited 0 — a silent truncation. The
-  failure is now surfaced to the script through `Server.streamErrors`
-  (the designated channel, not a raise out of the handler), and the
-  response is aborted. (The managed HttpListener emits the chunk
-  terminator even on abort and offers no AOT-safe way to suppress it, so
-  the wire-level truncation is best-effort on this platform; the
-  script-observable channel is the reliable signal.)
-
-- **`within serve` bounds the request-body read.** A client that declares
-  a large `Content-Length`, sends a few bytes and holds the socket used
-  to park a handler slot indefinitely. The read is now bounded by the new
-  `bodyTimeout` config field (default 30s) and exhaustion refuses the
-  request with a 408.
-
-- **Terminal escape sequences from data no longer reach the terminal
-  verbatim.** A filename or field carrying ANSI/OSC escapes, a bare ESC,
-  or other control bytes could clear the screen, set the window title,
-  leave the terminal coloured, or use a carriage return to hide the real
-  name. Tty-bound data renderers — `print`, command streaming, the REPL
-  echo and table, and error text — now render those bytes as a visible
-  `\xNN` escape. weir's own colouring is unaffected, and redirected
-  output (a pipe or file) stays byte-faithful.
 
 - **A parallel or race combinator inside a `plan` now refuses instead of
   escaping capture.** `plan`'s mutation capture is thread-local, but
