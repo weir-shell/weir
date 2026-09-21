@@ -155,6 +155,34 @@
   independently capped at 64KB so an unbounded header line cannot grow
   memory. `[D:lsp-transport-caps]`
 
+- **The line assembler no longer scales quadratically on hostile inputs
+  (algorithmic-DoS) [D:assemble-quadratic].** Four O(N²) paths in the
+  logical-line assembler let a crafted hundreds-of-KB source stall
+  `weir check`/`fmt`/REPL/LSP for tens of seconds to minutes:
+  1. the pending statement's text was rebuilt (`text + sep + piece`,
+     plus a full-text `TrimEnd`) on every continuation join — now a
+     single growing `StringBuilder` is mutated in place and materialized
+     to the immutable `LogicalLine.Text` exactly once at statement close;
+  2. the bracket-continuation dangle predicates called `TrimEnd()` on the
+     whole accumulated text per line — now answered from an
+     incrementally-tracked last-non-white index;
+  3. the `within proc`/`within serve` binder-head scan re-`LastIndexOf`'d
+     and re-scanned the whole growing text per join — now it reads an
+     incrementally-tracked last-segment start (and a `Contains` fast
+     reject skips the per-char scan on marker-free segments);
+  4. the record-update (`{ … with`) header check allocated a
+     whole-remaining-line substring per opening bracket, so a
+     bracket-heavy single line was quadratic — now an index-based,
+     allocation-free check.
+  The emitted diagnostics and the assembled span tables are byte-
+  identical (a pure performance fix, no grammar change): the join
+  arithmetic derives `joinedStart` from the buffer length at exactly the
+  point the old code read the string length, and the same separator
+  literals apply. Measured `weir check` on the standing fixtures:
+  continuation-line flood 80k lines 9.3s → 1.3s; the bareword
+  `within proc` marker case 80k lines 24.1s → 3.6s; a bracket-heavy
+  single line 400k record openers 29s → 0.5s — quadratic to linear.
+
 ## v0.0.47
 
 ### Added

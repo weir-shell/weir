@@ -329,6 +329,29 @@ expect "range literal on the AOT binary" "5 : int" "$out"
 out=$(timeout 5 $BIN -e '[1..1000000] |> Seq.take 3') || fail "huge range under first must terminate (laziness)"
 expect "ranges are lazy generators" '[1; 2; 3]' "$out"
 
+# hostile-input PERFORMANCE fixture [D:assemble-quadratic]: the line
+# assembler must scale LINEARLY. A crafted hundreds-of-KB source that was
+# once O(N^2) (a continuation-line flood + a bracket-heavy single line)
+# now checks in well under the bound; a regressed quadratic build blows
+# the timeout instead of merely slowing. The generous 20s ceiling is a
+# ~5x margin over the measured linear time, not a fine timing gate.
+asmdir=$(mkweirtmp)
+# (a) 60k continuation lines inside one list literal
+{ echo "let xs = ["; for _ in $(seq 1 60000); do echo "    1"; done; echo "]"; echo 'print (show (xs |> Seq.length))'; } > "$asmdir/flood.weir"
+timeout 20 $BIN check "$asmdir/flood.weir" >/dev/null 2>&1 || fail "assembler DoS: 60k continuation-line flood did not check within 20s (quadratic regression?)"
+echo "e2e ok: assembler — 60k-line continuation flood checks in linear time"
+# (b) a bracket-heavy single line (200k record openers) — the per-opener
+# with-header substring was quadratic; it fails to PARSE fast, so the
+# whole budget is the (now linear) assembler fold
+{ printf 'let xs = '; for _ in $(seq 1 200000); do printf '{}'; done; printf '\n'; echo 'print "done"'; } > "$asmdir/openers.weir"
+acode=0
+timeout 20 $BIN check "$asmdir/openers.weir" >/dev/null 2>&1 || acode=$?
+# exit 1 (a parse error) is the expected verdict; a timeout (124) is the
+# failure this fixture guards against
+[ "$acode" -ne 124 ] || fail "assembler DoS: 200k bracket-opener single line did not settle within 20s (quadratic regression?)"
+echo "e2e ok: assembler — 200k bracket-opener single line settles in linear time"
+rm -rf "$asmdir"
+
 rangedir=$(mkweirtmp)
 mkdir -p "$rangedir/sub"
 cat > "$rangedir/sub/updot.weir" <<'WEOF'

@@ -477,11 +477,17 @@ let isPlanHead (piece: string) : bool = isDistrictHead "plan" piece
 // outside strings and checks only the binder-`=` shape), so an inline
 // record `;` in serve's config tail does NOT hide the head — the reason
 // serve routes through here and not isWithinHead's `;`-guarded path.
-let private endsInBinderHead (marker: string) (text: string) : bool =
-    let lastSeg =
-        match text.LastIndexOf Parser.sibSep with
-        | -1 -> text
-        | i -> text.Substring(i + 1)
+// the binder-head test over an ALREADY-EXTRACTED last segment
+// [D:assemble-quadratic]: the whole-text `LastIndexOf sibSep` slice moved
+// to the caller so the assembler can hand its incrementally-tracked last
+// segment (short) instead of re-slicing the whole growing text per join.
+// A fast reject — Contains is allocation-free/vectorized — skips the
+// per-char foldOutsideStrings scan on the overwhelming majority of
+// segments that carry no marker at all.
+let private endsInBinderHeadSeg (marker: string) (lastSeg: string) : bool =
+    if not (lastSeg.Contains marker) then
+        false
+    else
 
     // the head may sit mid-segment (behind a let, a lambda arrow, a
     // pipe) — find its LAST occurrence OUTSIDE strings (the one
@@ -512,6 +518,16 @@ let private endsInBinderHead (marker: string) (text: string) : bool =
         | eq ->
             rest.Substring(0, eq).Trim()
             |> Seq.forall (fun c -> System.Char.IsLetterOrDigit c || c = '_'))
+
+// the last segment of a full logical-line text (after the last sibling
+// sentinel) — the whole-text callers (dangleOpensBlock on a short piece)
+let private lastSegOf (text: string) : string =
+    match text.LastIndexOf Parser.sibSep with
+    | -1 -> text
+    | i -> text.Substring(i + 1)
+
+let private endsInBinderHead (marker: string) (text: string) : bool =
+    endsInBinderHeadSeg marker (lastSegOf text)
 
 let endsInProcHead (text: string) : bool = endsInBinderHead "within proc " text
 
@@ -828,11 +844,27 @@ let bracketFold
                             j <- j + 1
 
                         // an update header's opener-line content is the
-                        // SOURCE, not a field — the first continuation
-                        // entry anchors instead [D:record-update]
+                        // SOURCE, not a field — the first continuation entry
+                        // anchors instead [D:record-update]. Only a RECORD
+                        // brace can carry a `with`; and the check is
+                        // index-based — no per-opener `piece.Substring(j)`
+                        // allocation, so a bracket-heavy single line stays
+                        // linear [D:assemble-quadratic].
                         let isWithHeader =
-                            let rest = piece.Substring(j).TrimEnd()
-                            rest = "with" || rest.EndsWith " with"
+                            c = '{'
+                            && (let mutable e = piece.Length - 1
+
+                                while e >= j && piece[e] = ' ' do
+                                    e <- e - 1
+                                // does piece[j..e] end with the word "with"?
+                                // (either the whole trimmed tail IS "with", or
+                                // it ends " with" — a space precedes it)
+                                e >= j + 3
+                                && piece[e] = 'h'
+                                && piece[e - 1] = 't'
+                                && piece[e - 2] = 'i'
+                                && piece[e - 3] = 'w'
+                                && (e - 3 = j || piece[e - 4] = ' '))
 
                         if j < piece.Length && piece[j] <> '}' && piece[j] <> ']' && not isWithHeader then
                             Some(indent + j)
@@ -861,6 +893,34 @@ let bracketFold
 // extend a compound instead of closing it. BraceDepth > 0 puts the
 // assembler in record-continuation mode: line breaks separate fields,
 // every other joining rule is inert (records are expressions).
+
+// The pending statement's GROWING text [D:assemble-quadratic]: a single
+// StringBuilder mutated in place, so a continuation-line flood joins in
+// AMORTIZED-LINEAR time (the old `ll.Text + sep + piece` rebuilt the whole
+// string per join → O(N²) on hundreds-of-KB inputs). The immutable
+// LogicalLine.Text is materialized ONCE at statement close (`bufToLL`);
+// every join site threads a PendBuf instead. Span arithmetic is byte-
+// identical: `joinedStart` derives from `Sb.Length` at the SAME point the
+// old code read `ll.Text.Length`, and the separators are the same literals.
+//
+// The incremental indexes answer the assembler's hot queries in O(1)/
+// O(suffix) instead of a full-text rescan per line:
+//   LastNonWs   — index of the last non-whitespace char (or -1): the
+//                 bracket-continuation `prev.TrimEnd()` predicates read it
+//                 (last char, EndsWith, Length) without slicing.
+//   LastSegStart — index just past the last sibling sentinel (or 0): the
+//                 proc/serve binder-head scan runs over the LAST segment
+//                 only, never the whole growing text (LastIndexOf was O(N)).
+type private PendBuf =
+    { Sb: System.Text.StringBuilder
+      // the statement's first physical line (LogicalLine.Head)
+      Head: int
+      Segments: (int * int * int) list
+      // index of the last non-whitespace char in Sb, or -1
+      LastNonWs: int
+      // index just past the last sibling sentinel (Parser.sibSep) in Sb, or 0
+      LastSegStart: int }
+
 type private District =
     { MarkerIndent: int
       MarkerLine: int
@@ -872,7 +932,7 @@ type private District =
       Active: int option }
 
 type private Pend =
-    { LL: LogicalLine
+    { Buf: PendBuf
       Lets: (int * int) list
       LastIndent: int
       // sibling pipe columns, innermost first [D:pipe-alignment]: a
@@ -923,45 +983,172 @@ type private Join =
     | JDistrictPipe // reopen the wrap: stem + " " + piece + ")"
     | JYamlLine of rel: int // sentinel + rel spaces + VERBATIM line [D:yaml-district]
 
-let private applyJoin (j: Join) (ll: LogicalLine) (piece: string) (lineNo: int) (indent: int) : LogicalLine =
-    let text, joinedStart =
-        match j with
-        | JIn ->
-            let sep = " in "
-            ll.Text + sep + piece, ll.Text.Length + sep.Length
-        | JSibling ->
-            // the field sentinel [D:field-sep-sentinel], same 3-char width
-            // as " ; " so span arithmetic is unchanged — a field value's `;`
-            // (a lambda body) cannot swallow it; the record/list sepBy splits
-            let sep = " " + Parser.fieldSepStr + " "
-            ll.Text + sep + piece, ll.Text.Length + sep.Length
-        | JStmtSibling ->
-            // same 3-char width as " ; " — translate arithmetic unchanged
-            let sep = " " + Parser.sibSepStr + " "
-            ll.Text + sep + piece, ll.Text.Length + sep.Length
-        | JSpace ->
-            let sep = " "
-            ll.Text + sep + piece, ll.Text.Length + sep.Length
-        | JDistrictOpen(strip, opener) ->
-            let stem = ll.Text.Substring(0, ll.Text.Length - strip)
-            stem + opener + piece + ")", stem.Length + opener.Length
-        | JDistrictSibling opener ->
-            let sep = " ; " + opener
-            ll.Text + sep + piece + ")", ll.Text.Length + sep.Length
-        | JDistrictPipe ->
-            let stem = ll.Text.Substring(0, ll.Text.Length - 1)
-            let sep = " "
-            stem + sep + piece + ")", stem.Length + sep.Length
-        | JYamlLine rel ->
-            // the block line rides VERBATIM: sentinel, then its indentation
-            // RELATIVE to the block's first line, then the text — the
-            // parser reconstructs the 2D structure from exactly this
-            let sep = Parser.sibSepStr + String(' ', rel)
-            ll.Text + sep + piece, ll.Text.Length + sep.Length
+// recompute LastNonWs / LastSegStart for the chars appended from `at`
+// onward (the buffer below `at` is unchanged, so the old indexes carry
+// unless the tail overwrote them — callers pass the smaller of the two)
+let private scanTail (sb: System.Text.StringBuilder) (from: int) (seedNonWs: int) (seedSegStart: int) =
+    let mutable nonWs = seedNonWs
+    let mutable segStart = seedSegStart
 
-    { ll with
-        Text = text
-        Segments = (joinedStart, lineNo, indent) :: ll.Segments }
+    for i in from .. sb.Length - 1 do
+        let c = sb[i]
+
+        if c = Parser.sibSep then
+            segStart <- i + 1
+
+        if not (System.Char.IsWhiteSpace c) then
+            nonWs <- i
+
+    nonWs, segStart
+
+// append `s` to the buffer, maintaining the incremental indexes over the
+// newly-added region (the existing buffer is untouched, so its indexes stand)
+let private bufAppend (b: PendBuf) (s: string) : PendBuf =
+    let from = b.Sb.Length
+    b.Sb.Append s |> ignore
+    let nonWs, segStart = scanTail b.Sb from b.LastNonWs b.LastSegStart
+
+    { b with
+        LastNonWs = nonWs
+        LastSegStart = segStart }
+
+let private bufLen (b: PendBuf) : int = b.Sb.Length
+
+// the TrimEnd'd length of the buffer (LastNonWs + 1), and whether the
+// TrimEnd'd buffer ENDS WITH `suffix` — both answered from the tracked
+// last-non-white index, so the bracket-continuation predicates cost
+// O(suffix) instead of a full-text TrimEnd allocation per line
+// [D:assemble-quadratic]
+let private bufTrimEndLen (b: PendBuf) : int = b.LastNonWs + 1
+
+let private bufTrimEndEndsWith (b: PendBuf) (suffix: string) : bool =
+    let sb = b.Sb
+    let last = b.LastNonWs
+    let n = suffix.Length
+
+    last + 1 >= n
+    && (let mutable ok = true
+        let mutable i = 0
+
+        while ok && i < n do
+            if sb[last - n + 1 + i] <> suffix[i] then
+                ok <- false
+
+            i <- i + 1
+
+        ok)
+
+// the last non-white char of the buffer (the caller guards emptiness via
+// bufTrimEndLen > 0)
+let private bufLastNonWsChar (b: PendBuf) : char = b.Sb[b.LastNonWs]
+
+// does the buffer, from index `at`, start with `prefix`? (the within-tail
+// wrap check, O(prefix) with no Substring allocation)
+let private bufStartsWithAt (b: PendBuf) (at: int) (prefix: string) : bool =
+    let sb = b.Sb
+
+    at >= 0
+    && sb.Length - at >= prefix.Length
+    && (let mutable ok = true
+        let mutable i = 0
+
+        while ok && i < prefix.Length do
+            if sb[at + i] <> prefix[i] then
+                ok <- false
+
+            i <- i + 1
+
+        ok)
+
+// does the buffer START with `prefix`? (O(prefix), no allocation) — the
+// `type ` / `[<` head checks
+let private bufStartsWith (b: PendBuf) (prefix: string) : bool =
+    let sb = b.Sb
+
+    sb.Length >= prefix.Length
+    && (let mutable ok = true
+        let mutable i = 0
+
+        while ok && i < prefix.Length do
+            if sb[i] <> prefix[i] then
+                ok <- false
+
+            i <- i + 1
+
+        ok)
+
+// the buffer's LAST segment (after the last sibling sentinel), O(segment)
+// via the tracked LastSegStart — the proc/serve binder-head scan reads
+// this instead of LastIndexOf over the whole growing text [D:assemble-quadratic]
+let private bufLastSeg (b: PendBuf) : string =
+    b.Sb.ToString(b.LastSegStart, b.Sb.Length - b.LastSegStart)
+
+let private bufEndsInProcHead (b: PendBuf) : bool =
+    endsInBinderHeadSeg "within proc " (bufLastSeg b)
+
+let private bufEndsInServeHead (b: PendBuf) : bool =
+    endsInBinderHeadSeg "within serve " (bufLastSeg b)
+
+// materialize a LogicalLine from a finished pending buffer (segments are
+// reversed at the boundary exactly as before)
+let private bufToLL (b: PendBuf) : LogicalLine =
+    { Text = b.Sb.ToString()
+      Head = b.Head
+      Segments = List.rev b.Segments }
+
+// a fresh single-line buffer (the assembler's per-statement seed)
+let private bufNew (text: string) (lineNo: int) (indent: int) : PendBuf =
+    let sb = System.Text.StringBuilder(text)
+    let nonWs, segStart = scanTail sb 0 -1 0
+
+    { Sb = sb
+      Head = lineNo
+      Segments = [ (0, lineNo, indent) ]
+      LastNonWs = nonWs
+      LastSegStart = segStart }
+
+let private applyJoin (j: Join) (b: PendBuf) (piece: string) (lineNo: int) (indent: int) : PendBuf =
+    // joinedStart derives from bufLen at the same point the old code read
+    // ll.Text.Length — byte-identical span arithmetic [D:assemble-quadratic]
+    let joinedStart =
+        match j with
+        | JIn -> bufLen b + " in ".Length
+        | JSibling -> bufLen b + (" " + Parser.fieldSepStr + " ").Length
+        | JStmtSibling -> bufLen b + (" " + Parser.sibSepStr + " ").Length
+        | JSpace -> bufLen b + " ".Length
+        | JDistrictOpen(strip, opener) -> (bufLen b - strip) + opener.Length
+        | JDistrictSibling opener -> bufLen b + (" ; " + opener).Length
+        | JDistrictPipe -> (bufLen b - 1) + " ".Length
+        | JYamlLine rel -> bufLen b + (Parser.sibSepStr + String(' ', rel)).Length
+
+    // apply the text mutation (identical bytes to the old string algebra)
+    let b =
+        match j with
+        | JIn -> bufAppend b (" in " + piece)
+        | JSibling -> bufAppend b (" " + Parser.fieldSepStr + " " + piece)
+        | JStmtSibling -> bufAppend b (" " + Parser.sibSepStr + " " + piece)
+        | JSpace -> bufAppend b (" " + piece)
+        | JDistrictOpen(strip, opener) ->
+            // strip the armed marker's trailing chars, then wrap. This arm
+            // fires ONCE per district (the first content line), so the full
+            // rescan-after-remove is not on any quadratic path.
+            if strip > 0 then
+                b.Sb.Remove(b.Sb.Length - strip, strip) |> ignore
+
+            let nonWs, segStart = scanTail b.Sb 0 -1 0
+            let b = { b with LastNonWs = nonWs; LastSegStart = segStart }
+            bufAppend b (opener + piece + ")")
+        | JDistrictSibling opener -> bufAppend b (" ; " + opener + piece + ")")
+        | JDistrictPipe ->
+            // only on a `|` continuation line inside a district — not a
+            // quadratic path; rescan the (now one-shorter) buffer whole
+            b.Sb.Remove(b.Sb.Length - 1, 1) |> ignore
+            let nonWs, segStart = scanTail b.Sb 0 -1 0
+            let b = { b with LastNonWs = nonWs; LastSegStart = segStart }
+            bufAppend b (" " + piece + ")")
+        | JYamlLine rel -> bufAppend b (Parser.sibSepStr + String(' ', rel) + piece)
+
+    { b with Segments = (joinedStart, lineNo, indent) :: b.Segments }
 
 let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> =
     // trailing comments strip HERE, per physical line [D:trailing-comments]:
@@ -1009,7 +1196,7 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
 
         let braceOpen (p: Pend) =
             match p.Brackets with
-            | ('{', line, _) :: _ when p.LL.Text.StartsWith "type " ->
+            | ('{', line, _) :: _ when bufStartsWith p.Buf "type " ->
                 Error $"line {line}: this record type's {{ is still open when the statement ends — close the brace"
             | ('{', line, _) :: _ ->
                 Error $"line {line}: this record literal's {{ is still open when the statement ends — close the brace"
@@ -1032,12 +1219,7 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
 
                 Error $"line {mLine}: line-end {what} needs an indented block below it"
             | Some { Lets = (_, letLine) :: _ } -> noBody letLine
-            | Some p ->
-                Ok(
-                    { p.LL with
-                        Segments = List.rev p.LL.Segments }
-                    :: acc
-                )
+            | Some p -> Ok(bufToLL p.Buf :: acc)
             | None -> Ok acc
 
         let districtLineCheck lineNo (cls: PieceClass) =
@@ -1050,12 +1232,18 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
 
         // paren-wrap the compound starting at textStart; later segment
         // starts shift by the inserted "(" (remaining compounds all start
-        // earlier — pops run deepest-first — so they never shift)
-        let wrapFrom (ll: LogicalLine) (ts: int) =
-            { ll with
-                Text = ll.Text.Substring(0, ts) + "(" + ll.Text.Substring ts + ")"
+        // earlier — pops run deepest-first — so they never shift). The buffer
+        // Insert/Append is byte-identical to the old Substring algebra; the
+        // trailing ")" becomes the last non-white char [D:assemble-quadratic]
+        let wrapFrom (b: PendBuf) (ts: int) : PendBuf =
+            b.Sb.Insert(ts, "(") |> ignore
+            b.Sb.Append ")" |> ignore
+
+            { b with
+                LastNonWs = b.Sb.Length - 1
+                LastSegStart = (if b.LastSegStart >= ts then b.LastSegStart + 1 else b.LastSegStart)
                 Segments =
-                    ll.Segments
+                    b.Segments
                     |> List.map (fun (js, l, i) -> (if js >= ts then js + 1 else js), l, i) }
 
         let folded =
@@ -1099,7 +1287,7 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                 Ok(
                                     Some
                                         { p with
-                                            LL = applyJoin (JYamlLine 0) p.LL "" lineNo 0 },
+                                            Buf = applyJoin (JYamlLine 0) p.Buf "" lineNo 0 },
                                     acc,
                                     blankSinceHead
                                 )
@@ -1125,7 +1313,7 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                 Ok(
                                     Some
                                         { p with
-                                            LL = applyJoin (JYamlLine(ind - bse)) p.LL (raw.Substring ind) lineNo ind },
+                                            Buf = applyJoin (JYamlLine(ind - bse)) p.Buf (raw.Substring ind) lineNo ind },
                                     acc,
                                     blankSinceHead
                                 )
@@ -1187,8 +1375,11 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                 $"line {lineNo}: statement at column 0 while the '{kind}' opened at line {bline} is still open — close the bracket"
                                         | (kind, _, entryCol) :: _ ->
                                             // bracket continuation: a line break after a
-                                            // field/element is a separator
-                                            let prev = p.LL.Text.TrimEnd()
+                                            // field/element is a separator. The predicates
+                                            // below read the pending buffer's tracked
+                                            // last-non-white index — no full-text TrimEnd per
+                                            // line [D:assemble-quadratic]
+                                            let isTypeDecl = bufStartsWith p.Buf "type "
 
                                             // the separator goes BEFORE an entry-start line,
                                             // never before a value continuation — a field's
@@ -1203,32 +1394,34 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                 // [D:multiline-brackets]
                                                 if piece.StartsWith "]" || piece.StartsWith "}" then false
                                                 elif kind = '[' then true
-                                                elif p.LL.Text.StartsWith "type " then cls.StartsTypeField
+                                                elif isTypeDecl then cls.StartsTypeField
                                                 else cls.StartsField
 
+                                            let prevEndsWith (s: string) = bufTrimEndEndsWith p.Buf s
+
                                             let danglesOpen =
-                                                prev.EndsWith "{"
+                                                prevEndsWith "{"
                                                 // the anon opener is one token [D:anon-literals] —
                                                 // named here because the operator clause below
                                                 // excludes `type` lines, where a nested anon
                                                 // TYPE may dangle it too
-                                                || prev.EndsWith "{|"
-                                                || prev.EndsWith "["
-                                                || prev.EndsWith ";"
+                                                || prevEndsWith "{|"
+                                                || prevEndsWith "["
+                                                || prevEndsWith ";"
                                                 // an update header ends at `with`; the
                                                 // first field after it is not a sibling
                                                 // [D:record-update]
-                                                || prev.EndsWith " with"
+                                                || prevEndsWith " with"
                                                 // a preceding-line attribute binds to ITS
                                                 // field: no separator between them
-                                                || prev.EndsWith ">]"
+                                                || prevEndsWith ">]"
                                                 // a dangling operator/comma continues the
                                                 // same element (wrapped elements) — but NOT in
                                                 // type declarations, where a generic closer
                                                 // (`Option<string>`) legitimately ends a field
-                                                || (not (kind = '{' && p.LL.Text.StartsWith "type ")
-                                                    && prev.Length > 0
-                                                    && "+-*/,(<>=|&" |> Seq.contains prev[prev.Length - 1])
+                                                || (not (kind = '{' && isTypeDecl)
+                                                    && bufTrimEndLen p.Buf > 0
+                                                    && "+-*/,(<>=|&" |> Seq.contains (bufLastNonWsChar p.Buf))
 
                                             let join = if startsEntry && not danglesOpen then JSibling else JSpace
 
@@ -1239,7 +1432,7 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                             // an attribute and its field are ONE entry on two
                                             // lines — the `>]` dangle suppresses the separator,
                                             // never the alignment [D:field-alignment]
-                                            let attrField = startsEntry && prev.EndsWith ">]"
+                                            let attrField = startsEntry && prevEndsWith ">]"
 
                                             let alignment =
                                                 if
@@ -1265,7 +1458,7 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                 |> Result.map (fun brackets ->
                                                     Some
                                                         { p with
-                                                            LL = applyJoin join p.LL piece lineNo indent
+                                                            Buf = applyJoin join p.Buf piece lineNo indent
                                                             LastIndent = indent
                                                             Brackets = brackets },
                                                     acc,
@@ -1280,7 +1473,7 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                 Ok(
                                                     Some
                                                         { p with
-                                                            LL = applyJoin (JYamlLine 0) p.LL rawPiece lineNo indent
+                                                            Buf = applyJoin (JYamlLine 0) p.Buf rawPiece lineNo indent
                                                             LastIndent = indent
                                                             District = Some { dst with Active = Some indent } },
                                                     acc,
@@ -1301,10 +1494,10 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                     Ok(
                                                         Some
                                                             { p with
-                                                                LL =
+                                                                Buf =
                                                                     applyJoin
                                                                         (JYamlLine(indent - bse))
-                                                                        p.LL
+                                                                        p.Buf
                                                                         rawPiece
                                                                         lineNo
                                                                         indent
@@ -1317,10 +1510,10 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                 |> Result.map (fun () ->
                                                     Some
                                                         { p with
-                                                            LL =
+                                                            Buf =
                                                                 applyJoin
                                                                     (JDistrictOpen(dst.Strip, dst.Opener))
-                                                                    p.LL
+                                                                    p.Buf
                                                                     piece
                                                                     lineNo
                                                                     indent
@@ -1342,7 +1535,7 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                     Ok(
                                                         Some
                                                             { p with
-                                                                LL = applyJoin JDistrictPipe p.LL piece lineNo indent
+                                                                Buf = applyJoin JDistrictPipe p.Buf piece lineNo indent
                                                                 LastIndent = indent },
                                                         acc,
                                                         blankSinceHead
@@ -1352,10 +1545,10 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                     |> Result.map (fun () ->
                                                         Some
                                                             { p with
-                                                                LL =
+                                                                Buf =
                                                                     applyJoin
                                                                         (JDistrictSibling dst.Opener)
-                                                                        p.LL
+                                                                        p.Buf
                                                                         piece
                                                                         lineNo
                                                                         indent
@@ -1379,9 +1572,7 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                 go
                                                     { p with
                                                         District = None
-                                                        LL =
-                                                            { p.LL with
-                                                                Text = p.LL.Text + Parser.districtCloseStr }
+                                                        Buf = bufAppend p.Buf Parser.districtCloseStr
                                                         LastIndent = dst.MarkerIndent }
                                             // the multiline lambda's closer and leak guard
                                             // [D:multiline-lambda]: a `)`-headed line continues
@@ -1430,16 +1621,16 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                         |> Result.map (fun brackets ->
                                                             Some
                                                                 { p with
-                                                                    LL =
+                                                                    Buf =
                                                                         applyJoin
                                                                             (if
-                                                                                 endsInProcHead p.LL.Text
-                                                                                 || endsInServeHead p.LL.Text
+                                                                                 bufEndsInProcHead p.Buf
+                                                                                 || bufEndsInServeHead p.Buf
                                                                              then
                                                                                  JStmtSibling
                                                                              else
                                                                                  JSpace)
-                                                                            p.LL
+                                                                            p.Buf
                                                                             piece
                                                                             lineNo
                                                                             indent
@@ -1587,7 +1778,7 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                             // ON — `(match …) |> f` [D:match-pipe-offside]
                                                             let closeAt = if closes then indent - 1 else indent
 
-                                                            let rec closeDeeper (ll: LogicalLine) compounds =
+                                                            let rec closeDeeper (b: PendBuf) compounds =
                                                                 match compounds with
                                                                 | (h, ts, _) :: rest when
                                                                     h > closeAt
@@ -1598,12 +1789,12 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                                     // the match-close wrap one keyword over
                                                                     || (h = indent
                                                                         && cls.Kind = PieceKind.PipeHead
-                                                                        && ll.Text.Substring(ts).StartsWith "within ")
+                                                                        && bufStartsWithAt b ts "within ")
                                                                     ->
-                                                                    closeDeeper (wrapFrom ll ts) rest
-                                                                | _ -> ll, compounds
+                                                                    closeDeeper (wrapFrom b ts) rest
+                                                                | _ -> b, compounds
 
-                                                            let ll, compounds = closeDeeper p.LL p.Compounds
+                                                            let buf, compounds = closeDeeper p.Buf p.Compounds
                                                             let depth = p.ParenDepth + parenDelta piece
 
                                                             let poppedL, keptL =
@@ -1626,22 +1817,22 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                             Ok(
                                                                 Some
                                                                     { p with
-                                                                        LL =
+                                                                        Buf =
                                                                             applyJoin
                                                                                 // until/always join at the SENTINEL:
                                                                                 // a space would feed the keyword to a
                                                                                 // command body's argv (cmdWord stops
                                                                                 // at the sentinel) [D:until-argv-join]
                                                                                 (if
-                                                                                     endsInProcHead ll.Text
-                                                                                     || endsInServeHead ll.Text
+                                                                                     bufEndsInProcHead buf
+                                                                                     || bufEndsInServeHead buf
                                                                                      || isUntil
                                                                                      || isAlways
                                                                                  then
                                                                                      JStmtSibling
                                                                                  else
                                                                                      JSpace)
-                                                                                ll
+                                                                                buf
                                                                                 piece
                                                                                 lineNo
                                                                                 indent
@@ -1675,14 +1866,14 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                     | _ ->
                                                         // the offside close: siblings at or left of an
                                                         // open if/match head wrap it shut
-                                                        let rec closeCompounds ll compounds closedHead =
+                                                        let rec closeCompounds b compounds closedHead =
                                                             match compounds with
                                                             | (h, ts, _) :: rest when indent <= h ->
-                                                                closeCompounds (wrapFrom ll ts) rest (Some h)
-                                                            | _ -> ll, compounds, closedHead
+                                                                closeCompounds (wrapFrom b ts) rest (Some h)
+                                                            | _ -> b, compounds, closedHead
 
-                                                        let ll, compounds, closedHead =
-                                                            closeCompounds p.LL p.Compounds None
+                                                        let buf, compounds, closedHead =
+                                                            closeCompounds p.Buf p.Compounds None
 
                                                         // the sibling floor is the STATEMENT's start column,
                                                         // not the last line's [D:continuation-siblings]: a
@@ -1718,7 +1909,7 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                                 rest, JIn
                                                             // a proc head's block joins sentineled even in
                                                             // the dangle position [D:scoped-procs]
-                                                            | _ when endsInProcHead ll.Text || endsInServeHead ll.Text ->
+                                                            | _ when bufEndsInProcHead buf || bufEndsInServeHead buf ->
                                                                 p.Lets, JStmtSibling
                                                             // the first line after a dangling head OPENS its
                                                             // body — a stale statement level from an earlier
@@ -1750,7 +1941,7 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                                   Marker = cls.Marker
                                                                   Active = None })
 
-                                                        let joined = applyJoin join ll piece lineNo indent
+                                                        let joined = applyJoin join buf piece lineNo indent
 
                                                         let depth = p.ParenDepth + parenDelta piece
 
@@ -1821,7 +2012,7 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                             |> Result.map (fun brackets ->
                                                                 Some
                                                                     { p with
-                                                                        LL = joined
+                                                                        Buf = joined
                                                                         Lets = lets
                                                                         LastIndent = lastIndent
                                                                         StmtLevel = stmtLevel
@@ -1866,14 +2057,15 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                     p.Brackets.IsEmpty
                                     && p.Lambdas.IsEmpty
                                     && p.District.IsNone
-                                    && (let t = p.LL.Text.TrimEnd() in t.StartsWith "[<" && t.EndsWith ">]")
+                                    && bufStartsWith p.Buf "[<"
+                                    && bufTrimEndEndsWith p.Buf ">]"
                                     ->
                                     Some p
                                 | _ -> None
 
-                            let joinedLL, accR =
+                            let joinedBuf, accR =
                                 match attrOnlyPend with
-                                | Some p -> Some p.LL, Ok acc
+                                | Some p -> Some p.Buf, Ok acc
                                 | None -> None, close current acc
 
                             accR
@@ -1881,13 +2073,10 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                 bracketFold lineNo 0 [] (raw.TrimEnd())
                                 |> Result.map (fun brackets ->
                                     Some
-                                        { LL =
-                                            match joinedLL with
-                                            | Some ll -> applyJoin JSpace ll (raw.TrimEnd()) lineNo 0
-                                            | None ->
-                                                { Text = raw
-                                                  Head = lineNo
-                                                  Segments = [ (0, lineNo, 0) ] }
+                                        { Buf =
+                                            match joinedBuf with
+                                            | Some b -> applyJoin JSpace b (raw.TrimEnd()) lineNo 0
+                                            | None -> bufNew raw lineNo 0
                                           Lets = []
                                           LastIndent = 0
                                           District =
@@ -1905,7 +2094,7 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                           // — so a later dedented `|>` can wrap it
                                           // `(match …) |> f`; a sibling head already is
                                           Compounds =
-                                              if cls.OpensCompound && joinedLL.IsNone then
+                                              if cls.OpensCompound && joinedBuf.IsNone then
                                                   [ (0, 0, 0) ]
                                               else
                                                   []
