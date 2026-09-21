@@ -8300,6 +8300,56 @@ WEOF
         echo "e2e SKIP: openssl absent — Http insecure TLS pin not run" >&2
     fi
 
+    # S1 [D:secret-redirect]: secretHeaders are DROPPED on a CROSS-ORIGIN
+    # redirect, exactly as the BCL drops Authorization — so weir's two
+    # credential channels agree (the review's F4). Driven over a LOCAL
+    # cross-origin 302 (127.0.0.1 -> localhost, a DIFFERENT origin by host),
+    # with origin B logging what arrived. The sensitive header must NOT
+    # reach B; a non-sensitive CONTROL header MUST (proving the drop is
+    # credential-specific, not a blanket strip). auth Bearer is dropped too.
+    ra=$((23400 + RANDOM % 200))
+    rb=$((23600 + RANDOM % 200))
+    cat > "$hdir/redir.py" <<REOF
+import http.server, sys
+PB = $rb
+class A(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(302)
+        self.send_header('Location', 'http://localhost:%d/dest' % PB)
+        self.end_headers()
+    def log_message(self, *a): pass
+http.server.HTTPServer(('127.0.0.1', $ra), A).serve_forever()
+REOF
+    cat > "$hdir/dest.py" <<DEOF
+import http.server, sys
+LOG = "$hdir/dest.log"
+class B(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        with open(LOG, 'a') as f:
+            for k, v in self.headers.items():
+                f.write("%s: %s\n" % (k, v))
+        self.send_response(200); self.end_headers(); self.wfile.write(b'landed')
+    def log_message(self, *a): pass
+http.server.HTTPServer(('localhost', $rb), B).serve_forever()
+DEOF
+    rm -f "$hdir/dest.log"
+    python3 "$hdir/redir.py" & rasrv=$!
+    python3 "$hdir/dest.py" & rbsrv=$!
+    sleep 0.6
+    cat > "$hdir/redir.weir" <<WEOF
+let tok = Secret.of "SECRET-TOKEN-ABC"
+let r = Http.send { Http.get "http://127.0.0.1:$ra/start" with secretHeaders = [("X-Api-Key", tok)]; headers = [("X-Control", "keepme")]; auth = Bearer (Secret.of "BEARER-TOK") }
+print \$"status={r.status} body={r.body |> Seq.head}"
+WEOF
+    out=$($BIN "$hdir/redir.weir" 2>&1) || { kill $rasrv $rbsrv 2>/dev/null || true; fail "S1 cross-origin redirect run failed: $out"; }
+    echo "$out" | grep -qF "status=200 body=landed" || { kill $rasrv $rbsrv 2>/dev/null || true; fail "S1: the redirect must be followed to origin B: $out"; }
+    kill $rasrv $rbsrv 2>/dev/null || true
+    dlog=$(cat "$hdir/dest.log" 2>/dev/null)
+    echo "$dlog" | grep -qiF "X-Api-Key" && fail "S1: the secretHeaders credential LEAKED to the cross-origin redirect target: $dlog" || true
+    echo "$dlog" | grep -qiF "Authorization" && fail "S1: the auth Bearer credential LEAKED to the cross-origin redirect target: $dlog" || true
+    echo "$dlog" | grep -qiF "X-Control: keepme" || fail "S1: a NON-sensitive control header must still cross the redirect (the drop is credential-specific): $dlog"
+    echo "e2e ok: Http S1 cross-origin redirect drops secretHeaders + auth (control header crosses; credentials do not reach origin B)"
+
     rm -rf "$hdir"
     echo "e2e ok: Http (mangling, status-is-data, auth, fetch-raises/send-binds, constructors, pmap, transport raises, check silent)"
 else

@@ -16,6 +16,13 @@ type Req =
       Url: string
       // header pairs, in order, auth included; duplicates preserved
       Headers: (string * string) list
+      // the CREDENTIAL header names [D:secret-redirect]: auth's
+      // Authorization plus every secretHeaders name (case-insensitive).
+      // On a CROSS-ORIGIN redirect these are DROPPED, exactly as the BCL
+      // drops Authorization — so weir's two credential channels agree
+      // (the auth union rode .NET's rule for free; secretHeaders did not).
+      // Empty for a request with no credentials.
+      SensitiveHeaders: Set<string>
       // (contentType, body) — the body is the EXACT bytes to send, no
       // re-encoding, no newline stripping (the whole point over curl -d)
       Body: (string * string) option
@@ -79,15 +86,46 @@ let transportMessage (host: string) (err: TransportError) : string =
     | TlsUntrusted -> $"cannot establish TLS with {host} — the certificate is not trusted"
     | OtherTransport root -> $"cannot reach {host} — {root}"
 
+/// two URLs share an ORIGIN [D:secret-redirect] iff scheme, host and port
+/// all match (a port change is a different origin — the same rule the BCL
+/// uses to decide whether Authorization survives a redirect). A parse
+/// failure on either side is treated as a DIFFERENT origin (fail safe: a
+/// URL weir cannot compare must not keep the credential).
+let sameOrigin (a: Uri) (b: Uri) : bool =
+    a.Scheme = b.Scheme
+    && String.Equals(a.Host, b.Host, StringComparison.OrdinalIgnoreCase)
+    && a.Port = b.Port
+
+/// redirect statuses weir follows [D:secret-redirect]: the BCL's set. 303
+/// (and 301/302 from a POST) rewrite the method to GET and drop the body;
+/// 307/308 preserve both.
+let isRedirect (code: int) : bool =
+    code = 301 || code = 302 || code = 303 || code = 307 || code = 308
+
+// the redirect bound [D:secret-redirect]: the BCL's default is 50; weir
+// bounds explicit-follow the same, so a redirect loop cannot hang past the
+// per-request timeout by hop count.
+[<Literal>]
+let private maxRedirects = 50
+
 /// send the request. Status is DATA — a 4xx/5xx is Ok with that status,
 /// never an Error [D:http]. Error is TRANSPORT failure only, classified
 /// [D:transport-words] — the worded message plus the case, so the caller
 /// can append a case-specific repair (Builtins: insecure on TlsUntrusted).
+///
+/// Redirects are followed EXPLICITLY [D:secret-redirect], not by the
+/// handler's AllowAutoRedirect: on a CROSS-ORIGIN hop the SensitiveHeaders
+/// (auth's Authorization + every secretHeaders name) are DROPPED, exactly
+/// as the BCL drops Authorization — so weir's two credential channels stop
+/// disagreeing (the review's F4). Same-origin hops keep every header.
 let send (req: Req) : Result<Resp, string * TransportError> =
     try
         // a per-request handler only when insecure — the default path keeps
-        // the plain HttpClient (TLS verification ON) [D:http-s2]
+        // the plain HttpClient (TLS verification ON) [D:http-s2]. Auto-redirect
+        // is OFF so weir controls the credential-drop on an origin change
+        // [D:secret-redirect] — the BCL would re-send secretHeaders.
         use handler = new HttpClientHandler()
+        handler.AllowAutoRedirect <- false
 
         if req.Insecure then
             handler.ServerCertificateCustomValidationCallback <- (fun _ _ _ _ -> true)
@@ -95,47 +133,105 @@ let send (req: Req) : Result<Resp, string * TransportError> =
         use client = new HttpClient(handler)
         client.Timeout <- TimeSpan.FromMilliseconds(float req.TimeoutMs)
 
-        use msg = new HttpRequestMessage(HttpMethod(req.Method), req.Url)
+        // build one request message for a hop: `method`/`url`, the CURRENT
+        // header set (already credential-filtered by the caller loop), the
+        // body when the method still carries one, and the UA default.
+        let buildMessage (method: string) (url: string) (headers: (string * string) list) (body: (string * string) option) =
+            let msg = new HttpRequestMessage(HttpMethod(method), url)
 
-        // the body is attached BEFORE headers so a content-header (e.g. a
-        // caller-set Content-Type override) can land on the content
-        match req.Body with
-        | Some(ct, body) ->
-            let content = new StringContent(body, Text.Encoding.UTF8)
-            // StringContent defaults text/plain; set the declared type,
-            // charset preserved from UTF8
-            (try
-                content.Headers.ContentType <- Headers.MediaTypeHeaderValue(ct)
-             with _ ->
-                 ())
+            // the body is attached BEFORE headers so a content-header (e.g. a
+            // caller-set Content-Type override) can land on the content
+            match body with
+            | Some(ct, b) ->
+                let content = new StringContent(b, Text.Encoding.UTF8)
+                // StringContent defaults text/plain; set the declared type,
+                // charset preserved from UTF8
+                (try
+                    content.Headers.ContentType <- Headers.MediaTypeHeaderValue(ct)
+                 with _ ->
+                     ())
 
-            msg.Content <- content
-        | None -> ()
+                msg.Content <- content
+            | None -> ()
 
-        for (k, v) in req.Headers do
-            // request headers first; a content header (Content-*) lands on
-            // the content instead — TryAddWithoutValidation keeps the bytes
-            // verbatim (no folding, no re-encoding)
-            if not (msg.Headers.TryAddWithoutValidation(k, v)) then
-                match msg.Content with
-                | null -> ()
-                | c -> c.Headers.TryAddWithoutValidation(k, v) |> ignore
+            for (k, v) in headers do
+                // request headers first; a content header (Content-*) lands on
+                // the content instead — TryAddWithoutValidation keeps the bytes
+                // verbatim (no folding, no re-encoding)
+                if not (msg.Headers.TryAddWithoutValidation(k, v)) then
+                    match msg.Content with
+                    | null -> ()
+                    | c -> c.Headers.TryAddWithoutValidation(k, v) |> ignore
 
-        // the default User-Agent [D:http-ua]: weir/<stamp>, the same
-        // string --version prints — applied at SEND time, never a field
-        // in Http.defaults, so the request RECORD stays stable across
-        // releases (a pinned/shown request must not break on a version
-        // bump; the cost — show req omits a header the wire carries — is
-        // stated in the docs). A caller's User-Agent is already on the
-        // message (headers and secretHeaders both arrive merged in
-        // req.Headers) and BLOCKS this: header names compare
-        // case-insensitively, so exactly one is ever sent. A DEFAULT, not
-        // a fixed header — the explicit pair is the override spelling.
-        if not (msg.Headers.Contains "User-Agent") then
-            msg.Headers.TryAddWithoutValidation("User-Agent", $"weir/{Weir.Version.current}")
-            |> ignore
+            // the default User-Agent [D:http-ua]: weir/<stamp>, the same
+            // string --version prints — applied at SEND time, never a field
+            // in Http.defaults, so the request RECORD stays stable across
+            // releases (a pinned/shown request must not break on a version
+            // bump; the cost — show req omits a header the wire carries — is
+            // stated in the docs). A caller's User-Agent is already on the
+            // message (headers and secretHeaders both arrive merged in
+            // req.Headers) and BLOCKS this: header names compare
+            // case-insensitively, so exactly one is ever sent. A DEFAULT, not
+            // a fixed header — the explicit pair is the override spelling.
+            if not (msg.Headers.Contains "User-Agent") then
+                msg.Headers.TryAddWithoutValidation("User-Agent", $"weir/{Weir.Version.current}")
+                |> ignore
 
-        use resp = client.SendAsync(msg).Result
+            msg
+
+        // the explicit follow loop [D:secret-redirect]: at each hop, send;
+        // on a redirect status with a Location, rebuild for the next hop,
+        // dropping the credential headers when the origin changed.
+        let mutable curMethod = req.Method
+        let mutable curUrl = req.Url
+        let mutable curHeaders = req.Headers
+        let mutable curBody = req.Body
+        let mutable hops = 0
+        let mutable result: HttpResponseMessage = null
+
+        let mutable go = true
+
+        while go do
+            let msg = buildMessage curMethod curUrl curHeaders curBody
+            let resp = client.SendAsync(msg).Result
+            let code = int resp.StatusCode
+
+            let location =
+                match resp.Headers.Location with
+                | null -> None
+                | l -> Some l
+
+            match location with
+            | Some loc when isRedirect code && hops < maxRedirects ->
+                resp.Dispose()
+                hops <- hops + 1
+
+                let fromUri = Uri curUrl
+                // a relative Location resolves against the current URL
+                let nextUri = if loc.IsAbsoluteUri then loc else Uri(fromUri, loc)
+
+                // CROSS-ORIGIN? then drop the credential headers — the F4 fix
+                // [D:secret-redirect], the same drop the BCL does for
+                // Authorization, now covering secretHeaders too
+                if not (sameOrigin fromUri nextUri) && not (Set.isEmpty req.SensitiveHeaders) then
+                    curHeaders <-
+                        curHeaders
+                        |> List.filter (fun (k, _) -> not (req.SensitiveHeaders.Contains(k.ToLowerInvariant())))
+
+                // 303, and 301/302 from a method with a body, rewrite to GET
+                // and drop the body (the BCL/browser rule); 307/308 preserve
+                let m = curMethod.ToUpperInvariant()
+
+                if code = 303 || ((code = 301 || code = 302) && m <> "GET" && m <> "HEAD") then
+                    curMethod <- "GET"
+                    curBody <- None
+
+                curUrl <- nextUri.ToString()
+            | _ ->
+                result <- resp
+                go <- false
+
+        use resp = result
 
         let headers =
             [ for h in resp.Headers -> h.Key, String.concat "," h.Value ]

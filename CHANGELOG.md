@@ -36,6 +36,17 @@
   bug is surfaced rather than swallowed. A benign control header is
   unaffected in both directions.
 
+- **`secretHeaders` no longer leak across a cross-origin redirect.**
+  `Http.send` following a redirect to a different origin used to re-send
+  `secretHeaders` — a credential channel carrying a `Secret` — to the new
+  host, while the typed `auth` union was protected only because .NET
+  happens to drop `Authorization`. weir now drops `secretHeaders` (and
+  `auth`) on a cross-origin redirect exactly as the BCL drops
+  `Authorization`, so the two credential channels agree: the destination
+  a redirect names can no longer harvest a credential the caller sent to
+  the original host. A same-origin redirect keeps the credential, and a
+  non-sensitive header still crosses (the drop is credential-specific).
+
 ## v0.0.47
 
 ### Added

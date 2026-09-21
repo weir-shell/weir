@@ -3417,16 +3417,26 @@ let private runRequest (reqV: Value) : Http.Resp =
     | VRecord("HttpRequest", f) ->
         let get k = recGet k f
 
+        let auth = authHeaders (get "auth")
+        let secret = headerPairs (get "secretHeaders")
+
+        // the credential channels [D:secret-redirect]: auth's Authorization
+        // AND every secretHeaders name are dropped on a cross-origin
+        // redirect, so the two channels agree (F4). Names are lowercased for
+        // a case-insensitive match, the same casing Http.send filters on.
+        let sensitive =
+            (auth @ secret)
+            |> List.map (fun (k, _) -> k.ToLowerInvariant())
+            |> Set.ofList
+
         let req: Http.Req =
             { Method = httpMethodName (get "method")
               Url =
                 (match get "url" with
                  | VStr s -> s
                  | v -> unreachable $"url {formatValue v}")
-              Headers =
-                authHeaders (get "auth")
-                @ headerPairs (get "headers")
-                @ headerPairs (get "secretHeaders")
+              Headers = auth @ headerPairs (get "headers") @ secret
+              SensitiveHeaders = sensitive
               Body = httpBodyOf (get "body")
               TimeoutMs =
                 (match get "timeout" with

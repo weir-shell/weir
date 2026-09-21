@@ -19614,6 +19614,22 @@ let serveTests =
 
               Weir.Http.refuseHeaderInjection "request header" failwith [ ("X-A", "1"); ("X-B", "2") ]
           }
+          // ---- S1: the cross-origin credential drop [D:secret-redirect] ----
+          test "sameOrigin: scheme, host and port must all match; a port change is a different origin" {
+              let u s = System.Uri(s: string)
+              Expect.isTrue (Weir.Http.sameOrigin (u "http://127.0.0.1:8503/a") (u "http://127.0.0.1:8503/b")) "same scheme/host/port is one origin (path differs)"
+              Expect.isFalse (Weir.Http.sameOrigin (u "http://127.0.0.1:8503/a") (u "http://127.0.0.1:8504/a")) "a PORT change is a different origin (the F4 case: 8503 -> 8504)"
+              Expect.isFalse (Weir.Http.sameOrigin (u "http://127.0.0.1:80/a") (u "http://localhost:80/a")) "127.0.0.1 and localhost are different origins (host differs)"
+              Expect.isFalse (Weir.Http.sameOrigin (u "http://example.com/a") (u "https://example.com/a")) "a scheme change is a different origin"
+              Expect.isTrue (Weir.Http.sameOrigin (u "http://EXAMPLE.com/a") (u "http://example.com/b")) "host compares case-insensitively"
+          }
+          test "isRedirect covers the BCL redirect set and nothing else" {
+              for code in [ 301; 302; 303; 307; 308 ] do
+                  Expect.isTrue (Weir.Http.isRedirect code) $"{code} is a redirect"
+
+              for code in [ 200; 201; 204; 300; 304; 400; 404; 500 ] do
+                  Expect.isFalse (Weir.Http.isRedirect code) $"{code} is not a follow-redirect"
+          }
           // ---- F12: the request-body read timeout [D:serve-body-timeout] ----
           test "the serve config accepts bodyTimeout, and omitting it stays clean" {
               // omitted — rests at the default, existing scripts unbroken
