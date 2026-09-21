@@ -1420,6 +1420,11 @@ if command -v python3 >/dev/null 2>&1; then
     WEIR_BIN="$BIN" python3 "$(dirname "$0")/../tests/lsp/lsp-e2e.py" || fail "lsp integration probes"
     echo "e2e ok: lsp diagnostics/hover/completion over stdio"
 
+    # transport hardening [D:lsp-transport-caps]: a hostile Content-Length
+    # must not OOM the session — the framing layer caps at 64MB and drains
+    WEIR_BIN="$BIN" python3 "$(dirname "$0")/../tests/lsp/lsp-framing.py" || fail "lsp framing hardening (oversized Content-Length)"
+    echo "e2e ok: lsp survives oversized Content-Length (no OOM, stream stays synced)"
+
     # conventional client argv is tolerated (languageclient v10 appends
     # --stdio/--clientProcessId to Executables — usage-exit-2 here put
     # the VS Code client in a crash-restart loop)

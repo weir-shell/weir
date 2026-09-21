@@ -1744,12 +1744,28 @@ let run (debug: bool) : int =
                 else
                     None)
 
-    let readMessage () : string option =
+    // transport hardening [D:lsp-transport-caps]: the framing layer never
+    // allocates for a client-supplied length before reading — an unbounded
+    // Content-Length (or an unbounded header line) is an OOM otherwise. Two
+    // fixed caps bound memory, and an oversized body is DRAINED (not
+    // allocated) so the stream stays framed and the session survives.
+    let maxMessageBytes = 64 * 1024 * 1024 // 64MB accepted body ceiling
+    let maxHeaderLineBytes = 64 * 1024 // 64KB per header line
+
+    // read outcome: a framed message, an oversized-and-drained no-op (drop
+    // it, keep serving), or end-of-stream/malformed (stop)
+    let mutable drainScratch = Array.zeroCreate 65536
+
+    let readMessage () : Choice<string, unit, unit> =
         // headers are ASCII lines ending \r\n; blank line then body
         let mutable contentLength = -1
         let mutable line = Text.StringBuilder()
         let mutable headerDone = false
         let mutable eof = false
+        // an unbounded header line cannot grow memory: once the accumulator
+        // passes the cap the line is malformed — stop reading its bytes into
+        // the buffer, and end the header loop malformed at the newline
+        let mutable headerOverflow = false
 
         while not headerDone && not eof do
             let b = stdin'.ReadByte()
@@ -1757,20 +1773,47 @@ let run (debug: bool) : int =
             if b < 0 then
                 eof <- true
             elif b = int '\n' then
-                let l = line.ToString().TrimEnd('\r')
-                line.Clear() |> ignore
+                if headerOverflow then
+                    // an over-long header line: the frame is unusable, treat
+                    // as malformed and stop (the connection is out of sync)
+                    eof <- true
+                else
+                    let l = line.ToString().TrimEnd('\r')
+                    line.Clear() |> ignore
 
-                if l = "" then
-                    headerDone <- contentLength >= 0
-                elif l.StartsWith "Content-Length:" then
-                    match Int32.TryParse(l.Substring(15).Trim()) with
-                    | true, n -> contentLength <- n
-                    | _ -> ()
+                    if l = "" then
+                        headerDone <- contentLength >= 0
+                    elif l.StartsWith "Content-Length:" then
+                        match Int64.TryParse(l.Substring(15).Trim()) with
+                        | true, n when n >= 0L && n <= int64 Int32.MaxValue -> contentLength <- int n
+                        // a length that overflows Int32 is definitively
+                        // oversized — a non-negative marker past the cap
+                        // routes to the drain path below
+                        | true, n when n > int64 Int32.MaxValue -> contentLength <- Int32.MaxValue
+                        | _ -> ()
+            elif line.Length >= maxHeaderLineBytes then
+                headerOverflow <- true // stop accumulating; drop the byte
             else
                 line.Append(char b) |> ignore
 
         if eof || contentLength < 0 then
-            None
+            Choice3Of3() // EOF or malformed — stop serving
+        elif contentLength > maxMessageBytes then
+            // OVERSIZED: do NOT allocate contentLength. Drain the declared
+            // body in fixed chunks to keep the stream synced, then drop the
+            // message as an id-less no-op and keep serving [D:lsp-transport-caps]
+            let mutable remaining = contentLength
+
+            while remaining > 0 && not eof do
+                let want = min remaining drainScratch.Length
+                let n = stdin'.Read(drainScratch, 0, want)
+                if n <= 0 then eof <- true else remaining <- remaining - n
+
+            if debug then
+                Console.Error.WriteLine
+                    $"weir lsp: dropped oversized message (Content-Length {contentLength} > cap {maxMessageBytes})"
+
+            if eof then Choice3Of3() else Choice2Of3()
         else
             let buf = Array.zeroCreate contentLength
             let mutable read = 0
@@ -1780,7 +1823,7 @@ let run (debug: bool) : int =
 
                 if n <= 0 then read <- contentLength else read <- read + n
 
-            Some(Text.Encoding.UTF8.GetString buf)
+            Choice1Of3(Text.Encoding.UTF8.GetString buf)
 
     // URIs published with diagnostics last cycle — cleared when they go clean
     let publishedUris = Collections.Generic.HashSet<string>()
@@ -1914,8 +1957,9 @@ let run (debug: bool) : int =
 
     while running do
         match readMessage () with
-        | None -> running <- false
-        | Some raw ->
+        | Choice3Of3() -> running <- false // EOF or malformed transport — stop
+        | Choice2Of3() -> () // oversized message drained and dropped — keep serving
+        | Choice1Of3 raw ->
             use doc =
                 try
                     JsonDocument.Parse raw

@@ -144,6 +144,17 @@
   bounds the file. Ordinary type errors are unaffected — a file with
   three plain type errors still reports all three. `[D:budget-stop-first]`
 
+- **`weir lsp` no longer allocates for a client-supplied `Content-Length`
+  before reading the body.** The framing layer allocated a buffer of
+  exactly the declared length, so `Content-Length: 2147483647` (26 bytes)
+  triggered an `OutOfMemoryException` that killed the editor session (an
+  OOM DoS). The transport now caps accepted messages at 64MB and never
+  allocates for a larger declared length: an oversized body is drained in
+  small fixed chunks to keep the stream synced and dropped as an id-less
+  no-op, so the server keeps serving. The header-line accumulator is
+  independently capped at 64KB so an unbounded header line cannot grow
+  memory. `[D:lsp-transport-caps]`
+
 ## v0.0.47
 
 ### Added
