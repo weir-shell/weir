@@ -9763,4 +9763,31 @@ WEOF
     rm -rf "$nuldir"
 fi
 
+# ---- STRIX-6: yaml depth caps — hostile input teaches, never hangs/crashes [D:yaml-depth]
+s6dir=$(mkweirtmp)
+# a 5000-level `a:` ladder (1-space indents) — the cubic-hang shape. The
+# parser caps at 500 and returns a located diagnostic PROMPTLY.
+: >"$s6dir/ladder.yaml"
+for i in $(seq 0 4999); do
+    printf '%*sa:\n' "$i" "" >>"$s6dir/ladder.yaml"
+done
+printf '%*sv: 1\n' 5000 "" >>"$s6dir/ladder.yaml"
+cat >"$s6dir/parse.weir" <<WEOF
+let doc = File.read "$s6dir/ladder.yaml" |> Yaml.parse
+print \$"{doc}"
+WEOF
+out=$($BIN "$s6dir/parse.weir" 2>&1) && fail "a 5000-deep ladder must be refused, not parsed: $out" || true
+echo "$out" | grep -qF "yaml nesting is too deep (limit 500)" || fail "parser depth cap message: $out"
+echo "e2e ok: STRIX-6 — a 5000-deep yaml ladder hits the parser cap (no hang)"
+# a Seq.fold-nested YSeq ~100k deep is the StackOverflow (exit 134) shape;
+# the emitter caps at 1000 and fails clean (exit 1).
+cat >"$s6dir/emit.weir" <<WEOF
+let deep = [1..100000] |> Seq.fold (fun acc _ -> YSeq [acc]) (YInt 1)
+deep |> to yaml |> Seq.length |> print
+WEOF
+out=$($BIN "$s6dir/emit.weir" 2>&1) && fail "a 100k-deep value must be refused, not emitted: $out" || true
+echo "$out" | grep -qF "nests deeper than 1000" || fail "emitter depth cap message: $out"
+echo "e2e ok: STRIX-6 — a 100k-deep 'to yaml' hits the emitter cap (no crash)"
+rm -rf "$s6dir"
+
 echo "e2e battery: all green"

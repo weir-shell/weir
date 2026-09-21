@@ -207,6 +207,27 @@
   The pre-existing statement-path refusal is unchanged.
   `[D:spawn-nul-funnel]`
 
+- **A deeply-nested YAML document no longer hangs the parser.**
+  `Yaml.parse` (and `from yaml T`, `#infer`, `Yaml.inferShape`, and
+  `weir check` on a deep-ladder yaml district) recursed once per
+  mapping/sequence nesting level with no limit, and each mapping level
+  re-scanned its remaining extent — so a hostile `a:` ladder was cubic
+  in depth and hung for tens of seconds to hours. The parser now caps
+  nesting at 500 and fails with a located diagnostic ("yaml nesting is
+  too deep (limit 500) — the subset reads real manifests, not
+  adversarial ladders"). Real manifests nest far below the cap and are
+  unaffected. External command output piped into a yaml adapter is the
+  realistic hostile source this closes.
+
+- **A deeply-nested value no longer crashes `to yaml`.** The YAML
+  emitter recursed per nesting level with no limit, so a value built
+  iteratively (e.g. a `Seq.fold` nesting a `YSeq` ~100k deep) crashed
+  the process with an uncatchable stack overflow (exit 134) — hostile
+  or malformed input must never crash the tool. The emitter now caps
+  nesting at 1000 and fails with a clean located error ("to yaml: the
+  value nests deeper than 1000 — the emitter needs finite trees").
+  Finite, real-depth trees render unchanged.
+
 ## v0.0.47
 
 ### Added

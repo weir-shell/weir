@@ -1559,6 +1559,42 @@ let boundaryTests =
 
               Expect.stringContains multi.Message "reads one document; this input has 2" "count and route"
           }
+          test "Yaml.parse: a deep ladder hits the nesting cap; legal depth still reads [D:yaml-depth]" {
+              // an `a:` ladder one space deeper each line — the cubic-hang
+              // shape. Past the cap it is a located diagnostic, never a hang.
+              let ladder n =
+                  [ for i in 0 .. n - 1 -> System.String(' ', i) + "a:" ] @ [ System.String(' ', n) + "v: 1" ]
+
+              let parse lines' =
+                  Weir.Yaml.parseDocs (lines' |> List.mapi (fun i l -> i + 1, l))
+
+              match parse (ladder 600) with
+              | Error msg ->
+                  Expect.stringContains msg "yaml nesting is too deep (limit 500)" "the cap teaches"
+                  Expect.stringContains msg "line " "and locates"
+              | Ok _ -> failtest "a 600-deep ladder must hit the cap"
+
+              // 250 deep is well inside the cap — real manifests read
+              match parse (ladder 250) with
+              | Ok [ _ ] -> ()
+              | other -> failtest $"a 250-deep ladder must parse: {other}"
+          }
+          test "to yaml: a value deeper than the cap teaches instead of crashing [D:yaml-depth]" {
+              // a Seq.fold-nested YSeq is the StackOverflow shape (exit 134)
+              // — past the emitter cap it is a clean boundary error
+              let ex =
+                  Expect.throwsC
+                      (fun () -> run "[1..2000] |> Seq.fold (fun acc _ -> YSeq [acc]) (YInt 1) |> to yaml" |> ignore)
+                      id
+
+              Expect.stringContains ex.Message "nests deeper than 1000" "the cap teaches"
+
+              // 250 deep renders fine — the cap sits above real trees
+              let ok =
+                  run "[1..250] |> Seq.fold (fun acc _ -> YSeq [acc]) (YInt 1) |> to yaml" |> forceSeq
+
+              Expect.isNonEmpty ok "a 250-deep value renders"
+          }
           test "yaml patch: types as YamlPatch; tombstones scoped; schema= refuses [D:yaml-nodes]" {
               let asm lines' =
                   match Weir.Script.assemble (lines' |> List.mapi (fun i l -> i + 1, l)) with

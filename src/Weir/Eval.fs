@@ -1808,11 +1808,22 @@ let private renderString (s: string) : Rendered =
     else
         Inline(Yaml.renderScalar s)
 
+// nesting ceiling [D:yaml-depth]: yamlRender recurses once per level,
+// so a value built iteratively (a Seq.fold nesting a YSeq) overflows the
+// native stack with an uncatchable StackOverflow — the tool must never
+// crash on hostile data. 1000 sits far above any real tree and below the
+// crash floor; the guard turns the crash into a clean boundary error.
+let private yamlMaxDepth = 1000
+
 let rec private yamlRender
     (renames: Map<string, Map<string, string>>)
     (unions: Map<string, string * string * bool>)
+    (depth: int)
     (v: Value)
     : Rendered =
+    if depth > yamlMaxDepth then
+        failwith $"to yaml: the value nests deeper than {yamlMaxDepth} — the emitter needs finite trees"
+
     let indent2 (lines: string list) =
         lines |> List.map (fun l -> if l = "" then "" else "  " + l)
 
@@ -1824,7 +1835,7 @@ let rec private yamlRender
             | _ ->
                 let key = Yaml.renderScalar k
 
-                match yamlRender renames unions v with
+                match yamlRender renames unions (depth + 1) v with
                 | Inline "" -> [ $"{key}:" ]
                 | Inline s -> [ $"{key}: {s}" ]
                 | Block lines -> $"{key}:" :: indent2 lines
@@ -1833,7 +1844,7 @@ let rec private yamlRender
     let renderSeq (items: Value list) : string list =
         items
         |> List.collect (fun item ->
-            match yamlRender renames unions item with
+            match yamlRender renames unions (depth + 1) item with
             | Inline "" -> [ "- null" ]
             | Inline s -> [ $"- {s}" ]
             | Block lines ->
@@ -1870,7 +1881,7 @@ let rec private yamlRender
                 |> List.ofSeq
             )
         )
-    | VUnion("Some", Some inner) -> yamlRender renames unions inner
+    | VUnion("Some", Some inner) -> yamlRender renames unions (depth + 1) inner
     | VUnion("None", None) -> Inline "null" // element position; fields omit above
     // a TAGGED case renders its payload with the tag entry FIRST
     // [D:wire-unions]; the [<Other>] case refuses — nothing faithful
@@ -1924,7 +1935,7 @@ let private yamlToLines
     (unions: Map<string, string * string * bool>)
     (v: Value)
     : string list =
-    match yamlRender renames unions v with
+    match yamlRender renames unions 0 v with
     | Inline s -> [ s ]
     | Block lines -> lines
     | BlockScalar(h, content) -> h :: (content |> List.map (fun l -> if l = "" then "" else "  " + l))
