@@ -2422,28 +2422,34 @@ let private ioGuarded (op: string) (r: string) (f: unit -> 'a) : 'a =
 // forcing NOW runs its reads under the plan's own frame (a nested
 // mutation in the content is captured/refused).
 
-/// capture a WriteFile op (File.write): force the content seq to data now
-let private capWrite (userPath: string) (resolved: string) (lines: Value seq) : Value option =
+/// capture a WriteFile op (File.write): force the content seq to data now.
+/// The captured path is the RESOLVED absolute path [D:plan-path-bound]:
+/// the target is fixed at capture, so apply writes exactly the previewed
+/// location regardless of the apply-time cwd.
+let private capWrite (resolved: string) (lines: Value seq) : Value option =
     if PlanMode.active () then
         let snapshot = lines |> List.ofSeq // FORCE: snapshot content at plan time
-        PlanMode.capture (VUnion("WriteFile", Some(VTuple [ VStr userPath; VSeq snapshot ]))) [ resolved ]
+        PlanMode.capture (VUnion("WriteFile", Some(VTuple [ VStr resolved; VSeq snapshot ]))) [ resolved ]
         Some VUnit
     else
         None
 
-/// capture a one-path op (DeleteFile / MakeDir / DeleteDir)
-let private capPath1 (case: string) (userPath: string) (resolved: string) : Value option =
+/// capture a one-path op (DeleteFile / MakeDir / DeleteDir): stores the
+/// RESOLVED absolute path [D:plan-path-bound]
+let private capPath1 (case: string) (resolved: string) : Value option =
     if PlanMode.active () then
-        PlanMode.capture (VUnion(case, Some(VStr userPath))) [ resolved ]
+        PlanMode.capture (VUnion(case, Some(VStr resolved))) [ resolved ]
         Some VUnit
     else
         None
 
 /// capture a two-path op (Copy / Move): the DESTINATION is the target a
-/// later read would see stale (the source is read, not written)
-let private capPath2 (case: string) (userSrc: string) (userDst: string) (resolvedDst: string) : Value option =
+/// later read would see stale (the source is read, not written). BOTH
+/// paths are stored RESOLVED absolute [D:plan-path-bound] — apply replays
+/// the exact captured source and destination, cwd-independent.
+let private capPath2 (case: string) (resolvedSrc: string) (resolvedDst: string) : Value option =
     if PlanMode.active () then
-        PlanMode.capture (VUnion(case, Some(VTuple [ VStr userSrc; VStr userDst ]))) [ resolvedDst ]
+        PlanMode.capture (VUnion(case, Some(VTuple [ VStr resolvedSrc; VStr resolvedDst ]))) [ resolvedDst ]
         Some VUnit
     else
         None
@@ -2492,7 +2498,7 @@ let private fileMembers: (string * Ty * Value) list =
               | VStr path, VSeq lines ->
                   let r = Session.resolve path
 
-                  match capWrite path r lines with
+                  match capWrite r lines with
                   | Some captured -> captured
                   | None ->
                   writeGuard "File.write" r
@@ -2619,7 +2625,7 @@ let private fsStr2 (name: string) (opCase: string) (f: string -> string -> unit)
             | VStr src, VStr dst ->
                 let s, d = Session.resolve src, Session.resolve dst
 
-                match capPath2 opCase src dst d with
+                match capPath2 opCase s d with
                 | Some captured -> captured
                 | None ->
                     ioGuarded name s (fun () -> f s d)
@@ -2759,7 +2765,7 @@ let private fsMoreFileMembers: (string * Ty * Value) list =
           | VStr p ->
               let r = Session.resolve p
 
-              match capPath1 "DeleteFile" p r with
+              match capPath1 "DeleteFile" r with
               | Some captured -> captured
               | None ->
 
@@ -2840,7 +2846,7 @@ let private dirMembers: (string * Ty * Value) list =
           | VStr p ->
               let r = Session.resolve p
 
-              match capPath1 "MakeDir" p r with
+              match capPath1 "MakeDir" r with
               | Some captured -> captured
               | None ->
 
@@ -2864,7 +2870,7 @@ let private dirMembers: (string * Ty * Value) list =
           | VStr p ->
               let r = Session.resolve p
 
-              match capPath1 "DeleteDir" p r with
+              match capPath1 "DeleteDir" r with
               | Some captured -> captured
               | None ->
 
@@ -2886,7 +2892,7 @@ let private dirMembers: (string * Ty * Value) list =
           | VStr p ->
               let r = Session.resolve p
 
-              match capPath1 "DeleteDir" p r with
+              match capPath1 "DeleteDir" r with
               | Some captured -> captured
               | None ->
 
@@ -3594,10 +3600,12 @@ let private previewOp (op: Value) : string =
 // frame, so the mutation builtins would perform too; applyOp performs
 // directly to keep the replay self-contained). Overwrite/existence rules
 // match the builtins (copy/move refuse an existing destination).
+// paths were resolved to absolute AT CAPTURE [D:plan-path-bound], so apply
+// replays the exact captured target — no re-resolve against the apply-time
+// cwd (that was DA-03: a relative capture rebound to apply's cwd).
 let private applyOp (op: Value) : unit =
     match op with
-    | VUnion("WriteFile", Some(VTuple [ VStr path; VSeq lines ])) ->
-        let r = Session.resolve path
+    | VUnion("WriteFile", Some(VTuple [ VStr r; VSeq lines ])) ->
         writeGuard "Plan.apply (WriteFile)" r
 
         ioGuarded "Plan.apply (WriteFile)" r (fun () ->
@@ -3617,26 +3625,19 @@ let private applyOp (op: Value) : unit =
 
             for l in lines do
                 w.WriteLine(asString l))
-    | VUnion("DeleteFile", Some(VStr path)) ->
-        let r = Session.resolve path
-
+    | VUnion("DeleteFile", Some(VStr r)) ->
         if not (System.IO.File.Exists r) then
             failwith $"Plan.apply (DeleteFile): no such file: {r}"
 
         ioGuarded "Plan.apply (DeleteFile)" r (fun () -> System.IO.File.Delete r)
-    | VUnion("MakeDir", Some(VStr path)) ->
-        let r = Session.resolve path
+    | VUnion("MakeDir", Some(VStr r)) ->
         ioGuarded "Plan.apply (MakeDir)" r (fun () -> System.IO.Directory.CreateDirectory r |> ignore)
-    | VUnion("DeleteDir", Some(VStr path)) ->
-        let r = Session.resolve path
-
+    | VUnion("DeleteDir", Some(VStr r)) ->
         if not (System.IO.Directory.Exists r) then
             failwith $"Plan.apply (DeleteDir): no such directory: {r}"
 
         ioGuarded "Plan.apply (DeleteDir)" r (fun () -> System.IO.Directory.Delete(r, true))
-    | VUnion("Copy", Some(VTuple [ VStr src; VStr dst ])) ->
-        let s, d = Session.resolve src, Session.resolve dst
-
+    | VUnion("Copy", Some(VTuple [ VStr s; VStr d ])) ->
         if System.IO.File.Exists d || System.IO.Directory.Exists d then
             failwith $"Plan.apply (Copy): destination exists: {d}"
 
@@ -3656,9 +3657,7 @@ let private applyOp (op: Value) : unit =
                 System.IO.File.Copy(s, d)
             else
                 failwith $"Plan.apply (Copy): no such source: {s}")
-    | VUnion("Move", Some(VTuple [ VStr src; VStr dst ])) ->
-        let s, d = Session.resolve src, Session.resolve dst
-
+    | VUnion("Move", Some(VTuple [ VStr s; VStr d ])) ->
         if System.IO.File.Exists d || System.IO.Directory.Exists d then
             failwith $"Plan.apply (Move): destination exists: {d}"
 

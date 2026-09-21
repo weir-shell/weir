@@ -7750,6 +7750,79 @@ let planApplyTests =
               finally
                   System.IO.Directory.Delete(root, true)
           }
+          // [D:plan-path-bound] DA-03: a plan captures paths RESOLVED to
+          // absolute AT capture, so apply writes the previewed location
+          // regardless of the apply-time cwd. Capture under cd A, apply
+          // under cd B: the file lands in A (the preview), never B.
+          test "DA-03: a write captured under cd A applies to A even when applied under cd B" {
+              let root = td ()
+              let dirA = weirPath (System.IO.Path.Combine(root, "A"))
+              let dirB = weirPath (System.IO.Path.Combine(root, "B"))
+
+              let prog =
+                  [ $"Dir.create \"{dirA}\""
+                    $"Dir.create \"{dirB}\""
+                    "let p ="
+                    $"    within cd \"{dirA}\""
+                    "        plan"
+                    "            File.write \"marker.txt\" [\"hi\"]"
+                    // preview must render the ABSOLUTE captured path (A's)
+                    "let text = Str.join \"\\n\" (p |> Plan.preview)"
+                    $"if not (Str.contains \"{dirA}/marker.txt\" text) then fail \"preview not absolute-A\""
+                    // apply under a DIFFERENT cwd — the bound path wins
+                    $"within cd \"{dirB}\""
+                    "    p |> Plan.apply"
+                    "print \"ok\"" ]
+
+              try
+                  Expect.equal (runFile prog) 0 "the program ran clean"
+
+                  Expect.isTrue
+                      (System.IO.File.Exists(System.IO.Path.Combine(root, "A", "marker.txt")))
+                      "the file landed in A (the previewed, capture-time location)"
+
+                  Expect.isFalse
+                      (System.IO.File.Exists(System.IO.Path.Combine(root, "B", "marker.txt")))
+                      "the file did NOT rebind to B (the apply-time cwd) — DA-03"
+              finally
+                  System.IO.Directory.Delete(root, true)
+          }
+          // [D:plan-path-bound] the two-path ops bind BOTH source and dest
+          // to absolute at capture: a copy captured under cd A applies into
+          // A's tree even from cd B.
+          test "DA-03: a copy captured under cd A binds src+dst to A, applies under cd B into A" {
+              let root = td ()
+              let dirA = weirPath (System.IO.Path.Combine(root, "A"))
+              let dirB = weirPath (System.IO.Path.Combine(root, "B"))
+
+              let prog =
+                  [ $"Dir.create \"{dirA}\""
+                    $"Dir.create \"{dirB}\""
+                    $"File.write \"{dirA}/orig.txt\" [\"data\"]"
+                    "let p ="
+                    $"    within cd \"{dirA}\""
+                    "        plan"
+                    "            File.copy \"orig.txt\" \"copied.txt\""
+                    "let text = Str.join \"\\n\" (p |> Plan.preview)"
+                    $"if not (Str.contains \"{dirA}/orig.txt\" text) then fail \"src not absolute-A\""
+                    $"if not (Str.contains \"{dirA}/copied.txt\" text) then fail \"dst not absolute-A\""
+                    $"within cd \"{dirB}\""
+                    "    p |> Plan.apply"
+                    "print \"ok\"" ]
+
+              try
+                  Expect.equal (runFile prog) 0 "the program ran clean"
+
+                  Expect.isTrue
+                      (System.IO.File.Exists(System.IO.Path.Combine(root, "A", "copied.txt")))
+                      "the copy landed in A (both paths bound at capture)"
+
+                  Expect.isFalse
+                      (System.IO.File.Exists(System.IO.Path.Combine(root, "B", "copied.txt")))
+                      "the copy did NOT rebind to B — DA-03"
+              finally
+                  System.IO.Directory.Delete(root, true)
+          }
           test "File.append inside a plan refuses — no v1 Op arm (kind-first)" {
               let dir = td ()
               System.IO.Directory.CreateDirectory dir |> ignore

@@ -8955,6 +8955,34 @@ out=$($BIN "$padir/helperwrite.weir" 2>&1) || fail "a native write via a serial 
 expect "the serial helper's native write is captured" "captured" "$out"
 [ -f "$padir/helper-marker.txt" ] && fail "the captured write ran to disk — over-captured"
 echo "e2e ok: plan/apply — a native write via a serial helper still captures (not over-refused)"
+
+# DA-03 [D:plan-path-bound]: a plan binds paths absolute AT CAPTURE, so
+# apply writes the previewed location regardless of the apply-time cwd.
+# Capture a write + a copy under `cd A`, apply under `cd B`: both land in
+# A (the preview shows A's absolute paths), NEVER B.
+mkdir -p "$padir/A" "$padir/B"
+printf 'data\n' > "$padir/A/orig.txt"
+cat > "$padir/bound.weir" <<WEOF
+let p =
+    within cd "$padir/A"
+        plan
+            File.write "marker.txt" ["hi"]
+            File.copy "orig.txt" "copied.txt"
+let text = Str.join "\n" (p |> Plan.preview)
+if not (Str.contains "$padir/A/marker.txt" text) then fail "preview not absolute-A (write)"
+if not (Str.contains "$padir/A/copied.txt" text) then fail "preview not absolute-A (copy dst)"
+within cd "$padir/B"
+    p |> Plan.apply
+print "applied"
+WEOF
+out=$($BIN "$padir/bound.weir" 2>&1) || fail "the bound-path plan failed: $out"
+expect "the bound plan applies" "applied" "$out"
+[ -f "$padir/A/marker.txt" ] || fail "the write did not land in A (the previewed capture-time dir)"
+[ -f "$padir/A/copied.txt" ] || fail "the copy did not land in A"
+[ -f "$padir/B/marker.txt" ] && fail "the write rebound to B (the apply-time cwd) — DA-03 regressed"
+[ -f "$padir/B/copied.txt" ] && fail "the copy rebound to B — DA-03 regressed"
+echo "e2e ok: plan/apply — paths bind absolute at capture; apply-under-B lands in A (DA-03)"
+
 rm -rf "$padir"
 
 # ---- within serve: the scoped HTTP listener [D:http-serve] -----------

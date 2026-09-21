@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.0.48
+
+### Fixed
+
+- **A `plan` now captures filesystem paths as absolute, bound to the
+  directory where they were captured.** A plan stored the caller's
+  *relative* path and `Plan.apply` re-resolved it against the
+  apply-time working directory — so a `File.write "marker.txt"`
+  captured under `within cd "planning"` and applied under
+  `within cd "application"` wrote to `application/marker.txt`, not the
+  previewed `planning/marker.txt`. Capture now resolves every
+  filesystem path to absolute at capture time and `Plan.apply` writes
+  that exact path, so what `Plan.preview` shows is exactly what apply
+  performs, regardless of the working directory at apply. This covers
+  every captured filesystem op — `File.write`/`delete`,
+  `Dir.create`/`delete`/`deleteAll`, and the two-path `File`/`Dir`
+  `copy`/`move` (both source and destination are bound). Plans built
+  from *absolute* paths are unchanged (they already resolved to
+  themselves), so plan equality and `Plan.ops` comparisons on absolute
+  paths behave as before.
+
 ## v0.0.47
 
 ### Fixed
