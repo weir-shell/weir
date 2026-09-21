@@ -9661,4 +9661,106 @@ rc=0; $BIN check "$hdir/attr.weir" >/dev/null 2>&1 || rc=$?
 echo "e2e ok: CLI verb dispatch backstops the front-end crash class (exit $rc, not 134)"
 rm -rf "$hdir"
 
+# ---- the spawn-boundary NUL funnel [D:spawn-nul-funnel] ------------------
+# SECURITY.md's word-integrity claim: a NUL-bearing value is REFUSED at
+# the process boundary with a diagnostic, never silently truncated. The
+# refusal lived only in the evaluator's statement/pipe constructors —
+# four downstream spawn paths (the reifiers, the ambient `within env`
+# overlay + the `$e(...)` twin, `into`, and the dynamic head `^$name`)
+# assembled argv/env and skipped it, so a `\0` truncated at execve. The
+# fix moves the refusal to the ONE spawn funnel (Proc.spawn), so every
+# path inherits it. Each hostile script below must REFUSE (exit 1) and
+# spawn NO child (the child logs its argv/env to a file — it must stay
+# empty). The NUL enters as external DATA: a shim on PATH emits a
+# NUL-bearing line, decoded into a weir string.
+if command -v sh >/dev/null 2>&1; then
+    nuldir=$(mkweirtmp)
+    mkdir -p "$nuldir/bin"
+    nullog="$nuldir/child.log"
+    # argvdump: logs its argv (excluding $0) and env FOO, then exits 0 —
+    # so a truncated word/env leaves EVIDENCE and a clean exit (the vuln)
+    cat > "$nuldir/bin/argvdump" <<EOF
+#!/bin/sh
+{ i=0; for a in "\$@"; do echo "argv[\$i]=\$a"; i=\$((i+1)); done; echo "FOO=\${FOO-unset}"; } >> "$nullog"
+exit 0
+EOF
+    chmod +x "$nuldir/bin/argvdump"
+    # emitnul: a NUL-bearing "line" a\0b ; emitprog: argvdump\0junk (a head)
+    printf '#!/bin/sh\nprintf '\''a\\000b'\''\n' > "$nuldir/bin/emitnul"
+    printf '#!/bin/sh\nprintf '\''argvdump\\000junk'\''\n' > "$nuldir/bin/emitprog"
+    chmod +x "$nuldir/bin/emitnul" "$nuldir/bin/emitprog"
+
+    nul_refuses() { # name — asserts exit 1, no child, NUL diagnostic
+        : > "$nullog"
+        set +e
+        out=$(PATH="$nuldir/bin:$PATH" $BIN "$nuldir/$1.weir" 2>&1)
+        rc=$?
+        set -e
+        [ "$rc" -eq 1 ] || fail "nul $1: expected exit 1, got $rc (out: $out)"
+        [ ! -s "$nullog" ] || fail "nul $1: a child SPAWNED (log: $(cat "$nullog"))"
+        echo "$out" | grep -qF "NUL byte" || fail "nul $1: no NUL diagnostic (out: $out)"
+        echo "e2e ok: nul funnel — $1 refuses, no child, located diagnostic"
+    }
+
+    # 1. dynamic head ^$name — the worst: a NUL-bearing head would resolve
+    # through PATH to the PREFIX program (argvdump) and run it
+    cat > "$nuldir/dynhead.weir" <<'WEOF'
+let p = emitprog |> Seq.exactlyOne
+let r = ^$p hello | complete
+print (show r.exitCode)
+WEOF
+    nul_refuses dynhead
+    # 2. reifier argument (| complete)
+    cat > "$nuldir/reifier.weir" <<'WEOF'
+let x = emitnul |> Seq.exactlyOne
+let r = argvdump $x | complete
+print (show r.exitCode)
+WEOF
+    nul_refuses reifier
+    # 3. ambient `within env` overlay — the env VALUE carries the NUL
+    cat > "$nuldir/ambient.weir" <<'WEOF'
+let v = emitnul |> Seq.exactlyOne
+within env [Env.pair "FOO" v]
+    let r = argvdump hello | complete
+    print (show r.exitCode)
+WEOF
+    nul_refuses ambient
+    # 4. into — the sh -c cmdline tail past the NUL would drop
+    cat > "$nuldir/into.weir" <<'WEOF'
+let tail = emitnul |> Seq.exactlyOne
+let cmd = $"argvdump before{tail}after"
+["one"] |> into cmd |> Seq.iter print
+WEOF
+    nul_refuses into
+    # 5. the $e(...) env twin — an env VALUE via the sigil
+    cat > "$nuldir/envsigil.weir" <<'WEOF'
+let v = emitnul |> Seq.exactlyOne
+let e = Env.ofPairs [("FOO", v)]
+let r = $e(argvdump hello | complete)
+print (show r.exitCode)
+WEOF
+    nul_refuses envsigil
+    # the env KEY coverage — a NUL in the key, not the value
+    cat > "$nuldir/envkey.weir" <<'WEOF'
+let k = emitnul |> Seq.exactlyOne
+let e = Env.ofPairs [(k, "v")]
+let r = $e(argvdump hello | complete)
+print (show r.exitCode)
+WEOF
+    nul_refuses envkey
+    # the statement-path control stays green: a plain command with a NUL
+    # arg still refuses (the pre-existing evaluator refusal), no child
+    cat > "$nuldir/stmt.weir" <<'WEOF'
+let x = emitnul |> Seq.exactlyOne
+argvdump $x
+WEOF
+    nul_refuses stmt
+    # and a CLEAN command still spawns (the funnel is not overzealous)
+    : > "$nullog"
+    PATH="$nuldir/bin:$PATH" $BIN -e 'argvdump ok deliberate' >/dev/null 2>&1 || fail "nul: a clean command must still run"
+    grep -qF "argv[0]=ok" "$nullog" || fail "nul: clean command did not reach the child"
+    echo "e2e ok: nul funnel — a clean command still spawns (no false refusal)"
+    rm -rf "$nuldir"
+fi
+
 echo "e2e battery: all green"

@@ -183,6 +183,30 @@
   `within proc` marker case 80k lines 24.1s → 3.6s; a bracket-heavy
   single line 400k record openers 29s → 0.5s — quadratic to linear.
 
+- **A NUL byte can no longer silently truncate a value at any process
+  boundary.** weir's word-integrity guarantee (SECURITY.md) refuses a
+  NUL-bearing value at the spawn hand-off — argv and env are
+  NUL-terminated C strings, so an unrefused NUL would truncate the word
+  at the child, which runs the prefix and exits 0 with no diagnostic.
+  The refusal lived only in the evaluator's command-statement and pipe
+  constructors; four other spawn paths assembled argv/env downstream and
+  skipped it, so a NUL entering as external data (a command whose stdout
+  carries a NUL, `File.read`, base64-to-bytes) leaked through: the
+  exit-code reifiers (`| complete`/`succeeds`/`exitCode`/`orFail`), the
+  ambient `within env` overlay and its `$e(...)` twin, `into`, and — the
+  worst — the dynamic command head `^$name`, where a NUL-bearing head
+  resolved through PATH to the *prefix* program and ran it with the
+  remaining words as argv. The NUL refusal now lives at `Proc.spawn`, the
+  single point every process start funnels through, validating the
+  program name, every argument, and every environment key and value — so
+  all four downstream paths inherit the boundary and refuse with the same
+  located diagnostic (exit 1, no child spawned). Two adjacent shapes gain
+  weir-shaped diagnostics too: an empty program name, and a NUL-bearing
+  path-like program name (which previously leaked a raw
+  "Null character in path" platform exception through `Path.GetFullPath`).
+  The pre-existing statement-path refusal is unchanged.
+  `[D:spawn-nul-funnel]`
+
 ## v0.0.47
 
 ### Added

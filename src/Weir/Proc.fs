@@ -29,6 +29,19 @@ let liveAmbient () =
       Cwd = None
       Ambient = None }
 
+// the NUL refusal AT the spawn hand-off [D:spawn-nul-funnel]: argv and
+// env are NUL-terminated C strings, so a NUL-bearing word would silently
+// TRUNCATE at the child (the prefix runs; exit 0; no diagnostic). The
+// evaluator's statement path already refused, but the reifier builtins,
+// the ambient `within env` overlay, `into`, and the dynamic head assemble
+// argv/env DOWNSTREAM and skipped it — so the byte leaked. Refusing HERE,
+// the ONE point every process start funnels through, gives all of them
+// the boundary for free. Same located message the statement path raised.
+let private nulRefusal (what: string) (s: string) : unit =
+    if s.Contains '\u0000' then
+        failwith
+            $"{what} contains a NUL byte — it would silently truncate at the process boundary (argv and env are NUL-terminated); NUL-bearing data is binary: pass it via a file or stdin, not an argument"
+
 // the ONE spawn [D:spawn-spec]: psi construction, the env law, cwd, the
 // not-found mapping, and the race-group registration every child owes
 // [D:seq-pfirst]. Redirection is the caller's — it is the only axis the
@@ -53,11 +66,6 @@ let private spawn
         failwith
             $"'{prog}' runs a command, and 'proc' is refused inside 'plan' — a spawned binary reads and writes opaquely, so its effects cannot be captured; plan covers weir-native mutation only (File/Dir/Http)"
 
-    let psi = ProcessStartInfo(prog)
-
-    for a in args do
-        psi.ArgumentList.Add a
-
     // ambient `within env` layers apply OUTER-FIRST under the explicit
     // spec env, so inner and explicit keys win [D:within-scopes] — at
     // the spawn, so EVERY child (reifiers, cmd/into, scoped procs) obeys
@@ -67,6 +75,34 @@ let private spawn
         match ambientO with
         | Some snap -> snap
         | None -> Session.envOverlay () |> List.rev |> List.collect id
+
+    // integrity gate [D:spawn-nul-funnel]: the program name, EVERY
+    // argument, and every env KEY and VALUE — no NUL crosses. The
+    // RESOLVED ambient is checked (the live `within env` overlay, not
+    // just a captured snapshot — the reifier path carries None here).
+    // An empty program name and a NUL-bearing path-like name get
+    // weir-shaped diagnostics too (the raw platform exception otherwise
+    // leaked).
+    nulRefusal "a dynamic command head" prog
+
+    if prog = "" then
+        failwith "the command program name is empty — nothing to run"
+
+    for a in args do
+        nulRefusal "a command argument" a
+
+    for k, v in ambient do
+        nulRefusal $"the env key '{k}'" k
+        nulRefusal $"the env value for '{k}'" v
+
+    for k, v in env do
+        nulRefusal $"the env key '{k}'" k
+        nulRefusal $"the env value for '{k}'" v
+
+    let psi = ProcessStartInfo(prog)
+
+    for a in args do
+        psi.ArgumentList.Add a
 
     for k, v in ambient do
         psi.Environment[k] <- v
@@ -625,6 +661,13 @@ let startSpilled
 let stopTree (p: Process) : unit = reap p
 
 let resolveProg (prog: string) : string =
+    // the NUL refusal reaches the RESOLVE too [D:spawn-nul-funnel]: a
+    // path-like name (`/`-bearing) resolves through Path.GetFullPath
+    // BEFORE the spawn funnel, which raised a raw platform exception
+    // ("Null character in path") on a NUL. Refuse here with the same
+    // weir-shaped diagnostic the spawn boundary produces.
+    nulRefusal "a dynamic command head" prog
+
     if prog.Contains '/' then
         Session.resolve prog
     elif System.OperatingSystem.IsWindows() && not (prog.Contains '\\') then

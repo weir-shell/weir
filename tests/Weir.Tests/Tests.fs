@@ -949,6 +949,92 @@ let boundaryTests =
               skipOnWindows ()
               runReal "sh -c \"exit 3\"" |> ignore
           }
+          // the spawn-boundary NUL funnel [D:spawn-nul-funnel]: the NUL
+          // refusal lives at Proc.spawn — the ONE point every process
+          // start funnels through — so the four downstream paths that
+          // skipped the evaluator's statement-path refusal (the
+          // reifiers, the ambient `within env` overlay, `into`, the
+          // dynamic head) inherit it. The guard runs BEFORE Process.Start,
+          // so a raise IS proof no child spawned. Each pin drives ONE
+          // public Proc entry (the funnel's real surface) with a
+          // NUL-bearing word and asserts the located refusal. A control
+          // proves a clean spawn still runs — the funnel is not
+          // overzealous.
+          let nul = "a\u0000b"
+          let nulMsg (f: unit -> unit) (what: string) =
+              let ex = Expect.throwsC f id
+              Expect.stringContains ex.Message "NUL byte" $"{what}: the NUL diagnostic"
+              Expect.stringContains ex.Message "silently truncate" $"{what}: the truncation reason"
+
+          test "funnel: a NUL command ARGUMENT refuses (lines/cmd path) [D:spawn-nul-funnel]" {
+              skipOnWindows ()
+              nulMsg (fun () -> Weir.Proc.lines "echo" [ nul ] None |> Seq.iter ignore) "arg"
+          }
+          test "funnel: a NUL argument refuses in the REIFIER path (complete) [D:spawn-nul-funnel]" {
+              skipOnWindows ()
+              // the exact seam the reifier builtins reach — completeWith
+              nulMsg (fun () -> Weir.Proc.complete "echo" [ nul ] None |> ignore) "reifier arg"
+          }
+          test "funnel: a NUL argument refuses in the exitCode/streamCode path [D:spawn-nul-funnel]" {
+              skipOnWindows ()
+              nulMsg (fun () -> Weir.Proc.streamCode [] "echo" [ nul ] |> ignore) "streamCode arg"
+          }
+          test "funnel: a NUL env VALUE refuses (ambient/$e overlay) [D:spawn-nul-funnel]" {
+              skipOnWindows ()
+              nulMsg (fun () -> Weir.Proc.linesWith [ "FOO", nul ] "echo" [ "hi" ] None |> Seq.iter ignore) "env value"
+              let ex = Expect.throwsC (fun () -> Weir.Proc.linesWith [ "FOO", nul ] "echo" [ "hi" ] None |> Seq.iter ignore) id
+              Expect.stringContains ex.Message "the env value for 'FOO'" "the env value refusal names the key"
+          }
+          test "funnel: a NUL env KEY refuses [D:spawn-nul-funnel]" {
+              skipOnWindows ()
+              let ex = Expect.throwsC (fun () -> Weir.Proc.linesWith [ nul, "v" ] "echo" [ "hi" ] None |> Seq.iter ignore) id
+              Expect.stringContains ex.Message "the env key" "the env key refusal names the key"
+              Expect.stringContains ex.Message "NUL byte" "the env key refusal is the NUL diagnostic"
+          }
+          test "funnel: a NUL in the `into` cmdline refuses (into path) [D:spawn-nul-funnel]" {
+              skipOnWindows ()
+              // into spawns `sh -c <cmdline>` — the cmdline is arg[1]
+              nulMsg (fun () -> Weir.Proc.lines "sh" [ "-c"; $"echo before{nul}after" ] None |> Seq.iter ignore) "into cmdline"
+          }
+          test "funnel: a NUL PROGRAM name refuses (dynamic head ^$name) [D:spawn-nul-funnel]" {
+              skipOnWindows ()
+              // the dynamic-head worst case: a NUL-bearing head would
+              // resolve to the PREFIX program and run it
+              nulMsg (fun () -> Weir.Proc.lines $"echo{nul}junk" [ "hi" ] None |> Seq.iter ignore) "program name"
+          }
+          test "funnel: a NUL PATH-like program name refuses at resolve, not a raw platform exception [D:spawn-nul-funnel]" {
+              skipOnWindows ()
+              // resolveProg runs before the spawn funnel and called
+              // Path.GetFullPath, which raised a raw 'Null character in
+              // path' — the funnel's diagnostic covers the resolve too
+              let ex = Expect.throwsC (fun () -> Weir.Proc.resolveProg $"./bin{nul}/x" |> ignore) id
+              Expect.stringContains ex.Message "NUL byte" "the resolve refusal is the NUL diagnostic"
+              Expect.isFalse (ex.Message.Contains "Null character in path") "the raw platform exception no longer leaks"
+          }
+          test "funnel: an EMPTY program name refuses with a weir diagnostic [D:spawn-nul-funnel]" {
+              skipOnWindows ()
+              let ex = Expect.throwsC (fun () -> Weir.Proc.lines "" [ "hi" ] None |> Seq.iter ignore) id
+              Expect.stringContains ex.Message "program name is empty" "the empty-program refusal"
+          }
+          test "funnel control: a CLEAN command still spawns (no false refusal) [D:spawn-nul-funnel]" {
+              skipOnWindows ()
+              Expect.equal (Weir.Proc.lines "echo" [ "ok" ] None |> List.ofSeq) [ "ok" ] "a clean spawn is untouched"
+          }
+          test "statement-path control stays green: a NUL arg refuses via the evaluator too [D:spawn-nul-funnel]" {
+              skipOnWindows ()
+              // the pre-existing evaluator refusal must not regress — a
+              // command-output NUL (YQBi = "a\0b") fed to a plain command
+              // statement's argument still refuses at force
+              let ex =
+                  Expect.throwsC
+                      (fun () ->
+                          runReal "echo $(sh -c \"printf YQBi | base64 -d\" |> Seq.exactlyOne)"
+                          |> forceSeq
+                          |> ignore)
+                      id
+
+              Expect.stringContains ex.Message "NUL byte" "the statement path still refuses"
+          }
           test "to jsonl serializes records as ndjson" {
               let src =
                   VSeq [ VRecord("JRow", [ "name", VStr "a.txt"; "bytes", VInt 0L; "readOnly", VBool false ]) ]
