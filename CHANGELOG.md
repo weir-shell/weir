@@ -122,6 +122,15 @@
   are byte-identical; argv words longer than the bound still parse as
   arguments (no grammar change).
 
+- **The top-level CLI verb dispatch has a residual-exception guard.**
+  `check`/`run`/`fmt`/`-e` run weir's front end, but the verb dispatch
+  had no top-level `try`/`with`, so any residual front-end exception
+  aborted with a raw stack trace and exit 134. A residual exception now
+  becomes a located `internal error: …` diagnostic on stderr with a
+  non-zero exit, mirroring the LSP's per-document guard. Kept narrow: a
+  legitimate `exit`/`fail` is never swallowed. This backstops the whole
+  front-end crash class behind the two point fixes above.
+
 ## v0.0.47
 
 ### Added

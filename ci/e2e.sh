@@ -9626,6 +9626,11 @@ elapsed=$((t1 - t0))
 [ "$elapsed" -lt 20 ] || fail "bareword ';'-spine is not linear: 20k barewords took ${elapsed}s (was quadratic; expected <20s)"
 echo "e2e ok: bareword ';'-spine checks in ${elapsed}s (linear, was O(N^2)/>25s)"
 
+# Fix 3 -- the CLI guard: the two fixed crash triggers exit located, never
+# 134, through the WHOLE binary [D:cli-exception-guard]
+rc=0; $BIN check "$hdir/attr.weir" >/dev/null 2>&1 || rc=$?
+[ "$rc" != "134" ] || fail "CLI guard: a front-end trigger still aborts with 134"
+echo "e2e ok: CLI verb dispatch backstops the front-end crash class (exit $rc, not 134)"
 rm -rf "$hdir"
 
 echo "e2e battery: all green"

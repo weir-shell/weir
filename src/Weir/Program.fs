@@ -215,459 +215,483 @@ let main argv =
         exit 2
     | Ok() -> ()
 
-    match Array.toList argv with
-    | [ "-e"; input ] -> evalOnce input
-    | [] -> Weir.Repl.run ()
-    // the reference dump [D:reference] — machine surface for the site's
-    // generated pages; the e2e currency gate diffs it against the
-    // committed site/src/data/reference.json
-    | [ "docs-json" ] ->
-        // Write + "\n", never WriteLine: the trailing newline must be LF
-        // on Windows too — the dump is diffed against a committed file
-        Console.Out.Write(Weir.Repl.docsJson () + "\n")
-        0
-    // the headless doc render [D:help-find]: the exact `#help <name>`
-    // text for the builtin surface — #find's fzf --preview runs it per
-    // highlighted line. Read-only (no user code, no eval); deliberately
-    // absent from the usage text (an internal seam, lightly documented
-    // in docs/repl.md).
-    | [ "--repl-doc"; name ] ->
-        Console.WriteLine(Weir.Repl.replDocText name)
-        0
-    | [ "--version" ] ->
-        // the build stamp [D:masking-mechanized] — <tag>+<hash>; the
-        // harness gates read the hash (the part after the last '+') and
-        // compare it against git HEAD. The same source the LSP
-        // serverInfo.version reads, so the two cannot diverge.
-        Console.WriteLine Weir.Version.current
-        0
-    // LSP clients conventionally append transport argv (languageclient
-    // v10 adds --stdio/--clientProcessId to Executables) — tolerated
-    // and ignored, stdio is the only transport anyway
-    | "lsp" :: rest when
-        rest
-        |> List.forall (fun a -> a = "--stdio" || a = "--debug" || a.StartsWith "--clientProcessId")
-        ->
-        Lsp.run (List.contains "--debug" rest)
-    | "lsp" :: _ ->
-        Console.Error.WriteLine
-            "usage: weir lsp — the language server, JSON-RPC over stdio (conventional client argv like --stdio is tolerated).\nWire your editor to run this command: see docs/editors.md"
-
-        2
-    | [ "check"; path ] -> Script.checkOnly false path
-    | [ "check"; "--json"; path ] -> Script.checkOnly true path
-    // the capability report [D:can-report]: --can implies the check;
-    // --strict exits 2 on any opaque site (CI's choice, not a default)
-    | [ "check"; "--can"; path ] -> Can.run false false path
-    | [ "check"; "--can"; "--json"; path ] -> Can.run true false path
-    | [ "check"; "--can"; "--strict"; path ] -> Can.run false true path
-    | [ "check"; "--can"; "--strict"; "--json"; path ] -> Can.run true true path
-    | [ "check"; "--can"; "--json"; "--strict"; path ] -> Can.run true true path
-
-    | [ "fmt"; "--check"; path ] -> Fmt.formatFile true path
-    | [ "fmt"; path ] -> Fmt.formatFile false path
-    | "fmt" :: _ ->
-        Console.Error.WriteLine "usage: weir fmt [--check] <script>"
-        2
-    // external contracts [D:contracts-spine]: `add <kind>` is
-    // KIND-AWARE (acquiring differs per kind); `restore`/`verify`
-    // operate on the LOCKFILE and are kind-agnostic by construction.
-    // All resolve .weir/ from the CWD; check never does any of this.
-    | [ "add"; "schema"; url; "--as"; name ] ->
-        let weirDir =
-            match Contracts.findWeirDir "." with
-            | Ok d -> d
-            // computed, NOT created [D:add-validates]: a failed add must
-            // leave the tree byte-identical, including no empty .weir/
-            | Error _ -> IO.Path.GetFullPath ".weir"
-
-        // the vendor-name guard at the argv crossing [D:lockfile-confinement]
-        // — the name becomes the vendored file, so a separator/`..`/absolute
-        // `--as` must refuse BEFORE the fetch, writing nothing (F14). Hyphens
-        // are fine (k8s-configmap); only path-escaping shapes refuse.
-        if not (Contracts.vendorNameSafe name) then
+    // top-level CLI guard [D:cli-exception-guard]: check/run/fmt/-e run
+    // the front end, and a RESIDUAL exception there (a parser edge the
+    // located teachings miss) otherwise aborts with a raw stack trace and
+    // exit 134 — the whole crash class. Mirror the LSP's per-document
+    // guard: turn it into a located lint diagnostic with a non-zero exit.
+    // `exit`/`fail` never reach here (Environment.Exit terminates;
+    // ExitRequest is caught inside run/-e), and it is re-raised in case.
+    let dispatch () =
+        match Array.toList argv with
+        | [ "-e"; input ] -> evalOnce input
+        | [] -> Weir.Repl.run ()
+        // the reference dump [D:reference] — machine surface for the site's
+        // generated pages; the e2e currency gate diffs it against the
+        // committed site/src/data/reference.json
+        | [ "docs-json" ] ->
+            // Write + "\n", never WriteLine: the trailing newline must be LF
+            // on Windows too — the dump is diffed against a committed file
+            Console.Out.Write(Weir.Repl.docsJson () + "\n")
+            0
+        // the headless doc render [D:help-find]: the exact `#help <name>`
+        // text for the builtin surface — #find's fzf --preview runs it per
+        // highlighted line. Read-only (no user code, no eval); deliberately
+        // absent from the usage text (an internal seam, lightly documented
+        // in docs/repl.md).
+        | [ "--repl-doc"; name ] ->
+            Console.WriteLine(Weir.Repl.replDocText name)
+            0
+        | [ "--version" ] ->
+            // the build stamp [D:masking-mechanized] — <tag>+<hash>; the
+            // harness gates read the hash (the part after the last '+') and
+            // compare it against git HEAD. The same source the LSP
+            // serverInfo.version reads, so the two cannot diverge.
+            Console.WriteLine Weir.Version.current
+            0
+        // LSP clients conventionally append transport argv (languageclient
+        // v10 adds --stdio/--clientProcessId to Executables) — tolerated
+        // and ignored, stdio is the only transport anyway
+        | "lsp" :: rest when
+            rest
+            |> List.forall (fun a -> a = "--stdio" || a = "--debug" || a.StartsWith "--clientProcessId")
+            ->
+            Lsp.run (List.contains "--debug" rest)
+        | "lsp" :: _ ->
             Console.Error.WriteLine
-                $"weir add schema: '--as {name}' must be a plain file name — no path separators, '..', or leading dot; it becomes the vendored file .weir/schemas/{name}.json"
+                "usage: weir lsp — the language server, JSON-RPC over stdio (conventional client argv like --stdio is tolerated).\nWire your editor to run this command: see docs/editors.md"
 
-            1
-        else
-            (match Contracts.addFetched weirDir "schema" name url with
+            2
+        | [ "check"; path ] -> Script.checkOnly false path
+        | [ "check"; "--json"; path ] -> Script.checkOnly true path
+        // the capability report [D:can-report]: --can implies the check;
+        // --strict exits 2 on any opaque site (CI's choice, not a default)
+        | [ "check"; "--can"; path ] -> Can.run false false path
+        | [ "check"; "--can"; "--json"; path ] -> Can.run true false path
+        | [ "check"; "--can"; "--strict"; path ] -> Can.run false true path
+        | [ "check"; "--can"; "--strict"; "--json"; path ] -> Can.run true true path
+        | [ "check"; "--can"; "--json"; "--strict"; path ] -> Can.run true true path
+
+        | [ "fmt"; "--check"; path ] -> Fmt.formatFile true path
+        | [ "fmt"; path ] -> Fmt.formatFile false path
+        | "fmt" :: _ ->
+            Console.Error.WriteLine "usage: weir fmt [--check] <script>"
+            2
+        // external contracts [D:contracts-spine]: `add <kind>` is
+        // KIND-AWARE (acquiring differs per kind); `restore`/`verify`
+        // operate on the LOCKFILE and are kind-agnostic by construction.
+        // All resolve .weir/ from the CWD; check never does any of this.
+        | [ "add"; "schema"; url; "--as"; name ] ->
+            let weirDir =
+                match Contracts.findWeirDir "." with
+                | Ok d -> d
+                // computed, NOT created [D:add-validates]: a failed add must
+                // leave the tree byte-identical, including no empty .weir/
+                | Error _ -> IO.Path.GetFullPath ".weir"
+
+            // the vendor-name guard at the argv crossing [D:lockfile-confinement]
+            // — the name becomes the vendored file, so a separator/`..`/absolute
+            // `--as` must refuse BEFORE the fetch, writing nothing (F14). Hyphens
+            // are fine (k8s-configmap); only path-escaping shapes refuse.
+            if not (Contracts.vendorNameSafe name) then
+                Console.Error.WriteLine
+                    $"weir add schema: '--as {name}' must be a plain file name — no path separators, '..', or leading dot; it becomes the vendored file .weir/schemas/{name}.json"
+
+                1
+            else
+                (match Contracts.addFetched weirDir "schema" name url with
+                 | Ok line ->
+                     Console.WriteLine line
+                     0
+                 | Error e ->
+                     Console.Error.WriteLine $"weir add: {e}"
+                     1)
+        | [ "add"; "sig"; tool ] ->
+            let weirDir =
+                match Contracts.findWeirDir "." with
+                | Ok d -> d
+                | Error _ -> IO.Path.GetFullPath ".weir"
+
+            (match Script.SigGen.generate weirDir tool with
              | Ok line ->
                  Console.WriteLine line
                  0
              | Error e ->
-                 Console.Error.WriteLine $"weir add: {e}"
+                 Console.Error.WriteLine $"weir add sig: {e}"
                  1)
-    | [ "add"; "sig"; tool ] ->
-        let weirDir =
-            match Contracts.findWeirDir "." with
-            | Ok d -> d
-            | Error _ -> IO.Path.GetFullPath ".weir"
+        | "add" :: "sig" :: _ ->
+            Console.Error.WriteLine "usage: weir add sig <tool>   generate a signature from the installed binary"
+            2
+        | [ "add"; "module"; spec; "--as"; name ] ->
+            let weirDir =
+                match Contracts.findWeirDir "." with
+                | Ok d -> d
+                | Error _ -> IO.Path.GetFullPath ".weir"
 
-        (match Script.SigGen.generate weirDir tool with
-         | Ok line ->
-             Console.WriteLine line
-             0
-         | Error e ->
-             Console.Error.WriteLine $"weir add sig: {e}"
-             1)
-    | "add" :: "sig" :: _ ->
-        Console.Error.WriteLine "usage: weir add sig <tool>   generate a signature from the installed binary"
-        2
-    | [ "add"; "module"; spec; "--as"; name ] ->
-        let weirDir =
-            match Contracts.findWeirDir "." with
-            | Ok d -> d
-            | Error _ -> IO.Path.GetFullPath ".weir"
+            // R5: the alias namespace — a builtin module's name is reserved,
+            // and the name must be able to derive an import alias. The
+            // plain-name rule is now Contracts.plainName [D:lockfile-confinement]
+            // — the ONE spelling every `--as` kind shares
+            let nameOk = Contracts.plainName name
 
-        // R5: the alias namespace — a builtin module's name is reserved,
-        // and the name must be able to derive an import alias. The
-        // plain-name rule is now Contracts.plainName [D:lockfile-confinement]
-        // — the ONE spelling every `--as` kind shares
-        let nameOk = Contracts.plainName name
+            let derivedAlias =
+                if name.Length > 0 then
+                    string (System.Char.ToUpper name[0]) + name.Substring 1
+                else
+                    name
 
-        let derivedAlias =
-            if name.Length > 0 then
-                string (System.Char.ToUpper name[0]) + name.Substring 1
+            if not nameOk then
+                Console.Error.WriteLine
+                    $"weir add module: '--as {name}' must be a plain name (a letter, then letters/digits/_) — it becomes the vendored file and the import alias"
+
+                1
+            elif Map.containsKey derivedAlias Builtins.typeEnvStrict.Modules then
+                Console.Error.WriteLine
+                    $"weir add module: '{name}' derives the alias '{derivedAlias}', a builtin module — pick another --as"
+
+                1
             else
-                name
-
-        if not nameOk then
-            Console.Error.WriteLine
-                $"weir add module: '--as {name}' must be a plain name (a letter, then letters/digits/_) — it becomes the vendored file and the import alias"
-
-            1
-        elif Map.containsKey derivedAlias Builtins.typeEnvStrict.Modules then
-            Console.Error.WriteLine
-                $"weir add module: '{name}' derives the alias '{derivedAlias}', a builtin module — pick another --as"
-
-            1
-        else
-            (match Contracts.resolveModuleSpec spec with
-             | Error e ->
-                 Console.Error.WriteLine $"weir add module: {e}"
-                 1
-             | Ok src ->
-                 match Contracts.fetchBytesWith src.FetchHeaders src.Url with
+                (match Contracts.resolveModuleSpec spec with
                  | Error e ->
-                     let e =
-                         match src.Host with
-                         | Some h -> Contracts.hintPrivate h e
-                         | None -> e
-
-                     Console.Error.WriteLine $"weir add module: {e}; nothing was written"
+                     Console.Error.WriteLine $"weir add module: {e}"
                      1
-                 | Ok(bytes, _) ->
-                     // validate BEFORE any .weir/ write [D:add-validates]:
-                     // a module that does not check must not land
-                     let tmp = IO.Path.Combine(IO.Path.GetTempPath(), $"weir-add-{name}.weir")
-                     IO.File.WriteAllBytes(tmp, bytes)
-                     let checked' = Script.checkVendoredModule tmp
-
-                     (try
-                         IO.File.Delete tmp
-                      with _ ->
-                          ())
-
-                     match checked' with
+                 | Ok src ->
+                     match Contracts.fetchBytesWith src.FetchHeaders src.Url with
                      | Error e ->
-                         // the teach names the SOURCE, not the temp file
-                         // validation ran against
-                         let e = e.Replace(tmp, src.Url)
+                         let e =
+                             match src.Host with
+                             | Some h -> Contracts.hintPrivate h e
+                             | None -> e
+
                          Console.Error.WriteLine $"weir add module: {e}; nothing was written"
                          1
-                     | Ok memberCount ->
-                         match
-                             Contracts.vendorFile weirDir "module" name ("modules/" + name + ".weir") src.Url bytes
-                         with
+                     | Ok(bytes, _) ->
+                         // validate BEFORE any .weir/ write [D:add-validates]:
+                         // a module that does not check must not land
+                         let tmp = IO.Path.Combine(IO.Path.GetTempPath(), $"weir-add-{name}.weir")
+                         IO.File.WriteAllBytes(tmp, bytes)
+                         let checked' = Script.checkVendoredModule tmp
+
+                         (try
+                             IO.File.Delete tmp
+                          with _ ->
+                              ())
+
+                         match checked' with
                          | Error e ->
-                             Console.Error.WriteLine $"weir add module: {e}"
+                             // the teach names the SOURCE, not the temp file
+                             // validation ran against
+                             let e = e.Replace(tmp, src.Url)
+                             Console.Error.WriteLine $"weir add module: {e}; nothing was written"
                              1
-                         | Ok(hash, prior) ->
-                             (match prior with
-                              | Some old when old <> hash ->
-                                  // a re-add IS the update path: the sha pair is
-                                  // the signal there is a diff to review
-                                  Console.WriteLine
-                                      $"updated module {name}: {old.Substring(0, 12)}… → {hash.Substring(0, 12)}…"
-                              | Some _ -> Console.WriteLine $"module {name}: unchanged ({hash.Substring(0, 12)}…)"
-                              | None ->
-                                  Console.WriteLine
-                                      $"added module {name} ({hash.Substring(0, 12)}…, {memberCount} member(s)) from {src.Url}")
+                         | Ok memberCount ->
+                             match
+                                 Contracts.vendorFile weirDir "module" name ("modules/" + name + ".weir") src.Url bytes
+                             with
+                             | Error e ->
+                                 Console.Error.WriteLine $"weir add module: {e}"
+                                 1
+                             | Ok(hash, prior) ->
+                                 (match prior with
+                                  | Some old when old <> hash ->
+                                      // a re-add IS the update path: the sha pair is
+                                      // the signal there is a diff to review
+                                      Console.WriteLine
+                                          $"updated module {name}: {old.Substring(0, 12)}… → {hash.Substring(0, 12)}…"
+                                  | Some _ -> Console.WriteLine $"module {name}: unchanged ({hash.Substring(0, 12)}…)"
+                                  | None ->
+                                      Console.WriteLine
+                                          $"added module {name} ({hash.Substring(0, 12)}…, {memberCount} member(s)) from {src.Url}")
 
-                             Console.WriteLine $"import it:  import \"weir:{name}\" as {derivedAlias}"
-                             0)
-    | "add" :: "module" :: _ ->
-        Console.Error.WriteLine
-            "usage: weir add module <host>/<org>/<repo>//<file>@<ref> --as <name>   vendor a remote module, lock it\n       (an explicit @ref is required; the full raw URL is also accepted)"
+                                 Console.WriteLine $"import it:  import \"weir:{name}\" as {derivedAlias}"
+                                 0)
+        | "add" :: "module" :: _ ->
+            Console.Error.WriteLine
+                "usage: weir add module <host>/<org>/<repo>//<file>@<ref> --as <name>   vendor a remote module, lock it\n       (an explicit @ref is required; the full raw URL is also accepted)"
 
-        2
-    | "add" :: _ ->
-        Console.Error.WriteLine
-            "usage: weir add schema <url> --as <name>   fetch a JSON schema into .weir/schemas/, lock it\n       weir add sig <tool>                 generate a signature from the installed binary\n       weir add module <src>//<file>@<ref> --as <name>   vendor a remote module, lock it"
+            2
+        | "add" :: _ ->
+            Console.Error.WriteLine
+                "usage: weir add schema <url> --as <name>   fetch a JSON schema into .weir/schemas/, lock it\n       weir add sig <tool>                 generate a signature from the installed binary\n       weir add module <src>//<file>@<ref> --as <name>   vendor a remote module, lock it"
 
-        2
-    | [ "restore" ] ->
-        (match Contracts.findWeirDir "." with
-         | Error e ->
-             Console.Error.WriteLine $"weir restore: {e}"
-             1
-         | Ok weirDir ->
-             match Contracts.restore weirDir with
-             | Ok lines ->
-                 lines |> List.iter Console.WriteLine
-                 0
+            2
+        | [ "restore" ] ->
+            (match Contracts.findWeirDir "." with
              | Error e ->
                  Console.Error.WriteLine $"weir restore: {e}"
-                 1)
-    | "restore" :: _ ->
-        Console.Error.WriteLine "usage: weir restore — re-materialize everything the lock records (hash-verified)"
-        2
-    | [ "verify" ] ->
-        (match Contracts.findWeirDir "." with
-         | Error e ->
-             Console.Error.WriteLine $"weir verify: {e}"
-             1
-         | Ok weirDir ->
-             match Contracts.verify Proc.resolveProg weirDir with
+                 1
+             | Ok weirDir ->
+                 match Contracts.restore weirDir with
+                 | Ok lines ->
+                     lines |> List.iter Console.WriteLine
+                     0
+                 | Error e ->
+                     Console.Error.WriteLine $"weir restore: {e}"
+                     1)
+        | "restore" :: _ ->
+            Console.Error.WriteLine "usage: weir restore — re-materialize everything the lock records (hash-verified)"
+            2
+        | [ "verify" ] ->
+            (match Contracts.findWeirDir "." with
              | Error e ->
                  Console.Error.WriteLine $"weir verify: {e}"
                  1
-             | Ok(lines, findings) ->
-                 lines |> List.iter Console.WriteLine
-                 if List.isEmpty findings then 0 else 1)
-    | "verify" :: _ ->
-        Console.Error.WriteLine
-            "usage: weir verify — vendored contracts against the lock (absent/modified are findings; exit 1)"
-
-        2
-    // the schema→types generator [D:schema-types]: LOCKED schema →
-    // a decl-only weir module the user owns. `gen`, not `add`: add's
-    // invariant is artifact-plus-lock-entry together, and the generated
-    // module is deliberately UNLOCKED (user-owned after generation —
-    // regeneration is an explicit re-run, the sigs/restore posture).
-    // Reads only the vendored file: never fetches (the offline law).
-    | "gen" :: "types" :: rest ->
-        let usage =
-            "usage: weir gen types --schema <name> [--as <TypeName>] [--out <path>|-]\n       generate weir type declarations from a locked schema (.weir/types/<name>.weir by default)"
-
-        let rec walk (m: Map<string, string>) rest =
-            match rest with
-            | [] -> Ok m
-            | f :: v :: tail when (f = "--schema" || f = "--as" || f = "--out") && not (Map.containsKey f m) ->
-                walk (Map.add f v m) tail
-            | f :: _ -> Error f
-
-        (match walk Map.empty rest with
-         | Error f ->
-             Console.Error.WriteLine $"weir gen types: unexpected '{f}'\n{usage}"
-             2
-         | Ok m when not (Map.containsKey "--schema" m) ->
-             Console.Error.WriteLine usage
-             2
-         | Ok m ->
-             let name = m["--schema"]
-
-             let fail1 (msg: string) =
-                 Console.Error.WriteLine $"weir gen types: {msg}"
-                 1
-
-             match Contracts.findWeirDir "." with
-             | Error e -> fail1 $"{e} — vendor the schema first: weir add schema <url> --as {name}"
              | Ok weirDir ->
-                 match Contracts.readLock weirDir with
-                 | Error e -> fail1 e
-                 | Ok entries ->
-                     match entries |> List.tryFind (fun e -> e.Kind = "schema" && e.Name = name) with
-                     | None -> fail1 $"no locked schema '{name}' — add it: weir add schema <url> --as {name}"
-                     | Some entry ->
-                         // gen types WRITES weir source, so it is the
-                         // highest-value consumer of the lock-read
-                         // confinement [D:lockfile-confinement]: resolve the
-                         // schema file through entryDest, refusing a hostile
-                         // path before reading it
-                         match Contracts.entryDest weirDir entry with
-                         | Error refusal -> fail1 refusal
-                         | Ok file ->
+                 match Contracts.verify Proc.resolveProg weirDir with
+                 | Error e ->
+                     Console.Error.WriteLine $"weir verify: {e}"
+                     1
+                 | Ok(lines, findings) ->
+                     lines |> List.iter Console.WriteLine
+                     if List.isEmpty findings then 0 else 1)
+        | "verify" :: _ ->
+            Console.Error.WriteLine
+                "usage: weir verify — vendored contracts against the lock (absent/modified are findings; exit 1)"
 
-                         if not (IO.File.Exists file) then
-                             fail1 $"schema '{name}': no {file} — the lock records it; run `weir restore`"
-                         else
-                             let bytes = IO.File.ReadAllBytes file
-                             let actual = Contracts.sha256Hex bytes
-
-                             if actual <> entry.Sha256 then
-                                 // generation must be reproducible FROM THE LOCK:
-                                 // a drifted file would stamp a hash the bytes
-                                 // do not carry
-                                 fail1
-                                     $"schema '{name}': the vendored file hashes {actual.Substring(0, 12)}… but the lock records {entry.Sha256.Substring(0, 12)}… — `weir restore` repairs it, or re-add"
-                             else
-                                 match Contracts.parseSchema name (Text.Encoding.UTF8.GetString bytes) with
-                                 | Error e -> fail1 e
-                                 | Ok doc ->
-                                     // prelude registration populates the builtin
-                                     // nominal set the taken-name guard reads
-                                     Prelude.extend Builtins.typeEnvStrict Builtins.valueEnv |> ignore
-                                     let taken = Infer.takenTypeNames Check.builtinTypeNames.Keys
-                                     let asName = Map.tryFind "--as" m
-
-                                     let asNameOk =
-                                         match asName with
-                                         | None -> Ok()
-                                         | Some n when
-                                             n.Length > 0
-                                             && Char.IsUpper n[0]
-                                             && n |> Seq.forall (fun c -> Char.IsLetterOrDigit c || c = '_')
-                                             ->
-                                             if Set.contains n taken then
-                                                 Error $"'--as {n}' is a builtin type name — pick another"
-                                             else
-                                                 Ok()
-                                         | Some n ->
-                                             Error
-                                                 $"'--as {n}' must be a type name — uppercase first, then letters/digits/_ (the casing law)"
-
-                                     match asNameOk with
-                                     | Error e -> fail1 e
-                                     | Ok() ->
-                                         match
-                                             SchemaTypes.moduleText
-                                                 Parser.keywords
-                                                 (Set.ofSeq Check.builtinTypeNames.Keys)
-                                                 name
-                                                 asName
-                                                 entry.Sha256
-                                                 entry.Url
-                                                 doc
-                                         with
-                                         | Error e -> fail1 e
-                                         | Ok gen ->
-                                             // add-validates [D:add-validates]: the emitted
-                                             // module must CHECK before anything lands — a
-                                             // schema producing unrepresentable weir refuses
-                                             // with the located reason
-                                             let tmp =
-                                                 IO.Path.Combine(
-                                                     IO.Path.GetTempPath(),
-                                                     $"weir-gentypes-{Guid.NewGuid():N}.weir"
-                                                 )
-
-                                             IO.File.WriteAllText(tmp, gen.Text)
-                                             let checked' = Script.checkVendoredModule tmp
-
-                                             (try
-                                                 IO.File.Delete tmp
-                                              with _ ->
-                                                  ())
-
-                                             match checked' with
-                                             | Error e ->
-                                                 let e = e.Replace(tmp, "<generated>")
-
-                                                 fail1
-                                                     $"the generated module does not check: {e} — this is a generator bug; nothing was written"
-                                             | Ok _ ->
-                                                 match Map.tryFind "--out" m with
-                                                 | Some "-" ->
-                                                     Console.Out.Write gen.Text
-                                                     0
-                                                 | out ->
-                                                     let dest, importPath, confineWrite =
-                                                         match out with
-                                                         // --out is a user-CHOSEN path (combine, not
-                                                         // under — the user controls it); the DEFAULT
-                                                         // .weir/types/ path is vendor-directory
-                                                         // territory and confines through a symlinked
-                                                         // `types` dir [D:lockfile-symlink-confinement]
-                                                         | Some p -> IO.Path.GetFullPath p, $"\"{p}\"", false
-                                                         | None ->
-                                                             IO.Path.Combine(weirDir, "types", name + ".weir"),
-                                                             $"\"weir:{name}\"",
-                                                             true
-
-                                                     let writeRes =
-                                                         if confineWrite then
-                                                             Contracts.writeConfined
-                                                                 weirDir
-                                                                 dest
-                                                                 (Text.Encoding.UTF8.GetBytes gen.Text)
-                                                         else
-                                                             IO.Directory.CreateDirectory(IO.Path.GetDirectoryName dest)
-                                                             |> ignore
-
-                                                             IO.File.WriteAllText(dest, gen.Text)
-                                                             Ok()
-
-                                                     match writeRes with
-                                                     | Error w -> fail1 w
-                                                     | Ok() ->
-
-                                                     let notes =
-                                                         if gen.NoteCount = 0 then
-                                                             ""
-                                                         else
-                                                             $", {gen.NoteCount} note(s) inside"
-
-                                                     Console.WriteLine
-                                                         $"generated {dest} — {gen.TypeCount} type(s){notes}; user-owned (re-run to regenerate)"
-
-                                                     Console.WriteLine
-                                                         $"import it:  import {importPath} as {gen.ModuleName}"
-
-                                                     Console.WriteLine
-                                                         $"read with:  from json {gen.TopType} / from yaml {gen.TopType}  (type names resolve bare)"
-
-                                                     0)
-    | "gen" :: _ ->
-        Console.Error.WriteLine
-            "usage: weir gen types --schema <name> [--as <TypeName>] [--out <path>|-]   generate weir types from a locked schema"
-
-        2
-    | "run" :: path :: rest -> Script.run path rest
-    | path :: rest when not (path.StartsWith "-") -> Script.run path rest
-    // teaching arms, not dumps [D:windows-v1]: a mistyped option gets a
-    // did-you-mean; a mis-quoted -e gets its arity named (on Windows a
-    // ONE-expression intent often arrives shell-split into many argv)
-    | [ "-e" ] ->
-        Console.Error.WriteLine "weir -e takes exactly one argument: the program"
-        2
-    | "-e" :: rest ->
-        Console.Error.WriteLine
-            $"weir -e takes ONE program argument, got {List.length rest} — quote the program so the shell passes it whole"
-
-        2
-    | "--version" :: _ ->
-        Console.Error.WriteLine "weir --version takes no arguments"
-        2
-    | opt :: _ when opt.StartsWith "-" && opt <> "--help" && opt <> "-h" ->
-        let spellings =
-            [ "-e"; "--version"; "check"; "fmt"; "lsp"; "add"; "gen"; "restore"; "verify"; "run" ]
-
-        Console.Error.WriteLine $"weir: unknown option '{opt}'{didYouMean opt spellings} (weir --help for usage)"
-        2
-    | args ->
-        let usage =
-            "usage: weir                                    the REPL\n"
-            + "       weir <script> [args...]                 run a script\n"
-            + "       weir -e <program>                       evaluate a program; the result is its last expression\n"
-            + "       weir check [--json] <script>            diagnostics only (no evaluation)\n"
-            + "       weir check --can [--strict] [--json] <script>  the static capability report\n"
-            + "       weir fmt [--check] <script>             canonical formatter\n"
-            + "       weir lsp                                language server (stdio)\n"
-            + "       weir add sig <tool>                     generate a command signature from the installed binary\n"
-            + "       weir add schema <url> --as <name>       fetch an external contract, lock it\n"
-            + "       weir add module <src>//<file>@<ref> --as <name>  vendor a remote module, lock it\n"
-            + "       weir gen types --schema <name>          generate weir types from a locked schema\n"
-            + "       weir restore                            re-materialize the lock's artifacts\n"
-            + "       weir verify                             vendored contracts vs the lock\n"
-            + "       weir --version                          the build stamp"
-
-        match args with
-        | [ "--help" ] // asked for: stdout, exit 0
-        | [ "-h" ] ->
-            Console.WriteLine usage
-            0
-        | _ ->
-            Console.Error.WriteLine usage
             2
+        // the schema→types generator [D:schema-types]: LOCKED schema →
+        // a decl-only weir module the user owns. `gen`, not `add`: add's
+        // invariant is artifact-plus-lock-entry together, and the generated
+        // module is deliberately UNLOCKED (user-owned after generation —
+        // regeneration is an explicit re-run, the sigs/restore posture).
+        // Reads only the vendored file: never fetches (the offline law).
+        | "gen" :: "types" :: rest ->
+            let usage =
+                "usage: weir gen types --schema <name> [--as <TypeName>] [--out <path>|-]\n       generate weir type declarations from a locked schema (.weir/types/<name>.weir by default)"
+
+            let rec walk (m: Map<string, string>) rest =
+                match rest with
+                | [] -> Ok m
+                | f :: v :: tail when (f = "--schema" || f = "--as" || f = "--out") && not (Map.containsKey f m) ->
+                    walk (Map.add f v m) tail
+                | f :: _ -> Error f
+
+            (match walk Map.empty rest with
+             | Error f ->
+                 Console.Error.WriteLine $"weir gen types: unexpected '{f}'\n{usage}"
+                 2
+             | Ok m when not (Map.containsKey "--schema" m) ->
+                 Console.Error.WriteLine usage
+                 2
+             | Ok m ->
+                 let name = m["--schema"]
+
+                 let fail1 (msg: string) =
+                     Console.Error.WriteLine $"weir gen types: {msg}"
+                     1
+
+                 match Contracts.findWeirDir "." with
+                 | Error e -> fail1 $"{e} — vendor the schema first: weir add schema <url> --as {name}"
+                 | Ok weirDir ->
+                     match Contracts.readLock weirDir with
+                     | Error e -> fail1 e
+                     | Ok entries ->
+                         match entries |> List.tryFind (fun e -> e.Kind = "schema" && e.Name = name) with
+                         | None -> fail1 $"no locked schema '{name}' — add it: weir add schema <url> --as {name}"
+                         | Some entry ->
+                             // gen types WRITES weir source, so it is the
+                             // highest-value consumer of the lock-read
+                             // confinement [D:lockfile-confinement]: resolve the
+                             // schema file through entryDest, refusing a hostile
+                             // path before reading it
+                             match Contracts.entryDest weirDir entry with
+                             | Error refusal -> fail1 refusal
+                             | Ok file ->
+
+                             if not (IO.File.Exists file) then
+                                 fail1 $"schema '{name}': no {file} — the lock records it; run `weir restore`"
+                             else
+                                 let bytes = IO.File.ReadAllBytes file
+                                 let actual = Contracts.sha256Hex bytes
+
+                                 if actual <> entry.Sha256 then
+                                     // generation must be reproducible FROM THE LOCK:
+                                     // a drifted file would stamp a hash the bytes
+                                     // do not carry
+                                     fail1
+                                         $"schema '{name}': the vendored file hashes {actual.Substring(0, 12)}… but the lock records {entry.Sha256.Substring(0, 12)}… — `weir restore` repairs it, or re-add"
+                                 else
+                                     match Contracts.parseSchema name (Text.Encoding.UTF8.GetString bytes) with
+                                     | Error e -> fail1 e
+                                     | Ok doc ->
+                                         // prelude registration populates the builtin
+                                         // nominal set the taken-name guard reads
+                                         Prelude.extend Builtins.typeEnvStrict Builtins.valueEnv |> ignore
+                                         let taken = Infer.takenTypeNames Check.builtinTypeNames.Keys
+                                         let asName = Map.tryFind "--as" m
+
+                                         let asNameOk =
+                                             match asName with
+                                             | None -> Ok()
+                                             | Some n when
+                                                 n.Length > 0
+                                                 && Char.IsUpper n[0]
+                                                 && n |> Seq.forall (fun c -> Char.IsLetterOrDigit c || c = '_')
+                                                 ->
+                                                 if Set.contains n taken then
+                                                     Error $"'--as {n}' is a builtin type name — pick another"
+                                                 else
+                                                     Ok()
+                                             | Some n ->
+                                                 Error
+                                                     $"'--as {n}' must be a type name — uppercase first, then letters/digits/_ (the casing law)"
+
+                                         match asNameOk with
+                                         | Error e -> fail1 e
+                                         | Ok() ->
+                                             match
+                                                 SchemaTypes.moduleText
+                                                     Parser.keywords
+                                                     (Set.ofSeq Check.builtinTypeNames.Keys)
+                                                     name
+                                                     asName
+                                                     entry.Sha256
+                                                     entry.Url
+                                                     doc
+                                             with
+                                             | Error e -> fail1 e
+                                             | Ok gen ->
+                                                 // add-validates [D:add-validates]: the emitted
+                                                 // module must CHECK before anything lands — a
+                                                 // schema producing unrepresentable weir refuses
+                                                 // with the located reason
+                                                 let tmp =
+                                                     IO.Path.Combine(
+                                                         IO.Path.GetTempPath(),
+                                                         $"weir-gentypes-{Guid.NewGuid():N}.weir"
+                                                     )
+
+                                                 IO.File.WriteAllText(tmp, gen.Text)
+                                                 let checked' = Script.checkVendoredModule tmp
+
+                                                 (try
+                                                     IO.File.Delete tmp
+                                                  with _ ->
+                                                      ())
+
+                                                 match checked' with
+                                                 | Error e ->
+                                                     let e = e.Replace(tmp, "<generated>")
+
+                                                     fail1
+                                                         $"the generated module does not check: {e} — this is a generator bug; nothing was written"
+                                                 | Ok _ ->
+                                                     match Map.tryFind "--out" m with
+                                                     | Some "-" ->
+                                                         Console.Out.Write gen.Text
+                                                         0
+                                                     | out ->
+                                                         let dest, importPath, confineWrite =
+                                                             match out with
+                                                             // --out is a user-CHOSEN path (combine, not
+                                                             // under — the user controls it); the DEFAULT
+                                                             // .weir/types/ path is vendor-directory
+                                                             // territory and confines through a symlinked
+                                                             // `types` dir [D:lockfile-symlink-confinement]
+                                                             | Some p -> IO.Path.GetFullPath p, $"\"{p}\"", false
+                                                             | None ->
+                                                                 IO.Path.Combine(weirDir, "types", name + ".weir"),
+                                                                 $"\"weir:{name}\"",
+                                                                 true
+
+                                                         let writeRes =
+                                                             if confineWrite then
+                                                                 Contracts.writeConfined
+                                                                     weirDir
+                                                                     dest
+                                                                     (Text.Encoding.UTF8.GetBytes gen.Text)
+                                                             else
+                                                                 IO.Directory.CreateDirectory(IO.Path.GetDirectoryName dest)
+                                                                 |> ignore
+
+                                                                 IO.File.WriteAllText(dest, gen.Text)
+                                                                 Ok()
+
+                                                         match writeRes with
+                                                         | Error w -> fail1 w
+                                                         | Ok() ->
+
+                                                         let notes =
+                                                             if gen.NoteCount = 0 then
+                                                                 ""
+                                                             else
+                                                                 $", {gen.NoteCount} note(s) inside"
+
+                                                         Console.WriteLine
+                                                             $"generated {dest} — {gen.TypeCount} type(s){notes}; user-owned (re-run to regenerate)"
+
+                                                         Console.WriteLine
+                                                             $"import it:  import {importPath} as {gen.ModuleName}"
+
+                                                         Console.WriteLine
+                                                             $"read with:  from json {gen.TopType} / from yaml {gen.TopType}  (type names resolve bare)"
+
+                                                         0)
+        | "gen" :: _ ->
+            Console.Error.WriteLine
+                "usage: weir gen types --schema <name> [--as <TypeName>] [--out <path>|-]   generate weir types from a locked schema"
+
+            2
+        | "run" :: path :: rest -> Script.run path rest
+        | path :: rest when not (path.StartsWith "-") -> Script.run path rest
+        // teaching arms, not dumps [D:windows-v1]: a mistyped option gets a
+        // did-you-mean; a mis-quoted -e gets its arity named (on Windows a
+        // ONE-expression intent often arrives shell-split into many argv)
+        | [ "-e" ] ->
+            Console.Error.WriteLine "weir -e takes exactly one argument: the program"
+            2
+        | "-e" :: rest ->
+            Console.Error.WriteLine
+                $"weir -e takes ONE program argument, got {List.length rest} — quote the program so the shell passes it whole"
+
+            2
+        | "--version" :: _ ->
+            Console.Error.WriteLine "weir --version takes no arguments"
+            2
+        | opt :: _ when opt.StartsWith "-" && opt <> "--help" && opt <> "-h" ->
+            let spellings =
+                [ "-e"; "--version"; "check"; "fmt"; "lsp"; "add"; "gen"; "restore"; "verify"; "run" ]
+
+            Console.Error.WriteLine $"weir: unknown option '{opt}'{didYouMean opt spellings} (weir --help for usage)"
+            2
+        | args ->
+            let usage =
+                "usage: weir                                    the REPL\n"
+                + "       weir <script> [args...]                 run a script\n"
+                + "       weir -e <program>                       evaluate a program; the result is its last expression\n"
+                + "       weir check [--json] <script>            diagnostics only (no evaluation)\n"
+                + "       weir check --can [--strict] [--json] <script>  the static capability report\n"
+                + "       weir fmt [--check] <script>             canonical formatter\n"
+                + "       weir lsp                                language server (stdio)\n"
+                + "       weir add sig <tool>                     generate a command signature from the installed binary\n"
+                + "       weir add schema <url> --as <name>       fetch an external contract, lock it\n"
+                + "       weir add module <src>//<file>@<ref> --as <name>  vendor a remote module, lock it\n"
+                + "       weir gen types --schema <name>          generate weir types from a locked schema\n"
+                + "       weir restore                            re-materialize the lock's artifacts\n"
+                + "       weir verify                             vendored contracts vs the lock\n"
+                + "       weir --version                          the build stamp"
+
+            match args with
+            | [ "--help" ] // asked for: stdout, exit 0
+            | [ "-h" ] ->
+                Console.WriteLine usage
+                0
+            | _ ->
+                Console.Error.WriteLine usage
+                2
+    try
+        dispatch ()
+    with
+    | Eval.ExitRequest code -> code
+    | ex ->
+        // located like a lint error: file:1:1 with the class, non-zero
+        // (2 — the tool's own failure, distinct from a script's exit 1)
+        Console.Error.WriteLine(
+            Types.Color.red Types.Color.onStderr.Value "internal error"
+            + $": {ex.GetType().Name}: {ex.Message}"
+        )
+
+        Console.Error.WriteLine
+            "this is a weir bug — the front end should have produced a located diagnostic; please report it with the script"
+
+        2

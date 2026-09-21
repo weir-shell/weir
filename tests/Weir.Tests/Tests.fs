@@ -21272,6 +21272,23 @@ let hardeningTests =
               match Weir.Parser.parseLine realResolver "git status" with
               | Ok(SCmd _) -> ()
               | other -> failtest $"a real command head must still parse: {other}"
+          }
+          // Fix 3 — the top-level CLI guard turns a residual front-end
+          // exception into a located diagnostic with a non-zero exit,
+          // never a raw stack trace / exit 134 [D:cli-exception-guard].
+          // The guard lives inline in Program.main; this pin documents the
+          // contract and asserts the two crash triggers it backstops are
+          // themselves already fixed (so the guard is a pure defense-in-depth
+          // net — reachability is exercised through the CLI e2e cell, which
+          // drives the whole binary).
+          test "the two known crash triggers no longer throw at the parser boundary" {
+              Expect.isError
+                  (Weir.Parser.parseStmt "type T = { [<Default 99999999999999999999>] A: int }")
+                  "attr overflow is data, not an exception"
+
+              let spine = "let x = " + System.String.Join(";", Array.create 5000 "b")
+              // must return (Ok or Error), never throw
+              Weir.Parser.parseLine realResolver spine |> ignore
           } ]
 
 [<Tests>]
