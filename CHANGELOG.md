@@ -47,6 +47,19 @@
   the original host. A same-origin redirect keeps the credential, and a
   non-sensitive header still crosses (the drop is credential-specific).
 
+- **The contract-fetch client no longer leaks credentials across a
+  cross-origin redirect.** `weir add module`/`add schema`/`restore`/
+  `verify` download over a separate HTTP client from `Http.send`, and it
+  was a bare `HttpClient` with automatic redirects that re-sent the
+  credential (a GitLab `PRIVATE-TOKEN`, a GitHub `Authorization: token`)
+  to a redirect target — the BCL strips only `Authorization`, so
+  `PRIVATE-TOKEN` in particular leaked. The contract client now disables
+  automatic redirects and follows them explicitly, dropping the
+  credential headers on a cross-origin change, across both the
+  API-resolution request and the artifact download. (The leak mechanism
+  is closed; whether a real provider can be induced to redirect to an
+  attacker host is an unproven precondition, recorded in the ledger.)
+
 ## v0.0.47
 
 ### Added

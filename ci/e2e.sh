@@ -6653,6 +6653,62 @@ else
     echo "e2e skip: DA-04 symlink-confinement (POSIX native symlinks)"
 fi
 
+# DA-05: the contract-fetch client drops the credential on a CROSS-ORIGIN
+# redirect [D:contract-redirect]. `add module <full-url>` attaches
+# `Authorization: token <WEIR_TOKEN_host>` when a host token is set (the
+# GitLab PRIVATE-TOKEN's shape) and downloads via fetchBytesWith; a bare
+# HttpClient re-sent it to a redirect target. Driven at the CLI over a LOCAL
+# cross-origin 302 (127.0.0.1 -> localhost). Origin B serves a VALID module
+# (so the add completes) and logs what arrived — the credential must NOT.
+if command -v python3 >/dev/null 2>&1; then
+    da5a=$((23800 + RANDOM % 100))
+    da5b=$((23900 + RANDOM % 100))
+    printf 'module M\nlet greet : string\nlet greet = "hi"\n' > "$ctdir/da5mod.weir"
+    cat > "$ctdir/da5redir.py" <<DA5EOF
+import http.server, sys
+PB = $da5b
+class A(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(302)
+        self.send_header('Location', 'http://localhost:%d/mod.weir' % PB)
+        self.end_headers()
+    def log_message(self, *a): pass
+http.server.HTTPServer(('127.0.0.1', $da5a), A).serve_forever()
+DA5EOF
+    cat > "$ctdir/da5dest.py" <<DA5EOF2
+import http.server, sys
+LOG = "$ctdir/da5.log"
+BODY = open("$ctdir/da5mod.weir", 'rb').read()
+class B(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        with open(LOG, 'a') as f:
+            for k, v in self.headers.items():
+                f.write("%s: %s\n" % (k, v))
+        self.send_response(200); self.end_headers(); self.wfile.write(BODY)
+    def log_message(self, *a): pass
+http.server.HTTPServer(('localhost', $da5b), B).serve_forever()
+DA5EOF2
+    rm -f "$ctdir/da5.log"
+    python3 "$ctdir/da5redir.py" & da5as=$!
+    python3 "$ctdir/da5dest.py" & da5bs=$!
+    sleep 0.6
+    mkdir -p "$ctdir/da5repo" && ( cd "$ctdir/da5repo" && git init -q . )
+    # the CLI attaches Authorization: token <this> for host 127.0.0.1
+    out=$( cd "$ctdir/da5repo" && WEIR_TOKEN_127_0_0_1="SECRET-CONTRACT-TOKEN" $BIN add module "http://127.0.0.1:$da5a/start.weir" --as da5 2>&1 ) || true
+    kill $da5as $da5bs 2>/dev/null || true
+    da5log=$(cat "$ctdir/da5.log" 2>/dev/null)
+    # the artifact DID land at origin B (the redirect was followed)
+    test -n "$da5log" || fail "DA-05: origin B never received the redirected request: add output: $out"
+    # but the credential must NOT have crossed to origin B
+    echo "$da5log" | grep -qiF "SECRET-CONTRACT-TOKEN" && fail "DA-05: the contract credential LEAKED across the cross-origin redirect: $da5log" || true
+    echo "$da5log" | grep -qiF "Authorization" && fail "DA-05: the Authorization header reached the cross-origin target: $da5log" || true
+    # the User-Agent (non-credential) still crosses — the drop is credential-specific
+    echo "$da5log" | grep -qiF "User-Agent: weir/" || fail "DA-05: a non-credential header must still cross (drop is credential-specific): $da5log"
+    echo "e2e ok: the contract-fetch client drops the credential across a cross-origin redirect (DA-05); UA still crosses"
+else
+    echo "e2e skip: DA-05 contract-redirect (python3 absent)"
+fi
+
 kill $ctsrv 2>/dev/null || true
 
 # F2: an unreadable file on the import path is a LOCATED diagnostic, never

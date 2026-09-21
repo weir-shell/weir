@@ -10648,6 +10648,88 @@ let lockfileSymlinkConfinementTests =
                       System.IO.Directory.Delete(baseDir, true)
                   with _ ->
                       ()
+          }
+          // ---- DA-05: the contract-fetch client drops credentials on a
+          // cross-origin redirect [D:contract-redirect] ----
+          test "fetchBytesWith drops PRIVATE-TOKEN across a cross-origin redirect; a control header crosses" {
+              // origin A (127.0.0.1) 302s to origin B (localhost) — a
+              // DIFFERENT origin by host. B records what arrived. The bare
+              // HttpClient re-sent PRIVATE-TOKEN here (DA-05); the explicit
+              // follow must drop it while a non-credential control crosses.
+              let portA = 8621
+              let portB = 8622
+              let received = System.Collections.Generic.List<string>()
+
+              let a = new System.Net.HttpListener()
+              a.Prefixes.Add $"http://127.0.0.1:{portA}/"
+              let b = new System.Net.HttpListener()
+              b.Prefixes.Add $"http://localhost:{portB}/"
+
+              a.Start()
+              b.Start()
+
+              let aLoop =
+                  System.Threading.Thread(fun () ->
+                      try
+                          let ctx = a.GetContext()
+                          ctx.Response.StatusCode <- 302
+                          ctx.Response.Headers.Add("Location", $"http://localhost:{portB}/dest")
+                          ctx.Response.Close()
+                      with _ ->
+                          ())
+
+              let bLoop =
+                  System.Threading.Thread(fun () ->
+                      try
+                          let ctx = b.GetContext()
+
+                          for k in ctx.Request.Headers.AllKeys do
+                              match ctx.Request.Headers.Get k with
+                              | null -> ()
+                              | v -> received.Add $"{k}: {v}"
+
+                          let bytes = System.Text.Encoding.UTF8.GetBytes "landed"
+                          ctx.Response.OutputStream.Write(bytes, 0, bytes.Length)
+                          ctx.Response.Close()
+                      with _ ->
+                          ())
+
+              aLoop.IsBackground <- true
+              bLoop.IsBackground <- true
+              aLoop.Start()
+              bLoop.Start()
+
+              try
+                  let result =
+                      Weir.Contracts.fetchBytesWith
+                          [ ("PRIVATE-TOKEN", "SECRET-GITLAB-TOKEN")
+                            ("Authorization", "Bearer SECRET-GH-TOKEN")
+                            ("X-Control", "keepme") ]
+                          $"http://127.0.0.1:{portA}/start"
+
+                  match result with
+                  | Ok(bytes, _) -> Expect.equal (System.Text.Encoding.UTF8.GetString bytes) "landed" "the redirect is followed to origin B"
+                  | Error e -> failtest $"the cross-origin fetch should succeed: {e}"
+
+                  aLoop.Join 2000 |> ignore
+                  bLoop.Join 2000 |> ignore
+
+                  let arrived = String.concat "\n" received
+
+                  Expect.isFalse
+                      (arrived.ToLowerInvariant().Contains "private-token")
+                      $"PRIVATE-TOKEN must NOT reach the cross-origin target (DA-05), arrived:\n{arrived}"
+
+                  Expect.isFalse
+                      (arrived.ToLowerInvariant().Contains "authorization")
+                      $"Authorization must NOT reach the cross-origin target, arrived:\n{arrived}"
+
+                  Expect.stringContains arrived "X-Control: keepme" "a non-credential control header still crosses (the drop is credential-specific)"
+              finally
+                  a.Stop()
+                  b.Stop()
+                  (a :> System.IDisposable).Dispose()
+                  (b :> System.IDisposable).Dispose()
           } ]
 
 
