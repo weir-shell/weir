@@ -8810,7 +8810,12 @@ rm -rf "$tdir"
 # to a BYTE-IDENTICAL tree vs the direct (non-plan) run — the full-
 # guarantee case (fs-only). Plus the refusals: proc-in-plan and
 # apply-in-plan (check), known-after-apply (located runtime).
-padir=$(mktemp -d)
+# mkweirtmp (NOT bare mktemp -d): its mixed C:/... spelling keeps every
+# padir path forward-slashed, so a bash-interpolated $padir inside a weir
+# "..."/$"..." string never carries a backslash the string-escape pass
+# would eat (\t → TAB) — the Windows path-mangling class every cell below
+# would otherwise share.
+padir=$(mkweirtmp)
 cat > "$padir/render.weir" <<'WEOF'
 type Node = { Rel: string; Content: seq<string> }
 
