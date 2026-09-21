@@ -51,7 +51,14 @@ type SResp =
 type Handle =
     { Listener: HttpListener
       Port: int
-      mutable Closed: bool }
+      mutable Closed: bool
+      // the stream-producer failure channel [D:serve-stream]: a Stream
+      // body whose producer raises mid-flight records its message HERE
+      // (Server.streamError surfaces it, Proc.wait's shape); it is not a
+      // raise out of the handler. Guarded by its own lock — worker threads
+      // write it, the scope reads it.
+      StreamErrors: System.Collections.Generic.List<string>
+      StreamErrorLock: obj }
 
 /// open the listener on loopback:port. Raises a WORDED error on a bind
 /// failure (a port already taken is the common one — the acceptance's
@@ -88,7 +95,22 @@ let start (port: int) : Handle =
         // the bind failure in its own words — the port is the fact the
         // caller needs to reword ("address in use")
         failwith $"serve: cannot listen on 127.0.0.1:{port} — {ex.Message}"
-    |> fun l -> { Listener = l; Port = port; Closed = false }
+    |> fun l ->
+        { Listener = l
+          Port = port
+          Closed = false
+          StreamErrors = System.Collections.Generic.List<string>()
+          StreamErrorLock = obj () }
+
+/// record a stream-producer failure on the handle [D:serve-stream] — the
+/// designated channel a Stream body's mid-flight raise reports through
+let recordStreamError (h: Handle) (msg: string) : unit =
+    lock h.StreamErrorLock (fun () -> h.StreamErrors.Add msg)
+
+/// the stream-producer failures seen so far, in occurrence order
+/// [D:serve-stream] — Server.streamErrors reads this
+let streamErrors (h: Handle) : string list =
+    lock h.StreamErrorLock (fun () -> List.ofSeq h.StreamErrors)
 
 /// close the listener idempotently — the scope-exit tail and the signal
 /// sweep share it, so a double close (finally after a signal) is benign.
@@ -122,22 +144,71 @@ let accept (h: Handle) : HttpListenerContext option =
     | :? HttpListenerException -> None
     | :? InvalidOperationException -> None
 
+/// a well-formed HTTP method is a non-empty RFC 7230 token — tchar only
+/// [D:serve-method]: no control chars, whitespace, or separators. A
+/// malformed token is refused at the boundary (400), the same byte-class
+/// refusal Bundle C's header guard performs; a well-formed unlisted verb
+/// (TRACE, a proxy's own) is PRESERVED, carried to the handler as Other.
+let methodTokenOk (m: string) : bool =
+    not (String.IsNullOrEmpty m)
+    && m
+       |> Seq.forall (fun c ->
+           (c >= 'A' && c <= 'Z')
+           || (c >= 'a' && c <= 'z')
+           || (c >= '0' && c <= '9')
+           || "!#$%&'*+-.^_`|~".Contains c)
+
+/// raised when the request-body read exceeds the configured bound
+/// [D:serve-body-timeout] — a distinguishable signal so the accept loop
+/// answers 408 rather than a generic 500 (a slow client is not an error
+/// inside the handler)
+exception BodyReadTimeout
+
+/// read the whole body under a DEADLINE [D:serve-body-timeout]: a slow
+/// client dribbling bytes cannot park the slot forever. The read runs on
+/// a task the deadline cancels; exhaustion raises BodyReadTimeout. The
+/// underlying socket read is not itself cancellable, so the task is
+/// abandoned on timeout and the connection is closed by the caller.
+let private readBodyBounded (stream: IO.Stream) (enc: Text.Encoding) (timeoutMs: int) : string =
+    let work =
+        System.Threading.Tasks.Task.Run(fun () ->
+            use r = new IO.StreamReader(stream, enc)
+            r.ReadToEnd())
+
+    if work.Wait timeoutMs then
+        work.Result
+    else
+        raise BodyReadTimeout
+
 /// read the request primitives off a context — path, query (no '?'),
 /// method, headers (in wire order, duplicates preserved), body as UTF-8
-/// text (request-body streaming is out of scope v1 [D:http-serve])
-let readRequest (ctx: HttpListenerContext) : SReq =
+/// text (request-body streaming is out of scope v1 [D:http-serve]). The
+/// body read is bounded by `bodyTimeoutMs` [D:serve-body-timeout].
+let readRequest (ctx: HttpListenerContext) (bodyTimeoutMs: int) : SReq =
     let req = ctx.Request
 
+    // GetValues over the indexer [D:http-serve]: for a header the parser
+    // folded to a comma-joined value, GetValues yields the pieces as
+    // separate pairs (the wire-order-pairs intent). NOTE the platform
+    // limit behind F10: the managed HttpListener collapses REPEATED
+    // request headers (three `X-Forwarded-For` lines) to the LAST value at
+    // parse time — those earlier values never reach this code, so faithful
+    // duplicate preservation is not reachable through HttpListener's
+    // parsed headers (see the session report).
     let headers =
         [ for k in req.Headers.AllKeys do
               match k with
               | null -> ()
-              | key -> key, (req.Headers[key]) ]
+              | key ->
+                  match req.Headers.GetValues key with
+                  | null -> ()
+                  | values ->
+                      for v in values do
+                          key, v ]
 
     let body =
         if req.HasEntityBody then
-            use r = new IO.StreamReader(req.InputStream, req.ContentEncoding)
-            r.ReadToEnd()
+            readBodyBounded req.InputStream req.ContentEncoding bodyTimeoutMs
         else
             ""
 
@@ -157,8 +228,32 @@ let readRequest (ctx: HttpListenerContext) : SReq =
 /// write a response to a context. A Stream body is written CHUNKED and
 /// FLUSHED per element (the incremental law); every other body is a
 /// single buffered write. Always closes the response (frees the
-/// connection) even on a mid-stream client disconnect [D:http-serve]
-let writeResponse (ctx: HttpListenerContext) (resp: SResp) : unit =
+/// connection) even on a mid-stream client disconnect [D:http-serve].
+///
+/// `onStreamFailure` is the DESIGNATED CHANNEL for a Stream PRODUCER
+/// raising mid-body [D:serve-stream]: modelled on `within proc`'s
+/// scoped-child surfacing, a producer failure does NOT raise out of the
+/// handler — it aborts the response WITHOUT the terminating chunk (so the
+/// client's own HTTP layer sees a truncated/broken body) and reports the
+/// message here, where the serve scope surfaces it to the script (a
+/// Server member, Proc.wait's shape). A CLIENT disconnect is NOT a
+/// producer failure: it ends enumeration and closes cleanly, unreported.
+/// abort a chunked response on a producer failure [D:serve-stream]. The
+/// INTENT is to leave the client a TRUNCATED body (no zero-length chunk),
+/// but the managed HttpListener emits the terminator on both Close() and
+/// Abort() and exposes no public way to suppress it; the only mechanism
+/// found reaches into HttpListener's private fields, which the AOT trimmer
+/// refuses (IL2075) — see the session report. So (a) degrades to a plain
+/// Abort here, and the DESIGNATED CHANNEL (b) — Server.streamErrors — is
+/// the reliable, script-observable signal: a monitoring loop reads it and
+/// learns its producer died, which the pre-fix silent path never allowed.
+let private abortWithoutTrailer (out: HttpListenerResponse) : unit =
+    try
+        out.Abort()
+    with _ ->
+        ()
+
+let writeResponse (ctx: HttpListenerContext) (resp: SResp) (onStreamFailure: string -> unit) : unit =
     let out = ctx.Response
     out.StatusCode <- resp.Status
 
@@ -191,24 +286,61 @@ let writeResponse (ctx: HttpListenerContext) (resp: SResp) : unit =
             // SSE-shaped chunked stream [D:http-serve]: no ContentLength
             // (SendChunked instead), text/event-stream, one `data:` line
             // per element, FLUSHED so the client sees each before the seq
-            // ends. A client disconnect raises on Write — we stop pulling
-            // (the producer sees the enumeration end, the Proc.stop
-            // analogue) and close.
+            // ends.
             if isNull out.ContentType then
                 out.ContentType <- "text/event-stream"
 
             out.SendChunked <- true
 
-            try
-                for line in lines do
-                    let frame = Encoding.UTF8.GetBytes($"data: {line}\n\n")
-                    out.OutputStream.Write(frame, 0, frame.Length)
-                    out.OutputStream.Flush()
-            with _ ->
-                // client gone mid-stream: end enumeration, close cleanly
-                ()
+            // the pull (producer) and the write (client) are separated so
+            // their failures do not conflate [D:serve-stream]: a producer
+            // raise on MoveNext is the script's own error (abort + report);
+            // a Write raise is the client vanishing (clean stop).
+            use e = lines.GetEnumerator()
+            let mutable go = true
+            let mutable producerError = None
 
-        out.OutputStream.Close()
+            while go do
+                let hasNext =
+                    try
+                        Some(e.MoveNext())
+                    with ex ->
+                        // the producer raised mid-body — the designated
+                        // channel, not a raise out of the handler
+                        producerError <- Some ex.Message
+                        None
+
+                match hasNext with
+                | None -> go <- false
+                | Some false -> go <- false
+                | Some true ->
+                    let line = e.Current
+                    let frame = Encoding.UTF8.GetBytes($"data: {line}\n\n")
+
+                    try
+                        out.OutputStream.Write(frame, 0, frame.Length)
+                        out.OutputStream.Flush()
+                    with _ ->
+                        // client gone mid-stream: end enumeration, close cleanly
+                        go <- false
+
+            match producerError with
+            | Some msg ->
+                // NO terminating chunk [D:serve-stream]: the client's HTTP
+                // layer must read a TRUNCATED chunked body (no 0-length
+                // terminator) so it can TELL the stream died — a proper
+                // terminator after a failure is the one outcome that must
+                // not survive.
+                abortWithoutTrailer out
+
+                // surface the failure to the script through the designated
+                // channel — Proc.wait's shape, not a raise out of the handler
+                onStreamFailure msg
+            | None -> out.OutputStream.Close()
+
+        match resp.Body with
+        | RStream _ -> () // the stream arm closed/aborted above
+        | _ -> out.OutputStream.Close()
     with _ ->
         // any late write failure (client vanished) — the connection is
         // already lost; closing is best-effort

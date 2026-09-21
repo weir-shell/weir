@@ -3412,6 +3412,18 @@ and eval (env: Env) (te: TypedExpr) : Value =
             if maxConcurrent < 1 then
                 failwith $"serve: maxConcurrent is at least 1, got {maxConcurrent}"
 
+            // the request-body read timeout [D:serve-body-timeout]: OPTIONAL
+            // in the config literal, resting at 30s when omitted — a slow
+            // client dribbling the body cannot park a handler slot forever
+            let bodyTimeoutMs =
+                match List.tryFind (fun (n, _) -> n = "bodyTimeout") cfg with
+                | Some(_, VDur ms) -> int ms
+                | Some(_, v) -> unreachable $"serve bodyTimeout {formatValue v}"
+                | None -> 30_000
+
+            if bodyTimeoutMs < 1 then
+                failwith $"serve: bodyTimeout is at least 1ms, got {bodyTimeoutMs}ms"
+
             // the handler closure, evaluated ONCE at scope entry
             let handler =
                 match topts with
@@ -3420,24 +3432,28 @@ and eval (env: Env) (te: TypedExpr) : Value =
 
             // request primitives -> the HttpServerRequest Value the handler sees
             let requestValue (r: Serve.SReq) : Value =
-                // HttpMethod is the closed client union [D:http-serve]; an
-                // exotic verb maps to Get — v1 handlers route on path, not
-                // verb (a stated simplicity, not a silent drop: the path
-                // and body are intact for a handler that cares)
-                let methodTag =
+                // HttpMethod is open-world inbound [D:serve-method]: the
+                // listed verbs read as themselves (QUERY included — a case
+                // the shared client↔server family already has), and a
+                // well-formed but UNLISTED verb reads as `Other v` so the
+                // handler can route on it and answer 405 by choice, never
+                // misreported as Get. A malformed token never reaches here
+                // (refused with 400 at the boundary before the handler).
+                let methodValue =
                     match r.Method.ToUpperInvariant() with
-                    | "GET" -> "Get"
-                    | "POST" -> "Post"
-                    | "PUT" -> "Put"
-                    | "DELETE" -> "Delete"
-                    | "PATCH" -> "Patch"
-                    | "HEAD" -> "Head"
-                    | "OPTIONS" -> "Options"
-                    | _ -> "Get"
+                    | "GET" -> VUnion("Get", None)
+                    | "POST" -> VUnion("Post", None)
+                    | "PUT" -> VUnion("Put", None)
+                    | "DELETE" -> VUnion("Delete", None)
+                    | "PATCH" -> VUnion("Patch", None)
+                    | "HEAD" -> VUnion("Head", None)
+                    | "OPTIONS" -> VUnion("Options", None)
+                    | "QUERY" -> VUnion("Query", None)
+                    | _ -> VUnion("Other", Some(VStr r.Method))
 
                 VRecord(
                     "HttpServerRequest",
-                    [ "method", VUnion(methodTag, None)
+                    [ "method", methodValue
                       "path", VStr r.Path
                       "query", VStr r.Query
                       "headers", VSeq(r.Headers |> List.map (fun (k, v) -> VTuple [ VStr k; VStr v ]))
@@ -3518,10 +3534,44 @@ and eval (env: Env) (te: TypedExpr) : Value =
                                     Session.enterWorker parentCwd
 
                                     try
-                                        let req = Serve.readRequest ctx
-                                        let resp = responseOf (apply handler (requestValue req))
-                                        Serve.writeResponse ctx resp
-                                    with _ ->
+                                        // the body read is bounded [D:serve-body-timeout]:
+                                        // a slow client dribbling its body no
+                                        // longer parks this slot forever — 408
+                                        // on exhaustion
+                                        let req = Serve.readRequest ctx bodyTimeoutMs
+
+                                        // a malformed method token is refused
+                                        // at the boundary [D:serve-method]:
+                                        // 400 before the handler, the byte-class
+                                        // refusal Bundle C's guard performs
+                                        if not (Serve.methodTokenOk req.Method) then
+                                            Serve.writeResponse
+                                                ctx
+                                                { Status = 400
+                                                  Headers = []
+                                                  Body = Serve.RText "malformed request method" }
+                                                ignore
+                                        else
+                                            let resp = responseOf (apply handler (requestValue req))
+                                            // a Stream producer raising mid-body is
+                                            // the designated channel [D:serve-stream]:
+                                            // record it on the handle, do not raise
+                                            Serve.writeResponse ctx resp (Serve.recordStreamError handle)
+                                    with
+                                    | Serve.BodyReadTimeout ->
+                                        // the client dribbled its body past the
+                                        // bound [D:serve-body-timeout] — refuse,
+                                        // bounded, not an unbounded park
+                                        (try
+                                            Serve.writeResponse
+                                                ctx
+                                                { Status = 408
+                                                  Headers = []
+                                                  Body = Serve.RText "request body read timed out" }
+                                                ignore
+                                         with _ ->
+                                             ())
+                                    | _ ->
                                         // a handler raise is a 500 — the server
                                         // survives one bad request
                                         (try
@@ -3530,6 +3580,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
                                                 { Status = 500
                                                   Headers = []
                                                   Body = Serve.RText "internal error" }
+                                                ignore
                                          with _ ->
                                              ())
                                 finally

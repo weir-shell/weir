@@ -596,20 +596,32 @@ print $"{key} -> {value}"
   `match` — weir's union dispatch, not a routing framework.
   `HttpServerRequest` carries `method`/`path`/`query` (the raw string,
   no leading `?` — `Str.trySplitOnce "=" req.query`)/`headers` (pairs,
-  wire order)/`body` (request text; request-body streaming is out of
-  scope v1). The response `body` is an `HttpBody` — the SAME union the
-  `Http` client uses (`NoBody`/`Text`/`Json`), plus `Stream of
-  seq<string>`: the runtime PULLS and FLUSHES each element as produced
-  (chunked, SSE-shaped `data:` lines), so a lazy producer streams
-  incrementally — the client sees early elements before the seq ends.
-  `maxConcurrent` bounds handlers-at-once (the `pmapWith` law); excess
-  queues. The handle surface is `Server.port`/`Server.running` — no
-  `stop` (the scope IS the teardown). ONE type family: `HttpMethod`,
-  header pairs and the body union are shared client↔server; only the
-  records differ where the wire does (`path`+`query` not `url`, no
-  `auth`/`timeout`). BOUNDED OUT v1, each a stated non-goal: TLS
-  (reverse-proxy posture), a routing DSL, WebSockets (the study proved
-  them unneeded), request-body streaming, HTTP/2.
+  wire order — but the platform listener collapses REPEATED request
+  headers to the last value, so a proxied `X-Forwarded-For` chain reads
+  the last hop only, a stated non-claim)/`body` (request text;
+  request-body streaming is out of scope v1). `method` is `HttpMethod`:
+  a well-formed verb the union does not name (`TRACE`, a proxy's own)
+  reads as `Other of string` so a handler can route on it (`| Other v ->
+  …`, 405 by choice); `QUERY` reads as `Query`; a malformed method token
+  is refused at the boundary with 400. The response `body` is an
+  `HttpBody` — the SAME union the `Http` client uses (`NoBody`/`Text`/
+  `Json`), plus `Stream of seq<string>`: the runtime PULLS and FLUSHES
+  each element as produced (chunked, SSE-shaped `data:` lines), so a lazy
+  producer streams incrementally — the client sees early elements before
+  the seq ends. If a `Stream` producer RAISES mid-body, the failure is
+  surfaced to the script through `Server.streamErrors srv` (the
+  designated channel, Proc.wait's shape — it is not raised out of the
+  handler). `maxConcurrent` bounds handlers-at-once (the `pmapWith` law);
+  excess queues. `bodyTimeout` (a `Duration`, OPTIONAL — default 30s)
+  bounds the request-body read so a slow client cannot park a slot; the
+  config is `{ port; maxConcurrent }` or `{ port; maxConcurrent;
+  bodyTimeout }`. The handle surface is `Server.port`/`Server.running`/
+  `Server.streamErrors` — no `stop` (the scope IS the teardown). ONE type
+  family: `HttpMethod`, header pairs and the body union are shared
+  client↔server; only the records differ where the wire does
+  (`path`+`query` not `url`, no `auth`/`timeout`). BOUNDED OUT v1, each a
+  stated non-goal: TLS (reverse-proxy posture), a routing DSL, WebSockets
+  (the study proved them unneeded), request-body streaming, HTTP/2.
 
 ```weir
 // the scope opens the socket and frees it on exit — this block binds

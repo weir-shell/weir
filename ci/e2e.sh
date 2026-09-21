@@ -9118,6 +9118,127 @@ echo "$out" | grep -qF "loaded" || fail "serve conc scope must exit: $out"
 first3=$(head -3 "$svdir/markers.txt" 2>/dev/null | tr '\n' ',')
 [ "$first3" = "start,start,end," ] || fail "serve concurrency ceiling BROKEN: first 3 markers were '$first3' (expected 'start,start,end,') — markers: $(cat "$svdir/markers.txt" 2>/dev/null | tr '\n' ' ')"
 echo "e2e ok: within serve — concurrency ceiling holds (maxConcurrent=2 caps 4 requests at 2)"
+
+# ---- Bundle E: serve wire fidelity (F8/F9/F12) --------------------
+svport4=8474
+svport5=8475
+svport6=8476
+
+# (F9) the method boundary [D:serve-method]: QUERY reads as Query, a
+# well-formed unlisted verb reads as Other v (the handler routes on it),
+# and a malformed method token is refused at the boundary with 400. A raw
+# socket sends the exact request line so the verb is what the wire says.
+cat > "$svdir/methprobe.py" <<'PYEOF'
+import socket, sys
+port = int(sys.argv[1])
+def send(verb):
+    s = socket.socket(); s.connect(('127.0.0.1', port))
+    s.sendall(('%s /echo HTTP/1.1\r\nHost: 127.0.0.1:%d\r\nConnection: close\r\n\r\n' % (verb, port)).encode())
+    d = b''
+    while True:
+        c = s.recv(4096)
+        if not c: break
+        d += c
+    status = d.split(b'\r\n', 1)[0].decode()
+    body = d.split(b'\r\n\r\n', 1)[-1].decode(errors='replace')
+    print('%s|status=%s|body=%s' % (verb, status, body))
+for v in ['GET', 'QUERY', 'FROBNICATE']:
+    send(v)
+# malformed: an embedded control byte in the method token
+s = socket.socket(); s.connect(('127.0.0.1', port))
+s.sendall(b'BA\x01D /echo HTTP/1.1\r\nHost: 127.0.0.1:%d\r\nConnection: close\r\n\r\n' % port)
+d = b''
+while True:
+    c = s.recv(4096)
+    if not c: break
+    d += c
+print('MALFORMED|status=%s' % (d.split(b'\r\n', 1)[0].decode() if d else '(reset)'))
+PYEOF
+cat > "$svdir/method.weir" <<WEOF
+within serve srv = { port = $svport4; maxConcurrent = 2 } (fun req -> match req.method with | Get -> HttpServerResponse { status = 200; headers = []; body = Text "GET" } | Query -> HttpServerResponse { status = 200; headers = []; body = Text "QUERY" } | Other v -> HttpServerResponse { status = 405; headers = []; body = Text \$"OTHER:{v}" } | _ -> HttpServerResponse { status = 200; headers = []; body = Text "known" })
+    poll timeout=8s interval=100ms
+        Net.portOpen $svport4
+    let out = sh -c "python3 '$svdir/methprobe.py' $svport4" | complete
+    out.stdout |> Seq.iter print
+print "method-done"
+WEOF
+out=$($BIN "$svdir/method.weir" 2>&1) || fail "serve method run failed: $out"
+echo "$out" | grep -qF "GET|status=HTTP/1.1 200 OK|body=GET" || fail "F9: GET must route as Get: $out"
+echo "$out" | grep -qF "QUERY|status=HTTP/1.1 200 OK|body=QUERY" || fail "F9: QUERY must read as Query, not Get: $out"
+echo "$out" | grep -qE "FROBNICATE\|status=HTTP/1.1 405( [^|]*)?\|body=OTHER:FROBNICATE" || fail "F9: an unlisted verb must route as Other v with 405: $out"
+echo "$out" | grep -qE "MALFORMED\|status=HTTP/1.1 400( |$)" || fail "F9: a malformed method token must be refused with 400: $out"
+echo "e2e ok: within serve — F9 method boundary (QUERY=Query, unlisted=Other, malformed=400)"
+
+# (F8) a Stream producer raising mid-body [D:serve-stream]: the failure is
+# surfaced to the script through Server.streamErrors (the designated
+# channel), never a raise out of the handler. The client reads whatever
+# arrived; the script observes the failure and can act on it.
+cat > "$svdir/streamprobe.py" <<'PYEOF'
+import socket, sys
+port = int(sys.argv[1])
+s = socket.socket(); s.connect(('127.0.0.1', port))
+s.sendall(('GET /half HTTP/1.1\r\nHost: 127.0.0.1:%d\r\nConnection: close\r\n\r\n' % port).encode())
+d = b''
+while True:
+    c = s.recv(4096)
+    if not c: break
+    d += c
+print('GOT-FIRST=%s' % (b'data: first' in d))
+PYEOF
+cat > "$svdir/stream.weir" <<WEOF
+let handler = fun req ->
+    match req.path with
+    | "/half" -> HttpServerResponse { status = 200; headers = []; body = Stream ([1; 2] |> Seq.map (fun i -> if i == 1 then "first" else fail "producer died")) }
+    | _ -> HttpServerResponse { status = 404; headers = []; body = Text "nf" }
+
+within serve srv = { port = $svport5; maxConcurrent = 2 } handler
+    poll timeout=8s interval=100ms
+        Net.portOpen $svport5
+    let out = sh -c "python3 '$svdir/streamprobe.py' $svport5" | complete
+    out.stdout |> Seq.iter print
+    let errs = Server.streamErrors srv
+    print \$"stream-errors={errs |> Seq.length}"
+    errs |> Seq.iter (fun e -> print \$"stream-err={e}")
+print "stream-done"
+WEOF
+out=$($BIN "$svdir/stream.weir" 2>&1) || fail "serve stream run failed: $out"
+echo "$out" | grep -qF "GOT-FIRST=True" || fail "F8: the client must receive the first element before the producer died: $out"
+echo "$out" | grep -qF "stream-errors=1" || fail "F8: the script must observe the producer failure via the channel: $out"
+echo "$out" | grep -qF "stream-err=producer died" || fail "F8: Server.streamErrors must carry the failure message: $out"
+echo "e2e ok: within serve — F8 a Stream producer raise surfaces via Server.streamErrors (not silent)"
+
+# (F12) the request-body read timeout [D:serve-body-timeout]: a slow
+# client declaring a large Content-Length and holding the socket is
+# refused with 408 within the bound, not parked. bodyTimeout=1s here.
+cat > "$svdir/slowbody.py" <<'PYEOF'
+import socket, sys, time
+port = int(sys.argv[1])
+s = socket.socket(); s.connect(('127.0.0.1', port))
+s.sendall(('POST /x HTTP/1.1\r\nHost: 127.0.0.1:%d\r\nContent-Length: 1000000\r\nConnection: close\r\n\r\n' % port).encode())
+s.sendall(b'0123456789')
+t0 = time.time()
+d = b''
+try:
+    while True:
+        c = s.recv(4096)
+        if not c: break
+        d += c
+except Exception:
+    pass
+print('elapsed=%.1f status=%s' % (time.time() - t0, d.split(b'\r\n', 1)[0].decode() if d else '(none)'))
+PYEOF
+cat > "$svdir/timeout.weir" <<WEOF
+within serve srv = { port = $svport6; maxConcurrent = 2; bodyTimeout = 1s } (fun req -> HttpServerResponse { status = 200; headers = []; body = Text "ok" })
+    poll timeout=8s interval=100ms
+        Net.portOpen $svport6
+    let out = sh -c "python3 '$svdir/slowbody.py' $svport6" | complete
+    out.stdout |> Seq.iter print
+print "timeout-done"
+WEOF
+out=$($BIN "$svdir/timeout.weir" 2>&1) || fail "serve body-timeout run failed: $out"
+echo "$out" | grep -qF "status=HTTP/1.1 408" || fail "F12: a slow body must be refused with 408: $out"
+echo "e2e ok: within serve — F12 request-body read timeout refuses a slow client with 408"
+
 rm -rf "$svdir"
 
 echo "e2e battery: all green"

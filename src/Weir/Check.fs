@@ -4387,9 +4387,43 @@ and private withinContracts
                 | None -> Ok None
             // serve's arg is the CONFIG record [D:http-serve] — a
             // ServerConfig `{ port; maxConcurrent }`; the handler rides
-            // opts (below), typed against the request->response function
+            // opts (below), typed against the request->response function.
+            // bodyTimeout is OPTIONAL in the literal [D:serve-body-timeout]:
+            // a bare `{ port; maxConcurrent }` literal is accepted and the
+            // timeout rests at its default, so the field addition does not
+            // break existing serve scripts. The generic record resolver
+            // matches by EXACT field set, so the two-field literal is
+            // checked HERE against the allowed shape; any non-literal
+            // config (a variable, `{ ServerConfig.defaults with … }`)
+            // falls through to the ordinary ServerConfig check.
             | WithinServe ->
                 match arg with
+                | Some({ Kind = ERecord fields } as a) ->
+                    let names = fields |> List.map (fun (n, _, _) -> n) |> Set.ofList
+                    let core = Set.ofList [ "port"; "maxConcurrent" ]
+                    let withTimeout = Set.add "bodyTimeout" core
+
+                    if names = core || names = withTimeout then
+                        let fieldTy name =
+                            if name = "bodyTimeout" then TDur else TInt
+
+                        fields
+                        |> List.fold
+                            (fun acc (n, _, v) ->
+                                acc
+                                |> Result.bind (fun ts ->
+                                    check ctx env v (fieldTy n) |> Result.map (fun tv -> (n, tv) :: ts)))
+                            (Ok [])
+                        |> Result.map (fun tfields ->
+                            Some
+                                { Kind = TERecord("ServerConfig", List.rev tfields)
+                                  Ty = TNamed("ServerConfig", [])
+                                  Span = a.Span })
+                    else
+                        // an unexpected field set — the ordinary check
+                        // produces the located "no declared record" or
+                        // field-type diagnostic
+                        check ctx env a (TNamed("ServerConfig", [])) |> Result.map Some
                 | Some a -> check ctx env a (TNamed("ServerConfig", [])) |> Result.map Some
                 | None -> Ok None
             | WithinTmp -> Ok None

@@ -24,7 +24,12 @@ let source =
       "type Retry = { attempts: int; delay: Duration; timeout: Option<Duration> }"
       "type Poll = { timeout: Duration; interval: Duration }"
       // the typed request boundary [D:http] — field names are PUBLIC API
-      "type HttpMethod = Get | Post | Put | Delete | Patch | Head | Options | Query"
+      // Other carries a well-formed but unlisted verb [D:serve-method]:
+      // a proxy may forward TRACE/QUERY-shaped tokens the union does not
+      // name, so the server reads it as `Other v` (route on it, answer 405
+      // by handler choice) rather than misreporting it as Get. The client
+      // never constructs Other — it is an inbound-only carrier.
+      "type HttpMethod = Get | Post | Put | Delete | Patch | Head | Options | Query | Other of string"
       "type Auth = NoAuth | Bearer of Secret | Basic of string * Secret"
       // the shared body union [D:http] [D:http-serve]: NoBody/Json/Text
       // are the client-and-server cases; Stream is the SERVER response's
@@ -41,7 +46,13 @@ let source =
       // the wire differs (a path+query, not a url; no auth/timeout — those
       // are client concerns). maxConcurrent is the handler ceiling, the
       // pmapWith concurrency-law on the scope.
-      "type ServerConfig = { port: int; maxConcurrent: int }"
+      // bodyTimeout bounds the request-body read [D:serve-body-timeout]:
+      // a slow client dribbling its body no longer parks a handler slot
+      // unboundedly. OPTIONAL in the config literal — omit it and it rests
+      // at 30s (the serve config accepts `{ port; maxConcurrent }` and
+      // `{ port; maxConcurrent; bodyTimeout }` both); exhaustion refuses
+      // the request (408), bounded.
+      "type ServerConfig = { port: int; maxConcurrent: int; bodyTimeout: Duration }"
       "type HttpServerRequest = { method: HttpMethod; path: string; query: string; headers: seq<string * string>; body: string }"
       "type HttpServerResponse = { status: int; headers: seq<string * string>; body: HttpBody }"
       // the plan/apply Op union [D:plan-apply] — the user-visible,

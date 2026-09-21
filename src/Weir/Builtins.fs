@@ -3323,6 +3323,10 @@ let private secretMembers: (string * Ty * Value) list =
 
 let private httpMethodName (v: Value) : string =
     match v with
+    // Other carries its verb VERBATIM to the wire [D:serve-method] — the
+    // one method whose name is data, so a request built with `Other v`
+    // (e.g. a proxy echo) sends v; the listed cases are their own names
+    | VUnion("Other", Some(VStr m)) -> m
     | VUnion(m, None) -> m.ToUpperInvariant()
     | v -> unreachable $"the checker rejects a non-method {formatValue v}"
 
@@ -3762,7 +3766,16 @@ let private serverMembers: (string * Ty * Value) list =
     [ "port", TFun(serverTy, TInt), VBuiltin(fun v -> VInt(int64 (asServer "Server.port" v).Port))
       "running",
       TFun(serverTy, TBool),
-      VBuiltin(fun v -> VBool(not (asServer "Server.running" v).Closed)) ]
+      VBuiltin(fun v -> VBool(not (asServer "Server.running" v).Closed))
+      // the stream-producer failure channel [D:serve-stream]: a Stream
+      // body whose producer raised mid-flight is NOT a raise out of the
+      // handler (it aborts the client's body instead) — it surfaces HERE,
+      // Proc.wait's data-not-raise shape, so a monitoring loop can tell a
+      // truncated stream from a clean one. Occurrence order; empty until a
+      // producer fails.
+      "streamErrors",
+      TFun(serverTy, TSeq TStr),
+      VBuiltin(fun v -> VSeq(Serve.streamErrors (asServer "Server.streamErrors" v) |> List.map VStr)) ]
 
 // Net [D:scoped-procs]: ONE readiness probe — poll's body. Remote
 // hosts on a receipt; localhost is the scoped-process pattern.
@@ -4442,6 +4455,12 @@ let builtinDocs: Map<string, BuiltinDoc> =
           |> named [ "srv" ]
           "Server.running",
           bd "True while the listener is still open (the scope has not exited)." None None
+          |> named [ "srv" ]
+          "Server.streamErrors",
+          bd
+              "The messages of any Stream-body producers that raised mid-flight — the truncated responses the client saw a broken body for. Empty until one fails; the designated channel for a streaming failure, so a raise never leaves the handler."
+              None
+              (Some "a Stream producer raise aborts the client's body and lands here")
           |> named [ "srv" ]
           // ---- Net: readiness probes [D:scoped-procs] ----
           "Net.portOpen",

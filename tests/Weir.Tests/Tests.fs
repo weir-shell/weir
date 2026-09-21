@@ -14346,12 +14346,13 @@ let ambiguousCtorTests =
           // the ambiguity cannot arise there. Pinned so the claim is checked
           // rather than remembered.
           test "a pattern resolves by the scrutinee's type even with a live collision" {
+              // Elsewise avoids the prelude's HttpMethod.Other [D:serve-method]
               Expect.isEmpty
                   (analyze
                       [ "type B = C"
-                        "type Z = C | Other"
-                        "let v = Other"
-                        "let s = match v with | C -> \"c\" | Other -> \"other\""
+                        "type Z = C | Elsewise"
+                        "let v = Elsewise"
+                        "let s = match v with | C -> \"c\" | Elsewise -> \"other\""
                         "print s" ])
                   "type-directed"
           }
@@ -19512,6 +19513,64 @@ let serveTests =
               let h2 = Weir.Serve.start 8199
               Expect.isFalse h2.Closed "the second bind succeeds after the first freed"
               Weir.Serve.stop h2
+          }
+          // ---- F9: the method boundary [D:serve-method] ----
+          test "HttpMethod carries a well-formed unlisted verb as Other; an inlined handler routes on it and on Query" {
+              // Other is an open-world inbound case; the handler is inlined
+              // so its param types from the serve head (params are not typed
+              // from patterns — the standing weir rule, not a serve concern)
+              clean
+                  [ "within serve srv = { port = 80; maxConcurrent = 1 } (fun req -> match req.method with | Other v -> HttpServerResponse { status = 405; headers = []; body = Text v } | Query -> HttpServerResponse { status = 200; headers = []; body = Text \"q\" } | _ -> HttpServerResponse { status = 200; headers = []; body = Text \"ok\" })"
+                    "    print \"ok\"" ]
+                  "an inlined handler matching Other and Query"
+          }
+          test "methodTokenOk accepts well-formed verbs and refuses malformed tokens" {
+              // well-formed tchar tokens (listed AND unlisted) pass
+              for ok in [ "GET"; "QUERY"; "TRACE"; "FROBNICATE"; "M-SEARCH"; "PATCH" ] do
+                  Expect.isTrue (Weir.Serve.methodTokenOk ok) $"'{ok}' is a well-formed token"
+
+              // control chars, whitespace, and separators are refused — the
+              // byte-class refusal at the boundary (400)
+              for bad in [ ""; "BAD METH"; "BAD\tX"; "GE\rT"; "GET\n"; "ab"; "GET/x" ] do
+                  Expect.isFalse (Weir.Serve.methodTokenOk bad) $"'{bad}' is malformed"
+          }
+          // ---- F12: the request-body read timeout [D:serve-body-timeout] ----
+          test "the serve config accepts bodyTimeout, and omitting it stays clean" {
+              // omitted — rests at the default, existing scripts unbroken
+              clean
+                  [ okHandler
+                    "within serve srv = { port = 80; maxConcurrent = 1 } h"
+                    "    print \"ok\"" ]
+                  "bodyTimeout omitted"
+
+              // supplied as a Duration
+              clean
+                  [ okHandler
+                    "within serve srv = { port = 80; maxConcurrent = 1; bodyTimeout = 5s } h"
+                    "    print \"ok\"" ]
+                  "bodyTimeout supplied"
+
+              // a non-Duration bodyTimeout is a type error naming Duration
+              mustSay
+                  [ okHandler
+                    "within serve srv = { port = 80; maxConcurrent = 1; bodyTimeout = 5 } h"
+                    "    print \"ok\"" ]
+                  "Duration"
+                  "an int bodyTimeout names Duration"
+          }
+          // ---- F8: the stream-producer failure channel [D:serve-stream] ----
+          test "a Stream producer raise records on the handle, not a raise out of the handler" {
+              let h = Weir.Serve.start 8207
+              Expect.isEmpty (Weir.Serve.streamErrors h) "no errors before a failure"
+              Weir.Serve.recordStreamError h "producer died"
+              Weir.Serve.recordStreamError h "another"
+
+              Expect.equal
+                  (Weir.Serve.streamErrors h)
+                  [ "producer died"; "another" ]
+                  "the designated channel records failures in order"
+
+              Weir.Serve.stop h
           } ]
 
 let versionStampTests =
