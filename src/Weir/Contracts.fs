@@ -14,8 +14,267 @@ module Weir.Contracts
 
 open System
 open System.IO
+open System.Runtime.InteropServices
 open Weir.Ast
 open Weir.Types
+
+// ---- the path/name boundary [D:lockfile-confinement] -----------------------
+// A path that came from OUTSIDE (a lock entry, an `--as` name) is joined
+// with a base and then used; a hostile or fat-fingered value must not
+// reach a write/read outside `.weir/`. Two guards, ONE copy each — the
+// confining join (Path.under's lexical core, Session-free so it lives
+// here, before Builtins) and the plain-name validator (the rule
+// `add module` had inline, extracted so `add schema`/`sig`/`gen types`
+// share it).
+
+/// absolute/rooted on ANY platform — refused by shape, the safe
+/// direction (a script must confine identically on Linux and Windows).
+/// Mirrors Builtins.absoluteShaped [D:path-under]; kept here so the lock
+/// read (before Builtins) can confine.
+let private absoluteShapedPath (p: string) : bool =
+    p.StartsWith "/"
+    || p.StartsWith "\\"
+    || (p.Length >= 2 && System.Char.IsLetter p[0] && p[1] = ':')
+
+/// the CONFINING join, Path.under's lexical core [D:path-under]: join
+/// `rel` under an ALREADY-RESOLVED `root` and return the confined
+/// absolute path, or Error when `rel` escapes (absolute, or `..` past the
+/// base). Purely textual — GetFullPath never touches disk, so a symlink
+/// out is textually under (the same bound Path.under states). `root` is
+/// resolved by the caller (weirDir is already absolute).
+let confineUnder (root: string) (rel: string) : Result<string, string> =
+    if absoluteShapedPath rel then
+        Error $"'{rel}' is an absolute path — it must be a relative path under the base"
+    else
+        let baseDir = Path.TrimEndingDirectorySeparator(Path.GetFullPath root)
+        let joined = Path.GetFullPath(Path.Combine(baseDir, rel))
+        let sep = string Path.DirectorySeparatorChar
+        let prefix = if baseDir.EndsWith sep then baseDir else baseDir + sep
+
+        // SEGMENT-WISE, never prefix-string-wise (`/safe/uploads-evil`
+        // starts with `/safe/uploads` and is NOT under it)
+        if joined = baseDir || joined.StartsWith prefix then
+            Ok joined
+        else
+            Error $"'{rel}' escapes the base — it must stay under it"
+
+// ---- symlink-resolving confinement [D:lockfile-symlink-confinement] ---------
+// confineUnder is purely LEXICAL — GetFullPath normalizes `..` without
+// touching disk, so a symlink OUT (an intermediate dir like `.weir/schemas`
+// → outside, or a final component that is itself a link) escapes a
+// lexically-clean path. This layer resolves the REAL filesystem object and
+// requires it under the REAL root, closing DA-04.
+
+/// segment-wise containment of an ALREADY-RESOLVED path under an
+/// ALREADY-RESOLVED root — the same rule confineUnder's textual check uses
+/// (`/safe/uploads-evil` is not under `/safe/uploads`), applied to real
+/// paths. Both arguments are absolute; the empty tail (path == root) is in.
+let private underResolved (realRoot: string) (realPath: string) : bool =
+    let root = Path.TrimEndingDirectorySeparator realRoot
+    let sep = string Path.DirectorySeparatorChar
+    let prefix = if root.EndsWith sep then root else root + sep
+    realPath = root || realPath.StartsWith prefix
+
+/// the REAL path of `p` when it exists (symlinks resolved to their final
+/// target), or None when it does not. Uses .NET link resolution — a
+/// non-link returns itself, a link chases to the final target; a broken
+/// link resolves to a non-existent target and reads as None here.
+let private realPathOf (p: string) : string option =
+    try
+        if Directory.Exists p then
+            let info = DirectoryInfo p
+            match info.ResolveLinkTarget true with
+            | null -> Some(Path.TrimEndingDirectorySeparator info.FullName)
+            | tgt -> Some(Path.TrimEndingDirectorySeparator tgt.FullName)
+        elif File.Exists p then
+            let info = FileInfo p
+            match info.ResolveLinkTarget true with
+            | null -> Some info.FullName
+            | tgt -> Some tgt.FullName
+        else
+            None
+    with _ ->
+        None
+
+/// resolve `path`'s symlinks up to its DEEPEST EXISTING ancestor, then
+/// re-append the not-yet-existing lexical tail. Nothing on disk is created.
+/// Returns the real absolute path a write/read would actually land on, or
+/// Error when an existing ancestor cannot be resolved. `path` is absolute
+/// and lexically normalized (confineUnder's output).
+let private resolveExistingPrefix (path: string) : Result<string, string> =
+    let rec walk (dir: string) (tail: string list) : Result<string, string> =
+        match realPathOf dir with
+        | Some real -> Ok(List.fold (fun acc seg -> Path.Combine(acc, seg)) real tail)
+        | None ->
+            match Directory.GetParent dir with
+            | null ->
+                // the filesystem root itself does not resolve — a hostile
+                // shape rather than a real tree; refuse in the safe direction
+                Error $"'{path}': its filesystem root does not resolve"
+            | parent -> walk parent.FullName (Path.GetFileName dir :: tail)
+
+    walk (Path.TrimEndingDirectorySeparator path) []
+
+/// the REAL-PATH confinement [D:lockfile-symlink-confinement]: `dest` is
+/// already lexically confined under `root` (confineUnder ran), but a
+/// symlink on the way — an intermediate dir OR the final component — can
+/// still redirect the actual object OUTSIDE. Resolve BOTH the root and the
+/// destination's existing prefix to their real paths and require the
+/// destination under the root. The final component is checked too: if it
+/// exists as a link out, realPathOf chases it and the check fails.
+let confineRealUnder (root: string) (dest: string) : Result<string, string> =
+    // resolve BOTH sides through their existing prefixes: a not-yet-created
+    // root (the add fallback, a fresh tree) resolves to its lexical self —
+    // there is no symlink to follow when nothing exists, so confinement
+    // matches the lexical result until a real symlinked component appears.
+    match resolveExistingPrefix root, resolveExistingPrefix dest with
+    | Error e, _
+    | _, Error e -> Error e
+    | Ok realRoot, Ok realDest ->
+        if underResolved realRoot realDest then
+            Ok dest
+        else
+            Error $"'{dest}' resolves through a symlink to outside .weir/ — the real object escapes the vendor directory"
+
+/// POSIX open(2) with O_NOFOLLOW on the FINAL component, the TOCTOU-tight
+/// write [D:lockfile-symlink-confinement]: the parent is realpath-verified
+/// under root by the caller, and O_NOFOLLOW makes the kernel REFUSE if the
+/// final name is a symlink — so the check and the open refer to the same
+/// object with no replacement window on the leaf. Unix only; the Windows
+/// path falls back to the realpath preflight (its residual window is
+/// stated in the ledger).
+module private Posix =
+    // the WHOLE open(2) flag set is per-OS [D:lockfile-symlink-confinement]:
+    // O_WRONLY agrees (0x0001) but O_CREAT/O_TRUNC/O_NOFOLLOW differ between
+    // Linux and macOS/BSD (fcntl.h). Only branching O_NOFOLLOW left the
+    // Linux O_CREAT (0x0040) / O_TRUNC (0x0200) meaning the WRONG bits on
+    // macOS (O_ASYNC / O_CREAT), so a re-write over a longer existing file
+    // was never truncated — stale trailing bytes broke the restore-repair
+    // hash. writeFlags () ORs the correct set for the running OS.
+    [<Literal>]
+    let private O_WRONLY = 0x0001 // same on Linux and macOS
+
+    [<Literal>]
+    let private O_CREAT_LINUX = 0x0040
+
+    [<Literal>]
+    let private O_TRUNC_LINUX = 0x0200
+
+    [<Literal>]
+    let private O_NOFOLLOW_LINUX = 0x20000
+
+    [<Literal>]
+    let private O_CREAT_MACOS = 0x0200
+
+    [<Literal>]
+    let private O_TRUNC_MACOS = 0x0400
+
+    [<Literal>]
+    let private O_NOFOLLOW_MACOS = 0x0100
+
+    [<DllImport("libc", SetLastError = true)>]
+    extern int private ``open``(string pathname, int flags, int mode)
+
+    // set the mode on the ALREADY-OPEN fd [D:lockfile-symlink-confinement]: libc
+    // open(2) is VARIADIC (mode_t is a `...` arg), and on ARM64 macOS a
+    // variadic trailing arg travels on the STACK — the fixed-signature
+    // `open` P/Invoke above passes mode positionally, supplying garbage
+    // there, so the leaf lands with a wrong/zero mode and a later
+    // File.ReadAllBytes hits Permission denied. fchmod is NON-variadic
+    // (two fixed args), so its P/Invoke is register-exact on every ABI;
+    // applied to the fd already held it re-follows nothing — the
+    // O_NOFOLLOW leaf confinement stands.
+    [<DllImport("libc", SetLastError = true)>]
+    extern int private fchmod(int fd, int mode)
+
+    [<DllImport("libc", SetLastError = true)>]
+    extern int private close(int fd)
+
+    let private writeFlags () =
+        if OperatingSystem.IsMacOS() then
+            O_WRONLY ||| O_CREAT_MACOS ||| O_TRUNC_MACOS ||| O_NOFOLLOW_MACOS
+        else
+            O_WRONLY ||| O_CREAT_LINUX ||| O_TRUNC_LINUX ||| O_NOFOLLOW_LINUX
+
+    /// write bytes creating/truncating the final component, REFUSING to
+    /// follow a symlinked leaf (ELOOP). Returns Error on any libc failure,
+    /// naming the leaf — the caller turns that into the located refusal.
+    let writeNoFollow (path: string) (bytes: byte[]) : Result<unit, string> =
+        let fd = ``open`` (path, writeFlags (), 0o644)
+
+        if fd < 0 then
+            let err = Marshal.GetLastWin32Error()
+            // ELOOP (40 on Linux, 62 on macOS) is the symlinked-leaf refusal
+            Error $"cannot open '{path}' without following symlinks (errno {err})"
+        else
+            // NAIL the mode on the open fd before writing [D:lockfile-symlink-confinement]:
+            // the variadic-open mode arg is unreliable on ARM64 macOS, so the
+            // 0o644 passed above may not have taken — fchmod on the fd we hold
+            // makes the leaf 0o644 regardless (no re-follow; the O_NOFOLLOW
+            // confinement already fixed which object this fd names).
+            fchmod (fd, 0o644) |> ignore
+
+            try
+                use fs = new FileStream(new Microsoft.Win32.SafeHandles.SafeFileHandle(nativeint fd, true), FileAccess.Write)
+                fs.Write(bytes, 0, bytes.Length)
+                Ok()
+            with ex ->
+                Error $"cannot write '{path}': {ex.Message}"
+
+/// write `bytes` to `dest`, which is confined under `root`
+/// [D:lockfile-symlink-confinement]. The parent directory is realpath-
+/// verified under root; on Unix the leaf is opened O_NOFOLLOW so a
+/// symlinked final component is refused by the kernel at open time (check
+/// and write name the same object). On Windows the realpath preflight
+/// stands alone (residual window stated in the ledger).
+let writeConfined (root: string) (dest: string) (bytes: byte[]) : Result<unit, string> =
+    let parent = Path.GetDirectoryName dest
+
+    // the PARENT must resolve under root — an intermediate symlink out is
+    // caught here even when the leaf does not yet exist
+    match confineRealUnder root parent with
+    | Error e -> Error e
+    | Ok _ ->
+        // and the leaf, if it already exists as a link out, is caught too
+        match confineRealUnder root dest with
+        | Error e -> Error e
+        | Ok _ ->
+            try
+                Directory.CreateDirectory parent |> ignore
+            with _ ->
+                ()
+
+            if OperatingSystem.IsWindows() then
+                try
+                    File.WriteAllBytes(dest, bytes)
+                    Ok()
+                with ex ->
+                    Error $"cannot write '{dest}': {ex.Message}"
+            else
+                Posix.writeNoFollow dest bytes
+
+/// a vendored name safe as a FILE-NAME segment [D:lockfile-confinement]:
+/// the F14 guard at the argv crossing — no separators, no `..`, no
+/// leading dot, no absolute shape, so `--as` can only ever name a file
+/// directly inside its kind's directory. Hyphens ARE allowed (a schema
+/// name like `k8s-configmap` is legitimate); the stricter identifier
+/// rule an import ALIAS needs is `plainName`, layered on top by
+/// `add module`. This is the confinement floor every `--as` shares; the
+/// lock-read confinement is the defence in depth behind it.
+let vendorNameSafe (name: string) : bool =
+    name.Length > 0
+    && not (absoluteShapedPath name)
+    && not (name.Contains "..")
+    && not (name.StartsWith ".")
+    && name |> Seq.forall (fun c -> System.Char.IsLetterOrDigit c || c = '_' || c = '-' || c = '.')
+
+/// a plain NAME that can also be an import ALIAS: a letter, then
+/// letters/digits/_ — the rule `add module` enforces (its name becomes a
+/// module alias, so no hyphen, no dot). Stricter than vendorNameSafe.
+let plainName (name: string) : bool =
+    name.Length > 0
+    && System.Char.IsLetter name[0]
+    && name |> Seq.forall (fun c -> System.Char.IsLetterOrDigit c || c = '_')
 
 // ---- discovery -------------------------------------------------------------
 
@@ -63,6 +322,28 @@ type LockEntry =
       // generation time — denormalized from the file (hash-protected,
       // so they cannot drift apart) so verify needs no weir parser
       Version: string option }
+
+/// the CONFINED dest for a lock entry [D:lockfile-confinement] — every
+/// consumer (restore/verify/gen types) resolves an entry's Path through
+/// THIS, PER ENTRY: a hostile path (absolute, `..`) is a located refusal
+/// naming the entry, never a write/read outside `.weir/`. Per-entry, not
+/// whole-lock: a tampered entry does not strand the benign siblings — the
+/// hostile one refuses, the rest proceed.
+let entryDest (weirDir: string) (e: LockEntry) : Result<string, string> =
+    // TWO gates [D:lockfile-symlink-confinement]: the lexical confineUnder
+    // (an absolute/`..` path), THEN the real-path check (a symlinked
+    // intermediate dir or final component that redirects the actual object
+    // outside .weir/ — DA-04). Both refuse PER ENTRY, naming the entry, so
+    // a benign sibling still restores.
+    let tampered () =
+        $"{e.Kind} {e.Name}: the lock records path '{e.Path}', which escapes .weir/ — a lock entry must stay under the vendor directory; this lock was tampered with or hand-edited"
+
+    match confineUnder weirDir e.Path with
+    | Error _ -> Error(tampered ())
+    | Ok dest ->
+        match confineRealUnder weirDir dest with
+        | Ok _ -> Ok dest
+        | Error _ -> Error(tampered ())
 
 let sha256Hex (bytes: byte[]) : string =
     use sha = Security.Cryptography.SHA256.Create()
@@ -359,18 +640,22 @@ let vendorFile
 
         let others = entries |> List.filter (fun e -> not (e.Kind = kind && e.Name = name))
 
-        try
-            Directory.CreateDirectory(Path.GetDirectoryName dest) |> ignore
-            File.WriteAllBytes(dest, bytes)
-            writeLock weirDir (others @ [ entry ])
-            Ok(hash, prior)
-        with ex ->
-            (try
-                File.Delete dest
-             with _ ->
-                 ())
+        // even a vendored kind directory (.weir/modules) can be a symlink
+        // OUT [D:lockfile-symlink-confinement] — writeConfined realpath-
+        // verifies the parent and opens the leaf O_NOFOLLOW
+        match writeConfined weirDir dest bytes with
+        | Error w -> Error w
+        | Ok() ->
+            try
+                writeLock weirDir (others @ [ entry ])
+                Ok(hash, prior)
+            with ex ->
+                (try
+                    File.Delete dest
+                 with _ ->
+                     ())
 
-            Error $"write failed: {ex.Message} — the partial file was removed"
+                Error $"write failed: {ex.Message} — the partial file was removed"
 
 // ---- the JSON Schema subset [D:yaml-schemas] -------------------------------
 
@@ -871,18 +1156,22 @@ let addFetched (weirDir: string) (kind: string) (name: string) (url: string) : R
 
                         let others = entries |> List.filter (fun e -> not (e.Kind = kind && e.Name = name))
 
-                        try
-                            Directory.CreateDirectory(Path.GetDirectoryName dest) |> ignore
-                            File.WriteAllBytes(dest, bytes)
-                            writeLock weirDir (others @ [ entry ])
-                            Ok $"added {kind} {name} ({hash.Substring(0, 12)}…) from {url}"
-                        with ex ->
-                            (try
-                                File.Delete dest
-                             with _ ->
-                                 ())
+                        // a symlinked kind directory (.weir/schemas → outside)
+                        // must not redirect the vendored write
+                        // [D:lockfile-symlink-confinement]
+                        match writeConfined weirDir dest bytes with
+                        | Error w -> Error w
+                        | Ok() ->
+                            try
+                                writeLock weirDir (others @ [ entry ])
+                                Ok $"added {kind} {name} ({hash.Substring(0, 12)}…) from {url}"
+                            with ex ->
+                                (try
+                                    File.Delete dest
+                                 with _ ->
+                                     ())
 
-                            Error $"write failed: {ex.Message} — the partial file was removed"
+                                Error $"write failed: {ex.Message} — the partial file was removed"
 
 let restore (weirDir: string) : Result<string list, string> =
     match readLock weirDir with
@@ -892,7 +1181,15 @@ let restore (weirDir: string) : Result<string list, string> =
         let results =
             entries
             |> List.map (fun e ->
-                let dest = Path.Combine(weirDir, e.Path)
+                // CONFINE PER ENTRY [D:lockfile-confinement]: a hostile
+                // path refuses HERE (located, naming the entry) and writes
+                // nothing; a benign sibling still restores. restore
+                // overwrites only its OWN artifacts inside .weir/, never a
+                // path outside it — the confinement makes "outside"
+                // unreachable [D:lockfile-confinement]
+                match entryDest weirDir e with
+                | Error refusal -> Error refusal
+                | Ok dest ->
 
                 // a PRESENT-BUT-MODIFIED url artifact is drift from the
                 // lock's intent — restore repairs it by refetching, the
@@ -924,8 +1221,14 @@ let restore (weirDir: string) : Result<string list, string> =
                                 $"{e.Kind} {e.Name}: fetched bytes hash {hash.Substring(0, 12)}… but the lock records {e.Sha256.Substring(0, 12)}… — the source changed; if intended, `weir add schema` again"
                         else
                             let repaired = File.Exists dest
-                            Directory.CreateDirectory(Path.GetDirectoryName dest) |> ignore
-                            File.WriteAllBytes(dest, bytes)
+
+                            // the TOCTOU-tight write [D:lockfile-symlink-confinement]:
+                            // writeConfined realpath-verifies the parent and opens the
+                            // leaf O_NOFOLLOW, so a symlinked component (DA-04) is
+                            // refused at open, not merely at the earlier preflight
+                            match writeConfined weirDir dest bytes with
+                            | Error w -> Error $"{e.Kind} {e.Name}: {w}"
+                            | Ok() ->
 
                             Ok(
                                 if repaired then
@@ -1064,7 +1367,14 @@ let verify (resolve: string -> string) (weirDir: string) : Result<string list * 
         let findings = ResizeArray<VerifyFinding>()
 
         for e in entries do
-            let dest = Path.Combine(weirDir, e.Path)
+            // CONFINE PER ENTRY [D:lockfile-confinement]: verify must not
+            // READ outside .weir/ either — a hostile path is a MODIFIED-class
+            // finding naming the escape, never a read of the escaped file
+            match entryDest weirDir e with
+            | Error refusal ->
+                findings.Add(Modified(e, "escapes .weir/"))
+                lines.Add $"{refusal}"
+            | Ok dest ->
 
             match e.Kind with
             // the hash arm: vendored artifacts verify by content

@@ -84,6 +84,24 @@ let parallelDepthNow () : int = parallelDepth.Value
 
 let setParallelDepth (d: int) : unit = parallelDepth.Value <- d
 
+// the plan-capture guard [D:plan-proc-runtime-guard]: a THREAD-LOCAL
+// depth, not AsyncLocal — it mirrors PlanMode's capture stack (Eval),
+// which is thread-local so a worker never inherits the capturing
+// thread's frame. Proc's spawn point (compiled before Eval) consults
+// this to REFUSE a process started while a plan captures on this
+// thread — an indirect helper runs on the capturing thread, so the
+// syntactic firstPlanRefusal that cannot follow the helper is backed
+// by this runtime check. Kept minimal (a bool via depth) so the frame
+// machinery and its Value dependency stay in Eval.
+let private planGuardDepth = new System.Threading.ThreadLocal<int>(fun () -> 0)
+
+/// is a plan capturing on THIS thread? (Proc's spawn-time refusal)
+let planGuardActive () : bool = planGuardDepth.Value > 0
+
+let enterPlanGuard () : unit = planGuardDepth.Value <- planGuardDepth.Value + 1
+
+let exitPlanGuard () : unit = planGuardDepth.Value <- max 0 (planGuardDepth.Value - 1)
+
 let enterWorker (parentCwd: string) : unit = localCwd.Value <- Some parentCwd
 
 let exitWorker () : unit =

@@ -4,6 +4,27 @@
 
 ### Fixed
 
+- **A parallel or race combinator inside a `plan` now refuses instead of
+  escaping capture.** `plan`'s mutation capture is thread-local, but
+  `Seq.pmap`/`pmapWith`/`piter`/`piterWith`/`pfirst`/`pfirstWith` run
+  their callbacks on worker threads that did not inherit the capture
+  frame — so a `File.write` (or any native mutation) inside a parallel
+  callback under `plan` executed for real while the plan reported empty.
+  The combinators now refuse on the calling thread before any worker is
+  scheduled, with a located error naming the combinator. The same
+  combinators outside a plan are unchanged, and a native mutation reached
+  through a *serial* helper still captures normally.
+
+- **An indirect process started inside a `plan` now refuses at runtime.**
+  The static plan check does not follow helper-function references, so a
+  helper that forced a command (e.g. `sh -c "…"`) spawned the process
+  for real during plan construction while the plan reported empty. The
+  process spawn point now refuses when a plan is capturing on the same
+  thread, with the same "proc refused inside plan" message. The direct
+  `sh -c` form still refuses at check time (belt and suspenders), and a
+  weir-native `File`/`Dir`/`Http` mutation reached through a helper still
+  captures — only process spawns are refused.
+
 - **`within serve` reaches the handler over `localhost`, not just
   `127.0.0.1`.** The scoped listener registered a prefix for
   `127.0.0.1` only, so a client addressing the server as `localhost`
@@ -23,6 +44,66 @@
   a path that is not a path. `""` now raises the same located
   `no such path` error a missing path raises. A real missing path still
   raises, unchanged.
+
+- **`restore` and `verify` confine a lock entry's path to `.weir/`.** A
+  hand-edited or tampered lockfile whose entry recorded a path outside
+  the vendor directory (absolute, or `../`) made `restore` write and
+  `verify` read outside `.weir/` — `restore` crashed on the write. Each
+  entry's path is now confined per entry: a hostile one is a located
+  refusal naming the entry, while its benign siblings still restore.
+  `restore` overwrites only its own artifacts inside `.weir/`.
+
+- **Contract-path confinement now resolves symlinks.** The path check
+  above was purely lexical, so a lock path with no `../` and no absolute
+  root still escaped `.weir/` when a component on the way — an
+  intermediate directory like `.weir/schemas`, or the final file itself —
+  was a symlink pointing outside. `restore` followed it and wrote outside
+  the vendor directory. Confinement now resolves the real filesystem
+  object (symlinks chased on every existing component) and requires it
+  under the real `.weir/` root, across every sink: `restore`, `verify`,
+  `gen types`, `add schema`, and `add module`. The write opens the final
+  component without following a symlinked leaf (`O_NOFOLLOW` on Unix), so
+  the check and the write refer to the same object, then `fchmod`s that
+  open descriptor to `0o644` (libc `open(2)` is variadic, and its mode
+  argument was unreliable on ARM64 macOS — a vendored file could land
+  unreadable, so a later `verify` failed with a permission error). The
+  full `open(2)` flag set (`O_CREAT`/`O_TRUNC`/`O_NOFOLLOW`) is now
+  branched per OS: the Linux values had been hardcoded, so on macOS
+  `O_TRUNC` was never set and a re-write over a longer existing file
+  (repairing a tampered vendored file) left stale trailing bytes and
+  failed the post-repair hash. A user-chosen `gen types --out <path>`
+  stays unconfined by design.
+
+- **`add schema --as` refuses a name that is not a plain name.** An
+  absolute or traversal `--as` name vendored the schema outside `.weir/`.
+  The plain-name rule `add module` already enforced is now shared by
+  `add schema`, `add module`, and `gen types`, refused before the fetch
+  with nothing written.
+
+- **An unreadable import is a located diagnostic, not a crash.** An
+  imported module that existed but could not be read (permissions) crashed
+  `check`, `check --json`, `check --can`, and the LSP. The import source
+  is now read once into a result: an unreadable file gives a located
+  `cannot read import` diagnostic (a missing file still says `no file
+  at …`), and the previous read-twice shape no longer races a file
+  deleted mid-check.
+
+- **A `for` loop no longer trips `pure`, `readonly`, `plan`, or
+  `--strict`.** The `for` desugar targets a library member (`Seq.iter`),
+  but the effect classifiers treated every `|`-prefixed internal name as
+  a command — so a `for` body that reached no effect was refused inside
+  a `pure`/`readonly`/`plan` block, the internal desugar key leaked into
+  the refusal message, and each `for` added a phantom dynamic-head
+  capability that failed `--strict`. The classifiers now distinguish a
+  command reifier from a library desugar and read the latter as its
+  target member; no internal `|`-name reaches a user-facing message.
+
+- **A multi-statement `readonly` body parses.** A `readonly` block whose
+  body ran a unit statement before its result value space-joined the
+  statement onto its successor and mis-parsed (a spurious arity error),
+  because `readonly` was missing from the block-sentinel registration
+  that `pure` and `plan` have. `readonly` now sequences its statements
+  like `pure`; its mutation ceiling is unchanged.
 
 ## v0.0.46
 

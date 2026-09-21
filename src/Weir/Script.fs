@@ -436,10 +436,10 @@ let isWithinHead (piece: string) : bool =
     afterLet = "within"
     || afterLet.StartsWith "within " && not (afterLet.Contains ";")
 
-// the standalone pure head [D:pure-stage1]: `pure` (bare, or behind
-// `let <name> =`) opens its block exactly as a within head does — the
-// same lexical rule, one word shorter (no kind, no args)
-let isPureHead (piece: string) : bool =
+// a standalone district head [D:pure-stage1]: a bare district keyword
+// (or one behind `let <name> =`) opens its block exactly as a within
+// head does — the same lexical rule, one word shorter (no kind, no args)
+let private isDistrictHead (keyword: string) (piece: string) : bool =
     let t = piece.Trim()
 
     let afterLet =
@@ -450,28 +450,23 @@ let isPureHead (piece: string) : bool =
         else
             t
 
-    afterLet = "pure"
-    || afterLet.StartsWith "pure " && not (afterLet.Contains ";")
+    afterLet = keyword
+    || afterLet.StartsWith(keyword + " ") && not (afterLet.Contains ";")
+
+let isPureHead (piece: string) : bool = isDistrictHead "pure" piece
+
+// the standalone readonly head [D:desugar-namespace]: readonly opens a
+// STATEMENT block exactly as pure does — a body may sequence unit
+// statements before its result value, so it needs the sibling sentinel
+// between them (an earlier assumption that "readonly's body is
+// value-shaped" space-joined a multi-statement body and mis-parsed it)
+let isReadonlyHead (piece: string) : bool = isDistrictHead "readonly" piece
 
 // the standalone plan head [D:plan-apply]: `plan` (bare, or behind
-// `let <name> =`) opens its block exactly as pure does — but a plan body
-// is a STATEMENT sequence (bare consecutive mutations, captured as Ops),
-// so unlike pure/readonly it genuinely NEEDS the sibling sentinel
-// between its statements (the reason it is registered in dangleOpensBlock
-// where readonly is not — readonly's body is value-shaped).
-let isPlanHead (piece: string) : bool =
-    let t = piece.Trim()
-
-    let afterLet =
-        if t.StartsWith "let " then
-            match t.IndexOf '=' with
-            | -1 -> t
-            | i -> t.Substring(i + 1).TrimStart()
-        else
-            t
-
-    afterLet = "plan"
-    || afterLet.StartsWith "plan " && not (afterLet.Contains ";")
+// `let <name> =`) opens its block exactly as pure/readonly do — a plan
+// body is a STATEMENT sequence (bare consecutive mutations, captured as
+// Ops), so it needs the sibling sentinel between its statements
+let isPlanHead (piece: string) : bool = isDistrictHead "plan" piece
 
 // the binder-head scanner [D:scoped-procs] [D:http-serve]: a `within
 // proc <b> =` / `within serve <b> =` head whose TAIL is a resource spec
@@ -546,6 +541,9 @@ let dangleOpensBlock (piece: string) : bool =
     // [D:http-serve] — isWithinHead's `;`-guard would hide it
     || endsInServeHead t
     || isPureHead t
+    // readonly opens a statement block too [D:desugar-namespace] — a
+    // multi-statement body sentinels between its statements, like pure
+    || isReadonlyHead t
     // the plan head opens a statement block [D:plan-apply]
     || isPlanHead t
     // retry/poll heads and the until binder line open their blocks
@@ -3510,14 +3508,34 @@ let runsCommandT: Check.TypedExpr -> bool = Check.runsCommandT
 // disk (decision 14).
 let importSourceOverride: (string -> string list option) option ref = ref None
 
-let private readImportSource (absPath: string) : string list option =
+// the import read, ONCE into a Result [D:lockfile-confinement]: an
+// unreadable file (mode 000) crashed check because Exists-then-ReadAllLines
+// was unguarded, and the two-call shape (isNone then get) also raced a
+// file deleted between them. Absent -> None (today's "no file at …");
+// present-but-unreadable -> Error naming the path (a NEW located
+// diagnostic, never a crash). The buffer override (LSP) is absent-or-present
+// by its own contract, so it maps to Ok.
+type private ImportRead =
+    | ISource of string list
+    | IAbsent
+    | IUnreadable of string
+
+let private readImportSource (absPath: string) : ImportRead =
     match importSourceOverride.Value with
-    | Some f -> f absPath
+    | Some f ->
+        match f absPath with
+        | Some lines -> ISource lines
+        | None -> IAbsent
     | None ->
-        if IO.File.Exists absPath then
-            Some(IO.File.ReadAllLines absPath |> Array.toList)
-        else
-            None
+        try
+            ISource(IO.File.ReadAllLines absPath |> Array.toList)
+        with
+        | :? IO.FileNotFoundException
+        | :? IO.DirectoryNotFoundException -> IAbsent
+        | ex ->
+            // present but unreadable — permission denied, a directory in
+            // the path, an IO fault; name the path and the reason, located
+            IUnreadable ex.Message
 
 // resolve + check an imported module to a LoadedModule, or an ImportError.
 // THE GRAPH [D:modules-v1]: `cache` (normalized abs path -> module) checks a
@@ -3574,7 +3592,12 @@ let rec loadModuleCachedWith
         Ok
             { cached with
                 Alias = importAs |> Option.defaultValue cached.NaturalName }
-    elif (readImportSource absPath) |> Option.isNone then
+    else
+
+    // read the source ONCE [D:lockfile-confinement] — no Exists/read race,
+    // and present-but-unreadable is its own located diagnostic, not a crash
+    match readImportSource absPath with
+    | IAbsent ->
         if path.StartsWith "weir:" then
             let n = path.Substring 5
 
@@ -3582,8 +3605,8 @@ let rec loadModuleCachedWith
                 $"no vendored module '{n}' ({absPath}) — vendor it: weir add module <host>/<org>/<repo>//<file>@<ref> --as {n} (a generated types module lands here via: weir gen types --schema {n})"
         else
             stmt $"cannot resolve import: no file at {absPath}"
-    else
-        let rawLines = readImportSource absPath |> Option.get
+    | IUnreadable reason -> stmt $"cannot read import {absPath}: {reason}"
+    | ISource rawLines ->
         let body, bodyOffset, _ = scriptBody rawLines
 
         let assembled = body |> List.mapi (fun i l -> bodyOffset + i + 1, l) |> assemble // raw lines: assemble classifies/strips internally [D:content-bytes]
@@ -3839,8 +3862,9 @@ let rec replayModule (procFacts: (string * Eval.Value) list) (lm: LoadedModule) 
 /// the member count for the add's report line.
 let checkVendoredModule (absPath: string) : Result<int, string> =
     match readImportSource absPath with
-    | None -> Error $"cannot read {absPath}"
-    | Some raws ->
+    | IAbsent -> Error $"cannot read {absPath}"
+    | IUnreadable reason -> Error $"cannot read {absPath}: {reason}"
+    | ISource raws ->
         if raws |> List.exists (fun l -> l.StartsWith "import ") then
             Error
                 "the module imports — vendored modules are leaves for now (transitive vendoring is a current boundary, not a refusal of the idea): inline the dependency, or vendor both and import each"
@@ -4334,7 +4358,13 @@ let loadSigs (path: string) (decls: SigDecl list) : Diagnostic list * SigInfo li
 /// buffers first when the LSP is driving, else disk) — cross-file hover
 /// and definition read the TARGET file through the same channel
 /// [D:lsp-cross-file]
-let targetSourceLines (absPath: string) : string list option = readImportSource absPath
+let targetSourceLines (absPath: string) : string list option =
+    // hover/definition want present-or-not; an unreadable target is
+    // "no source to show", the same None as absent [D:lockfile-confinement]
+    match readImportSource absPath with
+    | ISource lines -> Some lines
+    | IAbsent
+    | IUnreadable _ -> None
 
 /// the signatures a file's #sig head declares, loaded; QUIET on load
 /// errors — diagnostics are analyzeLines' job [D:lsp-cross-file]
@@ -4377,7 +4407,9 @@ let sigCmdDiagnostics
                      let rec spine (e: Check.TypedExpr) (acc: Check.TypedExpr list) =
                          match e.Kind with
                          | Check.TEApp(f, a) -> spine f (a :: acc)
-                         | Check.TEVar n when n.StartsWith "|" -> Some(n, acc)
+                         // a COMMAND reifier carries (prog, argv) [D:desugar-namespace];
+                         // a library desugar does not — never recover a command from it
+                         | Check.TEVar n when Weir.Effects.isCommandReifier n -> Some(n, acc)
                          | _ -> None
 
                      match spine te [] with

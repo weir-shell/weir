@@ -7156,6 +7156,37 @@ let pureRegionTests =
               let e = firstErr [ "let x ="; "    pure"; "        prompt \"q\""; "print x" ]
               Expect.stringContains e.Message "'prompt'" "prompt reads and writes — never pure"
           }
+          test "a pure for body reaching no effect is ACCEPTED [D:desugar-namespace] (F5)" {
+              // the for-desugar targets Seq.iter (a library member), not a
+              // command — a pure loop body must not refuse as a spawn
+              Expect.isEmpty
+                  (errsOf
+                      [ "let pure noop x = ()"
+                        "let a ="
+                        "    pure"
+                        "        for n in [1] do"
+                        "            noop n"
+                        "        \"ok\""
+                        "print a" ])
+                  "a pure for loop is pure"
+
+              // plan admits it too — a library desugar is captured, not refused
+              Expect.isEmpty
+                  (errsOf
+                      [ "let pure noop x = ()"
+                        "let p ="
+                        "    plan"
+                        "        for n in [1] do"
+                        "            noop n"
+                        "print $\"{p |> Plan.isEmpty}\"" ])
+                  "a library desugar in a plan block is not a proc refusal"
+
+              // but a REAL command in the for body still refuses, and the
+              // message speaks the command, never the |seqIter key
+              let e = firstErr [ "pure"; "    for n in [1] do"; "        echo hi" ]
+              Expect.stringContains e.Message "'echo' runs a command" "a real command still refuses"
+              Expect.isFalse (e.Message.Contains "|seqIter") "no desugar key in the message"
+          }
           test "union constructors are pure by construction — applied and partially applied [D:pure-stdin-ctors]" {
               Expect.isEmpty
                   (errsOf
@@ -7268,6 +7299,24 @@ let effectPartitionTests =
               // external mutation (changes the world)
               for n in [ "File.write"; "File.append"; "File.copy"; "Dir.create"; "Dir.delete"; "Dir.deleteAll"; "Proc.stop"; "print"; "printerr"; "Log.info"; "exit"; "Path.newTempDir" ] do
                   Expect.equal (Weir.Effects.effectClass n) (Some M) $"{n} is external mutation"
+          }
+          test "the |-name family split: library desugar vs command reifier [D:desugar-namespace]" {
+              // library desugars target a plain member (Seq.iter/…) — NOT
+              // commands, NOT effectful
+              for k in [ "|seqIter"; "|seqMap"; "|seqFreeze"; "|seqAppend"; "|seqRange"; "|seqItem"; "|retryDefaults"; "|pollDefaults" ] do
+                  Expect.isFalse (Weir.Effects.isCommandReifier k) $"{k} is a library desugar, not a command"
+                  Expect.isFalse (Weir.Effects.effectfulName k) $"{k} reads as its pure target member"
+                  Expect.equal (Weir.Effects.effectClass k) None $"{k} has no effect class"
+
+              // |seqIter resolves to its target member
+              Expect.equal (Weir.Effects.libraryDesugarTarget "|seqIter") (Some "Seq.iter") "the desugar names its target"
+              Expect.equal (Weir.Effects.libraryDesugarTarget "|orFailed") None "a command reifier is not a library desugar"
+
+              // command reifiers stay spawns (effectful, mutation)
+              for k in [ "|completed"; "|succeeded"; "|orFailed"; "|print"; "|exitCoded" ] do
+                  Expect.isTrue (Weir.Effects.isCommandReifier k) $"{k} targets a spawn"
+                  Expect.isTrue (Weir.Effects.effectfulName k) $"{k} is effectful"
+                  Expect.equal (Weir.Effects.effectClass k) (Some M) $"{k} is external mutation (a command)"
           }
           test "Http.send is method-dependent — effectClass alone cannot place it (None)" {
               Expect.equal (Weir.Effects.effectClass "Http.send") None "the name defers to the request value"
@@ -7395,6 +7444,61 @@ let readonlyBlockTests =
                         "            1 + 1"
                         "print $\"{x}\"" ])
                   "a pure island nests inside the looser ceiling"
+          }
+          test "a for body with no effect is ACCEPTED inside readonly [D:desugar-namespace] (F5)" {
+              // the |seqIter desugar is a LIBRARY member (Seq.iter), not a
+              // command — a pure for body must not be refused as a spawn
+              Expect.isEmpty
+                  (errsOf
+                      [ "let pure noop x = ()"
+                        "let a ="
+                        "    readonly"
+                        "        for n in [1] do"
+                        "            noop n"
+                        "        \"ok\""
+                        "print a" ])
+                  "a pure for loop reaches no effect — readonly admits it"
+          }
+          test "a multi-statement readonly body sentinels between statements [D:desugar-namespace] (F6)" {
+              // an earlier assumption that readonly's body is value-shaped
+              // space-joined a non-final statement onto its successor and
+              // mis-parsed it; a unit statement before the result now parses
+              Expect.isEmpty
+                  (errsOf
+                      [ "let noop x = ()"
+                        "let b ="
+                        "    readonly"
+                        "        [1] |> Seq.iter noop"
+                        "        \"ok\""
+                        "print b" ])
+                  "a non-final piped unit statement types under readonly, like pure"
+
+              // two consecutive unit statements before the result, too
+              Expect.isEmpty
+                  (errsOf
+                      [ "let noop x = ()"
+                        "let b ="
+                        "    readonly"
+                        "        noop 1"
+                        "        noop 2"
+                        "        \"ok\""
+                        "print b" ])
+                  "consecutive unit statements sequence, never space-join"
+          }
+          test "no |-desugar key reaches a readonly refusal message [D:desugar-namespace] (F5-vocabulary)" {
+              // a REAL effect in a for body still refuses — but the message
+              // speaks the effect, never the internal |seqIter key
+              let e =
+                  firstErr
+                      [ "let b ="
+                        "    readonly"
+                        "        for n in [1] do"
+                        "            File.write \"f\" [\"y\"]"
+                        "        \"ok\"" ]
+
+              Expect.stringContains e.Message "'File.write' writes the filesystem" "the real effect names itself"
+              Expect.isFalse (e.Message.Contains "|seqIter") "the desugar key never surfaces"
+              Expect.isFalse (e.Message.Contains "|") "no |-prefixed key in a user-facing message"
           }
           test "an unknown callable refuses — conservatism carries over" {
               let e = firstErr [ "let unknown g ="; "    readonly"; "        g 1" ]
@@ -7669,6 +7773,146 @@ let planApplyTests =
               Expect.isTrue
                   (ds |> List.exists (fun d -> d.Message.Contains "plan takes a block"))
                   "the bare head teaches the block form"
+          }
+          // [D:plan-parallel-refusal] DA-01: PlanMode's capture frame is
+          // thread-local, so a parallel/race callback runs on a worker
+          // WITHOUT it — a native mutation would escape capture and run
+          // for real. The combinators refuse on the calling thread before
+          // any worker is scheduled. Assert the FILESYSTEM: no marker.
+          test "DA-01: piterWith inside a plan REFUSES before any worker writes a file" {
+              let dir = td ()
+              System.IO.Directory.CreateDirectory dir |> ignore
+              let marker = System.IO.Path.Combine(dir, "parallel-marker.txt")
+              let markerW = weirPath marker
+
+              try
+                  let code =
+                      runFile
+                          [ "let changes ="
+                            "    plan"
+                            $"        [1] |> Seq.piterWith 1 (fun _ -> File.write \"{markerW}\" [\"probe\"])"
+                            "print $\"empty={changes |> Plan.isEmpty}\"" ]
+
+                  Expect.notEqual code 0 "the plan refused the parallel combinator"
+                  Expect.isFalse (System.IO.File.Exists marker) "no worker wrote the marker"
+              finally
+                  System.IO.Directory.Delete(dir, true)
+          }
+          test "DA-01: piter / pmap / pfirst inside a plan each REFUSE (message pins), no file" {
+              // the refusal fires at runtime on the calling thread; `run`
+              // evaluates in-process so the located failwith is catchable
+              let refuses combinator body =
+                  Expect.throwsC
+                      (fun () -> run ("plan" + Weir.Parser.sibSepStr + body) |> ignore)
+                      (fun ex ->
+                          Expect.stringContains ex.Message $"'{combinator}' is refused inside 'plan'" $"{combinator} refuses")
+
+              // File.write to a never-existing path proves no worker ran:
+              // a captured write is a no-op, a refusal precedes any worker
+              refuses "piter" "[1; 2; 3; 4] |> Seq.piter (fun n -> File.write \"/tmp/weir-da01-never\" [\"x\"])"
+              refuses "pmap" "[1; 2] |> Seq.pmap (fun n -> File.write \"/tmp/weir-da01-never\" [\"x\"]) |> Seq.length"
+              refuses "pfirst" "[1; 2] |> Seq.pfirst (fun n -> File.write \"/tmp/weir-da01-never\" [\"x\"])"
+              refuses "piterWith" "[1] |> Seq.piterWith 1 (fun n -> File.write \"/tmp/weir-da01-never\" [\"x\"])"
+              refuses "pmapWith" "[1] |> Seq.pmapWith 1 (fun n -> File.write \"/tmp/weir-da01-never\" [\"x\"]) |> Seq.length"
+              refuses "pfirstWith" "[1] |> Seq.pfirstWith 1 (fun n -> File.write \"/tmp/weir-da01-never\" [\"x\"])"
+              Expect.isFalse (System.IO.File.Exists "/tmp/weir-da01-never") "no combinator wrote the marker"
+          }
+          test "DA-01: a nested plan's parallel combinator REFUSES too (filesystem)" {
+              let dir = td ()
+              System.IO.Directory.CreateDirectory dir |> ignore
+              let marker = System.IO.Path.Combine(dir, "nested.txt")
+              let markerW = weirPath marker
+
+              try
+                  let code =
+                      runFile
+                          [ "let changes ="
+                            "    plan"
+                            "        let inner ="
+                            "            plan"
+                            $"                [1] |> Seq.piter (fun _ -> File.write \"{markerW}\" [\"x\"])"
+                            "        print $\"inner empty={inner |> Plan.isEmpty}\""
+                            "print $\"outer empty={changes |> Plan.isEmpty}\"" ]
+
+                  Expect.notEqual code 0 "the nested plan refused the parallel combinator"
+                  Expect.isFalse (System.IO.File.Exists marker) "nothing written"
+              finally
+                  System.IO.Directory.Delete(dir, true)
+          }
+          test "DA-01: a callback that itself fails is never reached — the refusal precedes scheduling" {
+              // even a callback that WOULD raise must not run: the refusal
+              // is on the calling thread before any worker is scheduled
+              Expect.throwsC
+                  (fun () ->
+                      run ("plan" + Weir.Parser.sibSepStr + "[1] |> Seq.piter (fun n -> fail \"callback ran\")")
+                      |> ignore)
+                  (fun ex -> Expect.stringContains ex.Message "'piter' is refused inside 'plan'" "refused, not the callback's fail")
+          }
+          test "DA-01: a parallel combinator OUTSIDE a plan still runs" {
+              let dir = td ()
+              System.IO.Directory.CreateDirectory dir |> ignore
+              let d = weirPath dir
+
+              try
+                  let code =
+                      runFile
+                          [ $"[1; 2; 3] |> Seq.piterWith 2 (fun n -> File.write $\"{d}/out-{{n}}.txt\" [\"x\"])"
+                            "print \"ran\"" ]
+
+                  Expect.equal code 0 "the parallel combinator ran outside a plan"
+                  Expect.equal (System.IO.Directory.GetFiles dir).Length 3 "all three arms wrote"
+              finally
+                  System.IO.Directory.Delete(dir, true)
+          }
+          // [D:plan-proc-runtime-guard] DA-02: firstPlanRefusal is a
+          // syntactic walk that cannot follow a helper reference, so an
+          // indirect proc slips past the checker. A thread-local guard at
+          // the ONE spawn point refuses at runtime (the helper runs on the
+          // capturing thread). The syntactic diagnostic stays for usability.
+          test "DA-02: a helper-wrapped proc inside a plan REFUSES at runtime, no process runs" {
+              let dir = td ()
+              System.IO.Directory.CreateDirectory dir |> ignore
+              let marker = System.IO.Path.Combine(dir, "process-marker.txt")
+              let markerW = weirPath marker
+
+              try
+                  let code =
+                      runFile
+                          [ "let runMarker () ="
+                            $"    let lines = sh -c \"printf marker > {markerW}\""
+                            "    lines |> Seq.length"
+                            "let changes ="
+                            "    plan"
+                            "        let _forced = runMarker ()"
+                            "        ()"
+                            "print $\"empty={changes |> Plan.isEmpty}\"" ]
+
+                  Expect.notEqual code 0 "the plan refused the indirect proc"
+                  Expect.isFalse (System.IO.File.Exists marker) "no process ran (no marker)"
+              finally
+                  System.IO.Directory.Delete(dir, true)
+          }
+          test "DA-02: a native File.write reached THROUGH a serial helper still CAPTURES" {
+              let dir = td ()
+              System.IO.Directory.CreateDirectory dir |> ignore
+              let marker = System.IO.Path.Combine(dir, "helper-marker.txt")
+              let markerW = weirPath marker
+
+              try
+                  let code =
+                      runFile
+                          [ "let doWrite () ="
+                            $"    File.write \"{markerW}\" [\"probe\"]"
+                            "let changes ="
+                            "    plan"
+                            "        doWrite ()"
+                            "if changes |> Plan.isEmpty then fail \"the helper's write was not captured\""
+                            "print \"ok\"" ]
+
+                  Expect.equal code 0 "the serial helper's native write is captured (not over-refused)"
+                  Expect.isFalse (System.IO.File.Exists marker) "the captured write did not run"
+              finally
+                  System.IO.Directory.Delete(dir, true)
           } ]
 
 let withinKindsTests =
@@ -10039,6 +10283,298 @@ let moduleTests =
               Expect.contains (suggest "Seq.tr" 0) "Seq.tryHead" ""
               Expect.contains (suggest "Str." 0) "Str.length" ""
               Expect.contains (suggest "Se" 0) "Seq" "module names complete"
+          } ]
+
+
+let lockfileConfinementTests =
+    // Bundle A+B [D:lockfile-confinement]: a path from outside (a lock
+    // entry, an --as name) must not reach a write/read outside .weir/.
+    // The confining join and the plain-name validator are pure — probe
+    // them directly; the import-unreadable path (F2) goes through
+    // analyzeLines.
+    let mkEntry path : Weir.Contracts.LockEntry =
+        { Kind = "schema"
+          Name = "n"
+          Url = "http://x"
+          Sha256 = "0"
+          Path = path
+          Version = None }
+
+    testList
+        "lockfile path confinement [D:lockfile-confinement]"
+        [ test "confineUnder admits an inside path, refuses absolute and traversal" {
+              let root = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "weir-conf-root")
+
+              match Weir.Contracts.confineUnder root "schemas/x.json" with
+              | Ok dest -> Expect.stringContains dest "schemas" "an inside path resolves under the base"
+              | Error e -> failtest $"an inside path must confine: {e}"
+
+              // a legitimately-inside `a/b/../c` stays under
+              match Weir.Contracts.confineUnder root "a/b/../c.json" with
+              | Ok _ -> ()
+              | Error e -> failtest $"a normalising-but-inside path must confine: {e}"
+
+              // absolute, traversal-past-base, and (the classic bug) a
+              // sibling that shares the base as a string PREFIX all refuse
+              for bad in [ "/etc/passwd"; "../escape.json"; "../root-evil/x" ] do
+                  match Weir.Contracts.confineUnder root bad with
+                  | Ok d -> failtest $"'{bad}' must escape, got {d}"
+                  | Error _ -> ()
+          }
+          test "vendorNameSafe: a file-name segment (hyphens ok), separators/traversal/absolute refuse" {
+              // the schema-name floor — k8s-configmap is legitimate
+              for ok in [ "benign"; "k8s-configmap"; "a_b-2"; "v1.2"; "X" ] do
+                  Expect.isTrue (Weir.Contracts.vendorNameSafe ok) $"'{ok}' is a safe file name"
+
+              // only path-ESCAPING shapes refuse
+              for bad in [ ""; "a/b"; "a\\b"; "../x"; "/abs"; ".hidden"; "a b"; "a..b" ] do
+                  Expect.isFalse (Weir.Contracts.vendorNameSafe bad) $"'{bad}' escapes or is unsafe"
+          }
+          test "plainName: the stricter ALIAS rule — a letter then letters/digits/_ ; hyphen and dot refuse" {
+              for ok in [ "benign"; "myMod"; "a_b_2"; "X" ] do
+                  Expect.isTrue (Weir.Contracts.plainName ok) $"'{ok}' is a plain identifier"
+
+              // an import alias admits no hyphen/dot/separator
+              for bad in [ ""; "1x"; "a/b"; "../x"; "/abs"; "a.b"; "a-b"; "a b" ] do
+                  Expect.isFalse (Weir.Contracts.plainName bad) $"'{bad}' is not an alias-shaped name"
+          }
+          test "entryDest confines PER ENTRY — a hostile entry is a located refusal naming it" {
+              let root = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "weir-conf-root")
+
+              match Weir.Contracts.entryDest root (mkEntry "schemas/ok.json") with
+              | Ok _ -> ()
+              | Error e -> failtest $"a benign entry resolves: {e}"
+
+              match Weir.Contracts.entryDest root (mkEntry "../ESCAPE.json") with
+              | Ok d -> failtest $"a hostile entry must refuse, got {d}"
+              | Error msg ->
+                  Expect.stringContains msg "escapes .weir/" "the refusal names the escape"
+                  Expect.stringContains msg "../ESCAPE.json" "and the offending path"
+          }
+          test "an unreadable import is a LOCATED diagnostic, never a crash (F2)" {
+              // mode-000 on the imported file: check must give a located
+              // 'cannot read import' error, not throw (the old crash)
+              if System.OperatingSystem.IsWindows() then
+                  ()
+              else
+                  let dir =
+                      System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-f2-{System.Guid.NewGuid():N}")
+
+                  System.IO.Directory.CreateDirectory dir |> ignore
+
+                  try
+                      let modP = System.IO.Path.Combine(dir, "mod.weir")
+                      System.IO.File.WriteAllLines(modP, [ "module M"; "let f : int -> int"; "let f x = x + 1" ])
+                      let mainP = System.IO.Path.Combine(dir, "main.weir")
+                      System.IO.File.WriteAllLines(mainP, [ "import \"./mod.weir\" as M"; "print (show (M.f 1))" ])
+                      System.IO.File.SetUnixFileMode(modP, System.IO.UnixFileMode.None)
+
+                      let ds, _, _, _ =
+                          Weir.Script.analyzeLines mainP (List.ofArray (System.IO.File.ReadAllLines mainP))
+
+                      let errs = ds |> List.filter (fun d -> d.Severity = "error")
+
+                      Expect.isNonEmpty errs "an unreadable import produces a diagnostic"
+
+                      Expect.exists
+                          errs
+                          (fun d -> d.Message.Contains "cannot read import")
+                          "the located 'cannot read import' diagnostic, not a crash"
+                  finally
+                      try
+                          System.IO.File.SetUnixFileMode(
+                              System.IO.Path.Combine(dir, "mod.weir"),
+                              System.IO.UnixFileMode.UserRead ||| System.IO.UnixFileMode.UserWrite
+                          )
+
+                          System.IO.Directory.Delete(dir, true)
+                      with _ ->
+                          ()
+          } ]
+
+
+let lockfileSymlinkConfinementTests =
+    // DA-04 [D:lockfile-symlink-confinement]: confineUnder is LEXICAL, so a
+    // lexically-clean path escapes through a symlinked component. entryDest
+    // now runs the real-path gate too — probe confineRealUnder directly
+    // (POSIX symlinks; skipped on Windows).
+    let mkEntry path : Weir.Contracts.LockEntry =
+        { Kind = "schema"
+          Name = "n"
+          Url = "http://x"
+          Sha256 = "0"
+          Path = path
+          Version = None }
+
+    testList
+        "lockfile symlink confinement [D:lockfile-symlink-confinement]"
+        [ test "entryDest refuses a symlinked INTERMEDIATE dir escaping .weir/ (DA-04)" {
+              if System.OperatingSystem.IsWindows() then
+                  ()
+              else
+                  let baseDir =
+                      System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-da04-{System.Guid.NewGuid():N}")
+
+                  let weirDir = System.IO.Path.Combine(baseDir, ".weir")
+                  let outside = System.IO.Path.Combine(baseDir, "OUTSIDE")
+                  System.IO.Directory.CreateDirectory weirDir |> ignore
+                  System.IO.Directory.CreateDirectory outside |> ignore
+
+                  try
+                      // .weir/schemas is a symlink to a dir OUTSIDE .weir/
+                      System.IO.Directory.CreateSymbolicLink(System.IO.Path.Combine(weirDir, "schemas"), outside)
+                      |> ignore
+
+                      // the lock path is lexically clean — no `..`, not absolute
+                      match Weir.Contracts.entryDest weirDir (mkEntry "schemas/marker.json") with
+                      | Ok d -> failtest $"a symlinked intermediate dir must refuse, got {d}"
+                      | Error msg ->
+                          Expect.stringContains msg "schema n" "the refusal names the entry"
+                          Expect.stringContains msg "escapes .weir/" "and names the escape"
+                  finally
+                      try
+                          System.IO.Directory.Delete(baseDir, true)
+                      with _ ->
+                          ()
+          }
+          test "confineRealUnder refuses a symlinked FINAL component escaping out" {
+              if System.OperatingSystem.IsWindows() then
+                  ()
+              else
+                  let baseDir =
+                      System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-da04b-{System.Guid.NewGuid():N}")
+
+                  let weirDir = System.IO.Path.Combine(baseDir, ".weir")
+                  let schemas = System.IO.Path.Combine(weirDir, "schemas")
+                  let outside = System.IO.Path.Combine(baseDir, "OUTSIDE")
+                  System.IO.Directory.CreateDirectory schemas |> ignore
+                  System.IO.Directory.CreateDirectory outside |> ignore
+
+                  try
+                      // the LEAF itself is a link pointing to a file outside
+                      let leak = System.IO.Path.Combine(outside, "leak.json")
+                      System.IO.File.WriteAllText(leak, "{}")
+                      let leaf = System.IO.Path.Combine(schemas, "marker.json")
+                      System.IO.File.CreateSymbolicLink(leaf, leak) |> ignore
+
+                      match Weir.Contracts.entryDest weirDir (mkEntry "schemas/marker.json") with
+                      | Ok d -> failtest $"a symlinked final component must refuse, got {d}"
+                      | Error msg -> Expect.stringContains msg "escapes .weir/" "the refusal names the escape"
+                  finally
+                      try
+                          System.IO.Directory.Delete(baseDir, true)
+                      with _ ->
+                          ()
+          }
+          test "a REAL .weir/schemas dir + a clean path still confines (not over-refused)" {
+              let baseDir =
+                  System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-da04c-{System.Guid.NewGuid():N}")
+
+              let weirDir = System.IO.Path.Combine(baseDir, ".weir")
+              System.IO.Directory.CreateDirectory(System.IO.Path.Combine(weirDir, "schemas")) |> ignore
+
+              try
+                  match Weir.Contracts.entryDest weirDir (mkEntry "schemas/marker.json") with
+                  | Ok _ -> ()
+                  | Error e -> failtest $"a real directory + clean path must confine: {e}"
+              finally
+                  try
+                      System.IO.Directory.Delete(baseDir, true)
+                  with _ ->
+                      ()
+          }
+          test "F1 absolute/`..` traversal is still refused (A+B behavior unchanged)" {
+              let baseDir =
+                  System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-da04d-{System.Guid.NewGuid():N}")
+
+              let weirDir = System.IO.Path.Combine(baseDir, ".weir")
+              System.IO.Directory.CreateDirectory weirDir |> ignore
+
+              try
+                  for bad in [ "../escape.json"; "/etc/passwd" ] do
+                      match Weir.Contracts.entryDest weirDir (mkEntry bad) with
+                      | Ok d -> failtest $"'{bad}' must still refuse, got {d}"
+                      | Error msg -> Expect.stringContains msg "escapes .weir/" "the lexical refusal is unchanged"
+              finally
+                  try
+                      System.IO.Directory.Delete(baseDir, true)
+                  with _ ->
+                      ()
+          }
+          test "writeConfined writes a READABLE file (mode is sane, not zero) [D:lockfile-symlink-confinement]" {
+              // the variadic-open mode regression: on ARM64 macOS the fixed-
+              // signature open(2) supplied a garbage mode_t (stack-passed
+              // variadic arg), so the leaf could land unreadable and a later
+              // read (verify) failed with Permission denied. fchmod on the
+              // open fd makes 0o644 reliable — the file must read back.
+              let baseDir =
+                  System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-da04e-{System.Guid.NewGuid():N}")
+
+              let weirDir = System.IO.Path.Combine(baseDir, ".weir")
+              System.IO.Directory.CreateDirectory(System.IO.Path.Combine(weirDir, "schemas")) |> ignore
+              let dest = System.IO.Path.Combine(weirDir, "schemas", "k8s-configmap.json")
+              let payload = System.Text.Encoding.UTF8.GetBytes "{\"ok\":true}"
+
+              try
+                  match Weir.Contracts.writeConfined weirDir dest payload with
+                  | Error e -> failtest $"writeConfined must succeed under a real .weir/: {e}"
+                  | Ok() ->
+                      // the exact CI failure was File.ReadAllBytes → Permission
+                      // denied; the file must read back identically
+                      let back = System.IO.File.ReadAllBytes dest
+                      Expect.equal back payload "the written file reads back byte-identical"
+
+                      if not (System.OperatingSystem.IsWindows()) then
+                          // the permission bits must be 0o644 (fchmod took) —
+                          // owner read+write, group/other read
+                          let mode = (System.IO.File.GetUnixFileMode dest)
+
+                          let expected =
+                              System.IO.UnixFileMode.UserRead
+                              ||| System.IO.UnixFileMode.UserWrite
+                              ||| System.IO.UnixFileMode.GroupRead
+                              ||| System.IO.UnixFileMode.OtherRead
+
+                          Expect.equal mode expected "the leaf is 0o644, not a garbage/zero mode"
+              finally
+                  try
+                      System.IO.Directory.Delete(baseDir, true)
+                  with _ ->
+                      ()
+          }
+          test "writeConfined TRUNCATES a longer existing file (no stale tail) [D:lockfile-symlink-confinement]" {
+              // the open(2) flag regression: the hardcoded Linux O_CREAT/O_TRUNC
+              // meant the WRONG bits on macOS, so O_TRUNC never set — a re-write
+              // over an existing LONGER file (restore repairing a tampered vendored
+              // file) left stale trailing bytes → hash mismatch. The result must be
+              // EXACTLY the new bytes. Passes on Linux either way; guards the flags.
+              let baseDir =
+                  System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-da04t-{System.Guid.NewGuid():N}")
+
+              let weirDir = System.IO.Path.Combine(baseDir, ".weir")
+              System.IO.Directory.CreateDirectory(System.IO.Path.Combine(weirDir, "schemas")) |> ignore
+              let dest = System.IO.Path.Combine(weirDir, "schemas", "k8s-configmap.json")
+
+              // a LONGER tampered file already on disk (the restore-repair case)
+              let longer = System.Text.Encoding.UTF8.GetBytes "{\"tampered\":true,\"padding\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\"}"
+              let shorter = System.Text.Encoding.UTF8.GetBytes "{\"ok\":true}"
+
+              try
+                  System.IO.File.WriteAllBytes(dest, longer)
+
+                  match Weir.Contracts.writeConfined weirDir dest shorter with
+                  | Error e -> failtest $"writeConfined must succeed over an existing file: {e}"
+                  | Ok() ->
+                      let back = System.IO.File.ReadAllBytes dest
+                      // exactly the new bytes — no truncation bug would leave the
+                      // longer file's trailing bytes after the shorter write
+                      Expect.equal back shorter "the re-written file is truncated to exactly the new bytes"
+                      Expect.equal back.Length shorter.Length "no stale trailing bytes remain"
+              finally
+                  try
+                      System.IO.Directory.Delete(baseDir, true)
+                  with _ ->
+                      ()
           } ]
 
 
@@ -20396,6 +20932,8 @@ let allTests =
           pipeAlignTests
           optionSweepTests
           moduleTests
+          lockfileConfinementTests
+          lockfileSymlinkConfinementTests
           moduleSignatureTests
           scriptTests
           multilineTests

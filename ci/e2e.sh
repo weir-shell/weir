@@ -6561,7 +6561,117 @@ out=$( cd "$ctdir/proj" && $BIN verify ) && fail "verify must exit 1 on absent" 
 echo "$out" | grep -q "ABSENT" || fail "absent named: $out"
 ( cd "$ctdir/proj" && $BIN restore ) | grep -q "restored" || fail "restore re-materializes from the lock"
 echo "e2e ok: weir verify distinguishes modified from absent; restore re-materializes"
+
+# ---- Bundle A+B: the lockfile path boundary [D:lockfile-confinement] --------
+# F14: an absolute/traversal `--as` name must refuse BEFORE the fetch,
+# writing nothing (the rule add module already had, now shared)
+mkdir -p "$ctdir/f14" && ( cd "$ctdir/f14" && git init -q . )
+f14abs="$ctdir/F14-ABSOLUTE.json"
+out=$( cd "$ctdir/f14" && $BIN add schema http://127.0.0.1:$ctport/configmap-v1.json --as "$f14abs" 2>&1 ) && fail "an absolute --as must refuse" || true
+echo "$out" | grep -qF "must be a plain file name" || fail "F14 absolute --as teaches the plain-name rule: $out"
+test ! -e "$f14abs" || fail "F14: an absolute --as must write nothing outside .weir/"
+out=$( cd "$ctdir/f14" && $BIN add schema http://127.0.0.1:$ctport/configmap-v1.json --as "../escape" 2>&1 ) && fail "a traversal --as must refuse" || true
+echo "$out" | grep -qF "must be a plain file name" || fail "F14 traversal --as teaches the plain-name rule: $out"
+test ! -e "$ctdir/f14/../escape.json" || fail "F14: a traversal --as must write nothing outside .weir/"
+echo "e2e ok: add schema refuses an absolute/traversal --as, writing nothing (F14)"
+
+# F1: a hostile lock (an entry pointing outside .weir/) refuses PER ENTRY
+# with a located diagnostic, restores the benign sibling, and writes
+# nothing outside .weir/. restore overwrites only its OWN artifacts
+# inside .weir/ [D:lockfile-confinement]
+f1repo="$ctdir/f1repo"
+mkdir -p "$f1repo/.weir"
+f1hash=$(sha256sum "$ctdir/serve/configmap-v1.json" | cut -d' ' -f1)
+f1esc="$ctdir/F1-ESCAPE.json"
+cat > "$f1repo/.weir/lock.json" <<F1EOF
+{ "schemaVersion": 1, "artifacts": [
+  {"kind":"schema","name":"benign","url":"http://127.0.0.1:$ctport/configmap-v1.json","sha256":"$f1hash","path":"schemas/benign.json"},
+  {"kind":"schema","name":"traversal","url":"http://127.0.0.1:$ctport/configmap-v1.json","sha256":"$f1hash","path":"../F1-TRAVERSAL.json"},
+  {"kind":"schema","name":"absolute","url":"http://127.0.0.1:$ctport/configmap-v1.json","sha256":"$f1hash","path":"$f1esc"}
+] }
+F1EOF
+out=$( cd "$f1repo" && $BIN restore 2>&1 ) && fail "restore on a hostile lock must exit nonzero" || true
+echo "$out" | grep -qF "escapes .weir/" || fail "F1: the hostile entry is a located refusal naming the escape: $out"
+test -f "$f1repo/.weir/schemas/benign.json" || fail "F1: the benign sibling must still restore"
+test ! -e "$f1esc" || fail "F1: an absolute lock path must not be written outside .weir/"
+test ! -e "$ctdir/F1-TRAVERSAL.json" || fail "F1: a traversal lock path must not be written outside .weir/"
+# verify refuses to READ outside .weir/ too — same located refusal
+out=$( cd "$f1repo" && $BIN verify 2>&1 ) && fail "verify on a hostile lock must exit nonzero" || true
+echo "$out" | grep -qF "escapes .weir/" || fail "F1: verify names the escape rather than reading it: $out"
+echo "e2e ok: a hostile lock refuses per entry (restore + verify), the benign sibling restores, nothing escapes (F1)"
+
+# DA-04: confinement RESOLVES SYMLINKS [D:lockfile-symlink-confinement].
+# A lexically-clean lock path (no `..`, not absolute) still escapes when a
+# component on the way is a symlink OUT. POSIX-only (native symlinks).
+if [ "$IS_WINDOWS" = "0" ]; then
+    # (1) a symlinked INTERMEDIATE dir: .weir/schemas → OUTSIDE .weir/
+    darepo="$ctdir/da04repo"
+    daout="$ctdir/DA04-OUTSIDE"
+    mkdir -p "$darepo/.weir" "$daout"
+    ln -s "$daout" "$darepo/.weir/schemas"
+    cat > "$darepo/.weir/lock.json" <<DA04EOF
+{ "schemaVersion": 1, "artifacts": [
+  {"kind":"schema","name":"marker","url":"http://127.0.0.1:$ctport/configmap-v1.json","sha256":"$f1hash","path":"schemas/marker.json"}
+] }
+DA04EOF
+    out=$( cd "$darepo" && $BIN restore 2>&1 ) && fail "DA-04: restore through a symlinked .weir/schemas must exit nonzero" || true
+    echo "$out" | grep -qF "escapes .weir/" || fail "DA-04: a symlinked intermediate dir is a located refusal: $out"
+    test ! -e "$daout/marker.json" || fail "DA-04: nothing may be written outside .weir/ through the symlink"
+    echo "e2e ok: a symlinked .weir/schemas is refused on restore, nothing escapes (DA-04)"
+
+    # (2) a symlinked FINAL component: the leaf itself points OUT
+    da2repo="$ctdir/da04repo2"
+    da2out="$ctdir/DA04-OUTSIDE2"
+    mkdir -p "$da2repo/.weir/schemas" "$da2out"
+    printf 'x' > "$da2out/leak.json"
+    ln -s "$da2out/leak.json" "$da2repo/.weir/schemas/marker.json"
+    cat > "$da2repo/.weir/lock.json" <<DA04EOF2
+{ "schemaVersion": 1, "artifacts": [
+  {"kind":"schema","name":"marker","url":"http://127.0.0.1:$ctport/configmap-v1.json","sha256":"$f1hash","path":"schemas/marker.json"}
+] }
+DA04EOF2
+    out=$( cd "$da2repo" && $BIN restore 2>&1 ) && fail "DA-04: restore over a symlinked leaf must exit nonzero" || true
+    echo "$out" | grep -qF "escapes .weir/" || fail "DA-04: a symlinked final component is refused: $out"
+    test "$(cat "$da2out/leak.json")" = "x" || fail "DA-04: the symlinked leaf's target must not be overwritten"
+    # (3) verify must not READ through the symlinked leaf either
+    out=$( cd "$da2repo" && $BIN verify 2>&1 ) && fail "DA-04: verify through a symlinked leaf must exit nonzero" || true
+    echo "$out" | grep -qF "escapes .weir/" || fail "DA-04: verify names the escape rather than reading through it: $out"
+    echo "e2e ok: a symlinked final component is refused on restore/verify, its target untouched (DA-04)"
+
+    # (4) benign control: a REAL .weir/schemas dir + clean path still works
+    da3repo="$ctdir/da04repo3"
+    mkdir -p "$da3repo/.weir/schemas"
+    cat > "$da3repo/.weir/lock.json" <<DA04EOF3
+{ "schemaVersion": 1, "artifacts": [
+  {"kind":"schema","name":"benign","url":"http://127.0.0.1:$ctport/configmap-v1.json","sha256":"$f1hash","path":"schemas/benign.json"}
+] }
+DA04EOF3
+    out=$( cd "$da3repo" && $BIN restore 2>&1 ) || fail "DA-04 control: a real .weir/schemas must still restore: $out"
+    test -f "$da3repo/.weir/schemas/benign.json" || fail "DA-04 control: the benign artifact must land inside .weir/"
+    echo "e2e ok: a real .weir/schemas directory still restores — not over-refused (DA-04 control)"
+else
+    echo "e2e skip: DA-04 symlink-confinement (POSIX native symlinks)"
+fi
+
 kill $ctsrv 2>/dev/null || true
+
+# F2: an unreadable file on the import path is a LOCATED diagnostic, never
+# a crash (mode 000; exit 1, not 134) [D:lockfile-confinement]
+if [ "$IS_WINDOWS" = "0" ]; then
+    f2dir=$(mkweirtmp)
+    printf 'module M\nlet f : int -> int\nlet f x = x + 1\n' > "$f2dir/mod.weir"
+    printf 'import "./mod.weir" as M\nprint (show (M.f 1))\n' > "$f2dir/main.weir"
+    chmod 000 "$f2dir/mod.weir"
+    f2rc=0
+    out=$($BIN check "$f2dir/main.weir" 2>&1) || f2rc=$?
+    chmod 644 "$f2dir/mod.weir"
+    [ "$f2rc" = "1" ] || fail "F2: an unreadable import must exit 1 (a located diagnostic), got $f2rc: $out"
+    echo "$out" | grep -qF "cannot read import" || fail "F2: the located 'cannot read import' diagnostic: $out"
+    rm -rf "$f2dir"
+    echo "e2e ok: an unreadable import is a located diagnostic, never a crash (F2)"
+else
+    echo "e2e skip: F2 unreadable-import (POSIX mode bits)"
+fi
 
 # check-time catches on the REAL schema: the typo (did-you-mean) and a
 # misplaced nesting (a field at the wrong level)
@@ -7095,6 +7205,26 @@ out=$($BIN check --can "$candir/bad.weir" 2>&1) || badrc=$?
 [ "$badrc" = "1" ] || fail "--can on a failing check exits 1 (got $badrc)"
 echo "$out" | grep -qE "error" || fail "the check's own diagnostics print: $out"
 echo "$out" | grep -qF "capability" && fail "no report for a script that cannot run: $out" || true
+
+# F7 [D:desugar-namespace]: a `for` loop (the |seqIter desugar) must add
+# NO phantom dynamic head — a for-only script reports ZERO opaque sites,
+# and --strict exits 0 (the |-namespace split: a library desugar is not
+# a spawn)
+printf 'for n in ["a"] do print n\n' > "$candir/foronly.weir"
+forout=$($BIN check --can "$candir/foronly.weir" 2>&1) || fail "--can on a for-only script errored: $forout"
+echo "$forout" | grep -qF "opaque site" && fail "a for loop must add no opaque site (F7): $forout" || true
+echo "$forout" | grep -qF '^$' && fail "a for loop must not report a dynamic head (F7): $forout" || true
+$BIN check --can --strict "$candir/foronly.weir" >/dev/null 2>&1 || fail "--strict must exit 0 on a for-only script (F7)"
+# the --json opaque count is exactly 0
+$BIN check --can --json "$candir/foronly.weir" > "$candir/foronly.json" 2>&1 || fail "--json failed on the for-only script"
+python3 - "$candir/foronly.json" <<'PYFOR' || fail "a for-only script has 0 opaque sites (F7)"
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d["opaqueSites"] == 0, d["opaqueSites"]
+kinds = {c["kind"] for c in d["capabilities"]}
+assert "runs" not in kinds and "opaque" not in kinds, kinds
+PYFOR
+echo "e2e ok: a for loop adds no phantom dynamic head — 0 opaque sites, --strict exits 0 (F7)"
 
 rm -rf "$candir"
 echo "e2e ok: check --can (model line, opaque loud + --strict, literals, untaken branch, import transitive, secret-argv, json shape, failure suppresses)"
@@ -8680,7 +8810,12 @@ rm -rf "$tdir"
 # to a BYTE-IDENTICAL tree vs the direct (non-plan) run — the full-
 # guarantee case (fs-only). Plus the refusals: proc-in-plan and
 # apply-in-plan (check), known-after-apply (located runtime).
-padir=$(mktemp -d)
+# mkweirtmp (NOT bare mktemp -d): its mixed C:/... spelling keeps every
+# padir path forward-slashed, so a bash-interpolated $padir inside a weir
+# "..."/$"..." string never carries a backslash the string-escape pass
+# would eat (\t → TAB) — the Windows path-mangling class every cell below
+# would otherwise share.
+padir=$(mkweirtmp)
 cat > "$padir/render.weir" <<'WEOF'
 type Node = { Rel: string; Content: seq<string> }
 
@@ -8756,6 +8891,70 @@ WEOF
 out=$($BIN "$padir/kaa.weir" 2>&1) && fail "a known-after-apply read must refuse" || true
 echo "$out" | grep -qF "known-after-apply" || fail "the known-after-apply teaching must fire: $out"
 echo "e2e ok: plan/apply — a known-after-apply read refuses (located)"
+
+# DA-01 [D:plan-parallel-refusal]: a parallel/race callback runs on a
+# worker thread WITHOUT the (thread-local) plan capture frame — a native
+# mutation there would escape capture and run FOR REAL. The combinator
+# must REFUSE at runtime before any worker is scheduled: no marker file.
+cat > "$padir/par.weir" <<WEOF
+let changes =
+    plan
+        [1] |> Seq.piterWith 1 (fun _ -> File.write "$padir/par-marker.txt" ["probe"])
+print \$"empty={changes |> Plan.isEmpty}"
+WEOF
+out=$($BIN "$padir/par.weir" 2>&1) && fail "a parallel combinator inside a plan must refuse" || true
+echo "$out" | grep -qF "'piterWith' is refused inside 'plan'" || fail "the parallel-in-plan refusal must fire: $out"
+[ -f "$padir/par-marker.txt" ] && fail "a worker wrote the marker despite the plan — capture escaped"
+echo "e2e ok: plan/apply — a parallel combinator inside a plan refuses (no worker ran)"
+
+# the same combinator OUTSIDE a plan still runs (the refusal is scoped)
+cat > "$padir/paro.weir" <<WEOF
+[1; 2; 3] |> Seq.piterWith 2 (fun n -> File.write \$"$padir/paro-{n}.txt" ["x"])
+print "ran"
+WEOF
+out=$($BIN "$padir/paro.weir" 2>&1) || fail "a parallel combinator OUTSIDE a plan must still run: $out"
+expect "the parallel combinator ran outside a plan" "ran" "$out"
+[ "$(ls "$padir"/paro-*.txt 2>/dev/null | wc -l)" -eq 3 ] || fail "the outside-plan parallel combinator did not write all arms"
+echo "e2e ok: plan/apply — a parallel combinator OUTSIDE a plan still runs"
+
+# DA-02 [D:plan-proc-runtime-guard]: the SYNTACTIC firstPlanRefusal cannot
+# follow a helper reference, so an indirect proc built inside a plan slips
+# past `check`. A runtime guard at the ONE spawn point refuses it: no
+# child process runs, no marker file. (Direct proc still refuses at check
+# above — belt and suspenders.)
+cat > "$padir/indirect.weir" <<WEOF
+let runMarker () =
+    let lines = sh -c "printf marker > $padir/proc-marker.txt"
+    lines |> Seq.length
+let changes =
+    plan
+        let _forced = runMarker ()
+        ()
+print \$"empty={changes |> Plan.isEmpty}"
+WEOF
+# it checks clean (the syntactic walk cannot see through the helper)...
+$BIN check "$padir/indirect.weir" >/dev/null 2>&1 || true
+# ...but REFUSES at runtime before the child spawns
+out=$($BIN "$padir/indirect.weir" 2>&1) && fail "an indirect proc inside a plan must refuse at runtime" || true
+echo "$out" | grep -qF "refused inside 'plan'" || fail "the runtime proc-in-plan guard must fire: $out"
+[ -f "$padir/proc-marker.txt" ] && fail "the indirect proc spawned despite the plan — the guard did not fire"
+echo "e2e ok: plan/apply — an indirect helper-wrapped proc refuses at runtime (no child ran)"
+
+# a native File.write reached THROUGH a serial helper still CAPTURES —
+# the runtime guard must not over-refuse weir-native mutations
+cat > "$padir/helperwrite.weir" <<WEOF
+let doWrite () =
+    File.write "$padir/helper-marker.txt" ["probe"]
+let changes =
+    plan
+        doWrite ()
+if changes |> Plan.isEmpty then fail "the helper's native write was not captured"
+print "captured"
+WEOF
+out=$($BIN "$padir/helperwrite.weir" 2>&1) || fail "a native write via a serial helper must still capture: $out"
+expect "the serial helper's native write is captured" "captured" "$out"
+[ -f "$padir/helper-marker.txt" ] && fail "the captured write ran to disk — over-captured"
+echo "e2e ok: plan/apply — a native write via a serial helper still captures (not over-refused)"
 rm -rf "$padir"
 
 # ---- within serve: the scoped HTTP listener [D:http-serve] -----------

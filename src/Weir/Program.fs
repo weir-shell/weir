@@ -280,13 +280,23 @@ let main argv =
             // leave the tree byte-identical, including no empty .weir/
             | Error _ -> IO.Path.GetFullPath ".weir"
 
-        (match Contracts.addFetched weirDir "schema" name url with
-         | Ok line ->
-             Console.WriteLine line
-             0
-         | Error e ->
-             Console.Error.WriteLine $"weir add: {e}"
-             1)
+        // the vendor-name guard at the argv crossing [D:lockfile-confinement]
+        // — the name becomes the vendored file, so a separator/`..`/absolute
+        // `--as` must refuse BEFORE the fetch, writing nothing (F14). Hyphens
+        // are fine (k8s-configmap); only path-escaping shapes refuse.
+        if not (Contracts.vendorNameSafe name) then
+            Console.Error.WriteLine
+                $"weir add schema: '--as {name}' must be a plain file name — no path separators, '..', or leading dot; it becomes the vendored file .weir/schemas/{name}.json"
+
+            1
+        else
+            (match Contracts.addFetched weirDir "schema" name url with
+             | Ok line ->
+                 Console.WriteLine line
+                 0
+             | Error e ->
+                 Console.Error.WriteLine $"weir add: {e}"
+                 1)
     | [ "add"; "sig"; tool ] ->
         let weirDir =
             match Contracts.findWeirDir "." with
@@ -310,11 +320,10 @@ let main argv =
             | Error _ -> IO.Path.GetFullPath ".weir"
 
         // R5: the alias namespace — a builtin module's name is reserved,
-        // and the name must be able to derive an import alias
-        let nameOk =
-            name.Length > 0
-            && System.Char.IsLetter name[0]
-            && name |> Seq.forall (fun c -> System.Char.IsLetterOrDigit c || c = '_')
+        // and the name must be able to derive an import alias. The
+        // plain-name rule is now Contracts.plainName [D:lockfile-confinement]
+        // — the ONE spelling every `--as` kind shares
+        let nameOk = Contracts.plainName name
 
         let derivedAlias =
             if name.Length > 0 then
@@ -471,7 +480,14 @@ let main argv =
                      match entries |> List.tryFind (fun e -> e.Kind = "schema" && e.Name = name) with
                      | None -> fail1 $"no locked schema '{name}' — add it: weir add schema <url> --as {name}"
                      | Some entry ->
-                         let file = IO.Path.Combine(weirDir, entry.Path)
+                         // gen types WRITES weir source, so it is the
+                         // highest-value consumer of the lock-read
+                         // confinement [D:lockfile-confinement]: resolve the
+                         // schema file through entryDest, refusing a hostile
+                         // path before reading it
+                         match Contracts.entryDest weirDir entry with
+                         | Error refusal -> fail1 refusal
+                         | Ok file ->
 
                          if not (IO.File.Exists file) then
                              fail1 $"schema '{name}': no {file} — the lock records it; run `weir restore`"
@@ -556,17 +572,35 @@ let main argv =
                                                      Console.Out.Write gen.Text
                                                      0
                                                  | out ->
-                                                     let dest, importPath =
+                                                     let dest, importPath, confineWrite =
                                                          match out with
-                                                         | Some p -> IO.Path.GetFullPath p, $"\"{p}\""
+                                                         // --out is a user-CHOSEN path (combine, not
+                                                         // under — the user controls it); the DEFAULT
+                                                         // .weir/types/ path is vendor-directory
+                                                         // territory and confines through a symlinked
+                                                         // `types` dir [D:lockfile-symlink-confinement]
+                                                         | Some p -> IO.Path.GetFullPath p, $"\"{p}\"", false
                                                          | None ->
                                                              IO.Path.Combine(weirDir, "types", name + ".weir"),
-                                                             $"\"weir:{name}\""
+                                                             $"\"weir:{name}\"",
+                                                             true
 
-                                                     IO.Directory.CreateDirectory(IO.Path.GetDirectoryName dest)
-                                                     |> ignore
+                                                     let writeRes =
+                                                         if confineWrite then
+                                                             Contracts.writeConfined
+                                                                 weirDir
+                                                                 dest
+                                                                 (Text.Encoding.UTF8.GetBytes gen.Text)
+                                                         else
+                                                             IO.Directory.CreateDirectory(IO.Path.GetDirectoryName dest)
+                                                             |> ignore
 
-                                                     IO.File.WriteAllText(dest, gen.Text)
+                                                             IO.File.WriteAllText(dest, gen.Text)
+                                                             Ok()
+
+                                                     match writeRes with
+                                                     | Error w -> fail1 w
+                                                     | Ok() ->
 
                                                      let notes =
                                                          if gen.NoteCount = 0 then
