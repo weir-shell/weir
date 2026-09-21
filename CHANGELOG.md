@@ -131,6 +131,19 @@
   legitimate `exit`/`fail` is never swallowed. This backstops the whole
   front-end crash class behind the two point fixes above.
 
+- **`weir check` / `--can` / the LSP no longer multiply a per-statement
+  inference-budget burn across a whole file.** The type checker's
+  inference budget bounds one statement, but the whole-file analysis
+  (`analyzeLines`) collects errors and continues after each — so a file
+  with several independent budget-exhausting statements multiplied the
+  single-statement cost with no whole-file ceiling (linear in blocks,
+  re-paid on every LSP keystroke: a CPU-exhaustion DoS). A budget-
+  exhaustion diagnostic is now a stop-and-fix, exactly as the runner and
+  module loader already abort on the first error: the fold stops at the
+  first budget diagnostic and checks no further statement, so one burn
+  bounds the file. Ordinary type errors are unaffected — a file with
+  three plain type errors still reports all three. `[D:budget-stop-first]`
+
 ## v0.0.47
 
 ### Added

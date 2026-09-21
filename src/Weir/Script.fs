@@ -5359,7 +5359,17 @@ let analyzeLines
         // `let` is already the module-rule error)
         let reenumTracker = ReenumTracker()
 
+        // budget stop-at-first [D:budget-stop-first]: the per-statement
+        // inference budget is a whole-file DoS when the multi-error fold
+        // multiplies it across independent burning statements. A budget
+        // diagnostic is a stop-and-fix (like the runner/module-loader
+        // aborting on first error), so once one is seen the fold reports
+        // it and processes no further statement — one burn bounds the file.
+        // Ordinary type errors still all report.
+        let mutable budgetStop = false
+
         for ll in logicalLines do
+          if not budgetStop then
             // ONE spelling for the head warning, shared by the Ok walk
             // (typed) and the Error walk (parse-level) below
             let warnMissingHead (prog: string) (startCol: int) =
@@ -5590,18 +5600,24 @@ let analyzeLines
                       Code = codeOf d.Parse d.Message
                       Message = d.Message }
 
-                match d.Note with
-                | Some(nl, nc, nmsg) ->
-                    diags.Add
-                        { File = path
-                          Line = nl
-                          Col = nc
-                          EndLine = None
-                          EndCol = None
-                          Severity = "note"
-                          Code = "imported-here"
-                          Message = nmsg }
-                | None -> ()
+                (match d.Note with
+                 | Some(nl, nc, nmsg) ->
+                     diags.Add
+                         { File = path
+                           Line = nl
+                           Col = nc
+                           EndLine = None
+                           EndCol = None
+                           Severity = "note"
+                           Code = "imported-here"
+                           Message = nmsg }
+                 | None -> ())
+
+                // budget stop-at-first [D:budget-stop-first]: a budget
+                // diagnostic ends the fold — no further statement is
+                // checked, so one exhaustion cannot multiply across the file
+                if Check.isBudgetMessage d.Message then
+                    budgetStop <- true
 
         // the whole-file signature laws [D:module-signatures]: every
         // remaining pending sig is an orphan; a /// doc on a signed

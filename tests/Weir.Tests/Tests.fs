@@ -1579,6 +1579,61 @@ let boundaryTests =
 
               Expect.isEmpty cmdDiags "a command with 'patch by=name' argv stays a command"
           }
+          test "budget stop-at-first: one exhaustion bounds the whole file [D:budget-stop-first]" {
+              // the per-statement inference budget is a whole-file DoS when
+              // the multi-error fold multiplies it across independent burning
+              // statements. A budget diagnostic is a stop-and-fix: the fold
+              // reports the FIRST one and checks no further statement.
+              let burnBlock (b: int) =
+                  [ $"let g{b}_0 x = (x, x)"
+                    $"let g{b}_1 x = g{b}_0 (g{b}_0 x)"
+                    $"let g{b}_2 x = g{b}_1 (g{b}_1 x)"
+                    $"let g{b}_3 x = g{b}_2 (g{b}_2 x)"
+                    $"let g{b}_4 x = g{b}_3 (g{b}_3 x)"
+                    $"let g{b}_5 x = g{b}_4 (g{b}_4 x)"
+                    $"let v{b} = g{b}_5 1" ]
+
+              // eight independent budget-burning blocks
+              let lines =
+                  [ for b in 0..7 do
+                        yield! burnBlock b ]
+                  @ [ "print \"done\"" ]
+
+              let diags, _, _, _ = Weir.Script.analyzeLines "burn.weir" lines
+
+              let budgetDiags =
+                  diags |> List.filter (fun d -> Weir.Check.isBudgetMessage d.Message)
+
+              // exactly ONE budget diagnostic — the fold stopped at the first
+              Expect.equal
+                  (List.length budgetDiags)
+                  1
+                  "one burn bounds the file: exactly one budget diagnostic, not one per block"
+
+              // and it is the ONLY error reported (stop-and-fix)
+              let errors = diags |> List.filter (fun d -> d.Severity = "error")
+              Expect.equal (List.length errors) 1 "the budget stop suppresses downstream statements"
+          }
+          test "budget stop does NOT swallow ordinary type errors [D:budget-stop-first]" {
+              // three independent plain type errors must ALL report — the
+              // stop applies only to budget exhaustion, never ordinary errors
+              let diags, _, _, _ =
+                  Weir.Script.analyzeLines
+                      "three.weir"
+                      [ "let a = 1 + \"x\""; "let b = 2 + \"y\""; "let c = 3 + \"z\""; "print \"done\"" ]
+
+              let errors = diags |> List.filter (fun d -> d.Severity = "error")
+              Expect.equal (List.length errors) 3 "all three plain type errors still report"
+
+              Expect.isEmpty
+                  (errors |> List.filter (fun d -> Weir.Check.isBudgetMessage d.Message))
+                  "no plain type error is a budget diagnostic"
+          }
+          test "isBudgetMessage recognizes exactly the two budget strings [D:budget-stop-first]" {
+              Expect.isTrue (Weir.Check.isBudgetMessage Weir.Check.budgetMsgSized) "sized message matches"
+              Expect.isTrue (Weir.Check.isBudgetMessage Weir.Check.budgetMsgUnsized) "unsized message matches"
+              Expect.isFalse (Weir.Check.isBudgetMessage "expected int, got string") "a plain error does not match"
+          }
           test "district templates check: splice law, key-splice string, for binder [D:yaml-district]" {
               // a record splice violates the liftable law
               let asm lines' =

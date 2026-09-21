@@ -4986,14 +4986,24 @@ let withAnonDefs (env: TypeEnv) (expr: Expr) : TypeEnv =
     withDefList env (anonDefs expr @ pendingAnonRecords ())
 
 // budget exhaustion surfaces as an ordinary located TypeError; the
-// text names what the author can act on, never the internal counter
+// text names what the author can act on, never the internal counter.
+// The two messages are named so the whole-file collectors can recognize
+// a budget diagnostic beside its single source and STOP the multi-error
+// fold on it (one burn bounds the file) [D:budget-stop-first].
+let budgetMsgSized =
+    "this expression's type grew too large to infer — split the expression into smaller bindings, or annotate the intended type"
+
+let budgetMsgUnsized =
+    "type inference ran out of budget on this expression — split it into smaller bindings"
+
+/// is this the message of a budget-exhaustion diagnostic? The predicate
+/// lives beside the two strings it matches, so it cannot drift from them.
+let isBudgetMessage (msg: string) : bool =
+    msg = budgetMsgSized || msg = budgetMsgUnsized
+
 let private budgetError (span: Span) (sized: bool) : TypeError =
     { Span = span
-      Message =
-        (if sized then
-             "this expression's type grew too large to infer — split the expression into smaller bindings, or annotate the intended type"
-         else
-             "type inference ran out of budget on this expression — split it into smaller bindings")
+      Message = (if sized then budgetMsgSized else budgetMsgUnsized)
       Origin = None }
 
 let private catchBudget (f: unit -> Result<'a, TypeError>) : Result<'a, TypeError> =
