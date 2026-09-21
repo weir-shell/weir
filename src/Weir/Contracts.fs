@@ -162,6 +162,18 @@ module private Posix =
     [<DllImport("libc", SetLastError = true)>]
     extern int private ``open``(string pathname, int flags, int mode)
 
+    // set the mode on the ALREADY-OPEN fd [D:lockfile-symlink-confinement]: libc
+    // open(2) is VARIADIC (mode_t is a `...` arg), and on ARM64 macOS a
+    // variadic trailing arg travels on the STACK — the fixed-signature
+    // `open` P/Invoke above passes mode positionally, supplying garbage
+    // there, so the leaf lands with a wrong/zero mode and a later
+    // File.ReadAllBytes hits Permission denied. fchmod is NON-variadic
+    // (two fixed args), so its P/Invoke is register-exact on every ABI;
+    // applied to the fd already held it re-follows nothing — the
+    // O_NOFOLLOW leaf confinement stands.
+    [<DllImport("libc", SetLastError = true)>]
+    extern int private fchmod(int fd, int mode)
+
     [<DllImport("libc", SetLastError = true)>]
     extern int private close(int fd)
 
@@ -180,6 +192,13 @@ module private Posix =
             // ELOOP (40 on Linux, 62 on macOS) is the symlinked-leaf refusal
             Error $"cannot open '{path}' without following symlinks (errno {err})"
         else
+            // NAIL the mode on the open fd before writing [D:lockfile-symlink-confinement]:
+            // the variadic-open mode arg is unreliable on ARM64 macOS, so the
+            // 0o644 passed above may not have taken — fchmod on the fd we hold
+            // makes the leaf 0o644 regardless (no re-follow; the O_NOFOLLOW
+            // confinement already fixed which object this fd names).
+            fchmod (fd, 0o644) |> ignore
+
             try
                 use fs = new FileStream(new Microsoft.Win32.SafeHandles.SafeFileHandle(nativeint fd, true), FileAccess.Write)
                 fs.Write(bytes, 0, bytes.Length)

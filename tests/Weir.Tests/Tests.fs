@@ -10500,6 +10500,47 @@ let lockfileSymlinkConfinementTests =
                       System.IO.Directory.Delete(baseDir, true)
                   with _ ->
                       ()
+          }
+          test "writeConfined writes a READABLE file (mode is sane, not zero) [D:lockfile-symlink-confinement]" {
+              // the variadic-open mode regression: on ARM64 macOS the fixed-
+              // signature open(2) supplied a garbage mode_t (stack-passed
+              // variadic arg), so the leaf could land unreadable and a later
+              // read (verify) failed with Permission denied. fchmod on the
+              // open fd makes 0o644 reliable — the file must read back.
+              let baseDir =
+                  System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-da04e-{System.Guid.NewGuid():N}")
+
+              let weirDir = System.IO.Path.Combine(baseDir, ".weir")
+              System.IO.Directory.CreateDirectory(System.IO.Path.Combine(weirDir, "schemas")) |> ignore
+              let dest = System.IO.Path.Combine(weirDir, "schemas", "k8s-configmap.json")
+              let payload = System.Text.Encoding.UTF8.GetBytes "{\"ok\":true}"
+
+              try
+                  match Weir.Contracts.writeConfined weirDir dest payload with
+                  | Error e -> failtest $"writeConfined must succeed under a real .weir/: {e}"
+                  | Ok() ->
+                      // the exact CI failure was File.ReadAllBytes → Permission
+                      // denied; the file must read back identically
+                      let back = System.IO.File.ReadAllBytes dest
+                      Expect.equal back payload "the written file reads back byte-identical"
+
+                      if not (System.OperatingSystem.IsWindows()) then
+                          // the permission bits must be 0o644 (fchmod took) —
+                          // owner read+write, group/other read
+                          let mode = (System.IO.File.GetUnixFileMode dest)
+
+                          let expected =
+                              System.IO.UnixFileMode.UserRead
+                              ||| System.IO.UnixFileMode.UserWrite
+                              ||| System.IO.UnixFileMode.GroupRead
+                              ||| System.IO.UnixFileMode.OtherRead
+
+                          Expect.equal mode expected "the leaf is 0o644, not a garbage/zero mode"
+              finally
+                  try
+                      System.IO.Directory.Delete(baseDir, true)
+                  with _ ->
+                      ()
           } ]
 
 

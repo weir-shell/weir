@@ -63,8 +63,11 @@
   under the real `.weir/` root, across every sink: `restore`, `verify`,
   `gen types`, `add schema`, and `add module`. The write opens the final
   component without following a symlinked leaf (`O_NOFOLLOW` on Unix), so
-  the check and the write refer to the same object. A user-chosen
-  `gen types --out <path>` stays unconfined by design.
+  the check and the write refer to the same object, then `fchmod`s that
+  open descriptor to `0o644` (libc `open(2)` is variadic, and its mode
+  argument was unreliable on ARM64 macOS — a vendored file could land
+  unreadable, so a later `verify` failed with a permission error). A
+  user-chosen `gen types --out <path>` stays unconfined by design.
 
 - **`add schema --as` refuses a name that is not a plain name.** An
   absolute or traversal `--as` name vendored the schema outside `.weir/`.
