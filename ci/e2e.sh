@@ -6747,6 +6747,26 @@ echo "$out" | grep -qF "***@ nohost" || fail "the transport fallback redacts the
 echo "$out" | grep -qiF "user:pw" && fail "the credential LEAKED in the transport fallback: $out" || true
 echo "e2e ok: the transport fallback redacts an unparseable URL's userinfo (Fix 1b)"
 
+# ---- Fix 2: parse/decode errors excerpt a huge invalid input [D:excerpt] ---
+# a multi-MB invalid input used to be echoed WHOLE (a ~2MB stderr flood);
+# it is now bounded to a 64-char head + the true length. A short invalid
+# input is still quoted in full.
+xdir=$(mkweirtmp)
+python3 - "$xdir/big.weir" <<'PYX'
+import sys
+big = 'z' * 2000000
+open(sys.argv[1], 'w').write('let big = "' + big + '"\nprint (Str.toInt big)\n')
+PYX
+out=$($BIN "$xdir/big.weir" 2>&1) && fail "an invalid toInt must raise" || true
+outlen=$(printf '%s' "$out" | wc -c)
+[ "$outlen" -lt 200 ] || fail "the excerpted error must be bounded (<200 bytes); got $outlen: ${out:0:120}"
+echo "$out" | grep -qF "(2000000 chars)" || fail "the true length is named: ${out:0:120}"
+# a short invalid input is still quoted whole
+out=$($BIN -e 'print (Str.toInt "notanum")' 2>&1) && fail "a short invalid toInt must raise" || true
+echo "$out" | grep -qF '"notanum"' || fail "a short input stays fully readable: $out"
+rm -rf "$xdir"
+echo "e2e ok: a multi-MB invalid parse input yields a bounded error; a short one is quoted whole (Fix 2)"
+
 # F2: an unreadable file on the import path is a LOCATED diagnostic, never
 # a crash (mode 000; exit 1, not 134) [D:lockfile-confinement]
 if [ "$IS_WINDOWS" = "0" ]; then

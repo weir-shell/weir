@@ -873,7 +873,7 @@ let private toIntImpl: Value =
         | VStr s ->
             match System.Int64.TryParse s with
             | true, n -> VInt n
-            | _ -> failwith $"toInt: not an integer: \"{s}\""
+            | _ -> failwith $"toInt: not an integer: \"{excerpt s}\""
         | v -> unreachable $"the checker rejects 'toInt' on {formatValue v}")
 
 let private tryToIntImpl: Value =
@@ -1898,7 +1898,7 @@ let private fromBase64Text (name: string) (s: string) : Result<string, string> =
         try
             Ok(base64Bytes s)
         with _ ->
-            Error $"{name}: invalid base64: \"{s}\""
+            Error $"{name}: invalid base64: \"{excerpt s}\""
 
     match bytes with
     | Error e -> Error e
@@ -3105,7 +3105,7 @@ let private bytesMembers: (string * Ty * Value) list =
               (try
                   VBytes(base64Bytes s)
                with _ ->
-                   failwith $"Bytes.fromBase64: invalid base64: \"{s}\"")
+                   failwith $"Bytes.fromBase64: invalid base64: \"{excerpt s}\"")
           | v -> unreachable $"the checker rejects 'Bytes.fromBase64' on {formatValue v}")
       "tryFromBase64",
       TFun(TStr, TNamed("Option", [ TBytes ])),
@@ -3154,7 +3154,7 @@ let private bytesMembers: (string * Ty * Value) list =
                   (try
                       VBytes(System.Convert.FromHexString s)
                    with _ ->
-                       failwith $"Bytes.fromHex: invalid hex: \"{s}\"")
+                       failwith $"Bytes.fromHex: invalid hex: \"{excerpt s}\"")
           | v -> unreachable $"the checker rejects 'Bytes.fromHex' on {formatValue v}")
       "toHex",
       TFun(TBytes, TStr),

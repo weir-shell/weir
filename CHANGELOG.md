@@ -70,6 +70,17 @@
   only — a credential still rides the wire and is `ps`-visible in argv,
   unchanged.)
 
+- **Parse and decode errors no longer echo a huge invalid input back.**
+  `Str.toInt`, `Str.fromBase64`, `Bytes.fromBase64`, `Bytes.fromHex`,
+  `Duration.parse`, `Size.parse`, `Float.parse` and `Instant.parse`
+  embedded the caller's whole input in the error message, so a 500KB
+  invalid value produced ~500KB of stderr. They now excerpt: an input of
+  64 characters or fewer is quoted in full (unchanged — a short typo
+  stays readable), a longer one shows a 64-character head and names the
+  true length (`… (200000 chars)`), so a multi-megabyte invalid input
+  yields a bounded error. (A residual short-prefix leak for a value
+  derived from a revealed `Secret` is recorded in the ledger.)
+
 ## v0.0.47
 
 ### Added

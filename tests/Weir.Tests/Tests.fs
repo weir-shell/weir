@@ -14789,6 +14789,41 @@ let httpTests =
               Expect.stringContains envMissing "Env.fromFile: no such file:" "the File-family guard wording"
               Expect.isFalse (envMissing.Contains "Could not find") "never FileNotFoundException's text"
           }
+          test "excerpt bounds a huge invalid input; a short one is quoted whole [D:excerpt]" {
+              // the helper in isolation: the length is named, the head kept
+              Expect.equal (Weir.Types.excerpt "abc") "abc" "<= 64 chars: unchanged"
+              Expect.equal (Weir.Types.excerpt (String.replicate 64 "x")) (String.replicate 64 "x") "exactly 64: unchanged"
+
+              let long = Weir.Types.excerpt (String.replicate 200000 "z")
+              Expect.stringContains long "(200000 chars)" "the TRUE length is named"
+              Expect.isTrue (long.Length < 120) "the rendered excerpt is bounded, not the input"
+          }
+          test "a multi-MB invalid parse/decode input yields a BOUNDED error [D:excerpt]" {
+              // the flood: a 2MB invalid input embedded whole was ~2MB of
+              // stderr — now bounded to a head + the length
+              let msgOf (src: string) =
+                  (Expect.throwsC (fun () -> run src |> ignore) id).Message
+
+              let big = String.replicate 2_000_000 "!"
+
+              for src in
+                  [ $"Str.toInt \"{big}\""
+                    $"Str.fromBase64 \"{big}\""
+                    $"Bytes.fromBase64 \"{big}\""
+                    $"Bytes.fromHex \"{big}\""
+                    $"Duration.parse \"{big}\""
+                    $"Size.parse \"{big}\""
+                    $"Float.parse \"{big}\""
+                    $"Instant.parse \"{big}\"" ] do
+                  let m = msgOf src
+                  Expect.isTrue (m.Length < 200) $"error stays under ~200 bytes for {src[.. 12]}… (was {m.Length})"
+                  Expect.stringContains m "(2000000 chars)" "the true length is named"
+                  Expect.isFalse (m.Contains(String.replicate 200 "!")) "the whole input is NOT echoed"
+
+              // a SHORT invalid input is still quoted in full, unchanged
+              let shortMsg = msgOf "Str.toInt \"notanum\""
+              Expect.stringContains shortMsg "\"notanum\"" "a short input stays fully readable"
+          }
           test "the fetch/send misreading names its repair [D:fetch-naming]" {
               // `Http.get u |> Http.fetch` reads as a pipeline and is the
               // ruled-not-renamed pair: the type error carries the split
