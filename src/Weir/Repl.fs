@@ -1632,7 +1632,10 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
          | Eval.ExitRequest _ -> reraise ()
          | ex ->
              lastErrored <- true
-             Console.WriteLine(Types.Color.red Types.Color.onStdout.Value "error" + $": {ex.Message}")
+             Console.WriteLine(
+                 Types.Color.red Types.Color.onStdout.Value "error"
+                 + $": {Eval.sanitizeIfTty Console.IsOutputRedirected ex.Message}"
+             )
              state)
     | Script.KLet(name, _, te) ->
         printWarnings state te
@@ -1682,8 +1685,12 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
                     // clipped `let` bind looked like it silently dropped
                     // data — the bare-expression echo already prints the
                     // footer last (visible), and the two arms must agree
+                    // DATA at the tty is sanitized [D:binary-echo]: the
+                    // echo is weir's own rendering, so a filename carrying
+                    // ANSI/CR must not wreck the terminal (the table's tint
+                    // is added inside printTable, around sanitized cells)
                     (if te.Ty = TSeq TStr then
-                         lines |> List.iter Console.WriteLine
+                         lines |> List.iter (fun l -> Console.WriteLine(Eval.sanitizeTtyData l))
                      else
                          printTable lines)
 
@@ -1691,7 +1698,7 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
                 | None ->
                     let rendered, hint = Eval.echoValue cap ev
                     let tail = Eval.echoTail hint
-                    Console.WriteLine $"{name} : {formatEchoTy te.Ty} = {rendered}{tail}"
+                    Console.WriteLine $"{name} : {formatEchoTy te.Ty} = {Eval.sanitizeTtyData rendered}{tail}"
 
             // a `let` binds its NAME only — it does not rebind `it`
             // (FSI parity, user-ruled) [D:repl-it]
@@ -1702,7 +1709,10 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
          | Eval.ExitRequest _ -> reraise ()
          | ex ->
              lastErrored <- true
-             Console.WriteLine(Types.Color.red Types.Color.onStdout.Value "error" + $": {ex.Message}")
+             Console.WriteLine(
+                 Types.Color.red Types.Color.onStdout.Value "error"
+                 + $": {Eval.sanitizeIfTty Console.IsOutputRedirected ex.Message}"
+             )
              state)
     | Script.KExpr te
     | Script.KCmd te ->
@@ -1738,7 +1748,12 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
              | Eval.ExitRequest _ -> reraise ()
              | ex ->
                  lastErrored <- true
-                 Console.WriteLine(Types.Color.red Types.Color.onStdout.Value "error" + $": {ex.Message}")
+
+                 Console.WriteLine(
+                     Types.Color.red Types.Color.onStdout.Value "error"
+                     + $": {Eval.sanitizeIfTty Console.IsOutputRedirected ex.Message}"
+                 )
+
                  state)
         | _ ->
 
@@ -1778,8 +1793,9 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
                                  Eval.echoTable cap (termWidth ()) ev)
                         with
                         | Some(lines, hint) ->
+                            // DATA at the tty is sanitized [D:binary-echo]
                             (if te.Ty = TSeq TStr then
-                                 lines |> List.iter Console.WriteLine
+                                 lines |> List.iter (fun l -> Console.WriteLine(Eval.sanitizeTtyData l))
                              else
                                  printTable lines)
 
@@ -1787,7 +1803,7 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
                         | None ->
                             let rendered, hint = Eval.echoValue cap ev
                             let tail = Eval.echoTail hint
-                            Console.WriteLine $"{rendered} : {formatEchoTy te.Ty}{tail}"
+                            Console.WriteLine $"{Eval.sanitizeTtyData rendered} : {formatEchoTy te.Ty}{tail}"
                 elif not Console.IsOutputRedirected then
                     // FSI parity [D:repl-it]: a unit expression/command
                     // rebinds `it := ()`, and the tty echo SAYS so —
@@ -1801,7 +1817,12 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
              | Eval.ExitRequest _ -> reraise ()
              | ex ->
                  lastErrored <- true
-                 Console.WriteLine(Types.Color.red Types.Color.onStdout.Value "error" + $": {ex.Message}")
+
+                 Console.WriteLine(
+                     Types.Color.red Types.Color.onStdout.Value "error"
+                     + $": {Eval.sanitizeIfTty Console.IsOutputRedirected ex.Message}"
+                 )
+
                  state)
     | Script.KModule _ ->
         Console.WriteLine "the REPL has no file to be a module of; 'module' belongs at the top of a script file"

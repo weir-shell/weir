@@ -5884,7 +5884,12 @@ let private printImpl: Value =
             writeLines items
             VUnit
         | (VStr _ | VInt _ | VFloat _ | VBool _) as scalar ->
-            System.Console.WriteLine(scalarString "print argument" scalar)
+            // DATA bound for a tty is sanitized [D:binary-echo]; a
+            // redirected stdout stays byte-faithful
+            System.Console.WriteLine(
+                sanitizeIfTty System.Console.IsOutputRedirected (scalarString "print argument" scalar)
+            )
+
             VUnit
         // unit prints NOTHING [D:exit-reifiers] — the !() sigil
         // desugar's interior may be unit (| orFail)

@@ -422,6 +422,47 @@ let private cappedPull (cap: int option) (items: seq<Value>) : Value list * bool
         shown |> List.truncate c, shown.Length > c
     | None -> items |> List.ofSeq, false
 
+// hostile bytes from DATA must not reach a TERMINAL [D:binary-echo]:
+// [D:binary-echo] already ruled a NUL-bearing echo refuses a tty; this is
+// the same rule one class wider, for the DATA a renderer prints. A
+// filename or field carrying ANSI/OSC escapes, a bare ESC, or C0/C1
+// controls can clear the screen, set the window title, or — the quiet
+// one — use CR so the name the user READS is not the name on disk. So
+// tty-bound DATA renderers NEUTRALIZE those bytes: ESC (the introducer),
+// C0 controls except \t and \n, DEL, and the C1 range render as a visible
+// \xNN caret so the text stays honest. Applied ONLY when the sink is a
+// tty and ONLY to DATA — weir's OWN colouring (added around already-
+// sanitized data) and redirected output are untouched, so a pipe stays
+// byte-faithful and colour still works.
+let sanitizeTtyData (s: string) : string =
+    // hostile = ESC (0x1B) the introducer, DEL (0x7F), any C0 control
+    // (< 0x20) except TAB and LF, and the C1 range (0x80..0x9F)
+    let hostile (c: char) =
+        let n = int c
+        n = 0x1B || n = 0x7F || (n < 0x20 && c <> '\t' && c <> '\n') || (n >= 0x80 && n <= 0x9F)
+
+    if not (s |> Seq.exists hostile) then
+        s
+    else
+        let sb = System.Text.StringBuilder(s.Length)
+
+        let hex = "0123456789abcdef"
+
+        for c in s do
+            if hostile c then
+                let n = int c
+                sb.Append("\\x").Append(hex[(n >>> 4) &&& 0xF]).Append(hex[n &&& 0xF]) |> ignore
+            else
+                sb.Append c |> ignore
+
+        sb.ToString()
+
+/// sanitize DATA only when the sink is a tty [D:binary-echo] — redirected
+/// output (a pipe, a file) stays byte-faithful; a terminal gets the safe
+/// rendering
+let sanitizeIfTty (redirected: bool) (s: string) : string =
+    if redirected then s else sanitizeTtyData s
+
 // binary content must not reach a TERMINAL [D:binary-echo]: a NUL in
 // the echo's pulled prefix marks the value binary (gzip at a tty — the
 // live receipt for the parked bytes item) and the echo, weir's OWN
@@ -532,7 +573,10 @@ let rec private tableCell (v: Value) : (string * bool) option =
             | Some m when s.Length > m -> s.Substring(0, m - 1) + "…"
             | _ -> s
 
-        Some(clipped, false)
+        // the table is a tty-only renderer [D:binary-echo]: a data cell's
+        // hostile bytes are neutralized (the tint is added later, around
+        // this sanitized text — weir's own colouring is untouched)
+        Some(sanitizeTtyData clipped, false)
     | VInt _
     | VFloat _
     | VSize _
@@ -712,11 +756,21 @@ let echoTail (hint: string option) : string =
 // The line-per-element renderer. Both consumers — the print builtin and the
 // runner's command-statement streaming — must call this one function; the
 // byte-identity of their output is a plan-level claim, not a coincidence.
+// DATA bound for a tty is sanitized [D:binary-echo] (redirected output
+// stays byte-faithful — the byte-identity claim holds for a pipe/file).
 let writeLinesTo (w: System.IO.TextWriter) (items: seq<Value>) : unit =
+    let redirected =
+        if System.Object.ReferenceEquals(w, System.Console.Out) then
+            System.Console.IsOutputRedirected
+        elif System.Object.ReferenceEquals(w, System.Console.Error) then
+            System.Console.IsErrorRedirected
+        else
+            true // a non-console writer (a file) is never a tty
+
     for item in items do
         match item with
-        | VStr s -> w.WriteLine s
-        | other -> w.WriteLine(formatValue other)
+        | VStr s -> w.WriteLine(sanitizeIfTty redirected s)
+        | other -> w.WriteLine(sanitizeIfTty redirected (formatValue other))
 
 let writeLines (items: seq<Value>) : unit = writeLinesTo System.Console.Out items
 

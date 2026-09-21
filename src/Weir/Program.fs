@@ -186,7 +186,8 @@ let private evalOnce (input: string) : int =
                         | Eval.ExitRequest code -> code
                         | ex ->
                             Console.Error.WriteLine(
-                                Types.Color.red Types.Color.onStderr.Value "error" + $": {ex.Message}"
+                                Types.Color.red Types.Color.onStderr.Value "error"
+                                + $": {Eval.sanitizeIfTty Console.IsErrorRedirected ex.Message}"
                             )
 
                             1

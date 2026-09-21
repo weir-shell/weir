@@ -9119,7 +9119,7 @@ first3=$(head -3 "$svdir/markers.txt" 2>/dev/null | tr '\n' ',')
 [ "$first3" = "start,start,end," ] || fail "serve concurrency ceiling BROKEN: first 3 markers were '$first3' (expected 'start,start,end,') — markers: $(cat "$svdir/markers.txt" 2>/dev/null | tr '\n' ' ')"
 echo "e2e ok: within serve — concurrency ceiling holds (maxConcurrent=2 caps 4 requests at 2)"
 
-# ---- Bundle E: serve wire fidelity (F8/F9/F12) --------------------
+# ---- Bundle E: serve wire fidelity (F8/F9/F12) + tty sanitize (F13) ---
 svport4=8474
 svport5=8475
 svport6=8476
@@ -9238,6 +9238,74 @@ WEOF
 out=$($BIN "$svdir/timeout.weir" 2>&1) || fail "serve body-timeout run failed: $out"
 echo "$out" | grep -qF "status=HTTP/1.1 408" || fail "F12: a slow body must be refused with 408: $out"
 echo "e2e ok: within serve — F12 request-body read timeout refuses a slow client with 408"
+
+# (F13) tty data sanitize [D:binary-echo]: a data value carrying ANSI/CR
+# renders sanitized AT A TTY, while weir's OWN colour output is
+# unaffected; redirected output stays byte-faithful. Driven through a pty.
+cat > "$svdir/f13.weir" <<'WEOF'
+let name = Str.fromBase64 "G1szMW1yZWQtbmFtZQ1mdA=="
+print name
+WEOF
+cat > "$svdir/f13err.weir" <<'WEOF'
+let bad = Str.fromBase64 "G1szMW1oaWRkZW4NZXZpbA=="
+fail $"file: {bad}"
+WEOF
+sanit=$(python3 - "$BIN" "$svdir/f13.weir" <<'PYEOF'
+import pty, os, sys
+binp, script = sys.argv[1], sys.argv[2]
+out = []
+pid, fd = pty.fork()
+if pid == 0:
+    os.execv(binp, [binp, script])
+else:
+    try:
+        while True:
+            d = os.read(fd, 1024)
+            if not d: break
+            out.append(d)
+    except OSError:
+        pass
+    data = b''.join(out)
+    # the DATA escapes must be neutralized: no raw ESC[31m, and the
+    # visible \x1b / \x0d forms present
+    raw_ansi = b'\x1b[31mred-name' in data
+    sanitized = (b'\\x1b' in data) and (b'\\x0d' in data)
+    print('RAW_ANSI=%s SANITIZED=%s' % (raw_ansi, sanitized))
+PYEOF
+)
+echo "$sanit" | grep -qF "RAW_ANSI=False" || fail "F13: raw ANSI from data must not reach the tty: $sanit"
+echo "$sanit" | grep -qF "SANITIZED=True" || fail "F13: data escapes must render as visible \\xNN at a tty: $sanit"
+# weir's own colour survives: the error word stays coloured while the
+# DATA in the message is sanitized
+colour=$(python3 - "$BIN" "$svdir/f13err.weir" <<'PYEOF'
+import pty, os, sys
+binp, script = sys.argv[1], sys.argv[2]
+out = []
+pid, fd = pty.fork()
+if pid == 0:
+    os.execv(binp, [binp, script])
+else:
+    try:
+        while True:
+            d = os.read(fd, 1024)
+            if not d: break
+            out.append(d)
+    except OSError:
+        pass
+    data = b''.join(out)
+    before_data = data.split(b'file:')[0]
+    weir_colour = b'\x1b[' in before_data   # weir's own error colour, raw
+    data_sanitized = (b'\\x1b' in data) and (b'\\x0d' in data)
+    print('WEIR_COLOUR=%s DATA_SANITIZED=%s' % (weir_colour, data_sanitized))
+PYEOF
+)
+echo "$colour" | grep -qF "WEIR_COLOUR=True" || fail "F13: weir's own colour must be unaffected: $colour"
+echo "$colour" | grep -qF "DATA_SANITIZED=True" || fail "F13: data in error text must be sanitized: $colour"
+# redirected (piped) output stays byte-faithful — the raw bytes survive
+$BIN "$svdir/f13.weir" > "$svdir/f13.out" 2>/dev/null || true
+python3 -c "import sys; d=open('$svdir/f13.out','rb').read(); sys.exit(0 if (b'\x1b[31mred-name\rft' in d) else 1)" \
+    || fail "F13: redirected output must stay byte-faithful (raw ESC/CR preserved through a pipe)"
+echo "e2e ok: F13 tty data sanitize (data escapes neutralized at a tty, weir colour intact, pipe byte-faithful)"
 
 rm -rf "$svdir"
 

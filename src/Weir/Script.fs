@@ -2332,6 +2332,16 @@ let private located (path: string) (lineNo: int) (msg: string) : string =
 
     $"{path}:{lineNo}: {msg}"
 
+// the runtime-error line [D:binary-echo]: an error message may interpolate
+// DATA (a hostile filename, a tenant name), and error TEXT is a tty-bound
+// renderer — so sanitize the message when stderr is a tty, the same guard
+// print's data path uses. weir's own "error" colour word is added AROUND
+// the sanitized message, so colouring is untouched; redirected stderr
+// stays byte-faithful.
+let private runtimeErrorLine (path: string) (lineNo: int) (message: string) : string =
+    let safe = Eval.sanitizeIfTty Console.IsErrorRedirected message
+    located path lineNo (Color.red Color.onStderr.Value "error" + $": {safe}")
+
 // Streaming output for command-mode statements — the single exempt form.
 // The seq case goes through Eval.writeLines, the same renderer print uses.
 let printResult (v: Eval.Value) =
@@ -6105,7 +6115,7 @@ let run (path: string) (scriptArgs: string list) : int =
                                 | Eval.ExitRequest code -> code
                                 | ex ->
                                     Console.Error.WriteLine(
-                                        located path lineNo (Color.red Color.onStderr.Value "error" + $": {ex.Message}")
+                                        runtimeErrorLine path lineNo ex.Message
                                     )
 
                                     1
@@ -6125,7 +6135,7 @@ let run (path: string) (scriptArgs: string list) : int =
                                 | Eval.ExitRequest code -> code
                                 | ex ->
                                     Console.Error.WriteLine(
-                                        located path lineNo (Color.red Color.onStderr.Value "error" + $": {ex.Message}")
+                                        runtimeErrorLine path lineNo ex.Message
                                     )
 
                                     1
@@ -6136,7 +6146,7 @@ let run (path: string) (scriptArgs: string list) : int =
                                 | Eval.ExitRequest code -> code
                                 | ex ->
                                     Console.Error.WriteLine(
-                                        located path lineNo (Color.red Color.onStderr.Value "error" + $": {ex.Message}")
+                                        runtimeErrorLine path lineNo ex.Message
                                     )
 
                                     1
@@ -6164,7 +6174,7 @@ let run (path: string) (scriptArgs: string list) : int =
                                 | Eval.ExitRequest code -> code
                                 | ex ->
                                     Console.Error.WriteLine(
-                                        located path lineNo (Color.red Color.onStderr.Value "error" + $": {ex.Message}")
+                                        runtimeErrorLine path lineNo ex.Message
                                     )
 
                                     1
@@ -6176,7 +6186,7 @@ let run (path: string) (scriptArgs: string list) : int =
                                 | Eval.ExitRequest code -> code
                                 | ex ->
                                     Console.Error.WriteLine(
-                                        located path lineNo (Color.red Color.onStderr.Value "error" + $": {ex.Message}")
+                                        runtimeErrorLine path lineNo ex.Message
                                     )
 
                                     1

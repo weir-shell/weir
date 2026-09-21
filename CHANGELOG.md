@@ -73,6 +73,15 @@
   `bodyTimeout` config field (default 30s) and exhaustion refuses the
   request with a 408.
 
+- **Terminal escape sequences from data no longer reach the terminal
+  verbatim.** A filename or field carrying ANSI/OSC escapes, a bare ESC,
+  or other control bytes could clear the screen, set the window title,
+  leave the terminal coloured, or use a carriage return to hide the real
+  name. Tty-bound data renderers — `print`, command streaming, the REPL
+  echo and table, and error text — now render those bytes as a visible
+  `\xNN` escape. weir's own colouring is unaffected, and redirected
+  output (a pipe or file) stays byte-faithful.
+
 - **A parallel or race combinator inside a `plan` now refuses instead of
   escaping capture.** `plan`'s mutation capture is thread-local, but
   `Seq.pmap`/`pmapWith`/`piter`/`piterWith`/`pfirst`/`pfirstWith` run

@@ -19063,6 +19063,42 @@ let echoBinaryTests =
               Expect.isFalse (Weir.Eval.echoBinary (Some 10) (Weir.Eval.VBytes [| 0uy |])) "Bytes renders a summary"
           } ]
 
+// F13 [D:binary-echo]: DATA bound for a tty is neutralized — escape
+// introducers and C0/C1 controls render as visible \xNN so a hostile
+// filename cannot clear the screen, set the title, or hide behind CR
+let ttySanitizeTests =
+    testList
+        "tty data sanitize [D:binary-echo]"
+        [ test "ESC, CR, OSC, and C1 controls become visible \\xNN; TAB and LF pass" {
+              // the review's own payload: clear-screen, colour, OSC title,
+              // and the quiet CR that hides the real name
+              let esc = string (char 0x1b)
+              let bel = string (char 0x07)
+              let hostile = esc + "[2Jcleared" + esc + "[31mred" + esc + "]0;PWNED" + bel + "a\rb"
+              let safe = Weir.Eval.sanitizeTtyData hostile
+              Expect.isFalse (safe.Contains(char 0x1b)) "no raw ESC survives"
+              Expect.isFalse (safe.Contains(char 0x07)) "no raw BEL survives"
+              Expect.isFalse (safe.Contains '\r') "no raw CR survives — the name stays honest"
+              Expect.stringContains safe "\\x1b" "ESC renders as \\x1b"
+              Expect.stringContains safe "\\x0d" "CR renders as \\x0d"
+              Expect.stringContains safe "cleared" "the visible text is preserved"
+
+              // TAB and LF are NOT hostile — ordinary layout survives
+              let layout = "a\tb\nc"
+              Expect.equal (Weir.Eval.sanitizeTtyData layout) layout "TAB and LF pass through"
+
+              // a C1 control (0x9b, the 8-bit CSI) is neutralized
+              Expect.stringContains (Weir.Eval.sanitizeTtyData (string (char 0x9b))) "\\x9b" "C1 CSI renders as \\x9b"
+
+              // a clean string is returned unchanged
+              Expect.equal (Weir.Eval.sanitizeTtyData "plain-name.txt") "plain-name.txt" "clean text untouched"
+          }
+          test "sanitizeIfTty leaves redirected output byte-faithful, sanitizes a tty" {
+              let hostile = string (char 0x1b) + "X"
+              Expect.equal (Weir.Eval.sanitizeIfTty true hostile) hostile "redirected: raw (a pipe/file is byte-faithful)"
+              Expect.stringContains (Weir.Eval.sanitizeIfTty false hostile) "\\x1b" "tty: sanitized"
+          } ]
+
 let logLevelTests =
     testList
         "Log level parse"
@@ -20948,6 +20984,7 @@ let allTests =
           portMembersTests
           serveTests
           echoBinaryTests
+          ttySanitizeTests
           logLevelTests
           dxMessageTests
           bytesTests
