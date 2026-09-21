@@ -164,6 +164,14 @@ let methodTokenOk (m: string) : bool =
 /// inside the handler)
 exception BodyReadTimeout
 
+/// raised when a handler-returned response header carries CR/LF/NUL
+/// [D:http-header-bytes] — the inbound-response face of the review's F3.
+/// A distinguishable signal (BodyReadTimeout's shape) so the accept loop
+/// refuses the response WITHOUT emitting the injecting header (never the
+/// silent drop the review found) and surfaces the located message to the
+/// script through the stream-error channel. Carries the located refusal.
+exception ResponseHeaderInjection of message: string
+
 /// read the whole body under a DEADLINE [D:serve-body-timeout]: a slow
 /// client dribbling bytes cannot park the slot forever. The read runs on
 /// a task the deadline cancels; exhaustion raises BodyReadTimeout. The

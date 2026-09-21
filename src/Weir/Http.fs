@@ -169,3 +169,43 @@ let send (req: Req) : Result<Resp, string * TransportError> =
 let basicToken (user: string) (password: string) : string =
     let raw = Text.Encoding.UTF8.GetBytes($"{user}:{password}")
     Convert.ToBase64String raw
+
+/// the header-injection byte class [D:http-header-bytes]: CR, LF or NUL in
+/// a header NAME or VALUE forges a second header / splits a response.
+/// Refused at BOTH crossings (the client send path and a serve response) —
+/// the same one-boundary refusal the argv NUL guard performs, never the
+/// silent forge (client) or drop (server) the review found. Shared so the
+/// two directions agree byte-for-byte.
+let private headerByteName (c: char) : string option =
+    match int c with
+    | 13 -> Some "CR"
+    | 10 -> Some "LF"
+    | 0 -> Some "NUL"
+    | _ -> None
+
+/// the offending byte's name and where it sits (NAME or VALUE), or None if
+/// the pair is clean — the caller words the located refusal
+let headerInjection (name: string, value: string) : (string * string) option =
+    match name |> Seq.tryPick headerByteName with
+    | Some b -> Some(b, "name")
+    | None ->
+        match value |> Seq.tryPick headerByteName with
+        | Some b -> Some(b, "value")
+        | None -> None
+
+/// the located refusal message [D:http-header-bytes], the argv-NUL guard's
+/// register: name the header, the byte, and where it sat. `who` is the
+/// crossing ("request header" / "response header") so the two directions
+/// read the same shape.
+let headerInjectionMessage (who: string) (name: string) (byteName: string) (where: string) : string =
+    $"{who} '{name}' carries a {byteName} byte in its {where} — that forges a second header (response splitting / header injection); a header name or value cannot contain CR, LF or NUL"
+
+/// refuse any injecting pair in a header list, or return the pairs
+/// untouched [D:http-header-bytes]. `fail` raises the located message the
+/// caller supplies — the client and server share this walk so neither can
+/// drift from the other's byte class.
+let refuseHeaderInjection (who: string) (fail: string -> unit) (headers: (string * string) list) : unit =
+    for (k, v) in headers do
+        match headerInjection (k, v) with
+        | Some(byteName, where) -> fail (headerInjectionMessage who k byteName where)
+        | None -> ()

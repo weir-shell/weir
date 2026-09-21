@@ -3437,6 +3437,12 @@ let private runRequest (reqV: Value) : Http.Resp =
                  | VBool b -> b
                  | v -> unreachable $"insecure {formatValue v}") }
 
+        // refuse a header name or value carrying CR/LF/NUL at the SEND
+        // boundary [D:http-header-bytes]: the outbound face of the review's
+        // F3 — TryAddWithoutValidation would otherwise forge a second header
+        // on the wire. One crossing, the argv-NUL guard's shape.
+        Http.refuseHeaderInjection "request header" failwith req.Headers
+
         let host =
             try
                 System.Uri(req.Url).Host

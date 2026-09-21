@@ -3534,6 +3534,15 @@ and eval (env: Env) (te: TypedExpr) : Value =
                                   | _ -> () ]
                         | _ -> []
 
+                    // refuse a response header carrying CR/LF/NUL
+                    // [D:http-header-bytes]: the serve face of F3 — a
+                    // handler-returned header cannot forge a second one on
+                    // the wire (nor be silently dropped, F11's shape). The
+                    // located message is surfaced to the script through the
+                    // stream-error channel, and the response is refused
+                    // WITHOUT the injecting header (the accept loop 500s it).
+                    Http.refuseHeaderInjection "response header" (fun m -> raise (Serve.ResponseHeaderInjection m)) headers
+
                     let asString v =
                         match v with
                         | VStr s -> s
@@ -3622,6 +3631,26 @@ and eval (env: Env) (te: TypedExpr) : Value =
                                                 { Status = 408
                                                   Headers = []
                                                   Body = Serve.RText "request body read timed out" }
+                                                ignore
+                                         with _ ->
+                                             ())
+                                    | Serve.ResponseHeaderInjection msg ->
+                                        // a handler returned a header carrying
+                                        // CR/LF/NUL [D:http-header-bytes]: refuse
+                                        // the response WITHOUT the injecting
+                                        // header (never a silent drop) — a 500
+                                        // to the client, and the located message
+                                        // to the script via the stream-error
+                                        // channel so the author learns which
+                                        // header and byte the handler bug carried
+                                        Serve.recordStreamError handle msg
+
+                                        (try
+                                            Serve.writeResponse
+                                                ctx
+                                                { Status = 500
+                                                  Headers = []
+                                                  Body = Serve.RText "internal error" }
                                                 ignore
                                          with _ ->
                                              ())

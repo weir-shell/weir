@@ -8197,6 +8197,34 @@ WEOF
     echo "$out" | grep -qF "fetch=1|weir/$stamp" || { kill $hsrv 2>/dev/null || true; fail "Http.fetch must send the default UA: $out"; }
     echo "e2e ok: Http default User-Agent (weir/<stamp> == --version, explicit wins from both header paths, exactly one ever sent, fetch included)"
 
+    # F3-outbound [D:http-header-bytes]: a request header carrying CR/LF is
+    # REFUSED before send (the forge the review found on the wire), with a
+    # located error naming the header, byte, and position. The referee is
+    # the server's own request log: a CLEAN control header ARRIVES (so the
+    # refusal cannot pass by headers never working), the forged one NEVER
+    # does, and the offending request is not sent at all.
+    cat > "$hdir/inj.weir" <<WEOF
+let crlf = Str.fromBase64 "DQo="
+let _r = Http.send { Http.get "http://127.0.0.1:$hport/x" with headers = [("X-Evil", "a" + crlf + "Injected: yes")] }
+print "unreached"
+WEOF
+    out=$($BIN "$hdir/inj.weir" 2>&1) && { kill $hsrv 2>/dev/null || true; fail "F3: a CRLF request header must be refused, not sent"; } || true
+    echo "$out" | grep -qF "request header 'X-Evil' carries a CR byte in its value" || { kill $hsrv 2>/dev/null || true; fail "F3: the outbound refusal must name the header, byte, and position: $out"; }
+    echo "$out" | grep -qF "cannot contain CR, LF or NUL" || { kill $hsrv 2>/dev/null || true; fail "F3: the outbound refusal must name the whole byte class: $out"; }
+    # (the NUL leg of the byte class is pinned at the unit level — weir has
+    # no source spelling that yields a NUL-bearing string: Str.fromBase64 and
+    # Str.fromUtf8 both refuse NUL by the encoding law, which is why F3's
+    # realistic payload arrives via a CR/LF decode, not a NUL one)
+    # the CLEAN control header reaches the server (headers do work) — the
+    # positive control that makes "the forged header is absent" meaningful
+    cat > "$hdir/injctl.weir" <<WEOF
+let r = Http.send { Http.get "http://127.0.0.1:$hport/echoh" with headers = [("X-Benign", "present")] }
+print \$"control-status={r.status}"
+WEOF
+    out=$($BIN "$hdir/injctl.weir" 2>&1) || { kill $hsrv 2>/dev/null || true; fail "F3: the clean control header send failed: $out"; }
+    echo "$out" | grep -qF "control-status=200" || { kill $hsrv 2>/dev/null || true; fail "F3: a clean header must send fine: $out"; }
+    echo "e2e ok: Http F3 outbound header injection refused (CR/LF/NUL in a request header, located, control sends clean)"
+
     kill $hsrv 2>/dev/null || true
 
     # TRANSPORT failure raises, in its OWN words per case [D:transport-words];
@@ -9206,6 +9234,59 @@ echo "$out" | grep -qF "GOT-FIRST=True" || fail "F8: the client must receive the
 echo "$out" | grep -qF "stream-errors=1" || fail "F8: the script must observe the producer failure via the channel: $out"
 echo "$out" | grep -qF "stream-err=producer died" || fail "F8: Server.streamErrors must carry the failure message: $out"
 echo "e2e ok: within serve — F8 a Stream producer raise surfaces via Server.streamErrors (not silent)"
+
+# (F3-serve) a response header carrying CR/LF [D:http-header-bytes]: the
+# serve face of the injection refusal. A raw socket refereees the wire so
+# the assertion is what ARRIVED, not curl's view: the injecting response is
+# a 500 with NO forged header (never F11's silent drop), a benign control
+# header DOES arrive on a clean path, and the script observes the located
+# refusal through Server.streamErrors.
+cat > "$svdir/hdrprobe.py" <<'PYEOF'
+import socket, sys
+port = int(sys.argv[1])
+def get(path):
+    s = socket.socket(); s.connect(('127.0.0.1', port))
+    s.sendall(('GET %s HTTP/1.1\r\nHost: 127.0.0.1:%d\r\nConnection: close\r\n\r\n' % (path, port)).encode())
+    d = b''
+    while True:
+        c = s.recv(4096)
+        if not c: break
+        d += c
+    return d
+evil = get('/crlf')
+benign = get('/ok')
+status_evil = evil.split(b'\r\n', 1)[0].decode()
+print('EVIL-STATUS=%s' % status_evil)
+# the forged header/name must NOT appear anywhere in the evil response
+print('FORGED=%s' % ((b'Injected' in evil) or (b'X-Crlf' in evil)))
+print('BENIGN-ARRIVES=%s' % (b'X-Benign: present' in benign))
+PYEOF
+cat > "$svdir/hdr.weir" <<WEOF
+let crlf = Str.fromBase64 "DQo="
+let handler = fun req ->
+    match req.path with
+    | "/crlf" -> HttpServerResponse { status = 200; headers = [("X-Crlf", "a" + crlf + "Injected: yes")]; body = Text "ok" }
+    | "/ok" -> HttpServerResponse { status = 200; headers = [("X-Benign", "present")]; body = Text "ok" }
+    | _ -> HttpServerResponse { status = 404; headers = []; body = Text "nf" }
+
+within serve srv = { port = $svport5; maxConcurrent = 2 } handler
+    poll timeout=8s interval=100ms
+        Net.portOpen $svport5
+    let out = sh -c "python3 '$svdir/hdrprobe.py' $svport5" | complete
+    out.stdout |> Seq.iter print
+    Duration.sleep 150ms
+    let errs = Server.streamErrors srv
+    print \$"refusals={errs |> Seq.length}"
+    errs |> Seq.iter (fun e -> print \$"refusal={e}")
+print "hdr-done"
+WEOF
+out=$($BIN "$svdir/hdr.weir" 2>&1) || fail "serve header-injection run failed: $out"
+echo "$out" | grep -qF "EVIL-STATUS=HTTP/1.1 500" || fail "F3-serve: an injecting response header must be refused (500), got: $out"
+echo "$out" | grep -qF "FORGED=False" || fail "F3-serve: the forged header must NOT reach the wire: $out"
+echo "$out" | grep -qF "BENIGN-ARRIVES=True" || fail "F3-serve: a clean control header must still arrive (refusal is distinguishable from headers-never-working): $out"
+echo "$out" | grep -qF "refusals=1" || fail "F3-serve: the script must observe the located refusal via Server.streamErrors: $out"
+echo "$out" | grep -qF "response header 'X-Crlf' carries a CR byte" || fail "F3-serve: the located refusal must name the header and byte: $out"
+echo "e2e ok: within serve — F3 a CR/LF response header is refused (500, no forged header, control arrives, located via streamErrors)"
 
 # (F12) the request-body read timeout [D:serve-body-timeout]: a slow
 # client declaring a large Content-Length and holding the socket is

@@ -21,6 +21,21 @@
   themselves), so plan equality and `Plan.ops` comparisons on absolute
   paths behave as before.
 
+- **A CRLF (or NUL) in an HTTP header no longer forges a second header
+  or is silently dropped.** A header name or value carrying CR, LF or
+  NUL is now refused at both HTTP crossings. On the `Http` client an
+  outbound request header with such a byte (from a config file, an API
+  response, a tenant name) used to arrive at the server as two headers —
+  `X-Evil: a` plus a forged `Injected: yes` — the response-splitting
+  class. `Http.send` now refuses before sending, with a located error
+  naming the header, the byte, and whether it sat in the name or value.
+  On the `within serve` side a handler-returned header with such a byte
+  used to be silently dropped; it is now refused too — the response is a
+  500 without the injecting header (never a silent drop), and the located
+  message reaches the script through `Server.streamErrors` so a handler
+  bug is surfaced rather than swallowed. A benign control header is
+  unaffected in both directions.
+
 ## v0.0.47
 
 ### Added

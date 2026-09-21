@@ -19570,6 +19570,50 @@ let serveTests =
               for bad in [ ""; "BAD METH"; "BAD\tX"; "GE\rT"; "GET\n"; "ab"; "GET/x" ] do
                   Expect.isFalse (Weir.Serve.methodTokenOk bad) $"'{bad}' is malformed"
           }
+          // ---- F3: the header-injection byte class [D:http-header-bytes] ----
+          test "headerInjection flags CR/LF/NUL in a header name or value, and passes a clean pair" {
+              Expect.isNone (Weir.Http.headerInjection ("X-Benign", "present")) "a clean pair does not inject"
+
+              Expect.equal
+                  (Weir.Http.headerInjection ("X-Evil", "a\r\nInjected: yes"))
+                  (Some("CR", "value"))
+                  "a CR in the value is caught (CR precedes the LF)"
+
+              Expect.equal
+                  (Weir.Http.headerInjection ("X-Evil", "a\nb"))
+                  (Some("LF", "value"))
+                  "a bare LF in the value is caught"
+
+              Expect.equal
+                  (Weir.Http.headerInjection ("X-Evil", "a b"))
+                  (Some("NUL", "value"))
+                  "a NUL in the value is caught"
+
+              Expect.equal
+                  (Weir.Http.headerInjection ("X-\r\nBad", "v"))
+                  (Some("CR", "name"))
+                  "a CR in the name is caught, located to the name"
+          }
+          test "refuseHeaderInjection raises the located message for the first injecting pair, both directions" {
+              let outErr =
+                  Expect.throwsC
+                      (fun () -> Weir.Http.refuseHeaderInjection "request header" failwith [ ("X-Ok", "fine"); ("X-Evil", "a\r\nInjected: yes") ])
+                      (fun ex -> ex.Message)
+
+              Expect.stringContains outErr "request header 'X-Evil'" "names the crossing and header"
+              Expect.stringContains outErr "CR byte in its value" "names the byte and position"
+              Expect.stringContains outErr "cannot contain CR, LF or NUL" "names the whole byte class"
+
+              let inErr =
+                  Expect.throwsC
+                      (fun () -> Weir.Http.refuseHeaderInjection "response header" failwith [ ("X-Crlf", "a\nb") ])
+                      (fun ex -> ex.Message)
+
+              Expect.stringContains inErr "response header 'X-Crlf'" "names the serve crossing and header"
+              Expect.stringContains inErr "LF byte in its value" "names the byte"
+
+              Weir.Http.refuseHeaderInjection "request header" failwith [ ("X-A", "1"); ("X-B", "2") ]
+          }
           // ---- F12: the request-body read timeout [D:serve-body-timeout] ----
           test "the serve config accepts bodyTimeout, and omitting it stays clean" {
               // omitted — rests at the default, existing scripts unbroken
