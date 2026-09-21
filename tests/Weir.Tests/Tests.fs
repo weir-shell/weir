@@ -14734,6 +14734,41 @@ let httpTests =
                   "cannot reach weir.sh — boom"
                   "the umbrella survives for the residual"
           }
+          test "redactUrl masks userinfo, leaves a credential-free URL whole [D:url-redact]" {
+              // the leak: a credential in user:pass@host would print verbatim
+              Expect.equal
+                  (Weir.Http.redactUrl "http://user:s3cr3t@host:8080/p?q=1")
+                  "http://***@host:8080/p?q=1"
+                  "the whole user:pass span becomes ***, host and path kept"
+
+              Expect.equal
+                  (Weir.Http.redactUrl "https://tok@api.example.com/v1")
+                  "https://***@api.example.com/v1"
+                  "a userinfo with no colon is redacted too"
+
+              // a credential-FREE URL is returned UNCHANGED — the target is
+              // still named in full
+              Expect.equal
+                  (Weir.Http.redactUrl "http://127.0.0.1:8792/x")
+                  "http://127.0.0.1:8792/x"
+                  "no userinfo: the URL is unchanged"
+
+              // an '@' in the PATH/QUERY is not a userinfo separator
+              Expect.equal
+                  (Weir.Http.redactUrl "https://host/path@v2?to=a@b")
+                  "https://host/path@v2?to=a@b"
+                  "an @ after the authority is data, not a credential"
+
+              // purely textual — it redacts a URL Uri could not parse (the
+              // transport fallback's exact case)
+              Expect.equal
+                  (Weir.Http.redactUrl "http://user:pw@ nohost")
+                  "http://***@ nohost"
+                  "an unparseable URL still gets its userinfo masked"
+
+              // a schemeless string has no authority — left alone
+              Expect.equal (Weir.Http.redactUrl "not-a-url") "not-a-url" "no :// — unchanged"
+          }
           test "the wider raw-leak sweep's finds stay closed [D:transport-words]" {
               // each of these leaked a NAKED .NET message before the sweep
               let msgOf (src: string) =

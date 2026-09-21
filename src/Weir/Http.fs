@@ -78,6 +78,35 @@ let classifyTransport (timeoutMs: int) (port: int) (ex: exn) : TransportError =
 let private fmtMs (ms: int) : string =
     if ms % 1000 = 0 then $"{ms / 1000}s" else $"{ms}ms"
 
+/// redact a URL's userinfo for a diagnostic [D:url-redact]: a credential in
+/// `scheme://user:pass@host/...` prints VERBATIM otherwise (terminal, CI
+/// log, REPL). Replace the whole `user:pass` span (between `://` and the
+/// first `@` before the path/query/fragment) with `***`, keeping scheme
+/// and everything from the host on — a credential-FREE URL is returned
+/// UNCHANGED, so the target is still named in full. Purely TEXTUAL so it
+/// works on a URL `Uri` could not parse (exactly the transport fallback's
+/// case). The authority ends at the first `/`, `?` or `#`; an `@` only
+/// counts as a userinfo separator BEFORE that, so an `@` in a path or query
+/// is left alone.
+let redactUrl (url: string) : string =
+    match url.IndexOf "://" with
+    | -1 -> url
+    | schemeEnd ->
+        let authStart = schemeEnd + 3
+        // the authority runs to the first path/query/fragment delimiter
+        let authEnd =
+            let rest = url.Substring authStart
+
+            match rest |> Seq.tryFindIndex (fun c -> c = '/' || c = '?' || c = '#') with
+            | Some i -> authStart + i
+            | None -> url.Length
+
+        let authority = url.Substring(authStart, authEnd - authStart)
+
+        match authority.IndexOf '@' with
+        | -1 -> url
+        | at -> url.Substring(0, authStart) + "***@" + url.Substring(authStart + at + 1)
+
 let transportMessage (host: string) (err: TransportError) : string =
     match err with
     | Timeout ms -> $"timed out after {fmtMs ms} reaching {host}"
@@ -254,7 +283,10 @@ let send (req: Req) : Result<Resp, string * TransportError> =
                 let u = Uri(req.Url)
                 u.Host, u.Port
             with _ ->
-                req.Url, 0
+                // the URL would not parse — the fallback names it in the
+                // error, so REDACT its userinfo [D:url-redact] (a
+                // `user:pass@host` credential must not print verbatim)
+                redactUrl req.Url, 0
 
         let err = classifyTransport req.TimeoutMs port ex
         Error(transportMessage host err, err)

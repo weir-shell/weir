@@ -6711,6 +6711,42 @@ fi
 
 kill $ctsrv 2>/dev/null || true
 
+# ---- Fix 1: HTTP diagnostics redact a URL's userinfo [D:url-redact] --------
+# a `user:pass@host` credential must not print verbatim when an HTTP error
+# names the URL. (a) a 500 through Http.fetch redacts the credential; a
+# userinfo-free URL is still named in full. (b) the transport fallback (an
+# unparseable URL) redacts too.
+if command -v python3 >/dev/null 2>&1; then
+    urport=$((24100 + RANDOM % 200))
+    cat > "$ctdir/url500.py" <<URLEOF
+import http.server
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self): self.send_response(500); self.end_headers(); self.wfile.write(b'nope')
+    def log_message(self, *a): pass
+http.server.HTTPServer(('127.0.0.1', $urport), H).serve_forever()
+URLEOF
+    python3 "$ctdir/url500.py" & ursrv=$!
+    # awaitTcp, not awaitHttp: the server ANSWERS 500 by design, and
+    # `curl -sf` treats a 500 as failure — readiness is the LISTENER
+    awaitTcp "$urport" || { kill $ursrv 2>/dev/null || true; fail "the redact 500-server never came up"; }
+    # (a) the credential is masked, the status still named
+    out=$($BIN -e "print (Http.fetch \"http://user:s3cr3t@127.0.0.1:$urport/\")" 2>&1) && fail "a 500 must raise" || true
+    echo "$out" | grep -qF "***@127.0.0.1:$urport/ answered 500" || fail "the userinfo is redacted in the 500 error: $out"
+    echo "$out" | grep -qiF "s3cr3t" && fail "the credential LEAKED verbatim in the 500 error: $out" || true
+    # a userinfo-free URL is still named in full
+    out=$($BIN -e "print (Http.fetch \"http://127.0.0.1:$urport/\")" 2>&1) && fail "a 500 must raise" || true
+    echo "$out" | grep -qF "http://127.0.0.1:$urport/ answered 500" || fail "a credential-free URL is named in full: $out"
+    kill $ursrv 2>/dev/null || true
+    echo "e2e ok: an HTTP 500 redacts a URL's userinfo, names a credential-free URL in full (Fix 1a)"
+else
+    echo "e2e skip: Fix 1a userinfo-500 (python3 absent)"
+fi
+# (b) the transport fallback: an unparseable URL still masks its userinfo
+out=$($BIN -e 'print (Http.fetch "http://user:pw@ nohost")' 2>&1) && fail "an unreachable URL must raise" || true
+echo "$out" | grep -qF "***@ nohost" || fail "the transport fallback redacts the unparseable URL's userinfo: $out"
+echo "$out" | grep -qiF "user:pw" && fail "the credential LEAKED in the transport fallback: $out" || true
+echo "e2e ok: the transport fallback redacts an unparseable URL's userinfo (Fix 1b)"
+
 # F2: an unreadable file on the import path is a LOCATED diagnostic, never
 # a crash (mode 000; exit 1, not 134) [D:lockfile-confinement]
 if [ "$IS_WINDOWS" = "0" ]; then

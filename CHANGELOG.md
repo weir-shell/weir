@@ -60,6 +60,16 @@
   is closed; whether a real provider can be induced to redirect to an
   attacker host is an unproven precondition, recorded in the ledger.)
 
+- **An HTTP error no longer prints a URL's credentials in the clear.**
+  `Http.fetch`'s non-2xx error quoted the whole URL (`http://…answered
+  500`) and `Http.send`'s transport error did the same when the URL
+  could not be parsed — so a credential in `http://user:pass@host`
+  printed verbatim to the terminal, a CI log, or the REPL. Both now
+  redact the userinfo: `http://***@host answered 500`. A URL with no
+  credentials is still shown in full, so the target is named. (Display
+  only — a credential still rides the wire and is `ps`-visible in argv,
+  unchanged.)
+
 ## v0.0.47
 
 ### Added

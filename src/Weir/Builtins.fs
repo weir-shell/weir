@@ -3457,7 +3457,10 @@ let private runRequest (reqV: Value) : Http.Resp =
             try
                 System.Uri(req.Url).Host
             with _ ->
-                req.Url
+                // the unparseable-URL fallback names it in the wait label —
+                // redact userinfo [D:url-redact], matching the transport
+                // error's own fallback
+                Http.redactUrl req.Url
 
         match Waiting.during $"{req.Method} {host}" (fun () -> Http.send req) with
         | Ok resp -> resp
@@ -3535,7 +3538,10 @@ let private httpFetchImpl: Value =
             let resp = runRequest (VRecord("HttpRequest", recSet "url" (VStr url) f))
 
             if resp.Status < 200 || resp.Status >= 300 then
-                failwith $"{url} answered {resp.Status}"
+                // REDACT the URL's userinfo [D:url-redact]: a `user:pass@`
+                // credential must not print verbatim in the status error
+                // (terminal / CI / REPL); a credential-free URL is unchanged
+                failwith $"{Http.redactUrl url} answered {resp.Status}"
             else
                 VSeq(respBodyLines resp)
         | v, _ -> unreachable $"the checker rejects 'Http.fetch' on {formatValue v}")
