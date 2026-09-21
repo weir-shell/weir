@@ -13229,6 +13229,48 @@ let typeClassTests =
           }
           test "erasure: a constrained closure partially applies like any other" {
               expectValue "let same x y = x == y in let s5 = same 5 in s5 5" (VBool true)
+          }
+          // VALUE EQUALITY IS ITERATIVE [D:eq-depth]: a legally-built
+          // recursive-record value (an Option-linked record folded deep
+          // via Seq.fold — the checker accepts it) once crashed the whole
+          // process with an uncatchable StackOverflow on `==`. The walk is
+          // now an explicit heap work-list; reaching these asserts AT ALL
+          // is the pin (an overflow aborts the runner, it cannot be
+          // caught). Depths are past the recursive walk's crash point.
+          test "a 200k-deep VRecord chain compares equal iteratively, no overflow [D:eq-depth]" {
+              let build () =
+                  [ 1..200000 ]
+                  |> List.fold
+                      (fun acc i -> VRecord("Node", [ "depth", VInt(int64 i); "next", VUnion("Some", Some acc) ]))
+                      (VRecord("Node", [ "depth", VInt 0L; "next", VUnion("None", None) ]))
+
+              Expect.isTrue (build().Equals(build())) "two independent 200k-deep chains are structurally equal"
+          }
+          test "deep-vs-shallow VRecord is false, drained not crashed [D:eq-depth]" {
+              let chain n =
+                  [ 1..n ]
+                  |> List.fold
+                      (fun acc i -> VRecord("Node", [ "depth", VInt(int64 i); "next", VUnion("Some", Some acc) ]))
+                      (VRecord("Node", [ "depth", VInt 0L; "next", VUnion("None", None) ]))
+
+              Expect.isFalse ((chain 200000).Equals(chain 100000)) "different depths mismatch and drain the work-list"
+          }
+          test "a 200k-element VSeq compares LOCKSTEP true; a tail mismatch is false [D:eq-depth]" {
+              let xs () = VSeq(seq { for i in 1..200000 -> VInt(int64 i) })
+              Expect.isTrue ((xs ()).Equals(xs ())) "lockstep enumerators, no double materialization"
+
+              let ys = VSeq(seq { for i in 1..200000 -> VInt(if i = 200000 then -1L else int64 i) })
+              Expect.isFalse ((xs ()).Equals(ys)) "a single tail element differs → false"
+          }
+          test "deep value renders FINITE through show, no overflow [D:eq-depth]" {
+              let deep =
+                  [ 1..200000 ]
+                  |> List.fold
+                      (fun acc i -> VRecord("Node", [ "depth", VInt(int64 i); "next", VUnion("Some", Some acc) ]))
+                      (VRecord("Node", [ "depth", VInt 0L; "next", VUnion("None", None) ]))
+
+              let rendered = Weir.Eval.formatValue deep
+              Expect.stringContains rendered "…" "the depth bound teaches with an ellipsis rather than crashing"
           } ]
 
 let typeClassBTests =

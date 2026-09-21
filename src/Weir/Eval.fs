@@ -67,40 +67,97 @@ type Value =
 
     override this.Equals(other) =
         match other with
-        | :? Value as v ->
-            match this, v with
-            | VInt a, VInt b -> a = b
-            // finite-only and -0.0-normalized [D:floats]: reflexive
-            | VFloat a, VFloat b -> a = b
-            | VDur a, VDur b -> a = b
-            | VInstant a, VInstant b -> a = b
-            | VSize a, VSize b -> a = b
-            // F# array equality is structural — byte equality, the Eq law
-            | VBytes a, VBytes b -> a = b
-            | VStr a, VStr b -> a = b
-            | VSecret a, VSecret b -> a = b
-            | VBool a, VBool b -> a = b
-            | VUnit, VUnit -> true
-            | VRecord(n1, f1), VRecord(n2, f2) ->
-                // order-insensitive [D:record-order]: order is carried,
-                // never semantic — two spellings of one record are equal
-                n1 = n2
-                && f1.Length = f2.Length
-                && f1
-                   |> List.forall (fun (k, v) ->
-                       match f2 |> List.tryFind (fun (k2, _) -> k2 = k) with
-                       | Some(_, v2) -> v = v2
-                       | None -> false)
-            | VUnion(c1, p1), VUnion(c2, p2) -> c1 = c2 && p1 = p2
-            | VSeq a, VSeq b -> obj.ReferenceEquals(a, b) || List.ofSeq a = List.ofSeq b
-            | VMap a, VMap b -> a = b
-            | VTuple a, VTuple b -> a = b
-            | VClosure(p1, b1, e1), VClosure(p2, b2, e2) -> p1 = p2 && b1 = b2 && obj.ReferenceEquals(e1, e2)
-            | VClosurePat(p1, b1, e1), VClosurePat(p2, b2, e2) -> p1 = p2 && b1 = b2 && obj.ReferenceEquals(e1, e2)
-            | VBuiltin f, VBuiltin g -> obj.ReferenceEquals(f, g)
-            | VProc a, VProc b -> obj.ReferenceEquals(a.Proc, b.Proc)
-            | VServer a, VServer b -> obj.ReferenceEquals(a.Listener, b.Listener)
-            | _ -> false
+        | :? Value as top ->
+            // VALUE EQUALITY IS ITERATIVE [D:eq-depth]: a legally-built
+            // recursive-record value (an Option-linked record folded
+            // 100k deep — the checker accepts it) once crashed the whole
+            // process with an uncatchable StackOverflow, because the walk
+            // recursed one frame per nesting level. The pending-pair
+            // work-list lives on the heap instead: children QUEUE, a
+            // mismatch DRAINS. Every prior semantic is preserved — the
+            // per-arm comparison is the same, only the recursion is gone.
+            let pending = System.Collections.Generic.Stack<Value * Value>()
+            pending.Push(this, top)
+            let mutable eq = true
+
+            while eq && pending.Count > 0 do
+                let a, b = pending.Pop()
+
+                match a, b with
+                | VInt a, VInt b -> eq <- a = b
+                // finite-only and -0.0-normalized [D:floats]: reflexive
+                | VFloat a, VFloat b -> eq <- a = b
+                | VDur a, VDur b -> eq <- a = b
+                | VInstant a, VInstant b -> eq <- a = b
+                | VSize a, VSize b -> eq <- a = b
+                // F# array equality is structural — byte equality, the Eq law
+                | VBytes a, VBytes b -> eq <- a = b
+                | VStr a, VStr b -> eq <- a = b
+                | VSecret a, VSecret b -> eq <- a = b
+                | VBool a, VBool b -> eq <- a = b
+                | VUnit, VUnit -> ()
+                | VRecord(n1, f1), VRecord(n2, f2) ->
+                    // order-insensitive [D:record-order]: order is carried,
+                    // never semantic — two spellings of one record are
+                    // equal; matched field VALUES queue as pending pairs
+                    if n1 = n2 && f1.Length = f2.Length then
+                        for (k, v) in f1 do
+                            match f2 |> List.tryFind (fun (k2, _) -> k2 = k) with
+                            | Some(_, v2) -> pending.Push(v, v2)
+                            | None -> eq <- false
+                    else
+                        eq <- false
+                | VUnion(c1, p1), VUnion(c2, p2) ->
+                    if c1 = c2 then
+                        match p1, p2 with
+                        | Some x, Some y -> pending.Push(x, y)
+                        | None, None -> ()
+                        | _ -> eq <- false
+                    else
+                        eq <- false
+                | VSeq a, VSeq b ->
+                    // LOCKSTEP via enumerators — never materialize two
+                    // lists; short-circuit at the first mismatch (the
+                    // Seq.equal discipline). Element pairs queue.
+                    if not (obj.ReferenceEquals(a, b)) then
+                        use ea = a.GetEnumerator()
+                        use eb = b.GetEnumerator()
+                        let mutable go = true
+
+                        while go do
+                            let na = ea.MoveNext()
+                            let nb = eb.MoveNext()
+
+                            if na && nb then pending.Push(ea.Current, eb.Current)
+                            elif na <> nb then
+                                eq <- false
+                                go <- false
+                            else
+                                go <- false
+                | VMap a, VMap b ->
+                    // same key set, entry VALUES queue (keys are strings,
+                    // compared by the Map itself) [D:map-string]
+                    if a.Count = b.Count then
+                        for kv in a do
+                            match b.TryFind kv.Key with
+                            | Some v2 -> pending.Push(kv.Value, v2)
+                            | None -> eq <- false
+                    else
+                        eq <- false
+                | VTuple a, VTuple b ->
+                    if a.Length = b.Length then
+                        List.iter2 (fun x y -> pending.Push(x, y)) a b
+                    else
+                        eq <- false
+                | VClosure(p1, b1, e1), VClosure(p2, b2, e2) -> eq <- p1 = p2 && b1 = b2 && obj.ReferenceEquals(e1, e2)
+                | VClosurePat(p1, b1, e1), VClosurePat(p2, b2, e2) ->
+                    eq <- p1 = p2 && b1 = b2 && obj.ReferenceEquals(e1, e2)
+                | VBuiltin f, VBuiltin g -> eq <- obj.ReferenceEquals(f, g)
+                | VProc a, VProc b -> eq <- obj.ReferenceEquals(a.Proc, b.Proc)
+                | VServer a, VServer b -> eq <- obj.ReferenceEquals(a.Listener, b.Listener)
+                | _ -> eq <- false
+
+            eq
         | _ -> false
 
     override this.GetHashCode() =
@@ -139,9 +196,15 @@ type private RenderLimits =
       Ellipsis: string }
 
 let private showLimits =
+    // depth-bounded like the equality walk [D:eq-depth]: a legally-built
+    // deeply-nested value (an Option-linked record folded 100k deep)
+    // once overflowed the stack through this recursive renderer too —
+    // show / interpolation / a to-json error all reach formatValue. 100
+    // clears every real value (the corpus max is ~11); past it the guard
+    // teaches with an ellipsis rather than crashing.
     { MaxItems = 20
       MaxStr = None
-      MaxDepth = System.Int32.MaxValue
+      MaxDepth = 100
       Ellipsis = "; ..." }
 
 let private echoLimits =

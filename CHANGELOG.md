@@ -228,6 +228,22 @@
   value nests deeper than 1000 — the emitter needs finite trees").
   Finite, real-depth trees render unchanged.
 
+- **`==` on a deeply-nested value no longer crashes the process with an
+  uncatchable stack overflow.** A legally-built recursive-record value —
+  an `Option`-linked record folded ~100k deep via `Seq.fold`, which the
+  checker accepts — crashed the whole `weir` process (StackOverflow, exit
+  139/134) when compared with `==`, because value equality recursed one
+  stack frame per nesting level. Equality now walks an explicit heap
+  work-list of pending value pairs instead: records (order-insensitive),
+  union payloads, tuples, and map entry values queue their children,
+  seqs compare lockstep via enumerators (short-circuiting at the first
+  mismatch), and a mismatch drains the list. Every existing equality
+  semantic is unchanged — closures/builtins/procs/servers still compare
+  by reference, bytes structurally, floats by value. The `show` /
+  interpolation renderer shared the same crash class and now carries a
+  finite depth bound (100, past every real value; deeper nesting renders
+  a teaching ellipsis), matching the REPL echo's existing bound.
+
 ## v0.0.47
 
 ### Added
