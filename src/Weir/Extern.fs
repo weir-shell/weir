@@ -76,8 +76,12 @@ let resolveFile (prog: string) : string option =
                 else
                     None))
 
+let private legalInPath (prog: string) = prog.IndexOf '\000' < 0
+
 let exists (prog: string) : bool =
-    if isPathy prog then
+    if not (legalInPath prog) then
+        false
+    elif isPathy prog then
         let resolved = Session.resolve prog
 
         File.Exists resolved
