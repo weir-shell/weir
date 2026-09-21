@@ -65,42 +65,99 @@ type Value =
     // the lifetime and closes it on every exit
     | VServer of handle: Serve.Handle
 
+    // ITERATIVE, never recursive [D:eq-depth]: a recursive-record value
+    // is finite in width, never in depth (the renderer's law), and the
+    // one-frame-per-nesting-level comparison killed the process with an
+    // uncatchable StackOverflowException on `deep == deep` — the same
+    // class the renderers already bound. An explicit work-list of
+    // pending pairs holds the whole comparison on the heap: children
+    // are queued, not recursed into, and a mismatch drains the list.
     override this.Equals(other) =
         match other with
         | :? Value as v ->
-            match this, v with
-            | VInt a, VInt b -> a = b
-            // finite-only and -0.0-normalized [D:floats]: reflexive
-            | VFloat a, VFloat b -> a = b
-            | VDur a, VDur b -> a = b
-            | VInstant a, VInstant b -> a = b
-            | VSize a, VSize b -> a = b
-            // F# array equality is structural — byte equality, the Eq law
-            | VBytes a, VBytes b -> a = b
-            | VStr a, VStr b -> a = b
-            | VSecret a, VSecret b -> a = b
-            | VBool a, VBool b -> a = b
-            | VUnit, VUnit -> true
-            | VRecord(n1, f1), VRecord(n2, f2) ->
-                // order-insensitive [D:record-order]: order is carried,
-                // never semantic — two spellings of one record are equal
-                n1 = n2
-                && f1.Length = f2.Length
-                && f1
-                   |> List.forall (fun (k, v) ->
-                       match f2 |> List.tryFind (fun (k2, _) -> k2 = k) with
-                       | Some(_, v2) -> v = v2
-                       | None -> false)
-            | VUnion(c1, p1), VUnion(c2, p2) -> c1 = c2 && p1 = p2
-            | VSeq a, VSeq b -> obj.ReferenceEquals(a, b) || List.ofSeq a = List.ofSeq b
-            | VMap a, VMap b -> a = b
-            | VTuple a, VTuple b -> a = b
-            | VClosure(p1, b1, e1), VClosure(p2, b2, e2) -> p1 = p2 && b1 = b2 && obj.ReferenceEquals(e1, e2)
-            | VClosurePat(p1, b1, e1), VClosurePat(p2, b2, e2) -> p1 = p2 && b1 = b2 && obj.ReferenceEquals(e1, e2)
-            | VBuiltin f, VBuiltin g -> obj.ReferenceEquals(f, g)
-            | VProc a, VProc b -> obj.ReferenceEquals(a.Proc, b.Proc)
-            | VServer a, VServer b -> obj.ReferenceEquals(a.Listener, b.Listener)
-            | _ -> false
+            let pending = ResizeArray<Value * Value>()
+            pending.Add(this, v)
+            let mutable eq = true
+            let mutable i = 0
+
+            while eq && i < pending.Count do
+                let a, b = pending[i]
+                i <- i + 1
+
+                match a, b with
+                | VInt x, VInt y -> eq <- x = y
+                // finite-only and -0.0-normalized [D:floats]: reflexive
+                | VFloat x, VFloat y -> eq <- x = y
+                | VDur x, VDur y -> eq <- x = y
+                | VInstant x, VInstant y -> eq <- x = y
+                | VSize x, VSize y -> eq <- x = y
+                // F# array equality is structural — byte equality, the Eq law
+                | VBytes x, VBytes y -> eq <- x = y
+                | VStr x, VStr y -> eq <- x = y
+                | VSecret x, VSecret y -> eq <- x = y
+                | VBool x, VBool y -> eq <- x = y
+                | VUnit, VUnit -> ()
+                | VRecord(n1, f1), VRecord(n2, f2) ->
+                    // order-insensitive [D:record-order]: order is carried,
+                    // never semantic — two spellings of one record are equal
+                    if n1 <> n2 || f1.Length <> f2.Length then
+                        eq <- false
+                    else
+                        // equal lengths + every key found = the bijection
+                        for (k, fv) in f1 do
+                            match f2 |> List.tryFind (fun (k2, _) -> k2 = k) with
+                            | Some(_, v2) -> pending.Add(fv, v2)
+                            | None -> eq <- false
+                | VUnion(c1, p1), VUnion(c2, p2) ->
+                    if c1 <> c2 then
+                        eq <- false
+                    else
+                        match p1, p2 with
+                        | None, None -> ()
+                        | Some x, Some y -> pending.Add(x, y)
+                        | _ -> eq <- false
+                | VSeq x, VSeq y ->
+                    if not (obj.ReferenceEquals(x, y)) then
+                        // lockstep, never materialized — Seq.equal's
+                        // discipline [D:port-members]: enumerates only as
+                        // far as the mismatch, so a deep (or infinite)
+                        // source never builds a list on the way to an
+                        // answer the elements themselves decide
+                        use ex = x.GetEnumerator()
+                        use ey = y.GetEnumerator()
+
+                        let mutable go = true
+
+                        while go && eq do
+                            let mx, my = ex.MoveNext(), ey.MoveNext()
+
+                            if mx <> my then eq <- false
+                            elif not mx then go <- false
+                            else pending.Add(ex.Current, ey.Current)
+                | VMap x, VMap y ->
+                    if x.Count <> y.Count then
+                        eq <- false
+                    else
+                        // equal counts + every key found = the same tree
+                        for (KeyValue(k, mv)) in x do
+                            match y.TryFind k with
+                            | Some v2 -> pending.Add(mv, v2)
+                            | None -> eq <- false
+                | VTuple x, VTuple y ->
+                    if x.Length <> y.Length then
+                        eq <- false
+                    else
+                        List.iter2 (fun t1 t2 -> pending.Add(t1, t2)) x y
+                | VClosure(p1, b1, e1), VClosure(p2, b2, e2) ->
+                    eq <- p1 = p2 && b1 = b2 && obj.ReferenceEquals(e1, e2)
+                | VClosurePat(p1, b1, e1), VClosurePat(p2, b2, e2) ->
+                    eq <- p1 = p2 && b1 = b2 && obj.ReferenceEquals(e1, e2)
+                | VBuiltin f, VBuiltin g -> eq <- obj.ReferenceEquals(f, g)
+                | VProc x, VProc y -> eq <- obj.ReferenceEquals(x.Proc, y.Proc)
+                | VServer x, VServer y -> eq <- obj.ReferenceEquals(x.Listener, y.Listener)
+                | _ -> eq <- false
+
+            eq
         | _ -> false
 
     override this.GetHashCode() =
