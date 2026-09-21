@@ -10541,6 +10541,40 @@ let lockfileSymlinkConfinementTests =
                       System.IO.Directory.Delete(baseDir, true)
                   with _ ->
                       ()
+          }
+          test "writeConfined TRUNCATES a longer existing file (no stale tail) [D:lockfile-symlink-confinement]" {
+              // the open(2) flag regression: the hardcoded Linux O_CREAT/O_TRUNC
+              // meant the WRONG bits on macOS, so O_TRUNC never set — a re-write
+              // over an existing LONGER file (restore repairing a tampered vendored
+              // file) left stale trailing bytes → hash mismatch. The result must be
+              // EXACTLY the new bytes. Passes on Linux either way; guards the flags.
+              let baseDir =
+                  System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-da04t-{System.Guid.NewGuid():N}")
+
+              let weirDir = System.IO.Path.Combine(baseDir, ".weir")
+              System.IO.Directory.CreateDirectory(System.IO.Path.Combine(weirDir, "schemas")) |> ignore
+              let dest = System.IO.Path.Combine(weirDir, "schemas", "k8s-configmap.json")
+
+              // a LONGER tampered file already on disk (the restore-repair case)
+              let longer = System.Text.Encoding.UTF8.GetBytes "{\"tampered\":true,\"padding\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\"}"
+              let shorter = System.Text.Encoding.UTF8.GetBytes "{\"ok\":true}"
+
+              try
+                  System.IO.File.WriteAllBytes(dest, longer)
+
+                  match Weir.Contracts.writeConfined weirDir dest shorter with
+                  | Error e -> failtest $"writeConfined must succeed over an existing file: {e}"
+                  | Ok() ->
+                      let back = System.IO.File.ReadAllBytes dest
+                      // exactly the new bytes — no truncation bug would leave the
+                      // longer file's trailing bytes after the shorter write
+                      Expect.equal back shorter "the re-written file is truncated to exactly the new bytes"
+                      Expect.equal back.Length shorter.Length "no stale trailing bytes remain"
+              finally
+                  try
+                      System.IO.Directory.Delete(baseDir, true)
+                  with _ ->
+                      ()
           } ]
 
 

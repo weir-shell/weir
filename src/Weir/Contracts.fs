@@ -144,20 +144,33 @@ let confineRealUnder (root: string) (dest: string) : Result<string, string> =
 /// path falls back to the realpath preflight (its residual window is
 /// stated in the ledger).
 module private Posix =
+    // the WHOLE open(2) flag set is per-OS [D:lockfile-symlink-confinement]:
+    // O_WRONLY agrees (0x0001) but O_CREAT/O_TRUNC/O_NOFOLLOW differ between
+    // Linux and macOS/BSD (fcntl.h). Only branching O_NOFOLLOW left the
+    // Linux O_CREAT (0x0040) / O_TRUNC (0x0200) meaning the WRONG bits on
+    // macOS (O_ASYNC / O_CREAT), so a re-write over a longer existing file
+    // was never truncated — stale trailing bytes broke the restore-repair
+    // hash. writeFlags () ORs the correct set for the running OS.
     [<Literal>]
-    let private O_WRONLY = 0x0001
+    let private O_WRONLY = 0x0001 // same on Linux and macOS
 
     [<Literal>]
-    let private O_CREAT = 0x0040
+    let private O_CREAT_LINUX = 0x0040
 
     [<Literal>]
-    let private O_TRUNC = 0x0200
+    let private O_TRUNC_LINUX = 0x0200
 
     [<Literal>]
-    let private O_NOFOLLOW = 0x20000 // Linux value; macOS is 0x0100
+    let private O_NOFOLLOW_LINUX = 0x20000
 
     [<Literal>]
-    let private O_NOFOLLOW_BSD = 0x0100
+    let private O_CREAT_MACOS = 0x0200
+
+    [<Literal>]
+    let private O_TRUNC_MACOS = 0x0400
+
+    [<Literal>]
+    let private O_NOFOLLOW_MACOS = 0x0100
 
     [<DllImport("libc", SetLastError = true)>]
     extern int private ``open``(string pathname, int flags, int mode)
@@ -177,15 +190,17 @@ module private Posix =
     [<DllImport("libc", SetLastError = true)>]
     extern int private close(int fd)
 
-    let private noFollowFlag () =
-        if OperatingSystem.IsMacOS() then O_NOFOLLOW_BSD else O_NOFOLLOW
+    let private writeFlags () =
+        if OperatingSystem.IsMacOS() then
+            O_WRONLY ||| O_CREAT_MACOS ||| O_TRUNC_MACOS ||| O_NOFOLLOW_MACOS
+        else
+            O_WRONLY ||| O_CREAT_LINUX ||| O_TRUNC_LINUX ||| O_NOFOLLOW_LINUX
 
     /// write bytes creating/truncating the final component, REFUSING to
     /// follow a symlinked leaf (ELOOP). Returns Error on any libc failure,
     /// naming the leaf — the caller turns that into the located refusal.
     let writeNoFollow (path: string) (bytes: byte[]) : Result<unit, string> =
-        let fd =
-            ``open`` (path, O_WRONLY ||| O_CREAT ||| O_TRUNC ||| noFollowFlag (), 0o644)
+        let fd = ``open`` (path, writeFlags (), 0o644)
 
         if fd < 0 then
             let err = Marshal.GetLastWin32Error()

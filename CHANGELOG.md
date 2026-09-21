@@ -66,8 +66,13 @@
   the check and the write refer to the same object, then `fchmod`s that
   open descriptor to `0o644` (libc `open(2)` is variadic, and its mode
   argument was unreliable on ARM64 macOS — a vendored file could land
-  unreadable, so a later `verify` failed with a permission error). A
-  user-chosen `gen types --out <path>` stays unconfined by design.
+  unreadable, so a later `verify` failed with a permission error). The
+  full `open(2)` flag set (`O_CREAT`/`O_TRUNC`/`O_NOFOLLOW`) is now
+  branched per OS: the Linux values had been hardcoded, so on macOS
+  `O_TRUNC` was never set and a re-write over a longer existing file
+  (repairing a tampered vendored file) left stale trailing bytes and
+  failed the post-repair hash. A user-chosen `gen types --out <path>`
+  stays unconfined by design.
 
 - **`add schema --as` refuses a name that is not a plain name.** An
   absolute or traversal `--as` name vendored the schema outside `.weir/`.
