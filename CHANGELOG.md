@@ -282,7 +282,7 @@
   the process with an uncatchable stack overflow (exit 134) — hostile
   or malformed input must never crash the tool. The emitter now caps
   nesting at 1000 and fails with a clean located error ("to yaml: the
-  value nests deeper than 1000 — the emitter needs finite trees").
+  value nests deeper than 100 — the emitter needs finite trees").
   Finite, real-depth trees render unchanged.
 
 - **`==` on a deeply-nested value no longer crashes the process with an

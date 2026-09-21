@@ -9786,7 +9786,7 @@ let deep = [1..100000] |> Seq.fold (fun acc _ -> YSeq [acc]) (YInt 1)
 deep |> to yaml |> Seq.length |> print
 WEOF
 out=$($BIN "$s6dir/emit.weir" 2>&1) && fail "a 100k-deep value must be refused, not emitted: $out" || true
-echo "$out" | grep -qF "nests deeper than 1000" || fail "emitter depth cap message: $out"
+echo "$out" | grep -qF "nests deeper than 100" || fail "emitter depth cap message: $out"
 echo "e2e ok: STRIX-6 — a 100k-deep 'to yaml' hits the emitter cap (no crash)"
 rm -rf "$s6dir"
 

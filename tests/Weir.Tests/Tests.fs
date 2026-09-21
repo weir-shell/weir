@@ -1587,13 +1587,13 @@ let boundaryTests =
                       (fun () -> run "[1..2000] |> Seq.fold (fun acc _ -> YSeq [acc]) (YInt 1) |> to yaml" |> ignore)
                       id
 
-              Expect.stringContains ex.Message "nests deeper than 1000" "the cap teaches"
+              Expect.stringContains ex.Message "nests deeper than 100" "the cap teaches"
 
-              // 250 deep renders fine — the cap sits above real trees
+              // 50 deep renders fine — the cap sits above real trees
               let ok =
-                  run "[1..250] |> Seq.fold (fun acc _ -> YSeq [acc]) (YInt 1) |> to yaml" |> forceSeq
+                  run "[1..50] |> Seq.fold (fun acc _ -> YSeq [acc]) (YInt 1) |> to yaml" |> forceSeq
 
-              Expect.isNonEmpty ok "a 250-deep value renders"
+              Expect.isNonEmpty ok "a 50-deep value renders"
           }
           test "yaml patch: types as YamlPatch; tombstones scoped; schema= refuses [D:yaml-nodes]" {
               let asm lines' =

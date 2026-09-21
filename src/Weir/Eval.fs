@@ -1874,9 +1874,12 @@ let private renderString (s: string) : Rendered =
 // nesting ceiling [D:yaml-depth]: yamlRender recurses once per level,
 // so a value built iteratively (a Seq.fold nesting a YSeq) overflows the
 // native stack with an uncatchable StackOverflow — the tool must never
-// crash on hostile data. 1000 sits far above any real tree and below the
-// crash floor; the guard turns the crash into a clean boundary error.
-let private yamlMaxDepth = 1000
+// crash on hostile data. 100 sits far above any real tree (kubectl nests
+// ~10) and safely below the stack crash floor: yamlRender's heavy frames
+// overflow a small-stack worker/test thread at ~600 nesting levels, so the
+// bound matches the show renderer's MaxDepth rather than a higher number
+// the stack cannot reach. The guard turns the crash into a clean error.
+let private yamlMaxDepth = 100
 
 let rec private yamlRender
     (renames: Map<string, Map<string, string>>)
