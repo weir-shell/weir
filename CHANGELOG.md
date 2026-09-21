@@ -97,6 +97,31 @@
   not-found so the parser emits its ordinary missing-command diagnostic
   instead of aborting. NUL-free paths are unchanged.
 
+- **An out-of-range attribute integer is now a located error, never a
+  crash.** The tiny literal lexer behind attribute arguments
+  (`[<Default n>]` and friends) cast the digits to `int64` with a raw
+  cast that throws `OverflowException` past the 64-bit range — and
+  nothing above the parser caught it, so `[<Default 99999999999999999999>]`
+  on any field, union case, or type aborted `check`/`run`/`fmt`/`-e`/the
+  REPL with a raw stack trace (exit 134). The digits are now parsed with
+  `Int64.TryParse`, and an out-of-range value is a located parse error —
+  `attribute argument out of range (64-bit): <digits>` — mirroring the
+  integer-literal parser. The duration/size unit arms (`…TiB`, `…h`)
+  additionally bound their scaling multiply, so a large-but-in-range base
+  can no longer silently wrap negative. In-range attributes (`30s`,
+  `10MiB`, `42`, `0.5`) are unchanged.
+
+- **A bareword `;`-spine no longer parses in O(N²).** A `let x = b;b;b;…`
+  line (N barewords) cost quadratic time: a bare `;` is a literal argv
+  word in command position, so the doomed command-mode attempt's
+  head-word scanner consumed the whole remaining line before failing,
+  once per bareword. The command head-word scan is now bounded (a
+  resolvable command head is a PATH entry, ≤255 bytes), which caps the
+  doomed attempt and makes the line linear — 20k barewords fell from
+  ~27s to ~5s. Resolvable command heads and the diagnostic on the spine
+  are byte-identical; argv words longer than the bound still parse as
+  arguments (no grammar change).
+
 ## v0.0.47
 
 ### Added

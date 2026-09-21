@@ -21216,11 +21216,70 @@ let fromTableTests =
               Expect.equal (run "let table = 5 in table + 1") (VInt 6L) "no new reserved word"
           } ]
 
+// the v0.0.48 security cut [D:attr-int-overflow][D:head-word-bound]
+// [D:cli-exception-guard]: three front-end hardening pins — none may
+// crash the tool; each fails as a LOCATED diagnostic, never a SIGABRT.
+let hardeningTests =
+    testList
+        "Hardening"
+        [ // Fix 1 — an out-of-range attribute integer is a located parse
+          // error, NOT an OverflowException (was SIGABRT/exit 134) [D:attr-int-overflow]
+          test "attribute integer past 64-bit is a located error, never a crash" {
+              match Weir.Parser.parseStmt "type T = { [<Default 99999999999999999999>] A: int }" with
+              | Error msg ->
+                  Expect.stringContains msg "attribute argument out of range (64-bit)" "the teaching mirrors the int-literal parser"
+                  Expect.stringContains msg "99999999999999999999" "the offending digits are named"
+              | Ok _ -> failtest "expected the overflow to be rejected"
+          }
+          test "attribute overflow on a union case and a type decl are located too" {
+              match Weir.Parser.parseStmt "type T = [<Default 99999999999999999999>] A | B" with
+              | Error msg -> Expect.stringContains msg "out of range (64-bit)" "union-position overflow located"
+              | Ok _ -> failtest "expected the overflow to be rejected"
+          }
+          test "a duration/size attribute multiply cannot silently wrap [D:attr-int-overflow]" {
+              // 9999999999999TiB is in-range as digits but overflows int64
+              // once scaled — the bound refuses instead of wrapping negative
+              match Weir.Parser.parseStmt "type T = { [<Default 9999999999999TiB>] A: int }" with
+              | Error msg -> Expect.stringContains msg "out of range (64-bit)" "the scaled overflow is refused"
+              | Ok _ -> failtest "expected the scaled overflow to be rejected"
+          }
+          test "an in-range attribute (unit and plain) still parses unchanged" {
+              Expect.isOk (Weir.Parser.parseStmt "type T = { [<Default 30s>] A: int }") "30s attr unchanged"
+              Expect.isOk (Weir.Parser.parseStmt "type T = { [<Default 10MiB>] A: int }") "10MiB attr unchanged"
+              Expect.isOk (Weir.Parser.parseStmt "type T = { [<Default 42>] A: int }") "plain int attr unchanged"
+              Expect.isOk (Weir.Parser.parseStmt "type T = { [<Default 0.5>] A: int }") "float attr unchanged"
+          }
+          // Fix 2 — the doomed command-mode attempt on a bareword ';'-spine
+          // stays LINEAR: the bounded head-word scan caps the doomed
+          // attempt, and the diagnostic is byte-identical [D:head-word-bound]
+          test "bareword ';'-spine still produces the unbound-variable diagnostic" {
+              match Weir.Parser.parseLine realResolver "let x = b;b;b" with
+              | Ok(SLet(_, _)) -> () // resolves as an expression, 'b' unbound downstream (check-time)
+              | Error msg -> Expect.stringContains msg "b" "the spine still names the bareword"
+              | other -> failtest $"unexpected parse of the spine: {other}"
+          }
+          test "bareword ';'-spine checks in bounded time (linearity guard) [D:head-word-bound]" {
+              // 20k barewords was O(N^2) (>25s); the bound makes it linear.
+              // A generous wall-clock ceiling catches a regression to
+              // quadratic without flaking on load.
+              let spine = "let x = " + System.String.Join(";", Array.create 20000 "b")
+              let sw = System.Diagnostics.Stopwatch.StartNew()
+              Weir.Parser.parseLine realResolver spine |> ignore
+              sw.Stop()
+              Expect.isLessThan sw.Elapsed.TotalSeconds 15.0 "the doomed attempt is bounded, not quadratic"
+          }
+          test "a resolvable command head is unaffected by the head-word bound" {
+              match Weir.Parser.parseLine realResolver "git status" with
+              | Ok(SCmd _) -> ()
+              | other -> failtest $"a real command head must still parse: {other}"
+          } ]
+
 [<Tests>]
 let allTests =
     testList
         "Weir"
-        [ versionStampTests
+        [ hardeningTests
+          versionStampTests
           portMembersTests
           serveTests
           echoBinaryTests

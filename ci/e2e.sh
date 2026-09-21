@@ -9593,4 +9593,39 @@ echo "e2e ok: F13 tty data sanitize (data escapes neutralized at a tty, weir col
 
 rm -rf "$svdir"
 
+# ---- v0.0.48 security cut: three front-end hardening pins ------------------
+# each triggered a SIGABRT/DoS on the base; the fix makes each a located
+# diagnostic (exit != 134) or linear time. Only e2e drives the whole
+# binary, so it is where the exit CODE (not just the message) is pinned.
+hdir=$(mkweirtmp)
+
+# Fix 1 -- attr integer past 64-bit: located parse error, NOT exit 134
+# [D:attr-int-overflow]
+cat > "$hdir/attr.weir" <<WEOF
+type T = {
+    [<Default 99999999999999999999>]
+    A: int
+}
+print "x"
+WEOF
+rc=0; out=$($BIN check "$hdir/attr.weir" 2>&1) || rc=$?
+[ "$rc" != "134" ] || fail "attr overflow still SIGABRTs (exit 134): $out"
+[ "$rc" = "1" ] || fail "attr overflow must be a lint error (exit 1), got $rc: $out"
+echo "$out" | grep -qF "out of range (64-bit)" || fail "attr overflow must teach the range: $out"
+echo "e2e ok: attr integer overflow is a located error (exit $rc, not 134)"
+
+# Fix 2 -- bareword ';'-spine: LINEAR, not O(N^2) [D:head-word-bound]
+# 20k barewords was >25s (quadratic); the bound makes it ~5s. A generous
+# ceiling catches a regression to quadratic without flaking on load.
+python3 -c "print('let x = ' + ';'.join(['b']*20000))" > "$hdir/spine.weir"
+t0=$(date +%s)
+rc=0; $BIN check "$hdir/spine.weir" >/dev/null 2>&1 || rc=$?
+t1=$(date +%s)
+elapsed=$((t1 - t0))
+[ "$rc" != "134" ] || fail "bareword spine crashed (exit 134)"
+[ "$elapsed" -lt 20 ] || fail "bareword ';'-spine is not linear: 20k barewords took ${elapsed}s (was quadratic; expected <20s)"
+echo "e2e ok: bareword ';'-spine checks in ${elapsed}s (linear, was O(N^2)/>25s)"
+
+rm -rf "$hdir"
+
 echo "e2e battery: all green"
