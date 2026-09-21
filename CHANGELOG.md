@@ -81,6 +81,22 @@
   yields a bounded error. (A residual short-prefix leak for a value
   derived from a revealed `Secret` is recorded in the ledger.)
 
+- **A NUL byte in a path no longer crashes weir — it is refused with a
+  located error.** `Path.GetFullPath` throws a raw
+  `ArgumentException: Null character in path` on a NUL-bearing argument,
+  and every File/Proc/completion builtin plus the parser's
+  command-head classifier reach it through `Session.resolve`. A `.weir`
+  line like `./a<NUL>b c` aborted the process (SIGABRT, exit 134) with
+  no diagnostic, because the parse-time head resolution runs outside the
+  runner's exception handler; a NUL-bearing *path value* at run time
+  (e.g. a command line or file line carrying a NUL) leaked the raw .NET
+  message. `Session.resolve` now rejects a NUL-bearing path with a
+  located weir error (`path contains a NUL byte — paths are NUL-free;
+  NUL-bearing data is binary, not a path`), closing the whole run-time
+  class, and `Extern.exists` treats a NUL-bearing program head as
+  not-found so the parser emits its ordinary missing-command diagnostic
+  instead of aborting. NUL-free paths are unchanged.
+
 ## v0.0.47
 
 ### Added

@@ -77,7 +77,15 @@ let resolveFile (prog: string) : string option =
                     None))
 
 let exists (prog: string) : bool =
-    if isPathy prog then
+    // parse-time NUL guard [D:nul-path]: a NUL-bearing head is not a real
+    // program, so it is not-found — this returns BEFORE Session.resolve,
+    // whose raise would abort the process here (the parse resolver runs
+    // outside the runtime try). The classifier then emits its ordinary
+    // located missing-command diagnostic instead of a SIGABRT. The
+    // run-time raise still guards every other Session.resolve caller.
+    if prog.Contains '\000' then
+        false
+    elif isPathy prog then
         let resolved = Session.resolve prog
 
         File.Exists resolved

@@ -1,5 +1,32 @@
 # Spike Notes
 
+## NUL in a path — the resolve funnel guard (STRIX-5) (2026-09-21)
+
+A `.weir` file whose one line was `./a<NUL>b c` did not error — it
+SIGABRTed. `Path.GetFullPath` throws a raw `ArgumentException: Null
+character in path` on a NUL-bearing argument, and the throw was
+reached two ways: at PARSE time the head classifier calls
+`Extern.exists` (its `isPathy` branch → `Session.resolve`) to decide
+whether a slash-bearing word is a command, and at RUN time ~20
+File/Proc/completion builtins call `Session.resolve` on their path
+value. The parse path was the loud one — the parse resolver runs
+OUTSIDE the runner's try, so the raise aborted the process with no
+diagnostic (exit 134). The run path merely leaked the .NET message
+through the runner's `error: {ex.Message}` catch (a located error,
+but the raw framework text, not weir's own).
+
+The fix is one funnel + one pre-empt [D:nul-path]. `Session.resolve`
+is the single resolution point every caller shares, so a NUL guard
+there ("path contains a NUL byte — paths are NUL-free; NUL-bearing
+data is binary, not a path") converts the WHOLE run-time class to a
+clean located weir error — the builtins already surface raises. And
+`Extern.exists` returns `false` (not-found) for a NUL-bearing head
+BEFORE it reaches `Session.resolve`, so the parser falls to its
+normal missing-command diagnosis rather than the abort. NUL-free
+paths take neither branch — no behaviour change for real paths. The
+same lesson the Str.fromBase64/Bytes split already teaches: a NUL is
+the boundary between text and binary, and a path is text.
+
 ## the yaml plural, corrected by a counter-example (2026-09-05)
 
 `[1;2;3] |> to yaml` printed three scalar documents separated by

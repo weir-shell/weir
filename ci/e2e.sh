@@ -206,6 +206,47 @@ $BIN -e 'Dir.copy "'"$pw2"'/src" "'"$pw2"'/dst"' || fail "Dir.copy failed"
 rm -rf "$pw2"
 echo "e2e ok: pins-walk candidates (exit codes exact, readSecret trio, Dir.copy recursive)"
 
+# ---- NUL in a path: refused, never crashed [D:nul-path] (STRIX-5) ----------
+# A NUL byte reaches Path.GetFullPath (via Session.resolve) two ways, and
+# both used to escape with a raw ArgumentException — the parse-time head
+# resolution as a SIGABRT (exit 134, no diagnostic), the run-time path as
+# a raw .NET message. Both must now be a located weir error with a
+# NON-134 exit and no core dump. POSIX-only: the NUL byte in a file/argv
+# is the axis, and skipOnWindows-style gating keeps the harness honest.
+if [ "$IS_WINDOWS" = "0" ]; then
+    nuldir=$(mkweirtmp)
+    # (a) PARSE-TIME: a NUL inside a slash-bearing word. The parser's head
+    # classifier calls Extern.exists, which now reports a NUL-bearing head
+    # as not-found BEFORE Session.resolve — so the parser emits its normal
+    # located missing-command diagnostic instead of aborting.
+    printf './a\000b c\n' > "$nuldir/parse.weir"
+    rc=0; out=$($BIN "$nuldir/parse.weir" 2>&1) || rc=$?
+    [ "$rc" -ne 0 ] || fail "NUL-in-slash parse must not exit 0: $out"
+    [ "$rc" -ne 134 ] || fail "NUL-in-slash parse must NOT SIGABRT (got 134): $out"
+    echo "$out" | grep -qiF "argumentexception" && fail "parse must not leak the raw .NET exception: $out"
+    echo "$out" | grep -qF "$nuldir/parse.weir:1:" || fail "parse error must be located at line 1: $out"
+
+    # (b) RUN-TIME: a NUL-bearing path VALUE (a file line carrying a NUL,
+    # fed to a File builtin) hits Session.resolve, which now raises a
+    # located weir error the builtin surfaces — no crash.
+    printf 'a\000b' > "$nuldir/nulpath.txt"
+    cat > "$nuldir/run.weir" <<WEOF
+let p = File.read "$nuldir/nulpath.txt" |> Seq.head
+let ok = File.exists p
+print (show ok)
+WEOF
+    rc=0; out=$($BIN "$nuldir/run.weir" 2>&1) || rc=$?
+    [ "$rc" -ne 0 ] || fail "NUL run-time path must not exit 0: $out"
+    [ "$rc" -ne 134 ] || fail "NUL run-time path must NOT SIGABRT (got 134): $out"
+    echo "$out" | grep -qiF "argumentexception" && fail "run-time must not leak the raw .NET exception: $out"
+    echo "$out" | grep -qF "NUL byte" || fail "run-time error must name the NUL byte: $out"
+    echo "$out" | grep -qF "$nuldir/run.weir:2:" || fail "run-time error must be located at line 2: $out"
+    rm -rf "$nuldir"
+    echo "e2e ok: NUL in a path is a located error, never a crash (parse + run-time, both non-134)"
+else
+    echo "e2e skip: NUL-in-path (POSIX axis — the NUL byte in a file/argv)"
+fi
+
 # walk cohort: the Args-side defaulted-Secret teaching [D:secret]
 pw3=$(mkweirtmp)
 cat > "$pw3/sd.weir" <<'WEOF'

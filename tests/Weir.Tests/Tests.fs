@@ -4107,6 +4107,34 @@ let session2Tests =
 
               Expect.isTrue (eventuallyNoSurvivors "weir-s2-dz") "direct-exec children leaked"
               Expect.equal (defunctChildren ()) 0 "defunct children accumulated"
+          }
+          // [D:nul-path] the RUN-TIME root: Session.resolve is the one
+          // funnel every File/Proc/completion builtin shares. A NUL in the
+          // path made Path.GetFullPath throw a raw ArgumentException (a
+          // SIGABRT reached through the parser, a raw .NET message elsewhere);
+          // it now raises a clear weir-shaped located error the builtins
+          // surface. NUL-free paths still resolve unchanged.
+          test "Session.resolve refuses a NUL-bearing path with a weir message" {
+              Expect.throwsC
+                  (fun () -> Weir.Session.resolve "a\000b" |> ignore)
+                  (fun ex ->
+                      Expect.stringContains ex.Message "NUL byte" "the message names the NUL, not the framework")
+              // and the negative twin: a NUL-free path still resolves
+              Expect.isTrue
+                  (System.IO.Path.IsPathRooted(Weir.Session.resolve "a/b"))
+                  "an ordinary path resolves unchanged"
+          }
+          // [D:nul-path] the PARSE-TIME pre-empt: a NUL-bearing program head
+          // is not-found (false) BEFORE Extern.exists reaches Session.resolve,
+          // whose raise would abort the parse resolver (it runs outside the
+          // runner's try). So the classifier emits its ordinary
+          // missing-command diagnostic instead of a crash.
+          test "Extern.exists reports a NUL-bearing head as not-found, not a raise" {
+              skipOnWindows ()
+              // pathy (contains '/') AND NUL-bearing: without the guard this
+              // is exactly the parse-time crash path
+              Expect.isFalse (Weir.Extern.exists "./a\000b") "a NUL-in-slash head is not found"
+              Expect.isFalse (Weir.Extern.exists "a\000b") "a bare NUL head is not found"
           } ]
 
 
