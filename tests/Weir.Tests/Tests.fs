@@ -7786,7 +7786,14 @@ let planApplyTests =
 
         d
 
-    testList
+    // testSequenced: the DA-03 cases drive programs through runFile
+    // (Weir.Script.run — IN-PROCESS), whose `within cd` mutates the GLOBAL
+    // Session.Cwd. Left parallel, this list raced itself (two DA-03 programs
+    // stomping each other's cwd → a preview bound to the wrong dir →
+    // "not absolute-A") and the parallel spawn tests. Sequencing keeps all
+    // cwd mutation in the non-parallel phase.
+    testSequenced
+    <| testList
         "the plan/apply capture [D:plan-apply]"
         [ test "parse shape: a bare plan head + block is a within-family node" {
               let asmLine = "plan" + Weir.Parser.sibSepStr + "File.write \"f\" [\"x\"]"
