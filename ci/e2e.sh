@@ -6760,7 +6760,9 @@ DA5EOF2
     rm -f "$ctdir/da5.log"
     python3 "$ctdir/da5redir.py" & da5as=$!
     python3 "$ctdir/da5dest.py" & da5bs=$!
-    sleep 0.6
+    # readiness, not a fixed sleep (see S1): a slow-runner bind race turns a
+    # connect into a 30s hang. $da5a is explicit 127.0.0.1.
+    awaitTcp $da5a || { kill $da5as $da5bs 2>/dev/null || true; fail "DA-05: the redirect server never came up on $da5a"; }
     mkdir -p "$ctdir/da5repo" && ( cd "$ctdir/da5repo" && git init -q . )
     # the CLI attaches Authorization: token <this> for host 127.0.0.1
     out=$( cd "$ctdir/da5repo" && WEIR_TOKEN_127_0_0_1="SECRET-CONTRACT-TOKEN" $BIN add module "http://127.0.0.1:$da5a/start.weir" --as da5 2>&1 ) || true
@@ -8287,7 +8289,9 @@ socketserver.TCPServer(("127.0.0.1", int(sys.argv[1])), H).serve_forever()
 PYEOF2
     python3 "$hdir/echo.py" "$hport" &
     hsrv=$!
-    sleep 0.6
+    # readiness, not a fixed sleep (see S1): the bind race hangs a macOS
+    # connect to the 30s client timeout. $hport is explicit 127.0.0.1.
+    awaitTcp $hport || { kill $hsrv 2>/dev/null || true; fail "Http: the echo server never came up on $hport"; }
 
     # THE MANGLING PIN: a multi-object NDJSON body (spans lines) round-trips
     # BYTE-EXACT — the exact bytes curl -d would have eaten
@@ -8516,7 +8520,12 @@ DEOF
     rm -f "$hdir/dest.log"
     python3 "$hdir/redir.py" & rasrv=$!
     python3 "$hdir/dest.py" & rbsrv=$!
-    sleep 0.6
+    # readiness, not a fixed sleep: on a slow runner (macOS) the listener
+    # may not be accepting at 0.6s, and a connect into the bind race HANGS
+    # to the 30s client timeout instead of refusing (the awaitTcp comment).
+    # $ra is explicit 127.0.0.1 so /dev/tcp readiness is reliable; dest.py
+    # then gets the request round-trip as extra margin.
+    awaitTcp $ra || { kill $rasrv $rbsrv 2>/dev/null || true; fail "S1: the redirect server never came up on $ra"; }
     cat > "$hdir/redir.weir" <<WEOF
 let tok = Secret.of "SECRET-TOKEN-ABC"
 let r = Http.send { Http.get "http://127.0.0.1:$ra/start" with secretHeaders = [("X-Api-Key", tok)]; headers = [("X-Control", "keepme")]; auth = Bearer (Secret.of "BEARER-TOK") }
@@ -9465,7 +9474,13 @@ within serve srv = { port = $svport5; maxConcurrent = 2 } handler
 print "stream-done"
 WEOF
 out=$($BIN "$svdir/stream.weir" 2>&1) || fail "serve stream run failed: $out"
-echo "$out" | grep -qF "GOT-FIRST=True" || fail "F8: the client must receive the first element before the producer died: $out"
+# the incremental-delivery half is a POSIX property: Windows HttpListener
+# buffers the chunked body, so an early chunk is not on the wire when the
+# producer's later raise aborts the response (a verified platform wall).
+# The failure-surfacing half below (streamErrors) holds on every platform.
+if [ "$IS_WINDOWS" = "0" ]; then
+    echo "$out" | grep -qF "GOT-FIRST=True" || fail "F8: the client must receive the first element before the producer died: $out"
+fi
 echo "$out" | grep -qF "stream-errors=1" || fail "F8: the script must observe the producer failure via the channel: $out"
 echo "$out" | grep -qF "stream-err=producer died" || fail "F8: Server.streamErrors must carry the failure message: $out"
 echo "e2e ok: within serve — F8 a Stream producer raise surfaces via Server.streamErrors (not silent)"
