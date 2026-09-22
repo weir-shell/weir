@@ -15901,8 +15901,16 @@ let fileRowReshapeTests =
 
 let lsTruthTests =
     // ls tells the whole truth [D:ls-truth]: files AND directories, the
-    // stated seven-field surface
-    testList
+    // stated seven-field surface.
+    // testSequenced [D:unused-bindings adjacent]: this list mutates the
+    // GLOBAL Session.Cwd (setCwd into a temp dir, then deletes it). Every
+    // other cwd-mutating list is already sequenced; left parallel, this one
+    // raced the parallel spawn tests — a concurrent spawn snapshots the temp
+    // cwd, this list deletes it before Process.Start, and the child dies
+    // "command not found" (the chdir fails). Sequencing moves it out of the
+    // parallel phase so no spawn ever sees a vanishing cwd.
+    testSequenced
+    <| testList
         "ls tells the whole truth [D:ls-truth]"
         [ test "directories join the rows: isDirectory filters, bytes is 0 B there" {
               let d =
