@@ -550,17 +550,35 @@ let private blockLastNo (raw: (int * string)[]) (headerNo: int) (parentIndent: i
 
 // ---- the block parser -----------------------------------------------------
 
+// nesting ceiling [D:yaml-depth]: parseBlock recurses once per mapping/
+// sequence level, so an adversarial ladder recurses unboundedly (and
+// each map level re-scans its extent — cubic in depth, the hang). The
+// cap converts that into an immediate located diagnostic. 500 matches
+// the expression parser's ceiling [D:depth-guard] and sits far above
+// any real manifest (kubectl output nests ~10). The residual per-level
+// re-scan within the cap is a known follow-up, not fixed here.
+let private maxDepth = 500
+
 // numbered CONTENT lines (blank and full-line-comment lines already
 // dropped, trailing comments stripped) → one document node. `raw` is
 // the UNFILTERED source — block scalar content reads from it
 // [D:block-scalars], because inside a block those dropped lines are bytes.
+// `depth` counts the mapping/sequence nesting level [D:yaml-depth].
 let rec private parseBlock
     (rawSrc: (int * string)[])
     (lines: (int * string)[])
     (start: int)
     (fin: int)
     (indent: int)
+    (depth: int)
     : Result<Node, string> =
+
+    if depth > maxDepth then
+        let no = if start < lines.Length then fst lines[start] else 0
+
+        Error
+            $"line {no}: yaml nesting is too deep (limit {maxDepth}) — the subset reads real manifests, not adversarial ladders"
+    else
 
     // a block value, with the extent guard: a dedented `#` line inside
     // the extent would strand the deeper lines after it outside the
@@ -669,7 +687,7 @@ let rec private parseBlock
 
                                 if inline'.Trim() = "" then
                                     // the item is the nested block below (or null)
-                                    parseBlock rawSrc lines (i + 1) j (indent + 2)
+                                    parseBlock rawSrc lines (i + 1) j (indent + 2) (depth + 1)
                                 else
                                     match (if j = i + 1 then emptyFlow no inline' else None) with
                                     | Some node ->
@@ -694,7 +712,7 @@ let rec private parseBlock
                                                 [| no, String.replicate (indent + 2) " " + inline' |]
                                                 lines[i + 1 .. j - 1]
 
-                                        parseBlock rawSrc shifted 0 shifted.Length (indent + 2)
+                                        parseBlock rawSrc shifted 0 shifted.Length (indent + 2) (depth + 1)
                                     | None ->
                                         match quotedValue no indent i j inline' with
                                         | Some r -> r
@@ -751,10 +769,10 @@ let rec private parseBlock
                                         | None ->
 
                                             if seqValue then
-                                                parseBlock rawSrc lines (i + 1) jSeq indent
+                                                parseBlock rawSrc lines (i + 1) jSeq indent (depth + 1)
                                             elif rest.Trim() = "" then
                                                 if j > i + 1 then
-                                                    parseBlock rawSrc lines (i + 1) j (indentOf (snd lines[i + 1]))
+                                                    parseBlock rawSrc lines (i + 1) j (indentOf (snd lines[i + 1])) (depth + 1)
                                                 else
                                                     Ok(NNull no)
                                             else
@@ -836,7 +854,7 @@ let parseDocs (numbered: (int * string) list) : Result<Node list, string> =
                     else
                         let baseIndent = indentOf (snd d[0])
 
-                        match parseBlock rawArr d 0 d.Length baseIndent with
+                        match parseBlock rawArr d 0 d.Length baseIndent 0 with
                         | Error e -> Error e
                         | Ok node -> build (node :: acc) rest
 

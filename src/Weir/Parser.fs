@@ -3645,8 +3645,17 @@ let private commandSegment
                 let span = { Start = pos startP; End = e.Span.End }
                 DynamicHead(disp, e), disp, span
 
+    // the head word is BOUNDED [D:head-word-bound]: a resolvable command
+    // head is a PATH entry (a filename component, <=255 bytes), so an
+    // unbounded `cmdWord` here only ever helps the DOOMED command-mode
+    // attempt on a `;`-spine (`let x = b;b;b;…`) — where `;` is a bareword
+    // char, so the head scan swallowed the WHOLE remaining line before
+    // failing, once per bareword: O(N^2). Capping the scan keeps every
+    // resolvable head byte-identical and makes the doomed attempt linear.
+    let cmdHeadWord = manyMinMaxSatisfy 1 1024 cmdWordChar
+
     let litHead =
-        spanned (opt (pchar '^') .>>. cmdWord)
+        spanned (opt (pchar '^') .>>. cmdHeadWord)
         // the machine boundary [D:yaml-district]: a head GLUED to the
         // sentinel can only be the assembler's yaml-district wrap
         // (statement joins always space the sentinel) — never a command
@@ -4266,7 +4275,8 @@ tySynRef.Value <-
 let private attrArgLit =
     choice
         [ between (pchar '"') (pchar '"') (manyChars stringChar) |>> AStr
-          many1Satisfy isDigit
+          getPosition
+          .>>. many1Satisfy isDigit
           .>>. opt (
               attempt (
                   (choice
@@ -4285,20 +4295,48 @@ let private attrArgLit =
           // [<Default 0.5>] — attrArgLit is its own tiny lexer
           // [D:floats], the Duration session's recorded gotcha
           .>>. opt (attempt (pchar '.' >>. many1Satisfy isDigit))
-          |>> fun ((digits, sfx), frac) ->
+          // the integer arms parse the digits into int64 [D:attr-int-overflow]:
+          // a raw `int64 digits` cast THROWS OverflowException past the 64-bit
+          // range (SIGABRT for the whole tool); TryParse turns it into the
+          // integer-literal parser's located teaching. The fraction arm goes to
+          // Double (finite-only, never throws). The unit arms also bound their
+          // multiply so a large-but-in-range base cannot SILENTLY WRAP past
+          // Int64.MaxValue — the same range refusal, one shape.
+          >>= fun (((at, digits), sfx), frac) ->
+              let outOfRange () =
+                  failFatallyAt at $"attribute argument out of range (64-bit): {digits}"
+
+              let scaled (n: int64) (factor: int64) : Parser<int64, unit> =
+                  // Int64 saturating check: n * factor overflows iff
+                  // n > MaxValue / factor (both non-negative — digits only)
+                  if factor <> 0L && n > System.Int64.MaxValue / factor then
+                      outOfRange ()
+                  else
+                      preturn (n * factor)
+
               match sfx, frac with
               | _, Some f ->
-                  AFloat(System.Double.Parse($"{digits}.{f}", System.Globalization.CultureInfo.InvariantCulture))
-              | Some "ms", _ -> ADur(int64 digits)
-              | Some "s", _ -> ADur(int64 digits * 1000L)
-              | Some "m", _ -> ADur(int64 digits * 60000L)
-              | Some "h", _ -> ADur(int64 digits * 3600000L)
-              | Some "B", _ -> ASize(int64 digits)
-              | Some "KiB", _ -> ASize(int64 digits * 1024L)
-              | Some "MiB", _ -> ASize(int64 digits * 1024L * 1024L)
-              | Some "GiB", _ -> ASize(int64 digits * 1024L * 1024L * 1024L)
-              | Some "TiB", _ -> ASize(int64 digits * 1024L * 1024L * 1024L * 1024L)
-              | _ -> AInt(int64 digits)
+                  preturn (
+                      AFloat(System.Double.Parse($"{digits}.{f}", System.Globalization.CultureInfo.InvariantCulture))
+                  )
+              | Some unit, _ ->
+                  match System.Int64.TryParse digits with
+                  | false, _ -> outOfRange ()
+                  | true, n ->
+                      match unit with
+                      | "ms" -> preturn (ADur n)
+                      | "s" -> scaled n 1000L |>> ADur
+                      | "m" -> scaled n 60000L |>> ADur
+                      | "h" -> scaled n 3600000L |>> ADur
+                      | "B" -> preturn (ASize n)
+                      | "KiB" -> scaled n 1024L |>> ASize
+                      | "MiB" -> scaled n (1024L * 1024L) |>> ASize
+                      | "GiB" -> scaled n (1024L * 1024L * 1024L) |>> ASize
+                      | _ -> scaled n (1024L * 1024L * 1024L * 1024L) |>> ASize
+              | None, _ ->
+                  match System.Int64.TryParse digits with
+                  | true, n -> preturn (AInt n)
+                  | false, _ -> outOfRange ()
           keyword "true" >>% ABool true
           keyword "false" >>% ABool false ]
     .>> ws

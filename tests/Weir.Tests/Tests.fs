@@ -949,6 +949,92 @@ let boundaryTests =
               skipOnWindows ()
               runReal "sh -c \"exit 3\"" |> ignore
           }
+          // the spawn-boundary NUL funnel [D:spawn-nul-funnel]: the NUL
+          // refusal lives at Proc.spawn — the ONE point every process
+          // start funnels through — so the four downstream paths that
+          // skipped the evaluator's statement-path refusal (the
+          // reifiers, the ambient `within env` overlay, `into`, the
+          // dynamic head) inherit it. The guard runs BEFORE Process.Start,
+          // so a raise IS proof no child spawned. Each pin drives ONE
+          // public Proc entry (the funnel's real surface) with a
+          // NUL-bearing word and asserts the located refusal. A control
+          // proves a clean spawn still runs — the funnel is not
+          // overzealous.
+          let nul = "a\u0000b"
+          let nulMsg (f: unit -> unit) (what: string) =
+              let ex = Expect.throwsC f id
+              Expect.stringContains ex.Message "NUL byte" $"{what}: the NUL diagnostic"
+              Expect.stringContains ex.Message "silently truncate" $"{what}: the truncation reason"
+
+          test "funnel: a NUL command ARGUMENT refuses (lines/cmd path) [D:spawn-nul-funnel]" {
+              skipOnWindows ()
+              nulMsg (fun () -> Weir.Proc.lines "echo" [ nul ] None |> Seq.iter ignore) "arg"
+          }
+          test "funnel: a NUL argument refuses in the REIFIER path (complete) [D:spawn-nul-funnel]" {
+              skipOnWindows ()
+              // the exact seam the reifier builtins reach — completeWith
+              nulMsg (fun () -> Weir.Proc.complete "echo" [ nul ] None |> ignore) "reifier arg"
+          }
+          test "funnel: a NUL argument refuses in the exitCode/streamCode path [D:spawn-nul-funnel]" {
+              skipOnWindows ()
+              nulMsg (fun () -> Weir.Proc.streamCode [] "echo" [ nul ] |> ignore) "streamCode arg"
+          }
+          test "funnel: a NUL env VALUE refuses (ambient/$e overlay) [D:spawn-nul-funnel]" {
+              skipOnWindows ()
+              nulMsg (fun () -> Weir.Proc.linesWith [ "FOO", nul ] "echo" [ "hi" ] None |> Seq.iter ignore) "env value"
+              let ex = Expect.throwsC (fun () -> Weir.Proc.linesWith [ "FOO", nul ] "echo" [ "hi" ] None |> Seq.iter ignore) id
+              Expect.stringContains ex.Message "the env value for 'FOO'" "the env value refusal names the key"
+          }
+          test "funnel: a NUL env KEY refuses [D:spawn-nul-funnel]" {
+              skipOnWindows ()
+              let ex = Expect.throwsC (fun () -> Weir.Proc.linesWith [ nul, "v" ] "echo" [ "hi" ] None |> Seq.iter ignore) id
+              Expect.stringContains ex.Message "the env key" "the env key refusal names the key"
+              Expect.stringContains ex.Message "NUL byte" "the env key refusal is the NUL diagnostic"
+          }
+          test "funnel: a NUL in the `into` cmdline refuses (into path) [D:spawn-nul-funnel]" {
+              skipOnWindows ()
+              // into spawns `sh -c <cmdline>` — the cmdline is arg[1]
+              nulMsg (fun () -> Weir.Proc.lines "sh" [ "-c"; $"echo before{nul}after" ] None |> Seq.iter ignore) "into cmdline"
+          }
+          test "funnel: a NUL PROGRAM name refuses (dynamic head ^$name) [D:spawn-nul-funnel]" {
+              skipOnWindows ()
+              // the dynamic-head worst case: a NUL-bearing head would
+              // resolve to the PREFIX program and run it
+              nulMsg (fun () -> Weir.Proc.lines $"echo{nul}junk" [ "hi" ] None |> Seq.iter ignore) "program name"
+          }
+          test "funnel: a NUL PATH-like program name refuses at resolve, not a raw platform exception [D:spawn-nul-funnel]" {
+              skipOnWindows ()
+              // resolveProg runs before the spawn funnel and called
+              // Path.GetFullPath, which raised a raw 'Null character in
+              // path' — the funnel's diagnostic covers the resolve too
+              let ex = Expect.throwsC (fun () -> Weir.Proc.resolveProg $"./bin{nul}/x" |> ignore) id
+              Expect.stringContains ex.Message "NUL byte" "the resolve refusal is the NUL diagnostic"
+              Expect.isFalse (ex.Message.Contains "Null character in path") "the raw platform exception no longer leaks"
+          }
+          test "funnel: an EMPTY program name refuses with a weir diagnostic [D:spawn-nul-funnel]" {
+              skipOnWindows ()
+              let ex = Expect.throwsC (fun () -> Weir.Proc.lines "" [ "hi" ] None |> Seq.iter ignore) id
+              Expect.stringContains ex.Message "program name is empty" "the empty-program refusal"
+          }
+          test "funnel control: a CLEAN command still spawns (no false refusal) [D:spawn-nul-funnel]" {
+              skipOnWindows ()
+              Expect.equal (Weir.Proc.lines "echo" [ "ok" ] None |> List.ofSeq) [ "ok" ] "a clean spawn is untouched"
+          }
+          test "statement-path control stays green: a NUL arg refuses via the evaluator too [D:spawn-nul-funnel]" {
+              skipOnWindows ()
+              // the pre-existing evaluator refusal must not regress — a
+              // command-output NUL (YQBi = "a\0b") fed to a plain command
+              // statement's argument still refuses at force
+              let ex =
+                  Expect.throwsC
+                      (fun () ->
+                          runReal "echo $(sh -c \"printf YQBi | base64 -d\" |> Seq.exactlyOne)"
+                          |> forceSeq
+                          |> ignore)
+                      id
+
+              Expect.stringContains ex.Message "NUL byte" "the statement path still refuses"
+          }
           test "to jsonl serializes records as ndjson" {
               let src =
                   VSeq [ VRecord("JRow", [ "name", VStr "a.txt"; "bytes", VInt 0L; "readOnly", VBool false ]) ]
@@ -1473,6 +1559,42 @@ let boundaryTests =
 
               Expect.stringContains multi.Message "reads one document; this input has 2" "count and route"
           }
+          test "Yaml.parse: a deep ladder hits the nesting cap; legal depth still reads [D:yaml-depth]" {
+              // an `a:` ladder one space deeper each line — the cubic-hang
+              // shape. Past the cap it is a located diagnostic, never a hang.
+              let ladder n =
+                  [ for i in 0 .. n - 1 -> System.String(' ', i) + "a:" ] @ [ System.String(' ', n) + "v: 1" ]
+
+              let parse lines' =
+                  Weir.Yaml.parseDocs (lines' |> List.mapi (fun i l -> i + 1, l))
+
+              match parse (ladder 600) with
+              | Error msg ->
+                  Expect.stringContains msg "yaml nesting is too deep (limit 500)" "the cap teaches"
+                  Expect.stringContains msg "line " "and locates"
+              | Ok _ -> failtest "a 600-deep ladder must hit the cap"
+
+              // 250 deep is well inside the cap — real manifests read
+              match parse (ladder 250) with
+              | Ok [ _ ] -> ()
+              | other -> failtest $"a 250-deep ladder must parse: {other}"
+          }
+          test "to yaml: a value deeper than the cap teaches instead of crashing [D:yaml-depth]" {
+              // a Seq.fold-nested YSeq is the StackOverflow shape (exit 134)
+              // — past the emitter cap it is a clean boundary error
+              let ex =
+                  Expect.throwsC
+                      (fun () -> run "[1..2000] |> Seq.fold (fun acc _ -> YSeq [acc]) (YInt 1) |> to yaml" |> ignore)
+                      id
+
+              Expect.stringContains ex.Message "nests deeper than 100" "the cap teaches"
+
+              // 50 deep renders fine — the cap sits above real trees
+              let ok =
+                  run "[1..50] |> Seq.fold (fun acc _ -> YSeq [acc]) (YInt 1) |> to yaml" |> forceSeq
+
+              Expect.isNonEmpty ok "a 50-deep value renders"
+          }
           test "yaml patch: types as YamlPatch; tombstones scoped; schema= refuses [D:yaml-nodes]" {
               let asm lines' =
                   match Weir.Script.assemble (lines' |> List.mapi (fun i l -> i + 1, l)) with
@@ -1578,6 +1700,61 @@ let boundaryTests =
                   Weir.Script.analyzeLines "pin.weir" [ "let x = echo patch by=name"; "x |> Seq.iter print" ]
 
               Expect.isEmpty cmdDiags "a command with 'patch by=name' argv stays a command"
+          }
+          test "budget stop-at-first: one exhaustion bounds the whole file [D:budget-stop-first]" {
+              // the per-statement inference budget is a whole-file DoS when
+              // the multi-error fold multiplies it across independent burning
+              // statements. A budget diagnostic is a stop-and-fix: the fold
+              // reports the FIRST one and checks no further statement.
+              let burnBlock (b: int) =
+                  [ $"let g{b}_0 x = (x, x)"
+                    $"let g{b}_1 x = g{b}_0 (g{b}_0 x)"
+                    $"let g{b}_2 x = g{b}_1 (g{b}_1 x)"
+                    $"let g{b}_3 x = g{b}_2 (g{b}_2 x)"
+                    $"let g{b}_4 x = g{b}_3 (g{b}_3 x)"
+                    $"let g{b}_5 x = g{b}_4 (g{b}_4 x)"
+                    $"let v{b} = g{b}_5 1" ]
+
+              // eight independent budget-burning blocks
+              let lines =
+                  [ for b in 0..7 do
+                        yield! burnBlock b ]
+                  @ [ "print \"done\"" ]
+
+              let diags, _, _, _ = Weir.Script.analyzeLines "burn.weir" lines
+
+              let budgetDiags =
+                  diags |> List.filter (fun d -> Weir.Check.isBudgetMessage d.Message)
+
+              // exactly ONE budget diagnostic — the fold stopped at the first
+              Expect.equal
+                  (List.length budgetDiags)
+                  1
+                  "one burn bounds the file: exactly one budget diagnostic, not one per block"
+
+              // and it is the ONLY error reported (stop-and-fix)
+              let errors = diags |> List.filter (fun d -> d.Severity = "error")
+              Expect.equal (List.length errors) 1 "the budget stop suppresses downstream statements"
+          }
+          test "budget stop does NOT swallow ordinary type errors [D:budget-stop-first]" {
+              // three independent plain type errors must ALL report — the
+              // stop applies only to budget exhaustion, never ordinary errors
+              let diags, _, _, _ =
+                  Weir.Script.analyzeLines
+                      "three.weir"
+                      [ "let a = 1 + \"x\""; "let b = 2 + \"y\""; "let c = 3 + \"z\""; "print \"done\"" ]
+
+              let errors = diags |> List.filter (fun d -> d.Severity = "error")
+              Expect.equal (List.length errors) 3 "all three plain type errors still report"
+
+              Expect.isEmpty
+                  (errors |> List.filter (fun d -> Weir.Check.isBudgetMessage d.Message))
+                  "no plain type error is a budget diagnostic"
+          }
+          test "isBudgetMessage recognizes exactly the two budget strings [D:budget-stop-first]" {
+              Expect.isTrue (Weir.Check.isBudgetMessage Weir.Check.budgetMsgSized) "sized message matches"
+              Expect.isTrue (Weir.Check.isBudgetMessage Weir.Check.budgetMsgUnsized) "unsized message matches"
+              Expect.isFalse (Weir.Check.isBudgetMessage "expected int, got string") "a plain error does not match"
           }
           test "district templates check: splice law, key-splice string, for binder [D:yaml-district]" {
               // a record splice violates the liftable law
@@ -4107,6 +4284,34 @@ let session2Tests =
 
               Expect.isTrue (eventuallyNoSurvivors "weir-s2-dz") "direct-exec children leaked"
               Expect.equal (defunctChildren ()) 0 "defunct children accumulated"
+          }
+          // [D:nul-path] the RUN-TIME root: Session.resolve is the one
+          // funnel every File/Proc/completion builtin shares. A NUL in the
+          // path made Path.GetFullPath throw a raw ArgumentException (a
+          // SIGABRT reached through the parser, a raw .NET message elsewhere);
+          // it now raises a clear weir-shaped located error the builtins
+          // surface. NUL-free paths still resolve unchanged.
+          test "Session.resolve refuses a NUL-bearing path with a weir message" {
+              Expect.throwsC
+                  (fun () -> Weir.Session.resolve "a\000b" |> ignore)
+                  (fun ex ->
+                      Expect.stringContains ex.Message "NUL byte" "the message names the NUL, not the framework")
+              // and the negative twin: a NUL-free path still resolves
+              Expect.isTrue
+                  (System.IO.Path.IsPathRooted(Weir.Session.resolve "a/b"))
+                  "an ordinary path resolves unchanged"
+          }
+          // [D:nul-path] the PARSE-TIME pre-empt: a NUL-bearing program head
+          // is not-found (false) BEFORE Extern.exists reaches Session.resolve,
+          // whose raise would abort the parse resolver (it runs outside the
+          // runner's try). So the classifier emits its ordinary
+          // missing-command diagnostic instead of a crash.
+          test "Extern.exists reports a NUL-bearing head as not-found, not a raise" {
+              skipOnWindows ()
+              // pathy (contains '/') AND NUL-bearing: without the guard this
+              // is exactly the parse-time crash path
+              Expect.isFalse (Weir.Extern.exists "./a\000b") "a NUL-in-slash head is not found"
+              Expect.isFalse (Weir.Extern.exists "a\000b") "a bare NUL head is not found"
           } ]
 
 
@@ -7581,7 +7786,14 @@ let planApplyTests =
 
         d
 
-    testList
+    // testSequenced: the DA-03 cases drive programs through runFile
+    // (Weir.Script.run — IN-PROCESS), whose `within cd` mutates the GLOBAL
+    // Session.Cwd. Left parallel, this list raced itself (two DA-03 programs
+    // stomping each other's cwd → a preview bound to the wrong dir →
+    // "not absolute-A") and the parallel spawn tests. Sequencing keeps all
+    // cwd mutation in the non-parallel phase.
+    testSequenced
+    <| testList
         "the plan/apply capture [D:plan-apply]"
         [ test "parse shape: a bare plan head + block is a within-family node" {
               let asmLine = "plan" + Weir.Parser.sibSepStr + "File.write \"f\" [\"x\"]"
@@ -7603,7 +7815,7 @@ let planApplyTests =
                   p
                   (VRecord(
                       "Plan",
-                      [ "ops", VSeq [ VUnion("WriteFile", Some(VTuple [ VStr "/tmp/weir-plan-never"; VSeq [ VStr "a"; VStr "b" ] ])) ] ]
+                      [ "ops", VSeq [ VUnion("WriteFile", Some(VTuple [ VStr(System.IO.Path.GetFullPath "/tmp/weir-plan-never"); VSeq [ VStr "a"; VStr "b" ] ])) ] ]
                   ))
                   "one WriteFile Op captured"
 
@@ -7642,7 +7854,7 @@ let planApplyTests =
                     "    plan"
                     "        let _r = Http.send { Http.post \"http://x\" with auth = Bearer t }"
                     "        print \"sent\""
-                    "let text = Str.join \"\\n\" (p |> Plan.preview)"
+                    "let text = Str.join \"\\n\" (p |> Plan.preview) |> Str.replace \"\\\\\" \"/\""
                     "if not (Str.contains \"***\" text) then fail \"not masked\""
                     "if Str.contains \"tok\" text then fail \"leaked\""
                     "print \"ok\"" ]
@@ -7747,6 +7959,79 @@ let planApplyTests =
                       |> Array.map (fun p -> p.Substring(d.Length), System.IO.File.ReadAllText p)
 
                   Expect.equal (read applied) (read direct) "the applied tree is byte-identical to the direct one"
+              finally
+                  System.IO.Directory.Delete(root, true)
+          }
+          // [D:plan-path-bound] DA-03: a plan captures paths RESOLVED to
+          // absolute AT capture, so apply writes the previewed location
+          // regardless of the apply-time cwd. Capture under cd A, apply
+          // under cd B: the file lands in A (the preview), never B.
+          test "DA-03: a write captured under cd A applies to A even when applied under cd B" {
+              let root = td ()
+              let dirA = weirPath (System.IO.Path.Combine(root, "A"))
+              let dirB = weirPath (System.IO.Path.Combine(root, "B"))
+
+              let prog =
+                  [ $"Dir.create \"{dirA}\""
+                    $"Dir.create \"{dirB}\""
+                    "let p ="
+                    $"    within cd \"{dirA}\""
+                    "        plan"
+                    "            File.write \"marker.txt\" [\"hi\"]"
+                    // preview must render the ABSOLUTE captured path (A's)
+                    "let text = Str.join \"\\n\" (p |> Plan.preview) |> Str.replace \"\\\\\" \"/\""
+                    $"if not (Str.contains \"{dirA}/marker.txt\" text) then fail \"preview not absolute-A\""
+                    // apply under a DIFFERENT cwd — the bound path wins
+                    $"within cd \"{dirB}\""
+                    "    p |> Plan.apply"
+                    "print \"ok\"" ]
+
+              try
+                  Expect.equal (runFile prog) 0 "the program ran clean"
+
+                  Expect.isTrue
+                      (System.IO.File.Exists(System.IO.Path.Combine(root, "A", "marker.txt")))
+                      "the file landed in A (the previewed, capture-time location)"
+
+                  Expect.isFalse
+                      (System.IO.File.Exists(System.IO.Path.Combine(root, "B", "marker.txt")))
+                      "the file did NOT rebind to B (the apply-time cwd) — DA-03"
+              finally
+                  System.IO.Directory.Delete(root, true)
+          }
+          // [D:plan-path-bound] the two-path ops bind BOTH source and dest
+          // to absolute at capture: a copy captured under cd A applies into
+          // A's tree even from cd B.
+          test "DA-03: a copy captured under cd A binds src+dst to A, applies under cd B into A" {
+              let root = td ()
+              let dirA = weirPath (System.IO.Path.Combine(root, "A"))
+              let dirB = weirPath (System.IO.Path.Combine(root, "B"))
+
+              let prog =
+                  [ $"Dir.create \"{dirA}\""
+                    $"Dir.create \"{dirB}\""
+                    $"File.write \"{dirA}/orig.txt\" [\"data\"]"
+                    "let p ="
+                    $"    within cd \"{dirA}\""
+                    "        plan"
+                    "            File.copy \"orig.txt\" \"copied.txt\""
+                    "let text = Str.join \"\\n\" (p |> Plan.preview) |> Str.replace \"\\\\\" \"/\""
+                    $"if not (Str.contains \"{dirA}/orig.txt\" text) then fail \"src not absolute-A\""
+                    $"if not (Str.contains \"{dirA}/copied.txt\" text) then fail \"dst not absolute-A\""
+                    $"within cd \"{dirB}\""
+                    "    p |> Plan.apply"
+                    "print \"ok\"" ]
+
+              try
+                  Expect.equal (runFile prog) 0 "the program ran clean"
+
+                  Expect.isTrue
+                      (System.IO.File.Exists(System.IO.Path.Combine(root, "A", "copied.txt")))
+                      "the copy landed in A (both paths bound at capture)"
+
+                  Expect.isFalse
+                      (System.IO.File.Exists(System.IO.Path.Combine(root, "B", "copied.txt")))
+                      "the copy did NOT rebind to B — DA-03"
               finally
                   System.IO.Directory.Delete(root, true)
           }
@@ -8229,7 +8514,14 @@ let pathParamCompletionTests =
               System.IO.File.WriteAllText(System.IO.Path.Combine(d, "tool.txt"), "x")
 
               try
-                  let saved = Weir.Session.Cwd()
+                  // the INVARIANT process cwd, not Session.Cwd(): under the
+                  // parallel test runner, Session.Cwd() may momentarily hold a
+                  // CONCURRENT test's temp dir, and restoring to it after that
+                  // dir is deleted leaves the global cwd pointing at a deleted
+                  // path — every concurrent spawn then fails "command not found"
+                  // (Process.Start cannot chdir there). GetCurrentDirectory is
+                  // never mutated (weir tracks cwd in Session, not the process).
+                  let saved = System.IO.Directory.GetCurrentDirectory()
                   Weir.Session.setCwd d
 
                   let sug env (line: string) =
@@ -10575,6 +10867,88 @@ let lockfileSymlinkConfinementTests =
                       System.IO.Directory.Delete(baseDir, true)
                   with _ ->
                       ()
+          }
+          // ---- DA-05: the contract-fetch client drops credentials on a
+          // cross-origin redirect [D:contract-redirect] ----
+          test "fetchBytesWith drops PRIVATE-TOKEN across a cross-origin redirect; a control header crosses" {
+              // origin A (127.0.0.1) 302s to origin B (localhost) — a
+              // DIFFERENT origin by host. B records what arrived. The bare
+              // HttpClient re-sent PRIVATE-TOKEN here (DA-05); the explicit
+              // follow must drop it while a non-credential control crosses.
+              let portA = 8621
+              let portB = 8622
+              let received = System.Collections.Generic.List<string>()
+
+              let a = new System.Net.HttpListener()
+              a.Prefixes.Add $"http://127.0.0.1:{portA}/"
+              let b = new System.Net.HttpListener()
+              b.Prefixes.Add $"http://localhost:{portB}/"
+
+              a.Start()
+              b.Start()
+
+              let aLoop =
+                  System.Threading.Thread(fun () ->
+                      try
+                          let ctx = a.GetContext()
+                          ctx.Response.StatusCode <- 302
+                          ctx.Response.Headers.Add("Location", $"http://localhost:{portB}/dest")
+                          ctx.Response.Close()
+                      with _ ->
+                          ())
+
+              let bLoop =
+                  System.Threading.Thread(fun () ->
+                      try
+                          let ctx = b.GetContext()
+
+                          for k in ctx.Request.Headers.AllKeys do
+                              match ctx.Request.Headers.Get k with
+                              | null -> ()
+                              | v -> received.Add $"{k}: {v}"
+
+                          let bytes = System.Text.Encoding.UTF8.GetBytes "landed"
+                          ctx.Response.OutputStream.Write(bytes, 0, bytes.Length)
+                          ctx.Response.Close()
+                      with _ ->
+                          ())
+
+              aLoop.IsBackground <- true
+              bLoop.IsBackground <- true
+              aLoop.Start()
+              bLoop.Start()
+
+              try
+                  let result =
+                      Weir.Contracts.fetchBytesWith
+                          [ ("PRIVATE-TOKEN", "SECRET-GITLAB-TOKEN")
+                            ("Authorization", "Bearer SECRET-GH-TOKEN")
+                            ("X-Control", "keepme") ]
+                          $"http://127.0.0.1:{portA}/start"
+
+                  match result with
+                  | Ok(bytes, _) -> Expect.equal (System.Text.Encoding.UTF8.GetString bytes) "landed" "the redirect is followed to origin B"
+                  | Error e -> failtest $"the cross-origin fetch should succeed: {e}"
+
+                  aLoop.Join 2000 |> ignore
+                  bLoop.Join 2000 |> ignore
+
+                  let arrived = String.concat "\n" received
+
+                  Expect.isFalse
+                      (arrived.ToLowerInvariant().Contains "private-token")
+                      $"PRIVATE-TOKEN must NOT reach the cross-origin target (DA-05), arrived:\n{arrived}"
+
+                  Expect.isFalse
+                      (arrived.ToLowerInvariant().Contains "authorization")
+                      $"Authorization must NOT reach the cross-origin target, arrived:\n{arrived}"
+
+                  Expect.stringContains arrived "X-Control: keepme" "a non-credential control header still crosses (the drop is credential-specific)"
+              finally
+                  a.Stop()
+                  b.Stop()
+                  (a :> System.IDisposable).Dispose()
+                  (b :> System.IDisposable).Dispose()
           } ]
 
 
@@ -12869,6 +13243,48 @@ let typeClassTests =
           }
           test "erasure: a constrained closure partially applies like any other" {
               expectValue "let same x y = x == y in let s5 = same 5 in s5 5" (VBool true)
+          }
+          // VALUE EQUALITY IS ITERATIVE [D:eq-depth]: a legally-built
+          // recursive-record value (an Option-linked record folded deep
+          // via Seq.fold — the checker accepts it) once crashed the whole
+          // process with an uncatchable StackOverflow on `==`. The walk is
+          // now an explicit heap work-list; reaching these asserts AT ALL
+          // is the pin (an overflow aborts the runner, it cannot be
+          // caught). Depths are past the recursive walk's crash point.
+          test "a 200k-deep VRecord chain compares equal iteratively, no overflow [D:eq-depth]" {
+              let build () =
+                  [ 1..200000 ]
+                  |> List.fold
+                      (fun acc i -> VRecord("Node", [ "depth", VInt(int64 i); "next", VUnion("Some", Some acc) ]))
+                      (VRecord("Node", [ "depth", VInt 0L; "next", VUnion("None", None) ]))
+
+              Expect.isTrue (build().Equals(build())) "two independent 200k-deep chains are structurally equal"
+          }
+          test "deep-vs-shallow VRecord is false, drained not crashed [D:eq-depth]" {
+              let chain n =
+                  [ 1..n ]
+                  |> List.fold
+                      (fun acc i -> VRecord("Node", [ "depth", VInt(int64 i); "next", VUnion("Some", Some acc) ]))
+                      (VRecord("Node", [ "depth", VInt 0L; "next", VUnion("None", None) ]))
+
+              Expect.isFalse ((chain 200000).Equals(chain 100000)) "different depths mismatch and drain the work-list"
+          }
+          test "a 200k-element VSeq compares LOCKSTEP true; a tail mismatch is false [D:eq-depth]" {
+              let xs () = VSeq(seq { for i in 1..200000 -> VInt(int64 i) })
+              Expect.isTrue ((xs ()).Equals(xs ())) "lockstep enumerators, no double materialization"
+
+              let ys = VSeq(seq { for i in 1..200000 -> VInt(if i = 200000 then -1L else int64 i) })
+              Expect.isFalse ((xs ()).Equals(ys)) "a single tail element differs → false"
+          }
+          test "deep value renders FINITE through show, no overflow [D:eq-depth]" {
+              let deep =
+                  [ 1..200000 ]
+                  |> List.fold
+                      (fun acc i -> VRecord("Node", [ "depth", VInt(int64 i); "next", VUnion("Some", Some acc) ]))
+                      (VRecord("Node", [ "depth", VInt 0L; "next", VUnion("None", None) ]))
+
+              let rendered = Weir.Eval.formatValue deep
+              Expect.stringContains rendered "…" "the depth bound teaches with an ellipsis rather than crashing"
           } ]
 
 let typeClassBTests =
@@ -14273,12 +14689,13 @@ let ambiguousCtorTests =
           // the ambiguity cannot arise there. Pinned so the claim is checked
           // rather than remembered.
           test "a pattern resolves by the scrutinee's type even with a live collision" {
+              // Elsewise avoids the prelude's HttpMethod.Other [D:serve-method]
               Expect.isEmpty
                   (analyze
                       [ "type B = C"
-                        "type Z = C | Other"
-                        "let v = Other"
-                        "let s = match v with | C -> \"c\" | Other -> \"other\""
+                        "type Z = C | Elsewise"
+                        "let v = Elsewise"
+                        "let s = match v with | C -> \"c\" | Elsewise -> \"other\""
                         "print s" ])
                   "type-directed"
           }
@@ -14578,6 +14995,41 @@ let httpTests =
                   "cannot reach weir.sh — boom"
                   "the umbrella survives for the residual"
           }
+          test "redactUrl masks userinfo, leaves a credential-free URL whole [D:url-redact]" {
+              // the leak: a credential in user:pass@host would print verbatim
+              Expect.equal
+                  (Weir.Http.redactUrl "http://user:s3cr3t@host:8080/p?q=1")
+                  "http://***@host:8080/p?q=1"
+                  "the whole user:pass span becomes ***, host and path kept"
+
+              Expect.equal
+                  (Weir.Http.redactUrl "https://tok@api.example.com/v1")
+                  "https://***@api.example.com/v1"
+                  "a userinfo with no colon is redacted too"
+
+              // a credential-FREE URL is returned UNCHANGED — the target is
+              // still named in full
+              Expect.equal
+                  (Weir.Http.redactUrl "http://127.0.0.1:8792/x")
+                  "http://127.0.0.1:8792/x"
+                  "no userinfo: the URL is unchanged"
+
+              // an '@' in the PATH/QUERY is not a userinfo separator
+              Expect.equal
+                  (Weir.Http.redactUrl "https://host/path@v2?to=a@b")
+                  "https://host/path@v2?to=a@b"
+                  "an @ after the authority is data, not a credential"
+
+              // purely textual — it redacts a URL Uri could not parse (the
+              // transport fallback's exact case)
+              Expect.equal
+                  (Weir.Http.redactUrl "http://user:pw@ nohost")
+                  "http://***@ nohost"
+                  "an unparseable URL still gets its userinfo masked"
+
+              // a schemeless string has no authority — left alone
+              Expect.equal (Weir.Http.redactUrl "not-a-url") "not-a-url" "no :// — unchanged"
+          }
           test "the wider raw-leak sweep's finds stay closed [D:transport-words]" {
               // each of these leaked a NAKED .NET message before the sweep
               let msgOf (src: string) =
@@ -14597,6 +15049,41 @@ let httpTests =
 
               Expect.stringContains envMissing "Env.fromFile: no such file:" "the File-family guard wording"
               Expect.isFalse (envMissing.Contains "Could not find") "never FileNotFoundException's text"
+          }
+          test "excerpt bounds a huge invalid input; a short one is quoted whole [D:excerpt]" {
+              // the helper in isolation: the length is named, the head kept
+              Expect.equal (Weir.Types.excerpt "abc") "abc" "<= 64 chars: unchanged"
+              Expect.equal (Weir.Types.excerpt (String.replicate 64 "x")) (String.replicate 64 "x") "exactly 64: unchanged"
+
+              let long = Weir.Types.excerpt (String.replicate 200000 "z")
+              Expect.stringContains long "(200000 chars)" "the TRUE length is named"
+              Expect.isTrue (long.Length < 120) "the rendered excerpt is bounded, not the input"
+          }
+          test "a multi-MB invalid parse/decode input yields a BOUNDED error [D:excerpt]" {
+              // the flood: a 2MB invalid input embedded whole was ~2MB of
+              // stderr — now bounded to a head + the length
+              let msgOf (src: string) =
+                  (Expect.throwsC (fun () -> run src |> ignore) id).Message
+
+              let big = String.replicate 2_000_000 "!"
+
+              for src in
+                  [ $"Str.toInt \"{big}\""
+                    $"Str.fromBase64 \"{big}\""
+                    $"Bytes.fromBase64 \"{big}\""
+                    $"Bytes.fromHex \"{big}\""
+                    $"Duration.parse \"{big}\""
+                    $"Size.parse \"{big}\""
+                    $"Float.parse \"{big}\""
+                    $"Instant.parse \"{big}\"" ] do
+                  let m = msgOf src
+                  Expect.isTrue (m.Length < 200) $"error stays under ~200 bytes for {src[.. 12]}… (was {m.Length})"
+                  Expect.stringContains m "(2000000 chars)" "the true length is named"
+                  Expect.isFalse (m.Contains(String.replicate 200 "!")) "the whole input is NOT echoed"
+
+              // a SHORT invalid input is still quoted in full, unchanged
+              let shortMsg = msgOf "Str.toInt \"notanum\""
+              Expect.stringContains shortMsg "\"notanum\"" "a short input stays fully readable"
           }
           test "the fetch/send misreading names its repair [D:fetch-naming]" {
               // `Http.get u |> Http.fetch` reads as a pipeline and is the
@@ -15421,8 +15908,16 @@ let fileRowReshapeTests =
 
 let lsTruthTests =
     // ls tells the whole truth [D:ls-truth]: files AND directories, the
-    // stated seven-field surface
-    testList
+    // stated seven-field surface.
+    // testSequenced [D:unused-bindings adjacent]: this list mutates the
+    // GLOBAL Session.Cwd (setCwd into a temp dir, then deletes it). Every
+    // other cwd-mutating list is already sequenced; left parallel, this one
+    // raced the parallel spawn tests — a concurrent spawn snapshots the temp
+    // cwd, this list deletes it before Process.Start, and the child dies
+    // "command not found" (the chdir fails). Sequencing moves it out of the
+    // parallel phase so no spawn ever sees a vanishing cwd.
+    testSequenced
+    <| testList
         "ls tells the whole truth [D:ls-truth]"
         [ test "directories join the rows: isDirectory filters, bytes is 0 B there" {
               let d =
@@ -15436,7 +15931,14 @@ let lsTruthTests =
               System.IO.File.WriteAllText(System.IO.Path.Combine(d, "a.txt"), "x")
 
               try
-                  let saved = Weir.Session.Cwd()
+                  // the INVARIANT process cwd, not Session.Cwd(): under the
+                  // parallel test runner, Session.Cwd() may momentarily hold a
+                  // CONCURRENT test's temp dir, and restoring to it after that
+                  // dir is deleted leaves the global cwd pointing at a deleted
+                  // path — every concurrent spawn then fails "command not found"
+                  // (Process.Start cannot chdir there). GetCurrentDirectory is
+                  // never mutated (weir tracks cwd in Session, not the process).
+                  let saved = System.IO.Directory.GetCurrentDirectory()
                   Weir.Session.setCwd d
 
                   // the shared valueEnv shadows ls with fakeFiles — this
@@ -15964,7 +16466,14 @@ let fileStatTests =
               System.IO.File.WriteAllText(System.IO.Path.Combine(d, "f.txt"), "x")
 
               try
-                  let saved = Weir.Session.Cwd()
+                  // the INVARIANT process cwd, not Session.Cwd(): under the
+                  // parallel test runner, Session.Cwd() may momentarily hold a
+                  // CONCURRENT test's temp dir, and restoring to it after that
+                  // dir is deleted leaves the global cwd pointing at a deleted
+                  // path — every concurrent spawn then fails "command not found"
+                  // (Process.Start cannot chdir there). GetCurrentDirectory is
+                  // never mutated (weir tracks cwd in Session, not the process).
+                  let saved = System.IO.Directory.GetCurrentDirectory()
                   Weir.Session.setCwd d
 
                   // the shared valueEnv shadows ls with fakeFiles — the
@@ -16023,7 +16532,14 @@ let dirStatTests =
               System.IO.File.WriteAllText(System.IO.Path.Combine(d, ".dot"), "x")
 
               try
-                  let saved = Weir.Session.Cwd()
+                  // the INVARIANT process cwd, not Session.Cwd(): under the
+                  // parallel test runner, Session.Cwd() may momentarily hold a
+                  // CONCURRENT test's temp dir, and restoring to it after that
+                  // dir is deleted leaves the global cwd pointing at a deleted
+                  // path — every concurrent spawn then fails "command not found"
+                  // (Process.Start cannot chdir there). GetCurrentDirectory is
+                  // never mutated (weir tracks cwd in Session, not the process).
+                  let saved = System.IO.Directory.GetCurrentDirectory()
                   Weir.Session.setCwd d
 
                   let runLive input =
@@ -18886,9 +19402,14 @@ let windowsV1Tests =
               let oldPath = System.Environment.GetEnvironmentVariable "PATH"
 
               try
-                  System.Environment.SetEnvironmentVariable("PATH", dir)
+                  // PREPEND, never replace: PATH is process-global and
+                  // `testSequenced` does NOT isolate it under the YoloDev
+                  // TestSdk (a bare `PATH := dir` raced concurrent spawns
+                  // into "sh not found"). The prepended probe dir still
+                  // forces a real Path.PathSeparator split to find the probe.
+                  System.Environment.SetEnvironmentVariable("PATH", dir + string Path.PathSeparator + oldPath)
                   Weir.Extern.refresh ()
-                  Expect.isTrue (Weir.Extern.exists "weirpsprobe") "single-dir PATH resolves"
+                  Expect.isTrue (Weir.Extern.exists "weirpsprobe") "a prepended PATH entry resolves through the split"
               finally
                   System.Environment.SetEnvironmentVariable("PATH", oldPath)
                   Weir.Extern.refresh ()
@@ -18987,6 +19508,42 @@ let echoBinaryTests =
 
               Expect.isFalse (Weir.Eval.echoBinary (Some 10) (Weir.Eval.VSecret nul)) "Secret renders ***"
               Expect.isFalse (Weir.Eval.echoBinary (Some 10) (Weir.Eval.VBytes [| 0uy |])) "Bytes renders a summary"
+          } ]
+
+// F13 [D:binary-echo]: DATA bound for a tty is neutralized — escape
+// introducers and C0/C1 controls render as visible \xNN so a hostile
+// filename cannot clear the screen, set the title, or hide behind CR
+let ttySanitizeTests =
+    testList
+        "tty data sanitize [D:binary-echo]"
+        [ test "ESC, CR, OSC, and C1 controls become visible \\xNN; TAB and LF pass" {
+              // the review's own payload: clear-screen, colour, OSC title,
+              // and the quiet CR that hides the real name
+              let esc = string (char 0x1b)
+              let bel = string (char 0x07)
+              let hostile = esc + "[2Jcleared" + esc + "[31mred" + esc + "]0;PWNED" + bel + "a\rb"
+              let safe = Weir.Eval.sanitizeTtyData hostile
+              Expect.isFalse (safe.Contains(char 0x1b)) "no raw ESC survives"
+              Expect.isFalse (safe.Contains(char 0x07)) "no raw BEL survives"
+              Expect.isFalse (safe.Contains '\r') "no raw CR survives — the name stays honest"
+              Expect.stringContains safe "\\x1b" "ESC renders as \\x1b"
+              Expect.stringContains safe "\\x0d" "CR renders as \\x0d"
+              Expect.stringContains safe "cleared" "the visible text is preserved"
+
+              // TAB and LF are NOT hostile — ordinary layout survives
+              let layout = "a\tb\nc"
+              Expect.equal (Weir.Eval.sanitizeTtyData layout) layout "TAB and LF pass through"
+
+              // a C1 control (0x9b, the 8-bit CSI) is neutralized
+              Expect.stringContains (Weir.Eval.sanitizeTtyData (string (char 0x9b))) "\\x9b" "C1 CSI renders as \\x9b"
+
+              // a clean string is returned unchanged
+              Expect.equal (Weir.Eval.sanitizeTtyData "plain-name.txt") "plain-name.txt" "clean text untouched"
+          }
+          test "sanitizeIfTty leaves redirected output byte-faithful, sanitizes a tty" {
+              let hostile = string (char 0x1b) + "X"
+              Expect.equal (Weir.Eval.sanitizeIfTty true hostile) hostile "redirected: raw (a pipe/file is byte-faithful)"
+              Expect.stringContains (Weir.Eval.sanitizeIfTty false hostile) "\\x1b" "tty: sanitized"
           } ]
 
 let logLevelTests =
@@ -19439,6 +19996,124 @@ let serveTests =
               let h2 = Weir.Serve.start 8199
               Expect.isFalse h2.Closed "the second bind succeeds after the first freed"
               Weir.Serve.stop h2
+          }
+          // ---- F9: the method boundary [D:serve-method] ----
+          test "HttpMethod carries a well-formed unlisted verb as Other; an inlined handler routes on it and on Query" {
+              // Other is an open-world inbound case; the handler is inlined
+              // so its param types from the serve head (params are not typed
+              // from patterns — the standing weir rule, not a serve concern)
+              clean
+                  [ "within serve srv = { port = 80; maxConcurrent = 1 } (fun req -> match req.method with | Other v -> HttpServerResponse { status = 405; headers = []; body = Text v } | Query -> HttpServerResponse { status = 200; headers = []; body = Text \"q\" } | _ -> HttpServerResponse { status = 200; headers = []; body = Text \"ok\" })"
+                    "    print \"ok\"" ]
+                  "an inlined handler matching Other and Query"
+          }
+          test "methodTokenOk accepts well-formed verbs and refuses malformed tokens" {
+              // well-formed tchar tokens (listed AND unlisted) pass
+              for ok in [ "GET"; "QUERY"; "TRACE"; "FROBNICATE"; "M-SEARCH"; "PATCH" ] do
+                  Expect.isTrue (Weir.Serve.methodTokenOk ok) $"'{ok}' is a well-formed token"
+
+              // control chars, whitespace, and separators are refused — the
+              // byte-class refusal at the boundary (400)
+              for bad in [ ""; "BAD METH"; "BAD\tX"; "GE\rT"; "GET\n"; "ab"; "GET/x" ] do
+                  Expect.isFalse (Weir.Serve.methodTokenOk bad) $"'{bad}' is malformed"
+          }
+          // ---- F3: the header-injection byte class [D:http-header-bytes] ----
+          test "headerInjection flags CR/LF/NUL in a header name or value, and passes a clean pair" {
+              Expect.isNone (Weir.Http.headerInjection ("X-Benign", "present")) "a clean pair does not inject"
+
+              Expect.equal
+                  (Weir.Http.headerInjection ("X-Evil", "a\r\nInjected: yes"))
+                  (Some("CR", "value"))
+                  "a CR in the value is caught (CR precedes the LF)"
+
+              Expect.equal
+                  (Weir.Http.headerInjection ("X-Evil", "a\nb"))
+                  (Some("LF", "value"))
+                  "a bare LF in the value is caught"
+
+              Expect.equal
+                  (Weir.Http.headerInjection ("X-Evil", "a b"))
+                  (Some("NUL", "value"))
+                  "a NUL in the value is caught"
+
+              Expect.equal
+                  (Weir.Http.headerInjection ("X-\r\nBad", "v"))
+                  (Some("CR", "name"))
+                  "a CR in the name is caught, located to the name"
+          }
+          test "refuseHeaderInjection raises the located message for the first injecting pair, both directions" {
+              let outErr =
+                  Expect.throwsC
+                      (fun () -> Weir.Http.refuseHeaderInjection "request header" failwith [ ("X-Ok", "fine"); ("X-Evil", "a\r\nInjected: yes") ])
+                      (fun ex -> ex.Message)
+
+              Expect.stringContains outErr "request header 'X-Evil'" "names the crossing and header"
+              Expect.stringContains outErr "CR byte in its value" "names the byte and position"
+              Expect.stringContains outErr "cannot contain CR, LF or NUL" "names the whole byte class"
+
+              let inErr =
+                  Expect.throwsC
+                      (fun () -> Weir.Http.refuseHeaderInjection "response header" failwith [ ("X-Crlf", "a\nb") ])
+                      (fun ex -> ex.Message)
+
+              Expect.stringContains inErr "response header 'X-Crlf'" "names the serve crossing and header"
+              Expect.stringContains inErr "LF byte in its value" "names the byte"
+
+              Weir.Http.refuseHeaderInjection "request header" failwith [ ("X-A", "1"); ("X-B", "2") ]
+          }
+          // ---- S1: the cross-origin credential drop [D:secret-redirect] ----
+          test "sameOrigin: scheme, host and port must all match; a port change is a different origin" {
+              let u s = System.Uri(s: string)
+              Expect.isTrue (Weir.Http.sameOrigin (u "http://127.0.0.1:8503/a") (u "http://127.0.0.1:8503/b")) "same scheme/host/port is one origin (path differs)"
+              Expect.isFalse (Weir.Http.sameOrigin (u "http://127.0.0.1:8503/a") (u "http://127.0.0.1:8504/a")) "a PORT change is a different origin (the F4 case: 8503 -> 8504)"
+              Expect.isFalse (Weir.Http.sameOrigin (u "http://127.0.0.1:80/a") (u "http://localhost:80/a")) "127.0.0.1 and localhost are different origins (host differs)"
+              Expect.isFalse (Weir.Http.sameOrigin (u "http://example.com/a") (u "https://example.com/a")) "a scheme change is a different origin"
+              Expect.isTrue (Weir.Http.sameOrigin (u "http://EXAMPLE.com/a") (u "http://example.com/b")) "host compares case-insensitively"
+          }
+          test "isRedirect covers the BCL redirect set and nothing else" {
+              for code in [ 301; 302; 303; 307; 308 ] do
+                  Expect.isTrue (Weir.Http.isRedirect code) $"{code} is a redirect"
+
+              for code in [ 200; 201; 204; 300; 304; 400; 404; 500 ] do
+                  Expect.isFalse (Weir.Http.isRedirect code) $"{code} is not a follow-redirect"
+          }
+          // ---- F12: the request-body read timeout [D:serve-body-timeout] ----
+          test "the serve config accepts bodyTimeout, and omitting it stays clean" {
+              // omitted — rests at the default, existing scripts unbroken
+              clean
+                  [ okHandler
+                    "within serve srv = { port = 80; maxConcurrent = 1 } h"
+                    "    print \"ok\"" ]
+                  "bodyTimeout omitted"
+
+              // supplied as a Duration
+              clean
+                  [ okHandler
+                    "within serve srv = { port = 80; maxConcurrent = 1; bodyTimeout = 5s } h"
+                    "    print \"ok\"" ]
+                  "bodyTimeout supplied"
+
+              // a non-Duration bodyTimeout is a type error naming Duration
+              mustSay
+                  [ okHandler
+                    "within serve srv = { port = 80; maxConcurrent = 1; bodyTimeout = 5 } h"
+                    "    print \"ok\"" ]
+                  "Duration"
+                  "an int bodyTimeout names Duration"
+          }
+          // ---- F8: the stream-producer failure channel [D:serve-stream] ----
+          test "a Stream producer raise records on the handle, not a raise out of the handler" {
+              let h = Weir.Serve.start 8207
+              Expect.isEmpty (Weir.Serve.streamErrors h) "no errors before a failure"
+              Weir.Serve.recordStreamError h "producer died"
+              Weir.Serve.recordStreamError h "another"
+
+              Expect.equal
+                  (Weir.Serve.streamErrors h)
+                  [ "producer died"; "another" ]
+                  "the designated channel records failures in order"
+
+              Weir.Serve.stop h
           } ]
 
 let versionStampTests =
@@ -20808,14 +21483,91 @@ let fromTableTests =
               Expect.equal (run "let table = 5 in table + 1") (VInt 6L) "no new reserved word"
           } ]
 
+// the v0.0.48 security cut [D:attr-int-overflow][D:head-word-bound]
+// [D:cli-exception-guard]: three front-end hardening pins — none may
+// crash the tool; each fails as a LOCATED diagnostic, never a SIGABRT.
+let hardeningTests =
+    testList
+        "Hardening"
+        [ // Fix 1 — an out-of-range attribute integer is a located parse
+          // error, NOT an OverflowException (was SIGABRT/exit 134) [D:attr-int-overflow]
+          test "attribute integer past 64-bit is a located error, never a crash" {
+              match Weir.Parser.parseStmt "type T = { [<Default 99999999999999999999>] A: int }" with
+              | Error msg ->
+                  Expect.stringContains msg "attribute argument out of range (64-bit)" "the teaching mirrors the int-literal parser"
+                  Expect.stringContains msg "99999999999999999999" "the offending digits are named"
+              | Ok _ -> failtest "expected the overflow to be rejected"
+          }
+          test "attribute overflow on a union case and a type decl are located too" {
+              match Weir.Parser.parseStmt "type T = [<Default 99999999999999999999>] A | B" with
+              | Error msg -> Expect.stringContains msg "out of range (64-bit)" "union-position overflow located"
+              | Ok _ -> failtest "expected the overflow to be rejected"
+          }
+          test "a duration/size attribute multiply cannot silently wrap [D:attr-int-overflow]" {
+              // 9999999999999TiB is in-range as digits but overflows int64
+              // once scaled — the bound refuses instead of wrapping negative
+              match Weir.Parser.parseStmt "type T = { [<Default 9999999999999TiB>] A: int }" with
+              | Error msg -> Expect.stringContains msg "out of range (64-bit)" "the scaled overflow is refused"
+              | Ok _ -> failtest "expected the scaled overflow to be rejected"
+          }
+          test "an in-range attribute (unit and plain) still parses unchanged" {
+              Expect.isOk (Weir.Parser.parseStmt "type T = { [<Default 30s>] A: int }") "30s attr unchanged"
+              Expect.isOk (Weir.Parser.parseStmt "type T = { [<Default 10MiB>] A: int }") "10MiB attr unchanged"
+              Expect.isOk (Weir.Parser.parseStmt "type T = { [<Default 42>] A: int }") "plain int attr unchanged"
+              Expect.isOk (Weir.Parser.parseStmt "type T = { [<Default 0.5>] A: int }") "float attr unchanged"
+          }
+          // Fix 2 — the doomed command-mode attempt on a bareword ';'-spine
+          // stays LINEAR: the bounded head-word scan caps the doomed
+          // attempt, and the diagnostic is byte-identical [D:head-word-bound]
+          test "bareword ';'-spine still produces the unbound-variable diagnostic" {
+              match Weir.Parser.parseLine realResolver "let x = b;b;b" with
+              | Ok(SLet(_, _)) -> () // resolves as an expression, 'b' unbound downstream (check-time)
+              | Error msg -> Expect.stringContains msg "b" "the spine still names the bareword"
+              | other -> failtest $"unexpected parse of the spine: {other}"
+          }
+          test "bareword ';'-spine checks in bounded time (linearity guard) [D:head-word-bound]" {
+              // 20k barewords was O(N^2) (>25s); the bound makes it linear.
+              // A generous wall-clock ceiling catches a regression to
+              // quadratic without flaking on load.
+              let spine = "let x = " + System.String.Join(";", Array.create 20000 "b")
+              let sw = System.Diagnostics.Stopwatch.StartNew()
+              Weir.Parser.parseLine realResolver spine |> ignore
+              sw.Stop()
+              Expect.isLessThan sw.Elapsed.TotalSeconds 15.0 "the doomed attempt is bounded, not quadratic"
+          }
+          test "a resolvable command head is unaffected by the head-word bound" {
+              match Weir.Parser.parseLine realResolver "git status" with
+              | Ok(SCmd _) -> ()
+              | other -> failtest $"a real command head must still parse: {other}"
+          }
+          // Fix 3 — the top-level CLI guard turns a residual front-end
+          // exception into a located diagnostic with a non-zero exit,
+          // never a raw stack trace / exit 134 [D:cli-exception-guard].
+          // The guard lives inline in Program.main; this pin documents the
+          // contract and asserts the two crash triggers it backstops are
+          // themselves already fixed (so the guard is a pure defense-in-depth
+          // net — reachability is exercised through the CLI e2e cell, which
+          // drives the whole binary).
+          test "the two known crash triggers no longer throw at the parser boundary" {
+              Expect.isError
+                  (Weir.Parser.parseStmt "type T = { [<Default 99999999999999999999>] A: int }")
+                  "attr overflow is data, not an exception"
+
+              let spine = "let x = " + System.String.Join(";", Array.create 5000 "b")
+              // must return (Ok or Error), never throw
+              Weir.Parser.parseLine realResolver spine |> ignore
+          } ]
+
 [<Tests>]
 let allTests =
     testList
         "Weir"
-        [ versionStampTests
+        [ hardeningTests
+          versionStampTests
           portMembersTests
           serveTests
           echoBinaryTests
+          ttySanitizeTests
           logLevelTests
           dxMessageTests
           bytesTests

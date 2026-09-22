@@ -67,40 +67,97 @@ type Value =
 
     override this.Equals(other) =
         match other with
-        | :? Value as v ->
-            match this, v with
-            | VInt a, VInt b -> a = b
-            // finite-only and -0.0-normalized [D:floats]: reflexive
-            | VFloat a, VFloat b -> a = b
-            | VDur a, VDur b -> a = b
-            | VInstant a, VInstant b -> a = b
-            | VSize a, VSize b -> a = b
-            // F# array equality is structural — byte equality, the Eq law
-            | VBytes a, VBytes b -> a = b
-            | VStr a, VStr b -> a = b
-            | VSecret a, VSecret b -> a = b
-            | VBool a, VBool b -> a = b
-            | VUnit, VUnit -> true
-            | VRecord(n1, f1), VRecord(n2, f2) ->
-                // order-insensitive [D:record-order]: order is carried,
-                // never semantic — two spellings of one record are equal
-                n1 = n2
-                && f1.Length = f2.Length
-                && f1
-                   |> List.forall (fun (k, v) ->
-                       match f2 |> List.tryFind (fun (k2, _) -> k2 = k) with
-                       | Some(_, v2) -> v = v2
-                       | None -> false)
-            | VUnion(c1, p1), VUnion(c2, p2) -> c1 = c2 && p1 = p2
-            | VSeq a, VSeq b -> obj.ReferenceEquals(a, b) || List.ofSeq a = List.ofSeq b
-            | VMap a, VMap b -> a = b
-            | VTuple a, VTuple b -> a = b
-            | VClosure(p1, b1, e1), VClosure(p2, b2, e2) -> p1 = p2 && b1 = b2 && obj.ReferenceEquals(e1, e2)
-            | VClosurePat(p1, b1, e1), VClosurePat(p2, b2, e2) -> p1 = p2 && b1 = b2 && obj.ReferenceEquals(e1, e2)
-            | VBuiltin f, VBuiltin g -> obj.ReferenceEquals(f, g)
-            | VProc a, VProc b -> obj.ReferenceEquals(a.Proc, b.Proc)
-            | VServer a, VServer b -> obj.ReferenceEquals(a.Listener, b.Listener)
-            | _ -> false
+        | :? Value as top ->
+            // VALUE EQUALITY IS ITERATIVE [D:eq-depth]: a legally-built
+            // recursive-record value (an Option-linked record folded
+            // 100k deep — the checker accepts it) once crashed the whole
+            // process with an uncatchable StackOverflow, because the walk
+            // recursed one frame per nesting level. The pending-pair
+            // work-list lives on the heap instead: children QUEUE, a
+            // mismatch DRAINS. Every prior semantic is preserved — the
+            // per-arm comparison is the same, only the recursion is gone.
+            let pending = System.Collections.Generic.Stack<Value * Value>()
+            pending.Push(this, top)
+            let mutable eq = true
+
+            while eq && pending.Count > 0 do
+                let a, b = pending.Pop()
+
+                match a, b with
+                | VInt a, VInt b -> eq <- a = b
+                // finite-only and -0.0-normalized [D:floats]: reflexive
+                | VFloat a, VFloat b -> eq <- a = b
+                | VDur a, VDur b -> eq <- a = b
+                | VInstant a, VInstant b -> eq <- a = b
+                | VSize a, VSize b -> eq <- a = b
+                // F# array equality is structural — byte equality, the Eq law
+                | VBytes a, VBytes b -> eq <- a = b
+                | VStr a, VStr b -> eq <- a = b
+                | VSecret a, VSecret b -> eq <- a = b
+                | VBool a, VBool b -> eq <- a = b
+                | VUnit, VUnit -> ()
+                | VRecord(n1, f1), VRecord(n2, f2) ->
+                    // order-insensitive [D:record-order]: order is carried,
+                    // never semantic — two spellings of one record are
+                    // equal; matched field VALUES queue as pending pairs
+                    if n1 = n2 && f1.Length = f2.Length then
+                        for (k, v) in f1 do
+                            match f2 |> List.tryFind (fun (k2, _) -> k2 = k) with
+                            | Some(_, v2) -> pending.Push(v, v2)
+                            | None -> eq <- false
+                    else
+                        eq <- false
+                | VUnion(c1, p1), VUnion(c2, p2) ->
+                    if c1 = c2 then
+                        match p1, p2 with
+                        | Some x, Some y -> pending.Push(x, y)
+                        | None, None -> ()
+                        | _ -> eq <- false
+                    else
+                        eq <- false
+                | VSeq a, VSeq b ->
+                    // LOCKSTEP via enumerators — never materialize two
+                    // lists; short-circuit at the first mismatch (the
+                    // Seq.equal discipline). Element pairs queue.
+                    if not (obj.ReferenceEquals(a, b)) then
+                        use ea = a.GetEnumerator()
+                        use eb = b.GetEnumerator()
+                        let mutable go = true
+
+                        while go do
+                            let na = ea.MoveNext()
+                            let nb = eb.MoveNext()
+
+                            if na && nb then pending.Push(ea.Current, eb.Current)
+                            elif na <> nb then
+                                eq <- false
+                                go <- false
+                            else
+                                go <- false
+                | VMap a, VMap b ->
+                    // same key set, entry VALUES queue (keys are strings,
+                    // compared by the Map itself) [D:map-string]
+                    if a.Count = b.Count then
+                        for kv in a do
+                            match b.TryFind kv.Key with
+                            | Some v2 -> pending.Push(kv.Value, v2)
+                            | None -> eq <- false
+                    else
+                        eq <- false
+                | VTuple a, VTuple b ->
+                    if a.Length = b.Length then
+                        List.iter2 (fun x y -> pending.Push(x, y)) a b
+                    else
+                        eq <- false
+                | VClosure(p1, b1, e1), VClosure(p2, b2, e2) -> eq <- p1 = p2 && b1 = b2 && obj.ReferenceEquals(e1, e2)
+                | VClosurePat(p1, b1, e1), VClosurePat(p2, b2, e2) ->
+                    eq <- p1 = p2 && b1 = b2 && obj.ReferenceEquals(e1, e2)
+                | VBuiltin f, VBuiltin g -> eq <- obj.ReferenceEquals(f, g)
+                | VProc a, VProc b -> eq <- obj.ReferenceEquals(a.Proc, b.Proc)
+                | VServer a, VServer b -> eq <- obj.ReferenceEquals(a.Listener, b.Listener)
+                | _ -> eq <- false
+
+            eq
         | _ -> false
 
     override this.GetHashCode() =
@@ -139,9 +196,15 @@ type private RenderLimits =
       Ellipsis: string }
 
 let private showLimits =
+    // depth-bounded like the equality walk [D:eq-depth]: a legally-built
+    // deeply-nested value (an Option-linked record folded 100k deep)
+    // once overflowed the stack through this recursive renderer too —
+    // show / interpolation / a to-json error all reach formatValue. 100
+    // clears every real value (the corpus max is ~11); past it the guard
+    // teaches with an ellipsis rather than crashing.
     { MaxItems = 20
       MaxStr = None
-      MaxDepth = System.Int32.MaxValue
+      MaxDepth = 100
       Ellipsis = "; ..." }
 
 let private echoLimits =
@@ -422,6 +485,47 @@ let private cappedPull (cap: int option) (items: seq<Value>) : Value list * bool
         shown |> List.truncate c, shown.Length > c
     | None -> items |> List.ofSeq, false
 
+// hostile bytes from DATA must not reach a TERMINAL [D:binary-echo]:
+// [D:binary-echo] already ruled a NUL-bearing echo refuses a tty; this is
+// the same rule one class wider, for the DATA a renderer prints. A
+// filename or field carrying ANSI/OSC escapes, a bare ESC, or C0/C1
+// controls can clear the screen, set the window title, or — the quiet
+// one — use CR so the name the user READS is not the name on disk. So
+// tty-bound DATA renderers NEUTRALIZE those bytes: ESC (the introducer),
+// C0 controls except \t and \n, DEL, and the C1 range render as a visible
+// \xNN caret so the text stays honest. Applied ONLY when the sink is a
+// tty and ONLY to DATA — weir's OWN colouring (added around already-
+// sanitized data) and redirected output are untouched, so a pipe stays
+// byte-faithful and colour still works.
+let sanitizeTtyData (s: string) : string =
+    // hostile = ESC (0x1B) the introducer, DEL (0x7F), any C0 control
+    // (< 0x20) except TAB and LF, and the C1 range (0x80..0x9F)
+    let hostile (c: char) =
+        let n = int c
+        n = 0x1B || n = 0x7F || (n < 0x20 && c <> '\t' && c <> '\n') || (n >= 0x80 && n <= 0x9F)
+
+    if not (s |> Seq.exists hostile) then
+        s
+    else
+        let sb = System.Text.StringBuilder(s.Length)
+
+        let hex = "0123456789abcdef"
+
+        for c in s do
+            if hostile c then
+                let n = int c
+                sb.Append("\\x").Append(hex[(n >>> 4) &&& 0xF]).Append(hex[n &&& 0xF]) |> ignore
+            else
+                sb.Append c |> ignore
+
+        sb.ToString()
+
+/// sanitize DATA only when the sink is a tty [D:binary-echo] — redirected
+/// output (a pipe, a file) stays byte-faithful; a terminal gets the safe
+/// rendering
+let sanitizeIfTty (redirected: bool) (s: string) : string =
+    if redirected then s else sanitizeTtyData s
+
 // binary content must not reach a TERMINAL [D:binary-echo]: a NUL in
 // the echo's pulled prefix marks the value binary (gzip at a tty — the
 // live receipt for the parked bytes item) and the echo, weir's OWN
@@ -532,7 +636,10 @@ let rec private tableCell (v: Value) : (string * bool) option =
             | Some m when s.Length > m -> s.Substring(0, m - 1) + "…"
             | _ -> s
 
-        Some(clipped, false)
+        // the table is a tty-only renderer [D:binary-echo]: a data cell's
+        // hostile bytes are neutralized (the tint is added later, around
+        // this sanitized text — weir's own colouring is untouched)
+        Some(sanitizeTtyData clipped, false)
     | VInt _
     | VFloat _
     | VSize _
@@ -712,11 +819,21 @@ let echoTail (hint: string option) : string =
 // The line-per-element renderer. Both consumers — the print builtin and the
 // runner's command-statement streaming — must call this one function; the
 // byte-identity of their output is a plan-level claim, not a coincidence.
+// DATA bound for a tty is sanitized [D:binary-echo] (redirected output
+// stays byte-faithful — the byte-identity claim holds for a pipe/file).
 let writeLinesTo (w: System.IO.TextWriter) (items: seq<Value>) : unit =
+    let redirected =
+        if System.Object.ReferenceEquals(w, System.Console.Out) then
+            System.Console.IsOutputRedirected
+        elif System.Object.ReferenceEquals(w, System.Console.Error) then
+            System.Console.IsErrorRedirected
+        else
+            true // a non-console writer (a file) is never a tty
+
     for item in items do
         match item with
-        | VStr s -> w.WriteLine s
-        | other -> w.WriteLine(formatValue other)
+        | VStr s -> w.WriteLine(sanitizeIfTty redirected s)
+        | other -> w.WriteLine(sanitizeIfTty redirected (formatValue other))
 
 let writeLines (items: seq<Value>) : unit = writeLinesTo System.Console.Out items
 
@@ -1754,11 +1871,25 @@ let private renderString (s: string) : Rendered =
     else
         Inline(Yaml.renderScalar s)
 
+// nesting ceiling [D:yaml-depth]: yamlRender recurses once per level,
+// so a value built iteratively (a Seq.fold nesting a YSeq) overflows the
+// native stack with an uncatchable StackOverflow — the tool must never
+// crash on hostile data. 100 sits far above any real tree (kubectl nests
+// ~10) and safely below the stack crash floor: yamlRender's heavy frames
+// overflow a small-stack worker/test thread at ~600 nesting levels, so the
+// bound matches the show renderer's MaxDepth rather than a higher number
+// the stack cannot reach. The guard turns the crash into a clean error.
+let private yamlMaxDepth = 100
+
 let rec private yamlRender
     (renames: Map<string, Map<string, string>>)
     (unions: Map<string, string * string * bool>)
+    (depth: int)
     (v: Value)
     : Rendered =
+    if depth > yamlMaxDepth then
+        failwith $"to yaml: the value nests deeper than {yamlMaxDepth} — the emitter needs finite trees"
+
     let indent2 (lines: string list) =
         lines |> List.map (fun l -> if l = "" then "" else "  " + l)
 
@@ -1770,7 +1901,7 @@ let rec private yamlRender
             | _ ->
                 let key = Yaml.renderScalar k
 
-                match yamlRender renames unions v with
+                match yamlRender renames unions (depth + 1) v with
                 | Inline "" -> [ $"{key}:" ]
                 | Inline s -> [ $"{key}: {s}" ]
                 | Block lines -> $"{key}:" :: indent2 lines
@@ -1779,7 +1910,7 @@ let rec private yamlRender
     let renderSeq (items: Value list) : string list =
         items
         |> List.collect (fun item ->
-            match yamlRender renames unions item with
+            match yamlRender renames unions (depth + 1) item with
             | Inline "" -> [ "- null" ]
             | Inline s -> [ $"- {s}" ]
             | Block lines ->
@@ -1816,7 +1947,7 @@ let rec private yamlRender
                 |> List.ofSeq
             )
         )
-    | VUnion("Some", Some inner) -> yamlRender renames unions inner
+    | VUnion("Some", Some inner) -> yamlRender renames unions (depth + 1) inner
     | VUnion("None", None) -> Inline "null" // element position; fields omit above
     // a TAGGED case renders its payload with the tag entry FIRST
     // [D:wire-unions]; the [<Other>] case refuses — nothing faithful
@@ -1870,7 +2001,7 @@ let private yamlToLines
     (unions: Map<string, string * string * bool>)
     (v: Value)
     : string list =
-    match yamlRender renames unions v with
+    match yamlRender renames unions 0 v with
     | Inline s -> [ s ]
     | Block lines -> lines
     | BlockScalar(h, content) -> h :: (content |> List.map (fun l -> if l = "" then "" else "  " + l))
@@ -3412,6 +3543,18 @@ and eval (env: Env) (te: TypedExpr) : Value =
             if maxConcurrent < 1 then
                 failwith $"serve: maxConcurrent is at least 1, got {maxConcurrent}"
 
+            // the request-body read timeout [D:serve-body-timeout]: OPTIONAL
+            // in the config literal, resting at 30s when omitted — a slow
+            // client dribbling the body cannot park a handler slot forever
+            let bodyTimeoutMs =
+                match List.tryFind (fun (n, _) -> n = "bodyTimeout") cfg with
+                | Some(_, VDur ms) -> int ms
+                | Some(_, v) -> unreachable $"serve bodyTimeout {formatValue v}"
+                | None -> 30_000
+
+            if bodyTimeoutMs < 1 then
+                failwith $"serve: bodyTimeout is at least 1ms, got {bodyTimeoutMs}ms"
+
             // the handler closure, evaluated ONCE at scope entry
             let handler =
                 match topts with
@@ -3420,24 +3563,28 @@ and eval (env: Env) (te: TypedExpr) : Value =
 
             // request primitives -> the HttpServerRequest Value the handler sees
             let requestValue (r: Serve.SReq) : Value =
-                // HttpMethod is the closed client union [D:http-serve]; an
-                // exotic verb maps to Get — v1 handlers route on path, not
-                // verb (a stated simplicity, not a silent drop: the path
-                // and body are intact for a handler that cares)
-                let methodTag =
+                // HttpMethod is open-world inbound [D:serve-method]: the
+                // listed verbs read as themselves (QUERY included — a case
+                // the shared client↔server family already has), and a
+                // well-formed but UNLISTED verb reads as `Other v` so the
+                // handler can route on it and answer 405 by choice, never
+                // misreported as Get. A malformed token never reaches here
+                // (refused with 400 at the boundary before the handler).
+                let methodValue =
                     match r.Method.ToUpperInvariant() with
-                    | "GET" -> "Get"
-                    | "POST" -> "Post"
-                    | "PUT" -> "Put"
-                    | "DELETE" -> "Delete"
-                    | "PATCH" -> "Patch"
-                    | "HEAD" -> "Head"
-                    | "OPTIONS" -> "Options"
-                    | _ -> "Get"
+                    | "GET" -> VUnion("Get", None)
+                    | "POST" -> VUnion("Post", None)
+                    | "PUT" -> VUnion("Put", None)
+                    | "DELETE" -> VUnion("Delete", None)
+                    | "PATCH" -> VUnion("Patch", None)
+                    | "HEAD" -> VUnion("Head", None)
+                    | "OPTIONS" -> VUnion("Options", None)
+                    | "QUERY" -> VUnion("Query", None)
+                    | _ -> VUnion("Other", Some(VStr r.Method))
 
                 VRecord(
                     "HttpServerRequest",
-                    [ "method", VUnion(methodTag, None)
+                    [ "method", methodValue
                       "path", VStr r.Path
                       "query", VStr r.Query
                       "headers", VSeq(r.Headers |> List.map (fun (k, v) -> VTuple [ VStr k; VStr v ]))
@@ -3463,6 +3610,15 @@ and eval (env: Env) (te: TypedExpr) : Value =
                                   | VTuple [ VStr k; VStr hv ] -> k, hv
                                   | _ -> () ]
                         | _ -> []
+
+                    // refuse a response header carrying CR/LF/NUL
+                    // [D:http-header-bytes]: the serve face of F3 — a
+                    // handler-returned header cannot forge a second one on
+                    // the wire (nor be silently dropped, F11's shape). The
+                    // located message is surfaced to the script through the
+                    // stream-error channel, and the response is refused
+                    // WITHOUT the injecting header (the accept loop 500s it).
+                    Http.refuseHeaderInjection "response header" (fun m -> raise (Serve.ResponseHeaderInjection m)) headers
 
                     let asString v =
                         match v with
@@ -3518,10 +3674,64 @@ and eval (env: Env) (te: TypedExpr) : Value =
                                     Session.enterWorker parentCwd
 
                                     try
-                                        let req = Serve.readRequest ctx
-                                        let resp = responseOf (apply handler (requestValue req))
-                                        Serve.writeResponse ctx resp
-                                    with _ ->
+                                        // the body read is bounded [D:serve-body-timeout]:
+                                        // a slow client dribbling its body no
+                                        // longer parks this slot forever — 408
+                                        // on exhaustion
+                                        let req = Serve.readRequest ctx bodyTimeoutMs
+
+                                        // a malformed method token is refused
+                                        // at the boundary [D:serve-method]:
+                                        // 400 before the handler, the byte-class
+                                        // refusal Bundle C's guard performs
+                                        if not (Serve.methodTokenOk req.Method) then
+                                            Serve.writeResponse
+                                                ctx
+                                                { Status = 400
+                                                  Headers = []
+                                                  Body = Serve.RText "malformed request method" }
+                                                ignore
+                                        else
+                                            let resp = responseOf (apply handler (requestValue req))
+                                            // a Stream producer raising mid-body is
+                                            // the designated channel [D:serve-stream]:
+                                            // record it on the handle, do not raise
+                                            Serve.writeResponse ctx resp (Serve.recordStreamError handle)
+                                    with
+                                    | Serve.BodyReadTimeout ->
+                                        // the client dribbled its body past the
+                                        // bound [D:serve-body-timeout] — refuse,
+                                        // bounded, not an unbounded park
+                                        (try
+                                            Serve.writeResponse
+                                                ctx
+                                                { Status = 408
+                                                  Headers = []
+                                                  Body = Serve.RText "request body read timed out" }
+                                                ignore
+                                         with _ ->
+                                             ())
+                                    | Serve.ResponseHeaderInjection msg ->
+                                        // a handler returned a header carrying
+                                        // CR/LF/NUL [D:http-header-bytes]: refuse
+                                        // the response WITHOUT the injecting
+                                        // header (never a silent drop) — a 500
+                                        // to the client, and the located message
+                                        // to the script via the stream-error
+                                        // channel so the author learns which
+                                        // header and byte the handler bug carried
+                                        Serve.recordStreamError handle msg
+
+                                        (try
+                                            Serve.writeResponse
+                                                ctx
+                                                { Status = 500
+                                                  Headers = []
+                                                  Body = Serve.RText "internal error" }
+                                                ignore
+                                         with _ ->
+                                             ())
+                                    | _ ->
                                         // a handler raise is a 500 — the server
                                         // survives one bad request
                                         (try
@@ -3530,6 +3740,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
                                                 { Status = 500
                                                   Headers = []
                                                   Body = Serve.RText "internal error" }
+                                                ignore
                                          with _ ->
                                              ())
                                 finally

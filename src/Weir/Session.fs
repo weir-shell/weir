@@ -109,6 +109,17 @@ let exitWorker () : unit =
     localEnvOverlay.Value <- None
 
 let resolve (path: string) : string =
+    // the run-time root guard [D:nul-path]: a NUL in the path makes
+    // Path.GetFullPath throw a raw ArgumentException (SIGABRT with no
+    // diagnostic) — this is the ONE resolution funnel every File/Proc/
+    // completion builtin passes through, so refusing here turns the whole
+    // run-time class into a located weir error (the builtins already
+    // surface raises). NUL-free paths are untouched. Parse-time never
+    // reaches this: Extern.exists pre-empts a NUL-bearing head as
+    // not-found [D:nul-path].
+    if path.Contains '\000' then
+        failwith "path contains a NUL byte — paths are NUL-free; NUL-bearing data is binary, not a path"
+
     System.IO.Path.GetFullPath(System.IO.Path.Combine(Cwd(), path))
 
 // pfirst's loser tree-kill [D:seq-pfirst]: an arm registers its live

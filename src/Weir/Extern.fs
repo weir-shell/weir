@@ -5,7 +5,20 @@ open System.IO
 
 let mutable private cache: Set<string> option = None
 
-let refresh () = cache <- None
+// per-PROGRAM resolution memo [D:head-word-bound]: exists() is called once
+// per command head; a bareword ';'-spine (20k identical heads) rescanning
+// PATH×PATHEXT each time was ~20s on POSIX / >800s on Windows. Memoise the
+// SCAN RESULT per name — O(1) amortised per DISTINCT program, while a
+// one-command line still pays a SINGLE scan (not the full-PATH enumeration
+// names() does for completion). ConcurrentDictionary: heads resolve off
+// worker threads. Cleared with the name cache so a mid-run PATH change is
+// seen after refresh().
+let mutable private existsCache =
+    System.Collections.Concurrent.ConcurrentDictionary<string, bool>()
+
+let refresh () =
+    cache <- None
+    existsCache <- System.Collections.Concurrent.ConcurrentDictionary<string, bool>()
 
 // Windows resolves a bare `git` to `git.exe` via PATHEXT; the name
 // as-given always wins first. POSIX: the empty list — names resolve
@@ -77,18 +90,30 @@ let resolveFile (prog: string) : string option =
                     None))
 
 let exists (prog: string) : bool =
-    if isPathy prog then
+    // parse-time NUL guard [D:nul-path]: a NUL-bearing head is not a real
+    // program, so it is not-found — this returns BEFORE Session.resolve,
+    // whose raise would abort the process here (the parse resolver runs
+    // outside the runtime try). The classifier then emits its ordinary
+    // located missing-command diagnostic instead of a SIGABRT. The
+    // run-time raise still guards every other Session.resolve caller.
+    if prog.Contains '\000' then
+        false
+    elif isPathy prog then
         let resolved = Session.resolve prog
 
         File.Exists resolved
         || pathExts () |> List.exists (fun e -> File.Exists(resolved + e))
     else
-        match cache with
-        | Some s -> s.Contains prog
-        | None ->
-            pathDirs ()
-            |> Array.exists (fun dir ->
-                let candidate = Path.Combine(dir, prog)
+        // per-program memo (not names()): a distinct name pays ONE scan
+        // then hits the cache; a one-command line does not enumerate all
+        // of PATH. Live per-name scan, so a file created after refresh()
+        // is still seen on its first query [D:head-word-bound].
+        existsCache.GetOrAdd(
+            prog,
+            fun p ->
+                pathDirs ()
+                |> Array.exists (fun dir ->
+                    let candidate = Path.Combine(dir, p)
 
-                File.Exists candidate
-                || pathExts () |> List.exists (fun e -> File.Exists(candidate + e)))
+                    File.Exists candidate
+                    || pathExts () |> List.exists (fun e -> File.Exists(candidate + e))))

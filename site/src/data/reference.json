@@ -1522,6 +1522,13 @@
           "summary": "True while the listener is still open (the scope has not exited).",
           "example": null,
           "pointer": null
+        },
+        {
+          "name": "streamErrors",
+          "signature": "Server.streamErrors (srv: Server) : seq\u003Cstring\u003E",
+          "summary": "The messages of any Stream-body producers that raised mid-flight \u2014 the truncated responses the client saw a broken body for. Empty until one fails; the designated channel for a streaming failure, so a raise never leaves the handler.",
+          "example": null,
+          "pointer": "a Stream producer raise aborts the client\u0027s body and lands here"
         }
       ]
     },

@@ -28,7 +28,22 @@ def assert_fresh(weir_bin, repo_root):
 
 def alive(pid):
     """waitpid-truth census: a ZOMBIE is dead. kill(pid, 0) succeeds on
-    zombies and lies — the Ctrl+D incident's lesson, mechanized."""
+    zombies and lies — the Ctrl+D incident's lesson, mechanized. Windows
+    has no zombies and no os.WNOHANG: query the process exit code
+    directly (STILL_ACTIVE means running), dependency-free via ctypes."""
+    if os.name == "nt":
+        import ctypes
+
+        STILL_ACTIVE = 259
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        k = ctypes.windll.kernel32
+        h = k.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if not h:
+            return False
+        code = ctypes.c_ulong()
+        ok = k.GetExitCodeProcess(h, ctypes.byref(code))
+        k.CloseHandle(h)
+        return ok != 0 and code.value == STILL_ACTIVE
     try:
         done, _ = os.waitpid(pid, os.WNOHANG)
         return done == 0

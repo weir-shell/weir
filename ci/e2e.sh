@@ -206,6 +206,47 @@ $BIN -e 'Dir.copy "'"$pw2"'/src" "'"$pw2"'/dst"' || fail "Dir.copy failed"
 rm -rf "$pw2"
 echo "e2e ok: pins-walk candidates (exit codes exact, readSecret trio, Dir.copy recursive)"
 
+# ---- NUL in a path: refused, never crashed [D:nul-path] (STRIX-5) ----------
+# A NUL byte reaches Path.GetFullPath (via Session.resolve) two ways, and
+# both used to escape with a raw ArgumentException — the parse-time head
+# resolution as a SIGABRT (exit 134, no diagnostic), the run-time path as
+# a raw .NET message. Both must now be a located weir error with a
+# NON-134 exit and no core dump. POSIX-only: the NUL byte in a file/argv
+# is the axis, and skipOnWindows-style gating keeps the harness honest.
+if [ "$IS_WINDOWS" = "0" ]; then
+    nuldir=$(mkweirtmp)
+    # (a) PARSE-TIME: a NUL inside a slash-bearing word. The parser's head
+    # classifier calls Extern.exists, which now reports a NUL-bearing head
+    # as not-found BEFORE Session.resolve — so the parser emits its normal
+    # located missing-command diagnostic instead of aborting.
+    printf './a\000b c\n' > "$nuldir/parse.weir"
+    rc=0; out=$($BIN "$nuldir/parse.weir" 2>&1) || rc=$?
+    [ "$rc" -ne 0 ] || fail "NUL-in-slash parse must not exit 0: $out"
+    [ "$rc" -ne 134 ] || fail "NUL-in-slash parse must NOT SIGABRT (got 134): $out"
+    echo "$out" | grep -qiF "argumentexception" && fail "parse must not leak the raw .NET exception: $out"
+    echo "$out" | grep -qF "$nuldir/parse.weir:1:" || fail "parse error must be located at line 1: $out"
+
+    # (b) RUN-TIME: a NUL-bearing path VALUE (a file line carrying a NUL,
+    # fed to a File builtin) hits Session.resolve, which now raises a
+    # located weir error the builtin surfaces — no crash.
+    printf 'a\000b' > "$nuldir/nulpath.txt"
+    cat > "$nuldir/run.weir" <<WEOF
+let p = File.read "$nuldir/nulpath.txt" |> Seq.head
+let ok = File.exists p
+print (show ok)
+WEOF
+    rc=0; out=$($BIN "$nuldir/run.weir" 2>&1) || rc=$?
+    [ "$rc" -ne 0 ] || fail "NUL run-time path must not exit 0: $out"
+    [ "$rc" -ne 134 ] || fail "NUL run-time path must NOT SIGABRT (got 134): $out"
+    echo "$out" | grep -qiF "argumentexception" && fail "run-time must not leak the raw .NET exception: $out"
+    echo "$out" | grep -qF "NUL byte" || fail "run-time error must name the NUL byte: $out"
+    echo "$out" | grep -qF "$nuldir/run.weir:2:" || fail "run-time error must be located at line 2: $out"
+    rm -rf "$nuldir"
+    echo "e2e ok: NUL in a path is a located error, never a crash (parse + run-time, both non-134)"
+else
+    echo "e2e skip: NUL-in-path (POSIX axis — the NUL byte in a file/argv)"
+fi
+
 # walk cohort: the Args-side defaulted-Secret teaching [D:secret]
 pw3=$(mkweirtmp)
 cat > "$pw3/sd.weir" <<'WEOF'
@@ -287,6 +328,29 @@ expect "range literal on the AOT binary" "5 : int" "$out"
 
 out=$(timeout 5 $BIN -e '[1..1000000] |> Seq.take 3') || fail "huge range under first must terminate (laziness)"
 expect "ranges are lazy generators" '[1; 2; 3]' "$out"
+
+# hostile-input PERFORMANCE fixture [D:assemble-quadratic]: the line
+# assembler must scale LINEARLY. A crafted hundreds-of-KB source that was
+# once O(N^2) (a continuation-line flood + a bracket-heavy single line)
+# now checks in well under the bound; a regressed quadratic build blows
+# the timeout instead of merely slowing. The generous 20s ceiling is a
+# ~5x margin over the measured linear time, not a fine timing gate.
+asmdir=$(mkweirtmp)
+# (a) 60k continuation lines inside one list literal
+{ echo "let xs = ["; for _ in $(seq 1 60000); do echo "    1"; done; echo "]"; echo 'print (show (xs |> Seq.length))'; } > "$asmdir/flood.weir"
+timeout 20 $BIN check "$asmdir/flood.weir" >/dev/null 2>&1 || fail "assembler DoS: 60k continuation-line flood did not check within 20s (quadratic regression?)"
+echo "e2e ok: assembler — 60k-line continuation flood checks in linear time"
+# (b) a bracket-heavy single line (200k record openers) — the per-opener
+# with-header substring was quadratic; it fails to PARSE fast, so the
+# whole budget is the (now linear) assembler fold
+{ printf 'let xs = '; for _ in $(seq 1 200000); do printf '{}'; done; printf '\n'; echo 'print "done"'; } > "$asmdir/openers.weir"
+acode=0
+timeout 20 $BIN check "$asmdir/openers.weir" >/dev/null 2>&1 || acode=$?
+# exit 1 (a parse error) is the expected verdict; a timeout (124) is the
+# failure this fixture guards against
+[ "$acode" -ne 124 ] || fail "assembler DoS: 200k bracket-opener single line did not settle within 20s (quadratic regression?)"
+echo "e2e ok: assembler — 200k bracket-opener single line settles in linear time"
+rm -rf "$asmdir"
 
 rangedir=$(mkweirtmp)
 mkdir -p "$rangedir/sub"
@@ -1378,6 +1442,11 @@ if command -v python3 >/dev/null 2>&1; then
 
     WEIR_BIN="$BIN" python3 "$(dirname "$0")/../tests/lsp/lsp-e2e.py" || fail "lsp integration probes"
     echo "e2e ok: lsp diagnostics/hover/completion over stdio"
+
+    # transport hardening [D:lsp-transport-caps]: a hostile Content-Length
+    # must not OOM the session — the framing layer caps at 64MB and drains
+    WEIR_BIN="$BIN" python3 "$(dirname "$0")/../tests/lsp/lsp-framing.py" || fail "lsp framing hardening (oversized Content-Length)"
+    echo "e2e ok: lsp survives oversized Content-Length (no OOM, stream stays synced)"
 
     # conventional client argv is tolerated (languageclient v10 appends
     # --stdio/--clientProcessId to Executables — usage-exit-2 here put
@@ -6653,7 +6722,121 @@ else
     echo "e2e skip: DA-04 symlink-confinement (POSIX native symlinks)"
 fi
 
+# DA-05: the contract-fetch client drops the credential on a CROSS-ORIGIN
+# redirect [D:contract-redirect]. `add module <full-url>` attaches
+# `Authorization: token <WEIR_TOKEN_host>` when a host token is set (the
+# GitLab PRIVATE-TOKEN's shape) and downloads via fetchBytesWith; a bare
+# HttpClient re-sent it to a redirect target. Driven at the CLI over a LOCAL
+# cross-origin 302 (127.0.0.1 -> localhost). Origin B serves a VALID module
+# (so the add completes) and logs what arrived — the credential must NOT.
+if command -v python3 >/dev/null 2>&1; then
+    da5a=$((23800 + RANDOM % 100))
+    da5b=$((23900 + RANDOM % 100))
+    printf 'module M\nlet greet : string\nlet greet = "hi"\n' > "$ctdir/da5mod.weir"
+    cat > "$ctdir/da5redir.py" <<DA5EOF
+import http.server, sys
+PB = $da5b
+class A(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(302)
+        self.send_header('Location', 'http://localhost:%d/mod.weir' % PB)
+        self.end_headers()
+    def log_message(self, *a): pass
+http.server.HTTPServer(('127.0.0.1', $da5a), A).serve_forever()
+DA5EOF
+    cat > "$ctdir/da5dest.py" <<DA5EOF2
+import http.server, sys
+LOG = "$ctdir/da5.log"
+BODY = open("$ctdir/da5mod.weir", 'rb').read()
+class B(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        with open(LOG, 'a') as f:
+            for k, v in self.headers.items():
+                f.write("%s: %s\n" % (k, v))
+        self.send_response(200); self.end_headers(); self.wfile.write(BODY)
+    def log_message(self, *a): pass
+http.server.HTTPServer(('localhost', $da5b), B).serve_forever()
+DA5EOF2
+    rm -f "$ctdir/da5.log"
+    python3 "$ctdir/da5redir.py" & da5as=$!
+    python3 "$ctdir/da5dest.py" & da5bs=$!
+    # readiness, not a fixed sleep (see S1): a slow-runner bind race turns a
+    # connect into a 30s hang. $da5a is explicit 127.0.0.1.
+    awaitTcp $da5a || { kill $da5as $da5bs 2>/dev/null || true; fail "DA-05: the redirect server never came up on $da5a"; }
+    mkdir -p "$ctdir/da5repo" && ( cd "$ctdir/da5repo" && git init -q . )
+    # the CLI attaches Authorization: token <this> for host 127.0.0.1
+    out=$( cd "$ctdir/da5repo" && WEIR_TOKEN_127_0_0_1="SECRET-CONTRACT-TOKEN" $BIN add module "http://127.0.0.1:$da5a/start.weir" --as da5 2>&1 ) || true
+    kill $da5as $da5bs 2>/dev/null || true
+    da5log=$(cat "$ctdir/da5.log" 2>/dev/null)
+    # the artifact DID land at origin B (the redirect was followed)
+    test -n "$da5log" || fail "DA-05: origin B never received the redirected request: add output: $out"
+    # but the credential must NOT have crossed to origin B
+    echo "$da5log" | grep -qiF "SECRET-CONTRACT-TOKEN" && fail "DA-05: the contract credential LEAKED across the cross-origin redirect: $da5log" || true
+    echo "$da5log" | grep -qiF "Authorization" && fail "DA-05: the Authorization header reached the cross-origin target: $da5log" || true
+    # the User-Agent (non-credential) still crosses — the drop is credential-specific
+    echo "$da5log" | grep -qiF "User-Agent: weir/" || fail "DA-05: a non-credential header must still cross (drop is credential-specific): $da5log"
+    echo "e2e ok: the contract-fetch client drops the credential across a cross-origin redirect (DA-05); UA still crosses"
+else
+    echo "e2e skip: DA-05 contract-redirect (python3 absent)"
+fi
+
 kill $ctsrv 2>/dev/null || true
+
+# ---- Fix 1: HTTP diagnostics redact a URL's userinfo [D:url-redact] --------
+# a `user:pass@host` credential must not print verbatim when an HTTP error
+# names the URL. (a) a 500 through Http.fetch redacts the credential; a
+# userinfo-free URL is still named in full. (b) the transport fallback (an
+# unparseable URL) redacts too.
+if command -v python3 >/dev/null 2>&1; then
+    urport=$((24100 + RANDOM % 200))
+    cat > "$ctdir/url500.py" <<URLEOF
+import http.server
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self): self.send_response(500); self.end_headers(); self.wfile.write(b'nope')
+    def log_message(self, *a): pass
+http.server.HTTPServer(('127.0.0.1', $urport), H).serve_forever()
+URLEOF
+    python3 "$ctdir/url500.py" & ursrv=$!
+    # awaitTcp, not awaitHttp: the server ANSWERS 500 by design, and
+    # `curl -sf` treats a 500 as failure — readiness is the LISTENER
+    awaitTcp "$urport" || { kill $ursrv 2>/dev/null || true; fail "the redact 500-server never came up"; }
+    # (a) the credential is masked, the status still named
+    out=$($BIN -e "print (Http.fetch \"http://user:s3cr3t@127.0.0.1:$urport/\")" 2>&1) && fail "a 500 must raise" || true
+    echo "$out" | grep -qF "***@127.0.0.1:$urport/ answered 500" || fail "the userinfo is redacted in the 500 error: $out"
+    echo "$out" | grep -qiF "s3cr3t" && fail "the credential LEAKED verbatim in the 500 error: $out" || true
+    # a userinfo-free URL is still named in full
+    out=$($BIN -e "print (Http.fetch \"http://127.0.0.1:$urport/\")" 2>&1) && fail "a 500 must raise" || true
+    echo "$out" | grep -qF "http://127.0.0.1:$urport/ answered 500" || fail "a credential-free URL is named in full: $out"
+    kill $ursrv 2>/dev/null || true
+    echo "e2e ok: an HTTP 500 redacts a URL's userinfo, names a credential-free URL in full (Fix 1a)"
+else
+    echo "e2e skip: Fix 1a userinfo-500 (python3 absent)"
+fi
+# (b) the transport fallback: an unparseable URL still masks its userinfo
+out=$($BIN -e 'print (Http.fetch "http://user:pw@ nohost")' 2>&1) && fail "an unreachable URL must raise" || true
+echo "$out" | grep -qF "***@ nohost" || fail "the transport fallback redacts the unparseable URL's userinfo: $out"
+echo "$out" | grep -qiF "user:pw" && fail "the credential LEAKED in the transport fallback: $out" || true
+echo "e2e ok: the transport fallback redacts an unparseable URL's userinfo (Fix 1b)"
+
+# ---- Fix 2: parse/decode errors excerpt a huge invalid input [D:excerpt] ---
+# a multi-MB invalid input used to be echoed WHOLE (a ~2MB stderr flood);
+# it is now bounded to a 64-char head + the true length. A short invalid
+# input is still quoted in full.
+xdir=$(mkweirtmp)
+python3 - "$xdir/big.weir" <<'PYX'
+import sys
+big = 'z' * 2000000
+open(sys.argv[1], 'w').write('let big = "' + big + '"\nprint (Str.toInt big)\n')
+PYX
+out=$($BIN "$xdir/big.weir" 2>&1) && fail "an invalid toInt must raise" || true
+outlen=$(printf '%s' "$out" | wc -c)
+[ "$outlen" -lt 200 ] || fail "the excerpted error must be bounded (<200 bytes); got $outlen: ${out:0:120}"
+echo "$out" | grep -qF "(2000000 chars)" || fail "the true length is named: ${out:0:120}"
+# a short invalid input is still quoted whole
+out=$($BIN -e 'print (Str.toInt "notanum")' 2>&1) && fail "a short invalid toInt must raise" || true
+echo "$out" | grep -qF '"notanum"' || fail "a short input stays fully readable: $out"
+rm -rf "$xdir"
+echo "e2e ok: a multi-MB invalid parse input yields a bounded error; a short one is quoted whole (Fix 2)"
 
 # F2: an unreadable file on the import path is a LOCATED diagnostic, never
 # a crash (mode 000; exit 1, not 134) [D:lockfile-confinement]
@@ -8106,7 +8289,9 @@ socketserver.TCPServer(("127.0.0.1", int(sys.argv[1])), H).serve_forever()
 PYEOF2
     python3 "$hdir/echo.py" "$hport" &
     hsrv=$!
-    sleep 0.6
+    # readiness, not a fixed sleep (see S1): the bind race hangs a macOS
+    # connect to the 30s client timeout. $hport is explicit 127.0.0.1.
+    awaitTcp $hport || { kill $hsrv 2>/dev/null || true; fail "Http: the echo server never came up on $hport"; }
 
     # THE MANGLING PIN: a multi-object NDJSON body (spans lines) round-trips
     # BYTE-EXACT — the exact bytes curl -d would have eaten
@@ -8197,6 +8382,34 @@ WEOF
     echo "$out" | grep -qF "fetch=1|weir/$stamp" || { kill $hsrv 2>/dev/null || true; fail "Http.fetch must send the default UA: $out"; }
     echo "e2e ok: Http default User-Agent (weir/<stamp> == --version, explicit wins from both header paths, exactly one ever sent, fetch included)"
 
+    # F3-outbound [D:http-header-bytes]: a request header carrying CR/LF is
+    # REFUSED before send (the forge the review found on the wire), with a
+    # located error naming the header, byte, and position. The referee is
+    # the server's own request log: a CLEAN control header ARRIVES (so the
+    # refusal cannot pass by headers never working), the forged one NEVER
+    # does, and the offending request is not sent at all.
+    cat > "$hdir/inj.weir" <<WEOF
+let crlf = Str.fromBase64 "DQo="
+let _r = Http.send { Http.get "http://127.0.0.1:$hport/x" with headers = [("X-Evil", "a" + crlf + "Injected: yes")] }
+print "unreached"
+WEOF
+    out=$($BIN "$hdir/inj.weir" 2>&1) && { kill $hsrv 2>/dev/null || true; fail "F3: a CRLF request header must be refused, not sent"; } || true
+    echo "$out" | grep -qF "request header 'X-Evil' carries a CR byte in its value" || { kill $hsrv 2>/dev/null || true; fail "F3: the outbound refusal must name the header, byte, and position: $out"; }
+    echo "$out" | grep -qF "cannot contain CR, LF or NUL" || { kill $hsrv 2>/dev/null || true; fail "F3: the outbound refusal must name the whole byte class: $out"; }
+    # (the NUL leg of the byte class is pinned at the unit level — weir has
+    # no source spelling that yields a NUL-bearing string: Str.fromBase64 and
+    # Str.fromUtf8 both refuse NUL by the encoding law, which is why F3's
+    # realistic payload arrives via a CR/LF decode, not a NUL one)
+    # the CLEAN control header reaches the server (headers do work) — the
+    # positive control that makes "the forged header is absent" meaningful
+    cat > "$hdir/injctl.weir" <<WEOF
+let r = Http.send { Http.get "http://127.0.0.1:$hport/echoh" with headers = [("X-Benign", "present")] }
+print \$"control-status={r.status}"
+WEOF
+    out=$($BIN "$hdir/injctl.weir" 2>&1) || { kill $hsrv 2>/dev/null || true; fail "F3: the clean control header send failed: $out"; }
+    echo "$out" | grep -qF "control-status=200" || { kill $hsrv 2>/dev/null || true; fail "F3: a clean header must send fine: $out"; }
+    echo "e2e ok: Http F3 outbound header injection refused (CR/LF/NUL in a request header, located, control sends clean)"
+
     kill $hsrv 2>/dev/null || true
 
     # TRANSPORT failure raises, in its OWN words per case [D:transport-words];
@@ -8271,6 +8484,61 @@ WEOF
     else
         echo "e2e SKIP: openssl absent — Http insecure TLS pin not run" >&2
     fi
+
+    # S1 [D:secret-redirect]: secretHeaders are DROPPED on a CROSS-ORIGIN
+    # redirect, exactly as the BCL drops Authorization — so weir's two
+    # credential channels agree (the review's F4). Driven over a LOCAL
+    # cross-origin 302 (127.0.0.1 -> localhost, a DIFFERENT origin by host),
+    # with origin B logging what arrived. The sensitive header must NOT
+    # reach B; a non-sensitive CONTROL header MUST (proving the drop is
+    # credential-specific, not a blanket strip). auth Bearer is dropped too.
+    ra=$((23400 + RANDOM % 200))
+    rb=$((23600 + RANDOM % 200))
+    cat > "$hdir/redir.py" <<REOF
+import http.server, sys
+PB = $rb
+class A(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(302)
+        self.send_header('Location', 'http://localhost:%d/dest' % PB)
+        self.end_headers()
+    def log_message(self, *a): pass
+http.server.HTTPServer(('127.0.0.1', $ra), A).serve_forever()
+REOF
+    cat > "$hdir/dest.py" <<DEOF
+import http.server, sys
+LOG = "$hdir/dest.log"
+class B(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        with open(LOG, 'a') as f:
+            for k, v in self.headers.items():
+                f.write("%s: %s\n" % (k, v))
+        self.send_response(200); self.end_headers(); self.wfile.write(b'landed')
+    def log_message(self, *a): pass
+http.server.HTTPServer(('localhost', $rb), B).serve_forever()
+DEOF
+    rm -f "$hdir/dest.log"
+    python3 "$hdir/redir.py" & rasrv=$!
+    python3 "$hdir/dest.py" & rbsrv=$!
+    # readiness, not a fixed sleep: on a slow runner (macOS) the listener
+    # may not be accepting at 0.6s, and a connect into the bind race HANGS
+    # to the 30s client timeout instead of refusing (the awaitTcp comment).
+    # $ra is explicit 127.0.0.1 so /dev/tcp readiness is reliable; dest.py
+    # then gets the request round-trip as extra margin.
+    awaitTcp $ra || { kill $rasrv $rbsrv 2>/dev/null || true; fail "S1: the redirect server never came up on $ra"; }
+    cat > "$hdir/redir.weir" <<WEOF
+let tok = Secret.of "SECRET-TOKEN-ABC"
+let r = Http.send { Http.get "http://127.0.0.1:$ra/start" with secretHeaders = [("X-Api-Key", tok)]; headers = [("X-Control", "keepme")]; auth = Bearer (Secret.of "BEARER-TOK") }
+print \$"status={r.status} body={r.body |> Seq.head}"
+WEOF
+    out=$($BIN "$hdir/redir.weir" 2>&1) || { kill $rasrv $rbsrv 2>/dev/null || true; fail "S1 cross-origin redirect run failed: $out"; }
+    echo "$out" | grep -qF "status=200 body=landed" || { kill $rasrv $rbsrv 2>/dev/null || true; fail "S1: the redirect must be followed to origin B: $out"; }
+    kill $rasrv $rbsrv 2>/dev/null || true
+    dlog=$(cat "$hdir/dest.log" 2>/dev/null)
+    echo "$dlog" | grep -qiF "X-Api-Key" && fail "S1: the secretHeaders credential LEAKED to the cross-origin redirect target: $dlog" || true
+    echo "$dlog" | grep -qiF "Authorization" && fail "S1: the auth Bearer credential LEAKED to the cross-origin redirect target: $dlog" || true
+    echo "$dlog" | grep -qiF "X-Control: keepme" || fail "S1: a NON-sensitive control header must still cross the redirect (the drop is credential-specific): $dlog"
+    echo "e2e ok: Http S1 cross-origin redirect drops secretHeaders + auth (control header crosses; credentials do not reach origin B)"
 
     rm -rf "$hdir"
     echo "e2e ok: Http (mangling, status-is-data, auth, fetch-raises/send-binds, constructors, pmap, transport raises, check silent)"
@@ -8955,6 +9223,38 @@ out=$($BIN "$padir/helperwrite.weir" 2>&1) || fail "a native write via a serial 
 expect "the serial helper's native write is captured" "captured" "$out"
 [ -f "$padir/helper-marker.txt" ] && fail "the captured write ran to disk — over-captured"
 echo "e2e ok: plan/apply — a native write via a serial helper still captures (not over-refused)"
+
+# DA-03 [D:plan-path-bound]: a plan binds paths absolute AT CAPTURE, so
+# apply writes the previewed location regardless of the apply-time cwd.
+# Capture a write + a copy under `cd A`, apply under `cd B`: both land in
+# A (the preview shows A's absolute paths), NEVER B.
+mkdir -p "$padir/A" "$padir/B"
+printf 'data\n' > "$padir/A/orig.txt"
+cat > "$padir/bound.weir" <<WEOF
+let p =
+    within cd "$padir/A"
+        plan
+            File.write "marker.txt" ["hi"]
+            File.copy "orig.txt" "copied.txt"
+// normalise separators: on Windows Plan.preview emits Path.GetFullPath's
+// backslashes, and the capture dir may carry an 8.3 shortname the bash
+// \$padir spelling lacks — so assert the absolute-under-A TAIL, not the
+// full prefix. The A-vs-B binding is proven by the filesystem checks below.
+let text = Str.join "\n" (p |> Plan.preview) |> Str.replace "\\\\" "/"
+if not (Str.contains "/A/marker.txt" text) then fail "preview not absolute-A (write)"
+if not (Str.contains "/A/copied.txt" text) then fail "preview not absolute-A (copy dst)"
+within cd "$padir/B"
+    p |> Plan.apply
+print "applied"
+WEOF
+out=$($BIN "$padir/bound.weir" 2>&1) || fail "the bound-path plan failed: $out"
+expect "the bound plan applies" "applied" "$out"
+[ -f "$padir/A/marker.txt" ] || fail "the write did not land in A (the previewed capture-time dir)"
+[ -f "$padir/A/copied.txt" ] || fail "the copy did not land in A"
+[ -f "$padir/B/marker.txt" ] && fail "the write rebound to B (the apply-time cwd) — DA-03 regressed"
+[ -f "$padir/B/copied.txt" ] && fail "the copy rebound to B — DA-03 regressed"
+echo "e2e ok: plan/apply — paths bind absolute at capture; apply-under-B lands in A (DA-03)"
+
 rm -rf "$padir"
 
 # ---- within serve: the scoped HTTP listener [D:http-serve] -----------
@@ -9090,6 +9390,436 @@ echo "$out" | grep -qF "loaded" || fail "serve conc scope must exit: $out"
 first3=$(head -3 "$svdir/markers.txt" 2>/dev/null | tr '\n' ',')
 [ "$first3" = "start,start,end," ] || fail "serve concurrency ceiling BROKEN: first 3 markers were '$first3' (expected 'start,start,end,') — markers: $(cat "$svdir/markers.txt" 2>/dev/null | tr '\n' ' ')"
 echo "e2e ok: within serve — concurrency ceiling holds (maxConcurrent=2 caps 4 requests at 2)"
+
+# ---- Bundle E: serve wire fidelity (F8/F9/F12) + tty sanitize (F13) ---
+svport4=8474
+svport5=8475
+svport6=8476
+
+# (F9) the method boundary [D:serve-method]: QUERY reads as Query, a
+# well-formed unlisted verb reads as Other v (the handler routes on it),
+# and a malformed method token is refused at the boundary with 400. A raw
+# socket sends the exact request line so the verb is what the wire says.
+cat > "$svdir/methprobe.py" <<'PYEOF'
+import socket, sys
+port = int(sys.argv[1])
+def send(verb):
+    s = socket.socket(); s.connect(('127.0.0.1', port))
+    s.sendall(('%s /echo HTTP/1.1\r\nHost: 127.0.0.1:%d\r\nConnection: close\r\n\r\n' % (verb, port)).encode())
+    d = b''
+    while True:
+        c = s.recv(4096)
+        if not c: break
+        d += c
+    status = d.split(b'\r\n', 1)[0].decode()
+    body = d.split(b'\r\n\r\n', 1)[-1].decode(errors='replace')
+    print('%s|status=%s|body=%s' % (verb, status, body))
+for v in ['GET', 'QUERY', 'FROBNICATE']:
+    send(v)
+# malformed: an embedded control byte in the method token
+s = socket.socket(); s.connect(('127.0.0.1', port))
+s.sendall(b'BA\x01D /echo HTTP/1.1\r\nHost: 127.0.0.1:%d\r\nConnection: close\r\n\r\n' % port)
+d = b''
+while True:
+    c = s.recv(4096)
+    if not c: break
+    d += c
+print('MALFORMED|status=%s' % (d.split(b'\r\n', 1)[0].decode() if d else '(reset)'))
+PYEOF
+cat > "$svdir/method.weir" <<WEOF
+within serve srv = { port = $svport4; maxConcurrent = 2 } (fun req -> match req.method with | Get -> HttpServerResponse { status = 200; headers = []; body = Text "GET" } | Query -> HttpServerResponse { status = 200; headers = []; body = Text "QUERY" } | Other v -> HttpServerResponse { status = 405; headers = []; body = Text \$"OTHER:{v}" } | _ -> HttpServerResponse { status = 200; headers = []; body = Text "known" })
+    poll timeout=8s interval=100ms
+        Net.portOpen $svport4
+    let out = sh -c "python3 '$svdir/methprobe.py' $svport4" | complete
+    out.stdout |> Seq.iter print
+print "method-done"
+WEOF
+out=$($BIN "$svdir/method.weir" 2>&1) || fail "serve method run failed: $out"
+echo "$out" | grep -qF "GET|status=HTTP/1.1 200 OK|body=GET" || fail "F9: GET must route as Get: $out"
+echo "$out" | grep -qF "QUERY|status=HTTP/1.1 200 OK|body=QUERY" || fail "F9: QUERY must read as Query, not Get: $out"
+echo "$out" | grep -qE "FROBNICATE\|status=HTTP/1.1 405( [^|]*)?\|body=OTHER:FROBNICATE" || fail "F9: an unlisted verb must route as Other v with 405: $out"
+echo "$out" | grep -qE "MALFORMED\|status=HTTP/1.1 400( |$)" || fail "F9: a malformed method token must be refused with 400: $out"
+echo "e2e ok: within serve — F9 method boundary (QUERY=Query, unlisted=Other, malformed=400)"
+
+# (F8) a Stream producer raising mid-body [D:serve-stream]: the failure is
+# surfaced to the script through Server.streamErrors (the designated
+# channel), never a raise out of the handler. The client reads whatever
+# arrived; the script observes the failure and can act on it.
+cat > "$svdir/streamprobe.py" <<'PYEOF'
+import socket, sys
+port = int(sys.argv[1])
+s = socket.socket(); s.connect(('127.0.0.1', port))
+s.sendall(('GET /half HTTP/1.1\r\nHost: 127.0.0.1:%d\r\nConnection: close\r\n\r\n' % port).encode())
+d = b''
+while True:
+    c = s.recv(4096)
+    if not c: break
+    d += c
+print('GOT-FIRST=%s' % (b'data: first' in d))
+PYEOF
+cat > "$svdir/stream.weir" <<WEOF
+let handler = fun req ->
+    match req.path with
+    | "/half" -> HttpServerResponse { status = 200; headers = []; body = Stream ([1; 2] |> Seq.map (fun i -> if i == 1 then "first" else fail "producer died")) }
+    | _ -> HttpServerResponse { status = 404; headers = []; body = Text "nf" }
+
+within serve srv = { port = $svport5; maxConcurrent = 2 } handler
+    poll timeout=8s interval=100ms
+        Net.portOpen $svport5
+    let out = sh -c "python3 '$svdir/streamprobe.py' $svport5" | complete
+    out.stdout |> Seq.iter print
+    let errs = Server.streamErrors srv
+    print \$"stream-errors={errs |> Seq.length}"
+    errs |> Seq.iter (fun e -> print \$"stream-err={e}")
+print "stream-done"
+WEOF
+out=$($BIN "$svdir/stream.weir" 2>&1) || fail "serve stream run failed: $out"
+# the incremental-delivery half is a POSIX property: Windows HttpListener
+# buffers the chunked body, so an early chunk is not on the wire when the
+# producer's later raise aborts the response (a verified platform wall).
+# The failure-surfacing half below (streamErrors) holds on every platform.
+if [ "$IS_WINDOWS" = "0" ]; then
+    echo "$out" | grep -qF "GOT-FIRST=True" || fail "F8: the client must receive the first element before the producer died: $out"
+fi
+echo "$out" | grep -qF "stream-errors=1" || fail "F8: the script must observe the producer failure via the channel: $out"
+echo "$out" | grep -qF "stream-err=producer died" || fail "F8: Server.streamErrors must carry the failure message: $out"
+echo "e2e ok: within serve — F8 a Stream producer raise surfaces via Server.streamErrors (not silent)"
+
+# (F3-serve) a response header carrying CR/LF [D:http-header-bytes]: the
+# serve face of the injection refusal. A raw socket refereees the wire so
+# the assertion is what ARRIVED, not curl's view: the injecting response is
+# a 500 with NO forged header (never F11's silent drop), a benign control
+# header DOES arrive on a clean path, and the script observes the located
+# refusal through Server.streamErrors.
+cat > "$svdir/hdrprobe.py" <<'PYEOF'
+import socket, sys
+port = int(sys.argv[1])
+def get(path):
+    s = socket.socket(); s.connect(('127.0.0.1', port))
+    s.sendall(('GET %s HTTP/1.1\r\nHost: 127.0.0.1:%d\r\nConnection: close\r\n\r\n' % (path, port)).encode())
+    d = b''
+    while True:
+        c = s.recv(4096)
+        if not c: break
+        d += c
+    return d
+evil = get('/crlf')
+benign = get('/ok')
+status_evil = evil.split(b'\r\n', 1)[0].decode()
+print('EVIL-STATUS=%s' % status_evil)
+# the forged header/name must NOT appear anywhere in the evil response
+print('FORGED=%s' % ((b'Injected' in evil) or (b'X-Crlf' in evil)))
+print('BENIGN-ARRIVES=%s' % (b'X-Benign: present' in benign))
+PYEOF
+cat > "$svdir/hdr.weir" <<WEOF
+let crlf = Str.fromBase64 "DQo="
+let handler = fun req ->
+    match req.path with
+    | "/crlf" -> HttpServerResponse { status = 200; headers = [("X-Crlf", "a" + crlf + "Injected: yes")]; body = Text "ok" }
+    | "/ok" -> HttpServerResponse { status = 200; headers = [("X-Benign", "present")]; body = Text "ok" }
+    | _ -> HttpServerResponse { status = 404; headers = []; body = Text "nf" }
+
+within serve srv = { port = $svport5; maxConcurrent = 2 } handler
+    poll timeout=8s interval=100ms
+        Net.portOpen $svport5
+    let out = sh -c "python3 '$svdir/hdrprobe.py' $svport5" | complete
+    out.stdout |> Seq.iter print
+    Duration.sleep 150ms
+    let errs = Server.streamErrors srv
+    print \$"refusals={errs |> Seq.length}"
+    errs |> Seq.iter (fun e -> print \$"refusal={e}")
+print "hdr-done"
+WEOF
+out=$($BIN "$svdir/hdr.weir" 2>&1) || fail "serve header-injection run failed: $out"
+echo "$out" | grep -qF "EVIL-STATUS=HTTP/1.1 500" || fail "F3-serve: an injecting response header must be refused (500), got: $out"
+echo "$out" | grep -qF "FORGED=False" || fail "F3-serve: the forged header must NOT reach the wire: $out"
+echo "$out" | grep -qF "BENIGN-ARRIVES=True" || fail "F3-serve: a clean control header must still arrive (refusal is distinguishable from headers-never-working): $out"
+echo "$out" | grep -qF "refusals=1" || fail "F3-serve: the script must observe the located refusal via Server.streamErrors: $out"
+echo "$out" | grep -qF "response header 'X-Crlf' carries a CR byte" || fail "F3-serve: the located refusal must name the header and byte: $out"
+echo "e2e ok: within serve — F3 a CR/LF response header is refused (500, no forged header, control arrives, located via streamErrors)"
+
+# (F12) the request-body read timeout [D:serve-body-timeout]: a slow
+# client declaring a large Content-Length and holding the socket is
+# refused with 408 within the bound, not parked. bodyTimeout=1s here.
+cat > "$svdir/slowbody.py" <<'PYEOF'
+import socket, sys, time
+port = int(sys.argv[1])
+s = socket.socket(); s.connect(('127.0.0.1', port))
+s.sendall(('POST /x HTTP/1.1\r\nHost: 127.0.0.1:%d\r\nContent-Length: 1000000\r\nConnection: close\r\n\r\n' % port).encode())
+s.sendall(b'0123456789')
+t0 = time.time()
+d = b''
+try:
+    while True:
+        c = s.recv(4096)
+        if not c: break
+        d += c
+except Exception:
+    pass
+print('elapsed=%.1f status=%s' % (time.time() - t0, d.split(b'\r\n', 1)[0].decode() if d else '(none)'))
+PYEOF
+cat > "$svdir/timeout.weir" <<WEOF
+within serve srv = { port = $svport6; maxConcurrent = 2; bodyTimeout = 1s } (fun req -> HttpServerResponse { status = 200; headers = []; body = Text "ok" })
+    poll timeout=8s interval=100ms
+        Net.portOpen $svport6
+    let out = sh -c "python3 '$svdir/slowbody.py' $svport6" | complete
+    out.stdout |> Seq.iter print
+print "timeout-done"
+WEOF
+out=$($BIN "$svdir/timeout.weir" 2>&1) || fail "serve body-timeout run failed: $out"
+echo "$out" | grep -qF "status=HTTP/1.1 408" || fail "F12: a slow body must be refused with 408: $out"
+echo "e2e ok: within serve — F12 request-body read timeout refuses a slow client with 408"
+
+# (F13) tty data sanitize [D:binary-echo]: a data value carrying ANSI/CR
+# renders sanitized AT A TTY, while weir's OWN colour output is
+# unaffected; redirected output stays byte-faithful. Driven through a pty.
+cat > "$svdir/f13.weir" <<'WEOF'
+let name = Str.fromBase64 "G1szMW1yZWQtbmFtZQ1mdA=="
+print name
+WEOF
+cat > "$svdir/f13err.weir" <<'WEOF'
+let bad = Str.fromBase64 "G1szMW1oaWRkZW4NZXZpbA=="
+fail $"file: {bad}"
+WEOF
+# F13 is driven through a real pty; Windows Python has no termios/pty
+# (import pty -> ModuleNotFoundError), and tty sanitize is a POSIX-tty
+# behaviour — skip the whole cell there (it never reached the redirect
+# coda on Windows anyway).
+if [ "$IS_WINDOWS" = "0" ]; then
+sanit=$(python3 - "$BIN" "$svdir/f13.weir" <<'PYEOF'
+import pty, os, sys
+binp, script = sys.argv[1], sys.argv[2]
+out = []
+pid, fd = pty.fork()
+if pid == 0:
+    os.execv(binp, [binp, script])
+else:
+    try:
+        while True:
+            d = os.read(fd, 1024)
+            if not d: break
+            out.append(d)
+    except OSError:
+        pass
+    data = b''.join(out)
+    # the DATA escapes must be neutralized: no raw ESC[31m, and the
+    # visible \x1b / \x0d forms present
+    raw_ansi = b'\x1b[31mred-name' in data
+    sanitized = (b'\\x1b' in data) and (b'\\x0d' in data)
+    print('RAW_ANSI=%s SANITIZED=%s' % (raw_ansi, sanitized))
+PYEOF
+)
+echo "$sanit" | grep -qF "RAW_ANSI=False" || fail "F13: raw ANSI from data must not reach the tty: $sanit"
+echo "$sanit" | grep -qF "SANITIZED=True" || fail "F13: data escapes must render as visible \\xNN at a tty: $sanit"
+# weir's own colour survives: the error word stays coloured while the
+# DATA in the message is sanitized
+colour=$(python3 - "$BIN" "$svdir/f13err.weir" <<'PYEOF'
+import pty, os, sys
+binp, script = sys.argv[1], sys.argv[2]
+out = []
+pid, fd = pty.fork()
+if pid == 0:
+    os.execv(binp, [binp, script])
+else:
+    try:
+        while True:
+            d = os.read(fd, 1024)
+            if not d: break
+            out.append(d)
+    except OSError:
+        pass
+    data = b''.join(out)
+    before_data = data.split(b'file:')[0]
+    weir_colour = b'\x1b[' in before_data   # weir's own error colour, raw
+    data_sanitized = (b'\\x1b' in data) and (b'\\x0d' in data)
+    print('WEIR_COLOUR=%s DATA_SANITIZED=%s' % (weir_colour, data_sanitized))
+PYEOF
+)
+echo "$colour" | grep -qF "WEIR_COLOUR=True" || fail "F13: weir's own colour must be unaffected: $colour"
+echo "$colour" | grep -qF "DATA_SANITIZED=True" || fail "F13: data in error text must be sanitized: $colour"
+# redirected (piped) output stays byte-faithful — the raw bytes survive
+$BIN "$svdir/f13.weir" > "$svdir/f13.out" 2>/dev/null || true
+python3 -c "import sys; d=open('$svdir/f13.out','rb').read(); sys.exit(0 if (b'\x1b[31mred-name\rft' in d) else 1)" \
+    || fail "F13: redirected output must stay byte-faithful (raw ESC/CR preserved through a pipe)"
+echo "e2e ok: F13 tty data sanitize (data escapes neutralized at a tty, weir colour intact, pipe byte-faithful)"
+else
+    echo "e2e skip: F13 tty sanitize is pty-driven — no termios/pty on Windows Python"
+fi
+
 rm -rf "$svdir"
+
+# ---- v0.0.48 security cut: three front-end hardening pins ------------------
+# each triggered a SIGABRT/DoS on the base; the fix makes each a located
+# diagnostic (exit != 134) or linear time. Only e2e drives the whole
+# binary, so it is where the exit CODE (not just the message) is pinned.
+hdir=$(mkweirtmp)
+
+# Fix 1 -- attr integer past 64-bit: located parse error, NOT exit 134
+# [D:attr-int-overflow]
+cat > "$hdir/attr.weir" <<WEOF
+type T = {
+    [<Default 99999999999999999999>]
+    A: int
+}
+print "x"
+WEOF
+rc=0; out=$($BIN check "$hdir/attr.weir" 2>&1) || rc=$?
+[ "$rc" != "134" ] || fail "attr overflow still SIGABRTs (exit 134): $out"
+[ "$rc" = "1" ] || fail "attr overflow must be a lint error (exit 1), got $rc: $out"
+echo "$out" | grep -qF "out of range (64-bit)" || fail "attr overflow must teach the range: $out"
+echo "e2e ok: attr integer overflow is a located error (exit $rc, not 134)"
+
+# Fix 2 -- bareword ';'-spine: LINEAR, not O(N^2) [D:head-word-bound]
+# 20k barewords was >25s (quadratic); the bound makes it ~5s. A generous
+# ceiling catches a regression to quadratic without flaking on load.
+python3 -c "print('let x = ' + ';'.join(['b']*20000))" > "$hdir/spine.weir"
+t0=$(date +%s)
+rc=0; $BIN check "$hdir/spine.weir" >/dev/null 2>&1 || rc=$?
+t1=$(date +%s)
+elapsed=$((t1 - t0))
+[ "$rc" != "134" ] || fail "bareword spine crashed (exit 134)"
+[ "$elapsed" -lt 20 ] || fail "bareword ';'-spine is not linear: 20k barewords took ${elapsed}s (was quadratic; expected <20s)"
+echo "e2e ok: bareword ';'-spine checks in ${elapsed}s (linear, was O(N^2)/>25s)"
+
+# Fix 3 -- the CLI guard: the two fixed crash triggers exit located, never
+# 134, through the WHOLE binary [D:cli-exception-guard]
+rc=0; $BIN check "$hdir/attr.weir" >/dev/null 2>&1 || rc=$?
+[ "$rc" != "134" ] || fail "CLI guard: a front-end trigger still aborts with 134"
+echo "e2e ok: CLI verb dispatch backstops the front-end crash class (exit $rc, not 134)"
+rm -rf "$hdir"
+
+# ---- the spawn-boundary NUL funnel [D:spawn-nul-funnel] ------------------
+# SECURITY.md's word-integrity claim: a NUL-bearing value is REFUSED at
+# the process boundary with a diagnostic, never silently truncated. The
+# refusal lived only in the evaluator's statement/pipe constructors —
+# four downstream spawn paths (the reifiers, the ambient `within env`
+# overlay + the `$e(...)` twin, `into`, and the dynamic head `^$name`)
+# assembled argv/env and skipped it, so a `\0` truncated at execve. The
+# fix moves the refusal to the ONE spawn funnel (Proc.spawn), so every
+# path inherits it. Each hostile script below must REFUSE (exit 1) and
+# spawn NO child (the child logs its argv/env to a file — it must stay
+# empty). The NUL enters as external DATA: a shim on PATH emits a
+# NUL-bearing line, decoded into a weir string.
+# POSIX-only: the shims are #!/bin/sh scripts used as command HEADS — a
+# native weir.exe cannot exec a shebang script (and an extensionless name
+# does not resolve via PATHEXT), so on Windows `emitprog` reads as an
+# unbound variable. sh alone is not enough (MSYS ships it); the NUL-refusal
+# itself is platform-neutral and unit-tested [D:spawn-nul-funnel].
+if [ "$IS_WINDOWS" = "0" ] && command -v sh >/dev/null 2>&1; then
+    nuldir=$(mkweirtmp)
+    mkdir -p "$nuldir/bin"
+    nullog="$nuldir/child.log"
+    # argvdump: logs its argv (excluding $0) and env FOO, then exits 0 —
+    # so a truncated word/env leaves EVIDENCE and a clean exit (the vuln)
+    cat > "$nuldir/bin/argvdump" <<EOF
+#!/bin/sh
+{ i=0; for a in "\$@"; do echo "argv[\$i]=\$a"; i=\$((i+1)); done; echo "FOO=\${FOO-unset}"; } >> "$nullog"
+exit 0
+EOF
+    chmod +x "$nuldir/bin/argvdump"
+    # emitnul: a NUL-bearing "line" a\0b ; emitprog: argvdump\0junk (a head)
+    printf '#!/bin/sh\nprintf '\''a\\000b'\''\n' > "$nuldir/bin/emitnul"
+    printf '#!/bin/sh\nprintf '\''argvdump\\000junk'\''\n' > "$nuldir/bin/emitprog"
+    chmod +x "$nuldir/bin/emitnul" "$nuldir/bin/emitprog"
+
+    nul_refuses() { # name — asserts exit 1, no child, NUL diagnostic
+        : > "$nullog"
+        set +e
+        out=$(PATH="$nuldir/bin:$PATH" $BIN "$nuldir/$1.weir" 2>&1)
+        rc=$?
+        set -e
+        [ "$rc" -eq 1 ] || fail "nul $1: expected exit 1, got $rc (out: $out)"
+        [ ! -s "$nullog" ] || fail "nul $1: a child SPAWNED (log: $(cat "$nullog"))"
+        echo "$out" | grep -qF "NUL byte" || fail "nul $1: no NUL diagnostic (out: $out)"
+        echo "e2e ok: nul funnel — $1 refuses, no child, located diagnostic"
+    }
+
+    # 1. dynamic head ^$name — the worst: a NUL-bearing head would resolve
+    # through PATH to the PREFIX program (argvdump) and run it
+    cat > "$nuldir/dynhead.weir" <<'WEOF'
+let p = emitprog |> Seq.exactlyOne
+let r = ^$p hello | complete
+print (show r.exitCode)
+WEOF
+    nul_refuses dynhead
+    # 2. reifier argument (| complete)
+    cat > "$nuldir/reifier.weir" <<'WEOF'
+let x = emitnul |> Seq.exactlyOne
+let r = argvdump $x | complete
+print (show r.exitCode)
+WEOF
+    nul_refuses reifier
+    # 3. ambient `within env` overlay — the env VALUE carries the NUL
+    cat > "$nuldir/ambient.weir" <<'WEOF'
+let v = emitnul |> Seq.exactlyOne
+within env [Env.pair "FOO" v]
+    let r = argvdump hello | complete
+    print (show r.exitCode)
+WEOF
+    nul_refuses ambient
+    # 4. into — the sh -c cmdline tail past the NUL would drop
+    cat > "$nuldir/into.weir" <<'WEOF'
+let tail = emitnul |> Seq.exactlyOne
+let cmd = $"argvdump before{tail}after"
+["one"] |> into cmd |> Seq.iter print
+WEOF
+    nul_refuses into
+    # 5. the $e(...) env twin — an env VALUE via the sigil
+    cat > "$nuldir/envsigil.weir" <<'WEOF'
+let v = emitnul |> Seq.exactlyOne
+let e = Env.ofPairs [("FOO", v)]
+let r = $e(argvdump hello | complete)
+print (show r.exitCode)
+WEOF
+    nul_refuses envsigil
+    # the env KEY coverage — a NUL in the key, not the value
+    cat > "$nuldir/envkey.weir" <<'WEOF'
+let k = emitnul |> Seq.exactlyOne
+let e = Env.ofPairs [(k, "v")]
+let r = $e(argvdump hello | complete)
+print (show r.exitCode)
+WEOF
+    nul_refuses envkey
+    # the statement-path control stays green: a plain command with a NUL
+    # arg still refuses (the pre-existing evaluator refusal), no child
+    cat > "$nuldir/stmt.weir" <<'WEOF'
+let x = emitnul |> Seq.exactlyOne
+argvdump $x
+WEOF
+    nul_refuses stmt
+    # and a CLEAN command still spawns (the funnel is not overzealous)
+    : > "$nullog"
+    PATH="$nuldir/bin:$PATH" $BIN -e 'argvdump ok deliberate' >/dev/null 2>&1 || fail "nul: a clean command must still run"
+    grep -qF "argv[0]=ok" "$nullog" || fail "nul: clean command did not reach the child"
+    echo "e2e ok: nul funnel — a clean command still spawns (no false refusal)"
+    rm -rf "$nuldir"
+fi
+
+# ---- STRIX-6: yaml depth caps — hostile input teaches, never hangs/crashes [D:yaml-depth]
+s6dir=$(mkweirtmp)
+# a 5000-level `a:` ladder (1-space indents) — the cubic-hang shape. The
+# parser caps at 500 and returns a located diagnostic PROMPTLY.
+: >"$s6dir/ladder.yaml"
+for i in $(seq 0 4999); do
+    printf '%*sa:\n' "$i" "" >>"$s6dir/ladder.yaml"
+done
+printf '%*sv: 1\n' 5000 "" >>"$s6dir/ladder.yaml"
+cat >"$s6dir/parse.weir" <<WEOF
+let doc = File.read "$s6dir/ladder.yaml" |> Yaml.parse
+print \$"{doc}"
+WEOF
+out=$($BIN "$s6dir/parse.weir" 2>&1) && fail "a 5000-deep ladder must be refused, not parsed: $out" || true
+echo "$out" | grep -qF "yaml nesting is too deep (limit 500)" || fail "parser depth cap message: $out"
+echo "e2e ok: STRIX-6 — a 5000-deep yaml ladder hits the parser cap (no hang)"
+# a Seq.fold-nested YSeq ~100k deep is the StackOverflow (exit 134) shape;
+# the emitter caps at 1000 and fails clean (exit 1).
+cat >"$s6dir/emit.weir" <<WEOF
+let deep = [1..100000] |> Seq.fold (fun acc _ -> YSeq [acc]) (YInt 1)
+deep |> to yaml |> Seq.length |> print
+WEOF
+out=$($BIN "$s6dir/emit.weir" 2>&1) && fail "a 100k-deep value must be refused, not emitted: $out" || true
+echo "$out" | grep -qF "nests deeper than 100" || fail "emitter depth cap message: $out"
+echo "e2e ok: STRIX-6 — a 100k-deep 'to yaml' hits the emitter cap (no crash)"
+rm -rf "$s6dir"
 
 echo "e2e battery: all green"

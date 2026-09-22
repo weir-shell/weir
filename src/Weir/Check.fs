@@ -4387,9 +4387,43 @@ and private withinContracts
                 | None -> Ok None
             // serve's arg is the CONFIG record [D:http-serve] — a
             // ServerConfig `{ port; maxConcurrent }`; the handler rides
-            // opts (below), typed against the request->response function
+            // opts (below), typed against the request->response function.
+            // bodyTimeout is OPTIONAL in the literal [D:serve-body-timeout]:
+            // a bare `{ port; maxConcurrent }` literal is accepted and the
+            // timeout rests at its default, so the field addition does not
+            // break existing serve scripts. The generic record resolver
+            // matches by EXACT field set, so the two-field literal is
+            // checked HERE against the allowed shape; any non-literal
+            // config (a variable, `{ ServerConfig.defaults with … }`)
+            // falls through to the ordinary ServerConfig check.
             | WithinServe ->
                 match arg with
+                | Some({ Kind = ERecord fields } as a) ->
+                    let names = fields |> List.map (fun (n, _, _) -> n) |> Set.ofList
+                    let core = Set.ofList [ "port"; "maxConcurrent" ]
+                    let withTimeout = Set.add "bodyTimeout" core
+
+                    if names = core || names = withTimeout then
+                        let fieldTy name =
+                            if name = "bodyTimeout" then TDur else TInt
+
+                        fields
+                        |> List.fold
+                            (fun acc (n, _, v) ->
+                                acc
+                                |> Result.bind (fun ts ->
+                                    check ctx env v (fieldTy n) |> Result.map (fun tv -> (n, tv) :: ts)))
+                            (Ok [])
+                        |> Result.map (fun tfields ->
+                            Some
+                                { Kind = TERecord("ServerConfig", List.rev tfields)
+                                  Ty = TNamed("ServerConfig", [])
+                                  Span = a.Span })
+                    else
+                        // an unexpected field set — the ordinary check
+                        // produces the located "no declared record" or
+                        // field-type diagnostic
+                        check ctx env a (TNamed("ServerConfig", [])) |> Result.map Some
                 | Some a -> check ctx env a (TNamed("ServerConfig", [])) |> Result.map Some
                 | None -> Ok None
             | WithinTmp -> Ok None
@@ -4952,14 +4986,24 @@ let withAnonDefs (env: TypeEnv) (expr: Expr) : TypeEnv =
     withDefList env (anonDefs expr @ pendingAnonRecords ())
 
 // budget exhaustion surfaces as an ordinary located TypeError; the
-// text names what the author can act on, never the internal counter
+// text names what the author can act on, never the internal counter.
+// The two messages are named so the whole-file collectors can recognize
+// a budget diagnostic beside its single source and STOP the multi-error
+// fold on it (one burn bounds the file) [D:budget-stop-first].
+let budgetMsgSized =
+    "this expression's type grew too large to infer — split the expression into smaller bindings, or annotate the intended type"
+
+let budgetMsgUnsized =
+    "type inference ran out of budget on this expression — split it into smaller bindings"
+
+/// is this the message of a budget-exhaustion diagnostic? The predicate
+/// lives beside the two strings it matches, so it cannot drift from them.
+let isBudgetMessage (msg: string) : bool =
+    msg = budgetMsgSized || msg = budgetMsgUnsized
+
 let private budgetError (span: Span) (sized: bool) : TypeError =
     { Span = span
-      Message =
-        (if sized then
-             "this expression's type grew too large to infer — split the expression into smaller bindings, or annotate the intended type"
-         else
-             "type inference ran out of budget on this expression — split it into smaller bindings")
+      Message = (if sized then budgetMsgSized else budgetMsgUnsized)
       Origin = None }
 
 let private catchBudget (f: unit -> Result<'a, TypeError>) : Result<'a, TypeError> =

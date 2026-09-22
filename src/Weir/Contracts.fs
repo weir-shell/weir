@@ -418,15 +418,69 @@ let writeLock (weirDir: string) (entries: LockEntry list) : unit =
 
 // ---- fetch (ruling 4: each failure mode its own message) -------------------
 
+// the credential headers the contract client carries [D:contract-redirect]:
+// GitHub's Authorization and GitLab's PRIVATE-TOKEN. On a CROSS-ORIGIN
+// redirect these are DROPPED — the contract-fetch client is a SEPARATE
+// client from Http.send, and a bare HttpClient re-sends them (DA-05: the
+// PRIVATE-TOKEN leaked to a redirect target the BCL does not protect, since
+// its built-in drop covers Authorization only). The set is lowercased for a
+// case-insensitive match, the same shape [D:secret-redirect] uses.
+let private contractSensitiveHeaders: Set<string> =
+    Set.ofList [ "authorization"; "private-token" ]
+
 let fetchBytesWith (headers: (string * string) list) (url: string) : Result<byte[] * string option, string> =
     try
-        use client = new Net.Http.HttpClient()
+        // auto-redirect OFF so the contract client controls the
+        // credential-drop on an origin change [D:contract-redirect] — the
+        // default handler would re-send PRIVATE-TOKEN to the redirect target
+        use handler = new Net.Http.HttpClientHandler()
+        handler.AllowAutoRedirect <- false
+        use client = new Net.Http.HttpClient(handler)
         client.Timeout <- TimeSpan.FromSeconds 60.0
 
-        for k, v in headers do
-            client.DefaultRequestHeaders.TryAddWithoutValidation(k, v) |> ignore
+        // the explicit follow loop [D:contract-redirect], Http.send's shape:
+        // per-message headers (not DefaultRequestHeaders, which cannot be
+        // filtered per hop), dropping the credential headers on a
+        // cross-origin change. Covers BOTH the API-resolution request and the
+        // artifact download — every fetchBytesWith caller.
+        let mutable curUrl = url
+        let mutable curHeaders = headers
+        let mutable hops = 0
+        let mutable result: Net.Http.HttpResponseMessage = null
+        let mutable go = true
 
-        use resp = client.GetAsync(url).Result
+        while go do
+            use msg = new Net.Http.HttpRequestMessage(Net.Http.HttpMethod.Get, curUrl)
+
+            for k, v in curHeaders do
+                msg.Headers.TryAddWithoutValidation(k, v) |> ignore
+
+            let resp = client.SendAsync(msg).Result
+            let code = int resp.StatusCode
+
+            let location =
+                match resp.Headers.Location with
+                | null -> None
+                | l -> Some l
+
+            match location with
+            | Some loc when Http.isRedirect code && hops < 50 ->
+                resp.Dispose()
+                hops <- hops + 1
+                let fromUri = Uri curUrl
+                let nextUri = if loc.IsAbsoluteUri then loc else Uri(fromUri, loc)
+
+                if not (Http.sameOrigin fromUri nextUri) then
+                    curHeaders <-
+                        curHeaders
+                        |> List.filter (fun (k, _) -> not (contractSensitiveHeaders.Contains(k.ToLowerInvariant())))
+
+                curUrl <- nextUri.ToString()
+            | _ ->
+                result <- resp
+                go <- false
+
+        use resp = result
 
         if not resp.IsSuccessStatusCode then
             Error $"{url} answered {int resp.StatusCode} ({resp.StatusCode})"

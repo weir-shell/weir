@@ -873,7 +873,7 @@ let private toIntImpl: Value =
         | VStr s ->
             match System.Int64.TryParse s with
             | true, n -> VInt n
-            | _ -> failwith $"toInt: not an integer: \"{s}\""
+            | _ -> failwith $"toInt: not an integer: \"{excerpt s}\""
         | v -> unreachable $"the checker rejects 'toInt' on {formatValue v}")
 
 let private tryToIntImpl: Value =
@@ -1898,7 +1898,7 @@ let private fromBase64Text (name: string) (s: string) : Result<string, string> =
         try
             Ok(base64Bytes s)
         with _ ->
-            Error $"{name}: invalid base64: \"{s}\""
+            Error $"{name}: invalid base64: \"{excerpt s}\""
 
     match bytes with
     | Error e -> Error e
@@ -2422,28 +2422,34 @@ let private ioGuarded (op: string) (r: string) (f: unit -> 'a) : 'a =
 // forcing NOW runs its reads under the plan's own frame (a nested
 // mutation in the content is captured/refused).
 
-/// capture a WriteFile op (File.write): force the content seq to data now
-let private capWrite (userPath: string) (resolved: string) (lines: Value seq) : Value option =
+/// capture a WriteFile op (File.write): force the content seq to data now.
+/// The captured path is the RESOLVED absolute path [D:plan-path-bound]:
+/// the target is fixed at capture, so apply writes exactly the previewed
+/// location regardless of the apply-time cwd.
+let private capWrite (resolved: string) (lines: Value seq) : Value option =
     if PlanMode.active () then
         let snapshot = lines |> List.ofSeq // FORCE: snapshot content at plan time
-        PlanMode.capture (VUnion("WriteFile", Some(VTuple [ VStr userPath; VSeq snapshot ]))) [ resolved ]
+        PlanMode.capture (VUnion("WriteFile", Some(VTuple [ VStr resolved; VSeq snapshot ]))) [ resolved ]
         Some VUnit
     else
         None
 
-/// capture a one-path op (DeleteFile / MakeDir / DeleteDir)
-let private capPath1 (case: string) (userPath: string) (resolved: string) : Value option =
+/// capture a one-path op (DeleteFile / MakeDir / DeleteDir): stores the
+/// RESOLVED absolute path [D:plan-path-bound]
+let private capPath1 (case: string) (resolved: string) : Value option =
     if PlanMode.active () then
-        PlanMode.capture (VUnion(case, Some(VStr userPath))) [ resolved ]
+        PlanMode.capture (VUnion(case, Some(VStr resolved))) [ resolved ]
         Some VUnit
     else
         None
 
 /// capture a two-path op (Copy / Move): the DESTINATION is the target a
-/// later read would see stale (the source is read, not written)
-let private capPath2 (case: string) (userSrc: string) (userDst: string) (resolvedDst: string) : Value option =
+/// later read would see stale (the source is read, not written). BOTH
+/// paths are stored RESOLVED absolute [D:plan-path-bound] — apply replays
+/// the exact captured source and destination, cwd-independent.
+let private capPath2 (case: string) (resolvedSrc: string) (resolvedDst: string) : Value option =
     if PlanMode.active () then
-        PlanMode.capture (VUnion(case, Some(VTuple [ VStr userSrc; VStr userDst ]))) [ resolvedDst ]
+        PlanMode.capture (VUnion(case, Some(VTuple [ VStr resolvedSrc; VStr resolvedDst ]))) [ resolvedDst ]
         Some VUnit
     else
         None
@@ -2492,7 +2498,7 @@ let private fileMembers: (string * Ty * Value) list =
               | VStr path, VSeq lines ->
                   let r = Session.resolve path
 
-                  match capWrite path r lines with
+                  match capWrite r lines with
                   | Some captured -> captured
                   | None ->
                   writeGuard "File.write" r
@@ -2619,7 +2625,7 @@ let private fsStr2 (name: string) (opCase: string) (f: string -> string -> unit)
             | VStr src, VStr dst ->
                 let s, d = Session.resolve src, Session.resolve dst
 
-                match capPath2 opCase src dst d with
+                match capPath2 opCase s d with
                 | Some captured -> captured
                 | None ->
                     ioGuarded name s (fun () -> f s d)
@@ -2759,7 +2765,7 @@ let private fsMoreFileMembers: (string * Ty * Value) list =
           | VStr p ->
               let r = Session.resolve p
 
-              match capPath1 "DeleteFile" p r with
+              match capPath1 "DeleteFile" r with
               | Some captured -> captured
               | None ->
 
@@ -2840,7 +2846,7 @@ let private dirMembers: (string * Ty * Value) list =
           | VStr p ->
               let r = Session.resolve p
 
-              match capPath1 "MakeDir" p r with
+              match capPath1 "MakeDir" r with
               | Some captured -> captured
               | None ->
 
@@ -2864,7 +2870,7 @@ let private dirMembers: (string * Ty * Value) list =
           | VStr p ->
               let r = Session.resolve p
 
-              match capPath1 "DeleteDir" p r with
+              match capPath1 "DeleteDir" r with
               | Some captured -> captured
               | None ->
 
@@ -2886,7 +2892,7 @@ let private dirMembers: (string * Ty * Value) list =
           | VStr p ->
               let r = Session.resolve p
 
-              match capPath1 "DeleteDir" p r with
+              match capPath1 "DeleteDir" r with
               | Some captured -> captured
               | None ->
 
@@ -3099,7 +3105,7 @@ let private bytesMembers: (string * Ty * Value) list =
               (try
                   VBytes(base64Bytes s)
                with _ ->
-                   failwith $"Bytes.fromBase64: invalid base64: \"{s}\"")
+                   failwith $"Bytes.fromBase64: invalid base64: \"{excerpt s}\"")
           | v -> unreachable $"the checker rejects 'Bytes.fromBase64' on {formatValue v}")
       "tryFromBase64",
       TFun(TStr, TNamed("Option", [ TBytes ])),
@@ -3148,7 +3154,7 @@ let private bytesMembers: (string * Ty * Value) list =
                   (try
                       VBytes(System.Convert.FromHexString s)
                    with _ ->
-                       failwith $"Bytes.fromHex: invalid hex: \"{s}\"")
+                       failwith $"Bytes.fromHex: invalid hex: \"{excerpt s}\"")
           | v -> unreachable $"the checker rejects 'Bytes.fromHex' on {formatValue v}")
       "toHex",
       TFun(TBytes, TStr),
@@ -3317,6 +3323,10 @@ let private secretMembers: (string * Ty * Value) list =
 
 let private httpMethodName (v: Value) : string =
     match v with
+    // Other carries its verb VERBATIM to the wire [D:serve-method] — the
+    // one method whose name is data, so a request built with `Other v`
+    // (e.g. a proxy echo) sends v; the listed cases are their own names
+    | VUnion("Other", Some(VStr m)) -> m
     | VUnion(m, None) -> m.ToUpperInvariant()
     | v -> unreachable $"the checker rejects a non-method {formatValue v}"
 
@@ -3407,16 +3417,26 @@ let private runRequest (reqV: Value) : Http.Resp =
     | VRecord("HttpRequest", f) ->
         let get k = recGet k f
 
+        let auth = authHeaders (get "auth")
+        let secret = headerPairs (get "secretHeaders")
+
+        // the credential channels [D:secret-redirect]: auth's Authorization
+        // AND every secretHeaders name are dropped on a cross-origin
+        // redirect, so the two channels agree (F4). Names are lowercased for
+        // a case-insensitive match, the same casing Http.send filters on.
+        let sensitive =
+            (auth @ secret)
+            |> List.map (fun (k, _) -> k.ToLowerInvariant())
+            |> Set.ofList
+
         let req: Http.Req =
             { Method = httpMethodName (get "method")
               Url =
                 (match get "url" with
                  | VStr s -> s
                  | v -> unreachable $"url {formatValue v}")
-              Headers =
-                authHeaders (get "auth")
-                @ headerPairs (get "headers")
-                @ headerPairs (get "secretHeaders")
+              Headers = auth @ headerPairs (get "headers") @ secret
+              SensitiveHeaders = sensitive
               Body = httpBodyOf (get "body")
               TimeoutMs =
                 (match get "timeout" with
@@ -3427,11 +3447,20 @@ let private runRequest (reqV: Value) : Http.Resp =
                  | VBool b -> b
                  | v -> unreachable $"insecure {formatValue v}") }
 
+        // refuse a header name or value carrying CR/LF/NUL at the SEND
+        // boundary [D:http-header-bytes]: the outbound face of the review's
+        // F3 — TryAddWithoutValidation would otherwise forge a second header
+        // on the wire. One crossing, the argv-NUL guard's shape.
+        Http.refuseHeaderInjection "request header" failwith req.Headers
+
         let host =
             try
                 System.Uri(req.Url).Host
             with _ ->
-                req.Url
+                // the unparseable-URL fallback names it in the wait label —
+                // redact userinfo [D:url-redact], matching the transport
+                // error's own fallback
+                Http.redactUrl req.Url
 
         match Waiting.during $"{req.Method} {host}" (fun () -> Http.send req) with
         | Ok resp -> resp
@@ -3509,7 +3538,10 @@ let private httpFetchImpl: Value =
             let resp = runRequest (VRecord("HttpRequest", recSet "url" (VStr url) f))
 
             if resp.Status < 200 || resp.Status >= 300 then
-                failwith $"{url} answered {resp.Status}"
+                // REDACT the URL's userinfo [D:url-redact]: a `user:pass@`
+                // credential must not print verbatim in the status error
+                // (terminal / CI / REPL); a credential-free URL is unchanged
+                failwith $"{Http.redactUrl url} answered {resp.Status}"
             else
                 VSeq(respBodyLines resp)
         | v, _ -> unreachable $"the checker rejects 'Http.fetch' on {formatValue v}")
@@ -3594,10 +3626,12 @@ let private previewOp (op: Value) : string =
 // frame, so the mutation builtins would perform too; applyOp performs
 // directly to keep the replay self-contained). Overwrite/existence rules
 // match the builtins (copy/move refuse an existing destination).
+// paths were resolved to absolute AT CAPTURE [D:plan-path-bound], so apply
+// replays the exact captured target — no re-resolve against the apply-time
+// cwd (that was DA-03: a relative capture rebound to apply's cwd).
 let private applyOp (op: Value) : unit =
     match op with
-    | VUnion("WriteFile", Some(VTuple [ VStr path; VSeq lines ])) ->
-        let r = Session.resolve path
+    | VUnion("WriteFile", Some(VTuple [ VStr r; VSeq lines ])) ->
         writeGuard "Plan.apply (WriteFile)" r
 
         ioGuarded "Plan.apply (WriteFile)" r (fun () ->
@@ -3617,26 +3651,19 @@ let private applyOp (op: Value) : unit =
 
             for l in lines do
                 w.WriteLine(asString l))
-    | VUnion("DeleteFile", Some(VStr path)) ->
-        let r = Session.resolve path
-
+    | VUnion("DeleteFile", Some(VStr r)) ->
         if not (System.IO.File.Exists r) then
             failwith $"Plan.apply (DeleteFile): no such file: {r}"
 
         ioGuarded "Plan.apply (DeleteFile)" r (fun () -> System.IO.File.Delete r)
-    | VUnion("MakeDir", Some(VStr path)) ->
-        let r = Session.resolve path
+    | VUnion("MakeDir", Some(VStr r)) ->
         ioGuarded "Plan.apply (MakeDir)" r (fun () -> System.IO.Directory.CreateDirectory r |> ignore)
-    | VUnion("DeleteDir", Some(VStr path)) ->
-        let r = Session.resolve path
-
+    | VUnion("DeleteDir", Some(VStr r)) ->
         if not (System.IO.Directory.Exists r) then
             failwith $"Plan.apply (DeleteDir): no such directory: {r}"
 
         ioGuarded "Plan.apply (DeleteDir)" r (fun () -> System.IO.Directory.Delete(r, true))
-    | VUnion("Copy", Some(VTuple [ VStr src; VStr dst ])) ->
-        let s, d = Session.resolve src, Session.resolve dst
-
+    | VUnion("Copy", Some(VTuple [ VStr s; VStr d ])) ->
         if System.IO.File.Exists d || System.IO.Directory.Exists d then
             failwith $"Plan.apply (Copy): destination exists: {d}"
 
@@ -3656,9 +3683,7 @@ let private applyOp (op: Value) : unit =
                 System.IO.File.Copy(s, d)
             else
                 failwith $"Plan.apply (Copy): no such source: {s}")
-    | VUnion("Move", Some(VTuple [ VStr src; VStr dst ])) ->
-        let s, d = Session.resolve src, Session.resolve dst
-
+    | VUnion("Move", Some(VTuple [ VStr s; VStr d ])) ->
         if System.IO.File.Exists d || System.IO.Directory.Exists d then
             failwith $"Plan.apply (Move): destination exists: {d}"
 
@@ -3763,7 +3788,16 @@ let private serverMembers: (string * Ty * Value) list =
     [ "port", TFun(serverTy, TInt), VBuiltin(fun v -> VInt(int64 (asServer "Server.port" v).Port))
       "running",
       TFun(serverTy, TBool),
-      VBuiltin(fun v -> VBool(not (asServer "Server.running" v).Closed)) ]
+      VBuiltin(fun v -> VBool(not (asServer "Server.running" v).Closed))
+      // the stream-producer failure channel [D:serve-stream]: a Stream
+      // body whose producer raised mid-flight is NOT a raise out of the
+      // handler (it aborts the client's body instead) — it surfaces HERE,
+      // Proc.wait's data-not-raise shape, so a monitoring loop can tell a
+      // truncated stream from a clean one. Occurrence order; empty until a
+      // producer fails.
+      "streamErrors",
+      TFun(serverTy, TSeq TStr),
+      VBuiltin(fun v -> VSeq(Serve.streamErrors (asServer "Server.streamErrors" v) |> List.map VStr)) ]
 
 // Net [D:scoped-procs]: ONE readiness probe — poll's body. Remote
 // hosts on a receipt; localhost is the scoped-process pattern.
@@ -4443,6 +4477,12 @@ let builtinDocs: Map<string, BuiltinDoc> =
           |> named [ "srv" ]
           "Server.running",
           bd "True while the listener is still open (the scope has not exited)." None None
+          |> named [ "srv" ]
+          "Server.streamErrors",
+          bd
+              "The messages of any Stream-body producers that raised mid-flight — the truncated responses the client saw a broken body for. Empty until one fails; the designated channel for a streaming failure, so a raise never leaves the handler."
+              None
+              (Some "a Stream producer raise aborts the client's body and lands here")
           |> named [ "srv" ]
           // ---- Net: readiness probes [D:scoped-procs] ----
           "Net.portOpen",
@@ -5866,7 +5906,12 @@ let private printImpl: Value =
             writeLines items
             VUnit
         | (VStr _ | VInt _ | VFloat _ | VBool _) as scalar ->
-            System.Console.WriteLine(scalarString "print argument" scalar)
+            // DATA bound for a tty is sanitized [D:binary-echo]; a
+            // redirected stdout stays byte-faithful
+            System.Console.WriteLine(
+                sanitizeIfTty System.Console.IsOutputRedirected (scalarString "print argument" scalar)
+            )
+
             VUnit
         // unit prints NOTHING [D:exit-reifiers] — the !() sigil
         // desugar's interior may be unit (| orFail)

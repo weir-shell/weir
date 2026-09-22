@@ -98,8 +98,8 @@ An HTTP listener held for the block. `within serve srv = { port =
 HttpServerResponse` function — once per request, and closes the socket
 at every block exit (normal, raise, SIGINT, SIGTERM), so the port
 frees. The scope is the lifetime, exactly as with `proc`; there is no
-`stop` member — `Server.port` and `Server.running` are the handle's
-whole surface.
+`stop` member — `Server.port`, `Server.running`, and
+`Server.streamErrors` are the handle's whole surface.
 
 The listener accepts the common loopback names beside each other on the
 one port — `127.0.0.1`, `localhost`, and `[::1]` — so a client
@@ -123,13 +123,26 @@ The response `body` is an `HttpBody`, shared with the `Http` client —
 `NoBody`, `Text`, `Json`, or `Stream of seq<string>`. A `Stream` body
 is written chunked and flushed per element (SSE-shaped `data:` lines),
 so a lazy producer streams incrementally: the client sees early
-elements before the sequence completes. `maxConcurrent` bounds how many
-handlers run at once (the `Seq.pmapWith` concurrency law); excess
-requests queue.
+elements before the sequence completes. If a `Stream` producer raises
+mid-body, the failure is not raised out of the handler — it is recorded
+on the handle and read back with `Server.streamErrors srv`, the
+designated channel (the response is aborted so a client that checks can
+notice the truncation). `maxConcurrent` bounds how many handlers run at
+once (the `Seq.pmapWith` concurrency law); excess requests queue.
+
+The config record is `{ port; maxConcurrent }`, optionally with a third
+field `bodyTimeout` (a `Duration`, default 30s) that bounds the
+request-body read — a slow client dribbling its body is refused with a
+408 instead of parking a handler slot.
 
 `HttpServerRequest` carries `method`, `path`, `query` (the raw string
 without the leading `?` — split it with `Str.trySplitOnce`), `headers`
-(pairs, wire order), and `body` (the request text). Out of scope for
-v1, each a deliberate non-goal: TLS (put a reverse proxy in front), a
-routing DSL (the `match` is the router), WebSockets, request-body
-streaming, and HTTP/2.
+(pairs, wire order), and `body` (the request text). `method` is an
+`HttpMethod`: a well-formed verb the union does not name reads as
+`Other of string` (route on it with `| Other v ->`), `QUERY` reads as
+`Query`, and a malformed method token is refused at the boundary with a
+400. Note the platform listener collapses repeated request headers to
+the last value, so a proxied `X-Forwarded-For` chain reads the last hop
+only. Out of scope for v1, each a deliberate non-goal: TLS (put a
+reverse proxy in front), a routing DSL (the `match` is the router),
+WebSockets, request-body streaming, and HTTP/2.

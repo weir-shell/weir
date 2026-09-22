@@ -7,6 +7,22 @@ module Weir.Types
 let isUserName (n: string) =
     n.Length > 0 && (System.Char.IsLetter n[0] || n[0] = '_')
 
+// the parse/decode error EXCERPT [D:excerpt]: a parse/decode builtin that
+// embeds the caller's WHOLE input in its error turns a 500KB invalid input
+// into ~500KB of stderr (a log flood, and it prints the prefix of whatever
+// derived value was fed in). Bound it: an input of 64 chars or fewer is
+// quoted IN FULL (the common typo stays fully readable, unchanged); a
+// longer one shows a 64-char HEAD and names the true length. The call site
+// keeps its own surrounding quotes, so only the body is bounded.
+[<Literal>]
+let excerptHead = 64
+
+let excerpt (s: string) : string =
+    if s.Length <= excerptHead then
+        s
+    else
+        $"{s.Substring(0, excerptHead)}… ({s.Length} chars)"
+
 type Ty =
     | TInt
     // FINITE-only floats [D:floats]: NaN/Infinity are unrepresentable —
@@ -588,8 +604,8 @@ let parseFloat (text: string) : Result<float, string> =
         )
     with
     | true, f when System.Double.IsFinite f -> Ok(if f = 0.0 then 0.0 else f)
-    | true, _ -> Error $"not a finite float: '{text}'"
-    | _ -> Error $"not a float: '{text}'"
+    | true, _ -> Error $"not a finite float: '{excerpt text}'"
+    | _ -> Error $"not a float: '{excerpt text}'"
 
 // sizes render BINARY units [D:size] — KiB/MiB/GiB/TiB, one decimal
 // above bytes (TRUNCATED tenths: a REPORT, not an encoding — base-1024
@@ -643,12 +659,12 @@ let parseSize (text: string) : Result<int64, string> =
         System.Text.RegularExpressions.Regex.Match(t, "^([0-9]+)(?:\.([0-9]+))? ?([A-Za-z]+)$")
 
     if not m.Success then
-        Error $"not a size: '{text}' — expected digits then a unit (512B, 1.5MiB)"
+        Error $"not a size: '{excerpt text}' — expected digits then a unit (512B, 1.5MiB)"
     else
         match units |> List.tryFind (fun (u, _) -> u = m.Groups[3].Value) with
         | None ->
             Error
-                $"not a size: '{text}' — unknown unit '{m.Groups[3].Value}' (binary KiB/MiB/GiB/TiB, SI KB/MB/GB/TB, or B)"
+                $"not a size: '{excerpt text}' — unknown unit '{m.Groups[3].Value}' (binary KiB/MiB/GiB/TiB, SI KB/MB/GB/TB, or B)"
         | Some(_, unit) ->
             // CHECKED arithmetic — the parser obeys the same no-silent-wrap
             // law as int arithmetic, and overflow gets its own words
@@ -663,7 +679,7 @@ let parseSize (text: string) : Result<int64, string> =
                         let pow10 = pown 10L frac.Length
 
                         if (Checked.(*) fracVal unit) % pow10 <> 0L then
-                            Error $"not a size: '{text}' — sub-byte precision (bytes are the unit)"
+                            Error $"not a size: '{excerpt text}' — sub-byte precision (bytes are the unit)"
                         else
                             Ok(Checked.(+) (Checked.(*) whole unit) (Checked.(*) fracVal unit / pow10))
                     else
@@ -673,7 +689,7 @@ let parseSize (text: string) : Result<int64, string> =
                 | Error e -> Error e
                 | Ok b -> Ok(if neg then -b else b)
             with :? System.OverflowException ->
-                Error $"not a size: '{text}' — beyond the 64-bit byte range"
+                Error $"not a size: '{excerpt text}' — beyond the 64-bit byte range"
 
 let formatDuration (totalMs: int64) : string =
     if totalMs = 0L then
@@ -730,7 +746,7 @@ let parseInstantMs (text: string) : Result<int64, string> =
     | true, dto -> Ok(dto.ToUnixTimeMilliseconds())
     | _ ->
         Error
-            $"not an ISO 8601 instant ('{t}'; 2026-08-14T12:34:56Z — offsets allowed, a bare date reads as midnight UTC)"
+            $"not an ISO 8601 instant ('{excerpt t}'; 2026-08-14T12:34:56Z — offsets allowed, a bare date reads as midnight UTC)"
 
 /// UTC always; millis shown only when nonzero (show's spelling)
 let formatInstant (ms: int64) : string =
@@ -919,7 +935,7 @@ let parseDurationMs (text: string) : Result<int64, string> =
 
     let rec go (i: int) (acc: int64) =
         if i >= body.Length then
-            if i = 0 then Error $"not a duration: '{text}'" else Ok acc
+            if i = 0 then Error $"not a duration: '{excerpt text}'" else Ok acc
         else
             let j0 = i
             let mutable j = i
@@ -928,7 +944,7 @@ let parseDurationMs (text: string) : Result<int64, string> =
                 j <- j + 1
 
             if j = j0 then
-                Error $"not a duration: '{text}' — expected digits at position {i + 1}"
+                Error $"not a duration: '{excerpt text}' — expected digits at position {i + 1}"
             else
                 let whole = System.Int64.Parse(body.Substring(j0, j - j0))
 
@@ -945,7 +961,7 @@ let parseDurationMs (text: string) : Result<int64, string> =
                         Some "", j
 
                 match fracDigits with
-                | None -> Error $"not a duration: '{text}' — a decimal point needs digits"
+                | None -> Error $"not a duration: '{excerpt text}' — a decimal point needs digits"
                 | Some frac ->
                     let u0 = j
                     let mutable k = j
@@ -954,13 +970,13 @@ let parseDurationMs (text: string) : Result<int64, string> =
                         k <- k + 1
 
                     match unitMs (body.Substring(u0, k - u0)) with
-                    | None -> Error $"not a duration: '{text}' — units are ms, s, m, h"
+                    | None -> Error $"not a duration: '{excerpt text}' — units are ms, s, m, h"
                     | Some unit ->
                         let pow10 = pown 10L frac.Length
                         let fracVal = if frac = "" then 0L else System.Int64.Parse frac
 
                         if (Checked.(*) fracVal unit) % pow10 <> 0L then
-                            Error $"not a duration: '{text}' — sub-millisecond precision (ms is the base unit)"
+                            Error $"not a duration: '{excerpt text}' — sub-millisecond precision (ms is the base unit)"
                         else
                             go
                                 k
@@ -973,4 +989,4 @@ let parseDurationMs (text: string) : Result<int64, string> =
     try
         go 0 0L |> Result.map (fun v -> if neg then -v else v)
     with :? System.OverflowException ->
-        Error $"not a duration: '{text}' — beyond the 64-bit millisecond range"
+        Error $"not a duration: '{excerpt text}' — beyond the 64-bit millisecond range"

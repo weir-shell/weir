@@ -1,5 +1,306 @@
 # Changelog
 
+## v0.0.48
+
+### Added
+
+- **`HttpMethod` gains an `Other of string` case** for a well-formed but
+  unlisted request verb. A `within serve` handler can now route on a verb
+  the union does not name (`match req.method with | Other v -> …`) and
+  answer 405 by its own choice, instead of the verb being silently
+  reported as `Get`. On the client side a request built with `Other "…"`
+  sends that verb verbatim.
+
+- **`within serve`'s config gains an optional `bodyTimeout` field** that
+  bounds the request-body read (default 30s). A slow client dribbling its
+  body is refused with a 408 instead of parking a handler slot. Existing
+  `{ port; maxConcurrent }` configs are unchanged — omitting the field
+  keeps the 30s default.
+
+- **`Server.streamErrors`** — the designated channel for a streaming
+  failure. When a `Stream` response body's producer raises mid-flight,
+  its message is recorded on the handle rather than raised out of the
+  handler, so a monitoring loop can read `Server.streamErrors srv` and
+  learn its producer died (the failure used to be reported to nobody).
+
+### Fixed
+
+- **An HTTP request method `within serve` cannot name no longer becomes
+  `Get`.** `TRACE`, `QUERY`, `FROBNICATE` and any other verb outside the
+  `HttpMethod` union all arrived at the handler as `Get`, so the read
+  path ran for a request that was not a GET and a handler could never
+  answer 405 for an unknown verb. `QUERY` now reads as `Query` (a case
+  the client side already had), a well-formed unlisted verb reads as
+  `Other v`, and a malformed method token (control chars, whitespace,
+  non-token bytes) is refused at the boundary with a 400 — while a
+  well-formed unknown verb a proxy may forward is preserved.
+
+- **A `Stream` response body whose producer raises mid-flight no longer
+  reports success to everyone.** The producer's failure used to still
+  emit a proper terminating chunk and a 200, so the client read a
+  complete stream and the script exited 0 — a silent truncation. The
+  failure is now surfaced to the script through `Server.streamErrors`
+  (the designated channel, not a raise out of the handler), and the
+  response is aborted. (The managed HttpListener emits the chunk
+  terminator even on abort and offers no AOT-safe way to suppress it, so
+  the wire-level truncation is best-effort on this platform; the
+  script-observable channel is the reliable signal.)
+
+- **`within serve` bounds the request-body read.** A client that declares
+  a large `Content-Length`, sends a few bytes and holds the socket used
+  to park a handler slot indefinitely. The read is now bounded by the new
+  `bodyTimeout` config field (default 30s) and exhaustion refuses the
+  request with a 408.
+
+- **Terminal escape sequences from data no longer reach the terminal
+  verbatim.** A filename or field carrying ANSI/OSC escapes, a bare ESC,
+  or other control bytes could clear the screen, set the window title,
+  leave the terminal coloured, or use a carriage return to hide the real
+  name. Tty-bound data renderers — `print`, command streaming, the REPL
+  echo and table, and error text — now render those bytes as a visible
+  `\xNN` escape. weir's own colouring is unaffected, and redirected
+  output (a pipe or file) stays byte-faithful.
+
+- **A `plan` now captures filesystem paths as absolute, bound to the
+  directory where they were captured.** A plan stored the caller's
+  *relative* path and `Plan.apply` re-resolved it against the
+  apply-time working directory — so a `File.write "marker.txt"`
+  captured under `within cd "planning"` and applied under
+  `within cd "application"` wrote to `application/marker.txt`, not the
+  previewed `planning/marker.txt`. Capture now resolves every
+  filesystem path to absolute at capture time and `Plan.apply` writes
+  that exact path, so what `Plan.preview` shows is exactly what apply
+  performs, regardless of the working directory at apply. This covers
+  every captured filesystem op — `File.write`/`delete`,
+  `Dir.create`/`delete`/`deleteAll`, and the two-path `File`/`Dir`
+  `copy`/`move` (both source and destination are bound). Plans built
+  from *absolute* paths are unchanged (they already resolved to
+  themselves), so plan equality and `Plan.ops` comparisons on absolute
+  paths behave as before.
+
+- **A CRLF (or NUL) in an HTTP header no longer forges a second header
+  or is silently dropped.** A header name or value carrying CR, LF or
+  NUL is now refused at both HTTP crossings. On the `Http` client an
+  outbound request header with such a byte (from a config file, an API
+  response, a tenant name) used to arrive at the server as two headers —
+  `X-Evil: a` plus a forged `Injected: yes` — the response-splitting
+  class. `Http.send` now refuses before sending, with a located error
+  naming the header, the byte, and whether it sat in the name or value.
+  On the `within serve` side a handler-returned header with such a byte
+  used to be silently dropped; it is now refused too — the response is a
+  500 without the injecting header (never a silent drop), and the located
+  message reaches the script through `Server.streamErrors` so a handler
+  bug is surfaced rather than swallowed. A benign control header is
+  unaffected in both directions.
+
+- **`secretHeaders` no longer leak across a cross-origin redirect.**
+  `Http.send` following a redirect to a different origin used to re-send
+  `secretHeaders` — a credential channel carrying a `Secret` — to the new
+  host, while the typed `auth` union was protected only because .NET
+  happens to drop `Authorization`. weir now drops `secretHeaders` (and
+  `auth`) on a cross-origin redirect exactly as the BCL drops
+  `Authorization`, so the two credential channels agree: the destination
+  a redirect names can no longer harvest a credential the caller sent to
+  the original host. A same-origin redirect keeps the credential, and a
+  non-sensitive header still crosses (the drop is credential-specific).
+
+- **The contract-fetch client no longer leaks credentials across a
+  cross-origin redirect.** `weir add module`/`add schema`/`restore`/
+  `verify` download over a separate HTTP client from `Http.send`, and it
+  was a bare `HttpClient` with automatic redirects that re-sent the
+  credential (a GitLab `PRIVATE-TOKEN`, a GitHub `Authorization: token`)
+  to a redirect target — the BCL strips only `Authorization`, so
+  `PRIVATE-TOKEN` in particular leaked. The contract client now disables
+  automatic redirects and follows them explicitly, dropping the
+  credential headers on a cross-origin change, across both the
+  API-resolution request and the artifact download. (The leak mechanism
+  is closed; whether a real provider can be induced to redirect to an
+  attacker host is an unproven precondition, recorded in the ledger.)
+
+- **An HTTP error no longer prints a URL's credentials in the clear.**
+  `Http.fetch`'s non-2xx error quoted the whole URL (`http://…answered
+  500`) and `Http.send`'s transport error did the same when the URL
+  could not be parsed — so a credential in `http://user:pass@host`
+  printed verbatim to the terminal, a CI log, or the REPL. Both now
+  redact the userinfo: `http://***@host answered 500`. A URL with no
+  credentials is still shown in full, so the target is named. (Display
+  only — a credential still rides the wire and is `ps`-visible in argv,
+  unchanged.)
+
+- **Parse and decode errors no longer echo a huge invalid input back.**
+  `Str.toInt`, `Str.fromBase64`, `Bytes.fromBase64`, `Bytes.fromHex`,
+  `Duration.parse`, `Size.parse`, `Float.parse` and `Instant.parse`
+  embedded the caller's whole input in the error message, so a 500KB
+  invalid value produced ~500KB of stderr. They now excerpt: an input of
+  64 characters or fewer is quoted in full (unchanged — a short typo
+  stays readable), a longer one shows a 64-character head and names the
+  true length (`… (200000 chars)`), so a multi-megabyte invalid input
+  yields a bounded error. (A residual short-prefix leak for a value
+  derived from a revealed `Secret` is recorded in the ledger.)
+
+- **A NUL byte in a path no longer crashes weir — it is refused with a
+  located error.** `Path.GetFullPath` throws a raw
+  `ArgumentException: Null character in path` on a NUL-bearing argument,
+  and every File/Proc/completion builtin plus the parser's
+  command-head classifier reach it through `Session.resolve`. A `.weir`
+  line like `./a<NUL>b c` aborted the process (SIGABRT, exit 134) with
+  no diagnostic, because the parse-time head resolution runs outside the
+  runner's exception handler; a NUL-bearing *path value* at run time
+  (e.g. a command line or file line carrying a NUL) leaked the raw .NET
+  message. `Session.resolve` now rejects a NUL-bearing path with a
+  located weir error (`path contains a NUL byte — paths are NUL-free;
+  NUL-bearing data is binary, not a path`), closing the whole run-time
+  class, and `Extern.exists` treats a NUL-bearing program head as
+  not-found so the parser emits its ordinary missing-command diagnostic
+  instead of aborting. NUL-free paths are unchanged.
+
+- **An out-of-range attribute integer is now a located error, never a
+  crash.** The tiny literal lexer behind attribute arguments
+  (`[<Default n>]` and friends) cast the digits to `int64` with a raw
+  cast that throws `OverflowException` past the 64-bit range — and
+  nothing above the parser caught it, so `[<Default 99999999999999999999>]`
+  on any field, union case, or type aborted `check`/`run`/`fmt`/`-e`/the
+  REPL with a raw stack trace (exit 134). The digits are now parsed with
+  `Int64.TryParse`, and an out-of-range value is a located parse error —
+  `attribute argument out of range (64-bit): <digits>` — mirroring the
+  integer-literal parser. The duration/size unit arms (`…TiB`, `…h`)
+  additionally bound their scaling multiply, so a large-but-in-range base
+  can no longer silently wrap negative. In-range attributes (`30s`,
+  `10MiB`, `42`, `0.5`) are unchanged.
+
+- **A bareword `;`-spine no longer parses in O(N²).** A `let x = b;b;b;…`
+  line (N barewords) cost quadratic time: a bare `;` is a literal argv
+  word in command position, so the doomed command-mode attempt's
+  head-word scanner consumed the whole remaining line before failing,
+  once per bareword. The command head-word scan is now bounded (a
+  resolvable command head is a PATH entry, ≤255 bytes), which caps the
+  doomed attempt and makes the line linear — 20k barewords fell from
+  ~27s to ~5s. Resolvable command heads and the diagnostic on the spine
+  are byte-identical; argv words longer than the bound still parse as
+  arguments (no grammar change).
+
+- **The top-level CLI verb dispatch has a residual-exception guard.**
+  `check`/`run`/`fmt`/`-e` run weir's front end, but the verb dispatch
+  had no top-level `try`/`with`, so any residual front-end exception
+  aborted with a raw stack trace and exit 134. A residual exception now
+  becomes a located `internal error: …` diagnostic on stderr with a
+  non-zero exit, mirroring the LSP's per-document guard. Kept narrow: a
+  legitimate `exit`/`fail` is never swallowed. This backstops the whole
+  front-end crash class behind the two point fixes above.
+
+- **`weir check` / `--can` / the LSP no longer multiply a per-statement
+  inference-budget burn across a whole file.** The type checker's
+  inference budget bounds one statement, but the whole-file analysis
+  (`analyzeLines`) collects errors and continues after each — so a file
+  with several independent budget-exhausting statements multiplied the
+  single-statement cost with no whole-file ceiling (linear in blocks,
+  re-paid on every LSP keystroke: a CPU-exhaustion DoS). A budget-
+  exhaustion diagnostic is now a stop-and-fix, exactly as the runner and
+  module loader already abort on the first error: the fold stops at the
+  first budget diagnostic and checks no further statement, so one burn
+  bounds the file. Ordinary type errors are unaffected — a file with
+  three plain type errors still reports all three. `[D:budget-stop-first]`
+
+- **`weir lsp` no longer allocates for a client-supplied `Content-Length`
+  before reading the body.** The framing layer allocated a buffer of
+  exactly the declared length, so `Content-Length: 2147483647` (26 bytes)
+  triggered an `OutOfMemoryException` that killed the editor session (an
+  OOM DoS). The transport now caps accepted messages at 64MB and never
+  allocates for a larger declared length: an oversized body is drained in
+  small fixed chunks to keep the stream synced and dropped as an id-less
+  no-op, so the server keeps serving. The header-line accumulator is
+  independently capped at 64KB so an unbounded header line cannot grow
+  memory. `[D:lsp-transport-caps]`
+
+- **The line assembler no longer scales quadratically on hostile inputs
+  (algorithmic-DoS) [D:assemble-quadratic].** Four O(N²) paths in the
+  logical-line assembler let a crafted hundreds-of-KB source stall
+  `weir check`/`fmt`/REPL/LSP for tens of seconds to minutes:
+  1. the pending statement's text was rebuilt (`text + sep + piece`,
+     plus a full-text `TrimEnd`) on every continuation join — now a
+     single growing `StringBuilder` is mutated in place and materialized
+     to the immutable `LogicalLine.Text` exactly once at statement close;
+  2. the bracket-continuation dangle predicates called `TrimEnd()` on the
+     whole accumulated text per line — now answered from an
+     incrementally-tracked last-non-white index;
+  3. the `within proc`/`within serve` binder-head scan re-`LastIndexOf`'d
+     and re-scanned the whole growing text per join — now it reads an
+     incrementally-tracked last-segment start (and a `Contains` fast
+     reject skips the per-char scan on marker-free segments);
+  4. the record-update (`{ … with`) header check allocated a
+     whole-remaining-line substring per opening bracket, so a
+     bracket-heavy single line was quadratic — now an index-based,
+     allocation-free check.
+  The emitted diagnostics and the assembled span tables are byte-
+  identical (a pure performance fix, no grammar change): the join
+  arithmetic derives `joinedStart` from the buffer length at exactly the
+  point the old code read the string length, and the same separator
+  literals apply. Measured `weir check` on the standing fixtures:
+  continuation-line flood 80k lines 9.3s → 1.3s; the bareword
+  `within proc` marker case 80k lines 24.1s → 3.6s; a bracket-heavy
+  single line 400k record openers 29s → 0.5s — quadratic to linear.
+
+- **A NUL byte can no longer silently truncate a value at any process
+  boundary.** weir's word-integrity guarantee (SECURITY.md) refuses a
+  NUL-bearing value at the spawn hand-off — argv and env are
+  NUL-terminated C strings, so an unrefused NUL would truncate the word
+  at the child, which runs the prefix and exits 0 with no diagnostic.
+  The refusal lived only in the evaluator's command-statement and pipe
+  constructors; four other spawn paths assembled argv/env downstream and
+  skipped it, so a NUL entering as external data (a command whose stdout
+  carries a NUL, `File.read`, base64-to-bytes) leaked through: the
+  exit-code reifiers (`| complete`/`succeeds`/`exitCode`/`orFail`), the
+  ambient `within env` overlay and its `$e(...)` twin, `into`, and — the
+  worst — the dynamic command head `^$name`, where a NUL-bearing head
+  resolved through PATH to the *prefix* program and ran it with the
+  remaining words as argv. The NUL refusal now lives at `Proc.spawn`, the
+  single point every process start funnels through, validating the
+  program name, every argument, and every environment key and value — so
+  all four downstream paths inherit the boundary and refuse with the same
+  located diagnostic (exit 1, no child spawned). Two adjacent shapes gain
+  weir-shaped diagnostics too: an empty program name, and a NUL-bearing
+  path-like program name (which previously leaked a raw
+  "Null character in path" platform exception through `Path.GetFullPath`).
+  The pre-existing statement-path refusal is unchanged.
+  `[D:spawn-nul-funnel]`
+
+- **A deeply-nested YAML document no longer hangs the parser.**
+  `Yaml.parse` (and `from yaml T`, `#infer`, `Yaml.inferShape`, and
+  `weir check` on a deep-ladder yaml district) recursed once per
+  mapping/sequence nesting level with no limit, and each mapping level
+  re-scanned its remaining extent — so a hostile `a:` ladder was cubic
+  in depth and hung for tens of seconds to hours. The parser now caps
+  nesting at 500 and fails with a located diagnostic ("yaml nesting is
+  too deep (limit 500) — the subset reads real manifests, not
+  adversarial ladders"). Real manifests nest far below the cap and are
+  unaffected. External command output piped into a yaml adapter is the
+  realistic hostile source this closes.
+
+- **A deeply-nested value no longer crashes `to yaml`.** The YAML
+  emitter recursed per nesting level with no limit, so a value built
+  iteratively (e.g. a `Seq.fold` nesting a `YSeq` ~100k deep) crashed
+  the process with an uncatchable stack overflow (exit 134) — hostile
+  or malformed input must never crash the tool. The emitter now caps
+  nesting at 1000 and fails with a clean located error ("to yaml: the
+  value nests deeper than 100 — the emitter needs finite trees").
+  Finite, real-depth trees render unchanged.
+
+- **`==` on a deeply-nested value no longer crashes the process with an
+  uncatchable stack overflow.** A legally-built recursive-record value —
+  an `Option`-linked record folded ~100k deep via `Seq.fold`, which the
+  checker accepts — crashed the whole `weir` process (StackOverflow, exit
+  139/134) when compared with `==`, because value equality recursed one
+  stack frame per nesting level. Equality now walks an explicit heap
+  work-list of pending value pairs instead: records (order-insensitive),
+  union payloads, tuples, and map entry values queue their children,
+  seqs compare lockstep via enumerators (short-circuiting at the first
+  mismatch), and a mismatch drains the list. Every existing equality
+  semantic is unchanged — closures/builtins/procs/servers still compare
+  by reference, bytes structurally, floats by value. The `show` /
+  interpolation renderer shared the same crash class and now carries a
+  finite depth bound (100, past every real value; deeper nesting renders
+  a teaching ellipsis), matching the REPL echo's existing bound.
+
 ## v0.0.47
 
 ### Fixed
