@@ -7808,7 +7808,7 @@ let planApplyTests =
                   p
                   (VRecord(
                       "Plan",
-                      [ "ops", VSeq [ VUnion("WriteFile", Some(VTuple [ VStr "/tmp/weir-plan-never"; VSeq [ VStr "a"; VStr "b" ] ])) ] ]
+                      [ "ops", VSeq [ VUnion("WriteFile", Some(VTuple [ VStr(System.IO.Path.GetFullPath "/tmp/weir-plan-never"); VSeq [ VStr "a"; VStr "b" ] ])) ] ]
                   ))
                   "one WriteFile Op captured"
 
@@ -7847,7 +7847,7 @@ let planApplyTests =
                     "    plan"
                     "        let _r = Http.send { Http.post \"http://x\" with auth = Bearer t }"
                     "        print \"sent\""
-                    "let text = Str.join \"\\n\" (p |> Plan.preview)"
+                    "let text = Str.join \"\\n\" (p |> Plan.preview) |> Str.replace \"\\\\\" \"/\""
                     "if not (Str.contains \"***\" text) then fail \"not masked\""
                     "if Str.contains \"tok\" text then fail \"leaked\""
                     "print \"ok\"" ]
@@ -7972,7 +7972,7 @@ let planApplyTests =
                     "        plan"
                     "            File.write \"marker.txt\" [\"hi\"]"
                     // preview must render the ABSOLUTE captured path (A's)
-                    "let text = Str.join \"\\n\" (p |> Plan.preview)"
+                    "let text = Str.join \"\\n\" (p |> Plan.preview) |> Str.replace \"\\\\\" \"/\""
                     $"if not (Str.contains \"{dirA}/marker.txt\" text) then fail \"preview not absolute-A\""
                     // apply under a DIFFERENT cwd — the bound path wins
                     $"within cd \"{dirB}\""
@@ -8008,7 +8008,7 @@ let planApplyTests =
                     $"    within cd \"{dirA}\""
                     "        plan"
                     "            File.copy \"orig.txt\" \"copied.txt\""
-                    "let text = Str.join \"\\n\" (p |> Plan.preview)"
+                    "let text = Str.join \"\\n\" (p |> Plan.preview) |> Str.replace \"\\\\\" \"/\""
                     $"if not (Str.contains \"{dirA}/orig.txt\" text) then fail \"src not absolute-A\""
                     $"if not (Str.contains \"{dirA}/copied.txt\" text) then fail \"dst not absolute-A\""
                     $"within cd \"{dirB}\""
