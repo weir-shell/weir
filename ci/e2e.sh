@@ -9581,6 +9581,11 @@ cat > "$svdir/f13err.weir" <<'WEOF'
 let bad = Str.fromBase64 "G1szMW1oaWRkZW4NZXZpbA=="
 fail $"file: {bad}"
 WEOF
+# F13 is driven through a real pty; Windows Python has no termios/pty
+# (import pty -> ModuleNotFoundError), and tty sanitize is a POSIX-tty
+# behaviour — skip the whole cell there (it never reached the redirect
+# coda on Windows anyway).
+if [ "$IS_WINDOWS" = "0" ]; then
 sanit=$(python3 - "$BIN" "$svdir/f13.weir" <<'PYEOF'
 import pty, os, sys
 binp, script = sys.argv[1], sys.argv[2]
@@ -9637,6 +9642,9 @@ $BIN "$svdir/f13.weir" > "$svdir/f13.out" 2>/dev/null || true
 python3 -c "import sys; d=open('$svdir/f13.out','rb').read(); sys.exit(0 if (b'\x1b[31mred-name\rft' in d) else 1)" \
     || fail "F13: redirected output must stay byte-faithful (raw ESC/CR preserved through a pipe)"
 echo "e2e ok: F13 tty data sanitize (data escapes neutralized at a tty, weir colour intact, pipe byte-faithful)"
+else
+    echo "e2e skip: F13 tty sanitize is pty-driven — no termios/pty on Windows Python"
+fi
 
 rm -rf "$svdir"
 
