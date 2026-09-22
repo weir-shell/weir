@@ -8507,7 +8507,14 @@ let pathParamCompletionTests =
               System.IO.File.WriteAllText(System.IO.Path.Combine(d, "tool.txt"), "x")
 
               try
-                  let saved = Weir.Session.Cwd()
+                  // the INVARIANT process cwd, not Session.Cwd(): under the
+                  // parallel test runner, Session.Cwd() may momentarily hold a
+                  // CONCURRENT test's temp dir, and restoring to it after that
+                  // dir is deleted leaves the global cwd pointing at a deleted
+                  // path — every concurrent spawn then fails "command not found"
+                  // (Process.Start cannot chdir there). GetCurrentDirectory is
+                  // never mutated (weir tracks cwd in Session, not the process).
+                  let saved = System.IO.Directory.GetCurrentDirectory()
                   Weir.Session.setCwd d
 
                   let sug env (line: string) =
@@ -15909,7 +15916,14 @@ let lsTruthTests =
               System.IO.File.WriteAllText(System.IO.Path.Combine(d, "a.txt"), "x")
 
               try
-                  let saved = Weir.Session.Cwd()
+                  // the INVARIANT process cwd, not Session.Cwd(): under the
+                  // parallel test runner, Session.Cwd() may momentarily hold a
+                  // CONCURRENT test's temp dir, and restoring to it after that
+                  // dir is deleted leaves the global cwd pointing at a deleted
+                  // path — every concurrent spawn then fails "command not found"
+                  // (Process.Start cannot chdir there). GetCurrentDirectory is
+                  // never mutated (weir tracks cwd in Session, not the process).
+                  let saved = System.IO.Directory.GetCurrentDirectory()
                   Weir.Session.setCwd d
 
                   // the shared valueEnv shadows ls with fakeFiles — this
@@ -16437,7 +16451,14 @@ let fileStatTests =
               System.IO.File.WriteAllText(System.IO.Path.Combine(d, "f.txt"), "x")
 
               try
-                  let saved = Weir.Session.Cwd()
+                  // the INVARIANT process cwd, not Session.Cwd(): under the
+                  // parallel test runner, Session.Cwd() may momentarily hold a
+                  // CONCURRENT test's temp dir, and restoring to it after that
+                  // dir is deleted leaves the global cwd pointing at a deleted
+                  // path — every concurrent spawn then fails "command not found"
+                  // (Process.Start cannot chdir there). GetCurrentDirectory is
+                  // never mutated (weir tracks cwd in Session, not the process).
+                  let saved = System.IO.Directory.GetCurrentDirectory()
                   Weir.Session.setCwd d
 
                   // the shared valueEnv shadows ls with fakeFiles — the
@@ -16496,7 +16517,14 @@ let dirStatTests =
               System.IO.File.WriteAllText(System.IO.Path.Combine(d, ".dot"), "x")
 
               try
-                  let saved = Weir.Session.Cwd()
+                  // the INVARIANT process cwd, not Session.Cwd(): under the
+                  // parallel test runner, Session.Cwd() may momentarily hold a
+                  // CONCURRENT test's temp dir, and restoring to it after that
+                  // dir is deleted leaves the global cwd pointing at a deleted
+                  // path — every concurrent spawn then fails "command not found"
+                  // (Process.Start cannot chdir there). GetCurrentDirectory is
+                  // never mutated (weir tracks cwd in Session, not the process).
+                  let saved = System.IO.Directory.GetCurrentDirectory()
                   Weir.Session.setCwd d
 
                   let runLive input =
