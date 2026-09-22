@@ -9700,7 +9700,12 @@ rm -rf "$hdir"
 # spawn NO child (the child logs its argv/env to a file — it must stay
 # empty). The NUL enters as external DATA: a shim on PATH emits a
 # NUL-bearing line, decoded into a weir string.
-if command -v sh >/dev/null 2>&1; then
+# POSIX-only: the shims are #!/bin/sh scripts used as command HEADS — a
+# native weir.exe cannot exec a shebang script (and an extensionless name
+# does not resolve via PATHEXT), so on Windows `emitprog` reads as an
+# unbound variable. sh alone is not enough (MSYS ships it); the NUL-refusal
+# itself is platform-neutral and unit-tested [D:spawn-nul-funnel].
+if [ "$IS_WINDOWS" = "0" ] && command -v sh >/dev/null 2>&1; then
     nuldir=$(mkweirtmp)
     mkdir -p "$nuldir/bin"
     nullog="$nuldir/child.log"
