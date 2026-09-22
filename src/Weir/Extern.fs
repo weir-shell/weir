@@ -91,12 +91,10 @@ let exists (prog: string) : bool =
         File.Exists resolved
         || pathExts () |> List.exists (fun e -> File.Exists(resolved + e))
     else
-        match cache with
-        | Some s -> s.Contains prog
-        | None ->
-            pathDirs ()
-            |> Array.exists (fun dir ->
-                let candidate = Path.Combine(dir, prog)
-
-                File.Exists candidate
-                || pathExts () |> List.exists (fun e -> File.Exists(candidate + e)))
+        // route through the MEMOISED name set, never a per-call filesystem
+        // scan: a bareword ';'-spine calls exists() once per head, and the
+        // uncached branch re-scanned PATH×PATHEXT every time — linear in
+        // heads but with a per-lookup cost that is ~20s for 20k heads on
+        // POSIX and >800s on Windows (PATHEXT × slow File.Exists). names()
+        // enumerates PATH once and caches; every lookup is then O(1).
+        (names ()).Contains prog
