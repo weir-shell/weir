@@ -19359,9 +19359,14 @@ let windowsV1Tests =
               let oldPath = System.Environment.GetEnvironmentVariable "PATH"
 
               try
-                  System.Environment.SetEnvironmentVariable("PATH", dir)
+                  // PREPEND, never replace: PATH is process-global and
+                  // `testSequenced` does NOT isolate it under the YoloDev
+                  // TestSdk (a bare `PATH := dir` raced concurrent spawns
+                  // into "sh not found"). The prepended probe dir still
+                  // forces a real Path.PathSeparator split to find the probe.
+                  System.Environment.SetEnvironmentVariable("PATH", dir + string Path.PathSeparator + oldPath)
                   Weir.Extern.refresh ()
-                  Expect.isTrue (Weir.Extern.exists "weirpsprobe") "single-dir PATH resolves"
+                  Expect.isTrue (Weir.Extern.exists "weirpsprobe") "a prepended PATH entry resolves through the split"
               finally
                   System.Environment.SetEnvironmentVariable("PATH", oldPath)
                   Weir.Extern.refresh ()

@@ -9227,9 +9227,13 @@ let p =
         plan
             File.write "marker.txt" ["hi"]
             File.copy "orig.txt" "copied.txt"
-let text = Str.join "\n" (p |> Plan.preview)
-if not (Str.contains "$padir/A/marker.txt" text) then fail "preview not absolute-A (write)"
-if not (Str.contains "$padir/A/copied.txt" text) then fail "preview not absolute-A (copy dst)"
+// normalise separators: on Windows Plan.preview emits Path.GetFullPath's
+// backslashes, and the capture dir may carry an 8.3 shortname the bash
+// \$padir spelling lacks — so assert the absolute-under-A TAIL, not the
+// full prefix. The A-vs-B binding is proven by the filesystem checks below.
+let text = Str.join "\n" (p |> Plan.preview) |> Str.replace "\\\\" "/"
+if not (Str.contains "/A/marker.txt" text) then fail "preview not absolute-A (write)"
+if not (Str.contains "/A/copied.txt" text) then fail "preview not absolute-A (copy dst)"
 within cd "$padir/B"
     p |> Plan.apply
 print "applied"
