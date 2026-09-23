@@ -9681,6 +9681,17 @@ elapsed=$((t1 - t0))
 [ "$elapsed" -lt 20 ] || fail "bareword ';'-spine is not linear: 20k barewords took ${elapsed}s (was quadratic; expected <20s)"
 echo "e2e ok: bareword ';'-spine checks in ${elapsed}s (linear, was O(N^2)/>25s)"
 
+# doc-comment run linearity: a contiguous /// run in a MODULE file accumulated
+# O(N^2) (a list append per line) — 50k /// lines was ~21s. Cons+reverse makes
+# it linear (~0.4s). A generous ceiling catches a regression to quadratic.
+python3 -c "print('module M'); [print('/// d') for _ in range(50000)]; print('let x = 1')" > "$hdir/docdos.weir"
+t0=$(date +%s)
+$BIN check "$hdir/docdos.weir" >/dev/null 2>&1 || true
+t1=$(date +%s)
+elapsed=$((t1 - t0))
+[ "$elapsed" -lt 15 ] || fail "doc-comment /// run is not linear: 50k lines took ${elapsed}s (was O(N^2)/~21s; expected <15s)"
+echo "e2e ok: doc-comment /// run checks in ${elapsed}s (linear, was O(N^2)/~21s)"
+
 # Fix 3 -- the CLI guard: the two fixed crash triggers exit located, never
 # 134, through the WHOLE binary [D:cli-exception-guard]
 rc=0; $BIN check "$hdir/attr.weir" >/dev/null 2>&1 || rc=$?

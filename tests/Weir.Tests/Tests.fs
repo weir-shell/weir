@@ -19501,6 +19501,21 @@ let echoBinaryTests =
 
               Expect.isTrue (Weir.Eval.echoBinary (Some 10) (Weir.Eval.VMap(Map [ "k", Weir.Eval.VStr nul ]))) "map"
           }
+          test "a 200k-deep value drains to the depth bound, never overflows the probe [D:eq-depth]" {
+              // the tty binary-echo probe was the last unbounded value walk:
+              // a recursive record is finite in WIDTH but not depth, so an
+              // unbounded descent stack-overflows UNCATCHABLY. Bounded at 100
+              // like show/eq; a checker-accepted deep value must RETURN, not
+              // abort the process (strix retest residual sink).
+              let deep =
+                  [ 1..200000 ]
+                  |> List.fold
+                      (fun acc i ->
+                          Weir.Eval.VRecord("Node", [ "depth", Weir.Eval.VInt(int64 i); "next", Weir.Eval.VUnion("Some", Some acc) ]))
+                      (Weir.Eval.VRecord("Node", [ "depth", Weir.Eval.VInt 0L; "next", Weir.Eval.VUnion("None", None) ]))
+
+              Expect.isFalse (Weir.Eval.echoBinary None deep) "no NUL, and the 200k-deep walk returns instead of overflowing"
+          }
           test "clean containers are not binary; mask/summary renderers are never probed" {
               Expect.isFalse
                   (Weir.Eval.echoBinary (Some 10) (Weir.Eval.VRecord("R", [ "out", Weir.Eval.VStr "plain" ])))
