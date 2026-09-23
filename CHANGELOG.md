@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.0.50
+
+### Fixed
+
+- **`#infer` no longer mis-drafts a heterogeneous object as a homogeneous
+  map.** When sibling objects in a sample array carried different keys whose
+  values only *coincidentally* agreed in an early pair (e.g. a Kubernetes
+  `securityContext` with a `bool` field, then an `int` field two elements
+  later), the pairwise merge committed to `seq<string * bool>` and a later
+  `from json` rejected the int (`expected bool, got Number`). The open-map
+  verdict is now decided over the *whole* set of siblings, so an object with
+  mixed value types stays a typed record; genuinely uniform data-keyed
+  objects (a ConfigMap's `data`) are still drafted as an open mapping.
+
 ## v0.0.49
 
 ### Fixed

@@ -307,12 +307,6 @@ let rec private mergeTwo (note: Note -> unit) (path: string) (a: INode) (b: INod
     | IOpt x, y -> iopt (mergeTwo note path x y)
     | x, IOpt y -> iopt (mergeTwo note path x y)
     | IObj xs, IObj ys -> mergeObjs note path xs ys
-    // an established map verdict absorbs a sibling's entries — the
-    // VALUES merge; a conflicting value keeps the map's (the first-wins
-    // rule, one level in)
-    | IMap v, IObj fs -> IMap(fs |> List.fold (fun acc (_, fv) -> mergeTwo note path acc fv) v)
-    | IObj fs, IMap v -> IMap(fs |> List.fold (fun acc (_, fv) -> mergeTwo note path acc fv) v)
-    | IMap x, IMap y -> IMap(mergeTwo note path x y)
     // arrays pool their elements; the enclosing seq walk merges the pool
     | IArr xs, IArr ys -> IArr(xs @ ys)
     | a, _ ->
@@ -320,40 +314,66 @@ let rec private mergeTwo (note: Note -> unit) (path: string) (a: INode) (b: INod
         a
 
 and private mergeObjs (note: Note -> unit) (path: string) (xs: (string * INode) list) (ys: (string * INode) list) : INode =
+    // ALWAYS the record union here; the open-map verdict (detection half b)
+    // is DEFERRED to openMaps over the fully-merged shape [D:repl-infer].
+    // Value uniformity must hold across ALL siblings, not a pair — the
+    // pairwise fold committed to a map from a coincidentally-uniform early
+    // pair, then absorbed a later CONFLICTING value first-wins (a k8s
+    // securityContext with a bool field then an int field drafted
+    // Map<string, bool> and rejected the int). The record merge: union of
+    // keys in first-seen order; a shared key merges recursively, a one-sided
+    // key drafts Option (which is how differing key sets read downstream).
     let kx = xs |> List.map fst |> Set.ofList
-    let ky = ys |> List.map fst |> Set.ofList
+    let ym = Map.ofList ys
 
-    match (if kx <> ky then uniformValue ((xs @ ys) |> List.map snd) else None) with
-    | Some v ->
-        // detection half (b): differing sibling key sets, one value
-        // shape — the keys are data [D:repl-infer]
-        note $"'{path}' carries different keys across the array's elements — its keys are data, drafted as an open mapping seq<string * _>"
-        IMap v
-    | None ->
-        // the record merge: union of keys in first-seen order; a shared
-        // key merges recursively, a one-sided key drafts Option
-        let ym = Map.ofList ys
+    let fromX =
+        xs
+        |> List.map (fun (k, xv) ->
+            match Map.tryFind k ym with
+            | Some yv -> k, mergeTwo note $"{path}.{k}" xv yv
+            | None -> k, iopt xv)
 
-        let fromX =
-            xs
-            |> List.map (fun (k, xv) ->
-                match Map.tryFind k ym with
-                | Some yv -> k, mergeTwo note $"{path}.{k}" xv yv
-                | None -> k, iopt xv)
+    let fromY =
+        ys
+        |> List.filter (fun (k, _) -> not (Set.contains k kx))
+        |> List.map (fun (k, yv) -> k, iopt yv)
 
-        let fromY =
-            ys
-            |> List.filter (fun (k, _) -> not (Set.contains k kx))
-            |> List.map (fun (k, yv) -> k, iopt yv)
+    IObj(fromX @ fromY)
 
-        IObj(fromX @ fromY)
+// the open-map verdict, DEFERRED to the fully-merged shape (detection half
+// b) [D:repl-infer]: an object whose keys DIFFER across the array's
+// elements — every field OPTIONAL after the union, none shared — AND whose
+// values share ONE shape has data keys, drafted seq<string * V>. Deciding
+// here rather than in the pairwise merge is what lets value uniformity be
+// judged over ALL siblings (a securityContext's bool+int values are not
+// uniform, so it stays a record; a ConfigMap data's all-string values are).
+// Walks bottom-up so a nested map is settled before its parent is judged.
+let rec private openMaps (note: Note -> unit) (path: string) (node: INode) : INode =
+    match node with
+    | IObj fields ->
+        let fields' = fields |> List.map (fun (k, v) -> k, openMaps note $"{path}.{k}" v)
+        let allOptional = fields' |> List.forall (fun (_, v) -> (match v with IOpt _ -> true | _ -> false))
+
+        let bare =
+            fields' |> List.map (fun (_, v) -> (match v with IOpt x -> x | x -> x))
+
+        match (if allOptional && List.length fields' > 1 then uniformValue bare else None) with
+        | Some v ->
+            note $"'{path}' carries different keys across the array's elements — its keys are data, drafted as an open mapping seq<string * _>"
+            IMap v
+        | None -> IObj fields'
+    | IArr items -> IArr(items |> List.map (openMaps note path))
+    | IOpt x -> iopt (openMaps note path x)
+    | IMap v -> IMap(openMaps note path v)
+    | _ -> node
 
 /// merge every non-null element of an array into ONE element shape (null
-/// elements never decide a shape — the adapters' existing posture)
+/// elements never decide a shape — the adapters' existing posture), then
+/// settle open maps over the full result
 let private mergeElems (note: Note -> unit) (path: string) (items: INode list) : INode option =
     match items |> List.filter ((<>) INull) with
     | [] -> None
-    | first :: rest -> Some(rest |> List.fold (mergeTwo note path) first)
+    | first :: rest -> Some(rest |> List.fold (mergeTwo note path) first |> openMaps note path)
 
 // `srcKey` is the wire key (or top name) that produced `desired` — the
 // shadow note names the user's own spelling, not the derived stem
