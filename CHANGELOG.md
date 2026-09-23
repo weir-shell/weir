@@ -1,5 +1,30 @@
 # Changelog
 
+## v0.0.49
+
+### Fixed
+
+- **A deeply-nested value echoed at a terminal no longer crashes the
+  process.** The tty binary-echo probe (which decides whether to sanitize
+  a value's bytes at a terminal) walked record/tuple/union/map structure
+  with no depth bound — the last value walk that wasn't iterative or
+  depth-capped. A checker-accepted program producing a deeply-nested
+  recursive-record value, echoed under `weir -e` at a tty or in the REPL,
+  aborted with an uncatchable stack overflow. The probe is now bounded at
+  depth 100, matching the `show` renderer.
+
+- **A heavily-documented module no longer stalls `weir check`.** The
+  doc-comment attachment pass appended each `///` line to a growing list
+  one at a time, which is O(N²) over a contiguous run — a 50,000-line
+  module pinned a core for ~20s. The run now conses in O(1) and is
+  reversed once at the point of use, restoring linear time.
+
+- **The top-level "internal error" fallback now sanitizes its message at a
+  terminal.** The CLI's residual-exception guard printed a .NET exception's
+  message verbatim to stderr; a message interpolating attacker-influenced
+  data (a filename, URL, or value) could emit terminal escape/control bytes,
+  the one error-echo site that had missed the tty-data neutralization.
+
 ## v0.0.48
 
 ### Added

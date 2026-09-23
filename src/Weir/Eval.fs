@@ -545,17 +545,24 @@ let echoBinary (cap: int option) (v: Value) : bool =
         | Some c -> c + 1
         | None -> 101
 
-    let rec has (v: Value) : bool =
+    // DEPTH-bounded like every other value walk [D:eq-depth]: `bound`
+    // clips seq WIDTH, but a recursive record type is finite in width and
+    // never in depth, so an unbounded descent stack-overflows (uncatchably)
+    // on a deeply-nested value — the last such sink. Cap at 100 (the show
+    // renderer's ceiling): a NUL nested past 100 goes undetected, strictly
+    // better than crashing the process.
+    let rec has (depth: int) (v: Value) : bool =
         match v with
+        | _ when depth > 100 -> false
         | VStr s -> s.Contains '\u0000'
-        | VSeq items -> items |> Seq.truncate bound |> Seq.exists has
-        | VRecord(_, fields) -> fields |> List.exists (snd >> has)
-        | VTuple items -> items |> List.exists has
-        | VUnion(_, Some payload) -> has payload
-        | VMap entries -> entries |> Map.exists (fun _ x -> has x)
+        | VSeq items -> items |> Seq.truncate bound |> Seq.exists (has (depth + 1))
+        | VRecord(_, fields) -> fields |> List.exists (snd >> has (depth + 1))
+        | VTuple items -> items |> List.exists (has (depth + 1))
+        | VUnion(_, Some payload) -> has (depth + 1) payload
+        | VMap entries -> entries |> Map.exists (fun _ x -> has (depth + 1) x)
         | _ -> false
 
-    has v
+    has 0 v
 
 let echoValue (cap: int option) (v: Value) : string * string option =
     match v with

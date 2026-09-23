@@ -631,7 +631,11 @@ let docAttachments (lines: string list) : DocAttach list =
         if masked[idx] then
             () // district content is bytes — never doc syntax [D:content-bytes]
         elif isDocLine raw then
-            pending <- pending @ [ docText raw ]
+            // CONS, not `@ [x]`: a contiguous /// run of N lines appended
+            // one-at-a-time is O(N^2) (each append copies the whole list),
+            // pinning a core on a heavily-documented module. Cons is O(1);
+            // the run is reversed once at the single consumer (Doc below).
+            pending <- docText raw :: pending
         elif isAttributeOnlyLine raw then
             ()
         elif raw.Trim() = "" then
@@ -646,7 +650,7 @@ let docAttachments (lines: string list) : DocAttach list =
                         { Line = ln
                           Col = col
                           Len = len
-                          Doc = pending }
+                          Doc = List.rev pending } // reverse the consed run
                 | None -> ()
 
             pending <- [])

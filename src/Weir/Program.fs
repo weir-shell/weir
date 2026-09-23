@@ -686,9 +686,12 @@ let main argv =
     | ex ->
         // located like a lint error: file:1:1 with the class, non-zero
         // (2 — the tool's own failure, distinct from a script's exit 1)
+        // ex.Message interpolates attacker-influenced data (a filename,
+        // URL, or value), so it is sanitized at a tty like every other
+        // error-echo site [D:binary-echo]; the class name is weir-internal.
         Console.Error.WriteLine(
             Types.Color.red Types.Color.onStderr.Value "internal error"
-            + $": {ex.GetType().Name}: {ex.Message}"
+            + $": {ex.GetType().Name}: {Eval.sanitizeIfTty Console.IsErrorRedirected ex.Message}"
         )
 
         Console.Error.WriteLine
