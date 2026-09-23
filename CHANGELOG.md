@@ -19,6 +19,12 @@
   module pinned a core for ~20s. The run now conses in O(1) and is
   reversed once at the point of use, restoring linear time.
 
+- **The top-level "internal error" fallback now sanitizes its message at a
+  terminal.** The CLI's residual-exception guard printed a .NET exception's
+  message verbatim to stderr; a message interpolating attacker-influenced
+  data (a filename, URL, or value) could emit terminal escape/control bytes,
+  the one error-echo site that had missed the tty-data neutralization.
+
 ## v0.0.48
 
 ### Added
