@@ -2469,7 +2469,9 @@ if [ "$IS_WINDOWS" != "1" ] && command -v python3 >/dev/null 2>&1; then
     echo "$gzout" | grep -qi "is a terminal\|to a terminal" || fail "gzip refuses its own tty now — the incident's cause removed: $gzout"
     rsout=$(printf 'SLEEP 700\nSEND sh -c "read x"\\r\nSLEEP 400\nSEND \\x03\nSLEEP 500\nSEND print (Str.toUpper "revived")\\r\nSLEEP 400\nSEND #quit\\r\n' \
         | python3 "$ptyrun" 10 "$BIN" | sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g; s/\x1b[=>]//g')
-    echo "$rsout" | grep -q "exit code 130" || fail "a REPL ^C must kill the foreground child naming 130: $rsout"
+    # the child's ^C death renders as the QUIET exit-code status now, not the
+    # loud error [D:repl-cmd-fail] — still names 130 and the SIGINT note
+    echo "$rsout" | grep -q "exit 130 (SIGINT" || fail "a REPL ^C must kill the foreground child naming 130: $rsout"
     echo "$rsout" | grep -q "REVIVED" || fail "the session must survive its child's ^C: $rsout"
     echo "$rsout" | grep -q "^EXIT 0" || fail "the session must end clean after a ^C'd child: $rsout"
 
