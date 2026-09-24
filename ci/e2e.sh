@@ -452,6 +452,27 @@ WEOF
     echo "$out" | grep -qF "cannot take a piped stdin" || fail "value-headed exec must refuse at check"
 fi
 
+# ---- the single-line capture reifier [D:reify-line] ------------------
+# `cmd | line` reads a one-value CLI's single stdout line as a string —
+# the $(cmd) |> Seq.exactlyOne idiom, first-class. Raises on nonzero and
+# on 0-or-2+ lines.
+lout=$($BIN -e 'let scope = printf "id-abc" | line
+echo scope $scope')
+expect "| line reifies one stdout line to a string" "scope id-abc" "$lout"
+# a trailing newline (the -o tsv shape) is still one line
+lout2=$($BIN -e 'let v = sh -c "printf \"val\n\"" | line
+echo got $v')
+expect "| line handles the trailing newline (one line)" "got val" "$lout2"
+# nonzero exit raises
+lerr=$($BIN -e 'let x = sh -c "exit 4" | line
+print x' 2>&1) && fail "| line must raise on nonzero" || true
+echo "$lerr" | grep -qF "exit code 4" || fail "| line lost the nonzero raise: $lerr"
+# 2+ lines is the caller's mistake, named
+lmulti=$($BIN -e 'let x = sh -c "printf \"a\nb\n\"" | line
+print x' 2>&1) && fail "| line must raise on 2+ lines" || true
+echo "$lmulti" | grep -qF "expected exactly one line" || fail "| line lost the one-line assert: $lmulti"
+echo "e2e ok: | line — one stdout line to a string, nonzero raises, 2+ lines named [D:reify-line]"
+
 # a 2-param generic union checks + evals through the binary (was the
 # prelude-Result pin; Result removed [D:no-result], the fixture is now a
 # locally-declared Either)

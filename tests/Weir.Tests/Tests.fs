@@ -12030,6 +12030,22 @@ let agentFindingsTests =
                   Expect.stringContains msg "cannot take a piped stdin" ""
               | Ok _ -> failtest "value-headed exec must refuse"
           }
+          test "line desugars to the lined application and types as string [D:reify-line]" {
+              match Weir.Parser.parseLine cmdResolver "echo hi | line" with
+              | Ok(SCmd e)
+              | Ok(SExpr e) -> Expect.stringContains (Weir.Ast.sexpr e) "|lined" ""
+              | other -> failtest $"expected the lined desugar, got {other}"
+
+              // a value-position `| line` is a string — a binding checks as
+              // string end-to-end (base, env twin, value-headed)
+              let clean (lines: string list) (label: string) =
+                  let diags, _, _, _ = Weir.Script.analyzeLines "line.weir" lines
+                  Expect.isEmpty (diags |> List.filter (fun d -> d.Severity = "error")) $"{label}: {diags |> List.map _.Message}"
+
+              clean [ "let scope = printf \"x\" | line"; "print (Str.length scope |> show)" ] "binds a string"
+              clean [ "let e = [Env.pair \"X\" \"1\"]"; "let v = $e(printenv X | line)"; "print v" ] "env twin binds a string"
+              clean [ "let m = [\"a\"; \"b\"] | grep a | line"; "print m" ] "value-headed | line binds a string"
+          }
           test "the fifth refusal cell: refused-context reifiers TEACH, never PATH-resolve [D:reifier-family-complete]" {
               // [D:statement-lets] moved the boundary: if-body and
               // within-body block lets now TAKE the reifier (statement

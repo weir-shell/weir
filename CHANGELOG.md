@@ -2,6 +2,16 @@
 
 ## v0.0.51
 
+### Added
+
+- **`cmd | line` — the single-line capture reifier.** Reads a one-value
+  command (`az … --query X -o tsv`, `git rev-parse`, `id -un`) as its one
+  trimmed line of stdout, as a `string` — replacing the
+  `$"{$(cmd) |> Seq.exactlyOne}"` mouthful with `let x = cmd | line`. It
+  joins the reifier family (`complete`/`succeeds`/`exitCode`/`orFail`/`exec`),
+  raises on a nonzero exit or on 0-or-2+ lines, and composes with the env
+  sigil (`$e(cmd | line)`) and a value head (`xs | grep foo | line`).
+
 ### Changed
 
 - **A failed command in the REPL is now a quiet exit-code status, not a red

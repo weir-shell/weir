@@ -1321,7 +1321,12 @@ within tmp d
   entrypoint the app gets signals directly with no forwarding layer);
   it NEVER returns, diverging like `fail`/`exit`, so it is a legal bare
   statement and cannot take a piped stdin (there is no parent left to
-  feed it). **`succeeds` is exitCode == 0, exactly** —
+  feed it). `cmd | line` reifies a one-value CLI to its single trimmed
+  line of stdout as a `string` [D:reify-line] — the
+  `$(cmd) |> Seq.exactlyOne` idiom for `az … -o tsv`/`git rev-parse`;
+  it raises on a nonzero exit or on 0-or-2+ lines, and composes with
+  the env sigil (`$e(cmd | line)`) and a value head. **`succeeds` is
+  exitCode == 0, exactly** —
   for tools whose nonzero codes AND output are both data (grep,
   fzf), use `| complete` and read the record. An `if`/`elif`
   CONDITION takes the chain inline: `if test -f $p | succeeds then`

@@ -404,6 +404,39 @@ let private execedWith (overlay: (string * string) list) : Value =
                 unreachable "exec returned — execve replaces the image or raises"
             | _ -> unreachable "the checker rejects 'exec' on these arguments"))
 
+// the single-line capture [D:reify-line]: `cmd | line` reads a one-value
+// CLI (`az … -o tsv`, `git rev-parse`, `id -un`) as a trimmed STRING —
+// the `$(cmd) |> Seq.exactlyOne` idiom as a first-class reifier. It
+// CAPTURES stdout and raises on a nonzero exit (the `$(…)` path via
+// Proc.linesWith), then ASSERTS exactly one line: a value was expected,
+// so 0 or 2+ lines is the caller's mistake, named.
+let private oneLine (prog: string) (argv: string list) (lines: seq<string>) : Value =
+    match List.ofSeq lines with
+    | [ one ] -> VStr(one.Trim())
+    | ls ->
+        let shown = String.concat " " (prog :: argv)
+        failwith $"'{shown} | line' expected exactly one line of output, got {List.length ls}"
+
+let private linedWith (overlay: (string * string) list) : Value =
+    VBuiltin(fun progV ->
+        VBuiltin(fun argsV ->
+            match progV, argsV with
+            | VStr prog, VSeq args ->
+                let argv = argStrings args
+                oneLine prog argv (Proc.linesWith overlay (Proc.resolveProg prog) argv None)
+            | _ -> unreachable "the checker rejects 'line' on these arguments"))
+
+let private linedWithIn (overlay: (string * string) list) : Value =
+    VBuiltin(fun progV ->
+        VBuiltin(fun argsV ->
+            VBuiltin(fun stdinV ->
+                match progV, argsV, stdinV with
+                | VStr prog, VSeq args, VSeq stdin ->
+                    let argv = argStrings args
+                    let input = stdin |> Seq.map asString
+                    oneLine prog argv (Proc.linesWith overlay (Proc.resolveProg prog) argv (Some input))
+                | _ -> unreachable "the checker rejects 'lineIn' on these arguments")))
+
 // stdin-carrying reifier twins [D:value-headed-pipe]: `xs | grep foo |
 // complete` reifies the segment WITH the value as stdin. INTERNAL —
 // the public expression-position spellings (completed/succeeded/…) keep
@@ -5730,6 +5763,11 @@ let builtinDocs: Map<string, BuiltinDoc> =
               "Replace the current process with the command (execve) — never returns; the app keeps weir's pid, so as a container entrypoint it gets signals directly. Diverging, like fail/exit; cannot take piped stdin."
               None
               (Some "the reifier law: the command becomes the process.")
+          "line",
+          bd
+              "Reify a one-value command to its single line of stdout, trimmed — the `az … -o tsv` / `git rev-parse` idiom (replaces `$(cmd) |> Seq.exactlyOne`). Raises on a nonzero exit, or on 0 or 2+ lines."
+              None
+              (Some "the reifier law: the meaning is the value.")
 
           // ---- types: a hover renders the structure; the value here is
           // WHEN you get one ----
@@ -5786,6 +5824,7 @@ let reifierSurface (name: string) : string option =
     elif name.StartsWith "|orFailed" then Some "orFail"
     elif name.StartsWith "|exitCoded" then Some "exitCode"
     elif name.StartsWith "|execed" then Some "exec"
+    elif name.StartsWith "|lined" then Some "line"
     else None
 
 /// the hover/completion text: summary, then example, then pointer — each
@@ -5945,6 +5984,9 @@ let private entries: (string * Ty * Value) list =
       "|succeeded", TFun(TStr, TFun(TSeq TStr, TBool)), succeededWith []
       "|orFailed", TFun(TStr, TFun(TStr, TFun(TSeq TStr, TUnit))), orFailedWith []
       "|exitCoded", TFun(TStr, TFun(TSeq TStr, TInt)), exitCodedWith []
+      // the single-line capture [D:reify-line] — `cmd | line` : the one
+      // trimmed line of stdout as a string (the one-value-CLI idiom)
+      "|lined", TFun(TStr, TFun(TSeq TStr, TStr)), linedWith []
       // process replacement [D:exec] — diverging (tA), like fail/exit; the
       // stdin twin is refused at parse (no parent to feed a replacement)
       "|execed", TFun(TStr, TFun(TSeq TStr, tA)), execedWith []
@@ -5954,6 +5996,7 @@ let private entries: (string * Ty * Value) list =
       "|succeededIn", TFun(TStr, TFun(TSeq TStr, TFun(TSeq TStr, TBool))), succeededWithIn []
       "|orFailedIn", TFun(TStr, TFun(TStr, TFun(TSeq TStr, TFun(TSeq TStr, TUnit)))), orFailedWithIn []
       "|exitCodedIn", TFun(TStr, TFun(TSeq TStr, TFun(TSeq TStr, TInt))), exitCodedWithIn []
+      "|linedIn", TFun(TStr, TFun(TSeq TStr, TFun(TSeq TStr, TStr))), linedWithIn []
       // diverging [D:fail-bottom]: the result var generalizes, so an arm
       // or branch that fails/exits unifies with the value the others make
       "fail", TFun(TStr, tA), failImpl
@@ -5990,7 +6033,10 @@ let private entries: (string * Ty * Value) list =
       VBuiltin(fun envV -> exitCodedWith (envVarPairs envV))
       "|execedEnv",
       TFun(TSeq(TNamed("EnvVar", [])), TFun(TStr, TFun(TSeq TStr, tA))),
-      VBuiltin(fun envV -> execedWith (envVarPairs envV)) ]
+      VBuiltin(fun envV -> execedWith (envVarPairs envV))
+      "|linedEnv",
+      TFun(TSeq(TNamed("EnvVar", [])), TFun(TStr, TFun(TSeq TStr, TStr))),
+      VBuiltin(fun envV -> linedWith (envVarPairs envV)) ]
     @ bareEntries
 
 let private showImpl: Value = VBuiltin(formatValue >> VStr)
