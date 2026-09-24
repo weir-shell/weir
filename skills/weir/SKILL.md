@@ -871,7 +871,11 @@ print first
   an Option-returning step (map without the re-wrap); `Option.flatten`
   collapses `Option<Option<T>>` to `Option<T>`. `Path.tempRoot ()` is the
   pure query; `Path.newTempDir ()` CREATES (cleanup is yours —
-  `within tmp` is the scoped-cleanup spelling).
+  `within tmp` is the scoped-cleanup spelling). Binding a `newTempDir`
+  then `Dir.delete`/`Dir.deleteAll`-ing it in the same scope is a
+  checker WARNING [D:newtempdir-lint] pointing at `within tmp` (which
+  also cleans up on Ctrl+C/kill); `newTempDir` is for a directory that
+  must OUTLIVE the scope, so an un-deleted bind is silent.
 
 ```weir
 // bind chains an Option step; flatten collapses one nesting level
@@ -1312,7 +1316,12 @@ within tmp d
   interior lines; `cmd | exitCode` STREAMS and gives the code as INT,
   never raises — bind it or match it (`| 130 ->` for cancels); a
   bare/`!()`/`$()` position is a teaching error ($() captures — use
-  `| complete` there). **`succeeds` is exitCode == 0, exactly** —
+  `| complete` there). `cmd | exec` REPLACES the weir process with the
+  command [D:exec] (execve — keeps weir's pid, so as a container
+  entrypoint the app gets signals directly with no forwarding layer);
+  it NEVER returns, diverging like `fail`/`exit`, so it is a legal bare
+  statement and cannot take a piped stdin (there is no parent left to
+  feed it). **`succeeds` is exitCode == 0, exactly** —
   for tools whose nonzero codes AND output are both data (grep,
   fzf), use `| complete` and read the record. An `if`/`elif`
   CONDITION takes the chain inline: `if test -f $p | succeeds then`
@@ -1322,8 +1331,9 @@ within tmp d
   Full inspection: `cmd | complete` gives `{ exitCode; stdout;
   stderr }`; a COMPUTED argv splats into the chain —
   `$author(git commit-tree $@argv | complete) |> _.stdout` (literal
-  head, splatted argv, sigil env; works with all four reifiers,
-  value-headed and interior lines too). `print ()` is silent (unit
+  head, splatted argv, sigil env; works with every reifier,
+  value-headed and interior lines too — except `exec`, which refuses a
+  value head). `print ()` is silent (unit
   prints nothing — the rule that lets orFail sit in effect
   positions).
 - Capture is IN MEMORY: `| complete` holds the whole output as one
@@ -1575,8 +1585,10 @@ type Bad = C of int
   `#help <Module>` glances one member per line (name + its doc's
   first line) and `#find [query]` fuzzy-searches modules and members
   [D:help-find] (fzf with a live doc preview at a tty; a substring
-  fallback piped/without fzf). All REPL scaffolding — see
-  docs/repl.md.
+  fallback piped/without fzf). `#history [N]` shows history (bare =
+  all, `N` = last N) with the file path in its header — the quick way
+  to find where history lives, since `~` never expands. All REPL
+  scaffolding — see docs/repl.md.
 
 ```weir
 let sample = ["{\"id\": 1, \"tags\": [\"a\"]}"]
@@ -2240,7 +2252,7 @@ not the teaching.
 - `Map`: `add` `count` `get` `has` `keys` `ofPairs` `pairs` `remove` `tryGet` `values`
 - `Net`: `portOpen`
 - `Option`: `defaultValue` `defaultWith` `iter` `map` `orElse`
-- `Path`: `combine` `dir` `extension` `fileName` `glob` `newTempDir` `stem` `tempRoot` `under`
+- `Path`: `cacheHome` `combine` `configHome` `dir` `extension` `fileName` `glob` `home` `newTempDir` `stateHome` `stem` `tempRoot` `under` — `home`/`configHome`/`stateHome`/`cacheHome` (each `unit -> string`) are the typed stand-in for `~`/`$HOME`, which never expand in argv: `cat $"{Path.home ()}/.bashrc"`
 - `Poll`: `defaults`
 - `Proc`: `pid` `running` `stop` `tail` `wait`
 - `Server`: `port` `running`

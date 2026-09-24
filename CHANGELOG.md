@@ -1,5 +1,62 @@
 # Changelog
 
+## v0.0.50
+
+### Added
+
+- **`exec`: process replacement.** `cmd | exec` replaces the running weir
+  process with the command (POSIX `execve`; Windows spawns, waits, and
+  exits with the child's code). weir keeps its pid, so as a container
+  entrypoint the application receives signals directly — no forwarding or
+  reaping layer. It is a reifier like `complete`/`orFail`, diverging like
+  `fail`/`exit` (never returns), so it is a legal bare statement; it takes
+  a literal or dynamic (`^$cmd`) head and an env-sigil overlay
+  (`$e(cmd | exec)`), but refuses a piped stdin — there is no parent left
+  to feed the replacement.
+
+- **`Path.home` and the XDG directory trio (`Path.configHome`,
+  `Path.stateHome`, `Path.cacheHome`).** The typed stand-in for `~`/`$HOME`,
+  which never expand in argv — build a path with an interpolation instead:
+  `cat $"{Path.home ()}/.bashrc"`, `cat $"{Path.stateHome ()}/weir/history"`.
+  Each is a pure `unit -> string` query with platform-native output:
+  `configHome`/`stateHome`/`cacheHome` resolve `%APPDATA%`/`%LOCALAPPDATA%`
+  on Windows and `$XDG_CONFIG_HOME`/`$XDG_STATE_HOME`/`$XDG_CACHE_HOME`
+  (falling back to `~/.config`, `~/.local/state`, `~/.cache`) on POSIX —
+  the same resolution the REPL uses for its own history file.
+
+- **`#history` REPL directive.** Shows the session's history with the
+  **file path in the header** (a quick way to find where history lives,
+  since `~` never expands): bare `#history` dumps every entry numbered,
+  `#history N` shows the last N. Entries render one per line, matching the
+  history search's display.
+
+- **A checker warning for the `Path.newTempDir` cleanup footgun.** A
+  `Path.newTempDir ()` binding that is later `Dir.delete`/`Dir.deleteAll`'d
+  in the same scope now draws an advisory warning pointing at `within tmp`,
+  which cleans up on scope exit *and* on Ctrl+C/kill (a manual delete
+  misses the signalled case). `newTempDir` remains the right tool for a
+  directory that must outlive its scope, so a binding with no in-scope
+  delete stays silent. Warning severity — `check` still exits 0.
+
+### Fixed
+
+- **A top-level `if … then … else …` block now parses.** The block form at
+  column 0 (`if c then` + an indented body, then a dedented `else`/`elif`)
+  was rejected as a stray `else` keyword — the assembler treated the
+  dedented `else` as a new statement. A col-0 `else`/`elif` now continues
+  its `if`, the same way a dedented `|`/`until`/`always` already did. (The
+  indented form inside a function body always worked.)
+
+- **`#infer` no longer mis-drafts a heterogeneous object as a homogeneous
+  map.** When sibling objects in a sample array carried different keys whose
+  values only *coincidentally* agreed in an early pair (e.g. a Kubernetes
+  `securityContext` with a `bool` field, then an `int` field two elements
+  later), the pairwise merge committed to `seq<string * bool>` and a later
+  `from json` rejected the int (`expected bool, got Number`). The open-map
+  verdict is now decided over the *whole* set of siblings, so an object with
+  mixed value types stays a typed record; genuinely uniform data-keyed
+  objects (a ConfigMap's `data`) are still drafted as an open mapping.
+
 ## v0.0.49
 
 ### Fixed

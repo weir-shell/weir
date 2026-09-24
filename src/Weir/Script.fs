@@ -245,6 +245,17 @@ let classifyLine (raw: string) : LineKind =
     else
         LineKind.Code
 
+/// a col-0 `else`/`elif` line continues its open `if` [D:toplevel-if-else]
+/// — the top-level block form (`if c then <block>` then a dedented
+/// `else`/`elif <block>`). `else`/`elif` are keywords, so a line whose
+/// leading word is one can only continue an open if, never head a fresh
+/// statement; checked on the trimmed text so an identifier such as
+/// `elsewhere` is untouched. Hoisted out of the assembler's col-0 gate so
+/// that giant function carries no inline `let … in`.
+let continuesOpenIf (raw: string) : bool =
+    let lw = raw.TrimEnd()
+    lw = "else" || lw.StartsWith "else " || lw.StartsWith "elif "
+
 /// Piece classification, inside assembly: the join/structure decisions.
 /// Kind is exclusive; Marker and OpensCompound are orthogonal fields —
 /// `let d = yaml` is a let head AND arms the yaml district.
@@ -1334,6 +1345,11 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                             // a col-0 `always` continues its bare within
                             // [D:within-always]
                             || raw.TrimEnd() = "always"
+                            // a col-0 `else`/`elif` continues its `if` — the
+                            // top-level block form; the ElseHead join below
+                            // already handles it, only this gate excluded a
+                            // dedented else/elif [D:toplevel-if-else]
+                            || continuesOpenIf raw
                             || inOpenBrace
                             || inOpenLambda
                         then
@@ -3638,6 +3654,93 @@ type ReenumTracker() =
     member _.Flush() : ReenumFinding list =
         if poisoned then [] else List.ofSeq found
 
+// ---- the newTempDir footgun [D:newtempdir-lint]: whole-file threading -----
+// A newTempDir binding and its delete can sit any number of statements
+// apart (`let d = Path.newTempDir ()` … work … `Dir.deleteAll d`), so the
+// pairing is a WHOLE-FILE judgement — the re-enumeration tracker's shape
+// exactly. Fed post-check per statement, flushed after the fold; WARNING
+// severity (advisory, check still exits 0); poisoned on any errored
+// statement (one real error beats advisory noise). Modules never bind a
+// command/effect `let`, so the pairing cannot arise there — the tracker is
+// only fed for scripts.
+
+type TempDirFinding =
+    { TLine: int
+      TCol: int
+      TEndCol: int
+      TMessage: string }
+
+type TempDirTracker() =
+    // top-level newTempDir binders: name -> id
+    let tracked = System.Collections.Generic.Dictionary<string, int>()
+    // every bind id seen (top-level + block-local) still awaiting a delete
+    let openIds = System.Collections.Generic.HashSet<int>()
+    let found = ResizeArray<TempDirFinding>()
+    let mutable nextId = 0
+    let mutable poisoned = false
+
+    let fresh () =
+        let id = nextId
+        nextId <- nextId + 1
+        id
+
+    /// walk one statement tree: a delete of an open binder (top-level or a
+    /// qualifying block-local) warns ONCE at the delete site
+    let consume (ll: LogicalLine) (te: Check.TypedExpr) =
+        let tracked0 =
+            tracked |> Seq.map (fun kv -> kv.Key, kv.Value) |> Map.ofSeq
+
+        for ev in Check.tempDirEvents fresh tracked0 te do
+            match ev with
+            | Check.TempBind(id, _) -> openIds.Add id |> ignore
+            | Check.TempDelete(id, name, span, isAll) ->
+                if openIds.Remove id then
+                    // a matched top-level binder is resolved — drop it so a
+                    // later stray delete of a reused name does not re-warn
+                    for kv in tracked |> Seq.filter (fun kv -> kv.Value = id) |> Seq.toList do
+                        tracked.Remove kv.Key |> ignore
+
+                    let l, c = translate ll span.Start.Col
+                    let _, ec = translate ll span.End.Col
+                    let deleteCall = if isAll then "Dir.deleteAll" else "Dir.delete"
+
+                    found.Add
+                        { TLine = l
+                          TCol = c
+                          TEndCol = max (c + 1) ec
+                          TMessage =
+                            $"'{name}' is a Path.newTempDir directory later removed with {deleteCall} — "
+                            + $"use a 'within tmp {name}' block instead: it removes the directory on scope exit "
+                            + "AND on Ctrl+C/kill, which a manual delete misses (newTempDir is for a directory "
+                            + "that must OUTLIVE the scope)" }
+
+    member _.Poison() = poisoned <- true
+
+    member _.Feed (ll: LogicalLine) (chk: CheckedStatement) =
+        match chk.Kind with
+        | KType _
+        | KSig _
+        | KModule _
+        | KImport _ -> ()
+        | KLet(name, _, te) ->
+            consume ll te
+            tracked.Remove name |> ignore
+
+            if Check.isNewTempDirCall te then
+                let id = fresh ()
+                tracked[name] <- id
+                openIds.Add id |> ignore
+        | KLetPat(pat, _, te) ->
+            consume ll te
+
+            for n, _ in Check.patNameSpans pat do
+                tracked.Remove n |> ignore
+        | KCmd te
+        | KExpr te -> consume ll te
+
+    member _.Flush() : TempDirFinding list =
+        if poisoned then [] else List.ofSeq found
+
 // ---- the module loader [D:modules-v1] ------------------------------------
 // A module's OWN base env: builtins (strict) + prelude + Self, with
 // Self.scriptPath = the module's own path. Pure — no stdin/args/Session
@@ -5552,6 +5655,11 @@ let analyzeLines
         // `let` is already the module-rule error)
         let reenumTracker = ReenumTracker()
 
+        // the newTempDir footgun [D:newtempdir-lint]: same per-statement
+        // feed / post-fold flush; scripts only (modules cannot pair a
+        // newTempDir bind with a delete)
+        let tempDirTracker = TempDirTracker()
+
         // budget stop-at-first [D:budget-stop-first]: the per-statement
         // inference budget is a whole-file DoS when the multi-error fold
         // multiplies it across independent burning statements. A budget
@@ -5699,12 +5807,14 @@ let analyzeLines
 
                 if not isModule then
                     reenumTracker.Feed ll chk
+                    tempDirTracker.Feed ll chk
 
                 stmts.Add(ll, chk)
                 tenv <- chk.Env
             | Error d ->
                 unusedTracker.Poison()
                 reenumTracker.Poison()
+                tempDirTracker.Poison()
                 d.Warnings |> List.iter warn
 
                 // [PLAN-diagnostics-arc B5+B6]: an ERRORED statement
@@ -5882,6 +5992,19 @@ let analyzeLines
                   Severity = "warning"
                   Code = "re-enumeration"
                   Message = f.RMessage })
+
+        // the newTempDir footgun [D:newtempdir-lint] lands on the delete
+        // site — warning severity, so check still exits 0
+        (for f in tempDirTracker.Flush() do
+            diags.Add
+                { File = path
+                  Line = f.TLine
+                  Col = f.TCol
+                  EndLine = Some f.TLine
+                  EndCol = Some f.TEndCol
+                  Severity = "warning"
+                  Code = "temp-dir-cleanup"
+                  Message = f.TMessage })
 
         (let sigLoadDiags, sigInfos = loadSigs path sigDecls
 

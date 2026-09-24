@@ -833,10 +833,24 @@
       "name": "Path",
       "members": [
         {
+          "name": "cacheHome",
+          "signature": "Path.cacheHome () : string",
+          "summary": "The base directory for user cache: \u0060$XDG_CACHE_HOME\u0060 (or \u0060~/.cache\u0060) on POSIX, \u0060%LOCALAPPDATA%\u0060 on Windows.",
+          "example": "Path.cacheHome ()",
+          "pointer": null
+        },
+        {
           "name": "combine",
           "signature": "Path.combine (a: string) (b: string) : string",
           "summary": "Join two path segments.",
           "example": "Path.combine \u0022a\u0022 \u0022b\u0022",
+          "pointer": null
+        },
+        {
+          "name": "configHome",
+          "signature": "Path.configHome () : string",
+          "summary": "The base directory for user config: \u0060$XDG_CONFIG_HOME\u0060 (or \u0060~/.config\u0060) on POSIX, \u0060%APPDATA%\u0060 on Windows.",
+          "example": "Path.configHome ()",
           "pointer": null
         },
         {
@@ -868,6 +882,13 @@
           "pointer": null
         },
         {
+          "name": "home",
+          "signature": "Path.home () : string",
+          "summary": "The user\u0027s home directory (a pure query; no trailing separator, platform-native). The typed stand-in for \u0060~\u0060/\u0060$HOME\u0060, which never expand in argv \u2014 build a path with \u0060$\u0022{Path.home ()}/.bashrc\u0022\u0060.",
+          "example": "Path.home ()",
+          "pointer": null
+        },
+        {
           "name": "newTempDir",
           "signature": "Path.newTempDir () : string",
           "summary": "Create a fresh unique directory under the temp root and return its path (the same naming \u0060within tmp\u0060 uses). Cleanup is the caller\u0027s or the OS\u0027s \u2014 use \u0060within tmp dir\u0060 for removal on scope exit (which the exit hook also sweeps on Ctrl\u002BC/kill); a newTempDir directory outlives every scope and is never removed automatically.",
@@ -879,6 +900,13 @@
           "signature": "Path.normalize (path: string) : string",
           "summary": "Collapse \u0027.\u0027 and \u0027..\u0027 segments lexically \u2014 no filesystem touch, no cwd, symlinks never followed. combine keeps \u0027..\u0027 (paths you control), under refuses an escape (paths you do not); normalize is the third spelling, for the legitimate escape both siblings decline. A relative path keeps its leading \u0027..\u0027s; at an absolute root \u0027..\u0027 swallows.",
           "example": "Path.normalize \u0022src/App/../Core/Core.csproj\u0022",
+          "pointer": null
+        },
+        {
+          "name": "stateHome",
+          "signature": "Path.stateHome () : string",
+          "summary": "The base directory for user state: \u0060$XDG_STATE_HOME\u0060 (or \u0060~/.local/state\u0060) on POSIX, \u0060%LOCALAPPDATA%\u0060 on Windows. Where the REPL keeps its history.",
+          "example": "Path.stateHome ()",
           "pointer": null
         },
         {
@@ -1901,6 +1929,13 @@
       "summary": "Reify a command chain to a Completed record (exitCode, stdout, stderr).",
       "example": null,
       "pointer": "the reifier law: output goes where the meaning goes."
+    },
+    {
+      "name": "exec",
+      "signature": null,
+      "summary": "Replace the current process with the command (execve) \u2014 never returns; the app keeps weir\u0027s pid, so as a container entrypoint it gets signals directly. Diverging, like fail/exit; cannot take piped stdin.",
+      "example": null,
+      "pointer": "the reifier law: the command becomes the process."
     },
     {
       "name": "exit",

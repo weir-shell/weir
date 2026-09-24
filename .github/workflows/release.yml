@@ -120,6 +120,16 @@ jobs:
             win-*) cp "$BIN" "weir-${{ github.ref_name }}-${{ matrix.rid }}.exe" ;;
             *)     cp "$BIN" "weir-${{ github.ref_name }}-${{ matrix.rid }}" ;;
           esac
+      # the ARTIFACT, not just the source tree, must uphold the output-hygiene
+      # guarantees — every strix retest found a fix "correct in source, still
+      # present in the shipped binary". The binary self-tests before it can ship.
+      - name: security smoke — the packaged binary upholds the hygiene guarantees
+        run: |
+          case "${{ matrix.rid }}" in
+            win-*) BIN=src/Weir/bin/Release/net10.0/${{ matrix.rid }}/publish/Weir.exe ;;
+            *)     BIN=src/Weir/bin/Release/net10.0/${{ matrix.rid }}/publish/Weir ;;
+          esac
+          "$BIN" ci/release-smoke.weir --bin "$BIN"
       # signed build provenance [D:install-checksum-scope]: the installer's
       # embedded checksum is the primary trust anchor; this adds an
       # independent, OIDC-signed record that THIS repo's Actions built the

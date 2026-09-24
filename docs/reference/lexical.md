@@ -310,6 +310,7 @@ three contexts:
 | `#echo` | the unforced-echo cap | REPL prompt, runs now |
 | `#infer` | draft named types from a JSON/YAML sample | REPL prompt, runs now |
 | `#save` | distill the session to a runnable script | REPL prompt, runs now |
+| `#history` | show history (`#history` all, `#history N` last N); prints the file path | REPL prompt, runs now |
 | `#quit` | leave the REPL | REPL prompt, runs now |
 
 The [REPL manual](../repl.md) covers the prompt set and the init

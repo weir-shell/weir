@@ -273,6 +273,76 @@ let runInherited (s: Spec) : unit =
     finally
         reap p
 
+// process REPLACEMENT [D:exec] — execvp, not spawn: the current weir image
+// is REPLACED by the command and keeps its pid, so as a container
+// entrypoint (PID 1) the app receives signals DIRECTLY, with no weir layer
+// to forward or reap. NEVER returns on POSIX success. Windows has no
+// execve (CreateProcess only), so it spawns the child in the foreground,
+// waits, and returns the exit code for the caller to exit with — the same
+// observable end (weir gone, the app's status is the script's) minus the
+// pid handoff. The env overlay and cwd land on THIS process first, so the
+// replaced image inherits them; execvp searches PATH for a bare name.
+[<System.Runtime.InteropServices.DllImport("libc",
+                                           SetLastError = true,
+                                           CharSet = System.Runtime.InteropServices.CharSet.Ansi)>]
+extern int private execvp(string file, string[] argv)
+
+// execvp reads the C `environ`, which .NET's SetEnvironmentVariable does
+// NOT sync to on Unix [D:exec] — so the env overlay must land via libc
+// setenv (overwrite = 1) for the replacement image to inherit it.
+[<System.Runtime.InteropServices.DllImport("libc",
+                                           SetLastError = true,
+                                           CharSet = System.Runtime.InteropServices.CharSet.Ansi)>]
+extern int private setenv(string name, string value, int overwrite)
+
+let exec (s: Spec) : unit =
+    // the same boundary spawn enforces [D:spawn-nul-funnel]
+    nulRefusal "the command program name" s.Prog
+
+    if s.Prog = "" then
+        failwith "the command program name is empty — nothing to run"
+
+    for a in s.Args do
+        nulRefusal "a command argument" a
+
+    let ambient =
+        match s.Ambient with
+        | Some snap -> snap
+        | None -> Session.envOverlay () |> List.rev |> List.collect id
+
+    let isWindows = System.OperatingSystem.IsWindows()
+
+    for k, v in List.append ambient s.Env do
+        nulRefusal $"the env key '{k}'" k
+        nulRefusal $"the env value for '{k}'" v
+        System.Environment.SetEnvironmentVariable(k, v)
+        // POSIX execvp reads the C environ, not .NET's managed copy —
+        // setenv so the replacement inherits the overlay; Windows spawns
+        // (CreateProcess inherits the process env block set above)
+        if not isWindows then
+            setenv (k, v, 1) |> ignore
+
+    match s.Cwd with
+    | Some wd when System.IO.Directory.Exists wd -> System.IO.Directory.SetCurrentDirectory wd
+    | Some wd -> failwith $"the working directory no longer exists: {wd}"
+    | None -> ()
+
+    if System.OperatingSystem.IsWindows() then
+        // no execve: run foreground, then HARD-exit with the child's code
+        // (no scope unwind — exec discards the image, matching POSIX)
+        let p = start false false s
+        p.WaitForExit()
+        let code = p.ExitCode
+        reap p
+        System.Environment.Exit code
+    else
+        // argv[0] is the program name by convention; the array is
+        // NULL-terminated (the null element marshals to a NULL pointer)
+        let argv = Array.append (List.toArray (s.Prog :: s.Args)) [| null |]
+        execvp (s.Prog, argv) |> ignore
+        // execvp returns ONLY on failure — success replaced the image
+        failwith $"command not found or not executable: {s.Prog}"
+
 // stdout relayed to the console as it arrives; the code as the result
 // [D:exit-reifiers]: output goes to the human, the code is the meaning
 let streamCodeOf (s: Spec) : int =

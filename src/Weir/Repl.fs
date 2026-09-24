@@ -408,25 +408,10 @@ type private ReplConfig =
       // wiring exists now (the session cap), so the key is real again
       EchoElems: int }
 
-let private xdgHome (var: string) (fallback: string) =
-    match Environment.GetEnvironmentVariable var with
-    | null
-    | "" -> Path.Combine(Environment.GetFolderPath Environment.SpecialFolder.UserProfile, fallback)
-    | v -> v
-
-// Windows has no XDG: config -> %APPDATA%, state -> %LOCALAPPDATA%
-// [D:windows-v1]. POSIX unchanged (XDG var, else ~/.config | ~/.local/state).
-let private configHome () =
-    if OperatingSystem.IsWindows() then
-        Environment.GetFolderPath Environment.SpecialFolder.ApplicationData
-    else
-        xdgHome "XDG_CONFIG_HOME" ".config"
-
-let private stateHome () =
-    if OperatingSystem.IsWindows() then
-        Environment.GetFolderPath Environment.SpecialFolder.LocalApplicationData
-    else
-        xdgHome "XDG_STATE_HOME" ".local/state"
+// config/state dirs come from Builtins [D:path-home] — the ONE impl the
+// Path.home/configHome/stateHome members also expose (was duplicated here)
+let private configHome () = Builtins.configDir ()
+let private stateHome () = Builtins.stateDir ()
 
 let private defaultConfig =
     { HistorySize = 5000
@@ -676,6 +661,36 @@ let private appendHistory (entry: string) =
             File.AppendAllText(historyFile, encodeEntry entry + Environment.NewLine)
         with _ ->
             ()
+
+// #history [N] [D:repl-history]: dump the session's history with the
+// file's PATH in the header — a user cannot cat what they cannot find,
+// and nothing in argv expands (`~` is a literal), so the path IS the
+// answer to "where does history live". Entries render DECODED, one per
+// line via displayEntry (a multi-line entry stays one greppable line —
+// the fzf display form), numbered by their real position. The in-memory
+// `history` is the source, so the dump reflects THIS session including
+// the line-per-entry appends not yet load-capped. Bare = all (cat
+// parity); a positive N = the last N (tail).
+let private historyDirective (arg: string) : string =
+    let render (startIdx: int) =
+        if history.Count = 0 then
+            $"history at {historyFile} (empty)"
+        else
+            let width = history.Count.ToString().Length
+
+            let lines =
+                [ for i in startIdx .. history.Count - 1 ->
+                      let n = (i + 1).ToString().PadLeft width
+                      $"  {n}  {displayEntry history[i]}" ]
+
+            String.concat "\n" ($"history at {historyFile} ({history.Count} entries)" :: lines)
+
+    match arg.Trim() with
+    | "" -> render 0
+    | a ->
+        match Int32.TryParse a with
+        | true, n when n > 0 -> render (max 0 (history.Count - n))
+        | _ -> "#history takes a positive count — e.g. #history 20 (bare = all)"
 
 // Ctrl+Left/Right navigation; '.' stays a separator here (unlike
 // completion's wordStartAt) so field chains hop segment by segment
@@ -1988,6 +2003,7 @@ let private helpDirective (color: bool) (te: TypeEnv) (arg: string) : string =
         + "  #infer [<src>] from <json|jsonl|yaml|table> as <Name>\n"
         + "                        //   draft named types from a sample (src defaults to 'it')\n"
         + "  #save <path>          // dump the session's accepted lines to a runnable .weir\n"
+        + "  #history [<n>]        // show history (bare = all, <n> = last n); prints the file path\n"
         + "  #alias [name = cmd …] // bare lists; a command-head alias (init.weir is canonical)\n"
         + "  #quit                 // leave the REPL (Ctrl+D works too)\n\n"
         + "Modules:\n"
@@ -2720,6 +2736,9 @@ let rec private loop (state: State) =
             loop (inferDirective state (t.Substring(6).Trim()))
         elif t = "#save" || t.StartsWith "#save " then
             saveDirective state (t.Substring(5).Trim())
+            loop state
+        elif t = "#history" || t.StartsWith "#history " then
+            Console.WriteLine(historyDirective (t.Substring(8).Trim()))
             loop state
         elif t = "#alias" || t.StartsWith "#alias " then
             // a live command-head alias [D:command-head-alias]. init.weir is

@@ -24,7 +24,7 @@ let private keywords = Weir.Parser.keywords - unsuggestedKeywords |> Set.toList
 // first. Both completion slots read this: the line-head '#' slot (bare
 // names — the editor's word starts after the '#') and the empty-prompt
 // head [D:empty-prompt-directives] (the '#'-prefixed teaching set).
-let sessionDirectives = [ "help"; "find"; "echo"; "infer"; "save"; "quit" ]
+let sessionDirectives = [ "help"; "find"; "echo"; "infer"; "save"; "history"; "quit" ]
 
 // the `#help` DOCUMENTABLE universe, one source [D:help-arg-complete]:
 // the bare names `#help <name>` can DOCUMENT — modules, top-level

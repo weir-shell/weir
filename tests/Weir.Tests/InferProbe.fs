@@ -543,6 +543,26 @@ let inferRules =
                   Expect.isFalse (out.Contains "metadata: seq<") "never a mapping"
           }
 
+          test "differing sibling keys with MIXED value types stay a record, not a coincidental bool map [D:repl-infer]" {
+              // the k8s securityContext bug: sibling objects carry different
+              // keys (runAsNonRoot / readOnly / runAsGroup) whose values only
+              // COINCIDENTALLY agree in the first pair (bool, bool), then an
+              // int. The pairwise fold drafted Map<string, bool> and a later
+              // `from json` REJECTED the int ("expected bool, got Number").
+              // Value uniformity is now judged over ALL siblings, so mixed
+              // values keep a record with each field typed.
+              let sample =
+                  "{\"items\": [{\"sc\": {\"runAsNonRoot\": true}}, {\"sc\": {\"readOnly\": false}}, {\"sc\": {\"runAsGroup\": 1000}}]}"
+
+              match Infer.infer Parser.keywords takenBase Infer.Json "PodList" [ sample ] with
+              | Error e -> failtestf "infer failed: %s" e
+              | Ok(decls, _) ->
+                  let out = String.concat "\n" decls
+                  Expect.isFalse (out.Contains "sc: seq<") "sc is NOT drafted as an open mapping"
+                  Expect.stringContains out "runAsGroup: Option<int>" "the int field survives as a typed record field"
+                  Expect.stringContains out "runAsNonRoot: Option<bool>" "the bool field stays bool"
+          }
+
           test "an empty {} drafts seq<string * string> and READS on both boundaries [D:yaml-empty-flow]" {
               // json draft + note
               match Infer.infer Parser.keywords takenBase Infer.Json "Spec" [ "{\"resources\": {}}" ] with

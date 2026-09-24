@@ -383,6 +383,27 @@ let private exitCodedWith (overlay: (string * string) list) : Value =
                 VInt(int64 (Proc.streamCode overlay (Proc.resolveProg prog) argv))
             | _ -> unreachable "the checker rejects 'exitCoded' on these arguments"))
 
+// process replacement [D:exec]: Proc.exec REPLACES the image (execve) —
+// it NEVER returns on success, and raises on a missing/failed exec, so the
+// VBuiltin's own result is unreachable. Diverging (typed tA), like
+// fail/exit. The overlay lands on this process before the handoff, so the
+// replacement inherits it (the env-sigil route `$e(cmd | exec)`).
+let private execedWith (overlay: (string * string) list) : Value =
+    VBuiltin(fun progV ->
+        VBuiltin(fun argsV ->
+            match progV, argsV with
+            | VStr prog, VSeq args ->
+                Proc.exec
+                    { Prog = Proc.resolveProg prog
+                      Args = argStrings args
+                      Env = overlay
+                      Input = None
+                      Cwd = None
+                      Ambient = None }
+
+                unreachable "exec returned — execve replaces the image or raises"
+            | _ -> unreachable "the checker rejects 'exec' on these arguments"))
+
 // stdin-carrying reifier twins [D:value-headed-pipe]: `xs | grep foo |
 // complete` reifies the segment WITH the value as stdin. INTERNAL —
 // the public expression-position spellings (completed/succeeded/…) keep
@@ -2107,6 +2128,39 @@ let private pathNormalize (p: string) : string =
     elif body = "" then "."
     else body
 
+// home + XDG dirs [D:path-home], the ONE implementation the REPL's
+// config/state paths also use: Windows maps to SpecialFolder
+// (%APPDATA% / %LOCALAPPDATA%), POSIX to the XDG_* var else the ~
+// fallback. Re-read per call — the environment can change. These replace
+// the argv-expansion weir does NOT do (no `~`, no `$HOME`): a typed value
+// to interpolate, injection-proof by construction.
+let xdgDir (var: string) (fallback: string) : string =
+    match System.Environment.GetEnvironmentVariable var with
+    | null
+    | "" -> System.IO.Path.Combine(System.Environment.GetFolderPath System.Environment.SpecialFolder.UserProfile, fallback)
+    | v -> v
+
+let homeDir () : string =
+    System.Environment.GetFolderPath System.Environment.SpecialFolder.UserProfile
+
+let configDir () : string =
+    if System.OperatingSystem.IsWindows() then
+        System.Environment.GetFolderPath System.Environment.SpecialFolder.ApplicationData
+    else
+        xdgDir "XDG_CONFIG_HOME" ".config"
+
+let stateDir () : string =
+    if System.OperatingSystem.IsWindows() then
+        System.Environment.GetFolderPath System.Environment.SpecialFolder.LocalApplicationData
+    else
+        xdgDir "XDG_STATE_HOME" ".local/state"
+
+let cacheDir () : string =
+    if System.OperatingSystem.IsWindows() then
+        System.Environment.GetFolderPath System.Environment.SpecialFolder.LocalApplicationData
+    else
+        xdgDir "XDG_CACHE_HOME" ".cache"
+
 let private pathMembers: (string * Ty * Value) list =
     [ "extension", TFun(TStr, TStr), str1 "extension" Path.GetExtension
       "fileName", TFun(TStr, TStr), str1 "fileName" Path.GetFileName
@@ -2121,6 +2175,12 @@ let private pathMembers: (string * Ty * Value) list =
       "normalize", TFun(TStr, TStr), str1 "normalize" pathNormalize
       "under", TFun(TStr, TFun(TStr, TStr)), pathUnderImpl
       "glob", TFun(TStr, TSeq TStr), globImpl
+      // home + XDG dirs [D:path-home] — the typed replacement for `~`/`$HOME`
+      // (weir expands nothing in argv): `cat $"{Path.home ()}/.bashrc"`
+      "home", TFun(TUnit, TStr), VBuiltin(fun _ -> VStr(homeDir ()))
+      "configHome", TFun(TUnit, TStr), VBuiltin(fun _ -> VStr(configDir ()))
+      "stateHome", TFun(TUnit, TStr), VBuiltin(fun _ -> VStr(stateDir ()))
+      "cacheHome", TFun(TUnit, TStr), VBuiltin(fun _ -> VStr(cacheDir ()))
       // the QUERY (pure): the system temp root, no trailing separator
       "tempRoot",
       TFun(TUnit, TStr),
@@ -5113,6 +5173,30 @@ let builtinDocs: Map<string, BuiltinDoc> =
               (Some "Path.glob \"*.nope123\" |> Seq.freeze")
               None
           |> named [ "pattern" ]
+          "Path.home",
+          (bd
+              "The user's home directory (a pure query; no trailing separator, platform-native). The typed stand-in for `~`/`$HOME`, which never expand in argv — build a path with `$\"{Path.home ()}/.bashrc\"`."
+              (Some "Path.home ()")
+              None
+           |> named [ "()" ])
+          "Path.configHome",
+          (bd
+              "The base directory for user config: `$XDG_CONFIG_HOME` (or `~/.config`) on POSIX, `%APPDATA%` on Windows."
+              (Some "Path.configHome ()")
+              None
+           |> named [ "()" ])
+          "Path.stateHome",
+          (bd
+              "The base directory for user state: `$XDG_STATE_HOME` (or `~/.local/state`) on POSIX, `%LOCALAPPDATA%` on Windows. Where the REPL keeps its history."
+              (Some "Path.stateHome ()")
+              None
+           |> named [ "()" ])
+          "Path.cacheHome",
+          (bd
+              "The base directory for user cache: `$XDG_CACHE_HOME` (or `~/.cache`) on POSIX, `%LOCALAPPDATA%` on Windows."
+              (Some "Path.cacheHome ()")
+              None
+           |> named [ "()" ])
 
           // ---- File (read/write touch the filesystem — no inline example) ----
           "File.exists",
@@ -5641,6 +5725,11 @@ let builtinDocs: Map<string, BuiltinDoc> =
               (Some "the reifier law: output streams, the exit is the meaning.")
           "exitCode",
           bd "Reify a command to its integer exit code." None (Some "the reifier law: the meaning is the code.")
+          "exec",
+          bd
+              "Replace the current process with the command (execve) — never returns; the app keeps weir's pid, so as a container entrypoint it gets signals directly. Diverging, like fail/exit; cannot take piped stdin."
+              None
+              (Some "the reifier law: the command becomes the process.")
 
           // ---- types: a hover renders the structure; the value here is
           // WHEN you get one ----
@@ -5696,6 +5785,7 @@ let reifierSurface (name: string) : string option =
     elif name.StartsWith "|succeeded" then Some "succeeds"
     elif name.StartsWith "|orFailed" then Some "orFail"
     elif name.StartsWith "|exitCoded" then Some "exitCode"
+    elif name.StartsWith "|execed" then Some "exec"
     else None
 
 /// the hover/completion text: summary, then example, then pointer — each
@@ -5855,6 +5945,9 @@ let private entries: (string * Ty * Value) list =
       "|succeeded", TFun(TStr, TFun(TSeq TStr, TBool)), succeededWith []
       "|orFailed", TFun(TStr, TFun(TStr, TFun(TSeq TStr, TUnit))), orFailedWith []
       "|exitCoded", TFun(TStr, TFun(TSeq TStr, TInt)), exitCodedWith []
+      // process replacement [D:exec] — diverging (tA), like fail/exit; the
+      // stdin twin is refused at parse (no parent to feed a replacement)
+      "|execed", TFun(TStr, TFun(TSeq TStr, tA)), execedWith []
       // stdin-carrying twins — the value-headed reifier route
       // (`xs | grep | complete`) [D:value-headed-pipe]
       "|completedIn", TFun(TStr, TFun(TSeq TStr, TFun(TSeq TStr, TNamed(completedDef.Name, [])))), completedWithIn []
@@ -5894,7 +5987,10 @@ let private entries: (string * Ty * Value) list =
       VBuiltin(fun envV -> orFailedWith (envVarPairs envV))
       "|exitCodedEnv",
       TFun(TSeq(TNamed("EnvVar", [])), TFun(TStr, TFun(TSeq TStr, TInt))),
-      VBuiltin(fun envV -> exitCodedWith (envVarPairs envV)) ]
+      VBuiltin(fun envV -> exitCodedWith (envVarPairs envV))
+      "|execedEnv",
+      TFun(TSeq(TNamed("EnvVar", [])), TFun(TStr, TFun(TSeq TStr, tA))),
+      VBuiltin(fun envV -> execedWith (envVarPairs envV)) ]
     @ bareEntries
 
 let private showImpl: Value = VBuiltin(formatValue >> VStr)

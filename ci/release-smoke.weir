@@ -1,0 +1,54 @@
+#!/usr/bin/env weir
+// Release SECURITY SMOKE [D:release-artifact-smoke]: the strix retests
+// found every credential/output-hygiene fix "correct in source, still
+// present in the SHIPPED binary" — a release-publishing gap, not a code
+// one. A guarantee that lives only in an unreleased tree protects no user.
+// This gate runs the promises against a BINARY (the packaged artifact), so
+// a build that regressed one cannot reach "released".
+//
+//   weir ci/release-smoke.weir --bin <path-to-weir>
+//
+// The probes use the transport-error path (a bogus host — no server) and
+// file-run rendering (no tty), so the gate is self-contained and portable.
+
+type Cli = { bin: string }
+
+let cli = Args.load Cli
+let bin = cli.bin
+
+// run <bin> on a one-off script; return the whole diagnostic stream and exit
+let probe program =
+    within tmp d
+        let path = $"{d}/probe.weir"
+        program |> File.write path
+        let r = ^$bin $path | complete
+        let text = Seq.append r.stdout r.stderr |> Str.join "\n"
+        (text, r.exitCode)
+
+// 1. HTTP URL userinfo is REDACTED in error output (CWE-532)
+let out1, _ = probe [ @"let _r = Http.fetch ""http://alice:hunter2@nonexistent.invalid/x""" ]
+if Str.contains "alice:hunter2" out1 then
+    fail $"REDACTION: URL userinfo printed verbatim in the error — {out1}"
+if not (Str.contains "***" out1) then
+    fail $"REDACTION: no *** mask in the transport error — {out1}"
+print "ok: HTTP userinfo redacted (user:pass -> ***)"
+
+// 2. parse/decode error output is BOUNDED, not proportional to input (CWE-1286)
+let out2, _ =
+    probe [ @"let big = Str.replicate 500000 ""!"""; "let _b = Bytes.fromBase64 big" ]
+let n2 = Str.length out2
+if n2 > 2000 then
+    fail $"BOUNDED-OUTPUT: a 500k invalid input yielded {n2} bytes of error (unbounded echo)"
+print $"ok: parse/decode error bounded ({n2} bytes for a 500k input)"
+
+// 3. a deeply-nested value does NOT crash the process (CWE-674, file-run render)
+let _, code3 =
+    probe
+        [ "type N = { d: int; next: Option<N> }"
+          "let deep = [1..200000] |> Seq.fold (fun acc i -> N { d = i; next = Some acc }) (N { d = 0; next = None })"
+          "print (Str.length (show deep))" ]
+if code3 <> 0 then
+    fail $"DEEP-VALUE: a 200k-deep value crashed the binary (exit {code3} — likely SIGSEGV/SIGABRT)"
+print "ok: deep value renders without crashing (exit 0)"
+
+print $"release-smoke: all security guarantees hold in {bin}"

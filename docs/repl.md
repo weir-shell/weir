@@ -166,6 +166,20 @@ time; session directives (`#help`, `#quit`) run now. One glyph, two
 lifetimes — the [reference table](reference/lexical.md#directives)
 maps every directive to its context.
 
+## History
+
+`#history` shows the session's history, the **file path first** —
+`history at <path> (N entries)` — because nothing in argv expands
+(`~` is a literal word), so the path is the answer to "where does
+history live". Bare `#history` dumps every entry, numbered;
+`#history 20` shows the last twenty. Each entry renders on one line
+(a multi-line entry joins with `⏎`, so it stays greppable), the way
+the history search displays them. The history file itself lives at
+`$XDG_STATE_HOME/weir/history` (else `~/.local/state/weir/history`;
+`%LOCALAPPDATA%\weir\` on Windows), created `0600` — a REPL line can
+carry a secret. `Path.stateHome ()` computes that base if you want to
+read it from a script.
+
 ## The last result: `it`
 
 Expressions and commands rebind `it` — always, unit included (FSI's

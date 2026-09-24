@@ -1146,6 +1146,7 @@ let rec private chainReifier (e: Expr) : string option =
     | EVar v when v.StartsWith "|succeeded" -> Some "succeeds"
     | EVar v when v.StartsWith "|exitCoded" -> Some "exitCode"
     | EVar v when v.StartsWith "|orFailed" -> Some "orFail"
+    | EVar v when v.StartsWith "|execed" -> Some "exec"
     | EApp(f, _) -> chainReifier f
     | EPipe(l, r) -> chainReifier r |> Option.orElseWith (fun () -> chainReifier l)
     | _ -> None
@@ -3822,6 +3823,10 @@ type private Seg =
     | SucceedsMarker of Span
     | ExitCodeMarker of Span
     | OrFailMarker of Expr * Span
+    // process replacement [D:exec] — the diverging reifier: it never
+    // returns (execve replaces the image), so it ends a command chain
+    // like the rest of the family
+    | ExecMarker of Span
 
 let private reifierEnd =
     // the let-RHS chain also ends at bare `in` [D:block-let-cmd] —
@@ -3890,6 +3895,14 @@ let private exitCodeMarker =
     )
     |>> fun (_, span) -> ExitCodeMarker span
 
+let private execMarker =
+    attempt (
+        spanned (pstring "exec" .>> notFollowedBy (satisfy cmdWordChar))
+        .>> ws
+        .>> reifierEnd
+    )
+    |>> fun (_, span) -> ExecMarker span
+
 // fold a parsed pipeline — an initial head expression plus piped stages
 // and reifier markers — into one Expr. Shared by the command-headed
 // chain and the value-headed chain [D:value-headed-pipe]: the ONLY
@@ -3927,13 +3940,14 @@ let private foldChain (h: Expr) (rest: ((string * Span) * Seg) list) : Result<Ex
                     Result.Ok
                         { Kind = EPipe(acc, seg)
                           Span = Span.union acc.Span seg.Span }
-                | (CompleteMarker _ | SucceedsMarker _ | ExitCodeMarker _ | OrFailMarker _ as marker) ->
+                | (CompleteMarker _ | SucceedsMarker _ | ExitCodeMarker _ | OrFailMarker _ | ExecMarker _ as marker) ->
                     let stageName, mspan, plainVar, envVar, stdinVar, extraArgs =
                         match marker with
                         | CompleteMarker sp -> "complete", sp, "|completed", "|completedEnv", "|completedIn", []
                         | SucceedsMarker sp -> "succeeds", sp, "|succeeded", "|succeededEnv", "|succeededIn", []
                         | ExitCodeMarker sp -> "exitCode", sp, "|exitCoded", "|exitCodedEnv", "|exitCodedIn", []
                         | OrFailMarker(msg, sp) -> "orFail", sp, "|orFailed", "|orFailedEnv", "|orFailedIn", [ msg ]
+                        | ExecMarker sp -> "exec", sp, "|execed", "|execedEnv", "|execedIn", []
                         | Stage _ -> "", acc.Span, "", "", "", []
 
                     // a chain head is command-ish (an external segment or a
@@ -4030,6 +4044,14 @@ let private foldChain (h: Expr) (rest: ((string * Span) * Seg) list) : Result<Ex
                     // is a value: a command→command LHS is the multi-external
                     // case below, rejected as always (the family's single-segment
                     // rule, unchanged).
+                    // exec REPLACES this process — there is no parent left to
+                    // feed a piped stdin, so the value-headed route is refused
+                    // [D:exec] (the stdin twin is never emitted)
+                    | EPipe(stdinE, { Kind = ECmd(_, _, None) }) when not (isCommandish stdinE) && stageName = "exec" ->
+                        Result.Error(
+                            "'exec' replaces the current process, so it cannot take a piped stdin — there is no parent left to feed it; drop the value pipe (spawn the command instead if you need its input)",
+                            mspan
+                        )
                     | EPipe(stdinE, { Kind = ECmd(h, args, None) }) when not (isCommandish stdinE) ->
                         let span = Span.union acc.Span mspan
                         let headVar = { Kind = EVar stdinVar; Span = mspan }
@@ -4128,6 +4150,7 @@ let private pipedStages (builtinHeads: bool) (argP: Parser<Expr, unit>) (sigilEn
               <|> succeedsMarker
               <|> exitCodeMarker
               <|> orFailMarker
+              <|> execMarker
               <|> reifierStageGuard
               <|> (segment builtinHeads argP sigilEnv r |>> Stage))
     )

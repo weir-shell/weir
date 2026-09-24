@@ -3287,7 +3287,7 @@ let completionTests =
               // replacement yields `#help` — never `##help` or `head`
               // the closed set is the one source Complete.sessionDirectives
               // — the '#'-slot and the empty-prompt head both read it
-              Expect.equal (suggest "#" 1) [ "echo"; "find"; "help"; "infer"; "quit"; "save" ] "the closed set"
+              Expect.equal (suggest "#" 1) [ "echo"; "find"; "help"; "history"; "infer"; "quit"; "save" ] "the closed set"
               Expect.equal (suggest "#he" 1) [ "help" ] "the prefix filters"
               Expect.equal (suggest "#q" 1) [ "quit" ] ""
               Expect.isFalse (List.contains "head" (suggest "#he" 1)) "the general pool stays out"
@@ -3874,7 +3874,7 @@ let completionTests =
               // `suggest "" 0` used to return 1130 (954 PATH execs + the
               // universe) via `StartsWith ""`. A fresh Tab now teaches the
               // REPL's affordances, `#help` first.
-              Expect.equal (suggest "" 0) [ "#help"; "#find"; "#echo"; "#infer"; "#save"; "#quit" ] "the curated directive set"
+              Expect.equal (suggest "" 0) [ "#help"; "#find"; "#echo"; "#infer"; "#save"; "#history"; "#quit" ] "the curated directive set"
 
               // filtered completion is unaffected (a real prefix at a head).
               // Assert only environment-stable facts: the `File` MODULE is
@@ -5936,6 +5936,45 @@ let bracketContinuationTests =
                   (assembleErr [ "let x ="; "    [1; 2"; "     3}" ])
                   "'}' closes the '[' opened at line 2"
                   ""
+          }
+          test "top-level if/else assembles as ONE statement — a dedented else/elif continues the if [D:toplevel-if-else]" {
+              // the block form at column 0: `if c then <block>` then a
+              // DEDENTED `else`/`elif`. Before this, a col-0 `else` started a
+              // fresh statement and the parser hit a stray keyword; the col-0
+              // continuation gate now admits else/elif like `until`/`always`.
+              let asm lines =
+                  Weir.Script.assemble (lines |> List.mapi (fun i l -> i + 1, l))
+
+              match asm [ "if x then"; "    print \"a\""; "else"; "    print \"b\"" ] with
+              | Ok [ _ ] -> ()
+              | other -> failtest $"top-level if/else must be ONE statement, got {other}"
+
+              match
+                  asm
+                      [ "if n > 5 then"
+                        "    print \"big\""
+                        "elif n > 1 then"
+                        "    print \"mid\""
+                        "else"
+                        "    print \"small\"" ]
+              with
+              | Ok [ _ ] -> ()
+              | other -> failtest $"top-level if/elif/else must be ONE statement, got {other}"
+
+              // a multi-statement then-block still keeps the else attached
+              match asm [ "if x then"; "    print \"a\""; "    print \"b\""; "else"; "    print \"c\"" ] with
+              | Ok [ _ ] -> ()
+              | other -> failtest $"multi-stmt then + else must be ONE statement, got {other}"
+
+              // and it checks clean end to end (not just assembles)
+              let diags, _, _, _ =
+                  Weir.Script.analyzeLines
+                      "ifelse.weir"
+                      [ "let x = true"; "if x then"; "    print \"a\""; "else"; "    print \"b\"" ]
+
+              Expect.isEmpty
+                  (diags |> List.filter (fun d -> d.Severity = "error"))
+                  $"top-level if/else checks clean: {diags |> List.map _.Message}"
           }
           // blanks are transparent inside brackets [D:blank-in-brackets]
           test "blank inside an open list is transparent" {
@@ -11942,6 +11981,30 @@ let agentFindingsTests =
               | Error msg -> Expect.stringContains msg "single external command segment" ""
               | Ok _ -> failtest "exitCode must keep the family's segment rule"
           }
+          test "exec desugars to the execed application [D:exec]" {
+              match Weir.Parser.parseLine cmdResolver "echo hi | exec" with
+              | Ok(SCmd e) -> Expect.stringContains (Weir.Ast.sexpr e) "|execed" ""
+              | other -> failtest $"expected the execed desugar, got {other}"
+          }
+          test "exec is a diverging bare statement — no discard error, either route [D:exec]" {
+              // exec never returns (execve/exit), so a bare statement is
+              // legitimate: the discard gate must exempt it like fail/exit,
+              // in the command route AND the env-sigil capture route
+              let clean (lines: string list) (label: string) =
+                  let diags, _, _, _ = Weir.Script.analyzeLines "exec.weir" lines
+                  Expect.isEmpty (diags |> List.filter (fun d -> d.Severity = "error")) $"{label}: {diags |> List.map _.Message}"
+
+              clean [ "echo replaced | exec" ] "plain command route"
+              clean [ "let e = [Env.pair \"X\" \"1\"]"; "$e(printenv X | exec)" ] "env-sigil capture route"
+              clean [ "let cmd = \"echo\""; "let rest = [\"a\"; \"b\"]"; "^$cmd $@rest | exec" ] "dynamic head"
+          }
+          test "exec refuses a piped stdin — no parent left to feed a replacement [D:exec]" {
+              match Weir.Parser.parseLine cmdResolver "[\"a\"] | grep a | exec" with
+              | Error msg ->
+                  Expect.stringContains msg "exec" ""
+                  Expect.stringContains msg "cannot take a piped stdin" ""
+              | Ok _ -> failtest "value-headed exec must refuse"
+          }
           test "the fifth refusal cell: refused-context reifiers TEACH, never PATH-resolve [D:reifier-family-complete]" {
               // [D:statement-lets] moved the boundary: if-body and
               // within-body block lets now TAKE the reifier (statement
@@ -12130,6 +12193,23 @@ let agentFindingsTests =
               // an absolute root swallows '..' (realpath's rule)
               expectValue "Path.normalize \"/a/../../b\"" (VStr "/b")
               expectValue "Path.combine \"/repo/src/App\" \"../Core/Core.csproj\" |> Path.normalize" (VStr "/repo/src/Core/Core.csproj")
+          }
+          test "Path.home + XDG dirs resolve — the typed stand-in for ~/$HOME [D:path-home]" {
+              // each is unit -> string, non-empty; the XDG dirs live under
+              // home (POSIX default / Windows profile), and stateHome is
+              // exactly where the REPL keeps history
+              let asStr what v =
+                  match v with
+                  | VStr s -> s
+                  | other -> failtestf "%s: expected VStr, got %A" what other
+
+              let home = asStr "home" (run "Path.home ()")
+              Expect.isNotEmpty home "home resolves"
+
+              for m in [ "configHome"; "stateHome"; "cacheHome" ] do
+                  let d = asStr m (run $"Path.{m} ()")
+                  Expect.isNotEmpty d $"{m} resolves"
+                  Expect.stringContains d home $"{m} sits under home"
           }
           test "Path.under confines; Path.combine does not [D:path-under]" {
               // RUNS ON EVERY PLATFORM. An earlier skipOnWindows left this member with
@@ -20750,6 +20830,79 @@ let reenumWarningTests =
                   "one real error beats advisory noise"
           } ]
 
+let tempDirLintTests =
+    // the newTempDir footgun [D:newtempdir-lint]: a Path.newTempDir binding
+    // deleted in the same scope is the manual (and Ctrl+C-leaky) spelling of
+    // a `within tmp` block; an UNMATCHED bind is the legitimate escaping use
+    // and stays silent. Warning severity — check still exits 0.
+    let diagsOf (lines: string list) =
+        let ds, _, _, _ = Weir.Script.analyzeLines "tmp.weir" lines
+        ds |> List.filter (fun d -> d.Code = "temp-dir-cleanup")
+
+    let silent (lines: string list) (label: string) =
+        Expect.isEmpty
+            (diagsOf lines)
+            $"{label}: expected no temp-dir warning, got {diagsOf lines |> List.map _.Message}"
+
+    testList
+        "newTempDir footgun [D:newtempdir-lint]"
+        [ test "bind then Dir.deleteAll warns at the delete site — command named, within suggested" {
+              match diagsOf [ "let d = Path.newTempDir ()"; "print d"; "Dir.deleteAll d" ] with
+              | [ d ] ->
+                  Expect.equal (d.Line, d.Col) (3, 1) "located at the delete"
+                  Expect.equal d.Severity "warning" "advisory, never a gate"
+                  Expect.stringContains d.Message "Dir.deleteAll" "the delete call is named"
+                  Expect.stringContains d.Message "within tmp d" "the repair points at the scoped block"
+              | other -> failtest $"expected one warning, got {other |> List.map (fun d -> d.Message)}"
+          }
+          test "Dir.delete (non-recursive) also warns, naming the call it saw" {
+              match diagsOf [ "let d = Path.newTempDir ()"; "Dir.delete d" ] with
+              | [ d ] -> Expect.stringContains d.Message "Dir.delete " "the non-recursive call is named"
+              | other -> failtest $"expected one warning, got {other |> List.map (fun d -> d.Message)}"
+          }
+          test "warning severity is exit-0's substance: no error rides along" {
+              let ds, _, _, _ = Weir.Script.analyzeLines "tmp.weir" [ "let d = Path.newTempDir ()"; "Dir.deleteAll d" ]
+              Expect.isFalse (ds |> List.exists (fun d -> d.Severity = "error")) "check exits 0 on a warning-only file"
+          }
+          test "an UNMATCHED bind is the escaping use — silent" {
+              silent [ "let d = Path.newTempDir ()"; "print d" ] "no in-scope delete"
+          }
+          test "a within tmp block is the good form — silent" {
+              silent [ "within tmp scratch"; "    print scratch" ] "within tmp"
+          }
+          test "deleting a DIFFERENT directory does not warn" {
+              silent [ "let d = Path.newTempDir ()"; "print d"; "Dir.deleteAll \"/tmp/other\"" ] "unrelated delete"
+          }
+          test "a plain Dir.deleteAll with no newTempDir binding is silent" {
+              silent [ "let p = \"/tmp/scratch\""; "Dir.deleteAll p" ] "not a temp dir"
+          }
+          test "block-local bind + delete warns inside its own body" {
+              match
+                  diagsOf
+                      [ "let f () ="
+                        "    let d = Path.newTempDir ()"
+                        "    Dir.deleteAll d"
+                        ""
+                        "f ()" ]
+              with
+              | [ d ] ->
+                  Expect.equal d.Line 3 "the local delete"
+                  Expect.stringContains d.Message "within tmp d" "the scoped repair"
+              | other -> failtest $"expected one warning, got {other |> List.map (fun d -> d.Message)}"
+          }
+          test "one bind, one delete, one warning — a later stray delete of the name does not re-warn" {
+              // the binder is resolved at its first matched delete; a second
+              // delete of the (now untracked) name is not a newTempDir pairing
+              match diagsOf [ "let d = Path.newTempDir ()"; "Dir.deleteAll d"; "Dir.deleteAll d" ] with
+              | [ _ ] -> ()
+              | other -> failtest $"expected exactly one warning, got {other |> List.map (fun d -> d.Message)}"
+          }
+          test "POISON: an errored statement suppresses the advisory pass" {
+              silent
+                  [ "let d = Path.newTempDir ()"; "Dir.deleteAll d"; "print (\"a\" + 1)" ]
+                  "one real error beats advisory noise"
+          } ]
+
 // ---- #save DISTILL [D:repl-save] -------------------------------------
 // the distill seam: transcript survivors (a `TDef` name + physical
 // source) through qualify -> dedup(last) -> the check guarantee. The
@@ -21735,6 +21888,7 @@ let allTests =
           districtTests
           unusedBindingTests
           reenumWarningTests
+          tempDirLintTests
           replSaveDistillTests
           aliasTests
           dynamicHeadTests
