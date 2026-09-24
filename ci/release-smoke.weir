@@ -25,13 +25,21 @@ let probe program =
         let text = Seq.append r.stdout r.stderr |> Str.join "\n"
         (text, r.exitCode)
 
-// 1. HTTP URL userinfo is REDACTED in error output (CWE-532)
+// 1. HTTP URL userinfo NEVER LEAKS in error output (CWE-532). The password
+// is the guarantee: a transport error for a well-formed URL shows host:port
+// (userinfo naturally absent), and an UNPARSEABLE URL is redacted to
+// `***@host` [D:url-redact] — either way `hunter2` must be gone. (The
+// earlier `***`-present pin tested only the unparseable path; a DNS/refused
+// error on the CI runner takes the host:port path, where there is nothing
+// to mask — no leak, but no `***` either.)
 let out1, _ = probe [ @"let _r = Http.fetch ""http://alice:hunter2@nonexistent.invalid/x""" ]
-if Str.contains "alice:hunter2" out1 then
-    fail $"REDACTION: URL userinfo printed verbatim in the error — {out1}"
-if not (Str.contains "***" out1) then
-    fail $"REDACTION: no *** mask in the transport error — {out1}"
-print "ok: HTTP userinfo redacted (user:pass -> ***)"
+if Str.contains "hunter2" out1 then
+    fail $"REDACTION: URL credentials leaked in the error — {out1}"
+// the error must reference the host — proof the URL was processed and it
+// errored, so the clean output is redaction, not an empty short-circuit
+if not (Str.contains "nonexistent.invalid" out1) then
+    fail $"REDACTION: the probe never reached a transport error — {out1}"
+print "ok: HTTP credentials never leak (host named, user:pass gone)"
 
 // 2. parse/decode error output is BOUNDED, not proportional to input (CWE-1286)
 let out2, _ =

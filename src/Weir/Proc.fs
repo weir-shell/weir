@@ -296,6 +296,15 @@ extern int private execvp(string file, string[] argv)
 extern int private setenv(string name, string value, int overwrite)
 
 let exec (s: Spec) : unit =
+    // runtime plan refusal [D:plan-proc-runtime-guard]: process replacement
+    // must obey the guard `spawn` enforces — POSIX execvp does NOT funnel
+    // through `spawn`, so an indirect `exec` inside a `plan` block (a helper
+    // that invokes it) would otherwise run and replace the image instead of
+    // being refused. Applied here directly, the same message spawn raises.
+    if Session.planGuardActive () then
+        failwith
+            $"'{s.Prog}' runs a command, and 'proc' is refused inside 'plan' — a spawned binary reads and writes opaquely, so its effects cannot be captured; plan covers weir-native mutation only (File/Dir/Http)"
+
     // the same boundary spawn enforces [D:spawn-nul-funnel]
     nulRefusal "the command program name" s.Prog
 

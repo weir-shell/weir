@@ -8216,6 +8216,31 @@ let planApplyTests =
               finally
                   System.IO.Directory.Delete(dir, true)
           }
+          test "DA-02: a helper-wrapped `| exec` inside a plan REFUSES at runtime, no image replaced [D:exec]" {
+              // execvp does NOT funnel through Proc.spawn, so the runtime plan
+              // guard is applied in Proc.exec directly; without it an indirect
+              // exec would replace the process instead of being refused.
+              let dir = td ()
+              System.IO.Directory.CreateDirectory dir |> ignore
+              let marker = System.IO.Path.Combine(dir, "exec-marker.txt")
+              let markerW = weirPath marker
+
+              try
+                  let code =
+                      runFile
+                          [ "let doExec () ="
+                            $"    sh -c \"printf marker > {markerW}\" | exec"
+                            "let changes ="
+                            "    plan"
+                            "        let _forced = doExec ()"
+                            "        ()"
+                            "print $\"empty={changes |> Plan.isEmpty}\"" ]
+
+                  Expect.notEqual code 0 "the plan refused the indirect exec"
+                  Expect.isFalse (System.IO.File.Exists marker) "the guard fired before execvp — no image replaced, no marker"
+              finally
+                  System.IO.Directory.Delete(dir, true)
+          }
           test "DA-02: a native File.write reached THROUGH a serial helper still CAPTURES" {
               let dir = td ()
               System.IO.Directory.CreateDirectory dir |> ignore
