@@ -740,15 +740,23 @@ let private fzfSearch (query: string) : string option =
         // identical displays imply identical text, so the map is lossless
         let byDisplay = Collections.Generic.Dictionary<string, string>()
 
-        for i in history.Count - 1 .. -1 .. 0 do
-            let d = displayEntry history[i]
+        // the selection can land BEFORE the feed completes (fzf exits on
+        // Enter while lines still stream) — the feed's broken pipe is a
+        // normal outcome, not a cancel; the selection is still whole on
+        // stdout, so only the feed wears the guard [D:repl-quality]
+        try
+            for i in history.Count - 1 .. -1 .. 0 do
+                let d = displayEntry history[i]
 
-            if not (byDisplay.ContainsKey d) then
-                byDisplay[d] <- history[i]
+                if not (byDisplay.ContainsKey d) then
+                    byDisplay[d] <- history[i]
 
-            p.StandardInput.WriteLine d
+                p.StandardInput.WriteLine d
 
-        p.StandardInput.Close()
+            p.StandardInput.Close()
+        with :? IO.IOException ->
+            ()
+
         let sel = p.StandardOutput.ReadToEnd().TrimEnd('\n', '\r')
         p.WaitForExit()
 
@@ -2194,10 +2202,17 @@ let private findFzf (te: TypeEnv) (query: string) : string option =
 
         use p = Diagnostics.Process.Start psi
 
-        for line in findCandidates te do
-            p.StandardInput.WriteLine line
+        // the same feed guard as Ctrl+R's [D:repl-quality]: a selection
+        // can land before every candidate streamed, and the broken pipe
+        // must not read as a cancel
+        try
+            for line in findCandidates te do
+                p.StandardInput.WriteLine line
 
-        p.StandardInput.Close()
+            p.StandardInput.Close()
+        with :? IO.IOException ->
+            ()
+
         let sel = p.StandardOutput.ReadToEnd().TrimEnd('\n', '\r')
         p.WaitForExit()
 

@@ -1685,8 +1685,15 @@ print (show (pods |> Seq.head |> _.node))
   pipes, `Seq`). `$<<<` is the interpolated twin with EXACTLY the
   string forms' hole rules: `{expr}` substitutes, `{{`/`}}` are
   literal braces, `$` STILL stays a byte (shell `$VAR` text passes
-  through untouched). The markers are GLYPHS, not words — no
-  identifier is reserved and `$<<<` can never read as a splice; any
+  through untouched). `$$<<<` is the SPLICE twin for templating
+  brace-heavy text (JSON/config) [D:heredoc-splice]: `$name` /
+  `${expr}` substitute, `$$` is a literal `$` (a `$` not starting a
+  name/`${` stays literal), and `{`/`}`/`"` are ALL literal — a pasted
+  JSON blob templates with no `{{`/`}}` doubling. It substitutes raw
+  like any template (a `"`/newline in a value can break the output —
+  reach for `to json` from a record/`{| … |}`/Map when a value is
+  untrusted or the shape is structured). The markers are GLYPHS, not
+  words — no identifier is reserved; any
   line ENDING in the glyph arms a block (no indented block below is
   an error), and nothing else may legally end in `<<<`. Canonical:
   the marker on the binding line (`let x = <<<`), never alone on a

@@ -146,7 +146,14 @@ line, and trailing blank lines clip (the block-scalar ruling: the
 blank before the next statement is layout, not content). `$<<<`
 is the interpolated twin with the string forms' hole rules —
 `{expr}` substitutes, `{{` and `}}` are literal braces, `$` still
-stays a byte. Any line ending in the marker glyph arms a block,
+stays a byte. `$$<<<` is the **splice** twin, for templating
+brace-heavy text (JSON, config): `$name` and `${expr}` substitute,
+`$$` is a literal `$` (and a `$` not starting a name or `${` stays
+literal, so `$1`/`$-` survive), and braces and quotes are all
+literal — a pasted JSON blob templates with no `{{`/`}}` doubling.
+It substitutes raw, like any text template (a value with a `"` or
+newline can break the output; use `to json` when a value is
+untrusted). Any line ending in the marker glyph arms a block,
 exactly as `yaml` does; without an indented block below it, that is
 the error. The glyph is not an operator and reserves no identifier.
 The marker may end a `let` line or sit alone, indented, on the line

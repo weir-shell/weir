@@ -10,7 +10,7 @@
 #
 # scenario lines (stdin):  SLEEP <ms>  |  SEND <text\n escaped: \n \t \x03>
 # output: "<ms> <chunk-repr>" per read chunk, then "EXIT <code>"
-import os, pty, sys, time, select, signal
+import os, pty, sys, time, select, signal, fcntl, termios, struct
 
 timeout = float(sys.argv[1])
 cmd = sys.argv[2:]
@@ -30,6 +30,15 @@ if pid == 0:
     for sig in (signal.SIGINT, signal.SIGQUIT, signal.SIGHUP, signal.SIGTERM):
         signal.signal(sig, signal.SIG_DFL)
     os.execvp(cmd[0], cmd)
+
+# a REAL winsize: pty.fork leaves 0x0, which every subject clamps to a
+# degenerate 20 columns — multi-row repaints per keystroke, and .NET's
+# width cache races on macOS under exactly that state (the repl-multiline
+# driver's finding: macOS lost the width where Linux never did). The
+# SIGWINCH after the ioctl invalidates any width cached at console init,
+# so the pty size ALWAYS wins.
+fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 120, 0, 0))
+os.kill(pid, signal.SIGWINCH)
 
 start = time.monotonic()
 out = []

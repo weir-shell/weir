@@ -1902,6 +1902,31 @@ let boundaryTests =
                   | Error terr -> failtest (formatError terr)
               | other -> failtest $"unexpected: {other}"
           }
+          test "$$<<< eval: braces literal, ${expr} substitutes, $$ -> $, $1 literal [D:heredoc-splice]" {
+              let asm lines' =
+                  match Weir.Script.assemble (lines' |> List.mapi (fun i l -> i + 1, l)) with
+                  | Ok [ ll ] -> ll.Text
+                  | other -> failtest $"assembly: {other}"
+
+              // one statement: the block is the `let` RHS. `${expr}` exercises
+              // the same IExpr path a bare `$name` splice does (both parse to
+              // IExpr); a bare `$name` needs a binding, covered by the e2e.
+              let src = asm [ "let t = $$<<<"; "    {a} ${1 + 2} $$ $1 \"quoted\"" ]
+
+              match Weir.Parser.parseLine realResolver src with
+              | Ok(SLet(_, e)) ->
+                  match typecheck env e with
+                  | Ok te ->
+                      match Weir.Eval.eval valueEnv te with
+                      | Weir.Eval.VSeq items ->
+                          Expect.equal
+                              (List.ofSeq items)
+                              [ Weir.Eval.VStr "{a} 3 $ $1 \"quoted\"" ]
+                              "braces/quotes literal; ${1+2} splices; $$ is one $; $1 stays literal"
+                      | v -> failtest $"expected VSeq, got {v}"
+                  | Error terr -> failtest (formatError terr)
+              | other -> failtest $"unexpected: {other}"
+          }
           test "$<<< dedents IDENTICALLY to <<<: only the hole differs [D:text-block]" {
               // the regression [D:text-block]: $<<< once left-trimmed every
               // line (runFragmentAt's `ws`), flattening deeper-indented lines

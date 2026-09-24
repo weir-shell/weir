@@ -4432,6 +4432,21 @@ dterr=$(printf 'print "a\036b"\n' > "$dtdir/ctl.weir" && "$BIN" check "$dtdir/ct
 echo "$dterr" | grep -qF "illegal control character" || fail "the district-close sentinel must be unproduceable from source: $dterr"
 echo "e2e ok: district piping — |> composes with the block, piped≡bound bytes, the close sentinel is unproduceable"
 
+# ---- $$<<< splice heredoc [D:heredoc-splice] ------------------------
+# a pasted JSON blob with $name/${expr} splices, braces literal — the
+# templating case $<<< (holes) could not do without doubling braces
+cat > "$dtdir/splice.weir" <<'WEOF'
+let host = "srv.example"
+let port = 5432
+$$<<<
+    { "server": "$host", "port": ${port}, "type": "AzureSqlMI", "lit": "$$" }
+|> File.write "out.json"
+WEOF
+sout=$(cd "$dtdir" && "$BIN" splice.weir && cat out.json)
+echo "$sout" | grep -qF '{ "server": "srv.example", "port": 5432, "type": "AzureSqlMI", "lit": "$" }' \
+  || fail "\$\$<<< must splice \$name/\${expr}, keep braces literal, \$\$ -> \$: $sout"
+echo "e2e ok: \$\$<<< splice heredoc — \$name/\${expr} substitute, braces literal, JSON templates directly [D:heredoc-splice]"
+
 # the stream cardinality [D:wire-unions] session S: `from yaml stream T`
 # reads N `---` documents each as T — the heterogeneous BUNDLE is
 # stream over a tagged union, and to yaml stream's write roundtrips
