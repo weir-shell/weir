@@ -439,6 +439,8 @@ The fixed bindings (this is not a keybinding-config feature):
 | <kbd>Alt+Enter</kbd> / <kbd>Ctrl+J</kbd> | force a newline (formatting; an entry stays one statement). <kbd>Shift+Enter</kbd> is not bindable — terminals do not distinguish it from <kbd>Enter</kbd>. Windows Terminal claims left-<kbd>Alt+Enter</kbd> for fullscreen: use <kbd>Ctrl+J</kbd> or right-Alt there |
 | <kbd>Up</kbd> / <kbd>Down</kbd> | move between lines; <kbd>Up</kbd> on the first line recalls history |
 | <kbd>Ctrl+R</kbd> | history search (fzf when installed; entries display one-line, ⏎-joined) |
+| <kbd>Ctrl+W</kbd> / <kbd>Ctrl+U</kbd> / <kbd>Ctrl+K</kbd> | kill the previous word / to line start / to line end — each into the kill-ring |
+| <kbd>Ctrl+Y</kbd> | yank (paste) the last killed text at the cursor. The ring is session-wide, so a kill on one line yanks into a later one. (Copy from *elsewhere* is your terminal's own mouse selection — weir does not read the OS clipboard.) |
 | <kbd>Esc</kbd> / <kbd>Ctrl+C</kbd> | abandon the whole buffer |
 | <kbd>Ctrl+D</kbd> | EOF on an empty buffer; delete/join otherwise |
 

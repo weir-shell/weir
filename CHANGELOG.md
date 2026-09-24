@@ -4,6 +4,13 @@
 
 ### Added
 
+- **REPL kill-ring: `Ctrl+W` / `Ctrl+Y`.** `Ctrl+W` kills the previous word,
+  `Ctrl+Y` yanks (pastes) the last killed text, and `Ctrl+U` / `Ctrl+K`
+  (kill to line start / end) now feed the same ring. The ring is
+  session-wide, so a kill on one line yanks into a later one. (Copying from
+  elsewhere remains your terminal's own mouse selection — there is no
+  shift-arrow selection, matching every terminal line editor.)
+
 - **`cmd | line` — the single-line capture reifier.** Reads a one-value
   command (`az … --query X -o tsv`, `git rev-parse`, `id -un`) as its one
   trimmed line of stdout, as a `string` — replacing the

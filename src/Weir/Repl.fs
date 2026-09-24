@@ -16,6 +16,12 @@ let private prompt = "weir> "
 // everywhere counts prompt.Length — the tint is zero-width.
 let mutable private lastErrored = false
 
+// the kill-ring [D:repl-killring]: the last text a kill verb removed
+// (Ctrl+U/Ctrl+K/Ctrl+W), yanked back by Ctrl+Y. Session-scoped (readline
+// parity) so a kill on one line yanks into a later one. Last kill wins —
+// no consecutive-kill accumulation (the simple, predictable v1).
+let mutable private killRing = ""
+
 // the streamed-statement latch [D:repl-it]: Some <source text> while the
 // CURRENT `it` binding came from a streamed statement (the inherit path
 // [D:colour-inherit] — the child wrote the terminal itself, weir never
@@ -1178,12 +1184,41 @@ let private readLineTty () : string option =
             col <- cur().Length
             redraw ()
         | ConsoleKey.U when ctrl ->
-            cur().Remove(0, col) |> ignore
-            col <- 0
-            redraw ()
+            // kill to line start → the ring [D:repl-killring]
+            if col > 0 then
+                killRing <- cur().ToString().Substring(0, col)
+                cur().Remove(0, col) |> ignore
+                col <- 0
+                redraw ()
         | ConsoleKey.K when ctrl ->
-            cur().Remove(col, cur().Length - col) |> ignore
-            redraw ()
+            // kill to line end → the ring [D:repl-killring]
+            if col < cur().Length then
+                killRing <- cur().ToString().Substring(col)
+                cur().Remove(col, cur().Length - col) |> ignore
+                redraw ()
+        | ConsoleKey.W when ctrl ->
+            // kill the previous WORD → the ring [D:repl-killring] — the
+            // Ctrl+Left range (skip separators, then the word)
+            let t = cur().ToString()
+            let mutable p = col
+
+            while p > 0 && not (isWordChar t[p - 1]) do
+                p <- p - 1
+
+            while p > 0 && isWordChar t[p - 1] do
+                p <- p - 1
+
+            if p < col then
+                killRing <- t.Substring(p, col - p)
+                cur().Remove(p, col - p) |> ignore
+                col <- p
+                redraw ()
+        | ConsoleKey.Y when ctrl ->
+            // yank the ring at the cursor [D:repl-killring]
+            if killRing <> "" then
+                cur().Insert(col, killRing) |> ignore
+                col <- col + killRing.Length
+                redraw ()
         | ConsoleKey.UpArrow ->
             // Up WITHIN the buffer; history only from the FIRST line
             // (the fish/ipython convention; Ctrl+R is the explicit path)
