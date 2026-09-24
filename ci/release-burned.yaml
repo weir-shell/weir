@@ -1,0 +1,7 @@
+# Burned tags [D:burned-tag-ack]: pushed, never published, never
+# re-pointed [D:tag-immutability] — superseded by the next release.
+# Swept by ci/release-published.weir: a listed-but-published tag fails
+# as stale; an aged-out entry is named for removal without failing.
+burned:
+  - tag: v0.0.50
+    reason: release run red (release-smoke redaction probe pinned the wrong error path; fixed on main); changes ship in v0.0.51
