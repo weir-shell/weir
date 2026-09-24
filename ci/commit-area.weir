@@ -80,7 +80,10 @@ let areaOfOther p =
         "site"
     elif Str.startsWith "ci/" p || Str.startsWith ".github/" p || Str.startsWith "tools/" p || Str.startsWith "tests/pty/" p then
         "ci"
-    elif Str.startsWith "publish." p || Str.startsWith "install." p || p == "Dockerfile" || p == "weir.slnx" || p == ".gitignore" || p == ".dockerignore" || p == ".gitattributes" then
+    elif Str.startsWith "publish." p || Str.startsWith "install." p || p == "Dockerfile" || p == "weir.slnx" || p == ".gitignore" || p == ".dockerignore" || p == ".gitattributes" || Str.endsWith ".fsproj" p then
+        // a .fsproj with no accompanying .fs change is BUILD config (it
+        // rides the src it configures via areaOfSrc when both move; alone,
+        // it is ci, never the docs fallback) [D:commit-areas]
         "ci"
     elif Str.startsWith "tests/" p then
         "tests"
