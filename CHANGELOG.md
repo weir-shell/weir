@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.0.51
+
+### Added
+
+- **`from table` reads `az … -o table` output.** Azure CLI (and other
+  tabulate-style tools) draw a `------  ----------` dashes rule under the
+  header; `from table` now skips that separator when it is the first data
+  row, so both `from table T` and `#infer … from table` work on az output.
+  kubectl/docker tables (no separator) are unchanged, and a real row that
+  merely contains a lone `-` cell is kept — only an all-dashes row is
+  dropped.
+
 ## v0.0.50
 
 ### Added

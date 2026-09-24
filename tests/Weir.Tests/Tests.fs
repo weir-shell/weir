@@ -21446,6 +21446,7 @@ let fromTableTests =
         |> declare
             "type TNode = { name: string; [<Wire \"ROLES\">] roles: Option<string>; cpu: Option<float>; ready: bool; podTemplateHash: string }"
         |> declare "type TReq = { name: string; restarts: int }"
+        |> declare "type TPod3 = { name: string; ready: string; status: string }"
         |> declare "type TBadSeq = { name: seq<string> }"
         |> declare "type TBadOpt = { name: Option<seq<int>> }"
         |> declare "type TUni = A of int | B"
@@ -21499,6 +21500,44 @@ let fromTableTests =
                               "age", VStr "5h" ]
                         ) ])
                   "columns slice at header offsets; int cells convert; blank interior lines skip"
+          }
+          test "az `-o table` dashes separator under the header is skipped, never a garbage row [D:from-table-az]" {
+              // az (and tabulate-style tools) draw `----  ----` between the
+              // header and the data; it must not parse as a data row. The
+              // separator rides at the header offsets like any aligned row.
+              let azSample =
+                  VSeq
+                      [ VStr(row podWidths [ "NAME"; "READY"; "STATUS"; "RESTARTS"; "AGE" ])
+                        VStr(row podWidths [ "------"; "-----"; "-------"; "--------"; "---" ])
+                        VStr(row podWidths [ "web-1"; "1/1"; "Running"; "0"; "2d1h" ]) ]
+
+              Expect.equal
+                  (runT [ "src", azSample ] "src |> from table TPod")
+                  (VSeq
+                      [ VRecord(
+                            "TPod",
+                            [ "name", VStr "web-1"
+                              "ready", VStr "1/1"
+                              "status", VStr "Running"
+                              "restarts", VInt 0L
+                              "age", VStr "2d1h" ] ) ])
+                  "the dashes row is dropped; only the real row reads (no `------` cell became data)"
+          }
+          test "a real first row is NOT skipped — the separator drop is conditional [D:from-table-az]" {
+              // a row with a lone `-` cell (a tool's own 'none' spelling) is
+              // NOT all-dashes, so it stays data — the skip fires only on a
+              // row that is ENTIRELY dashes and spaces
+              let ws = [ 8; 8; 0 ]
+
+              let sample =
+                  VSeq
+                      [ VStr(row ws [ "name"; "ready"; "status" ])
+                        VStr(row ws [ "web-1"; "-"; "Running" ]) ]
+
+              Expect.equal
+                  (runT [ "src", sample ] "src |> from table TPod3")
+                  (VSeq [ VRecord("TPod3", [ "name", VStr "web-1"; "ready", VStr "-"; "status", VStr "Running" ]) ])
+                  "a first row that only LOOKS dash-ish (one `-` cell) is real data, kept"
           }
           test "a two-word single-space header is ONE column; spaced values and a spaced last column survive" {
               // docker's reality: `CONTAINER ID` is one header (single

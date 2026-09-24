@@ -81,6 +81,15 @@ let matchKey (s: string) : string =
 /// `<none>` — under Option<T> both read as None
 let isAbsent (cell: string) : bool = cell = "" || cell = "<none>"
 
+/// az `-o table` (and other tabulate-style tools) draw a rule line of
+/// dashes under the header — `--------  ----------  -----` [D:from-table-az].
+/// A row that is ONLY dashes and spaces (with at least one dash) is that
+/// separator, never data: every cell would be dashes, which no real row is.
+let isSeparatorRow (line: string) : bool =
+    line.Trim() <> ""
+    && line |> Seq.forall (fun c -> c = '-' || c = ' ')
+    && line |> Seq.exists ((=) '-')
+
 /// parse numbered input lines into the header's columns and the sliced
 /// data rows (1-based line numbers ride each row; blank lines skip).
 /// Errors are bare text — the caller prefixes its own name
@@ -90,6 +99,15 @@ let parse (lines: (int * string) list) : Result<Column list * (int * string list
     | [] -> Error "empty input — expected a header row (and aligned data rows under it)"
     | (hn, header) :: rows ->
         let cols = columns header
+
+        // az `-o table` puts a dashes separator row between the header and
+        // the data [D:from-table-az]; drop it when it is the FIRST data row.
+        // kubectl/docker have none, so a real first data row is untouched —
+        // the skip is conditional on that row actually being a separator.
+        let rows =
+            match rows with
+            | (_, sep) :: rest when isSeparatorRow sep -> rest
+            | _ -> rows
 
         let dup =
             cols

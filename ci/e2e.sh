@@ -3934,7 +3934,13 @@ echo "$tto" | grep -qF "the table boundary is read-only" || fail "to table refus
 tid=$($BIN -e 'let table = 5
 show (table + 1)') || fail "'table' must stay bindable"
 echo "$tid" | grep -qF '"6"' || fail "'table' as an identifier: $tid"
-echo "e2e ok: from table — header-offset slicing, Wire + Option/<none>, located errors, no to table, 'table' unreserved"
+# az `-o table` dashes separator [D:from-table-az]: the rule line under the
+# header is skipped, so the real rows read typed — bool/int survive
+taz=$($BIN -e 'type Vm = { name: string; running: bool; port: int }
+["Name    Running   Port"; "------  --------  ----"; "web-1   true      8080"; "db-0    false     443"] |> from table Vm |> Seq.where (fun v -> v.running) |> Seq.map (fun v -> v.name) |> Str.join ",")
+echo "$taz" | grep -qF "web-1" || fail "az separator skip: real rows must read (got: $taz)"
+echo "$taz" | grep -qF -- "------" && fail "az separator must not become a data row: $taz" || true
+echo "e2e ok: from table — header-offset slicing, Wire + Option/<none>, located errors, az separator skip, no to table, 'table' unreserved"
 rm -rf "$tdir"
 
 # --- #infer from table [D:from-table]: the REPL drafts the row record

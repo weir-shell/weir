@@ -1650,6 +1650,9 @@ refs |> Seq.iter (fun r -> print r.Include)
   repair. Extra columns are ignored, blank lines skip, a header-only
   table is the empty seq, and every error is located (a missing
   column lists the headers seen; a bad cell carries line and column).
+  An `az … -o table` dashes separator (`------  ----------`) under the
+  header is skipped when it is the first data row, so az output reads
+  too; kubectl/docker (no separator) are unchanged.
   Rows are already plural — no `seq`/`stream`/`Map` wrap — and there
   is NO `to table` (the REPL's record echo already renders tables
   for display). `table` stays an ordinary identifier elsewhere.

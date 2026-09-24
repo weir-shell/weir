@@ -794,6 +794,22 @@ let tableInferRules =
               Expect.stringContains out "age: string" ""
               Expect.exists (notes) (fun n -> n.Contains "no data rows under the header") "verify-against-a-fuller-sample"
           }
+          test "az `-o table` dashes separator is skipped when drafting — types come from real rows [D:from-table-az]" {
+              let ws = [ 8; 10; 8 ]
+
+              let out, _ =
+                  inferTable
+                      "Vm"
+                      [ trow ws [ "NAME"; "RUNNING"; "PORT" ]
+                        trow ws [ "------"; "--------"; "------" ]
+                        trow ws [ "web-1"; "true"; "8080" ]
+                        trow ws [ "db-0"; "false"; "443" ] ]
+
+              // without the skip, the `------` cells would force every column
+              // to string; with it, the scan types from the real rows
+              Expect.stringContains out "running: bool" "the dashes row is not sampled — bool survives"
+              Expect.stringContains out "port: int" "int survives too"
+          }
           test "the drafted type checks and its from-table read checks (the injection round-trip)" {
               let decl, _ =
                   inferTable "Pod" [ "NAME   RESTARTS"; "web-1  0" ]
