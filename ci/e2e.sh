@@ -428,10 +428,12 @@ if [ "$IS_WINDOWS" = "0" ]; then
 sh -c "exit 7" | exec
 print "unreached"
 WEOF
-    $BIN "$execdir/exec.weir"
-    code=$?
+    # exec replaces with `sh -c "exit 7"`, so the runner exits 7 BY DESIGN —
+    # capture it without tripping the battery's set -e
+    code=0
+    $BIN "$execdir/exec.weir" || code=$?
     [ "$code" = "7" ] || fail "exec must exit with the replacement's code (got $code)"
-    out=$($BIN "$execdir/exec.weir" 2>&1)
+    out=$($BIN "$execdir/exec.weir" 2>&1 || true)
     echo "$out" | grep -qF "unreached" && fail "no statement runs after exec — the image is gone"
 
     # the env overlay reaches the replacement (libc setenv, since execvp
@@ -443,9 +445,10 @@ WEOF
     out=$($BIN "$execdir/execenv.weir")
     expect "exec's env overlay reaches the replacement" "reached" "$out"
 
-    # a value pipe into exec is refused at parse (no parent to feed stdin)
+    # a value pipe into exec is refused at parse (no parent to feed stdin);
+    # `check` exits nonzero on that error BY DESIGN — do not let set -e abort
     printf '["a"] | grep a | exec\n' > "$execdir/execbad.weir"
-    out=$($BIN check "$execdir/execbad.weir" 2>&1)
+    out=$($BIN check "$execdir/execbad.weir" 2>&1 || true)
     echo "$out" | grep -qF "cannot take a piped stdin" || fail "value-headed exec must refuse at check"
 fi
 
