@@ -6244,3 +6244,91 @@ let reenumEvents (nextId: unit -> int) (tracked0: Map<string, int>) (root: Typed
 
     walk tracked0 root
     List.ofSeq acc
+
+// ---- the newTempDir footgun [D:newtempdir-lint] --------------------------
+// `Path.newTempDir` bound then `Dir.delete`/`Dir.deleteAll`'d in the same
+// scope is the MANUAL spelling of a `within tmp d` block — and a worse one:
+// `within` removes the directory on scope exit AND on Ctrl+C/kill (the exit
+// hook sweeps it), which a straight-line delete misses when the body raises
+// or the process is signalled. newTempDir EARNS its place for the escaping
+// case (a directory that outlives the block — a cross-process handoff), so
+// an UNMATCHED bind (no in-scope delete) is exactly that legitimate use and
+// stays silent [D:gap-a-remainder]. The warning fires only when the pairing
+// is visible, mirroring the re-enumeration walk's scope discipline.
+
+/// a `Path.newTempDir ()` call (the arg is unit — ignored)
+let isNewTempDirCall (te: TypedExpr) : bool =
+    match te.Kind with
+    | TEApp({ Kind = TEVar "Path.newTempDir" }, _) -> true
+    | _ -> false
+
+/// a `Dir.delete`/`Dir.deleteAll` applied to a bare name -> Some(name, isAll)
+let private dirDeleteOf (te: TypedExpr) : (string * bool) option =
+    match te.Kind with
+    | TEApp({ Kind = TEVar "Dir.deleteAll" }, { Kind = TEVar n }) -> Some(n, true)
+    | TEApp({ Kind = TEVar "Dir.delete" }, { Kind = TEVar n }) -> Some(n, false)
+    | _ -> None
+
+type TempDirEvent =
+    // a block-local newTempDir binder — joins the tracked set for its body
+    | TempBind of id: int * name: string
+    // a delete of a tracked binder, at its site
+    | TempDelete of id: int * name: string * span: Span * isAll: bool
+
+/// newTempDir binds and their in-scope deletes in one statement tree,
+/// source order, shadow-aware — the same threading as [D:reenum-warning]:
+/// block-local binders join the tracked set for their body (fresh ids from
+/// the caller's well), and a name leaving scope (lambda/match/within/let
+/// pattern) drops from tracking. Top-level binders arrive via tracked0.
+let tempDirEvents (nextId: unit -> int) (tracked0: Map<string, int>) (root: TypedExpr) : TempDirEvent list =
+    let acc = ResizeArray<TempDirEvent>()
+
+    let removeAll (names: string list) (m: Map<string, int>) =
+        names |> List.fold (fun m n -> Map.remove n m) m
+
+    let rec walk (tracked: Map<string, int>) (te: TypedExpr) : unit =
+        (match dirDeleteOf te with
+         | Some(n, isAll) ->
+             match Map.tryFind n tracked with
+             | Some id -> acc.Add(TempDelete(id, n, te.Span, isAll))
+             | None -> ()
+         | None -> ())
+
+        match te.Kind with
+        | TELet(n, _, v, b) ->
+            walk tracked v
+
+            let trackedB =
+                if isNewTempDirCall v then
+                    let id = nextId ()
+                    acc.Add(TempBind(id, n))
+                    Map.add n id tracked
+                else
+                    Map.remove n tracked
+
+            walk trackedB b
+        | TELetPat(pat, v, b) ->
+            walk tracked v
+            walk (removeAll (patNameSpans pat |> List.map fst) tracked) b
+        | TELambda(p, _, b) -> walk (Map.remove p tracked) b
+        | TELambdaPat(pat, b) -> walk (removeAll (patNameSpans pat |> List.map fst) tracked) b
+        | TEMatch(s, arms) ->
+            walk tracked s
+
+            for pat, g, b in arms do
+                let t' = removeAll (patNameSpans pat |> List.map fst) tracked
+                g |> Option.iter (walk t')
+                walk t' b
+        | TEWithin(_, binder, a, o, b) ->
+            a |> Option.iter (walk tracked)
+            o |> Option.iter (walk tracked)
+
+            walk
+                (match binder with
+                 | Some n -> Map.remove n tracked
+                 | None -> tracked)
+                b
+        | _ -> childExprs te |> List.iter (walk tracked)
+
+    walk tracked0 root
+    List.ofSeq acc

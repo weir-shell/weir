@@ -20767,6 +20767,79 @@ let reenumWarningTests =
                   "one real error beats advisory noise"
           } ]
 
+let tempDirLintTests =
+    // the newTempDir footgun [D:newtempdir-lint]: a Path.newTempDir binding
+    // deleted in the same scope is the manual (and Ctrl+C-leaky) spelling of
+    // a `within tmp` block; an UNMATCHED bind is the legitimate escaping use
+    // and stays silent. Warning severity — check still exits 0.
+    let diagsOf (lines: string list) =
+        let ds, _, _, _ = Weir.Script.analyzeLines "tmp.weir" lines
+        ds |> List.filter (fun d -> d.Code = "temp-dir-cleanup")
+
+    let silent (lines: string list) (label: string) =
+        Expect.isEmpty
+            (diagsOf lines)
+            $"{label}: expected no temp-dir warning, got {diagsOf lines |> List.map _.Message}"
+
+    testList
+        "newTempDir footgun [D:newtempdir-lint]"
+        [ test "bind then Dir.deleteAll warns at the delete site — command named, within suggested" {
+              match diagsOf [ "let d = Path.newTempDir ()"; "print d"; "Dir.deleteAll d" ] with
+              | [ d ] ->
+                  Expect.equal (d.Line, d.Col) (3, 1) "located at the delete"
+                  Expect.equal d.Severity "warning" "advisory, never a gate"
+                  Expect.stringContains d.Message "Dir.deleteAll" "the delete call is named"
+                  Expect.stringContains d.Message "within tmp d" "the repair points at the scoped block"
+              | other -> failtest $"expected one warning, got {other |> List.map (fun d -> d.Message)}"
+          }
+          test "Dir.delete (non-recursive) also warns, naming the call it saw" {
+              match diagsOf [ "let d = Path.newTempDir ()"; "Dir.delete d" ] with
+              | [ d ] -> Expect.stringContains d.Message "Dir.delete " "the non-recursive call is named"
+              | other -> failtest $"expected one warning, got {other |> List.map (fun d -> d.Message)}"
+          }
+          test "warning severity is exit-0's substance: no error rides along" {
+              let ds, _, _, _ = Weir.Script.analyzeLines "tmp.weir" [ "let d = Path.newTempDir ()"; "Dir.deleteAll d" ]
+              Expect.isFalse (ds |> List.exists (fun d -> d.Severity = "error")) "check exits 0 on a warning-only file"
+          }
+          test "an UNMATCHED bind is the escaping use — silent" {
+              silent [ "let d = Path.newTempDir ()"; "print d" ] "no in-scope delete"
+          }
+          test "a within tmp block is the good form — silent" {
+              silent [ "within tmp scratch"; "    print scratch" ] "within tmp"
+          }
+          test "deleting a DIFFERENT directory does not warn" {
+              silent [ "let d = Path.newTempDir ()"; "print d"; "Dir.deleteAll \"/tmp/other\"" ] "unrelated delete"
+          }
+          test "a plain Dir.deleteAll with no newTempDir binding is silent" {
+              silent [ "let p = \"/tmp/scratch\""; "Dir.deleteAll p" ] "not a temp dir"
+          }
+          test "block-local bind + delete warns inside its own body" {
+              match
+                  diagsOf
+                      [ "let f () ="
+                        "    let d = Path.newTempDir ()"
+                        "    Dir.deleteAll d"
+                        ""
+                        "f ()" ]
+              with
+              | [ d ] ->
+                  Expect.equal d.Line 3 "the local delete"
+                  Expect.stringContains d.Message "within tmp d" "the scoped repair"
+              | other -> failtest $"expected one warning, got {other |> List.map (fun d -> d.Message)}"
+          }
+          test "one bind, one delete, one warning — a later stray delete of the name does not re-warn" {
+              // the binder is resolved at its first matched delete; a second
+              // delete of the (now untracked) name is not a newTempDir pairing
+              match diagsOf [ "let d = Path.newTempDir ()"; "Dir.deleteAll d"; "Dir.deleteAll d" ] with
+              | [ _ ] -> ()
+              | other -> failtest $"expected exactly one warning, got {other |> List.map (fun d -> d.Message)}"
+          }
+          test "POISON: an errored statement suppresses the advisory pass" {
+              silent
+                  [ "let d = Path.newTempDir ()"; "Dir.deleteAll d"; "print (\"a\" + 1)" ]
+                  "one real error beats advisory noise"
+          } ]
+
 // ---- #save DISTILL [D:repl-save] -------------------------------------
 // the distill seam: transcript survivors (a `TDef` name + physical
 // source) through qualify -> dedup(last) -> the check guarantee. The
@@ -21752,6 +21825,7 @@ let allTests =
           districtTests
           unusedBindingTests
           reenumWarningTests
+          tempDirLintTests
           replSaveDistillTests
           aliasTests
           dynamicHeadTests

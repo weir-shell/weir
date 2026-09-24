@@ -20,6 +20,14 @@
   `#history N` shows the last N. Entries render one per line, matching the
   history search's display.
 
+- **A checker warning for the `Path.newTempDir` cleanup footgun.** A
+  `Path.newTempDir ()` binding that is later `Dir.delete`/`Dir.deleteAll`'d
+  in the same scope now draws an advisory warning pointing at `within tmp`,
+  which cleans up on scope exit *and* on Ctrl+C/kill (a manual delete
+  misses the signalled case). `newTempDir` remains the right tool for a
+  directory that must outlive its scope, so a binding with no in-scope
+  delete stays silent. Warning severity — `check` still exits 0.
+
 ### Fixed
 
 - **`#infer` no longer mis-drafts a heterogeneous object as a homogeneous
