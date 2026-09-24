@@ -200,7 +200,14 @@ result — `it` (FSI's and ghci's convention) collides with nothing.
 
 A bare command at a tty streams straight to the terminal (the
 colour-inherit path — weir never holds the bytes), so its value is
-`()` and that is what `it` binds. Using that unit `it` where a value
+`()` and that is what `it` binds. When such a command exits nonzero,
+the prompt shows a dim `↳ exit N` status (and the next prompt reddens)
+rather than a red error — the output already streamed and the session
+continues, so it reads like a shell's `$?`. The exit still *raises*:
+in a script it fails-fast, and a failure inside a value (`$(cmd)`, a
+reifier, a binding) keeps the full `error:` because there it aborted a
+computation — `cmd | exitCode` / `cmd | complete` are the ways to make
+a nonzero exit into data. Using that unit `it` where a value
 is needed is an ordinary type error, and the error appends the
 repair with the streamed command verbatim:
 
@@ -432,6 +439,8 @@ The fixed bindings (this is not a keybinding-config feature):
 | <kbd>Alt+Enter</kbd> / <kbd>Ctrl+J</kbd> | force a newline (formatting; an entry stays one statement). <kbd>Shift+Enter</kbd> is not bindable — terminals do not distinguish it from <kbd>Enter</kbd>. Windows Terminal claims left-<kbd>Alt+Enter</kbd> for fullscreen: use <kbd>Ctrl+J</kbd> or right-Alt there |
 | <kbd>Up</kbd> / <kbd>Down</kbd> | move between lines; <kbd>Up</kbd> on the first line recalls history |
 | <kbd>Ctrl+R</kbd> | history search (fzf when installed; entries display one-line, ⏎-joined) |
+| <kbd>Ctrl+W</kbd> / <kbd>Ctrl+U</kbd> / <kbd>Ctrl+K</kbd> | kill the previous word / to line start / to line end — each into the kill-ring |
+| <kbd>Ctrl+Y</kbd> | yank (paste) the last killed text at the cursor. The ring is session-wide, so a kill on one line yanks into a later one. (Copy from *elsewhere* is your terminal's own mouse selection — weir does not read the OS clipboard.) |
 | <kbd>Esc</kbd> / <kbd>Ctrl+C</kbd> | abandon the whole buffer |
 | <kbd>Ctrl+D</kbd> | EOF on an empty buffer; delete/join otherwise |
 

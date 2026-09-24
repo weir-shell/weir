@@ -452,6 +452,27 @@ WEOF
     echo "$out" | grep -qF "cannot take a piped stdin" || fail "value-headed exec must refuse at check"
 fi
 
+# ---- the single-line capture reifier [D:reify-line] ------------------
+# `cmd | line` reads a one-value CLI's single stdout line as a string —
+# the $(cmd) |> Seq.exactlyOne idiom, first-class. Raises on nonzero and
+# on 0-or-2+ lines.
+lout=$($BIN -e 'let scope = printf "id-abc" | line
+echo scope $scope')
+expect "| line reifies one stdout line to a string" "scope id-abc" "$lout"
+# a trailing newline (the -o tsv shape) is still one line
+lout2=$($BIN -e 'let v = sh -c "printf \"val\n\"" | line
+echo got $v')
+expect "| line handles the trailing newline (one line)" "got val" "$lout2"
+# nonzero exit raises
+lerr=$($BIN -e 'let x = sh -c "exit 4" | line
+print x' 2>&1) && fail "| line must raise on nonzero" || true
+echo "$lerr" | grep -qF "exit code 4" || fail "| line lost the nonzero raise: $lerr"
+# 2+ lines is the caller's mistake, named
+lmulti=$($BIN -e 'let x = sh -c "printf \"a\nb\n\"" | line
+print x' 2>&1) && fail "| line must raise on 2+ lines" || true
+echo "$lmulti" | grep -qF "expected exactly one line" || fail "| line lost the one-line assert: $lmulti"
+echo "e2e ok: | line — one stdout line to a string, nonzero raises, 2+ lines named [D:reify-line]"
+
 # a 2-param generic union checks + evals through the binary (was the
 # prelude-Result pin; Result removed [D:no-result], the fixture is now a
 # locally-declared Either)
@@ -1631,7 +1652,7 @@ PYADP
     echo "e2e ok: repl cooked-trap (one child run per echo, Enter survives a slow child)"
 
     python3 "$(dirname "$0")/../tests/repl/repl-it-streamed.py" "$BIN" || fail "it FSI-parity / function echo"
-    echo "e2e ok: it FSI-parity — streamed binds (), misuse teaches the capture, functions echo mini-help [D:repl-it] [D:repl-fn-echo]"
+    echo "e2e ok: it FSI-parity — streamed binds (), misuse teaches the capture, functions echo mini-help, a failed command quiets to an exit-code status [D:repl-it] [D:repl-fn-echo] [D:repl-cmd-fail]"
 
     python3 "$(dirname "$0")/../tests/repl/repl-directives.py" "$BIN" || fail "repl directives"
     echo "e2e ok: repl directives (#help x3, #quit, :q retired, comments no-op, #echo cap)"
@@ -2448,7 +2469,9 @@ if [ "$IS_WINDOWS" != "1" ] && command -v python3 >/dev/null 2>&1; then
     echo "$gzout" | grep -qi "is a terminal\|to a terminal" || fail "gzip refuses its own tty now — the incident's cause removed: $gzout"
     rsout=$(printf 'SLEEP 700\nSEND sh -c "read x"\\r\nSLEEP 400\nSEND \\x03\nSLEEP 500\nSEND print (Str.toUpper "revived")\\r\nSLEEP 400\nSEND #quit\\r\n' \
         | python3 "$ptyrun" 10 "$BIN" | sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g; s/\x1b[=>]//g')
-    echo "$rsout" | grep -q "exit code 130" || fail "a REPL ^C must kill the foreground child naming 130: $rsout"
+    # the child's ^C death renders as the QUIET exit-code status now, not the
+    # loud error [D:repl-cmd-fail] — still names 130 and the SIGINT note
+    echo "$rsout" | grep -q "exit 130 (SIGINT" || fail "a REPL ^C must kill the foreground child naming 130: $rsout"
     echo "$rsout" | grep -q "REVIVED" || fail "the session must survive its child's ^C: $rsout"
     echo "$rsout" | grep -q "^EXIT 0" || fail "the session must end clean after a ^C'd child: $rsout"
 
@@ -3934,7 +3957,13 @@ echo "$tto" | grep -qF "the table boundary is read-only" || fail "to table refus
 tid=$($BIN -e 'let table = 5
 show (table + 1)') || fail "'table' must stay bindable"
 echo "$tid" | grep -qF '"6"' || fail "'table' as an identifier: $tid"
-echo "e2e ok: from table — header-offset slicing, Wire + Option/<none>, located errors, no to table, 'table' unreserved"
+# az `-o table` dashes separator [D:from-table-az]: the rule line under the
+# header is skipped, so the real rows read typed — bool/int survive
+taz=$($BIN -e 'type Vm = { name: string; running: bool; port: int }
+["Name    Running   Port"; "------  --------  ----"; "web-1   true      8080"; "db-0    false     443"] |> from table Vm |> Seq.where (fun v -> v.running) |> Seq.map (fun v -> v.name) |> Str.join ","')
+echo "$taz" | grep -qF "web-1" || fail "az separator skip: real rows must read (got: $taz)"
+echo "$taz" | grep -qF -- "------" && fail "az separator must not become a data row: $taz" || true
+echo "e2e ok: from table — header-offset slicing, Wire + Option/<none>, located errors, az separator skip, no to table, 'table' unreserved"
 rm -rf "$tdir"
 
 # --- #infer from table [D:from-table]: the REPL drafts the row record

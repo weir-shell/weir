@@ -167,8 +167,30 @@ if out.count("let f x = x + 1") < 2:
 if out.count("let f x = x + 2") < 2:
     failures.append(f"(g) redefinition must show the LAST accepted definition: {out!r}")
 
+# --- (h): a bare command that EXITS NONZERO renders a QUIET exit-code
+# status (there is no $?, so the code must show), NOT the loud `error:` —
+# the raise is caught on the inherit path and the session continues
+# [D:repl-cmd-fail]. `it` after binds () like any streamed command.
+out = session([(b'sh -c "echo OUT; exit 3"\r', 1.2), (b"it\r", 0.8), (b'print "after"\r', 0.8)])
+if "OUT" not in out:
+    failures.append(f"(h) the failing command's output must still stream: {out!r}")
+if "exit 3" not in out:
+    failures.append(f"(h) a nonzero exit must show its code (the $?-less REPL's only surface): {out!r}")
+if "error: command failed" in out:
+    failures.append(f"(h) a bare command failure must NOT be the loud error at a tty: {out!r}")
+if "() : unit" not in out:
+    failures.append(f"(h) it after a failed streamed command still binds () : unit: {out!r}")
+if "after" not in out:
+    failures.append(f"(h) the session must continue past a failed command: {out!r}")
+
+# --- (h2): a VALUE-position command failure stays the LOUD error — there
+# it aborted a computation, not a shell `$?` [D:repl-cmd-fail] ---
+out = session([(b'let x = $(sh -c "exit 4")\r', 1.0)])
+if "error: command failed with exit code 4" not in out:
+    failures.append(f"(h2) a $() capture failure must keep the loud error (it broke a value): {out!r}")
+
 if failures:
     for f in failures:
         print("FAIL:", f)
     sys.exit(1)
-print("ok: it FSI-parity — streamed binds (), misuse teaches the capture, functions echo mini-help")
+print("ok: it FSI-parity — streamed binds (), misuse teaches the capture, functions echo mini-help, failed command quiets to an exit-code status")

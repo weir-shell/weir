@@ -1147,6 +1147,7 @@ let rec private chainReifier (e: Expr) : string option =
     | EVar v when v.StartsWith "|exitCoded" -> Some "exitCode"
     | EVar v when v.StartsWith "|orFailed" -> Some "orFail"
     | EVar v when v.StartsWith "|execed" -> Some "exec"
+    | EVar v when v.StartsWith "|lined" -> Some "line"
     | EApp(f, _) -> chainReifier f
     | EPipe(l, r) -> chainReifier r |> Option.orElseWith (fun () -> chainReifier l)
     | _ -> None
@@ -3827,6 +3828,9 @@ type private Seg =
     // returns (execve replaces the image), so it ends a command chain
     // like the rest of the family
     | ExecMarker of Span
+    // the single-line capture [D:reify-line] — `cmd | line` reifies to
+    // the one trimmed stdout line as a string
+    | LineMarker of Span
 
 let private reifierEnd =
     // the let-RHS chain also ends at bare `in` [D:block-let-cmd] —
@@ -3903,6 +3907,14 @@ let private execMarker =
     )
     |>> fun (_, span) -> ExecMarker span
 
+let private lineMarker =
+    attempt (
+        spanned (pstring "line" .>> notFollowedBy (satisfy cmdWordChar))
+        .>> ws
+        .>> reifierEnd
+    )
+    |>> fun (_, span) -> LineMarker span
+
 // fold a parsed pipeline — an initial head expression plus piped stages
 // and reifier markers — into one Expr. Shared by the command-headed
 // chain and the value-headed chain [D:value-headed-pipe]: the ONLY
@@ -3940,7 +3952,7 @@ let private foldChain (h: Expr) (rest: ((string * Span) * Seg) list) : Result<Ex
                     Result.Ok
                         { Kind = EPipe(acc, seg)
                           Span = Span.union acc.Span seg.Span }
-                | (CompleteMarker _ | SucceedsMarker _ | ExitCodeMarker _ | OrFailMarker _ | ExecMarker _ as marker) ->
+                | (CompleteMarker _ | SucceedsMarker _ | ExitCodeMarker _ | OrFailMarker _ | ExecMarker _ | LineMarker _ as marker) ->
                     let stageName, mspan, plainVar, envVar, stdinVar, extraArgs =
                         match marker with
                         | CompleteMarker sp -> "complete", sp, "|completed", "|completedEnv", "|completedIn", []
@@ -3948,6 +3960,7 @@ let private foldChain (h: Expr) (rest: ((string * Span) * Seg) list) : Result<Ex
                         | ExitCodeMarker sp -> "exitCode", sp, "|exitCoded", "|exitCodedEnv", "|exitCodedIn", []
                         | OrFailMarker(msg, sp) -> "orFail", sp, "|orFailed", "|orFailedEnv", "|orFailedIn", [ msg ]
                         | ExecMarker sp -> "exec", sp, "|execed", "|execedEnv", "|execedIn", []
+                        | LineMarker sp -> "line", sp, "|lined", "|linedEnv", "|linedIn", []
                         | Stage _ -> "", acc.Span, "", "", "", []
 
                     // a chain head is command-ish (an external segment or a
@@ -4151,6 +4164,7 @@ let private pipedStages (builtinHeads: bool) (argP: Parser<Expr, unit>) (sigilEn
               <|> exitCodeMarker
               <|> orFailMarker
               <|> execMarker
+              <|> lineMarker
               <|> reifierStageGuard
               <|> (segment builtinHeads argP sigilEnv r |>> Stage))
     )

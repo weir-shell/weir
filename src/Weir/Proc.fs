@@ -169,6 +169,19 @@ let private reap (p: Process) =
     with _ ->
         ()
 
+/// a command's nonzero exit as a TYPED failure [D:repl-cmd-fail]: the REPL
+/// catches THIS specifically to render a bare command statement's failure
+/// as a quiet exit-code status (there is no `$?`, so the code must show)
+/// while a script — or a value/reifier position — keeps the loud raise.
+/// The Message is BYTE-IDENTICAL to the old failwith, so every existing
+/// catcher (the script runner, the top-level guard, `orFail`'s siblings)
+/// renders exactly as before.
+type CommandFailure(code: int, signalNote: string, shown: string) =
+    inherit exn($"command failed with exit code {code}{signalNote}: {shown}")
+    member _.Code = code
+    member _.SignalNote = signalNote
+    member _.Shown = shown
+
 let private raiseNonzero (s: Spec) (code: int) =
     let shown = String.concat " " (s.Prog :: s.Args)
 
@@ -182,7 +195,7 @@ let private raiseNonzero (s: Spec) (code: int) =
         | c when c > 128 && c < 165 -> $" (signal {c - 128})"
         | _ -> ""
 
-    failwith $"command failed with exit code {code}{signalNote}: {shown}"
+    raise (CommandFailure(code, signalNote, shown))
 
 // ---- the consumers (the output axis) -------------------------------
 

@@ -1,6 +1,10 @@
 # Changelog
 
-## v0.0.50
+## v0.0.51
+
+<!-- v0.0.50 was tagged but never published (its release build was red); its
+     changes ship here under v0.0.51. Tags stay immutable — the v0.0.50 tag is
+     burned, not re-pointed. -->
 
 ### Added
 
@@ -13,6 +17,14 @@
   a literal or dynamic (`^$cmd`) head and an env-sigil overlay
   (`$e(cmd | exec)`), but refuses a piped stdin — there is no parent left
   to feed the replacement.
+
+- **`cmd | line` — the single-line capture reifier.** Reads a one-value
+  command (`az … --query X -o tsv`, `git rev-parse`, `id -un`) as its one
+  trimmed line of stdout, as a `string` — replacing the
+  `$"{$(cmd) |> Seq.exactlyOne}"` mouthful with `let x = cmd | line`. It
+  joins the reifier family (`complete`/`succeeds`/`exitCode`/`orFail`/`exec`),
+  raises on a nonzero exit or on 0-or-2+ lines, and composes with the env
+  sigil (`$e(cmd | line)`) and a value head (`xs | grep foo | line`).
 
 - **`Path.home` and the XDG directory trio (`Path.configHome`,
   `Path.stateHome`, `Path.cacheHome`).** The typed stand-in for `~`/`$HOME`,
@@ -30,6 +42,21 @@
   `#history N` shows the last N. Entries render one per line, matching the
   history search's display.
 
+- **REPL kill-ring: `Ctrl+W` / `Ctrl+Y`.** `Ctrl+W` kills the previous word,
+  `Ctrl+Y` yanks (pastes) the last killed text, and `Ctrl+U` / `Ctrl+K`
+  (kill to line start / end) now feed the same ring. The ring is
+  session-wide, so a kill on one line yanks into a later one. (Copying from
+  elsewhere remains your terminal's own mouse selection — there is no
+  shift-arrow selection, matching every terminal line editor.)
+
+- **`from table` reads `az … -o table` output.** Azure CLI (and other
+  tabulate-style tools) draw a `------  ----------` dashes rule under the
+  header; `from table` now skips that separator when it is the first data
+  row, so both `from table T` and `#infer … from table` work on az output.
+  kubectl/docker tables (no separator) are unchanged, and a real row that
+  merely contains a lone `-` cell is kept — only an all-dashes row is
+  dropped.
+
 - **A checker warning for the `Path.newTempDir` cleanup footgun.** A
   `Path.newTempDir ()` binding that is later `Dir.delete`/`Dir.deleteAll`'d
   in the same scope now draws an advisory warning pointing at `within tmp`,
@@ -37,6 +64,18 @@
   misses the signalled case). `newTempDir` remains the right tool for a
   directory that must outlive its scope, so a binding with no in-scope
   delete stays silent. Warning severity — `check` still exits 0.
+
+### Changed
+
+- **A failed command in the REPL is now a quiet exit-code status, not a red
+  error.** When a bare command you type at the prompt exits nonzero, the
+  REPL shows a dim `↳ exit N` instead of `error: command failed with exit
+  code N: …` — the output already streamed and the session continues, so
+  it reads like a shell's `$?` (and since weir has no `$?`, showing the
+  code is the only way to see it). The raise itself is unchanged: scripts
+  still fail-fast, and a command failure inside a value (`$(…)`, a reifier,
+  a binding) still raises the full error, because there it aborted a
+  computation.
 
 ### Fixed
 
@@ -56,6 +95,18 @@
   verdict is now decided over the *whole* set of siblings, so an object with
   mixed value types stays a typed record; genuinely uniform data-keyed
   objects (a ConfigMap's `data`) are still drafted as an open mapping.
+
+- **Tab-completing a `$name` splice in a command argument now offers session
+  bindings.** `az … --location $l<TAB>` completes to `$location` (any
+  binding whose name starts with `l`); before, an argv position offered only
+  filesystem paths, so a splice never completed. A bare (non-`$`) argument
+  still completes paths only.
+
+- **`exec` is now refused inside a `plan` block.** A helper that invokes
+  `cmd | exec` inside a `plan` is refused at runtime, matching the guard on
+  every other spawn — `execve` does not funnel through the spawn path, so
+  the guard is applied in `Proc.exec` directly (it could otherwise replace
+  the process inside a dry run).
 
 ## v0.0.49
 

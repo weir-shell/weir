@@ -1321,7 +1321,12 @@ within tmp d
   entrypoint the app gets signals directly with no forwarding layer);
   it NEVER returns, diverging like `fail`/`exit`, so it is a legal bare
   statement and cannot take a piped stdin (there is no parent left to
-  feed it). **`succeeds` is exitCode == 0, exactly** —
+  feed it). `cmd | line` reifies a one-value CLI to its single trimmed
+  line of stdout as a `string` [D:reify-line] — the
+  `$(cmd) |> Seq.exactlyOne` idiom for `az … -o tsv`/`git rev-parse`;
+  it raises on a nonzero exit or on 0-or-2+ lines, and composes with
+  the env sigil (`$e(cmd | line)`) and a value head. **`succeeds` is
+  exitCode == 0, exactly** —
   for tools whose nonzero codes AND output are both data (grep,
   fzf), use `| complete` and read the record. An `if`/`elif`
   CONDITION takes the chain inline: `if test -f $p | succeeds then`
@@ -1650,6 +1655,9 @@ refs |> Seq.iter (fun r -> print r.Include)
   repair. Extra columns are ignored, blank lines skip, a header-only
   table is the empty seq, and every error is located (a missing
   column lists the headers seen; a bad cell carries line and column).
+  An `az … -o table` dashes separator (`------  ----------`) under the
+  header is skipped when it is the first data row, so az output reads
+  too; kubectl/docker (no separator) are unchanged.
   Rows are already plural — no `seq`/`stream`/`Map` wrap — and there
   is NO `to table` (the REPL's record echo already renders tables
   for display). `table` stays an ordinary identifier elsewhere.

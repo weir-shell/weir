@@ -8,9 +8,28 @@
 // spot that let a publish-wait poll report v0.0.31 shipped while
 // /latest still served v0.0.29). A burned tag ages out on its own: the
 // next release makes a newer tag the newest, and the burned one is
-// never demanded again (the v0.0.30 precedent).
+// never demanded again (the v0.0.30 precedent) — but the aging-out
+// WINDOW is red and blocks the superseding release's own PR (the check
+// eating its repair, the shape [D:release-assets] reversed with
+// known-incomplete): ci/release-burned.yaml acknowledges the burn for
+// that window [D:burned-tag-ack].
 
 let repo = "weir-shell/weir"
+
+// burned tags [D:burned-tag-ack]: a tag whose release never shipped is
+// BURNED — immutable [D:tag-immutability], never re-pointed, superseded
+// by the next tag. An entry carries its reason and is SWEPT below: a
+// listed tag that IS published fails as stale; an aged-out entry (a
+// newer stable tag exists) is named for removal WITHOUT failing — it
+// suppresses nothing, and a hard stale-fail would re-open the exact
+// red-window this file closes.
+let burned =
+    (File.read "ci/release-burned.yaml"
+     |> from yaml {| burned: seq<{| tag: string; reason: string |}> |})
+        .burned
+    |> Seq.freeze
+
+let burnedTags = burned |> Seq.map (fun e -> e.tag) |> Seq.freeze
 
 // tags come from the checkout (the release tag is pushed before the
 // draft is published). Only STABLE tags count [D:tag-immutability]: a
@@ -21,10 +40,11 @@ let repo = "weir-shell/weir"
 let tags =
     git tag -l "v*"
     |> Seq.where (fun t -> not (Str.contains "-" t))
+    |> Seq.where (fun t -> not (Seq.contains t burnedTags))
     |> Seq.freeze
 
 if Seq.isEmpty tags then
-    print "no stable v* tag yet — nothing to check (pre-first-release; prerelease tags are exempt)"
+    print "no stable unburned v* tag yet — nothing to check (pre-first-release; prerelease and burned tags are exempt)"
     exit 0
 
 // newest by VERSION, not by text — v0.0.9 sorts after v0.0.31 textually
@@ -39,12 +59,23 @@ let newest = tags |> Seq.maxBy verKey
 // GitHub's API requires a User-Agent; the default one [D:http-ua] covers it.
 // GITHUB_TOKEN when present: CI runners share egress IPs, so the
 // unauthenticated rate limit 403s routinely — auth lifts it.
-let req = Http.get $"https://api.github.com/repos/{repo}/releases/latest"
-
-let rel =
+let sendGh req =
     match Env.get "GITHUB_TOKEN" with
     | Some t -> Http.send { req with auth = Bearer (Secret.of t) }
     | None -> Http.send req
+
+// the burned sweep: a still-current entry must reference a tag that is
+// genuinely unpublished — /releases/tags/{tag} answers 200 for
+// PUBLISHED only (a draft has no tag association until the click)
+for e in burned do
+    if verKey e.tag < verKey newest then
+        print $"note: burned entry {e.tag} ('{e.reason}') aged out — {newest} supersedes it; remove it at leisure"
+    else
+        let r = sendGh (Http.get $"https://api.github.com/repos/{repo}/releases/tags/{e.tag}")
+        if r.status == 200 then
+            fail $"ci/release-burned.yaml lists {e.tag} ('{e.reason}') as burned but that release IS published — stale entry, remove it"
+
+let rel = sendGh (Http.get $"https://api.github.com/repos/{repo}/releases/latest")
 
 if rel.status == 200 then
     let latest = (rel.body |> from json {| tag_name: string |}).tag_name
@@ -81,7 +112,7 @@ if rel.status == 200 then
             weir ci/release-assets.weir --tag $latest | orFail $"releases/latest {latest} is published but INCOMPLETE (verdicts above) — a published release is immutable, so nothing repairs {latest} in place: fix forward, cut and publish release vNEXT (the supersede path) and acknowledge {latest} in ci/release-known-incomplete.yaml"
 
         exit 0
-    fail $"releases/latest is {latest} but the newest stable tag is {newest} — that tag was pushed and never PUBLISHED, and the installers silently keep serving {latest}. If its draft exists: gh release edit {newest} --draft=false (or the Releases page); if the release run never built (a red gate), fix and re-release — or burn the tag by cutting the next one"
+    fail $"releases/latest is {latest} but the newest stable tag is {newest} — that tag was pushed and never PUBLISHED, and the installers silently keep serving {latest}. If its draft exists: gh release edit {newest} --draft=false (or the Releases page); if the release run never built (a red gate), fix and re-release — or burn the tag: acknowledge it in ci/release-burned.yaml (tag + reason) and cut the next release; the gate then demands the newest unburned tag"
 
 // a 404 is the missing-publish state with NO release published yet —
 // /latest excluding drafts answers 404, never 403. Any other status is

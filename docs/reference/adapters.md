@@ -163,6 +163,13 @@ the row line and column. Rows are already plural — no
 `seq`/`stream`/`Map` wrap — and the boundary is read-only: there is
 no `to table`.
 
+`az … -o table` (and other `tabulate`-style tools) draw a dashes rule
+line under the header (`------  ----------`). `from table` skips that
+separator when it is the first data row, so az output reads without a
+garbage row and `#infer` types from the real rows. Tables with no
+separator (kubectl, docker) are unchanged; only a row that is entirely
+dashes and spaces is dropped, and only in first position.
+
 `#infer <src> from table as Pod` (or `sample |> Table.inferShape`)
 drafts the row record from a live sample — per-column type scanning,
 `Option` where a column has empty/`<none>` cells, and a note that

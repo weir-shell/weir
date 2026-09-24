@@ -41,6 +41,22 @@ for _ in range(25):
     send("\x1b[D", 0.02)  # Left over ' (fun s -> s) |> Seq.head'
 send("\t", 0.3)
 send("\r", 0.6)
+# kill-ring [D:repl-killring]: Ctrl+W kills the previous word INTO the ring,
+# Ctrl+Y yanks it — kill "KRX", yank twice -> echo KRXKRX (streams KRXKRX)
+send("echo ")
+send("KRX")
+send("\x17")       # Ctrl+W: kill "KRX" into the ring
+send("\x19")       # Ctrl+Y: yank
+send("\x19")       # yank again -> KRXKRX
+send("\r", 0.5)
+# Ctrl+U feeds the SAME ring: type UKILL, ^U kills it to the ring, then a
+# fresh `echo `, yanked twice -> echo UKILLUKILL (streams UKILLUKILL)
+send("UKILL")
+send("\x15")       # Ctrl+U: kill to line start into the ring
+send("echo ")
+send("\x19")
+send("\x19")
+send("\r", 0.5)
 send("\x04")       # Ctrl+D
 time.sleep(0.4)
 
@@ -66,6 +82,10 @@ if "ab9.cd" not in text:
     failures.append("Ctrl+Left x2 / Ctrl+Right did not hop segment-wise (no ab9.cd echo)")
 if '"zz"' not in text:
     failures.append("mid-line Tab completion did not complete Seq.ma with a tail after the cursor (no zz echo)")
+if "KRXKRX" not in text:
+    failures.append("Ctrl+W did not kill a word into the ring / Ctrl+Y did not yank it (no KRXKRX)")
+if "UKILLUKILL" not in text:
+    failures.append("Ctrl+U did not feed the kill-ring / Ctrl+Y yank failed (no UKILLUKILL)")
 
 if failures:
     print(text)
@@ -73,4 +93,4 @@ if failures:
         print("repl-wordnav FAIL:", f)
     sys.exit(1)
 
-print("repl-wordnav: word navigation holds")
+print("repl-wordnav: word navigation + kill-ring (Ctrl+W/Ctrl+U → ring, Ctrl+Y yanks) hold")

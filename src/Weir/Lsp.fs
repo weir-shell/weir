@@ -210,7 +210,10 @@ let semanticTokensFor (lines: string list) : (int * int * int * int) list =
               "|exitCodedIn"
               "|orFailedIn"
               "|execed"
-              "|execedEnv" ]
+              "|execedEnv"
+              "|lined"
+              "|linedEnv"
+              "|linedIn" ]
 
     let rec spineIsReifier (te: Check.TypedExpr) =
         match te.Kind with
