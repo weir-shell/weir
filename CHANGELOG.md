@@ -12,6 +12,14 @@
   raises on a nonzero exit or on 0-or-2+ lines, and composes with the env
   sigil (`$e(cmd | line)`) and a value head (`xs | grep foo | line`).
 
+### Fixed
+
+- **Tab-completing a `$name` splice in a command argument now offers session
+  bindings.** `az … --location $l<TAB>` completes to `$location` (any
+  binding whose name starts with `l`); before, an argv position offered only
+  filesystem paths, so a splice never completed. A bare (non-`$`) argument
+  still completes paths only.
+
 ### Changed
 
 - **A failed command in the REPL is now a quiet exit-code status, not a red

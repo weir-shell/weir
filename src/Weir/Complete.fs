@@ -691,8 +691,22 @@ let suggestScopedWith
             Extern.names () |> Set.filter (fun n -> n.StartsWith word && n <> word) |> Set.toList
         elif commandArgvPosition env before then
             // argv position [D:complete-argv]: paths, nothing else — the
-            // pool, fields, and members are expression furniture
-            filesystemComplete word
+            // pool, fields, and members are expression furniture. EXCEPT a
+            // `$name` splice [D:argv-splice-complete]: `$` is not a word
+            // char, so the word starts after it and `before` ends with `$`;
+            // offer the session's bindings (bare — the `$` is already typed),
+            // so `--location $l<TAB>` completes to `$location`.
+            if before.EndsWith "$" then
+                env.Values
+                |> Map.toList
+                |> List.choose (fun (n, _) ->
+                    if Types.isUserName n && n.StartsWith word && n <> word then
+                        Some n
+                    else
+                        None)
+                |> List.sort
+            else
+                filesystemComplete word
         elif pathParamAt before then
             // a path position wants paths AND string bindings — `cd
             // target` applies the binding, so hard-removing identifiers

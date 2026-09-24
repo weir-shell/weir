@@ -3282,6 +3282,31 @@ let completionTests =
               // from the full parser set [D:keyword-completion]
               Expect.equal (suggest "ls |> whe" 6) [ "when"; "where" ] ""
           }
+          test "a $name splice in argv completes session bindings [D:argv-splice-complete]" {
+              // `$` is not a word char, so the word starts after it and the
+              // before-text ends with `$`: `--location $l<TAB>` must offer the
+              // binding `location` (bare — the $ is already typed), not the
+              // empty filesystem match it used to.
+              let envL =
+                  { env with
+                      Values =
+                          env.Values
+                          |> Map.add "location" (Weir.Types.mono Weir.Types.TStr)
+                          |> Map.add "logLevel" (Weir.Types.mono Weir.Types.TStr) }
+
+              let ask (text: string) =
+                  Weir.Complete.suggest envL text (Weir.Complete.wordStartAt text text.Length)
+
+              let cands = ask "az vm list-usage --location $l"
+              Expect.contains cands "location" "$l offers the location binding"
+              Expect.contains cands "logLevel" "prefix $l offers every l-binding"
+              Expect.isFalse (cands |> List.exists (fun c -> c.StartsWith "$")) "candidates are bare (the $ is already before the word)"
+
+              // a BARE argv word (no $) stays the paths-only pool — a binding
+              // name must NOT leak in as an argv word
+              let bare = ask "az vm list-usage --location loc"
+              Expect.isFalse (List.contains "location" bare) "a non-splice argv word is not a binding pool"
+          }
           test "a line-head '#' completes the session directives, bare [D:repl-directives]" {
               // bare names: the editor's word starts AFTER the '#', so
               // replacement yields `#help` — never `##help` or `head`
