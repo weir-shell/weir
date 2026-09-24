@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.0.52
+
+### Added
+
+- **`$$<<<` — a splice-interpolated heredoc for templating JSON/config.**
+  A third block form alongside `<<<` (literal) and `$<<<` (`{expr}` holes):
+  in `$$<<<`, `$name` and `${expr}` substitute, `$$` is a literal `$`, and
+  braces/quotes are literal — so a pasted JSON blob templates directly, no
+  brace-doubling:
+
+  ```
+  $$<<<
+      { "server": "$sqlFqdn", "type": "AzureSqlMI" }
+  |> File.write "ls.json"
+  ```
+
+  Like any text template it substitutes raw (a value with a `"`/newline can
+  break the output — use `to json` when a value is untrusted).
+
 ## v0.0.51
 
 <!-- v0.0.50 was tagged but never published (its release build was red); its

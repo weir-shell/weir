@@ -393,6 +393,11 @@ let isHeredocMarkerPiece (piece: string) =
     || piece.EndsWith " <<<"
     || piece = "$<<<"
     || piece.EndsWith " $<<<"
+    // `$$<<<` [D:heredoc-splice] — the splice-interpolated block: `$name` /
+    // `${expr}` substitute, braces are LITERAL (JSON/config templating);
+    // the shell-heredoc twin of `$<<<`'s `{expr}` holes
+    || piece = "$$<<<"
+    || piece.EndsWith " $$<<<"
 
 /// the grammar manifest's blockHeads field reads this list [D:text-block]
 let blockHeads = [ "<<<"; "yaml" ]
@@ -3178,12 +3183,31 @@ let private heredocInterpLine: Parser<InterpPart<Expr> list, unit> =
          <|> (getPosition
               >>= fun p -> failFatallyAt p "a literal } in a $<<< line is }} ('{' opens a hole, '{{' a literal brace)"))
 
+// a $$<<< SPLICE line [D:heredoc-splice]: `$name` / `${expr}` substitute,
+// `$$` is a literal `$`, and braces/quotes are LITERAL (JSON just passes
+// through). Reuses EInterp — the holes' node — so check and eval are
+// unchanged; only the SURFACE (splices, not `{}` holes) differs. A `$` not
+// starting a name or `${` is a literal `$` (so `$1`/`$-` survive).
+let private heredocSplicePart: Parser<InterpPart<Expr>, unit> =
+    choice
+        [ pstring "$$" >>% IStr "$"
+          attempt (pchar '$' >>. pchar '{' >>. ws >>. holeExpr .>> pchar '}') |>> IExpr
+          attempt (spanned (pchar '$' >>. many1Satisfy2 isIdentStart isIdentCont))
+          |>> (fun (n, sp) -> IExpr { Kind = EVar n; Span = sp })
+          pchar '$' >>% IStr "$"
+          many1Satisfy (fun c -> c <> '$') |>> IStr ]
+
+let private heredocSpliceLine: Parser<InterpPart<Expr> list, unit> = many heredocSplicePart .>> eof
+
 let private heredocDistrictBody: Parser<Expr, unit> =
     attempt (
-        getPosition .>>. (pstring "$<<<" >>% true <|> (pstring "<<<" >>% false))
+        // 0 = literal `<<<`, 1 = `{expr}` holes `$<<<`, 2 = `$var` splices
+        // `$$<<<` [D:heredoc-splice] — longest marker first
+        getPosition
+        .>>. (pstring "$$<<<" >>% 2 <|> (pstring "$<<<" >>% 1) <|> (pstring "<<<" >>% 0))
         .>> followedBy (pstring sibSepStr)
     )
-    >>= fun (startP, interpolated) ->
+    >>= fun (startP, mode) ->
         districtTail
         >>= fun (lines, colCursor) ->
             if lines |> Array.forall (fun (_, _, t) -> t = "") then
@@ -3208,14 +3232,18 @@ let private heredocDistrictBody: Parser<Expr, unit> =
                         else
                             let lineText = System.String(' ', rel - baseRel) + content
 
-                            if interpolated then
-                                match runFragmentAt (col - (rel - baseRel)) lineText heredocInterpLine with
+                            let interpWith lineParser =
+                                match runFragmentAt (col - (rel - baseRel)) lineText lineParser with
                                 | Result.Ok parts ->
                                     items.Add
                                         { Kind = EInterp parts
                                           Span = lineSpan lineText.Length }
                                 | Result.Error(m, ecol) -> err <- Some(ecol, m)
-                            else
+
+                            match mode with
+                            | 1 -> interpWith heredocInterpLine // {expr} holes
+                            | 2 -> interpWith heredocSpliceLine // $var splices
+                            | _ ->
                                 items.Add
                                     { Kind = EStr lineText
                                       Span = lineSpan lineText.Length }
@@ -3241,7 +3269,7 @@ let private heredocDistrictBody: Parser<Expr, unit> =
                                 { Line = int startP.Line
                                   Col = colCursor } } }
 
-let private heredocDistrict = deepenAfter [ "<<<"; "$<<<" ] heredocDistrictBody // [D:depth-guard]
+let private heredocDistrict = deepenAfter [ "<<<"; "$<<<"; "$$<<<" ] heredocDistrictBody // [D:depth-guard]
 
 opp.TermParser <-
     choice
