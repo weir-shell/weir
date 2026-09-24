@@ -1631,7 +1631,7 @@ PYADP
     echo "e2e ok: repl cooked-trap (one child run per echo, Enter survives a slow child)"
 
     python3 "$(dirname "$0")/../tests/repl/repl-it-streamed.py" "$BIN" || fail "it FSI-parity / function echo"
-    echo "e2e ok: it FSI-parity — streamed binds (), misuse teaches the capture, functions echo mini-help [D:repl-it] [D:repl-fn-echo]"
+    echo "e2e ok: it FSI-parity — streamed binds (), misuse teaches the capture, functions echo mini-help, a failed command quiets to an exit-code status [D:repl-it] [D:repl-fn-echo] [D:repl-cmd-fail]"
 
     python3 "$(dirname "$0")/../tests/repl/repl-directives.py" "$BIN" || fail "repl directives"
     echo "e2e ok: repl directives (#help x3, #quit, :q retired, comments no-op, #echo cap)"

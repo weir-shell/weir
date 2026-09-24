@@ -1761,6 +1761,17 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
                 st
              with
              | Eval.ExitRequest _ -> reraise ()
+             // a BARE command statement's nonzero exit is the shell's `$?`,
+             // not a weir error [D:repl-cmd-fail]: the output already
+             // streamed and the session continues, so render a QUIET
+             // exit-code status (the ONLY surface for the code — there is no
+             // `$?`) instead of the loud `error:`. The raise itself is
+             // unchanged (scripts still abort; a value/reifier failure below
+             // still errors loudly). The red prompt cue rides `lastErrored`.
+             | :? Proc.CommandFailure as cf ->
+                 lastErrored <- true
+                 echoMeta $"↳ exit {cf.Code}{cf.SignalNote}"
+                 bindIt TUnit Eval.VUnit state
              | ex ->
                  lastErrored <- true
 

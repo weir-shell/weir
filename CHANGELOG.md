@@ -2,6 +2,18 @@
 
 ## v0.0.51
 
+### Changed
+
+- **A failed command in the REPL is now a quiet exit-code status, not a red
+  error.** When a bare command you type at the prompt exits nonzero, the
+  REPL shows a dim `↳ exit N` instead of `error: command failed with exit
+  code N: …` — the output already streamed and the session continues, so
+  it reads like a shell's `$?` (and since weir has no `$?`, showing the
+  code is the only way to see it). The raise itself is unchanged: scripts
+  still fail-fast, and a command failure inside a value (`$(…)`, a reifier,
+  a binding) still raises the full error, because there it aborted a
+  computation.
+
 ### Added
 
 - **`from table` reads `az … -o table` output.** Azure CLI (and other
