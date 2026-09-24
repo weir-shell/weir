@@ -245,6 +245,17 @@ let classifyLine (raw: string) : LineKind =
     else
         LineKind.Code
 
+/// a col-0 `else`/`elif` line continues its open `if` [D:toplevel-if-else]
+/// — the top-level block form (`if c then <block>` then a dedented
+/// `else`/`elif <block>`). `else`/`elif` are keywords, so a line whose
+/// leading word is one can only continue an open if, never head a fresh
+/// statement; checked on the trimmed text so an identifier such as
+/// `elsewhere` is untouched. Hoisted out of the assembler's col-0 gate so
+/// that giant function carries no inline `let … in`.
+let continuesOpenIf (raw: string) : bool =
+    let lw = raw.TrimEnd()
+    lw = "else" || lw.StartsWith "else " || lw.StartsWith "elif "
+
 /// Piece classification, inside assembly: the join/structure decisions.
 /// Kind is exclusive; Marker and OpensCompound are orthogonal fields —
 /// `let d = yaml` is a let head AND arms the yaml district.
@@ -1335,14 +1346,10 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                             // [D:within-always]
                             || raw.TrimEnd() = "always"
                             // a col-0 `else`/`elif` continues its `if` — the
-                            // top-level block form (`if c then <block>` then a
-                            // dedented `else <block>`); the ElseHead join below
+                            // top-level block form; the ElseHead join below
                             // already handles it, only this gate excluded a
-                            // dedented else/elif [D:toplevel-if-else]. `else`/
-                            // `elif` are keywords, so they can only ever
-                            // continue an open if, never head a fresh statement
-                            || (let lw = raw.TrimEnd() in
-                                lw = "else" || lw.StartsWith "else " || lw.StartsWith "elif ")
+                            // dedented else/elif [D:toplevel-if-else]
+                            || continuesOpenIf raw
                             || inOpenBrace
                             || inOpenLambda
                         then

@@ -4044,17 +4044,15 @@ let private foldChain (h: Expr) (rest: ((string * Span) * Seg) list) : Result<Ex
                     // is a value: a command→command LHS is the multi-external
                     // case below, rejected as always (the family's single-segment
                     // rule, unchanged).
+                    // exec REPLACES this process — there is no parent left to
+                    // feed a piped stdin, so the value-headed route is refused
+                    // [D:exec] (the stdin twin is never emitted)
+                    | EPipe(stdinE, { Kind = ECmd(_, _, None) }) when not (isCommandish stdinE) && stageName = "exec" ->
+                        Result.Error(
+                            "'exec' replaces the current process, so it cannot take a piped stdin — there is no parent left to feed it; drop the value pipe (spawn the command instead if you need its input)",
+                            mspan
+                        )
                     | EPipe(stdinE, { Kind = ECmd(h, args, None) }) when not (isCommandish stdinE) ->
-                        // exec REPLACES this process — there is no parent left
-                        // to feed a piped stdin, so the value-headed route is
-                        // refused [D:exec] (the stdin twin is never emitted)
-                        if stageName = "exec" then
-                            Result.Error(
-                                "'exec' replaces the current process, so it cannot take a piped stdin — there is no parent left to feed it; drop the value pipe (spawn the command instead if you need its input)",
-                                mspan
-                            )
-                        else
-
                         let span = Span.union acc.Span mspan
                         let headVar = { Kind = EVar stdinVar; Span = mspan }
                         let progArg = progArgOf h acc.Span
