@@ -19,6 +19,13 @@
   Like any text template it substitutes raw (a value with a `"`/newline can
   break the output — use `to json` when a value is untrusted).
 
+### Fixed
+
+- A `Ctrl+R`/`#find` selection made while candidates were still streaming to
+  fzf was silently discarded as a cancel: the finder's exit breaks the feed
+  pipe, and the broken-pipe error swallowed the selection. The feed now wears
+  its own guard — the selection is read regardless.
+
 ## v0.0.51
 
 <!-- v0.0.50 was tagged but never published (its release build was red); its

@@ -96,6 +96,26 @@ if "--preview" not in argv2b or "--repl-doc" not in argv2b:
 if "--query opt" not in argv2b:
     failures.append(f"#find's initial query must pass as fzf --query: {argv2b}")
 
+# --- 2c. the feed survives a finder that exits MID-STREAM [D:repl-quality]:
+# a history larger than the pipe buffer guarantees the stub's head -1 exit
+# breaks the feed (EPIPE) while weir still streams — the broken pipe is a
+# normal selection outcome, never a cancel. Padded entries push the feed
+# past 64k; most-recent-first makes the LAST file entry the selection ---
+d2c = tempfile.mkdtemp()
+os.makedirs(d2c + "/bin")
+os.makedirs(d2c + "/state/weir", exist_ok=True)
+with open(d2c + "/bin/fzf", "w") as f:
+    f.write('#!/bin/sh\nhead -1\n')
+os.chmod(d2c + "/bin/fzf", 0o755)
+pad = "x" * 48
+with open(d2c + "/state/weir/history", "w") as f:
+    f.write("".join(f"{i} + {i} // {pad}\n" for i in range(2000)))
+out2c = run_repl({"XDG_STATE_HOME": d2c + "/state", "XDG_CONFIG_HOME": d2c + "/cfg",
+                  "PATH": d2c + "/bin:" + os.environ["PATH"]},
+                 [('\x12', 0.8), ('\r', 0.5), ('#quit\r', 0.3)])
+if "3998" not in out2c:
+    failures.append(f"selection lost when the finder exits mid-feed (EPIPE must not cancel): {out2c[-300:]!r}")
+
 # --- 3. Ctrl+R fallback (fzf absent): minimal reverse substring search ---
 d3 = tempfile.mkdtemp()
 out3 = run_repl({"XDG_STATE_HOME": d3 + "/state", "XDG_CONFIG_HOME": d3 + "/cfg",
