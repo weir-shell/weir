@@ -1334,6 +1334,15 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                             // a col-0 `always` continues its bare within
                             // [D:within-always]
                             || raw.TrimEnd() = "always"
+                            // a col-0 `else`/`elif` continues its `if` — the
+                            // top-level block form (`if c then <block>` then a
+                            // dedented `else <block>`); the ElseHead join below
+                            // already handles it, only this gate excluded a
+                            // dedented else/elif [D:toplevel-if-else]. `else`/
+                            // `elif` are keywords, so they can only ever
+                            // continue an open if, never head a fresh statement
+                            || (let lw = raw.TrimEnd() in
+                                lw = "else" || lw.StartsWith "else " || lw.StartsWith "elif ")
                             || inOpenBrace
                             || inOpenLambda
                         then

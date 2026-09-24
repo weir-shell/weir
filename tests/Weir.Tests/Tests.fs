@@ -5937,6 +5937,45 @@ let bracketContinuationTests =
                   "'}' closes the '[' opened at line 2"
                   ""
           }
+          test "top-level if/else assembles as ONE statement — a dedented else/elif continues the if [D:toplevel-if-else]" {
+              // the block form at column 0: `if c then <block>` then a
+              // DEDENTED `else`/`elif`. Before this, a col-0 `else` started a
+              // fresh statement and the parser hit a stray keyword; the col-0
+              // continuation gate now admits else/elif like `until`/`always`.
+              let asm lines =
+                  Weir.Script.assemble (lines |> List.mapi (fun i l -> i + 1, l))
+
+              match asm [ "if x then"; "    print \"a\""; "else"; "    print \"b\"" ] with
+              | Ok [ _ ] -> ()
+              | other -> failtest $"top-level if/else must be ONE statement, got {other}"
+
+              match
+                  asm
+                      [ "if n > 5 then"
+                        "    print \"big\""
+                        "elif n > 1 then"
+                        "    print \"mid\""
+                        "else"
+                        "    print \"small\"" ]
+              with
+              | Ok [ _ ] -> ()
+              | other -> failtest $"top-level if/elif/else must be ONE statement, got {other}"
+
+              // a multi-statement then-block still keeps the else attached
+              match asm [ "if x then"; "    print \"a\""; "    print \"b\""; "else"; "    print \"c\"" ] with
+              | Ok [ _ ] -> ()
+              | other -> failtest $"multi-stmt then + else must be ONE statement, got {other}"
+
+              // and it checks clean end to end (not just assembles)
+              let diags, _, _, _ =
+                  Weir.Script.analyzeLines
+                      "ifelse.weir"
+                      [ "let x = true"; "if x then"; "    print \"a\""; "else"; "    print \"b\"" ]
+
+              Expect.isEmpty
+                  (diags |> List.filter (fun d -> d.Severity = "error"))
+                  $"top-level if/else checks clean: {diags |> List.map _.Message}"
+          }
           // blanks are transparent inside brackets [D:blank-in-brackets]
           test "blank inside an open list is transparent" {
               Expect.equal (joined [ "let x ="; "    [1"; ""; "     2]" ]) "let x = [1 ; 2]" ""

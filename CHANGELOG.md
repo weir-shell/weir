@@ -40,6 +40,13 @@
 
 ### Fixed
 
+- **A top-level `if … then … else …` block now parses.** The block form at
+  column 0 (`if c then` + an indented body, then a dedented `else`/`elif`)
+  was rejected as a stray `else` keyword — the assembler treated the
+  dedented `else` as a new statement. A col-0 `else`/`elif` now continues
+  its `if`, the same way a dedented `|`/`until`/`always` already did. (The
+  indented form inside a function body always worked.)
+
 - **`#infer` no longer mis-drafts a heterogeneous object as a homogeneous
   map.** When sibling objects in a sample array carried different keys whose
   values only *coincidentally* agreed in an early pair (e.g. a Kubernetes
