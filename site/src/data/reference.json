@@ -2008,6 +2008,13 @@
       "pointer": "#help pure has the block form and the effect families"
     },
     {
+      "name": "line",
+      "signature": null,
+      "summary": "Reify a one-value command to its single line of stdout, trimmed \u2014 the \u0060az \u2026 -o tsv\u0060 / \u0060git rev-parse\u0060 idiom (replaces \u0060$(cmd) |\u003E Seq.exactlyOne\u0060). Raises on a nonzero exit, or on 0 or 2\u002B lines.",
+      "example": null,
+      "pointer": "the reifier law: the meaning is the value."
+    },
+    {
       "name": "not",
       "signature": "not (b: bool) : bool",
       "summary": "Boolean negation.",
