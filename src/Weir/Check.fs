@@ -909,8 +909,17 @@ let private seqUnitError (first: Expr) (ty: Ty) : string =
 // fresh var no position should have to name. Shared by the unit-position
 // carves (ESeq head, else-less if) and the statement gate.
 let rec divergesTo (x: Expr) : bool =
+    // exec REPLACES the process [D:exec] — a diverging reifier like
+    // fail/exit; its desugar is a `|execed`/`|execedEnv` application spine
+    let rec execSpine (e: Expr) =
+        match e.Kind with
+        | EVar v when v.StartsWith "|execed" -> true
+        | EApp(f, _) -> execSpine f
+        | _ -> false
+
     match x.Kind with
     | EApp({ Kind = EVar("fail" | "exit") }, _) -> true
+    | EApp _ when execSpine x -> true
     | ESeq(_, b)
     | ELet(_, _, _, b)
     | ELetPat(_, _, b)

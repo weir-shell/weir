@@ -4,6 +4,16 @@
 
 ### Added
 
+- **`exec`: process replacement.** `cmd | exec` replaces the running weir
+  process with the command (POSIX `execve`; Windows spawns, waits, and
+  exits with the child's code). weir keeps its pid, so as a container
+  entrypoint the application receives signals directly — no forwarding or
+  reaping layer. It is a reifier like `complete`/`orFail`, diverging like
+  `fail`/`exit` (never returns), so it is a legal bare statement; it takes
+  a literal or dynamic (`^$cmd`) head and an env-sigil overlay
+  (`$e(cmd | exec)`), but refuses a piped stdin — there is no parent left
+  to feed the replacement.
+
 - **`Path.home` and the XDG directory trio (`Path.configHome`,
   `Path.stateHome`, `Path.cacheHome`).** The typed stand-in for `~`/`$HOME`,
   which never expand in argv — build a path with an interpolation instead:

@@ -11942,6 +11942,30 @@ let agentFindingsTests =
               | Error msg -> Expect.stringContains msg "single external command segment" ""
               | Ok _ -> failtest "exitCode must keep the family's segment rule"
           }
+          test "exec desugars to the execed application [D:exec]" {
+              match Weir.Parser.parseLine cmdResolver "echo hi | exec" with
+              | Ok(SCmd e) -> Expect.stringContains (Weir.Ast.sexpr e) "|execed" ""
+              | other -> failtest $"expected the execed desugar, got {other}"
+          }
+          test "exec is a diverging bare statement — no discard error, either route [D:exec]" {
+              // exec never returns (execve/exit), so a bare statement is
+              // legitimate: the discard gate must exempt it like fail/exit,
+              // in the command route AND the env-sigil capture route
+              let clean (lines: string list) (label: string) =
+                  let diags, _, _, _ = Weir.Script.analyzeLines "exec.weir" lines
+                  Expect.isEmpty (diags |> List.filter (fun d -> d.Severity = "error")) $"{label}: {diags |> List.map _.Message}"
+
+              clean [ "echo replaced | exec" ] "plain command route"
+              clean [ "let e = [Env.pair \"X\" \"1\"]"; "$e(printenv X | exec)" ] "env-sigil capture route"
+              clean [ "let cmd = \"echo\""; "let rest = [\"a\"; \"b\"]"; "^$cmd $@rest | exec" ] "dynamic head"
+          }
+          test "exec refuses a piped stdin — no parent left to feed a replacement [D:exec]" {
+              match Weir.Parser.parseLine cmdResolver "[\"a\"] | grep a | exec" with
+              | Error msg ->
+                  Expect.stringContains msg "exec" ""
+                  Expect.stringContains msg "cannot take a piped stdin" ""
+              | Ok _ -> failtest "value-headed exec must refuse"
+          }
           test "the fifth refusal cell: refused-context reifiers TEACH, never PATH-resolve [D:reifier-family-complete]" {
               // [D:statement-lets] moved the boundary: if-body and
               // within-body block lets now TAKE the reifier (statement

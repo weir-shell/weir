@@ -208,7 +208,9 @@ let semanticTokensFor (lines: string list) : (int * int * int * int) list =
               "|succeededIn"
               "|completedIn"
               "|exitCodedIn"
-              "|orFailedIn" ]
+              "|orFailedIn"
+              "|execed"
+              "|execedEnv" ]
 
     let rec spineIsReifier (te: Check.TypedExpr) =
         match te.Kind with

@@ -1316,7 +1316,12 @@ within tmp d
   interior lines; `cmd | exitCode` STREAMS and gives the code as INT,
   never raises — bind it or match it (`| 130 ->` for cancels); a
   bare/`!()`/`$()` position is a teaching error ($() captures — use
-  `| complete` there). **`succeeds` is exitCode == 0, exactly** —
+  `| complete` there). `cmd | exec` REPLACES the weir process with the
+  command [D:exec] (execve — keeps weir's pid, so as a container
+  entrypoint the app gets signals directly with no forwarding layer);
+  it NEVER returns, diverging like `fail`/`exit`, so it is a legal bare
+  statement and cannot take a piped stdin (there is no parent left to
+  feed it). **`succeeds` is exitCode == 0, exactly** —
   for tools whose nonzero codes AND output are both data (grep,
   fzf), use `| complete` and read the record. An `if`/`elif`
   CONDITION takes the chain inline: `if test -f $p | succeeds then`
@@ -1326,8 +1331,9 @@ within tmp d
   Full inspection: `cmd | complete` gives `{ exitCode; stdout;
   stderr }`; a COMPUTED argv splats into the chain —
   `$author(git commit-tree $@argv | complete) |> _.stdout` (literal
-  head, splatted argv, sigil env; works with all four reifiers,
-  value-headed and interior lines too). `print ()` is silent (unit
+  head, splatted argv, sigil env; works with every reifier,
+  value-headed and interior lines too — except `exec`, which refuses a
+  value head). `print ()` is silent (unit
   prints nothing — the rule that lets orFail sit in effect
   positions).
 - Capture is IN MEMORY: `| complete` holds the whole output as one

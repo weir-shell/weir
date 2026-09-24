@@ -287,6 +287,14 @@ let runInherited (s: Spec) : unit =
                                            CharSet = System.Runtime.InteropServices.CharSet.Ansi)>]
 extern int private execvp(string file, string[] argv)
 
+// execvp reads the C `environ`, which .NET's SetEnvironmentVariable does
+// NOT sync to on Unix [D:exec] — so the env overlay must land via libc
+// setenv (overwrite = 1) for the replacement image to inherit it.
+[<System.Runtime.InteropServices.DllImport("libc",
+                                           SetLastError = true,
+                                           CharSet = System.Runtime.InteropServices.CharSet.Ansi)>]
+extern int private setenv(string name, string value, int overwrite)
+
 let exec (s: Spec) : unit =
     // the same boundary spawn enforces [D:spawn-nul-funnel]
     nulRefusal "the command program name" s.Prog
@@ -302,10 +310,17 @@ let exec (s: Spec) : unit =
         | Some snap -> snap
         | None -> Session.envOverlay () |> List.rev |> List.collect id
 
+    let isWindows = System.OperatingSystem.IsWindows()
+
     for k, v in List.append ambient s.Env do
         nulRefusal $"the env key '{k}'" k
         nulRefusal $"the env value for '{k}'" v
         System.Environment.SetEnvironmentVariable(k, v)
+        // POSIX execvp reads the C environ, not .NET's managed copy —
+        // setenv so the replacement inherits the overlay; Windows spawns
+        // (CreateProcess inherits the process env block set above)
+        if not isWindows then
+            setenv (k, v, 1) |> ignore
 
     match s.Cwd with
     | Some wd when System.IO.Directory.Exists wd -> System.IO.Directory.SetCurrentDirectory wd
