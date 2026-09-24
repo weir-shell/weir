@@ -3287,7 +3287,7 @@ let completionTests =
               // replacement yields `#help` — never `##help` or `head`
               // the closed set is the one source Complete.sessionDirectives
               // — the '#'-slot and the empty-prompt head both read it
-              Expect.equal (suggest "#" 1) [ "echo"; "find"; "help"; "infer"; "quit"; "save" ] "the closed set"
+              Expect.equal (suggest "#" 1) [ "echo"; "find"; "help"; "history"; "infer"; "quit"; "save" ] "the closed set"
               Expect.equal (suggest "#he" 1) [ "help" ] "the prefix filters"
               Expect.equal (suggest "#q" 1) [ "quit" ] ""
               Expect.isFalse (List.contains "head" (suggest "#he" 1)) "the general pool stays out"
@@ -3874,7 +3874,7 @@ let completionTests =
               // `suggest "" 0` used to return 1130 (954 PATH execs + the
               // universe) via `StartsWith ""`. A fresh Tab now teaches the
               // REPL's affordances, `#help` first.
-              Expect.equal (suggest "" 0) [ "#help"; "#find"; "#echo"; "#infer"; "#save"; "#quit" ] "the curated directive set"
+              Expect.equal (suggest "" 0) [ "#help"; "#find"; "#echo"; "#infer"; "#save"; "#history"; "#quit" ] "the curated directive set"
 
               // filtered completion is unaffected (a real prefix at a head).
               // Assert only environment-stable facts: the `File` MODULE is

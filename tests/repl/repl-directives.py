@@ -9,6 +9,7 @@ import re
 import select
 import subprocess
 import sys
+import tempfile
 import time
 
 WEIR = sys.argv[1] if len(sys.argv) > 1 else os.path.expanduser("~/.local/bin/weir")
@@ -325,6 +326,77 @@ t = pty_tab("Wr")
 if "WriteFile" in t:
     failures.append(f"a constructor (WriteFile) must not complete at a statement head: {t[-300:]!r}")
 
+# --- #history [D:repl-history]: shows the entries with the file PATH in
+# the header (a user cannot cat what they cannot find; `~` never expands),
+# bare = all, <n> = the last n. Only the TTY path records (piped input is
+# not the user's history), so this must be a pty session; a FRESH HOME per
+# session makes the count deterministic. A tty records EVERY submitted
+# line, the `#history` directive included (bash-style), so the count and
+# the tail account for the directive line itself. ---------------------
+def pty_history(lines, settle=0.6):
+    home = tempfile.mkdtemp(prefix="weir-hist-")
+    pid, fd = pty.fork()
+    if pid == 0:
+        os.environ["HOME"] = home
+        # scrub XDG so stateHome resolves under the clean HOME
+        for k in ("XDG_STATE_HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME"):
+            os.environ.pop(k, None)
+        os.execv(WEIR, ["weir"])
+    time.sleep(0.8)
+    out = b""
+
+    def drain(t):
+        nonlocal out
+        deadline = time.time() + t
+        while time.time() < deadline:
+            r, _, _ = select.select([fd], [], [], 0.1)
+            if r:
+                try:
+                    out += os.read(fd, 65536)
+                except OSError:
+                    return
+
+    segs = []
+    for l in lines:
+        start = len(out)
+        os.write(fd, (l + "\r").encode())
+        drain(settle)
+        segs.append(re.sub(r"\x1b\[[0-9;]*[A-Za-z]|\x1b=", "", out[start:].decode(errors="replace")))
+    os.write(fd, b"\x04")
+    time.sleep(0.3)
+    try:
+        os.close(fd)
+    except OSError:
+        pass
+    os.waitpid(pid, 0)
+    return segs
+
+
+# bare #history: the three lets plus the `#history` line itself (4 entries)
+allseg = pty_history(["let ha = 1", "let hb = 2", "let hc = 3", "#history"])[3]
+if "history at " not in allseg or "/weir/history" not in allseg:
+    failures.append(f"#history must print the file path in its header: {allseg[-300:]!r}")
+if "(4 entries)" not in allseg:
+    failures.append(f"#history header must count the entries (3 lets + the directive): {allseg[-300:]!r}")
+for want in ("let ha = 1", "let hb = 2", "let hc = 3"):
+    if want not in allseg:
+        failures.append(f"bare #history must dump every entry ({want}): {allseg[-400:]!r}")
+
+# #history 3 is the tail of [ha, hb, hc, "#history 3"]: hb, hc, the
+# directive line — the oldest (ha) is excluded
+tailseg = pty_history(["let ha = 1", "let hb = 2", "let hc = 3", "#history 3"])[3]
+if "let hb = 2" not in tailseg or "let hc = 3" not in tailseg:
+    failures.append(f"#history 3 must show the recent entries: {tailseg[-300:]!r}")
+if "let ha = 1" in tailseg:
+    failures.append(f"#history 3 must NOT show the oldest entry (tail): {tailseg[-300:]!r}")
+
+t = piped("#help\n#quit\n")
+if "#history" not in t:
+    failures.append(f"#help must list #history: {t[-300:]!r}")
+t = piped("#hisory\n#quit\n")
+if "did you mean" not in t.lower() or "#history" not in t:
+    failures.append(f"a #history typo must did-you-mean it (dispatch reads sessionDirectives): {t[-200:]!r}")
+
 # --- Ctrl+D still leaves (the pty half) -------------------------------
 pid, fd = pty.fork()
 if pid == 0:
@@ -355,4 +427,4 @@ if failures:
         print("repl-directives FAIL:", f)
     sys.exit(1)
 
-print("repl-directives: #help x3 (one source), glance rendering (member + module blurbs), #find fallback (substring/usage/no-match), #quit + Ctrl+D, :q retired, comments no-op, #echo cap (report/set/all/teach, tty live, piped pinned), unknown-directive message trimmed (#sig/#schema redirect), #alias recognized (list/add/single-hop/help), empty-prompt Tab offers directives, constructor not a head")
+print("repl-directives: #help x3 (one source), glance rendering (member + module blurbs), #find fallback (substring/usage/no-match), #quit + Ctrl+D, :q retired, comments no-op, #echo cap (report/set/all/teach, tty live, piped pinned), #history (path header, count, bare-all, tail-n, help-listed, typo did-you-mean), unknown-directive message trimmed (#sig/#schema redirect), #alias recognized (list/add/single-hop/help), empty-prompt Tab offers directives, constructor not a head")

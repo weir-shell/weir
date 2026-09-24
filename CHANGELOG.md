@@ -14,6 +14,12 @@
   (falling back to `~/.config`, `~/.local/state`, `~/.cache`) on POSIX —
   the same resolution the REPL uses for its own history file.
 
+- **`#history` REPL directive.** Shows the session's history with the
+  **file path in the header** (a quick way to find where history lives,
+  since `~` never expands): bare `#history` dumps every entry numbered,
+  `#history N` shows the last N. Entries render one per line, matching the
+  history search's display.
+
 ### Fixed
 
 - **`#infer` no longer mis-drafts a heterogeneous object as a homogeneous

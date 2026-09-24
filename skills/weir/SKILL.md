@@ -1575,8 +1575,10 @@ type Bad = C of int
   `#help <Module>` glances one member per line (name + its doc's
   first line) and `#find [query]` fuzzy-searches modules and members
   [D:help-find] (fzf with a live doc preview at a tty; a substring
-  fallback piped/without fzf). All REPL scaffolding — see
-  docs/repl.md.
+  fallback piped/without fzf). `#history [N]` shows history (bare =
+  all, `N` = last N) with the file path in its header — the quick way
+  to find where history lives, since `~` never expands. All REPL
+  scaffolding — see docs/repl.md.
 
 ```weir
 let sample = ["{\"id\": 1, \"tags\": [\"a\"]}"]
