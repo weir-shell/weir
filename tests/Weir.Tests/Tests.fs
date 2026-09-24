@@ -12131,6 +12131,23 @@ let agentFindingsTests =
               expectValue "Path.normalize \"/a/../../b\"" (VStr "/b")
               expectValue "Path.combine \"/repo/src/App\" \"../Core/Core.csproj\" |> Path.normalize" (VStr "/repo/src/Core/Core.csproj")
           }
+          test "Path.home + XDG dirs resolve — the typed stand-in for ~/$HOME [D:path-home]" {
+              // each is unit -> string, non-empty; the XDG dirs live under
+              // home (POSIX default / Windows profile), and stateHome is
+              // exactly where the REPL keeps history
+              let asStr what v =
+                  match v with
+                  | VStr s -> s
+                  | other -> failtestf "%s: expected VStr, got %A" what other
+
+              let home = asStr "home" (run "Path.home ()")
+              Expect.isNotEmpty home "home resolves"
+
+              for m in [ "configHome"; "stateHome"; "cacheHome" ] do
+                  let d = asStr m (run $"Path.{m} ()")
+                  Expect.isNotEmpty d $"{m} resolves"
+                  Expect.stringContains d home $"{m} sits under home"
+          }
           test "Path.under confines; Path.combine does not [D:path-under]" {
               // RUNS ON EVERY PLATFORM. An earlier skipOnWindows left this member with
               // ZERO Windows coverage and pointed at an e2e row that did not exist; the

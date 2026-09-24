@@ -2,6 +2,18 @@
 
 ## v0.0.50
 
+### Added
+
+- **`Path.home` and the XDG directory trio (`Path.configHome`,
+  `Path.stateHome`, `Path.cacheHome`).** The typed stand-in for `~`/`$HOME`,
+  which never expand in argv — build a path with an interpolation instead:
+  `cat $"{Path.home ()}/.bashrc"`, `cat $"{Path.stateHome ()}/weir/history"`.
+  Each is a pure `unit -> string` query with platform-native output:
+  `configHome`/`stateHome`/`cacheHome` resolve `%APPDATA%`/`%LOCALAPPDATA%`
+  on Windows and `$XDG_CONFIG_HOME`/`$XDG_STATE_HOME`/`$XDG_CACHE_HOME`
+  (falling back to `~/.config`, `~/.local/state`, `~/.cache`) on POSIX —
+  the same resolution the REPL uses for its own history file.
+
 ### Fixed
 
 - **`#infer` no longer mis-drafts a heterogeneous object as a homogeneous

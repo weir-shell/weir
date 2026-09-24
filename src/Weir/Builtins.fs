@@ -2107,6 +2107,39 @@ let private pathNormalize (p: string) : string =
     elif body = "" then "."
     else body
 
+// home + XDG dirs [D:path-home], the ONE implementation the REPL's
+// config/state paths also use: Windows maps to SpecialFolder
+// (%APPDATA% / %LOCALAPPDATA%), POSIX to the XDG_* var else the ~
+// fallback. Re-read per call — the environment can change. These replace
+// the argv-expansion weir does NOT do (no `~`, no `$HOME`): a typed value
+// to interpolate, injection-proof by construction.
+let xdgDir (var: string) (fallback: string) : string =
+    match System.Environment.GetEnvironmentVariable var with
+    | null
+    | "" -> System.IO.Path.Combine(System.Environment.GetFolderPath System.Environment.SpecialFolder.UserProfile, fallback)
+    | v -> v
+
+let homeDir () : string =
+    System.Environment.GetFolderPath System.Environment.SpecialFolder.UserProfile
+
+let configDir () : string =
+    if System.OperatingSystem.IsWindows() then
+        System.Environment.GetFolderPath System.Environment.SpecialFolder.ApplicationData
+    else
+        xdgDir "XDG_CONFIG_HOME" ".config"
+
+let stateDir () : string =
+    if System.OperatingSystem.IsWindows() then
+        System.Environment.GetFolderPath System.Environment.SpecialFolder.LocalApplicationData
+    else
+        xdgDir "XDG_STATE_HOME" ".local/state"
+
+let cacheDir () : string =
+    if System.OperatingSystem.IsWindows() then
+        System.Environment.GetFolderPath System.Environment.SpecialFolder.LocalApplicationData
+    else
+        xdgDir "XDG_CACHE_HOME" ".cache"
+
 let private pathMembers: (string * Ty * Value) list =
     [ "extension", TFun(TStr, TStr), str1 "extension" Path.GetExtension
       "fileName", TFun(TStr, TStr), str1 "fileName" Path.GetFileName
@@ -2121,6 +2154,12 @@ let private pathMembers: (string * Ty * Value) list =
       "normalize", TFun(TStr, TStr), str1 "normalize" pathNormalize
       "under", TFun(TStr, TFun(TStr, TStr)), pathUnderImpl
       "glob", TFun(TStr, TSeq TStr), globImpl
+      // home + XDG dirs [D:path-home] — the typed replacement for `~`/`$HOME`
+      // (weir expands nothing in argv): `cat $"{Path.home ()}/.bashrc"`
+      "home", TFun(TUnit, TStr), VBuiltin(fun _ -> VStr(homeDir ()))
+      "configHome", TFun(TUnit, TStr), VBuiltin(fun _ -> VStr(configDir ()))
+      "stateHome", TFun(TUnit, TStr), VBuiltin(fun _ -> VStr(stateDir ()))
+      "cacheHome", TFun(TUnit, TStr), VBuiltin(fun _ -> VStr(cacheDir ()))
       // the QUERY (pure): the system temp root, no trailing separator
       "tempRoot",
       TFun(TUnit, TStr),
@@ -5113,6 +5152,30 @@ let builtinDocs: Map<string, BuiltinDoc> =
               (Some "Path.glob \"*.nope123\" |> Seq.freeze")
               None
           |> named [ "pattern" ]
+          "Path.home",
+          (bd
+              "The user's home directory (a pure query; no trailing separator, platform-native). The typed stand-in for `~`/`$HOME`, which never expand in argv — build a path with `$\"{Path.home ()}/.bashrc\"`."
+              (Some "Path.home ()")
+              None
+           |> named [ "()" ])
+          "Path.configHome",
+          (bd
+              "The base directory for user config: `$XDG_CONFIG_HOME` (or `~/.config`) on POSIX, `%APPDATA%` on Windows."
+              (Some "Path.configHome ()")
+              None
+           |> named [ "()" ])
+          "Path.stateHome",
+          (bd
+              "The base directory for user state: `$XDG_STATE_HOME` (or `~/.local/state`) on POSIX, `%LOCALAPPDATA%` on Windows. Where the REPL keeps its history."
+              (Some "Path.stateHome ()")
+              None
+           |> named [ "()" ])
+          "Path.cacheHome",
+          (bd
+              "The base directory for user cache: `$XDG_CACHE_HOME` (or `~/.cache`) on POSIX, `%LOCALAPPDATA%` on Windows."
+              (Some "Path.cacheHome ()")
+              None
+           |> named [ "()" ])
 
           // ---- File (read/write touch the filesystem — no inline example) ----
           "File.exists",

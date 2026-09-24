@@ -408,25 +408,10 @@ type private ReplConfig =
       // wiring exists now (the session cap), so the key is real again
       EchoElems: int }
 
-let private xdgHome (var: string) (fallback: string) =
-    match Environment.GetEnvironmentVariable var with
-    | null
-    | "" -> Path.Combine(Environment.GetFolderPath Environment.SpecialFolder.UserProfile, fallback)
-    | v -> v
-
-// Windows has no XDG: config -> %APPDATA%, state -> %LOCALAPPDATA%
-// [D:windows-v1]. POSIX unchanged (XDG var, else ~/.config | ~/.local/state).
-let private configHome () =
-    if OperatingSystem.IsWindows() then
-        Environment.GetFolderPath Environment.SpecialFolder.ApplicationData
-    else
-        xdgHome "XDG_CONFIG_HOME" ".config"
-
-let private stateHome () =
-    if OperatingSystem.IsWindows() then
-        Environment.GetFolderPath Environment.SpecialFolder.LocalApplicationData
-    else
-        xdgHome "XDG_STATE_HOME" ".local/state"
+// config/state dirs come from Builtins [D:path-home] — the ONE impl the
+// Path.home/configHome/stateHome members also expose (was duplicated here)
+let private configHome () = Builtins.configDir ()
+let private stateHome () = Builtins.stateDir ()
 
 let private defaultConfig =
     { HistorySize = 5000

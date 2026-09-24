@@ -2240,7 +2240,7 @@ not the teaching.
 - `Map`: `add` `count` `get` `has` `keys` `ofPairs` `pairs` `remove` `tryGet` `values`
 - `Net`: `portOpen`
 - `Option`: `defaultValue` `defaultWith` `iter` `map` `orElse`
-- `Path`: `combine` `dir` `extension` `fileName` `glob` `newTempDir` `stem` `tempRoot` `under`
+- `Path`: `cacheHome` `combine` `configHome` `dir` `extension` `fileName` `glob` `home` `newTempDir` `stateHome` `stem` `tempRoot` `under` — `home`/`configHome`/`stateHome`/`cacheHome` (each `unit -> string`) are the typed stand-in for `~`/`$HOME`, which never expand in argv: `cat $"{Path.home ()}/.bashrc"`
 - `Poll`: `defaults`
 - `Proc`: `pid` `running` `stop` `tail` `wait`
 - `Server`: `port` `running`
