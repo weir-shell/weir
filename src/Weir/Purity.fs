@@ -156,6 +156,7 @@ let rec private effectPhrase (n: string) : string =
         | "Instant.now" -> "'Instant.now' reads the clock"
         | "Duration.sleep" -> "'Duration.sleep' waits on the clock"
         | "Self.stdin" -> "'Self.stdin' reads the process's input stream"
+        | "Self.prompt" -> "'Self.prompt' reads a line from stdin and writes to stderr"
         | _ ->
             match n.Split '.' with
             | [| ("File" | "Dir"); m |] when fsWriteMembers.Contains m -> $"'{n}' writes the filesystem"

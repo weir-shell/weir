@@ -3216,18 +3216,7 @@ let private splitSessionBlock
 
                 let synthesized =
                     if fieldStart.Success then
-                        let body = if l.StartsWith "    " then l.Substring 4 else t
-
-                        // `prompt` is a builtin, so its synthesized let
-                        // takes a same-length internal binder — columns
-                        // survive, the shadow refusal never fires
-                        let body =
-                            if inPromptField then
-                                "pr0mpt" + body.Substring "prompt".Length
-                            else
-                                body
-
-                        "let " + body
+                        "let " + (if l.StartsWith "    " then l.Substring 4 else t)
                     else
                         l
 
@@ -3603,7 +3592,7 @@ let private loadInit (baseState: State) : State =
                                             match checked' with
                                             | [ (ll, chk) ] ->
                                                 (match chk.Kind with
-                                                 | Script.KLet("pr0mpt", _, te) when Script.runsCommandT te ->
+                                                 | Script.KLet("prompt", _, te) when Script.runsCommandT te ->
                                                      initDiag
                                                          path
                                                          ll.Head
@@ -3612,7 +3601,7 @@ let private loadInit (baseState: State) : State =
                                                          "a #session value cannot run a command — name a function here (prompt = f); the command runs when the prompt calls f"
 
                                                      false
-                                                 | Script.KLet("pr0mpt", _, te) ->
+                                                 | Script.KLet("prompt", _, te) ->
                                                      (match te.Ty with
                                                       | Types.TStr ->
                                                           (try

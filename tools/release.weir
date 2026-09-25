@@ -20,7 +20,7 @@ let cli = Args.load Cli
 let gdir = cli.grammar |> Option.defaultValue "../tree-sitter-weir"
 
 let confirm msg =
-    let a = prompt $"{msg} [y/N]"
+    let a = Self.prompt $"{msg} [y/N]"
     a == "y" || a == "Y" || a == "yes"
 
 // ---- 1. preflight: refuse before anything mutates -------------------------

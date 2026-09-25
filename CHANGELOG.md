@@ -13,6 +13,13 @@
   back to `weir> ` with one stderr note. Redirected sessions keep the
   fixed default.
 
+### Changed
+
+- **Breaking: `prompt` is now `Self.prompt`.** The interactive read moves
+  in with `Self.stdin`; the bare name is unbound (no alias, pre-1.0). The
+  REPL and `-e` now carry a `Self` module with `prompt` alone — the
+  script facts (`args`, `stdin`, `scriptPath`…) stay script-only.
+
 ## v0.0.52
 
 ### Added

@@ -10,7 +10,7 @@
 ///     weir tools/ext-release.weir
 
 let confirm msg =
-    let a = prompt $"{msg} [y/N]"
+    let a = Self.prompt $"{msg} [y/N]"
     a == "y" || a == "Y" || a == "yes"
 
 let manifest =

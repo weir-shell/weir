@@ -4238,13 +4238,13 @@ resources:
 echo "e2e ok: districts in modules — patch district in an imported function, YamlPatch-typed export"
 rm -rf "$mdir"
 
-# prompt + the Self.stdin law [D:prompt]: one line per interaction
+# Self.prompt + the Self.stdin law [D:prompt]: one line per interaction
 # (message on stderr, stdout stays data), EOF refuses, and a second
 # enumeration of the live stream raises the teaching
 pdir=$(mkweirtmp)
-out=$(printf 'Ada\n' | $BIN -e 'print (prompt "name?")' 2>/dev/null)
+out=$(printf 'Ada\n' | $BIN -e 'print (Self.prompt "name?")' 2>/dev/null)
 expect "prompt reads a line; stdout carries only the data" "Ada" "$out"
-perr=$($BIN -e 'print (prompt "x?")' < /dev/null 2>&1) && fail "prompt at EOF must refuse" || true
+perr=$($BIN -e 'print (Self.prompt "x?")' < /dev/null 2>&1) && fail "Self.prompt at EOF must refuse" || true
 echo "$perr" | grep -qF "stdin is closed (EOF)" || fail "the EOF teaching: $perr"
 cat > "$pdir/re.weir" <<'WEOF'
 let one = Self.stdin |> Seq.head
@@ -4254,7 +4254,7 @@ print two
 WEOF
 rerr=$(printf 'a\nb\n' | $BIN "$pdir/re.weir" 2>&1) && fail "re-enumerating Self.stdin must raise" || true
 echo "$rerr" | grep -qF "already consumed" || fail "the one-enumeration teaching: $rerr"
-echo "e2e ok: prompt reads per-line, EOF refuses, Self.stdin enumerates once"
+echo "e2e ok: Self.prompt reads per-line, EOF refuses, Self.stdin enumerates once"
 rm -rf "$pdir"
 
 # anonymous record types [D:anon-records]: the shape inline in the

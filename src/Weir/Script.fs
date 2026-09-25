@@ -2469,7 +2469,10 @@ let selfMembers: Map<string, Scheme> =
           // entryPath = the invoked script's, a process fact like args/stdin
           // — the same for every file in the run [D:modules-v1] (decision 12)
           "scriptPath", generalize TStr
-          "entryPath", generalize TStr ]
+          "entryPath", generalize TStr
+          // the interactive read [D:prompt] — static (Builtins holds the
+          // value under the mangled key); grouped here, not bare
+          "prompt", generalize (TFun(TStr, TStr)) ]
 
 let private baseEnvs (scriptArgs: string list) (scriptPath: string) =
     let typeEnv = Builtins.typeEnvStrict
@@ -2490,7 +2493,7 @@ let private baseEnvs (scriptArgs: string list) (scriptPath: string) =
             Seq.delay (fun () ->
                 if consumed.Value then
                     failwith
-                        "Self.stdin is a live stream and was already consumed — bind ONE enumeration (let lines = Self.stdin |> Seq.freeze), or read a line per interaction with `prompt`"
+                        "Self.stdin is a live stream and was already consumed — bind ONE enumeration (let lines = Self.stdin |> Seq.freeze), or read a line per interaction with `Self.prompt`"
 
                 consumed.Value <- true
 

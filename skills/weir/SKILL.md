@@ -60,11 +60,12 @@ print (show (Seq.length xs))
 #loose
 print (show 1)
 ```
-- The `Self` module groups a script's own facts, script-only (absent
-  in the REPL and `-e`): `Self.args : seq<string>`,
+- The `Self` module groups a script's own facts; the facts are
+  script-only (absent in the REPL and `-e`), while `Self.prompt` is
+  available everywhere: `Self.args : seq<string>`,
   `Self.stdin : seq<string>` (the WHOLE input stream, ONE
   enumeration — it is live, a second enumeration raises with the
-  repair; `prompt "msg?"` reads a line per interaction instead, message
+  repair; `Self.prompt "msg?"` reads a line per interaction instead, message
   to stderr so piped stdout stays data, EOF refuses), `Self.pid : int` (the process id),
   `Self.scriptPath : string` (the FILE'S OWN absolute path, resolved
   at startup before any `cd`; symlinks unresolved like bash's `$0` —
