@@ -4,6 +4,16 @@
 
 ### Added
 
+- **`#infer let` — draft, declare, and bind in one shot.**
+  `#infer let z = <src> |> from json as Pods` evaluates the source once,
+  drafts and injects the types, and binds `z` to the value parsed from
+  the same sample — no `Seq.freeze`, no re-run, no third statement.
+  `as _` auto-names the root (`Type1`), in the classic form too; a
+  top-level array binds as `seq<Name>`. `#save` distills the honest
+  explicit spelling (`type` decls + `let z = src |> from json Name`),
+  never the directive line. `from … as <Name>` in a file now teaches
+  the `#infer` spelling instead of a bare parse error.
+
 - **A custom REPL prompt: `prompt` in the init file's `#session` block.**
   A string, or the name of a `unit -> string` function declared in
   `init.weir` — it may run commands (`git branch --show-current | line`)

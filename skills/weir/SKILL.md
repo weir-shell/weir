@@ -1576,7 +1576,13 @@ type Bad = C of int
   column [D:from-table]; empty-array/null/type-conflict cases ride as
   `//` notes). The REPL's `#infer <source> from <json|jsonl|yaml|table> as <Name>`
   directive also INJECTS the drafted types into the session (so
-  `from json <Name>` and field completion light up); `#save <path>`
+  `from json <Name>` and field completion light up); the one-shot
+  `#infer let <x> = <src> |> from <fmt> as <Name|_>` [D:infer-one-shot]
+  additionally BINDS `<x>` to the value parsed from the same sample —
+  the source runs exactly once (no freeze, no re-parse) and `as _`
+  auto-names the root type (`Type1`); `from … as <Name>` is a
+  DIRECTIVE spelling only — in a script, declare the type and write
+  `from <fmt> <Name>` (the parser teaches this); `#save <path>`
   DISTILLS a session to a runnable script — it keeps the `type` decls
   and named `let` bindings (real multi-line source preserved, bare
   aliases qualified), dedups a redeclared name to its last form, drops

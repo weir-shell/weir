@@ -20032,6 +20032,14 @@ let portMembersTests =
                   "write 'Pod', not 'Acme.Pod'"
                   "the repair is spelled"
           }
+          test "'as' in the adapter slot teaches the #infer spelling [D:infer-one-shot]" {
+              // the fatal's long message hard-wraps in the rendered
+              // diagnostic, so the pin is a fragment no wrap can straddle
+              mustSay
+                  [ "let z = [\"{}\"] |> from json as Zeds"; "print \"x\"" ]
+                  "#infer spelling"
+                  "the directive-in-a-file misuse is taught"
+          }
           test "a capture sigil x reifier teaches the in-parens spelling [D:exit-reifiers]" {
               mustSay
                   [ "let e = Env.ofPairs [(\"A\", \"1\")]"

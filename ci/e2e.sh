@@ -1164,6 +1164,57 @@ echo "$ekout" | grep -qF "empty-string key" || fail "the empty-key drop must pri
 echo "$ekout" | grep -qF "a=2" || fail "the draft must read around the dropped empty key: $ekout"
 echo "e2e ok: a keyword key rides [<Wire>] and reads; an empty-string key drops loudly and reads around"
 
+# --- #infer let: the one-shot form (2026-09-25) [D:infer-one-shot] -----
+# `#infer let z = <src> |> from json as _` runs the source ONCE, drafts
+# + injects the types (as _ auto-names the root), and binds z to the
+# value parsed from the SAME sample — the manual freeze/re-parse dance
+# and its double-run hazard both gone. #save distills the honest
+# two-part spelling: the type decls plus a plain `let z = src |> from
+# json <Name>`, never the directive line.
+osdir=$(mkweirtmp)
+osout=$(printf '%s\n%s\n%s\n%s\n%s\n' \
+  'let js = ["{\"a\": \"b\"}"]' \
+  '#infer let z = js |> from json as _' \
+  'print z.a' \
+  "#save $osdir/one.weir" \
+  '#quit' | $BIN 2>&1)
+echo "$osout" | grep -qF "defined: Type1 (1 type)" || fail "#infer let must auto-name the root on as _: $osout"
+echo "$osout" | grep -qF 'z : Type1 = { a = "b" }' || fail "#infer let must bind and echo the parsed value: $osout"
+grep -qF "type Type1" "$osdir/one.weir" || fail "#save must carry the one-shot's drafted type: $(cat "$osdir/one.weir")"
+grep -qF "from json Type1" "$osdir/one.weir" || fail "#save must distill the honest explicit read, not the directive: $(cat "$osdir/one.weir")"
+$BIN check "$osdir/one.weir" || fail "the one-shot distill must weir-check clean: $(cat "$osdir/one.weir")"
+# run-once: a side-effecting source runs exactly once for draft + bind
+oscount="$osdir/runs.txt"
+osrun=$(printf '%s\n%s\n%s\n' \
+  "#infer let p = \$(sh -c \"echo run >> $oscount; echo '{\\\"n\\\": 1}'\") |> from json as Ping" \
+  'print p.n' \
+  '#quit' | $BIN 2>&1)
+echo "$osrun" | grep -qF "defined: Ping (1 type)" || fail "#infer let over a command must draft: $osrun"
+# -eq, not =: BSD/macOS wc -l pads the count with leading spaces
+[ "$(wc -l < "$oscount")" -eq 1 ] || fail "#infer let must run the source exactly once, ran $(wc -l < "$oscount")"
+# a top-level array binds seq<Name>; the directive picks the seq spelling
+osarr=$(printf '%s\n%s\n%s\n' \
+  'let ns = ["[{\"name\": \"a\"}, {\"name\": \"b\"}]"]' \
+  '#infer let xs = ns |> from json as Svc' \
+  '#quit' | $BIN 2>&1)
+echo "$osarr" | grep -qF "xs : seq<Svc>" || fail "#infer let must bind a top-level array as seq<Name>: $osarr"
+# the script-side leak of the directive spelling teaches, at check
+cat > "$osdir/leak.weir" <<'WEOF'
+let z = ["{}"] |> from json as Zeds
+print "x"
+WEOF
+oschk=$($BIN check "$osdir/leak.weir" 2>&1) && fail "from json as <Name> must refuse in a file: $oschk"
+# the rendered message wraps at the terminal width — pin a fragment
+# that cannot straddle the wrap
+echo "$oschk" | grep -qF "#infer spelling" || fail "the file-side 'as' misuse must teach #infer: $oschk"
+# a scalar top drafts no root record — nothing bound, the notes stand
+ossc=$(printf '%s\n%s\n' '#infer let z = ["42"] |> from json as _' '#quit' | $BIN 2>&1)
+echo "$ossc" | grep -qF "nothing bound" || fail "#infer let must refuse to bind a scalar top: $ossc"
+# usage: the pipe-from marker is required
+osus=$(printf '%s\n%s\n' '#infer let z = foo as _' '#quit' | $BIN 2>&1)
+echo "$osus" | grep -qF "missing '|> from <format>'" || fail "#infer let usage lost the from marker teach: $osus"
+echo "e2e ok: #infer let drafts, binds run-once, distills the explicit spelling; the file-side 'as' teaches; scalar refused, usage taught"
+
 # --- #infer taken-name guard (2026-09-18) [D:repl-infer] ---------------
 # a k8s secret volume's `secret:` sub-object desires the name `Secret` —
 # a taken name (the builtin): the old draft injected `type Secret` that
