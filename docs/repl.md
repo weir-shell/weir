@@ -250,6 +250,30 @@ record from the header and a per-column scan of the cells — a column
 with empty/`<none>` cells drafts `Option` with a note, and the value
 reads as `seq<Name>`.
 
+The one-shot form does the whole motion — draft the types *and* bind
+the parsed value:
+
+```
+weir> #infer let po = kubectl get po -o json |> from json as _
+defined: Type1, Metadata, Status (3 types)
+po : Type1 = { items = …; count = 3 }
+weir> po.items |> Seq.map _.⟨TAB⟩
+```
+
+`#infer let <x> = <source> |> from <fmt> as <Name|_>` runs the source
+exactly once: the same sample drives the inference and the binding,
+so there is no re-run (no `Seq.freeze` needed) and no third statement
+re-spelling the name. `as _` auto-names the root (`Type1` — the
+nested names are already derived; `_` extends that to the top; it
+works in the classic form too). A top-level array binds as
+`seq<Name>`; a sample whose top is a scalar or an open mapping
+defines what it can and binds nothing (the notes give the read
+spelling). `#save` distills the honest explicit form — the `type`
+decls plus `let x = source |> from <fmt> Name` — never the directive
+line: the one-shot is prompt-side convenience, the file stays the
+checkable language. (Writing `from json as Name` in a script is a
+check error that points here.)
+
 The output is ordinary `type` decls you own and edit — this is the
 `weir add schema` category, not check-time inference (`check` never
 evaluates; `from json` never sniffs). When the shape has a published

@@ -2218,8 +2218,10 @@ let private helpDirective (color: bool) (te: TypeEnv) (arg: string) : string =
         + "  #find [query]         // fuzzy-search modules and members (fzf + live preview)\n"
         + "  #echo [<n> | all]     // the unforced-echo cap (default 100); bare reports;\n"
         + "                        //   all = no cap — an infinite seq will hang (Ctrl+C)\n"
-        + "  #infer [<src>] from <json|jsonl|yaml|table> as <Name>\n"
-        + "                        //   draft named types from a sample (src defaults to 'it')\n"
+        + "  #infer [<src>] from <json|jsonl|yaml|table> as <Name|_>\n"
+        + "                        //   draft named types from a sample (src defaults to 'it'; _ auto-names)\n"
+        + "  #infer let <x> = <src> |> from <fmt> as <Name|_>\n"
+        + "                        //   one shot: draft the types and bind the parsed value (runs once)\n"
         + "  #save <path>          // dump the session's accepted lines to a runnable .weir\n"
         + "  #history [<n>]        // show history (bare = all, <n> = last n); prints the file path\n"
         + "  #alias [name = cmd …] // bare lists; a command-head alias (init.weir is canonical)\n"
@@ -2574,7 +2576,220 @@ let private injectDecls (state: State) (declText: string list) : Result<State * 
 
         go state [] lls
 
+// ---- #infer let [D:infer-one-shot]: draft, declare, and bind in one --
+// The one-shot form owns the whole motion the manual flow hand-operates
+// (freeze, #infer, re-parse): evaluate the source ONCE, draft + inject
+// the types, then bind the name to the value parsed from the SAME
+// sample — the freeze and the double-run hazard both disappear. The
+// binding rides the ordinary let path (check, eval, echo), against a
+// hidden materialized copy of the sample; #save records the honest
+// two-part spelling (the type decls + a plain `let x = src |> from fmt
+// Name`), never the directive line — the distilled file stays the
+// checkable language.
+
+/// the `as _` auto-name [D:infer-one-shot]: every nested name is
+/// already derived, `_` extends that to the root — the first free TypeN
+let private autoTypeName (taken: Set<string>) : string =
+    let mutable n = 1
+
+    while Set.contains $"Type{n}" taken do
+        n <- n + 1
+
+    $"Type{n}"
+
+let private inferLetUsage =
+    "#infer let <name> = <source> |> from <json|jsonl|yaml|table> as <Name|_>"
+
+let private isBinderName (s: string) =
+    s <> ""
+    && (Char.IsLetter s[0] || s[0] = '_')
+    && s |> Seq.forall (fun c -> Char.IsLetterOrDigit c || c = '_')
+
+/// split "let <name> = <source> |> from <fmt> as <Name|_>" on the
+/// literal markers — the directive's own parse, like parseInfer
+let private parseInferLet (rest: string) : Result<string * string * string * string, string> =
+    let body = rest.Substring 3
+    let eqIdx = body.IndexOf '='
+
+    if eqIdx < 0 then
+        Error $"{inferLetUsage} — missing '='"
+    else
+        let binder = body.Substring(0, eqIdx).Trim()
+        let rhs = body.Substring(eqIdx + 1)
+        let asIdx = rhs.LastIndexOf " as "
+
+        if asIdx < 0 then
+            Error $"{inferLetUsage} — missing 'as <Name|_>'"
+        else
+            let name = rhs.Substring(asIdx + 4).Trim()
+            let head = rhs.Substring(0, asIdx)
+            let fromIdx = head.LastIndexOf "|> from "
+
+            if fromIdx < 0 then
+                Error $"{inferLetUsage} — missing '|> from <format>'"
+            else
+                let source = head.Substring(0, fromIdx).Trim()
+                let fmt = head.Substring(fromIdx + 8).Trim()
+
+                if not (isBinderName binder) || Set.contains binder Parser.keywords then
+                    Error $"{inferLetUsage} — '{binder}' is not a bindable name"
+                elif source = "" then
+                    Error $"{inferLetUsage} — missing the source expression"
+                else
+                    Ok(binder, source, fmt, name)
+
+/// bind `binder` to the sample parsed by `from <fmt> <spelling>` — the
+/// sample rides a hidden materialized binding so the command never
+/// re-runs [D:infer-one-shot]; the ordinary let path does the check,
+/// eval, and echo, then the hidden name scrubs
+let private bindParsed (state: State) (binder: string) (source: string) (fmt: Infer.Format) (spelling: string) (lines: string list) : State =
+    let fmtWord =
+        match fmt with
+        | Infer.Json -> "json"
+        | Infer.Jsonl -> "jsonl"
+        | Infer.Yaml -> "yaml"
+        | Infer.Table -> "table"
+
+    let hidden =
+        let free (n: string) =
+            n <> binder
+            && not (Map.containsKey n state.Values)
+            && not (Map.containsKey n state.TypeEnv.Values)
+
+        Seq.initInfinite (fun i -> if i = 0 then "inferSample" else $"inferSample{i}")
+        |> Seq.find free
+
+    let scratch =
+        { state with
+            TypeEnv =
+                { state.TypeEnv with
+                    Values = Map.add hidden (Types.generalize (TSeq TStr)) state.TypeEnv.Values }
+            Values = Map.add hidden (Eval.VSeq(lines |> List.map Eval.VStr |> Seq.ofList)) state.Values }
+
+    let scrub (st: State) =
+        { st with
+            TypeEnv =
+                { st.TypeEnv with
+                    Values = Map.remove hidden st.TypeEnv.Values }
+            Values = Map.remove hidden st.Values }
+
+    let adapter = $"from {fmtWord} {spelling}"
+    let stmt = $"let {binder} = {hidden} |> {adapter}"
+    let ll = Script.singleLine stmt
+
+    match Script.checkStatement false None (fun _ -> resolver scratch) Script.scriptOnlyImport scratch.TypeEnv ll with
+    | Error d ->
+        Console.WriteLine $"#infer: the binding does not check: {d.Message}"
+        state
+    | Ok chk ->
+        let st = scrub (evalCheckedBody stmt scratch chk)
+
+        // #save's honest spelling [D:infer-one-shot]: the drafted types
+        // recorded by the caller plus the plain read — a re-run of the
+        // source is exactly what a distilled script means
+        if not lastErrored && isNamedBinder binder then
+            let text = $"let {binder} = {source} |> {adapter}"
+            recordDef binder text text
+
+        st
+
+let private inferLetDirective (state: State) (rest: string) : State =
+    match parseInferLet rest with
+    | Error msg ->
+        Console.WriteLine msg
+        state
+    | Ok(binder, source, fmtStr, name) ->
+        match Infer.parseFormat fmtStr with
+        | Error msg ->
+            Console.WriteLine msg
+            state
+        | Ok fmt ->
+            if name <> "_" && (name = "" || not (Char.IsUpper name[0])) then
+                Console.WriteLine $"#infer: the type name '{name}' must start with an uppercase letter ('_' auto-names)"
+                state
+            elif name <> "_" && Set.contains name (Infer.takenTypeNames Check.builtinTypeNames.Keys) then
+                Console.WriteLine
+                    $"#infer: '{name}' is a built-in type — a drafted '{name}' could never be referenced (the built-in wins every use); pick another 'as' name"
+
+                state
+            else
+                match evalSource state source with
+                | Error msg ->
+                    Console.WriteLine msg
+                    state
+                | Ok lines ->
+                    let taken =
+                        Infer.takenTypeNames (Seq.append Check.builtinTypeNames.Keys (Map.keys state.TypeEnv.Types))
+
+                    let name = if name = "_" then autoTypeName taken else name
+
+                    // the read spelling rides the top shape
+                    // [D:infer-one-shot]: `from json T` reads one
+                    // document, a top-level array document reads
+                    // `from json seq<T>`; jsonl and table read rows ->
+                    // seq<T> with the bare name in the slot
+                    let inferred =
+                        match fmt with
+                        | Infer.Table ->
+                            Infer.infer Parser.keywords taken fmt name lines
+                            |> Result.map (fun (decls, notes) -> decls, notes, name)
+                        | _ ->
+                            Infer.nodeOf fmt lines
+                            |> Result.map (fun node ->
+                                let decls, notes = Infer.inferDecls Parser.keywords taken name node
+
+                                let spelling =
+                                    match fmt, node with
+                                    | (Infer.Json | Infer.Yaml), Infer.IArr _ -> $"seq<{name}>"
+                                    | _ -> name
+
+                                decls, notes, spelling)
+
+                    match inferred with
+                    | Error msg ->
+                        Console.WriteLine msg
+                        state
+                    | Ok(decls, notes, spelling) ->
+                        match injectDecls state decls with
+                        | Error msg ->
+                            Console.WriteLine msg
+                            state
+                        | Ok(state', defined) ->
+                            for d in decls do
+                                let declName =
+                                    match d.Trim().Split([| ' '; '\n' |]) with
+                                    | [| _typeKw; nm |] -> nm
+                                    | arr when arr.Length >= 2 -> arr[1]
+                                    | _ -> ""
+
+                                recordDef declName d d
+
+                            let count = List.length defined
+
+                            Console.WriteLine
+                                $"""defined: {String.concat ", " defined} ({count} type{if count = 1 then "" else "s"})"""
+
+                            for n in notes do
+                                Console.WriteLine $"  note: {n}"
+
+                            // no root record to read into (a scalar or
+                            // open-map top) — the notes above carry the
+                            // read spelling; any types stay defined
+                            if not (List.contains name defined) then
+                                Console.WriteLine
+                                    $"#infer: the sample drafts no '{name}' record (its top level is a scalar or an open mapping) — nothing bound; the notes give the read spelling"
+
+                                state'
+                            else
+                                bindParsed state' binder source fmt spelling lines
+
 let private inferDirective (state: State) (rest: string) : State =
+    // the one-shot form [D:infer-one-shot] heads with `let` — a source
+    // expression can never begin with the statement keyword
+    if rest = "let" || rest.StartsWith "let " then
+        inferLetDirective state rest
+    else
+
     match parseInfer rest with
     | Error msg ->
         Console.WriteLine msg
@@ -2597,10 +2812,10 @@ let private inferDirective (state: State) (rest: string) : State =
                     "#infer: no prior result — write '#infer <source> from … as <Name>', or run an expression first (it binds 'it')"
 
                 state
-            elif name = "" || not (Char.IsUpper name[0]) then
-                Console.WriteLine $"#infer: the type name '{name}' must start with an uppercase letter"
+            elif name <> "_" && (name = "" || not (Char.IsUpper name[0])) then
+                Console.WriteLine $"#infer: the type name '{name}' must start with an uppercase letter ('_' auto-names)"
                 state
-            elif Set.contains name (Infer.takenTypeNames Check.builtinTypeNames.Keys) then
+            elif name <> "_" && Set.contains name (Infer.takenTypeNames Check.builtinTypeNames.Keys) then
                 // the 'as'-name is the user's choice [D:repl-infer]: a
                 // builtin name could never be referenced (the builtin
                 // wins every use), and renaming their choice silently
@@ -2620,6 +2835,10 @@ let private inferDirective (state: State) (rest: string) : State =
                     // injected-and-shadowed, never usable
                     let taken =
                         Infer.takenTypeNames (Seq.append Check.builtinTypeNames.Keys (Map.keys state.TypeEnv.Types))
+
+                    // `as _` joins the derived-name family here too
+                    // [D:infer-one-shot]
+                    let name = if name = "_" then autoTypeName taken else name
 
                     match Infer.infer Parser.keywords taken fmt name lines with
                     | Error msg ->

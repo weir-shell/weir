@@ -2002,6 +2002,22 @@ let private fromExpr =
                      failFatallyAtCol
                          wspan.Start.Col
                          $"the adapter slot takes a bare record name — write '{m}', not '{w}.{m}': imported types resolve by their plain name (they live flat; the module alias qualifies values, not types here)")
+            // `as` after the format word is the REPL directive's
+            // spelling leaking into a file [D:infer-one-shot] —
+            // recognized whole first so the fatal fires outside the
+            // slot's attempt, like the qualified teach above
+            <|> (attempt (
+                     identSpanned
+                     >>= fun (w, wspan) ->
+                         if w = "as" then
+                             preturn wspan
+                         else
+                             ifail "not the #infer spelling"
+                 )
+                 >>= fun wspan ->
+                     failFatallyAtCol
+                         wspan.Start.Col
+                         "the adapter slot takes a declared record name — 'from … as <Name>' is the REPL's #infer spelling; here, declare the type and write the name (draft it at the prompt: #infer let x = <src> |> from <fmt> as _)")
             <|> attempt (
                 identSpanned
                 >>= fun (w, _) ->
