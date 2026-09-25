@@ -4356,6 +4356,26 @@ let private tableModuleMembers: (string * Ty * Value) list =
 let private moduleTable: (string * (string * Ty * Value) list) list =
     [ "Seq", seqMembers
       "Str", strMembers
+      // the interactive read [D:prompt]: message to stderr (a piped
+      // stdout stays data), one line from stdin; EOF refuses — no
+      // phantom input. The one static Self member — the script FACTS
+      // inject per-run in Script [D:self-module], overriding this
+      // module entry with the full set (prompt included)
+      "Self",
+      [ "prompt",
+        TFun(TStr, TStr),
+        VBuiltin(fun v ->
+            match v with
+            | VStr msg ->
+                eprintf "%s " msg
+                System.Console.Error.Flush()
+
+                match System.Console.In.ReadLine() with
+                | null ->
+                    failwith
+                        "Self.prompt: stdin is closed (EOF) — no line to read; pipe an answer in, or run at a terminal"
+                | line -> VStr line
+            | v -> unreachable $"the checker rejects 'Self.prompt' on {formatValue v}") ]
       "Frontier", frontierMembers
       "Graph", graphMembers
       "Tree", treeMembers
@@ -5014,13 +5034,6 @@ let builtinDocs: Map<string, BuiltinDoc> =
                   "message-carrying; `exit n` is the bare-code spelling. Diverges (`string -> 'a`): a failing arm sits opposite a value arm.")
            |> named [ "message" ])
           "exit", (bd "Exit the process with a status code." None None |> named [ "code" ])
-          "prompt",
-          (bd
-              "Write a message to stderr and read one line from stdin (interactive input; a piped stdout stays data). EOF refuses — no phantom input. Self.stdin stays the stream reading (one enumeration; the two compose per-line vs whole-stream)."
-              None
-              (Some "let name = prompt \"your name?\" — interactive; in tests, pipe the answer in.")
-           |> named [ "message" ])
-
           // ---- Str ----
           "Str.contains",
           (bd "True when a substring is present." (Some "\"abc\" |> Str.contains \"b\"") None
@@ -5449,6 +5462,12 @@ let builtinDocs: Map<string, BuiltinDoc> =
           "Self.pid", bd "This process's id." None None
           "Self.args", bd "The invoked script's argument vector (a process fact — the same in every module)." None None
           "Self.stdin", bd "This process's standard input, as lazy lines (a process fact)." None None
+          "Self.prompt",
+          (bd
+              "Write a message to stderr and read one line from stdin (interactive input; a piped stdout stays data). EOF refuses — no phantom input. Self.stdin stays the stream reading (one enumeration; the two compose per-line vs whole-stream)."
+              None
+              (Some "let name = Self.prompt \"your name?\" — interactive; in tests, pipe the answer in.")
+           |> named [ "message" ])
           "Self.scriptPath", bd "The path of the file reading it — a module sees its own path." None None
           "Self.entryPath",
           bd "The path of the invoked script (a process fact — the same in every module, unlike scriptPath)." None None
@@ -5875,6 +5894,7 @@ let moduleBlurbs: Map<string, string> =
           "Server", "scoped HTTP listener handles: port, running (see within serve)"
           "Retry", "retry's options record: defaults"
           "Secret", "rendering-masked values: of, map, reveal"
+          "Self", "the process's own facts: args, stdin, pid, paths — and prompt"
           "Seq", "lazy sequence pipeline ops: map, where, fold, pmap"
           "Size", "byte sizes: binary-unit literals, arithmetic, parse"
           "Str", "string ops: trim, split, match, encode, hash"
@@ -6003,22 +6023,6 @@ let private entries: (string * Ty * Value) list =
       // or branch that fails/exits unifies with the value the others make
       "fail", TFun(TStr, tA), failImpl
       "exit", TFun(TInt, tA), exitImpl
-      // the interactive read [D:prompt]: message to stderr (a piped
-      // stdout stays data), one line from stdin; EOF refuses — no
-      // phantom input
-      "prompt",
-      TFun(TStr, TStr),
-      VBuiltin(fun v ->
-          match v with
-          | VStr msg ->
-              eprintf "%s " msg
-              System.Console.Error.Flush()
-
-              match System.Console.In.ReadLine() with
-              | null ->
-                  failwith "prompt: stdin is closed (EOF) — no line to read; pipe an answer in, or run at a terminal"
-              | line -> VStr line
-          | v -> unreachable $"the checker rejects 'prompt' on {formatValue v}")
       // env-carrying twins — the env-sigil reifier route
       // (`$e(cmd | complete)`)
       "|completedEnv",

@@ -1774,7 +1774,9 @@ print $"count={cli.count} seed={cli.seed}"
 
 `Self` groups what a running script knows about itself: `Self.args`
 (the arguments), `Self.stdin` (the input stream), `Self.pid` (the
-process id), and `Self.scriptPath`.
+process id), and `Self.scriptPath`. `Self.prompt` (write a message
+to stderr, read one line — interactive input) lives here too, and
+unlike the facts it is available in the REPL and `-e` as well.
 
 `Self.scriptPath` is the running script's absolute path. It is
 resolved when the script starts, against the directory you invoked it

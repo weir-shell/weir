@@ -1621,8 +1621,8 @@ let boundaryTests =
                   Expect.stringContains (formatError terr) "a patch is partial — schema= validates whole documents" ""
               | Ok _ -> failtest "patch x schema= must refuse"
           }
-          test "prompt is string -> string, bare and effectful [D:prompt]" {
-              Expect.equal (formatTy (checkOk "prompt").Ty) "string -> string" "the interactive read's type"
+          test "Self.prompt is string -> string, qualified and effectful [D:prompt]" {
+              Expect.equal (formatTy (checkOk "Self.prompt").Ty) "string -> string" "the interactive read's type"
           }
           test "the marker law learns the patch modifiers [D:yaml-nodes]" {
               Expect.isTrue (Weir.Parser.isYamlMarkerPiece "let p = yaml patch") "patch arms"
@@ -7448,9 +7448,9 @@ let pureRegionTests =
                         "print $\"{nargs ()} {me ()}\"" ])
                   "args/pid are per-run constants, not effects"
           }
-          test "prompt in a pure region still refuses — the ambient-input guard holds" {
-              let e = firstErr [ "let x ="; "    pure"; "        prompt \"q\""; "print x" ]
-              Expect.stringContains e.Message "'prompt'" "prompt reads and writes — never pure"
+          test "Self.prompt in a pure region still refuses — the ambient-input guard holds" {
+              let e = firstErr [ "let x ="; "    pure"; "        Self.prompt \"q\""; "print x" ]
+              Expect.stringContains e.Message "'Self.prompt'" "Self.prompt reads and writes — never pure"
           }
           test "a pure for body reaching no effect is ACCEPTED [D:desugar-namespace] (F5)" {
               // the for-desugar targets Seq.iter (a library member), not a
@@ -21214,6 +21214,26 @@ let aliasTests =
               Expect.isTrue (Weir.Repl.parseAliasLineForTest "kb = kustomize build" |> Result.isOk) "with prefix"
               Expect.isTrue (Weir.Repl.parseAliasLineForTest "= kubectl" |> Result.isError) "no name"
               Expect.isTrue (Weir.Repl.parseAliasLineForTest "k" |> Result.isError) "no ="
+          }
+          test "(k2) the prompt sanitizer keeps SGR alone [D:session-prompt]" {
+              let san = Weir.Repl.sanitizePromptForTest
+              Expect.equal (san "\x1b[32mX\x1b[0m> ") "\x1b[32mX\x1b[0m> \x1b[0m" "SGR survives, reset appended"
+              Expect.equal (san "\x1b]0;evil title\x07x> ") "x> " "an OSC title (BEL-terminated) drops whole"
+              Expect.equal (san "\x1b]8;;http://evil\x1b\\x> ") "x> " "an OSC hyperlink (ST-terminated) drops whole"
+              Expect.equal (san "\x1b]52;c;payload\x07x> ") "x> " "an OSC clipboard write drops whole"
+              Expect.equal (san "\x1bP+q544e\x1b\\x> ") "x> " "a DCS drops whole"
+              Expect.equal (san "\x1b[2Ax> ") "x> " "a non-SGR CSI (cursor move) drops whole"
+              Expect.equal (san "x\x1b") "x" "a dangling ESC drops alone"
+              Expect.equal (san "a\nb\tc") "a b c" "controls flatten to spaces"
+              Expect.equal (san "\x1b]0;unterminated x> ") "]0;unterminated x> " "an unterminated OSC loses its ESC; the rest is inert text"
+          }
+          test "(k) the prompt's visible width is terminal cells [D:session-prompt]" {
+              Expect.equal (Weir.Repl.visibleWidthForTest "weir> ") 6 "plain ascii"
+              Expect.equal (Weir.Repl.visibleWidthForTest "\x1b[32mX\x1b[0m> ") 3 "SGR is zero-width"
+              Expect.equal (Weir.Repl.visibleWidthForTest "中> ") 4 "CJK counts two cells"
+              Expect.equal (Weir.Repl.visibleWidthForTest "🌿> ") 4 "an emoji counts two cells"
+              Expect.equal (Weir.Repl.visibleWidthForTest "é> ") 3 "a combining mark counts none"
+              Expect.equal (Weir.Repl.visibleWidthForTest " x> ") 5 "a private-use glyph counts one"
           } ]
 
 // ---- dynamic command heads [D:dynamic-head] --------------------------

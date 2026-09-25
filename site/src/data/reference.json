@@ -1080,6 +1080,13 @@
           "pointer": null
         },
         {
+          "name": "prompt",
+          "signature": "Self.prompt (message: string) : string",
+          "summary": "Write a message to stderr and read one line from stdin (interactive input; a piped stdout stays data). EOF refuses \u2014 no phantom input. Self.stdin stays the stream reading (one enumeration; the two compose per-line vs whole-stream).",
+          "example": null,
+          "pointer": "let name = Self.prompt \u0022your name?\u0022 \u2014 interactive; in tests, pipe the answer in."
+        },
+        {
           "name": "scriptPath",
           "signature": "Self.scriptPath : string",
           "summary": "The path of the file reading it \u2014 a module sees its own path.",
@@ -2048,13 +2055,6 @@
       "summary": "Write a value and a newline to stderr \u2014 diagnostics there, data on stdout. Same accepted set as print: string, int, float, bool, or seq\u003Cstring\u003E.",
       "example": "printerr \u0022oops\u0022",
       "pointer": null
-    },
-    {
-      "name": "prompt",
-      "signature": "prompt (message: string) : string",
-      "summary": "Write a message to stderr and read one line from stdin (interactive input; a piped stdout stays data). EOF refuses \u2014 no phantom input. Self.stdin stays the stream reading (one enumeration; the two compose per-line vs whole-stream).",
-      "example": null,
-      "pointer": "let name = prompt \u0022your name?\u0022 \u2014 interactive; in tests, pipe the answer in."
     },
     {
       "name": "pure",

@@ -62,9 +62,12 @@ let effectfulQualified =
           // one-shot fd: ambient input, an effect. Its siblings
           // (Self.args/pid/scriptPath/entryPath) are per-run constants
           // and stay pure-admissible [D:pure-stdin-ctors]
-          "Self.stdin" ]
+          "Self.stdin"
+          // Self.prompt is a static builtin under the Self name [D:prompt]:
+          // reads stdin, writes stderr — ambient input like Self.stdin
+          "Self.prompt" ]
 
-let effectfulBare = Set [ "ls"; "glob"; "print"; "printerr"; "exit"; "prompt" ]
+let effectfulBare = Set [ "ls"; "glob"; "print"; "printerr"; "exit" ]
 
 // the library desugars [D:desugar-namespace]: `|`-prefixed keys that a
 // rewrite (for, ranges, retry/poll) targets at a plain library member,
@@ -158,7 +161,7 @@ let effectClass (n: string) : EffectClass option =
         match n with
         | "print"
         | "printerr" -> Some Mutation // a console write changes the world
-        | "prompt" -> Some Mutation // reads stdin AND writes the prompt to stderr
+        | "Self.prompt" -> Some Mutation // reads stdin and writes the prompt to stderr
         | "exit" -> Some Mutation // takes the process down
         | "ls"
         | "glob"

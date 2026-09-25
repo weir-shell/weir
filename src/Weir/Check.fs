@@ -2915,11 +2915,18 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                     ->
                     // Args.load T — a typed-boundary instance [D:typed-argv]:
                     // Env.load's sibling; the union acceptance is the delta.
-                    // The script-mode signal is the Self module [D:self-module]
-                    // (injected per-run by baseEnvs; absent in the REPL and -e).
-                    // Args.load reads Session.ScriptArgs at eval, so this is
-                    // purely the availability gate.
-                    (if not (Map.containsKey "Self" env.Modules) then
+                    // The script-mode signal is Self.args [D:self-module]
+                    // (injected per-run by baseEnvs; the static Self module
+                    // carries prompt alone everywhere [D:prompt], so the
+                    // member, not the module, marks a script). Args.load
+                    // reads Session.ScriptArgs at eval, so this is purely
+                    // the availability gate.
+                    (if
+                         not
+                             (match Map.tryFind "Self" env.Modules with
+                              | Some ms -> Map.containsKey "args" ms
+                              | None -> false)
+                     then
                          err expr.Span "Args.load is script-only (Self.args is not available here)"
                      else
                          let validateFields span (label: string) (def: RecordDef) =
