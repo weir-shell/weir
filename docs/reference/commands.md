@@ -27,8 +27,13 @@ rm -rf $root/* // argv words do not concatenate — write $"{root}/*"
 ```
 
 What command lines do not do: no glob expansion (`Path.glob` is a
-function), no `$VAR` expansion (splice weir bindings), no `&&`
-(write two statements), no redirects (`>` passes through as a
+function), no `$VAR` expansion (splice weir bindings), no `~`
+expansion (`Path.home ()` and the XDG trio `Path.configHome`/
+`Path.stateHome`/`Path.cacheHome` — each a pure `unit -> string`,
+resolving `%APPDATA%`/`%LOCALAPPDATA%` on Windows and the
+`$XDG_*` variables with their `~/.config`-style fallbacks on POSIX —
+build the path in an interpolation: `cat $"{Path.home ()}/.bashrc"`),
+no `&&` (write two statements), no redirects (`>` passes through as a
 literal word, with a warning naming `File.write`). For bash
 semantics, run bash: `sh -c "the line"` — and inside that quoted
 string, `$w` is sh's variable, not weir's; interpolate first
@@ -151,6 +156,22 @@ teaching error:
 ```weir-error
 sh -c "exit 3" | exitCode // a bare statement discards the code — bind or match it
 ```
+
+Two more reifiers share the pipe-stage spelling without being about
+the exit code. `cmd | line` captures a one-value command's single
+trimmed stdout line as a `string` —
+`let sha = git rev-parse HEAD | line` replaces the
+`$(cmd) |> Seq.exactlyOne` capture; it raises on a nonzero exit and
+on zero or two-plus lines, and composes with the env sigil
+(`$e(cmd | line)`) and a value head (`xs | grep foo | line`).
+`cmd | exec` replaces the weir process with the command
+(POSIX `execve`; Windows spawns, waits, and exits with the child's
+code) — weir keeps its pid, so a container entrypoint receives
+signals directly. It never returns, diverging like `fail`/`exit`,
+so it is a legal bare statement; it takes a literal or dynamic
+(`^$cmd`) head and an env overlay (`$e(cmd | exec)`), refuses a
+piped stdin (no parent remains to feed the replacement), and is
+refused inside a `plan` block.
 
 ## Signatures
 

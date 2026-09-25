@@ -34,7 +34,7 @@ print $"{xs |> Seq.length}"
 ```
 
 One layout form is armed by the line's end: a statement line ending
-in the `yaml` marker or the `<<<`/`$<<<` heredoc glyph opens a
+in the `yaml` marker or a heredoc glyph (`<<<`/`$<<<`/`$$<<<`) opens a
 district — the indented block below is that literal's content, not
 weir statements, and the first shallower line closes it. The
 heredoc forms are in [Lexical](lexical.md#strings); the `yaml`

@@ -42,7 +42,10 @@ HTTP and YAML — is in [docs/GUIDE.md](docs/GUIDE.md).
   pattern covers everything line-shaped.
 - **Exit codes are data.** `cmd | succeeds`, `| complete`,
   `| exitCode`, `| orFail "why"` — a failing command raises by
-  default, so there is no `set -e` folklore to get wrong.
+  default, so there is no `set -e` folklore to get wrong. The same
+  family includes `| line` (one trimmed line of stdout as a string)
+  and `| exec` (replace the weir process — the container-entrypoint
+  form, so the application receives signals directly).
 - **YAML without the string horror.** A `yaml` block is a checked
   literal: structure errors at check time, typed splices,
   `for`-generated entries, optional JSON-schema validation — and no

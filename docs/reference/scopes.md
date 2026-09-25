@@ -2,7 +2,7 @@
 
 `within` holds a resource for a block and releases it on every
 exit — normal completion, a raise, `exit n`, SIGINT and SIGTERM, at a
-tty AND detached (a `kill -INT`/`kill -TERM` on a `setsid` or
+tty and detached alike (a `kill -INT`/`kill -TERM` on a `setsid` or
 backgrounded weir unwinds the same way, exiting 130/143; a second
 signal mid-teardown hard-exits — the double-Ctrl+C escape). Two
 carve-outs, both by design: `kill -9` of weir itself (the lock is the

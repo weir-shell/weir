@@ -14,15 +14,16 @@ fields, keywords, bindings, and — at a head slot — the callable
 commands. A head slot is the statement start *or a top-level `let`'s
 RHS*: `let svc = kubect<TAB>` completes the command exactly as a bare
 `kubect<TAB>` does, the words after that head complete as argv
-(directory entries, nothing else), and the live head tint follows the
+(directory entries — or session bindings after a `$`, below), and the
+live head tint follows the
 same rule — `let svc = kubectl …` paints its RHS head by the session
 verdict. Session [aliases](#alias-command-head-aliases) are known
 heads at both slots (tint and Tab); a `^`-led head completes against
-PATH alone — the sigil skips bindings and the alias table. Two
+PATH alone — the sigil skips bindings and the alias table. Some
 behaviours worth naming:
 
-- **An empty prompt lists the session directives** (`#help` first),
-  not the whole world. A bare Tab is a teaching Tab — `#help` itself
+- **An empty prompt lists the session directives** (`#help` first)
+  rather than everything; `#help` itself
   lists the modules and members. Start typing and the usual filtered
   pool returns; a Tab in argument position still lists the directory.
 - **Record fields complete through a pipe.** A record piped into `_.`
@@ -49,6 +50,10 @@ behaviours worth naming:
   because knowing its keys would mean running the pipeline — bind it
   first (`let d = …`) and the keys complete; an unforced seq is never
   pulled for the same reason.
+- **A `$` splice in a command argument completes session bindings.**
+  `az … --location $l<TAB>` completes to `$location` — any binding
+  whose name starts with `l`. A bare (non-`$`) argument still
+  completes paths only.
 - **A path completes quoted in an expression, bare as a command
   argument.** `File.read ./x<TAB>` yields `File.read "./x"` — a bare
   path is not a valid weir expression, so the completion is a string
@@ -87,7 +92,7 @@ A bare expression that evaluates to a **named function** echoes what
 
 A `let` binding echoes the same way — the value's lines (or table)
 first, then a `name : type` footer that carries the very same
-unforced sentence a bare echo shows. The footer sits BELOW the lines
+unforced sentence a bare echo shows. The footer sits below the lines
 in both, so a truncated bind can never look like it silently dropped
 data: you see the clip, then the sentence telling you it was clipped
 and how to see the rest (`Seq.freeze`).
@@ -234,13 +239,13 @@ weir> raw |> from json Pods |> _.items |> Seq.map _.⟨TAB⟩
 ```
 
 `#infer <source> from <json|jsonl|yaml|table> as <Name>` evaluates the
-source ONCE, parses it by the named adapter, walks it to a set of
+source once, parses it by the named adapter, walks it to a set of
 named `type` declarations, and injects them into the session (as if
 you had typed them) — so `from json Pods` checks and field
 completion lights up. The source defaults to `it` when omitted
 (`#infer from json as Pods` reads the last result — the way to "pipe
 into" a directive). A bare top-level array (or `from jsonl`) names
-the ELEMENT: you write `seq<Name>`. `from table` drafts the ROW
+the element: you write `seq<Name>`. `from table` drafts the row
 record from the header and a per-column scan of the cells — a column
 with empty/`<none>` cells drafts `Option` with a note, and the value
 reads as `seq<Name>`.
@@ -248,21 +253,21 @@ reads as `seq<Name>`.
 The output is ordinary `type` decls you own and edit — this is the
 `weir add schema` category, not check-time inference (`check` never
 evaluates; `from json` never sniffs). When the shape has a published
-JSON Schema, generate the types from the CONTRACT instead:
+JSON Schema, generate the types from the contract instead:
 [`weir gen types`](tooling.md#types-from-a-schema) reads a locked
 schema and knows what no sample can — `required` vs optional,
-`additionalProperties`, the definition names. Array elements MERGE: the
+`additionalProperties`, the definition names. Array elements merge: the
 element type is the union of every element's keys, a key absent in
 some elements drafts `Option<T>` — one sample of a k8s List sees the
 optional fields its items disagree on. Where the sample still cannot
-decide, `#infer` PRINTS notes rather than guessing: an empty array
+decide, `#infer` prints notes rather than guessing: an empty array
 (`seq<string>` default), a null field (`Option<string>`), a genuine
 type conflict for one key across elements (the first element's type,
 "verify").
 
-An object whose keys are DATA drafts as the open mapping
+An object whose keys are data drafts as the open mapping
 `seq<string * V>` instead of a record, with a note. The detection:
-its values share ONE shape, and either a majority of its keys are
+its values share one shape, and either a majority of its keys are
 not identifier-shaped (k8s `labels`/`annotations` — dots, slashes,
 dashes; a reserved word like `type` still counts as
 identifier-shaped) or its key sets differ across the array's sibling
@@ -283,21 +288,21 @@ declared. A k8s volume's `secret:` sub-object would draft
 `type Secret`, and every `secret: Secret` field would then bypass it
 for the builtin (the redaction type — `from yaml` refuses to cross
 it); the draft parent-prefixes instead (`VolumeSecret`) and prints a
-note naming the rename. The `as` name is YOURS, so it is never
+note naming the rename. The `as` name is yours, so it is never
 renamed: `#infer … as Secret` refuses and asks you to pick another.
 
 A key weir cannot spell as a field name never breaks the draft — and
 an object the open-map detection claims never needs one: its keys
-are data, not fields. On the RECORD path (mixed value shapes) a
-non-identifier or KEYWORD key rides `[<Wire "the-key">]` over a
+are data, not fields. On the record path (mixed value shapes) a
+non-identifier or keyword key rides `[<Wire "the-key">]` over a
 derived identifier (`k8s-app`→`k8sApp`, `in`→`inField` — the parser
 rejects every keyword in field position), and an empty-string key —
 which a field name cannot spell and `[<Wire>]` refuses to carry — is
-DROPPED with a printed note (reading tolerates the extra key). When a
+dropped with a printed note (reading tolerates the extra key). When a
 drafted type still fails to check — the sample carried the same key
 twice, say — `#infer` does not stop at "a drafted type did not
 check". The drafted text is weir's own synthesis, so the diagnostic
-names the `line:col` WITHIN the drafted type and prints the offending
+names the `line:col` within the drafted type and prints the offending
 line with a caret, the same shape a normal parse or type error uses:
 
 ```
@@ -312,20 +317,20 @@ You can see exactly which generated field is wrong and fix the sample
 
 ## `#save`: distill the session to a script
 
-`#save <path>` DISTILLS the session to its reusable definitions — a
-session is scratch; `#save` crystallizes what you'll keep. It writes
+`#save <path>` distills the session to its reusable definitions —
+the session is scratch; this is what you keep. It writes
 the `type` decls and named `let` bindings (with their real
 multi-line source — a heredoc keeps its newlines), auto-qualifying
 bare aliases (`map` → `Seq.map`, `startsWith` → `Str.startsWith`)
 and formatting the result — so `#infer` to explore, `#save` to keep.
 The bare-echo scratch (a glance) drops; a redeclared name is deduped
 to its last form; injected `#infer` types come out as ordinary
-`type` decls. The written file is GUARANTEED to `weir check` clean —
+`type` decls. The written file is guaranteed to `weir check` clean —
 any surviving statement that still references session-only state (a
 `let x = it`) is dropped and `#save` prints a note counting them.
 
-`#save` also DESUGARS [command-head aliases](#alias-command-head-aliases):
-the saved script has no alias table, so each kept line's command HEAD
+`#save` also desugars [command-head aliases](#alias-command-head-aliases):
+the saved script has no alias table, so each kept line's command head
 is rewritten back to the real invocation — `let pods = k get po` saves
 as `let pods = kubectl get po`, a kept `kb overlays/prod` as `kustomize
 build overlays/prod`. The rewrite is span-based and head-only, so a `k`
@@ -376,9 +381,9 @@ levels, same parsing), and `echoCap` (the `#echo` cap's persistent
 form — it wins over the config file's `echoElems`). A typo'd key
 gets a did-you-mean; values cannot run commands.
 
-A `let pu () = …` is a nullary FUNCTION, not a command-head alias:
+A `let pu () = …` is a nullary function, not a command-head alias:
 it takes params and spans lines, but calling it costs `()` and it
-does not accept bare argv. When you want a short HEAD that carries
+does not accept bare argv. When you want a short head that carries
 argv straight through — `k get po` — reach for `#alias` below.
 
 Loading is all-or-nothing: a broken init prints its located weir
@@ -391,7 +396,7 @@ shows its `///` doc.
 ## `#alias`: command-head aliases
 
 A `#alias` maps a short name to a program and a fixed prefix of
-arguments, consulted ONLY in command-head position. Declare them in
+arguments, consulted only in command-head position. Declare them in
 `init.weir` (the canonical place), one per line:
 
 ```text
@@ -402,10 +407,10 @@ arguments, consulted ONLY in command-head position. Declare them in
 Now `k get po -o yaml` runs `kubectl get po -o yaml`, and `kb
 overlays/prod` runs `kustomize build overlays/prod` — the fixed
 prefix is inserted after the exe, your argv appended. This is a
-RESOLUTION-table entry, not a textual macro: your argv stays typed
-argv, so `k get $x` passes `$x` as ONE argument (the injection law
+resolution-table entry, not a textual macro: your argv stays typed
+argv, so `k get $x` passes `$x` as one argument (the injection law
 holds), and a `k` in a string, a variable, or an argument is
-untouched — only the HEAD token, only in command-head position.
+untouched — only the head token, only in command-head position.
 
 The resolution order is **alias table → PATH**, and the `^`
 force-PATH sigil skips the table: with `#alias ls = ls --color`, a
@@ -444,7 +449,7 @@ The fixed bindings (this is not a keybinding-config feature):
 | <kbd>Esc</kbd> / <kbd>Ctrl+C</kbd> | abandon the whole buffer |
 | <kbd>Ctrl+D</kbd> | EOF on an empty buffer; delete/join otherwise |
 
-A REDIRECTED session (`printf '…' | weir`) has no editor, but it
+A redirected session (`printf '…' | weir`) has no editor, but it
 assembles multi-line statements the same way — the way a script does.
 It reads physical lines and keeps them together while the statement is
 still open (a heredoc body, a multi-line `type`, an offside
@@ -464,7 +469,7 @@ PATH:
   (fallback: a substring filter over the same candidate lines).
 - **fzf-class tools compose in ordinary pipelines** — an interactive
   picker draws on /dev/tty while stdio pipes, so `git branch | fzf`
-  just works; when the selection AND the cancel code are both data,
+  just works; when the selection and the cancel code are both data,
   reach for `cmd | complete`
   ([guide](GUIDE.md#exit-codes-from-command-to-value)).
 - **`finderFlags`** in the [config](tooling.md#configuration) tunes
