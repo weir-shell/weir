@@ -2445,6 +2445,41 @@ WEOF
     echo "$rpipeout" | grep -qF "IS-PIPE" || fail "a redirected REPL keeps the pipe: $rpipeout"
 
     echo "e2e ok: colour inherit — bare statements see the terminal, captures see the pipe, ordering holds, redirected unchanged, and the runner/REPL 2x2 agrees"
+
+    # ---- the #session prompt at a tty [D:session-prompt] -------------------
+    # the provider (an init function that runs a command) paints in place
+    # of the default, once per entry read; a raising provider falls back
+    # to the default with one stderr note, and the session keeps working
+    spdir=$(mkweirtmp)
+    mkdir -p "$spdir/cfg/weir" "$spdir/state"
+    cat > "$spdir/cfg/weir/init.weir" <<'WEOF'
+let sigil () =
+    let n = $(sh -c "echo demo") |> Seq.head
+    $"({n}) weir> "
+
+#session {
+    prompt = sigil
+}
+WEOF
+    spout=$(printf 'SLEEP 900\nSEND 1 + 1\\r\nSLEEP 400\nSEND #quit\\r\n' \
+        | XDG_CONFIG_HOME="$spdir/cfg" XDG_STATE_HOME="$spdir/state" python3 "$ptyrun" 10 "$BIN")
+    echo "$spout" | grep -qF "(demo) weir> " || fail "the #session prompt must paint at a tty: $spout"
+    echo "$spout" | grep -qF "2" || fail "an entry under a custom prompt must still evaluate: $spout"
+    cat > "$spdir/cfg/weir/init.weir" <<'WEOF'
+let boom () =
+    if 1 == 1 then fail "nope" else "x> "
+
+#session {
+    prompt = boom
+}
+WEOF
+    spout=$(printf 'SLEEP 900\nSEND 1\\r\nSLEEP 300\nSEND #quit\\r\n' \
+        | XDG_CONFIG_HOME="$spdir/cfg" XDG_STATE_HOME="$spdir/state" python3 "$ptyrun" 10 "$BIN")
+    echo "$spout" | grep -qF "using the default prompt" || fail "a raising provider must say it fell back: $spout"
+    n=$(echo "$spout" | grep -cF "using the default prompt")
+    [ "$n" = "1" ] || fail "the fallback note prints once per session, got $n"
+    echo "$spout" | grep -qF "weir> " || fail "the fallback must render the default prompt: $spout"
+    echo "e2e ok: #session prompt — an init provider paints at a tty (commands run when called), a raising one falls back to the default with one note"
 else
     echo "e2e skip: streaming-echo pty pins (POSIX + python3)"
 fi
@@ -8884,6 +8919,40 @@ echo "$iout" | grep -qE "init\.weir:1:" || fail "the raising let must be LOCATED
 echo "$iout" | grep -qF "init: not loaded" || fail "a raising init let must not load"
 echo "$iout" | grep -qF "unknown name 'hi'" || fail "all-or-nothing broke after a raising init let"
 echo "$iout" | grep -qF "Unhandled exception" && fail "a raising init let dumped a .NET trace: $iout" || true
+
+# the #session prompt [D:session-prompt], piped half: the provider
+# names an init declaration (so it checks after the declarations bind),
+# and a redirected session ignores it — the prompt mirror stays the
+# fixed default (a provider could run commands per piped line)
+cat > "$INITHOME/weir/init.weir" <<'WEOF'
+let sigil () = "custom> "
+
+#session {
+    prompt = sigil
+}
+WEOF
+iout=$(printf '1 + 1\n#quit\n' | XDG_CONFIG_HOME="$initcfg" XDG_STATE_HOME="$initcfg/state" "$BIN" 2>&1)
+echo "$iout" | grep -qF "init: 1 name(s)" || fail "a prompt provider must load: $iout"
+echo "$iout" | grep -qF "weir> " || fail "a redirected session must keep the default prompt mirror: $iout"
+echo "$iout" | grep -qF "custom> " && fail "a redirected session must not run the prompt provider" || true
+# the value expression stays command-free like every field — the
+# command belongs inside the function the field names
+cat > "$INITHOME/weir/init.weir" <<'WEOF'
+#session {
+    prompt = $(sh -c "echo x") |> Seq.head
+}
+WEOF
+iout=$(printf '#quit\n' | XDG_CONFIG_HOME="$initcfg" XDG_STATE_HOME="$initcfg/state" "$BIN" 2>&1)
+echo "$iout" | grep -qF "a #session value cannot run a command" || fail "a command-running prompt value must refuse: $iout"
+echo "$iout" | grep -qF "init: not loaded" || fail "a refused prompt value must not load"
+# the type gate names both accepted shapes
+cat > "$INITHOME/weir/init.weir" <<'WEOF'
+#session {
+    prompt = 42
+}
+WEOF
+iout=$(printf '#quit\n' | XDG_CONFIG_HOME="$initcfg" XDG_STATE_HOME="$initcfg/state" "$BIN" 2>&1)
+echo "$iout" | grep -qF "prompt expects a string or a unit -> string function, got int" || fail "a mistyped prompt must refuse with both shapes named: $iout"
 
 # declaration-only: a bare command refuses with the teach
 cat > "$INITHOME/weir/init.weir" <<'WEOF'

@@ -5,7 +5,57 @@ open System.IO
 open Weir.Ast
 open Weir.Types
 
-let private prompt = "weir> "
+let private defaultPrompt = "weir> "
+
+// the #session prompt [D:session-prompt]: an init-file provider (a
+// string, or a unit -> string function that may run commands when
+// called) replaces the default. The provider runs once per entry read
+// in readInput — never per keystroke, never in a redirected session —
+// and its output is held stable across repaints. Set by loadInit after
+// the declarations bind, so it can call the init's own functions.
+let mutable private promptProvider: (unit -> string) option = None
+
+// the prompt in effect for the entry being read; sanitized text (SGR
+// allowed), its visible width, and a same-width continuation prompt.
+// Column math everywhere counts promptWidth, not String.Length — SGR
+// spans are zero-width on screen [D:red-prompt].
+let mutable private prompt = "weir> "
+let mutable private promptWidth = 6
+let mutable private promptWarned = false
+
+/// display width of a prompt: what the terminal shows once escape
+/// sequences are dropped
+let private visibleWidth (s: string) =
+    System.Text.RegularExpressions.Regex.Replace(s, "\x1b\\[[0-9;?]*[A-Za-z]", "").Length
+
+/// compute the prompt for the next entry: default when no provider or
+/// redirected (a piped session's prompt mirror stays fixed — a provider
+/// could run commands per piped line); otherwise the provider's output,
+/// control characters flattened, colors closed with a reset so they
+/// cannot bleed into the typed text. A raising provider falls back to
+/// the default and says so once per session.
+let private computePrompt () =
+    match promptProvider with
+    | None -> defaultPrompt
+    | Some _ when Console.IsInputRedirected -> defaultPrompt
+    | Some f ->
+        try
+            let raw = f ()
+
+            let flat =
+                raw
+                |> String.map (fun c ->
+                    if System.Char.IsControl c && c <> '\x1b' then ' ' else c)
+
+            if flat.Contains '\x1b' then flat + "\x1b[0m" else flat
+        with ex ->
+            if not promptWarned then
+                promptWarned <- true
+
+                Console.Error.WriteLine
+                    $"prompt: {ex.Message} — using the default prompt (later prompt errors stay quiet)"
+
+            defaultPrompt
 
 // The prompt's status tint [D:red-prompt]: true after an entry ends in
 // a printed error (parse, check, or eval), false after one executes
@@ -877,9 +927,13 @@ let private bufferComplete (bufLines: string list) : bool =
                     | Some c -> c <= ll.Text.TrimEnd().Length
                     | None -> true)
 
-// the continuation prompt — the same width as "weir> " so column math
-// is uniform across rows [D:repl-multiline]
-let private contPrompt = "  ... "
+// the continuation prompt — the same width as the prompt in effect so
+// column math is uniform across rows [D:repl-multiline]; dots when the
+// width affords them, plain spaces when it does not
+let mutable private contPrompt = "  ... "
+
+let private deriveContPrompt (w: int) =
+    if w >= 4 then String(' ', w - 4) + "... " else String(' ', w)
 
 // the live editor's repaint hook for SIGWINCH (full repaint on resize;
 // best-effort — the climb to the region top uses pre-resize wrap math)
@@ -909,7 +963,7 @@ let private readLineTty () : string option =
     // display rows a buffer line occupies at width w (prompt included);
     // a line filling its final row exactly leaves the terminal
     // wrap-pending, which the ceil and the \r\n emission agree about
-    let dispRows (w: int) (len: int) = max 1 ((6 + len + w - 1) / w)
+    let dispRows (w: int) (len: int) = max 1 ((promptWidth + len + w - 1) / w)
 
     // (display-row offset from region top, display column) of the
     // cursor. At an exact wrap boundary ((6+col) % w = 0) the logical
@@ -926,8 +980,8 @@ let private readLineTty () : string option =
         for i in 0 .. row - 1 do
             above <- above + dispRows w lines[i].Length
 
-        let dc = (6 + col) % w
-        let dr = (6 + col) / w
+        let dc = (promptWidth + col) % w
+        let dr = (promptWidth + col) / w
 
         if dc = 0 && col > 0 then
             if col < lines[row].Length then
@@ -978,8 +1032,10 @@ let private readLineTty () : string option =
 
             let p0 =
                 // the status tint [D:red-prompt] — zero-width dressing;
-                // every width computation keeps counting prompt.Length
-                if lastErrored then
+                // every width computation keeps counting promptWidth.
+                // A #session prompt owns its colors, so the tint applies
+                // to the default prompt only [D:session-prompt]
+                if lastErrored && promptProvider.IsNone then
                     Types.Color.red Types.Color.onStdout.Value prompt
                 else
                     prompt
@@ -1454,6 +1510,12 @@ let private readRedirected () : string =
     go []
 
 let private readInput () =
+    // the prompt for this entry [D:session-prompt]: computed once here
+    // (a provider may run commands), then held stable across repaints
+    prompt <- computePrompt ()
+    promptWidth <- visibleWidth prompt
+    contPrompt <- deriveContPrompt promptWidth
+
     if Console.IsInputRedirected then
         readRedirected ()
     else
@@ -1474,7 +1536,7 @@ let private readInput () =
             line
 
 let private underline (span: Span) : string =
-    String(' ', prompt.Length + span.Start.Col - 1)
+    String(' ', promptWidth + span.Start.Col - 1)
     + String('^', max 1 (span.End.Col - span.Start.Col))
 
 let private printWarnings (state: State) (te: Check.TypedExpr) =
@@ -2967,7 +3029,7 @@ let rec private loop (state: State) =
                 lastErrored <- true
                 // the input sits on the prompt line above — caret under it
                 Console.WriteLine(
-                    Types.Color.red Types.Color.onStdout.Value (String(' ', prompt.Length + d.PhysCol - 1) + "^")
+                    Types.Color.red Types.Color.onStdout.Value (String(' ', promptWidth + d.PhysCol - 1) + "^")
                 )
 
                 // labelled, like every other parse diagnostic weir prints
@@ -3036,7 +3098,7 @@ let rec private loop (state: State) =
 let private initFilePath () =
     Path.Combine(configHome (), "weir", "init.weir")
 
-let private sessionKeys = [ "cwd"; "env"; "logLevel"; "echoCap" ]
+let private sessionKeys = [ "cwd"; "env"; "logLevel"; "echoCap"; "prompt" ]
 
 /// #session field values must be command-free (the module-let rule);
 /// beyond that any closed expression checks — literals in practice
@@ -3053,8 +3115,13 @@ let private initDiag (path: string) (line: int) (col: int) (srcLine: string) (ms
 let private splitSessionBlock
     (path: string)
     (lines: string[])
-    : Result<(int * string) list * (int * string) list * (int * string) list, unit> =
+    : Result<(int * string) list * (int * string) list * (int * string) list * (int * string) list, unit> =
     let mutable fields: (int * string) list = []
+    // the prompt field rides separately [D:session-prompt]: its value
+    // names init declarations, so it checks after they bind — every
+    // other field checks before them (settings before names)
+    let mutable promptFields: (int * string) list = []
+    let mutable inPromptField = false
     let mutable rest: (int * string) list = []
     // #alias directive lines, collected with their (1-based) line number;
     // the text is what follows `#alias` [D:command-head-alias]
@@ -3097,16 +3164,34 @@ let private splitSessionBlock
                 // other line (list entries, closers) passes through
                 // untouched: still indented, still a continuation of the
                 // synthesized let, columns exact
-                let isFieldStart =
-                    System.Text.RegularExpressions.Regex.IsMatch(t, "^[A-Za-z_][A-Za-z0-9_]*\s*=")
+                let fieldStart =
+                    System.Text.RegularExpressions.Regex.Match(t, "^([A-Za-z_][A-Za-z0-9_]*)\s*=")
+
+                // a continuation line belongs to the field it follows
+                if fieldStart.Success then
+                    inPromptField <- fieldStart.Groups.[1].Value = "prompt"
 
                 let synthesized =
-                    if isFieldStart then
-                        "let " + (if l.StartsWith "    " then l.Substring 4 else t)
+                    if fieldStart.Success then
+                        let body = if l.StartsWith "    " then l.Substring 4 else t
+
+                        // `prompt` is a builtin, so its synthesized let
+                        // takes a same-length internal binder — columns
+                        // survive, the shadow refusal never fires
+                        let body =
+                            if inPromptField then
+                                "pr0mpt" + body.Substring "prompt".Length
+                            else
+                                body
+
+                        "let " + body
                     else
                         l
 
-                fields <- (i + 1, synthesized) :: fields
+                if inPromptField then
+                    promptFields <- (i + 1, synthesized) :: promptFields
+                else
+                    fields <- (i + 1, synthesized) :: fields
 
             rest <- (i + 1, "") :: rest
         else
@@ -3119,7 +3204,7 @@ let private splitSessionBlock
     if failed then
         Error()
     else
-        Ok(List.rev fields, List.rev rest, List.rev aliases)
+        Ok(List.rev fields, List.rev promptFields, List.rev rest, List.rev aliases)
 
 let private applySessionField
     (path: string)
@@ -3197,7 +3282,7 @@ let private applySessionField
     | "env", ty -> err $"env expects seq<string * string> — pairs, order kept; got {Types.formatTy ty}"
     | k, _ ->
         let hint = didYouMean k (Set.ofList sessionKeys)
-        err $"unknown #session key '{k}'{hint} (the keys: cwd, env, logLevel, echoCap)"
+        err $"unknown #session key '{k}'{hint} (the keys: cwd, env, logLevel, echoCap, prompt)"
 
 /// load the init file into the session; all-or-nothing. Returns the
 /// state to start with and prints the one report line (stderr — a piped
@@ -3219,7 +3304,7 @@ let private loadInit (baseState: State) : State =
 
         match splitSessionBlock path lines with
         | Error() -> notLoaded ()
-        | Ok(fieldLines, declLines, aliasLines) ->
+        | Ok(fieldLines, promptFieldLines, declLines, aliasLines) ->
             let checkAll (lls: Script.LogicalLine list) (tenv: TypeEnv) =
                 let rec go env acc rest =
                     match rest with
@@ -3448,6 +3533,93 @@ let private loadInit (baseState: State) : State =
                                         evalFailed <- true
 
                             if evalFailed then
+                                notLoaded ()
+                            else
+
+                            // the prompt field last [D:session-prompt]: its
+                            // value names the declarations above, so it
+                            // checks in the loaded env — a string renders
+                            // as-is; a unit -> string function runs once
+                            // per entry read. The value expression itself
+                            // stays command-free like every field; commands
+                            // belong inside the function it names.
+                            let promptOutcome =
+                                if List.isEmpty promptFieldLines then
+                                    true
+                                else
+                                    match Script.assemble promptFieldLines with
+                                    | Error msg ->
+                                        Console.Error.WriteLine $"{path}: {msg}"
+                                        false
+                                    | Ok lls ->
+                                        match checkAll lls tenv with
+                                        | Error(ll, d) ->
+                                            reportDiag ll d
+                                            false
+                                        | Ok checked' ->
+                                            match checked' with
+                                            | [ (ll, chk) ] ->
+                                                (match chk.Kind with
+                                                 | Script.KLet("pr0mpt", _, te) when Script.runsCommandT te ->
+                                                     initDiag
+                                                         path
+                                                         ll.Head
+                                                         5
+                                                         (srcLine ll.Head)
+                                                         "a #session value cannot run a command — name a function here (prompt = f); the command runs when the prompt calls f"
+
+                                                     false
+                                                 | Script.KLet("pr0mpt", _, te) ->
+                                                     (match te.Ty with
+                                                      | Types.TStr ->
+                                                          (try
+                                                              match Eval.eval venv te with
+                                                              | Eval.VStr s ->
+                                                                  promptProvider <- Some(fun () -> s)
+                                                                  true
+                                                              | _ -> false
+                                                           with ex ->
+                                                               initDiag path ll.Head 5 (srcLine ll.Head) ex.Message
+                                                               false)
+                                                      | Types.TFun(Types.TUnit, Types.TStr) ->
+                                                          (try
+                                                              let f = Eval.eval venv te
+
+                                                              promptProvider <-
+                                                                  Some(fun () ->
+                                                                      match Eval.apply f Eval.VUnit with
+                                                                      | Eval.VStr s -> s
+                                                                      | _ -> defaultPrompt)
+
+                                                              true
+                                                           with ex ->
+                                                               initDiag path ll.Head 5 (srcLine ll.Head) ex.Message
+                                                               false)
+                                                      | ty ->
+                                                          initDiag
+                                                              path
+                                                              ll.Head
+                                                              5
+                                                              (srcLine ll.Head)
+                                                              $"prompt expects a string or a unit -> string function, got {Types.formatTy ty}"
+
+                                                          false)
+                                                 | _ ->
+                                                     initDiag
+                                                         path
+                                                         ll.Head
+                                                         1
+                                                         (srcLine ll.Head)
+                                                         "a #session block takes 'key = value' lines only"
+
+                                                     false)
+                                            | (ll, _) :: _ ->
+                                                initDiag path ll.Head 5 (srcLine ll.Head) "duplicate #session key 'prompt'"
+                                                false
+                                            | [] -> true
+
+                            if not promptOutcome then
+                                promptProvider <- None
                                 notLoaded ()
                             else
 

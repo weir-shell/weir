@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.0.53
+
+### Added
+
+- **A custom REPL prompt: `prompt` in the init file's `#session` block.**
+  A string, or the name of a `unit -> string` function declared in
+  `init.weir` — it may run commands (`git branch --show-current | line`)
+  and is called once per entry read, never per keystroke. Colors work
+  (SGR is zero-width for the column math, a reset is appended); the
+  continuation prompt pads to the same width; a raising provider falls
+  back to `weir> ` with one stderr note. Redirected sessions keep the
+  fixed default.
+
 ## v0.0.52
 
 ### Added

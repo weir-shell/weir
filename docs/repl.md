@@ -373,13 +373,42 @@ on Windows) loads before the first prompt. It is declaration-only —
 let pu () = git push --set-upstream origin HEAD
 ```
 
-The four keys: `cwd` (applied before the first prompt), `env`
+The five keys: `cwd` (applied before the first prompt), `env`
 (`seq<string * string>` — set into the process environment once, so
 `Env.vars`, every spawn, and `within env` layering all see it; an
 entry adds or overrides, never unsets), `logLevel` (the `WEIR_LOG`
-levels, same parsing), and `echoCap` (the `#echo` cap's persistent
-form — it wins over the config file's `echoElems`). A typo'd key
-gets a did-you-mean; values cannot run commands.
+levels, same parsing), `echoCap` (the `#echo` cap's persistent
+form — it wins over the config file's `echoElems`), and `prompt`
+(below). A typo'd key gets a did-you-mean; values cannot run
+commands.
+
+### `prompt`: your own prompt
+
+`prompt` takes a string, or the name of a `unit -> string` function
+declared in the same file. The function may run commands: it is
+called once per entry read (never per keystroke), after the previous
+entry finishes. Because the value names your declarations, it is
+checked after they bind:
+
+```text
+let sigil () =
+    let branch = git branch --show-current | line
+    $"({branch}) weir> "
+
+#session {
+    prompt = sigil
+}
+```
+
+Colors work — SGR escapes are zero-width for the column math, and a
+reset is appended so they cannot bleed into what you type. Newlines
+and other control characters flatten to spaces; the continuation
+prompt pads to the same width. A raising provider falls back to the
+default `weir> ` and says so once on stderr; later failures stay
+quiet for the session. Two boundaries: a redirected session keeps
+the fixed default (the piped prompt mirror must not run your code),
+and the error tint below applies to the default prompt only — a
+custom prompt owns its colors.
 
 A `let pu () = …` is a nullary function, not a command-head alias:
 it takes params and spans lines, but calling it costs `()` and it
