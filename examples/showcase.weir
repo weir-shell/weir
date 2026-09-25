@@ -1,14 +1,14 @@
 #!/usr/bin/env weir
 #sig git
 // weir showcase — one runnable tour of the language.
-// `weir check examples/showcase.weir` finds every error before ANY
+// `weir check examples/showcase.weir` finds every error before any
 // line runs; `weir examples/showcase.weir [--verbose] [--tag x]`
-// executes. PORTABLE BY CONSTRUCTION: the only external heads are
+// executes. Portable by construction: the only external heads are
 // `weir` itself and `git`, so the tour runs on Linux, macOS, and
 // Windows alike (coreutils are cmd builtins there — nothing for a
 // resolver to find). The POSIX escape hatch is still a feature:
 // !(sh -c "...") on POSIX, cmd /c on Windows — spelled here in prose
-// because a named head must resolve on YOUR platform.
+// because a named head must resolve on your platform.
 // The tour now hosts its own module (showcase-lib.weir), a vendored
 // schema and a hand-written git signature (examples/.weir/ — checked
 // in, so `check` needs no restore and no network). Still not here,
@@ -91,7 +91,7 @@ let who = "world"
 print $"hello {who} with {{literal braces}}"
 print @"C:\verbatim\no-escapes"
 print """say "hi" with no escapes at all"""
-// the RAW INTERPOLATED kind [D:interp-raw]: escapes OFF and holes ON — a
+// the raw interpolated kind [D:interp-raw]: escapes off and holes on — a
 // backslash, a quote and a splice in one literal, which is what generating
 // weir from weir needs (there is no $@"…"; one spelling)
 print $"""raw+holes: File.read "{who}\keep" — no escape pass, one splice"""
@@ -100,7 +100,7 @@ print $"""raw+holes: File.read "{who}\keep" — no escape pass, one splice"""
 let squares = [for n in [1..cli.limit] -> n * n]
 print $"sum of squares to {cli.limit}: {squares |> Seq.sum}"
 
-// ---- the heredoc block: multiline LINES, holes on the $ form ----------
+// ---- the heredoc blocks: multiline lines, holes on the $ forms --------
 // line-end <<< opens the plain block: every byte below is content ($ and
 // { included), indentation is relative to the first line, and the value
 // is seq<string> — File.write, pipes and Seq take it unchanged
@@ -112,7 +112,7 @@ let plain = <<<
 print $"plain heredoc: {plain |> Seq.length} lines, every byte literal"
 
 // $<<< is the interpolated twin with the string forms' hole rules:
-// {expr} substitutes, {{ }} are literal braces, $ STILL stays a byte;
+// {expr} substitutes, {{ }} are literal braces, $ still stays a byte;
 // the blank line above `print` is layout — trailing blanks clip
 let motd = $<<<
     hello {who} from the heredoc
@@ -120,13 +120,27 @@ let motd = $<<<
 
 motd |> Seq.iter print
 
+// $$<<< is the splice twin for brace-heavy text [D:heredoc-splice]:
+// $name and ${expr} substitute, $$ is a literal $, and braces and
+// quotes are all literal — where $<<< opens {expr} holes and needs
+// {{ }} for literal braces, $$<<< keeps a pasted JSON blob intact and
+// splices with the $ forms instead. It substitutes raw, so the proof
+// here is a round trip: the templated text parses through the json
+// adapter (reach for `to json` when a value is untrusted)
+let dbHost = "db.internal"
+let conf = $$<<<
+    {"server": "$dbHost", "port": ${4000 + cli.limit}, "glob": "src/{a,b}"}
+|> from json {| server: string; port: int; glob: string |}
+
+print $"spliced json parses: {conf.server}:{conf.port} glob {conf.glob}"
+
 // ---- tuples, records, copy-and-update ---------------------------------
 
 let pair = 3, "three"
 let n0, name0 = pair
 print $"{n0} spells {name0} (fst = {fst pair})"
 
-// the qualified literal: a MODULE's record type, built here — types
+// the qualified literal: a module's record type, built here — types
 // cross the boundary, and inference names the literal Lib.Ctx { … }
 let ctx = Lib.Ctx { name = "tour"; port = 4040 }
 print (Lib.label ctx)
@@ -152,7 +166,7 @@ let judge score =
     elif score > 50 then Again ("close", score)
     else Reject
 
-// constructor patterns need a KNOWN scrutinee — the pipeline types v
+// constructor patterns need a known scrutinee — the pipeline types v
 [95; 100; 60; 10]
     |> Seq.map judge
     |> Seq.map (fun v ->
@@ -172,7 +186,7 @@ print $"generic == on ints: {sameInts}; on strings: {sameStrs}"
 
 // ---- Duration and floats: time as a type, decimals at the edges -------
 
-// the SAME / glyph, two algebras: a Duration is integer ms by law,
+// the same / glyph, two algebras: a Duration is integer ms by law,
 // so Duration / int stays integer (half is 15s, no fraction) …
 let half = cli.timeout / 2
 // … while toSeconds returns floats, so THIS / is float division —
@@ -183,9 +197,9 @@ print $"budget {cli.timeout}, half {half}"
 print $"ratio {ratio} of {Duration.toSeconds 1m} seconds, at rate {cli.rate}"
 Duration.sleep 1ms // takes a Duration, not a number; module-qualified so coreutils sleep stays reachable
 
-// absolute time is `Instant` [D:instant] — a POINT on the UTC timeline, the
+// absolute time is `Instant` [D:instant] — a point on the UTC timeline, the
 // boring subset: no local zones and no calendar arithmetic, so the only
-// algebra is the one above — two instants SUBTRACT to a Duration
+// algebra is the one above — two instants subtract to a Duration
 let cut = Instant.parse "2026-08-09T12:00:00Z"
 let later = Instant.parse "2026-08-16T18:30:00Z"
 print $"between the two tags: {later - cut} (from {cut})"
@@ -195,7 +209,7 @@ print $"between the two tags: {later - cut} (from {cut})"
 retry attempts=2 delay=10ms
     weir -e "print 7" | succeeds
 
-// poll, the wall-clock twin, with the `until` segment: a VALUE body
+// poll, the wall-clock twin, with the `until` segment: a value body
 // cannot be its own predicate, so `until` names the body's binding
 // and reads it — two segments, both heads at column 0; the block
 // yields the value once the condition holds
@@ -287,13 +301,20 @@ print $"exitCode reified: {code}"
 
 weir $probe --out assert-me | orFail "the probe broke"
 
+// | line reifies a one-value command [D:reify-line]: exactly one
+// trimmed line of stdout, captured as a string — the
+// $(cmd) |> Seq.exactlyOne mouthful as one reifier; a nonzero exit
+// and zero-or-many lines both raise
+let solo = weir -e "print \"solo\"" | line
+print $"line-reified: {solo}"
+
 // a weir seq pipes into an external's stdin
 let loud = ["alpha"; "beta"] | weir $probe --upper |> Seq.head
 print $"stdin-piped upcase: {loud}"
 
 // typed command output: the Regex pattern for line shapes, the json
 // adapter for structure. The #sig at the file head checks git's
-// flags: `--porcelian` here would WARN with a did-you-mean (partial
+// flags: `--porcelian` here would warn with a did-you-mean (partial
 // signature — the e2e battery carries the executable proof)
 let staged =
     git status --porcelain
@@ -315,7 +336,7 @@ let peer = <<<
 print $"peer {peer.host}:{peer.port} (note {peer.note})"
 
 // ---- files, paths, glob — inside `within tmp` -------------------------
-// the scope CREATES the directory and DELETES it at block end: the
+// the scope creates the directory and deletes it at block end: the
 // cleanup is the scope, not a trailing chore (redirects are functions)
 
 within tmp scratch
@@ -332,17 +353,30 @@ within tmp scratch
     // (`> 10MiB` needs no arithmetic), which is why the row carries the type
     print $"size {File.size store}; over a KiB? {File.size store > 1KiB}"
 
+// ---- Path.home and the XDG trio: the typed stand-in for ~ -------------
+// ~ and $HOME never expand in argv, so a home-relative path is built,
+// never expanded: Path.home and configHome/stateHome/cacheHome are
+// pure unit -> string queries with platform-native resolution (the
+// XDG vars with ~/.config-style fallbacks on POSIX, the APPDATA pair
+// on Windows). Read-only here: resolve where a config would live and
+// probe for it — nothing under home is written
+
+let cfgHome = Path.configHome ()
+let weirCfg = Path.combine cfgHome "weir"
+print $"config root leaf: {Path.fileName cfgHome}; a weir config dir there: {Dir.exists weirCfg}"
+print $"home resolves: {(Path.home () |> Str.length) > 0}; state/cache leaves: {Path.stateHome () |> Path.fileName} + {Path.cacheHome () |> Path.fileName}"
+
 // ---- env overlays: sigils and the env district ------------------------
 
 let envFile = Path.combine tmpBase $"weir-showcase-{Self.pid}.env"
 ["GREETING=bonjour"; "SECRET=hunter2"] |> File.write envFile
 let ev = Env.fromFile envFile
 
-// the SAME command twice: first CAPTURED under the overlay…
+// the same command twice: first captured under the overlay…
 let greetz = $ev(weir $probe --greet) |> Seq.exactlyOne
 print greetz
 
-// …then as an EFFECT — streams to the terminal, raises on failure
+// …then as an effect — streams to the terminal, raises on failure
 !ev(weir $probe --greet)
 
 let ready = true
@@ -355,7 +389,7 @@ within env ev
 // within cd is the third scope kind (tmp ran the files section above):
 // the working directory changes for the block and restores at its end
 within cd helperDir
-    // pwd is a weir BUILTIN (like ls/cd) — no PATH head resolves here,
+    // pwd is a weir builtin (like ls/cd) — no PATH head resolves here,
     // so the weir+git-only portability claim in the header holds
     let here = pwd |> Seq.exactlyOne
     print $"cd-scoped: running beside {Path.fileName here}"
@@ -383,15 +417,15 @@ shouts |> print
 
 // ---- YAML: nodes, adapters, and the checked template district ---------
 
-// YMap/YStr (with YInt, YSeq, …) are YAML node VALUES built directly —
-// a YMap keeps YOUR insertion order, where a record renders in declared
+// YMap/YStr (with YInt, YSeq, …) are YAML node values built directly —
+// a YMap keeps your insertion order, where a record renders in declared
 // field order; both are one `to yaml` away from text
 let ordered = YMap ["zulu", YStr "keeps"; "alpha", YStr "your order"]
 ordered |> to yaml |> print
 
 type PeerDoc = { host: string; port: int }
 
-// a top-level SEQUENCE document reads through the seq form — the
+// a top-level sequence document reads through the seq form — the
 // declared type names the top level (streams are one-document-only)
 let peers =
     ["- host: a.example"; "  port: 9000"; "- host: b.example"; "  port: 9001"]
@@ -400,11 +434,11 @@ let peers =
 peers |> Seq.iter (fun p -> print $"peer {p.host}:{p.port}")
 
 // the yaml DISTRICT: a checked block literal. Structure errors are
-// check errors; splices are typed VALUES, so no YAML injection exists
+// check errors; splices are typed values, so no YAML injection exists
 // for the same reason no argv injection does; a None splice omits its
 // entry; `for k, v in pairs` destructures each pair to a dynamic key
 // (`$k:`) and its value; ambiguous scalars auto-quote.
-// a REAL Service shape (the live-check finding: `annotation` was a
+// a real Service shape (the live-check finding: `annotation` was a
 // typo the schema validator caught unprompted, and replicas/rollout
 // were Deployment concepts on a Service — the district now describes
 // the resource it names). The "on" annotation keeps the auto-quote
@@ -429,8 +463,8 @@ let manifest name port tag pairs = yaml
 let svc = manifest "web" 8080 cli.tag ["app", "web"; "tier", "edge"]
 svc |> to yaml |> print
 
-// a district validated against a VENDORED schema (examples/.weir/
-// schemas/, committed + locked): structure errors become CHECK errors
+// a district validated against a vendored schema (examples/.weir/
+// schemas/, committed + locked): structure errors become check errors
 // — misspell `apiVersion` and this file refuses to run
 let cm = yaml schema=k8s-configmap
     apiVersion: v1
@@ -443,7 +477,7 @@ let cm = yaml schema=k8s-configmap
 cm |> to yaml |> print
 
 // ---- cleanup: File.delete asserts its target exists -------------------
-// envFile stays MANUAL on purpose: ev outlives any one block (the
+// envFile stays manual on purpose: ev outlives any one block (the
 // sigil pair and the within env section both use it), so a tmp scope
 // cannot own it — and the one remaining delete demos the member.
 // (the tmp scope already deleted its own files at block end)
@@ -451,8 +485,8 @@ cm |> to yaml |> print
 File.delete envFile
 
 // ---- bindings shadow commands; ^ still reaches PATH -------------------
-// ORDER IS LOAD-BEARING: this section stays LAST — the binding shadows
-// the `weir` COMMAND for every line after it
+// order is load-bearing: this section stays last — the binding shadows
+// the `weir` command for every line after it
 
 let weir = "a local binding now shadows the command name"
 print $"shadow: {weir}"
@@ -467,7 +501,7 @@ print $"^weir still reaches the binary: {v}"
 match level with
 | Debug -> printerr "debug: every section ran"
 | Info -> printerr "done"
-// unit prints NOTHING — quiet really is silent
+// unit prints nothing — quiet really is silent
 | Quiet -> print ()
 
 print "showcase complete"
