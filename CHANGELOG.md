@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.0.54
+
+### Added
+
+- **`Bytes` now slices — `b[a..b]`, `b[..b]`, `b[a..]`.** The range
+  slice operator was string/seq only; `Bytes` joins as the third
+  target, same inclusive-clamping contract, slicing to `Bytes`. A
+  single `b[i]` still isn't a bracket form (use `Bytes.sub start len`);
+  it now teaches that instead of leaking a `seq` type error.
+
 ## v0.0.53
 
 ### Added

@@ -16426,6 +16426,27 @@ let accessorTeachingTests =
 
               Expect.equal (formatTy (checkOk "\"abcdef\"[1..3]").Ty) "string" "a string slices to a string"
           }
+          test "Bytes slices to Bytes — the third type-directed target [D:range-slicing]" {
+              for src in
+                  [ "let b = Bytes.fromBase64 \"AAECAwQF\" in b[1..3]"
+                    "let b = Bytes.fromBase64 \"AAECAwQF\" in b[..2]"
+                    "let b = Bytes.fromBase64 \"AAECAwQF\" in b[3..]" ] do
+                  Expect.equal (formatTy (checkOk src).Ty) "Bytes" $"'{src}' slices to Bytes"
+
+              // inclusive, clamping — the same contract as string/seq
+              expectValue
+                  "Bytes.toBase64 ((Bytes.fromBase64 \"AAECAwQF\")[1..3])"
+                  (VStr "AQID") // bytes 1,2,3 of 0..5
+              expectValue "Bytes.toBase64 ((Bytes.fromBase64 \"AAEC\")[10..20])" (VStr "") // out of range
+              expectValue "Bytes.toBase64 ((Bytes.fromBase64 \"AAEC\")[3..1])" (VStr "") // reversed
+          }
+          test "b[i] on Bytes teaches the byte forms — indexing stays parked [D:range-slicing]" {
+              let msg = (checkErr "let b = Bytes.fromBase64 \"AAEC\" in b[0]").Message
+              Expect.stringContains msg "no b[i] index on Bytes" "names the refusal"
+              Expect.stringContains msg "b[a..b]" "points at slicing"
+              Expect.stringContains msg "Bytes.sub" "and the window form"
+              Expect.isFalse (msg.Contains "expected seq") "not the leaky desugar type"
+          }
           test "from-the-end indexing (^n) is declined — ^ is command-force [D:range-slicing]" {
               match Weir.Parser.parseExpr "let xs = [1; 2; 3] in xs[^1]" with
               | Ok _ -> failtest "xs[^1] must be refused"

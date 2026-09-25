@@ -95,6 +95,14 @@ type JsonTop =
     | TopRec of RecordDef
     | TopUnion of UnionDef
 
+/// which value a slice runs on [D:range-slicing] — the type-directed
+/// choice the checker resolved, so the evaluator dispatches without
+/// re-inspecting: substring, subsequence, or sub-bytes
+type SliceOn =
+    | SliceStr
+    | SliceSeq
+    | SliceBytes
+
 type TypedExpr = { Kind: TypedKind; Ty: Ty; Span: Span }
 
 and TypedKind =
@@ -108,9 +116,10 @@ and TypedKind =
     | TEApp of fn: TypedExpr * arg: TypedExpr
     | TEPipe of arg: TypedExpr * fn: TypedExpr
     | TEField of target: TypedExpr * field: string
-    // a slice [D:range-slicing]; onString picks the eval (substring vs
-    // subsequence) — the type-directed choice the checker resolved
-    | TESlice of target: TypedExpr * lo: TypedExpr option * hi: TypedExpr option * onString: bool
+    // a slice [D:range-slicing]; `on` picks the eval (substring,
+    // subsequence, or sub-bytes) — the type-directed choice the checker
+    // resolved
+    | TESlice of target: TypedExpr * lo: TypedExpr option * hi: TypedExpr option * on: SliceOn
     | TEBinOp of op: string * left: TypedExpr * right: TypedExpr
     | TERecord of record: string * fields: (string * TypedExpr) list
     | TEMatch of scrutinee: TypedExpr * arms: (Pattern * TypedExpr option * TypedExpr) list
@@ -2674,6 +2683,13 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                             err
                                 expr.Span
                                 "no m[k] indexing on a Map — Map.get k m is the spelling (Map.tryGet for the asking form)"
+                        // Bytes slices [D:range-slicing] but has no single
+                        // b[i] — the leaky "expected seq" would mention the
+                        // index desugar's own type, so teach the byte forms
+                        | TBytes ->
+                            err
+                                expr.Span
+                                "no b[i] index on Bytes — slice it (b[a..b], inclusive) or take a window with Bytes.sub start len"
                         | _ -> Ok()
                     // a broken target reports through the ordinary path
                     | Error _ -> Ok()
@@ -3411,12 +3427,17 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
             match resolve ctx ttarget.Ty with
             | TStr ->
                 return
-                    { Kind = TESlice(ttarget, tlo, thi, true)
+                    { Kind = TESlice(ttarget, tlo, thi, SliceStr)
                       Ty = TStr
+                      Span = expr.Span }
+            | TBytes ->
+                return
+                    { Kind = TESlice(ttarget, tlo, thi, SliceBytes)
+                      Ty = TBytes
                       Span = expr.Span }
             | TSeq elem ->
                 return
-                    { Kind = TESlice(ttarget, tlo, thi, false)
+                    { Kind = TESlice(ttarget, tlo, thi, SliceSeq)
                       Ty = TSeq elem
                       Span = expr.Span }
             | TVar _ ->
@@ -3424,12 +3445,14 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                 do! bind ctx env target.Span ttarget.Ty (TSeq elem)
 
                 return
-                    { Kind = TESlice(ttarget, tlo, thi, false)
+                    { Kind = TESlice(ttarget, tlo, thi, SliceSeq)
                       Ty = TSeq elem
                       Span = expr.Span }
             | other ->
                 return!
-                    err target.Span $"a slice `x[a..b]` works on a string or a sequence; this expression is {formatTy other}"
+                    err
+                        target.Span
+                        $"a slice `x[a..b]` works on a string, a sequence, or Bytes; this expression is {formatTy other}"
         }
     | EOpValue op ->
         // desugar to exactly `fun a b -> a op b` [D:operator-values]:

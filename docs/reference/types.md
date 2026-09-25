@@ -50,6 +50,15 @@ enumerated at a second site (`possible re-enumeration`, advisory —
 `weir check` still exits 0). Command capture is `seq<string>`, one
 element per line.
 
+`xs[i]` is `Seq.item i xs` (raises out of range); the bracket must be
+adjacent — `f [0]` is application. `xs[a..b]` slices, **inclusive and
+clamping** (out-of-range or reversed → empty, never a raise), with
+open ends `xs[..b]` / `xs[a..]`. A bounded slice truncates a lazy
+source, so `nats[0..4]` terminates. Slicing is type-directed: a `seq`
+slices to a `seq`, a `string` to a `string` (`"weir"[1..2]` is `"ei"`,
+by UTF-16 char), and `Bytes` to `Bytes`. No from-the-end `xs[^1]`
+(`^` is the command sigil) and no dotted `xs.[i]`.
+
 ## Tuples
 
 `(a, b)` — arity two and up, structural. The moment a shape needs
@@ -125,10 +134,12 @@ print (show (a == a)) // '==' is not defined for Map<string, int>
 
 `Bytes` is the non-text value — opt-in at both ends, refused at
 every rendering boundary with the exit named
-([the guide](../GUIDE.md#binary-data-bytes)). `Secret` is the
-rendering marker for credentials: `show` masks, interpolation and
-the wire refuse, `Secret.reveal` is the one exit, argv splices pass
-it whole.
+([the guide](../GUIDE.md#binary-data-bytes)). It slices like a
+sequence — `b[1..3]`, `b[..2]`, `b[3..]`, inclusive and clamping, to
+`Bytes` — but has no single `b[i]`; `Bytes.sub start len` takes one
+byte's window. `Secret` is the rendering marker for credentials:
+`show` masks, interpolation and the wire refuse, `Secret.reveal` is
+the one exit, argv splices pass it whole.
 
 ## Functions
 

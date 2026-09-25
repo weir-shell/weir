@@ -3057,7 +3057,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
             | Some v -> v
             | None -> unreachable $"the checker rejects unknown field '{field}' on {name}"
         | v -> unreachable $"the checker rejects field access on {formatValue v}"
-    | TESlice(target, lo, hi, onString) ->
+    | TESlice(target, lo, hi, on) ->
         // inclusive, clamping [D:range-slicing]: an absent bound is an open
         // end (lo -> 0, hi -> last), out-of-range and reversed yield the
         // empty result, never a raise. A bounded seq truncates (so an
@@ -3072,17 +3072,27 @@ and eval (env: Env) (te: TypedExpr) : Value =
 
         let a = max 0 (boundOr 0 lo)
 
-        if onString then
+        // the closed upper bound for a finite target of length n (an
+        // absent hi is the last element; a present one clamps to n - 1)
+        let closedHi n =
+            match hi with
+            | None -> n - 1
+            | Some _ -> min (boundOr 0 hi) (n - 1)
+
+        match on with
+        | Check.SliceStr ->
             match eval env target with
             | VStr s ->
-                let n = s.Length
-                let b = match hi with
-                        | None -> n - 1
-                        | Some _ -> min (boundOr 0 hi) (n - 1)
-
+                let b = closedHi s.Length
                 if a > b then VStr "" else VStr(s.Substring(a, b - a + 1))
             | v -> unreachable $"the checker guarantees a string slice target; got {formatValue v}"
-        else
+        | Check.SliceBytes ->
+            match eval env target with
+            | VBytes arr ->
+                let b = closedHi arr.Length
+                if a > b then VBytes [||] else VBytes(Array.sub arr a (b - a + 1))
+            | v -> unreachable $"the checker guarantees a Bytes slice target; got {formatValue v}"
+        | Check.SliceSeq ->
             match eval env target with
             | VSeq items ->
                 let dropped = items |> Seq.indexed |> Seq.skipWhile (fun (i, _) -> i < a) |> Seq.map snd

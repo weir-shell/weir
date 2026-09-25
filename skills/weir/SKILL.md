@@ -1992,10 +1992,12 @@ print (f 1)
   (Option) / `Seq.skip`; `_[0]` is shorthand for `fun x -> x[0]`.
   Slicing is `xs[a..b]` [D:range-slicing]: INCLUSIVE both ends, CLAMPING
   (out-of-range and reversed give the empty result, never a raise), on
-  strings AND seqs (`"abc"[0..1]` is `"ab"`, `xs[3..100]` truncates),
-  with open ends `xs[..b]`/`xs[a..]`. `xs[i]` stays the single-element
-  accessor (raises out of range; = `Seq.item i xs`) and `Str.sub start
-  len` the offset-and-length string form. From-the-end (`xs[^1]`) is
+  strings, seqs, AND Bytes (`"abc"[0..1]` is `"ab"`, `xs[3..100]`
+  truncates, `b[1..3]` slices Bytes to Bytes), with open ends
+  `xs[..b]`/`xs[a..]`. `xs[i]` stays the single-element accessor (raises
+  out of range; = `Seq.item i xs`) and `Str.sub start len` the
+  offset-and-length string form; Bytes has no single `b[i]` (`Bytes.sub
+  start len` takes one byte's window). From-the-end (`xs[^1]`) is
   declined — `^` is the command-force sigil; `Seq.last`/`Seq.rev` reach
   the end. `xs.[i]` (F#'s dotted indexer) is refused naming the dotless
   spelling [D:accessor-teaching].
