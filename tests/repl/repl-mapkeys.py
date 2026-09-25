@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # Value-aware map-key completion [D:value-key-complete]: an open map's
-# keys are data, so completion reads them from the SESSION's stored
+# keys are data, so completion reads them from the session's stored
 # value — inside the open key literal of a pipe-form Map lookup whose
 # receiver is a bare, already-materialized binding, Tab completes the
-# value's own keys. The boundary is peek-vs-evaluate: a PIPELINE
+# value's own keys. The boundary is peek-vs-evaluate: a pipeline
 # receiver would need evaluating, so it completes nothing — bind first,
 # then the keys complete. This drives the real pty line editor: bind a
 # pair-seq at the prompt, type the lookup prefix, Tab, read the painted
@@ -48,7 +48,7 @@ def pty_complete(setup, prefix, settle=0.6):
 
     if setup:
         os.write(fd, (setup + "\r").encode())
-        # a full drain: the bind's echo must land BEFORE the capture
+        # a full drain: the bind's echo must land before the capture
         # starts, or its quoted keys would pollute the painted region
         drain(1.0)
     start = len(out)
@@ -89,7 +89,7 @@ if 'Map.tryGet "CoreCount' not in t:
 if 'Map.tryGet "CoreCount"' in t:
     failures.append(f"no closing quote is synthesized: {t[-400:]!r}")
 
-# (2) the bind-first law: a PIPELINE receiver would need evaluating, so
+# (2) the bind-first law: a pipeline receiver would need evaluating, so
 # Tab completes nothing — the typed prefix stays as typed
 t = pty_complete(BIND, 'd |> Seq.map fst |> Map.tryGet "Cor')
 if 'Map.tryGet "CoreCount' in t:

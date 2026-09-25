@@ -2,19 +2,19 @@
 # The depth-coverage gate [D:depth-guard]: every recursive cycle in the
 # parser routes through `deepen`, asserted mechanically rather than
 # remembered. The adversarial review found the type and pattern grammars
-# unguarded by attacking a NAMED axis and then asking what else existed —
-# a search answers "what did I find", only an enumeration answers "what
-# is there". This is the enumeration: build the reference graph between
-# top-level parser bindings (the same lexical extraction discipline as
-# grammar-manifest.py), delete every node whose definition is wrapped in
-# `deepen (`, and require the residual graph acyclic. A new recursive
-# nonterminal that skips `deepen` shows up here as a named cycle, not as
-# a SEGV report.
+# unguarded by attacking one named axis and then asking what else
+# existed — a search answers "what did I find", only an enumeration
+# answers "what is there". This is the enumeration: build the reference
+# graph between top-level parser bindings (the same lexical extraction
+# discipline as grammar-manifest.py), delete every node whose definition
+# is wrapped in `deepen (`, and require the residual graph acyclic. A
+# new recursive nonterminal that skips `deepen` shows up here as a named
+# cycle, not as a SEGV report.
 #
 # In FParsec every grammar cycle passes through a forwarded ref or a
 # top-level function, both of which are col-0 bindings — so col-0
 # extraction sees every cycle. Over-approximation (a name mentioned in a
-# non-recursive position) can only ADD edges, so a green run is safe and
+# non-recursive position) can only add edges, so a green run is safe and
 # a red run names its cycle for a human read.
 import re, sys, os
 
@@ -44,8 +44,8 @@ asg_re = re.compile(r"^(\w+)(?:\.Value|\.TermParser)?\s*<-")
 
 # recursive AST walkers whose depth is bounded by the deepen'd parse
 # that built the tree (patLeafNames, chainReifier [D:statement-lets]),
-# or tail recursion the compiler
-# turns into a loop (exitCodeSpine) — not input-driven stack growth
+# or tail recursion the compiler turns into a loop (exitCodeSpine) —
+# not input-driven stack growth
 AST_WALKERS = {"patLeafNames", "exitCodeSpine", "chainReifier"}
 
 ref_to_node = {}  # exprRef -> expr
@@ -62,7 +62,7 @@ for i, ln in enumerate(lines):
         defs.append((ref_to_node.get(m.group(1), m.group(1)), i, False))
 
 # a node with several defs (forwarded decl + ref assignment) is guarded
-# when ANY def's body opens with `deepen` (possibly under a `fun` arg,
+# when any def's body opens with `deepen` (possibly under a `fun` arg,
 # the parameterized-parser spelling)
 
 # body of a definition runs to the next col-0 code line

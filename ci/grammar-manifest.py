@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-# The grammar manifest [D:ts-split] — the GENERATED contract between the
+# The grammar manifest [D:ts-split] — the generated contract between the
 # language and every grammar, in-repo or split out. One extraction (the
 # same regexes the inventory gates always used), one JSON artifact:
 #
 #   editors/grammar-manifest.json
 #
-# `--check` verifies the committed file is CURRENT (the main repo's
+# `--check` verifies the committed file is current (the main repo's
 # currency gate); without it, the file is (re)written. The tree-sitter
-# repo's CI checks ITSELF against this file at its pinned weir ref —
+# repo's CI checks itself against this file at its pinned weir ref —
 # the main repo no longer reads tree-sitter sources at all.
 #
-# Deliberately NO volatile field (sha/date): the manifest must be byte-
+# Deliberately no volatile field (sha/date): the manifest must be byte-
 # stable across commits that do not move the sets, or every commit
 # dirties it. Git versions the content; the grammar repo's tracked ref
 # names the language version it follows.
@@ -39,7 +39,7 @@ adapters = {
 
 # line-end district markers [D:text-block]: the parser's blockHeads list
 # is the source; $-interpolated spellings ($<<<) derive in the grammars.
-# heads may be GLYPHS (<<<), so the capture is any quoted string
+# heads may be glyphs (<<<), so the capture is any quoted string
 bh_block = re.search(r'let blockHeads = \[([^\]]*)\]', parser_src).group(1)
 block_heads = sorted(set(re.findall(r'"([^"]+)"', bh_block)))
 

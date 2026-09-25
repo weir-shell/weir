@@ -1,17 +1,17 @@
 #!/usr/bin/env weir
 // The Zed pin check [D:grammar-currency] — two invisible pins, one
 // check that fails when either moves. editors/zed/extension.toml pins
-// the tree-sitter grammar by REV, and nothing enforced the rev ritual
+// the tree-sitter grammar by rev, and nothing enforced the rev ritual
 // (bump + refresh highlights.scm, one motion) — a comment was doing a
 // check's job. Two assertions:
-//   1. the pinned rev IS the grammar repo's current main — a stale
+//   1. the pinned rev is the grammar repo's current main — a stale
 //      grammar and a stale rev both surface here, because either makes
 //      the rev not match what the repo publishes;
 //   2. every node name queried by editors/zed/languages/weir/
-//      highlights.scm exists in the grammar's node inventory AT THE
-//      PINNED REV — a matching rev with queries naming nodes the
+//      highlights.scm exists in the grammar's node inventory at the
+//      pinned rev — a matching rev with queries naming nodes the
 //      grammar no longer has is green-but-broken.
-// Public repo — plain fetches, no token. Runs at RELEASE and on the
+// Public repo — plain fetches, no token. Runs at release and on the
 // weekly schedule, never on PRs: bumping the rev requires the grammar
 // push to have happened first, so a PR red here is unfixable in the PR.
 //
@@ -37,10 +37,10 @@ if Seq.isEmpty revHits then
 
 let rev = revHits |> Seq.head |> Seq.head
 
-// the rev must be the FULL 40-hex sha: Zed's builder runs `git fetch
+// the rev must be the full 40-hex sha: Zed's builder runs `git fetch
 // origin <rev>` with the literal string, and a server cannot resolve
 // an abbreviated sha in a fetch — a short pin builds locally (the
-// clone resolves it) and dies only in THEIR CI (caught live on the
+// clone resolves it) and dies only in Zed's CI (caught live on the
 // first submission)
 if Str.length rev <> 40 then
     fail $"ZED PIN TOO SHORT: rev '{rev}' has {Str.length rev} chars — Zed fetches the literal rev and git cannot fetch an abbreviated sha; pin the full 40-char commit"
@@ -67,8 +67,8 @@ let mainSha =
     | Some d -> localSha d
     | None -> fetchedSha ()
 
-// At a TAG ref the pin may legitimately TRAIL main [D:zed-tag-ancestor]:
-// the release's own TARGET bump moves grammar main AFTER the tag is
+// At a tag ref the pin may legitimately trail main [D:zed-tag-ancestor]:
+// the release's own TARGET bump moves grammar main after the tag is
 // frozen, so equality is false on every post-publish re-run with nothing
 // to fix. Ancestor-of-main = trailing by the ritual; a rev off main's
 // history is still stale, tag or not. Forward-looking runs (main, cron,

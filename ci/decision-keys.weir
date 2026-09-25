@@ -1,11 +1,11 @@
 #!/usr/bin/env weir
 // Every [D:key] must resolve to a key-column row in docs/DECISIONS.md
 // [D:decision-keys]. CLAUDE.md's rule is "New decision = new index row"; it
-// was a convention with no check, and a decision written into ANOTHER row's
+// was a convention with no check, and a decision written into another row's
 // body leaves its citations pointing at nothing.
 //
-// SCOPE, and the reason for each file: src/ and tests/ because a code comment
-// citing a key is the rule's main customer, and DECISIONS.md ITSELF because a
+// Scope, and the reason for each file: src/ and tests/ because a code comment
+// citing a key is the rule's main customer, and DECISIONS.md itself because a
 // row body may cite a sibling key — the index has to be self-consistent or it
 // cannot be the thing the other files resolve against.
 //
@@ -26,7 +26,7 @@ let sources =
         || f == "docs/DECISIONS.md")
     |> Seq.freeze
 
-// in the index itself only ROW lines count: the header explains the
+// in the index itself only row lines count: the header explains the
 // convention using `[D:key]` as an illustration, which is prose about the
 // rule rather than a citation of a decision
 let citedLines f =

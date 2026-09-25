@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # The surface gate [D:skill-surface]: every module member the binary
-# SHIPS appears in skills/weir/SKILL.md — the qualified spelling
+# ships appears in skills/weir/SKILL.md — the qualified spelling
 # (`Module.member`) or a backticked bare name (`member`) — or is listed
-# in ci/skill-omitted.txt as omitted ON PURPOSE with a reason. #help
+# in ci/skill-omitted.txt as omitted on purpose with a reason. #help
 # enumerates the real surface (the derived sources, machine-readable by
-# construction), so the doc's completeness is a CHECKED property, not a
+# construction), so the doc's completeness is a checked property, not a
 # hope — the fallback protocol ("if a feature is not in the skill file,
 # assume it does not exist") silently depends on it. The omitted list
 # is swept both ways: a documented or vanished entry there is stale and
@@ -20,7 +20,7 @@ OMIT="$(dirname "$0")/skill-omitted.txt"
 surface=$(mktemp)
 trap 'rm -f "$surface"' EXIT
 
-# the glance rendering [D:help-glance] is one NAME per line, name first —
+# the glance rendering [D:help-glance] is one name per line, name first —
 # $1 is the module (bare #help) or the member (#help Module); the blurb
 # and glance text after it never enter the surface
 mods=$(printf '#help\n#quit\n' | "$BIN" 2>/dev/null | sed 's/^weir> //' \

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-# Expression-position path completion QUOTES [D:repl-path-quote]: a bare
+# Expression-position path completion quotes [D:repl-path-quote]: a bare
 # filesystem path is not a valid weir expression, so completing a path as
-# a FUNCTION argument (File.read ./x) must yield a QUOTED string literal —
-# File.read "./x" — which parses on Enter. A COMMAND-argv path (cat ./x)
-# stays BARE. This drives the real pty line editor: type the prefix, Tab,
+# a function argument (File.read ./x) must yield a quoted string literal —
+# File.read "./x" — which parses on Enter. A command-argv path (cat ./x)
+# stays bare. This drives the real pty line editor: type the prefix, Tab,
 # then read the painted line back.
 import os
 import pty
@@ -80,20 +80,20 @@ def pty_complete(setup, prefix, settle=0.6):
 
 cd_line = 'cd "%s"' % work
 
-# (1) after a function head the completion comes back QUOTED — the line
+# (1) after a function head the completion comes back quoted — the line
 # the editor now holds is `File.read "./somefile.txt"`, which parses.
 t = pty_complete(cd_line, "File.read ./some")
 if 'File.read "./somefile.txt"' not in t:
     failures.append(f"expression-slot path must complete QUOTED: {t[-400:]!r}")
 
-# (2) a command-argv path stays BARE — `cat ./somefile.txt`, no quotes
+# (2) a command-argv path stays bare — `cat ./somefile.txt`, no quotes
 t = pty_complete(cd_line, "cat ./some")
 if "cat ./somefile.txt" not in t:
     failures.append(f"command-argv path must stay BARE: {t[-400:]!r}")
 if 'cat "./some' in t:
     failures.append(f"command-argv path must NOT be quoted: {t[-400:]!r}")
 
-# (3) completing INSIDE an already-open quote does not double the quote:
+# (3) completing inside an already-open quote does not double the quote:
 # the entry lands within the string (no second opening quote, and no
 # closing quote is synthesized — the user owns the closer, as before)
 t = pty_complete(cd_line, 'File.read "./some')

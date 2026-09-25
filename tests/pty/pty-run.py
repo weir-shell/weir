@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-# The GENERAL pty instrument [D:stream-echo]: run one command under a
+# The general pty instrument [D:stream-echo]: run one command under a
 # pseudo-terminal, feed scripted input with delays, capture output with
-# MILLISECOND timestamps relative to start. Built for the streaming-echo
+# millisecond timestamps relative to start. Built for the streaming-echo
 # pins but deliberately general — the concurrency review parked C14
 # (TTY contention) and the REPL SIGINT split for want of exactly this;
-# keep scenario logic OUT of here and IN the caller.
+# keep scenario logic out of here and in the caller.
 #
 #   pty-run.py <total-timeout-s> <cmd> [args...] < scenario
 #
@@ -23,7 +23,7 @@ for line in sys.stdin.read().splitlines():
 
 pid, fd = pty.fork()
 if pid == 0:
-    # the subject starts with DEFAULT dispositions: a non-interactive
+    # the subject starts with default dispositions: a non-interactive
     # caller's `&` bequeaths SIGINT/SIGQUIT=SIG_IGN through exec, and a
     # signal probe against an ignoring-by-inheritance subject reports
     # "survived" for the harness's own reason (caught by the B3 bisect)
@@ -31,12 +31,12 @@ if pid == 0:
         signal.signal(sig, signal.SIG_DFL)
     os.execvp(cmd[0], cmd)
 
-# a REAL winsize: pty.fork leaves 0x0, which every subject clamps to a
+# a real winsize: pty.fork leaves 0x0, which every subject clamps to a
 # degenerate 20 columns — multi-row repaints per keystroke, and .NET's
 # width cache races on macOS under exactly that state (the repl-multiline
 # driver's finding: macOS lost the width where Linux never did). The
 # SIGWINCH after the ioctl invalidates any width cached at console init,
-# so the pty size ALWAYS wins.
+# so the pty size always wins.
 fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 120, 0, 0))
 os.kill(pid, signal.SIGWINCH)
 
@@ -66,8 +66,8 @@ for kind, arg in steps:
         os.write(fd, arg)
 
 # reap even when the output side already closed: a child that exits
-# DURING the scenario used to fall through to "EXIT timeout" with its
-# real status collected and DISCARDED (caught by this harness's own
+# during the scenario used to fall through to "EXIT timeout" with its
+# real status collected and discarded (caught by this harness's own
 # control: gzip refuses a tty stdout and exits at 1ms). Signal deaths
 # report as negative codes (waitstatus_to_exitcode: -2 = SIGINT).
 deadline = time.monotonic() + timeout

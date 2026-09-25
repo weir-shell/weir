@@ -6,9 +6,9 @@ set -euo pipefail
 
 BIN="${WEIR_BIN:-$HOME/.local/bin/weir}"
 
-# stale-binary guard [D:masking-mechanized]: the ONE shared gate (was a
-# warn-only mtime check here — a doc-test validating against a stale
-# binary is exactly the masked failure the gate exists to prevent)
+# stale-binary guard [D:masking-mechanized]: the one shared gate — a
+# doc-test validating against a stale binary is exactly the masked
+# failure the gate exists to prevent
 "$(dirname "$0")/check-fresh.sh" "$BIN"
 
 # child weir in doc blocks resolves through the binary's own dir — the
@@ -69,6 +69,6 @@ done
 
 echo "skill-doc: all $i blocks hold"
 
-# the doc's COMPLETENESS is checked beside its correctness
+# the doc's completeness is checked beside its correctness
 # [D:skill-surface]: every shipped member documented or omitted-on-purpose
 "$(dirname "$0")/skill-surface.sh"

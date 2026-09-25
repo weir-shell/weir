@@ -1,6 +1,6 @@
 #!/usr/bin/env weir
 // Repro harness for dev/plans/PLAN-multi-area-review.md. Each probe prints OK
-// when its finding is FIXED and REPRODUCES otherwise, so one script is both
+// when its finding is fixed and REPRODUCES otherwise, so one script is both
 // the bug report and the acceptance gate.
 //
 //     weir tools/multi-repro.weir --bin ./path/to/weir
@@ -8,15 +8,15 @@
 // Probe labels match the plan's numbering exactly (F1-F11), so a fixer never
 // translates between the two documents.
 //
-// LOUD, in every direction:
-//   - a probe that fails to RUN counts as reproducing, never as a pass;
-//   - a MISSING INSTRUMENT (python3) is a named SKIP that keeps its finding
+// Loud, in every direction:
+//   - a probe that fails to run counts as reproducing, never as a pass;
+//   - a missing instrument (python3) is a named SKIP that keeps its finding
 //     OPEN — a SKIP is counted with the failures, because absence is never a
 //     pass;
-//   - "fixed" for a crash probe means exit 1, a LOCATED diagnostic. A crash
+//   - "fixed" for a crash probe means exit 1, a located diagnostic. A crash
 //     (>= 128) is not a fix, so those probes test == 1, never <> n.
 //
-// Positive controls are INDEPENDENT OF EVERY FINDING'S STATE:
+// Positive controls are independent of every finding's state:
 //   - control-sees-broken: the verdict channel can report failure;
 //   - control-lock-benign: `restore` works at all, so F1's "nothing landed
 //     outside" cannot pass by restore being broken;
@@ -26,12 +26,12 @@
 //     `readonly`, so F6 cannot pass by the body being illegal everywhere.
 //
 // F12 (no request-body read timeout) and F13 (terminal escapes at a tty) are
-// deliberately NOT in this gate: one is measured with a CLOCK against a
+// deliberately not in this gate: one is measured with a clock against a
 // no-liar control, the other with a pty. Both are recorded in the plan under
 // instrument honesty rather than half-automated here.
 //
-// Every command-running helper is a TOP-LEVEL function: a block `let` with a
-// command RHS loses its reifier off the topLet spine. Verdicts go to a FILE
+// Every command-running helper is a top-level function: a block `let` with a
+// command RHS loses its reifier off the topLet spine. Verdicts go to a file
 // because a `within` scope yields unit, so a probe cannot return its own bool.
 
 type Cli = {
@@ -134,7 +134,7 @@ let logRefereeSrc = <<<
 
 // ---- fixtures whose verdict the binary reaches on its own -------------------
 
-// F2: an unreadable file on the import path. FIXED = a located diagnostic
+// F2: an unreadable file on the import path. Fixed = a located diagnostic
 // (exit 1). A crash (134) is not a fix, which is why this tests == 1.
 let f2importer p = $<<<
     import "{p}" as M
@@ -145,7 +145,7 @@ let f2module = <<<
     let f : int -> int
     let f x = x + 1
 
-// F5: a `for` body that reaches no effect, inside each gate. FIXED = clean.
+// F5: a `for` body that reaches no effect, inside each gate. Fixed = clean.
 let f5pure = <<<
     let pure noop x = ()
 
@@ -178,7 +178,7 @@ let f5plan = <<<
 
     print $"{p |> Plan.isEmpty}"
 
-// F6: the SAME statement types under `pure` and fails under `readonly`.
+// F6: the same statement types under `pure` and fails under `readonly`.
 let f6readonly = <<<
     let noop x = ()
 
@@ -199,7 +199,7 @@ let f6controlPure = <<<
 
     print b
 
-// F7: a script that runs NO command must report no dynamic head and must
+// F7: a script that runs no command must report no dynamic head and must
 // satisfy --strict.
 let f7 = <<<
     for n in ["a"] do print n

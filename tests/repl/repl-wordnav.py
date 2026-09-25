@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# REPL word-navigation probe: Ctrl+Left/Right hop word-wise (2026-07-21).
+# REPL word-navigation probe: Ctrl+Left/Right hop word-wise.
 # Runs the real binary under a pty and asserts on evaluated output, not
 # on redraw escape sequences (those vary by terminal state).
 import os
@@ -41,7 +41,7 @@ for _ in range(25):
     send("\x1b[D", 0.02)  # Left over ' (fun s -> s) |> Seq.head'
 send("\t", 0.3)
 send("\r", 0.6)
-# kill-ring [D:repl-killring]: Ctrl+W kills the previous word INTO the ring,
+# kill-ring [D:repl-killring]: Ctrl+W kills the previous word into the ring,
 # Ctrl+Y yanks it — kill "KRX", yank twice -> echo KRXKRX (streams KRXKRX)
 send("echo ")
 send("KRX")
@@ -49,7 +49,7 @@ send("\x17")       # Ctrl+W: kill "KRX" into the ring
 send("\x19")       # Ctrl+Y: yank
 send("\x19")       # yank again -> KRXKRX
 send("\r", 0.5)
-# Ctrl+U feeds the SAME ring: type UKILL, ^U kills it to the ring, then a
+# Ctrl+U feeds the same ring: type UKILL, ^U kills it to the ring, then a
 # fresh `echo `, yanked twice -> echo UKILLUKILL (streams UKILLUKILL)
 send("UKILL")
 send("\x15")       # Ctrl+U: kill to line start into the ring
@@ -70,7 +70,7 @@ try:
 except OSError:
     pass
 os.waitpid(pid, 0)
-# assertions are about TEXT, not paint: strip color spans (the input
+# assertions are about text, not paint: strip color spans (the input
 # echo colors as of PLAN-repl-color; content must be unchanged)
 import re as _re
 text = _re.sub(r"\x1b\[[0-9;]*m", "", out.decode(errors="replace"))

@@ -19,9 +19,9 @@ let cli = Args.load Cli
 let heading = $"## {cli.tag}"
 let lines = File.read "CHANGELOG.md" |> Seq.freeze
 
-// EXACT match, because the workflow's awk extraction matches the line
+// Exact match, because the workflow's awk extraction matches the line
 // exactly — the gate and the extractor must agree on one spelling, so a
-// heading that only matches after trimming is named as the defect it is
+// heading that only matches after trimming is reported as its own defect
 let exactHit = lines |> Seq.exists (fun l -> l == heading)
 let trimmedHit = lines |> Seq.exists (fun l -> Str.trim l == heading)
 

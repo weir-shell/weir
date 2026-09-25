@@ -1,25 +1,25 @@
 #!/usr/bin/env bash
 # Probe harness for the two parked pty items: C14 (TTY contention) and
 # the REPL SIGINT split. Findings-shaped: probes report what they
-# OBSERVED; signal probes run N times and report a RATE; every zero is
+# observed; signal probes run N times and report a rate; every zero is
 # paired with a non-zero from the same instrument.
 #
 #     ci/pty-review.sh /path/to/weir [N]
 #
-# INSTRUMENT SCARS, all caught by this harness's own controls:
+# Instrument pitfalls, all caught by this harness's own controls:
 #   * pty-run.py discarded an early child's real exit ("EXIT timeout"
 #     for a child dead at 1ms) — fixed in the instrument.
-#   * The REPL editor ECHOES the typed line with syntax colors, so any
-#     needle typed at the prompt matches ITSELF. Every REPL probe here
+#   * The REPL editor echoes the typed line with syntax colors, so any
+#     needle typed at the prompt matches itself. Every REPL probe here
 #     types only neutral text (a helper-script path) or derives its
 #     needle by case transform (type "alive", grep ALIVE).
 #   * Enter is \r: terminals send CR; \n is Ctrl-J (insert-newline) and
 #     leaves the editor at a continuation prompt forever.
-# Scenario SEND lines carry control bytes as \xNN ESCAPES decoded by
+# Scenario SEND lines carry control bytes as \xNN escapes decoded by
 # the instrument — no literal control bytes in this file. Signal deaths
-# report as NEGATIVE exits (-2 = SIGINT, -9 = SIGKILL).
+# report as negative exits (-2 = SIGINT, -9 = SIGKILL).
 #
-# PLATFORM: the tty layer and tree-kill are the BCL's per-platform
+# Platform: the tty layer and tree-kill are the BCL's per-platform
 # code; this harness reports uname and claims nothing beyond it.
 
 set -u
@@ -41,7 +41,7 @@ strip() { sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g; s/\x1b[=>]//g'; }
 
 say "== pty review: $(uname -sr), N=$N =="
 
-# ---- helper tools (needles live HERE, never in typed lines) -----------------
+# ---- helper tools (needles live here, never in typed lines) -----------------
 printf 'ps -o pid=,pgid=,tpgid= -p $$,$PPID\n' > "$work/pgroups.sh"
 printf 'stty -a | tr ";" "\\n" | grep -Ew "isig|icanon" | tr -d " "\n' > "$work/flags.sh"
 printf 'sleep 2; stty -a | tr ";" "\\n" | grep -Ew "isig|icanon" | tr -d " "\n' > "$work/flags2.sh"
@@ -112,7 +112,7 @@ say "A1 script: prompt drawn on the tty: $(echo "$out" | grep -q 'choose>' && ec
 out=$( (cd "$work" && printf 'SLEEP 700\nSEND let r = $(sh pick.sh | complete)\\r\nSLEEP 500\nSEND pear\\r\nSLEEP 400\nSEND print (r.stdout |> Seq.head)\\r\nSLEEP 400\nSEND #quit\\r\n' | pty 10 "$BIN") | strip)
 say "A1 REPL:   prompt drawn on the tty: $(echo "$out" | grep -q 'choose>' && echo yes || echo no); value reached the pipeline: $(echo "$out" | grep -q 'PICKED-pear' && echo yes || echo no)"
 
-# A2a a spontaneous cancel (fzf's Esc): the tool exits 130 with NO
+# A2a a spontaneous cancel (fzf's Esc): the tool exits 130 with no
 # signal in flight — the doc's raise claim, isolated from delivery
 cat > "$work/a2.weir" <<'WEIR'
 sh pick.sh
@@ -121,8 +121,8 @@ WEIR
 out=$( (cd "$work" && printf 'SLEEP 500\nSEND q\\r\n' | pty 8 "$BIN" a2.weir) | strip)
 say "A2a script, tool exits 130 spontaneously: raise names 130: $(echo "$out" | grep -q '130' && echo yes || echo no); statements after the fault ran: $(echo "$out" | grep -q 'AFTER' && echo yes || echo NO); weir EXIT $(echo "$out" | awk '/^EXIT/{print $2}')"
 
-# A2b a REAL ^C mid-pipeline, script path (isig is ON there): SIGINT
-# goes to the whole foreground group — weir AND the tool. N runs.
+# A2b a real ^C mid-pipeline, script path (isig is on there): SIGINT
+# goes to the whole foreground group — weir and the tool. N runs.
 ok=0; aborted=0
 for i in $(seq "$N"); do
     out=$( (cd "$work" && printf 'SLEEP 500\nSEND \\x03\n' | pty 6 "$BIN" a2.weir) | strip)
@@ -132,7 +132,7 @@ for i in $(seq "$N"); do
 done
 say "A2b script, real ^C mid-pipeline: aborted-at-the-fault $aborted/$N; weir died of the group SIGINT (-2) $ok/$N"
 
-# A3 two concurrent pmap arms both opening /dev/tty — UNSTATED in the
+# A3 two concurrent pmap arms both opening /dev/tty — unstated in the
 # docs; the outcome decides doc sentence vs finding. N runs, classified.
 cat > "$work/a3.weir" <<'WEIR'
 [1; 2] |> Seq.pmap (fun i -> $(sh pick.sh | complete)) |> Seq.iter (fun r -> print (r.stdout |> Seq.head))
@@ -163,12 +163,12 @@ say "-- Part B: the REPL split --"
 out=$(printf 'SLEEP 700\nSEND gzip\\r\nSLEEP 400\nSEND \\x03\\x03\\x03\nSLEEP 600\n' | pty 3 "$BIN" | strip)
 say "B1 gzip + three ^C at the REPL: weir EXIT $(echo "$out" | awk '/^EXIT/{print $2}') (timeout = still hung, the incident); tty echoed the bytes as data: $(echo "$out" | grep -q '\^C\^C\^C' && echo yes || echo no)"
 
-# B1b the undocumented escape: icanon is ON, so ^D at an empty line is
+# B1b the undocumented escape: icanon is on, so ^D at an empty line is
 # EOF — gzip exits and the session returns
 out=$(printf 'SLEEP 700\nSEND gzip\\r\nSLEEP 300\nSEND \\x03\\x03\\x03\nSLEEP 200\nSEND \\x04\\x04\nSLEEP 500\nSEND print (Str.toUpper "back")\\r\nSLEEP 400\nSEND #quit\\r\n' | pty 8 "$BIN" | strip)
 say "B1b ^D^D ends the child (EOF), session usable after: $(echo "$out" | grep -q 'BACK' && echo yes || echo no)"
 
-# B2 script path, ^C with a child that IGNORES SIGINT: does weir's own
+# B2 script path, ^C with a child that ignores SIGINT: does weir's own
 # signal death leave the child running? N runs + a control child that
 # does not ignore.
 printf 'trap "" INT HUP\necho UP\nexec sleep 31.4173\n' > "$work/ignore.sh"
@@ -191,7 +191,7 @@ sleep 0.2
 say "B2 script ^C, child ignoring INT+HUP: survived weir's death $orphans/$N runs; control (default dispositions): $(ledger 31.4174) survivor (0 = the group SIGINT/pty HUP reaped it)"
 reap
 
-# B3 a DIRECT SIGINT to the weir process at the REPL prompt (bypassing
+# B3 a direct SIGINT to the weir process at the REPL prompt (bypassing
 # the tty): the editor never sees it — the PosixSignal path answers
 b3died=0; b3lived=0; b3miss=0
 for i in $(seq "$N"); do
@@ -209,7 +209,7 @@ done
 say "B3 kill -INT at the REPL prompt, $N shots: died(-2) $b3died, survived $b3lived, probe-missed-pid $b3miss (the tty ^C key clears a line; a DELIVERED SIGINT kills the session — two fates; NB an inherited SIG_IGN is honoured, the nohup courtesy, which is why the instrument resets dispositions)" 
 
 # B4 ^C mid-stream: the relay keeps flushing; the byte waits in the pty
-# queue and hits the EDITOR at the next prompt
+# queue and hits the editor at the next prompt
 printf 'printf partial-; sleep 1; echo done-marker\n' > "$work/stream.sh"
 (cd "$work" && printf "SLEEP 700\nSEND sh stream.sh\\\\r\nSLEEP 400\nSEND \\\\x03\nSLEEP 1300\nSEND print (Str.toUpper \"usable\")\\\\r\nSLEEP 400\nSEND #quit\\\\r\n" | pty 10 "$BIN" > b4.raw)
 out=$(strip < "$work/b4.raw")

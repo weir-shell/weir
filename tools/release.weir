@@ -43,8 +43,8 @@ print $"tagged and pushed {cli.tag} — the gated release flow is running"
 
 // ---- 3. wait for the publish (drafts do not count) -------------------------
 // the release workflow builds the binaries then a human clicks publish.
-// The human SAYS when: the timed poll of the live gate proved
-// unreliable, so each confirm runs the gate ONCE — a not-yet verdict
+// The human says when: the timed poll of the live gate proved
+// unreliable, so each confirm runs the gate once — a not-yet verdict
 // shows itself and asks again; anything but yes aborts. The prompt is
 // what blocks; the poll interval never paces the wait.
 print "the release flow builds a DRAFT — review its asset list, then publish it."
@@ -68,7 +68,7 @@ poll timeout=8h interval=1s
 
 print $"{cli.tag} is published"
 
-// ---- 4. the grammar TARGET bump (AFTER publish, never before) --------------
+// ---- 4. the grammar TARGET bump (after publish, never before) --------------
 if not (confirm $"bump {gdir}/TARGET_WEIR_RELEASE to {cli.tag}, commit and push?") then
     fail "aborted — remember: the grammar bump is still owed"
 

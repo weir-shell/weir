@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 
-# KNOWN NOISE, not a failure (Windows, round 31's run): bash lines like
+# Known noise, not a failure (Windows, round 31's run): bash lines like
 #   dofork: child -1 - forked process N died unexpectedly ... 0xC0000142
 #   ./ci/e2e.sh: fork: retry: Resource temporarily unavailable
-# are the msys2/Git-Bash fork flake — the forked bash CHILD fails DLL
+# are the msys2/Git-Bash fork flake — the forked bash child fails DLL
 # init (cygwin address-space collision on loaded runners), and bash
 # retries with backoff (0/1/3/7s) and recovers. Every battery-owned
-# background job is killed AND reaped at block end, so a live-leak
+# background job is killed and reaped at block end, so a live-leak
 # diagnosis is wrong by construction; only a fork that exhausts all
 # retries fails the run, and that is the runner's weather, not ours.
 
-# temp dirs weir can SEE on every platform: Git Bash's /tmp is
+# temp dirs weir can see on every platform: Git Bash's /tmp is
 # MSYS-virtual — a native weir.exe cannot resolve it, so hand weir the
 # mixed (C:/...) spelling; POSIX passes through untouched
 mkweirtmp() {
@@ -26,8 +26,8 @@ awaitHttp() {
     done
     return 1
 }
-# the TLS twin polls TCP-ACCEPT only (curl's TLS stack disagrees with
-# the python server on some platforms; readiness needs the LISTENER,
+# the TLS twin polls for a TCP accept only (curl's TLS stack disagrees
+# with the python server on some platforms; readiness needs the listener,
 # and the server survives the aborted handshake — verified): bash's
 # /dev/tcp, present on macOS 3.2 and Git Bash alike
 awaitTcp() {
@@ -39,9 +39,9 @@ awaitTcp() {
 }
 # End-to-end battery against the AOT binary (command-mode Session 4 set).
 set -euo pipefail
-# an UNGUARDED nonzero command under set -e used to kill the battery
-# SILENTLY (round 33 — the run ended after a green line with no FAIL at
-# all); the ERR trap names its own line and command. Deliberately NO
+# an unguarded nonzero command under set -e used to kill the battery
+# silently (round 33 — the run ended after a green line with no FAIL at
+# all); the ERR trap names its own line and command. Deliberately no
 # `set -E`: with it the trap reaches into command-substitution
 # subshells, where several pins run commands whose failure is the
 # point ($(cmd; echo rc=$?)) — top level is where the silent class
@@ -50,25 +50,25 @@ trap 'echo "e2e FAIL: unguarded command failed at line $LINENO: $BASH_COMMAND" >
 
 BIN="${WEIR_BIN:-$HOME/.local/bin/weir}"
 
-# POSIX-only harnesses (os.fork, pty, zombies) get STATED skips on
+# POSIX-only harnesses (os.fork, pty, zombies) get stated skips on
 # Windows — a skip echoes its reason, never silence
 IS_WINDOWS=0
 case "$(uname -s)" in MINGW* | MSYS* | CYGWIN*) IS_WINDOWS=1 ;; esac
-# python subprocess must NOT resolve `bash` itself on Windows — the
+# python subprocess must not resolve `bash` itself on Windows — the
 # native PATH finds System32's WSL stub first (the sh-never-bash class,
-# python axis): hand the harnesses THIS bash, native-form
+# python axis): hand the harnesses this bash, in native form
 if [ "$IS_WINDOWS" = "1" ]; then
     WEIR_BASH=$(cygpath -m "$(command -v bash)")
     export WEIR_BASH
 fi
 
-# a PATH ENTRY must be POSIX-form: mkweirtmp's mixed (C:/...) spelling
+# a PATH entry must be POSIX-form: mkweirtmp's mixed (C:/...) spelling
 # and a Windows-form dirname both carry a drive colon that reads as a
 # PATH separator — round 5's class, every prefix site (identity on POSIX)
 pathEntry() {
     if command -v cygpath >/dev/null 2>&1; then cygpath -u "$1"; else printf '%s\n' "$1"; fi
 }
-# a fake PATH binary every platform can SPAWN — PER-PLATFORM, never
+# a fake PATH binary every platform can spawn — per-platform, never
 # both: with both present, weir's Windows resolver prefers the exact
 # extensionless name and CreateProcess fails on it rather than falling
 # through to the .bat (noted as a possible product divergence from
@@ -96,7 +96,7 @@ mkFakeBin() {
 }
 BINDIR=$(pathEntry "$(dirname "$BIN")")
 
-# HARD stale-binary gate [D:masking-mechanized] — the ONE shared gate
+# Hard stale-binary gate [D:masking-mechanized] — the one shared gate
 # (stamp == HEAD, no .fs newer than the binary), so stale results are
 # impossible rather than catchable.
 "$(dirname "$0")/check-fresh.sh" "$BIN"
@@ -118,10 +118,10 @@ if git -C "$(dirname "$0")/.." ls-files -z 2>/dev/null \
 fi
 echo "e2e ok: no conflict markers in tracked files"
 
-# client-name gate: dev/ may name client projects; RENDERED surfaces must
+# client-name gate: dev/ may name client projects; rendered surfaces must
 # not — no file under docs/, skills/, or site/ (nor the root pages the
 # site loads: CHANGELOG, README) may carry the names. The site's loaders
-# reach ../docs and ../CHANGELOG.md, so docs/ IS a rendered surface; the
+# reach ../docs and ../CHANGELOG.md, so docs/ is a rendered surface; the
 # conflict-marker/cdn-cgi shape, applied to the client constraint.
 if git -C "$(dirname "$0")/.." ls-files -zco --exclude-standard -- docs skills site CHANGELOG.md README.md 2>/dev/null \
     | xargs -0 grep -lIE '\bdbt\b|\bKSL\b' 2>/dev/null | grep -q .; then
@@ -132,14 +132,14 @@ echo "e2e ok: no client names in rendered doc surfaces"
 
 # ---- pins-walk: three runtime messages only e2e can see [D:pins-walk] ------
 pwdir=$(mkweirtmp)
-# THE set-e analogue's WORDS were never asserted (the raise itself was)
+# the set-e analogue's words were never asserted (the raise itself was)
 cat > "$pwdir/x.weir" <<'WEOF'
 sh -c "exit 3"
 print "unreached"
 WEOF
 out=$($BIN "$pwdir/x.weir" 2>&1) && fail "nonzero exit must raise" || true
 echo "$out" | grep -qF "command failed with exit code 3" || fail "the exit-raise names code+command: $out"
-# the '>' redirect WARNING names the File.write spelling
+# the '>' redirect warning names the File.write spelling
 cat > "$pwdir/r.weir" <<'WEOF'
 echo hi > out.txt
 WEOF
@@ -211,13 +211,13 @@ echo "e2e ok: pins-walk candidates (exit codes exact, readSecret trio, Dir.copy 
 # both used to escape with a raw ArgumentException — the parse-time head
 # resolution as a SIGABRT (exit 134, no diagnostic), the run-time path as
 # a raw .NET message. Both must now be a located weir error with a
-# NON-134 exit and no core dump. POSIX-only: the NUL byte in a file/argv
+# non-134 exit and no core dump. POSIX-only: the NUL byte in a file/argv
 # is the axis, and skipOnWindows-style gating keeps the harness honest.
 if [ "$IS_WINDOWS" = "0" ]; then
     nuldir=$(mkweirtmp)
-    # (a) PARSE-TIME: a NUL inside a slash-bearing word. The parser's head
+    # (a) parse-time: a NUL inside a slash-bearing word. The parser's head
     # classifier calls Extern.exists, which now reports a NUL-bearing head
-    # as not-found BEFORE Session.resolve — so the parser emits its normal
+    # as not-found before Session.resolve — so the parser emits its normal
     # located missing-command diagnostic instead of aborting.
     printf './a\000b c\n' > "$nuldir/parse.weir"
     rc=0; out=$($BIN "$nuldir/parse.weir" 2>&1) || rc=$?
@@ -226,7 +226,7 @@ if [ "$IS_WINDOWS" = "0" ]; then
     echo "$out" | grep -qiF "argumentexception" && fail "parse must not leak the raw .NET exception: $out"
     echo "$out" | grep -qF "$nuldir/parse.weir:1:" || fail "parse error must be located at line 1: $out"
 
-    # (b) RUN-TIME: a NUL-bearing path VALUE (a file line carrying a NUL,
+    # (b) run-time: a NUL-bearing path value (a file line carrying a NUL,
     # fed to a File builtin) hits Session.resolve, which now raises a
     # located weir error the builtin surfaces — no crash.
     printf 'a\000b' > "$nuldir/nulpath.txt"
@@ -312,7 +312,7 @@ errout=$($BIN -e '1<mb>' 2>&1 || true)
 echo "$errout" | grep -qF "units of measure are not supported" || fail "transition message missing: $errout"
 echo "e2e ok: measure transition error"
 
-# the witness is a WEIR child: native on every platform, so it cannot
+# the witness is a weir child: native on every platform, so it cannot
 # glob for us — an MSYS echo.exe expands args from a native parent,
 # convicting the witness, not weir
 awdir=$(mkweirtmp)
@@ -329,8 +329,8 @@ expect "range literal on the AOT binary" "5 : int" "$out"
 out=$(timeout 5 $BIN -e '[1..1000000] |> Seq.take 3') || fail "huge range under first must terminate (laziness)"
 expect "ranges are lazy generators" '[1; 2; 3]' "$out"
 
-# hostile-input PERFORMANCE fixture [D:assemble-quadratic]: the line
-# assembler must scale LINEARLY. A crafted hundreds-of-KB source that was
+# hostile-input performance fixture [D:assemble-quadratic]: the line
+# assembler must scale linearly. A crafted hundreds-of-KB source that was
 # once O(N^2) (a continuation-line flood + a bracket-heavy single line)
 # now checks in well under the bound; a regressed quadratic build blows
 # the timeout instead of merely slowing. The generous 20s ceiling is a
@@ -341,7 +341,7 @@ asmdir=$(mkweirtmp)
 timeout 20 $BIN check "$asmdir/flood.weir" >/dev/null 2>&1 || fail "assembler DoS: 60k continuation-line flood did not check within 20s (quadratic regression?)"
 echo "e2e ok: assembler — 60k-line continuation flood checks in linear time"
 # (b) a bracket-heavy single line (200k record openers) — the per-opener
-# with-header substring was quadratic; it fails to PARSE fast, so the
+# with-header substring was quadratic; it fails to parse fast, so the
 # whole budget is the (now linear) assembler fold
 { printf 'let xs = '; for _ in $(seq 1 200000); do printf '{}'; done; printf '\n'; echo 'print "done"'; } > "$asmdir/openers.weir"
 acode=0
@@ -396,7 +396,7 @@ expect "external pipes into external stdin" '["hi"; "hi"]' "$out"
 out=$($BIN -e 'grep nomatch /etc/hosts | complete |> _.exitCode')
 expect "complete reifies nonzero exit as data" "1 : int" "$out"
 
-# sh, NEVER bash: a native weir resolving `bash` on a Windows runner
+# sh, never bash: a native weir resolving `bash` on a Windows runner
 # finds System32's WSL bash.exe first (no distro installed — exit 1);
 # sh has no System32 shadow, which is why every sh -c block passes.
 out=$(timeout 10 $BIN -e 'sh -c "seq 1 4000 | sed s/^/eeeeeeeeeeeeeeeeeeeeeeee/ 1>&2; echo done" | complete |> _.exitCode') \
@@ -413,8 +413,8 @@ out=$($BIN -e 'sh -c "exit 7" | complete |> _.exitCode')
 expect "sh lines can complete now (old builtin boundary gone)" "7 : int" "$out"
 
 # ---- exec: process replacement [D:exec] -----------------------------
-# exec REPLACES the runner (execve), so the command's own stdout AND exit
-# code ARE the script's — there is no weir layer left to reify through.
+# exec replaces the runner (execve), so the command's own stdout and exit
+# code are the script's — there is no weir layer left to reify through.
 # Out-of-process by nature: -e / a script drives it and the child's bytes
 # and status are observed directly. POSIX-only (execve; the coreutils
 # heads have no Windows shadow — the Windows spawn-wait-exit path is the
@@ -428,7 +428,7 @@ if [ "$IS_WINDOWS" = "0" ]; then
 sh -c "exit 7" | exec
 print "unreached"
 WEOF
-    # exec replaces with `sh -c "exit 7"`, so the runner exits 7 BY DESIGN —
+    # exec replaces with `sh -c "exit 7"`, so the runner exits 7 by design —
     # capture it without tripping the battery's set -e
     code=0
     $BIN "$execdir/exec.weir" || code=$?
@@ -446,7 +446,7 @@ WEOF
     expect "exec's env overlay reaches the replacement" "reached" "$out"
 
     # a value pipe into exec is refused at parse (no parent to feed stdin);
-    # `check` exits nonzero on that error BY DESIGN — do not let set -e abort
+    # `check` exits nonzero on that error by design — do not let set -e abort
     printf '["a"] | grep a | exec\n' > "$execdir/execbad.weir"
     out=$($BIN check "$execdir/execbad.weir" 2>&1 || true)
     echo "$out" | grep -qF "cannot take a piped stdin" || fail "value-headed exec must refuse at check"
@@ -533,9 +533,9 @@ if [ -e "$scriptdir/proof-file" ]; then
 fi
 echo "e2e ok: whole-file check runs nothing on error"
 
-# #loose is REMOVED (PLAN-dx-review D1): files are always strict, the
+# #loose is removed (PLAN-dx-review D1): files are always strict, the
 # directive is unknown, and fmt --qualify went with the mode. The gate
-# is pointed at what CHANGED, not at a probe that passed on the
+# is pointed at what changed, not at a probe that passed on the
 # untouched tree.
 cat > "$scriptdir/loose.weir" <<'WEOF'
 #loose
@@ -557,9 +557,9 @@ out=$($BIN -e '[1] |> where (fun n -> n > 0)' 2>&1 || true)
 echo "$out" | grep -q "Seq.where" || fail "-e is strict and must teach the qualified spelling: $out"
 echo "e2e ok: #loose removed — strict everywhere, fmt --qualify gone, bare names teach"
 
-# -e takes a PROGRAM (PLAN-dx-review D9, reading (b)): newlines are
+# -e takes a program (PLAN-dx-review D9, reading (b)): newlines are
 # statement boundaries as in a file, a lone declaration is still
-# refused, and the AGREEMENT with the file path is the property —
+# refused, and the agreement with the file path is the property —
 # pin both and pin that they agree.
 prog='let x = 1
 print $"{x}"'
@@ -666,9 +666,9 @@ elapsed_ms=$(($(now_ms) - start))
 [ "$elapsed_ms" -lt 900 ] || fail "piter must run workers in parallel (4x300ms took ${elapsed_ms}ms)"
 echo "e2e ok: piter parallelism (4x300ms in ${elapsed_ms}ms)"
 
-# temp-dir fixture, leaf pins: /tmp and /etc are POSIX-isms a NATIVE
+# temp-dir fixture, leaf pins: /tmp and /etc are POSIX-isms a native
 # weir resolves drive-relative on Windows (D:\tmp), and pwd's separator
-# is the platform's — assert the LEAF, never the path
+# is the platform's — assert the leaf, never the path
 forkdir=$(mkweirtmp)
 mkdir -p "$forkdir/home" "$forkdir/wa" "$forkdir/wb"
 cat > "$forkdir/fork.weir" <<'WEOF'
@@ -779,7 +779,7 @@ done
 if echo "$out" | grep -qF "dist-never"; then fail "false-branch district ran"; fi
 echo "e2e ok: command-group effect counts, both branch ways, comments transparent (districts retired)"
 
-# the retirement TEACHES [D:district-retirement]
+# the retirement teaches [D:district-retirement]
 cat > "$distdir/old.weir" <<'WEOF'
 if go then !
     sh -c "echo x"
@@ -845,7 +845,7 @@ echo "$errout" | grep -qF "expected one of: Debug, Info" || fail "candidates mis
 echo "$errout" | grep -qF "Did you mean 'Debug'?" || fail "hint missing: $errout"
 echo "e2e ok: enum miss carries candidates + the hint"
 
-# the overlay stack resolves BEFORE the enum conversion: a dotenv file
+# the overlay stack resolves before the enum conversion: a dotenv file
 # feeds the child env, the child's Env.load sees the layered value
 cat > "$envdir/lvl.env" <<'WEOF'
 WEIR_E2E_LVL=info
@@ -903,7 +903,7 @@ echo "e2e ok: non-exhaustive match is a hard check error"
 
 # the bare-comma precedence did-you-mean [D:user-language-messages]:
 # `code, _ :: rest` against a seq names the grouping repair, and no
-# pattern message says "scrutinee". Pin the FRAGMENTS (FParsec wraps).
+# pattern message says "scrutinee". Pin the fragments (FParsec wraps).
 errout=$($BIN -e 'match ["a"; "b"] with | code, _ :: rest -> code | _ -> "z"' 2>&1) && fail "the tuple/cons footgun must error"
 echo "$errout" | grep -qF "groups looser than" || fail "did-you-mean must name the precedence cause: $errout"
 echo "$errout" | grep -qF "(code, _) :: rest" || fail "did-you-mean must name the repair: $errout"
@@ -919,7 +919,7 @@ echo "$errout" | grep -qF "does not chain commands" || fail "runner must surface
 out=$($BIN "$scriptdir/warn.weir" 2>/dev/null)
 expect "warnings do not block execution" "ran" "$out"
 
-# unreachable arms are HARD errors, coverage's dual (2026-07-21: the
+# unreachable arms are hard errors, coverage's dual (2026-07-21: the
 # casing-law footgun — a typo'd constructor becomes a catch-all binder)
 cat > "$scriptdir/dead.weir" <<'WEOF'
 let x = match 1 == 1 with | _ -> 1 | true -> 2
@@ -1032,7 +1032,7 @@ out=$($BIN -e 'print "visible"')
 [ "$out" = "visible" ] || fail "print in -e must emit exactly the line, no unit trailer (got: $out)"
 echo "e2e ok: unit is invisible in -e"
 
-# unit stays invisible on the PIPED surface (its bytes are pinned) —
+# unit stays invisible on the piped surface (its bytes are pinned) —
 # the tty echoes `() : unit` since the FSI-parity ruling [D:repl-it],
 # pinned in tests/repl/repl-it-streamed.py
 out=$(printf 'print "hi"\nlet u = ()\nu\n#quit\n' | $BIN)
@@ -1041,8 +1041,8 @@ if echo "$out" | grep -qF "() : unit"; then fail "unit leaked into the piped REP
 echo "e2e ok: unit is invisible in the piped REPL"
 
 # --- the it-rebinding matrix, FSI parity (2026-09-18) [D:repl-it] ------
-# EXPRESSIONS and COMMANDS rebind `it` — always, unit included; a `let`
-# does NOT (FSI: `let o = 10;;` binds no it); a directive leaves it; a
+# expressions and commands rebind `it` — always, unit included; a `let`
+# does not (FSI: `let o = 10;;` binds no it); a directive leaves it; a
 # fresh session's `it` is unbound. These cells pin the piped value path;
 # the streamed (tty) half — it := () and the misuse teach — lives in
 # tests/repl/repl-it-streamed.py.
@@ -1067,17 +1067,17 @@ out=$(printf 'find\n#quit\n' | $BIN)
 echo "$out" | grep -qF "Seq.find (pred: 'a -> bool) (xs: seq<'a>) : 'a" || fail "a bare alias must echo its qualified home: $out"
 out=$(printf 'let f x = x + 1\nf\n#quit\n' | $BIN)
 echo "$out" | grep -qF "f : int -> int" || fail "a session function must echo name : scheme: $out"
-# piped stdin is not echoed, so the definition line in the output IS the echo's
+# piped stdin is not echoed, so the definition line in the output is the echo's
 echo "$out" | grep -qF "let f x = x + 1" || fail "a session function must echo its recorded definition line: $out"
 out=$(printf 'fun x -> x\n#quit\n' | $BIN)
 echo "$out" | grep -qF "<fun> : 'a -> 'a" || fail "an anonymous closure keeps <fun> : ty, vars normalized: $out"
 echo "e2e ok: the function-value echo — builtin mini-help, session def line, anonymous <fun> [D:repl-fn-echo]"
 
-# --- #infer / it / #save DISTILL round-trip (2026-09-17) [D:repl-save] -
-# #save DISTILLS a session to its checkable DEFINITIONS (option B): it
+# --- #infer / it / #save distill round-trip (2026-09-17) [D:repl-save] -
+# #save distills a session to its checkable definitions (option B): it
 # keeps `type` decls and named `let` bindings (with their real multi-line
-# source), DEDUPS a redeclared name to its last form, DROPS bare-echo
-# scratch and `it`-references, and GUARANTEES the file weir-checks clean.
+# source), dedups a redeclared name to its last form, drops bare-echo
+# scratch and `it`-references, and guarantees the file weir-checks clean.
 # A realistic messy session drives it here; each single-line statement,
 # plus the multi-line heredoc/type distill, is pinned. The piped
 # multi-line assembly is pinned in its own cell below.
@@ -1105,10 +1105,10 @@ $BIN check "$infdir/explore.weir" || fail "the saved script must weir-check clea
 # (b) the injected type is carried; a bare alias qualified (map -> Seq.map)
 grep -qF "type Root" "$infdir/explore.weir" || fail "#save did not carry the injected type"
 grep -qF "Seq.map" "$infdir/explore.weir" || fail "#save did not qualify the bare alias 'map': $(cat "$infdir/explore.weir")"
-# (c) DEDUP: the redeclared type appears ONCE, in its LAST form
+# (c) dedup: the redeclared type appears once, in its last form
 [ "$(grep -cF "type Mode" "$infdir/explore.weir")" = "1" ] || fail "#save did not dedup the redeclared type: $(cat "$infdir/explore.weir")"
 grep -qF "Idle" "$infdir/explore.weir" || fail "#save kept the wrong (earlier) redeclaration: $(cat "$infdir/explore.weir")"
-# (d) DROP the bare expression echo and the it-reference
+# (d) drop the bare expression echo and the it-reference
 grep -qF "Seq.length" "$infdir/explore.weir" && fail "#save kept a bare expression echo (scratch): $(cat "$infdir/explore.weir")"
 grep -qF "= it" "$infdir/explore.weir" && fail "#save kept an it-referencing binding: $(cat "$infdir/explore.weir")"
 grep -qF "gobeldy" "$infdir/explore.weir" && fail "#save kept the dropped it-binding: $(cat "$infdir/explore.weir")"
@@ -1118,13 +1118,13 @@ echo "$infout" | grep -qF "dropped 1 line(s) that referenced session-only state"
 echo "e2e ok: #save DISTILLS a messy session to a checking .weir (dedup, drop it, note)"
 
 # --- #infer drafted-type diagnostic (recast 2026-09-17) [D:infer-diagnostic]/[D:infer-wire-sanitize] --
-# when a DRAFTED type fails to check for ANY reason, the diagnostic must
-# name the line:col within the drafted text AND show the offending line
+# when a drafted type fails to check for any reason, the diagnostic must
+# name the line:col within the drafted text and show the offending line
 # with a caret — the drafted text is weir's own synthesis, so the user
-# must see WHICH generated part is bad. KEYWORD keys sanitize now
-# ([<Wire "in">] inField — the old {"in": 2} fixture CHECKS and is the
-# POSITIVE below), so the remaining un-checkable class is a DUPLICATE
-# key: legal JSON, both occurrences draft the SAME clean field, and a
+# must see which generated part is bad. Keyword keys sanitize now
+# ([<Wire "in">] inField — the old {"in": 2} fixture checks and is the
+# positive below), so the remaining un-checkable class is a duplicate
+# key: legal JSON, both occurrences draft the same clean field, and a
 # record refuses a duplicate field. That class drives the diagnostic.
 # The directive prints to stdout, so the piped REPL surfaces it — no
 # pty needed.
@@ -1138,9 +1138,9 @@ echo "$idout" | grep -qF "type PodsJson = {" || fail "#infer diagnostic lost the
 echo "$idout" | grep -qF "^" || fail "#infer diagnostic lost the caret: $idout"
 echo "e2e ok: a failing #infer drafted type prints line:col + a caret'd snippet (duplicate-key class)"
 
-# the POSITIVE the old fixture became [D:infer-wire-sanitize]: a KEYWORD
+# the positive the old fixture became [D:infer-wire-sanitize]: a keyword
 # key infers to a [<Wire>]'d field on the parser's own repair spelling
-# (in -> inField) — the draft CHECKS and READS the sample
+# (in -> inField) — the draft checks and reads the sample
 inpos=$(printf '%s\n%s\n%s\n%s\n%s\n' \
   'let js = ["{\"in\": 2}"]' \
   '#infer js from json as InJson' \
@@ -1150,8 +1150,8 @@ inpos=$(printf '%s\n%s\n%s\n%s\n%s\n' \
 echo "$inpos" | grep -qF "defined: InJson (1 type)" || fail "a keyword key must draft a checking type: $inpos"
 echo "$inpos" | grep -qF "read=2" || fail "the Wire'd keyword-key field must READ the sample: $inpos"
 
-# an EMPTY-STRING key [D:infer-wire-sanitize]: no field name can spell
-# it and [<Wire>] refuses an empty wire key, so the sanitizer DROPS it
+# an empty-string key [D:infer-wire-sanitize]: no field name can spell
+# it and [<Wire>] refuses an empty wire key, so the sanitizer drops it
 # with a printed note — and the draft still reads the sample (the
 # readers tolerate an undeclared key)
 ekout=$(printf '%s\n%s\n%s\n%s\n%s\n' \
@@ -1165,9 +1165,9 @@ echo "$ekout" | grep -qF "a=2" || fail "the draft must read around the dropped e
 echo "e2e ok: a keyword key rides [<Wire>] and reads; an empty-string key drops loudly and reads around"
 
 # --- #infer taken-name guard (2026-09-18) [D:repl-infer] ---------------
-# a k8s secret VOLUME's `secret:` sub-object desires the name `Secret` —
-# a TAKEN name (the builtin): the old draft injected `type Secret` that
-# every `secret: Secret` field bypassed for the PRIMITIVE, so `from yaml`
+# a k8s secret volume's `secret:` sub-object desires the name `Secret` —
+# a taken name (the builtin): the old draft injected `type Secret` that
+# every `secret: Secret` field bypassed for the primitive, so `from yaml`
 # refused ("a Secret must not cross"). The derived name now parent-
 # prefixes (VolumeSecret), loudly, and the draft reads the fixture clean.
 ivdir=$(mkweirtmp)
@@ -1193,7 +1193,7 @@ echo "$ivout" | grep -qF "app-creds" || fail "the renamed draft must READ the se
 echo "$ivout" | grep -qF "420" || fail "the renamed draft must read the volume's int field: $ivout"
 echo "e2e ok: a k8s secret volume infers around the builtin Secret (VolumeSecret, noted) and reads clean"
 
-# the 'as'-NAME colliding with a builtin refuses with the teaching — the
+# the 'as' name colliding with a builtin refuses with the teaching — the
 # user chose the name, so renaming it silently would be worse
 asout=$(printf '%s\n%s\n%s\n' \
   'let js = ["{\"x\": 1}"]' \
@@ -1208,9 +1208,9 @@ echo "e2e ok: '#infer … as Secret' refuses loudly (the builtin wins every use;
 # the real-kubectl failure this closes: `kubectl get cm -o json` — every
 # ConfigMap's `data` carries its own keys, so a first-element-only draft
 # died reading item 2 ("missing field 'items[2].data.networkYml'").
-# Array elements MERGE (a key absent in some items drafts Option) and a
+# Array elements merge (a key absent in some items drafts Option) and a
 # data-keyed object drafts as the open mapping seq<string * string> —
-# the draft reads the WHOLE list, per-item data as pairs.
+# the draft reads the whole list, per-item data as pairs.
 cmdir=$(mkweirtmp)
 cat > "$cmdir/cmlist.json" <<'JEOF'
 {
@@ -1323,21 +1323,21 @@ echo "e2e ok: the yaml twin merges items and reads data as an open mapping"
 rm -rf "$cmdir"
 
 # --- piped REPL multi-line assembly (2026-09-16) [D:repl-multiline] ----
-# a REDIRECTED REPL (printf … | weir) reads physical lines but must
-# ASSEMBLE a statement that spans several — heredoc, a multi-line `type`,
+# a redirected REPL (printf … | weir) reads physical lines but must
+# assemble a statement that spans several — heredoc, a multi-line `type`,
 # an offside if/match block, a leading-`|>` pipeline — the way a script
 # does. The bug (v0.0.35): each physical line parsed alone, so a heredoc
 # body was "unbound variable 'a'". Reuses bufferComplete + Script.assemble
 # (no second parser); a peeked line stays only if it still attaches.
 
 # the flagship repro: a heredoc body of two lines, then a statement that
-# USES the binding — both must assemble, and Seq.length is 2
+# uses the binding — both must assemble, and Seq.length is 2
 out=$(printf 'let block = <<<\n    a\n    b\nblock |> Seq.length\n' | $BIN 2>&1)
 expect "piped heredoc assembles its body" 'block : seq<string> = ["a"; "b"]' "$out"
 expect "piped heredoc then a using-statement evaluates" "2 : int" "$out"
 
 # a multi-line record `type`, then a value that uses it — the type must
-# declare and the following field-access must evaluate as its OWN echo
+# declare and the following field-access must evaluate as its own echo
 out=$(printf 'type Point = {\n  x: int\n  y: int\n}\n{ x = 1; y = 2 }.x\n' | $BIN 2>&1)
 expect "piped multi-line type declares" "type Point declared" "$out"
 expect "piped value after a type evaluates separately" "1 : int" "$out"
@@ -1355,7 +1355,7 @@ out=$(printf 'let xs = [1; 2; 3]\nxs\n|> Seq.map (fun n -> n * 2)\n|> Seq.sum\n'
 expect "piped leading-pipe continuation assembles" "12 : int" "$out"
 echo "$out" | grep -qF "continuation without a statement" && fail "leading-|> lines split into separate statements: $out"
 
-# the REGRESSION guard: a run of single-line statements must EACH still
+# the regression guard: a run of single-line statements must each still
 # evaluate and echo, exactly as before — no gluing of independent lines
 out=$(printf 'let a = 1\na + 1\n"hi"\n' | $BIN 2>&1)
 expect "single-line: let echoes" "a : int = 1" "$out"
@@ -1401,7 +1401,7 @@ WEOF
 out=$($BIN "$stmtdir/adv.weir")
 expected=$(printf 'a\n\nline1\nline2\nb')
 [ "$out" = "$expected" ] || fail "renderer adversarial case diverged from line-per-element: $(printf '%q' "$out")"
-# captured output is LF on EVERY platform [D:lf-output] — Windows
+# captured output is LF on every platform [D:lf-output] — Windows
 # WriteLine's \r\n reached redirected streams until the ruling
 case "$out" in *$'\r'*) fail "captured output must carry no CR byte: $(printf '%q' "$out")";; esac
 echo "e2e ok: renderer byte-identical on empties and embedded newlines (LF everywhere)"
@@ -1446,7 +1446,7 @@ rc=0; $BIN "$svdir/missing.weir" >/dev/null 2>&1 || rc=$?
 [ $rc -ne 0 ] || fail "the RUNNER must still reject missing commands"
 echo "e2e ok: check warns where run errors (DELIBERATE, the editing-without-tools rule)"
 
-# a near-miss BINDING bridges the verdict split: check's command
+# a near-miss binding bridges the verdict split: check's command
 # reading names the candidate the runner's expression reading will name
 cat > "$svdir/nearmiss.weir" <<'WEOF'
 let target = "x"
@@ -1525,15 +1525,15 @@ if command -v python3 >/dev/null 2>&1; then
     echo "e2e ok: weir lsp --debug logs to stderr"
 
     # grammar drift guard: micro's '# rule:' annotations vs the
-    # tmLanguage repository keys — add to BOTH or neither.
-    # LIMITATION on record: this proves rule PRESENCE, not regex
+    # tmLanguage repository keys — add to both or neither.
+    # Limitation on record: this proves rule presence, not regex
     # semantics — a wrong skip/end inside a matching rule name is
     # invisible here; per-kind escape laws are verified by eye on the
     # showcase (its @-verbatim and triple-quote lines are the canary,
-    # and a stale INSTALLED syntax copy shows there too)
-    # the drift rule, AMENDED for engine capability [D:micro-exempt]: add
-    # to both or neither, UNLESS a grammar's engine cannot express it —
-    # then the shortfall is STATED in that grammar's header
+    # and a stale installed syntax copy shows there too)
+    # the drift rule, amended for engine capability [D:micro-exempt]: add
+    # to both or neither, unless a grammar's engine cannot express it —
+    # then the shortfall is stated in that grammar's header
     # (`# micro-exempt: <key> (<reason>)`) and the inventory allows it.
     # micro is Go RE2 (no lookaround); a stated exemption keeps the rich
     # editors rich without shipping a micro rule that is actively wrong.
@@ -1556,7 +1556,7 @@ print(f"inventories match ({len(micro)} rules, {len(exempt)} stated micro-exempt
 PYEOF
     echo "e2e ok: grammar inventories match (micro == tmLanguage)"
 
-    # the grammar MANIFEST [D:ts-split]: the generated contract the
+    # the grammar manifest [D:ts-split]: the generated contract the
     # split tree-sitter repo checks itself against at its pinned ref —
     # the currency gate here proves the committed file matches the
     # source, so the cross-repo half can trust it
@@ -1567,10 +1567,10 @@ PYEOF
     # remembered list of constructors
     python3 "$(dirname "$0")/depth-coverage.py" || fail "depth coverage gate"
 
-    # within-kind inventory [D:within-kinds]: the kinds are a CLOSED SET
-    # in ONE table (src/Weir/Ast.fs withinKinds); the IN-REPO grammars
+    # within-kind inventory [D:within-kinds]: the kinds are a closed set
+    # in one table (src/Weir/Ast.fs withinKinds); the in-repo grammars
     # hard-code the same set by necessity — this pins them together
-    # (the tree-sitter third checks itself in ITS repo, against the
+    # (the tree-sitter third checks itself in its repo, against the
     # manifest [D:ts-split])
     python3 - "$(dirname "$0")/.." <<'PYWK' || fail "within-kind inventories diverge from Ast.withinKinds"
 import re, sys
@@ -1599,7 +1599,7 @@ PYWK
     echo "e2e ok: within-kind inventory (Ast.withinKinds == micro == tmLanguage; the tree-sitter third TRUSTS the manifest — checked in its repo + [D:grammar-currency])"
 
     # adapter inventory [D:form-word-hover]: the from/to adapters are a
-    # CLOSED SET whose SOURCE is the builtinDocs keys (`from X`/`to X`) —
+    # closed set whose source is the builtinDocs keys (`from X`/`to X`) —
     # the same one hover/completion derive from. The three grammars
     # hard-code the union of both directions; this pins all four together
     python3 - "$(dirname "$0")/.." <<'PYADP' || fail "adapter inventories diverge from builtinDocs"
@@ -1623,12 +1623,12 @@ print(f"adapters match across builtinDocs + in-repo grammars ({sorted(source)})"
 PYADP
     echo "e2e ok: adapter inventory (builtinDocs == micro == tmLanguage; the tree-sitter third TRUSTS the manifest — checked in its repo + [D:grammar-currency])"
 
-    # the Zed highlight drift guard RETIRED with the split [D:ts-split]:
+    # the Zed highlight drift guard retired with the split [D:ts-split]:
     # the canonical queries live in weir-shell/tree-sitter-weir now, so
-    # this repo cannot diff against them. The replacement is a RITUAL,
+    # this repo cannot diff against them. The replacement is a ritual,
     # stated where the guard stood: bumping the Zed grammar rev and
-    # refreshing languages/weir/highlights.scm are ONE motion — the
-    # extension update copies the queries from the SAME grammar commit
+    # refreshing languages/weir/highlights.scm are one motion — the
+    # extension update copies the queries from the same grammar commit
     # the rev pins. A CI re-join needs the extension in the grammar's
     # repo or its own; deferred with the split's release-gate question.
 
@@ -1690,14 +1690,14 @@ echo "$out" | grep -qF '"code":"casing-law"' || fail "json code field: $out"
 echo "$out" | grep -qF '"line":1' || fail "json line field: $out"
 echo "e2e ok: weir check --json carries file/line/col/code"
 
-# cmd-not-found squiggles the WHOLE head word [PLAN-diagnostics-arc A4]
+# cmd-not-found squiggles the whole head word [PLAN-diagnostics-arc A4]
 printf 'nosuchzz foo bar\n' > "$ckdir/word.weir"
 out=$($BIN check --json "$ckdir/word.weir" || true)
 echo "$out" | grep -qF '"code":"cmd-not-found"' || fail "cmd-not-found json: $out"
 echo "$out" | grep -qF '"endCol":9' || fail "full-word endCol (nosuchzz = cols 1-8): $out"
 echo "e2e ok: cmd-not-found spans the full head word"
 
-# row provenance: cross-statement no-field errors point at the ACCESS,
+# row provenance: cross-statement no-field errors point at the access,
 # with the meet in the message [PLAN-diagnostics-arc D]
 cat > "$ckdir/prov.weir" <<'WEOF'
 type T = { BicepPath: string; Name: string }
@@ -1712,7 +1712,7 @@ echo "$out" | grep -qF '"endCol":24' || fail "provenance covers the field word: 
 echo "$out" | grep -qF "(the value becomes a T at 5:1)" || fail "the meet note: $out"
 echo "e2e ok: row provenance points at the access, meet in the note"
 
-# the same note for a PATTERN-introduced field [D:record-patterns]: the
+# the same note for a pattern-introduced field [D:record-patterns]: the
 # field-name span in the pattern is the access, provenance inherited
 cat > "$ckdir/provpat.weir" <<'WEOF'
 type T = { BicepPath: string; Name: string }
@@ -1725,7 +1725,7 @@ echo "$out" | grep -qF "no field 'BicepPath2'" || fail "a pattern field misses l
 echo "$out" | grep -qF "(the value becomes a T at" || fail "the meet note rides the pattern miss: $out"
 echo "e2e ok: pattern-introduced fields inherit row provenance"
 
-# the same note from a MATCH-position pattern [D:record-pattern-rows]:
+# the same note from a match-position pattern [D:record-pattern-rows]:
 # arms accumulate their fields into one row, so a record missing any of
 # them is refused with the meet naming where the value became nominal
 cat > "$ckdir/provmatch.weir" <<'WEOF'
@@ -1742,9 +1742,9 @@ echo "$out" | grep -qF "no field 'Missing'" || fail "match arms accumulate into 
 echo "$out" | grep -qF "(the value becomes a T at" || fail "the meet note rides a match-position miss: $out"
 echo "e2e ok: match-position record patterns accumulate fields and keep provenance"
 
-# FLIPPED by [D:interior-arming]: a command-first body now CHECKS —
-# the interior command ARMS as an effect instead of seq-unit-erroring.
-# The at-the-head/no-EOF-dump quality property moves to a NON-command
+# Flipped by [D:interior-arming]: a command-first body now checks —
+# the interior command arms as an effect instead of seq-unit-erroring.
+# The at-the-head/no-EOF-dump quality property moves to a non-command
 # fixture (the statement rule is unchanged for those); the old
 # rejection this pin asserted is the rule's named flip.
 cat > "$ckdir/sib.weir" <<'WEOF'
@@ -1850,7 +1850,7 @@ done
 echo "e2e ok: block lets take command RHS in within/if/for/match/always/proc bodies"
 
 # the pure interplay [D:statement-lets]: the parser admits the grammar;
-# PURITY refuses, located at the command — never a parse error
+# purity refuses, located at the command — never a parse error
 cat > "$sldir/slpure.weir" <<'WEOF'
 if 1 > 0 then
     let v =
@@ -1865,7 +1865,7 @@ echo "$out" | grep -qF "is a reifier" && fail "no parse-level refusal may preemp
 echo "e2e ok: pure admits the grammar; purity refuses at the command"
 
 # the hardened teaching [D:statement-lets]: a refused context names $()
-# and the ACTUAL context — --flag argv included (the dash-death class,
+# and the actual context — --flag argv included (the dash-death class,
 # which used to die raw at the double dash before the pipe)
 cat > "$sldir/sllam.weir" <<'WEOF'
 [1] |> Seq.iter (fun _ ->
@@ -1877,8 +1877,8 @@ echo "$out" | grep -qF 'inside a lambda body, a command needs $(' || fail "the h
 echo "e2e ok: the refusal teaches \$() naming the lambda context, --flag argv included"
 
 
-# raise timings [D:interior-arming]: ARMED raises immediately (the tail
-# never runs); CAPTURE raises only at force (existing law, re-pinned)
+# raise timings [D:interior-arming]: armed raises immediately (the tail
+# never runs); capture raises only at force (existing law, re-pinned)
 cat > "$iadir/armed.weir" <<'WEOF'
 let x =
     sh -c "exit 3"
@@ -1896,7 +1896,7 @@ out=$(cd "$iadir" && $BIN cap.weir 2>&1) || fail "an unforced capture must not r
 echo "$out" | grep -qF "bound-fine" || fail "capture binds without raising"
 echo "e2e ok: armed raises immediately; capture raises at force (both timings)"
 
-# a MULTI-LINE for body needs no district now [D:interior-arming] —
+# a multi-line for body needs no district now [D:interior-arming] —
 # the single-chain body yields to the sequence, binders stay in scope
 cat > "$iadir/formulti.weir" <<'WEOF'
 for s in ["a"; "b"] do
@@ -1949,7 +1949,7 @@ while read -r p; do
 done < "$widir/both.txt"
 echo "e2e ok: nested within tmp — two dirs, both removed"
 
-# statement position: a NON-command non-unit block still hits the
+# statement position: a non-command non-unit block still hits the
 # existing discard teaching (mode-from-position, no new rule)
 cat > "$widir/disc.weir" <<'WEOF'
 within tmp d
@@ -1990,7 +1990,7 @@ within cd "definitely-absent"
 WEOF
 mout=$( cd "$widir" && $BIN cdmiss.weir 2>&1 ) && fail "missing path must error" || true
 echo "$mout" | grep -qF "within cd: no such directory:" || fail "missing-path message: $mout"
-# resolved-ness = the PARENT rode into the message; the leaf pair with
+# resolved-ness = the parent rode into the message; the leaf pair with
 # a dot, never the slash (the separator-brittle path-pin class)
 echo "$mout" | grep -q "$(basename "$widir").definitely-absent" || fail "resolved absolute path named: $mout"
 test ! -e "$widir/marker.txt" || fail "the block must NOT run on a missing path"
@@ -2039,9 +2039,9 @@ vout=$( cd "$widir" && $BIN envval.weir )
 [ "$vout" = "carried" ] || fail "env value case captures under the overlay: $vout"
 echo "e2e ok: within env expression position yields a captured value"
 
-# ---- ambient env reaches EVERY spawn [D:within-scopes] ---------------------
-# the reifier desugars spawned with a BAKED empty overlay for 12 days
-# (found 2026-08-16): within env + `| orFail` ran the child WITHOUT the
+# ---- ambient env reaches every spawn [D:within-scopes] ---------------------
+# the reifier desugars spawned with a baked empty overlay for 12 days
+# (found 2026-08-16): within env + `| orFail` ran the child without the
 # overlay while bare commands and $() saw it — the deep-fuzz driver ran
 # at harness defaults the whole window. The matrix pins the law where
 # it broke: every reifier family member, the In/Env twins, cmd/into,
@@ -2076,7 +2076,7 @@ echo "$rout" | grep -qF "sigil=sig-keep"   || fail "explicit sigil wins over amb
 echo "e2e ok: ambient env reaches every spawn — reifier family, In/Env twins, into; nesting outer-first"
 
 # the observed-count loop [D:observed-report]: the driver must report
-# what the harness MEASURED, not what it was asked — a tiny run, the
+# what the harness measured, not what it was asked — a tiny run, the
 # regression guard for the silent-defaults window. Linux-only, where
 # the deep nightly lives: native Windows cannot spawn ci/deep-lock.sh,
 # and the fuzz suite's depth pins abort the macOS testhost (no fuzz
@@ -2122,17 +2122,17 @@ fi
 echo "e2e ok: always runs on normal exit, fail, exit n, SIGINT, SIGTERM"
 
 # ---- detached SIGINT tears down [D:signal-teardown] -------------------------
-# THE GAP (ring port finding #1): a shell backgrounding weir in a
-# NON-INTERACTIVE session (setsid, no job control) sets SIGINT to
-# SIG_IGN — the nohup convention — and .NET HONOURS an inherited
+# the gap (ring port finding #1): a shell backgrounding weir in a
+# non-interactive session (setsid, no job control) sets SIGINT to
+# SIG_IGN — the nohup convention — and .NET honours an inherited
 # SIG_IGN, so PosixSignalRegistration never installs and a `kill -INT`
-# on a detached supervisor was a NO-OP: no scope unwind, `always`
+# on a detached supervisor was a no-op: no scope unwind, `always`
 # cleanup skipped, children orphaned, only SIGKILL stopping it. The fix
-# resets SIGINT to SIG_DFL when there is NO controlling terminal (a
+# resets SIGINT to SIG_DFL when there is no controlling terminal (a
 # detached process has no terminal Ctrl+C to protect against), so the
-# registration binds and the SAME sweep the tty path runs fires. The
+# registration binds and the same sweep the tty path runs fires. The
 # within-always cell above drives SIGINT under bash's job control (default
-# disposition); THIS cell drives it detached (setsid), the actual gap.
+# disposition); this cell drives it detached (setsid), the actual gap.
 # SIGTERM is never SIG_IGN'd — it already worked — so it is the twin.
 if [ "$IS_WINDOWS" != "1" ] && command -v setsid >/dev/null 2>&1 && command -v pgrep >/dev/null 2>&1; then
     dtdir=$(mkweirtmp)
@@ -2176,7 +2176,7 @@ WEOF
     done
     echo "e2e ok: detached SIGINT/SIGTERM tear down — always cleanup runs, child reaped, exit 130/143"
 
-    # the double-signal escape [D:signal-teardown]: a SECOND signal DURING
+    # the double-signal escape [D:signal-teardown]: a second signal during
     # a slow teardown hard-exits (the shell's double-Ctrl+C), never wedging
     # on a stuck cleanup. The always sleeps 20s; the second SIGINT must land
     # the process in well under that, before the cleanup's "done" write.
@@ -2216,7 +2216,7 @@ else
 fi
 
 # Phase 0's measured answer, pinned [D:within-always]: exit n is an
-# ExitRequest RAISE — it unwinds through every scope finally (the tmp
+# ExitRequest raise — it unwinds through every scope finally (the tmp
 # dir is removed by the scope itself, not the hook), so always and exit
 # compose with no carve-out
 cat > "$aldir/exittmp.weir" <<'WEOF'
@@ -2250,7 +2250,7 @@ echo "$rout" | grep -qF "the cleanup ALSO failed" || fail "the cleanup failure r
 echo "e2e ok: always raise rulings — original wins, marker on stderr, teardown continues outward"
 
 # ---- within lock [D:within-lock] -------------------------------------------
-# advisory file lock: mutual exclusion across processes AND pmap arms
+# advisory file lock: mutual exclusion across processes and pmap arms
 # (flock(2) is per-open-file-description — probe-pinned), blocking by
 # default, timeout= raises, kill -9 releases (the kernel's guarantee).
 # The no-lock control is the same instrument observing contention —
@@ -2322,7 +2322,7 @@ fi
 # the general pty instrument (tests/pty/pty-run.py — built for these
 # pins, deliberately general: C14 TTY-contention and the REPL SIGINT
 # split were parked for want of it). Timestamped chunks make "appeared
-# BEFORE exit" an assertion, not a claim.
+# before exit" an assertion, not a claim.
 if [ "$IS_WINDOWS" != "1" ] && command -v python3 >/dev/null 2>&1; then
     sedir=$(mkweirtmp)
     printf '#!/bin/sh\nprintf PARTIAL-\nsleep 1\necho done\n' > "$sedir/pp.sh"
@@ -2331,9 +2331,9 @@ if [ "$IS_WINDOWS" != "1" ] && command -v python3 >/dev/null 2>&1; then
     ptyrun="$(dirname "$0")/../tests/pty/pty-run.py"
 
     # REPL: the partial line (an interactive prompt's shape) appears
-    # BEFORE the command exits — under inheritance the child writes the
-    # pty itself, so the chunk BOUNDARY is the kernel's (the old exact
-    # b'PARTIAL-' chunk was the relay's flush shape); the ORDER stamp is
+    # before the command exits — under inheritance the child writes the
+    # pty itself, so the chunk boundary is the kernel's (the old exact
+    # b'PARTIAL-' chunk was the relay's flush shape); the order stamp is
     # the claim
     rout=$(printf 'SLEEP 500\nSEND sh %s/pp.sh\\r\nSLEEP 2500\nSEND #quit\\r\n' "$sedir" | python3 "$ptyrun" 8 "$BIN")
     pline=$(echo "$rout" | grep -F "PARTIAL-" | grep -vF "pp.sh" | head -1 | awk '{print $1}')
@@ -2352,21 +2352,21 @@ WEOF
     [ -n "$spline" ] && [ -n "$sdline" ] && [ "$spline" -lt "$sdline" ] || fail "script: partial precedes completion: $sout"
 
     # ruling (a) [D:colour-inherit]: the bare statement at a tty is the
-    # CHILD's own write — no weir guard, raw bytes and all (bash's
-    # posture; gzip refuses a tty by ITSELF). The VALUE echo keeps its
+    # child's own write — no weir guard, raw bytes and all (bash's
+    # posture; gzip refuses a tty by itself). The value echo keeps its
     # refusal — the [D:binary-echo] cells pin that half.
     bout=$(printf 'SLEEP 500\nSEND sh %s/pb.sh\\r\nSLEEP 800\nSEND #quit\\r\n' "$sedir" | python3 "$ptyrun" 5 "$BIN")
     echo "$bout" | grep -qF "binary output" && fail "the statement path has no guard to refuse with: $bout"
     echo "$bout" | grep -qF "text\x00binary" || fail "the child's bytes reach the terminal raw: $bout"
 
-    # tty/redirected divergence is TIMING ONLY — redirected bytes are
+    # tty/redirected divergence is timing only — redirected bytes are
     # the batched path's, byte-identical (od's format differs GNU/BSD,
     # so assert content + exact byte count instead)
     rcontent=$( "$BIN" "$sedir/sp.weir" )
     rcount=$( "$BIN" "$sedir/sp.weir" | wc -c | tr -d ' ' )
     [ "$rcontent" = "PARTIAL-done" ] && [ "$rcount" = "13" ] || fail "redirected content unchanged (got '$rcontent' / $rcount bytes)"
 
-    # reifiers do NOT stream — | complete is in-memory capture by law
+    # reifiers do not stream — | complete is in-memory capture by law
     cat > "$sedir/rc.weir" <<WEOF
 let r = \$(sh $sedir/pp.sh | complete)
 print (r.stdout |> Seq.head)
@@ -2378,10 +2378,10 @@ WEOF
     echo "e2e ok: streaming echo — partials flush live (REPL + script), the bare statement's bytes are the child's own, redirected byte-identical, reifiers capture"
 
     # ---- let-echo truncation teaching consistency [D:echo-teaching-consistency] ----
-    # a `let`-bound over-cap UNFORCED seq<string> must carry the SAME
+    # a `let`-bound over-cap unforced seq<string> must carry the same
     # unforced-hint teaching the bare-expression echo shows — and it must
-    # be VISIBLE (printed AFTER the lines, not scrolled off the top). The
-    # old shape printed `xs : seq<string> ={hint}` FIRST (a dangling ' ='
+    # be visible (printed after the lines, not scrolled off the top). The
+    # old shape printed `xs : seq<string> ={hint}` first (a dangling ' ='
     # too); the fix prints the lines, then `xs : seq<string> (hint)` last.
     # `nats |> Seq.map show` is a deterministic unforced seq<string> — no
     # PATH executable. tty-only path (redirected uses the batched form),
@@ -2410,7 +2410,7 @@ WEOF
     echo "e2e ok: the binding echo states seq state (re-runs / frozen)"
 
     # ---- colour from the child [D:colour-inherit] ----------------------
-    # THE motivating pins: a bare statement at a tty sees isatty TRUE
+    # the motivating pins: a bare statement at a tty sees isatty true
     # (colour on); the captured form sees a pipe and its value is
     # unchanged — the positive twin, or "inherited" is achieved by
     # dropping the pipe everywhere
@@ -2433,9 +2433,9 @@ WEOF
     echo "$rout2" | grep -q "31mCRED" || true  # the tool colours unconditionally; content-identical either way
     printf 'sh %s/t.sh\n' "$cidir" > "$cidir/tt.weir"
     [ "$("$BIN" "$cidir/tt.weir")" = "IS-PIPE" ] || fail "a redirected weir keeps the pipe (byte laws intact)"
-    # ONE GATE, BOTH CONSUMERS [D:colour-inherit]: the runner and the REPL
+    # one gate, both consumers [D:colour-inherit]: the runner and the REPL
     # ask Eval.inheritsStdout, never their own copy of the condition, so the
-    # 2x2 must be SYMMETRIC — same probe, both consumers, both stdout modes.
+    # 2x2 must be symmetric — same probe, both consumers, both stdout modes.
     # The rows above pin one diagonal (REPL at a tty, script redirected);
     # these are the other two. Pinning a diagonal lets the halves drift apart
     # while every assertion still passes.
@@ -2452,37 +2452,37 @@ fi
 # ---- the REPL SIGINT split, closed [D:repl-isig] ---------------------------
 # eval runs under the shell's tty disposition (ISIG on), so ^C is a
 # group SIGINT: the child dies with the script path's exact message and
-# the SESSION survives (the cancel registration). The needle rule: the
+# the session survives (the cancel registration). The needle rule: the
 # editor echoes typed lines, so needles derive by case transform.
 if [ "$IS_WINDOWS" != "1" ] && command -v python3 >/dev/null 2>&1; then
     ptyrun="$(dirname "$0")/../tests/pty/pty-run.py"
 
-    # the incident, CURED TWICE: under inheritance gzip sees the real
-    # terminal and refuses BY ITSELF (fast, its own message, exit 1)
+    # the incident, cured twice: under inheritance gzip sees the real
+    # terminal and refuses by itself (fast, its own message, exit 1)
     # [D:colour-inherit] — and a stdin-reading child that does hang
     # dies to ^C naming 130 with the session surviving [D:repl-isig]
     gzout=$(printf 'SLEEP 700\nSEND gzip\\r\nSLEEP 600\nSEND #quit\\r\n' \
         | python3 "$ptyrun" 8 "$BIN" | sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g; s/\x1b[=>]//g')
     # GNU: "compressed data not written to a terminal"; Apple:
-    # "standard output is a terminal -- ignoring" — the CLAIM is the
+    # "standard output is a terminal -- ignoring" — the claim is the
     # refusal, so the pin matches the word both spell
     echo "$gzout" | grep -qi "is a terminal\|to a terminal" || fail "gzip refuses its own tty now — the incident's cause removed: $gzout"
     rsout=$(printf 'SLEEP 700\nSEND sh -c "read x"\\r\nSLEEP 400\nSEND \\x03\nSLEEP 500\nSEND print (Str.toUpper "revived")\\r\nSLEEP 400\nSEND #quit\\r\n' \
         | python3 "$ptyrun" 10 "$BIN" | sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g; s/\x1b[=>]//g')
-    # the child's ^C death renders as the QUIET exit-code status now, not the
+    # the child's ^C death renders as the quiet exit-code status now, not the
     # loud error [D:repl-cmd-fail] — still names 130 and the SIGINT note
     echo "$rsout" | grep -q "exit 130 (SIGINT" || fail "a REPL ^C must kill the foreground child naming 130: $rsout"
     echo "$rsout" | grep -q "REVIVED" || fail "the session must survive its child's ^C: $rsout"
     echo "$rsout" | grep -q "^EXIT 0" || fail "the session must end clean after a ^C'd child: $rsout"
 
-    # the positive twin: ^C at an IDLE prompt stays an editor key — the
+    # the positive twin: ^C at an idle prompt stays an editor key — the
     # line clears and the session continues (two fates, both pinned)
     twout=$(printf 'SLEEP 700\nSEND \\x03\nSLEEP 300\nSEND print (Str.toUpper "alive")\\r\nSLEEP 400\nSEND #quit\\r\n' \
         | python3 "$ptyrun" 8 "$BIN" | sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g; s/\x1b[=>]//g')
     echo "$twout" | grep -q '\^C' || fail "an idle-prompt ^C clears the line, never kills: $twout"
     echo "$twout" | grep -q "ALIVE" || fail "the session continues after an idle-prompt ^C: $twout"
 
-    # the agreement's other half: the SCRIPT path still dies with the
+    # the agreement's other half: the script path still dies with the
     # group (C8's shape — weir aborts at the fault alongside the child)
     ssdir=$(mkweirtmp)
     printf 'sh -c "read x"\nprint (Str.toUpper "after")\n' > "$ssdir/sig.weir"
@@ -2492,12 +2492,12 @@ if [ "$IS_WINDOWS" != "1" ] && command -v python3 >/dev/null 2>&1; then
 
     echo "e2e ok: REPL SIGINT — ^C kills the child (130) and the session survives; idle ^C clears the line; scripts die with the group"
 
-    # the sweep gate, MEASURED [D:repl-isig]: a ^C the session outlives
-    # must not run the exit-hook sweep — the sweep deletes LIVE within-tmp
-    # dirs. The ^C lands mid-PURE-computation (a child would die and
+    # the sweep gate, measured [D:repl-isig]: a ^C the session outlives
+    # must not run the exit-hook sweep — the sweep deletes live within-tmp
+    # dirs. The ^C lands mid-pure-computation (a child would die and
     # unwind the scope), the block then checks its own dir. Linux is the
     # mechanism's platform; the cell runs wherever the pty pins do.
-    # multi-line body via Alt-Enter (\x1b\r): plain Enter SUBMITS the
+    # multi-line body via Alt-Enter (\x1b\r): plain Enter submits the
     # moment the block parses complete — one body line suffices
     gatedir=$(mkweirtmp)
     cat > "$gatedir/gate.scn" <<'SCN'
@@ -2532,10 +2532,10 @@ else
 fi
 
 # ---- Path.under confines, at the binary [D:path-under] ---------------------
-# EVERY platform: rule 7 makes the drive/UNC shapes raise everywhere,
+# Every platform: rule 7 makes the drive/UNC shapes raise everywhere,
 # and the unit pin's old header claimed Windows ran units only — e2e
 # runs there now, so the shipped binary carries the spec too. The
-# POSITIVE TWIN leads: raises-on-escape is satisfiable by raising on
+# positive twin leads: raises-on-escape is satisfiable by raising on
 # everything.
 pudir=$(mkweirtmp)
 cat > "$pudir/pu.weir" <<'WEOF'
@@ -2557,13 +2557,13 @@ purefuse 'Path.under "/safe/uploads" "a/../../etc"'
 purefuse 'Path.under "/safe/uploads" "C:x"'
 purefuse 'Path.under "/safe/uploads" "C:/x"'
 # UNC and backslash-leading shapes: weir strings escape \\ only, so the
-# UNC VALUE \\server\share needs the doubled spelling — the single one
-# is a PARSE error and a refusal pin passing on it is vacuous (the unit
+# UNC value \\server\share needs the doubled spelling — the single one
+# is a parse error and a refusal pin passing on it is vacuous (the unit
 # pin had exactly that; fixed alongside this cell)
 purefuse 'Path.under "/safe/uploads" "\\\\server\\share"'
 purefuse 'Path.under "/safe/uploads" "\\x"'
-# the rule-7 departure, BOTH sides: separators are not rewritten, so a
-# backslash NAME (not leading) is a legal single filename on POSIX and
+# the rule-7 departure, both sides: separators are not rewritten, so a
+# backslash name (not leading) is a legal single filename on POSIX and
 # the same text normalises-and-escapes on Windows
 if [ "$IS_WINDOWS" = "1" ]; then
     purefuse 'Path.under "C:/safe" "..\\..\\etc"'
@@ -2573,7 +2573,7 @@ fi
 echo "e2e ok: Path.under at the binary — twin joins, sibling/absolute/climb/drive/UNC refuse, the separator split holds per platform"
 
 # ---- pure regions [D:pure-stage1] -------------------------------------------
-# the ENFORCED purity assertion at the binary: a pure body runs; an
+# the enforced purity assertion at the binary: a pure body runs; an
 # effect refuses with the located teaching (block, let pure, and the
 # within-proc composition); the law is check-time, so `check` sees it
 puredir=$(mkweirtmp)
@@ -2614,10 +2614,10 @@ echo "$out" | grep -q "'within proc' scopes a resource" || fail "composition wit
 echo "e2e ok: pure regions — a pure body runs (7), effects refuse LOCATED (block, let pure, within proc), the law is check-time"
 
 # ---- commit areas [D:commit-areas] ------------------------------------------
-# the derived-area check, pinned BOTH ways (a check that rejects
+# the derived-area check, pinned both ways (a check that rejects
 # everything satisfies "rejects bad areas") — a scratch repo, three
 # commits: correct area passes, wrong area fails, missing prefix fails,
-# and a SUBSET of a multi-area derivation fails (equality, not
+# and a subset of a multi-area derivation fails (equality, not
 # intersection)
 cadir=$(mkweirtmp)
 (
@@ -2655,10 +2655,10 @@ rc=0; ( cd "$cadir" && "$BIN" "$OLDPWD/$cascript" --commit "$h_none" ) >/dev/nul
 [ "$rc" != "0" ] || fail "a missing prefix must FAIL"
 echo "e2e ok: commit-area check — correct passes, wrong/subset/missing fail, the error names the derived prefix, pins ride"
 
-# the rider's fixtures [D:commit-areas]: an unmapped SRC file FAILS
+# the rider's fixtures [D:commit-areas]: an unmapped src file fails
 # naming itself (a new src file is an area decision — plausible
 # fallbacks are the canary/completion/orFail failure mode); an unmapped
-# ROOT file falls back to docs, said aloud; a retired type prefix
+# root file falls back to docs, said aloud; a retired type prefix
 # teaches the areas
 (
     cd "$cadir"
@@ -2684,7 +2684,7 @@ echo "$tyout" | grep -qF "retired type prefix" || fail "the type-prefix failure 
 echo "e2e ok: commit-area rider — unmapped src stops loud, unmapped root falls back aloud, type prefixes teach their retirement"
 
 # ---- wire keys [D:wire-keys] ------------------------------------------------
-# reserved words as adapter keys, refereed EXTERNALLY [D:yaml-interop]:
+# reserved words as adapter keys, refereed externally [D:yaml-interop]:
 # python writes a document whose keys are weir keywords, weir reads it
 # under [<Wire>] fields, modifies one, writes back — python verifies the
 # wire keys and values survived the roundtrip
@@ -2727,13 +2727,13 @@ else
 fi
 
 # ---- FileRow reshape [D:filerow] --------------------------------------------
-# kind/target over a REAL symlink, and File.mode against the platform's
+# kind/target over a real symlink, and File.mode against the platform's
 # own stat — an external referee [D:yaml-interop]'s rule
 if [ "$IS_WINDOWS" != "1" ]; then
     frdir=$(mkweirtmp)
     echo x > "$frdir/plain.txt"
     ln -s plain.txt "$frdir/link"
-    # z-dangle: sorts AFTER link, so the find-by-kind below still lands
+    # z-dangle: sorts after link, so the find-by-kind below still lands
     # on the live one; a dangling link is a row, not an absence
     ln -s missing "$frdir/z-dangle"
     cat > "$frdir/fr.weir" <<'WEOF'
@@ -2751,7 +2751,7 @@ WEOF
     echo "$frout" | grep -qF "plain-ok" || fail "a plain file is Regular with target None: $frout"
     echo "$frout" | grep -qF "stat-agrees-link" || fail "File.stat and ls must agree on the symlink row: $frout"
     echo "$frout" | grep -qF "dangle-ok missing" || fail "File.stat on a dangling link is a row carrying its target: $frout"
-    # File.mode agrees with File.stat about EXISTENCE [D:mode-existence]:
+    # File.mode agrees with File.stat about existence [D:mode-existence]:
     # the dangling case raises its own honest message, never "no such path"
     mdout=$( cd "$frdir" && $BIN -e 'File.mode "z-dangle"' 2>&1 ) && fail "File.mode on a dangling link must raise: $mdout" || true
     echo "$mdout" | grep -qF "dangling symlink" || fail "the dangling case names the dangle: $mdout"
@@ -2770,7 +2770,7 @@ fi
 # located missing-path error a real absent path raises, never true.
 ixout=$($BIN -e 'File.isExecutable ""' 2>&1) && fail "File.isExecutable \"\" must raise, got: $ixout" || true
 echo "$ixout" | grep -qF "no such path" || fail "File.isExecutable \"\" must raise no-such-path: $ixout"
-# the correct missing-path posture is UNCHANGED — a real absent path still raises
+# the correct missing-path posture is unchanged — a real absent path still raises
 ixmiss=$($BIN -e 'File.isExecutable "./no-such-path-zz"' 2>&1) && fail "File.isExecutable on a missing path must raise, got: $ixmiss" || true
 echo "$ixmiss" | grep -qF "no such path" || fail "File.isExecutable on a missing path must raise no-such-path: $ixmiss"
 echo "e2e ok: File.isExecutable \"\" raises like a missing path (the empty string is not the cwd)"
@@ -2790,7 +2790,7 @@ out=$($BIN "$fsdir/glob.weir") || fail "the glob-delete composition must run"
 [ "$out" = "0" ] || fail "glob a tree, delete the results: $out"
 echo "e2e ok: Path.glob composes with File.delete (the obvious composition)"
 
-# within tmp DOUBLE-DELETE: a block that deleteAlls its own binder must
+# within tmp double-delete: a block that deleteAlls its own binder must
 # exit clean — the scope's cleanup tolerates an already-gone directory
 cat > "$fsdir/dd.weir" <<'WEOF'
 within tmp d
@@ -2803,7 +2803,7 @@ echo "$out" | grep -qF "survived" || fail "double-delete: $out"
 echo "e2e ok: within tmp tolerates a block that already removed its own directory"
 rm -rf "$fsdir"
 
-# bare-pipe caret anchors ON the '|', not the space after [PLAN-anchor-before-read]
+# bare-pipe caret anchors on the '|', not the space after [PLAN-anchor-before-read]
 cat > "$ckdir/bp.weir" <<'WEOF'
 let names =
     []
@@ -2893,7 +2893,7 @@ echo "$errout" | grep -q "\^" || fail "parse errors must carry a caret: $errout"
 echo "$errout" | grep -qF " ; " && fail "assembled text must never appear: $errout"
 echo "e2e ok: parse errors show unassembled source with caret"
 
-# type errors show the source line with the SPAN underlined, same
+# type errors show the source line with the span underlined, same
 # treatment as parse errors (user report, 2026-07-21)
 cat > "$mdir/terr.weir" <<'WEOF'
 let workdir = "x"
@@ -2914,7 +2914,7 @@ echo "e2e ok: dangling let expects an identifier"
 
 rm -rf "$mdir"
 
-# --- every repo script must CHECK (2026-07-21: test-counts.weir had
+# --- every repo script must check (2026-07-21: test-counts.weir had
 # been broken since the pairwise re-type and nothing noticed — scripts
 # rot silently unless gated; cmd-not-found warnings are fine, errors
 # are not) ---
@@ -2926,7 +2926,7 @@ for scr in "$(dirname "$0")"/../examples/*.weir "$(dirname "$0")"/../tools/*.wei
 done
 echo "e2e ok: all repo scripts check clean"
 
-# the showcase is a COMPOSITION TEST disguised as a document — a tour
+# the showcase is a composition test disguised as a document — a tour
 # that can be invalid without failing a build is not that (the schema
 # live-check found three real errors in it, unprompted [D:add-validates]).
 # Child weirs resolve via PATH: the $BIN dir prefix, as everywhere.
@@ -2935,23 +2935,23 @@ echo "$scout" | grep -qF "showcase complete" || fail "the showcase completes: ${
 echo "$scout" | grep -qF 'weir.dev/switch: "on"' || fail "the district auto-quote demo holds"
 echo "e2e ok: the showcase runs end to end (the tour is a build gate now)"
 
-# ---- what weir says when the file ISN'T weir (rider D1/D3/D4/D5) ----------
+# ---- what weir says when the file isn't weir (rider D1/D3/D4/D5) ----------
 # weir.slnx is the reported case and a deliberate fixture choice: XML, in the
 # repo, and not going to change shape. No extension rule is involved — the
-# heuristic is about SHAPE, so it also covers shebang files and stdin.
+# heuristic is about shape, so it also covers shebang files and stdin.
 nw=$($BIN check "$(dirname "$0")/../weir.slnx" 2>&1) || true
 
-# D4: one sentence, and it comes FIRST — before the detail, never instead of it
+# D4: one sentence, and it comes first — before the detail, never instead of it
 echo "$nw" | head -1 | grep -qF "does not look like a weir script" \
     || fail "D4: the not-weir heuristic must lead the output: ${nw:0:200}"
 echo "$nw" | grep -qF "error [parse]" || fail "D4: the detail must survive the heuristic"
 
-# D1: diagnostics in POSITION order — the parse error at line 1 precedes the
+# D1: diagnostics in position order — the parse error at line 1 precedes the
 # assembly errors at 4/5/7, which is the whole point (a reader went to line 4)
 first_line_no=$(echo "$nw" | grep -oE "weir\.slnx:[0-9]+" | head -1 | cut -d: -f2)
 [ "$first_line_no" = "1" ] || fail "D1: first diagnostic must be line 1, got $first_line_no"
 
-# D3: words reserved ONLY to teach that weir lacks them must never be offered
+# D3: words reserved only to teach that weir lacks them must never be offered
 # as tokens the parser expects
 for w in while return try def; do
     echo "$nw" | grep -qE "Expecting:.*'$w'" \
@@ -2959,7 +2959,7 @@ for w in while return try def; do
 done
 
 # D5: FParsec's backtracking trace is the parser talking to its author —
-# HIDDEN from users, not deleted: it still tells weir's own developers where
+# hidden from users, not deleted: it still tells weir's own developers where
 # the grammar gave up, so WEIR_LOG=debug keeps it. Both halves are pinned,
 # because "absent by default" alone would pass if the capability were dropped.
 echo "$nw" | grep -qF "The parser backtracked after" && fail "D5: backtracking note reached the user"
@@ -2968,9 +2968,9 @@ nwdbg=$(WEIR_LOG=debug $BIN check "$(dirname "$0")/../weir.slnx" 2>&1) || true
 echo "$nwdbg" | grep -qF "The parser backtracked after" \
     || fail "D5: WEIR_LOG=debug must KEEP the backtrace — hiding it is not deleting it"
 
-# D4 NEGATIVE CONTROL — without this the trigger is untested: a REAL weir
-# script whose FIRST line is broken must keep its located diagnostic and must
-# NOT be told it isn't weir (other statements parsed, so the shape is fine)
+# D4 negative control — without this the trigger is untested: a real weir
+# script whose first line is broken must keep its located diagnostic and must
+# not be told it isn't weir (other statements parsed, so the shape is fine)
 # own temp dir: $scriptdir is rm -rf'd at line ~869, ~950 lines above here,
 # and this block was its only consumer that late
 nwdir=$(mkweirtmp)
@@ -2987,11 +2987,11 @@ echo "$njson" | grep -qF "does not look like" && fail "D4: the heuristic must no
 rm -rf "$nwdir"
 echo "e2e ok: a non-weir file says so once, in position order, without parser internals"
 
-# D5's suppression covers a CLASS, not the paths it was written against
+# D5's suppression covers a class, not the paths it was written against
 # [D:accessor-teaching]: `Unknown Error(s)` is FParsec admitting it has
 # nothing to say while claiming an error, and it kept the backtrack
 # section alive after D5 dropped that section's position lines. Pinned
-# BOTH ways, like the D5 cell above — absent by default, present under
+# both ways, like the D5 cell above — absent by default, present under
 # WEIR_LOG=debug (absence alone would pass if the capability were lost).
 ueout=$($BIN -e 'let r = 1..3 in 0' 2>&1 || true)
 echo "$ueout" | grep -qF "Unknown Error(s)" && fail "the parser must not print Unknown Error(s): $ueout"
@@ -3008,7 +3008,7 @@ strout=$($BIN -e '"abcdefghi"[3..7]' 2>&1)
 echo "$strout" | grep -qF "defgh" || fail "string slice drifted: $strout"
 feout=$($BIN -e 'let xs = [1; 2; 3] in xs[^1]' 2>&1 || true)
 echo "$feout" | grep -qF "from-the-end" || fail "from-end (^n) must teach the decline: $feout"
-# the accessor teachings that STAND [D:accessor-teaching]: the dotted
+# the accessor teachings that stand [D:accessor-teaching]: the dotted
 # indexer and Map-index still refuse (only the range form flipped)
 dtout=$($BIN -e 'let xs = [1; 2; 3] in xs.[0]' 2>&1 || true)
 echo "$dtout" | grep -qF "without the dot" || fail "the dotted indexer teaches: $dtout"
@@ -3024,7 +3024,7 @@ echo "$errout" | grep -qF "binding names start lowercase" || fail "casing law mu
 echo "e2e ok: the casing law (lowercase binds) on the AOT binary"
 
 # param-ful command RHS (PLAN-paramful-rhs): the shadowing law —
-# this pin was written FAILING against the guard-dropped prototype
+# this pin was written failing against the guard-dropped prototype
 # (`let f x = x` printed SPAWNED with an executable x on PATH)
 shdir=$(mkweirtmp)
 mkFakeBin "$shdir" x SPAWNED
@@ -3125,7 +3125,7 @@ cmp -s "$fdir/guard.weir" "$fdir/guard0.weir" || fail "the shape guard must reve
 echo "e2e ok: the shape guard keeps command argv braces literal"
 rm -rf "$fdir"
 
-# record update (PLAN-record-update): the corpus snippets ARE the e2e
+# record update (PLAN-record-update): the corpus snippets are the e2e
 upd=$(mkweirtmp)
 cat > "$upd/corpus1.weir" <<'WEOF'
 type Model = { V: string; I: int }
@@ -3269,7 +3269,7 @@ echo "e2e ok: composed function rejected as a command splice"
 out=$($BIN -e '[(1, "b"); (2, "a")] |> Seq.sortBy snd |> Seq.map fst |> Seq.head')
 expect "fst/snd project pairs point-free" "2 : int" "$out"
 out=$($BIN -e 'Path.combine (Path.dir "a/b/c.fs") (Path.stem "a/b/c.fs")')
-# weir's path outputs are the PLATFORM'S (the platformPath law) — the
+# weir's path outputs are the platform's (the platformPath law) — the
 # unit pin went platform-aware in windows-s2; this one never had
 case "$out" in
     *'"a/b/c"'* | *'"a\\b\\c"'*) echo "e2e ok: Path members compose (platform separators)" ;;
@@ -3282,7 +3282,7 @@ expect "prefix minus at operand position" "-6 : int" "$out"
 out=$($BIN -e '[1; 3; 2] |> Seq.sortByDescending (fun x -> x) |> Seq.freeze')
 expect "sortByDescending orders down" "[3; 2; 1]" "$out"
 
-# the squiggle sits ON the name, not the RHS (user report, 2026-07-21)
+# the squiggle sits on the name, not the RHS (user report, 2026-07-21)
 errout=$($BIN -e 'let Total = 1 + 2' 2>&1 || true)
 echo "$errout" | grep -qF '    ^^^^^' || fail "casing squiggle must underline the binder name: $errout"
 echo "e2e ok: casing squiggle points at the binder"
@@ -3420,9 +3420,9 @@ rm -rf "$cdir"
 
 bdir=$(mkweirtmp)
 
-# THE HEADLINE: sortBy-on-record-key is rejected at CHECK time — the
-# effect before it must NOT run (check-first proves the runtime check
-# is gone, replaced by static Ord)
+# sortBy on a record key is rejected at check time — the effect before
+# it must not run (check-first proves the runtime check is gone,
+# replaced by static Ord)
 cat > "$bdir/ord.weir" <<'WEOF'
 printerr "must-not-run"
 
@@ -3480,7 +3480,7 @@ rm -rf "$tdir"
 
 hdir=$(mkweirtmp)
 
-# A x E: a blank line ends a compound body — the tail runs UNCONDITIONALLY
+# A x E: a blank line ends a compound body — the tail runs unconditionally
 cat > "$hdir/axe.weir" <<'WEOF'
 if 1 > 2 then
     printerr "conditional"
@@ -3521,7 +3521,7 @@ out=$($BIN "$hdir/fxg.weir" 2>&1)
 [ "$(echo "$out" | grep -c first)" = "1" ] && [ "$(echo "$out" | grep -c second)" = "1" ] || fail "F x G effect count (got: $out)"
 echo "e2e ok: F x G sibling effects across comment, counted"
 
-# fixture backfill: record continuation HEADED (inside a compound body)
+# fixture backfill: record continuation headed (inside a compound body)
 cat > "$hdir/rec-headed.weir" <<'WEOF'
 type T = { Name: string; Count: int }
 
@@ -3538,7 +3538,7 @@ WEOF
 out=$($BIN "$hdir/rec-headed.weir")
 expect "record continuation headed under if/else" "headed" "$out"
 
-# fixture backfill: record continuation NESTED (record in record, multi-line)
+# fixture backfill: record continuation nested (record in record, multi-line)
 cat > "$hdir/rec-nested.weir" <<'WEOF'
 type Inner = { V: int }
 type Outer = { Name: string; In: Inner }
@@ -3727,8 +3727,8 @@ WEOF
 out=$($BIN "$gdir/rec2.weir")
 expect "record continuation, trailing-; spelling (no double separator)" "b3" "$out"
 
-# FLIPPED 2026-07-23 [D:blank-in-brackets]: this pinned the AT-BLANK error;
-# blanks are transparent now — a gapped-but-closed record RUNS, and the
+# flipped 2026-07-23 [D:blank-in-brackets]: this pinned the at-blank error;
+# blanks are transparent now — a gapped-but-closed record runs, and the
 # unclosed shape still errors (at statement end / the statement-head guard)
 cat > "$gdir/gapped.weir" <<'WEOF'
 type T = { Name: string }
@@ -3822,11 +3822,10 @@ out=$($BIN "$adir/attrs-json.weir")
 expect "from json loads a documented record identically (/// inert)" "5" "$out"
 
 # the recursive field law [D:recursive-fields]: nested records and seq
-# fields read from REAL response shapes — the World Bank receipt
-# (verbatim from the live sitting that forced the law; its Map-keyed
-# `documents` stays untypable pending Map and is IGNORED as an
-# undeclared field), and kubectl's List/items shape for arrays-inside-
-# objects. Round-trip pinned.
+# fields read from real response shapes — the World Bank receipt (its
+# Map-keyed `documents` stays untypable pending Map and is ignored as
+# an undeclared field), and kubectl's List/items shape for arrays
+# inside objects. Round-trip pinned.
 rfdir=$(mkweirtmp)
 cat > "$rfdir/wb.json" <<'JEOF'
 { "rows": 10, "total": 593,
@@ -3863,7 +3862,7 @@ expect "recursive fields: seq of records inside an object" "kube-dns" "$out"
 expect "recursive fields: to json round-trips the nesting" "round-trip-ok" "$out"
 rm -rf "$rfdir"
 
-# from xml [D:from-xml]: the read-only boundary against a REAL .csproj on
+# from xml [D:from-xml]: the read-only boundary against a real .csproj on
 # disk (File.read, not a literal) — attributes, optional text, repeated
 # children, a stripped default xmlns, and the missing-attribute runtime
 # teaching. The receipt is project traversal: parse groups and refs.
@@ -3910,7 +3909,7 @@ echo "$xto" | grep -qF "XML is read-only" || fail "to xml refusal teaches: $xto"
 echo "e2e ok: from xml — real .csproj groups/refs, stripped xmlns, no to xml"
 rm -rf "$xdir"
 
-# from table [D:from-table]: the aligned-table boundary on a REAL file —
+# from table [D:from-table]: the aligned-table boundary on a real file —
 # a kubectl-shaped fixture (tabwriter reality: 3-space padding, spaced
 # values, <none>) read into typed rows; the header-offset law is the
 # spaced STATUS value surviving as one cell. Wire hits a raw header;
@@ -3968,7 +3967,7 @@ rm -rf "$tdir"
 
 # --- #infer from table [D:from-table]: the REPL drafts the row record
 # from an aligned sample, injects it, and the typed read lights up in
-# the SAME session; the as-name guard still refuses a builtin landing
+# the same session; the as-name guard still refuses a builtin landing
 tinf=$(printf '%s\n%s\n%s\n%s\n%s\n' \
   'let tsample = ["NAME    STATUS    RESTARTS"; "web-1   Running   0"; "db-0    Pending   3"]' \
   '#infer tsample from table as Pod' \
@@ -4007,7 +4006,7 @@ echo "e2e ok: structural walks — Graph.reach BFS each-once, Tree.walk parent-f
 rm -rf "$wdir"
 
 # yaml patch [D:yaml-nodes]: the typeless read + district-addressed merge
-# against a REAL kustomization.yaml on disk — keyed upsert, append,
+# against a real kustomization.yaml on disk — keyed upsert, append,
 # tombstones, undeclared fields preserved (what typed RMW cannot do),
 # and the laws (patches don't render; tombstones scoped to patch)
 ydir=$(mkweirtmp)
@@ -4062,7 +4061,7 @@ echo "e2e ok: yaml patch — kustomization RMW (upsert/append/tombstones, unknow
 # check == run for patch districts [D:yaml-nodes]: check's assume path
 # once claimed the `yaml patch …` marker line as a command and the
 # district body then failed as statements, while the same file ran
-# green — every patch-district script must CHECK green too
+# green — every patch-district script must check green too
 (cd "$ydir" && $BIN check patch.weir) || fail "a patch-district script that runs must check (check == run)"
 cat > "$ydir/patch-splice.weir" <<'WEOF'
 let n = "api"
@@ -4083,7 +4082,7 @@ awk '/^```weir$/{f=1;buf="";next} /^```/{if(f && buf ~ /yaml patch/){print buf; 
 echo "e2e ok: patch districts check as they run (splice + multi-line item + the adapters.md example)"
 rm -rf "$ydir"
 
-# byte pipes [D:byte-pipes]: a command→command hop is a RAW byte pipe —
+# byte pipes [D:byte-pipes]: a command→command hop is a raw byte pipe —
 # no decode, no line split, no appended newline. gzip through a weir
 # pipe must be byte-identical to gzip through a bash pipe; chains and
 # the leftmost-failure raise ride the same cell.
@@ -4104,9 +4103,9 @@ echo "$berr" | grep -qF "command failed with exit code 3" || fail "the leftmost 
 echo "e2e ok: byte pipes — raw hops byte-identical, chains compose, leftmost failure raises"
 rm -rf "$bdir"
 
-# ambient capture [D:ambient-capture]: a LAZY command bound inside a
-# `within` scope and forced OUTSIDE spawns under the scope it was
-# WRITTEN in (closure law), not the restored outer ambient
+# ambient capture [D:ambient-capture]: a lazy command bound inside a
+# `within` scope and forced outside spawns under the scope it was
+# written in (closure law), not the restored outer ambient
 adir2=$(mkweirtmp)
 mkdir -p "$adir2/inner"
 cat > "$adir2/amb.weir" <<'WEOF'
@@ -4121,10 +4120,10 @@ echo "$out" | grep -q "/inner$" || fail "an escaped lazy command must keep its w
 echo "e2e ok: ambient capture — an escaped lazy command spawns under its written-site scope"
 rm -rf "$adir2"
 
-# within tail pipes [D:within-tail-pipe]: a pipe ON a body line belongs
+# within tail pipes [D:within-tail-pipe]: a pipe on a body line belongs
 # to the body statement — the six-cell matrix (within cd / within env ×
 # bare command, value-headed pipe, cmd|cmd chain) all see the scope, a
-# `s |> f` tail line parses, and a DEDENTED pipe at the head column
+# `s |> f` tail line parses, and a dedented pipe at the head column
 # still closes the scope (the offside law [D:match-pipe-offside])
 wtpdir=$(mkweirtmp)
 mkdir -p "$wtpdir/scoped"
@@ -4163,7 +4162,7 @@ echo "$out" | grep -qE "dedent=" || fail "the dedented pipe's stage must still r
 echo "e2e ok: within tail pipes — the six-cell matrix scopes, dedented pipe closes"
 rm -rf "$wtpdir"
 
-# districts in MODULES [D:yaml-nodes]: a `yaml patch` district inside an
+# districts in modules [D:yaml-nodes]: a `yaml patch` district inside an
 # imported module function assembles and runs — pinned after a stale-
 # binary report claimed the loader broke on the district sentinel
 mdir=$(mkweirtmp)
@@ -4193,12 +4192,12 @@ out=$(cd "$mdir" && $BIN puse.weir)
 expect "a yaml patch district works inside an imported module" 'kind: K
 resources:
   - a.yaml' "$out"
-# a module EXPORTS a patch builder — the sig names the def-less nominal
+# a module exports a patch builder — the sig names the def-less nominal
 # [D:yaml-nodes]; the consumer merges the returned patch
 expect "a module exports a YamlPatch-typed builder" 'kind: K
 resources:
   - b.yaml' "$out"
-# the CHECK side agrees with the runner on both files (the assume-
+# the check side agrees with the runner on both files (the assume-
 # resolver once claimed the patch marker as a command [D:assume-resolver])
 (cd "$mdir" && $BIN check pmod.weir && $BIN check puse.weir) || fail "check must agree with run on the patch-district module"
 echo "e2e ok: districts in modules — patch district in an imported function, YamlPatch-typed export"
@@ -4225,7 +4224,7 @@ rm -rf "$pdir"
 
 # anonymous record types [D:anon-records]: the shape inline in the
 # adapter slot — `_.field` checks, seq<> composes, the shape persists
-# across statements, and a declared record stays a DIFFERENT type
+# across statements, and a declared record stays a different type
 cat > "$adir/anon.weir" <<'WEOF'
 let one = echo '{"ip": "1.2.3.4"}' |> from json {| ip: string |}
 print one.ip
@@ -4237,10 +4236,10 @@ expect "anonymous shape: _.field checks, seq<> composes, persists" '1.2.3.4
 2' "$out"
 out=$($BIN check "$adir/anon.weir" 2>&1) || fail "anon.weir must check clean: $out"
 
-# anonymous record LITERALS [D:anon-literals]: the write-side mirror —
+# anonymous record literals [D:anon-literals]: the write-side mirror —
 # heterogeneous fields write through to json (the Map spelling cannot),
 # the literal unifies with the adapter shape, and a multi-line literal
-# assembles ({| is ONE opener token to the sibling rule)
+# assembles ({| is one opener token to the sibling rule)
 cat > "$adir/anonlit.weir" <<'WEOF'
 let key = "xxxx-111"
 let n = 7
@@ -4263,7 +4262,7 @@ two' "$out"
 rm -f "$adir/x.json"
 
 # Option<scalar> at the JSON boundary [D:json-option]: present -> Some,
-# missing/null -> None, and to jsonl OMITS the None key so it roundtrips.
+# missing/null -> None, and to jsonl omits the None key so it roundtrips.
 cat > "$adir/json-option.weir" <<'WEOF'
 type R = { name: string; age: Option<int> }
 let rows = ["{\"name\":\"a\",\"age\":5}"; "{\"name\":\"b\"}"; "{\"name\":\"c\",\"age\":null}"]
@@ -4275,7 +4274,7 @@ expect "json Option: Some writes, None (missing or null) omits the key" \
 {"name":"b"}
 {"name":"c"}' "$out"
 
-# to json writes ONE document, to jsonl one per element [D:to-jsonl]:
+# to json writes one document, to jsonl one per element [D:to-jsonl]:
 # the top level follows the value's type (record -> object, seq ->
 # array), and every adapter pairs with its own name across the arrow
 cat > "$adir/to-jsonl.weir" <<'WEOF'
@@ -4321,7 +4320,7 @@ echo "e2e ok: attribute positions outside declarations reject by name"
 
 # widened positions [D:attr-positions]: union decls and cases host
 # attributes (validated, inert until [D:wire-unions] binds them); an
-# attribute line above `type` binds to it; wrong positions teach HOMES
+# attribute line above `type` binds to it; wrong positions teach their homes
 cat > "$adir/attrpos.weir" <<'WEOF'
 type DepSpec = { replicas: int }
 
@@ -4346,7 +4345,7 @@ echo "e2e ok: widened attribute positions — hosts declare, wrong positions tea
 
 # tagged unions cross the wire [D:wire-unions]: the tag field picks the
 # case, [<Other>] is the declared open-world posture, writers reinsert
-# the tag FIRST — and `from jsonl KDoc` dispatches mixed NDJSON with
+# the tag first — and `from jsonl KDoc` dispatches mixed NDJSON with
 # zero surface beyond the union itself (the decomposition's receipt)
 cat > "$adir/wireunion.weir" <<'WEOF'
 type DepSpec = { replicas: int; image: string }
@@ -4397,7 +4396,7 @@ echo "$errout" | grep -qF "nothing faithful can be written" || fail "Other write
 echo "e2e ok: wire unions — mixed NDJSON via from jsonl, tag dispatch both formats, Other refuses to write"
 
 # a district composes like the seq<string> it produces [D:district-terminates]:
-# a `|>` on the block's closing line pipes the WHOLE block, and the bytes
+# a `|>` on the block's closing line pipes the whole block, and the bytes
 # match the bound spelling exactly (interior blank, deeper indent, trailing
 # clip). Before, the trailing pipe glued into the last content line.
 dtdir=$(mkweirtmp)
@@ -4448,7 +4447,7 @@ echo "$sout" | grep -qF '{ "server": "srv.example", "port": 5432, "type": "Azure
 echo "e2e ok: \$\$<<< splice heredoc — \$name/\${expr} substitute, braces literal, JSON templates directly [D:heredoc-splice]"
 
 # the stream cardinality [D:wire-unions] session S: `from yaml stream T`
-# reads N `---` documents each as T — the heterogeneous BUNDLE is
+# reads N `---` documents each as T — the heterogeneous bundle is
 # stream over a tagged union, and to yaml stream's write roundtrips
 cat > "$adir/bundle.weir" <<'WEOF'
 type DepSpec = { replicas: int; image: string }
@@ -4496,7 +4495,7 @@ echo "$errout" | grep -qF "read a stream with 'from yaml stream T'" || fail "the
 echo "e2e ok: yaml stream — bundle dispatch, roundtrip, fences re-point"
 
 # function types [D:function-types]: writable/constructible/callable, but
-# the four data ops refuse a function-bearing type at CHECK, naming the field
+# the four data ops refuse a function-bearing type at check, naming the field
 ftout=$($BIN -e 'type Rule = { matches: string -> bool }
 let r = { matches = fun s -> s == "x" }
 let run { matches = m } x = m x
@@ -4603,9 +4602,9 @@ echo "$errout" | grep -qF "unexpected argument 'stray'" || fail "strictness coll
 echo "$errout" | grep -qF "missing required flag '--env'" || fail "missing required collected: $errout"
 echo "e2e ok: a four-problem invocation reports all four, collected"
 
-# the argv-order oracle [D:argv-rules]: the aggregated error's ORDER is
-# the contract — scan problems in TOKEN order, then fills in
-# DECLARATION order (shared tier before payload). Exact-string pins,
+# the argv-order oracle [D:argv-rules]: the aggregated error's order is
+# the contract — scan problems in token order, then fills in
+# declaration order (shared tier before payload). Exact-string pins,
 # written against the pre-extraction binary; the twins' shared rules
 # must keep this byte-identical.
 odir=$(mkweirtmp)
@@ -4652,7 +4651,7 @@ echo "$out" | grep -qF -- "--env <string>" || fail "help shows valued flags: $ou
 echo "$out" | grep -qF "required" || fail "help shows requiredness: $out"
 echo "e2e ok: --help derives usage (short truth + /// doc) BEFORE validation, exit 0"
 
-# multi-line ///: --help shows ONLY the first line; the rest is hover-only [D:doc-help]
+# multi-line ///: --help shows only the first line; the rest is hover-only [D:doc-help]
 cat > "$tadir/multi.weir" <<'WEOF'
 type Cli = {
     /// terse help line
@@ -4740,8 +4739,8 @@ out=$($BIN "$tadir/host.weir" -h); rc=$?
 echo "$out" | grep -qE -- '^      --host' || fail "h-initial field must not derive a short: $out"
 echo "e2e ok: -h is help; h-initial fields never derive"
 
-# [<Positional>] DROPPED [D:drop-positional] — now an unknown attribute
-# Positional RETURNED for signatures [D:command-signatures] — registered
+# [<Positional>] dropped [D:drop-positional] — now an unknown attribute
+# Positional returned for signatures [D:command-signatures] — registered
 # and inert on weir's own records; its no-argument law still checks
 printf 'type P = { [<Positional>] t: string }\nprint "ok"\n' | checkPiped >/dev/null 2>&1 || fail "Positional declares clean (inert)"
 errout=$(printf 'type P = { [<Positional 3>] t: string }\n' | checkPiped 2>&1) && fail "Positional takes no argument" || true
@@ -4812,7 +4811,7 @@ errout=$($BIN "$mldir/cross.weir" 2>&1) && fail "cross-bracket must reject"
 echo "$errout" | grep -qF "'}' closes the '[' opened at line 2" || fail "cross-bracket names both: $errout"
 echo "e2e ok: cross-bracket closer errors naming both brackets"
 
-# FLIPPED 2026-07-23 [D:blank-in-brackets]
+# flipped 2026-07-23 [D:blank-in-brackets]
 printf 'let x =\n    [1\n\n     2]\nprint (x |> Seq.sum)\n' > "$mldir/blank.weir"
 out=$($BIN "$mldir/blank.weir")
 expect "blank inside an open list is transparent (flipped pin)" "3" "$out"
@@ -4958,7 +4957,7 @@ echo "$errout" | grep -qF "pipe expressions with '|>'" || fail "the cliff must n
 echo "e2e ok: '|' after an expression names the |> spelling"
 
 # block-let command RHS (PLAN-block-let-cmd): the uniformity fix
-# (ROOT resolved BEFORE any cd: $0 is relative to the invocation dir)
+# (ROOT resolved before any cd: $0 is relative to the invocation dir)
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 bldir=$(mkweirtmp)
 cat > "$bldir/forms.weir" <<'WEOF'
@@ -5002,7 +5001,7 @@ mkFakeBin "$bldir/bin" function FN-BINARY
 out=$(PATH="$(pathEntry "$bldir/bin"):$PATH" $BIN -e '^function' 2>&1)
 expect "^function reaches a PATH binary (reservation does not block force)" "FN-BINARY" "$out"
 
-# the reservation retired into the FEATURE [D:function-keyword]: the
+# the reservation retired into the feature [D:function-keyword]: the
 # form runs; a binder slot refuses with the generic keyword message
 out=$($BIN -e 'print ((function | 0 -> "z" | _ -> "n") 0)')
 [ "$out" = "z" ] || fail "function must evaluate: $out"
@@ -5139,7 +5138,7 @@ errout=$($BIN "$sfdir/cli.weir" search --qeury x 2>&1) && fail "typo after case 
 echo "$errout" | grep -qF "Did you mean '--query'?" || fail "after-tier did-you-mean: $errout"
 echo "e2e ok: tier-aware did-you-mean"
 
-# collect-then-raise spans both tiers in ONE error
+# collect-then-raise spans both tiers in one error
 errout=$($BIN "$sfdir/cli.weir" search 2>&1) && fail "missing payload flag must reject"
 echo "$errout" | grep -qF "missing required flag '--query'" || fail "cross-tier collection: $errout"
 echo "e2e ok: one boundary error across tiers"
@@ -5153,7 +5152,7 @@ echo "$out" | grep -qF "usage: cli.weir run [flags]" || fail "case-scoped help: 
 echo "$out" | grep -qF -- "-q, --quiet" || fail "scoped help shows the scope-derived short: $out"
 echo "e2e ok: two-tier and case-scoped help"
 
-# declaration collisions reject at CHECK (both routes)
+# declaration collisions reject at check (both routes)
 errout=$(printf 'type CA = { quiet: bool }\ntype Cmd = Go of CA | Stop\ntype Cli = { quiet: bool; cmd: Cmd }\nlet c = Args.load Cli\nprint "x"\n' | checkPiped 2>&1) && fail "kebab collision must reject"
 echo "$errout" | grep -qF "shared flags are declared once" || fail "kebab collision route: $errout"
 errout=$(printf 'type CA = { [<Short "q">] query: string }\ntype Cmd = Go of CA | Stop\ntype Cli = { [<Short "q">] quiet: bool; cmd: Cmd }\nlet c = Args.load Cli\nprint "x"\n' | checkPiped 2>&1) && fail "explicit-short collision must reject"
@@ -5169,9 +5168,9 @@ rm -rf "$sfdir"
 
 rfdir=$(mkweirtmp)
 
-# the exit-code discard teaching is ONE string [D:exit-reifiers]: four
+# the exit-code discard teaching is one string [D:exit-reifiers]: four
 # refusal sites, and the copies had drifted to two spellings of the dash
-# with nothing pinning any of them. Pinned VERBATIM and LEADING at the two
+# with nothing pinning any of them. Pinned verbatim and leading at the two
 # sites that lead with it — a tail-only assertion sees neither the dash nor
 # a demotion under a parser dump. Newlines fold first: the renderer wraps.
 edmsg="this discards the exit code — bind it (let rc = <command> | exitCode), match on it, or drop '| exitCode'"
@@ -5184,13 +5183,13 @@ printf 'let f () =\n    git push | exitCode\n    print "z"\n' > "$rfdir/ed-seq.w
 out=$($BIN check "$rfdir/ed-seq.weir" 2>&1) && fail "a non-final sibling must refuse a discarded exit code"
 printf '%s' "$out" | tr '\n' ' ' | grep -qF "error [parse]: $edmsg" || fail "the sequence site must LEAD with the shared teaching: $out"
 
-# the statement rule's own wording is deliberately NOT that string — it is
+# the statement rule's own wording is deliberately not that string — it is
 # the discard family's sentence, and pinning it keeps the two distinct
 printf 'git push | exitCode\n' > "$rfdir/ed-st.weir"
 out=$($BIN check "$rfdir/ed-st.weir" 2>&1) && fail "a bare statement must refuse a discarded exit code"
 printf '%s' "$out" | tr '\n' ' ' | grep -qF "error [discard]: this statement computes the exit code and discards it" || fail "the statement site keeps the discard family's wording: $out"
 
-# orFail STREAMS (behavioral pin: the child's stdout reaches the user)
+# orFail streams (behavioral pin: the child's stdout reaches the user)
 cat > "$rfdir/of.weir" <<'WEOF'
 sh -c "echo build-step-one; echo build-step-two; exit 4" | orFail "build broke"
 WEOF
@@ -5289,7 +5288,7 @@ out=$(timeout 10 $BIN "$fddir/lazy.weir") || fail "value-headed input must be la
 expect "value-headed input laziness on the AOT binary" "1" "$out"
 
 # ---- value-headed pipelines, more shapes [D:value-headed-pipe] ----
-# an EXPRESSION piped into an external command feeds its stdin
+# an expression piped into an external command feeds its stdin
 out=$($BIN -e '["a"; "b"; "c"] | tr a-z A-Z')
 expect "value-headed pipe feeds stdin" '["A"; "B"; "C"]' "$out"
 # value-headed pipe carries args to the child
@@ -5313,7 +5312,7 @@ out=$(printf 'let r = ["x"] | grep x | complete\nprint (show r.exitCode)\n' | ru
 expect "value-headed | complete now reifies (bind it)" "0" "$out"
 echo "e2e ok: value-headed pipe — resolution boundary, type teachings"
 # reifier-with-stdin [D:value-headed-pipe] (session 2): a value-headed
-# single external segment reifies WITH the value as stdin
+# single external segment reifies with the value as stdin
 out=$($BIN -e '["apple"; "banana"; "cherry"] | grep app | complete')
 expect "value-headed | complete reifies with stdin" 'stdout = ["apple"]' "$out"
 out=$($BIN -e '["foo"; "bar"; "foobar"] | grep -c foo | complete')
@@ -5401,7 +5400,7 @@ echo "e2e ok: the Default resting point sits below the whole env stack"
 
 spdir=$(mkweirtmp)
 # macOS: mktemp lives under the /var symlink and weir absolutizes a
-# relative script path against the PHYSICAL cwd (getcwd) — compare
+# relative script path against the physical cwd (getcwd) — compare
 # physical to physical (pwd -P is POSIX; a no-op on Linux)
 spdir=$(cd "$spdir" && pwd -P)
 mkdir -p "$spdir/sub" "$spdir/pbin"
@@ -5413,7 +5412,7 @@ WEOF
 chmod +x "$spdir/sub/where.weir"
 cp "$spdir/sub/where.weir" "$spdir/pbin/where.weir"
 
-# one absolute answer three ways: the three outputs must AGREE and end
+# one absolute answer three ways: the three outputs must agree and end
 # at the right leaf — never a full-path equality (the separator class;
 # weir prints the platform's)
 out1=$(cd "$spdir" && $BIN sub/where.weir | tail -1)
@@ -5446,7 +5445,7 @@ WEOF
 out=$($BIN "$spdir/pid.weir")
 [ "$(echo "$out" | sed -n 1p)" = "true" ] || fail "Self.pid must be STABLE across reads: $out"
 [ "$(echo "$out" | sed -n 2p)" = "true" ] || fail "Self.pid must be a positive int: $out"
-# it IS the running process (matches the OS view of the child)
+# it is the running process (matches the OS view of the child)
 printf 'print Self.pid\n' > "$spdir/pid2.weir"
 got=$($BIN "$spdir/pid2.weir")
 echo "$got" | grep -qE '^[0-9]+$' || fail "Self.pid prints an int: $got"
@@ -5461,10 +5460,10 @@ mkdir -p "$pgdir/src/a/b" "$pgdir/fixtures/x" "$pgdir/deny" "$pgdir/loop"
 touch "$pgdir/top.json" "$pgdir/other.json" "$pgdir/.hidden.json" \
       "$pgdir/src/one.fs" "$pgdir/src/a/two.fs" "$pgdir/src/a/b/three.fs" \
       "$pgdir/fixtures/x/f.txt" "$pgdir/deny/secret.fs"
-# a REAL symlink or none: Git Bash's ln copy-emulates by default (a
+# a real symlink or none: Git Bash's ln copy-emulates by default (a
 # self-referential loop cannot be copied); nativestrict asks for the
 # real thing (runners hold the privilege) and failure gates the
-# symlink CELL as a stated skip rather than a broken fixture
+# symlink cell as a stated skip rather than a broken fixture
 HAVE_LOOP=1
 MSYS=winsymlinks:nativestrict ln -s .. "$pgdir/loop/up" 2>/dev/null || HAVE_LOOP=0
 # permission-denial fixtures are inexpressible under root (uid 0
@@ -5492,8 +5491,8 @@ expect "glob: * excludes dotfiles, sorted" "other.json
 top.json" "$out"
 expect "glob: a dot segment matches them" ".hidden.json" "$out"
 expect "glob: ** crosses segments, skips unreadable dirs and symlinks" "src/a/b/three.fs" "$out"
-# EFFECTIVENESS gate, not an euid gate (the locked.txt precedent):
-# root ignores modes AND Windows chmod is inert — test whether the
+# an effectiveness gate, not an euid gate (the locked.txt precedent):
+# root ignores modes and Windows chmod is inert — test whether the
 # denial actually took
 if [ -r "$pgdir/deny/secret.fs" ]; then
     echo "e2e SKIP: unreadable-dir cell — chmod 000 did not deny here (root, or Windows where modes are inert)"
@@ -5577,7 +5576,7 @@ out=$(cd "$spldir" && $BIN add.weir)
 expect "splat: glob into git add (N files, N words)" "A  a.txt
 A  b.txt" "$out"
 
-# empty splat vanishes — argv inspection AND behavior
+# empty splat vanishes — argv inspection and behavior
 cat > "$spldir/empty.weir" <<'WEOF'
 let qf = if false then ["-q"] else []
 sh -c "echo argc=$#" self $@qf tail
@@ -5585,7 +5584,7 @@ WEOF
 out=$(cd "$spldir" && $BIN empty.weir)
 expect "splat: empty seq contributes ZERO words" "argc=1" "$out"
 
-# adversarial elements stay single words (THE injection pin)
+# adversarial elements stay single words (the injection pin)
 cat > "$spldir/evil.weir" <<'WEOF'
 let evil = ["one two"; "semi;colon"; "star*glob"]
 sh -c "echo argc=$#" self $@evil
@@ -5593,7 +5592,7 @@ WEOF
 out=$(cd "$spldir" && $BIN evil.weir)
 expect "splat: spaces/semicolons/globs stay ONE word each (no re-split)" "argc=3" "$out"
 
-# splat rides reifier chains [D:splat-reifier-chains]: THE safety pin
+# splat rides reifier chains [D:splat-reifier-chains]: the safety pin
 # re-run through the reifier path (word integrity identical), empty
 # splat, the env-sigil route (the flagship's shape), all four reifiers,
 # value-headed, district
@@ -5653,7 +5652,7 @@ echo "e2e ok: splat teaches head, mid-word, and both type directions"
 # the argv boundary refuses NUL on its own [D:encoding-law] — never
 # silent truncation. fromBase64 rejects NUL as non-text, but NUL still
 # arrives via File.read of a NUL-bearing file; the spawn hand-off is
-# where the byte would truncate, so the refusal lives THERE.
+# where the byte would truncate, so the refusal lives there.
 nuldir=$(mkweirtmp)
 printf 'a\0b' > "$nuldir/nul.bin"
 cat > "$nuldir/nul-argv.weir" <<WEOF
@@ -5674,12 +5673,12 @@ echo "$out" | grep -qF "contains a NUL byte" || fail "the env NUL refusal is mis
 rm -rf "$nuldir"
 echo "e2e ok: NUL refuses at the spawn boundary (argv and env), naming the truncation"
 
-# the binary-echo probe recurses through CONTAINERS [D:binary-echo]: a
+# the binary-echo probe recurses through containers [D:binary-echo]: a
 # `| complete` record carrying NUL-bearing stdout must refuse the tty
 # echo (the record echo leaked what the seq echo refused); the -e echo
 # wears the same guard. Needs a pty — `script` — and SKIPs by name
 # where absent (absence is never a pass).
-# the pty instrument is PROBED, not assumed (the `timeout` precedent):
+# the pty instrument is probed, not assumed (the `timeout` precedent):
 # macOS ships BSD script, whose syntax has no -e/-c — command -v passes
 # and the invocation dies. A failing probe is a named SKIP.
 if command -v script >/dev/null 2>&1 && script -qec true /dev/null >/dev/null 2>&1; then
@@ -5721,8 +5720,8 @@ errout=$(printf 'let f = "x"
 echo --file=$f
 ' | checkPiped 2>&1) && fail "mid-word scalar splice must reject"
 echo "$errout" | grep -qF "cannot join a word under construction" || fail "mid-word scalar teaching: $errout"
-# argv pieces do not CONCATENATE [D:argv-concat]: the suffix side of the
-# whole-word law — before the guard, $root/* silently became TWO words
+# argv pieces do not concatenate [D:argv-concat]: the suffix side of the
+# whole-word law — before the guard, $root/* silently became two words
 errout=$(printf 'let root = "r"
 echo $root/*
 ' | checkPiped 2>&1) && fail "glued tail must reject"
@@ -5730,7 +5729,7 @@ echo "$errout" | grep -qF "argv words do not concatenate" || fail "glued-tail te
 errout=$(printf 'echo --flag="quoted v"
 ' | checkPiped 2>&1) && fail "glued quote must reject"
 echo "$errout" | grep -qF "argv words do not concatenate" || fail "glued-quote teaching: $errout"
-# a PATH-shaped word gets the PATH hint, not the flag hint [D:argv-splat]:
+# a path-shaped word gets the path hint, not the flag hint [D:argv-splat]:
 # the space repair splits one path into two args, so the message leads with
 # interpolation and Path.under (the confining join — combine would follow an escaping tail)
 errout=$(printf 'let build = "b"
@@ -5745,7 +5744,7 @@ echo --file $f
 echo "$out" | grep -qF -- "--file x.txt" || fail "spaced splice must pass: $out"
 echo "e2e ok: scalar mid-word splice rejects, spaced spelling passes"
 
-# the child's ARGS take a splat while input streams (both axes)
+# the child's args take a splat while input streams (both axes)
 cat > "$spldir/fd.weir" <<'WEOF'
 let flags = ["-r"]
 ["a"; "b"; "c"] | sort $@flags |> Seq.iter print
@@ -5760,7 +5759,7 @@ else
 fi
 rm -rf "$spldir"
 
-# deep-lock loudness [D:vacuous-probe-audit]: a garbage lock is NOT a
+# deep-lock loudness [D:vacuous-probe-audit]: a garbage lock is not a
 # stale lock — check must exit 3 (probe-failure), never clear it, and
 # publish's consumers treat any non-1 as refuse
 LOCKFILE="$(dirname "$0")/../.weir-deep-run.lock"
@@ -5784,7 +5783,7 @@ python3 -c "print('let _x = ' + '('*499 + '1' + ')'*499)" > "$ddir/deep.weir" 2>
 $BIN check "$ddir/deep.weir" >/dev/null 2>&1 || fail "depth 499 must parse on a full-size stack"
 if [ "$IS_WINDOWS" = "1" ]; then
     # ulimit -s cannot constrain a native Windows process (the stack
-    # reserve is baked at link time) — the small-stack PREMISE does not
+    # reserve is baked at link time) — the small-stack premise does not
     # exist there; the depth guard itself ran above at full stack
     echo "e2e SKIP: the small-stack probe cell — no POSIX stack limit on Windows (depth 499 parsed above)"
 else
@@ -5843,7 +5842,7 @@ b" "$out"
 # assume-command rule must not read an uppercase type name as a command)
 $BIN check "$mdir/disambig.weir" 2>&1 | grep -q . && fail "a clean named-literal module produced diagnostics" || echo "e2e ok: named literals check clean under the assume-command rule"
 
-# a bare literal matching TWO in-scope records is ambiguous, naming both
+# a bare literal matching two in-scope records is ambiguous, naming both
 cat > "$mdir/ambig.weir" <<'WEOF'
 import "./paths.weir"
 type Local = { root: string; name: string }
@@ -5871,10 +5870,10 @@ printf 'import "./plain.weir"\n' > "$mdir/e_notmod.weir"
 out=$($BIN check "$mdir/e_notmod.weir" 2>&1 || true)
 expect "importing a non-module names the fix (add module, or invoke as a command)" "is not a module; add \`module\` at the top" "$out"
 
-# a missing import puts the RESOLVED ABSOLUTE path in the message
+# a missing import puts the resolved absolute path in the message
 printf 'import "./nope.weir"\n' > "$mdir/e_missing.weir"
 out=$($BIN check "$mdir/e_missing.weir" 2>&1 || true)
-# message SHAPE + resolved-ness (the parent leaf, dot-joined) — never
+# message shape + resolved-ness (the parent leaf, dot-joined) — never
 # the verbatim path: weir answers the platform's separators and the
 # long 8.3 form (the separator class)
 echo "$out" | grep -qF "cannot resolve import: no file at" || fail "missing-import message shape: $out"
@@ -5919,7 +5918,7 @@ printf 'import "./ca.weir"\nprint "hi"\n' > "$mdir/ecycle.weir"
 out=$($BIN check "$mdir/ecycle.weir" 2>&1 || true)
 expect "an import cycle is named as a loop" "import cycle: ca.weir → cb.weir → ca.weir" "$out"
 
-# a deep error reports at the deepest module's OWN site
+# a deep error reports at the deepest module's own site
 printf 'module DBad\nlet x = Str.trim 5\n' > "$mdir/dbad.weir"
 printf 'module MBad\nimport "./dbad.weir"\nlet y = 1\n' > "$mdir/mbad.weir"
 printf 'import "./mbad.weir"\nprint "hi"\n' > "$mdir/tbad.weir"
@@ -5931,8 +5930,8 @@ printf 'import foo\n' > "$mdir/e_litpath.weir"
 out=$($BIN check "$mdir/e_litpath.weir" 2>&1 || true)
 expect "the import path must be a literal string" "import takes a literal string path" "$out"
 
-# multi-file diagnostics [D:modules-v1]: a module-CONTENT error reports at
-# the module's OWN file:line, PLUS an "imported here" note at the import line
+# multi-file diagnostics [D:modules-v1]: a module-content error reports at
+# the module's own file:line, plus an "imported here" note at the import line
 cat > "$mdir/broken.weir" <<'WEOF'
 module Broken
 let bad = Str.trim 5
@@ -5942,10 +5941,10 @@ out=$($BIN check "$mdir/e_broken.weir" 2>&1 || true)
 expect "a module error reports at its OWN site" "broken.weir:2:20: error" "$out"
 expect "an imported-here note points at the import line" "e_broken.weir:1:8: note" "$out"
 
-# check --json carries the module's own file per diagnostic — and ONE
+# check --json carries the module's own file per diagnostic — and one
 # spelling per document (round 26: the importer's diag carried argv's
 # form while the module's carried the resolved one; GetFullPath is the
-# identity now, so pin the LEAF and pin the consistency)
+# identity now, so pin the leaf and pin the consistency)
 out=$($BIN check --json "$mdir/e_broken.weir" 2>&1 || true)
 echo "$out" | grep -q '"file":"[^"]*broken\.weir"' || fail "check --json carries the module's file identity: $out"
 files=$(printf '%s' "$out" | grep -o '"file":"[^"]*tmp[^"]*"' | sed 's/.*tmp/tmp/; s/[\\/].*//' | sort -u | wc -l)
@@ -5960,21 +5959,21 @@ expect "import is script-only (-e rejects it)" "import is script-only" "$out"
 out=$($BIN -e 'let import = 1' 2>&1 || true)
 expect "import is a reserved word" "'import' is a keyword" "$out"
 
-# Self.scriptPath is the FILE's own path; Self.entryPath is the invoked
+# Self.scriptPath is the file's own path; Self.entryPath is the invoked
 # script's (a process fact) [D:modules-v1] (decision 12)
 printf 'module Sp\nlet where : unit -> string\nlet where () = Self.scriptPath\nlet entry : unit -> string\nlet entry () = Self.entryPath\n' > "$mdir/sp.weir"
 printf 'import "./sp.weir"\nprint (Sp.where ())\nprint (Sp.entry ())\n' > "$mdir/spmain.weir"
 out=$($BIN "$mdir/spmain.weir" 2>&1)
 # leaf pins (weir prints the platform's path spelling): the property is
-# WHICH file each answer names, not the dir's spelling
+# which file each answer names, not the dir's spelling
 echo "$out" | sed -n 1p | grep -q "sp\.weir$" || fail "a module's Self.scriptPath is its OWN file: $out"
 echo "$out" | sed -n 2p | grep -q "spmain\.weir$" || fail "a module's Self.entryPath is the invoked script: $out"
 echo "e2e ok: a module's Self.scriptPath is its own file; entryPath the invoked script"
 
-# ---- module signatures [D:module-signatures]: a signature IS the export ----
+# ---- module signatures [D:module-signatures]: a signature is the export ----
 # one signed + one unsigned member end-to-end: the signed one exports and
 # runs, the unsigned one refuses with the migration teaching (inferred
-# type included, did-you-mean over the SIGNED members); a script refuses
+# type included, did-you-mean over the signed members); a script refuses
 # the form; an orphan sig errors at its own site
 cat > "$mdir/sigmod.weir" <<'WEOF'
 module Sigmod
@@ -6006,11 +6005,11 @@ echo "e2e ok: module signatures (export, private teaching, script refusal, orpha
 rm -rf "$mdir"
 
 # ---- REPL config [D:repl-quality]: inert keys, reject unknown, and the
-# load-bearing property that SCRIPTS never read it -----------------------
+# load-bearing property that scripts never read it -----------------------
 cfgdir=$(mkweirtmp)
 # weir reads XDG_CONFIG_HOME on POSIX and %APPDATA% (the shell API, not
 # the env) on Windows [D:windows-v1] — so the Windows half uses the
-# runner's REAL AppData (a throwaway VM's), giving the config path
+# runner's real AppData (a throwaway VM's), giving the config path
 # actual coverage instead of a skip; cleaned up either way
 if [ "$IS_WINDOWS" = "1" ]; then
     CFGHOME="$APPDATA"
@@ -6022,7 +6021,7 @@ printf '{"historySizee": 10}\n' > "$CFGHOME/weir/config.json"
 out=$(printf '#quit\n' | XDG_CONFIG_HOME="$cfgdir" XDG_STATE_HOME="$cfgdir/state" $BIN 2>&1 || true)
 expect "the REPL config rejects an unknown key with did-you-mean" "unknown key 'historySizee'. Did you mean 'historySize'?" "$out"
 
-# echoElems REVIVED [D:echo-cap]: the config seeds the session cap
+# echoElems revived [D:echo-cap]: the config seeds the session cap
 # (#echo reads it back); a non-positive value teaches and defaults
 printf '{"echoElems": 25}\n' > "$CFGHOME/weir/config.json"
 out=$(printf '#echo\n#quit\n' | XDG_CONFIG_HOME="$cfgdir" XDG_STATE_HOME="$cfgdir/state" $BIN 2>&1 || true)
@@ -6032,7 +6031,7 @@ out=$(printf '#echo\n#quit\n' | XDG_CONFIG_HOME="$cfgdir" XDG_STATE_HOME="$cfgdi
 echo "$out" | grep -qF "echoElems must be positive; got 0 (using 100)" || fail "a non-positive echoElems must teach: $out"
 echo "$out" | grep -qF "echo cap: 100" || fail "…and default: $out"
 
-# a MALFORMED config must not affect a SCRIPT — scripts never read it, so the
+# a malformed config must not affect a script — scripts never read it, so the
 # script runs clean rather than erroring on the broken JSON
 printf 'not valid json {{{\n' > "$CFGHOME/weir/config.json"
 printf 'print "scripts-ignore-config"\n' > "$cfgdir/s.weir"
@@ -6043,7 +6042,7 @@ rm -rf "$cfgdir"
 
 # ---- command-head aliases [D:command-head-alias] -----------------------
 # an init.weir #alias line maps a short head to (exe, prefix args),
-# consulted BEFORE PATH in command-head position, REPL-only. Stubs on
+# consulted before PATH in command-head position, REPL-only. Stubs on
 # PATH echo their argv so resolution is asserted without a real tool.
 # Skipped on Windows (the .bat stubs quote argv differently — the POSIX
 # half proves the resolution law).
@@ -6064,22 +6063,22 @@ if [ "$IS_WINDOWS" != "1" ]; then
     out=$(printf 'kb overlays/prod\n#quit\n' | PATH="$astub:$PATH" XDG_CONFIG_HOME="$acfg" $BIN 2>/dev/null)
     expect "a prefix-args alias inserts the fixed prefix" "kustomize-argv:build overlays/prod" "$out"
 
-    # (c) injection-safety: a splice passes as ONE argv entry (the stub's
+    # (c) injection-safety: a splice passes as one argv entry (the stub's
     # $* joins with spaces, so a single spliced value shows whole)
     out=$(printf 'let x = "a b"\nk get $x\n#quit\n' | PATH="$astub:$PATH" XDG_CONFIG_HOME="$acfg" $BIN 2>/dev/null)
     expect "a spliced value stays ONE argument through an alias" "kubectl-argv:get a b" "$out"
 
-    # (d) ^ bypasses the shadowing alias — real ls, NO --color prefix
+    # (d) ^ bypasses the shadowing alias — real ls, no --color prefix
     out=$(printf '^ls xarg\n#quit\n' | PATH="$astub:$PATH" XDG_CONFIG_HOME="$acfg" $BIN 2>/dev/null)
     expect "^ forces PATH, bypassing the alias table" "realls-argv:xarg" "$out"
     echo "$out" | grep -qF -- "--color" && fail "^ls must NOT carry the alias prefix: $out"
 
-    # (e) REPL-only: a SCRIPT using an alias errors unknown-command (no leak)
+    # (e) REPL-only: a script using an alias errors unknown-command (no leak)
     printf 'k get po\n' > "$acfg/uses-alias.weir"
     out=$(PATH="$astub:$PATH" XDG_CONFIG_HOME="$acfg" $BIN "$acfg/uses-alias.weir" 2>&1 || true)
     echo "$out" | grep -qF "unbound variable 'k'" || fail "a script must not see aliases (no leak): $out"
 
-    # (f) a malformed #alias is a LOUD init error (all-or-nothing)
+    # (f) a malformed #alias is a loud init error (all-or-nothing)
     printf '#alias = kubectl\n' > "$acfg/weir/init.weir"
     out=$(printf '#quit\n' | PATH="$astub:$PATH" XDG_CONFIG_HOME="$acfg" $BIN 2>&1 || true)
     echo "$out" | grep -qF "malformed #alias" || fail "a malformed #alias must be a loud init error: $out"
@@ -6090,7 +6089,7 @@ if [ "$IS_WINDOWS" != "1" ]; then
     out=$(printf '#quit\n' | PATH="$astub:$PATH" XDG_CONFIG_HOME="$acfg" $BIN 2>&1 || true)
     echo "$out" | grep -qF "single-hop" || fail "an alias-of-alias must be rejected: $out"
 
-    # (h) #save DESUGARS alias heads: the saved script is alias-free and checks
+    # (h) #save desugars alias heads: the saved script is alias-free and checks
     printf '#alias k  = kubectl\n#alias kb = kustomize build\n' > "$acfg/weir/init.weir"
     out=$(printf 'let pods = k get po -o json\nlet note = "k is a letter"\n#save %s/saved.weir\n#quit\n' "$acfg" \
         | PATH="$astub:$PATH" XDG_CONFIG_HOME="$acfg" $BIN 2>/dev/null)
@@ -6103,7 +6102,7 @@ if [ "$IS_WINDOWS" != "1" ]; then
 fi
 
 # ---- dynamic command heads [D:dynamic-head] ----------------------------
-# ^$name / ^$(…) force-external a VALUE head: one program, resolved at
+# ^$name / ^$(…) force-external a value head: one program, resolved at
 # run, argv stays typed argv. Stubs echo their argv so injection safety
 # is asserted without a real tool. Skipped on Windows (POSIX stubs; the
 # unit pins carry the parse/check laws everywhere).
@@ -6117,13 +6116,13 @@ if [ "$IS_WINDOWS" != "1" ]; then
     out=$($BIN "$dhdir/a.weir")
     expect "a dynamic head runs the value" "argc=2" "$out"
 
-    # (b) injection safety: a spliced arg with spaces stays ONE argv entry
+    # (b) injection safety: a spliced arg with spaces stays one argv entry
     printf 'let tool = "%s/argprobe"\nlet x = "a b; rm -rf /"\n^$tool $x\n' "$dhdir" > "$dhdir/b.weir"
     out=$($BIN "$dhdir/b.weir")
     expect "a spaced splice is one argument under a dynamic head" "arg:[a b; rm -rf /]" "$out"
     echo "$out" | grep -qF "argc=1" || fail "injection: exactly one argv entry: $out"
 
-    # (c) a head value with spaces is ONE program, never re-lexed
+    # (c) a head value with spaces is one program, never re-lexed
     printf 'let tool = "%s/spaced probe"\n^$tool hi\n' "$dhdir" > "$dhdir/c.weir"
     out=$($BIN "$dhdir/c.weir")
     expect "a spaced head value is one program" "arg:[hi]" "$out"
@@ -6139,7 +6138,7 @@ if [ "$IS_WINDOWS" != "1" ]; then
     out=$($BIN "$dhdir/e.weir")
     expect "a string-typed capture heads directly" "arg:[go]" "$out"
 
-    # (f) not-found is a located RUN error naming the value; check stays silent
+    # (f) not-found is a located run error naming the value; check stays silent
     printf 'let tool = "zz-no-such-prog"\n^$tool hi\n' > "$dhdir/f.weir"
     $BIN check "$dhdir/f.weir" 2>&1 | grep -q "cmd-not-found" && fail "check must not warn on a dynamic head (run-time carve-out)"
     out=$($BIN "$dhdir/f.weir" 2>&1 || true)
@@ -6180,7 +6179,7 @@ if [ "$IS_WINDOWS" != "1" ]; then
 fi
 
 # ---- help glance + #find [D:help-glance] [D:help-find] --------------------
-# the headless doc render is the ONE #help source: `weir --repl-doc X`
+# the headless doc render is the one #help source: `weir --repl-doc X`
 # must print byte-identically to the piped `#help X` answer (prompts
 # stripped) — the pin that keeps #find's fzf preview and the prompt's
 # own answer from drifting.
@@ -6190,7 +6189,7 @@ printf '#help Option\n#quit\n' | $BIN | sed -e 's/^weir> //' -e '/^weir>/d' > "$
 diff -u "$hdir/headless.txt" "$hdir/prompted.txt" >/dev/null \
     || fail "--repl-doc must print the exact #help bytes: $(diff "$hdir/headless.txt" "$hdir/prompted.txt" | head -5)"
 # the directive reference table [D:help-find]: docs/reference/lexical.md
-# names EVERY dispatched directive across its three contexts (the
+# names every dispatched directive across its three contexts (the
 # gen-lexical spirit — a new directive without a table row fails here)
 for d in help find echo infer save quit alias session sig schema; do
     grep -q "\`#$d\`" "$(dirname "$0")/../docs/reference/lexical.md" \
@@ -6274,7 +6273,7 @@ expect "from yaml seq<T> reads a top-level sequence document" "a
 b" "$out"
 
 # [D:yaml-seq]/[D:yaml-empty-flow] zero-indent block sequences +
-# empty flow collections — kubectl's form: a block sequence at the SAME
+# empty flow collections — kubectl's form: a block sequence at the same
 # column as its parent mapping key, plus `{}`/`[]` empty flow values
 # (resources/securityContext/emptyDir/lastState). A real
 # `kubectl get -o yaml` List (nested zero-indent seqs throughout:
@@ -6378,20 +6377,20 @@ expect "nested zero-indent seqs inside a seq item's map read (containers/args/po
 expect "a same-indent ownerReferences seq under metadata reads" "owner: ReplicaSet" "$out"
 expect "an empty flow {} reads into a Yaml field as YMap []" "resources: YMap ([])" "$out"
 # [D:quoted-fold] the kubectl message forms: single-line quoted with
-# colons inside, and the multi-line quoted continuation (single AND
+# colons inside, and the multi-line quoted continuation (single and
 # double quoted) — the fold is one space per break
 expect "a single-line quoted message with colons reads" "cond: Pod was rejected: The node had condition: [DiskPressure]. " "$out"
 expect "a multi-line DOUBLE-quoted message folds to one line" "sched: 0/3 nodes are available: 3 Insufficient memory. preemption: not eligible." "$out"
 expect "a multi-line single-quoted eviction message folds to one line" "evict: The node was low on resource: ephemeral-storage. Threshold quantity: 25462616238, available: 24515828Ki. Container was using 54204Ki, request is 0. " "$out"
 
-# the real file INFERS clean end-to-end: zero-indent seqs + empty flow
+# the real file infers clean end-to-end: zero-indent seqs + empty flow
 # together, empty {} → opaque Yaml with a note (never a silent shape)
 cat > "$ydir/inferdecl.weir" <<'WEOF'
 let text = File.read "kubectl-list.yaml" |> Seq.freeze
 print (Yaml.inferShape text)
 WEOF
 out=$(cd "$ydir" && $BIN inferdecl.weir)
-# MOVED PINS [D:repl-infer]: an empty {} is an open map with zero
+# moved pins [D:repl-infer]: an empty {} is an open map with zero
 # entries (the opaque-Yaml draft could not cross the json boundary),
 # and the dirty-keyed labels object drafts as the mapping — its keys
 # are data, so no [<Wire>] rides at all
@@ -6403,10 +6402,10 @@ echo "$out" | grep -qF "'labels' has mostly non-identifier keys" || fail "the la
 echo "$out" | grep -qF 'pod-template-hash' && fail "a mapping's keys are data — no label key belongs in the draft: $out" || true
 echo "$out" | grep -qF 'k8s-app: string' && fail "a non-identifier key must NOT appear bare as a field: $out" || true
 
-# the open-map draft end-to-end [D:repl-infer] (MOVED PIN — this cell
+# the open-map draft end-to-end [D:repl-infer] (moved pin — this cell
 # pinned the [<Wire>]'d record draft): a labels object with hyphen/dot/
-# slash keys over one value shape drafts as the MAPPING, and the draft
-# READS the real data through from yaml as pairs — keys stay data
+# slash keys over one value shape drafts as the mapping, and the draft
+# reads the real data through from yaml as pairs — keys stay data
 cat > "$ydir/labels.yaml" <<'YEOF'
 labels:
   k8s-app: web
@@ -6444,13 +6443,13 @@ printf 'let d = ["- {}"; "- []"] |> Yaml.parse\nprint (show d)\n' > "$ydir/efseq
 out=$($BIN "$ydir/efseq.weir")
 expect "empty flow as sequence items parses ({} → YMap [], [] → YSeq [])" "YSeq ([YMap ([]); YSeq ([])])" "$out"
 
-# empty flow ROUNDTRIPS: {} renders back as {}, reads back as YMap []
+# empty flow roundtrips: {} renders back as {}, reads back as YMap []
 printf 'type R = { m: Yaml }\nlet r = ["m: {}"] |> from yaml R\nlet back = r |> to yaml\nback |> Seq.iter print\nlet r2 = back |> from yaml R\nprint (show r2.m)\n' > "$ydir/efrt.weir"
 out=$($BIN "$ydir/efrt.weir")
 expect "an empty {} round-trips: renders {} and reads back YMap []" 'm: {}
 YMap ([])' "$out"
 
-# POPULATED flow STAYS rejected — the ambiguity that justifies block-only
+# populated flow stays rejected — the ambiguity that justifies block-only
 # fires at one-or-more elements; only the empty forms are the exception
 printf 'type R = { m: Yaml }\nlet r = ["m: {a: 1}"] |> from yaml R\nprint (show r.m)\n' > "$ydir/pop.weir"
 out=$($BIN "$ydir/pop.weir" 2>&1 || true)
@@ -6465,7 +6464,7 @@ printf 'type P = { name: string }\ntype R = { items: seq<P> }\nlet flat = ["item
 out=$($BIN "$ydir/styles.weir")
 expect "both block-sequence indent styles read to the same value" "2 2" "$out"
 
-# a GENUINELY malformed inline-value-plus-nested-block still errors: the
+# a genuinely malformed inline-value-plus-nested-block still errors: the
 # nested block is more-indented (not a same-indent sequence)
 printf 'type D = { k: string }\nlet d = ["k: value"; "  nested: x"] |> from yaml D\nprint d.k\n' > "$ydir/mal.weir"
 out=$($BIN "$ydir/mal.weir" 2>&1 || true)
@@ -6545,10 +6544,10 @@ expect "the multiline value renders back as a block" "run.sh: |" "$out"
 expect "the no-trailing-newline value renders inline (form follows value)" "note: no trailing newline" "$out"
 echo "e2e ok: district block scalars — ConfigMap workload on the AOT binary"
 
-# the interop REFEREE [D:yaml-v1]: `to yaml`/`to json` round-trip
+# the interop referee [D:yaml-v1]: `to yaml`/`to json` round-trip
 # through parsers weir did not write, over the hostile corpus — the
 # adversarial review's F2 durable fix (weir refereeing itself let four
-# emitter defects through). PyYAML absent is a NAMED SKIP, never a
+# emitter defects through). PyYAML absent is a named SKIP, never a
 # silent pass; the linux CI image carries it, so the gate always runs
 # at least there.
 if python3 -c 'import yaml' 2>/dev/null; then
@@ -6557,7 +6556,7 @@ else
     echo "e2e SKIP: interop referee — python3+PyYAML absent on this runner (the linux AND macos CI images run it)"
 fi
 
-# a rejected header inside a district errors AT THE HEADER under check
+# a rejected header inside a district errors at the header under check
 cat > "$yddir/fold.weir" <<'WEOF'
 let d = yaml
     a: 1
@@ -6572,7 +6571,7 @@ echo "e2e ok: a rejected block header errors at the header, with the teaching"
 rm -rf "$yddir"
 
 # mid-line # on district structure lines is a comment [D:district-hash] —
-# the two paths agree; the acceptance: the pasted line emits UNQUOTED
+# the two paths agree; the acceptance: the pasted line emits unquoted
 mhdir=$(mkweirtmp)
 cat > "$mhdir/mh.weir" <<'WEOF'
 let d = yaml
@@ -6588,10 +6587,10 @@ echo "e2e ok: district mid-line # agrees with from yaml — unquoted value out"
 rm -rf "$mhdir"
 
 # ---- the hostile-byte fixture [D:content-bytes] ----------------------------
-# content is BYTES: every hostile class through one block scalar, asserted
-# byte-exact through check AND run. The fixture is GENERATED (printf) because
+# content is bytes: every hostile class through one block scalar, asserted
+# byte-exact through check and run. The fixture is generated (printf) because
 # a checked-in literal with trailing spaces / tabs / CRLF invites editor and
-# git mangling — the generator IS the fixture.
+# git mangling — the generator is the fixture.
 hbdir=$(mkweirtmp)
 {
     printf 'let d = yaml\n'
@@ -6636,7 +6635,7 @@ echo "e2e ok: CRLF source normalizes at read — output byte-identical"
 
 # File.write preserves an existing file's UTF-8 BOM [D:encoding-law], never
 # adds one — the round-trip-edit case (a BOM'd .csproj kept its BOM). weir
-# runs under `cd` with RELATIVE paths so its cwd matches the shell's — a
+# runs under `cd` with relative paths so its cwd matches the shell's — a
 # Git-Bash /tmp path and native weir's D:\tmp disagree otherwise.
 bomdir=$(mktemp -d)
 printf '\xEF\xBB\xBF<Project>\n</Project>\n' > "$bomdir/bom.csproj"
@@ -6650,7 +6649,7 @@ bom3() { od -An -tx1 -N3 "$1" | tr -d ' '; }
 [ "$(bom3 "$bomdir/new.txt")" = "efbbbf" ] && fail "File.write must NOT add a BOM to a new file"
 echo "e2e ok: File.write preserves an existing UTF-8 BOM, never adds one"
 
-# fmt: value-preserving on the fixture; its ONLY byte change is
+# fmt: value-preserving on the fixture; its only byte change is
 # normalizing the whitespace-only line to empty (a stated house rule —
 # both spellings are a blank content line); idempotent after
 cp "$hbdir/hostile.weir" "$hbdir/fmted.weir"
@@ -6663,7 +6662,7 @@ rm -rf "$hbdir"
 
 # ---- external contracts: the spine + schemas [D:contracts-spine] -----------
 # vendored, pinned, check-time only; the fetch machinery is exercised
-# against a LOCAL server (CI is offline) serving the committed REAL
+# against a local server (CI is offline) serving the committed real
 # k8s configmap schema — the published-schema fetch ran in-session
 # and is recorded in the plan's report
 ctdir=$(mkweirtmp)
@@ -6673,7 +6672,7 @@ ctport=$((18930 + RANDOM % 2000))
 # loopback bind: macOS's firewall drops SYNs to an unsigned listener on
 # 0.0.0.0 ('Operation timed out' on the very first fetch)
 # --directory, never a cd-subshell: MSYS bash does not exec-optimize
-# `( cd .. && python ) &`, so $! was the SUBSHELL and the kill left
+# `( cd .. && python ) &`, so $! was the subshell's pid and the kill left
 # python alive holding the dir as its cwd (rm: Device or resource busy)
 python3 -m http.server $ctport --bind 127.0.0.1 --directory "$ctdir/serve" >/dev/null 2>&1 &
 ctsrv=$!
@@ -6685,7 +6684,7 @@ mkdir -p "$ctdir/proj/sub"
 test -f "$ctdir/proj/.weir/lock.json" || fail "the lockfile exists after the first fetch"
 echo "e2e ok: weir add schema fetches, writes, and locks"
 
-# [D:add-validates]: add validates BEFORE it writes — nothing on disk
+# [D:add-validates]: add validates before it writes — nothing on disk
 # on any failure, including no .weir/ creation at all (the strongest
 # pin: the tree is byte-identical after a failed add)
 printf '<!DOCTYPE html><html><body>a blob page, not the raw file</body></html>' > "$ctdir/serve/page.html"
@@ -6716,7 +6715,7 @@ echo "$out" | grep -q "ABSENT" || fail "absent named: $out"
 echo "e2e ok: weir verify distinguishes modified from absent; restore re-materializes"
 
 # ---- Bundle A+B: the lockfile path boundary [D:lockfile-confinement] --------
-# F14: an absolute/traversal `--as` name must refuse BEFORE the fetch,
+# F14: an absolute/traversal `--as` name must refuse before the fetch,
 # writing nothing (the rule add module already had, now shared)
 mkdir -p "$ctdir/f14" && ( cd "$ctdir/f14" && git init -q . )
 f14abs="$ctdir/F14-ABSOLUTE.json"
@@ -6728,9 +6727,9 @@ echo "$out" | grep -qF "must be a plain file name" || fail "F14 traversal --as t
 test ! -e "$ctdir/f14/../escape.json" || fail "F14: a traversal --as must write nothing outside .weir/"
 echo "e2e ok: add schema refuses an absolute/traversal --as, writing nothing (F14)"
 
-# F1: a hostile lock (an entry pointing outside .weir/) refuses PER ENTRY
+# F1: a hostile lock (an entry pointing outside .weir/) refuses per entry
 # with a located diagnostic, restores the benign sibling, and writes
-# nothing outside .weir/. restore overwrites only its OWN artifacts
+# nothing outside .weir/. restore overwrites only its own artifacts
 # inside .weir/ [D:lockfile-confinement]
 f1repo="$ctdir/f1repo"
 mkdir -p "$f1repo/.weir"
@@ -6748,16 +6747,16 @@ echo "$out" | grep -qF "escapes .weir/" || fail "F1: the hostile entry is a loca
 test -f "$f1repo/.weir/schemas/benign.json" || fail "F1: the benign sibling must still restore"
 test ! -e "$f1esc" || fail "F1: an absolute lock path must not be written outside .weir/"
 test ! -e "$ctdir/F1-TRAVERSAL.json" || fail "F1: a traversal lock path must not be written outside .weir/"
-# verify refuses to READ outside .weir/ too — same located refusal
+# verify refuses to read outside .weir/ too — same located refusal
 out=$( cd "$f1repo" && $BIN verify 2>&1 ) && fail "verify on a hostile lock must exit nonzero" || true
 echo "$out" | grep -qF "escapes .weir/" || fail "F1: verify names the escape rather than reading it: $out"
 echo "e2e ok: a hostile lock refuses per entry (restore + verify), the benign sibling restores, nothing escapes (F1)"
 
-# DA-04: confinement RESOLVES SYMLINKS [D:lockfile-symlink-confinement].
+# DA-04: confinement resolves symlinks [D:lockfile-symlink-confinement].
 # A lexically-clean lock path (no `..`, not absolute) still escapes when a
-# component on the way is a symlink OUT. POSIX-only (native symlinks).
+# component on the way is a symlink pointing out. POSIX-only (native symlinks).
 if [ "$IS_WINDOWS" = "0" ]; then
-    # (1) a symlinked INTERMEDIATE dir: .weir/schemas → OUTSIDE .weir/
+    # (1) a symlinked intermediate dir: .weir/schemas → outside .weir/
     darepo="$ctdir/da04repo"
     daout="$ctdir/DA04-OUTSIDE"
     mkdir -p "$darepo/.weir" "$daout"
@@ -6772,7 +6771,7 @@ DA04EOF
     test ! -e "$daout/marker.json" || fail "DA-04: nothing may be written outside .weir/ through the symlink"
     echo "e2e ok: a symlinked .weir/schemas is refused on restore, nothing escapes (DA-04)"
 
-    # (2) a symlinked FINAL component: the leaf itself points OUT
+    # (2) a symlinked final component: the leaf itself points out
     da2repo="$ctdir/da04repo2"
     da2out="$ctdir/DA04-OUTSIDE2"
     mkdir -p "$da2repo/.weir/schemas" "$da2out"
@@ -6786,12 +6785,12 @@ DA04EOF2
     out=$( cd "$da2repo" && $BIN restore 2>&1 ) && fail "DA-04: restore over a symlinked leaf must exit nonzero" || true
     echo "$out" | grep -qF "escapes .weir/" || fail "DA-04: a symlinked final component is refused: $out"
     test "$(cat "$da2out/leak.json")" = "x" || fail "DA-04: the symlinked leaf's target must not be overwritten"
-    # (3) verify must not READ through the symlinked leaf either
+    # (3) verify must not read through the symlinked leaf either
     out=$( cd "$da2repo" && $BIN verify 2>&1 ) && fail "DA-04: verify through a symlinked leaf must exit nonzero" || true
     echo "$out" | grep -qF "escapes .weir/" || fail "DA-04: verify names the escape rather than reading through it: $out"
     echo "e2e ok: a symlinked final component is refused on restore/verify, its target untouched (DA-04)"
 
-    # (4) benign control: a REAL .weir/schemas dir + clean path still works
+    # (4) benign control: a real .weir/schemas dir + clean path still works
     da3repo="$ctdir/da04repo3"
     mkdir -p "$da3repo/.weir/schemas"
     cat > "$da3repo/.weir/lock.json" <<DA04EOF3
@@ -6806,13 +6805,13 @@ else
     echo "e2e skip: DA-04 symlink-confinement (POSIX native symlinks)"
 fi
 
-# DA-05: the contract-fetch client drops the credential on a CROSS-ORIGIN
+# DA-05: the contract-fetch client drops the credential on a cross-origin
 # redirect [D:contract-redirect]. `add module <full-url>` attaches
 # `Authorization: token <WEIR_TOKEN_host>` when a host token is set (the
 # GitLab PRIVATE-TOKEN's shape) and downloads via fetchBytesWith; a bare
-# HttpClient re-sent it to a redirect target. Driven at the CLI over a LOCAL
-# cross-origin 302 (127.0.0.1 -> localhost). Origin B serves a VALID module
-# (so the add completes) and logs what arrived — the credential must NOT.
+# HttpClient re-sent it to a redirect target. Driven at the CLI over a local
+# cross-origin 302 (127.0.0.1 -> localhost). Origin B serves a valid module
+# (so the add completes) and logs what arrived — the credential must not.
 if command -v python3 >/dev/null 2>&1; then
     da5a=$((23800 + RANDOM % 100))
     da5b=$((23900 + RANDOM % 100))
@@ -6852,9 +6851,9 @@ DA5EOF2
     out=$( cd "$ctdir/da5repo" && WEIR_TOKEN_127_0_0_1="SECRET-CONTRACT-TOKEN" $BIN add module "http://127.0.0.1:$da5a/start.weir" --as da5 2>&1 ) || true
     kill $da5as $da5bs 2>/dev/null || true
     da5log=$(cat "$ctdir/da5.log" 2>/dev/null)
-    # the artifact DID land at origin B (the redirect was followed)
+    # the artifact did land at origin B (the redirect was followed)
     test -n "$da5log" || fail "DA-05: origin B never received the redirected request: add output: $out"
-    # but the credential must NOT have crossed to origin B
+    # but the credential must not have crossed to origin B
     echo "$da5log" | grep -qiF "SECRET-CONTRACT-TOKEN" && fail "DA-05: the contract credential LEAKED across the cross-origin redirect: $da5log" || true
     echo "$da5log" | grep -qiF "Authorization" && fail "DA-05: the Authorization header reached the cross-origin target: $da5log" || true
     # the User-Agent (non-credential) still crosses — the drop is credential-specific
@@ -6881,8 +6880,8 @@ class H(http.server.BaseHTTPRequestHandler):
 http.server.HTTPServer(('127.0.0.1', $urport), H).serve_forever()
 URLEOF
     python3 "$ctdir/url500.py" & ursrv=$!
-    # awaitTcp, not awaitHttp: the server ANSWERS 500 by design, and
-    # `curl -sf` treats a 500 as failure — readiness is the LISTENER
+    # awaitTcp, not awaitHttp: the server answers 500 by design, and
+    # `curl -sf` treats a 500 as failure — readiness means the listener is up
     awaitTcp "$urport" || { kill $ursrv 2>/dev/null || true; fail "the redact 500-server never came up"; }
     # (a) the credential is masked, the status still named
     out=$($BIN -e "print (Http.fetch \"http://user:s3cr3t@127.0.0.1:$urport/\")" 2>&1) && fail "a 500 must raise" || true
@@ -6903,7 +6902,7 @@ echo "$out" | grep -qiF "user:pw" && fail "the credential LEAKED in the transpor
 echo "e2e ok: the transport fallback redacts an unparseable URL's userinfo (Fix 1b)"
 
 # ---- Fix 2: parse/decode errors excerpt a huge invalid input [D:excerpt] ---
-# a multi-MB invalid input used to be echoed WHOLE (a ~2MB stderr flood);
+# a multi-MB invalid input used to be echoed whole (a ~2MB stderr flood);
 # it is now bounded to a 64-char head + the true length. A short invalid
 # input is still quoted in full.
 xdir=$(mkweirtmp)
@@ -6922,7 +6921,7 @@ echo "$out" | grep -qF '"notanum"' || fail "a short input stays fully readable: 
 rm -rf "$xdir"
 echo "e2e ok: a multi-MB invalid parse input yields a bounded error; a short one is quoted whole (Fix 2)"
 
-# F2: an unreadable file on the import path is a LOCATED diagnostic, never
+# F2: an unreadable file on the import path is a located diagnostic, never
 # a crash (mode 000; exit 1, not 134) [D:lockfile-confinement]
 if [ "$IS_WINDOWS" = "0" ]; then
     f2dir=$(mkweirtmp)
@@ -6940,7 +6939,7 @@ else
     echo "e2e skip: F2 unreadable-import (POSIX mode bits)"
 fi
 
-# check-time catches on the REAL schema: the typo (did-you-mean) and a
+# check-time catches on the real schema: the typo (did-you-mean) and a
 # misplaced nesting (a field at the wrong level)
 cat > "$ctdir/proj/sub/cm.weir" <<'WEOF'
 let cm = yaml schema=k8s-configmap
@@ -6985,8 +6984,8 @@ sed 's/ schema=k8s-configmap//' "$ctdir/proj/sub/p3.weir" > "$ctdir/proj/sub/p3p
 diff <($BIN "$ctdir/proj/sub/p3.weir") <($BIN "$ctdir/proj/sub/p3plain.weir") || fail "property 3: contracts must not change runtime output"
 echo "e2e ok: PROPERTY 3 — byte-identical with and without the contract"
 
-# check NEVER fetches: an unreachable URL in the lock is irrelevant
-# while the vendored file exists; a MISSING schema teaches vendor,
+# check never fetches: an unreachable URL in the lock is irrelevant
+# while the vendored file exists; a missing schema teaches vendor,
 # without touching the network
 python3 - "$ctdir/proj/.weir/lock.json" <<'PYEOF2'
 import json, sys
@@ -6999,7 +6998,7 @@ rm "$ctdir/proj/.weir/schemas/k8s-configmap.json"
 out=$($BIN check "$ctdir/proj/sub/p3.weir" 2>&1 || true)
 echo "$out" | grep -qF "the lock records it; run \`weir restore\`" || fail "locked-but-missing teaches restore, never fetches: $out"
 
-# ...and a NEVER-declared schema teaches `add` — the checker tells the
+# ...and a never-declared schema teaches `add` — the checker tells the
 # two apart by the lock [D:contracts-spine]
 cat > "$ctdir/proj/sub/never.weir" <<'WEOF'
 let d = yaml schema=never-added
@@ -7011,7 +7010,7 @@ out=$($BIN check "$ctdir/proj/sub/never.weir" 2>&1 || true)
 echo "$out" | grep -qF "add it: weir add schema <url> --as never-added" || fail "undeclared schema teaches add: $out"
 echo "e2e ok: check never fetches — locked-but-missing teaches restore, undeclared teaches add"
 
-# the six message shapes, re-pinned VERBATIM after the consistency pass
+# the six message shapes, re-pinned verbatim after the consistency pass
 # [schema-polish]: every message names its field; paths always (root
 # renders without a suffix); a one-element enum states its value plainly
 mkdir -p "$ctdir/proj/.weir/schemas"
@@ -7055,11 +7054,11 @@ out=$($BIN check "$ctdir/proj/sub/six2.weir" 2>&1 || true)
 echo "$out" | grep -qF "schema six: field kind expects 'Service', got 'Deployment'" || fail "6 one-element enum, plainly: $out"
 echo "e2e ok: the six schema messages re-pinned verbatim — fields named, paths always"
 
-# a schema with NO additionalProperties:false warns at ADD time — the
+# a schema without additionalProperties:false warns at add time — the
 # silently-inert-contract guard [schema-polish item 3]
 printf '{ "type": "object", "properties": { "a": { "type": "string" } } }' > "$ctdir/serve/loose.json"
 # --directory, never a cd-subshell: MSYS bash does not exec-optimize
-# `( cd .. && python ) &`, so $! was the SUBSHELL and the kill left
+# `( cd .. && python ) &`, so $! was the subshell's pid and the kill left
 # python alive holding the dir as its cwd (rm: Device or resource busy)
 python3 -m http.server $ctport --bind 127.0.0.1 --directory "$ctdir/serve" >/dev/null 2>&1 &
 ctsrv2=$!
@@ -7075,8 +7074,8 @@ echo "e2e ok: a no-strict schema warns at add time, naming the variant"
 rm -rf "$ctdir"
 
 # ---- schema→types: weir gen types [D:schema-types] -------------------------
-# a LOCKED schema becomes a user-owned decl-only module: required vs
-# optional BY SCHEMA FACT (the thing no #infer sample can carry), the
+# a locked schema becomes a user-owned decl-only module: required vs
+# optional by schema fact (the thing no #infer sample can carry), the
 # open mappings, the wire sanitizer — offline (reads the vendored file),
 # deterministic (byte-identical on re-run), add-validates (the emitted
 # module runs through the real checker before anything lands)
@@ -7097,7 +7096,7 @@ awaitHttp "http://127.0.0.1:$gtport/pod-v1-trimmed.json" || { kill $gtsrv 2>/dev
 kill $gtsrv 2>/dev/null || true
 wait $gtsrv 2>/dev/null || true
 
-# generation is OFFLINE from here — the server is gone
+# generation is offline from here — the server is gone
 out=$( cd "$gtdir/proj" && $BIN gen types --schema pod )
 echo "$out" | grep -q "generated .*types.*pod\.weir" || fail "gen types announces the file: $out"
 echo "$out" | grep -qF 'import it:  import "weir:pod" as Pod' || fail "the import line teaches use: $out"
@@ -7109,7 +7108,7 @@ grep -qF "containers: seq<Container>" "$gtdir/proj/.weir/types/pod.weir" || fail
 grep -qF "an enum of 'Pending', 'Running'" "$gtdir/proj/.weir/types/pod.weir" || fail "the enum note lists the values"
 echo "e2e ok: gen types — required/optional by schema fact, mappings, enum notes"
 
-# DETERMINISM: same locked schema → byte-identical output; and the
+# determinism: same locked schema → byte-identical output; and the
 # output is fmt-canonical
 cp "$gtdir/proj/.weir/types/pod.weir" "$gtdir/gen1.weir"
 ( cd "$gtdir/proj" && $BIN gen types --schema pod ) >/dev/null
@@ -7118,8 +7117,8 @@ cp "$gtdir/proj/.weir/types/pod.weir" "$gtdir/fmtprobe.weir"
 $BIN fmt --check "$gtdir/fmtprobe.weir" || fail "the generated module must be fmt-canonical"
 echo "e2e ok: gen types is byte-deterministic and fmt-canonical"
 
-# THE ACCEPTANCE (the pain #infer cannot fix): a container WITHOUT env
-# reads clean because the SCHEMA said env is optional; labels read as
+# the acceptance (the pain #infer cannot fix): a container without env
+# reads clean because the schema said env is optional; labels read as
 # the mapping — through the weir: import, in a nested dir
 mkdir -p "$gtdir/proj/sub"
 cat > "$gtdir/proj/sub/pod.json" <<'JEOF'
@@ -7175,7 +7174,7 @@ echo "e2e ok: gen types refusals — scalar top, unlocked name, lowercase --as"
 # --out -: stdout, nothing written; --as renames the top type
 ( cd "$gtdir/proj" && $BIN gen types --schema pod --as Manifest --out - ) | grep -qF "type Manifest = {" || fail "--as + --out - streams the renamed module"
 
-# the missing-field teach [D:schema-types]: a REQUIRED field a document
+# the missing-field teach [D:schema-types]: a required field a document
 # lacks names the Option repair — the drafted-from-a-sample pain, said
 # at the failure
 cat > "$gtdir/proj/sub/teach.weir" <<'WEOF'
@@ -7191,7 +7190,7 @@ out=$( cd "$gtdir/proj/sub" && $BIN teach.weir 2>&1 ) && fail "the missing requi
 echo "$out" | grep -qF "missing field 'env'" || fail "the field is named: $out"
 echo "$out" | grep -qF "if the field is sometimes absent, declare it Option<seq<string>>" || fail "the Option repair rides the error: $out"
 echo "$out" | grep -qF "a type drafted from a sample only sees what the sample had" || fail "the sample teach: $out"
-# (yaml reads a MISSING seq as empty by its own law, so the yaml teach
+# (yaml reads a missing seq as empty by its own law, so the yaml teach
 # pins on a missing scalar field)
 cat > "$gtdir/proj/sub/teachy.weir" <<'WEOF'
 type Y = {
@@ -7208,8 +7207,8 @@ echo "e2e ok: from json/yaml missing-field errors carry the Option repair"
 rm -rf "$gtdir"
 
 # ---- the Log module [D:log-module] -----------------------------------------
-# stderr always; WEIR_LOG selects; stdout is BYTE-IDENTICAL at every
-# level (THE pin — stdout is data); invalid level = loud startup error
+# stderr always; WEIR_LOG selects; stdout is byte-identical at every
+# level (the pin — stdout is data); invalid level = loud startup error
 lgdir=$(mkweirtmp)
 cat > "$lgdir/lg.weir" <<'WEOF'
 Log.trace "t"
@@ -7235,12 +7234,12 @@ diff <($BIN "$lgdir/lg.weir" 2>/dev/null) <(WEIR_LOG=trace $BIN "$lgdir/lg.weir"
 diff <($BIN "$lgdir/lg.weir" 2>/dev/null) <(WEIR_LOG=off $BIN "$lgdir/lg.weir" 2>/dev/null) || fail "stdout byte-identical at off"
 echo "e2e ok: Log — stderr always, WEIR_LOG selects, stdout byte-identical (THE pin)"
 
-# NO_COLOR / non-tty: the harness reads PLAIN level labels (this pipe is
+# NO_COLOR / non-tty: the harness reads plain level labels (this pipe is
 # not a tty, so tint must be absent even without NO_COLOR)
 grep -q "$(printf '\033')" "$lgdir/err" && fail "no escapes when stderr is not a tty"
 echo "e2e ok: Log plain form when stderr is piped"
 
-# the thunk is NOT evaluated below threshold (side-effect proof)
+# the thunk is not evaluated below threshold (side-effect proof)
 cat > "$lgdir/lz.weir" <<'WEOF'
 Log.traceWith (fun () ->
     ["proof"] |> File.write "thunk-ran.txt"
@@ -7277,7 +7276,7 @@ rm -rf "$lgdir"
 
 # ---- CLI teaching arms [D:windows-v1] --------------------------------------
 # a mistyped option teaches, never dumps; -e names its arity (the
-# Windows shell-splitting trap: ONE intended expression arrives as many)
+# Windows shell-splitting trap: one intended expression arrives as many)
 out=$($BIN --e 'x' 2>&1) && fail "--e must exit nonzero" || true
 echo "$out" | grep -qF "unknown option '--e'. Did you mean '-e'?" || fail "--e did-you-means -e: $out"
 out=$($BIN -e one two three 2>&1) && fail "-e arity must exit nonzero" || true
@@ -7308,7 +7307,7 @@ out=$(WEIR_E2E_TICK=1h30m $BIN "$ddir/dur.weir" --timeout 90s)
 out=$($BIN "$ddir/dur.weir" --timeout nope 2>&1) && fail "bad duration flag must exit nonzero" || true
 echo "$out" | grep -qF "not a duration: 'nope'" || fail "flag rejection names the text: $out"
 $BIN "$ddir/dur.weir" --help | grep -qF "default: 30s" || fail "--help renders the Show shape"
-# command-mode: 30s is an argv WORD on the published binary
+# command-mode: 30s is an argv word on the published binary
 out=$($BIN -e '$(echo 30s) |> Seq.head')
 [ "$out" = '"30s" : string' ] || fail "command-mode 30s stays a word: $out"
 # holes consult Show [D:interp-show]; command splices do not
@@ -7323,7 +7322,7 @@ echo "e2e ok: Duration (defaults rest, both boundaries parse, rejection locates,
 indir=$(mkweirtmp)
 # the cert-expiry acceptance: openssl's own enddate spelling (month
 # name, padded day) through the named-format reader — the use case
-# that had NO weir spelling (openssl-gated, the TLS block's precedent)
+# that had no weir spelling (openssl-gated, the TLS block's precedent)
 if command -v openssl >/dev/null 2>&1; then
     insubj="/CN=inst"
     [ "$IS_WINDOWS" = "1" ] && insubj="//CN=inst"
@@ -7397,7 +7396,7 @@ echo "$out" | grep -qF "lib.weir" || fail "the module site carries the module's 
 
 # the reifier desugar's slots [D:can-report]: orFail's msg rides ahead
 # of the program and the Env twins lead with the overlay — the report
-# once printed an orFail MESSAGE as a command; the prog slot is
+# once printed an orFail message as a command; the prog slot is
 # positional, literalness checked after (an interpolated msg must not
 # shift it)
 cat > "$candir/reify.weir" <<'WEOF'
@@ -7421,7 +7420,7 @@ echo "$rout" | grep -qF "already live" && fail "an orFail MESSAGE must never app
 echo "$rout" | grep -qF "env twin" && fail "an Env-twin orFail MESSAGE must never appear as a command: $rout"
 echo "e2e ok: --can reads every reifier member's program slot (orFail/complete/succeeds/exitCode, In and Env twins; messages never commands)"
 
-# F3: overlay NAMES when literal (direct, ofPairs, let-bound); honest
+# F3: the overlay is named when literal (direct, ofPairs, let-bound); honest
 # form when computed. F4: identical entries group with a count. F6:
 # weir on the interpreter list — the report is honest about the
 # largest thing a self-shelling script does.
@@ -7465,7 +7464,7 @@ assert {"runs", "opaque", "write", "network", "secret-argv", "secret-load"} <= k
 assert all("file" in c and "line" in c and "col" in c for c in d["capabilities"])
 PYCAN
 
-# a check FAILURE suppresses the report (reporting on what cannot run)
+# a check failure suppresses the report (reporting on what cannot run)
 printf 'let x = 1 + "a"\n' > "$candir/bad.weir"
 badrc=0
 out=$($BIN check --can "$candir/bad.weir" 2>&1) || badrc=$?
@@ -7474,7 +7473,7 @@ echo "$out" | grep -qE "error" || fail "the check's own diagnostics print: $out"
 echo "$out" | grep -qF "capability" && fail "no report for a script that cannot run: $out" || true
 
 # F7 [D:desugar-namespace]: a `for` loop (the |seqIter desugar) must add
-# NO phantom dynamic head — a for-only script reports ZERO opaque sites,
+# no phantom dynamic head — a for-only script reports zero opaque sites,
 # and --strict exits 0 (the |-namespace split: a library desugar is not
 # a spawn)
 printf 'for n in ["a"] do print n\n' > "$candir/foronly.weir"
@@ -7562,7 +7561,7 @@ rm -rf "$djdir"
 echo "e2e ok: dedent correct-join (post-scope statements join, the floor stays)"
 
 # ---- tasks underneath [D:tasks-underneath]: I/O-bound fan-out --------------
-# 100 arms each SPAWNING a child weir — the domain's real arm shape,
+# 100 arms each spawning a child weir — the domain's real arm shape,
 # at the raised ceiling; order preserved, parent cwd untouched
 tudir=$(mkweirtmp)
 mkdir -p "$tudir/work"
@@ -7620,7 +7619,7 @@ echo "e2e ok: retry/poll (yields value, computed options, exhaustion messages, c
 
 # ---- if cmd | succeeds then [D:if-succeeds] --------------------------------
 # the inline command condition: the let-RHS acceptance gate one position
-# over; `then` stops the chain's argv ONLY inside a condition
+# over; `then` stops the chain's argv only inside a condition
 isdir=$(mkweirtmp)
 cat > "$isdir/is.weir" <<'WEOF'
 if test -f /etc/hosts | succeeds then
@@ -7639,9 +7638,9 @@ out=$($BIN "$isdir/is.weir")
 [ "$(echo "$out" | sed -n 1p)" = "inline-if" ] || fail "inline if: $out"
 [ "$(echo "$out" | sed -n 2p)" = "elif-inline" ] || fail "inline elif: $out"
 [ "$(echo "$out" | sed -n 3p)" = "bind-first-still" ] || fail "bind-first kept: $out"
-# `then` stays ordinary argv OUTSIDE a condition — the stop is positional
+# `then` stays ordinary argv outside a condition — the stop is positional
 [ "$(echo "$out" | sed -n 4p)" = "then one" ] || fail "argv then at top level: $out"
-# a streaming chain parses and teaches at the CHECKER (bool demanded)
+# a streaming chain parses and teaches at the checker (bool demanded)
 out=$($BIN -e 'if git ls-files then 1 else 2' 2>&1) && fail "non-bool chain must check-error" || true
 echo "$out" | grep -qF "expected bool, got seq<string>" || fail "bool teaching: $out"
 rm -rf "$isdir"
@@ -7649,7 +7648,7 @@ echo "e2e ok: if cmd | succeeds then (inline if/elif, bind-first kept, argv-then
 
 # ---- Seq.pfirst [D:seq-pfirst]: the race -----------------------------------
 # the winner returns without joining the losers, and a loser's spawned
-# TREE dies: its `sleep 2 && touch marker` orphan would fire at ~2s if
+# tree dies: its `sleep 2 && touch marker` orphan would fire at ~2s if
 # the kill missed, so the absence check waits past that
 pfdir=$(mkweirtmp)
 cat > "$pfdir/pf.weir" <<'WEOF'
@@ -7661,7 +7660,7 @@ let racer n =
 let r = [1; 2] |> Seq.pfirst racer
 print $"winner: {r}"
 WEOF
-# FILE redirect, never $( ): command substitution's pipe stays open
+# a file redirect, never $( ): command substitution's pipe stays open
 # until every process that inherited a handle to it dies, so a missed
 # kill would masquerade as weir waiting — the file separates the two.
 # The fail message carries the marker state: present = the loser's sh
@@ -7676,16 +7675,16 @@ out=$(cat "$pfdir/pf.out")
 sleep 2.5
 [ ! -e "$pfdir/marker" ] || fail "the loser's child survived the kill"
 
-# a SCOPED child joins its arm's race group too [D:seq-pfirst]: the spill
+# a scoped child joins its arm's race group too [D:seq-pfirst]: the spill
 # path spawns through the one starter, so `within proc` obeys the same
 # kill. The bare-command case above proved the group works; this proves
-# the membership. BOTH directions — the loser's child must die, the
+# the membership. Both directions — the loser's child must die, the
 # winner's must run to completion (a group that killed everything would
 # pass the first assertion alone).
 #
-# DO NOT COLLAPSE THE BRANCHES: the loser's scope sits in the `then` arm
-# and the winner's in `else`, which is not incidental — if/match INFER
-# their first branch and CHECK the rest, so this shape covers both type
+# Do not collapse the branches: the loser's scope sits in the `then` arm
+# and the winner's in `else`, which is not incidental — if/match infer
+# their first branch and check the rest, so this shape covers both type
 # directions of [D:within-scopes]'s scope contracts at the same time. A
 # tidy-up that moves both scopes to one branch, or hoists them out of the
 # if, silently drops half that coverage.
@@ -7710,18 +7709,18 @@ grep -qF "winner: 20" "$pfdir/pfproc.out" || fail "pfirst+proc winner: $(cat "$p
 
 out=$($BIN -e '[7; 8] |> Seq.pfirst (fun n -> match n with | 7 -> Duration.sleep 200ms ; fail "seven dies" | _ -> fail "eight dies")' 2>&1) && fail "all-failed must raise" || true
 echo "$out" | grep -qF "seven dies" || fail "first error by input order: $out"
-# empty raises AND names the guard (reject-don't-guess full form) — pin the
-# FRAGMENT, not the joined sentence (FParsec wraps long messages)
+# empty raises and names the guard (reject-don't-guess full form) — pin the
+# fragment, not the joined sentence (FParsec wraps long messages)
 out=$($BIN -e '[] |> Seq.pfirst (fun n -> n)' 2>&1) && fail "empty must raise" || true
 echo "$out" | grep -qF "a race needs at least one arm" || fail "empty names Seq.isEmpty: $out"
 rm -rf "$pfdir"
 echo "e2e ok: Seq.pfirst (winner in ${took}ms, loser tree killed — bare AND scoped, winner's scoped child survives, first-by-order error, empty names the guard)"
 
-# a loser's within-tmp cleanup DOES run — the `finally` executes on the
+# a loser's within-tmp cleanup does run — the `finally` executes on the
 # loser's own (un-aborted) thread once its killed child fails; here the
-# process OUTLIVES the loser (a 1s wait after the winner), so cleanup
+# process outlives the loser (a 1s wait after the winner), so cleanup
 # completes and the dir is gone. The exit-race leak [D:seq-pfirst] is the
-# OTHER case (process exits immediately) — parked, not pinned.
+# other case (process exits immediately) — parked, not pinned.
 pfdir2=$(mkweirtmp)
 cat > "$pfdir2/pf2.weir" <<WEOF
 let racer n =
@@ -7745,9 +7744,9 @@ echo "e2e ok: Seq.pfirst loser within-tmp cleanup runs (finally on the un-aborte
 # ---- the exit hook [D:exit-hook]: temp dirs survive a hard exit no more ----
 ehdir=$(mkweirtmp)
 
-# PROBE B REGRESSION: a pfirst whose script exits immediately after the
+# probe B regression: a pfirst whose script exits immediately after the
 # winner used to leak the loser's within-tmp dir (a background thread
-# killed mid-finally on NORMAL completion); the ProcessExit sweep fixes it
+# killed mid-finally on normal completion); the ProcessExit sweep fixes it
 cat > "$ehdir/probeb.weir" <<WEOF
 let racer n =
     within tmp d
@@ -7763,20 +7762,20 @@ sleep 0.5
 loser=$(cat "$ehdir/bdir.txt")
 [ ! -d "$loser" ] || { rm -rf "$loser"; fail "pfirst exit-race leaked the loser's tmp dir: $loser"; }
 
-# the SIGNAL sweep (customer 1 — the leak every script always had) and
-# REGISTRATION IS PER-PROCESS: a second weir's live dir survives the
+# the signal sweep (customer 1 — the leak every script always had), and
+# registration is per-process: a second weir's live dir survives the
 # first one's sweep (never a blind scan of the temp root). Pinned via
 # SIGTERM: a POSIX shell without job control starts background jobs
-# with SIGINT IGNORED (and .NET honors an inherited SIG_IGN — the
-# nohup convention), so a harness kill -INT is a no-op by DESIGN;
+# with SIGINT ignored (and .NET honors an inherited SIG_IGN — the
+# nohup convention), so a harness kill -INT is a no-op by design;
 # real Ctrl-C (default disposition) takes the same handler, verified
 # interactively. TERM exercises the identical sweep path.
-# per-instance TAG files, never pid-keyed: on Windows, bash's $! is the
-# msys fork-exec STUB's pid while Self.pid is the native weir's — the
+# per-instance tag files, never pid-keyed: on Windows, bash's $! is the
+# msys fork-exec stub's pid while Self.pid is the native weir's — the
 # two never match (the process-identity-across-the-msys-boundary class,
 # round 30). And on Windows the TERM stops at the msys boundary: it
 # lands on the MSYS sh child, weir raises command-failed, and the
-# RAISE-PATH finally removes the dir — the same no-leak property
+# raise-path finally removes the dir — the same no-leak property
 # through the error-unwind arm (the CancelKeyPress arm is
 # interactive-only, stated in Session.fs).
 for tag in one two; do
@@ -7808,10 +7807,10 @@ echo "e2e ok: exit hook (pfirst exit-race fixed, signal sweep via TERM, registra
 # ---- scoped processes [D:scoped-procs] -------------------------------------
 spdir=$(mkweirtmp)
 spport=$((21500 + RANDOM % 300))
-# the acceptance: start-await-use-teardown in weir, and NOTHING survives.
-# The server is a plain TCPServer — NOT `-m http.server`, whose
+# the acceptance: start-await-use-teardown in weir, and nothing survives.
+# The server is a plain TCPServer — not `-m http.server`, whose
 # HTTPServer.server_bind calls getfqdn(host): on the macOS runner that
-# reverse-DNS parks in mDNSResponder FOREVER for weir-descendant
+# reverse-DNS parks in mDNSResponder indefinitely for weir-descendant
 # processes (sample(1) showed slot_tp_init -> socket_gethostbyaddr ->
 # mdns_hostbyaddr -> kevent; bash-spawned pythons resolve fine — the
 # privacy gating keys on the spawning binary, which weir cannot fix).
@@ -7831,7 +7830,7 @@ print "closed"
 WEOF
 out=$($BIN "$spdir/acc.weir" 2>&1) || {
     # discriminate the halves [marker discipline]: server reachable from
-    # BASH means weir's probe is the broken side; unreachable means the
+    # bash means weir's probe is the broken side; unreachable means the
     # spawn/bind side
     probe=$(curl -s --max-time 2 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$spport/" 2>/dev/null || echo "curl-failed")
     fail "scoped-proc acceptance failed (bash-side probe of :$spport = $probe): $out"
@@ -7841,7 +7840,7 @@ echo "$out" | grep -qF "closed" || fail "acceptance close: $out"
 sleep 0.5
 $BIN -e "Net.portOpen $spport" | grep -qF "false" || fail "the no-orphan half: port $spport still up after the scope"
 
-# died-at-startup fails the poll IMMEDIATELY with the child's own words
+# died-at-startup fails the poll immediately with the child's own words
 printf 'within proc p = sh -c "echo boom >&2; exit 3"\n    poll timeout=8s watch=p\n        Net.portOpen 1\n' > "$spdir/dead.weir"
 out=$($BIN "$spdir/dead.weir" 2>&1) && fail "died-at-startup must raise" || true
 echo "$out" | grep -qF "watched process" || fail "watch names itself: $out"
@@ -7876,7 +7875,7 @@ if [ "$IS_WINDOWS" != "1" ]; then
     pgrep -f "sleep 298" >/dev/null && { pkill -f "sleep 298" 2>/dev/null || true; fail "the TERM sweep left the scoped child"; } || true
 fi
 
-# an ESCAPED handle (the scope's value) answers gracefully after the
+# an escaped handle (the scope's value) answers gracefully after the
 # scope killed the child: running=false, tail empty (spill gone), wait
 # yields the kill's code — never a crash
 printf 'let esc = within proc p = sh -c "sleep 5"\n    p\nprint (show (Proc.running esc))\nprint (show (Proc.tail esc |> Seq.length))\n' > "$spdir/esc.weir"
@@ -7884,10 +7883,10 @@ out=$($BIN "$spdir/esc.weir" 2>&1) || fail "the escaped handle must not crash: $
 printf '%s' "$out" | head -1 | grep -qF "false" || fail "escaped running must be false: $out"
 printf '%s' "$out" | tail -1 | grep -qF "0" || fail "escaped tail must be empty (spill gone): $out"
 
-# a proc scope spawns in a CHECKED position too [D:scoped-procs]: an
+# a proc scope spawns in a checked position too [D:scoped-procs]: an
 # else branch and a non-first match arm are typed by the check direction,
 # not infer, and the two directions must agree on the scope's contracts.
-# The body deliberately never TOUCHES the binder — reading it as a Proc
+# The body deliberately never touches the binder — reading it as a Proc
 # raises a type error, so a body that ignores it is the only shape that
 # can observe a scope which types clean and spawns nothing.
 cat > "$spdir/branch.weir" <<'WEOF'
@@ -7957,7 +7956,7 @@ cd "$sgdir/proj"
 SIGTOOL_MARK="$sgdir/gen-mark" PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" $BIN add sig sigtool | grep -qF "added sig sigtool (2 flag(s), source: help" || fail "add sig generates"
 test -f .weir/sigs/sigtool.weir || fail "sig file written"
 grep -qF '"version": "sigtool 3.1.4"' .weir/lock.json || fail "lock carries the verbatim version"
-# checking: typo caught, and CHECK SPAWNS NOTHING (the marker pin)
+# checking: typo caught, and check spawns nothing (the marker pin)
 printf '#sig sigtool\nsigtool --dry-run --nmae x\nprint "done"\n' > use.weir
 rm -f "$sgdir/gen-mark"
 out=$(SIGTOOL_MARK="$sgdir/gen-mark" PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" $BIN check use.weir 2>&1)
@@ -7984,8 +7983,8 @@ echo "$out" | grep -qF "VERSION MISMATCH" || fail "verify version arm (mismatch)
 rm .weir/sigs/sigtool.weir
 out=$($BIN restore 2>&1) && fail "restore of an absent generated sig must fail" || true
 echo "$out" | grep -qF "ABSENT and generated (nothing to fetch)" || fail "restore never regenerates: $out"
-# a tool that REFUSES --version (the jira shape [D:sig-version-probe]):
-# the usage dump is not an identity — the sig records NO version and
+# a tool that refuses --version (the jira shape [D:sig-version-probe]):
+# the usage dump is not an identity — the sig records no version and
 # says so; the surface still checks; verify takes the hash-only arm
 if [ "$IS_WINDOWS" != "1" ]; then
 cat > bin/noverstool <<'WEOF'
@@ -8025,10 +8024,10 @@ print "d"
 out=$(PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" $BIN check nv.weir 2>&1)
 echo "$out" | grep -qF "unknown flag '--forc' for noverstool" || fail "a version-less sig still checks: $out"
 # (verify exits nonzero here — the sigtool teardown above left its lock
-# entry pointing at a removed file; the noverstool LINE is the pin)
+# entry pointing at a removed file; the noverstool line is the pin)
 vout=$(PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" $BIN verify 2>&1) || true
 echo "$vout" | grep -qF "sig noverstool: ok" || fail "verify takes the hash-only arm: $vout"
-# the SECOND rung (the jira shape exactly): --version refused, the
+# the second rung (the jira shape exactly): --version refused, the
 # `version` subcommand speaks — the ladder records that identity
 if [ "$IS_WINDOWS" != "1" ]; then
 cat > bin/subverstool <<'WEOF'
@@ -8066,12 +8065,12 @@ fi
 out=$(PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" $BIN add sig subverstool 2>&1) || fail "add sig must succeed via the version subcommand: $out"
 echo "$out" | grep -qF "version: subverstool (Version=1.7.0)" || fail "the second rung records the identity: $out"
 grep -qF 'let version = "subverstool (Version=1.7.0)"' .weir/sigs/subverstool.weir || fail "the sig carries the rung-two identity"
-# the harvest pass [D:sig-version-probe]: weir's OWN usage-table help
+# the harvest pass [D:sig-version-probe]: weir's own usage-table help
 # has no flag rows — the last-resort --flag harvest records a surface
 out=$($BIN add sig weir 2>&1) || fail "add sig weir must succeed via the harvest: $out"
 echo "$out" | grep -qF "source: help-scan" || fail "the harvested surface is labeled: $out"
 grep -qF "json: bool" .weir/sigs/weir.weir || fail "the harvest found weir's own --json"
-# the SUBCOMMAND WALK (the jira/kubectl shape): Cobra keeps the real
+# the subcommand walk (the jira/kubectl shape): Cobra keeps the real
 # flags under `tool sub --help` — depth 2, unioned into the flat surface
 if [ "$IS_WINDOWS" != "1" ]; then
 cat > bin/cobratool <<'WEOF'
@@ -8123,8 +8122,8 @@ fi
 out=$(PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" $BIN add sig cobratool 2>&1) || fail "add sig cobratool: $out"
 echo "$out" | grep -qF "source: help+subs" || fail "the walk labels its lineage: $out"
 grep -qF "jql: bool" .weir/sigs/cobratool.weir || fail "the depth-2 walk found --jql"
-# the SCOPING receipt [D:scoped-sigs]: provenance kept, the union emitted —
-# a flag on the wrong subcommand warns NAMING the case; globals ride
+# the scoping receipt [D:scoped-sigs]: provenance kept, the union emitted —
+# a flag on the wrong subcommand warns naming the case; globals ride
 # every case; a line with no subcommand token stays the L2 skip
 grep -qF "type Cmd =" .weir/sigs/cobratool.weir || fail "the walk emits the scoped union"
 printf '#sig cobratool\ncobratool issue list --jql x --debug\nprint "d"\n' > sc1.weir
@@ -8133,12 +8132,12 @@ echo "$out" | grep -q "unknown flag" && fail "in-scope + global must check clean
 printf '#sig cobratool\ncobratool run --jql x\nprint "d"\n' > sc2.weir
 out=$(PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" $BIN check sc2.weir 2>&1)
 echo "$out" | grep -qF "unknown flag '--jql' for cobratool run" || fail "the wrong-case flag warns naming the case: $out"
-# the UNCRAMPING receipt [D:scoped-sigs]: a deeper path's flag does not
+# the uncramping receipt [D:scoped-sigs]: a deeper path's flag does not
 # leak up — `issue --jql` warns while `issue list --jql` is the clean pin above
 printf '#sig cobratool\ncobratool issue --jql x\nprint "d"\n' > sc4.weir
 out=$(PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" $BIN check sc4.weir 2>&1)
 echo "$out" | grep -qF "unknown flag '--jql' for cobratool issue" || fail "a deeper path's flag must not leak up: $out"
-# a SUB-LESS line checks the GLOBALS (the case intersection) — the
+# a sub-less line checks the globals (the case intersection) — the
 # claude shape: flag-only usage must still squiggle [D:scoped-sigs]
 printf '#sig cobratool\ncobratool --debgu\ncobratool --debug\nprint "d"\n' > sc3.weir
 out=$(PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" $BIN check sc3.weir 2>&1)
@@ -8172,13 +8171,13 @@ exit 1
 WEOF
 chmod +x bin/kwtool
 out=$(PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" $BIN add sig kwtool 2>&1) || fail "keyword longs must generate: $out"
-# a keyword long WITH a short shares one bracket (stacked attrs do not parse)
+# a keyword long with a short shares one bracket (stacked attrs do not parse)
 grep -qF '[<Wire "type"; Short "t">]' .weir/sigs/kwtool.weir || fail "Wire and Short share one attr bracket"
 # subcommands reusing a short: first holder keeps it, the union still validates
 grep -qF "allTags: bool" .weir/sigs/kwtool.weir || fail "the dup-short flag keeps its long"
 grep -c 'Short "a"' .weir/sigs/kwtool.weir | grep -qx 1 || fail "exactly one field holds -a"
 # open-by-default tools (the VS Code shape [D:sig-version-probe]): a bare
-# word would OPEN things — bare-word probes run only when --help
+# word would open things — bare-word probes run only when --help
 # advertises the subcommand, so generation must spawn none here
 cat > bin/opentool <<'WEOF'
 #!/bin/sh
@@ -8194,7 +8193,7 @@ rm -f "$sgdir/opened.log"
 out=$(PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" $BIN add sig opentool 2>&1) || fail "add sig opentool: $out"
 test -f "$sgdir/opened.log" && fail "a bare-word probe OPENED something: $(cat "$sgdir/opened.log")" || true
 # the az dialect [D:sig-version-probe]: multi-line --version records its
-# FIRST line only; `--flag --alias -s [Required] : doc` rows record the
+# first line only; `--flag --alias -s [Required] : doc` rows record the
 # postfix short, each alias, and a clean doc
 cat > bin/aztool <<'WEOF'
 #!/bin/sh
@@ -8211,13 +8210,13 @@ echo "$out" | grep -qF ".azure" && fail "environment lines reached the identity"
 grep -qF '[<Short "u">]' .weir/sigs/aztool.weir || fail "the postfix short records"
 grep -qF "url: bool" .weir/sigs/aztool.weir || fail "the alias records as its own flag"
 grep -qF "/// Request URL." .weir/sigs/aztool.weir || fail "the doc sheds the alias run and the colon"
-# claude-style same-camel aliases MERGE into one field: the kebab is
+# claude-style same-camel aliases merge into one field: the kebab is
 # accepted for free, one Wire carries the differing spelling
 grep -qF '[<Wire "dryRun">]' .weir/sigs/aztool.weir || fail "the camel alias rides Wire"
 printf '#sig aztool\naztool --dryRun x\naztool --dry-run x\nprint "d"\n' > azw.weir
 out=$(PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" $BIN check azw.weir 2>&1)
 echo "$out" | grep -q "unknown flag" && fail "both alias spellings must check: $out" || true
-# Go-flag rows (micro): single-dash longs, description on the NEXT line
+# Go-flag rows (micro): single-dash longs, description on the next line
 cat > bin/gotool <<'WEOF'
 #!/bin/sh
 if [ "$1" = "--version" ]; then echo "gotool 2.0"; exit 0; fi
@@ -8228,7 +8227,7 @@ chmod +x bin/gotool
 out=$(PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" $BIN add sig gotool 2>&1) || fail "add sig gotool: $out"
 grep -qF "configDir: bool" .weir/sigs/gotool.weir || fail "single-dash longs record"
 grep -qF "/// Clean the configuration directory and exit" .weir/sigs/gotool.weir || fail "next-line docs attach"
-# usage-only help on a NONZERO exit (BSD grep): the dump harvests; a
+# usage-only help on a nonzero exit (BSD grep): the dump harvests; a
 # short never warns on a surface that recorded no shorts
 cat > bin/bsdtool <<'WEOF'
 #!/bin/sh
@@ -8243,7 +8242,7 @@ printf '#sig bsdtool\nbsdtool -q --color=auto x\nprint "d"\n' > bsd.weir
 out=$(PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" $BIN check bsd.weir 2>&1)
 echo "$out" | grep -q "unknown flag '-q'" && fail "a shortless surface must not warn on shorts: $out" || true
 # gh's dialect [D:scoped-sigs]: colon-suffixed command tokens walk, and
-# the walk reaches DEPTH 4 (kustomize edit add resource's shape)
+# the walk reaches depth 4 (kustomize edit add resource's shape)
 cat > bin/ghtool <<'WEOF'
 #!/bin/sh
 case "$*" in
@@ -8259,7 +8258,7 @@ chmod +x bin/ghtool
 out=$(PATH="$(pathEntry "$sgdir/proj/bin"):$PATH" $BIN add sig ghtool 2>&1) || fail "add sig ghtool: $out"
 grep -qF "branch: bool" .weir/sigs/ghtool.weir || fail "colon-suffixed command tokens walk"
 grep -qF "track4: bool" .weir/sigs/ghtool.weir || fail "the walk reaches depth 4"
-# PATH-y tool names [D:scoped-sigs]: one FLAT file under sigs/ (never a
+# PATH-y tool names [D:scoped-sigs]: one flat file under sigs/ (never a
 # nested tree, never an escape from .weir), a legal module name, and
 # the #sig round-trip on the spelling the script uses
 mkdir -p "$sgdir/proj/lib"
@@ -8285,7 +8284,7 @@ printf 'kind: XR\n' > xr.yaml
 out=$($BIN add sig ./xr.yaml 2>&1) && fail "a data file must refuse" || true
 echo "$out" | grep -qF "exists but did not run" || fail "the data-file teach: $out"
 fi
-# broot draws a box TABLE — the glyphs strip to spaces and rows parse
+# broot draws a box table — the glyphs strip to spaces and rows parse
 cat > bin/boxtool <<'WEOF'
 #!/bin/sh
 if [ "$1" = "--version" ]; then echo "boxtool 1.0"; exit 0; fi
@@ -8346,13 +8345,13 @@ echo "$out" | sed -n 1p | grep -qF "supersecret" && fail "the shown record LEAKE
 rm -rf "$scdir"
 echo "e2e ok: Secret (show ***, reveal + argv splice reveal, the shown record does not leak)"
 
-# ---- Http [D:http]: the typed request boundary (OFFLINE local server) ------
+# ---- Http [D:http]: the typed request boundary (offline local server) ------
 if command -v python3 >/dev/null 2>&1; then
     hport=$((21000 + RANDOM % 2000))
     hdir=$(mkweirtmp)
     # an echo server: returns the request body byte-exact, status from a
     # header, the Authorization header on /auth, and the User-Agent
-    # header(s) as "count|joined" on /ua (COUNT, because the duplicate-UA
+    # header(s) as "count|joined" on /ua (a count, because the duplicate-UA
     # case is the likely bug [D:http-ua] — pairs append, they don't replace)
     cat > "$hdir/echo.py" <<'PYEOF2'
 import http.server, socketserver, sys
@@ -8377,8 +8376,8 @@ PYEOF2
     # connect to the 30s client timeout. $hport is explicit 127.0.0.1.
     awaitTcp $hport || { kill $hsrv 2>/dev/null || true; fail "Http: the echo server never came up on $hport"; }
 
-    # THE MANGLING PIN: a multi-object NDJSON body (spans lines) round-trips
-    # BYTE-EXACT — the exact bytes curl -d would have eaten
+    # the mangling pin: a multi-object NDJSON body (spans lines) round-trips
+    # byte-exact — the exact bytes curl -d would have eaten
     cat > "$hdir/mangle.weir" <<WEOF
 type P = { name: string; count: int }
 let items = [{ name = "a"; count = 1 }; { name = "b"; count = 2 }; { name = "c"; count = 3 }]
@@ -8392,7 +8391,7 @@ WEOF
     echo "$out" | grep -qF "lines=3 match=true" || { kill $hsrv 2>/dev/null || true; fail "body did not round-trip line-count: $out"; }
     echo "$out" | grep -qF '{"name":"b","count":2}' || { kill $hsrv 2>/dev/null || true; fail "body bytes mangled: $out"; }
 
-    # STATUS IS DATA: a 404 binds, never raises
+    # status is data: a 404 binds, never raises
     cat > "$hdir/status.weir" <<WEOF
 let resp = Http.send { Http.defaults with url = "http://127.0.0.1:$hport/x"; headers = [("X-Want-Status", "404")] }
 print \$"status={resp.status}"
@@ -8411,8 +8410,8 @@ WEOF
     echo "$out" | grep -qF "Bearer tok123" || { kill $hsrv 2>/dev/null || true; fail "Bearer not sent: $out"; }
     echo "$out" | grep -qF "Basic YWxpY2U6czNjcjN0" || { kill $hsrv 2>/dev/null || true; fail "Basic base64 wrong: $out"; }
 
-    # Http.fetch RAISES on non-2xx (naming the status); the SAME 404 that
-    # send BINDS as data [D:http-s2] — two names, no boolean
+    # Http.fetch raises on non-2xx (naming the status); the same 404 that
+    # send binds as data [D:http-s2] — two names, no boolean
     cat > "$hdir/fetch.weir" <<WEOF
 let ok = Http.fetch "http://127.0.0.1:$hport/x"
 print \$"fetch-ok lines={ok |> Seq.length}"
@@ -8441,10 +8440,10 @@ WEOF
     [ "$(echo "$out" | grep -c '^200$')" -eq 3 ] || { kill $hsrv 2>/dev/null || true; fail "pmap did not fetch all: $out"; }
 
     # the default User-Agent [D:http-ua]: weir/<stamp> — pinned as a
-    # RELATIONSHIP to --version (a literal would break every release).
-    # The /ua path reports count|value: exactly ONE must arrive in every
+    # relationship to --version (a literal would break every release).
+    # The /ua path reports count|value: exactly one must arrive in every
     # case (pairs append — the duplicate-UA bug is the likely one), an
-    # explicit header WINS from both header paths (lowercase spelling
+    # explicit header wins from both header paths (lowercase spelling
     # included), and fetch rides the same default.
     stamp=$("$BIN" --version)
     cat > "$hdir/ua.weir" <<WEOF
@@ -8467,10 +8466,10 @@ WEOF
     echo "e2e ok: Http default User-Agent (weir/<stamp> == --version, explicit wins from both header paths, exactly one ever sent, fetch included)"
 
     # F3-outbound [D:http-header-bytes]: a request header carrying CR/LF is
-    # REFUSED before send (the forge the review found on the wire), with a
+    # refused before send (the forge the review found on the wire), with a
     # located error naming the header, byte, and position. The referee is
-    # the server's own request log: a CLEAN control header ARRIVES (so the
-    # refusal cannot pass by headers never working), the forged one NEVER
+    # the server's own request log: a clean control header arrives (so the
+    # refusal cannot pass by headers never working), the forged one never
     # does, and the offending request is not sent at all.
     cat > "$hdir/inj.weir" <<WEOF
 let crlf = Str.fromBase64 "DQo="
@@ -8484,7 +8483,7 @@ WEOF
     # no source spelling that yields a NUL-bearing string: Str.fromBase64 and
     # Str.fromUtf8 both refuse NUL by the encoding law, which is why F3's
     # realistic payload arrives via a CR/LF decode, not a NUL one)
-    # the CLEAN control header reaches the server (headers do work) — the
+    # the clean control header reaches the server (headers do work) — the
     # positive control that makes "the forged header is absent" meaningful
     cat > "$hdir/injctl.weir" <<WEOF
 let r = Http.send { Http.get "http://127.0.0.1:$hport/echoh" with headers = [("X-Benign", "present")] }
@@ -8496,8 +8495,8 @@ WEOF
 
     kill $hsrv 2>/dev/null || true
 
-    # TRANSPORT failure raises, in its OWN words per case [D:transport-words];
-    # and CHECK makes NO request (a bogus URL checks clean, no network)
+    # transport failure raises, in its own words per case [D:transport-words];
+    # and check makes no request (a bogus URL checks clean, no network)
     cat > "$hdir/dead.weir" <<'WEOF'
 let _resp = Http.send { Http.defaults with url = "http://127.0.0.1:1/never" }
 print "unreached"
@@ -8506,7 +8505,7 @@ WEOF
     out=$($BIN "$hdir/dead.weir" 2>&1) && fail "transport failure must raise" || true
     echo "$out" | grep -qF "refused the connection" || fail "refused case must say so: $out"
 
-    # a TIMEOUT names itself and the duration that fired — never the .NET
+    # a timeout names itself and the duration that fired — never the .NET
     # cancellation text (the raw-leak class's 4th instance, closed)
     cat > "$hdir/hang.py" <<'HANGEOF'
 import socket, sys, time
@@ -8523,8 +8522,8 @@ HANGEOF
     echo "$out" | grep -qF "timed out after 1s reaching 127.0.0.1" || fail "timeout must name itself and the duration: $out"
     echo "$out" | grep -qF "canceled" && fail "the .NET cancellation text must not reach a user: $out" || true
 
-    # insecure: TLS verification is ON by default and OFF per-request when
-    # asked [D:http-s2] — a self-signed server the default REJECTS and
+    # insecure: TLS verification is on by default and off per-request when
+    # asked [D:http-s2] — a self-signed server the default rejects and
     # insecure = true accepts (openssl-guarded)
     if command -v openssl >/dev/null 2>&1; then
         tport=$((22800 + RANDOM % 200))
@@ -8552,11 +8551,11 @@ TLSEOF
         python3 "$hdir/tls.py" "$tport" 2>/dev/null &
         tsrv=$!
         awaitTcp "$tport" || { kill $tsrv 2>/dev/null || true; fail "the TLS server never came up"; }
-        # default REJECTS the self-signed cert (verification on)
+        # default rejects the self-signed cert (verification on)
         out=$($BIN -e 'Http.send (Http.get "https://127.0.0.1:'"$tport"'/")' 2>&1) && { kill $tsrv 2>/dev/null || true; fail "default must reject a self-signed cert"; } || true
         echo "$out" | grep -qF "certificate is not trusted" || { kill $tsrv 2>/dev/null || true; fail "TLS rejection message: $out"; }
         echo "$out" | grep -qF "insecure = true" || { kill $tsrv 2>/dev/null || true; fail "TLS rejection must name its repair: $out"; }
-        # insecure = true ACCEPTS it
+        # insecure = true accepts it
         cat > "$hdir/ins.weir" <<WEOF
 let r = Http.send { Http.get "https://127.0.0.1:$tport/" with insecure = true }
 print \$"insecure-status={r.status}"
@@ -8569,12 +8568,12 @@ WEOF
         echo "e2e SKIP: openssl absent — Http insecure TLS pin not run" >&2
     fi
 
-    # S1 [D:secret-redirect]: secretHeaders are DROPPED on a CROSS-ORIGIN
+    # S1 [D:secret-redirect]: secretHeaders are dropped on a cross-origin
     # redirect, exactly as the BCL drops Authorization — so weir's two
-    # credential channels agree (the review's F4). Driven over a LOCAL
-    # cross-origin 302 (127.0.0.1 -> localhost, a DIFFERENT origin by host),
-    # with origin B logging what arrived. The sensitive header must NOT
-    # reach B; a non-sensitive CONTROL header MUST (proving the drop is
+    # credential channels agree (the review's F4). Driven over a local
+    # cross-origin 302 (127.0.0.1 -> localhost, a different origin by host),
+    # with origin B logging what arrived. The sensitive header must not
+    # reach B; a non-sensitive control header must (proving the drop is
     # credential-specific, not a blanket strip). auth Bearer is dropped too.
     ra=$((23400 + RANDOM % 200))
     rb=$((23600 + RANDOM % 200))
@@ -8605,7 +8604,7 @@ DEOF
     python3 "$hdir/redir.py" & rasrv=$!
     python3 "$hdir/dest.py" & rbsrv=$!
     # readiness, not a fixed sleep: on a slow runner (macOS) the listener
-    # may not be accepting at 0.6s, and a connect into the bind race HANGS
+    # may not be accepting at 0.6s, and a connect into the bind race hangs
     # to the 30s client timeout instead of refusing (the awaitTcp comment).
     # $ra is explicit 127.0.0.1 so /dev/tcp readiness is reliable; dest.py
     # then gets the request round-trip as extra margin.
@@ -8631,7 +8630,7 @@ else
 fi
 
 # ---- the showcase's own .weir tree [D:showcase-covers] ---------------------
-# the tour imports a module, validates a district against the COMMITTED
+# the tour imports a module, validates a district against the committed
 # schema, and declares the hand-written git signature — check needs no
 # restore and no network (the fresh-tree copy proves it)
 sctdir=$(mkweirtmp)
@@ -8646,16 +8645,16 @@ rm -rf "$sctdir"
 echo "e2e ok: showcase .weir tree (offline check, no restore; the typo the comment names is caught)"
 
 # ---- install.sh hardening [D:install-truncation][D:install-checksum-scope] --
-# install.sh is a TEMPLATE [D:install-checksum-scope]: ci/gen-install.weir
-# substitutes the tag and embeds the release SHA256SUMS to produce the PINNED
-# artifact weir.sh serves. This exercises BOTH — the template's guards and the
+# install.sh is a template [D:install-checksum-scope]: ci/gen-install.weir
+# substitutes the tag and embeds the release SHA256SUMS to produce the pinned
+# artifact weir.sh serves. This exercises both — the template's guards and the
 # generation — offline, against a synthetic release.
 insdir=$(mkweirtmp)
 
 # the truncation guard: the whole body is main() invoked last, so a fetch cut
-# mid-body is an UNCLOSED FUNCTION — a syntax error that defines and runs
+# mid-body is an unclosed function — a syntax error that defines and runs
 # nothing (set -eu cannot catch a truncation; nothing failed). Parse-only
-# (sh -n), so no side effects. The cut is computed to land INSIDE main() —
+# (sh -n), so no side effects. The cut is computed to land inside main() —
 # past its opening brace, before the closing one — so it stays a mid-body cut
 # as the header comment grows.
 mainstart=$(grep -b -m1 '^main() {' "$ROOT/install.sh" | cut -d: -f1)
@@ -8667,21 +8666,21 @@ fi
 sh -n "$ROOT/install.sh" || fail "the full install.sh template must parse clean"
 echo "e2e ok: install.sh truncation guard — mid-main cut is a syntax error, full template parses"
 
-# the template refuses to RUN unsubstituted: a real tag never contains '@', so
+# the template refuses to run unsubstituted: a real tag never contains '@', so
 # the placeholder trips the guard rather than fetching a bogus tag
 tout=$(sh "$ROOT/install.sh" 2>&1 || true)
 echo "$tout" | grep -qF "this is the install TEMPLATE" || fail "the unsubstituted template must refuse to run, got: $tout"
 echo "e2e ok: install.sh template refuses to run unsubstituted (@-sentinel guard)"
 
 # generation [D:install-checksum-scope]: gen-install.weir pins the tag and
-# embeds a REAL SHA256SUMS; the result must parse, carry no leftover
+# embeds a real SHA256SUMS; the result must parse, carry no leftover
 # placeholders, and its embedded checksum must match the real binary (two-origin
 # verify — nothing fetched from the binary's origin to check it).
 gendir="$insdir/gen"; mkdir -p "$gendir"
 printf 'fake-x64\n'   > "$gendir/weir-v9.9.9-linux-x64"
 printf 'fake-arm64\n' > "$gendir/weir-v9.9.9-linux-arm64"
-# the fixture is the CANONICAL format release.yml's ubuntu sha256sum
-# emits — hash, TWO SPACES, name — spelled out rather than trusted to the
+# the fixture is the canonical format release.yml's ubuntu sha256sum
+# emits — hash, two spaces, name — spelled out rather than trusted to the
 # local tool: MSYS coreutils writes the binary marker (hash *name), which
 # broke the space-anchored greps below on Windows and is a fixture
 # infidelity, not the format under test. $HASHTOOL (declared beside the
@@ -8698,15 +8697,15 @@ gsums=$(awk "/<<'WEIR_SUMS'/{f=1;next} /^WEIR_SUMS\$/{f=0} f" "$gendir/install.s
 gexp=$(printf '%s\n' "$gsums" | grep " $name\$" | cut -d' ' -f1)
 gact=$($HASHTOOL "$gendir/$name" | cut -d' ' -f1)
 [ -n "$gexp" ] && [ "$gexp" = "$gact" ] || fail "embedded checksum ($gexp) must match the real binary ($gact)"
-# each checksum appears EXACTLY ONCE — inside the heredoc. v0.0.2's
-# generator replaced a comment that MENTIONED the placeholder, planting
+# each checksum appears exactly once — inside the heredoc. v0.0.2's
+# generator replaced a comment that mentioned the placeholder, planting
 # a second, bare copy of the sums at the top of the served script,
 # executed as commands before set -eu could object.
 [ "$(grep -cF "$gexp" "$gendir/install.sh")" -eq 1 ] || fail "a checksum appears outside the heredoc — the anchor matched a mention, not the placeholder line"
 echo "e2e ok: gen-install.weir — pins the tag, embeds SHA256SUMS once, embedded checksum matches the binary"
 
-# a missing SHA256SUMS entry is NAMED, not left to a formatting error — the
-# exact grep-guard the generated script runs over its embedded SUMS
+# a missing SHA256SUMS entry is named, not left to a formatting error — the
+# exact grep-guard the generated script runs over its embedded sums
 missing="weir-v9.9.9-linux-riscv"
 imsg=$(printf '%s\n' "$gsums" | grep -q " $missing\$" || echo "no embedded checksum for $missing")
 [ "$imsg" = "no embedded checksum for $missing" ] || fail "a missing checksum entry must be named, got: $imsg"
@@ -8714,7 +8713,7 @@ echo "e2e ok: install missing-checksum entry is named; present entry verifies"
 
 # ---- release-assets argv boundary [D:release-assets] ------------------------
 # the completeness check itself needs the live API (the release publish
-# job and ci/release-published.weir run it there); OFFLINE, pin the argv
+# job and ci/release-published.weir run it there); offline, pin the argv
 # boundary: --tag is required (strict Args.load — no request is ever made
 # without it), and --help exits 0. No network test is invented here.
 if raout=$("$BIN" "$ROOT/ci/release-assets.weir" 2>&1); then
@@ -8725,14 +8724,14 @@ echo "$raout" | grep -qF -- "--tag" || fail "release-assets.weir must name the m
 echo "e2e ok: release-assets.weir argv boundary (missing --tag refuses; --help exits 0)"
 
 # ---- the reference dump is current [D:reference] --------------------------
-# site/src/data/reference.json is GENERATED from builtinDocs (weir
+# site/src/data/reference.json is generated from builtinDocs (weir
 # docs-json) — the same one source #help and hover read. The committed
 # copy must match the binary's dump, or the site's reference pages are
 # stale (the grammar-manifest currency pattern, applied to docs).
 refdump=$(mkweirtmp)
 "$BIN" docs-json > "$refdump/reference.json"
 if ! diff "$refdump/reference.json" "$ROOT/site/src/data/reference.json" > /dev/null; then
-    # show WHAT differs before failing — a platform-byte mismatch and a
+    # show what differs before failing — a platform-byte mismatch and a
     # stale dump need different repairs, and a silent diff hides which
     echo "--- sizes: dump=$(wc -c < "$refdump/reference.json") committed=$(wc -c < "$ROOT/site/src/data/reference.json")"
     echo "--- first differing bytes (cmp -l, octal):"
@@ -8794,7 +8793,7 @@ echo "e2e ok: every manifest keyword taught in prose (GUIDE or written reference
 # ---- the REPL init file [D:repl-init] -------------------------------------
 # the plan's own example file loads: settings applied, names bound,
 # #help carries the /// doc; failure is all-or-nothing with a located
-# error; a missing init is SILENT (the negative pin).
+# error; a missing init is silent (the negative pin).
 initcfg=$(mkweirtmp)
 # the config-home split [D:windows-v1], same as the config cells: POSIX
 # reads XDG_CONFIG_HOME (the fixture), Windows reads the shell API's
@@ -8831,7 +8830,7 @@ WEOF
 iout=$(printf 'pwd\nprint (Env.get "EDITOR" |> Option.defaultValue "unset")\n#echo\n#help pu\nsh -c "echo child-sees-$PAGER"\n#quit\n' \
     | XDG_CONFIG_HOME="$initcfg" XDG_STATE_HOME="$initcfg/state" "$BIN" 2>&1)
 # count + file name only — Windows prints native separators, the
-# fixture path is bash-form; the path SPELLING is not the claim
+# fixture path is bash-form; the path spelling is not the claim
 echo "$iout" | grep -q "init: 3 name(s) from .*init\.weir" || fail "init count line missing: $iout"
 # the fixture's unique dirname + /work, separator-agnostic: pwd echoes
 # the native (escape-doubled) spelling on Windows
@@ -8840,7 +8839,7 @@ echo "$iout" | grep -qxF "weir> hx" || fail "init env not visible to Env.get"
 echo "$iout" | grep -qF "echo cap: 50" || fail "init echoCap not applied"
 echo "$iout" | grep -qF "push the current branch and set upstream" || fail "#help on an init name lost its /// doc"
 echo "$iout" | grep -qF "child-sees-less -R" || fail "init env not inherited by a child"
-# all-or-nothing: a typo'd #session key reports located, loads NOTHING
+# all-or-nothing: a typo'd #session key reports located, loads nothing
 cat > "$INITHOME/weir/init.weir" <<'WEOF'
 #session {
     echoCpa = 50
@@ -8853,11 +8852,11 @@ iout=$(printf '#help hi
 echo "$iout" | grep -qF "unknown #session key 'echoCpa'. Did you mean 'echoCap'?" || fail "init typo key lost its did-you-mean"
 echo "$iout" | grep -qF "init: not loaded" || fail "broken init must say not loaded"
 echo "$iout" | grep -qF "unknown name 'hi'" || fail "all-or-nothing broke: a binding survived a failed init"
-# a RAISING value fails the load LOCATED, never as a .NET trace: both
+# a raising value fails the load located, never as a .NET trace: both
 # eval sites (a #session field's value and a plain let) run user code at
 # startup, and an escaping exception killed the REPL before it reached a
 # prompt. The trace-absence assertion is the claim — the located line
-# alone would pass on a build that ALSO dumped a stack.
+# alone would pass on a build that also dumped a stack.
 cat > "$INITHOME/weir/init.weir" <<'WEOF'
 #session {
     cwd = File.read "/no/such/file/xyz" |> Seq.head
@@ -8893,13 +8892,13 @@ WEOF
 iout=$(printf '#quit
 ' | XDG_CONFIG_HOME="$initcfg" XDG_STATE_HOME="$initcfg/state" "$BIN" 2>&1)
 echo "$iout" | grep -qF "the init file is declaration-only" || fail "init decl-only teach missing"
-# missing init: SILENT — the negative pin ("reports on failure" must
+# missing init: silent — the negative pin ("reports on failure" must
 # not be satisfied by something that reports always)
 rm "$INITHOME/weir/init.weir"
 iout=$(printf '#quit
 ' | XDG_CONFIG_HOME="$initcfg" XDG_STATE_HOME="$initcfg/state" "$BIN" 2>&1)
 echo "$iout" | grep -qF "init:" && fail "a missing init must be silent" || true
-# a #session in a SCRIPT teaches its home; typed at the PROMPT likewise
+# a #session in a script teaches its home; typed at the prompt likewise
 printf '#session {\n    cwd = "/tmp"\n}\nprint "x"\n' > "$initcfg/s.weir"
 sout=$("$BIN" "$initcfg/s.weir" 2>&1 || true)
 echo "$sout" | grep -qF "#session lives in the REPL init file" || fail "script #session teach missing: $sout"
@@ -8912,8 +8911,8 @@ echo "e2e ok: repl init file (example loads with docs+settings, all-or-nothing f
 
 # ---- weir add module [D:add-module] ---------------------------------------
 # the acceptance battery: vendor from a local server (deterministic),
-# import via the weir: walk from root AND a subdir, the module's
-# capability in the IMPORTER's --can at the module's own line, tamper →
+# import via the weir: walk from root and a subdir, the module's
+# capability in the importer's --can at the module's own line, tamper →
 # verify → restore-repairs, re-add prints the sha pair, the seven
 # teaches, R1's negative pins, and the live shorthand chain.
 amdir=$(mkweirtmp)
@@ -8964,7 +8963,7 @@ printf 'import "weir:nope" as N\nprint "x"\n' > "$amdir/proj/missing.weir"
 ( cd "$amdir/proj" && $BIN missing.weir 2>&1 || true ) | grep -q "no vendored module 'nope'" || fail "missing-vendored teach"
 printf 'import "weir:../evil" as E\nprint "x"\n' > "$amdir/proj/evil.weir"
 ( cd "$amdir/proj" && $BIN evil.weir 2>&1 || true ) | grep -q "names a vendored module, never a path" || fail "weir: path-shape refusal"
-# R1's negative pins: BOTH pre-existing bare spellings stay file-relative
+# R1's negative pins: both pre-existing bare spellings stay file-relative
 printf 'module Sib\nlet s : unit -> string\nlet s () = "sibling"\n' > "$amdir/proj/sib.weir"
 cp "$amdir/proj/sib.weir" "$amdir/proj/sibnoext"
 printf 'import "sib.weir" as A\nprint (A.s ())\n' > "$amdir/proj/r1a.weir"
@@ -8972,7 +8971,7 @@ printf 'import "sibnoext" as B\nprint (B.s ())\n' > "$amdir/proj/r1b.weir"
 [ "$(cd "$amdir/proj" && $BIN r1a.weir)" = "sibling" ] || fail "R1: bare-with-extension must stay file-relative"
 [ "$(cd "$amdir/proj" && $BIN r1b.weir)" = "sibling" ] || fail "R1: bare-no-extension must stay file-relative"
 # the live shorthand chain (ref→sha→raw fetch→validation): a real repo
-# file that is NOT a module — the refusal proves the bytes arrived.
+# file that is not a module — the refusal proves the bytes arrived.
 # Tolerates the shared-IP rate limit; CI passes WEIR_TOKEN_GITHUB_COM.
 lout=$(cd "$amdir/proj" && $BIN add module "github.com/weir-shell/weir//ci/release-published.weir@v0.0.5" --as relpub 2>&1 || true)
 echo "$lout" | grep -q "is not a module" || echo "$lout" | grep -qE "rate limit|answered 403" || fail "live shorthand chain: $lout"
@@ -8981,13 +8980,13 @@ echo "e2e ok: add module (vendor, walk-import root+subdir, --can at the module's
 
 # ---- the homepage quotes the compiler [D:hero] ----------------------------
 # site/src/pages/index.astro quotes four outputs verbatim; all are pinned
-# here against LIVE runs so the homepage cannot go stale while green (the
+# here against live runs so the homepage cannot go stale while green (the
 # docs gate asserts executability, not output). The splice refusal's
 # message text is also byte-pinned in Tests.fs. --can file:lines are
 # included deliberately: fuzz.weir drift must move the homepage in the
 # same commit.
 herodir=$(mkweirtmp)
-# the hero [D:hero-3]: the typed boundary ENDS in a real command —
+# the hero [D:hero-3]: the typed boundary ends in a real command —
 # from json parses the version, git tag consumes it. The fixture is a
 # real repo (identity via -c flags; a lightweight tag needs a commit)
 printf '%s\n' '{"name": "acme-api", "version": "2.4.0", "private": true}' > "$herodir/package.json"
@@ -9004,10 +9003,10 @@ hout=$(cd "$herodir" && "$BIN" tag.weir 2>&1) || fail "the hero run failed: $hou
 ( cd "$herodir" && git tag -l ) | grep -qxF "v2.4.0" || fail "the hero's git tag was not created"
 # beat 1 [D:hero-3]: the check at three distances — a tool's flag
 # (#sig, generated from a stub then marked exhaustive: the stub's
-# 2-flag surface IS fully known), a manifest's key (the REAL vendored
+# 2-flag surface is fully known), a manifest's key (the real vendored
 # ConfigMap schema, served locally like the contracts cell), a program
-# name (PATH). All three findings in ONE weir check report, and the
-# check must write NOTHING. HTTP-e2e shaped (a served schema + a spawned
+# name (PATH). All three findings in one weir check report, and the
+# check must write nothing. HTTP-e2e shaped (a served schema + a spawned
 # stub), so POSIX + python3 only — never on Windows, like the sibling
 # schema cells; the Linux/macOS currency gate is what pins the page.
 if [ "$IS_WINDOWS" != "1" ] && command -v python3 >/dev/null 2>&1; then
@@ -9048,9 +9047,9 @@ let config = yaml schema=k8s-configmap
 config |> to yaml |> File.write "config.yaml"
 rsnyc -av main.json config.yaml backup:/srv/site
 WEOF
-    # the check resolves against ONLY the stub bin [D:hero-3]: rsnyc's
+    # the check resolves against only the stub bin [D:hero-3]: rsnyc's
     # cmd-not-found is did-you-mean-agnostic just when no near command is
-    # on PATH (a box WITH rsync would splice "Did you mean 'rsync'?" and
+    # on PATH (a box with rsync would splice "Did you mean 'rsync'?" and
     # the byte-pin — and the page — would drift). bicep still resolves
     # (it is the one entry); the check spawns nothing.
     b1=$(cd "$b1dir" && PATH="$(pathEntry "$b1dir/bin")" "$BIN" check deploy.weir 2>&1) && fail "beat-1 check must exit nonzero"
@@ -9089,13 +9088,13 @@ for line in \
     "      --timeout <duration>    optional — wait this long for the health check"; do
     echo "$b2" | grep -qF "$line" || fail "beat-2 --help drifted — update index.astro; missing: $line"
 done
-# the concatenation refusal (below the fold) — the LIKE-FOR-LIKE steam
+# the concatenation refusal (below the fold) — the like-for-like steam
 # shape [D:argv-concat]: root from the script's own path, glued /*
 printf 'let steamroot = Self.scriptPath |> Path.dir\nrm -rf $steamroot/*\n' > "$herodir/steam.weir"
 herr=$(cd "$herodir" && "$BIN" check steam.weir 2>&1) && fail "the steam snippet must refuse"
 echo "$herr" | grep -qF "steam.weir:2:18: error [parse]: argv words do not concatenate" || fail "concat refusal framing drifted: $herr"
 echo "$herr" | grep -qF "filesystem path" || fail "concat refusal tail drifted: $herr"
-# the --can quote — RELATIVE path, as the homepage shows it
+# the --can quote — relative path, as the homepage shows it
 hcan=$(cd "$ROOT" && "$BIN" check --can tools/fuzz.weir 2>&1) || fail "hero --can run failed: $hcan"
 for line in \
     "tools/fuzz.weir can (capability, not behaviour — an untaken branch still counts):" \
@@ -9110,7 +9109,7 @@ echo "e2e ok: homepage hero currency (hero tag run + tag created, beat-1 three-d
 
 # the ported-module findings triage [D:fail-bottom] [D:continuation-siblings]:
 # a fail arm opposite a value arm, a lambda body's tuple block-let, and
-# a multi-line application whose EVERY deeper line joins — script and
+# a multi-line application whose every deeper line joins — script and
 # module body alike
 tdir=$(mkweirtmp)
 cat > "$tdir/triage.weir" <<'WEOF'
@@ -9157,12 +9156,12 @@ expect "multi-line application assembles in a module body" '534' "$out"
 rm -rf "$tdir"
 
 # ---- plan/apply [D:plan-apply]: the acceptance cell ------------------
-# a NEUTRAL manifest-tree renderer run inside `plan` must CAPTURE every
+# a neutral manifest-tree renderer run inside `plan` must capture every
 # File.write/Dir op (its reads run) and the resulting Plan must `apply`
-# to a BYTE-IDENTICAL tree vs the direct (non-plan) run — the full-
+# to a byte-identical tree vs the direct (non-plan) run — the full-
 # guarantee case (fs-only). Plus the refusals: proc-in-plan and
 # apply-in-plan (check), known-after-apply (located runtime).
-# mkweirtmp (NOT bare mktemp -d): its mixed C:/... spelling keeps every
+# mkweirtmp (not bare mktemp -d): its mixed C:/... spelling keeps every
 # padir path forward-slashed, so a bash-interpolated $padir inside a weir
 # "..."/$"..." string never carries a backslash the string-escape pass
 # would eat (\t → TAB) — the Windows path-mangling class every cell below
@@ -9206,7 +9205,7 @@ if ! diff -r "$padir/direct" "$padir/applied" >/dev/null 2>&1; then
 fi
 echo "e2e ok: plan/apply — the applied tree is byte-identical to the direct run"
 
-# proc-in-plan REFUSES (check)
+# proc-in-plan refuses (check)
 cat > "$padir/proc.weir" <<'WEOF'
 let p =
     plan
@@ -9217,7 +9216,7 @@ out=$($BIN check "$padir/proc.weir" 2>&1) && fail "proc inside a plan must refus
 echo "$out" | grep -qF "refused inside 'plan'" || fail "the proc-in-plan teaching must fire: $out"
 echo "e2e ok: plan/apply — proc inside a plan refuses"
 
-# apply-in-plan REFUSES (check)
+# apply-in-plan refuses (check)
 cat > "$padir/applyin.weir" <<'WEOF'
 let q =
     plan
@@ -9231,7 +9230,7 @@ out=$($BIN check "$padir/applyin.weir" 2>&1) && fail "apply inside a plan must r
 echo "$out" | grep -qF "'Plan.apply' is refused inside 'plan'" || fail "the apply-in-plan teaching must fire: $out"
 echo "e2e ok: plan/apply — apply inside a plan refuses"
 
-# known-after-apply: a read of a captured target is a LOCATED runtime refusal
+# known-after-apply: a read of a captured target is a located runtime refusal
 cat > "$padir/kaa.weir" <<WEOF
 let p =
     plan
@@ -9245,9 +9244,9 @@ echo "$out" | grep -qF "known-after-apply" || fail "the known-after-apply teachi
 echo "e2e ok: plan/apply — a known-after-apply read refuses (located)"
 
 # DA-01 [D:plan-parallel-refusal]: a parallel/race callback runs on a
-# worker thread WITHOUT the (thread-local) plan capture frame — a native
-# mutation there would escape capture and run FOR REAL. The combinator
-# must REFUSE at runtime before any worker is scheduled: no marker file.
+# worker thread without the (thread-local) plan capture frame — a native
+# mutation there would escape capture and run for real. The combinator
+# must refuse at runtime before any worker is scheduled: no marker file.
 cat > "$padir/par.weir" <<WEOF
 let changes =
     plan
@@ -9259,7 +9258,7 @@ echo "$out" | grep -qF "'piterWith' is refused inside 'plan'" || fail "the paral
 [ -f "$padir/par-marker.txt" ] && fail "a worker wrote the marker despite the plan — capture escaped"
 echo "e2e ok: plan/apply — a parallel combinator inside a plan refuses (no worker ran)"
 
-# the same combinator OUTSIDE a plan still runs (the refusal is scoped)
+# the same combinator outside a plan still runs (the refusal is scoped)
 cat > "$padir/paro.weir" <<WEOF
 [1; 2; 3] |> Seq.piterWith 2 (fun n -> File.write \$"$padir/paro-{n}.txt" ["x"])
 print "ran"
@@ -9269,9 +9268,9 @@ expect "the parallel combinator ran outside a plan" "ran" "$out"
 [ "$(ls "$padir"/paro-*.txt 2>/dev/null | wc -l)" -eq 3 ] || fail "the outside-plan parallel combinator did not write all arms"
 echo "e2e ok: plan/apply — a parallel combinator OUTSIDE a plan still runs"
 
-# DA-02 [D:plan-proc-runtime-guard]: the SYNTACTIC firstPlanRefusal cannot
+# DA-02 [D:plan-proc-runtime-guard]: the syntactic firstPlanRefusal cannot
 # follow a helper reference, so an indirect proc built inside a plan slips
-# past `check`. A runtime guard at the ONE spawn point refuses it: no
+# past `check`. A runtime guard at the one spawn point refuses it: no
 # child process runs, no marker file. (Direct proc still refuses at check
 # above — belt and suspenders.)
 cat > "$padir/indirect.weir" <<WEOF
@@ -9286,13 +9285,13 @@ print \$"empty={changes |> Plan.isEmpty}"
 WEOF
 # it checks clean (the syntactic walk cannot see through the helper)...
 $BIN check "$padir/indirect.weir" >/dev/null 2>&1 || true
-# ...but REFUSES at runtime before the child spawns
+# ...but refuses at runtime before the child spawns
 out=$($BIN "$padir/indirect.weir" 2>&1) && fail "an indirect proc inside a plan must refuse at runtime" || true
 echo "$out" | grep -qF "refused inside 'plan'" || fail "the runtime proc-in-plan guard must fire: $out"
 [ -f "$padir/proc-marker.txt" ] && fail "the indirect proc spawned despite the plan — the guard did not fire"
 echo "e2e ok: plan/apply — an indirect helper-wrapped proc refuses at runtime (no child ran)"
 
-# a native File.write reached THROUGH a serial helper still CAPTURES —
+# a native File.write reached through a serial helper still captures —
 # the runtime guard must not over-refuse weir-native mutations
 cat > "$padir/helperwrite.weir" <<WEOF
 let doWrite () =
@@ -9308,10 +9307,10 @@ expect "the serial helper's native write is captured" "captured" "$out"
 [ -f "$padir/helper-marker.txt" ] && fail "the captured write ran to disk — over-captured"
 echo "e2e ok: plan/apply — a native write via a serial helper still captures (not over-refused)"
 
-# DA-03 [D:plan-path-bound]: a plan binds paths absolute AT CAPTURE, so
+# DA-03 [D:plan-path-bound]: a plan binds paths absolute at capture, so
 # apply writes the previewed location regardless of the apply-time cwd.
 # Capture a write + a copy under `cd A`, apply under `cd B`: both land in
-# A (the preview shows A's absolute paths), NEVER B.
+# A (the preview shows A's absolute paths), never B.
 mkdir -p "$padir/A" "$padir/B"
 printf 'data\n' > "$padir/A/orig.txt"
 cat > "$padir/bound.weir" <<WEOF
@@ -9352,7 +9351,7 @@ svport2=8472
 svport3=8473
 
 # (1) routing: /health -> 200 "ok"; /echo -> a query param echoed. The
-# server backgrounds itself in the SCOPE and drives its own client so
+# server backgrounds itself in the scope and drives its own client so
 # the port is torn down deterministically at block exit.
 cat > "$svdir/route.weir" <<WEOF
 let handler = fun req ->
@@ -9382,7 +9381,7 @@ print "closed"
 WEOF
 # the localhost fetch above (and the dual-host probe below) prove the
 # loopback-names fix [D:serve-loopback-names]: a Host: localhost request
-# reaches the handler, not .NET's prefix-miss 404 — on the SAME socket
+# reaches the handler, not .NET's prefix-miss 404 — on the same socket
 cat > "$svdir/dualhost.sh" <<DHEOF
 #!/bin/sh
 {
@@ -9399,7 +9398,7 @@ echo "$out" | grep -qF "health=ok" || fail "serve /health must return ok: $out"
 echo "$out" | grep -qF "health-localhost=ok" || fail "serve localhost Host must reach the handler, not a 404: $out"
 echo "$out" | grep -qF "echo=hello weir" || fail "serve /echo must echo the query param: $out"
 echo "$out" | grep -qF "closed" || fail "serve scope must exit: $out"
-# the bash-side dual-host referee: BOTH names returned the handler body
+# the bash-side dual-host referee: both names returned the handler body
 grep -qF "v4=ok" "$svdir/dualhost.txt" || fail "serve 127.0.0.1 Host must return the handler body: $(cat "$svdir/dualhost.txt" 2>/dev/null)"
 grep -qF "name=ok" "$svdir/dualhost.txt" || fail "serve localhost Host must return the handler body (not .NET's 404): $(cat "$svdir/dualhost.txt" 2>/dev/null)"
 # clean shutdown: the port frees, a second bind on it succeeds
@@ -9409,7 +9408,7 @@ echo "e2e ok: within serve — routing (health/echo) reachable over BOTH 127.0.0
 
 # (2) streaming: a 5-element Stream body with a delay between elements.
 # The client (curl -N, unbuffered) timestamps each arrival; we assert
-# the FIRST chunk lands well before the LAST — incremental, not
+# the first chunk lands well before the last — incremental, not
 # buffered-then-flushed. The capture is a standalone script (no nested
 # quote-escaping through the weir sh -c and the heredoc).
 cat > "$svdir/capture.sh" <<CAPEOF
@@ -9468,7 +9467,7 @@ print "loaded"
 WEOF
 out=$($BIN "$svdir/conc.weir" 2>&1) || fail "serve concurrency run failed: $out"
 echo "$out" | grep -qF "loaded" || fail "serve conc scope must exit: $out"
-# the ceiling proof: the FIRST THREE markers must be start,start,end —
+# the ceiling proof: the first three markers must be start,start,end —
 # a third 'start' before any 'end' would mean 3+ concurrent (ceiling
 # broken). At maxConcurrent=2 the third line is always an 'end'.
 first3=$(head -3 "$svdir/markers.txt" 2>/dev/null | tr '\n' ',')
@@ -9570,10 +9569,10 @@ echo "$out" | grep -qF "stream-err=producer died" || fail "F8: Server.streamErro
 echo "e2e ok: within serve — F8 a Stream producer raise surfaces via Server.streamErrors (not silent)"
 
 # (F3-serve) a response header carrying CR/LF [D:http-header-bytes]: the
-# serve face of the injection refusal. A raw socket refereees the wire so
-# the assertion is what ARRIVED, not curl's view: the injecting response is
-# a 500 with NO forged header (never F11's silent drop), a benign control
-# header DOES arrive on a clean path, and the script observes the located
+# serve face of the injection refusal. A raw socket referees the wire so
+# the assertion is what arrived, not curl's view: the injecting response is
+# a 500 with no forged header (never F11's silent drop), a benign control
+# header does arrive on a clean path, and the script observes the located
 # refusal through Server.streamErrors.
 cat > "$svdir/hdrprobe.py" <<'PYEOF'
 import socket, sys
@@ -9655,7 +9654,7 @@ echo "$out" | grep -qF "status=HTTP/1.1 408" || fail "F12: a slow body must be r
 echo "e2e ok: within serve — F12 request-body read timeout refuses a slow client with 408"
 
 # (F13) tty data sanitize [D:binary-echo]: a data value carrying ANSI/CR
-# renders sanitized AT A TTY, while weir's OWN colour output is
+# renders sanitized at a tty, while weir's own colour output is
 # unaffected; redirected output stays byte-faithful. Driven through a pty.
 cat > "$svdir/f13.weir" <<'WEOF'
 let name = Str.fromBase64 "G1szMW1yZWQtbmFtZQ1mdA=="
@@ -9696,7 +9695,7 @@ PYEOF
 echo "$sanit" | grep -qF "RAW_ANSI=False" || fail "F13: raw ANSI from data must not reach the tty: $sanit"
 echo "$sanit" | grep -qF "SANITIZED=True" || fail "F13: data escapes must render as visible \\xNN at a tty: $sanit"
 # weir's own colour survives: the error word stays coloured while the
-# DATA in the message is sanitized
+# data in the message is sanitized
 colour=$(python3 - "$BIN" "$svdir/f13err.weir" <<'PYEOF'
 import pty, os, sys
 binp, script = sys.argv[1], sys.argv[2]
@@ -9735,10 +9734,10 @@ rm -rf "$svdir"
 # ---- v0.0.48 security cut: three front-end hardening pins ------------------
 # each triggered a SIGABRT/DoS on the base; the fix makes each a located
 # diagnostic (exit != 134) or linear time. Only e2e drives the whole
-# binary, so it is where the exit CODE (not just the message) is pinned.
+# binary, so it is where the exit code (not just the message) is pinned.
 hdir=$(mkweirtmp)
 
-# Fix 1 -- attr integer past 64-bit: located parse error, NOT exit 134
+# Fix 1 -- attr integer past 64-bit: located parse error, not exit 134
 # [D:attr-int-overflow]
 cat > "$hdir/attr.weir" <<WEOF
 type T = {
@@ -9753,7 +9752,7 @@ rc=0; out=$($BIN check "$hdir/attr.weir" 2>&1) || rc=$?
 echo "$out" | grep -qF "out of range (64-bit)" || fail "attr overflow must teach the range: $out"
 echo "e2e ok: attr integer overflow is a located error (exit $rc, not 134)"
 
-# Fix 2 -- bareword ';'-spine: LINEAR, not O(N^2) [D:head-word-bound]
+# Fix 2 -- bareword ';'-spine: linear, not O(N^2) [D:head-word-bound]
 # 20k barewords was >25s (quadratic); the bound makes it ~5s. A generous
 # ceiling catches a regression to quadratic without flaking on load.
 python3 -c "print('let x = ' + ';'.join(['b']*20000))" > "$hdir/spine.weir"
@@ -9765,7 +9764,7 @@ elapsed=$((t1 - t0))
 [ "$elapsed" -lt 20 ] || fail "bareword ';'-spine is not linear: 20k barewords took ${elapsed}s (was quadratic; expected <20s)"
 echo "e2e ok: bareword ';'-spine checks in ${elapsed}s (linear, was O(N^2)/>25s)"
 
-# doc-comment run linearity: a contiguous /// run in a MODULE file accumulated
+# doc-comment run linearity: a contiguous /// run in a module file accumulated
 # O(N^2) (a list append per line) — 50k /// lines was ~21s. Cons+reverse makes
 # it linear (~0.4s). A generous ceiling catches a regression to quadratic.
 python3 -c "print('module M'); [print('/// d') for _ in range(50000)]; print('let x = 1')" > "$hdir/docdos.weir"
@@ -9777,25 +9776,25 @@ elapsed=$((t1 - t0))
 echo "e2e ok: doc-comment /// run checks in ${elapsed}s (linear, was O(N^2)/~21s)"
 
 # Fix 3 -- the CLI guard: the two fixed crash triggers exit located, never
-# 134, through the WHOLE binary [D:cli-exception-guard]
+# 134, through the whole binary [D:cli-exception-guard]
 rc=0; $BIN check "$hdir/attr.weir" >/dev/null 2>&1 || rc=$?
 [ "$rc" != "134" ] || fail "CLI guard: a front-end trigger still aborts with 134"
 echo "e2e ok: CLI verb dispatch backstops the front-end crash class (exit $rc, not 134)"
 rm -rf "$hdir"
 
 # ---- the spawn-boundary NUL funnel [D:spawn-nul-funnel] ------------------
-# SECURITY.md's word-integrity claim: a NUL-bearing value is REFUSED at
+# SECURITY.md's word-integrity claim: a NUL-bearing value is refused at
 # the process boundary with a diagnostic, never silently truncated. The
 # refusal lived only in the evaluator's statement/pipe constructors —
 # four downstream spawn paths (the reifiers, the ambient `within env`
 # overlay + the `$e(...)` twin, `into`, and the dynamic head `^$name`)
 # assembled argv/env and skipped it, so a `\0` truncated at execve. The
-# fix moves the refusal to the ONE spawn funnel (Proc.spawn), so every
-# path inherits it. Each hostile script below must REFUSE (exit 1) and
-# spawn NO child (the child logs its argv/env to a file — it must stay
-# empty). The NUL enters as external DATA: a shim on PATH emits a
+# fix moves the refusal to the one spawn funnel (Proc.spawn), so every
+# path inherits it. Each hostile script below must refuse (exit 1) and
+# spawn no child (the child logs its argv/env to a file — it must stay
+# empty). The NUL enters as external data: a shim on PATH emits a
 # NUL-bearing line, decoded into a weir string.
-# POSIX-only: the shims are #!/bin/sh scripts used as command HEADS — a
+# POSIX-only: the shims are #!/bin/sh scripts used as command heads — a
 # native weir.exe cannot exec a shebang script (and an extensionless name
 # does not resolve via PATHEXT), so on Windows `emitprog` reads as an
 # unbound variable. sh alone is not enough (MSYS ships it); the NUL-refusal
@@ -9805,7 +9804,7 @@ if [ "$IS_WINDOWS" = "0" ] && command -v sh >/dev/null 2>&1; then
     mkdir -p "$nuldir/bin"
     nullog="$nuldir/child.log"
     # argvdump: logs its argv (excluding $0) and env FOO, then exits 0 —
-    # so a truncated word/env leaves EVIDENCE and a clean exit (the vuln)
+    # so a truncated word/env leaves evidence and a clean exit (the vuln)
     cat > "$nuldir/bin/argvdump" <<EOF
 #!/bin/sh
 { i=0; for a in "\$@"; do echo "argv[\$i]=\$a"; i=\$((i+1)); done; echo "FOO=\${FOO-unset}"; } >> "$nullog"
@@ -9830,7 +9829,7 @@ EOF
     }
 
     # 1. dynamic head ^$name — the worst: a NUL-bearing head would resolve
-    # through PATH to the PREFIX program (argvdump) and run it
+    # through PATH to the prefix program (argvdump) and run it
     cat > "$nuldir/dynhead.weir" <<'WEOF'
 let p = emitprog |> Seq.exactlyOne
 let r = ^$p hello | complete
@@ -9844,7 +9843,7 @@ let r = argvdump $x | complete
 print (show r.exitCode)
 WEOF
     nul_refuses reifier
-    # 3. ambient `within env` overlay — the env VALUE carries the NUL
+    # 3. ambient `within env` overlay — the env value carries the NUL
     cat > "$nuldir/ambient.weir" <<'WEOF'
 let v = emitnul |> Seq.exactlyOne
 within env [Env.pair "FOO" v]
@@ -9859,7 +9858,7 @@ let cmd = $"argvdump before{tail}after"
 ["one"] |> into cmd |> Seq.iter print
 WEOF
     nul_refuses into
-    # 5. the $e(...) env twin — an env VALUE via the sigil
+    # 5. the $e(...) env twin — an env value via the sigil
     cat > "$nuldir/envsigil.weir" <<'WEOF'
 let v = emitnul |> Seq.exactlyOne
 let e = Env.ofPairs [("FOO", v)]
@@ -9867,7 +9866,7 @@ let r = $e(argvdump hello | complete)
 print (show r.exitCode)
 WEOF
     nul_refuses envsigil
-    # the env KEY coverage — a NUL in the key, not the value
+    # the env key coverage — a NUL in the key, not the value
     cat > "$nuldir/envkey.weir" <<'WEOF'
 let k = emitnul |> Seq.exactlyOne
 let e = Env.ofPairs [(k, "v")]
@@ -9882,7 +9881,7 @@ let x = emitnul |> Seq.exactlyOne
 argvdump $x
 WEOF
     nul_refuses stmt
-    # and a CLEAN command still spawns (the funnel is not overzealous)
+    # and a clean command still spawns (the funnel is not overzealous)
     : > "$nullog"
     PATH="$nuldir/bin:$PATH" $BIN -e 'argvdump ok deliberate' >/dev/null 2>&1 || fail "nul: a clean command must still run"
     grep -qF "argv[0]=ok" "$nullog" || fail "nul: clean command did not reach the child"
@@ -9893,7 +9892,7 @@ fi
 # ---- STRIX-6: yaml depth caps — hostile input teaches, never hangs/crashes [D:yaml-depth]
 s6dir=$(mkweirtmp)
 # a 5000-level `a:` ladder (1-space indents) — the cubic-hang shape. The
-# parser caps at 500 and returns a located diagnostic PROMPTLY.
+# parser caps at 500 and returns a located diagnostic promptly.
 : >"$s6dir/ladder.yaml"
 for i in $(seq 0 4999); do
     printf '%*sa:\n' "$i" "" >>"$s6dir/ladder.yaml"

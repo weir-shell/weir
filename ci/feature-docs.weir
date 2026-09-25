@@ -1,14 +1,14 @@
 #!/usr/bin/env weir
 // The feature-docs gate [D:feature-docs]: every keyword the grammar
-// manifest carries must appear in TEACHING PROSE — GUIDE or a written
+// manifest carries must appear in teaching prose — GUIDE or a written
 // reference page — not merely inside a fence or the generated keyword
 // table. Members are coverage-gated ([D:docs-coverage]); this is the
 // same idea for the half that is syntax, derived from the same gated
-// artifact. STATED LIMIT: keywords that are ordinary English words
-// (of, in, do, if, to…) match prose vacuously — the gate's teeth are
-// the distinctive ones (import caught red before its section landed);
-// and "appears in prose" is presence, not pedagogy — judgement stays
-// judgement.
+// artifact. Known limit: keywords that are ordinary English words
+// (of, in, do, if, to…) match prose vacuously — the check only bites
+// on the distinctive ones (import caught red before its section
+// landed); and "appears in prose" is presence, not pedagogy — that
+// judgement stays with the reader.
 
 type Manifest = { keywords: seq<string> }
 
@@ -21,7 +21,7 @@ type St = {
 }
 
 // prose only: drop fenced blocks and the generated keyword table —
-// a python fence taught us `import socketserver` reads as coverage
+// a python fence once made `import socketserver` read as coverage
 let stripFences path =
     let step st line =
         let fence = Str.startsWith "```" (Str.trim line)

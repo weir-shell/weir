@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # REPL quality probes [D:repl-quality]: persistent history (XDG_STATE path,
-# consecutive-dup dedup, 0600), Ctrl+R history search via a STUB fzf (the
+# consecutive-dup dedup, 0600), Ctrl+R history search via a stub fzf (the
 # spawn-feed-select-restore mechanics, deterministic without real fzf) and
 # the minimal built-in fallback when fzf is absent. Runs the real binary
 # under a pty; asserts on evaluated output, not on redraw escapes.
@@ -52,8 +52,8 @@ else:
     if mode != 0o600:
         failures.append(f"history file not 0600: {oct(mode)}")
 
-# --- 2. Ctrl+R via a STUB fzf: the selection REPLACES the line, and the
-# invocation carries --no-extended BEFORE the config flags (weir glyphs
+# --- 2. Ctrl+R via a stub fzf: the selection replaces the line, and the
+# invocation carries --no-extended before the config flags (weir glyphs
 # ^ | $ ! are fzf query operators; literal matching is the default, and
 # last-flag-wins lets finderFlags restore --extended) ---
 d2 = tempfile.mkdtemp()
@@ -77,7 +77,7 @@ else:
     elif "--height" in argv and argv.index("--no-extended") > argv.index("--height"):
         failures.append(f"--no-extended must precede config flags (last-flag-wins override): {argv}")
 
-# --- 2b. #find via the SAME stub fzf [D:help-find]: candidates feed in,
+# --- 2b. #find via the same stub fzf [D:help-find]: candidates feed in,
 # the selection's first field prints its #help answer, and the argv
 # carries --no-extended plus a --preview that runs the binary's own
 # headless doc render (--repl-doc) — never `weir` assumed on PATH ---
@@ -96,11 +96,11 @@ if "--preview" not in argv2b or "--repl-doc" not in argv2b:
 if "--query opt" not in argv2b:
     failures.append(f"#find's initial query must pass as fzf --query: {argv2b}")
 
-# --- 2c. the feed survives a finder that exits MID-STREAM [D:repl-quality]:
+# --- 2c. the feed survives a finder that exits mid-stream [D:repl-quality]:
 # a history larger than the pipe buffer guarantees the stub's head -1 exit
 # breaks the feed (EPIPE) while weir still streams — the broken pipe is a
 # normal selection outcome, never a cancel. Padded entries push the feed
-# past 64k; most-recent-first makes the LAST file entry the selection ---
+# past 64k; most-recent-first makes the last file entry the selection ---
 d2c = tempfile.mkdtemp()
 os.makedirs(d2c + "/bin")
 os.makedirs(d2c + "/state/weir", exist_ok=True)
@@ -126,7 +126,7 @@ if "103" not in out3:
     failures.append(f"Ctrl+R fallback did not recall '3 + 100' by substring: {out3!r}")
 
 # --- 4. Tab at the let-RHS head slot [D:let-rhs-head]: the head pool
-# serves the RHS and the completion INSERTS at the RHS word. A session
+# serves the RHS and the completion inserts at the RHS word. A session
 # alias is the candidate (unique by construction; nothing asserts a
 # PATH executable) — statement head and let-RHS both offer it
 # [D:command-head-alias] ---

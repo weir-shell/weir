@@ -2,7 +2,7 @@
 # Session directives [D:repl-directives]: '#' is the prefix for
 # everything addressed to the tooling — #help's three forms from the
 # one hover source, #quit (Ctrl+D still works), and comment-only
-# lines as silent no-ops. The :q teaching arm retired 2026-08-14.
+# lines as silent no-ops. The :q teaching arm is retired.
 import os
 import pty
 import re
@@ -90,7 +90,7 @@ if "print (Yaml.inferShape sample)" not in t:
 if "\x1b[" in t:
     failures.append("piped #help signature/example must carry zero ANSI")
 
-# a name the CHECKER would refuse must not get a confident hover: #help and
+# a name the checker would refuse must not get a confident hover: #help and
 # the checker read one ownership function [D:ambiguous-ctor]
 t = piped("type B = C\ntype Z = C\n#help C\n#quit\n")
 if "ambiguous constructor" not in t or "B, Z" not in t:
@@ -104,7 +104,7 @@ t = piped("#help Seq.colect\n#quit\n")
 if "no member 'colect'" not in t or "collect" not in t:
     failures.append(f"a dotted typo must did-you-mean in its module: {t[-200:]!r}")
 
-# --- #quit quits; :q is fully retired (user 2026-08-14) ---------------
+# --- #quit quits; :q is fully retired ---------------------------------
 t = piped("#quit\nprint \"unreached\"\n")
 if "unreached" in t:
     failures.append("#quit must leave the REPL")
@@ -123,7 +123,7 @@ if "unknown directive '#time'" not in t:
 if "#sig" in t or "#schema" in t:
     failures.append(f"an unrelated typo must NOT carry the #sig/#schema tail: {t[-200:]!r}")
 
-# --- a FILE directive at the REPL gets its own redirect, not the flood
+# --- a file directive at the REPL gets its own redirect, not the flood
 t = piped("#sig\n#quit\n")
 if "file directive" not in t or "no effect in the REPL" not in t:
     failures.append(f"#sig at the REPL must redirect (file directive): {t[-200:]!r}")
@@ -131,7 +131,7 @@ t = piped("#schema\n#quit\n")
 if "file directive" not in t:
     failures.append(f"#schema at the REPL must redirect (file directive): {t[-200:]!r}")
 
-# --- #alias [D:command-head-alias] is a RECOGNIZED directive ----------
+# --- #alias [D:command-head-alias] is a recognized directive ----------
 # bare #alias lists (empty session -> the teaching line); a live add
 # echoes; #help lists it; the single-hop rule rejects an alias-of-alias
 t = piped("#alias\n#quit\n")
@@ -175,7 +175,7 @@ if "#echo" not in t:
 if "hang" not in t:
     failures.append(f"#help's #echo line must carry the all-hangs warning: {t[-300:]!r}")
 
-# --- piped bytes are UNMOVED by the session cap [D:echo-cap]: the piped
+# --- piped bytes are unmoved by the session cap [D:echo-cap]: the piped
 # echo keeps its pinned constant even after #echo changes the session's
 t = piped('#echo 3\n[1; 2; 3; 4; 5; 6; 7; 8; 9; 10; 11; 12] |> Seq.map (fun x -> x)\n#quit\n')
 if "first 10 of an unforced seq" not in t:
@@ -238,7 +238,7 @@ segs = pty_session(
     ]
 )
 # the acceptance: 29 unforced lines fit under the default cap — no
-# Seq.freeze, no clip sentence ("l29" is a RESULT spelling; the typed
+# Seq.freeze, no clip sentence ("l29" is a result spelling; the typed
 # line never contains it)
 if "l29" not in segs[0] or "first" in segs[0]:
     failures.append(f"29 lines must echo whole under the default cap: {segs[0][-300:]!r}")
@@ -247,10 +247,10 @@ if "l5" not in segs[2] or "l6" in segs[2] or "first 5 of an unforced seq" not in
 if "l29" not in segs[4] or "first" in segs[4]:
     failures.append(f"#echo all must uncap the tty echo: {segs[4][-300:]!r}")
 
-# --- the bare statement is the CHILD's own write [D:colour-inherit] ---
+# --- the bare statement is the child's own write [D:colour-inherit] ---
 # stdout inherits at a tty (isatty true — colour works), so weir has no
 # guard on this path: the bytes, NUL included, are the child's choice
-# (bash's posture). The VALUE echo keeps its refusal — pinned by the
+# (bash's posture). The value echo keeps its refusal — pinned by the
 # [D:binary-echo] cells and the echoBinary units.
 segs = pty_session(["sh -c 'printf \"x\\0y\\n\"'"])
 if "binary output" in segs[0]:
@@ -264,7 +264,7 @@ if "\x00" not in segs[0]:
 def pty_tab(prefix, taps=1, settle=0.6):
     # type <prefix> then Tab(s), capture the paint, then ^C + ^D to leave.
     # a set of candidates sharing a prefix extends on the first Tab and
-    # LISTS on the second (readline convention) — taps controls it
+    # lists on the second (readline convention) — taps controls it
     pid, fd = pty.fork()
     if pid == 0:
         os.execv(WEIR, ["weir"])
@@ -319,18 +319,18 @@ if "weir> #" not in t:
 if "help" not in t or "infer" not in t or "save" not in t:
     failures.append(f"an empty-prompt Tab must offer the session directives: {t[-400:]!r}")
 
-# `Wr` at a head has a single completion and it is NOT the WriteFile
+# `Wr` at a head has a single completion and it is not the WriteFile
 # constructor — Tab either does nothing visible or completes a function;
 # WriteFile must not be the offered head
 t = pty_tab("Wr")
 if "WriteFile" in t:
     failures.append(f"a constructor (WriteFile) must not complete at a statement head: {t[-300:]!r}")
 
-# --- #history [D:repl-history]: shows the entries with the file PATH in
+# --- #history [D:repl-history]: shows the entries with the file path in
 # the header (a user cannot cat what they cannot find; `~` never expands),
 # bare = all, <n> = the last n. Only the TTY path records (piped input is
-# not the user's history), so this must be a pty session; a FRESH HOME per
-# session makes the count deterministic. A tty records EVERY submitted
+# not the user's history), so this must be a pty session; a fresh HOME per
+# session makes the count deterministic. A tty records every submitted
 # line, the `#history` directive included (bash-style), so the count and
 # the tail account for the directive line itself. ---------------------
 def pty_history(lines, settle=0.6):

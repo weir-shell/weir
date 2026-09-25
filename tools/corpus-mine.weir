@@ -81,7 +81,7 @@ let kept = distinctSnips |> Seq.where plausible |> Seq.freeze
 
 kept
 |> Seq.iter (fun src ->
-    // Str.sha256 retires the corpus's LAST coreutils shell-out
+    // Str.sha256 retires the corpus's last coreutils shell-out
     // [D:encoding-law]. The digest differs from the old feed|sha256sum
     // spelling by the trailing newline feed wrote — filenames change,
     // the kept-set partition does not (dedup is by content).

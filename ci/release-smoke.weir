@@ -1,9 +1,9 @@
 #!/usr/bin/env weir
-// Release SECURITY SMOKE [D:release-artifact-smoke]: the strix retests
+// Release security smoke [D:release-artifact-smoke]: the strix retests
 // found every credential/output-hygiene fix "correct in source, still
-// present in the SHIPPED binary" — a release-publishing gap, not a code
+// present in the shipped binary" — a release-publishing gap, not a code
 // one. A guarantee that lives only in an unreleased tree protects no user.
-// This gate runs the promises against a BINARY (the packaged artifact), so
+// This gate runs the promises against a binary (the packaged artifact), so
 // a build that regressed one cannot reach "released".
 //
 //   weir ci/release-smoke.weir --bin <path-to-weir>
@@ -25,9 +25,9 @@ let probe program =
         let text = Seq.append r.stdout r.stderr |> Str.join "\n"
         (text, r.exitCode)
 
-// 1. HTTP URL userinfo NEVER LEAKS in error output (CWE-532). The password
+// 1. HTTP URL userinfo never leaks in error output (CWE-532). The password
 // is the guarantee: a transport error for a well-formed URL shows host:port
-// (userinfo naturally absent), and an UNPARSEABLE URL is redacted to
+// (userinfo naturally absent), and an unparseable URL is redacted to
 // `***@host` [D:url-redact] — either way `hunter2` must be gone. (The
 // earlier `***`-present pin tested only the unparseable path; a DNS/refused
 // error on the CI runner takes the host:port path, where there is nothing
@@ -41,7 +41,7 @@ if not (Str.contains "nonexistent.invalid" out1) then
     fail $"REDACTION: the probe never reached a transport error — {out1}"
 print "ok: HTTP credentials never leak (host named, user:pass gone)"
 
-// 2. parse/decode error output is BOUNDED, not proportional to input (CWE-1286)
+// 2. parse/decode error output is bounded, not proportional to input (CWE-1286)
 let out2, _ =
     probe [ @"let big = Str.replicate 500000 ""!"""; "let _b = Bytes.fromBase64 big" ]
 let n2 = Str.length out2
@@ -49,7 +49,7 @@ if n2 > 2000 then
     fail $"BOUNDED-OUTPUT: a 500k invalid input yielded {n2} bytes of error (unbounded echo)"
 print $"ok: parse/decode error bounded ({n2} bytes for a 500k input)"
 
-// 3. a deeply-nested value does NOT crash the process (CWE-674, file-run render)
+// 3. a deeply-nested value does not crash the process (CWE-674, file-run render)
 let _, code3 =
     probe
         [ "type N = { d: int; next: Option<N> }"

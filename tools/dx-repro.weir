@@ -1,12 +1,12 @@
 #!/usr/bin/env weir
-// Gate for dev/plans/PLAN-dx-review.md — the DX findings that are BINARY
+// Gate for dev/plans/PLAN-dx-review.md — the DX findings that are binary
 // (a probe checks clean or it does not; a message says a word or it does
 // not). The census ratio in the plan is a measurement, not a gate; these are
 // the cells a fix must move.
 //
 //     weir tools/dx-repro.weir --bin ./path/to/weir
 //
-// Exits nonzero while any finding reproduces. A probe that fails to RUN
+// Exits nonzero while any finding reproduces. A probe that fails to run
 // counts as reproducing, never as a pass.
 //
 // Positive controls: `control-sees-clean` proves the runner can observe a
@@ -16,7 +16,7 @@
 // Probes avoid string literals entirely (they use `show`) so that this file
 // never needs a quote nested three deep to ask a one-line question.
 //
-// Shape note: every command-running helper is TOP-LEVEL, because a block
+// Shape note: every command-running helper is top-level, because a block
 // `let` with a command RHS loses its reifier off the topLet spine
 // (PLAN-adversarial-review F3).
 
@@ -30,11 +30,11 @@ let cli = Args.load Cli
 
 // ---- probes -----------------------------------------------------------------
 
-// D1 RE-POINTED at the removal (the plan's own instruction: the old
-// mustCheckClean could only go green if the mode were IMPLEMENTED, and
+// D1 re-pointed at the removal (the plan's own instruction: the old
+// mustCheckClean could only go green if the mode were implemented, and
 // its inverse passed on an untouched tree). What actually changes:
 // fmt --qualify is an unknown flag; fmt leaves a #loose file's
-// directive and names alone; a bare name in a strict file TEACHES the
+// directive and names alone; a bare name in a strict file teaches the
 // qualified spelling.
 let d1Loose =
     [ @"#loose"
@@ -81,7 +81,7 @@ let writeProbe d name lines =
 
 // ---- assertions -------------------------------------------------------------
 
-// the probe must CHECK CLEAN for the finding to be fixed
+// the probe must check clean for the finding to be fixed
 let mustCheckClean d name lines =
     let path = writeProbe d name lines
     let r = checkRun path
@@ -91,7 +91,7 @@ let mustCheckClean d name lines =
     print $"  {name}: {word}"
     fixed
 
-// the probe must produce SOME diagnostic — silence is the defect
+// the probe must produce some diagnostic — silence is the defect
 let mustDiagnose d name lines =
     let path = writeProbe d name lines
     let r = checkRun path
@@ -101,7 +101,7 @@ let mustDiagnose d name lines =
     print $"  {name}: {word}"
     fixed
 
-// the message must MENTION the repair
+// the message must mention the repair
 let mustSay d name lines needle =
     let path = writeProbe d name lines
     let r = checkRun path
@@ -111,7 +111,7 @@ let mustSay d name lines needle =
     print $"  {name}: {word}"
     fixed
 
-// the message must NOT contain a misleading word
+// the message must not contain a misleading word
 let mustNotSay d name lines needle =
     let path = writeProbe d name lines
     let r = checkRun path
@@ -149,7 +149,7 @@ within tmp d
     let d2 = mustDiagnose d "D2-ampersand-silent" d2Amp
     let d3 = mustSay d "D3-equals-teaches" d3Eq "=="
     let d4 = mustNotSay d "D4-while-as-command" d4While "command not found on PATH: while"
-    // the probe FILE NAME must not contain the needle: the diagnostic
+    // the probe file name must not contain the needle: the diagnostic
     // echoes the path, and a name carrying "Post" kept the cell red
     // after the fix (instrument honesty: found while executing)
     let d5 = mustNotSay d "D5-List-suggestion" d5List "Post"

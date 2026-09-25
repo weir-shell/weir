@@ -7,21 +7,21 @@
 // slips — each graded into one of three buckets:
 //
 //   teaches   the message names a repair (did-you-mean, "use X", a stated rule)
-//   plain     a located, correct error that names NO repair ("expected int, got string")
+//   plain     a located, correct error that names no repair ("expected int, got string")
 //   dump      a bare parser expecting-list with no repair named
-//   silent    accepted with NO diagnostic (the worst bucket: wrong and quiet)
+//   silent    accepted with no diagnostic (the worst bucket: wrong and quiet)
 //
 // `plain` exists because an earlier draft folded it into `teaches` and
 // inflated the score — a correct diagnosis is not the same as a taught fix.
 //
-// KNOWN PROXY LIMIT, stated rather than tuned away: `teaches` is detected by
-// a stock-phrase list, so a message that teaches by EXPLANATION lands in
+// Known proxy limit, stated rather than tuned away: `teaches` is detected by
+// a stock-phrase list, so a message that teaches by explanation lands in
 // `plain` — the non-exhaustive-match error ("missing: false") and the
 // precedence error ("'==' binds tighter than '|>', so this parses as ...")
-// both teach well and both score `plain`. So `teaches` is a FLOOR, `plain` is
+// both teach well and both score `plain`. So `teaches` is a floor, `plain` is
 // a mixed bucket, and the per-case bucket is worth more than the total.
 //
-// This is a REGRESSION BASELINE, not an absolute grade — the corpus is
+// This is a regression baseline, not an absolute grade — the corpus is
 // hand-chosen for realism, because no corpus of real weir errors exists yet.
 // The number is meaningful as "did this get worse", and the bucket a given
 // case sits in is meaningful on its own.
@@ -29,7 +29,7 @@
 // Fails if `teaches` drops below --baseline, so a message refactor cannot
 // quietly regress the set.
 //
-// Shape note: command-running helpers are TOP-LEVEL (PLAN-adversarial-review F3).
+// Shape note: command-running helpers are top-level (PLAN-adversarial-review F3).
 
 type Cli = {
     /// the weir binary under test
@@ -69,12 +69,12 @@ let corpus =
       ("typo-member", [ @"print (show (Seq.lenght [1]))" ])
       ("comma-in-record", [ @"type R = { a: int, b: int }"; @"print (show 1)" ])
       ("precedence-pipe-eq", [ @"let b = [1] |> Seq.length == 1"; @"print (show b)" ])
-      // iter-print-ints REMOVED (PLAN-dx-review D7): the fix made the
-      // spelling VALID — it is a right-first-try now, and correct code
+      // iter-print-ints removed (PLAN-dx-review D7): the fix made the
+      // spelling valid — it is a right-first-try now, and correct code
       // has no bucket in a mistake census (the no-regression pin lives
       // in the unit suite); n is 26
       ("map-as-statement", [ @"[1] |> Seq.map print" ])
-      // loose-bare-where REMOVED with #loose itself (PLAN-dx-review D1):
+      // loose-bare-where removed with #loose itself (PLAN-dx-review D1):
       // once the directive is out of the docs nobody types it, so it
       // stopped being a realistic wrong-first-try; n is 27
       ("bare-where-strict", [ @"let xs = [1] |> where (fun n -> n > 0)"; @"print (show (Seq.length xs))" ]) ]
@@ -108,11 +108,11 @@ let classify d entry =
     let path = $"{d}/{name}.weir"
     File.write path (snd entry)
     let r = checkRun path
-    // grade the FIRST diagnostic only — the one the reader actually hits.
-    // Grading the whole output let a CASCADING secondary error carry a teach
+    // grade the first diagnostic only — the one the reader actually hits.
+    // Grading the whole output let a cascading secondary error carry a teach
     // phrase and rescue a case whose real message was a dump (`1 = 1` did
     // exactly this: the dump on line 1, "Did you mean 'cd'?" on line 2).
-    // the first DIAGNOSTIC, not the first LINE: a file-level preamble can
+    // the first diagnostic, not the first line: a file-level preamble can
     // precede the diagnostics (the not-a-weir-script note), and grading the
     // line under it graded the preamble — every displaced message read as
     // `plain` and the total fell without a single message changing
@@ -122,7 +122,7 @@ let classify d entry =
         |> Option.orElse (r.stdout |> Seq.tryHead)
         |> Option.defaultValue ""
 
-    // POSITION, not presence: a repair phrase that arrives AFTER an
+    // Position, not presence: a repair phrase that arrives after an
     // expecting-list is not a teaching — the reader hits the token dump
     // first, and the message the anchoring law wants on top is second
     // [D:anchor-before-read]. Presence alone scored these `teaches` and

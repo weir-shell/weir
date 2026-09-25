@@ -13,7 +13,7 @@ import base64, json, subprocess, sys, tempfile, os
 try:
     import yaml
 except ImportError:
-    # the CALLER decides whether absence is a skip (e2e names it); this
+    # the caller decides whether absence is a skip (e2e names it); this
     # script itself never passes without the oracle
     print("interop-referee: PyYAML is not importable", file=sys.stderr)
     sys.exit(2)
@@ -41,13 +41,13 @@ payloads += ["a\x01b", "\x1b[31mred\x1b[0m", "\x7f", "a\x1fb"]
 payloads += ["\U0001F600", "a\U0001F600b\u2028\U0001F600"]
 payloads += ["x" * 5000, ("ab " * 2000).strip()]
 
-# positive control, TWO-SIDED and structurally independent of every
+# positive control, two-sided and structurally independent of every
 # finding: the oracle must accept a match and reject a mismatch
 assert yaml.safe_load("k: abc")["k"] == "abc"
 assert yaml.safe_load("k: abc")["k"] != "xyz"
 assert json.loads('{"k": "abc"}')["k"] == "abc"
 
-# `to yaml` yields the document's lines; `to json` writes ONE
+# `to yaml` yields the document's lines; `to json` writes one
 # document [D:to-jsonl] — base64 collapses each doc to one line
 script = ["type T = { A: string }"]
 for p in payloads:
