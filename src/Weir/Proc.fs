@@ -2,10 +2,10 @@ module Weir.Proc
 
 open System.Diagnostics
 
-// The spawn spec [D:spawn-spec]: ONE description of a child —
+// The spawn spec [D:spawn-spec]: one description of a child —
 // Prog / Args / Env / Input — consumed by one starter. The output
-// axis is the CONSUMER function (lines / streamCode / complete): the
-// reifier law restated in code — the consumer IS the meaning. The
+// axis is the consumer function (lines / streamCode / complete),
+// which carries the meaning — the reifier law restated in code. The
 // public wrappers keep their signatures; they are thin constructors
 // over the spec.
 type Spec =
@@ -13,9 +13,9 @@ type Spec =
       Args: string list
       Env: (string * string) list
       Input: seq<string> option
-      // the ambient snapshot [D:ambient-capture]: a LAZY command spawn
+      // the ambient snapshot [D:ambient-capture]: a lazy command spawn
       // replays the scope state captured where the expression was
-      // WRITTEN (closure semantics) — None reads the live session (the
+      // written (closure semantics); None reads the live session (the
       // eager statement paths, where site and spawn coincide)
       Cwd: string option
       Ambient: (string * string) list option }
@@ -29,23 +29,24 @@ let liveAmbient () =
       Cwd = None
       Ambient = None }
 
-// the NUL refusal AT the spawn hand-off [D:spawn-nul-funnel]: argv and
-// env are NUL-terminated C strings, so a NUL-bearing word would silently
-// TRUNCATE at the child (the prefix runs; exit 0; no diagnostic). The
-// evaluator's statement path already refused, but the reifier builtins,
-// the ambient `within env` overlay, `into`, and the dynamic head assemble
-// argv/env DOWNSTREAM and skipped it — so the byte leaked. Refusing HERE,
-// the ONE point every process start funnels through, gives all of them
-// the boundary for free. Same located message the statement path raised.
+// NUL refusal at the spawn hand-off [D:spawn-nul-funnel]: argv and
+// env are NUL-terminated C strings, so a NUL-bearing word would
+// silently truncate at the child (the prefix runs; exit 0; no
+// diagnostic). The evaluator's statement path already refused, but the
+// reifier builtins, the ambient `within env` overlay, `into`, and the
+// dynamic head assemble argv/env downstream and skipped it, so the
+// byte leaked. Refusing here — the one point every process start
+// funnels through — covers all of them. Same located message the
+// statement path raised.
 let private nulRefusal (what: string) (s: string) : unit =
     if s.Contains '\u0000' then
         failwith
             $"{what} contains a NUL byte — it would silently truncate at the process boundary (argv and env are NUL-terminated); NUL-bearing data is binary: pass it via a file or stdin, not an argument"
 
-// the ONE spawn [D:spawn-spec]: psi construction, the env law, cwd, the
-// not-found mapping, and the race-group registration every child owes
-// [D:seq-pfirst]. Redirection is the caller's — it is the only axis the
-// two starters differ on, so everything else lives here once.
+// the single spawn point [D:spawn-spec]: psi construction, the env
+// law, cwd, the not-found mapping, and the race-group registration
+// every child owes [D:seq-pfirst]. Redirection is the caller's — the
+// only axis the two starters differ on, so everything else lives here.
 let private spawn
     (redirectOut: bool)
     (redirectErr: bool)
@@ -60,25 +61,25 @@ let private spawn
     // firstPlanRefusal cannot follow a helper reference, so an indirect
     // proc built inside a plan slipped through the checker and spawned
     // for real. The helper runs on the capturing thread, so this
-    // thread-local guard is set — refuse here, the ONE spawn all
+    // thread-local guard is set — refuse here, the one point all
     // process starts funnel through.
     if Session.planGuardActive () then
         failwith
             $"'{prog}' runs a command, and 'proc' is refused inside 'plan' — a spawned binary reads and writes opaquely, so its effects cannot be captured; plan covers weir-native mutation only (File/Dir/Http)"
 
-    // ambient `within env` layers apply OUTER-FIRST under the explicit
-    // spec env, so inner and explicit keys win [D:within-scopes] — at
-    // the spawn, so EVERY child (reifiers, cmd/into, scoped procs) obeys
-    // the one law, not just the Eval command paths. A LAZY spawn replays
-    // its written-site snapshot instead [D:ambient-capture].
+    // ambient `within env` layers apply outer-first under the explicit
+    // spec env, so inner and explicit keys win [D:within-scopes] —
+    // applied at the spawn so every child (reifiers, cmd/into, scoped
+    // procs) obeys the one law, not just the Eval command paths. A lazy
+    // spawn replays its written-site snapshot [D:ambient-capture].
     let ambient =
         match ambientO with
         | Some snap -> snap
         | None -> Session.envOverlay () |> List.rev |> List.collect id
 
-    // integrity gate [D:spawn-nul-funnel]: the program name, EVERY
-    // argument, and every env KEY and VALUE — no NUL crosses. The
-    // RESOLVED ambient is checked (the live `within env` overlay, not
+    // integrity gate [D:spawn-nul-funnel]: the program name, every
+    // argument, and every env key and value — no NUL crosses. The
+    // resolved ambient is checked (the live `within env` overlay, not
     // just a captured snapshot — the reifier path carries None here).
     // An empty program name and a NUL-bearing path-like name get
     // weir-shaped diagnostics too (the raw platform exception otherwise
@@ -123,13 +124,13 @@ let private spawn
             failwith $"command not found or not executable: {prog}"
 
     // a racing arm's children join its group [D:seq-pfirst] — a no-op
-    // outside pfirst, and the SCOPED child owes it too: the spill path
+    // outside pfirst, and the scoped child owes it too: the spill path
     // reached the exit-hook backstop without ever joining the group
     Session.registerChild p
 
     p
 
-// the one starter: the shared spawn plus the stdin writer — which PULLS
+// the one starter: the shared spawn plus the stdin writer, which pulls
 // the input seq lazily as the pipe accepts (laziness reaches inputs too)
 let private start (redirectOut: bool) (redirectErr: bool) (s: Spec) : Process =
     let p = spawn redirectOut redirectErr s.Input.IsSome s.Cwd s.Ambient s.Prog s.Args s.Env
@@ -139,7 +140,7 @@ let private start (redirectOut: bool) (redirectErr: bool) (s: Spec) : Process =
         System.Threading.Tasks.Task.Run(fun () ->
             try
                 try
-                    // a child's stdin is DATA: LF on every platform
+                    // a child's stdin is data: LF on every platform
                     // [D:lf-output] — WriteLine's Environment.NewLine
                     // fed \r\n into child hashes on Windows
                     p.StandardInput.NewLine <- "\n"
@@ -169,13 +170,13 @@ let private reap (p: Process) =
     with _ ->
         ()
 
-/// a command's nonzero exit as a TYPED failure [D:repl-cmd-fail]: the REPL
-/// catches THIS specifically to render a bare command statement's failure
-/// as a quiet exit-code status (there is no `$?`, so the code must show)
-/// while a script — or a value/reifier position — keeps the loud raise.
-/// The Message is BYTE-IDENTICAL to the old failwith, so every existing
-/// catcher (the script runner, the top-level guard, `orFail`'s siblings)
-/// renders exactly as before.
+/// a command's nonzero exit as a typed failure [D:repl-cmd-fail]: the
+/// REPL catches this specifically to render a bare command statement's
+/// failure as a quiet exit-code status (there is no `$?`, so the code
+/// must show), while a script — or a value/reifier position — keeps
+/// the loud raise. The Message is byte-identical to the old failwith,
+/// so every existing catcher (the script runner, the top-level guard,
+/// `orFail`'s siblings) renders exactly as before.
 type CommandFailure(code: int, signalNote: string, shown: string) =
     inherit exn($"command failed with exit code {code}{signalNote}: {shown}")
     member _.Code = code
@@ -221,7 +222,7 @@ let linesOf (s: Spec) : seq<string> =
     }
 
 // the chunk-level relay [D:stream-echo]: onText receives content the
-// moment it arrives — PARTIALS included, so an interactive prompt shows
+// moment it arrives — partials included, so an interactive prompt shows
 // before its newline — and onBreak marks each terminator (\n, \r,
 // \r\n: exactly ReadLine's split, so the segment stream is linesOf's
 // lines with immediacy). Raises nonzero like every forced spawn.
@@ -270,7 +271,7 @@ let streamSegmentsOf (s: Spec) (onText: string -> unit) (onBreak: unit -> unit) 
         reap p
 
 // colour from the child [D:colour-inherit]: a bare statement command
-// at a tty spawns with stdout INHERITED — the child sees the terminal
+// at a tty spawns with stdout inherited — the child sees the terminal
 // (isatty true, colour on) and weir never holds the bytes, so the
 // relay's guard/threshold do not apply (bash's posture: the child
 // chose its bytes for a terminal it can see). Stderr was always
@@ -286,34 +287,36 @@ let runInherited (s: Spec) : unit =
     finally
         reap p
 
-// process REPLACEMENT [D:exec] — execvp, not spawn: the current weir image
-// is REPLACED by the command and keeps its pid, so as a container
-// entrypoint (PID 1) the app receives signals DIRECTLY, with no weir layer
-// to forward or reap. NEVER returns on POSIX success. Windows has no
-// execve (CreateProcess only), so it spawns the child in the foreground,
-// waits, and returns the exit code for the caller to exit with — the same
-// observable end (weir gone, the app's status is the script's) minus the
-// pid handoff. The env overlay and cwd land on THIS process first, so the
-// replaced image inherits them; execvp searches PATH for a bare name.
+// process replacement [D:exec] — execvp, not spawn: the current weir
+// image is replaced by the command and keeps its pid, so as a container
+// entrypoint (PID 1) the app receives signals directly, with no weir
+// layer to forward or reap. Does not return on POSIX success. Windows
+// has no execve (CreateProcess only), so it spawns the child in the
+// foreground, waits, and returns the exit code for the caller to exit
+// with — the same observable end (weir gone, the app's status is the
+// script's) minus the pid handoff. The env overlay and cwd land on
+// this process first, so the replaced image inherits them; execvp
+// searches PATH for a bare name.
 [<System.Runtime.InteropServices.DllImport("libc",
                                            SetLastError = true,
                                            CharSet = System.Runtime.InteropServices.CharSet.Ansi)>]
 extern int private execvp(string file, string[] argv)
 
-// execvp reads the C `environ`, which .NET's SetEnvironmentVariable does
-// NOT sync to on Unix [D:exec] — so the env overlay must land via libc
-// setenv (overwrite = 1) for the replacement image to inherit it.
+// execvp reads the C `environ`, which .NET's SetEnvironmentVariable
+// does not sync to on Unix [D:exec] — the env overlay must land via
+// libc setenv (overwrite = 1) for the replacement image to inherit it.
 [<System.Runtime.InteropServices.DllImport("libc",
                                            SetLastError = true,
                                            CharSet = System.Runtime.InteropServices.CharSet.Ansi)>]
 extern int private setenv(string name, string value, int overwrite)
 
 let exec (s: Spec) : unit =
-    // runtime plan refusal [D:plan-proc-runtime-guard]: process replacement
-    // must obey the guard `spawn` enforces — POSIX execvp does NOT funnel
-    // through `spawn`, so an indirect `exec` inside a `plan` block (a helper
-    // that invokes it) would otherwise run and replace the image instead of
-    // being refused. Applied here directly, the same message spawn raises.
+    // runtime plan refusal [D:plan-proc-runtime-guard]: process
+    // replacement must obey the guard `spawn` enforces — POSIX execvp
+    // does not funnel through `spawn`, so an indirect `exec` inside a
+    // `plan` block (a helper that invokes it) would otherwise run and
+    // replace the image instead of being refused. Applied here
+    // directly, with the same message spawn raises.
     if Session.planGuardActive () then
         failwith
             $"'{s.Prog}' runs a command, and 'proc' is refused inside 'plan' — a spawned binary reads and writes opaquely, so its effects cannot be captured; plan covers weir-native mutation only (File/Dir/Http)"
@@ -350,8 +353,9 @@ let exec (s: Spec) : unit =
     | None -> ()
 
     if System.OperatingSystem.IsWindows() then
-        // no execve: run foreground, then HARD-exit with the child's code
-        // (no scope unwind — exec discards the image, matching POSIX)
+        // no execve: run foreground, then hard-exit with the child's
+        // code (no scope unwind — exec discards the image, matching
+        // POSIX)
         let p = start false false s
         p.WaitForExit()
         let code = p.ExitCode
@@ -362,7 +366,7 @@ let exec (s: Spec) : unit =
         // NULL-terminated (the null element marshals to a NULL pointer)
         let argv = Array.append (List.toArray (s.Prog :: s.Args)) [| null |]
         execvp (s.Prog, argv) |> ignore
-        // execvp returns ONLY on failure — success replaced the image
+        // execvp returns only on failure — success replaced the image
         failwith $"command not found or not executable: {s.Prog}"
 
 // stdout relayed to the console as it arrives; the code as the result
@@ -383,8 +387,8 @@ let streamCodeOf (s: Spec) : int =
     finally
         reap p
 
-// ---- capture representation [D:capture-buffer]: ONE byte buffer per
-// stream + line offsets; stdout/stderr are lazy VIEWS decoding a
+// ---- capture representation [D:capture-buffer]: one byte buffer per
+// stream + line offsets; stdout/stderr are lazy views decoding a
 // string per pull. Same observable seq<string>, ~2x the text in RSS
 // instead of ~18x (per-string object overhead + UTF-16 were the old
 // cost). Offsets are int into one array — a single capture caps at
@@ -394,7 +398,7 @@ let streamCodeOf (s: Spec) : int =
 
 let private utf8 = System.Text.Encoding.UTF8
 
-// fixed-size segments ARE the storage — no doubling, no final
+// fixed-size segments are the storage — no doubling, no final
 // assembly copy, so peak touched pages ≈ the text itself (a growable
 // array's doubling+trim touched ~3x and MaxRSS keeps LOH pages)
 let private segBits = 22 // 4MB
@@ -434,7 +438,7 @@ let private readAllBytes (stream: System.IO.Stream) : Segments =
     { Segs = segs.ToArray(); Total = total }
 
 // StreamReader's BOM detection is part of today's pinned contract: a
-// UTF-16/32 BOM SWITCHES decoding. Those captures take the fallback
+// UTF-16/32 BOM switches decoding. Those captures take the fallback
 // (a real StreamReader over the bytes — byte-for-byte the old
 // behavior); everything else takes the per-line fast path.
 let private nonUtf8Bom (b: Segments) =
@@ -481,7 +485,7 @@ let private decodeAt (b: Segments) (start: int) (len: int) : string =
 
             utf8.GetString tmp
 
-// two passes over the bytes: count lines, then fill EXACT (start,len)
+// two passes over the bytes: count lines, then fill exact (start,len)
 // arrays — no growable-array churn, the offsets cost is 8B/line flat.
 // isStdout selects the oracle-pinned rule: stdout = ReadLine (\n,
 // \r\n, lone \r; empties kept); stderr = \n-only split, empties
@@ -565,10 +569,10 @@ let completedOf (s: Spec) : int * seq<string> * seq<string> =
     p.ExitCode, linesView outBytes true, linesView errBytes false
 
 // ---- the byte chain [D:byte-pipes]: raw command→command hops -------
-// A hop makes NO value, so weir does not hold the bytes
+// A hop makes no value, so weir does not hold the bytes
 // ([D:colour-inherit]'s own rationale, completed): stage stdout copies
 // 1:1 into the next stage's stdin — no decode, no line split, no
-// appended newline. Only the chain's ENDS are edges: the head may take
+// appended newline. Only the chain's ends are edges: the head may take
 // a text stdin feed (Input on the first spec), the tail's stdout is
 // read under the same line law as any single command.
 let private pumpBytes (src: System.IO.Stream) (dst: System.IO.Stream) (closeDst: unit -> unit) =
@@ -643,7 +647,7 @@ let chainLinesOf (specs: Spec list) : seq<string> =
 
 // ---- the public wrappers (signatures unchanged) --------------------
 
-// Child-env overlay [D:child-env-overlay]: `lines` IS the empty
+// Child-env overlay [D:child-env-overlay]: `lines` is the empty
 // overlay, so cmd/cmdEnv share one path by construction.
 let linesWith
     (overlay: (string * string) list)
@@ -687,14 +691,14 @@ let completeWith
 let complete (prog: string) (args: string list) (input: seq<string> option) : int * seq<string> * seq<string> =
     completeWith [] prog args input
 
-// a SCOPED background child [D:scoped-procs]: both streams spill to
+// a scoped background child [D:scoped-procs]: both streams spill to
 // files (the parent's terminal never interleaves; Proc.tail and the
 // poll-watch errors read them back), stdin closed — a child that reads
-// gets EOF. Registered with the exit hook by the CALLER.
-/// returns the process AND a bounded drain: joining the pump threads
-/// guarantees the spill holds the child's LAST words before a reader
+// gets EOF. Registered with the exit hook by the caller.
+/// returns the process and a bounded drain: joining the pump threads
+/// guarantees the spill holds the child's last output before a reader
 /// composes an error from it — a fast-exiting child raced the pumps
-/// and the died-at-startup message lost its "boom" [D:scoped-procs]
+/// and the died-at-startup message lost its cause [D:scoped-procs]
 let startSpilled
     (overlay: (string * string) list)
     (prog: string)
@@ -704,11 +708,11 @@ let startSpilled
     : Process * (unit -> unit) =
     let p = spawn true true true None None prog args overlay
 
-    // stdin closed HERE, not through the writer task: a scoped child
+    // stdin closed here, not through the writer task: a scoped child
     // that reads must see EOF at once, with no thread between
     p.StandardInput.Close()
 
-    // per-chunk flush: the spill must be READABLE while the child runs
+    // per-chunk flush: the spill must be readable while the child runs
     // (tail during the scope) — CopyTo's big buffer would sit on lines
     let pump (src: System.IO.Stream) (path: string) =
         let t =
@@ -741,7 +745,7 @@ let startSpilled
 
     let drain () =
         // bounded: a dead child's pipes hit EOF at once, so the join is
-        // instant in the case that matters; the cap only guards a LIVE
+        // instant in the case that matters; the cap only guards a live
         // caller from a chatty child
         tOut.Join 2000 |> ignore
         tErr.Join 2000 |> ignore
@@ -753,9 +757,9 @@ let startSpilled
 let stopTree (p: Process) : unit = reap p
 
 let resolveProg (prog: string) : string =
-    // the NUL refusal reaches the RESOLVE too [D:spawn-nul-funnel]: a
+    // the NUL refusal reaches the resolve too [D:spawn-nul-funnel]: a
     // path-like name (`/`-bearing) resolves through Path.GetFullPath
-    // BEFORE the spawn funnel, which raised a raw platform exception
+    // before the spawn funnel, which raised a raw platform exception
     // ("Null character in path") on a NUL. Refuse here with the same
     // weir-shaped diagnostic the spawn boundary produces.
     nulRefusal "a dynamic command head" prog
@@ -764,7 +768,7 @@ let resolveProg (prog: string) : string =
         Session.resolve prog
     elif System.OperatingSystem.IsWindows() && not (prog.Contains '\\') then
         // the checker's existence gate resolves x -> x.bat via PATHEXT;
-        // the SPAWN must hand CreateProcess the same real file (it
+        // the spawn must hand CreateProcess the same real file (it
         // appends only .exe itself) [D:windows-s2]
         Extern.resolveFile prog |> Option.defaultValue prog
     else

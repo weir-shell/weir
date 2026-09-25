@@ -1,20 +1,20 @@
 module Weir.Can
 
-// `weir check --can` [D:can-report]: what a script CAN do, derived from
-// the typed tree AFTER a clean check — a separate post-check walk, so
-// the collector cannot touch the check's error path BY CONSTRUCTION
-// (the design argument the order-insensitive Eq arm won on). This is a
-// report, NOT an effect system: no annotations, no inference on
-// signatures — if it ever wants one, reopen the question.
+// `weir check --can` [D:can-report]: what a script can do, derived
+// from the typed tree after a clean check — a separate post-check
+// walk, so the collector cannot touch the check's error path by
+// construction (the design argument the order-insensitive Eq arm won
+// on). This is a report, not an effect system: no annotations, no
+// inference on signatures — if it ever wants one, reopen the question.
 //
-// CAPABILITY, NOT BEHAVIOUR: a command inside a branch that never runs
-// still counts — the report is a sound over-approximation of weir-level
-// actions, never a prediction. THE MODEL BOUNDARY, stated once: the
-// report covers what WEIR spawns and touches; any external can itself
-// spawn children, read files, or reach the network — no static report
-// closes that, and the interpreter list below only marks the COMMON
-// deliberate escapes (their argument is a program this report cannot
-// read).
+// Capability, not behaviour: a command inside a branch that never runs
+// still counts — the report is a sound over-approximation of
+// weir-level actions, never a prediction. The model boundary, stated
+// once: the report covers what weir spawns and touches; any external
+// can itself spawn children, read files, or reach the network — no
+// static report closes that, and the interpreter list below only
+// marks the common deliberate escapes (their argument is a program
+// this report cannot read).
 
 open Weir.Types
 open Weir.Ast
@@ -25,8 +25,8 @@ type Site = { File: string; Line: int; Col: int }
 
 type Fact =
     | Runs of prog: string
-    // a dynamic head [D:dynamic-head]: the program is a runtime VALUE —
-    // an unresolved external, counted with the opaque sites
+    // a dynamic head [D:dynamic-head]: the program is a runtime value
+    // — an unresolved external, counted with the opaque sites
     | RunsDyn of display: string
     | OpaqueArg of interp: string
     | FsRead of member_: string * path: string option
@@ -40,17 +40,17 @@ type Fact =
     | SecretArgv of prog: string
     | ProcScope
     // a scoped HTTP listener [D:http-serve]: binds a port and runs a
-    // handler per request — the network's LISTEN face, distinct from
-    // Network's client SENDs
+    // handler per request — the listen side of the network, distinct
+    // from Network's client sends
     | ServeScope of port: int option
     | ProcCtl of member_: string
     | Terminates of via: string
 
 type Cap = { Fact: Fact; Site: Site }
 
-// the common deliberate escapes: heads whose ARGUMENT is a program this
-// report cannot read. Everything else external is still listed under
-// runs — this set only adds the loud opaque marker.
+// the common deliberate escapes: heads whose argument is a program
+// this report cannot read. Everything else external is still listed
+// under runs — this set only adds the loud opaque marker.
 let private interpreters =
     Set
         [ "sh"
@@ -72,13 +72,13 @@ let private interpreters =
           "timeout"
           "watch"
           "eval"
-          // weir itself [D:can-report]: `weir file.weir` takes a program
-          // as its argument in exactly sh -c's sense — the report cannot
-          // see through it, and 22 unmarked self-invocations in the
-          // showcase were the receipt
+          // weir itself [D:can-report]: `weir file.weir` takes a
+          // program as its argument in exactly sh -c's sense — the
+          // report cannot see through it (the showcase had 22
+          // unmarked self-invocations without this entry)
           "weir" ]
 
-// module-member classification: what a REFERENCE to each member means
+// module-member classification: what a reference to each member means
 // for the report. Pure members (Path.fileName, Http.get the
 // constructor…) are deliberately absent — building a request is not
 // sending it.
@@ -100,10 +100,10 @@ let private networkMembers = Set [ "Http.send"; "Http.fetch"; "Net.portOpen" ]
 
 let private procMembers = Set [ "Proc.stop"; "Proc.wait" ]
 
-// overlay NAMES, when literal [D:can-report]: Env.pair lists and
+// overlay names, when literal [D:can-report]: Env.pair lists and
 // Env.ofPairs tuple lists carry their keys statically; a let-bound
 // overlay resolves through the binds map (top-level and expression
-// lets both register). Anything else is honestly unknown.
+// lets both register). Anything else is reported as unknown.
 let rec private envNamesOf
     (binds: System.Collections.Generic.Dictionary<string, string list>)
     (e: TypedExpr)
@@ -171,8 +171,9 @@ let rec private walkExpr
           | Some ns -> binds[n] <- ns
           | None -> ())
      | TEWithin(kind, _, arg, _, _) ->
-         // exhaustive on the kind UNION [D:within-kind-union] — the
-         // wildcard this table drifted under is gone by construction
+         // exhaustive on the kind union [D:within-kind-union] — no
+         // wildcard, so a new kind cannot silently drift past this
+         // table
          (match kind with
           | WithinTmp -> add (TempWrite "within tmp (a temporary directory)") te.Span
           | WithinProc ->
@@ -185,15 +186,15 @@ let rec private walkExpr
               let names = arg |> Option.bind (envNamesOf binds)
               add (EnvWrite("within env", names)) te.Span
           | WithinCd -> add CwdChange te.Span
-          // the lock FILE is a write [D:within-lock]: the scope creates it
-          // when missing, so a report that omits it denies a write that
-          // happens
+          // the lock file is a write [D:within-lock]: the scope
+          // creates it when missing, so omitting it would deny a
+          // write that happens
           | WithinLock -> add (FsWrite("within lock", arg |> Option.bind literalStr)) te.Span
-          // pure/readonly regions ASSERT, they do not touch
+          // pure/readonly regions assert, they do not touch
           // [D:pure-stage1] [D:pure-stage2] — the capabilities inside
           // still surface through their own nodes; a plan region
           // [D:plan-apply] transforms them into Ops but the same nodes
-          // report what the plan CAN do when applied
+          // report what the plan can do when applied
           | WithinPure
           | WithinReadonly
           | WithinPlan -> ())
@@ -218,7 +219,7 @@ let rec private walkExpr
                  | TSecret
                  | TNamed("Option", [ TSecret ]) -> add (SecretLoad $"{fname} (Args.load {d.Name})") te.Span
                  | _ -> ()
-     // a module member is a DOTTED TEVar (the checker's resolution) —
+     // a module member is a dotted TEVar (the checker's resolution) —
      // classify the reference; a following literal application upgrades
      // "some path/url" to the named one
      | TEVar qual when qual.Contains "." ->
@@ -257,32 +258,32 @@ let rec private walkExpr
               elif qual = "Env.get" then
                   add (EnvRead "a named variable (Env.get)") te.Span)
 
-         // the fn side is fully handled; walk only the ARGUMENT
+         // the fn side is fully handled; walk only the argument
          walkExpr binds site acc arg
          skipChildren <- true
      | TEApp({ Kind = TEVar "exit" }, _) -> add (Terminates "exit") te.Span
      | TEApp({ Kind = TEVar "fail" }, _) -> add (Terminates "fail") te.Span
      | TEApp(f, args) ->
-         // the reifier desugar [D:exit-reifiers]: the program rides as a
-         // LITERAL argument to the internal |complete family — the third
-         // spawn shape, still statically visible
+         // the reifier desugar [D:exit-reifiers]: the program rides as
+         // a literal argument to the internal |complete family — the
+         // third spawn shape, still statically visible
          let rec headOf (e: TypedExpr) =
              match e.Kind with
              | TEApp(g, _) -> headOf g
              | k -> k
 
          match headOf te with
-         // only a COMMAND reifier is a spawn here [D:desugar-namespace]: a
-         // library desugar (|seqIter from `for`, |seqRange from a range)
-         // targets a plain member and adds NO capability — the phantom
-         // dynamic head a `for` loop used to report
+         // only a command reifier is a spawn here [D:desugar-namespace]:
+         // a library desugar (|seqIter from `for`, |seqRange from a
+         // range) targets a plain member and adds no capability (a
+         // `for` loop must not report a phantom dynamic head)
          | TEVar h when Weir.Effects.isCommandReifier h ->
-             // the program's POSITION in the desugar, then literalness:
-             // base twins take (prog, args); orFail's msg rides ahead;
-             // the Env twins lead with the overlay; orFailedEnv has both.
-             // Filtering to literal strings FIRST mis-slots whenever the
-             // msg is interpolated — slot 0 once reported the MESSAGE as
-             // a command
+             // find the program's position in the desugar, then check
+             // literalness: base twins take (prog, args); orFail's msg
+             // comes first; the Env twins lead with the overlay;
+             // orFailedEnv has both. Filtering to literal strings
+             // first would mis-slot whenever the msg is interpolated,
+             // reporting the message as a command
              let rec argsOf (e: TypedExpr) =
                  match e.Kind with
                  | TEApp(g, a) -> argsOf g @ [ a ]
@@ -303,8 +304,8 @@ let rec private walkExpr
                       if interpreters.Contains prog then
                           add (OpaqueArg prog) te.Span
                   | None ->
-                      // a reified dynamic head [D:dynamic-head]: the prog
-                      // slot carries the head VALUE, not a literal
+                      // a reified dynamic head [D:dynamic-head]: the
+                      // prog slot carries the head value, not a literal
                       let display =
                           match slot.Kind with
                           | TEVar n -> $"^${n}"
@@ -320,8 +321,8 @@ let rec private walkExpr
     if not skipChildren then
         childExprs te |> List.iter (walkExpr binds site acc)
 
-/// walk a checked file: the script's (line, statement) pairs plus every
-/// imported module's, transitively — the import graph IS the tree
+/// walk a checked file: the script's (line, statement) pairs plus
+/// every imported module's, recursing through the import graph
 let rec private walkStmts (file: string) (acc: ResizeArray<Cap>) (pairs: (LogicalLine * CheckedStmt) list) : unit =
     let binds = System.Collections.Generic.Dictionary<string, string list>()
 
@@ -357,7 +358,7 @@ let private siteStr (s: Site) = $"{s.File}:{s.Line}:{s.Col}"
 
 let private factLine (c: Cap) : string * string =
     // (section, message) — the site renders separately so identical
-    // messages GROUP [D:can-report]
+    // messages can group [D:can-report]
     match c.Fact with
     | Runs p -> "runs", p
     | RunsDyn d -> "runs", $"{d} (not statically known — a dynamic head resolves at run)"
@@ -393,13 +394,14 @@ let private sectionOrder =
       "processes"
       "terminates" ]
 
-// the ambient/mutation CLASS of a capability [D:pure-stage2]: the same
-// partition the `readonly` ceiling and plan/apply use, applied to
-// the report so "what does this script CHANGE?" is answerable — not just
-// "what can it touch?". Ambient READS the world (reproducible), Mutation
-// CHANGES it. A network fact carries its member; Http.send's per-method
-// split is not statically known here (the request value is dynamic), so
-// send lands under mutations conservatively — fetch/query read.
+// the ambient/mutation class of a capability [D:pure-stage2]: the same
+// partition the `readonly` ceiling and plan/apply use, applied to the
+// report so "what does this script change?" is answerable — not just
+// "what can it touch?". Ambient reads the world (reproducible),
+// Mutation changes it. A network fact carries its member; Http.send's
+// per-method split is not statically known here (the request value is
+// dynamic), so send lands under mutations conservatively — fetch and
+// query read.
 let private factClass (f: Fact) : Weir.Effects.EffectClass =
     match f with
     | FsRead _ -> Weir.Effects.Ambient
@@ -430,7 +432,7 @@ let opaqueCount (caps: Cap list) : int =
     |> List.sumBy (fun c ->
         match c.Fact with
         | OpaqueArg _
-        // a dynamic head is an unresolved external — --strict's business
+        // a dynamic head is an unresolved external — counted for --strict
         | RunsDyn _ -> 1
         | _ -> 0)
 
@@ -447,8 +449,8 @@ let renderHuman (script: string) (caps: Cap list) : string =
             $"  ⚠ this report is incomplete: {opaque} opaque site(s) — an interpreter's argument or a dynamic head cannot be analyzed statically"
         |> ignore
 
-    // opacity marks its runs line INLINE (the header carries the count;
-    // a separate section said the same thing twice) — the opaque section
+    // opacity marks its runs line inline (the header carries the
+    // count; a separate section would repeat it) — the opaque section
     // itself renders only in --json [D:can-report]
     let opaqueSites =
         caps
@@ -458,9 +460,10 @@ let renderHuman (script: string) (caps: Cap list) : string =
             | _ -> None)
         |> Set.ofList
 
-    // each entry carries its CLASS (ambient read vs mutation) alongside
-    // its section+message+site, so the report groups by class first
-    // [D:pure-stage2] — "what does this script CHANGE?" is answerable
+    // each entry carries its class (ambient read vs mutation)
+    // alongside its section+message+site, so the report groups by
+    // class first [D:pure-stage2] — "what does this script change?"
+    // is answerable
     let entries =
         caps
         |> List.choose (fun c ->
@@ -469,15 +472,16 @@ let renderHuman (script: string) (caps: Cap list) : string =
             | Runs p when opaqueSites.Contains(p, c.Site) -> Some(factClass c.Fact, ("runs", $"{p} (opaque)"), c.Site)
             | _ -> Some(factClass c.Fact, factLine c, c.Site))
 
-    // identical messages group with a count, sites kept — 22 lines of
-    // `weir` carry one line of information [D:can-report]. Distinct
-    // sites stay visible, so a genuine same-line pair reads as one.
+    // identical messages group with a count, sites kept — repeated
+    // runs of the same program carry one line of information
+    // [D:can-report]. Distinct sites stay visible, so a genuine
+    // same-line pair reads as one.
     let grouped =
         entries
         |> List.groupBy (fun (cls, sm, _) -> cls, sm)
         |> List.map (fun ((cls, (section, msg)), hits) -> cls, section, msg, hits |> List.map (fun (_, _, s) -> s))
 
-    // the TWO class buckets [D:pure-stage2], ambient reads first (they
+    // the two class buckets [D:pure-stage2], ambient reads first (they
     // inform, they do not change), then mutations (what the script does
     // to the world) — each bucket keeps the section order within it
     let renderBucket (cls: Weir.Effects.EffectClass) (heading: string) =
@@ -620,8 +624,8 @@ let run (json: bool) (strict: bool) (path: string) : int =
 // ---- purity [D:pure] ------------------------------------------------------
 // The classifier lives in Purity.fs (between Builtins and Script, so
 // the enforcement stage can reach it [D:pure-stage1]); only the
-// Script-shaped fold stays here — pureTopBindings reads CheckedStatement,
-// a type this file alone among the classifier's homes can see.
+// Script-shaped fold stays here — pureTopBindings reads
+// CheckedStatement, a Script type Purity.fs cannot see.
 
 /// per-binding purity over a checked script, in declaration order (no
 /// `let rec` exists, so a single forward pass is total)

@@ -13,16 +13,16 @@ let unreachable (why: string) : 'a = failwith $"unreachable: {why}"
 exception ExitRequest of code: int
 
 // a scoped process handle [D:scoped-procs]: the live child plus its
-// spill paths — identity IS the process (reference equality, pid hash);
-// the scope that bound it owns the lifetime
+// spill paths; identity is the process itself (reference equality,
+// pid hash), and the scope that bound it owns the lifetime
 [<ReferenceEquality>]
 type ProcHandle =
     { Proc: System.Diagnostics.Process
       OutPath: string
       ErrPath: string
       SpillDir: string
-      // joins the spill pumps (bounded) — called before any read that
-      // must see the child's LAST words [D:scoped-procs]
+      // joins the spill pumps (bounded); call before any read that
+      // must see the child's final output [D:scoped-procs]
       Drain: unit -> unit }
 
 [<CustomEquality; NoComparison>]
@@ -32,9 +32,9 @@ type Value =
     | VDur of ms: int64
     | VInstant of ms: int64
     | VSize of bytes: int64
-    // the non-text value [D:bytes]: renders as a SUMMARY everywhere a
-    // renderer can reach it (raw bytes wreck terminals — the gzip
-    // receipt); Bytes.toBase64 is the deliberate text exit
+    // the non-text value [D:bytes]: every renderer shows a summary,
+    // never the content (raw bytes wreck terminals); Bytes.toBase64 is
+    // the deliberate conversion to text
     | VBytes of byte[]
     | VStr of string
     // a Secret wraps a plain string [D:secret]; the renderers show *** —
@@ -42,17 +42,17 @@ type Value =
     | VSecret of string
     | VBool of bool
     | VUnit
-    // fields in DECLARATION order [D:record-order] (wire order for an
-    // anonymous shape read at a boundary): the ordered list IS the
-    // container — order by construction, no parallel invariant; the
-    // Map it replaced was 6-23x slower to build and bought nothing at
-    // record widths. Equality is order-INSENSITIVE by the custom arm
-    // below — the one place the rule lives, where it cannot drift.
+    // fields in declaration order [D:record-order] (wire order for an
+    // anonymous shape read at a boundary): the ordered list is the
+    // container itself, so order holds by construction with no
+    // parallel invariant; the Map it replaced was 6-23x slower to
+    // build and bought nothing at record widths. Equality is
+    // order-insensitive, implemented once in the custom arm below.
     | VRecord of record: string * fields: (string * Value) list
     | VUnion of case: string * payload: Value option
     | VSeq of items: seq<Value>
     // string-keyed only [D:map-string]: every receipt has string keys
-    // (JSON object keys ARE strings) and int keys would make Map the
+    // (JSON object keys are strings), and int keys would make Map the
     // first Ord-constrained container — widened only on a receipt
     | VMap of entries: Map<string, Value>
     | VTuple of items: Value list
@@ -60,22 +60,23 @@ type Value =
     | VClosurePat of binder: Pattern * body: TypedExpr * env: Env
     | VBuiltin of (Value -> Value)
     | VProc of handle: ProcHandle
-    // a scoped listener handle [D:http-serve]: the live socket — identity
-    // IS the listener (reference equality); the within-serve scope owns
-    // the lifetime and closes it on every exit
+    // a scoped listener handle [D:http-serve]: the live socket;
+    // identity is the listener (reference equality), and the
+    // within-serve scope owns the lifetime, closing it on every exit
     | VServer of handle: Serve.Handle
 
     override this.Equals(other) =
         match other with
         | :? Value as top ->
-            // VALUE EQUALITY IS ITERATIVE [D:eq-depth]: a legally-built
+            // value equality is iterative [D:eq-depth]: a legally-built
             // recursive-record value (an Option-linked record folded
-            // 100k deep — the checker accepts it) once crashed the whole
-            // process with an uncatchable StackOverflow, because the walk
-            // recursed one frame per nesting level. The pending-pair
-            // work-list lives on the heap instead: children QUEUE, a
-            // mismatch DRAINS. Every prior semantic is preserved — the
-            // per-arm comparison is the same, only the recursion is gone.
+            // 100k deep, which the checker accepts) once crashed the
+            // process with an uncatchable StackOverflow because the
+            // walk recursed one frame per nesting level. The
+            // pending-pair work-list lives on the heap instead:
+            // children are queued, a mismatch ends the loop. The
+            // per-arm comparison is unchanged; only the recursion is
+            // gone.
             let pending = System.Collections.Generic.Stack<Value * Value>()
             pending.Push(this, top)
             let mutable eq = true
@@ -90,16 +91,17 @@ type Value =
                 | VDur a, VDur b -> eq <- a = b
                 | VInstant a, VInstant b -> eq <- a = b
                 | VSize a, VSize b -> eq <- a = b
-                // F# array equality is structural — byte equality, the Eq law
+                // F# array equality is structural, so this is byte equality
                 | VBytes a, VBytes b -> eq <- a = b
                 | VStr a, VStr b -> eq <- a = b
                 | VSecret a, VSecret b -> eq <- a = b
                 | VBool a, VBool b -> eq <- a = b
                 | VUnit, VUnit -> ()
                 | VRecord(n1, f1), VRecord(n2, f2) ->
-                    // order-insensitive [D:record-order]: order is carried,
-                    // never semantic — two spellings of one record are
-                    // equal; matched field VALUES queue as pending pairs
+                    // order-insensitive [D:record-order]: order is
+                    // carried but never semantic, so two spellings of
+                    // one record are equal; matched field values queue
+                    // as pending pairs
                     if n1 = n2 && f1.Length = f2.Length then
                         for (k, v) in f1 do
                             match f2 |> List.tryFind (fun (k2, _) -> k2 = k) with
@@ -116,9 +118,9 @@ type Value =
                     else
                         eq <- false
                 | VSeq a, VSeq b ->
-                    // LOCKSTEP via enumerators — never materialize two
-                    // lists; short-circuit at the first mismatch (the
-                    // Seq.equal discipline). Element pairs queue.
+                    // lockstep via enumerators — neither side is
+                    // materialized; short-circuit at the first mismatch
+                    // (as Seq.equal does). Element pairs queue.
                     if not (obj.ReferenceEquals(a, b)) then
                         use ea = a.GetEnumerator()
                         use eb = b.GetEnumerator()
@@ -135,8 +137,8 @@ type Value =
                             else
                                 go <- false
                 | VMap a, VMap b ->
-                    // same key set, entry VALUES queue (keys are strings,
-                    // compared by the Map itself) [D:map-string]
+                    // same key set; entry values queue (keys are
+                    // strings, compared by the Map itself) [D:map-string]
                     if a.Count = b.Count then
                         for kv in a do
                             match b.TryFind kv.Key with
@@ -200,8 +202,8 @@ let private showLimits =
     // deeply-nested value (an Option-linked record folded 100k deep)
     // once overflowed the stack through this recursive renderer too —
     // show / interpolation / a to-json error all reach formatValue. 100
-    // clears every real value (the corpus max is ~11); past it the guard
-    // teaches with an ellipsis rather than crashing.
+    // clears every real value (the corpus max is ~11); past it the
+    // guard renders an ellipsis rather than crashing.
     { MaxItems = 20
       MaxStr = None
       MaxDepth = 100
@@ -213,9 +215,9 @@ let private echoLimits =
       MaxDepth = 8
       Ellipsis = "; …" }
 
-// ordered-field access [D:record-order]: linear scan — record widths
+// ordered-field access [D:record-order]: a linear scan — record widths
 // are single digits and the scan beat the Map it replaced; recSet
-// replaces IN PLACE (a copy-and-update keeps the field's position)
+// replaces in place, so a copy-and-update keeps the field's position
 let recTryGet (name: string) (fields: (string * Value) list) : Value option =
     fields |> List.tryPick (fun (k, v) -> if k = name then Some v else None)
 
@@ -239,12 +241,12 @@ let rec private formatWith (lim: RenderLimits) (depth: int) (v: Value) : string 
         | VDur n -> formatDuration n
         | VInstant n -> formatInstant n
         | VSize b -> formatSize b
-        // a SUMMARY, never content [D:bytes]: raw bytes on a terminal
-        // is the gzip failure; Bytes.toBase64 is the deliberate exit
+        // a summary, never content [D:bytes]: raw bytes must not reach
+        // a terminal; Bytes.toBase64 is the deliberate conversion
         | VBytes b -> $"<{formatSize (int64 b.Length)}>"
-        // the load-bearing render [D:secret]: *** ALWAYS, and because this
-        // is the one recursive renderer, a Secret inside a shown record /
-        // union / tuple / seq renders *** too (sub calls back here)
+        // always *** [D:secret]; because this is the one recursive
+        // renderer, a Secret inside a shown record / union / tuple /
+        // seq renders *** too (sub calls back here)
         | VSecret _ -> "***"
         | VStr s ->
             let raw, clipped =
@@ -273,8 +275,8 @@ let rec private formatWith (lim: RenderLimits) (depth: int) (v: Value) : string 
             | VBool _ -> $"{case} {inner}"
             | _ -> $"{case} ({inner})"
         | VMap entries ->
-            // SORTED by construction (F# Map iterates in key order) — the
-            // deterministic-output law; keys render through the string
+            // sorted by construction (F# Map iterates in key order), so
+            // output is deterministic; keys render through the string
             // arm (escaped), values recurse (Map<string, Secret> masks
             // for free) [D:map-string]
             let shown = entries |> Seq.truncate (lim.MaxItems + 1) |> List.ofSeq
@@ -319,27 +321,28 @@ let rec private formatWith (lim: RenderLimits) (depth: int) (v: Value) : string 
 let formatValue (v: Value) : string = formatWith showLimits 0 v
 
 // ---- plan/apply capture [D:plan-apply] ------------------------------
-// A `plan` block runs its body but CAPTURES external mutations as Op
+// A `plan` block runs its body but captures external mutations as Op
 // values instead of performing them. The interpreter holds the running
 // Value at each mutation builtin, so the interception is a thread-local
-// CAPTURE STACK the mutation builtins consult: active => append an Op
-// and return VUnit; ambient reads (fs.read/env/clock/query-net) ignore
-// it and RUN. Nested plan composes (each pushes its own frame — the
-// TOP frame captures). The stack is per-thread so pmap arms cannot
-// cross-contaminate captures. Op is a `VUnion(case, payload)` value
-// (the prelude `Op` type), so equality/show/masking ride the existing
-// Value machinery [D:secret].
+// capture stack the mutation builtins consult: when active, append an
+// Op and return VUnit; ambient reads (fs.read/env/clock/query-net)
+// ignore it and run. Nested plans compose — each pushes its own frame
+// and the top frame captures. The stack is per-thread so pmap arms
+// cannot cross-contaminate captures. Op is a `VUnion(case, payload)`
+// value (the prelude `Op` type), so equality/show/masking ride the
+// existing Value machinery [D:secret].
 type private PlanFrame =
     { Ops: ResizeArray<Value>
-      // the LITERAL target paths captured mutations write [D:plan-apply]
-      // — a later read of one is known-after-apply (refused). Session-
-      // resolved so a relative read matches an earlier relative write.
+      // the literal target paths captured mutations write
+      // [D:plan-apply]; a later read of one is known-after-apply and
+      // refused. Session-resolved so a relative read matches an
+      // earlier relative write.
       Targets: System.Collections.Generic.HashSet<string> }
 
 module PlanMode =
     let private stack = new System.Threading.ThreadLocal<PlanFrame list>(fun () -> [])
 
-    /// is a plan currently capturing on THIS thread?
+    /// is a plan currently capturing on this thread?
     let active () = not (List.isEmpty stack.Value)
 
     /// run f while a fresh capture frame is on top; returns the captured
@@ -379,10 +382,10 @@ module PlanMode =
 
     /// a read builtin's known-after-apply gate [D:plan-apply]: inside a
     /// plan, reading a path an earlier captured mutation targeted would
-    /// see STALE state (the mutation has not run — it is a pending Op).
-    /// A LOCATED refusal, path-scoped: only a read of a captured target
-    /// refuses; other reads run. `op`/`path` name the offender and the
-    /// restructure.
+    /// see stale state (the mutation is still a pending Op). The
+    /// refusal is located and path-scoped: only a read of a captured
+    /// target refuses; other reads run. `op`/`path` name the offender
+    /// and the suggested restructure.
     let checkRead (op: string) (resolvedPath: string) =
         match stack.Value with
         | frame :: _ when frame.Targets.Contains resolvedPath ->
@@ -390,15 +393,16 @@ module PlanMode =
                 $"{op}: known-after-apply — this reads '{resolvedPath}', but an earlier captured mutation in this 'plan' targets it; the read would see stale state (the mutation is a pending Op, not yet applied). Restructure so the read does not depend on a captured write, or move it out of the plan"
         | _ -> ()
 
-// The REPL/-e echo [D:repl-echo]: bounded render + the way-out hint.
-// The count shows only when already known (a materialized list) —
-// counting a lazy seq would force it.
-// the spill tail [D:scoped-procs]: the child's last words — stderr
-// first (where diagnostics live), stdout filling the remainder; read
-// SHARED (the pump holds the write handle and flushes per chunk)
+// The REPL/-e echo [D:repl-echo]: bounded render plus the way-out
+// hint. The count shows only when already known (a materialized list)
+// — counting a lazy seq would force it.
+// the spill tail [D:scoped-procs]: the child's final output — stderr
+// first (where diagnostics live), stdout filling the remainder; opened
+// shared (the pump holds the write handle and flushes per chunk)
 let procTail (h: ProcHandle) : string list =
-    // an exited child's spill must be COMPLETE before it is read — the
-    // fast-exit race dropped the dying words from the watch error
+    // an exited child's spill must be complete before it is read —
+    // otherwise a fast exit races the pumps and the final output is
+    // missing from the watch error
     (try
         if h.Proc.HasExited then
             h.Drain()
@@ -433,8 +437,9 @@ let procTail (h: ProcHandle) : string list =
     let errT = take 100 err
     errT @ take (100 - errT.Length) out
 
-// a one-line rendering of the tail for error messages — the fzf
-// display's ⏎ join (multi-line content, one-line message)
+// a one-line rendering of the tail for error messages: lines join
+// with ⏎, fzf's convention for multi-line content in a one-line
+// message
 let procTailLine (h: ProcHandle) : string =
     let t = procTail h
 
@@ -442,42 +447,42 @@ let procTailLine (h: ProcHandle) : string =
     | [] -> ""
     | lines -> " — last output: " + String.concat " ⏎ " lines
 
-// the echo RULE [D:echo-rule]: a FORCED seq echoes in full (the user
-// forced it; the ceiling is scrollback, which is theirs); an UNFORCED
-// one shows the first N and names the lever that WORKS and renders
-// identically — Seq.freeze. Forced-ness is the materialized-collection
-// probe (the same one that used to print real counts); the REPL's
-// map-key completion peeks through the same probe, so echo and
-// completion agree about what "forced" means [D:value-key-complete].
+// the echo rule [D:echo-rule]: a forced seq echoes in full (the user
+// forced it; the ceiling is their own scrollback); an unforced one
+// shows the first N and names Seq.freeze — the lever that works and
+// renders identically. Forced-ness is the materialized-collection
+// probe; the REPL's map-key completion peeks through the same probe,
+// so echo and completion agree about what "forced" means
+// [D:value-key-complete].
 let forcedItems (items: seq<Value>) : Value list option =
     match items with
     | :? (Value list) as l -> Some l
     | :? System.Collections.Generic.ICollection<Value> as c -> Some(List.ofSeq c)
     | _ -> None
 
-/// the footer names the cap IN EFFECT [D:echo-cap] — a hardcoded count
-/// beside a configurable cap is the lying-message class
+/// the footer names the cap in effect [D:echo-cap] — a hardcoded
+/// count beside a configurable cap could misstate it
 let unforcedHint (cap: int) =
     $"first {cap} of an unforced seq — Seq.freeze to echo everything"
 
-// the piped/-e echo cap [D:echo-cap]: the SESSION cap is a tty-echo
-// concern (the REPL owns it, #echo moves it); the piped surface and -e
-// keep the historical constant — their bytes are pinned
+// the piped/-e echo cap [D:echo-cap]: the session cap is a tty-echo
+// concern (the REPL owns it, #echo moves it); the piped surface and
+// -e keep this constant because their output bytes are pinned
 let echoPipedCap: int option = Some 10
 
 /// echo preparation [D:echo-once]: cache an unforced seq so the table
-/// probe and the line rendering enumerate the SOURCE once — the
-/// echoTable-then-echoValue composition re-enumerated, and a bare
-/// command's child ran TWICE per echo
+/// probe and the line rendering enumerate the source once — without
+/// this the echoTable-then-echoValue composition re-enumerates, and a
+/// bare command's child runs twice per echo
 let echoPrep (v: Value) : Value =
     match v with
     | VSeq items when (forcedItems items).IsNone -> VSeq(Seq.cache items)
     | v -> v
 
 // the unforced pull, bounded by the cap [D:echo-cap]: cap+1 when
-// capped (the laziness guarantee — the echo never runs more than it
-// shows), EVERYTHING when uncapped (#echo all is the user's own
-// footgun; an infinite seq hangs, and the #help line says so)
+// capped (so the echo never runs more than it shows), everything when
+// uncapped (#echo all is the user's own choice; an infinite seq
+// hangs, and the #help line says so)
 let private cappedPull (cap: int option) (items: seq<Value>) : Value list * bool =
     match cap with
     | Some c ->
@@ -485,18 +490,19 @@ let private cappedPull (cap: int option) (items: seq<Value>) : Value list * bool
         shown |> List.truncate c, shown.Length > c
     | None -> items |> List.ofSeq, false
 
-// hostile bytes from DATA must not reach a TERMINAL [D:binary-echo]:
-// [D:binary-echo] already ruled a NUL-bearing echo refuses a tty; this is
-// the same rule one class wider, for the DATA a renderer prints. A
-// filename or field carrying ANSI/OSC escapes, a bare ESC, or C0/C1
-// controls can clear the screen, set the window title, or — the quiet
-// one — use CR so the name the user READS is not the name on disk. So
-// tty-bound DATA renderers NEUTRALIZE those bytes: ESC (the introducer),
-// C0 controls except \t and \n, DEL, and the C1 range render as a visible
-// \xNN caret so the text stays honest. Applied ONLY when the sink is a
-// tty and ONLY to DATA — weir's OWN colouring (added around already-
-// sanitized data) and redirected output are untouched, so a pipe stays
-// byte-faithful and colour still works.
+// hostile bytes from data must not reach a terminal [D:binary-echo]:
+// [D:binary-echo] already ruled that a NUL-bearing echo refuses a tty;
+// this is the same rule one class wider, covering the data a renderer
+// prints. A filename or field carrying ANSI/OSC escapes, a bare ESC,
+// or C0/C1 controls can clear the screen, set the window title, or —
+// quietest of all — use CR so the name the user reads is not the name
+// on disk. So tty-bound data renderers neutralize those bytes: ESC
+// (the introducer), C0 controls except \t and \n, DEL, and the C1
+// range render as a visible \xNN escape so the text stays honest.
+// Applied only when the sink is a tty and only to data — weir's own
+// colouring (added around already-sanitized data) and redirected
+// output are untouched, so a pipe stays byte-faithful and colour
+// still works.
 let sanitizeTtyData (s: string) : string =
     // hostile = ESC (0x1B) the introducer, DEL (0x7F), any C0 control
     // (< 0x20) except TAB and LF, and the C1 range (0x80..0x9F)
@@ -520,37 +526,35 @@ let sanitizeTtyData (s: string) : string =
 
         sb.ToString()
 
-/// sanitize DATA only when the sink is a tty [D:binary-echo] — redirected
-/// output (a pipe, a file) stays byte-faithful; a terminal gets the safe
-/// rendering
+/// sanitize data only when the sink is a tty [D:binary-echo] —
+/// redirected output (a pipe, a file) stays byte-faithful; a terminal
+/// gets the safe rendering
 let sanitizeIfTty (redirected: bool) (s: string) : string =
     if redirected then s else sanitizeTtyData s
 
-// binary content must not reach a TERMINAL [D:binary-echo]: a NUL in
-// the echo's pulled prefix marks the value binary (gzip at a tty — the
-// live receipt for the parked bytes item) and the echo, weir's OWN
-// rendering choice, refuses with the redirect hint; `print` stays the
-// user's decision. NUL, never strict-UTF-8 (the misdetection class
-// stays closed). The probe walks the echoPrep CACHE — no enumeration
-// added; an uncapped echo probes a bounded prefix (101).
-// The probe RECURSES through containers: a `| complete` RECORD holds
-// the command's stdout, and the record echo leaked the bytes the seq
-// echo refused — the membership shape again (the mechanism was right;
-// records/tuples/unions/maps were missing). Secret renders *** and
-// Bytes renders a summary, so neither can leak content and neither is
-// probed.
+// binary content must not reach a terminal [D:binary-echo]: a NUL in
+// the echo's pulled prefix marks the value binary, and the echo —
+// weir's own rendering choice — refuses with the redirect hint;
+// `print` stays the user's decision. The marker is NUL, never strict
+// UTF-8, which would misdetect. The probe walks the echoPrep cache,
+// so no enumeration is added; an uncapped echo probes a bounded
+// prefix (101).
+// The probe recurses through containers: a `| complete` record holds
+// the command's stdout, so records/tuples/unions/maps need the same
+// refusal the seq echo has. Secret renders *** and Bytes renders a
+// summary, so neither can leak content and neither is probed.
 let echoBinary (cap: int option) (v: Value) : bool =
     let bound =
         match cap with
         | Some c -> c + 1
         | None -> 101
 
-    // DEPTH-bounded like every other value walk [D:eq-depth]: `bound`
-    // clips seq WIDTH, but a recursive record type is finite in width and
-    // never in depth, so an unbounded descent stack-overflows (uncatchably)
-    // on a deeply-nested value — the last such sink. Cap at 100 (the show
-    // renderer's ceiling): a NUL nested past 100 goes undetected, strictly
-    // better than crashing the process.
+    // depth-bounded like every other value walk [D:eq-depth]: `bound`
+    // clips seq width, but a recursive record type is finite in width
+    // and not in depth, so an unbounded descent stack-overflows
+    // (uncatchably) on a deeply-nested value. Cap at 100, the show
+    // renderer's ceiling: a NUL nested past 100 goes undetected, which
+    // is strictly better than crashing the process.
     let rec has (depth: int) (v: Value) : bool =
         match v with
         | _ when depth > 100 -> false
@@ -569,14 +573,15 @@ let echoValue (cap: int option) (v: Value) : string * string option =
     | VSeq items ->
         match forcedItems items with
         | Some all ->
-            // full at the TOP level; each ELEMENT keeps the echo's inner
-            // clips (a forced outer may hold a lazy inner — [nats] is
-            // forcible and must not hang the echo). The cap NEVER clips
-            // a forced seq [D:echo-cap] — forced-ness outranks it.
+            // full at the top level; each element keeps the echo's
+            // inner clips (a forced outer may hold a lazy inner —
+            // [nats] is forcible and must not hang the echo). The cap
+            // never clips a forced seq [D:echo-cap]; forced-ness
+            // outranks it.
             let body = all |> List.map (formatWith echoLimits 1) |> String.concat "; "
             $"[{body}]", None
         | None ->
-            // ONE forcing pass — the echo must not enumerate its source
+            // one forcing pass — the echo must not enumerate its source
             // twice: materialize the capped prefix, render from that list
             let visible, clipped = cappedPull cap items
             let body = visible |> List.map (formatWith echoLimits 1) |> String.concat "; "
@@ -586,15 +591,17 @@ let echoValue (cap: int option) (v: Value) : string * string option =
             $"[{body}{ellipsis}]", (if clipped then Some(unforcedHint cap.Value) else None)
     | _ -> formatWith echoLimits 0 v, None
 
-// the REPL's TABLE rendering [D:repl-table] — PRESENTATION ONLY: show
+// the REPL's table rendering [D:repl-table] — presentation only: show
 // stays canonical and every other consumer is untouched; the REPL's
-// echo (tty-gated by the CALLER) renders a seq of same-shaped records
+// echo (tty-gated by the caller) renders a seq of same-shaped records
 // with scalar fields as aligned columns. Cells reuse show's spellings
 // except strings, which drop their quotes (a display, not a literal);
-// columns are alphabetical (show's own field law); numeric-ish columns
-// right-align. Widths are char counts (the wrap math's assumption).
+// columns are alphabetical (show's own field order); numeric-ish
+// columns right-align. Widths are char counts (the wrap math assumes
+// this).
 /// "a week ago" — the table's rendering of an Instant [D:filerow];
-/// show/interpolation keep ISO (assert BOTH or the split is unpinned)
+/// show/interpolation keep ISO (tests must assert both to pin the
+/// split)
 let relativeInstant (nowMs: int64) (ms: int64) : string =
     let past = ms <= nowMs
     let s = abs (nowMs - ms) / 1000L
@@ -652,9 +659,10 @@ let rec private tableCell (v: Value) : (string * bool) option =
     | VSize _
     | VBytes _
     | VDur _ -> Some(formatWith echoLimits 0 v, true)
-    // RELATIVE in the table, ISO everywhere else [D:filerow]: the
-    // Duration split (lossless show, abbreviated cell) — no staleness,
-    // the row carries the absolute Instant and this renders at echo
+    // relative in the table, ISO everywhere else [D:filerow]: the same
+    // split Duration has (lossless show, abbreviated cell) — no
+    // staleness, since the row carries the absolute Instant and this
+    // renders at echo time
     | VInstant ms -> Some(relativeInstant (System.DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()) ms, false)
     | VBool b -> Some((if b then "true" else "false"), false)
     | VSecret _ -> Some("***", false)
@@ -663,13 +671,13 @@ let rec private tableCell (v: Value) : (string * bool) option =
     | VUnion(name, None) -> Some(name, false)
     | _ -> None
 
-/// the LINES form [D:echo-lines]: seq<string> presents as its lines at
-/// a tty — the content arrived as lines and the literal was UNDOING
-/// that. RAW and unclipped per line (print parity — a tab or an escape
-/// renders as itself; tty-only, so the piped surface cannot move); the
-/// COUNT clip and the forced/unforced sentence ride the footer
-/// unchanged. Keyed on the TYPE at the caller (seq<string> exactly) —
-/// never content-sniffing.
+/// the lines form [D:echo-lines]: seq<string> presents as its lines
+/// at a tty — the content arrived as lines, and the list-literal
+/// render undid that. Raw and unclipped per line (print parity — a
+/// tab or an escape renders as itself; tty-only, so the piped surface
+/// cannot change); the count clip and the forced/unforced sentence
+/// ride the footer unchanged. Keyed on the type at the caller
+/// (seq<string> exactly), never content-sniffing.
 let echoLines (cap: int option) (v: Value) : (string list * string option) option =
     let asLine =
         function
@@ -702,10 +710,10 @@ let echoTable (cap: int option) (width: int option) (v: Value) : (string list * 
 
             let keys0 = f0 |> List.map fst
 
-            // an all-None optional column HIDES [D:filerow]: a column
-            // that says nothing on every shown row costs width saying
-            // it — general table rule, not a FileRow special case; one
-            // Some anywhere and the column is back
+            // an all-None optional column hides [D:filerow]: a column
+            // that says nothing on every shown row only costs width —
+            // a general table rule, not a FileRow special case; one
+            // Some anywhere brings the column back
             let allNone k =
                 visible
                 |> List.forall (fun r ->
@@ -752,11 +760,12 @@ let echoTable (cap: int option) (width: int option) (v: Value) : (string list * 
                     [ 0 .. showKeys.Length - 1 ]
                     |> List.map (fun i -> rows |> List.fold (fun w r -> max w (fst r[i]).Length) showKeys[i].Length)
 
-                // terminal-width clamping [D:table-polish]: the WIDEST
-                // column above its floor absorbs the clip (path,
-                // usually), repeatedly until the table fits; a terminal
-                // too narrow even for the floors renders unclamped —
-                // the terminal wraps, stated, never a mangled floor
+                // terminal-width clamping [D:table-polish]: the widest
+                // column above its floor absorbs the clip (usually the
+                // path column), repeatedly until the table fits; a
+                // terminal too narrow even for the floors renders
+                // unclamped — the terminal wraps rather than the
+                // floors being mangled
                 let widths =
                     match width with
                     | Some termW ->
@@ -815,19 +824,20 @@ let echoTable (cap: int option) (width: int option) (v: Value) : (string list * 
     | _ -> None
 
 // the clipped-echo tail — one spelling for the three echo consumers
-// (REPL let/expr arms, -e). The old pipe-to-print suggestion RETIRED
-// [D:echo-rule]: it promised continuation and delivered a different
-// rendering; the hint now names the lever that reproduces this one.
+// (REPL let/expr arms, -e). No pipe-to-print suggestion [D:echo-rule]:
+// that promised continuation but delivered a different rendering; the
+// hint names the lever that reproduces this one.
 let echoTail (hint: string option) : string =
     match hint with
     | Some h -> $" ({h})"
     | None -> ""
 
-// The line-per-element renderer. Both consumers — the print builtin and the
-// runner's command-statement streaming — must call this one function; the
-// byte-identity of their output is a plan-level claim, not a coincidence.
-// DATA bound for a tty is sanitized [D:binary-echo] (redirected output
-// stays byte-faithful — the byte-identity claim holds for a pipe/file).
+// The line-per-element renderer. Both consumers — the print builtin
+// and the runner's command-statement streaming — must call this one
+// function; the byte-identity of their output is a stated claim, not
+// a coincidence. Data bound for a tty is sanitized [D:binary-echo]
+// (redirected output stays byte-faithful, so the byte-identity claim
+// holds for a pipe/file).
 let writeLinesTo (w: System.IO.TextWriter) (items: seq<Value>) : unit =
     let redirected =
         if System.Object.ReferenceEquals(w, System.Console.Out) then
@@ -844,17 +854,17 @@ let writeLinesTo (w: System.IO.TextWriter) (items: seq<Value>) : unit =
 
 let writeLines (items: seq<Value>) : unit = writeLinesTo System.Console.Out items
 
-// Overflow policy (Part 3): int arithmetic is CHECKED — wrapping silently
-// is the bash-calculator bug class; a raise joins the named runtime
-// failure classes instead.
+// Overflow policy (Part 3): int arithmetic is checked — silent
+// wrapping is the classic shell-calculator bug; a raise joins the
+// named runtime failure classes instead.
 let private checkedInt (f: unit -> int64) : Value =
     try
         VInt(f ())
     with :? System.OverflowException ->
         failwith "integer overflow"
 
-// non-finite results RAISE [D:floats] — the checkedInt law applied to
-// the new type; -0.0 normalizes so equality and rendering never split
+// non-finite results raise [D:floats], mirroring checkedInt; -0.0
+// normalizes so equality and rendering never disagree
 let private checkedFloat (op: string) (f: unit -> float) : Value =
     let r = f ()
 
@@ -908,16 +918,17 @@ let private binOp (op: string) (l: Value) (r: Value) : Value =
     | "-", VInt a, VInt b -> checkedInt (fun () -> Checked.(-) a b)
     | "*", VInt a, VInt b -> checkedInt (fun () -> Checked.(*) a b)
     | "/", VInt a, VInt b ->
-        // weir's own text [D:message-ownership] — the float twin above
-        // already said it; the int side leaked the BCL's
+        // weir's own message text [D:message-ownership], matching the
+        // float arm above, rather than the BCL's
         if b = 0L then
             failwith "division by zero"
         else
             checkedInt (fun () -> a / b)
     | "%", VInt a, VInt b ->
-        // TRUNCATED, .NET's own % [D:modulo] — sign follows the
+        // truncated, .NET's own % [D:modulo] — the sign follows the
         // dividend (-7 % 3 = -1), matching F# so the oracle stays
-        // divergence-free; /'s zero discipline, %'s word
+        // divergence-free; same zero handling as /, with % in the
+        // message
         if b = 0L then
             failwith "modulo by zero"
         else
@@ -942,18 +953,21 @@ let private jsonLine
         match v with
         | VInt n -> writer.WriteNumberValue n
         // the show shape [D:floats-boundaries]: 1.0 emits as 1.0 (a
-        // float field is not an integer field); formatFloat is always a
-        // valid JSON number — non-finite is unrepresentable by law
+        // float field is not an integer field); formatFloat is always
+        // a valid JSON number since non-finite values are
+        // unrepresentable
         | VFloat f -> writer.WriteRawValue(formatFloat f)
         | VStr s -> writer.WriteStringValue s
         | VBool b -> writer.WriteBooleanValue b
-        // Option [D:json-option]: Some writes its scalar; a bare None at the
-        // element level is a null line (a None FIELD is OMITTED, below)
+        // Option [D:json-option]: Some writes its scalar; a bare None
+        // at the element level is a null line (a None field is
+        // omitted, below)
         | VUnion("Some", Some inner) -> write inner
         | VUnion("None", None) -> writer.WriteNullValue()
-        // a TAGGED case writes its payload with the tag REINSERTED FIRST
-        // [D:wire-unions] (k8s's own convention); the [<Other>] case
-        // holds what was not understood — nothing faithful writes
+        // a tagged case writes its payload with the tag reinserted
+        // first [D:wire-unions] (k8s's own convention); the [<Other>]
+        // case holds what was not understood, so nothing faithful can
+        // be written
         | VUnion(c, payload) when unions.ContainsKey c ->
             let tagField, tagValue, isOther = unions[c]
 
@@ -972,12 +986,13 @@ let private jsonLine
 
             writer.WriteEndObject()
         | VSeq items ->
-            // a non-empty pair-seq is ONE OBJECT (the seq<string * _>
-            // law, `to yaml`'s twin [D:repl-infer]); any other seq is a
-            // nested array [D:recursive-fields] — elements recurse; an
-            // Option element writes null for None (an array slot cannot
-            // be omitted; null reads back as None). An EMPTY mapping
-            // writes [] — value-directed, the yaml writer's own posture.
+            // a non-empty pair-seq is one object (the seq<string * _>
+            // rule, `to yaml`'s twin [D:repl-infer]); any other seq is
+            // a nested array [D:recursive-fields] — elements recurse;
+            // an Option element writes null for None (an array slot
+            // cannot be omitted; null reads back as None). An empty
+            // mapping writes [] — value-directed, matching the yaml
+            // writer.
             let items = List.ofSeq items
 
             let asPairs =
@@ -1000,7 +1015,7 @@ let private jsonLine
                 items |> Seq.iter write
                 writer.WriteEndArray()
         | VMap entries ->
-            // an OBJECT, keys sorted by construction [D:map-string] —
+            // an object, keys sorted by construction [D:map-string] —
             // the round-trip's write half
             writer.WriteStartObject()
 
@@ -1016,15 +1031,16 @@ let private jsonLine
         | v -> unreachable $"the checker rejects 'to json' on {formatValue v}"
 
     // the field loop, shared by records and tagged payloads
-    // [D:wire-unions] — the tag rides FIRST, the payload's fields follow
+    // [D:wire-unions] — the tag comes first, the payload's fields
+    // follow
     and writeFields (rname: string) (fields: (string * Value) list) =
-        // the wire key comes back on WRITE [D:wire-keys] — the
+        // the wire key comes back on write [D:wire-keys] — the
         // roundtrip's other half; the rename table rides the TETo
         // node (attrs never reach values)
         let rens = Map.tryFind rname renames |> Option.defaultValue Map.empty
 
         for kv in fields do
-            // THE FORK [D:json-option]: a None field OMITS its key — a
+            // [D:json-option]: a None field omits its key, so a
             // weir-produced payload looks like the ecosystem's (gh /
             // kubectl / docker inspect omit rather than null). Missing
             // and null both read back as None, so the roundtrip holds.
@@ -1048,14 +1064,14 @@ let private jsonKindName (k: System.Text.Json.JsonValueKind) : string =
     | System.Text.Json.JsonValueKind.Null -> "null"
     | _ -> "non-object"
 
-/// one OBJECT document/element -> one row of `def`. `who` names the
+/// one object document/element -> one row of `def`. `who` names the
 /// adapter in every message ("from json" / "from jsonl") and `shown`
 /// is the input to cite — the line for jsonl, a snippet for a joined
 /// document [D:from-jsonl]
-/// parse one document and read it under the DECLARED shape: wantSeq
-/// demands a top-level array (one row per element), otherwise an object
-/// — the type decides what the top level must be, never the input
-/// [D:from-json-seq]
+/// parse one document and read it under the declared shape: wantSeq
+/// demands a top-level array (one row per element), otherwise an
+/// object — the type decides what the top level must be, never the
+/// input [D:from-json-seq]
 let private jsonDoc
     (who: string)
     (wantSeq: bool)
@@ -1083,7 +1099,7 @@ let private jsonDoc
             match prop.TryGetInt64() with
             | true, n -> VInt n
             | _ ->
-                // TryGetInt64 fails for BOTH decimals and integer-shaped
+                // TryGetInt64 fails for both decimals and integer-shaped
                 // overflow — the raw token tells them apart, so the message
                 // never calls 99999999999999999999 "a decimal"
                 // [D:format-surface-json]
@@ -1094,9 +1110,10 @@ let private jsonDoc
                 else
                     failwith $"{who}: field '{name}': number out of int range — declare it float"
         | TFloat, System.Text.Json.JsonValueKind.Number ->
-            // integer-shaped numbers WIDEN here [D:floats-boundaries]:
-            // JSON has one number type — this is a parse, not weir
-            // arithmetic, so the no-implicit-widening rule does not bite
+            // integer-shaped numbers widen here [D:floats-boundaries]:
+            // JSON has one number type, and this is a parse, not weir
+            // arithmetic, so the no-implicit-widening rule does not
+            // apply
             let d = prop.GetDouble()
 
             if System.Double.IsFinite d then
@@ -1108,10 +1125,10 @@ let private jsonDoc
         | TBool, System.Text.Json.JsonValueKind.False -> VBool false
         | ty, kind -> failwith $"{who}: field '{name}' expected {formatTy ty}, got {kind} in: {shown}"
 
-    // the RECURSIVE reader [D:recursive-fields]: nested objects convert
-    // through `defs` (the check-time closure — eval has no env), arrays
-    // through the element type; Option means the SAME thing at every
-    // depth (null -> None), and paths name the location
+    // the recursive reader [D:recursive-fields]: nested objects
+    // convert through `defs` (the check-time closure — eval has no
+    // env), arrays through the element type; Option means the same
+    // thing at every depth (null -> None), and paths name the location
     let rec readValue (name: string) (ty: Ty) (prop: System.Text.Json.JsonElement) : Value =
         match ty with
         | TNamed("Option", [ inner ]) ->
@@ -1120,12 +1137,13 @@ let private jsonDoc
             else
                 VUnion("Some", Some(readValue name inner prop))
         | TSeq(TTuple [ TStr; v ]) ->
-            // the open MAPPING (yaml's seq<string * _> law at the json
-            // boundary [D:repl-infer]): a JSON object whose keys are DATA
-            // reads as pairs in document order. An empty ARRAY is the
-            // EMPTY mapping — the writer's own empty spelling (a pair-seq
-            // with no pairs has no object evidence), so the roundtrip
-            // holds; a populated array still refuses.
+            // the open mapping (yaml's seq<string * _> rule at the
+            // json boundary [D:repl-infer]): a JSON object whose keys
+            // are data reads as pairs in document order. An empty
+            // array is the empty mapping — the writer's own empty
+            // spelling (a pair-seq with no pairs has no object
+            // evidence), so the roundtrip holds; a populated array
+            // still refuses.
             if
                 prop.ValueKind = System.Text.Json.JsonValueKind.Array
                 && prop.GetArrayLength() = 0
@@ -1153,9 +1171,10 @@ let private jsonDoc
             |> List.toSeq
             |> VSeq
         | TNamed("Map", [ TStr; inner ]) ->
-            // the ID-keyed object [D:map-string]: every property VALUE
-            // reads as the map's value type; duplicate keys LAST-WIN
-            // (System.Text.Json's own lookup — the boundary's stated law)
+            // the ID-keyed object [D:map-string]: every property value
+            // reads as the map's value type; duplicate keys last-win
+            // (System.Text.Json's own lookup, the stated boundary
+            // rule)
             if prop.ValueKind <> System.Text.Json.JsonValueKind.Object then
                 failwith
                     $"{who}: field '{name}' expected an object ({formatTy ty}), got {jsonKindName prop.ValueKind} in: {shown}"
@@ -1177,11 +1196,12 @@ let private jsonDoc
             readUnion $"{name}." udefs[n] prop
         | scalarTy -> readScalar name scalarTy prop
 
-    // the tag DISPATCH [D:wire-unions]: the discriminator field picks the
-    // case, the WHOLE object reads as its payload record (the tag rides
-    // among the fields — internal tagging, the ecosystem's shape); an
-    // unmatched value takes the [<Other>] fallback or refuses naming the
-    // cases; a MISSING tag field is a malformed document, never Other's
+    // the tag dispatch [D:wire-unions]: the discriminator field picks
+    // the case, and the whole object reads as its payload record (the
+    // tag sits among the fields — internal tagging, the ecosystem's
+    // shape); an unmatched value takes the [<Other>] fallback or
+    // refuses naming the cases; a missing tag field is a malformed
+    // document, never Other's
     and readUnion (prefix: string) (udef: UnionDef) (root: System.Text.Json.JsonElement) : Value =
         let tagField = udef.Tag |> Option.defaultValue "?"
         let mutable prop = Unchecked.defaultof<System.Text.Json.JsonElement>
@@ -1216,14 +1236,14 @@ let private jsonDoc
                     failwith
                         $"{who}: tag '{prefix}{tagField}' is '{tagValue}', which matches no case of {udef.Name} (cases: {cases}) in: {shown}"
 
-    // one OBJECT element -> one row (the param shadows the document root
-    // on purpose: the field readers below say `root` either way);
+    // one object element -> one row (the param shadows the document
+    // root on purpose: the field readers below say `root` either way);
     // `prefix` is the dotted path above this object ("" at the top)
     and objRow (prefix: string) (rdef: RecordDef) (root: System.Text.Json.JsonElement) =
         let readField (name: string, ty: Ty) =
             let shownName = prefix + name
-            // the WIRE key [D:wire-keys]: [<Wire "type">] kind reads the
-            // document's "type"; paths keep the weir field name
+            // the wire key [D:wire-keys]: [<Wire "type">] kind reads
+            // the document's "type"; paths keep the weir field name
             let wire = Types.wireName rdef name
             let mutable prop = Unchecked.defaultof<System.Text.Json.JsonElement>
             let present = root.TryGetProperty(wire, &prop)
@@ -1231,22 +1251,22 @@ let private jsonDoc
 
             let value =
                 match ty with
-                // an Option field: missing key OR explicit null -> None;
+                // an Option field: missing key or explicit null -> None;
                 // present -> Some (readValue keeps the rule at depth)
                 | TNamed("Option", [ inner ]) ->
                     if not present || isNull then
                         VUnion("None", None)
                     else
                         VUnion("Some", Some(readValue shownName inner prop))
-                // a required field: missing or null both fail — null names
-                // the fix (a missing ARRAY is an error too: absence is
-                // Option's job, [] is not guessed)
+                // a required field: missing or null both fail, and the
+                // message names the fix (a missing array is an error
+                // too: absence is Option's job, [] is not guessed)
                 | _ when not present ->
                     let wireNote = if wire <> name then $" (wire key \"{wire}\")" else ""
 
-                    // the Option repair rides the error (from-table's own
-                    // teach): a type drafted from a SAMPLE only sees what
-                    // the sample had [D:schema-types]
+                    // the error suggests the Option repair (as
+                    // from-table does): a type drafted from a sample
+                    // only sees what the sample had [D:schema-types]
                     failwith
                         $"{who}: missing field '{shownName}'{wireNote} in: {shown} — if the field is sometimes absent, declare it Option<{formatTy ty}>; a type drafted from a sample only sees what the sample had"
                 | _ when isNull ->
@@ -1256,9 +1276,9 @@ let private jsonDoc
 
             name, value
 
-        // fields read in DECLARATION order; an ANONYMOUS shape takes the
-        // WIRE's order instead [D:record-order] — the one place order
-        // comes from data, which is what makes read-modify-write
+        // fields read in declaration order; an anonymous shape takes
+        // the wire's order instead [D:record-order] — the one place
+        // order comes from data, which is what makes read-modify-write
         // roundtrips hold for shapes the author never declared
         let fields = rdef.Fields |> List.map readField
 
@@ -1283,7 +1303,7 @@ let private jsonDoc
 
         VRecord(rdef.Name, ordered)
 
-    // record and TAGGED-UNION tops read the same way at every position
+    // record and tagged-union tops read the same way at every position
     // below — one element, one dispatch [D:wire-unions]
     let topName =
         match top with
@@ -1296,8 +1316,9 @@ let private jsonDoc
         | TopUnion u -> readUnion prefix u el
 
     if wantMap then
-        // the ID-keyed object [D:map-string]: the top level IS the map —
-        // each property value reads as one row; duplicate keys LAST-WIN
+        // the ID-keyed object [D:map-string]: the top level is the map
+        // — each property value reads as one row; duplicate keys
+        // last-win
         match root.ValueKind with
         | System.Text.Json.JsonValueKind.Object ->
             root.EnumerateObject()
@@ -1328,7 +1349,7 @@ let private jsonDoc
                         $"{who}: array element {i + 1} is a JSON {jsonKindName el.ValueKind}, not an object, in: {shown}"
                 else
                     readTopEl "" el)
-            // forced BEFORE the document disposes; then seq for the ctor
+            // forced before the document disposes; then seq for the ctor
             |> List.ofSeq
             |> List.toSeq
             |> VSeq
@@ -1339,7 +1360,8 @@ let private jsonDoc
             failwith
                 $"{who}: the top level is a JSON {jsonKindName k}, but the declared type is seq<{topName}>, in: {shown}"
         | false, System.Text.Json.JsonValueKind.Array when who = "from json" ->
-            // the pointer is REAL now: the spelling exists
+            // the suggested seq<T> spelling exists, so the message can
+            // point at it
             failwith
                 $"{who}: the top level is a JSON array, not an object — declare seq<{topName}> to read it, in: {shown}"
         | false, k ->
@@ -1351,17 +1373,17 @@ let private jsonDoc
 
             failwith $"{who}: the top level is a JSON {jsonKindName k}, not an object — {contract}, in: {shown}"
 
-// a document snippet for error messages: whole if short, elided middle
-// if not (a joined body can be megabytes; the message stays a message)
+// a document snippet for error messages: whole if short, truncated if
+// not (a joined body can be megabytes; the message stays a message)
 let private jsonSnippet (text: string) : string =
     let t = text.Trim()
     if t.Length <= 120 then t else t.Substring(0, 117) + "..."
 
 // ---- the read-only XML boundary [D:from-xml] ------------------------------
 
-/// read one XML document under the DECLARED shape [D:from-xml]: the root
-/// element is the top record, field names match child elements (matched by
-/// LOCAL name — a default xmlns is stripped), [<Attr>] reads an attribute,
+/// read one XML document under the declared shape [D:from-xml]: the root
+/// element is the top record, field names match child elements (matched
+/// by local name — a default xmlns is stripped), [<Attr>] reads an attribute,
 /// [<Elem "X">] a repeated child, a record a nested element. Every leaf is
 /// text (an element's inner text or an attribute value) — no numbers reach
 /// here, the checker admits string / Option<string> / record / seq only.
@@ -1379,8 +1401,9 @@ let private xmlDoc
             // never System.Xml's words, mirroring the JSON boundary
             failwith $"{who}: not valid XML: {shown}"
 
-    // children / attributes matched by LOCAL name — namespaces (msbuild's
-    // default xmlns) are ignored so field names stay plain [D:from-xml]
+    // children / attributes matched by local name — namespaces
+    // (msbuild's default xmlns) are ignored so field names stay plain
+    // [D:from-xml]
     let childElems (el: XElement) (name: string) =
         el.Elements() |> Seq.filter (fun e -> e.Name.LocalName = name)
 
@@ -1458,9 +1481,9 @@ let private xmlDoc
 
 // ---- the aligned-table boundary [D:from-table] ----------------------------
 
-/// read header-aligned rows (kubectl/docker style) under the DECLARED row
+/// read header-aligned rows (kubectl/docker style) under the declared row
 /// record [D:from-table]: the first non-blank line is the header; columns
-/// slice by HEADER OFFSETS (a header boundary is a run of 2+ spaces, so
+/// slice by header offsets (a header boundary is a run of 2+ spaces, so
 /// `CONTAINER ID` stays one column), never whitespace runs — a cell value
 /// with spaces survives. Each field reads its column: [<Wire "…">] matches
 /// the raw header verbatim, otherwise the normalized names match
@@ -1473,7 +1496,7 @@ let private tableRows (who: string) (def: RecordDef) (lines: string list) : Valu
         let colArr = List.toArray cols
         let headers = cols |> List.map (fun c -> c.Header) |> String.concat ", "
 
-        // resolve each declared field to its column ONCE, before any row
+        // resolve each declared field to its column once, before any row
         let fieldCols =
             def.Fields
             |> List.map (fun (fname, fty) ->
@@ -1481,7 +1504,7 @@ let private tableRows (who: string) (def: RecordDef) (lines: string list) : Valu
 
                 let hit =
                     if wire <> fname then
-                        // the Wire law: the attribute names the raw header
+                        // the Wire rule: the attribute names the raw header
                         colArr |> Array.tryFindIndex (fun c -> c.Header = wire)
                     else
                         colArr
@@ -1550,8 +1573,8 @@ let private fromAdapter
     (udefs: Map<string, UnionDef>)
     : Value =
     match fmt with
-    // ONE document -> T: join the elements back into the text they came
-    // from (a pretty-printed body pipes straight in) [D:from-jsonl]
+    // one document -> T: join the elements back into the text they
+    // came from (a pretty-printed body pipes straight in) [D:from-jsonl]
     | "json" ->
         VBuiltin(fun v ->
             match v with
@@ -1582,8 +1605,8 @@ let private fromAdapter
                         | v -> unreachable $"the checker rejects 'from' on non-string elements: {formatValue v}")
                 )
             | v -> unreachable $"the checker rejects 'from' on {formatValue v}")
-    // ONE document -> T, reading the root element [D:from-xml]; the lines
-    // join back into the text they came from, as json does
+    // one document -> T, reading the root element [D:from-xml]; the
+    // lines join back into the text they came from, as json does
     | "xml" ->
         VBuiltin(fun v ->
             match v with
@@ -1623,15 +1646,15 @@ let private fromAdapter
 
 // ---- the yaml boundary [D:yaml-v1] ----------------------------------------
 
-// shape-directed conversion: the checker packed the resolved target tree;
-// every error carries the node's LINE (the owned parser's positions —
-// the bar YamlDotNet's messages missed)
-// the typeless scalar/node rules [D:yaml-nodes] — pure, dependency-free,
-// so both the typed `Yaml`-field read (yamlConvert's SNode) and the
-// district/Yaml.parse path share the ONE machine
+// shape-directed conversion: the checker packed the resolved target
+// tree; every error carries the node's line (the in-house parser's
+// positions — something YamlDotNet's messages lacked)
+// the typeless scalar/node rules [D:yaml-nodes] — pure and
+// dependency-free, so the typed `Yaml`-field read (yamlConvert's
+// SNode) and the district/Yaml.parse path share one implementation
 let yamlScalarValue (raw: string) (quoted: bool) : Value =
-    // the ONE typeless scalar rule — the district and Yaml.parse agree
-    // by construction [D:yaml-nodes]
+    // the single typeless scalar rule — the district and Yaml.parse
+    // agree by construction [D:yaml-nodes]
     if not quoted && raw = "" then
         VUnion("YNull", None)
     elif not quoted && (raw = "true" || raw = "false") then
@@ -1641,15 +1664,16 @@ let yamlScalarValue (raw: string) (quoted: bool) : Value =
         | true, n -> VUnion("YInt", Some(VInt n))
         | _ ->
             // unquoted float-shaped literals self-type [D:floats-boundaries]
-            // — `cpu: 1.5` must not render as "1.5" (the int precedent;
+            // — `cpu: 1.5` must not render as "1.5" (same as int;
             // parseFloat refuses non-finite so nan/inf text stays string)
             match (if quoted then Error "" else parseFloat raw) with
             | Ok f -> VUnion("YFloat", Some(VFloat f))
             | Error _ -> VUnion("YStr", Some(VStr raw))
 
 let rec yamlNodeValue (node: Yaml.Node) : Value =
-    // the typeless read [D:yaml-nodes]: parsed structure into the public
-    // Yaml union — no tombstone or patch ctor can EVER come from here
+    // the typeless read [D:yaml-nodes]: parsed structure into the
+    // public Yaml union — no tombstone or patch ctor can ever come
+    // from here
     match node with
     | Yaml.NNull _ -> VUnion("YNull", None)
     | Yaml.NBlock(text, _) -> VUnion("YStr", Some(VStr text))
@@ -1673,8 +1697,8 @@ let rec private yamlConvert (shape: Yaml.Shape) (node: Yaml.Node) : Value =
             | true, n -> VInt n
             | _ -> failwith $"from yaml: line {line}: expected int, got '{raw}'"
     | Yaml.SBool, Yaml.NScalar(raw, quoted, line) ->
-        // EXACTLY true/false (the Env.load law: `yes`/`on`/`1` are data,
-        // not booleans — the Norway problem never fires by construction)
+        // exactly true/false (Env.load's rule: `yes`/`on`/`1` are
+        // data, not booleans — the Norway problem cannot fire)
         if quoted then
             failwith $"from yaml: line {line}: a quoted scalar is a string; this field expects bool"
         elif raw = "true" then
@@ -1687,8 +1711,8 @@ let rec private yamlConvert (shape: Yaml.Shape) (node: Yaml.Node) : Value =
         if quoted then
             failwith $"from yaml: line {line}: a quoted scalar is a string; this field expects float"
         else
-            // parseFloat rejects non-finite; .inf/.nan additionally
-            // TEACH — yaml spells them, weir's law forbids the value
+            // parseFloat rejects non-finite; .inf/.nan get a dedicated
+            // message — yaml can spell them, weir forbids the value
             match raw.Trim().ToLowerInvariant() with
             | ".inf"
             | "-.inf"
@@ -1711,17 +1735,17 @@ let rec private yamlConvert (shape: Yaml.Shape) (node: Yaml.Node) : Value =
     | Yaml.SBool, Yaml.NBlock(_, line) ->
         failwith $"from yaml: line {line}: a block scalar is a string; this field expects bool"
     | Yaml.SRec(name, fields), Yaml.NMap(entries, line) ->
-        // extra keys are IGNORED (the from-json precedent); a missing or
-        // null REQUIRED field teaches Option (the json-option precedent)
+        // extra keys are ignored (as in from-json); a missing or null
+        // required field suggests Option (the json-option precedent)
         let get fname =
             entries |> List.tryFind (fun (k, _) -> k = fname)
 
         let fieldValues =
             fields
             |> List.map (fun (fname, wire, fshape) ->
-                // the WIRE key matches the document; the FIELD names the
-                // record (and the message cites both when they differ)
-                // [D:wire-keys]
+                // the wire key matches the document; the field names
+                // the record (and the message cites both when they
+                // differ) [D:wire-keys]
                 let wireNote = if wire <> fname then $" (wire key \"{wire}\")" else ""
 
                 match get wire, fshape with
@@ -1736,10 +1760,10 @@ let rec private yamlConvert (shape: Yaml.Shape) (node: Yaml.Node) : Value =
                 | Some(_, v), _ -> fname, yamlConvert fshape v)
 
         VRecord(name, fieldValues)
-    // the tag DISPATCH [D:wire-unions]: the discriminator entry picks the
-    // case, the WHOLE mapping reads as its payload record; unmatched
-    // values take [<Other>] or refuse naming the cases; a missing tag
-    // is a malformed document, never Other's
+    // the tag dispatch [D:wire-unions]: the discriminator entry picks
+    // the case, and the whole mapping reads as its payload record;
+    // unmatched values take [<Other>] or refuse naming the cases; a
+    // missing tag is a malformed document, never Other's
     | Yaml.SUnion(uname, tag, ucases, other), Yaml.NMap(entries, line) ->
         match entries |> List.tryFind (fun (k, _) -> k = tag) with
         | None -> failwith $"from yaml: line {line}: missing tag field '{tag}' ({uname})"
@@ -1758,8 +1782,8 @@ let rec private yamlConvert (shape: Yaml.Shape) (node: Yaml.Node) : Value =
         | Some(_, n) ->
             failwith $"from yaml: line {Yaml.nodeLine n}: tag field '{tag}' ({uname}) expects a string scalar"
     | Yaml.SSeq inner, Yaml.NSeq(items, _) -> VSeq(items |> List.map (yamlConvert inner) |> List.toSeq)
-    // a null where a seq/mapping sits is the EMPTY collection (the yaml
-    // idiom: `ports:` with nothing below)
+    // a null where a seq/mapping sits is the empty collection (the
+    // yaml idiom: `ports:` with nothing below)
     | Yaml.SSeq _, Yaml.NNull _ -> VSeq Seq.empty
     | Yaml.SPairs inner, Yaml.NMap(entries, _) ->
         VSeq(
@@ -1768,8 +1792,9 @@ let rec private yamlConvert (shape: Yaml.Shape) (node: Yaml.Node) : Value =
             |> List.toSeq
         )
     | Yaml.SPairs _, Yaml.NNull _ -> VSeq Seq.empty
-    // the opaque `Yaml` field reads structure whole [D:yaml-empty-flow] —
-    // an empty `{}` is YMap [], an empty `[]` is YSeq [], any node rides
+    // the opaque `Yaml` field reads structure whole [D:yaml-empty-flow]
+    // — an empty `{}` is YMap [], an empty `[]` is YSeq [], and any
+    // node passes through
     | Yaml.SNode, n -> yamlNodeValue n
     | shape, node ->
         let want =
@@ -1811,13 +1836,14 @@ let private yamlFromImpl (shape: Yaml.Shape) (stream: bool) : Value =
             | Error msg -> failwith $"from yaml: {msg}"
             | Ok docs when stream ->
                 // the stream cardinality [D:wire-unions]: N documents,
-                // each converted through the SAME per-document shape —
+                // each converted through the same per-document shape —
                 // an empty stream is zero documents, not an error
                 VSeq(docs |> List.map (yamlConvert shape) |> List.toSeq)
             | Ok [] -> failwith "from yaml: empty input — expected one document"
             | Ok [ doc ] ->
-                // ONE document; the declared shape names the top level
-                // [D:yaml-seq] — pointers cross to the other spelling
+                // one document; the declared shape names the top level
+                // [D:yaml-seq] — each mismatch message points at the
+                // other spelling
                 match shape, doc with
                 | Yaml.SSeq _, Yaml.NMap _ ->
                     failwith
@@ -1827,16 +1853,17 @@ let private yamlFromImpl (shape: Yaml.Shape) (stream: bool) : Value =
                 | _ -> yamlConvert shape doc
             | Ok docs ->
                 // the one-document spelling stays one-document
-                // [D:yaml-seq] — the stream form is the repair now
+                // [D:yaml-seq] — the stream form is the suggested
+                // repair
                 failwith
                     $"from yaml: reads one document; this input has {List.length docs} documents — read a stream with 'from yaml stream T'"
         | v -> unreachable $"the checker rejects 'from yaml' on {formatValue v}")
 
-// the renderer: VALUE-driven (records/seqs/scalars/Option/Yaml nodes).
-// Record fields render ALPHABETICALLY (the VRecord representation's
-// existing law — same as to json); YMap preserves ITS order (the
-// user-controlled escape). A None FIELD omits its key; a None ELEMENT
-// renders `null` (both the json-option split).
+// the renderer: value-driven (records/seqs/scalars/Option/Yaml nodes).
+// Record fields render alphabetically (the VRecord representation's
+// existing rule — same as to json); YMap preserves its own order (the
+// user-controlled escape). A None field omits its key; a None element
+// renders `null` (both per the json-option split).
 type private Rendered =
     | Inline of string
     | Block of string list
@@ -1846,15 +1873,16 @@ type private Rendered =
 
 // a string renders as a block scalar when it holds newlines (and no
 // wilder control characters) [D:block-scalars]; the form is
-// DETERMINISTIC — one trailing newline is `|`, none is `|-`, more have
-// no form in the subset (`|+` is rejected) and dropping bytes is the
-// one thing a renderer must never do, so that errors
+// deterministic — one trailing newline is `|`, none is `|-`; strings
+// with more have no form in the subset (`|+` is rejected) and fall
+// back below, since dropping bytes is the one thing a renderer must
+// never do
 let private renderString (s: string) : Rendered =
     let tame =
         s |> Seq.forall (fun c -> not (System.Char.IsControl c) || c = '\n' || c = '\t')
 
     // multiple trailing newlines have no block form in the subset (`|+`
-    // is rejected) — they FALL BACK to the quoted-with-escapes spelling:
+    // is rejected) — they fall back to the quoted-with-escapes spelling:
     // valid, exact, round-trips; every legal string stays renderable
     // [D:content-bytes]. A content line starting with space/tab also
     // falls back: block content indentation is detected from the first
@@ -1956,8 +1984,9 @@ let rec private yamlRender
         )
     | VUnion("Some", Some inner) -> yamlRender renames unions (depth + 1) inner
     | VUnion("None", None) -> Inline "null" // element position; fields omit above
-    // a TAGGED case renders its payload with the tag entry FIRST
+    // a tagged case renders its payload with the tag entry first
     // [D:wire-unions]; the [<Other>] case refuses — nothing faithful
+    // can be written
     | VUnion(c, payload) when unions.ContainsKey c ->
         let tagField, tagValue, isOther = unions[c]
 
@@ -1989,7 +2018,7 @@ let rec private yamlRender
     | VSeq items ->
         let items = List.ofSeq items
 
-        // a pair-seq is ONE mapping (the seq<string * _> law)
+        // a pair-seq is one mapping (the seq<string * _> rule)
         let asPairs =
             items
             |> List.map (fun i ->
@@ -2020,10 +2049,10 @@ let private yamlToImpl
     : Value =
     VBuiltin(fun v ->
         match v with
-        // `to yaml stream` [D:yaml-seq-doc]: one document per element —
-        // the bundle write. Without the word a seq is ONE SEQUENCE
-        // document (yamlRender's own VSeq arm — json's array, one
-        // format over), and a pair-seq is ONE mapping document.
+        // `to yaml stream` [D:yaml-seq-doc]: one document per element
+        // — the bundle write. Without the keyword a seq is a single
+        // sequence document (yamlRender's own VSeq arm, matching
+        // json's array), and a pair-seq is a single mapping document.
         | VSeq items when stream ->
             let docs = items |> Seq.map (yamlToLines renames unions) |> List.ofSeq
 
@@ -2038,9 +2067,9 @@ let private yamlToImpl
 let scalarString (what: string) (v: Value) : string =
     match v with
     | VStr s -> s
-    // a Secret splices to argv in the CLEAR [D:secret]: the argv ruling —
-    // `curl -H $auth` needs the real value. print/printerr reject Secret
-    // at the type (printArgTy), so this arm is reached only via argv
+    // a Secret splices to argv in the clear [D:secret]: `curl -H
+    // $auth` needs the real value. print/printerr reject Secret at
+    // the type (printArgTy), so this arm is reached only via argv
     | VSecret s -> s
     | VInt n -> string n
     | VBool true -> "true"
@@ -2060,7 +2089,7 @@ let rec private tryBind (p: Pattern) (v: Value) : (string * Value) list option =
     | PStr _, v -> unreachable $"the checker rejects string patterns on {formatValue v}"
     | PUnit, _ -> Some []
     | PRecord fields, VRecord(_, vfields) ->
-        // irrefutable by checker law [D:record-patterns]: every field
+        // irrefutable by checking [D:record-patterns]: every field
         // exists (checked) and every sub-pattern binds — the fold can
         // only ever produce Some
         fields
@@ -2146,7 +2175,7 @@ let private wrapOpt (ty: Ty) (v: Value) : Value =
 
 // ---- Args.load [D:typed-argv] ------------------------------------
 // collect-then-raise over Session.ScriptArgs; --help short-circuits
-// BEFORE validation (help must work on invalid invocations)
+// before validation (help must work on invalid invocations)
 
 // the <value> hint on a value-taking flag [D:argv-help-slots]: every
 // non-bool field takes a value, so every one gets a slot named for its
@@ -2208,21 +2237,22 @@ let private argvUsageLines (def: RecordDef) : string list =
     argvUsageLinesWith (fst (Argv.shortTables def)) def
 
 // the per-case flag scope [D:shared-flags]: shared and payload fields
-// together — short derivation runs over the UNION, so a cross-tier
-// contest (-q for --quiet and --query) derives for NEITHER in that scope
+// together — short derivation runs over the union of both, so a
+// cross-tier contest (-q for --quiet and --query) derives for neither
+// in that scope
 let private scopeDef (sharedDef: RecordDef) (payloadDef: RecordDef option) : RecordDef =
     match payloadDef with
     | Some pd ->
         { sharedDef with
             Fields = sharedDef.Fields @ pd.Fields
             Attrs = pd.Attrs |> Map.fold (fun m k v -> Map.add k v m) sharedDef.Attrs
-            // the two-tier help draws --help text from BOTH tiers [D:doc-help]
+            // the two-tier help draws --help text from both tiers [D:doc-help]
             Docs = pd.Docs |> Map.fold (fun m k v -> Map.add k v m) sharedDef.Docs }
     | None -> sharedDef
 
-// pass 1 of the shared-flags scan: shared flags float, the FIRST
-// non-flag token anchors as the case selector (an unknown flag consumes
-// no value — the standing precedent)
+// pass 1 of the shared-flags scan: shared flags float, and the first
+// non-flag token anchors as the case selector (an unknown flag
+// consumes no value, per precedent)
 let private argvFindCase (sharedDef: RecordDef) (argv: string list) : (int * string) option =
     let sharedLong =
         sharedDef.Fields
@@ -2308,7 +2338,7 @@ let private argvUsage (target: ArgsTarget) (argv: string list) : string =
                  @ caseBlock c p)
         | None ->
             // the global section shows a derived short only when it holds
-            // in EVERY case scope (explicit shorts always hold)
+            // in every case scope (explicit shorts always hold)
             let sharedOwn, _ = Argv.shortTables sharedDef
 
             let stable =
@@ -2334,16 +2364,16 @@ let private argvUsage (target: ArgsTarget) (argv: string list) : string =
                  @ caseLines
                  @ blocks)
 
-// the three argv-boundary rules — ONE implementation each, shared by
+// the three argv-boundary rules — one implementation each, shared by
 // the record and shared-flags twins [D:argv-rules]. The accumulators
-// arrive as PARAMETERS, never closure captures: problem ORDER stays
+// arrive as parameters, never closure captures: problem order stays
 // each caller's own (scan order, then declaration-order fills —
-// pinned exact in e2e).
+// pinned exactly in e2e).
 
 // the resting-point fill [D:default-attr]: run-time Value construction
-// lives HERE (Eval); the Default POLICY it consumes (Argv.defaultOf)
-// is check-time schema, already shared in Argv.fs beside the Args/Env
-// flip — the check/run line is unchanged by the unification
+// lives here in Eval; the Default policy it consumes (Argv.defaultOf)
+// is check-time schema, shared in Argv.fs beside the Args/Env flip —
+// the check/run split is unchanged by the unification
 let private argvFill
     (problems: ResizeArray<string>)
     (def: RecordDef)
@@ -2500,9 +2530,10 @@ let private argvParseRecord (label: string) (def: RecordDef) (tokens: string lis
 
     VRecord(def.Name, fields)
 
-// the shared-flags load [D:shared-flags]: shared flags float anywhere on
-// the line; the first non-flag token anchors the case; payload flags
-// bind only AFTER it. Both tiers collect into ONE boundary error.
+// the shared-flags load [D:shared-flags]: shared flags float anywhere
+// on the line; the first non-flag token anchors the case; payload
+// flags bind only after it. Both tiers collect into one boundary
+// error.
 let private argvLoadShared
     (outer: RecordDef)
     (unionField: string)
@@ -2696,8 +2727,8 @@ let private envPairsOf (v: Value) : (string * string) list =
     | _ -> unreachable "the checker rejects non-seq overlays"
 
 // the explicit sigil env only — ambient `within env` layers apply in
-// Proc's starters themselves [D:within-scopes], so EVERY spawn
-// (reifier desugars, cmd/into included) obeys the outer-first law,
+// Proc's starters themselves [D:within-scopes], so every spawn
+// (reifier desugars, cmd/into included) obeys the outer-first rule,
 // not just these Eval paths
 let rec private overlayOf (env: Env) (cenvO: TypedExpr option) : (string * string) list =
     match cenvO with
@@ -2707,11 +2738,11 @@ let rec private overlayOf (env: Env) (cenvO: TypedExpr option) : (string * strin
         |> List.map (fun (k, v) -> k, noNul $"the env value for '{k}'" v)
 
 // a NUL cannot cross the spawn hand-off [D:encoding-law]: argv and env
-// are NUL-terminated C strings, so the byte would silently TRUNCATE
-// the word at the child — and silent truncation is wrong under every
-// answer. The boundary holds on its own rather than trusting every
-// upstream constructor: once BYTES lands there will be other routes
-// to a NUL.
+// are NUL-terminated C strings, so the byte would silently truncate
+// the word at the child — and silent truncation is always wrong. The
+// boundary holds on its own rather than trusting every upstream
+// constructor: once a Bytes type lands there will be other routes to
+// a NUL.
 and private noNul (what: string) (s: string) : string =
     if s.Contains '\u0000' then
         failwith
@@ -2719,9 +2750,9 @@ and private noNul (what: string) (s: string) : string =
     else
         s
 
-// spawn-argv assembly [D:argv-splat]: a splat enumerates ONCE at
-// spawn (argv is finite — the splat forces by necessity), order
-// preserved, each element ONE word
+// spawn-argv assembly [D:argv-splat]: a splat enumerates once at
+// spawn (argv is finite, so the splat forces by necessity), order
+// preserved, each element one word
 and argvOf (env: Env) (args: Check.TypedExpr list) : string list =
     args
     |> List.collect (fun a ->
@@ -2735,9 +2766,9 @@ and argvOf (env: Env) (args: Check.TypedExpr list) : string list =
             | v -> unreachable $"the checker rejects '$@' on {formatValue v}"
         | _ -> [ eval env a |> scalarString "command argument" |> noNul "a command argument" ])
 
-// a dynamic head resolves at RUN [D:dynamic-head] — like `^literal`,
-// on the runtime string: no glob, no word-split, no re-lex. Not-found
-// raises a located error naming the value.
+// a dynamic head resolves at run time [D:dynamic-head] — like
+// `^literal`, on the runtime string: no glob, no word-split, no
+// re-lex. Not-found raises a located error naming the value.
 and private progOf (env: Env) (h: Check.TCmdHead) : string =
     match h with
     | Check.THeadLit p -> p
@@ -2772,8 +2803,8 @@ and eval (env: Env) (te: TypedExpr) : Value =
                 | VProc h -> h
                 | v -> unreachable $"the checker rejects a watch of {formatValue v}")
 
-        // the watched child dying IS the answer [D:scoped-procs]: fail
-        // NOW with its own words, never a blind timeout
+        // the watched child dying is itself the answer [D:scoped-procs]:
+        // fail immediately with its own output, never a blind timeout
         let watchCheck (sw: System.Diagnostics.Stopwatch) =
             match watched with
             | Some h when
@@ -2782,9 +2813,9 @@ and eval (env: Env) (te: TypedExpr) : Value =
                  with _ ->
                      true)
                 ->
-                // elapsed is the POLL's clock — Process.StartTime throws
-                // on an exited child (the .NET trap), and the wait's own
-                // duration is the number the reader wants anyway
+                // elapsed is the poll's own clock — Process.StartTime
+                // throws on an exited child, and the wait's duration
+                // is the number the reader wants anyway
                 failwith (
                     $"poll: watched process (pid {h.Proc.Id}) exited with code {h.Proc.ExitCode} "
                     + $"after {formatDuration sw.ElapsedMilliseconds}"
@@ -2802,9 +2833,9 @@ and eval (env: Env) (te: TypedExpr) : Value =
             | VDur ms -> ms
             | v -> unreachable $"the checker rejects a {name} of {formatValue v}"
 
-        // the two bounds [D:retry-poll]: retry counts ATTEMPTS (with an
-        // optional total-time ceiling), poll counts TIME — an unbounded
-        // loop is unrepresentable, not refused
+        // the two bounds [D:retry-poll]: retry counts attempts (with
+        // an optional total-time ceiling), poll counts time — an
+        // unbounded loop is unrepresentable rather than refused
         let attempts, delayMs, timeoutMs =
             if isPoll then
                 System.Int32.MaxValue, dur "interval", Some(dur "timeout")
@@ -2829,9 +2860,9 @@ and eval (env: Env) (te: TypedExpr) : Value =
         | _ -> ()
 
         let sw = System.Diagnostics.Stopwatch.StartNew()
-        // the wait is CANCELLABLE from the start [D:retry-poll]: the
-        // timeout ceiling cancels a pending delay instead of waiting it
-        // out; an external token can join the source later
+        // the wait is cancellable from the start [D:retry-poll]: the
+        // timeout ceiling cancels a pending delay instead of waiting
+        // it out; an external token can join the source later
         use cts = new System.Threading.CancellationTokenSource()
 
         match timeoutMs with
@@ -2851,9 +2882,10 @@ and eval (env: Env) (te: TypedExpr) : Value =
 
         let exhausted (n: int) =
             if isPoll then
-                // the watched state rides the exhaustion [D:scoped-procs]:
-                // up-but-never-ready names itself (only poll can reach
-                // this message — the reason watch is a key, not a wrapper)
+                // the watched state rides the exhaustion message
+                // [D:scoped-procs]: an up-but-never-ready child is
+                // named as such (only poll can reach this message —
+                // the reason watch is a key, not a wrapper)
                 let watchedNote =
                     match watched with
                     | Some h -> $"; watched process (pid {h.Proc.Id}) still running{procTailLine h}"
@@ -2865,7 +2897,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
 
         let rec loop (n: int) =
             watchCheck sw
-            // raises PROPAGATE [D:retry-poll]: retry retries on the
+            // raises propagate [D:retry-poll]: retry retries on the
             // predicate, never on exceptions — command failure becomes
             // data through the reifier family
             let v = eval env body
@@ -2879,7 +2911,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
             else
                 let timedOut =
                     if delayMs > 0L then
-                        // the indicator wraps ONLY the wait between
+                        // the indicator wraps only the wait between
                         // attempts — the body may own the terminal
                         // [D:waiting-indicator]
                         Waiting.during $"{head}: waiting {formatDuration delayMs}" (fun () ->
@@ -2915,13 +2947,13 @@ and eval (env: Env) (te: TypedExpr) : Value =
     | TELambda(param, _, body) -> VClosure(param, body, env)
     | TEApp(fn, arg) -> apply (eval env fn) (eval env arg)
     | TEPipe(arg, { Kind = TECmd(chead, cargs, cenvO) }) ->
-        // collect the COMMAND CHAIN left of this hop [D:byte-pipes]: a
+        // collect the command chain left of this hop [D:byte-pipes]: a
         // command feeding a command is a raw byte hop (a hop makes no
         // value — [D:colour-inherit]'s rationale, completed); only the
-        // chain's far-left VALUE head (if any) is a text edge
-        // the ambient snapshot [D:ambient-capture]: taken HERE, where
+        // chain's far-left value head (if any) is a text edge
+        // the ambient snapshot [D:ambient-capture]: taken here, where
         // the pipe is written — a lazy seq escaping a `within` scope
-        // still spawns under the scope it was written in (closure law)
+        // still spawns under the scope it was written in (closure rule)
         let snapCwd = Some(Weir.Session.Cwd())
 
         let snapAmb =
@@ -2979,13 +3011,14 @@ and eval (env: Env) (te: TypedExpr) : Value =
                   Proc.Ambient = snapAmb } ]
 
         VSeq(Seq.delay (fun () -> Proc.chainLinesOf specs) |> Seq.map VStr)
-    // the armed statement command STREAMS at a tty [D:stream-echo]:
-    // |print(linesOf) held a partial line (an interactive prompt) until
-    // its newline — the chunk relay flushes as bytes arrive. Content is
-    // byte-identical to the batched path (same segment split, trailing
-    // newline ensured); ONLY timing differs, and only at a tty —
-    // redirected output keeps the linesOf path untouched. Reifiers and
-    // captures are unaffected by law (| complete is in-memory capture).
+    // the armed statement command streams at a tty [D:stream-echo]:
+    // |print(linesOf) would hold a partial line (an interactive
+    // prompt) until its newline, so the chunk relay flushes as bytes
+    // arrive. Content is byte-identical to the batched path (same
+    // segment split, trailing newline ensured); only timing differs,
+    // and only at a tty — redirected output keeps the linesOf path
+    // untouched. Reifiers and captures are unaffected (| complete is
+    // in-memory capture).
     | TEPipe({ Kind = TECmd(head, args, cenvO) }, { Kind = TEVar "|print" }) when
         not (System.Console.IsOutputRedirected)
         ->
@@ -3083,7 +3116,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
     | TEBinOp(op, l, r) -> binOp op (eval env l) (eval env r)
     | TERecord(name, fields) -> VRecord(name, fields |> List.map (fun (n, fv) -> n, eval env fv))
     | TEUpdate(src, updates) ->
-        // source evaluated ONCE [D:record-update]; nested paths overlay
+        // source evaluated once [D:record-update]; nested paths overlay
         let source = eval env src
 
         updates
@@ -3091,7 +3124,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
             (fun acc (path, tval) ->
                 let rec go (v: Value) (path: string list) : Value =
                     match v, path with
-                    // recSet replaces IN PLACE [D:record-order]: an
+                    // recSet replaces in place [D:record-order]: an
                     // updated field keeps its position, never moves
                     | VRecord(n, fs), [ f ] -> VRecord(n, recSet f (eval env tval) fs)
                     | VRecord(n, fs), f :: rest -> VRecord(n, recSet f (go (recGet f fs) rest) fs)
@@ -3104,7 +3137,8 @@ and eval (env: Env) (te: TypedExpr) : Value =
     | TECmd(head, args, cenvO) ->
         let argv = argvOf env args
 
-        // written-site ambient [D:ambient-capture], the lazy-spawn law
+        // ambient captured at the written site [D:ambient-capture],
+        // per the lazy-spawn rule
         let spec: Proc.Spec =
             { Prog = Proc.resolveProg (progOf env head)
               Args = argv
@@ -3122,7 +3156,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
             | IStr s -> sb.Append s |> ignore
             | IExpr e ->
                 // a hole renders what show renders [D:interp-show]; a
-                // bare string stays RAW (the value, not its quoted form)
+                // bare string stays raw (the value, not its quoted form)
                 sb.Append(
                     match eval env e with
                     | VStr str -> str
@@ -3135,7 +3169,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
     | TEFromYaml(_, shape, stream) -> yamlFromImpl shape stream
     | TEYaml(tpl, _, patchBy) ->
         // a patch district wraps its tree with the merge key — the
-        // wrapper ctor is UNPRODUCIBLE from user code and from parsed
+        // wrapper ctor cannot be produced from user code or from parsed
         // text ([D:yaml-nodes]; the |-prefix trick, [D:drop-reify-builtins])
         let tree = evalYamlTpl env tpl
 
@@ -3149,17 +3183,18 @@ and eval (env: Env) (te: TypedExpr) : Value =
             | VSeq items -> VSeq(items |> Seq.map (jsonLine renames unions >> VStr))
             | v -> unreachable $"the checker rejects 'to jsonl' on {formatValue v}")
     | TETo(_, renames, unions, _) ->
-        // ONE document [D:to-jsonl] — the whole value through the same
+        // one document [D:to-jsonl] — the whole value through the same
         // renderer, once; an array document forces its seq (one line
         // cannot stream)
         VBuiltin(fun v -> VSeq [ VStr(jsonLine renames unions v) ])
     | TEMatch(scrutinee, arms) ->
         let v0 = eval env scrutinee
 
-        // memoize-once law [D:seq-patterns]: a match containing ANY seq
-        // pattern views its scrutinee through ONE cache — arms probe the
-        // same buffer (never re-pull), rest binds the buffer suffix plus
-        // the untouched tail, effects run once TOTAL
+        // memoize-once rule [D:seq-patterns]: a match containing any
+        // seq pattern views its scrutinee through one cache — arms
+        // probe the same buffer (never re-pull), rest binds the buffer
+        // suffix plus the untouched tail, and effects run once in
+        // total
         let rec hasSeqPat (p: Weir.Ast.Pattern) =
             match p.PKind with
             | Weir.Ast.PSeqNil
@@ -3197,19 +3232,19 @@ and eval (env: Env) (te: TypedExpr) : Value =
         tryArms arms
     | TEArgsLoad target -> argvLoad target
     | TEEnvLoad(def, enums) ->
-        // snapshot at force time; collect every problem, raise ONCE
+        // snapshot at force time; collect every problem, raise once
         let problems = ResizeArray<string>()
 
         let fields =
             def.Fields
             |> List.map (fun (field, ty) ->
-                // the env var this field READS [D:wire-keys]: verbatim unless
+                // the env var this field reads [D:wire-keys]: verbatim unless
                 // [<Wire "NAME">] says otherwise. Env var names are not always
-                // legal weir field names either (a leading digit, a dash, a
-                // reserved word), and the author controls the environment no more
-                // than a JSON payload — the same wire-key problem as from json.
-                // `name` is the WIRE name from here on, so every message names the
-                // variable the author actually asked for.
+                // legal weir field names (a leading digit, a dash, a reserved
+                // word), and the author controls the environment no more than
+                // a JSON payload — the same wire-key problem as from json.
+                // `name` is the wire name from here on, so every message names
+                // the variable the author actually asked for.
                 let name = Types.wireName def field
                 let raw = System.Environment.GetEnvironmentVariable name
 
@@ -3217,7 +3252,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
                     match ty, raw with
                     | TNamed("Option", _), null -> VUnion("None", None)
                     | _, null ->
-                        // the resting point sits BELOW the whole overlay
+                        // the resting point sits below the whole overlay
                         // stack [D:default-attr]: any set var wins
                         match Argv.defaultOf def field with // attributes are keyed by FIELD
                         | Some(AStr s) -> VStr s
@@ -3267,14 +3302,14 @@ and eval (env: Env) (te: TypedExpr) : Value =
                         | Error e ->
                             problems.Add $"{name}: {e}"
                             VUnit
-                    // env is THE secret channel [D:secret]: wrap at the boundary
+                    // env is the secret channel [D:secret]: wrap at the boundary
                     | (TSecret | TNamed("Option", [ TSecret ])), v -> wrapOpt ty (VSecret v)
                     | (TNamed(un, []) | TNamed("Option", [ TNamed(un, []) ])), v ->
                         // the enum conversion [D:env-enums]: matching is
-                        // CASE-INSENSITIVE against the declared names (env
+                        // case-insensitive against the declared names (env
                         // convention is uppercase — LOG_LEVEL=DEBUG, =debug
                         // and =Debug all select Debug); an empty value is a
-                        // miss with candidates, the int rule's precedent
+                        // miss listing the candidates, as the int rule does
                         let cases = enums |> Map.tryFind un |> Option.defaultValue []
 
                         match
@@ -3285,7 +3320,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
                         | Some c -> wrapOpt ty (VUnion(c, None))
                         | None ->
                             // the hint compares like the matcher does —
-                            // case-insensitively — but names the DECLARED
+                            // case-insensitively — but names the declared
                             // spelling
                             let hint =
                                 cases
@@ -3311,10 +3346,10 @@ and eval (env: Env) (te: TypedExpr) : Value =
         eval env a |> ignore
         eval env b
     | TEAlways(body, cleanup) ->
-        // the bare scope [D:within-always], the raise rulings:
+        // the bare scope [D:within-always]; raise handling:
         //  1. normal exit + cleanup raises -> the scope raises (always
         //     is never the one place a raise disappears)
-        //  2. already unwinding + cleanup raises -> the ORIGINAL wins;
+        //  2. already unwinding + cleanup raises -> the original wins;
         //     the cleanup failure goes to stderr with a marker (the
         //     diagnosis outranks its consequence)
         //  3. teardown continues outward regardless — one failed
@@ -3349,12 +3384,12 @@ and eval (env: Env) (te: TypedExpr) : Value =
 
             raise original
     | TEWithin(kind, binder, targ, topts, body) ->
-        // dispatch KIND-FIRST on the union [D:within-kind-union]: a new
-        // kind must claim its runtime here or the build fails. Binder and
-        // arg are extracted by NAME per kind, never a wildcard over the
-        // tuple: a wildcard absorbs a malformed node of ANY kind instead
-        // of reaching the unreachable guard, which is what makes the
-        // guard worth having.
+        // dispatch kind-first on the union [D:within-kind-union]: a new
+        // kind must claim its runtime here or the build fails. Binder
+        // and arg are extracted by name per kind, never a wildcard over
+        // the tuple: a wildcard would absorb a malformed node of any
+        // kind instead of reaching the unreachable guard, which is what
+        // makes the guard worth having.
         let argOf (what: string) =
             match targ with
             | Some a -> a
@@ -3368,30 +3403,32 @@ and eval (env: Env) (te: TypedExpr) : Value =
         match kind with
         | WithinPure
         | WithinReadonly ->
-            // the purity/read-only assertions are CHECK-time laws
+            // the purity/read-only assertions are check-time rules
             // [D:pure-stage1] [D:pure-stage2]: by the time evaluation
-            // reaches the region, the body is verified within its ceiling
-            // (∅ for pure, ambient-input for readonly) — the region
-            // is transparent at runtime, so ambient READS still run
+            // reaches the region, the body is verified within its
+            // ceiling (∅ for pure, ambient-input for readonly) — the
+            // region is transparent at runtime, so ambient reads still
+            // run
             eval env body
         | WithinPlan ->
-            // the plan capture [D:plan-apply]: run the body while a fresh
-            // capture frame is on top — the mutation builtins append Ops
-            // instead of performing (ambient reads still run); the body's
-            // own value is DISCARDED (it ran for its capture). The region
-            // yields a Plan (a VRecord carrying the captured Ops in order,
-            // all-data by ruling 6 — content thunks forced at capture).
+            // the plan capture [D:plan-apply]: run the body while a
+            // fresh capture frame is on top — the mutation builtins
+            // append Ops instead of performing (ambient reads still
+            // run); the body's own value is discarded (it ran for its
+            // capture). The region yields a Plan (a VRecord carrying
+            // the captured Ops in order, all data per ruling 6 —
+            // content thunks forced at capture).
             let ops = PlanMode.capturing (fun () -> eval env body |> ignore)
             VRecord("Plan", [ "ops", VSeq ops ])
         | WithinLock ->
-            // advisory file lock [D:within-lock]: FileShare.None maps to
-            // flock(2) on Unix (probe-pinned: per-open-file-description,
-            // so pmap arms exclude each other; interoperates with
-            // flock(1)) and native share modes on Windows. Blocking by
-            // default, timeout= bounds the wait; the kernel releases on
-            // ANY death, kill -9 included — the one kind whose guarantee
+            // advisory file lock [D:within-lock]: FileShare.None maps
+            // to flock(2) on Unix (per-open-file-description, so pmap
+            // arms exclude each other; interoperates with flock(1))
+            // and native share modes on Windows. Blocking by default,
+            // timeout= bounds the wait; the kernel releases on any
+            // death, kill -9 included — the one kind whose guarantee
             // survives the hard-exit carve-out. Advisory only: a
-            // non-cooperating process ignores it (stated non-claim).
+            // non-cooperating process ignores it.
             let path =
                 match eval env (argOf "lock") with
                 | VStr s -> s
@@ -3420,9 +3457,9 @@ and eval (env: Env) (te: TypedExpr) : Value =
                             )
                         )
                      with
-                     // DirectoryNotFound IS an IOException — a missing
-                     // parent must fail NOW, not spin as "held elsewhere"
-                     // (the Windows C:\tmp lesson)
+                     // DirectoryNotFound is an IOException — a missing
+                     // parent must fail immediately, not spin as "held
+                     // elsewhere"
                      | :? System.IO.DirectoryNotFoundException ->
                          failwith $"within lock: no such directory for {resolved} — the lock file's parent must exist"
                      | :? System.IO.IOException -> None)
@@ -3444,9 +3481,10 @@ and eval (env: Env) (te: TypedExpr) : Value =
             finally
                 fs.Dispose()
         | WithinCd ->
-            // cd CONSUMES a path [D:within-scopes]: resolved against the
-            // current cwd (so nested relative scopes compose), verified
-            // BEFORE the block runs, restored on every managed exit
+            // cd consumes a path [D:within-scopes]: resolved against
+            // the current cwd (so nested relative scopes compose),
+            // verified before the block runs, restored on every
+            // managed exit
             let path =
                 match eval env (argOf "cd") with
                 | VStr s -> s
@@ -3465,8 +3503,8 @@ and eval (env: Env) (te: TypedExpr) : Value =
             finally
                 Session.setCwd saved
         | WithinEnv ->
-            // env pushes an ambient overlay CHILD SPAWNS see; weir's own
-            // Env.load is untouched [D:within-scopes]
+            // env pushes an ambient overlay that child spawns see;
+            // weir's own Env.load is untouched [D:within-scopes]
             Session.pushEnvOverlay (envPairsOf (eval env (argOf "env")))
 
             try
@@ -3475,9 +3513,10 @@ and eval (env: Env) (te: TypedExpr) : Value =
                 Session.popEnvOverlay ()
         | WithinProc ->
             // the scoped process [D:scoped-procs]: spawn with both
-            // streams spilling, bind the handle, and at EVERY exit —
-            // normal and raise alike — tree-kill and reap. The scope IS
-            // the lifetime; the exit hook is the hard-exit backstop.
+            // streams spilling, bind the handle, and at every exit —
+            // normal and raise alike — tree-kill and reap. The scope
+            // is the lifetime; the exit hook is the hard-exit
+            // backstop.
             let binderName = binderOf "proc"
 
             let prog, argv, overlay =
@@ -3524,12 +3563,13 @@ and eval (env: Env) (te: TypedExpr) : Value =
 
                 Session.deregisterTmpDir spill
         | WithinServe ->
-            // the scoped listener [D:http-serve]: open the socket, serve on
-            // a pool of handler threads (the maxConcurrent ceiling — the
-            // pmapWith law on the scope), bind the handle, run the body,
-            // and at EVERY exit — normal, raise, SIGINT/SIGTERM — close the
-            // listener so the port frees. The signal path rides the same
-            // registerAlways backstop the bare within/always uses.
+            // the scoped listener [D:http-serve]: open the socket,
+            // serve on a pool of handler threads (the maxConcurrent
+            // ceiling, as pmapWith bounds it), bind the handle, run
+            // the body, and at every exit — normal, raise,
+            // SIGINT/SIGTERM — close the listener so the port frees.
+            // The signal path rides the same registerAlways backstop
+            // the bare within/always uses.
             let binderName = binderOf "serve"
 
             let cfg =
@@ -3550,9 +3590,10 @@ and eval (env: Env) (te: TypedExpr) : Value =
             if maxConcurrent < 1 then
                 failwith $"serve: maxConcurrent is at least 1, got {maxConcurrent}"
 
-            // the request-body read timeout [D:serve-body-timeout]: OPTIONAL
-            // in the config literal, resting at 30s when omitted — a slow
-            // client dribbling the body cannot park a handler slot forever
+            // the request-body read timeout [D:serve-body-timeout]:
+            // optional in the config literal, defaulting to 30s — a
+            // slow client dribbling the body cannot park a handler
+            // slot forever
             let bodyTimeoutMs =
                 match List.tryFind (fun (n, _) -> n = "bodyTimeout") cfg with
                 | Some(_, VDur ms) -> int ms
@@ -3562,7 +3603,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
             if bodyTimeoutMs < 1 then
                 failwith $"serve: bodyTimeout is at least 1ms, got {bodyTimeoutMs}ms"
 
-            // the handler closure, evaluated ONCE at scope entry
+            // the handler closure, evaluated once at scope entry
             let handler =
                 match topts with
                 | Some h -> eval env h
@@ -3570,13 +3611,14 @@ and eval (env: Env) (te: TypedExpr) : Value =
 
             // request primitives -> the HttpServerRequest Value the handler sees
             let requestValue (r: Serve.SReq) : Value =
-                // HttpMethod is open-world inbound [D:serve-method]: the
-                // listed verbs read as themselves (QUERY included — a case
-                // the shared client↔server family already has), and a
-                // well-formed but UNLISTED verb reads as `Other v` so the
-                // handler can route on it and answer 405 by choice, never
-                // misreported as Get. A malformed token never reaches here
-                // (refused with 400 at the boundary before the handler).
+                // HttpMethod is open-world inbound [D:serve-method]:
+                // the listed verbs read as themselves (QUERY included
+                // — a case the shared client↔server family already
+                // has), and a well-formed but unlisted verb reads as
+                // `Other v` so the handler can route on it and answer
+                // 405 by choice, never misreported as Get. A malformed
+                // token never reaches here (refused with 400 at the
+                // boundary before the handler).
                 let methodValue =
                     match r.Method.ToUpperInvariant() with
                     | "GET" -> VUnion("Get", None)
@@ -3598,9 +3640,10 @@ and eval (env: Env) (te: TypedExpr) : Value =
                       "body", VStr r.Body ]
                 )
 
-            // the handler's HttpServerResponse Value -> response primitives.
-            // A Stream body stays a LAZY seq<Value> mapped to strings — pulled
-            // by Serve.writeResponse element-by-element (the incremental law)
+            // the handler's HttpServerResponse Value -> response
+            // primitives. A Stream body stays a lazy seq<Value> mapped
+            // to strings, pulled by Serve.writeResponse
+            // element-by-element (the incremental rule)
             let responseOf (v: Value) : Serve.SResp =
                 match v with
                 | VRecord("HttpServerResponse", f) ->
@@ -3620,11 +3663,12 @@ and eval (env: Env) (te: TypedExpr) : Value =
 
                     // refuse a response header carrying CR/LF/NUL
                     // [D:http-header-bytes]: the serve face of F3 — a
-                    // handler-returned header cannot forge a second one on
-                    // the wire (nor be silently dropped, F11's shape). The
-                    // located message is surfaced to the script through the
-                    // stream-error channel, and the response is refused
-                    // WITHOUT the injecting header (the accept loop 500s it).
+                    // handler-returned header cannot forge a second one
+                    // on the wire (nor be silently dropped, F11's
+                    // shape). The located message is surfaced to the
+                    // script through the stream-error channel, and the
+                    // response is refused without the injecting header
+                    // (the accept loop 500s it).
                     Http.refuseHeaderInjection "response header" (fun m -> raise (Serve.ResponseHeaderInjection m)) headers
 
                     let asString v =
@@ -3656,13 +3700,14 @@ and eval (env: Env) (te: TypedExpr) : Value =
             // finally does on a managed exit — one close, idempotent
             let hooked = Session.registerAlways (fun () -> Serve.stop handle)
 
-            // the handler concurrency ceiling [D:http-serve]: N in flight,
-            // excess queues — the pmapWith law, a SemaphoreSlim here
+            // the handler concurrency ceiling [D:http-serve]: N in
+            // flight, excess queues — pmapWith's bound, via a
+            // SemaphoreSlim here
             let gate = new System.Threading.SemaphoreSlim(maxConcurrent, maxConcurrent)
             let parentCwd = Session.Cwd()
             let inflight = System.Collections.Concurrent.ConcurrentDictionary<System.Threading.Thread, unit>()
 
-            // the accept loop on its OWN thread: it blocks in GetContext
+            // the accept loop on its own thread: it blocks in GetContext
             // until a connection arrives or stop() closes the socket
             // (accept then yields None and the loop ends). Each accepted
             // request runs the handler under the gate on a worker thread.
@@ -3682,15 +3727,16 @@ and eval (env: Env) (te: TypedExpr) : Value =
 
                                     try
                                         // the body read is bounded [D:serve-body-timeout]:
-                                        // a slow client dribbling its body no
-                                        // longer parks this slot forever — 408
-                                        // on exhaustion
+                                        // a slow client dribbling its body
+                                        // cannot park this slot forever —
+                                        // 408 on exhaustion
                                         let req = Serve.readRequest ctx bodyTimeoutMs
 
                                         // a malformed method token is refused
                                         // at the boundary [D:serve-method]:
-                                        // 400 before the handler, the byte-class
-                                        // refusal Bundle C's guard performs
+                                        // 400 before the handler, the same
+                                        // byte-class refusal Bundle C's
+                                        // guard performs
                                         if not (Serve.methodTokenOk req.Method) then
                                             Serve.writeResponse
                                                 ctx
@@ -3700,15 +3746,16 @@ and eval (env: Env) (te: TypedExpr) : Value =
                                                 ignore
                                         else
                                             let resp = responseOf (apply handler (requestValue req))
-                                            // a Stream producer raising mid-body is
-                                            // the designated channel [D:serve-stream]:
-                                            // record it on the handle, do not raise
+                                            // a Stream producer raising mid-body
+                                            // goes through the designated
+                                            // channel [D:serve-stream]: record
+                                            // it on the handle, do not raise
                                             Serve.writeResponse ctx resp (Serve.recordStreamError handle)
                                     with
                                     | Serve.BodyReadTimeout ->
                                         // the client dribbled its body past the
-                                        // bound [D:serve-body-timeout] — refuse,
-                                        // bounded, not an unbounded park
+                                        // bound [D:serve-body-timeout] — refuse
+                                        // rather than park unboundedly
                                         (try
                                             Serve.writeResponse
                                                 ctx
@@ -3721,7 +3768,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
                                     | Serve.ResponseHeaderInjection msg ->
                                         // a handler returned a header carrying
                                         // CR/LF/NUL [D:http-header-bytes]: refuse
-                                        // the response WITHOUT the injecting
+                                        // the response without the injecting
                                         // header (never a silent drop) — a 500
                                         // to the client, and the located message
                                         // to the script via the stream-error
@@ -3784,9 +3831,10 @@ and eval (env: Env) (te: TypedExpr) : Value =
                 gate.Dispose()
         | WithinTmp ->
             // kind tmp [D:within-scopes]: a fresh unique directory,
-            // bound as the binder for the block; removed on EVERY exit —
-            // normal and raise alike (the raise-path is the load-bearing
-            // pin). The delete is best-effort (a vanished dir is fine).
+            // bound as the binder for the block; removed on every
+            // exit, normal and raise alike (the raise path is the
+            // important guarantee). The delete is best-effort (a
+            // vanished dir is fine).
             let binderName = binderOf "tmp"
 
             let dir =
@@ -3819,12 +3867,12 @@ and eval (env: Env) (te: TypedExpr) : Value =
     | TESplat _ -> unreachable "$@ splat outside command arguments (checker confines it to argv)"
 
 
-// the yaml district's evaluator [D:yaml-district]: build Yaml NODES —
-// the lift is VALUE-driven (the checker already enforced the liftable
-// law), a None SPLICE omits its entry/item, `for` instantiates its body
-// per element (binder = bindPattern, a lambda param's machinery), and
-// runtime duplicate keys (for-generated or key-spliced) are errors —
-// invalid YAML must not render silently.
+// the yaml district's evaluator [D:yaml-district]: builds Yaml nodes —
+// the lift is value-driven (the checker already enforced the liftable
+// rule), a None splice omits its entry/item, `for` instantiates its
+// body per element (binder = bindPattern, a lambda param's machinery),
+// and runtime duplicate keys (for-generated or key-spliced) are
+// errors — invalid YAML must not render silently.
 and private liftYaml (v: Value) : Value option =
     match v with
     | VStr s -> Some(VUnion("YStr", Some(VStr s)))
@@ -3849,13 +3897,14 @@ and private liftYaml (v: Value) : Value option =
             )
         )
     | v ->
-        // the sortBy posture: a polymorphic splice's law is enforced HERE
+        // as with sortBy, a polymorphic splice's constraint is
+        // enforced here at runtime
         failwith
             $"yaml splice: got {formatValue v}; splices take string/int/float/bool, a Yaml node, Option of one, or a seq of those"
 
 and private evalYamlTpl (env: Env) (tpl: Check.TypedYamlTpl) : Value =
     match tpl with
-    // block scalar content never self-types: it is a STRING, always
+    // block scalar content never self-types: it is always a string
     // [D:block-scalars]
     | Check.TYtBlock(text, _) -> VUnion("YStr", Some(VStr text))
     | Check.TYtScalar(raw, quoted, _) -> yamlScalarValue raw quoted
@@ -3885,7 +3934,7 @@ and private evalYamlEntries (env: Env) (entries: Check.TypedYamlTplEntry list) :
                     | VStr s -> s
                     | v -> unreachable $"the checker rejects a non-string key splice: {formatValue v}"
 
-            // a splice VALUE evaluating to None omits the whole entry
+            // a splice value evaluating to None omits the whole entry
             // (the json-option omit, in template form)
             match value with
             | Check.TYtSplice te ->
@@ -3939,7 +3988,7 @@ and apply (fn: Value) (arg: Value) : Value =
     | VBuiltin f -> f arg
     | v -> unreachable $"the checker rejects application of {formatValue v}"
 
-/// the bare-statement spec (argv, overlay) — ONE builder for the relay
+/// the bare-statement spec (argv, overlay) — one builder for the relay
 /// and the inheriting spawn, so the two forms cannot drift
 let private commandStatementSpec (env: Env) (te: Check.TypedExpr) : Proc.Spec =
     match te.Kind with
@@ -3956,17 +4005,18 @@ let private commandStatementSpec (env: Env) (te: Check.TypedExpr) : Proc.Spec =
 /// bare command via the chunk relay instead of eval'ing to a VSeq (a
 /// seq<string> cannot carry a partial line). The caller owns rendering;
 /// this owns the spawn (argv, overlay, nonzero raise). The relay's
-/// remaining statement customer is the REDIRECTED-|print form; the
+/// remaining statement customer is the redirected-|print form; the
 /// bare statement at a tty inherits instead [D:colour-inherit].
 let streamCommandStatement (env: Env) (te: Check.TypedExpr) (onText: string -> unit) (onBreak: unit -> unit) : unit =
     Proc.streamSegmentsOf (commandStatementSpec env te) onText onBreak
 
 /// colour from the child [D:colour-inherit]: the bare statement at a
-/// tty spawns with stdout INHERITED — isatty is true for the child
-/// the inherit GATE [D:colour-inherit] — one predicate, so the runner and the
-/// REPL cannot answer it differently. TECmd is built with Ty = seq<string> at
-/// its single site, so the type test is redundant TODAY and stated anyway: it
-/// is the property the spawn depends on, not an incidental fact about TECmd.
+/// tty spawns with stdout inherited, so isatty is true for the child
+/// the inherit gate [D:colour-inherit] — one predicate, so the runner
+/// and the REPL cannot answer it differently. TECmd is built with
+/// Ty = seq<string> at its single site, so the type test is currently
+/// redundant but stated anyway: it is the property the spawn depends
+/// on, not an incidental fact about TECmd.
 let inheritsStdout (te: Check.TypedExpr) : bool =
     match te.Kind with
     | Check.TECmd _ -> not System.Console.IsOutputRedirected && te.Ty = TSeq TStr

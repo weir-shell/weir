@@ -14,7 +14,7 @@ let private parse input =
     | Ok e -> e
     | Error msg -> failtest $"parse failed: {msg}"
 
-// [D:sibling-sentinel] the assembler joins STATEMENT siblings with the
+// [D:sibling-sentinel] the assembler joins statement siblings with the
 // machine sentinel, not ';' (command mode stops at it; a user ';' does
 // not). Assembler-text pins spell the join as a readable ';'; asmSib
 // rewrites that display ';' to the sentinel the assembler emits.
@@ -22,7 +22,7 @@ let private asmSib (s: string) =
     s.Replace(" ; ", " " + Weir.Parser.sibSepStr + " ")
 
 // [D:field-sep-sentinel] record fields and list elements joined across
-// lines get the FIELD sentinel, not ';' (a field value's own ';' cannot
+// lines get the field sentinel, not ';' (a field value's own ';' cannot
 // cross it). Same display-';'-to-sentinel rewrite as asmSib, for the
 // bracket/record-continuation pins.
 let private asmField (s: string) =
@@ -148,10 +148,10 @@ let private cmdResolver: Weir.Parser.Resolver =
       AliasHead = fun _ -> None }
 
 // Windows: parse-only fixtures resolve coreutils heads (echo, sh,
-// grep ...) through the REAL resolver, and those are cmd BUILTINS or
+// grep ...) through the real resolver, and those are cmd builtins or
 // absent there — no executable to find. Resolution is File.Exists, not
 // execution, so empty <name>.exe shims on a prepended PATH dir make
-// every parse pin platform-independent [D:windows-v1]. Tests that RUN
+// every parse pin platform-independent [D:windows-v1]. Tests that run
 // these tools stay skipOnWindows (an empty exe cannot run). POSIX: no-op.
 let private _windowsParseShims =
     if System.OperatingSystem.IsWindows() then
@@ -159,8 +159,8 @@ let private _windowsParseShims =
 
         Directory.CreateDirectory dir |> ignore
 
-        // sort deliberately ABSENT: System32 ships a real sort.exe
-        // that tests RUN — an empty shadow would break it
+        // sort deliberately absent: System32 ships a real sort.exe
+        // that tests run — an empty shadow would break it
         for tool in
             [ "echo"
               "printf"
@@ -217,22 +217,22 @@ let private expectValue input expected =
     Expect.equal (run input) expected $"eval of '{input}'"
 
 // ---- Windows-v1 harness helpers [D:windows-v1] ----------------------------
-// weirPath: a NATIVE path made safe to interpolate into weir SOURCE —
+// weirPath: a native path made safe to interpolate into weir source —
 // weir strings treat `\` as an escape, so a Windows temp path must ride
-// as forward slashes (liberal input: Windows APIs accept them)
-// EVERY platform path interpolated into weir SOURCE routes through
+// as forward slashes (liberal input: Windows APIs accept them).
+// Every platform path interpolated into weir source routes through
 // this (a raw C:\ path in a plain string trips the \U escape teaching
 // — the Windows first-run's whole fixture class); and expected
-// MESSAGES pin the shape + the name, never the platform's rendering
+// messages pin the shape + the name, never the platform's rendering
 let private weirPath (p: string) = p.Replace('\\', '/')
 
-// platformPath: a POSIX-spelled EXPECTED value converted to the
+// platformPath: a POSIX-spelled expected value converted to the
 // platform's separator — the suite's spelling for the Path members'
 // native-output ruling (identity on POSIX)
 let private platformPath (p: string) =
     p.Replace('/', System.IO.Path.DirectorySeparatorChar)
 
-// a fixture that IS about POSIX tools or absolute POSIX paths (sh, yes,
+// a fixture that is about POSIX tools or absolute POSIX paths (sh, yes,
 // /tmp, /bin) — marked, not shimmed; the session report carries the
 // shim-candidate list for when the CI matrix can verify conversions
 let private skipOnWindows () =
@@ -630,7 +630,7 @@ let warningTests =
           }
           test "named groups REJECT with the binder teaching [D:no-named-groups]" {
               // .NET numbers positionals first, named after — the outlier
-              // among engines; weir names captures at the BINDER
+              // among engines; weir names captures at the binder
               let terr =
                   checkErr "match \"ab\" with | Regex @\"(?<x>a)(b)\" (p, q) -> p | _ -> \"?\""
 
@@ -707,7 +707,7 @@ let warningTests =
               Expect.stringContains terr.Message "string value" ""
           }
           test "the raw literal: backslashes belong to the regex (no doubling)" {
-              // the source below contains a SINGLE backslash before w/d
+              // the source below contains a single backslash before w/d
               expectValue "match \"k=1\" with | Regex @\"(\\w+)=(\\d+)\" (k, _) -> k | _ -> \"?\"" (VStr "k")
           }
           // raw strings [D:raw-strings] — F#'s semantics, probe-backed
@@ -715,7 +715,7 @@ let warningTests =
               expectValue "@\"a\\nb\" |> Str.length" (VInt 4L)
               expectValue "@\"x\"\"y\"" (VStr "x\"y")
               expectValue "\"\"\"a\"b\"\"\"" (VStr "a\"b")
-              // the quad-OPENER edge: content is a leading quote (FCS's verdict)
+              // the quad-opener edge: content is a leading quote (FCS's verdict)
               expectValue "\"\"\"\"a\"\"\"" (VStr "\"a")
           }
           test "raw strings: the quad-closer edge rejects (FCS's verdict)" {
@@ -748,7 +748,7 @@ let warningTests =
               Expect.equal (Weir.Script.closers "let s = @\"a\"\"b") "\"" "doubled quote stays inside"
           }
           test "accepted matches are total: the runtime match-failure class is gone" {
-              // non-exhaustive shapes are CHECK errors, never runtime failures
+              // non-exhaustive shapes are check errors, never runtime failures
               let terr = checkErr "match Stopped with | Running n -> n"
               Expect.stringContains (formatError terr) "missing: Stopped" ""
           } ]
@@ -823,7 +823,7 @@ let streamingTests =
           test "feed closes stdin on input exhaustion: EOF-needing children finish [D:spawn-spec]" {
               // bare `sort` (sh does not resolve in the Windows unit
               // context — every sh-spawning unit test is skipped there),
-              // with an ODD total byte count: System32's sort.exe runs
+              // with an odd total byte count: System32's sort.exe runs
               // IsTextUnicode on stdin, and a short even-length LF-only
               // buffer misdetects as UTF-16 (the Bush-hid-the-facts
               // class, '?' output); an odd length cannot
@@ -895,7 +895,7 @@ let streamingTests =
               expectValue "Running 1 == Stopped" (VBool false)
           }
           test "one non-Eq field poisons a MIXED record (mutation-spike survivor)" {
-              // decompose must demand Eq of EVERY field; an Eq-able
+              // decompose must demand Eq of every field; an Eq-able
               // sibling must not carry the record [D:inferred-type-classes]
               let mixedEnv = env |> declare "type Mixed = { A: int; B: seq<int> }"
               let e = parse "let m = { A = 1; B = nats } in m == m"
@@ -950,16 +950,14 @@ let boundaryTests =
               runReal "sh -c \"exit 3\"" |> ignore
           }
           // the spawn-boundary NUL funnel [D:spawn-nul-funnel]: the NUL
-          // refusal lives at Proc.spawn — the ONE point every process
-          // start funnels through — so the four downstream paths that
-          // skipped the evaluator's statement-path refusal (the
-          // reifiers, the ambient `within env` overlay, `into`, the
-          // dynamic head) inherit it. The guard runs BEFORE Process.Start,
-          // so a raise IS proof no child spawned. Each pin drives ONE
-          // public Proc entry (the funnel's real surface) with a
-          // NUL-bearing word and asserts the located refusal. A control
-          // proves a clean spawn still runs — the funnel is not
-          // overzealous.
+          // refusal lives at Proc.spawn, the one point every process start
+          // funnels through, so the four downstream paths that skipped the
+          // evaluator's statement-path refusal (the reifiers, the ambient
+          // `within env` overlay, `into`, the dynamic head) inherit it. The
+          // guard runs before Process.Start, so a raise proves no child
+          // spawned. Each pin drives one public Proc entry with a NUL-bearing
+          // word and asserts the located refusal; a control proves a clean
+          // spawn still runs.
           let nul = "a\u0000b"
           let nulMsg (f: unit -> unit) (what: string) =
               let ex = Expect.throwsC f id
@@ -999,7 +997,7 @@ let boundaryTests =
           test "funnel: a NUL PROGRAM name refuses (dynamic head ^$name) [D:spawn-nul-funnel]" {
               skipOnWindows ()
               // the dynamic-head worst case: a NUL-bearing head would
-              // resolve to the PREFIX program and run it
+              // resolve to the prefix program and run it
               nulMsg (fun () -> Weir.Proc.lines $"echo{nul}junk" [ "hi" ] None |> Seq.iter ignore) "program name"
           }
           test "funnel: a NUL PATH-like program name refuses at resolve, not a raw platform exception [D:spawn-nul-funnel]" {
@@ -1045,7 +1043,7 @@ let boundaryTests =
                   ""
           }
           test "ls rows no longer cross the wire: Size is non-representable there [D:size]" {
-              // this USED to roundtrip when bytes was an int — the type
+              // this used to roundtrip when bytes was an int — the type
               // change is a wire-boundary change, stated and pinned
               let m = (checkErr "ls |> to json").Message
 
@@ -1147,7 +1145,7 @@ let boundaryTests =
           }
           test
               "json boundary: null-in-required teaches Option; nested Option and Option-of-record reject [D:json-option]" {
-              // null in a REQUIRED field -> runtime error naming the fix
+              // null in a required field -> runtime error naming the fix
               let srcNull = VSeq [ VStr """{"name":null,"age":5}""" ]
 
               let msg =
@@ -1168,7 +1166,7 @@ let boundaryTests =
                   Expect.stringContains terr.Message "flatten" "the repair"
               | Ok _ -> failtest "nested Option should reject"
 
-              // Option of a record is ADMITTED under the recursive law
+              // Option of a record is admitted under the recursive law
               // [D:recursive-fields] (the flat-row refusal retired)
               let eRec = env |> declare "type JR = { r: Option<Point> }"
 
@@ -1227,7 +1225,7 @@ let boundaryTests =
               Expect.equal (run "[for x in [1; 2; 3] -> x * 10]" |> forceSeq) [ VInt 10L; VInt 20L; VInt 30L ] ""
           }
           test "the for binder TYPES from its source — a constructor match resolves [D:for-binder]" {
-              // the desugar is the PIPE shape, so the source infers before
+              // the desugar is the pipe shape, so the source infers before
               // the body — surfaced by the wire-unions flagship loop, where
               // `for d in docs do match d with | Case …` refused with
               // \"this one has type 'a1\" while the piped spelling worked
@@ -1248,7 +1246,7 @@ let boundaryTests =
           test "for and do are reserved words; sudo at EOL does not dangle [D:for-do]" {
               Expect.isError (Weir.Parser.parseLine cmdResolver "let for = 1") "for reserved"
               Expect.isError (Weir.Parser.parseLine cmdResolver "let do = 1") "do reserved"
-              // the word-boundary guard: a line ENDING in 'do' opens a block,
+              // the word-boundary guard: a line ending in 'do' opens a block,
               // a line ending in 'sudo' does not
               Expect.isTrue (Weir.Script.dangleOpensBlock "for x in xs do") "do dangles"
               Expect.isFalse (Weir.Script.dangleOpensBlock "run sudo") "sudo must not dangle"
@@ -1278,13 +1276,13 @@ let boundaryTests =
               | Ok _ -> failtest "a partial named literal should reject"
           }
           test "a constructor applied to a bare record still applies (zero movement) [D:modules-v1]" {
-              // Some { .. } is NOT a named record — Some is a ctor, not a type
+              // Some { .. } is not a named record — Some is a ctor, not a type
               match typecheck env (parse "Some { X = 1; Y = 2 }") with
               | Ok te -> Expect.equal te.Ty (TNamed("Option", [ TNamed("Point", []) ])) "Some applied to a Point"
               | Error terr -> failtest (formatError terr)
           }
           test "yaml value-domain answers, pinned: Show renders, Eq refuses by the no-seq rule [D:yaml-v1]" {
-              // the bless-note questions, answered by the EXISTING machinery
+              // the bless-note questions, answered by the existing machinery
               Expect.equal (run "show (YMap [(\"a\", YInt 1)])") (VStr "YMap ([(\"a\", YInt 1)])") "Show recurses"
 
               Expect.stringContains
@@ -1294,7 +1292,7 @@ let boundaryTests =
           }
           test "to yaml: reverse-Norway quoting — no/007/1e5/mid-#/colon quote; multiline is a BLOCK [D:yaml-v1]" {
               // the f case moved deliberately with [D:block-scalars]: a
-              // multiline string is a block scalar, NOT quoted — the
+              // multiline string is a block scalar, not quoted — the
               // quoting law governs single-line strings only
               Expect.equal
                   (run
@@ -1367,7 +1365,7 @@ let boundaryTests =
                   + "(d |> to yaml |> from yaml YDep) == d"
 
               // Eq on records of scalars+pair-seqs? pair-seq is a seq — Eq
-              // refuses; compare FIELDS instead
+              // refuses; compare fields instead
               let prog2 =
                   "let d = YDep { kind = \"D\"; metadata = YMeta { name = \"app\"; labels = [(\"app\", \"web\")] }; spec = YSpec { replicas = 3; paused = None } } in "
                   + "let back = d |> to yaml |> from yaml YDep in "
@@ -1512,10 +1510,10 @@ let boundaryTests =
           }
           test "a command line ending in `yaml` is argv, not an armed district [D:yaml-district]" {
               // the reported bug: `-o yaml`/`--format yaml` are everyday
-              // argv; the district arm must NOT fire for them, so the
+              // argv; the district arm must not fire for them, so the
               // line assembles clean (no armed-district demand for a
-              // block below) and check == run at the ASSEMBLY boundary.
-              // Assert the assembly VERDICT (armed-error vs clean), never
+              // block below) and check == run at the assembly boundary.
+              // Assert the assembly verdict (armed-error vs clean), never
               // a PATH completion — these are command-shaped lines.
               let assemblesClean line =
                   match Weir.Script.assemble [ 1, line ] with
@@ -1528,7 +1526,7 @@ let boundaryTests =
               assemblesClean "docker x --format yaml"
               assemblesClean "echo a b yaml"
 
-              // and the district STILL arms for the real forms: a bare
+              // and the district still arms for the real forms: a bare
               // `= yaml` with no block below is the armed-district error
               // (proves the arm fires, the block demand included)
               match Weir.Script.assemble [ 1, "let d = yaml" ] with
@@ -1638,7 +1636,7 @@ let boundaryTests =
               Expect.isTrue (Weir.Parser.isYamlMarkerPiece "yaml") "bare yaml arms (next-line form)"
               Expect.isTrue (Weir.Parser.isYamlMarkerPiece "let d = yaml") "a let RHS arms"
               Expect.isTrue (Weir.Parser.isYamlMarkerPiece "d = yaml") "an assignment RHS arms"
-              // does NOT arm: `yaml` preceded by argv — the everyday
+              // does not arm: `yaml` preceded by argv — the everyday
               // `-o yaml`/`--format yaml` ops lines, a trailing bare word
               Expect.isFalse (Weir.Parser.isYamlMarkerPiece "echo -o yaml") "-o yaml is argv, not a marker"
               Expect.isFalse (Weir.Parser.isYamlMarkerPiece "kubectl get po -o yaml") "kubectl -o yaml is a command"
@@ -1705,7 +1703,7 @@ let boundaryTests =
               // the per-statement inference budget is a whole-file DoS when
               // the multi-error fold multiplies it across independent burning
               // statements. A budget diagnostic is a stop-and-fix: the fold
-              // reports the FIRST one and checks no further statement.
+              // reports the first one and checks no further statement.
               let burnBlock (b: int) =
                   [ $"let g{b}_0 x = (x, x)"
                     $"let g{b}_1 x = g{b}_0 (g{b}_0 x)"
@@ -1726,18 +1724,18 @@ let boundaryTests =
               let budgetDiags =
                   diags |> List.filter (fun d -> Weir.Check.isBudgetMessage d.Message)
 
-              // exactly ONE budget diagnostic — the fold stopped at the first
+              // exactly one budget diagnostic — the fold stopped at the first
               Expect.equal
                   (List.length budgetDiags)
                   1
                   "one burn bounds the file: exactly one budget diagnostic, not one per block"
 
-              // and it is the ONLY error reported (stop-and-fix)
+              // and it is the only error reported (stop-and-fix)
               let errors = diags |> List.filter (fun d -> d.Severity = "error")
               Expect.equal (List.length errors) 1 "the budget stop suppresses downstream statements"
           }
           test "budget stop does NOT swallow ordinary type errors [D:budget-stop-first]" {
-              // three independent plain type errors must ALL report — the
+              // three independent plain type errors must all report — the
               // stop applies only to budget exhaustion, never ordinary errors
               let diags, _, _, _ =
                   Weir.Script.analyzeLines
@@ -1867,7 +1865,7 @@ let boundaryTests =
                   | Error terr -> failtest (formatError terr)
               | other -> failtest $"unexpected: {other}"
 
-              // trailing blanks CLIP (the block-scalar ruling [D:block-scalars]):
+              // trailing blanks clip (the block-scalar ruling [D:block-scalars]):
               // the blank separating a block from the next statement is layout
               match Weir.Parser.parseLine realResolver (asm [ "let t = <<<"; "    a"; ""; "" ]) with
               | Ok(SLet(_, e)) ->
@@ -1931,7 +1929,7 @@ let boundaryTests =
               // the regression [D:text-block]: $<<< once left-trimmed every
               // line (runFragmentAt's `ws`), flattening deeper-indented lines
               // to column 0 while <<< kept the relative indent. The twins must
-              // differ ONLY in whether {holes} interpolate — indentation,
+              // differ only in whether {holes} interpolate — indentation,
               // interior blanks, deeper indent and trailing-clip byte-identical.
               let asm lines' =
                   match Weir.Script.assemble (lines' |> List.mapi (fun i l -> i + 1, l)) with
@@ -1956,7 +1954,7 @@ let boundaryTests =
                   | other -> failtest $"unexpected: {other}"
 
               // same content, plain vs interp — deeper indent, a hole at the
-              // START of a deeper line, an interior blank, and a trailing blank
+              // start of a deeper line, an interior blank, and a trailing blank
               let plainSrc =
                   asm
                       [ "let t = <<<"
@@ -1993,9 +1991,9 @@ let boundaryTests =
               | Error e -> Expect.stringContains e "'<<<' needs an indented block" "the no-block error names the glyph"
               | other -> failtest $"expected an assembly error, got {other}"
 
-              // a district that closes mid-statement COMPOSES [D:district-terminates]:
+              // a district that closes mid-statement composes [D:district-terminates]:
               // before, a pipe after the block glued into the last content
-              // line as BYTES (`alpha |> Seq.length`, silent corruption);
+              // line as bytes (`alpha |> Seq.length`, silent corruption);
               // now the assembler terminates the content and the pipe pipes
               match Weir.Script.assemble [ 1, "let t = <<<"; 2, "    alpha"; 3, "|> Seq.length" ] with
               | Ok [ ll ] ->
@@ -2035,13 +2033,13 @@ let boundaryTests =
               // A pending/open buffer is not-yet-countable (None).
               Expect.equal (Weir.Script.statementCount [ "let x = 1" ]) (Some 1) "one complete statement"
               Expect.equal (Weir.Script.statementCount [ "let x = 1"; "x + 1" ]) (Some 2) "two independent statements"
-              // assemble reports STRUCTURE: an armed district with no body
+              // assemble reports structure: an armed district with no body
               // is an assembly error (None); an open `match with` is
               // structurally one statement (Some 1) — the parse-completeness
               // half is bufferComplete's, layered on top in the REPL
               Expect.equal (Weir.Script.statementCount [ "let block = <<<" ]) None "an armed heredoc with no body pends"
 
-              // a leading-|> continuation MERGES: the count does not rise ->
+              // a leading-|> continuation merges: the count does not rise ->
               // pipedAttaches true (the pipeline stays one statement)
               Expect.isTrue (Weir.Script.pipedAttaches [ "xs" ] "|> Seq.sum") "a |> tail attaches to the value above"
               // a heredoc body line attaches (district content keeps count 1)
@@ -2051,7 +2049,7 @@ let boundaryTests =
                   (Weir.Script.pipedAttaches [ "let r ="; "  if 1 > 0 then"; "    \"y\"" ] "  else")
                   "an offside else attaches"
 
-              // an INDEPENDENT statement does NOT attach — the count rises
+              // an independent statement does not attach — the count rises
               Expect.isFalse (Weir.Script.pipedAttaches [ "let x = 1" ] "x + 1") "an independent statement does not attach"
               Expect.isFalse
                   (Weir.Script.pipedAttaches [ "type P = {"; "  x: int"; "}" ] "{ x = 1 }.x")
@@ -2077,7 +2075,7 @@ let boundaryTests =
               Expect.equal (blockText (docOf [ "k: |"; "    a"; "    b" ])) "a\nb\n" "| keeps one trailing newline"
               Expect.equal (blockText (docOf [ "k: |-"; "    a"; "    b" ])) "a\nb" "|- strips it"
 
-              // content is BYTES: blank lines are newlines, ` #` is not a
+              // content is bytes: blank lines are newlines, ` #` is not a
               // comment, more-indented lines keep their extra indentation,
               // trailing blanks clip (|+ is the rejected keep-them form)
               Expect.equal
@@ -2124,7 +2122,7 @@ let boundaryTests =
                   | other -> failtest $"parse: {other}"
 
               // a valueless mapping key whose block sequence sits at the
-              // SAME column (kubectl's zero-indent form): the sequence IS
+              // same column (kubectl's zero-indent form): the sequence is
               // the value, with the compact `- key: v` first entry
               match docOf [ "items:"; "- apiVersion: v1"; "  kind: Pod" ] with
               | Weir.Yaml.NMap([ ("items", Weir.Yaml.NSeq([ Weir.Yaml.NMap(fields, _) ], _)) ], _) ->
@@ -2134,14 +2132,14 @@ let boundaryTests =
                       "the same-column seq is items' value; the compact dash entry parses"
               | other -> failtest $"zero-indent seq did not become items' value: {other}"
 
-              // both indent styles read to the SAME node — the read side
+              // both indent styles read to the same node — the read side
               // accepts kubectl's flush form and the classic indented form
               Expect.equal
                   (docOf [ "items:"; "- a: 1"; "- a: 2" ])
                   (docOf [ "items:"; "  - a: 1"; "  - a: 2" ])
                   "flush and indented block sequences read equal"
 
-              // nested: a seq item's map contains its OWN same-column seq
+              // nested: a seq item's map contains its own same-column seq
               match docOf [ "items:"; "- metadata:"; "    ownerReferences:"; "    - apiVersion: apps/v1"; "      kind: ReplicaSet" ] with
               | Weir.Yaml.NMap([ ("items",
                                   Weir.Yaml.NSeq([ Weir.Yaml.NMap([ ("metadata",
@@ -2152,14 +2150,14 @@ let boundaryTests =
                       "a same-column ownerReferences seq nested under metadata reads"
               | other -> failtest $"nested zero-indent seq failed: {other}"
 
-              // a zero-indent seq followed by a SIBLING mapping key: the
+              // a zero-indent seq followed by a sibling mapping key: the
               // sequence's extent stops at the sibling
               match docOf [ "items:"; "- a: 1"; "kind: List" ] with
               | Weir.Yaml.NMap([ ("items", Weir.Yaml.NSeq(_, _)); ("kind", Weir.Yaml.NScalar("List", _, _)) ], _) -> ()
               | other -> failtest $"sibling key after a zero-indent seq: {other}"
 
-              // the regression: a GENUINE inline-value + nested-block (the
-              // nested block is MORE indented, not a same-column seq) STILL
+              // the regression: a genuine inline-value + nested-block (the
+              // nested block is more indented, not a same-column seq) still
               // errors — the fix must not swallow this
               match Weir.Yaml.parseDocs ([ "k: value"; "  nested: x" ] |> List.mapi (fun i l -> i + 1, l)) with
               | Error e -> Expect.stringContains e "has both an inline value and a nested block" "malformed inline+block still fires"
@@ -2172,19 +2170,19 @@ let boundaryTests =
                   | other -> failtest $"parse: {other}"
 
               // `{}` → the empty mapping, `[]` → the empty sequence, as a
-              // MAP value (inner whitespace tolerated)
+              // map value (inner whitespace tolerated)
               match docOf [ "resources: {}"; "args: []"; "sc: { }" ] with
               | Weir.Yaml.NMap([ ("resources", Weir.Yaml.NMap([], _))
                                  ("args", Weir.Yaml.NSeq([], _))
                                  ("sc", Weir.Yaml.NMap([], _)) ], _) -> ()
               | other -> failtest $"empty flow as map values: {other}"
 
-              // and as a SEQUENCE item
+              // and as a sequence item
               match docOf [ "- {}"; "- []" ] with
               | Weir.Yaml.NSeq([ Weir.Yaml.NMap([], _); Weir.Yaml.NSeq([], _) ], _) -> ()
               | other -> failtest $"empty flow as seq items: {other}"
 
-              // the NARROW exception: POPULATED flow STILL rejects with the
+              // the narrow exception: populated flow still rejects with the
               // block-only teaching — the ambiguity that justifies it fires
               // at one-or-more elements, in both map and seq position
               let errOf lines' =
@@ -2208,8 +2206,8 @@ let boundaryTests =
                   | other -> failtest $"expected one scalar entry, got {other}"
 
               // the folding law (PyYAML-refereed set): one break folds to
-              // ONE SPACE; each empty continuation line contributes a
-              // NEWLINE; continuation indentation strips; trailing space
+              // one space; each empty continuation line contributes a
+              // newline; continuation indentation strips; trailing space
               // before the closing quote is content
               Expect.equal (scalarOf (docOf [ "k: 'a"; "  b'" ])) ("a b", true) "one break folds to a space"
               Expect.equal (scalarOf (docOf [ "k: 'a"; ""; "  b'" ])) ("a\nb", true) "an empty line folds to a newline"
@@ -2217,7 +2215,7 @@ let boundaryTests =
               Expect.equal (scalarOf (docOf [ "k: 'trail"; "  end. '" ])) ("trail end. ", true) "trailing space inside the quote survives"
               Expect.equal (scalarOf (docOf [ "k: 'it''s"; "  ok, it''s'" ])) ("it's ok, it's", true) "'' escapes mid-continuation"
               // double-quoted: the single-line escape set extends across
-              // the fold (a \-escaped line break is NOT in the subset)
+              // the fold (a \-escaped line break is not in the subset)
               Expect.equal (scalarOf (docOf [ "k: \"a\\n x"; "  b\"" ])) ("a\n x b", true) "double-quoted folds, escapes resolve"
 
               // the kubectl message form: colons inside, deeper continuations
@@ -2250,8 +2248,8 @@ let boundaryTests =
               | other -> failtest $"zero-indent nested multiline: {other}"
 
               // the errors: unterminated (dedent or EOF before the close)
-              // names the OPENING line in the unclosed family; content
-              // after the closing quote names ITS line; a deeper line
+              // names the opening line in the unclosed family; content
+              // after the closing quote names its line; a deeper line
               // past the close has no owner
               let errOf lines' =
                   match Weir.Yaml.parseDocs (lines' |> List.mapi (fun i l -> i + 1, l)) with
@@ -2286,15 +2284,15 @@ let boundaryTests =
                       | Error terr -> failtest (formatError terr)
                   | other -> failtest $"unexpected: {other}"
 
-              // the read holds the FOLDED content
+              // the read holds the folded content
               Expect.equal
                   (evalStr "([\"k: 'a: b\"; \"  c\"; \"\"; \"  d '\"] |> from yaml QKV).k")
                   (VStr "a: b c\nd ")
                   "the string field holds the folded content"
 
-              // `to yaml` re-emits weir's OWN spelling — the block scalar
+              // `to yaml` re-emits weir's own spelling — the block scalar
               // for a multiline string [D:block-scalars], never a
-              // multi-line QUOTED form — and reading that back yields the
+              // multi-line quoted form — and reading that back yields the
               // same string
               Expect.equal
                   (evalStr "let d = [\"k: 'a: b\"; \"  c\"; \"\"; \"  d '\"] |> from yaml QKV in d |> to yaml |> Seq.freeze |> show")
@@ -2308,7 +2306,7 @@ let boundaryTests =
                   "the roundtrip pin"
 
               // the Norway law across the fold: a folded quoted no-like
-              // value is a STRING even at a bool field
+              // value is a string even at a bool field
               let env3 = env |> declare "type QB = { k: bool }"
 
               match Weir.Parser.parseStmt "([\"k: 'no\"; \"  way'\"] |> from yaml QB).k" with
@@ -2326,9 +2324,9 @@ let boundaryTests =
                   | VStr s -> s
                   | v -> failtest $"expected a string, got {formatValue v}"
 
-              // MOVED PIN [D:repl-infer]: uniform dirty-key objects draft
-              // the open MAPPING now, so the record sanitizer is pinned on
-              // a MIXED-value object (map detection needs one value shape)
+              // moved pin [D:repl-infer]: uniform dirty-key objects draft
+              // the open mapping now, so the record sanitizer is pinned on
+              // a mixed-value object (map detection needs one value shape)
               // — hyphen/dot/slash keys ride [<Wire>] over a camelCased
               // identifier; the already-legal key stays bare
               let out =
@@ -2340,7 +2338,7 @@ let boundaryTests =
               Expect.stringContains out "clean: string" "an already-legal key stays a bare field"
               Expect.isFalse (out.Contains "clean\">]") "a clean key carries NO wire attribute"
 
-              // the UNIFORM dirty-key object is the open mapping — keys
+              // the uniform dirty-key object is the open mapping — keys
               // are data, no [<Wire>] rides at all [D:repl-infer]
               let map =
                   inferStr (run "Json.inferShape [\"{\\\"labels\\\":{\\\"k8s-app\\\":\\\"a\\\",\\\"node.kubernetes.io/os\\\":\\\"b\\\",\\\"clean\\\":\\\"c\\\"}}\"]")
@@ -2364,7 +2362,7 @@ let boundaryTests =
               Expect.stringContains ty "kind: string" "type still lands on 'kind'"
           }
           test "block scalars render: the form follows the value, both directions [D:block-scalars]" {
-              // no policy exists: | MEANS ends-with-one-newline, |- means
+              // no policy exists: | means ends-with-one-newline, |- means
               // ends-with-none — read and write agree by construction
               Expect.equal
                   (run "[(\"k\", \"a\\nb\\n\")] |> to yaml" |> forceSeq)
@@ -2377,7 +2375,7 @@ let boundaryTests =
                   "no trailing newline renders |-"
 
               // multiple trailing newlines have no block form (|+ is
-              // rejected) — the quoted-with-escapes FALLBACK keeps every
+              // rejected) — the quoted-with-escapes fallback keeps every
               // legal string renderable, exactly [D:content-bytes]
               Expect.equal
                   (run "[(\"k\", \"a\\n\\n\")] |> to yaml" |> forceSeq)
@@ -2394,7 +2392,7 @@ let boundaryTests =
           test "district comments: a SHALLOW comment between a key and its block stays transparent [D:district-hash]" {
               // the yaml fuzz production's first catch: `// noise` at an
               // indent between the key's and its content's made
-              // firstContentRel derive the nested indent from the COMMENT
+              // firstContentRel derive the nested indent from the comment
               let asm lines' =
                   match Weir.Script.assemble (lines' |> List.mapi (fun i l -> i + 1, l)) with
                   | Ok [ ll ] -> ll.Text
@@ -2412,7 +2410,7 @@ let boundaryTests =
               | Ok(SLet(_, { Kind = EYaml _ })) -> ()
               | other -> failtest $"the shallow comment must stay transparent: {other}"
 
-              // the second face (same session): a comment at the UNIT's own
+              // the second face (same session): a comment at the unit's own
               // indent must not close a key's nested extent
               let src2 =
                   asm [ "let d = yaml"; "    k2:"; "    // noise at unit indent"; "        n0: w1" ]
@@ -2423,7 +2421,7 @@ let boundaryTests =
           }
           test
               "schema completion: marker-local `schema=`, vendored names after it, adapters offer nothing [D:yaml-schemas]" {
-              // `schema` is deliberately NOT a Parser.keywords member — a
+              // `schema` is deliberately not a Parser.keywords member — a
               // keyword would reserve the identifier; the marker context
               // offers it instead
               Expect.isFalse (Weir.Parser.keywords.Contains "schema") "marker-local, not a keyword"
@@ -2451,7 +2449,7 @@ let boundaryTests =
               System.IO.Directory.CreateDirectory(System.IO.Path.Combine(root, ".weir"))
               |> ignore
 
-              // no .weir inside the repo: the walk must STOP at .git, never
+              // no .weir inside the repo: the walk must stop at .git, never
               // reaching the grandparent's .weir outside the boundary
               let bounded =
                   match Weir.Contracts.findWeirDir deep with
@@ -2460,7 +2458,7 @@ let boundaryTests =
 
               Expect.stringContains bounded "repo root" "bounded by .git"
 
-              // a .weir INSIDE the repo wins from anywhere under it
+              // a .weir inside the repo wins from anywhere under it
               let inner = System.IO.Path.Combine(root, "repo", ".weir")
               System.IO.Directory.CreateDirectory inner |> ignore
 
@@ -2493,7 +2491,7 @@ let boundaryTests =
                   | Error e -> e
                   | Ok s -> failtest $"expected rejection, got {s}"
 
-              // an in-document $ref is IN the subset now [D:schema-types];
+              // an in-document $ref is in the subset now [D:schema-types];
               // a dangling one still refuses, naming the resolution law
               Expect.stringContains
                   (errOf """{ "$ref": "#/definitions/x" }""")
@@ -2559,7 +2557,7 @@ let boundaryTests =
               Expect.equal d3.Root (Weir.Contracts.SRef "P") "components.schemas is a holder"
 
               // anyOf: all-scalar folds (the IntOrString idiom, k8s's
-              // OpenAPI spelling); mixed alternatives KEEP as SChoice
+              // OpenAPI spelling); mixed alternatives keep as SChoice
               let folded =
                   match (parsed """{ "anyOf": [{ "type": "integer" }, { "type": "string" }] }""").Root with
                   | Weir.Contracts.SScalar kinds -> kinds
@@ -2576,7 +2574,7 @@ let boundaryTests =
 
               // the nullable spellings: type-array on a scalar folds into
               // the kind set; `nullable: true` folds the same way; a
-              // nullable OBJECT (either spelling) wraps
+              // nullable object (either spelling) wraps
               let kindsOf src =
                   match (parsed src).Root with
                   | Weir.Contracts.SScalar kinds -> kinds
@@ -2604,7 +2602,7 @@ let boundaryTests =
 
               Expect.equal (Weir.Contracts.deref cyc.Defs Set.empty cyc.Root) Weir.Contracts.SAny "ref cycle lands on SAny"
 
-              // the holders are ROOT-only — a nested one names the law
+              // the holders are root-only — a nested one names the law
               let nested =
                   match
                       Weir.Contracts.parseSchema "t" """{ "type": "object", "properties": { "p": { "definitions": {} } } }"""
@@ -2660,7 +2658,7 @@ let boundaryTests =
               Expect.stringContains g.Text "replicas: Option<int>" "integer → int"
               Expect.stringContains g.Text "ratio: Option<float>" "number → float"
               Expect.stringContains g.Text "ready: Option<bool>" "boolean → bool"
-              // fields are ALPHABETICAL by wire key — the determinism law
+              // fields are alphabetical by wire key — the determinism law
               let namePos = g.Text.IndexOf "\n    name:"
               let imagePos = g.Text.IndexOf "\n    image:"
               Expect.isTrue (imagePos < namePos && imagePos > 0) "fields sort alphabetically"
@@ -2694,7 +2692,7 @@ let boundaryTests =
                   | Ok g -> g
                   | Error e -> failtest e
 
-              // a $ref's definition key names the type by its LAST segment
+              // a $ref's definition key names the type by its last segment
               Expect.stringContains g.Text "type PodSpec = {" "def name → last dot-segment"
               Expect.stringContains g.Text "type Container = {" "container named from its def"
               // allOf of one-ref-plus-annotations flattens to the ref
@@ -2714,7 +2712,7 @@ let boundaryTests =
               Expect.equal g2.TopType "Manifest" "--as names the top type"
               Expect.stringContains g2.Text "type Manifest = {" "--as lands on the declaration"
 
-              // DETERMINISM: same locked schema → byte-identical output
+              // determinism: same locked schema → byte-identical output
               let g3 =
                   match genAs None podSrc with
                   | Ok g -> g
@@ -2722,7 +2720,7 @@ let boundaryTests =
 
               Expect.equal g3.Text g.Text "generate twice, byte-equal"
 
-              // a CYCLE (JSONSchemaProps' shape) keeps the opaque posture
+              // a cycle (JSONSchemaProps' shape) keeps the opaque posture
               let cyc =
                   match
                       genAs
@@ -2738,7 +2736,7 @@ let boundaryTests =
               Expect.stringContains cyc.Text "items: Option<seq<Yaml>>" "a self-ref field keeps opaque Yaml"
               Expect.stringContains cyc.Text "self-referential" "the cycle note fires"
 
-              // UNREPRESENTABLE top level REFUSES with the located reason
+              // an unrepresentable top level refuses with the located reason
               let refusal =
                   match genAs None """{ "type": "string" }""" with
                   | Error e -> e
@@ -2867,9 +2865,9 @@ let boundaryTests =
                   | Error e -> failtestf "second fmt failed: %s" e
           }
           test "into feeds stdin and yields stdout" {
-              // into IS the documented sh -c path, so the fixture is a
-              // POSIX shell by definition. into's WINDOWS semantics are
-              // UNDECIDED [D:windows-s3] — its default shell there would
+              // into is the documented sh -c path, so the fixture is a
+              // POSIX shell by definition. into's Windows semantics are
+              // undecided [D:windows-s3] — its default shell there would
               // be cmd /c, a real (small) feature awaiting a receipt; a
               // stated gap beats a blind shim.
               skipOnWindows ()
@@ -2886,9 +2884,9 @@ let boundaryTests =
 let wireUnionTests =
     // tagged unions at the wire [D:wire-unions] — the tag field picks
     // the case (internal tagging), [<Other>] is the declared open-world
-    // posture, writers reinsert the tag FIRST
-    // `declare` extends the TYPE env only — the eval env needs the
-    // constructor VALUES beside it (the run-helper's REPL env does this
+    // posture, writers reinsert the tag first.
+    // `declare` extends the type env only — the eval env needs the
+    // constructor values beside it (the run-helper's REPL env does this
     // for inline declarations)
     let kvenv =
         valueEnv
@@ -3157,8 +3155,8 @@ let wireUnionTests =
               Expect.stringContains ex.Message "read a stream with 'from yaml stream T'" "the teaching re-points"
           }
           test "two reachable tagged unions sharing a case name refuse at the write site" {
-              // `Shared` is ambiguous at bare USE [D:ambiguous-ctor], so the
-              // colliding value arrives via a READ — the closure still
+              // `Shared` is ambiguous at bare use [D:ambiguous-ctor], so the
+              // colliding value arrives via a read — the closure still
               // reaches both unions, and the writer cannot key the case
               let e2 =
                   env
@@ -3254,14 +3252,14 @@ let completionTests =
     testList
         "Completion"
         [ test "argv path completion keeps the directory prefix [D:complete-argv]" {
-              // the WORD RULE is where this lived: both callers cut the word AT the
+              // the word rule is where this lived: both callers cut the word at the
               // slash, so `micro ci/e` completed against the CWD and `micro ci/`
               // listed it whole. filesystemComplete was always correct — the
               // directory half never reached it.
               Expect.equal (Weir.Complete.wordStartAt "micro ci/e" 10) 6 "a path is ONE word, slash included"
               Expect.equal (Weir.Complete.wordStartAt "micro ci/check-f" 16) 6 "a hyphen is part of a filename"
               // a Windows drive prefix belongs to its path — the CI runner's temp dir
-              // is C:/…, which is how this surfaced. `:` elsewhere must NOT glue, or a
+              // is C:/…, which is how this surfaced. `:` elsewhere must not glue, or a
               // yaml key would swallow its value.
               Expect.equal (Weir.Complete.wordStartAt "micro C:/Users/x/e" 18) 6 "a drive letter leads its path"
               Expect.equal (Weir.Complete.wordStartAt "key:value" 9) 4 "a colon after a word is a separator"
@@ -3293,7 +3291,7 @@ let completionTests =
 
               one "a directory prefix scopes the search" (dir + "/e") "e2e.sh"
               one "a hyphen does not restart the word" (dir + "/check-") "check-fresh.sh"
-              // the dotfile law, mirrored from Path.glob: a leading '.' is TYPED
+              // the dotfile law, mirrored from Path.glob: a leading '.' is typed
               Expect.isFalse
                   (ask (dir + "/") |> List.exists (fun s -> s.EndsWith ".hidden"))
                   "a bare Tab does not bury entries under dotfiles"
@@ -3327,13 +3325,13 @@ let completionTests =
               Expect.contains cands "logLevel" "prefix $l offers every l-binding"
               Expect.isFalse (cands |> List.exists (fun c -> c.StartsWith "$")) "candidates are bare (the $ is already before the word)"
 
-              // a BARE argv word (no $) stays the paths-only pool — a binding
-              // name must NOT leak in as an argv word
+              // a bare argv word (no $) stays the paths-only pool — a binding
+              // name must not leak in as an argv word
               let bare = ask "az vm list-usage --location loc"
               Expect.isFalse (List.contains "location" bare) "a non-splice argv word is not a binding pool"
           }
           test "a line-head '#' completes the session directives, bare [D:repl-directives]" {
-              // bare names: the editor's word starts AFTER the '#', so
+              // bare names: the editor's word starts after the '#', so
               // replacement yields `#help` — never `##help` or `head`
               // the closed set is the one source Complete.sessionDirectives
               // — the '#'-slot and the empty-prompt head both read it
@@ -3345,10 +3343,10 @@ let completionTests =
               Expect.isFalse (List.contains "help" (suggest "ls # he" 5)) "line-head only"
           }
           test "the `#help <arg>` slot completes the documentable universe [D:help-arg-complete]" {
-              // an #infer-injected type lives ONLY in env.Types — the general
+              // an #infer-injected type lives only in env.Types — the general
               // pool never surfaced it, so `#help Patatas` documented it while
               // `#help Pat<TAB>` offered only Path (module) / Patch (a ctor).
-              // The slot offers helpNames (modules + user forms + TYPES), bare.
+              // The slot offers helpNames (modules + user forms + types), bare.
               let envP = env |> declare "type Patatas = { spuds: int }"
               let ask text pos = Weir.Complete.suggest envP text pos
 
@@ -3360,7 +3358,7 @@ let completionTests =
               // bare names (so the editor yields `#help Patatas`, not doubled)
               Expect.isFalse (pat |> List.exists (fun c -> c.StartsWith "#")) "candidates are bare"
 
-              // modules AND types complete here — Contains, never an exact list
+              // modules and types complete here — Contains, never an exact list
               let se = ask "#help Se" 6
               Expect.contains se "Seq" "a module"
               Expect.contains se "Secret" "another module"
@@ -3369,7 +3367,7 @@ let completionTests =
               // the `#he` directiveSlot is unaffected — still the directive
               Expect.equal (suggest "#he" 1) [ "help" ] "directiveSlot stays as-is"
 
-              // NO general-position leak: a bare `Pat` at expression head does
+              // no general-position leak: a bare `Pat` at expression head does
               // not newly offer type names (the fix is scoped to the slot)
               Expect.isFalse
                   (List.contains "Patatas" (Weir.Complete.suggest envP "Pat" 0))
@@ -3407,7 +3405,7 @@ let completionTests =
               let t2 = "{ Http.get \"u\" with insecure = "
               Expect.equal (suggest t2 t2.Length) [ "false"; "true" ] "the whole closed set, empty prefix"
 
-              // a union field offers its CASES
+              // a union field offers its cases
               let t3 = "{ Http.get \"u\" with method = G"
               Expect.equal (suggest t3 (t3.Length - 1)) [ "Get" ] "the enum-shaped case"
 
@@ -3430,14 +3428,14 @@ let completionTests =
           }
           test "command heads: the let-RHS is a head slot [D:let-rhs-head]" {
               // the topLet RHS admits command mode, so its head takes the
-              // SAME pool the statement head does — the command-callable
+              // same pool the statement head does — the command-callable
               // pin mirrored (never a PATH executable, the CI lesson)
               Expect.contains (suggest "let x = c" 8) "cd" "cd completes at the let-RHS head"
               // params keep the slot (`let f a b = <head>` is command-first too)
               Expect.contains (suggest "let f a b = c" 12) "cd" "a paramful binder keeps the slot"
               Expect.contains (suggest "let pure f = c" 13) "cd" "the pure modifier keeps the slot"
               // an empty word at the let-RHS stays pool-only — never the
-              // whole PATH dump (the empty-prompt rationale). PATH-ONLY
+              // whole PATH dump (the empty-prompt rationale). PATH-only
               // names (no binding/module/keyword shares the spelling) are
               // the discriminator — a pool name may legitimately coincide
               // with an executable
@@ -3452,7 +3450,7 @@ let completionTests =
                   (suggest "let x = " 8 |> List.forall (pathOnly.Contains >> not))
                   "no PATH dump on an empty RHS word"
 
-              // a destructuring let's RHS is EXPRESSION-only (SLetPat, no
+              // a destructuring let's RHS is expression-only (SLetPat, no
               // command mode) — the head extras stay out (PATH-only names
               // as the discriminator; the pool may share spellings)
               Expect.isTrue
@@ -3473,12 +3471,12 @@ let completionTests =
               let argv: string list = sug "let x = micro Weir.Tests."
               Expect.isTrue (argv |> List.contains "Weir.Tests.dll") "a real relative path completes in RHS argv"
               Expect.isFalse (argv |> List.exists (fun c -> c.EndsWith ".bytes")) "no fields in RHS argv"
-              // the unbound-scrutinee D5 pin holds unchanged: a DOTTED
+              // the unbound-scrutinee D5 pin holds unchanged: a dotted
               // RHS head is not argv, and offers nothing
               Expect.equal (sug "let x = publish.") [] "unbound dotted head after ="
           }
           test "the ^-forced head completes PATH-only — statement head and let-RHS [D:let-rhs-head]" {
-              // the pool is a SUBSET of the PATH cache (asserting any one
+              // the pool is a subset of the PATH cache (asserting any one
               // executable would be brittle); the general pool's keywords
               // and bindings never enter behind the sigil
               let path = Weir.Extern.names ()
@@ -3504,9 +3502,9 @@ let completionTests =
               Expect.equal (slot "let x == ") Weir.Complete.HeadSlot.No "== is not a binder's ="
           }
           test "session alias heads: known at both head slots, completable, ^-bypassed [D:command-head-alias]" {
-              // the ONE membership [D:repl-color] gains the alias table's
+              // the one membership [D:repl-color] gains the alias table's
               // names: `#alias k = kubectl` makes `k` a known head — at
-              // the statement head AND the let-RHS — through the same
+              // the statement head and the let-RHS — through the same
               // verdict fn the live repaint uses
               let known = Weir.Repl.knownWithAliasesForTest (Set.ofList [ "k" ])
               Expect.isTrue (known "k") "an alias head is known"
@@ -3515,7 +3513,7 @@ let completionTests =
               let colorize = Weir.Script.colorizeRepl known
               Expect.stringContains (colorize "k get pod -A") "\x1b[1mk\x1b[0m" "alias head bold at the statement head"
               Expect.stringContains (colorize "let x = k get pod") "\x1b[1mk\x1b[0m" "alias head bold at the let-RHS"
-              // the ^ sigil SKIPS the table [D:command-head-alias]: `^k`
+              // the ^ sigil skips the table [D:command-head-alias]: `^k`
               // is a PATH lookup of literal `k` — the alias must not
               // paint it (PATH-membership decides; no `k` binary here
               // means red, and never bold)
@@ -3532,7 +3530,7 @@ let completionTests =
               Expect.isFalse (List.contains "kzz" (ask "let x = ^kz" 9)) "…at the RHS too"
           }
           test "map-key completion: a bound value's keys inside a Map lookup literal [D:value-key-complete]" {
-              // the stored value's OWN keys complete inside the open key
+              // the stored value's own keys complete inside the open key
               // literal of a pipe-form Map lookup — reading the Values
               // table is peeking, never evaluating
               let vals: Map<string, Value> =
@@ -3552,7 +3550,7 @@ let completionTests =
               Expect.equal (ask "d |> Map.has \"Zo") [ "Zone" ] "Map.has too"
               Expect.equal (ask "d |> Map.tryGet \"") [ "CoreCount"; "Corge"; "Zone" ] "an empty literal offers every key"
 
-              // a MATERIALIZED pair-seq offers exactly as a map does
+              // a materialized pair-seq offers exactly as a map does
               Expect.equal (ask "ps |> Map.tryGet \"Cor") [ "CoreCount" ] "a materialized pair-seq offers its keys"
 
               // the let-RHS spelling is the same slot [D:let-rhs-head]
@@ -3566,11 +3564,11 @@ let completionTests =
                   [ "CoreCount"; "Corge" ]
                   "it as receiver, when materialized"
 
-              // the bind-first law: a PIPELINE receiver would need evaluating
-              // — the slot claims and offers NOTHING (never the general pool)
+              // the bind-first law: a pipeline receiver would need evaluating
+              // — the slot claims and offers nothing (never the general pool)
               Expect.equal (ask "d |> Seq.map fst |> Map.tryGet \"Cor") [] "a pipeline receiver offers nothing"
 
-              // the never-executes law's sharp edge: an UNFORCED seq is not
+              // the never-executes law's sharp edge: an unforced seq is not
               // pulled — nothing offers
               Expect.equal (ask "lazyPs |> Map.tryGet \"K") [] "an unforced receiver offers nothing"
 
@@ -3621,7 +3619,7 @@ let completionTests =
           test "expression-position path completion quotes; command-argv stays bare [D:repl-path-quote]" {
               skipOnWindows ()
               // a bare filesystem path is not a valid weir expression, so a
-              // path completed as a FUNCTION argument must come back quoted —
+              // path completed as a function argument must come back quoted —
               // otherwise the line the editor builds fails to parse on Enter.
               let d =
                   System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-pq-{System.Guid.NewGuid():N}")
@@ -3636,8 +3634,8 @@ let completionTests =
                   let ask (line: string) =
                       suggest line (Weir.Complete.wordStartAt line line.Length)
 
-                  // (a) after a function head the completion is QUOTED and the
-                  // line it produces PARSES — a bare path would not
+                  // (a) after a function head the completion is quoted and the
+                  // line it produces parses — a bare path would not
                   let fnLine = "File.read " + dir + "/n"
                   let fnGot = ask fnLine
                   Expect.equal (List.length fnGot) 1 "one match"
@@ -3652,19 +3650,19 @@ let completionTests =
                   | Ok _ -> ()
                   | Error e -> failtestf "the completed line must parse: %s -> %s" produced e
 
-                  // (b) command-argv stays BARE — cat takes an unquoted argv path
+                  // (b) command-argv stays bare — cat takes an unquoted argv path
                   let argvGot = ask ("cat " + dir + "/n")
                   Expect.equal (List.length argvGot) 1 "one match"
                   Expect.isFalse (argvGot.Head.StartsWith "\"") "an argv path is never quoted"
                   Expect.isTrue (argvGot.Head.EndsWith "note.txt") "the bare entry"
 
-                  // (c) completing INSIDE an already-open quote does NOT double
+                  // (c) completing inside an already-open quote does not double
                   let inQuote = ask ("File.read \"" + dir + "/n")
                   Expect.equal (List.length inQuote) 1 "one match"
                   Expect.isFalse (inQuote.Head.StartsWith "\"") "no second opening quote inside the string"
                   Expect.isTrue (inQuote.Head.EndsWith "note.txt") "the entry lands inside the quotes"
 
-                  // (d) a DIRECTORY keeps its trailing '/' — inside the quotes
+                  // (d) a directory keeps its trailing '/' — inside the quotes
                   let dirGot = ask ("File.read " + dir + "/s")
                   Expect.equal (List.length dirGot) 1 "one match"
                   Expect.equal dirGot.Head ("\"" + dir + "/sub/\"") "trailing slash survives inside the quotes"
@@ -3683,34 +3681,34 @@ let completionTests =
               Expect.isFalse (argv |> List.exists (fun c -> c.EndsWith ".attempts")) "no Retry fields in argv"
               Expect.isFalse (argv |> List.exists (fun c -> c.EndsWith ".bytes")) "no FileRow fields in argv"
 
-              // paths DO complete there (the fallback exists): the test
+              // paths do complete there (the fallback exists): the test
               // bin dir is the cwd and its own dll is a stable entry
               let paths: string list = sug "micro Weir.Tests."
               Expect.isTrue (paths |> List.contains "Weir.Tests.dll") "a real relative path completes in argv"
 
-              // every candidate EXTENDS the typed word — the editor
+              // every candidate extends the typed word — the editor
               // replaces the word, so a ./-prefixed shape the user never
               // typed re-prepends on each tab (the ././././ bug)
               Expect.isTrue
                   (paths |> List.forall (fun c -> c.StartsWith "Weir.Tests."))
                   $"candidates extend the typed word: {paths |> List.truncate 3}"
 
-              // unbound scrutinee in EXPRESSION position: nothing beats
+              // unbound scrutinee in expression position: nothing beats
               // the union of everything (the D5 rule)
               Expect.equal (sug "let x = publish.") [] "unbound head after ="
               Expect.equal (sug "publish.") [] "unbound head, statement position"
 
-              // bound-but-UNRESOLVED keeps the declared-fields fallback:
-              // the rule is about BINDING, not resolution
+              // bound-but-unresolved keeps the declared-fields fallback:
+              // the rule is about binding, not resolution
               Expect.isTrue (sug "fun q -> q." |> List.contains "q.bytes") "a lambda param keeps the high-signal union"
 
               // the positive twin from the same instrument: a bound,
-              // RESOLVED record still completes its own fields (the
+              // resolved record still completes its own fields (the
               // where-lambda pins above assert the exact list)
               Expect.isTrue (sug "ls |> where (fun f -> f." |> List.contains "f.kind") "resolved fields still fire"
           }
           test "keyword completion inventory: every grammar keyword offered or excluded, decided [D:keyword-completion]" {
-              // the PINNED split — a new grammar keyword fails here until
+              // the pinned split — a new grammar keyword fails here until
               // its completion decision is recorded (added below as
               // offered, or to unsuggestedKeywords with a reason beside
               // the definition). The inventory-match pattern, applied to
@@ -3840,7 +3838,7 @@ let completionTests =
               Expect.equal (Weir.Complete.suggest envWithQ "q." 0) [ "q.X"; "q.Y" ] ""
           }
           test "module completion offers bespoke arms: Args.load / Env.load (user receipt)" {
-              // load is a checker ARM, not a member-map entry — completion
+              // load is a checker arm, not a member-map entry — completion
               // must surface it beside the ordinary members, from the one
               // source the checker's error path also reads
               Expect.equal (suggest "Args." 0) [ "Args.flag"; "Args.load"; "Args.value" ] "Args.load beside flag/value"
@@ -3874,7 +3872,7 @@ let completionTests =
           }
           test "record fields complete through a pipe: scalar record, bound record, lambda param [D:hole-completion]" {
               // [D:repl-quality] pipelineElemTy: `from yaml T` yields a
-              // SCALAR record (one document, not a seq), and a bound record
+              // scalar record (one document, not a seq), and a bound record
               // piped into `_.` carries itself — both must type to the
               // record. The seq-only unwrap returned None and no fields
               // surfaced. The one arm — the type flowing into the position —
@@ -3892,20 +3890,20 @@ let completionTests =
               let sg (t: string) =
                   Weir.Complete.suggest renv t (Weir.Complete.wordStartAt t t.Length)
 
-              // FIX: a scalar record from `from yaml T` piped into `_.`
+              // fix: a scalar record from `from yaml T` piped into `_.`
               Expect.equal (sg "src |> from yaml Test2 |> _.") [ "_.some" ] "scalar-record pipe into _."
 
-              // FIX: a bound record piped into `_.`
+              // fix: a bound record piped into `_.`
               Expect.equal (sg "r |> _.") [ "_.some" ] "bound record into _."
 
-              // FIX: the lambda param over a scalar-record pipe (was the
+              // fix: the lambda param over a scalar-record pipe (was the
               // noisy all-declared-fields fallback; now resolves precisely)
               Expect.equal
                   (sg "src |> from yaml Test2 |> (fun row -> row.")
                   [ "row.some" ]
                   "lambda param over the scalar-record pipe"
 
-              // UNCHANGED (the seq unwrap): `Seq.map _.` and its lambda twin
+              // unchanged (the seq unwrap): `Seq.map _.` and its lambda twin
               // over a seq of records still complete
               let renvSeq =
                   { renv with
@@ -3917,7 +3915,7 @@ let completionTests =
               Expect.equal (sgs "xs |> Seq.map _.") [ "_.some" ] "seq element via Seq.map _."
               Expect.equal (sgs "xs |> Seq.map (fun elt -> elt.") [ "elt.some" ] "seq element via the lambda param"
 
-              // CONTROL: a non-record element still offers nothing
+              // control: a non-record element still offers nothing
               Expect.equal (sgs "src |> Seq.map (fun e -> e.") [] "a string element offers no fields"
           }
           test "the empty prompt offers the session directives, not the flood [D:empty-prompt-directives]" {
@@ -3927,7 +3925,7 @@ let completionTests =
               Expect.equal (suggest "" 0) [ "#help"; "#find"; "#echo"; "#infer"; "#save"; "#history"; "#quit" ] "the curated directive set"
 
               // filtered completion is unaffected (a real prefix at a head).
-              // Assert only environment-stable facts: the `File` MODULE is
+              // Assert only environment-stable facts: the `File` module is
               // offered and every candidate matches the prefix — never a
               // specific PATH binary (those vary per machine: a dev box has
               // LLVM's FileCheck-21, a CI runner does not)
@@ -3963,7 +3961,7 @@ let rowTests =
               | t -> failtest $"expected a row-typed projection, got {formatTy t}"
           }
           test "an Eq constraint rides a row var (mutation-spike survivor)" {
-              // demanding Eq on a still-open row must PEND, not refuse —
+              // demanding Eq on a still-open row must pend, not refuse —
               // discharge happens when the row resolves [D:inferred-type-classes]
               (checkOk "fun r -> r.A == 1 && r == r").Ty |> ignore
           }
@@ -4036,7 +4034,7 @@ let private survivors (marker: string) : int =
     let psi = ProcessStartInfo("/bin/sh")
     psi.ArgumentList.Add "-c"
     // pgrep rc 0 = matched, 1 = no match; anything else (or pgrep
-    // missing, 127) is the PROBE failing — loud, never a benign zero
+    // missing, 127) is the probe failing — loud, never a benign zero
     // [D:vacuous-probe-audit]
     psi.ArgumentList.Add
         $"o=$(pgrep -f '[{marker[0]}]{marker.Substring 1}'); rc=$?; [ \"$rc\" -le 1 ] || exit 9; [ -z \"$o\" ] && echo 0 || printf '%%s\\n' \"$o\" | wc -l"
@@ -4066,7 +4064,7 @@ let private defunctChildrenOf (pid: int) : int =
     let psi = ProcessStartInfo("/bin/sh")
     psi.ArgumentList.Add "-c"
     // BSD ps has no --ppid; `-A -o ppid=,stat=` is portable. The ps run
-    // must fail LOUDLY (exit 9): on macOS the GNU spelling errored and
+    // must fail loudly (exit 9): on macOS the GNU spelling errored and
     // `grep -c Z` counted zero — the pin passed vacuously
     psi.ArgumentList.Add
         $"o=$(ps -A -o ppid=,stat=) || exit 9; printf '%%s\\n' \"$o\" | awk -v p={pid} '$1 == p && $2 ~ /^Z/ {{c++}} END {{print c+0}}'"
@@ -4090,14 +4088,14 @@ let lifecycleTests =
         "Process lifecycle"
         [ // POSITIVE CONTROLS FIRST [D:vacuous-probe-audit]: every zero
           // assertion below rests on these two counters; a counter that
-          // can break must be shown to COUNT before its zeros mean
+          // can break must be shown to count before its zeros mean
           // anything (the macOS vacuous-pass lesson).
           test "positive control: the survivors probe counts a live marker" {
               skipOnWindows ()
               let psi = ProcessStartInfo("/bin/sh")
               psi.ArgumentList.Add "-c"
               // the marker rides $0 and the compound suffix keeps sh from
-              // EXEC-ing the sleep — macOS bash-as-sh replaces a lone
+              // exec-ing the sleep — macOS bash-as-sh replaces a lone
               // simple command, vaporizing a comment-borne marker
               psi.ArgumentList.Add "sleep 30; :"
               psi.ArgumentList.Add "weir-probe-ctl"
@@ -4112,7 +4110,7 @@ let lifecycleTests =
           }
           test "positive control: the zombie counter counts a real zombie" {
               skipOnWindows ()
-              // the .NET runtime auto-reaps OUR children, so the control
+              // the .NET runtime auto-reaps our children, so the control
               // targets the counting line at another parent: a python
               // that forks and deliberately never reaps (python3 is
               // already a harness dependency via tests/lib)
@@ -4134,7 +4132,7 @@ let lifecycleTests =
               finally
                   p.Kill(entireProcessTree = true)
           }
-          // TRIPWIRE PAIR: the simple case passes even without tree-kill because
+          // tripwire pair: the simple case passes even without tree-kill because
           // sh execs a single command (one process). The compound case is the
           // real guard — sh forks pipeline children and only
           // Kill(entireProcessTree: true) reaches them. If the sh backing is
@@ -4224,7 +4222,7 @@ let session2Tests =
           test "cd changes the spawn cwd for sh" {
               skipOnWindows ()
               // /usr, not /tmp: macOS's /tmp is a symlink to /private/tmp
-              // and the CHILD's getcwd reports the physical path
+              // and the child's getcwd reports the physical path
               try
                   Expect.equal (runReal "let d = cd \"/usr\" in $(sh -c \"pwd\")" |> forceSeq) [ VStr "/usr" ] ""
               finally
@@ -4232,9 +4230,10 @@ let session2Tests =
           }
           test "completion follows cd, and an offered path opens [F1]" {
               skipOnWindows ()
-              // completion resolved relative paths against the PROCESS cwd, which weir
-              // never chdir's — so it froze at the startup directory and vouched for
-              // paths File.read immediately rejected.
+              // completion resolved relative paths against the process cwd,
+              // which weir never chdir's — so it froze at the startup
+              // directory and vouched for paths File.read immediately
+              // rejected.
               let root =
                   Path.Combine(Path.GetTempPath(), "weir-cwd-" + System.Guid.NewGuid().ToString "N")
 
@@ -4250,7 +4249,7 @@ let session2Tests =
                   Weir.Complete.suggest Weir.Builtins.typeEnvStrict text (Weir.Complete.wordStartAt text text.Length)
 
               try
-                  // the positive twin: correct BEFORE any cd, so the fix is not
+                  // the positive twin: correct before any cd, so the fix is not
                   // "disable relative completion"
                   Weir.Session.setCwd a
                   Expect.equal (offer ()) [ "./marker-a.txt" ] "completion reads the session cwd"
@@ -4260,7 +4259,8 @@ let session2Tests =
                   let after = offer ()
                   Expect.equal after [ "./marker-b.txt" ] "completion follows cd"
 
-                  // the property no existing completion pin asserts: an offered path OPENS
+                  // the property no existing completion pin asserts: an
+                  // offered path opens
                   Expect.isTrue
                       (File.Exists(Weir.Session.resolve (List.head after)))
                       "an offered path resolves to a real file"
@@ -4273,8 +4273,9 @@ let session2Tests =
               skipOnWindows ()
 
               try
-                  // normalised AT ASSIGNMENT, so no reader ever sees the spelling of
-                  // the argument — Path.GetFullPath preserves a trailing separator
+                  // normalised at assignment, so no reader ever sees the
+                  // spelling of the argument — Path.GetFullPath preserves
+                  // a trailing separator
                   Weir.Session.setCwd "/tmp/"
                   Expect.equal (Weir.Session.Cwd()) "/tmp" "a trailing separator is trimmed"
                   Weir.Session.setCwd "/"
@@ -4335,7 +4336,7 @@ let session2Tests =
               Expect.isTrue (eventuallyNoSurvivors "weir-s2-dz") "direct-exec children leaked"
               Expect.equal (defunctChildren ()) 0 "defunct children accumulated"
           }
-          // [D:nul-path] the RUN-TIME root: Session.resolve is the one
+          // [D:nul-path] the run-time root: Session.resolve is the one
           // funnel every File/Proc/completion builtin shares. A NUL in the
           // path made Path.GetFullPath throw a raw ArgumentException (a
           // SIGABRT reached through the parser, a raw .NET message elsewhere);
@@ -4351,14 +4352,14 @@ let session2Tests =
                   (System.IO.Path.IsPathRooted(Weir.Session.resolve "a/b"))
                   "an ordinary path resolves unchanged"
           }
-          // [D:nul-path] the PARSE-TIME pre-empt: a NUL-bearing program head
-          // is not-found (false) BEFORE Extern.exists reaches Session.resolve,
+          // [D:nul-path] the parse-time pre-empt: a NUL-bearing program head
+          // is not-found (false) before Extern.exists reaches Session.resolve,
           // whose raise would abort the parse resolver (it runs outside the
           // runner's try). So the classifier emits its ordinary
           // missing-command diagnostic instead of a crash.
           test "Extern.exists reports a NUL-bearing head as not-found, not a raise" {
               skipOnWindows ()
-              // pathy (contains '/') AND NUL-bearing: without the guard this
+              // pathy (contains '/') and NUL-bearing: without the guard this
               // is exactly the parse-time crash path
               Expect.isFalse (Weir.Extern.exists "./a\000b") "a NUL-in-slash head is not found"
               Expect.isFalse (Weir.Extern.exists "a\000b") "a bare NUL head is not found"
@@ -4647,7 +4648,7 @@ let session3Tests =
           test "external pipes into external via stdin" {
               skipOnWindows ()
               // the marker rides the command so the survivor check checks
-              // SOMETHING — it previously asserted a marker no process
+              // something — it previously asserted a marker no process
               // ever carried [D:vacuous-probe-audit]
               Expect.equal
                   (runReal "yes weir-s3cc | cat |> take 2" |> forceSeq)
@@ -4712,8 +4713,8 @@ let session3Tests =
               Expect.equal (runReal "grep nomatch /etc/hosts | complete |> _.exitCode") (VInt 1) ""
           }
           // capture oracle [D:capture-buffer]: the exact line-split and
-          // decode rules of `| complete`, pinned against the OLD
-          // representation BEFORE the buffer change — the equivalence
+          // decode rules of `| complete`, pinned against the old
+          // representation before the buffer change — the equivalence
           // oracle for "one buffer, not N strings". Octal via sh printf
           // (POSIX printf has no \x).
           test "capture oracle: stdout line rule — CRLF, lone CR, empties kept, unterminated tail" {
@@ -4771,7 +4772,7 @@ let session3Tests =
                   [ VStr "a�b" ]
                   "invalid byte becomes one replacement char"
 
-              // StreamReader's BOM detection SWITCHES encodings — part of
+              // StreamReader's BOM detection switches encodings — part of
               // today's contract, preserved via the fallback path
               Expect.equal
                   (runReal "sh -c 'printf \"\\377\\376x\\012\"' | complete |> _.stdout" |> forceSeq)
@@ -4887,7 +4888,7 @@ let stringTests =
           }
           test "replace is pattern-replacement-subject" { expectValue "replace \"o\" \"0\" \"foo\"" (VStr "f00") }
           test "splitOnce splits at the FIRST separator, tail intact [D:split-once]" {
-              // the receipt class: the tail CONTAINS the separator —
+              // the receipt class: the tail contains the separator —
               // Str.split + a [k; v] pattern silently misses here
               expectValue "Str.splitOnce \"=\" \"KEY=a=b\"" (VTuple [ VStr "KEY"; VStr "a=b" ])
               // destructures straight into names (the tuple answer)
@@ -4979,7 +4980,7 @@ let stringTests =
 
               expectValue "[42] |> Seq.exactlyOne" (VInt 42L)
 
-              // ruling 2: none and more are DIFFERENT causes — the two
+              // ruling 2: none and more are different causes — the two
               // messages pin separately, one pin covering both would
               // defeat the member's advantage over head
               Expect.equal
@@ -4992,8 +4993,8 @@ let stringTests =
                   "exactlyOne: expected exactly one element, got more"
                   "the produced-extra cause"
 
-              // the try twin: None for BOTH failure shapes, and it must
-              // stop at the SECOND element — an infinite source proves it
+              // the try twin: None for both failure shapes, and it must
+              // stop at the second element — an infinite source proves it
               expectValue "[7] |> Seq.tryExactlyOne" (VUnion("Some", Some(VInt 7L)))
               expectValue "[] |> Seq.tryExactlyOne" (VUnion("None", None))
               expectValue "[1; 2] |> Seq.tryExactlyOne" (VUnion("None", None))
@@ -5257,7 +5258,7 @@ let attributeTests =
                   Expect.stringContains msg "attributes attach to record fields, union cases, and type declarations" ""
           }
           // the widened positions [D:attr-positions]: union decls and cases
-          // HOST attributes; the registry is position-scoped; Tag/Other
+          // host attributes; the registry is position-scoped; Tag/Other
           // validate here and bind at the wire boundary [D:wire-unions]
           test "a union declaration hosts [<Tag>]; the def carries the binding [D:wire-unions]" {
               let env' =
@@ -5434,9 +5435,9 @@ let typedArgvTests =
                   ""
           }
           test "Positional RETURNED for signatures — inert on weir's own CLIs [D:command-signatures]" {
-              // the drop's archaeology stands (weir scripts take FLAGS;
-              // its one receipt was contract-mimicry) — but a SIGNATURE
-              // describes a FOREIGN tool, and foreign CLIs have operands.
+              // the drop's archaeology stands (weir scripts take flags;
+              // its one receipt was contract-mimicry) — but a signature
+              // describes a foreign tool, and foreign CLIs have operands.
               // Registered again: legal-and-inert here (the attribute
               // law), meaningful only inside .weir/sigs files
               let e = argvEnv |> declare "type WithPos = { [<Positional>] target: string }"
@@ -5494,8 +5495,8 @@ let typedArgvTests =
                   "is int"
                   ""
 
-              // THE FLIP: Default false is LEGAL at Env (absent -> false is
-              // a real statement under text bools), REJECTED at Args
+              // the flip: Default false is legal at Env (absent -> false is
+              // a real statement under text bools), rejected at Args
               // (presence already rests at false)
               let e4 = argvEnv |> declare "type E4 = { [<Default false>] DEBUG_ZZQ: bool }"
 
@@ -5602,7 +5603,7 @@ let typedArgvTests =
                   Expect.stringContains msg "expected one of: Debug, Info, Warn" "candidates"
                   Expect.stringContains msg "Did you mean 'Debug'?" "the hint machinery rides"
 
-                  // collect-then-raise: a bad enum AND a bad int, one error
+                  // collect-then-raise: a bad enum and a bad int, one error
                   set "PORTE_ZZQ" "nope"
 
                   let both =
@@ -5615,7 +5616,7 @@ let typedArgvTests =
                   Expect.stringContains both "is not a LvlE" "enum problem present"
                   Expect.stringContains both "is not an int" "int problem collected alongside"
 
-                  // EMPTY is a miss with candidates (the int precedent), not None
+                  // empty is a miss with candidates (the int precedent), not None
                   set "LOGE_ZZQ" ""
                   set "PORTE_ZZQ" "1"
 
@@ -5831,7 +5832,7 @@ let typedArgvTests =
                       (fun d -> d.Message.Contains $"use 'Self.{name}'")
                       $"bare '{name}' teaches Self.{name}"
 
-              // in EXPRESSION position (bare at statement head is a command
+              // in expression position (bare at statement head is a command
               // candidate — a cmd-not-found warning, a different path)
               teaches "args" [ "print (Seq.length args)" ]
               teaches "stdin" [ "print (Seq.length stdin)" ]
@@ -5989,7 +5990,7 @@ let bracketContinuationTests =
           }
           test "top-level if/else assembles as ONE statement — a dedented else/elif continues the if [D:toplevel-if-else]" {
               // the block form at column 0: `if c then <block>` then a
-              // DEDENTED `else`/`elif`. Before this, a col-0 `else` started a
+              // dedented `else`/`elif`. Before this, a col-0 `else` started a
               // fresh statement and the parser hit a stray keyword; the col-0
               // continuation gate now admits else/elif like `until`/`always`.
               let asm lines =
@@ -6248,7 +6249,7 @@ let replEchoTests =
           }
           test "the WHOLE echo enumerates its source once [D:echo-once]" {
               // echoTable's probe + echoValue's rendering used to pull the
-              // lazy source twice — a bare command's child ran TWICE per
+              // lazy source twice — a bare command's child ran twice per
               // echo (and its second cooked-tty window ate the next Enter)
               let pulls = ref 0
 
@@ -6270,7 +6271,7 @@ let replEchoTests =
               Expect.equal hint (Some(Weir.Eval.unforcedHint 10)) "a cached seq is still an unforced seq to the echo"
           }
           test "the LINES form [D:echo-lines]: raw per line, count-clipped, footer honest" {
-              // forced: every line, no hint; content RAW (a tab stays a
+              // forced: every line, no hint; content raw (a tab stays a
               // tab — print parity; tty-only so the piped surface holds)
               let lines, hint =
                   Weir.Eval.echoLines
@@ -6296,7 +6297,7 @@ let replEchoTests =
                   "empty seq: footer only"
 
               // one enumeration across the whole echo (the echo-once law):
-              // prep once, lines + render pull the CACHE, the source once
+              // prep once, lines + render pull the cache, the source once
               let pulls = ref 0
 
               let counted =
@@ -6309,7 +6310,7 @@ let replEchoTests =
               Weir.Eval.echoValue Weir.Eval.echoPipedCap prepped |> ignore
               Expect.equal pulls.Value 3 "the lines form adds no enumeration"
 
-              // show is UNTOUCHED — the literal with quotes
+              // show is untouched — the literal with quotes
               Expect.equal (run "[\"a\"; \"b\"] |> show") (VStr "[\"a\"; \"b\"]") "show renders; the echo presents"
           }
           test "a FORCED seq echoes in full, no hint [D:echo-rule]" {
@@ -6403,7 +6404,7 @@ let replEchoTests =
 
               Expect.isTrue (Weir.Eval.echoBinary None (VStr "x\u0000")) "a scalar carries the mark too"
 
-              // the probe is BOUNDED and walks the cache — cap+1 pulls, max
+              // the probe is bounded and walks the cache — cap+1 pulls, max
               let pulls = ref 0
 
               let counted =
@@ -6460,7 +6461,7 @@ let replEchoTests =
               let _, bareHint = Weir.Eval.echoLines (Some 10) unforced |> Option.get
               Expect.equal bareHint (Some(Weir.Eval.unforcedHint 10)) "the bare echo teaches the unforced clip"
 
-              // the let-echo meta line carries that SAME tail — the fix's
+              // the let-echo meta line carries that same tail — the fix's
               // invariant: a clipped `let` bind never looks like it
               // silently dropped data
               let meta = Weir.Repl.letEchoMeta "xs" (TSeq TStr) None bareHint
@@ -6475,12 +6476,12 @@ let replEchoTests =
           test "a forced-seq let echo shows NO teaching and all elements (unchanged) [D:echo-rule]" {
               let forced = VSeq([ for i in 1..12 -> VStr(string i) ] :> seq<Weir.Eval.Value>)
 
-              // forced: echoLines returns every line and NO hint
+              // forced: echoLines returns every line and no hint
               let lines, hint = Weir.Eval.echoLines (Some 10) forced |> Option.get
               Expect.equal (List.length lines) 12 "all twelve elements, the cap never clips a forced seq"
               Expect.equal hint None "forced carries no teaching"
 
-              // the let meta with no state then has an EMPTY tail — no
+              // the let meta with no state then has an empty tail — no
               // dangling teaching (the state annotation is the caller's,
               // via letSeqState — the frozen pin below)
               let meta = Weir.Repl.letEchoMeta "xs" (TSeq TStr) None hint
@@ -6559,7 +6560,7 @@ let replEchoTests =
               // a unit expression rebinds — unit included, FSI's rule
               Expect.equal (Weir.Repl.itSchemeForTest [ "print \"x\"" ]) (Some "unit") "a unit expression binds it := ()"
 
-              // a `let` does NOT rebind — `let o = 10` binds no it
+              // a `let` does not rebind — `let o = 10` binds no it
               Expect.equal (Weir.Repl.itSchemeForTest [ "let o = 10" ]) None "a let binds its name, never it"
 
               // and a later `let` leaves an earlier binding standing
@@ -6674,7 +6675,7 @@ let replEchoTests =
               Expect.stringContains rendered "1a: int" "the offending drafted line is shown as a snippet"
               Expect.stringContains rendered "^" "a caret marks the column"
 
-              // the caret sits UNDER the reported column (snippet indented by 2)
+              // the caret sits under the reported column (snippet indented by 2)
               let snippetLines = rendered.Split('\n')
               let caretLine = snippetLines |> Array.find (fun l -> l.Trim() |> Seq.forall (fun c -> c = '^'))
               let caretCol = caretLine.IndexOf '^'
@@ -6683,7 +6684,7 @@ let replEchoTests =
 
 let replColorTests =
     // [D:repl-color] — the paint-transparency property is the load-bearing
-    // pin: coloring NEVER alters the text (strip . colorize = id)
+    // pin: coloring never alters the text (strip . colorize = id)
     let colorize = Weir.Script.colorizeRepl (fun n -> n = "ls" || n = "print")
     let strip = Weir.Script.stripAnsi
 
@@ -6703,7 +6704,7 @@ let replColorTests =
               Expect.stringContains (colorize "within cd d") $"{kw}cd{reset}" "the within kind"
               Expect.stringContains (colorize "xs |> from json Config") $"{kw}json{reset}" "the from adapter"
               Expect.stringContains (colorize "xs |> to yaml") $"{kw}yaml{reset}" "the to adapter"
-              // a binding that merely STARTS with an adapter word stays plain
+              // a binding that merely starts with an adapter word stays plain
               Expect.isFalse ((colorize "let jsonData = 1").Contains $"{kw}jsonData{reset}") "not a false match"
           }
           test "paint transparency: strip after colorize is the identity" {
@@ -6729,7 +6730,7 @@ let replColorTests =
               Expect.stringContains (colorize "zzznope arg") "\x1b[31mzzznope\x1b[0m" "unknown head red"
 
               // ^-forced resolves against PATH only: 'show' is known but
-              // not a binary ANYWHERE (Windows System32 ships a legacy
+              // not a binary anywhere (Windows System32 ships a legacy
               // print.exe — the old ^print fixture correctly flipped
               // there [D:windows-s2]), so ^show paints red even though
               // bare show would be bold
@@ -6817,7 +6818,7 @@ let seqPatternTests =
               "the bare-comma precedence footgun: `code, _ :: rest` vs a seq NAMES the grouping [D:user-language-messages]" {
               let m =
                   (checkErr "match [\"a\"; \"b\"] with | code, _ :: rest -> code | _ -> \"z\"").Message
-              // FParsec wraps long messages — pin FRAGMENTS, not the joined sentence
+              // FParsec wraps long messages — pin fragments, not the joined sentence
               Expect.stringContains m "groups looser than" "names the precedence cause"
               Expect.stringContains m "(code, _) :: rest" "names the repair, not the category"
           }
@@ -6879,14 +6880,14 @@ let blockLetCmdTests =
               | other -> failtest $"unexpected: {other}"
           }
           test "the shadowing block twin: bindings beat PATH at depth (failing-first pin)" {
-              // guard-dropped, this spawned a real PATH binary (SPAWNED
+              // guard-dropped, this spawned a real PATH binary (the spawn
               // observed live); guarded, the block name wins
               expectValue
                   "let f = fun y -> (let zzshadow = fun a -> a in let z = zzshadow y in z |> Seq.head) in f [\"safe\"]"
                   (VStr "safe")
           }
           test "sigil equivalence: bare block RHS = the $() spelling" {
-              // the two spellings must produce the same TypedExpr SHAPE
+              // the two spellings must produce the same TypedExpr shape
               // (ELet of the same chain expression)
               let bare =
                   Weir.Script.assemble [ 1, "let f c ="; 2, "    let a = git rev-parse $c | Seq.head"; 3, "    a" ]
@@ -6934,7 +6935,7 @@ let blockLetCmdTests =
                   "nested-paren let-in keeps the exclusion"
           }
           test "function in a binder slot refuses as a keyword" {
-              // the reservation retired into the FEATURE [D:function-keyword]
+              // the reservation retired into the feature [D:function-keyword]
               match Weir.Parser.parseStmt "let function = 1" with
               | Error msg -> Expect.stringContains msg "'function' is a keyword" "the generic refusal"
               | Ok _ -> failtest "expected the keyword refusal"
@@ -6946,13 +6947,13 @@ let statementLetTests =
     // splice + param resolution at the new depth [D:paramful-rhs], and
     // check==run parity under the assume-resolver [D:assume-resolver]
     // (the patch-district lesson: the two parse paths drift exactly
-    // here, so each fixture runs BOTH — analyzeLines against a real
+    // here, so each fixture runs both — analyzeLines against a real
     // parse+check+eval fold).
     let checkDiags lines =
         let ds, _, _, _ = Weir.Script.analyzeLines "sl.weir" lines
         ds |> List.filter (fun d -> d.Severity = "error")
 
-    // the run path: assemble + parse under the REAL resolver + check +
+    // the run path: assemble + parse under the real resolver + check +
     // eval, statement by statement (the dedent-join fold, real heads)
     let runStmts (lines: string list) : unit =
         match Weir.Script.assemble (lines |> List.mapi (fun i l -> i + 1, l)) with
@@ -6983,7 +6984,7 @@ let statementLetTests =
                 (env, valueEnv)
             |> ignore
 
-    // one parity fixture per context: check accepts AND the run path
+    // one parity fixture per context: check accepts and the run path
     // produces the marker file — both parse paths, one meaning
     let parity (name: string) (fixture: string -> string list) =
         test $"parity: {name} body takes a command let, check == run [D:statement-lets]" {
@@ -7125,7 +7126,7 @@ let statementLetTests =
                       (fun d -> d.Message.Contains "inside a lambda body, a command needs $(…)")
                       $"the lambda teaching for: {rhs}"
 
-              // the paren interior names ITS context
+              // the paren interior names its context
               let ds =
                   checkDiags
                       [ "within tmp d"
@@ -7138,7 +7139,7 @@ let statementLetTests =
           } ]
 
 let lspCrossFileTests =
-    // real files on disk: cross-file targets re-analyze the TARGET file
+    // real files on disk: cross-file targets re-analyze the target file
     // through the import channel [D:lsp-cross-file]
     let withTree (f: string -> string list -> string -> string -> unit) =
         let td =
@@ -7234,7 +7235,7 @@ let lspCrossFileTests =
               withTree (fun entry lines lib _ ->
                   Expect.equal (Weir.Lsp.definitionTarget entry lines 4 14) (Some(Some lib, 16, 5, 6)) "Lib.double"
                   Expect.equal (Weir.Lsp.definitionTarget entry lines 6 12) (Some(Some lib, 6, 5, 4)) "field Name"
-                  // imported cases reach expressions only through PATTERNS (a bare
+                  // imported cases reach expressions only through patterns (a bare
                   // `Bad 3` reads as a command head — cases do not merge into
                   // value scope); the pattern position resolves cross-file
                   Expect.equal (Weir.Lsp.definitionTarget entry lines 9 33) (Some(Some lib, 13, 7, 3)) "case Bad")
@@ -7267,7 +7268,7 @@ let lspCrossFileTests =
           } ]
 
 let letBindingHoverTests =
-    // [D:annotated-signature] a binding with a NAMED param hovers as its
+    // [D:annotated-signature] a binding with a named param hovers as its
     // param signature; an all-`()` (unit) or param-less binding hovers as
     // the flat value type, like F# (which names only named params)
     testList
@@ -7285,7 +7286,7 @@ let letBindingHoverTests =
           } ]
 
 let purityBadgeTests =
-    // the DISPLAY stage of [D:pure]: the rare pure function gets a
+    // the display stage of [D:pure]: the rare pure function gets a
     // hover badge; effectful stays the unbadged norm. The badge is
     // conservative — missing is allowed, lying is not.
     let hoverOf (lines: string list) (line: int) (col: int) =
@@ -7351,9 +7352,9 @@ let purityBadgeTests =
           } ]
 
 let pureRegionTests =
-    // STAGE 1 of [D:pure]: the `pure` region ENFORCES [D:pure-stage1] —
+    // Stage 1 of [D:pure]: the `pure` region enforces [D:pure-stage1] —
     // opt-in only (nothing outside a region is gated), judged by the
-    // Stage 0 classifier, refused with a LOCATED teaching naming the
+    // Stage 0 classifier, refused with a located teaching naming the
     // offender's effect family.
     let errsOf (lines: string list) =
         let ds, _, _, _ = Weir.Script.analyzeLines "pure.weir" lines
@@ -7475,7 +7476,7 @@ let pureRegionTests =
                         "print $\"{p |> Plan.isEmpty}\"" ])
                   "a library desugar in a plan block is not a proc refusal"
 
-              // but a REAL command in the for body still refuses, and the
+              // but a real command in the for body still refuses, and the
               // message speaks the command, never the |seqIter key
               let e = firstErr [ "pure"; "    for n in [1] do"; "        echo hi" ]
               Expect.stringContains e.Message "'echo' runs a command" "a real command still refuses"
@@ -7561,15 +7562,15 @@ let pureRegionTests =
           } ]
 
 let effectPartitionTests =
-    // STAGE 2 of [D:pure]: the ambient/mutation PARTITION [D:pure-stage2]
+    // Stage 2 of [D:pure]: the ambient/mutation partition [D:pure-stage2]
     // — effectClass over the effect-label table, plus the per-method net
-    // split, consultable at BOTH check time (Effects.effectClass) and
+    // split, consultable at both check time (Effects.effectClass) and
     // eval time (Builtins.effectClassOfCall). This is [PLAN-plan-apply]'s
     // load-bearing dependency: probe it directly, both ends.
     let A = Weir.Effects.Ambient
     let M = Weir.Effects.Mutation
 
-    // a minimal HttpRequest VALUE carrying a method case — the shape the
+    // a minimal HttpRequest value carrying a method case — the shape the
     // interpreter holds at an Http.send call site
     let reqWith (methodCase: string) =
         VRecord(
@@ -7595,8 +7596,8 @@ let effectPartitionTests =
                   Expect.equal (Weir.Effects.effectClass n) (Some M) $"{n} is external mutation"
           }
           test "the |-name family split: library desugar vs command reifier [D:desugar-namespace]" {
-              // library desugars target a plain member (Seq.iter/…) — NOT
-              // commands, NOT effectful
+              // library desugars target a plain member (Seq.iter/…) — not
+              // commands, not effectful
               for k in [ "|seqIter"; "|seqMap"; "|seqFreeze"; "|seqAppend"; "|seqRange"; "|seqItem"; "|retryDefaults"; "|pollDefaults" ] do
                   Expect.isFalse (Weir.Effects.isCommandReifier k) $"{k} is a library desugar, not a command"
                   Expect.isFalse (Weir.Effects.effectfulName k) $"{k} reads as its pure target member"
@@ -7623,7 +7624,7 @@ let effectPartitionTests =
                   Expect.equal (Weir.Effects.httpMethodClass m) M $"{m} mutates → mutation"
           }
           test "EVAL-TIME resolution: Http.send{post} = Mutation, Http.send{get} = Ambient (probe 2)" {
-              // the CRITICAL probe — plan/apply intercepts at eval; the
+              // the critical probe — plan/apply intercepts at eval; the
               // class of a builtin call must resolve where the interpreter
               // runs, from the runtime request Value
               Expect.equal (Weir.Builtins.effectClassOfCall "Http.send" [ reqWith "Post" ]) (Some M) "send{post} mutates"
@@ -7640,7 +7641,7 @@ let effectPartitionTests =
           test "the partition is TOTAL over every classified-effectful name effectPhrase names" {
               // every name the teaching vocabulary classifies effectful
               // must also get a class — the two cannot drift (Http.send is
-              // the ONE deliberate None, resolved per-request)
+              // the one deliberate None, resolved per-request)
               let names =
                   [ "File.read"; "File.write"; "Dir.create"; "Dir.list"; "Env.get"; "Args.load"; "Proc.stop"
                     "Net.portOpen"; "Http.fetch"; "Http.query"; "Log.info"; "print"; "printerr"; "exit"
@@ -7652,10 +7653,10 @@ let effectPartitionTests =
           } ]
 
 let readonlyBlockTests =
-    // STAGE 2 [D:pure-stage2]: the `readonly` block — the user-facing
+    // Stage 2 [D:pure-stage2]: the `readonly` block — the user-facing
     // surface. `readonly == only ambient-input`, one tier up from
-    // `pure == only ∅`; a reachable external MUTATION refuses (located,
-    // naming the offender AND its class), an ambient READ is fine.
+    // `pure == only ∅`; a reachable external mutation refuses (located,
+    // naming the offender and its class), an ambient read is fine.
     let errsOf (lines: string list) =
         let ds, _, _, _ = Weir.Script.analyzeLines "ro.weir" lines
         ds |> List.filter (fun d -> d.Severity = "error")
@@ -7740,7 +7741,7 @@ let readonlyBlockTests =
                   "a pure island nests inside the looser ceiling"
           }
           test "a for body with no effect is ACCEPTED inside readonly [D:desugar-namespace] (F5)" {
-              // the |seqIter desugar is a LIBRARY member (Seq.iter), not a
+              // the |seqIter desugar is a library member (Seq.iter), not a
               // command — a pure for body must not be refused as a spawn
               Expect.isEmpty
                   (errsOf
@@ -7780,7 +7781,7 @@ let readonlyBlockTests =
                   "consecutive unit statements sequence, never space-join"
           }
           test "no |-desugar key reaches a readonly refusal message [D:desugar-namespace] (F5-vocabulary)" {
-              // a REAL effect in a for body still refuses — but the message
+              // a real effect in a for body still refuses — but the message
               // speaks the effect, never the internal |seqIter key
               let e =
                   firstErr
@@ -7799,9 +7800,9 @@ let readonlyBlockTests =
               Expect.stringContains e.Message "unknown callable" "a function-typed param could mutate"
           }
           test "reading DATA from an impure binding is NOT a mutation — the fuzz-found line" {
-              // a value computed from an impure command holds DATA once
+              // a value computed from an impure command holds data once
               // bound (the command ran outside the block); reading it is
-              // ambient, not mutation — only a CALLABLE mutates when applied
+              // ambient, not mutation — only a callable mutates when applied
               Expect.isEmpty
                   (errsOf
                       [ "let lines = git status"; "let n ="; "    readonly"; "        lines |> Seq.length"; "print $\"{n}\"" ])
@@ -7818,9 +7819,9 @@ let readonlyBlockTests =
                   "the bare head teaches the block form"
           }
           test "the freed word: deterministic is now an ORDINARY identifier — the pre-release rename" {
-              // deterministic was the OLD keyword; the rename frees it, so
+              // deterministic was the old keyword; the rename frees it, so
               // it binds like any other name (a misnomer retired — the block
-              // permits clock/stdin/file READS, so it never guaranteed
+              // permits clock/stdin/file reads, so it never guaranteed
               // determinism; readonly names 'no external mutation')
               Expect.isEmpty (errsOf [ "let deterministic = 1"; "print $\"{deterministic}\"" ]) "the old keyword is a free identifier again"
           }
@@ -7833,7 +7834,7 @@ let readonlyBlockTests =
           }
           test "badge interplay: readonly does NOT mint a (pure) badge — the asymmetry holds" {
               // a function whose body reads ambient input is read-only
-              // but NOT pure; the (pure) badge stays absent (effect-normal
+              // but not pure; the (pure) badge stays absent (effect-normal
               // display is untouched — readonly is the looser tier)
               let lines = [ "let reader () = Env.get \"HOME\""; "print (show (reader () |> Option.defaultValue \"x\"))" ]
 
@@ -7876,7 +7877,7 @@ let planApplyTests =
         d
 
     // testSequenced: the DA-03 cases drive programs through runFile
-    // (Weir.Script.run — IN-PROCESS), whose `within cd` mutates the GLOBAL
+    // (Weir.Script.run — in-process), whose `within cd` mutates the global
     // Session.Cwd. Left parallel, this list raced itself (two DA-03 programs
     // stomping each other's cwd → a preview bound to the wrong dir →
     // "not absolute-A") and the parallel spawn tests. Sequencing keeps all
@@ -7913,7 +7914,7 @@ let planApplyTests =
           test "Plan equality is content-sensitive; isEmpty reads the ops" {
               // multi-line plan bodies go through the real assembler (a
               // temp file); the program self-checks and exits nonzero on
-              // mismatch, so exit 0 IS the assertion
+              // mismatch, so exit 0 is the assertion
               let prog =
                   [ "let a ="
                     "    plan"
@@ -8051,8 +8052,8 @@ let planApplyTests =
               finally
                   System.IO.Directory.Delete(root, true)
           }
-          // [D:plan-path-bound] DA-03: a plan captures paths RESOLVED to
-          // absolute AT capture, so apply writes the previewed location
+          // [D:plan-path-bound] DA-03: a plan captures paths resolved to
+          // absolute at capture, so apply writes the previewed location
           // regardless of the apply-time cwd. Capture under cd A, apply
           // under cd B: the file lands in A (the preview), never B.
           test "DA-03: a write captured under cd A applies to A even when applied under cd B" {
@@ -8067,10 +8068,10 @@ let planApplyTests =
                     $"    within cd \"{dirA}\""
                     "        plan"
                     "            File.write \"marker.txt\" [\"hi\"]"
-                    // preview must render the ABSOLUTE captured path (A's)
+                    // preview must render the absolute captured path (A's)
                     "let text = Str.join \"\\n\" (p |> Plan.preview) |> Str.replace \"\\\\\" \"/\""
                     $"if not (Str.contains \"{dirA}/marker.txt\" text) then fail \"preview not absolute-A\""
-                    // apply under a DIFFERENT cwd — the bound path wins
+                    // apply under a different cwd — the bound path wins
                     $"within cd \"{dirB}\""
                     "    p |> Plan.apply"
                     "print \"ok\"" ]
@@ -8088,7 +8089,7 @@ let planApplyTests =
               finally
                   System.IO.Directory.Delete(root, true)
           }
-          // [D:plan-path-bound] the two-path ops bind BOTH source and dest
+          // [D:plan-path-bound] the two-path ops bind both source and dest
           // to absolute at capture: a copy captured under cd A applies into
           // A's tree even from cd B.
           test "DA-03: a copy captured under cd A binds src+dst to A, applies under cd B into A" {
@@ -8150,9 +8151,9 @@ let planApplyTests =
           }
           // [D:plan-parallel-refusal] DA-01: PlanMode's capture frame is
           // thread-local, so a parallel/race callback runs on a worker
-          // WITHOUT it — a native mutation would escape capture and run
+          // without it — a native mutation would escape capture and run
           // for real. The combinators refuse on the calling thread before
-          // any worker is scheduled. Assert the FILESYSTEM: no marker.
+          // any worker is scheduled. Assert the filesystem: no marker.
           test "DA-01: piterWith inside a plan REFUSES before any worker writes a file" {
               let dir = td ()
               System.IO.Directory.CreateDirectory dir |> ignore
@@ -8214,7 +8215,7 @@ let planApplyTests =
                   System.IO.Directory.Delete(dir, true)
           }
           test "DA-01: a callback that itself fails is never reached — the refusal precedes scheduling" {
-              // even a callback that WOULD raise must not run: the refusal
+              // even a callback that would raise must not run: the refusal
               // is on the calling thread before any worker is scheduled
               Expect.throwsC
                   (fun () ->
@@ -8241,7 +8242,7 @@ let planApplyTests =
           // [D:plan-proc-runtime-guard] DA-02: firstPlanRefusal is a
           // syntactic walk that cannot follow a helper reference, so an
           // indirect proc slips past the checker. A thread-local guard at
-          // the ONE spawn point refuses at runtime (the helper runs on the
+          // the one spawn point refuses at runtime (the helper runs on the
           // capturing thread). The syntactic diagnostic stays for usability.
           test "DA-02: a helper-wrapped proc inside a plan REFUSES at runtime, no process runs" {
               let dir = td ()
@@ -8267,7 +8268,7 @@ let planApplyTests =
                   System.IO.Directory.Delete(dir, true)
           }
           test "DA-02: a helper-wrapped `| exec` inside a plan REFUSES at runtime, no image replaced [D:exec]" {
-              // execvp does NOT funnel through Proc.spawn, so the runtime plan
+              // execvp does not funnel through Proc.spawn, so the runtime plan
               // guard is applied in Proc.exec directly; without it an indirect
               // exec would replace the process instead of being refused.
               let dir = td ()
@@ -8393,7 +8394,7 @@ let withinKindsTests =
 
 let reserveBuiltinTests =
     // builtins with no qualified spelling are reserved binders
-    // [D:reserve-builtins]; bare ALIASES keep the standing shadow rule
+    // [D:reserve-builtins]; bare aliases keep the standing shadow rule
     testList
         "reserved builtins"
         [ test "the message, verbatim — every binding position" {
@@ -8416,7 +8417,7 @@ let reserveBuiltinTests =
           test "the positive twins: ordinary and module-shaped names bind; aliases keep their escape" {
               expectValue "let file = 1 in file" (VInt 1L)
               expectValue "let seq = 2 in seq" (VInt 2L)
-              // the alias distinction IS the ruling's edge: Seq.max is
+              // the alias distinction is the ruling's edge: Seq.max is
               // the way back, so `max` stays bindable
               expectValue "let max = 3 in max + Seq.max [1; 2]" (VInt 5L)
               // the escape-bearer, not an alias [D:dir-stat]: Dir.stat
@@ -8551,7 +8552,7 @@ let withinAlwaysLockTests =
 
 let adapterFormTests =
     // the from/to adapters — the within kinds' sibling [D:form-word-hover].
-    // The adapter LIST is derived from the one source (builtinDocs keys)
+    // The adapter list is derived from the one source (builtinDocs keys)
     // that already backs each adapter's own hover, so they cannot drift.
     let ws (t: string) =
         let mutable i = t.Length
@@ -8613,8 +8614,8 @@ let adapterFormTests =
 let pathParamCompletionTests =
     // path-parameter positions [D:path-param-completion]: the registry
     // is builtinDocs' named params (path/src/dst; base within Path) —
-    // paths and string BINDINGS offer, keywords and bare members do
-    // not. SEQUENCED: the fixture moves the ambient session cwd
+    // paths and string bindings offer, keywords and bare members do
+    // not. Sequenced: the fixture moves the ambient session cwd
     testSequenced
     <| testList
         "path-parameter completion [D:path-param-completion]"
@@ -8628,9 +8629,9 @@ let pathParamCompletionTests =
               System.IO.File.WriteAllText(System.IO.Path.Combine(d, "tool.txt"), "x")
 
               try
-                  // the INVARIANT process cwd, not Session.Cwd(): under the
+                  // the invariant process cwd, not Session.Cwd(): under the
                   // parallel test runner, Session.Cwd() may momentarily hold a
-                  // CONCURRENT test's temp dir, and restoring to it after that
+                  // concurrent test's temp dir, and restoring to it after that
                   // dir is deleted leaves the global cwd pointing at a deleted
                   // path — every concurrent spawn then fails "command not found"
                   // (Process.Start cannot chdir there). GetCurrentDirectory is
@@ -8648,7 +8649,7 @@ let pathParamCompletionTests =
                       Expect.equal got [ "weir-sub/" ] "the path, alone"
 
                       // the positive twin hard-filtering would break:
-                      // `cd target` applies the BINDING, so a string
+                      // `cd target` applies the binding, so a string
                       // binding offers beside the matching path
                       let envT =
                           { Weir.Builtins.typeEnvStrict with
@@ -8661,13 +8662,13 @@ let pathParamCompletionTests =
                       for bad in [ "when"; "where"; "windowed"; "with"; "within" ] do
                           Expect.isFalse (List.contains bad withBinding) $"'{bad}' is not a path argument"
 
-                      // a SECOND-argument position: File.copy's dst
+                      // a second-argument position: File.copy's dst
                       Expect.equal
                           (sug Weir.Builtins.typeEnvStrict "File.copy tool.txt w")
                           [ "weir-sub/" ]
                           "dst is a path"
 
-                      // the position is param-KEYED, not member-keyed:
+                      // the position is param-keyed, not member-keyed:
                       // File.write's second param is lines, so the
                       // general pool (keywords included) returns
                       Expect.contains
@@ -8681,7 +8682,7 @@ let pathParamCompletionTests =
                           [ "weir-sub/" ]
                           "within cd is a path position"
 
-                      // keywords still complete where they SHOULD — the
+                      // keywords still complete where they should — the
                       // standing rule: 'keywords removed' must not be
                       // satisfiable by removing them everywhere
                       Expect.contains (sug Weir.Builtins.typeEnvStrict "wh") "when" "statement start keeps keywords"
@@ -8718,7 +8719,7 @@ let hoverResidueTests =
               match Weir.Lsp.hoverType retryLines 1 12 with
               | Some hv ->
                   Expect.stringContains hv "bounded retry loop" "the form's meaning"
-                  // the expectation DERIVES from the same source the hover
+                  // the expectation derives from the same source the hover
                   // reads — a new Retry key appears in both with no edit here
                   let expected =
                       match Map.tryFind "Retry" preludeTypeEnv.Types with
@@ -8817,7 +8818,7 @@ let hoverResidueTests =
           } ]
 
 let schemaHoverTests =
-    // the schema= name hovers its FILE facts [D:schema-hover] — a
+    // the schema= name hovers its file facts [D:schema-hover] — a
     // vendored file, not an env.Types entry, so the type-argument arm
     // could not render it and the district's type used to leak
     let withSchemas (f: string -> string list -> string -> unit) =
@@ -8981,14 +8982,14 @@ let semanticTokenTests =
 
               // a use resolves to its top-level let
               Expect.equal (Weir.Lsp.definitionFor lines 2 12) (Some(1, 5, 5)) "alpha use -> its let"
-              // shadowing: the LAST binder above the use wins
+              // shadowing: the last binder above the use wins
               Expect.equal (Weir.Lsp.definitionFor lines 4 10) (Some(3, 5, 5)) "last binder above wins"
               // a let-pattern binder is a definition site too
               let pat = [ "let (a, b) = (1, 2)"; "print $\"{a}\"" ]
               Expect.equal (Weir.Lsp.definitionFor pat 2 10) (Some(1, 6, 1)) "letpat binder found"
               // builtins have no source: null
               Expect.equal (Weir.Lsp.definitionFor [ "print 1" ] 1 2) None "builtin -> null"
-              // FLIPPED by the binder-span session [PLAN-diagnostics-arc C]:
+              // flipped by the binder-span session [PLAN-diagnostics-arc C]:
               // the park's conservative null became the jump
               Expect.equal (Weir.Lsp.definitionFor [ "let f x = x + 1" ] 1 11) (Some(1, 7, 1)) "param use -> param"
           }
@@ -9009,13 +9010,13 @@ let semanticTokenTests =
 
               // expression-position union case -> its case in the decl
               Expect.equal (Weir.Lsp.definitionFor lines 7 9) (Some(2, 7, 4)) "ctor use -> the case"
-              // field ACCESS -> the field in the record decl
+              // field access -> the field in the record decl
               Expect.equal (Weir.Lsp.definitionFor lines 9 13) (Some(5, 28, 4)) "c.Port -> the Port field"
-              // record-LITERAL field name -> the field in the decl
+              // record-literal field name -> the field in the decl
               Expect.equal (Weir.Lsp.definitionFor lines 8 11) (Some(5, 14, 4)) "literal Host -> the Host field"
-              // PATTERN-position case (PSpan carries it) -> the case
+              // pattern-position case (PSpan carries it) -> the case
               Expect.equal (Weir.Lsp.definitionFor lines 11 3) (Some(2, 7, 4)) "| Pull -> the case"
-              // a pattern PAYLOAD binder is a local binder: null (the park)
+              // a pattern payload binder is a local binder: null (the park)
               Expect.equal (Weir.Lsp.definitionFor lines 12 8) None "payload binder -> null"
           }
           test
@@ -9115,7 +9116,7 @@ let semanticTokenTests =
               Expect.isTrue (onTitle |> Option.exists (fun s -> s.Contains "string")) "title : string"
           }
           test "hoverType: a lambda param shows its own type, not the enclosing arrow (user receipt)" {
-              // t is used via field access -> an OPEN ROW; the bug showed
+              // t is used via field access -> an open row; the bug showed
               // the param carrying the function's `... -> ...` arrow because
               // nodeAt fell back to the lambda. The param must show only its
               // own domain type.
@@ -9143,7 +9144,7 @@ let semanticTokenTests =
                   [ (3, 6, 8, [ "The token env."; "Two lines." ]) ]
                   "a contiguous /// run attaches to the type name at (3,6,8), lines accumulated in order"
 
-              // a blank line between the doc and the declaration BREAKS it
+              // a blank line between the doc and the declaration breaks it
               Expect.equal
                   (Weir.Script.docAttachments [ "/// orphan"; ""; "type T = { x: int }" ])
                   []
@@ -9254,7 +9255,7 @@ let semanticTokenTests =
                   | Error e -> failtestf "second fmt failed: %s" e
           }
           test "fmt: a yaml district keeps relative indentation, re-anchors the base [D:yaml-district]" {
-              // the block's RELATIVE indentation is semantic (JYamlLine rel),
+              // the block's relative indentation is semantic (JYamlLine rel),
               // so fmt re-anchors the base to marker+1 depth and preserves
               // every line's offset from it — never rewriting the yaml's own
               // nesting, which is the user's data
@@ -9286,9 +9287,9 @@ let semanticTokenTests =
                   | Error e -> failtestf "second fmt failed: %s" e
           }
           test "fmt: a next-line district marker merges onto the binding line [D:district-canonical]" {
-              // canonical layout puts the marker ON the binding line; the
+              // canonical layout puts the marker on the binding line; the
               // next-line spelling stays parseable at the assembler and fmt
-              // REWRITES it — both spellings converge on ONE canonical text
+              // rewrites it — both spellings converge on one canonical text
               let next =
                   [ "let x ="
                     "    <<<"
@@ -9440,7 +9441,7 @@ let semanticTokenTests =
                   |> Map.toList
                   |> List.collect (fun (m, mems) -> mems |> Map.toList |> List.map (fun (name, _) -> $"{m}.{name}"))
 
-              // the enumeration must be REAL before zero-missing can pass
+              // the enumeration must be real before zero-missing can pass
               Expect.isGreaterThan (List.length members) 100 "the enumeration broke, not the docs"
 
               let missing =
@@ -9464,10 +9465,10 @@ let semanticTokenTests =
                   Expect.contains members q $"'{q}' is omitted but not shipped — stale"
           }
           test "builtin docs: every doc example runs clean [D:builtin-docs]" {
-              // D1 = (a) EXECUTABLE, weir-side: the Example is registry DATA
+              // D1 = (a) executable, weir-side: the Example is registry data
               // run through the same check+eval path, not prose parsed from
               // an F# literal. A rotted example fails the build here.
-              // STATEMENT-STYLE examples [D:no-let-in-examples]: a multi-line
+              // Statement-style examples [D:no-let-in-examples]: a multi-line
               // example assembles and folds statement by statement, so hover
               // teaches the style scripts actually use — never `let … in`
               let runExample (ex: string) =
@@ -9546,8 +9547,8 @@ let semanticTokenTests =
               let onInner = Weir.Lsp.hoverType il 2 9 |> Option.defaultValue "" // inner `g`
               Expect.stringContains onInner "g (a: string) (b: string) : bool" "annotated inner let"
 
-              // FALLBACK: a USAGE of a user function (names are reached at
-              // DECLARATIONS, not use sites) -> the arrow type
+              // fallback: a usage of a user function (names are reached at
+              // declarations, not use sites) -> the arrow type
               let fb = [ "let myFn a b = Str.contains a b"; "let z = myFn \"x\" \"y\"" ]
               let onFallback = Weir.Lsp.hoverType fb 2 10 |> Option.defaultValue "" // `myFn` at the USE
 
@@ -9555,7 +9556,7 @@ let semanticTokenTests =
           }
           test "annotated signature is presentation-only: formatTy (errors) stays the arrow [D:annotated-signature]" {
               // the arrow formatter is untouched — errors quote what the
-              // checker COMPUTED; the annotated form is hover PRESENTATION
+              // checker computed; the annotated form is hover presentation
               let ty = TFun(TStr, TFun(TStr, TBool))
 
               Expect.equal
@@ -9618,7 +9619,7 @@ let semanticTokenTests =
               Expect.stringContains onLoad "typed record" "the Env.load summary reaches hover on `load`"
               Expect.stringContains onLoad "field law" "and its law pointer"
 
-              // the reported bug: hovering the module `Env` must NOT surface load's doc
+              // the reported bug: hovering the module `Env` must not surface load's doc
               let onEnv = Weir.Lsp.hoverType lines 2 10 |> Option.defaultValue "" // on `Env`
               Expect.isFalse (onEnv.Contains "field law") "hovering the module Env does not surface load's doc"
           }
@@ -9688,7 +9689,7 @@ let semanticTokenTests =
           test
               "hover: a pattern constructor shows its signature; the payload binder shows its OWN type [D:hover-completeness]" {
               // the payload type (string) deliberately differs from the arm
-              // result (int) — so the binder must resolve to its OWN type,
+              // result (int) — so the binder must resolve to its own type,
               // not the enclosing match's. `r` is bound to a PR value so the
               // constructor pattern has a known union to match.
               let lines =
@@ -9704,7 +9705,7 @@ let semanticTokenTests =
           }
           test
               "over-application on an indented continuation points at the extra args + hints the indent [D:over-apply-continuation]" {
-              // the misleading case: `deleteBranch branch` indented DEEPER
+              // the misleading case: `deleteBranch branch` indented deeper
               // than `makeRef …` is slurped as extra arguments — the error
               // must land on the continuation, not the head, and say so
               let lines =
@@ -9721,7 +9722,7 @@ let semanticTokenTests =
               Expect.stringContains d.Message "indented continuation" "the hint names the real cause (the indent)"
           }
           test "an errored let warns its command heads and suppresses the unbound cascade [PLAN-diagnostics-arc B5+B6]" {
-              // B6: the failed deploy binds a HOLE — one real error,
+              // B6: the failed deploy binds a hole — one real error,
               // zero "unbound 'deploy'. Did you mean 'Deploy'?" echoes,
               // and the hole's descendants (application results,
               // constraints, discards) stay silent too
@@ -9736,7 +9737,7 @@ let semanticTokenTests =
               Expect.hasLength errors 1 "ONE real error, zero echoes"
               Expect.stringContains errors[0].Message "expected int, got string" "the real error"
 
-              // B5: an ERRORED statement still surfaces its command-head
+              // B5: an errored statement still surfaces its command-head
               // warnings (parse-level walk — no typed tree exists)
               let lines2 =
                   [ "let go t ="; "    let e = targ etEnv t"; "    echo hi"; "    print \"ok\"" ]
@@ -9768,7 +9769,7 @@ let semanticTokenTests =
                   Expect.stringContains d.Message "(the value becomes a T at 5:1)" "the meet is the note"
               | other -> failtest $"expected ONE error, got {other}"
 
-              // a DIRECT access on the concrete value stays where it was:
+              // a direct access on the concrete value stays where it was:
               // no origin recorded, no note
               let direct =
                   [ "type T = { BicepPath: string }"
@@ -9784,7 +9785,7 @@ let semanticTokenTests =
               | other -> failtest $"expected ONE error, got {other}"
           }
           test "row provenance: the TYPE-mismatch sibling also anchors at the access [PLAN-open-findings D]" {
-              // right field name, WRONG type, cross-statement: t.count is
+              // right field name, wrong type, cross-statement: t.count is
               // forced to string but T.count is int. Was reported at the
               // meet; now at the access, meet as the note (the no-field
               // sibling's shape, sharing the atAccess helper)
@@ -9804,7 +9805,7 @@ let semanticTokenTests =
                   Expect.stringContains d.Message "(the value becomes a T at 5:1)" "the meet is the note"
               | other -> failtest $"expected ONE error, got {other}"
 
-              // WITHIN-statement mismatch is unchanged: direct at the access,
+              // within-statement mismatch is unchanged: direct at the access,
               // no meet note (no cross-statement origin recorded)
               let within =
                   [ "type T = { count: int }"
@@ -9822,7 +9823,7 @@ let semanticTokenTests =
           test "Args/Env.load near-miss shapes teach ONE-type-name [PLAN-diagnostics-arc A1]" {
               // `Args.load C md` (a space inside the type name) used to
               // fall through to "module Args has no member 'load'" — a
-              // lie: load is an ARM, not a member
+              // lie: load is an arm, not a member
               Expect.stringContains (checkErr "Args.load").Message "takes ONE record or union type name" "zero args"
 
               Expect.stringContains
@@ -9833,7 +9834,7 @@ let semanticTokenTests =
               Expect.stringContains (checkErr "Env.load Cfg md").Message "takes ONE record type name" "the Env twin"
           }
           test "formatting request contracts: broken statements verbatim, assemble failure refuses [D:lsp-requests]" {
-              // an unparseable statement never refuses the FILE — indent
+              // an unparseable statement never refuses the file — indent
               // normalizes, the broken line rides verbatim (format-on-save
               // on a broken buffer stays useful)
               match Weir.Fmt.formatLines [ "let go () ="; "  let x = (((("; "  print \"hi\"" ] with
@@ -9873,7 +9874,7 @@ let semanticTokenTests =
                   "head, argv, $@name whole, tail argv — the reifier name stays lexical"
           }
           test "the shadowed-cat trio: binding wins, deletion restores, ^ forces" {
-              // bound: an application — NO command tokens
+              // bound: an application — no command tokens
               let bound =
                   Weir.Lsp.semanticTokensFor [ "let echo x = x"; "let y = echo 5"; "print $\"{y}\"" ]
 
@@ -9889,7 +9890,7 @@ let semanticTokenTests =
           }
           test "a parse-failed statement renders expression-colored (no phantom tokens)" {
               // [D:seq-commit] makes this an error; a failed statement
-              // emits NOTHING
+              // emits nothing
               let toks =
                   Weir.Lsp.semanticTokensFor
                       [ "let v0 ="
@@ -9959,7 +9960,7 @@ let semanticTokenTests =
                   "the fresh block-let RHS tokens; the param splice is an island"
           }
           test "nested sigil through a paren splice recurses (depth 2)" {
-              // $() as a direct command ARG is a type error (seq arg —
+              // $() as a direct command argument is a type error (seq arg —
               // rejected); the nested spelling rides a paren splice
               let toks =
                   Weir.Lsp.semanticTokensFor
@@ -10012,7 +10013,7 @@ let multilineLambdaTests =
           }
           test "a col-0 line under a col-0 opener joins as body; EOF names the open lambda" {
               // opener at col 0 makes col 0 the body floor (the
-              // at-opener-indent continuation rule): nothing sits LEFT of
+              // at-opener-indent continuation rule): nothing sits left of
               // it, so the runaway surfaces at close, named
               match Weir.Script.assemble [ 1, "xs |> Seq.iter (fun r ->"; 2, "    print r"; 3, "let x = 1" ] with
               | Error e -> Expect.stringContains e "line 1: this lambda's '(' is still open" ""
@@ -10029,7 +10030,7 @@ let multilineLambdaTests =
               | other -> failtest $"expected noBody, got {other}"
           }
           test "a compound in the body prunes at the user's closer (the original repro, now designed)" {
-              // [D:compound-paren-prune]: the match must NOT swallow
+              // [D:compound-paren-prune]: the match must not swallow
               // the next outer stage
               match
                   Weir.Script.assemble
@@ -10096,7 +10097,7 @@ let multilineLambdaTests =
           }
           test "lambda params shadow PATH in their body" {
               // under the assume-resolver a param-headed let RHS must stay
-              // an EXPRESSION, not become a phantom command [D:paramful-rhs]
+              // an expression, not become a phantom command [D:paramful-rhs]
               let lines =
                   [ "let counts ="
                     "    [\"a b\"]"
@@ -10110,7 +10111,7 @@ let multilineLambdaTests =
               Expect.isEmpty diags "no diagnostics — the param is known, not a command head"
           }
           test "block-let params shadow PATH in an if-condition head [D:paramful-rhs]" {
-              // a param heading a block-let's if-condition is a BINDING —
+              // a param heading a block-let's if-condition is a binding —
               // bindings-beat-PATH reaches condition position at block-let
               // depth (check's assume-resolver once claimed it as a
               // phantom command: cmd-not-found + bogus type errors)
@@ -10124,7 +10125,7 @@ let multilineLambdaTests =
                     "    f xs"
                     "print (outer [(\"a\", 5)])" ]
 
-              // even a param NAMED like a real PATH binary stays the binding
+              // even a param named like a real PATH binary stays the binding
               clean
                   [ "let outer b ="
                     "    let pick test = if test then \"y\" else \"n\""
@@ -10165,7 +10166,7 @@ let pipeAlignTests =
           }
           test "a returning arm after a multi-statement body is an arm, not left-of-match [D:match-pipe-offside]" {
               // a `let` then an if/else in an arm body leaves the if
-              // compound open when the NEXT arm arrives: the arm group
+              // compound open when the next arm arrives: the arm group
               // at the arm's own column says it is a returning arm —
               // the deeper if offside-closes, it is not "its match"
               let lines =
@@ -10192,7 +10193,7 @@ let pipeAlignTests =
               | Error e -> Expect.stringContains e "align the group" "misaligned arms still refuse"
               | Ok _ -> failtest "expected the alignment error"
           }
-          // the arm-commit soundness premise rides THIS invariant
+          // the arm-commit soundness premise rides this invariant
           // [D:arm-commit]: offside-close paren-wraps nested matches, so
           // at the logical line a '|' after a completed arm at the same
           // paren depth can only be another arm
@@ -10303,7 +10304,7 @@ let optionSweepTests =
           test "message domination: the teaching fatal surfaces CLEANLY, not buried [D:anchor-before-read]" {
               // finding-class (b): correct caret, but a non-consuming fatal
               // merged the competitors' expected-set into a dump. Now the
-              // teaching wins its spot — pin the caret AND the absence of
+              // teaching wins its spot — pin the caret and the absence of
               // the raw expecting-list (the burial is the bug).
               let sole (line: string) =
                   let ds, _, _, _ = Weir.Script.analyzeLines "pin.weir" [ line ]
@@ -10316,7 +10317,7 @@ let optionSweepTests =
                   let l, c, msg = sole line
                   Expect.equal (l, c) (1, expectedCol) $"caret for: {line}"
                   Expect.stringContains msg teach $"teaching present: {line}"
-                  // BOTH burial markers — pinning one leaves the other free
+                  // both burial markers — pinning one leaves the other free
                   Expect.isFalse (msg.Contains "Expecting:") $"no expecting-list: {line} -> {msg}"
                   Expect.isFalse (msg.Contains "Other error messages") $"not buried: {line} -> {msg}"
 
@@ -10326,18 +10327,18 @@ let optionSweepTests =
               clean "'function' is a keyword" "let function = 1" 5
               clean "'rec' is a keyword" "let rec = 1" 5
               clean "'mutable' is a keyword" "let mutable = 1" 5
-              // B: keyword in the PARAM and record-DECL field slots
+              // B: keyword in the param and record-decl field slots
               clean "'rec' is a keyword" "let f rec = 1" 7
               clean "'when' is a keyword" "let f when = 1" 7
               clean "'let' is a keyword" "type T = { let: int }" 12
-              // record-LITERAL field name: a guard BEFORE the arm-commit check
+              // record-literal field name: a guard before the arm-commit check
               clean "'let' is a keyword" "let r = { let = 1 }" 11
               clean "'in' is a keyword" "let r = { in = 1 }" 11
-              // A: foldChain reifier anchors on the MARKER, not the chain end
+              // A: foldChain reifier anchors on the marker, not the chain end
               clean "must directly follow a single external command" "git | grep x | complete" 16
               clean "must directly follow a single external command" "git | grep x | exitCode" 16
 
-              // GATED: every keyword must still fall through to its parser —
+              // gated: every keyword must still fall through to its parser —
               // the risk matrix (heads of their own constructs)
               let okParses (line: string) =
                   let ds, _, _, _ = Weir.Script.analyzeLines "pin.weir" [ line ]
@@ -10358,7 +10359,7 @@ let optionSweepTests =
           }
           test "keyword in a pattern binder dominates in committed contexts [D:anchor-before-read]" {
               // item 2 of the keyword-slots residue: patWord's keyword check
-              // dominates OUTSIDE its own attempt, so a match arm (past its
+              // dominates outside its own attempt, so a match arm (past its
               // `|`), a lambda (past `fun`), and a param all surface the
               // teaching. let-destructure stays a finding (SLetPat's attempt).
               let sole (line: string) =
@@ -10394,7 +10395,7 @@ let optionSweepTests =
               okParses "let _z = match [1] with | [x] -> x | _ -> 0"
               // the binder-scan skips pattern delimiters and stops at `=`:
               // an RHS keyword is not a binder keyword, and true/false in a
-              // destructure are LITERAL patterns (a check error, not parse)
+              // destructure are literal patterns (a check error, not parse)
               okParses "let _go = (let (a, _b) = (1, 2) in a)"
 
               let noParseError (line: string) =
@@ -10410,7 +10411,7 @@ let optionSweepTests =
               // C of the anchor residue: the fix narrows negAtom's attempt so
               // the operand's out-of-range fatal escapes instead of being
               // swallowed and merged (a fatal inside an attempt is not a
-              // fatal). Corrected diagnosis: NOT parsed-twice (negIntLit is
+              // fatal). Corrected diagnosis: not parsed-twice (negIntLit is
               // range-only) — negAtom's own attempt was the swallower.
               let ds, _, _, _ =
                   Weir.Script.analyzeLines "pin.weir" [ "let x = -99999999999999999999" ]
@@ -10424,7 +10425,7 @@ let optionSweepTests =
               | other -> failtest $"expected ONE error, got {other}"
 
               // the risk surface — prefix minus, subtraction, spaced range
-              // step, and application-vs-subtraction — UNCHANGED
+              // step, and application-vs-subtraction — unchanged
               expectValue "let a = 5 in a - 1" (VInt 4L)
               expectValue "let a = 5 in a-1" (VInt 4L)
               expectValue "-5" (VInt -5L)
@@ -10432,7 +10433,7 @@ let optionSweepTests =
               expectValue "let f x = x + 100 in f -1" (VInt 99L)
           }
           test "value-headed pipeline: external head feeds; library head keeps the hint [D:value-headed-pipe]" {
-              // resolution decides — an EXTERNAL head after a value `|`
+              // resolution decides — an external head after a value `|`
               // desugars to a pipe into the command (stdin), reusing the
               // EPipe-into-ECmd machinery (identical to feed)
               match Weir.Parser.parseLine cmdResolver "[\"a\"] | cat" with
@@ -10452,14 +10453,14 @@ let optionSweepTests =
           }
           test "a body-line pipe belongs to the body statement [D:within-tail-pipe]" {
               // the inline `| cmd` on a within block's tail line stays
-              // INSIDE the scope — it parsed as `(within …) | cmd`, the
+              // inside the scope — it parsed as `(within …) | cmd`, the
               // command spawning after the scope restored
               match Weir.Parser.parseLine cmdResolver "within cd \"/d\" [\"x\"] | cat" with
               | Ok(SExpr e | SCmd e) ->
                   Expect.equal (Weir.Ast.sexpr e) "(within cd \"/d\" ([\"x\"] |> (cmd cat)))" "the pipe rides the body"
               | other -> failtest $"expected the scoped pipe, got {other}"
 
-              // a NON-FINAL value-headed pipe is a body statement too (was
+              // a non-final value-headed pipe is a body statement too (was
               // a bare parse error at the sibling boundary) — and armSeq
               // arms it exactly like a command-headed chain
               let joined =
@@ -10479,7 +10480,7 @@ let optionSweepTests =
           }
           test "a dedented pipe below a within block closes it [D:within-tail-pipe]" {
               // the offside face: at (or left of) the head column the pipe
-              // takes the WHOLE scope — the assembler wraps `(within …)`,
+              // takes the whole scope — the assembler wraps `(within …)`,
               // the match-close shape [D:match-pipe-offside]
               let dedentBar =
                   match Weir.Script.assemble [ 1, "within cd \"/d\""; 2, "    [\"x\"]"; 3, "| cat" ] with
@@ -10495,7 +10496,7 @@ let optionSweepTests =
 
               Expect.equal dedentFwd "(within cd \"/d\" [\"x\"]) |> Seq.length" "the dedented |> wraps the scope"
 
-              // a pipe at BODY indent extends the body statement (no wrap)
+              // a pipe at body indent extends the body statement (no wrap)
               let bodyPipe =
                   match Weir.Script.assemble [ 1, "within cd \"/d\""; 2, "    [\"x\"]"; 3, "    | cat" ] with
                   | Ok [ ll ] -> ll.Text
@@ -10514,7 +10515,7 @@ let optionSweepTests =
               Expect.stringContains (checkErr "[1] |> Seq.force").Message "renamed 'Seq.freeze'" ""
               Expect.stringContains (checkErr "[1] |> force").Message "renamed 'freeze'" ""
 
-              // the collect reservation PAID OUT [D:seq-gaps]: the member
+              // the collect reservation paid out [D:seq-gaps]: the member
               // exists with F#'s semantics and no retirement text remains
               Expect.isFalse ((checkOk "[1] |> Seq.collect (fun x -> [x])").Ty = TUnit) "Seq.collect is a live member"
           }
@@ -10617,7 +10618,7 @@ let moduleTests =
           }
           test "the bare-alias ALLOWLIST: a new module CANNOT steal a bare alias [D:bare-allowlist]" {
               // the property, not the outcome: a hypothetical module with
-              // hot-path-named members contributes NOTHING — safe by
+              // hot-path-named members contributes nothing — safe by
               // construction, no blocklist entry to remember (the guard
               // three collisions bought: Secret.map, Http.head, Float.toInt)
               let evil =
@@ -10721,7 +10722,7 @@ let lockfileConfinementTests =
               | Error e -> failtest $"a normalising-but-inside path must confine: {e}"
 
               // absolute, traversal-past-base, and (the classic bug) a
-              // sibling that shares the base as a string PREFIX all refuse
+              // sibling that shares the base as a string prefix all refuse
               for bad in [ "/etc/passwd"; "../escape.json"; "../root-evil/x" ] do
                   match Weir.Contracts.confineUnder root bad with
                   | Ok d -> failtest $"'{bad}' must escape, got {d}"
@@ -10732,7 +10733,7 @@ let lockfileConfinementTests =
               for ok in [ "benign"; "k8s-configmap"; "a_b-2"; "v1.2"; "X" ] do
                   Expect.isTrue (Weir.Contracts.vendorNameSafe ok) $"'{ok}' is a safe file name"
 
-              // only path-ESCAPING shapes refuse
+              // only path-escaping shapes refuse
               for bad in [ ""; "a/b"; "a\\b"; "../x"; "/abs"; ".hidden"; "a b"; "a..b" ] do
                   Expect.isFalse (Weir.Contracts.vendorNameSafe bad) $"'{bad}' escapes or is unsafe"
           }
@@ -10800,7 +10801,7 @@ let lockfileConfinementTests =
 
 
 let lockfileSymlinkConfinementTests =
-    // DA-04 [D:lockfile-symlink-confinement]: confineUnder is LEXICAL, so a
+    // DA-04 [D:lockfile-symlink-confinement]: confineUnder is lexical, so a
     // lexically-clean path escapes through a symlinked component. entryDest
     // now runs the real-path gate too — probe confineRealUnder directly
     // (POSIX symlinks; skipped on Windows).
@@ -10827,7 +10828,7 @@ let lockfileSymlinkConfinementTests =
                   System.IO.Directory.CreateDirectory outside |> ignore
 
                   try
-                      // .weir/schemas is a symlink to a dir OUTSIDE .weir/
+                      // .weir/schemas is a symlink to a dir outside .weir/
                       System.IO.Directory.CreateSymbolicLink(System.IO.Path.Combine(weirDir, "schemas"), outside)
                       |> ignore
 
@@ -10857,7 +10858,7 @@ let lockfileSymlinkConfinementTests =
                   System.IO.Directory.CreateDirectory outside |> ignore
 
                   try
-                      // the LEAF itself is a link pointing to a file outside
+                      // the leaf itself is a link pointing to a file outside
                       let leak = System.IO.Path.Combine(outside, "leak.json")
                       System.IO.File.WriteAllText(leak, "{}")
                       let leaf = System.IO.Path.Combine(schemas, "marker.json")
@@ -10950,10 +10951,10 @@ let lockfileSymlinkConfinementTests =
           }
           test "writeConfined TRUNCATES a longer existing file (no stale tail) [D:lockfile-symlink-confinement]" {
               // the open(2) flag regression: the hardcoded Linux O_CREAT/O_TRUNC
-              // meant the WRONG bits on macOS, so O_TRUNC never set — a re-write
-              // over an existing LONGER file (restore repairing a tampered vendored
+              // meant the wrong bits on macOS, so O_TRUNC never set — a re-write
+              // over an existing longer file (restore repairing a tampered vendored
               // file) left stale trailing bytes → hash mismatch. The result must be
-              // EXACTLY the new bytes. Passes on Linux either way; guards the flags.
+              // exactly the new bytes. Passes on Linux either way; guards the flags.
               let baseDir =
                   System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-da04t-{System.Guid.NewGuid():N}")
 
@@ -10961,7 +10962,7 @@ let lockfileSymlinkConfinementTests =
               System.IO.Directory.CreateDirectory(System.IO.Path.Combine(weirDir, "schemas")) |> ignore
               let dest = System.IO.Path.Combine(weirDir, "schemas", "k8s-configmap.json")
 
-              // a LONGER tampered file already on disk (the restore-repair case)
+              // a longer tampered file already on disk (the restore-repair case)
               let longer = System.Text.Encoding.UTF8.GetBytes "{\"tampered\":true,\"padding\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\"}"
               let shorter = System.Text.Encoding.UTF8.GetBytes "{\"ok\":true}"
 
@@ -10986,7 +10987,7 @@ let lockfileSymlinkConfinementTests =
           // cross-origin redirect [D:contract-redirect] ----
           test "fetchBytesWith drops PRIVATE-TOKEN across a cross-origin redirect; a control header crosses" {
               // origin A (127.0.0.1) 302s to origin B (localhost) — a
-              // DIFFERENT origin by host. B records what arrived. The bare
+              // different origin by host. B records what arrived. The bare
               // HttpClient re-sent PRIVATE-TOKEN here (DA-05); the explicit
               // follow must drop it while a non-credential control crosses.
               let portA = 8621
@@ -11097,7 +11098,7 @@ let scriptTests =
               // no migration message — a mode that never executed gets
               // whatever the generic stray-directive path does (a parse
               // error under check, the directive error on run); the pin
-              // is that it ERRORS with no bespoke farewell
+              // is that it errors with no bespoke farewell
               let diags, _, _, _ =
                   Weir.Script.analyzeLines "pin.weir" [ "#loose"; "print (show 1)" ]
 
@@ -11122,8 +11123,8 @@ let scriptTests =
           }
           test "a bare module member at command head teaches, not 'install the tool' [D:bare-partition]" {
               // sortBy, not where: the head teaching fires only when the
-              // name is NOT on PATH (a real tool of that name must stay
-              // runnable — resolution integrity), and Windows SHIPS
+              // name is not on PATH (a real tool of that name must stay
+              // runnable — resolution integrity), and Windows ships
               // where.exe, so `where` resolves there and never reaches
               // the cmd-not-found path
               let diags, _, _, _ =
@@ -11562,7 +11563,7 @@ let depthGuardTests =
           }
           test "at-ceiling parens: parse or a located diagnostic, never a crash (limit 500, stack-probed)" {
               // capacity between the stack probe's floor and the counted
-              // ceiling is platform-dependent BY DESIGN — big stacks parse
+              // ceiling is platform-dependent by design — big stacks parse
               // 499, small stacks get the probe's diagnostic; a crash is
               // the only wrong answer [D:depth-guard]
               match Weir.Parser.parseExpr (nestDeep "(" ")" 499) with
@@ -11573,7 +11574,7 @@ let depthGuardTests =
           test "small-stack thread: deep parse diagnoses via the stack probe, no overflow [D:depth-guard]" {
               // the macOS finding, emulated: test hosts there run smaller
               // stacks than Linux's 8MB and overflowed at ~420 of 500.
-              // On a deliberately tiny stack, RETURNING at all is the
+              // On a deliberately tiny stack, returning at all is the
               // no-crash pin; the probe's diagnostic is the expected path.
               let mutable result = None
 
@@ -11609,11 +11610,11 @@ let depthGuardTests =
               | Ok _ -> failtest "depth 800 brackets must be rejected"
           }
           test "a wide cons-chain pattern's name walk does not overflow the process [D:pattern-width]" {
-              // Property-3 on the WIDTH axis: patLeafNames recurses once
+              // Property-3 on the width axis: patLeafNames recurses once
               // per leaf; a `a :: a :: … :: _` chain is flat-reading but
-              // builds a deep right-spine, and the OLD recursive walk blew
-              // the stack DURING parse (in withPatNames) — a host crash,
-              // not a diagnostic. Reaching this line AT ALL is the pin: a
+              // builds a deep right-spine, and the old recursive walk blew
+              // the stack during parse (in withPatNames) — a host crash,
+              // not a diagnostic. Reaching this line at all is the pin: a
               // stack overflow is uncatchable and would abort the runner.
               let line =
                   "let v = match [1] with | " + String.replicate 20000 "a :: " + "_ -> 1 | _ -> 0"
@@ -11748,7 +11749,7 @@ let agentFindingsTests =
               | _ -> ()
           }
           test "let RHS: command-callable builtins stay functions (regression pin)" {
-              // `let workdir = cd target` must apply the BINDING, not pass a
+              // `let workdir = cd target` must apply the binding, not pass a
               // bareword — the meaning it had before let-RHS command mode.
               match Weir.Parser.parseLine cmdResolver "let w = cd target" with
               | Ok(SLet("w", { Kind = EApp({ Kind = EVar "cd" }, { Kind = EVar "target" }) })) -> ()
@@ -11771,7 +11772,7 @@ let agentFindingsTests =
               | other -> failtest $"expected a lambda over a command, got {other}"
           }
           test "params shadow PATH in their own RHS (the law's regression pin)" {
-              // cmdResolver says EVERY bareword is an external; the param
+              // cmdResolver says every bareword is an external; the param
               // must still win — identity stays identity
               match Weir.Parser.parseLine cmdResolver "let f x = x" with
               | Ok(SLet("f", { Kind = ELambda("x", _, { Kind = EVar "x" }) })) -> ()
@@ -11937,7 +11938,7 @@ let agentFindingsTests =
               | other -> failtest $"expected the expr splat, got {other}"
           }
           test "splat is confined to argv — a parse error everywhere else [D:argv-splat]" {
-              // the grammar produces ESplat ONLY in command-argument
+              // the grammar produces ESplat only in command-argument
               // position; this confinement is why infer/eval close their
               // matches with an unreachable arm rather than a splat case
               for src in [ "let y = $@xs"; "let y = [$@xs]"; "print ($@xs)" ] do
@@ -11977,7 +11978,7 @@ let agentFindingsTests =
           }
           test "$@\" stays the parked interpolated-verbatim cell, not a splat" {
               // lookahead lets $@ splat and $@"..." coexist; the quote form
-              // is not yet a feature, so it errors as an unknown token — NOT
+              // is not yet a feature, so it errors as an unknown token — not
               // as a broken splat
               match Weir.Parser.parseLine cmdResolver "echo $@\"x\"" with
               | Error msg -> Expect.isFalse (msg.Contains "splat") "the quote opener is not read as a splat"
@@ -11985,7 +11986,7 @@ let agentFindingsTests =
           }
           test "argv pieces do not concatenate — every glued adjacency refuses [D:argv-concat]" {
               // the suffix side of the whole-word law: before the guard,
-              // `$root/*` silently became TWO argv words. Each glued shape
+              // `$root/*` silently became two argv words. Each glued shape
               // must refuse; the spaced/interpolated forms stay legal.
               for glued in
                   [ "echo $x/tail"
@@ -12024,7 +12025,7 @@ let agentFindingsTests =
               match Weir.Parser.parseLine cmdResolver "rm -rf ./tt3/$build" with
               | Error msg ->
                   // EndsWith: the parser frames the message with position
-                  // lines; the QUOTED text is the message itself, pinned
+                  // lines; the quoted text is the message itself, pinned
                   // byte-exact (the file:line prefix is the CLI formatter's,
                   // pinned by the e2e hero-currency cell)
                   Expect.isTrue
@@ -12064,7 +12065,7 @@ let agentFindingsTests =
           test "exec is a diverging bare statement — no discard error, either route [D:exec]" {
               // exec never returns (execve/exit), so a bare statement is
               // legitimate: the discard gate must exempt it like fail/exit,
-              // in the command route AND the env-sigil capture route
+              // in the command route and the env-sigil capture route
               let clean (lines: string list) (label: string) =
                   let diags, _, _, _ = Weir.Script.analyzeLines "exec.weir" lines
                   Expect.isEmpty (diags |> List.filter (fun d -> d.Severity = "error")) $"{label}: {diags |> List.map _.Message}"
@@ -12098,17 +12099,17 @@ let agentFindingsTests =
           }
           test "the fifth refusal cell: refused-context reifiers TEACH, never PATH-resolve [D:reifier-family-complete]" {
               // [D:statement-lets] moved the boundary: if-body and
-              // within-body block lets now TAKE the reifier (statement
+              // within-body block lets now take the reifier (statement
               // contexts — pinned in statementLetTests); the remaining
               // refused position (lambda-body) must teach $() with its
-              // context named, and NEVER resolve the keyword on PATH —
+              // context named, and never resolve the keyword on PATH —
               // the degradation F3 found.
               for name, spelled in
                   [ "complete", "complete"
                     "succeeds", "succeeds"
                     "exitCode", "exitCode"
                     "orFail", "orFail \"m\"" ] do
-                  // the two FLIPPED positions accept
+                  // the two flipped positions accept
                   for posName, tpl in
                       [ "if-body", [ "if true then"; "    let _r = sh -c \"echo x\" | %s"; "    print \"z\"" ]
                         "within-body", [ "within tmp d"; "    let _r = sh -c \"echo x\" | %s"; "    print \"z\"" ] ] do
@@ -12119,7 +12120,7 @@ let agentFindingsTests =
                           (diags |> List.filter (fun d -> d.Severity = "error"))
                           $"{name} in {posName}: statement contexts take the reifier let now"
 
-                  // the lambda position stays refused, with the NEW teaching
+                  // the lambda position stays refused, with the new teaching
                   let diags, _, _, _ =
                       Weir.Script.analyzeLines
                           "pin.weir"
@@ -12160,7 +12161,7 @@ let agentFindingsTests =
           test "a discarded | complete joins the family — Completed record, stage caret [D:exit-reifiers]" {
               // the one-cell gap: a bare `| complete` statement was accepted
               // while its bool/int siblings were rejected. Now it errors in
-              // the family's voice at the reifier STAGE (exact col, not
+              // the family's voice at the reifier stage (exact col, not
               // inherited — the anchor-before-read lesson).
               let diags, _, _, _ = Weir.Script.analyzeLines "pin.weir" [ "git status | complete" ]
 
@@ -12213,13 +12214,13 @@ let agentFindingsTests =
           }
           test "splatted reifier argv: word integrity identical to the argv path [D:splat-reifier-chains]" {
               skipOnWindows ()
-              // N elements, N words — through the BUILTIN's argv
+              // N elements, N words — through the builtin's argv
               Expect.equal
                   (runReal "echo one $@([\"a\"; \"b\"]) | complete |> _.stdout |> Seq.head")
                   (VStr "one a b")
                   "splat elements land as words"
 
-              // THE safety pin: adversarial elements stay single words
+              // the safety pin: adversarial elements stay single words
               // through the reifier path, exactly as through spawn argv
               Expect.equal
                   (runReal
@@ -12303,12 +12304,12 @@ let agentFindingsTests =
                   Expect.stringContains d home $"{m} sits under home"
           }
           test "Path.under confines; Path.combine does not [D:path-under]" {
-              // RUNS ON EVERY PLATFORM. An earlier skipOnWindows left this member with
-              // ZERO Windows coverage and pointed at an e2e row that did not exist; the
-              // e2e row exists now (Windows runs e2e too) and this pin stays — units
-              // referee the lib, the row referees the shipped binary. The logic is pure
-              // string work; both sides build from the same BCL call, so the drive/UNC
-              // shapes assert everywhere.
+              // runs on every platform. An earlier skipOnWindows left this member
+              // with zero Windows coverage and pointed at an e2e row that did not
+              // exist; the e2e row exists now (Windows runs e2e too) and this pin
+              // stays — units referee the lib, the row referees the shipped binary.
+              // The logic is pure string work; both sides build from the same BCL
+              // call, so the drive/UNC shapes assert everywhere.
               let root =
                   System.IO.Path.Combine(
                       System.IO.Path.GetTempPath(),
@@ -12328,11 +12329,11 @@ let agentFindingsTests =
                   Expect.throws (fun () -> under name |> ignore)
 
               try
-                  // the POSITIVE TWIN first: "raises on escape" is satisfied by a member
+                  // the positive twin first: "raises on escape" is satisfied by a member
                   // that raises on everything, so the legitimate joins are the real pins
                   Expect.equal (under "report.pdf") (VStr(full "report.pdf")) "a plain name joins"
                   Expect.equal (under "a/b/c.txt") (VStr(full "a/b/c.txt")) "a nested name joins"
-                  // interior `..` is legitimate — rejecting the SEGMENT would be wrong
+                  // interior `..` is legitimate — rejecting the segment would be wrong
                   Expect.equal (under "a/../b") (VStr(full "b")) "interior .. stays inside"
                   // rule 6: empty and dot-only yield the base
                   Expect.equal
@@ -12350,18 +12351,18 @@ let agentFindingsTests =
                   escapes "../etc/passwd" "traversal escapes"
                   escapes "a/../../etc" "interior traversal that leaves escapes"
 
-                  // rule 7: drive- and UNC-shaped names are refused on EVERY platform,
+                  // rule 7: drive- and UNC-shaped names are refused on every platform,
                   // which is exactly what the old skip stopped anyone from checking
                   escapes "C:/x" "a drive root escapes"
                   escapes "C:x" "a drive-RELATIVE name escapes"
                   // the weir-source spelling matters: weir strings escape
-                  // backslashes, so the UNC VALUE needs the doubled form —
-                  // the old single form was a PARSE error and the throws
-                  // pin passed VACUOUSLY on it, never testing rule 7
+                  // backslashes, so the UNC value needs the doubled form —
+                  // the old single form was a parse error and the throws
+                  // pin passed vacuously on it, never testing rule 7
                   escapes "\\\\\\\\server\\\\share" "a UNC name escapes"
                   escapes "\\\\x" "a backslash-leading name escapes"
 
-                  // rule 4, THE reason the member exists: a sibling whose name EXTENDS
+                  // rule 4, the reason the member exists: a sibling whose name extends
                   // the base is not under it, and a prefix-string test says it is
                   let leaf =
                       System.IO.Path.GetFileName(System.IO.Path.TrimEndingDirectorySeparator root)
@@ -12388,7 +12389,7 @@ let agentFindingsTests =
               expectValue "Path.fileName \"a/b/c.fs\"" (VStr "c.fs")
               expectValue "Path.stem \"a/b/c.fs\"" (VStr "c")
               // native-out ruling [D:windows-v1]: a\b on Windows, a/b on POSIX;
-              // the forward-slash INPUT is the liberal-in pin on both
+              // the forward-slash input is the liberal-in pin on both
               expectValue "Path.dir \"a/b/c.fs\"" (VStr(platformPath "a/b"))
               expectValue "Path.dir \"c.fs\"" (VStr "")
               expectValue "Path.combine \"ci\" \"e2e.sh\"" (VStr(platformPath "ci/e2e.sh"))
@@ -12417,12 +12418,12 @@ let agentFindingsTests =
               // the previously-taught idiom stays legal: the seq gate
               // carves the diverging heads and checks them against unit
               Expect.equal (checkOk "fail \"x\" ; 0").Ty TInt "the fail-then-value idiom"
-              // a NON-diverging unresolved value keeps the dead-value
+              // a non-diverging unresolved value keeps the dead-value
               // tripwire the [D:fail-unit] ruling defended
               let terr2 = checkErr "Seq.head [] ; 0"
               Expect.stringContains (formatError terr2) "must be unit" "the tripwire survives"
 
-              // a mid-script fail STATEMENT passes the discard gate (its
+              // a mid-script fail statement passes the discard gate (its
               // fresh var is no value to discard); a non-diverging var
               // statement stays refused
               let diags, _, _, _ =
@@ -12450,14 +12451,14 @@ let agentFindingsTests =
               | Ok [ ll ] -> Expect.equal ll.Text "let v = combine3 1 2 3" "all argument lines join"
               | other -> failtest $"expected one logical line, got {other}"
 
-              // a block statement AFTER a deeper continuation still
+              // a block statement after a deeper continuation still
               // sequences at the block level (was a dedent-floor error)
               match Weir.Script.assemble [ 1, "if a then"; 2, "    f"; 3, "        x"; 4, "    g" ] with
               | Ok [ ll ] -> Expect.equal ll.Text (asmSib "if a then f x ; g") "the sibling after a continuation"
               | other -> failtest $"expected one logical line, got {other}"
           }
           test "a `)`-headed line closes a multi-line application, never siblings [D:paren-close-continuation]" {
-              // the close paren at the opener's indent CONTINUES the
+              // the close paren at the opener's indent continues the
               // statement while a plain paren is open — the lambda
               // closer's rule extended to ordinary applications
               match
@@ -12494,7 +12495,7 @@ let agentFindingsTests =
                     "build \"map\" |> to yaml |> Seq.iter print" ]
 
               // the closer restores the statement level: the next body
-              // line is a SIBLING of the whole application (the in-join
+              // line is a sibling of the whole application (the in-join
               // for a pending block let), never an argument
               match
                   Weir.Script.assemble
@@ -12511,7 +12512,7 @@ let agentFindingsTests =
                       "the in-join waits for the closer"
               | other -> failtest $"expected one logical line, got {other}"
 
-              // the other direction: with NO paren open a `)`-headed
+              // the other direction: with no paren open a `)`-headed
               // sibling is still refused, never silently joined
               let diags, _, _, _ =
                   Weir.Script.analyzeLines "pin.weir" [ "if 1 > 0 then"; "    print \"x\""; "    )" ]
@@ -12704,7 +12705,7 @@ let showTests =
               let nested = checkErr "let f = fun x -> x in show (Some f)"
               Expect.stringContains (formatError nested) "cannot render functions" "nested in a payload"
 
-              // a MIXED tuple: the int component must not carry it
+              // a mixed tuple: the int component must not carry it
               // (mutation-spike survivor — the Eq twin was already pinned)
               let tupled = checkErr "show (1, (fun x -> x + 1))"
               Expect.stringContains (formatError tupled) "cannot render functions" "mixed tuple"
@@ -12836,7 +12837,7 @@ let assemblyRecoveryTests =
                         "if go then !"
                         "nats == nats" ]
               // the bare marker with no block is the assembly error; the
-              // == error after it must STILL be found, and earlier
+              // == error after it must still be found, and earlier
               // statements survive
               Expect.exists diags (fun d -> d.Code = "assembly") "assembly diag present"
               Expect.exists diags (fun d -> d.Code = "eq") "later statement still checked"
@@ -12886,7 +12887,7 @@ let scannerTests =
               Expect.equal (Weir.Script.classifyPiece "letter x").Kind Weir.Script.PieceKind.Plain ""
           }
           test "classifyPiece: retired ! markers classify as NoMarker; the assembler TEACHES [D:district-retirement]" {
-              // the old Bare/Env marker pins FLIP: retirement makes them
+              // the old Bare/Env marker pins flip: retirement makes them
               // plain pieces, and the retiredDistrictMarker predicate is
               // what routes the teaching error
               Expect.equal (Weir.Script.classifyPiece "if c then !").Marker Weir.Script.MarkerKind.NoMarker ""
@@ -12896,7 +12897,7 @@ let scannerTests =
               Expect.isFalse (Weir.Script.retiredDistrictMarker "echo hello!") "a trailing ! word is not the marker"
               Expect.isFalse (Weir.Script.retiredDistrictMarker "!e(git st)") "sigil forms stay"
 
-              // the TEACHES half, observed at the ASSEMBLER (the maintenance
+              // the teaches half, observed at the assembler (the maintenance
               // sweep's M5 found only the predicate asserted — if assemble
               // stopped consulting it, this test still passed)
               match Weir.Script.assemble [ 1, "if c then !"; 2, "    git pull" ] with
@@ -12992,13 +12993,13 @@ let childEnvTests =
               Expect.stringContains (formatError terr) "wrap it: $(sh " "the repair named at the head"
               Expect.stringContains (formatError terr) "unbound variable 'sh'" "did-you-mean line coexists"
 
-              // a LONE unbound var is not command-shaped — old text only
+              // a lone unbound var is not command-shaped — old text only
               let plain = checkErr "zzznope"
               Expect.isFalse ((formatError plain).Contains "wrap it") "no hint without application"
           }
           test "THE DEDENT FLOOR: unaligned dedents ERROR instead of silently joining [D:district-retirement]" {
               // the silent-swallow class (legal-parse-wrong-meaning): a
-              // statement dedenting from a nested block used to SPACE-JOIN
+              // statement dedenting from a nested block used to space-join
               // — absorbed as argv after a command line. Four shapes, one
               // floor: within, block-let, for, if.
               let shapes =
@@ -13026,7 +13027,7 @@ let childEnvTests =
                   match Weir.Script.assemble shape with
                   | Error msg -> Expect.stringContains msg "aligns with no enclosing statement" $"floor fires: {shape}"
                   | Ok lls ->
-                      // an Ok is fine ONLY if the dedented line became a
+                      // an Ok is fine only if the dedented line became a
                       // real sibling (a sentinel precedes it) — never a
                       // space-absorbed argv
                       let joinedOk =
@@ -13040,7 +13041,7 @@ let childEnvTests =
               // !e / !name at line end, standalone or headed — all five
               // former district-header pins collapse to the teaching;
               // `within env vars` is the block overlay now (e2e-pinned),
-              // and the $e()/!e() SIGIL pins below stay untouched
+              // and the $e()/!e() sigil pins below stay untouched
               for fixture in
                   [ [ 1, "if go then !e"; 2, "    git pull" ]
                     [ 1, "let f x ="; 2, "    !e"; 3, "        git pull"; 4, "    printerr \"OK\"" ]
@@ -13050,7 +13051,7 @@ let childEnvTests =
                   | other -> failtest $"unexpected: {other}"
           }
           test "fromFile: single quotes are shell-literal ($ allowed)" {
-              // the NINTH \U site, found by the Windows hand-run — the
+              // the ninth \U site, found by the Windows hand-run — the
               // mechanical GetTempFileName/GetTempPath grep now confirms
               // no tenth [D:windows-s3]
               let f = weirPath (System.IO.Path.GetTempFileName())
@@ -13149,7 +13150,7 @@ let binderTests =
           }
           // --- the bare-comma composition matrix ---
           test "comma x semicolon: a, b ; c groups (a, b) first (decided cell)" {
-              // `;` looser than `,`: the seq's FIRST element is the tuple —
+              // `;` looser than `,`: the seq's first element is the tuple —
               // non-unit first element is the sequencing hard error
               let terr = checkErr "(1, 2) ; 3"
               Expect.stringContains (formatError terr) "must be unit" ""
@@ -13336,7 +13337,7 @@ let literalThunkTests =
               expectValue "let f x () y = x + 0 + y in f 1 () 2" (VInt 3L)
           }
           test "thunk shadowing: () param adds no binding" {
-              // the "()" name is unforgeable; body sees the OUTER x
+              // the "()" name is unforgeable; body sees the outer x
               expectValue "let x = 5 in let f () = x in f ()" (VInt 5L)
           } ]
 
@@ -13415,11 +13416,11 @@ let typeClassTests =
           test "erasure: a constrained closure partially applies like any other" {
               expectValue "let same x y = x == y in let s5 = same 5 in s5 5" (VBool true)
           }
-          // VALUE EQUALITY IS ITERATIVE [D:eq-depth]: a legally-built
+          // value equality is iterative [D:eq-depth]: a legally-built
           // recursive-record value (an Option-linked record folded deep
           // via Seq.fold — the checker accepts it) once crashed the whole
           // process with an uncatchable StackOverflow on `==`. The walk is
-          // now an explicit heap work-list; reaching these asserts AT ALL
+          // now an explicit heap work-list; merely reaching these asserts
           // is the pin (an overflow aborts the runner, it cannot be
           // caught). Depths are past the recursive walk's crash point.
           test "a 200k-deep VRecord chain compares equal iteratively, no overflow [D:eq-depth]" {
@@ -13499,7 +13500,7 @@ let typeClassBTests =
               expectValue "let f x y = (show x == show y) && x == y in f 1 1" (VBool true)
           }
           test "Show x Eq on one var: Eq's narrower rule still rejects seqs" {
-              // show accepts seqs, == does not — the var carries BOTH and
+              // show accepts seqs, == does not — the var carries both and
               // the strictest class decides
               let terr = checkErr "let f x y = (show x == show y) && x == y in f [1] [1]"
               Expect.stringContains (formatError terr) "requires equatable values" ""
@@ -13519,7 +13520,7 @@ let typeClassCTests =
           }
           test "Eq x generic records: the reachability correction (fn field via instantiation)" {
               // Session A scoped fn-field records as undeclarable; generic
-              // instantiation REACHES them
+              // instantiation reaches them
               let boxEnv = env |> declare "type Box<'a> = { V: 'a }"
 
               let e =
@@ -13592,7 +13593,7 @@ let typeClassCTests =
               let te = checkOk "print (show [1; 2])"
               Expect.equal (formatTy te.Ty) "unit" ""
 
-              // Show did NOT widen print: a seq<int> still cannot go to print directly
+              // Show did not widen print: a seq<int> still cannot go to print directly
               let terr = checkErr "print [1]"
               Expect.stringContains (formatError terr) "print" ""
           } ]
@@ -13738,7 +13739,7 @@ let offsideTests =
           }
           test "a lowercase case name errors AT the name, not past it" {
               // rawWord's trailing ws crosses the physical line — the
-              // error must anchor BEFORE the read consumes it
+              // error must anchor before the read consumes it
               let r: Weir.Parser.Resolver =
                   { IsKnown = fun _ -> true
                     IsCommandCallable = fun _ -> false
@@ -13767,7 +13768,7 @@ let offsideTests =
               let diags, _, _, _ = Weir.Script.analyzeLines "pin.weir" lines
 
               // [D:seq-commit]: no backtrack can anchor past the
-              // district — the primary lands ON the junk
+              // district — the primary lands on the junk
               match diags |> List.filter (fun d -> d.Severity = "error") with
               | d :: _ -> Expect.equal (d.Line, d.Col) (4, 20) "primary anchors on the junk itself"
               | [] -> failtest "expected a parse diagnostic"
@@ -13850,7 +13851,7 @@ let offsideTests =
                   { rNone with
                       IsExternal = (fun n -> n = "git") }
 
-              // (a) a bare '|' in an arm RHS is an ARM SEPARATOR (F#
+              // (a) a bare '|' in an arm RHS is an arm separator (F#
               // reads it the same way) — command chains in arms ride $()
               match Weir.Parser.parseLineFull rGit "let v = match 1 with | 1 -> git log | Seq.head | _ -> \"x\"" with
               | Error _ -> ()
@@ -13873,7 +13874,7 @@ let offsideTests =
               | Ok _ -> ()
               | Error e -> failtest $"guards must survive the commit: {e}"
 
-              // (e) a reserved word in arm-head position errors AT it
+              // (e) a reserved word in arm-head position errors at it
               match Weir.Parser.parseLineFull rNone "let f = match 1 with | 1 -> 2 | function -> 3" with
               | Error f -> Expect.equal f.Col (Some 33) "located at the reserved word"
               | Ok _ -> failtest "expected the arm-head failure"
@@ -13885,7 +13886,7 @@ let offsideTests =
           }
           test "a field misaligned from ITS OWN attribute line errors [D:field-alignment]" {
               // the >] dangle suppresses the separator, never the alignment
-              // an unaligned attr-owned field must fail the CHECK, not
+              // an unaligned attr-owned field must fail the check, not
               // surface as a runtime argv error
               match
                   Weir.Script.assemble
@@ -14047,13 +14048,13 @@ let siblingSentinelTests =
               match
                   Weir.Parser.parseLine
                       realResolver
-                      // the REAL sibling join is SPACED (" <US> ") — a glued
+                      // the real sibling join is spaced (" <US> ") — a glued
                       // sentinel is machine-impossible and the command
                       // grammar now refuses it (the yaml-district boundary)
                       ("let f t = git status " + Weir.Parser.sibSepStr + " let e = \"x\" in print e")
               with
-              // FLIPPED by [D:interior-arming]: the non-final command now
-              // ARMS (EPipe into print) instead of sitting capture-typed
+              // flipped by [D:interior-arming]: the non-final command now
+              // arms (EPipe into print) instead of sitting capture-typed
               | Ok(SLet("f",
                         { Kind = ELambda("t",
                                          _,
@@ -14064,7 +14065,7 @@ let siblingSentinelTests =
           }
           test "ACCEPTANCE: a command-first body now CHECKS (flipped by [D:interior-arming])" {
               // the old pin asserted the seq-unit rejection at the head;
-              // the interior-arming rule makes the command an EFFECT and
+              // the interior-arming rule makes the command an effect and
               // the body legal — the flip, named
               let ds = diags [ "let _f t ="; "    git status"; "    let e = \"x\""; "    print e" ]
 
@@ -14086,7 +14087,7 @@ let siblingSentinelTests =
           }
           test "user ';' is byte-identical: one command, a bareword arg, the prior-bleed warning" {
               // the whole reason B beat A — a user-typed ';' on one line
-              // is STILL a command with a ';' argv word that warns
+              // is still a command with a ';' argv word that warns
               match Weir.Parser.parseLine cmdResolver "git status ; echo hi" with
               | Ok(SCmd({ Kind = ECmd(HeadLit "git", args, _) })) ->
                   Expect.isTrue
@@ -14100,9 +14101,9 @@ let siblingSentinelTests =
               | Ok _ -> failtest "a source sentinel must not assemble"
           }
           test "no-leak: the sentinel never surfaces in a diagnostic" {
-              // a command-first body whose parse dump lists SEPARATORS in the
+              // a command-first body whose parse dump lists separators in the
               // expected-set — the seqSep relabel keeps the sentinel out, and
-              // cleanParseDump scrubs both the raw char AND FParsec's 
+              // cleanParseDump scrubs both the raw char and FParsec's 
               // escape (the form that leaked into Zed's expecting-list)
               let noLeak (lines: string list) =
                   let ds = diags lines
@@ -14142,7 +14143,7 @@ let siblingSentinelTests =
               Expect.isFalse (d.Message.Contains "Expecting:") "no expecting-list burial"
           }
           test "DESIGNED expectations survive the label filter [D:label-leaks]" {
-              // the filter drops only MARKED labels — the seq< > slot's
+              // the filter drops only marked labels — the seq< > slot's
               // designed expectation (and the escape teaching) still reach
               // the user through the cleaned dump
               let ds = diags [ "let x = [\"[]\"] |> from json seq<int>" ]
@@ -14300,8 +14301,8 @@ let envLoadTests =
                       System.Environment.SetEnvironmentVariable(n, null)
           }
           test "Env.load HONOURS [<Wire>]; Args.load rejects it [D:wire-keys]" {
-              // accepted at declaration and silently IGNORED at the boundary — and the
-              // miss named the FIELD, reinforcing the wrong model at the exact moment
+              // accepted at declaration and silently ignored at the boundary — and the
+              // miss named the field, reinforcing the wrong model at the exact moment
               // the author had just renamed the variable.
               System.Environment.SetEnvironmentVariable("WT_WIRE_ZZ", "hello")
 
@@ -14316,15 +14317,15 @@ let envLoadTests =
                       | v -> failtest $"unexpected {formatValue v}"
                   | Error terr -> failtest (formatError terr)
 
-                  // exact-name: only enum VALUES are case-insensitive, never names
+                  // exact-name: only enum values are case-insensitive, never names
                   let eCase = env |> declare "type WCase = { [<Wire \"wt_wire_zz\">] token: string }"
 
                   match Weir.Check.typecheck eCase (parse "Env.load WCase") with
                   | Ok te2 ->
-                      // env lookup case-sensitivity is the PLATFORM's, not weir's: weir does
-                      // an EXACT lookup and never case-maps, but the Windows environment block
+                      // env lookup case-sensitivity is the platform's, not weir's: weir does
+                      // an exact lookup and never case-maps, but the Windows environment block
                       // is itself case-insensitive, so the same exact lookup finds WT_WIRE_ZZ
-                      // there. Pinned TWO-SIDED so neither half can be 'fixed' away.
+                      // there. Pinned two-sided so neither half can be 'fixed' away.
                       if System.OperatingSystem.IsWindows() then
                           match eval valueEnv te2 with
                           | VRecord(_, fs) ->
@@ -14339,7 +14340,7 @@ let envLoadTests =
                               "on POSIX a lowercase wire must NOT match"
                   | Error terr -> failtest (formatError terr)
 
-                  // the miss names the VARIABLE, not the field — the defect itself
+                  // the miss names the variable, not the field — the defect itself
                   let eMiss =
                       env |> declare "type WMiss = { [<Wire \"WT_ABSENT_ZZ\">] token: string }"
 
@@ -14369,7 +14370,7 @@ let envLoadTests =
                       | v -> failtest $"unexpected {formatValue v}"
                   | Error terr -> failtest (formatError terr)
 
-                  // Args.load refuses the SAME shape — at the CALL SITE, so a
+                  // Args.load refuses the same shape — at the call site, so a
                   // Wire-carrying record stays legal for Env.load and the adapters.
                   // Script mode (Self present) or Args.load refuses for that reason first.
                   let scriptEnv =
@@ -14620,7 +14621,7 @@ let adversarialTests =
           } ]
 
 // ---- Windows v1, session 1 [D:windows-v1] — both-ways platform pins:
-// each asserts ITS OWN platform's semantics, so the suite is meaningful
+// each asserts its own platform's semantics, so the suite is meaningful
 // on Linux today and on Windows when the CI matrix arrives
 let fsMemberTests =
     testList
@@ -14834,7 +14835,7 @@ let ambiguousCtorTests =
                       "exact text, both candidates, and a repair"
               | other -> failtest $"expected one error, got {other.Length}"
           }
-          // ARITY IS NOT A DISAMBIGUATOR: resolving a constructor by how it is
+          // arity is not a disambiguator: resolving a constructor by how it is
           // applied is overload resolution, which this language declines. Both
           // spellings are ambiguous, and the message does not vary with them.
           test "arity does not disambiguate — bare or applied, both refuse" {
@@ -14855,7 +14856,7 @@ let ambiguousCtorTests =
           test "a collision that is never USED bare still checks" {
               Expect.isEmpty (analyze [ "type B = C"; "type Z = C"; "print \"n\"" ]) "use-site rule"
           }
-          // PATTERNS NEED NO TWIN: PCase resolves against the SCRUTINEE's type,
+          // patterns need no twin: PCase resolves against the scrutinee's type,
           // never by name, and an unresolved scrutinee is already refused — so
           // the ambiguity cannot arise there. Pinned so the claim is checked
           // rather than remembered.
@@ -14870,7 +14871,7 @@ let ambiguousCtorTests =
                         "print s" ])
                   "type-directed"
           }
-          // THE HALF THAT ALREADY WORKED, guarded: imported types live FLAT in
+          // the half that already worked, guarded: imported types live flat in
           // env.Types so signatures and field access resolve, but their cases
           // are not in scope bare — so an import must not make a local
           // declaration look ambiguous. The first cut of this check scanned
@@ -14907,7 +14908,7 @@ let ambiguousCtorTests =
               match analyze [ "type Z = C"; "let f x = match x with | C -> 1"; "print \"n\"" ] with
               | d :: _ ->
                   Expect.stringContains d.Message "params are not typed from patterns" ""
-                  // the teaching names BOTH repairs: the same lambda
+                  // the teaching names both repairs: the same lambda
                   // inlined at a typed pipe position types fine, so the
                   // error must say so rather than dump a type variable
                   Expect.stringContains d.Message "inline the lambda at its use site" ""
@@ -14962,9 +14963,9 @@ let dupTypeTests =
           } ]
 
 let secretTests =
-    // Secret [D:secret] — a marker the renderers respect; the COVERAGE is
+    // Secret [D:secret] — a marker the renderers respect; the coverage is
     // the feature, so every rendering site is pinned, the containing-record
-    // case FIRST (the likeliest miss a naive implementation makes)
+    // case first (the likeliest miss a naive implementation makes)
     let evalWith te input =
         match Weir.Check.typecheck te (parse input) with
         | Ok typed -> eval valueEnv typed
@@ -15039,9 +15040,9 @@ let secretTests =
           } ]
 
 let httpTests =
-    // Http [D:http] — the typed request boundary. The NETWORK behavior
+    // Http [D:http] — the typed request boundary. The network behavior
     // (mangling round-trip, status-is-data, transport-raises, auth-reaches,
-    // pmap) is pinned OFFLINE in e2e against a local server; here the pure
+    // pmap) is pinned offline in e2e against a local server; here the pure
     // and render-level guarantees, the show-masking foremost.
     let evalWith te input =
         match Weir.Check.typecheck te (parse input) with
@@ -15090,7 +15091,7 @@ let httpTests =
               Expect.equal (run "(Http.get \"u\").insecure") (VBool false) "a constructor is secure by default"
           }
           test "File.write/append emit LF bytes on every platform [D:lf-output]" {
-              // a written file is DATA (hashes, sigs, diffs) — the
+              // a written file is data (hashes, sigs, diffs) — the
               // content-bytes input ruling's dual
               let p =
                   System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-lf-{System.Environment.ProcessId}.txt")
@@ -15178,14 +15179,14 @@ let httpTests =
                   "https://***@api.example.com/v1"
                   "a userinfo with no colon is redacted too"
 
-              // a credential-FREE URL is returned UNCHANGED — the target is
+              // a credential-free URL is returned unchanged — the target is
               // still named in full
               Expect.equal
                   (Weir.Http.redactUrl "http://127.0.0.1:8792/x")
                   "http://127.0.0.1:8792/x"
                   "no userinfo: the URL is unchanged"
 
-              // an '@' in the PATH/QUERY is not a userinfo separator
+              // an '@' in the path/query is not a userinfo separator
               Expect.equal
                   (Weir.Http.redactUrl "https://host/path@v2?to=a@b")
                   "https://host/path@v2?to=a@b"
@@ -15202,7 +15203,7 @@ let httpTests =
               Expect.equal (Weir.Http.redactUrl "not-a-url") "not-a-url" "no :// — unchanged"
           }
           test "the wider raw-leak sweep's finds stay closed [D:transport-words]" {
-              // each of these leaked a NAKED .NET message before the sweep
+              // each of these leaked a naked .NET message before the sweep
               let msgOf (src: string) =
                   (Expect.throwsC (fun () -> run src |> ignore) id).Message
 
@@ -15210,7 +15211,7 @@ let httpTests =
               Expect.stringContains durOver "beyond the 64-bit millisecond range" "overflow in weir's words"
               Expect.isFalse (durOver.Contains "Int64") "never Int64.Parse's text"
 
-              // 9999999999GiB fits Int64.Parse but WRAPS the multiply —
+              // 9999999999GiB fits Int64.Parse but wraps the multiply —
               // the silent-wrap case the checked ops now catch
               let sizeWrap = msgOf "Size.parse \"9999999999GiB\""
               Expect.stringContains sizeWrap "beyond the 64-bit byte range" "checked multiply, own words"
@@ -15252,7 +15253,7 @@ let httpTests =
                   Expect.stringContains m "(2000000 chars)" "the true length is named"
                   Expect.isFalse (m.Contains(String.replicate 200 "!")) "the whole input is NOT echoed"
 
-              // a SHORT invalid input is still quoted in full, unchanged
+              // a short invalid input is still quoted in full, unchanged
               let shortMsg = msgOf "Str.toInt \"notanum\""
               Expect.stringContains shortMsg "\"notanum\"" "a short input stays fully readable"
           }
@@ -15361,7 +15362,7 @@ let functionKeywordTests =
               | Ok _ -> ()
               | Error m -> failtest $"the form must parse: {m}"
 
-              // a keyword position still refuses, with the GENERIC message —
+              // a keyword position still refuses, with the generic message —
               // the reserved-teaching wording no longer exists anywhere
               match Weir.Parser.parseStmt "let function = 1" with
               | Error m ->
@@ -15444,7 +15445,7 @@ let recursiveFieldTests =
                   Expect.stringContains terr.Message "finite trees" "the reason"
               | Ok _ -> failtest "a self-referential record must refuse the boundary"
 
-              // the MUTUAL pair A → B → A cannot even be DECLARED (no
+              // the mutual pair A → B → A cannot even be declared (no
               // forward type references) — unrepresentable by
               // construction, stated here so no audit reads it as a gap
               Expect.throws (fun () -> env |> declare "type A = { b: BNotYet }" |> ignore) "no forward refs"
@@ -15526,7 +15527,7 @@ let recursiveFieldTests =
           test "anonymous shapes NEST — everywhere a type is written [D:anon-nesting]" {
               // the one-level rule reversed on the REPL shape-exploration
               // receipt: field-of-anon, seq-element, Map-value, and a
-              // DECLARED record's field all admit the form; registration
+              // declared record's field all admit the form; registration
               // drains the parser's pending table at the existing seams
               let v =
                   runWith
@@ -15590,7 +15591,7 @@ let recursiveFieldTests =
 
 let jsonBoundaryTests =
     // the json boundary [D:from-jsonl] [D:json-boundary]: from json reads
-    // ONE document -> T (joins its elements internally); from jsonl reads
+    // one document -> T (joins its elements internally); from jsonl reads
     // one document per element -> seq<T>; every failure speaks weir's
     // words, never System.Text.Json's
     testList
@@ -15883,7 +15884,7 @@ let yamlSeqTests =
 let fileRowSizeTests =
     // FileRow.bytes : Size — the Size session's own argument applied to
     // the member it missed [D:size]; File.size and ls now agree on the
-    // quantity's TYPE
+    // quantity's type
     testList
         "FileRow.bytes is a Size [D:size]"
         [ test "the acceptance: f.bytes > 10MiB typechecks and filters" {
@@ -15975,7 +15976,7 @@ let replTableTests =
 
 let lsSortTests =
     // ls joins the sorted discovery surfaces [D:ls-sort]: by name,
-    // ORDINAL — case-sensitive, uppercase first, never the locale
+    // ordinal — case-sensitive, uppercase first, never the locale
     testList
         "ls is sorted [D:ls-sort]"
         [ test "Env.vars is name-sorted (the sweep's one sibling); fromFile keeps FILE order" {
@@ -15997,12 +15998,12 @@ let lsSortTests =
           test "the FileRow table's column order is DECLARATION order — name leads, path trails [D:record-order]" {
               // supersedes the alphabetical pin (that order was the Map
               // container's accident; the table-polish decline was about
-              // a reorder KNOB, not about order being carried)
+              // a reorder knob, not about order being carried)
               match Weir.Eval.echoTable Weir.Eval.echoPipedCap None (VSeq(fakeFiles |> List.toSeq)) with
               | Some(header :: _, _) ->
                   Expect.isTrue (header.StartsWith "name") "name leads"
 
-                  // target is absent BY THE HIDING RULE (all fixture rows
+                  // target is absent by the hiding rule (all fixture rows
                   // carry None) [D:filerow] — its reappearance is its own pin
                   for col in [ "bytes"; "hidden"; "kind"; "modified"; "name"; "path" ] do
                       Expect.stringContains header col $"column present: {col}"
@@ -16078,10 +16079,10 @@ let fileRowReshapeTests =
           } ]
 
 let lsTruthTests =
-    // ls tells the whole truth [D:ls-truth]: files AND directories, the
+    // ls tells the whole truth [D:ls-truth]: files and directories, the
     // stated seven-field surface.
     // testSequenced [D:unused-bindings adjacent]: this list mutates the
-    // GLOBAL Session.Cwd (setCwd into a temp dir, then deletes it). Every
+    // global Session.Cwd (setCwd into a temp dir, then deletes it). Every
     // other cwd-mutating list is already sequenced; left parallel, this one
     // raced the parallel spawn tests — a concurrent spawn snapshots the temp
     // cwd, this list deletes it before Process.Start, and the child dies
@@ -16097,14 +16098,14 @@ let lsTruthTests =
               System.IO.Directory.CreateDirectory(System.IO.Path.Combine(d, "sub")) |> ignore
               System.IO.File.WriteAllText(System.IO.Path.Combine(d, "f.txt"), "x")
               System.IO.File.WriteAllText(System.IO.Path.Combine(d, ".dot"), "")
-              // for the sort pin [D:ls-sort]: a case pair proves ORDINAL
+              // for the sort pin [D:ls-sort]: a case pair proves ordinal
               System.IO.File.WriteAllText(System.IO.Path.Combine(d, "B.txt"), "x")
               System.IO.File.WriteAllText(System.IO.Path.Combine(d, "a.txt"), "x")
 
               try
-                  // the INVARIANT process cwd, not Session.Cwd(): under the
+                  // the invariant process cwd, not Session.Cwd(): under the
                   // parallel test runner, Session.Cwd() may momentarily hold a
-                  // CONCURRENT test's temp dir, and restoring to it after that
+                  // concurrent test's temp dir, and restoring to it after that
                   // dir is deleted leaves the global cwd pointing at a deleted
                   // path — every concurrent spawn then fails "command not found"
                   // (Process.Start cannot chdir there). GetCurrentDirectory is
@@ -16113,7 +16114,7 @@ let lsTruthTests =
                   Weir.Session.setCwd d
 
                   // the shared valueEnv shadows ls with fakeFiles — this
-                  // pin needs the REAL prelude ls
+                  // pin needs the real prelude ls
                   let runLive input =
                       match typecheck env (parse input) with
                       | Ok te -> eval Weir.Builtins.valueEnv te
@@ -16135,7 +16136,7 @@ let lsTruthTests =
                       | [ VStr ".dot" ] -> ()
                       | other -> failtest $"the dot-name is hidden: {other}"
 
-                      // sorted by name, ORDINAL [D:ls-sort]: B(66) before
+                      // sorted by name, ordinal [D:ls-sort]: B(66) before
                       // a(97); the locale is never consulted
                       match runLive "ls |> Seq.map _.name" |> forceSeq with
                       | [ VStr ".dot"; VStr "B.txt"; VStr "a.txt"; VStr "f.txt"; VStr "sub" ] -> ()
@@ -16156,7 +16157,7 @@ let lsTruthTests =
 
 let refutableRecordPatternTests =
     // refutable children [D:refutable-record-patterns]: the park's reason
-    // was a mispricing — coverage over field VALUES is never asked,
+    // was a mispricing — coverage over field values is never asked,
     // because a refutable child makes the pattern refutable and a
     // refutable pattern never completes a match (the literal rule)
     let renv =
@@ -16236,7 +16237,7 @@ let refutableRecordPatternTests =
 let recordPatternRowTests =
     // match position gets the row [D:record-pattern-rows]: the ctor law
     // was inherited, not justified — `Some` names a case from a closed
-    // set (nominal identity required); a field pattern names a FIELD
+    // set (nominal identity required); a field pattern names a field
     let renv =
         env
         |> declare "type RwA = { nm: string; ag: int }"
@@ -16294,7 +16295,7 @@ let recordPatternRowTests =
                   errR "let h p = match p with | { nm = \"x\" } -> 1 | { ag = a } -> a in h { nm = \"y\"; fl = true }"
 
               Expect.stringContains missing.Message "no field 'ag'" "a record missing one is refused"
-              // the becomes-a NOTE needs the ambient physical translator
+              // the becomes-a note needs the ambient physical translator
               // (script-only), so its half is an e2e pin [D:row-provenance]
               Expect.stringContains missing.Message "Did you mean 'nm'" "with the field did-you-mean"
           }
@@ -16309,8 +16310,8 @@ let recordPatternRowTests =
 
 let matchPipeOffsideTests =
     // [D:match-pipe-offside]: F#'s offside for a `|>` after a match. At the
-    // arm `|` it CLOSES the match (assembler wraps `(match …) |> f`); at or
-    // past the arm's pattern column it EXTENDS the arm body; in the gap
+    // arm `|` it closes the match (assembler wraps `(match …) |> f`); at or
+    // past the arm's pattern column it extends the arm body; in the gap
     // between the two it rejects. All in Script.assemble.
     let assemble lines =
         Weir.Script.assemble (lines |> List.mapi (fun i l -> i + 1, l))
@@ -16442,18 +16443,18 @@ let accessorTeachingTests =
               expectValue "let xs = [1; 2; 3] in xs[1]" (VInt 2L)
               expectValue "let xs = [1; 2; 3] in xs[1 + 1]" (VInt 3L)
               expectValue "let f = fun x -> x[0] in f [7; 8]" (VInt 7L)
-              // a SPACE means application, still (the F# 6 whitespace rule)
+              // a space means application, still (the F# 6 whitespace rule)
               Expect.equal (show (parse "f [1; 2]")) "(f [1; 2])" "spaced brackets stay an application"
           }
           test "m[k] teaches Map.get — the doc's promise, now real" {
               // SKILL has said "no m[k] indexing — Map.get is the spelling"
-              // while the binary raised a raw unification error on the KEY
+              // while the binary raised a raw unification error on the key
               let msg = (checkErr "let m = Map.ofPairs [(\"a\", 1)] in m[\"a\"]").Message
               Expect.stringContains msg "no m[k] indexing" "names the refusal"
               Expect.stringContains msg "Map.get" "names the spelling"
               Expect.stringContains msg "Map.tryGet" "and the asking form"
 
-              // the index TYPE must not decide it: an int index on a Map
+              // the index type must not decide it: an int index on a Map
               // reaches the same teaching (the raw error fired here first)
               Expect.stringContains
                   (checkErr "let m = Map.ofPairs [(\"a\", 1)] in m[0]").Message
@@ -16477,8 +16478,8 @@ let accessorTeachingTests =
 
               Expect.equal (msgOf "1 / 0") "division by zero" "the int twin of the float message"
 
-              // the positive twins: the members still WORK, and skip stays
-              // LAZY (an infinite source must not be probed for length)
+              // the positive twins: the members still work, and skip stays
+              // lazy (an infinite source must not be probed for length)
               expectValue "[1; 2; 3] |> Seq.item 1" (VInt 2L)
               expectValue "nats |> Seq.skip 2 |> Seq.head" (VInt 2L)
           }
@@ -16486,7 +16487,7 @@ let accessorTeachingTests =
               let msgOf src =
                   Expect.throwsC (fun () -> run src |> ignore) id |> _.Message
 
-              // TRUNCATED (F#/.NET): the sign follows the DIVIDEND —
+              // truncated (F#/.NET): the sign follows the dividend —
               // only the negative cases assert the ruling
               expectValue "7 % 3" (VInt 1L)
               expectValue "-7 % 3" (VInt -1L)
@@ -16586,8 +16587,8 @@ let recordPatternTests =
                   "Did you mean 'UpN'"
                   "unknown field reaches did-you-mean"
 
-              // the row-in-match refusal INVERTED [D:record-pattern-rows]:
-              // a field pattern needs a ROW, and match position now emits
+              // the row-in-match refusal inverted [D:record-pattern-rows]:
+              // a field pattern needs a row, and match position now emits
               // the one the binder position always did
               Expect.equal
                   (runR "(fun x -> match x with | { UpN = n } -> n) { UpN = 4 }")
@@ -16614,7 +16615,7 @@ let recordPatternTests =
           }
           test "provenance: a pattern-introduced field anchors the meet note" {
               // Phase 0's deliverable message: the wrong record names the
-              // missing field; the becomes-a NOTE needs the ambient
+              // missing field; the becomes-a note needs the ambient
               // physical translator (script-only — "empty when no
               // translator is ambient"), so the note half is an e2e pin
               let msg = errR "let g { deep = d } = d in g { UpN = 1 }" |> _.Message
@@ -16623,8 +16624,8 @@ let recordPatternTests =
 
 let fileStatTests =
     // the bridge from paths to rows [D:file-stat]: ls's own constructor
-    // over one path — the agreement between the two producers IS the
-    // property, so it is pinned directly. SEQUENCED: the session cwd is
+    // over one path — the agreement between the two producers is the
+    // property, so it is pinned directly. Sequenced: the session cwd is
     // ambient and lsTruthTests moves it too
     testSequenced
     <| testList
@@ -16637,9 +16638,9 @@ let fileStatTests =
               System.IO.File.WriteAllText(System.IO.Path.Combine(d, "f.txt"), "x")
 
               try
-                  // the INVARIANT process cwd, not Session.Cwd(): under the
+                  // the invariant process cwd, not Session.Cwd(): under the
                   // parallel test runner, Session.Cwd() may momentarily hold a
-                  // CONCURRENT test's temp dir, and restoring to it after that
+                  // concurrent test's temp dir, and restoring to it after that
                   // dir is deleted leaves the global cwd pointing at a deleted
                   // path — every concurrent spawn then fails "command not found"
                   // (Process.Start cannot chdir there). GetCurrentDirectory is
@@ -16648,7 +16649,7 @@ let fileStatTests =
                   Weir.Session.setCwd d
 
                   // the shared valueEnv shadows ls with fakeFiles — the
-                  // agreement needs the REAL prelude ls
+                  // agreement needs the real prelude ls
                   let runLive input =
                       match typecheck env (parse input) with
                       | Ok te -> eval Weir.Builtins.valueEnv te
@@ -16667,8 +16668,8 @@ let fileStatTests =
                       | VBool true -> ()
                       | other -> failtest $"the directory rows must be identical: {other}"
 
-                      // a RELATIVE argument resolves against the session
-                      // cwd and yields the documented ABSOLUTE path
+                      // a relative argument resolves against the session
+                      // cwd and yields the documented absolute path
                       match runLive "(File.stat \"f.txt\").path" with
                       | VStr p when p.StartsWith d && p.EndsWith "f.txt" -> ()
                       | other -> failtest $"a relative argument must yield an absolute path: {other}"
@@ -16687,9 +16688,9 @@ let fileStatTests =
 
 let dirStatTests =
     // the rows form of Dir.list [D:dir-stat]: ls's enumeration over a
-    // NAMED directory. The agreement — identical rows in identical
-    // order — IS the property; the halves are implementation.
-    // SEQUENCED: the session cwd is ambient (the fileStatTests reason)
+    // named directory. The agreement — identical rows in identical
+    // order — is the property; the halves are implementation.
+    // Sequenced: the session cwd is ambient (the fileStatTests reason)
     testSequenced
     <| testList
         "Dir.stat [D:dir-stat]"
@@ -16703,9 +16704,9 @@ let dirStatTests =
               System.IO.File.WriteAllText(System.IO.Path.Combine(d, ".dot"), "x")
 
               try
-                  // the INVARIANT process cwd, not Session.Cwd(): under the
+                  // the invariant process cwd, not Session.Cwd(): under the
                   // parallel test runner, Session.Cwd() may momentarily hold a
-                  // CONCURRENT test's temp dir, and restoring to it after that
+                  // concurrent test's temp dir, and restoring to it after that
                   // dir is deleted leaves the global cwd pointing at a deleted
                   // path — every concurrent spawn then fails "command not found"
                   // (Process.Start cannot chdir there). GetCurrentDirectory is
@@ -16726,7 +16727,7 @@ let dirStatTests =
                       | VBool true -> ()
                       | other -> failtest $"rows and order must agree: {other}"
 
-                      // a RELATIVE argument yields absolute path fields
+                      // a relative argument yields absolute path fields
                       // (File.stat's pin, the seq form)
                       match runLive "(Dir.stat \".\" |> Seq.head).path" with
                       | VStr p when p.StartsWith d -> ()
@@ -16757,12 +16758,12 @@ let dirStatTests =
           } ]
 
 let invariantModeTests =
-    // the string semantics the SHIPPED binary runs [D:invariant-strings]:
+    // the string semantics the shipped binary runs [D:invariant-strings]:
     // Weir.fsproj sets InvariantGlobalization, where every culture
     // comparison is ordinal; the test hosts must match or the referee
-    // tests DIFFERENT semantics than the subject. Under ICU culture
-    // rules U+001F — and NUL, ZWJ, the soft hyphen — are IGNORABLE:
-    // "a<US>b".StartsWith "ab" is TRUE, and LastIndexOf "matches" past
+    // tests different semantics than the subject. Under ICU culture
+    // rules U+001F — and NUL, ZWJ, the soft hyphen — are ignorable:
+    // "a<US>b".StartsWith "ab" is true, and LastIndexOf "matches" past
     // the end (the [D:path-param-completion] crash, tests-only). Str's
     // startsWith/endsWith are these very calls, so this pins the
     // language surface too.
@@ -16795,7 +16796,7 @@ let recordKeysTests =
           test "prelude-declared records: the hand-built defaults agree with the parsed defs" {
               // HttpRequest/Retry/Poll declare in Prelude.fs as weir
               // source — the helper cannot reach their defs, so the
-              // agreement is PINNED instead (HttpResponse is covered by
+              // agreement is pinned instead (HttpResponse is covered by
               // the e2e pins that access every field on a live response)
               let keysOf (v: Value) =
                   match v with
@@ -16825,7 +16826,7 @@ let recordKeysTests =
 
 let pinsWalkTests =
     // the full DECISIONS-to-pins walk's cheap pins [D:pins-walk]: every
-    // test here asserts a teaching message that existed ONLY in the
+    // test here asserts a teaching message that existed only in the
     // source (the grep pass's list) — fragments, not joined sentences
     testList
         "pins walk: source-only teaching messages [D:pins-walk]"
@@ -16879,7 +16880,7 @@ let pinsWalkTests =
               | Ok _ -> failtest "generic from json must refuse"
           }
           test "'to json' takes ONE value; 'to jsonl' demands a seq; unknown formats teach [D:to-jsonl]" {
-              // the reshape's flagship: a scalar IS a document now
+              // the reshape's flagship: a scalar is a document now
               expectValue "5 |> to json" (VSeq [ VStr "5" ])
 
               Expect.stringContains
@@ -16977,11 +16978,11 @@ let pinsWalkTests =
 
 let walkCohortTests =
     // the partial cohort's remaining pins [D:walk-findings] — each closes
-    // a PARTIAL row from the DECISIONS walk, citation added to its row
+    // a partial row from the DECISIONS walk, citation added to its row
     testList
         "walk cohort: the partial rows' missing halves [D:walk-findings]"
         [ test "Exit.code does not exist — the rename left no module behind [D:exit-rename]" {
-              // the hint points at the LIVE lowercase exit, not the
+              // the hint points at the live lowercase exit, not the
               // retired spelling — a teaching, not a resurrection
               let terr = checkErr "print (show Exit.code)"
               Expect.stringContains terr.Message "unbound variable 'Exit'" ""
@@ -16992,7 +16993,7 @@ let walkCohortTests =
 
               // Args.load is script-only in this env (its Secret-specific
               // teaching is e2e-pinned); Env.load refuses with the
-              // literal-mismatch shape — a Secret has NO matching literal
+              // literal-mismatch shape — a Secret has no matching literal
               match Weir.Check.typecheck e (parse "Env.load SC") with
               | Error terr ->
                   Expect.stringContains terr.Message "the Default literal does not match the field, which is Secret" ""
@@ -17125,7 +17126,7 @@ let sizedFindingsTests =
 let windowsFindingsTests =
     // the Windows hand-run's two message fixes [D:windows-findings] —
     // neither is Windows-specific; Windows is just where they surfaced.
-    // Long messages pin as FRAGMENTS (FParsec rewraps).
+    // Long messages pin as fragments (FParsec rewraps).
     let perrOf input =
         match Weir.Parser.parseLine realResolver input with
         | Error msg -> msg
@@ -17286,7 +17287,7 @@ let sizeTests =
               | Ok _ -> failtest "expected the yaml park"
 
               // and Duration's yaml park, tailored to match (it had only
-              // the GENERIC rejection — the seam this session's misfit
+              // the generic rejection — the seam this session's misfit
               // report surfaced)
               let e2 = env |> declare "type DY = { d: Duration }"
 
@@ -17515,7 +17516,7 @@ let sigTests =
           }
           test "the sig file needs Cmd; `let version` is OPTIONAL [D:sig-version-probe]" {
               // a tool that does not answer --version has no identity to
-              // record — a version-less sig VALIDATES and its flags check
+              // record — a version-less sig validates and its flags check
               withSigTree [ "module Fixtool"; "type Cmd = { x: bool }" ] (fun root ->
                   let ds = diagsFor root [] [ "#sig fixtool"; "print \"x\"" ]
                   Expect.equal ds [] "version absence is a stated fact, not a defect")
@@ -17536,7 +17537,7 @@ let sigTests =
 let ifSucceedsTests =
     // the inline command condition [D:if-succeeds] — the let-RHS
     // acceptance gate one position over; `then` terminates the chain's
-    // argv ONLY inside a condition. The REAL resolver (PATH heads), not
+    // argv only inside a condition. The real resolver (PATH heads), not
     // the bare parse helper: the gate is resolver-driven by design.
     let parseReal input =
         match Weir.Parser.parseLine realResolver input with
@@ -17676,7 +17677,7 @@ let matchArmCommandTests =
               Expect.stringContains sx "status" "the command stayed in the same chain (not split into an arm)"
           }
           test "a pipe stage spelling `pattern ->` reads as the next arm (the documented corner)" {
-              // `| y -> …` after a command is a NEW arm binding y; under a
+              // `| y -> …` after a command is a new arm binding y; under a
               // leading catch-all it is unreachable — the teaching that
               // points at the quote repair
               let ds = diags [ "match 1 with"; "| _ -> echo x | y -> print \"z\"" ]
@@ -17701,10 +17702,10 @@ let retryPollTests =
         "retry / poll [D:retry-poll]"
         [ test
               "the desugar targets the INTERNAL key; sugar and manual spelling are VALUE-equivalent [D:desugar-capture]" {
-              // the old byte-identical AST pin moved BY DESIGN: the sugar
+              // the old byte-identical AST pin moved by design: the sugar
               // now references |retryDefaults (un-shadowable), the manual
               // spelling references Retry.defaults (the user's own name).
-              // Equivalence is guaranteed by both naming the SAME OBJECT
+              // Equivalence is guaranteed by both naming the same object
               // (pinned below by reference) — pin both sexpr forms:
               Expect.equal
                   (sx "retry attempts=5 delay=30s (1 == 1)")
@@ -17739,8 +17740,8 @@ let retryPollTests =
               | Ok te -> Expect.equal te.Ty TUnit "the sugar survives a user constructor named Retry"
               | Error terr -> failtest $"captured: {terr.Message}"
 
-              // the user's OWN reference to the shadowed name stays an
-              // ordinary error — the fix protects the DESUGAR only
+              // the user's own reference to the shadowed name stays an
+              // ordinary error — the fix protects the desugar only
               match Weir.Check.typecheck e (parse "{ Retry.defaults with attempts = 2 }") with
               | Error terr -> Expect.stringContains terr.Message "only records have fields" "their name, their shadow"
               | Ok _ -> failtest "expected ordinary shadowing"
@@ -17766,10 +17767,11 @@ let retryPollTests =
                   | Error terr -> failtest $"'{src}' captured: {terr.Message}"
           }
           test "ruling 5's table, all four rows" {
-              // bool body, no until: yields UNIT — legal as a bare statement
+              // bool body, no until: yields unit — legal as a bare statement
               Expect.equal (checkOk "retry attempts=2 delay=0ms (1 == 1)").Ty TUnit "row 1"
 
-              // bool body WITH until: rejected naming the fix and the alternative
+              // bool body with until: rejected naming the fix and the
+              // alternative
               let terr = checkErr "retry attempts=2 delay=0ms (1 == 1) until r r"
               Expect.stringContains terr.Message "it IS the predicate — drop the until segment" "row 2 fix"
               Expect.stringContains terr.Message "a different condition belongs in the body" "row 2 alternative"
@@ -17948,8 +17950,8 @@ let seqPfirstTests =
           } ]
 
 let dedentJoinTests =
-    // whole-script probes: assemble + check + eval; the JOIN is proven
-    // by the BINDINGS (absorption would corrupt or reject them)
+    // whole-script probes: assemble + check + eval; the join is proven
+    // by the bindings (absorption would corrupt or reject them)
     let runScript (lines: string list) : Map<string, Value> =
         match Weir.Script.assemble (lines |> List.mapi (fun i l -> i + 1, l)) with
         | Error e -> failtest $"assemble: {e}"
@@ -18170,7 +18172,7 @@ let trailingCommentTests =
         [ test "the three-region table: expression comments, argv data, argv comments" {
               // expression/statement territory: whitespace-preceded // is a comment
               Expect.equal (asm [ 1, "let x = 5 // note" ]) "let x = 5" "the origin case parses"
-              // command argv, GLUED: data (the URL receipt)
+              // command argv, glued: data (the URL receipt)
               Expect.equal
                   (asm [ 1, "git clone http://a --format=a//b" ])
                   "git clone http://a --format=a//b"
@@ -18189,7 +18191,7 @@ let trailingCommentTests =
           }
           test "holes do not host comments: a // inside a hole is neither comment nor legal" {
               // a to-EOL construct cannot nest inside a delimited one —
-              // the scan leaves it, the parser rejects it, LOCATED
+              // the scan leaves it, the parser rejects it, located
               match Weir.Parser.parseExpr "$\"{1 // 2}\"" with
               | Error _ -> ()
               | Ok e -> failtest $"expected a parse rejection, got {show e}"
@@ -18336,7 +18338,7 @@ let interpShowTests =
           }
           test "a hole renders what show renders: seq and record forms" {
               expectValue "$\"xs={[1; 2]}\"" (VStr "xs=[1; 2]")
-              // strings INSIDE a structure render quoted (show's form);
+              // strings inside a structure render quoted (show's form);
               // only the bare top-level string hole stays raw
               expectValue "$\"{[\"a\"]}\"" (VStr "[\"a\"]")
               expectValue "$\"a{\"b\"}c\"" (VStr "abc")
@@ -18371,7 +18373,7 @@ let interpShowTests =
 
 let anonRecordTests =
     // anonymous record types in the adapter slot [D:anon-records]:
-    // synthetic-nominal — the canonical name IS the rendered shape, so
+    // synthetic-nominal — the canonical name is the rendered shape, so
     // same-shape anons unify and a declared record stays distinct
     testList
         "anonymous record types [D:anon-records]"
@@ -18402,7 +18404,7 @@ let anonRecordTests =
                       | Error terr -> Some terr.Message
                   | other -> failtest $"unexpected: {other}"
 
-              // missing field in the DATA: byte-identical modulo the name
+              // missing field in the data: byte-identical modulo the name
               let declared =
                   msgOf declaredEnv "[\"{\\\"ip\\\": \\\"x\\\"}\"] |> from json P |> _.ip"
 
@@ -18411,7 +18413,7 @@ let anonRecordTests =
 
               Expect.equal anon declared "the anonymous shape validates exactly as a declared record"
 
-              // wrong field at CHECK time: the declared-record wording with
+              // wrong field at check time: the declared-record wording with
               // the shape standing where the name stands
               let m = (checkErr "[\"{}\"]  |> from json {| ip: string |} |> _.nope").Message
               Expect.stringContains m "{| ip: string |} has no field 'nope'" "the declared-record message shape"
@@ -18480,8 +18482,8 @@ let anonRecordTests =
           } ]
 
 let anonLiteralTests =
-    // anonymous record LITERALS [D:anon-literals]: F#'s spelling; the
-    // canonical name is minted at CHECK (values sit in the form, not
+    // anonymous record literals [D:anon-literals]: F#'s spelling; the
+    // canonical name is minted at check (values sit in the form, not
     // types) and the typed node is TERecord — eval/writers/LSP ride
     // existing arms
     let parseErr (src: string) =
@@ -18614,8 +18616,8 @@ let seqGapsTests =
 
         pulled, VSeq src
 
-    // the counting source rides the REAL nats builtin (typed seq<int>);
-    // runWith swaps only its VALUE — the windowed pin's pattern
+    // the counting source rides the real nats builtin (typed seq<int>);
+    // runWith swaps only its value — the windowed pin's pattern
     let pullPin (label: string) (bound: int) (expr: string) =
         test $"{label} is LAZY (pull-count pin)" {
             let pulled, src = counted ()
@@ -18720,7 +18722,7 @@ let seqGapsTests =
           } ]
 
 let scopedProcTests =
-    // scoped processes [D:scoped-procs]: the no-orphan law's STATIC
+    // scoped processes [D:scoped-procs]: the no-orphan law's static
     // half — parse/assemble/check shapes; the live lifecycle (kill,
     // reap, sweep, watch errors) pins in e2e where processes are real
     let assembleParse (lines: string list) =
@@ -18830,8 +18832,8 @@ let recordOrderTests =
           } ]
 
 let interpRawTests =
-    // the raw interpolated literal [D:interp-raw]: escapes OFF, holes
-    // ON — reopened from the no-interpolated-raw park on its stated
+    // the raw interpolated literal [D:interp-raw]: escapes off, holes
+    // on — reopened from the no-interpolated-raw park on its stated
     // trigger (raw-with-splice receipts)
     testList
         "raw interpolation [D:interp-raw]"
@@ -18888,7 +18890,7 @@ let interpRawTests =
 
 let instantTests =
     // Instant [D:instant]: the boring subset — instants only, UTC
-    // inside, no calendar arithmetic; `-` between points IS Duration
+    // inside, no calendar arithmetic; `-` between points is Duration
     testList
         "Instant [D:instant]"
         [ test "the arithmetic: points subtract to Duration; Duration shifts a point (both spellings); points never add" {
@@ -19015,7 +19017,7 @@ let instantTests =
 
 let mapStringTests =
     // Map<string, T> [D:map-string]: the ID-keyed object — keys are
-    // DATA, not schema; string keys only; the adapter slot's third form
+    // data, not schema; string keys only; the adapter slot's third form
     let checkErrIn te input =
         match Weir.Check.typecheck te (parse input) with
         | Error terr -> terr
@@ -19187,7 +19189,7 @@ let mapStringTests =
 
 let operatorValueTests =
     // (op): an operator as a value, unapplied only [D:operator-values]
-    // — the desugar contract is BYTE-PARITY with the spelled lambda
+    // — the desugar contract is byte-parity with the spelled lambda
     testList
         "operators as values [D:operator-values]"
         [ test "the receipt: reduce/scan/fold take (+), context resolves the overload" {
@@ -19208,7 +19210,7 @@ let operatorValueTests =
                   "the desugar is verbatim"
 
               // both spellings fail identically where nothing pins the
-              // operands — the (op) form must not be BETTER either
+              // operands — the (op) form must not be better either
               let m1 = (checkErr "Seq.fold (+) 100 [1; 2; 3]").Message
               let m2 = (checkErr "Seq.fold (fun a b -> a + b) 100 [1; 2; 3]").Message
               Expect.equal m1 m2 "failure parity, same message"
@@ -19255,9 +19257,9 @@ let operatorValueTests =
           } ]
 
 let bareRuleTests =
-    // the bare-member rule [D:bare-rule] widened to a DERIVATION
+    // the bare-member rule [D:bare-rule] widened to a derivation
     // [D:bare-partition]: unambiguous means bare — the gate asserts the
-    // partition MATCHES the derivation, and pins the collision set so a
+    // partition matches the derivation, and pins the collision set so a
     // new collision (which demotes a bare name) is a decision
     testList
         "the bare-member rule [D:bare-rule] [D:bare-partition]"
@@ -19286,7 +19288,7 @@ let bareRuleTests =
                   "the two-home scan moved: decide the new name (qualified-only), then update this pin"
           }
           test "no formerly-bare name lost its slot in the widening (the monotonicity check the plan demanded)" {
-              // `first` LEFT the set by RULING, not accident — the
+              // `first` left the set by ruling, not accident — the
               // retirement [D:first-retired] is the allowed exit this
               // pin guards against happening silently; `force` became
               // `freeze` by the same door [D:freeze-rename]
@@ -19351,8 +19353,8 @@ let bareRuleTests =
           test "bare `dir` teaches the listing too [D:dir-teach]" {
               // DOS muscle memory wants ls; Path.dir is the parent-of-a-
               // path function — the teach carries both readings.
-              // ARGUMENT position forces pure expression mode: a bare
-              // `dir` elsewhere resolves as the coreutils COMMAND on
+              // Argument position forces pure expression mode: a bare
+              // `dir` elsewhere resolves as the coreutils command on
               // Linux (the platform split that makes this teach
               // Windows/macOS-facing)
               let m = (checkErr "[1] |> Seq.map dir").Message
@@ -19412,7 +19414,7 @@ let gapATests =
                       System.Threading.Interlocked.Increment ran |> ignore
                       VUnit)
 
-              // override print's VALUE with the counter (probe needs a
+              // override print's value with the counter (probe needs a
               // typed name; print's scheme fits iter's consumer)
               runWith [ "print", probe ] "Some \"x\" |> Option.iter print" |> ignore
               Expect.equal ran.Value 1 "Some runs once"
@@ -19482,7 +19484,7 @@ let withinTests =
           }
           test "cd and env args are typed expressions; a binding serves (6th/7th sites, on arrival)" {
               // cd consumes string, env consumes seq<EnvVar> — the kinds'
-              // contracts [D:within-scopes]; the arg is an ATOM, resolved
+              // contracts [D:within-scopes]; the arg is an atom, resolved
               // as an ordinary expression (never a command head)
               let e = parse ("let b = \"x\" in within cd b" + Weir.Parser.sibSepStr + "1")
 
@@ -19504,7 +19506,7 @@ let withinTests =
           }
           test "the scope binder beats PATH (the fifth patLeafNames site)" {
               // `within tmp git` — a perverse but legal binder; the block's
-              // `git` is the BINDING, never a phantom command
+              // `git` is the binding, never a phantom command
               let e = parse ("within tmp git" + Weir.Parser.sibSepStr + "Str.length git")
 
               match Weir.Check.typecheck env e with
@@ -19545,7 +19547,7 @@ let windowsV1Tests =
                       (System.OperatingSystem.IsWindows())
                       "bare .bat resolution: Windows yes, POSIX no"
 
-                  // the list is read from the ENVIRONMENT, not hardcoded
+                  // the list is read from the environment, not hardcoded
                   // [D:windows-s2]: a custom extension resolves iff the
                   // platform honours PATHEXT at all
                   let oldExts = System.Environment.GetEnvironmentVariable "PATHEXT"
@@ -19573,8 +19575,8 @@ let windowsV1Tests =
               let oldPath = System.Environment.GetEnvironmentVariable "PATH"
 
               try
-                  // PREPEND, never replace: PATH is process-global and
-                  // `testSequenced` does NOT isolate it under the YoloDev
+                  // prepend, never replace: PATH is process-global and
+                  // `testSequenced` does not isolate it under the YoloDev
                   // TestSdk (a bare `PATH := dir` raced concurrent spawns
                   // into "sh not found"). The prepended probe dir still
                   // forces a real Path.PathSeparator split to find the probe.
@@ -19618,7 +19620,7 @@ let windowsV1Tests =
               Expect.stringContains (Weir.Contracts.rawUrlHint "https://example.com/x.json") "use the raw URL" "generic"
           }
           test "LSP uri/path ROUND-TRIPS on this platform (spaces + non-ASCII)" {
-              // the acceptance is identity BOTH WAYS [D:windows-s3] — a
+              // the acceptance is identity both ways [D:windows-s3] — a
               // one-way fix is how the mirror bug survives
               let native =
                   if System.OperatingSystem.IsWindows() then
@@ -19631,7 +19633,7 @@ let windowsV1Tests =
               Expect.isTrue (uri.StartsWith "file:///") "file scheme, empty host"
               Expect.equal (Weir.Lsp.uriToPath uri) native "round-trip identity"
 
-              // the crash shape: a bare drive path must CONVERT, not throw
+              // the crash shape: a bare drive path must convert, not throw
               Expect.isTrue
                   ((Weir.Lsp.pathToUri "C:\\x\\y.weir").StartsWith "file:///c:/")
                   "drive lowercases on the wire"
@@ -19647,8 +19649,8 @@ let windowsV1Tests =
 
 // PLAN-dx-review D2-D8: the message-family completions, pinned — each
 // mistake census case that moved buckets has its message here
-// WEIR_LOG follows the env-enum convention: case-INSENSITIVE (the
-// SKILL rule for the channel — DEBUG in a CI config must not be a
+// WEIR_LOG follows the env-enum convention: case-insensitive (the
+// skill rule for the channel — DEBUG in a CI config must not be a
 // startup error)
 // [D:binary-echo] recurses through containers: the `| complete`
 // record held the bytes the seq echo refused (the pty probe's exact
@@ -19674,9 +19676,9 @@ let echoBinaryTests =
           }
           test "a 200k-deep value drains to the depth bound, never overflows the probe [D:eq-depth]" {
               // the tty binary-echo probe was the last unbounded value walk:
-              // a recursive record is finite in WIDTH but not depth, so an
-              // unbounded descent stack-overflows UNCATCHABLY. Bounded at 100
-              // like show/eq; a checker-accepted deep value must RETURN, not
+              // a recursive record is finite in width but not depth, so an
+              // unbounded descent stack-overflows uncatchably. Bounded at 100
+              // like show/eq; a checker-accepted deep value must return, not
               // abort the process (strix retest residual sink).
               let deep =
                   [ 1..200000 ]
@@ -19696,7 +19698,7 @@ let echoBinaryTests =
               Expect.isFalse (Weir.Eval.echoBinary (Some 10) (Weir.Eval.VBytes [| 0uy |])) "Bytes renders a summary"
           } ]
 
-// F13 [D:binary-echo]: DATA bound for a tty is neutralized — escape
+// F13 [D:binary-echo]: data bound for a tty is neutralized — escape
 // introducers and C0/C1 controls render as visible \xNN so a hostile
 // filename cannot clear the screen, set the title, or hide behind CR
 let ttySanitizeTests =
@@ -19716,7 +19718,7 @@ let ttySanitizeTests =
               Expect.stringContains safe "\\x0d" "CR renders as \\x0d"
               Expect.stringContains safe "cleared" "the visible text is preserved"
 
-              // TAB and LF are NOT hostile — ordinary layout survives
+              // TAB and LF are not hostile — ordinary layout survives
               let layout = "a\tb\nc"
               Expect.equal (Weir.Eval.sanitizeTtyData layout) layout "TAB and LF pass through"
 
@@ -19766,7 +19768,7 @@ let dxMessageTests =
           test "D3: a stray backslash at hole level teaches, quotes need no escape there" {
               mustSay [ "print $\"{ \\\"abc\\\" }\"" ] "not an escape here" "hole backslash"
 
-              // the CONTROL: an unescaped string inside a hole is fine
+              // the control: an unescaped string inside a hole is fine
               let clean, _, _, _ =
                   Weir.Script.analyzeLines "pin.weir" [ "print $\"{Str.length \"abc\"}\"" ]
 
@@ -19828,7 +19830,7 @@ let bytesTests =
               let ex = Expect.throwsC (fun () -> run "Bytes.fromBase64 \"!!!\"" |> ignore) id
               Expect.stringContains ex.Message "invalid base64" ""
               expectValue "Bytes.tryFromBase64 \"!!!\"" (VUnion("None", None))
-              // a PNG header decodes as BYTES — Str.fromBase64 refuses it
+              // a PNG header decodes as bytes — Str.fromBase64 refuses it
               expectValue "Bytes.length (Bytes.fromBase64 \"iVBORw0KGgo=\")" (VSize 8L)
           }
           test "fromUtf8 wears the encoding law's gate, NUL included [D:encoding-law]" {
@@ -19879,8 +19881,8 @@ let bytesTests =
           } ]
 
 // the port-driven member batch (v0.0.46) [D:port-members] — each gap
-// cited from the asdf/acme
-// FINDINGS, each edge pinned; plus the two ports' diagnostic teachings
+// cited from the asdf/acme findings, each edge pinned; plus the two
+// ports' diagnostic teachings
 let portMembersTests =
     let diagsOf lines =
         let diags, _, _, _ = Weir.Script.analyzeLines "pm.weir" lines
@@ -19974,7 +19976,8 @@ let portMembersTests =
 
               try
                   if System.OperatingSystem.IsWindows() then
-                      // the STATED posture: extension-based, no execute bit exists
+                      // the stated posture: extension-based, no execute
+                      // bit exists
                       let cmd = tmp + ".cmd"
                       System.IO.File.WriteAllText(cmd, "")
 
@@ -20067,7 +20070,7 @@ let portMembersTests =
 // the seams a unit test can reach: the parse/check contract (the head
 // form, the shared body union, the type errors) and the Serve leg's own
 // socket lifecycle (start/stop idempotency, the port frees). The three
-// primitives' RUNTIME behaviour (incremental stream, concurrency ceiling,
+// primitives' runtime behaviour (incremental stream, concurrency ceiling,
 // signal teardown) are the e2e battery's server cells — a listener needs
 // a real socket and a client process, out of a unit's reach.
 let serveTests =
@@ -20126,7 +20129,7 @@ let serveTests =
           }
           test "the handler must be HttpServerRequest -> HttpServerResponse" {
               // a wrong return type: a plain int handler names the expected
-              // response type — the server response (body: HttpBody) is NOT
+              // response type — the server response (body: HttpBody) is not
               // the client HttpResponse (body: seq<string>), the checker
               // holds the boundary
               mustSay
@@ -20156,7 +20159,7 @@ let serveTests =
               Expect.equal h.Port 8199 "the handle carries the port"
               Expect.isFalse h.Closed "open after start"
 
-              // the loopback NAMES are registered beside each other so a
+              // the loopback names are registered beside each other so a
               // Host: localhost request reaches the handler, not .NET's
               // prefix-miss 404 [D:serve-loopback-names]; the posture stays
               // loopback — never a +/* all-interfaces bind
@@ -20194,7 +20197,7 @@ let serveTests =
                   "an inlined handler matching Other and Query"
           }
           test "methodTokenOk accepts well-formed verbs and refuses malformed tokens" {
-              // well-formed tchar tokens (listed AND unlisted) pass
+              // well-formed tchar tokens (listed and unlisted) pass
               for ok in [ "GET"; "QUERY"; "TRACE"; "FROBNICATE"; "M-SEARCH"; "PATCH" ] do
                   Expect.isTrue (Weir.Serve.methodTokenOk ok) $"'{ok}' is a well-formed token"
 
@@ -20307,18 +20310,18 @@ let versionStampTests =
         "Version stamp"
         [ test "current is <tag>+<hash>, dev-tagged when untagged [D:masking-mechanized]" {
               let v = Weir.Version.current
-              // ALWAYS tag+hash — the tag leads for humans, the sha rides
+              // always tag+hash — the tag leads for humans, the sha rides
               Expect.stringContains v "+" "the stamp joins a tag and a hash with '+'"
               // every dev/CI-gate build is untagged and tags 0.0.0-dev: an
               // honest marker that sorts below any release, never an empty tag
               Expect.isTrue (v.StartsWith "0.0.0-dev+") $"an untagged build tags 0.0.0-dev, got '{v}'"
-              // the hash rides after the LAST '+' — the exact substring the
+              // the hash rides after the last '+' — the exact substring the
               // freshness gates read — and is never empty
               let hash = v.Substring(v.LastIndexOf '+' + 1)
               Expect.isFalse (System.String.IsNullOrEmpty hash) "the hash component is present"
           } ]
 
-// module signatures [D:module-signatures]: a signature IS the export —
+// module signatures [D:module-signatures]: a signature is the export —
 // one pin per law, over real files (the module loader is the
 // enforcement point) plus the parse/script-refusal edges
 let moduleSignatureTests =
@@ -20444,7 +20447,7 @@ let moduleSignatureTests =
                           Expect.stringContains d.Message "doc belongs on the signature" ""
                       | [] -> failtest "expected the doc-home teaching")
 
-              // doc on the SIG line: hover reads sig + doc there
+              // doc on the sig line: hover reads sig + doc there
               withDir
                   [ "lib.weir", lib ]
                   (fun td ->
@@ -20543,8 +20546,9 @@ let moduleSignatureTests =
                     [ "import \"./m.weir\" as M"
                       "let doc = [\"kind: K\"] |> Yaml.parse"
                       "doc |> Yaml.merge (M.mk \"gold\") |> to yaml |> Seq.iter print" ]
-                    // Proc is semantically exportable: a module helper over a
-                    // HANDLE (handles are data and escape scopes [D:scoped-procs])
+                    // Proc is semantically exportable: a module helper
+                    // over a handle (handles are data and escape scopes
+                    // [D:scoped-procs])
                     "p.weir", [ "module P"; "let pid : Proc -> int"; "let pid p = Proc.pid p" ]
                     // the declared prelude nominals + Map already crossed —
                     // pinned so it stays true
@@ -20638,7 +20642,7 @@ let moduleSignatureTests =
               | Error msg -> Expect.stringContains msg "a signature names types bare" "nested position"
               | Ok s -> failtest $"nested qualified must refuse, got {s}"
 
-              // the ONE type grammar: a record field's type teaches too
+              // the one type grammar: a record field's type teaches too
               match Weir.Parser.parseLine cmdResolver "type R = { f: M.Spec }" with
               | Error msg -> Expect.stringContains msg "plain name" "field position"
               | Ok s -> failtest $"a qualified field type must refuse, got {s}"
@@ -20700,7 +20704,7 @@ let unusedBindingTests =
                   Expect.stringContains d.Message "never used before being rebound at line 2" "the rebind cited"
               | other -> failtest $"expected one error, got {other}"
 
-              // the RHS reads the OUTER binding (no let rec): a read-through
+              // the RHS reads the outer binding (no let rec): a read-through
               // rebind is clean
               clean [ "let x = 1"; "let x = x + 1"; "print (show x)" ] "read-through rebind"
           }
@@ -20727,7 +20731,7 @@ let unusedBindingTests =
           test "the escape: a '_'-prefixed name never errors, top-level and block" {
               clean [ "let _keep = 5"; "print \"x\"" ] "top-level _name"
               clean [ "let f () ="; "    let _a = 1"; "    2"; "print (show (f ()))" ] "block _name"
-              // and a _name stays READABLE — the prefix only switches the
+              // and a _name stays readable — the prefix only switches the
               // judgement off
               clean [ "let _n = 5"; "print (show _n)" ] "_name read back"
           }
@@ -20755,7 +20759,7 @@ let unusedBindingTests =
                   Expect.stringContains d.Message "export it with a signature" "the export repair"
               | other -> failtest $"expected one error, got {other |> List.map (fun d -> d.Message)}"
 
-              // the signature IS the use — a signed member unread at home is
+              // the signature is the use — a signed member unread at home is
               // the export case, pinned
               clean [ "module M"; "let grade : int -> int"; "let grade n = n + 1" ] "signed member exempt"
 
@@ -20904,7 +20908,7 @@ let reenumWarningTests =
               | other -> failtest $"expected one warning, got {other |> List.map (fun d -> d.Message)}"
           }
           test "a rebinding consumes the old tracking; its RHS pull counts once" {
-              // the second statement's RHS reads the OUTER pods (one
+              // the second statement's RHS reads the outer pods (one
               // pull); the rebound name is a plain pipeline, untracked
               silent
                   [ "let pods = git ls-files"
@@ -20924,7 +20928,7 @@ let reenumWarningTests =
 let tempDirLintTests =
     // the newTempDir footgun [D:newtempdir-lint]: a Path.newTempDir binding
     // deleted in the same scope is the manual (and Ctrl+C-leaky) spelling of
-    // a `within tmp` block; an UNMATCHED bind is the legitimate escaping use
+    // a `within tmp` block; an unmatched bind is the legitimate escaping use
     // and stays silent. Warning severity — check still exits 0.
     let diagsOf (lines: string list) =
         let ds, _, _, _ = Weir.Script.analyzeLines "tmp.weir" lines
@@ -21038,7 +21042,7 @@ let replSaveDistillTests =
                   distill [ ("manifest", "let manifest = <<<\n    apiVersion: v1\n    kind: Pod\n    name: web") ]
 
               let joined = String.concat "\n" lines
-              // the body rides as real newlines, NOT the assembler's sentinel
+              // the body rides as real newlines, not the assembler's sentinel
               Expect.isFalse (joined.Contains "\x1d" || joined.Contains "\x1f") "no join sentinel leaked"
               Expect.stringContains joined "apiVersion: v1" "the first body line"
               Expect.stringContains joined "name: web" "the last body line"
@@ -21057,7 +21061,7 @@ let replSaveDistillTests =
           test "(e) a self-contained named let is KEPT (protected, not dropped)" {
               // an unused-but-self-contained binding is the product of a
               // session, not scratch — the guarantee protects it (a
-              // `_`-prefix) rather than dropping it, and does NOT count it
+              // `_`-prefix) rather than dropping it, and does not count it
               let lines, dropped = distill [ ("greeting", "let greeting = \"hello\"") ]
               let joined = String.concat "\n" lines
               Expect.stringContains joined "\"hello\"" $"the value survives: {lines}"
@@ -21066,7 +21070,7 @@ let replSaveDistillTests =
           }
           test "(f) PROTECT is surgical: a binder a later survivor reads keeps its name" {
               // the chained-session shape: `base` is read by `total`, only
-              // `total` is unread. Protecting EVERY binder would rename
+              // `total` is unread. Protecting every binder would rename
               // `base` under its reader's feet (`let _base` + `let _total =
               // base |> …` — `base` then resolves as a phantom command), so
               // only the binder the unused finding names takes the `_`
@@ -21095,7 +21099,7 @@ let replSaveDistillTests =
 
 // ---- command-head aliases [D:command-head-alias] ---------------------
 // the alias table maps a short head to (real exe, fixed prefix args),
-// REPL-only, consulted ONLY in command-head position and BEFORE PATH;
+// REPL-only, consulted only in command-head position and before PATH;
 // `^` skips it and it is single-hop by construction.
 
 let private aliasTable: Map<string, string * string list> =
@@ -21140,12 +21144,12 @@ let aliasTests =
               | Error e -> failtest e
           }
           test "(c) injection-safety: `k $x` passes the splice as ONE argv entry" {
-              // the alias is a resolution-table entry, NOT a re-lex: a
+              // the alias is a resolution-table entry, not a re-lex: a
               // single splice stays a single argument.
               match Weir.Parser.parseLine aliasResolver "k get $x" with
               | Ok(SCmd { Kind = ECmd(HeadLit "kubectl", args, _) })
               | Ok(SExpr { Kind = ECmd(HeadLit "kubectl", args, _) }) ->
-                  // args: get (literal), then the ONE splice $x
+                  // args: get (literal), then the one splice $x
                   Expect.equal (List.length args) 2 "exactly two argv entries: 'get' and the single splice"
               | Ok other -> failtest $"expected an ECmd headed by kubectl, got {other}"
               | Error e -> failtest $"parse failed: {e}"
@@ -21153,7 +21157,7 @@ let aliasTests =
           test "(d) `^` bypasses the alias table (forces the real PATH binary)" {
               // ^git is a real external; the ^ forces PATH and the alias
               // table is never consulted. A shadowing alias `ls = ls
-              // --color` is bypassed by `^ls` — NO prefix injected.
+              // --color` is bypassed by `^ls` — no prefix injected.
               match Weir.Parser.parseLine aliasResolver "^ls x" with
               | Ok(SCmd { Kind = ECmd(HeadLit "ls", args, _) })
               | Ok(SExpr { Kind = ECmd(HeadLit "ls", args, _) }) ->
@@ -21162,7 +21166,8 @@ let aliasTests =
               | Error e -> failtest $"parse failed: {e}"
           }
           test "(e) an alias applies to the HEAD only — a name in argv is untouched" {
-              // `git k` : k in ARGUMENT position is a plain word, not resolved
+              // `git k` : k in argument position is a plain word, not
+              // resolved
               match Weir.Parser.parseLine aliasResolver "git add k" with
               | Ok(SCmd { Kind = ECmd(HeadLit "git", _, _) })
               | Ok(SExpr { Kind = ECmd(HeadLit "git", _, _) }) ->
@@ -21212,7 +21217,7 @@ let aliasTests =
 
 // ---- dynamic command heads [D:dynamic-head] --------------------------
 // `^` gains a `$`-splice alternative: ^$name / ^$(…) force-external a
-// VALUE head — one program, string exactly, resolved at run; argv stays
+// value head — one program, string exactly, resolved at run; argv stays
 // typed argv, so the injection law holds for computed programs too.
 
 let dynamicHeadTests =
@@ -21469,7 +21474,7 @@ let helpUxTests =
                   ("\x1b[1mYaml.inferShape\x1b[0m \x1b[2m(\x1b[0mlines\x1b[2m: \x1b[0m\x1b[33mseq<string>\x1b[0m\x1b[2m)\x1b[0m\x1b[2m : \x1b[0m\x1b[33mstring\x1b[0m")
                   "the composed signature carries the input colorizer's palette"
 
-              // the style IS the colorizer's palette — Color functions, not
+              // the style is the colorizer's palette — Color functions, not
               // restated codes; a hardcoded escape here would let them drift
               Expect.equal (Weir.Types.sigTintStyle.Name "n") (Weir.Types.Color.bold true "n") "name = the head tint"
               Expect.equal (Weir.Types.sigTintStyle.Ty "t") (Weir.Types.Color.yellow true "t") "types = the casing-law tint"
@@ -21499,7 +21504,7 @@ let helpUxTests =
 
 let fromTableTests =
     // the aligned-table boundary [D:from-table]: fixtures build by
-    // PADDED WIDTHS so header offsets and cell offsets agree by
+    // padded widths so header offsets and cell offsets agree by
     // construction — the tabwriter reality both kubectl and docker emit
     let row (ws: int list) (cs: string list) =
         (List.zip ws cs |> List.map (fun (w, c: string) -> c.PadRight w) |> String.concat "")
@@ -21591,8 +21596,8 @@ let fromTableTests =
           }
           test "a real first row is NOT skipped — the separator drop is conditional [D:from-table-az]" {
               // a row with a lone `-` cell (a tool's own 'none' spelling) is
-              // NOT all-dashes, so it stays data — the skip fires only on a
-              // row that is ENTIRELY dashes and spaces
+              // not all-dashes, so it stays data — the skip fires only on a
+              // row that is entirely dashes and spaces
               let ws = [ 8; 8; 0 ]
 
               let sample =
@@ -21658,7 +21663,7 @@ let fromTableTests =
                   "the kubectl idioms: <none>/empty read None under Option; undeclared columns cost nothing"
           }
           test "runtime errors are located, each teaching" {
-              // a missing declared column names itself AND the headers seen
+              // a missing declared column names itself and the headers seen
               let missing =
                   Expect.throwsC
                       (fun () ->
@@ -21783,12 +21788,13 @@ let fromTableTests =
 
 // the v0.0.48 security cut [D:attr-int-overflow][D:head-word-bound]
 // [D:cli-exception-guard]: three front-end hardening pins — none may
-// crash the tool; each fails as a LOCATED diagnostic, never a SIGABRT.
+// crash the tool; each fails as a located diagnostic, never a SIGABRT.
 let hardeningTests =
     testList
         "Hardening"
         [ // Fix 1 — an out-of-range attribute integer is a located parse
-          // error, NOT an OverflowException (was SIGABRT/exit 134) [D:attr-int-overflow]
+          // error, not an OverflowException (was SIGABRT/exit 134)
+          // [D:attr-int-overflow]
           test "attribute integer past 64-bit is a located error, never a crash" {
               match Weir.Parser.parseStmt "type T = { [<Default 99999999999999999999>] A: int }" with
               | Error msg ->
@@ -21815,7 +21821,7 @@ let hardeningTests =
               Expect.isOk (Weir.Parser.parseStmt "type T = { [<Default 0.5>] A: int }") "float attr unchanged"
           }
           // Fix 2 — the doomed command-mode attempt on a bareword ';'-spine
-          // stays LINEAR: the bounded head-word scan caps the doomed
+          // stays linear: the bounded head-word scan caps the doomed
           // attempt, and the diagnostic is byte-identical [D:head-word-bound]
           test "bareword ';'-spine still produces the unbound-variable diagnostic" {
               match Weir.Parser.parseLine realResolver "let x = b;b;b" with

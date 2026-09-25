@@ -4,14 +4,14 @@ open System
 open Weir.Ast
 open Weir.Types
 
-// The quote-aware scanner — the ONE string-state primitive
-// [D:one-scanner]. Folds f over the characters that sit OUTSIDE string
+// The quote-aware scanner, the single string-state primitive
+// [D:one-scanner]. Folds f over the characters outside string
 // literals: double quotes honor backslash escapes, single quotes close
 // at the next single quote.
-// the ONE string-state machine [D:one-scanner] — the outside-string fold
-// and the end-state question share it (a second inline quote machine is a
-// review flag). stringScan returns the fold result AND whether the line
-// ENDS inside a string.
+// The outside-string fold and the end-state question share this one
+// machine [D:one-scanner] — a second inline quote machine is a review
+// flag. stringScan returns the fold result and whether the line ends
+// inside a string.
 let private stringScan (f: 'a -> int -> char -> 'a) (init: 'a) (s: string) : 'a * bool =
     let mutable st = init
     let mutable i = 0
@@ -19,7 +19,7 @@ let private stringScan (f: 'a -> int -> char -> 'a) (init: 'a) (s: string) : 'a 
     let mutable inSingle = false
     // raw kinds [D:raw-strings]: verbatim @"..." ("" = one quote, no
     // escapes) and triple-quoted """...""" (no escapes at all,
-    // closes at the FIRST triple [D:raw-strings])
+    // closes at the first triple [D:raw-strings])
     let mutable inVerbatim = false
     let mutable inTriple = false
 
@@ -63,7 +63,7 @@ let private stringScan (f: 'a -> int -> char -> 'a) (init: 'a) (s: string) : 'a 
 
 let private foldOutsideStrings (f: 'a -> int -> char -> 'a) (init: 'a) (s: string) : 'a = fst (stringScan f init s)
 
-// weir strings are SINGLE-LINE (all four kinds), so a line ending inside
+// All four weir string kinds are single-line, so a line ending inside
 // one can never be completed by more input — the multiline REPL submits
 // such a buffer instead of growing it [D:repl-multiline]
 let endsInsideString (s: string) : bool =
@@ -88,16 +88,16 @@ let stripComment (line: string) : string =
             -1
             line
 
-    // TrimEnd ON CUT only [D:trailing-comments]: the code before a
-    // comment never needs its gap (district heads match EndsWith), and
-    // an untouched line stays byte-equal
+    // TrimEnd only when a comment was cut [D:trailing-comments]: the
+    // code before a comment never needs its gap (district heads match
+    // EndsWith), and an untouched line stays byte-equal
     if cut >= 0 then line.Substring(0, cut).TrimEnd() else line
 
 // ---- `///` doc comments [D:doc-comments] -------------------------
-// Docs are OUT-OF-BAND metadata about a source LOCATION, never part of
+// Docs are out-of-band metadata about a source location, never part of
 // the program's meaning: Value/Eval/Check never see one, so runtime is
-// byte-identical BY ARCHITECTURE (nothing to erase, nothing to pin).
-// The key is the PHYSICAL (line, col, len) of the documented name,
+// byte-identical by construction (nothing to erase, nothing to pin).
+// The key is the physical (line, col, len) of the documented name,
 // never the name itself (shadowing / inner lets / duplicate field
 // names). Hover and completion look attachments up by that position.
 
@@ -117,7 +117,7 @@ let private docText (raw: string) : string =
     let t = raw.TrimStart().Substring 3
     if t.StartsWith " " then t.Substring 1 else t
 
-/// the documented NAME's (1-based col, len) on a declaration line: the
+/// the documented name's (1-based col, len) on a declaration line: the
 /// identifier after `let`/`type`, after `|` (union case), or leading
 /// (a record field). None when the line has no such name.
 let private declName (raw: string) : (int * int) option =
@@ -147,9 +147,9 @@ let private declName (raw: string) : (int * int) option =
     elif trimmed = "" then None
     else identAt indent
 
-// In-string mask over a line — TRUE where a char sits inside any
+// In-string mask over a line — true where a char sits inside any
 // string kind (plain/single/verbatim/triple). The scanner family's
-// third consumer face [D:fmt-respace]: respacing must never touch
+// third consumer [D:fmt-respace]: respacing must never touch
 // string interiors.
 let inStringMask (s: string) : bool[] =
     let mask = Array.create s.Length false
@@ -169,7 +169,7 @@ let inStringMask (s: string) : bool[] =
 
 // Canonical intra-line spacing [D:fmt-respace], bounded: collapse
 // space runs, pad record braces, tidy `;`. String interiors and
-// leading indent untouched. Fmt applies this under a PARSE-SHAPE
+// leading indent untouched. Fmt applies this under a parse-shape
 // safety check — any statement whose sexpr changes reverts — so a
 // rule misfiring on a command line (argv `{x}`, literal `;`) can
 // never change meaning, only be skipped.
@@ -228,7 +228,7 @@ let private braceDelta (s: string) : int =
 
 // --- the line classifier: one derivation, three consumers -----------
 // (assembler fold, fmt's block logic, the oracle's weirVerdict mirror
-// — one derivation, so the three agree by construction)
+// — sharing the derivation is what makes them agree)
 
 /// Whole-line classification, pre-assembly: the statement filter.
 [<RequireQualifiedAccess>]
@@ -258,7 +258,7 @@ let continuesOpenIf (raw: string) : bool =
 
 /// Piece classification, inside assembly: the join/structure decisions.
 /// Kind is exclusive; Marker and OpensCompound are orthogonal fields —
-/// `let d = yaml` is a let head AND arms the yaml district.
+/// `let d = yaml` is a let head and also arms the yaml district.
 [<RequireQualifiedAccess>]
 type PieceKind =
     | PipeHead
@@ -267,16 +267,16 @@ type PieceKind =
     | Plain
 
 /// Line-end district markers: `yaml` (with an optional schema= suffix)
-/// is the ONE surviving marker — the `!`/`!name` command districts were
-/// retired [D:district-retirement].
+/// is the only surviving marker — the `!`/`!name` command districts
+/// were retired [D:district-retirement].
 [<RequireQualifiedAccess>]
 type MarkerKind =
     | NoMarker
     // line-end `yaml` opens a yaml district [D:yaml-district] — except
     // `to yaml` / `from yaml`, which are the boundary adapters.
-    // The `!` and `!ev` districts RETIRED [D:district-retirement]: the
-    // arming rule made their mode gate unnecessary and `within env`
-    // covers the overlay; the $e()/!e() SIGIL forms stay (fragment and
+    // The `!` and `!ev` districts are retired [D:district-retirement]:
+    // the arming rule made their mode gate unnecessary and `within env`
+    // covers the overlay; the $e()/!e() sigil forms stay (fragment and
     // single-command uses have no block spelling).
     | Yaml
     // line-end `<<<` / `$<<<` opens a heredoc district [D:text-block] —
@@ -307,7 +307,7 @@ let isHeredocMarkerPiece = Parser.isHeredocMarkerPiece
 
 /// the arm arrow `->` at bracket-depth 0, outside strings
 /// [D:match-pipe-offside] — the match arm's body offside. Patterns carry
-/// no arrow and a guard lambda's arrow nests in parens, so the FIRST such
+/// no arrow and a guard lambda's arrow nests in parens, so the first such
 /// `->` is the arm's; a string literal in the pattern is skipped.
 let armArrowIndex (s: string) : int option =
     let mutable depth = 0
@@ -366,7 +366,7 @@ let classifyPiece (piece: string) : PieceClass =
       OpensCompound =
         // within/for block heads close-and-wrap exactly like the
         // conditionals [D:dedent-join] — same machine, two more
-        // members, NOT a fifth alignment stack (let-prefixed forms
+        // members, not a fifth alignment stack (let-prefixed forms
         // stay Lets-owned, the if/match convention)
         piece.StartsWith "if "
         || piece.StartsWith "match "
@@ -398,7 +398,7 @@ let classifyPiece (piece: string) : PieceClass =
       BraceDelta = braceDelta piece }
 
 /// The multiline-lambda opener [D:multiline-lambda]: a line ends with
-/// `->` while its INNERMOST unclosed paren opens a `fun` — `(fun r ->`
+/// `->` while its innermost unclosed paren opens a `fun` — `(fun r ->`
 /// dangling at EOL opens a body block closed by its own `)`. A same-line
 /// `(fun r -> body)` never arms (its parens balance at EOL).
 let lambdaOpens (piece: string) : bool =
@@ -424,14 +424,14 @@ let lambdaOpens (piece: string) : bool =
         | top :: _ -> trimmed.Substring(top + 1).TrimStart().StartsWith "fun "
         | [] -> false
 
-/// A piece that dangles a block open at EOL: the NEXT deeper line
+/// A piece that dangles a block open at EOL: the next deeper line
 /// starts a statement of that block (the lambda restore level rides
 /// this) [D:multiline-lambda].
 let dangleEnders = [| "="; "then"; "else"; "with"; "->" |]
 
-// a within HEAD [D:within-scopes]: `within <kind> <args…>` (optionally
+// a within head [D:within-scopes]: `within <kind> <args…>` (optionally
 // behind `let <name> =`) opens its block — the head ends with arbitrary
-// argument words, so the classifier keys on the KEYWORD, the yaml-marker
+// argument words, so the classifier keys on the keyword, the yaml-marker
 // precedent (a lexical rule shared by assembler and REPL, never a parse)
 let isWithinHead (piece: string) : bool =
     let t = piece.Trim()
@@ -467,41 +467,41 @@ let private isDistrictHead (keyword: string) (piece: string) : bool =
 let isPureHead (piece: string) : bool = isDistrictHead "pure" piece
 
 // the standalone readonly head [D:desugar-namespace]: readonly opens a
-// STATEMENT block exactly as pure does — a body may sequence unit
+// statement block exactly as pure does — a body may sequence unit
 // statements before its result value, so it needs the sibling sentinel
-// between them (an earlier assumption that "readonly's body is
-// value-shaped" space-joined a multi-statement body and mis-parsed it)
+// between them (treating the body as value-shaped space-joined a
+// multi-statement body and mis-parsed it)
 let isReadonlyHead (piece: string) : bool = isDistrictHead "readonly" piece
 
 // the standalone plan head [D:plan-apply]: `plan` (bare, or behind
 // `let <name> =`) opens its block exactly as pure/readonly do — a plan
-// body is a STATEMENT sequence (bare consecutive mutations, captured as
+// body is a statement sequence (bare consecutive mutations, captured as
 // Ops), so it needs the sibling sentinel between its statements
 let isPlanHead (piece: string) : bool = isDistrictHead "plan" piece
 
 // the binder-head scanner [D:scoped-procs] [D:http-serve]: a `within
-// proc <b> =` / `within serve <b> =` head whose TAIL is a resource spec
+// proc <b> =` / `within serve <b> =` head whose tail is a resource spec
 // (a command for proc, `{config} handler` atoms for serve), so the
-// FIRST block statement must join at the machine boundary too — a space
+// first block statement must join at the machine boundary too — a space
 // join would feed it to the tail (proc: the command's argv; serve: the
-// handler application). This scan is `;`-BLIND (it finds the marker
+// handler application). This scan is `;`-blind (it finds the marker
 // outside strings and checks only the binder-`=` shape), so an inline
-// record `;` in serve's config tail does NOT hide the head — the reason
+// record `;` in serve's config tail does not hide the head — the reason
 // serve routes through here and not isWithinHead's `;`-guarded path.
-// the binder-head test over an ALREADY-EXTRACTED last segment
+// The test takes an already-extracted last segment
 // [D:assemble-quadratic]: the whole-text `LastIndexOf sibSep` slice moved
 // to the caller so the assembler can hand its incrementally-tracked last
 // segment (short) instead of re-slicing the whole growing text per join.
-// A fast reject — Contains is allocation-free/vectorized — skips the
-// per-char foldOutsideStrings scan on the overwhelming majority of
-// segments that carry no marker at all.
+// A fast reject — Contains is allocation-free and vectorized — skips the
+// per-char foldOutsideStrings scan on the vast majority of segments,
+// which carry no marker at all.
 let private endsInBinderHeadSeg (marker: string) (lastSeg: string) : bool =
     if not (lastSeg.Contains marker) then
         false
     else
 
     // the head may sit mid-segment (behind a let, a lambda arrow, a
-    // pipe) — find its LAST occurrence OUTSIDE strings (the one
+    // pipe) — find its last occurrence outside strings (the one
     // scanner), then require the binder-`=` shape; the tail then runs to
     // the segment's end, which is the thing a space join would feed
     let lastStart =
@@ -552,9 +552,9 @@ let dangleOpensBlock (piece: string) : bool =
     let t = piece.TrimEnd()
 
     dangleEnders |> Array.exists t.EndsWith
-    // `do` needs a WORD boundary — `sudo` at EOL must not dangle a
+    // `do` needs a word boundary — `sudo` at EOL must not dangle a
     // block open [D:for-do] (the existing enders keep their exact
-    // suffix behavior, zero movement)
+    // suffix behavior)
     || t = "do"
     || t.EndsWith " do"
     // a line-end `function` dangles its arm block open, the match-head
@@ -583,12 +583,12 @@ let dangleOpensBlock (piece: string) : bool =
     // the bare within's teardown segment dangles too [D:within-always]
     || t = "always"
 
-/// A line-end district marker of ANY kind — the mask below and the
+/// A line-end district marker of any kind — the mask below and the
 /// REPL share classifyPiece's marker rules through these predicates.
 let isMarkerPiece (piece: string) =
     (classifyPiece piece).Marker <> MarkerKind.NoMarker
 
-/// TRUE for physical lines that are DISTRICT content (deeper than an
+/// True for physical lines that are district content (deeper than an
 /// arming marker line) [D:content-bytes]: the byte-preserving passes —
 /// doc attachment, the doc-align lint, fmt's doc canonicalization —
 /// must neither read nor move them; content is bytes.
@@ -620,9 +620,9 @@ let districtContentMask (lines: string list) : bool[] =
     mask
 
 /// Pure pass: a contiguous run of `///` lines attaches to the
-/// declaration on the next CODE line; a blank OR a plain `//` line
-/// breaks the run (the contiguity law). An attribute-only line
-/// (`[<...>]`) is TRANSPARENT: the doc rides through to the
+/// declaration on the next code line; a blank or a plain `//` line
+/// breaks the run (the contiguity rule). An attribute-only line
+/// (`[<...>]`) is transparent: the doc rides through to the
 /// declaration below, so F#'s canonical doc-then-attribute order and
 /// the attribute-then-doc order both attach.
 let isAttributeOnlyLine (raw: string) =
@@ -642,9 +642,9 @@ let docAttachments (lines: string list) : DocAttach list =
         if masked[idx] then
             () // district content is bytes — never doc syntax [D:content-bytes]
         elif isDocLine raw then
-            // CONS, not `@ [x]`: a contiguous /// run of N lines appended
-            // one-at-a-time is O(N^2) (each append copies the whole list),
-            // pinning a core on a heavily-documented module. Cons is O(1);
+            // Cons, not `@ [x]`: a contiguous /// run of N lines appended
+            // one at a time is O(N^2) (each append copies the whole list),
+            // pinning a core on a heavily documented module. Cons is O(1);
             // the run is reversed once at the single consumer (Doc below).
             pending <- docText raw :: pending
         elif isAttributeOnlyLine raw then
@@ -670,10 +670,10 @@ let docAttachments (lines: string list) : DocAttach list =
 
 /// The marker's district wrap: opener text and how many trailing
 /// characters of the armed line the first district line strips.
-/// the RETIRED district spellings [D:district-retirement] — detected
-/// so their removal error TEACHES instead of dumping an expecting-list
-/// (a documented feature's removal is the one case a reader has a
-/// right to be confused about)
+/// the retired district spellings [D:district-retirement] — detected
+/// so their removal error explains itself instead of dumping an
+/// expecting-list (a documented feature's removal is the one case a
+/// reader has a right to be confused about)
 let retiredDistrictMarker (piece: string) : bool =
     let lastToken =
         match piece.LastIndexOf ' ' with
@@ -690,7 +690,7 @@ let private markerOpener (m: MarkerKind) : (string * int * bool) option =
     match m with
     | MarkerKind.NoMarker -> None
 
-    // the yaml district keeps its marker word; lines join VERBATIM with
+    // the yaml district keeps its marker word; lines join verbatim with
     // relative indentation behind the sentinel [D:yaml-district]
     | MarkerKind.Yaml -> Some("", 0, true)
     // the text district joins exactly as yaml does [D:text-block]
@@ -709,25 +709,24 @@ let singleLine (text: string) : LogicalLine =
 
 // Block lets — F# light syntax at the assembly layer, the same way F#'s own
 // lexer implements it (token insertion at offside boundaries): a continuation
-// line beginning with `let` opens a binding; the next line at the SAME
+// line beginning with `let` opens a binding; the next line at the same
 // indentation closes it by joining with " in " instead of " ", so the
 // single-line grammar sees the explicit form. `|`-headed lines are inert to
-// the stack ONLY while it is empty (statement-level pipeline continuations
+// the stack only while it is empty (statement-level pipeline continuations
 // and column-0 match arms — the two customers); with a binding pending they
 // follow the plain indent rules, so a dedented arm inside a block is the
 // same "needs a body" error F# gives the shape. Every pending let must be
 // closed before the statement ends.
 // Unbalanced ( and { closers for a text fragment — the completion
 // repair path appends these so a mid-edit dangling line parses.
-// Quote-aware via its OWN stack machine, NOT stringScan: interp `$"`
+// Quote-aware via its own stack machine, not stringScan: interp `$"`
 // holes reopen code land mid-string, which a flag-based scanner cannot
 // model — the four string-kind close rules are re-implemented here by
-// necessity (and stringScan reads `$"…"` as a plain string; this gives
-// it its own state).
+// necessity (and stringScan reads `$"…"` as a plain string).
 let closers (text: string) : string =
     // one stack of expected closers models the full nesting: brackets
     // in code, strings ('"' plain, '$' interp — closes with '"' but
-    // '{' opens a HOLE back into code land), single quotes, holes.
+    // '{' opens a hole back into code land), single quotes, holes.
     // Mid-edit dangling text closes correctly at any depth.
     let mutable stack: char list = []
     let mutable i = 0
@@ -794,11 +793,11 @@ let closers (text: string) : string =
     |> String.concat ""
 
 // Still-open brackets (kind, column) after folding a line into the
-// running stack — fmt aligns record fields at TOP+2 and list elements
-// at TOP+1, under the first field/element either way
+// running stack — fmt aligns record fields at top+2 and list elements
+// at top+1, under the first field/element either way
 // (quote-aware via the scanner family; lives here per the rule).
 let braceStack (prev: (char * int) list) (line: string) : (char * int) list =
-    // rides the ONE scanner [D:one-scanner]
+    // rides the one scanner [D:one-scanner]
     foldOutsideStrings
         (fun stack i c ->
             match c with
@@ -828,10 +827,10 @@ let parenDelta (s: string) : int =
 // Fold a piece's brackets into the pending statement's open-bracket
 // stack (kind, line, firstEntryCol) [D:multiline-brackets]. A bracket
 // with content after its opener on the same line records that content's
-// PHYSICAL column as the sibling-entry anchor [D:field-alignment]; a
+// physical column as the sibling-entry anchor [D:field-alignment]; a
 // dangling opener records None (the first continuation entry sets it).
-// A mismatched closer is an error naming BOTH sides; over-closing stays
-// permissive (the parser owns that message). Parens are NOT tracked.
+// A mismatched closer is an error naming both sides; over-closing stays
+// permissive (the parser owns that message). Parens are not tracked.
 let bracketFold
     (lineNo: int)
     (indent: int)
@@ -847,7 +846,7 @@ let bracketFold
                 | '{'
                 | '[' ->
                     let entryCol =
-                        // `{|` is ONE opener token [D:anon-literals] — the
+                        // `{|` is one opener token [D:anon-literals] — the
                         // `|` is not entry content, and `|}` closes from
                         // the entry-content side too
                         let mutable j = i + 1
@@ -859,8 +858,8 @@ let bracketFold
                             j <- j + 1
 
                         // an update header's opener-line content is the
-                        // SOURCE, not a field — the first continuation entry
-                        // anchors instead [D:record-update]. Only a RECORD
+                        // source, not a field — the first continuation entry
+                        // anchors instead [D:record-update]. Only a record
                         // brace can carry a `with`; and the check is
                         // index-based — no per-opener `piece.Substring(j)`
                         // allocation, so a bracket-heavy single line stays
@@ -872,7 +871,7 @@ let bracketFold
                                 while e >= j && piece[e] = ' ' do
                                     e <- e - 1
                                 // does piece[j..e] end with the word "with"?
-                                // (either the whole trimmed tail IS "with", or
+                                // (either the whole trimmed tail is "with", or
                                 // it ends " with" — a space precedes it)
                                 e >= j + 3
                                 && piece[e] = 'h'
@@ -903,19 +902,19 @@ let bracketFold
 // if/match-headed piece as (headIndent, textStart). A sibling arriving
 // at or left of a head closes that compound by paren-wrapping it — a
 // balanced, line-structural unit — so same-level siblings sequence
-// AFTER the conditional while deeper lines still join into its body,
+// after the conditional while deeper lines still join into its body,
 // where greedy `;` grouping is exactly right. `else` and `|` pieces
 // extend a compound instead of closing it. BraceDepth > 0 puts the
 // assembler in record-continuation mode: line breaks separate fields,
 // every other joining rule is inert (records are expressions).
 
-// The pending statement's GROWING text [D:assemble-quadratic]: a single
+// The pending statement's growing text [D:assemble-quadratic]: a single
 // StringBuilder mutated in place, so a continuation-line flood joins in
-// AMORTIZED-LINEAR time (the old `ll.Text + sep + piece` rebuilt the whole
+// amortized-linear time (the old `ll.Text + sep + piece` rebuilt the whole
 // string per join → O(N²) on hundreds-of-KB inputs). The immutable
-// LogicalLine.Text is materialized ONCE at statement close (`bufToLL`);
+// LogicalLine.Text is materialized once at statement close (`bufToLL`);
 // every join site threads a PendBuf instead. Span arithmetic is byte-
-// identical: `joinedStart` derives from `Sb.Length` at the SAME point the
+// identical: `joinedStart` derives from `Sb.Length` at the same point the
 // old code read `ll.Text.Length`, and the separators are the same literals.
 //
 // The incremental indexes answer the assembler's hot queries in O(1)/
@@ -924,7 +923,7 @@ let bracketFold
 //                 bracket-continuation `prev.TrimEnd()` predicates read it
 //                 (last char, EndsWith, Length) without slicing.
 //   LastSegStart — index just past the last sibling sentinel (or 0): the
-//                 proc/serve binder-head scan runs over the LAST segment
+//                 proc/serve binder-head scan runs over the last segment
 //                 only, never the whole growing text (LastIndexOf was O(N)).
 type private PendBuf =
     { Sb: System.Text.StringBuilder
@@ -955,18 +954,18 @@ type private Pend =
       // first pipe after a non-pipe line opens a group. Per group:
       // (groupCol, bodyCol, isForward) [D:match-pipe-offside]. isForward =
       // a `|>` group vs a bare `|` (match/union arm) group; bodyCol = the
-      // arm BODY's column (after the arm `->`; for a dangling arm resolved
+      // arm body's column (after the arm `->`; for a dangling arm resolved
       // to the body line's indent when it arrives; MaxValue until then).
-      // A forward `|>` landing on a bare arm group: at the `|` CLOSES the
-      // match, at or under the body EXTENDS the arm, left of the body
-      // REJECTS.
+      // A forward `|>` landing on a bare arm group: at the `|` it closes
+      // the match, at or under the body it extends the arm, left of the
+      // body it is rejected.
       PipeGroups: (int * int * bool) list
       LastWasPipe: bool
       District: District option
       // (headIndent, textStart, parenDepthAtOpen) [D:compound-paren-prune]
       Compounds: (int * int * int) list
       ParenDepth: int
-      // the indent where the CURRENT statement started (statement = a
+      // the indent where the current statement started (statement = a
       // sibling/`in` join, or the first line after a dangling head) —
       // the lambda pop restores to this level, so a block sibling after
       // the `)` sequences while a fold's init still applies
@@ -974,7 +973,7 @@ type private Pend =
       StmtLevel: int
       PrevDangles: bool
       // open multiline lambdas (opening line, opener indent, paren depth
-      // BEFORE the open, statement level to RESTORE on pop), innermost
+      // before the open, statement level to restore on pop), innermost
       // first [D:multiline-lambda] — popped by paren balance; the user's
       // `)` is the closer
       Lambdas: (int * int * int * int) list
@@ -983,7 +982,7 @@ type private Pend =
       Brackets: (char * int * int option) list }
 
 // The join algebra: every way a continuation line attaches to the
-// pending statement, its inserted text in ONE place. joinedStart
+// pending statement, its inserted text in one place. joinedStart
 // derives from the same strings, so span arithmetic cannot drift from
 // the insertion.
 type private Join =
@@ -1030,7 +1029,7 @@ let private bufAppend (b: PendBuf) (s: string) : PendBuf =
 let private bufLen (b: PendBuf) : int = b.Sb.Length
 
 // the TrimEnd'd length of the buffer (LastNonWs + 1), and whether the
-// TrimEnd'd buffer ENDS WITH `suffix` — both answered from the tracked
+// TrimEnd'd buffer ends with `suffix` — both answered from the tracked
 // last-non-white index, so the bracket-continuation predicates cost
 // O(suffix) instead of a full-text TrimEnd allocation per line
 // [D:assemble-quadratic]
@@ -1075,7 +1074,7 @@ let private bufStartsWithAt (b: PendBuf) (at: int) (prefix: string) : bool =
 
         ok)
 
-// does the buffer START with `prefix`? (O(prefix), no allocation) — the
+// does the buffer start with `prefix`? (O(prefix), no allocation) — the
 // `type ` / `[<` head checks
 let private bufStartsWith (b: PendBuf) (prefix: string) : bool =
     let sb = b.Sb
@@ -1092,7 +1091,7 @@ let private bufStartsWith (b: PendBuf) (prefix: string) : bool =
 
         ok)
 
-// the buffer's LAST segment (after the last sibling sentinel), O(segment)
+// the buffer's last segment (after the last sibling sentinel), O(segment)
 // via the tracked LastSegStart — the proc/serve binder-head scan reads
 // this instead of LastIndexOf over the whole growing text [D:assemble-quadratic]
 let private bufLastSeg (b: PendBuf) : string =
@@ -1145,7 +1144,7 @@ let private applyJoin (j: Join) (b: PendBuf) (piece: string) (lineNo: int) (inde
         | JSpace -> bufAppend b (" " + piece)
         | JDistrictOpen(strip, opener) ->
             // strip the armed marker's trailing chars, then wrap. This arm
-            // fires ONCE per district (the first content line), so the full
+            // fires once per district (the first content line), so the full
             // rescan-after-remove is not on any quadratic path.
             if strip > 0 then
                 b.Sb.Remove(b.Sb.Length - strip, strip) |> ignore
@@ -1166,13 +1165,13 @@ let private applyJoin (j: Join) (b: PendBuf) (piece: string) (lineNo: int) (inde
     { b with Segments = (joinedStart, lineNo, indent) :: b.Segments }
 
 let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> =
-    // trailing comments strip HERE, per physical line [D:trailing-comments]:
+    // trailing comments strip here, per physical line [D:trailing-comments]:
     // stripComment is the whitespace-preceded rule (glued // — http://a,
-    // --format=a//b — stays data). Skipped: yaml district content (BYTES)
-    // and comment-ONLY lines (their class carries transparency semantics
+    // --format=a//b — stays data). Skipped: yaml district content (bytes)
+    // and comment-only lines (their class carries transparency semantics
     // a blanked line would lose — blankSinceHead is the difference)
     let numbered =
-        // the mask must see STRIPPED heads (a commented district head
+        // the mask must see stripped heads (a commented district head
         // still opens its district), so the cut runs twice: once to
         // find the content regions, once — content excluded — for real.
         // TrimEnd only on actual cuts: untouched lines stay byte-equal
@@ -1185,9 +1184,10 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
             else
                 n, stripComment raw)
 
-    // the retired ! districts TEACH [D:district-retirement] — checked
-    // up front over every non-content line (yaml district bodies are
-    // bytes, never read: districtContentMask)
+    // the retired ! districts get an explanatory error
+    // [D:district-retirement] — checked up front over every non-content
+    // line (yaml district bodies are bytes, never read:
+    // districtContentMask)
     let retiredHit =
         let mask = districtContentMask (numbered |> List.map snd)
 
@@ -1283,7 +1283,7 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                             | Some p -> not p.Brackets.IsEmpty
                             | None -> false
 
-                        // the col-0 law suspends while a lambda's paren is
+                        // the col-0 rule suspends while a lambda's paren is
                         // open [D:multiline-lambda]: the closer (or the leak
                         // guard) owns those lines
                         let inOpenLambda =
@@ -1293,8 +1293,8 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
 
                         if raw.Trim() = "" then
                             match current with
-                            // inside an ACTIVE yaml district a blank line is
-                            // BYTES [D:block-scalars] — a block scalar's
+                            // inside an active yaml district a blank line is
+                            // bytes [D:block-scalars] — a block scalar's
                             // content keeps it, so it rides as an empty
                             // verbatim line; the template parser skips blanks
                             // everywhere outside a block scalar's content
@@ -1308,15 +1308,15 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                 )
                             // transparency is total while a statement pends
                             // [D:body-blanks] — the comment-line class, second
-                            // member; the col-0 law (plus EOF) is the sole
+                            // member; the col-0 rule (plus EOF) is the sole
                             // statement boundary, so every error the blank
                             // boundary produced still fires at close
                             | Some p -> Ok(Some p, acc, blankSinceHead)
                             | None -> Ok(None, acc, true)
                         elif (stripComment raw).Trim() = "" then
                             // comment-only: transparent [D:comment-transparency] —
-                            // EXCEPT inside an active yaml district, where the
-                            // line is BYTES (`// x` in a block scalar is data)
+                            // except inside an active yaml district, where the
+                            // line is bytes (`// x` in a block scalar is data)
                             match current with
                             | Some({ District = Some { Active = Some bse
                                                        Yaml = true
@@ -1357,7 +1357,7 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                             let indent = raw |> Seq.takeWhile ((=) ' ') |> Seq.length
 
                             // content is bytes: inside an active yaml district a
-                            // tab AFTER the (space) indentation is CONTENT — the
+                            // tab after the (space) indentation is content — the
                             // structure-level rejection must not reach it
                             let inYamlContent =
                                 match current with
@@ -1377,8 +1377,8 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                     else
                                         Error $"line {lineNo}: continuation without a statement"
                                 | Some p ->
-                                    // structure decisions read the STRIPPED text;
-                                    // yaml-district joins carry the raw BYTES
+                                    // structure decisions read the stripped text;
+                                    // yaml-district joins carry the raw bytes
                                     let rawPiece = raw.Substring indent
                                     let piece = (stripComment raw).Substring indent
                                     let cls = classifyPiece piece
@@ -1401,10 +1401,9 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                             // line [D:assemble-quadratic]
                                             let isTypeDecl = bufStartsWith p.Buf "type "
 
-                                            // the separator goes BEFORE an entry-start line,
+                                            // the separator goes before an entry-start line,
                                             // never before a value continuation — a field's
-                                            // value may open on the next line (the
-                                            // fixture-diversity sweep's first catch — dev/PROCESS.md).
+                                            // value may open on the next line.
                                             // Lists have no entry marker: every line starts an
                                             // element unless the previous line dangles an
                                             // opener/separator/operator [D:multiline-brackets]
@@ -1424,7 +1423,7 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                 // the anon opener is one token [D:anon-literals] —
                                                 // named here because the operator clause below
                                                 // excludes `type` lines, where a nested anon
-                                                // TYPE may dangle it too
+                                                // type may dangle it too
                                                 || prevEndsWith "{|"
                                                 || prevEndsWith "["
                                                 || prevEndsWith ";"
@@ -1432,11 +1431,11 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                 // first field after it is not a sibling
                                                 // [D:record-update]
                                                 || prevEndsWith " with"
-                                                // a preceding-line attribute binds to ITS
+                                                // a preceding-line attribute binds to its
                                                 // field: no separator between them
                                                 || prevEndsWith ">]"
                                                 // a dangling operator/comma continues the
-                                                // same element (wrapped elements) — but NOT in
+                                                // same element (wrapped elements) — but not in
                                                 // type declarations, where a generic closer
                                                 // (`Option<string>`) legitimately ends a field
                                                 || (not (kind = '{' && isTypeDecl)
@@ -1449,7 +1448,7 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                             // the first entry (opener-line content, or the first
                                             // continuation entry of a dangling opener) sets the
                                             // column; every later entry must hit it
-                                            // an attribute and its field are ONE entry on two
+                                            // an attribute and its field are one entry on two
                                             // lines — the `>]` dangle suppresses the separator,
                                             // never the alignment [D:field-alignment]
                                             let attrField = startsEntry && prevEndsWith ">]"
@@ -1488,7 +1487,7 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                             | Some({ Active = None; Yaml = true } as dst) when
                                                 indent > dst.MarkerIndent
                                                 ->
-                                                // the first yaml line fixes the block BASE; it rides
+                                                // the first yaml line fixes the block base; it rides
                                                 // at relative indent 0 [D:yaml-district]
                                                 Ok(
                                                     Some
@@ -1583,12 +1582,12 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                 // pends [D:district-terminates]: the district closes and
                                                 // the line reprocesses under the normal rules — a
                                                 // following `|>`, `in`, or sibling composes with the
-                                                // block's value. The flattened logical line carried no
-                                                // content terminator, so before this the continuation
-                                                // GLUED into the last content line (silent corruption);
-                                                // appending districtClose marks the extent, and
-                                                // districtTail stops there so the expression grammar
-                                                // resumes on the reprocessed line.
+                                                // block's value. The flattened logical line carries no
+                                                // content terminator, so without a marker the
+                                                // continuation would glue into the last content line
+                                                // (silent corruption); appending districtClose marks
+                                                // the extent, and districtTail stops there so the
+                                                // expression grammar resumes on the reprocessed line.
                                                 go
                                                     { p with
                                                         District = None
@@ -1596,8 +1595,9 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                         LastIndent = dst.MarkerIndent }
                                             // the multiline lambda's closer and leak guard
                                             // [D:multiline-lambda]: a `)`-headed line continues
-                                            // the statement at ANY indent; any other line at or
-                                            // left of the opener is a leak, named
+                                            // the statement at any indent; any other line at or
+                                            // left of the opener is a leak (the error names the
+                                            // opener)
                                             | None when
                                                 (match p.Lambdas with
                                                  | (_, oindent, _, _) :: _ -> cls.ClosesParen || indent < oindent
@@ -1606,8 +1606,8 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                 let (oline, oindent, _, _) = List.head p.Lambdas
 
                                                 if not cls.ClosesParen then
-                                                    // F#-parity: FS0058 is an ERROR left of the
-                                                    // opener; AT the opener's indent the line is a
+                                                    // F#-parity: FS0058 is an error left of the
+                                                    // opener; at the opener's indent the line is a
                                                     // body continuation (handled below)
                                                     Error
                                                         $"line {lineNo}: this line sits left of the lambda '(' opened at line {oline} — close the paren first"
@@ -1673,7 +1673,7 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                 if cls.Kind = PieceKind.PipeHead || cls.Kind = PieceKind.ElseHead then
                                                     // arms, pipeline stages, and else extend the
                                                     // current piece: no sibling `;` — but siblings
-                                                    // must ALIGN, and a shallower arm offside-closes
+                                                    // must align, and a shallower arm offside-closes
                                                     // deeper compounds [D:pipe-alignment]
                                                     let isUntil = piece = "until" || piece.StartsWith "until "
                                                     let isAlways = piece = "always"
@@ -1683,11 +1683,11 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                     | (k, letLine) :: _ when indent <= k && not isUntil ->
                                                         noBody letLine
                                                     | _ ->
-                                                        // deeper groups die at this line's column
+                                                        // deeper groups close at this line's column
                                                         let groups =
                                                             p.PipeGroups |> List.skipWhile (fun (g, _, _) -> g > indent)
 
-                                                        // the arm BODY's column [D:match-pipe-offside]: the
+                                                        // the arm body's column [D:match-pipe-offside]: the
                                                         // token after the arm `->` for an inline body;
                                                         // MaxValue for a dangling arm (resolved to the body
                                                         // line's indent when it arrives) or a `|`-decl with
@@ -1745,13 +1745,13 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                                 // opens a group — anchored at or
                                                                 // right of the innermost open
                                                                 // compound head (F#'s offside).
-                                                                // A DANGLING pipe line (ending
+                                                                // A dangling pipe line (ending
                                                                 // with/->/function) opens one too:
                                                                 // its arms sit deeper by design
                                                                 // [D:function-keyword]
                                                                 match groups with
                                                                 | (g, _, false) :: rest when g = indent && not isFwd ->
-                                                                    // a RETURNING arm after a non-pipe
+                                                                    // a returning arm after a non-pipe
                                                                     // body [D:match-pipe-offside]: the
                                                                     // group at this exact column is the
                                                                     // arm's own match — a deeper open
@@ -1773,8 +1773,8 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                             else
                                                                 match groups with
                                                                 | (g, _, false) :: rest when g = indent && not isFwd ->
-                                                                    // a NEW arm aligns with its siblings:
-                                                                    // reset the group's body column to THIS
+                                                                    // a new arm aligns with its siblings:
+                                                                    // reset the group's body column to this
                                                                     // arm's — each arm has its own body
                                                                     // offside [D:match-pipe-offside]
                                                                     Ok(false, (g, bodyCol, false) :: rest)
@@ -1794,8 +1794,8 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                             // a shallower arm closes compounds whose
                                                             // heads sit deeper (the nested-match
                                                             // return F# reads from the columns); a
-                                                            // CLOSING `|>` also wraps the head it sits
-                                                            // ON — `(match …) |> f` [D:match-pipe-offside]
+                                                            // closing `|>` also wraps the head it sits
+                                                            // on — `(match …) |> f` [D:match-pipe-offside]
                                                             let closeAt = if closes then indent - 1 else indent
 
                                                             let rec closeDeeper (b: PendBuf) compounds =
@@ -1804,7 +1804,7 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                                     h > closeAt
                                                                     // a within head has no arm at its
                                                                     // column [D:within-tail-pipe]: a pipe
-                                                                    // AT the head closes the scope and
+                                                                    // at the head closes the scope and
                                                                     // pipes the whole — `(within …) |> f`,
                                                                     // the match-close wrap one keyword over
                                                                     || (h = indent
@@ -1839,7 +1839,7 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                                     { p with
                                                                         Buf =
                                                                             applyJoin
-                                                                                // until/always join at the SENTINEL:
+                                                                                // until/always join at the sentinel:
                                                                                 // a space would feed the keyword to a
                                                                                 // command body's argv (cmdWord stops
                                                                                 // at the sentinel) [D:until-argv-join]
@@ -1895,7 +1895,7 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                         let buf, compounds, closedHead =
                                                             closeCompounds p.Buf p.Compounds None
 
-                                                        // the sibling floor is the STATEMENT's start column,
+                                                        // the sibling floor is the statement's start column,
                                                         // not the last line's [D:continuation-siblings]: a
                                                         // deeper continuation line must not hoist the floor,
                                                         // or the second argument line of a multi-line
@@ -1907,7 +1907,7 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
 
                                                         // while a lambda's paren is open, lines at (or
                                                         // right of) its opener that would close a let or
-                                                        // sequence a sibling OUTSIDE it are body
+                                                        // sequence a sibling outside it are body
                                                         // continuations instead — the `in`/`;` joins wait
                                                         // for the `)` [D:multiline-lambda]
                                                         let lambdaFloor =
@@ -1919,7 +1919,7 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                             match p.Lets with
                                                             // a `)`-headed line while a plain paren is
                                                             // open closes a multi-line application — a
-                                                            // continuation at ANY body indent, never a
+                                                            // continuation at any body indent, never a
                                                             // sibling; the `in`/`;` joins wait for the
                                                             // `)` exactly as the lambda floor rules
                                                             // [D:paren-close-continuation]
@@ -1931,7 +1931,7 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                             // the dangle position [D:scoped-procs]
                                                             | _ when bufEndsInProcHead buf || bufEndsInServeHead buf ->
                                                                 p.Lets, JStmtSibling
-                                                            // the first line after a dangling head OPENS its
+                                                            // the first line after a dangling head opens its
                                                             // body — a stale statement level from an earlier
                                                             // block must not sibling-capture it
                                                             // [D:continuation-siblings]
@@ -1939,7 +1939,7 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                                 p.Lets, JSpace
                                                             // same-indent sibling = block sequencing
                                                             // [D:sibling-sentinel]: the machine boundary,
-                                                            // NOT a user ';' — command mode stops here
+                                                            // not a user ';' — command mode stops here
                                                             | _ when indent = siblingLevel && indent > lambdaFloor ->
                                                                 p.Lets, JStmtSibling
                                                             | _ -> p.Lets, JSpace
@@ -1990,7 +1990,7 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                             else
                                                                 p.StmtLevel
 
-                                                        // an attached closer pops its lambda AND restores
+                                                        // an attached closer pops its lambda and restores
                                                         // the statement level — the next sibling must
                                                         // join with `;`, never as an application
                                                         let poppedL, keptL =
@@ -2010,11 +2010,11 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                                 let (_, _, _, restore) = List.last ps
                                                                 restore, restore
 
-                                                        // THE DEDENT FLOOR [D:district-retirement]: a line
+                                                        // the dedent floor [D:district-retirement]: a line
                                                         // that dedents below the open block but aligns with
-                                                        // no enclosing level would SPACE-JOIN — silently
+                                                        // no enclosing level would space-join — silently
                                                         // absorbed as argv when the previous line is a
-                                                        // command (legal-parse-wrong-meaning). Error instead.
+                                                        // command (a legal parse, wrong meaning). Error instead.
                                                         if
                                                             join = JSpace
                                                             && indent < p.LastIndent
@@ -2044,7 +2044,7 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                                         ParenDepth = depth
                                                                         PipeGroups =
                                                                             // the first body line of a
-                                                                            // DANGLING arm resolves its body
+                                                                            // dangling arm resolves its body
                                                                             // column [D:match-pipe-offside]
                                                                             (match p.PipeGroups with
                                                                              | (g, bc, false) :: rest when
@@ -2065,12 +2065,12 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                             let cls = classifyPiece (raw.TrimEnd())
 
                             // a statement-level attribute line binds to the
-                            // DECLARATION below it [D:attr-positions] — a pend
-                            // that is ONLY a complete attr list joins the next
+                            // declaration below it [D:attr-positions] — a pend
+                            // that is only a complete attr list joins the next
                             // col-0 line instead of closing (the field-attr `>]`
                             // dangle, one level up); the joined text re-parses
                             // as one statement, so a non-decl follower gets the
-                            // parser's position teaching, located
+                            // parser's located error about attribute position
                             let attrOnlyPend =
                                 match current with
                                 | Some p when
@@ -2109,7 +2109,7 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                   Yaml = isYaml
                                                   Marker = cls.Marker
                                                   Active = None })
-                                          // a fresh logical-line HEAD that opens a
+                                          // a fresh logical-line head that opens a
                                           // compound is tracked too [D:match-pipe-offside]
                                           // — so a later dedented `|>` can wrap it
                                           // `(match …) |> f`; a sibling head already is
@@ -2141,8 +2141,8 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
 // [D:repl-multiline] — comment-only lines filtered, comments stripped
 // exactly as the REPL preprocesses. An assembly error (a still-open or
 // pending statement) is "not yet countable" -> None. The piped REPL's
-// continuation oracle: an added line that keeps the count MERGED into the
-// pending statement; one that raises it STARTED a new statement.
+// continuation oracle: an added line that keeps the count merged into the
+// pending statement; one that raises it started a new statement.
 let statementCount (bufLines: string list) : int option =
     let numbered =
         bufLines
@@ -2154,11 +2154,11 @@ let statementCount (bufLines: string list) : int option =
     | Ok lls -> Some(List.length lls)
     | Error _ -> None
 
-/// does `next` CONTINUE the already-complete statement in `buf`?
+/// does `next` continue the already-complete statement in `buf`?
 /// [D:repl-multiline] The assembler's own answer, no second parser: a
 /// blank/comment line breaks a completed statement (the blank-boundary
-/// rule) and does NOT attach; otherwise `next` attaches iff appending it
-/// does not RAISE the assembled statement count (a `|>` tail, an offside
+/// rule) and does not attach; otherwise `next` attaches iff appending it
+/// does not raise the assembled statement count (a `|>` tail, an offside
 /// `else`, a district body keep it; still-pending buffers always want
 /// more). Drives the piped REPL's read-ahead so a multi-line statement
 /// assembles the way a script does.
@@ -2187,8 +2187,8 @@ let translate (ll: LogicalLine) (col: int) : int * int =
 module Color = Weir.Types.Color
 
 // ---- the REPL input-line colorizer [D:repl-color] -----------------
-// Rides the ONE scanner (inStringMask), stripComment, and the parser's
-// keyword set — no re-derived string states, by law: this is the one
+// Rides the one scanner (inStringMask), stripComment, and the parser's
+// keyword set — no re-derived string states, so this is the one
 // highlighter that is correct by construction. Lexical grade only;
 // the head word additionally colors by the session resolver's verdict
 // (the fish trick). Fixed palette, no theming.
@@ -2227,10 +2227,10 @@ let colorizeRepl (isKnown: string -> bool) (line: string) : string =
 
         // token pass over the code region
         let mutable i = 0
-        // the within KIND paints as part of the form [D:within-kinds]
+        // the within kind paints as part of the form [D:within-kinds]
         let mutable prevWord = ""
         // the mode tint [D:semantic-tokens]: an external head arms
-        // command mode; argv words render DIM until a '|' hands the
+        // command mode; argv words render dim until a '|' hands the
         // chain to an expression stage — the same three-way the LSP
         // tokens carry (head / argv / splice), from the same resolver
         let mutable cmdMode = false
@@ -2247,7 +2247,7 @@ let colorizeRepl (isKnown: string -> bool) (line: string) : string =
                 let word = line.Substring(start, i - start)
 
                 let code =
-                    // the head SLOT is Complete's one predicate
+                    // the head slot is Complete's one predicate
                     // [D:let-rhs-head]: the statement head and the
                     // let-RHS take the same verdict — tint and Tab
                     // cannot disagree about where a head stands
@@ -2258,7 +2258,7 @@ let colorizeRepl (isKnown: string -> bool) (line: string) : string =
                         Some(if Extern.exists word then "34" else "31")
                     | slot ->
                         if Weir.Parser.keywords.Contains word then
-                            // keywords: BLUE — the red family (31/35 render
+                            // keywords: blue — the red family (31/35 render
                             // near-identically in some themes) is reserved for
                             // exactly one signal: a head that would fail
                             Some "34"
@@ -2275,7 +2275,7 @@ let colorizeRepl (isKnown: string -> bool) (line: string) : string =
                         elif slot = Complete.HeadSlot.Stmt then
                             Some "31" // unresolved statement head: red
                         elif Char.IsUpper word[0] then
-                            // the casing law: types/ctors/modules — at the
+                            // the casing rule: types/ctors/modules — at the
                             // let-RHS an unknown uppercase head is a legal
                             // constructor application, never red
                             // [D:constructors-not-heads]
@@ -2322,15 +2322,15 @@ let colorizeRepl (isKnown: string -> bool) (line: string) : string =
                 i <- i + 1
 
         // the yaml district marker [D:yaml-district]: the line-end word
-        // tints like the `!` markers do; district BODY lines stay
+        // tints like the `!` markers do; district body lines stay
         // per-line lexical — the block treatment is the static grammars'
         // and semantic tokens' job, not a line colorizer's
         let codeTrimmed = (line.Substring(0, commentCut)).TrimEnd()
 
         if codeTrimmed.Length >= 4 && isYamlMarkerPiece codeTrimmed then
             // marker + modifiers (patch/by=/schema=) — one strip loop
-            // shared with the predicate, so tint and law cannot
-            // disagree [D:yaml-nodes]
+            // shared with the predicate, so tint and the marker rule
+            // cannot disagree [D:yaml-nodes]
             let markerLen = Parser.yamlMarkerLen codeTrimmed
 
             for j in codeTrimmed.Length - markerLen .. codeTrimmed.Length - 1 do
@@ -2358,13 +2358,13 @@ let colorizeRepl (isKnown: string -> bool) (line: string) : string =
         sb.ToString()
 
 // a `#sig` head directive [D:command-signatures]: tool + optional
-// override path + its physical line (for the declared-by teaching)
+// override path + its physical line (so errors can name the declaration)
 type SigDecl =
     { Tool: string
       Override: string option
       Line: int }
 
-// shebang/#sig peeling — ONE derivation for the runner and the
+// shebang/#sig peeling — one derivation for the runner and the
 // check-side analyzeLines. The head block takes #sig lines; a #-line
 // past it stays the misplaced-directive error.
 let private scriptBody (rawLines: string list) : string list * int * SigDecl list =
@@ -2423,25 +2423,25 @@ type CheckedStmt =
 // module's values. AbsPath is the normalized identity (symlinks unresolved).
 and LoadedModule =
     { Alias: string
-      // the module's OWN name (declared or filename-derived), independent
+      // the module's own name (declared or filename-derived), independent
       // of a site's `as` — a cached module re-aliases from this [D:modules-v1]
       NaturalName: string
       AbsPath: string
       TypeDefs: (string * TypeDef) list
       Members: (string * Scheme) list
       // unsigned members [D:module-signatures]: never resolvable from an
-      // importer — carried so the import-of-private error can teach the
-      // signature to add (type included)
+      // importer — carried so the import-of-private error can suggest
+      // the signature to add (type included)
       PrivateMembers: (string * Scheme) list
       TypeNames: string list
-      // each statement WITH its logical line [D:can-report]: the line
+      // each statement with its logical line [D:can-report]: the line
       // carries the segment table, so a capability inside a module can
       // name its own file:line:col like any diagnostic
       Body: (LogicalLine * CheckedStmt) list }
 
-// an import failure [D:modules-v1]. File=Some for a MODULE-CONTENT error —
-// reported at the module's OWN site (Line/Col into that file) plus an
-// "imported here" note at the import line; File=None for an import-STATEMENT
+// an import failure [D:modules-v1]. File=Some for a module-content error —
+// reported at the module's own site (Line/Col into that file) plus an
+// "imported here" note at the import line; File=None for an import-statement
 // error (self-import, missing file, not-a-module) reported at the import line.
 and ImportError =
     { File: string option
@@ -2465,8 +2465,8 @@ let selfMembers: Map<string, Scheme> =
         [ "pid", generalize TInt
           "args", generalize (TSeq TStr)
           "stdin", generalize (TSeq TStr)
-          // scriptPath = the FILE'S OWN path (a module sees its own);
-          // entryPath = the INVOKED script's, a process fact like args/stdin
+          // scriptPath = the file's own path (a module sees its own);
+          // entryPath = the invoked script's, a process fact like args/stdin
           // — the same for every file in the run [D:modules-v1] (decision 12)
           "scriptPath", generalize TStr
           "entryPath", generalize TStr ]
@@ -2481,9 +2481,9 @@ let private baseEnvs (scriptArgs: string list) (scriptPath: string) =
             Modules = typeEnv.Modules |> Map.add "Self" selfMembers }
 
     let stdinStream =
-        // ONE enumeration [D:prompt]: stdin is a live stream — a second
+        // one enumeration [D:prompt]: stdin is a live stream — a second
         // GetEnumerator cannot rewind the fd, and yielding empty there
-        // was the silent-wrong-data class; raise with the repair instead
+        // silently produces wrong data; raise with the repair instead
         let consumed = ref false
 
         Eval.VSeq(
@@ -2511,7 +2511,7 @@ let private baseEnvs (scriptArgs: string list) (scriptPath: string) =
         |> Map.add "Self.pid" (Eval.VInt(int64 System.Environment.ProcessId))
         |> Map.add "Self.args" (Eval.VSeq(scriptArgs |> List.map Eval.VStr :> seq<Eval.Value>))
         |> Map.add "Self.stdin" stdinStream
-        // the entry IS the invoked script, so its own path and the entry
+        // the entry is the invoked script, so its own path and the entry
         // path coincide here; a module later overrides scriptPath with its
         // own while entryPath rides along as a process fact
         |> Map.add "Self.scriptPath" (Eval.VStr scriptPath)
@@ -2519,9 +2519,8 @@ let private baseEnvs (scriptArgs: string list) (scriptPath: string) =
 
     typeEnv, valueEnv
 
-// THE base resolver over a type env — one constructor behind the
-// script/fmt/REPL/CLI call sites (was ×4 verbatim; the census's
-// conviction)
+// the base resolver over a type env — one constructor behind the
+// script/fmt/REPL/CLI call sites
 let resolver (typeEnv: TypeEnv) : Parser.Resolver =
     { IsKnown = fun n -> Map.containsKey n typeEnv.Values || Map.containsKey n typeEnv.Modules
       IsCommandCallable = fun n -> Builtins.commandCallable.Contains n
@@ -2542,9 +2541,9 @@ let private located (path: string) (lineNo: int) (msg: string) : string =
     $"{path}:{lineNo}: {msg}"
 
 // the runtime-error line [D:binary-echo]: an error message may interpolate
-// DATA (a hostile filename, a tenant name), and error TEXT is a tty-bound
+// data (a hostile filename, a tenant name), and error text is a tty-bound
 // renderer — so sanitize the message when stderr is a tty, the same guard
-// print's data path uses. weir's own "error" colour word is added AROUND
+// print's data path uses. weir's own "error" colour word is added around
 // the sanitized message, so colouring is untouched; redirected stderr
 // stays byte-faithful.
 let private runtimeErrorLine (path: string) (lineNo: int) (message: string) : string =
@@ -2557,7 +2556,7 @@ let printResult (v: Eval.Value) =
     match v with
     | Eval.VStr s -> Console.WriteLine s
     | Eval.VSeq items -> Eval.writeLines items
-    // unit-valued command statements (| orFail) print NOTHING —
+    // unit-valued command statements (| orFail) print nothing —
     // the assert idiom is silent on success [D:exit-reifiers]
     | Eval.VUnit -> ()
     | other -> Console.WriteLine(Eval.formatValue other)
@@ -2579,7 +2578,7 @@ let discardError (ty: Ty) : string option =
             $"this statement computes a {formatTy ty} and discards it — bind it, or pipe it to print"
             + " (for a plain listing, ^ls runs the real program)"
         )
-    // an UNRESOLVED statement type [D:exit-polymorphic]: nothing
+    // an unresolved statement type [D:exit-polymorphic]: nothing
     // determines it — almost always a helper whose body ends in
     // exit/fail (diverging, so polymorphic — never unit). A bare
     // "computes a 'a1" names no cause; this names it and the repair.
@@ -2590,12 +2589,12 @@ let discardError (ty: Ty) : string option =
     | ty -> Some $"this statement computes a {formatTy ty} and discards it — bind it, or pipe it to print"
 
 // ---------------------------------------------------------------------------
-// The checked-statement pipeline — ONE owner [D:one-pipeline]:
+// The checked-statement pipeline — one owner [D:one-pipeline]:
 // parse -> statement dispatch -> check -> statement-rule gate,
-// physical spans computed INSIDE. Every consumer (runner, REPL, -e,
+// physical spans computed inside. Every consumer (runner, REPL, -e,
 // check/LSP, the oracle mirror) calls this and only renders.
 
-// a module member SIGNATURE [D:module-signatures] — the export
+// a module member signature [D:module-signatures] — the export
 // declaration. Line/Col are the sig's own physical site (mismatch and
 // orphan errors name it); Scheme is the sig type generalized (the
 // paired implementation's check refines its Cs).
@@ -2605,7 +2604,7 @@ type MemberSig =
       Line: int
       Col: int }
 
-// the module-signature context a MODULE check threads [D:module-signatures]:
+// the module-signature context a module check threads [D:module-signatures]:
 // None = script/REPL/-e, where the form refuses with the teaching.
 // Pending = declared, not yet implemented; Signed = every name ever
 // signed (re-implementation guard); Implemented = every module-own
@@ -2654,8 +2653,8 @@ type StmtDiag =
       Parse: bool // parse error (FParsec text) vs type error (message)
       Message: string
       // multi-file [D:modules-v1]: File=Some when PhysLine/PhysCol point
-      // into ANOTHER file (a module's own error site); Note carries an
-      // extra (line, col, message) in the CURRENT file (the import-line
+      // into another file (a module's own error site); Note carries an
+      // extra (line, col, message) in the current file (the import-line
       // "imported here"). Both default to None (single-file).
       File: string option
       Note: (int * int * string) option
@@ -2669,9 +2668,9 @@ type CheckedStatement =
       Warnings: (int * int * string) list } // physical line, col, message
 
 // gateExprs: scripts apply the statement rule (values must be bound or
-// printed); the REPL and -e ECHO values instead — the same pipeline,
+// printed); the REPL and -e echo values instead — the same pipeline,
 // one explicit switch, never a re-derivation
-// assume only COMMAND-SHAPED words (letter-initial, ident chars +
+// assume only command-shaped words (letter-initial, ident chars +
 // dashes; never keywords, never dotted): the expression grammar must
 // keep claiming Env.load, from-adapters, and punctuation heads
 let assumeResolver (tenv: TypeEnv) : Parser.Resolver =
@@ -2689,16 +2688,16 @@ let assumeResolver (tenv: TypeEnv) : Parser.Resolver =
                     && not (Map.containsKey n tenv.Modules)
                     && n |> Seq.forall (fun c -> System.Char.IsLetterOrDigit c || c = '_' || c = '-')) }
 
-// mkR builds the resolver FROM THE CURRENT ENV per statement, so
+// mkR builds the resolver from the current env per statement, so
 // script-defined names are known at parse time — bindings shadow PATH
 // commands by construction (`let cat = ...` then `cat x` is an
 // application; ^cat forces the binary) [D:assume-resolver].
-// FParsec dumps embed the ASSEMBLED logical line — never what the user
+// FParsec dumps embed the assembled logical line — never what the user
 // wrote. Strip every snippet+caret block, keep the diagnostic text,
 // and translate embedded positions to physical line/col
 // [D:clean-parse-dump].
 let private cleanParseDump (ll: LogicalLine) (msg: string) : string =
-    // no-leak [D:sibling-sentinel]: FParsec may echo the assembled line OR
+    // no-leak [D:sibling-sentinel]: FParsec may echo the assembled line or
     // list the sentinel as an expected token; the machine sentinel must
     // never surface — render both the raw char and FParsec's  escape
     // (its expected-set rendering) as ';'
@@ -2737,8 +2736,8 @@ let private cleanParseDump (ll: LogicalLine) (msg: string) : string =
                     | x :: xs when isCaret x -> xs
                     | _ :: xs -> dropSnippet xs
 
-                // the FIRST position is the diag's own — consumers render
-                // it with the source line; only BACKTRACK positions stay
+                // the first position is the diag's own — consumers render
+                // it with the source line; only backtrack positions stay
                 let acc' = if first then acc else (String(' ', indent) + pos) :: acc
                 go false acc' (dropSnippet tail)
             | None -> go first (l :: acc) tail
@@ -2748,7 +2747,7 @@ let private cleanParseDump (ll: LogicalLine) (msg: string) : string =
     // whose whole section emptied
     // openers (header/position lines ending with ':') whose section
     // emptied are dropped too — bottom-up: an opener survives only if
-    // the next SURVIVING line is its content (>= indent, non-opener) or
+    // the next surviving line is its content (>= indent, non-opener) or
     // a nested opener (> indent)
     let isOpener (l: string) = l.TrimEnd().EndsWith ":"
 
@@ -2773,8 +2772,8 @@ let private cleanParseDump (ll: LogicalLine) (msg: string) : string =
                 h :: kept
 
     // rider D3: the foreign words (`while`/`return`/`try`/`def`) are reserved
-    // ONLY to teach that weir lacks them, so offering them as tokens the
-    // parser EXPECTS is backwards. Strip them, consulting Parser's ONE list.
+    // only to explain that weir lacks them, so offering them as tokens the
+    // parser expects is backwards. Strip them, consulting Parser's one list.
     // FParsec wraps a long list across lines, so rejoin first — otherwise a
     // token straddling the break is missed, and the list reads better whole.
     let bannedTokens =
@@ -2783,9 +2782,9 @@ let private cleanParseDump (ll: LogicalLine) (msg: string) : string =
     let rebuildExpecting (ls: string list) : string list =
         // FParsec wraps the list at whatever width it likes — sometimes
         // comma-first, sometimes token-first — so a prefix test misses
-        // continuations and the banned words survive on the tail line (found
-        // by D4's negative control). A continuation is instead any following
-        // line that is NOT a section opener: openers end with ':'.
+        // continuations and the banned words survive on the tail line.
+        // A continuation is instead any following line that is not a
+        // section opener: openers end with ':'.
         let isCont (l: string) =
             l.Trim() <> "" && not (l.TrimEnd().EndsWith ":")
 
@@ -2829,21 +2828,19 @@ let private cleanParseDump (ll: LogicalLine) (msg: string) : string =
         walk [] ls
 
     // rider D5: FParsec's backtracking trace is the parser talking to its
-    // author. `go` already dropped the diagnostic's OWN position (consumers
+    // author. `go` already dropped the diagnostic's own position (consumers
     // render that with the source line), so any position line still standing
-    // is a BACKTRACK position — drop those and FParsec's EOF note, and the
+    // is a backtrack position — drop those and FParsec's EOF note, and the
     // "The parser backtracked after:" opener empties and dropEmptyOpeners
     // takes it.
     //
-    // KEPT UNDER WEIR_LOG=debug, deliberately: `go` retained these on
-    // purpose ("only BACKTRACK positions stay"), and the reason — they tell
-    // weir's own developers where the grammar gave up — is still true. What
-    // was wrong was the AUDIENCE, not the information, so this hides it
-    // rather than deleting it. The smaller reversal keeps the capability.
-    // `Unknown Error(s)` is FParsec admitting it has nothing to say while
-    // claiming there is an error — the worst line in the dump, and the
-    // content that kept the backtrack section alive after D5 dropped its
-    // position lines (the opener survives while any child does)
+    // Kept under WEIR_LOG=debug: backtrack positions tell weir's own
+    // developers where the grammar gave up — the wrong part was the
+    // audience, not the information, so this hides rather than deletes.
+    // `Unknown Error(s)` is FParsec claiming an error while having
+    // nothing to say — dropped too, since that content alone would keep
+    // the backtrack section (and its opener) alive after the position
+    // lines go.
     let isBacktrackNoise (l: string) =
         let t = l.Trim()
 
@@ -2915,9 +2912,9 @@ let private checkStatementCore
     try
         match Parser.parseLineFull r ll.Text with
         | Error f ->
-            // FParsec's primary error is often IRRELEVANT when the real cause
+            // FParsec's primary error is often irrelevant when the real cause
             // is an unresolvable command head (the backtrack note buries it).
-            // Retry under the assume-resolver: if that parses, the failure IS
+            // Retry under the assume-resolver: if that parses, the failure is
             // missing commands — name them precisely instead of the dump.
             let missingHeads =
                 match Parser.parseLineFull (assumeResolver tenv) ll.Text with
@@ -3010,8 +3007,8 @@ let private checkStatementCore
 
             match sigCtx with
             | None ->
-                // scripts infer [D:module-signatures] — the API-surface law
-                // is a MODULE law; a script's lets need no export marker
+                // scripts infer [D:module-signatures] — the API-surface rule
+                // is a module rule; a script's lets need no export marker
                 sigErr
                     $"signatures belong to module APIs — scripts infer: drop the signature (let {name} = …), or move this into a module"
             | Some sc ->
@@ -3043,8 +3040,8 @@ let private checkStatementCore
                                   Env = tenv'
                                   Warnings = [] }
         | Ok(SLetPat({ PKind = PWildcard } as pat, _)) when gateExprs ->
-            // a bare `_` binder is the anonymous swallow — binding is how
-            // weir silences raise-on-nonzero, so the discard gets a NAME
+            // a bare `_` binder discards anonymously — binding is how
+            // weir silences raise-on-nonzero, so the discard gets a name
             // [D:unused-bindings]; gateExprs scopes the refusal with the
             // discard family (the REPL and -e keep their echo regime)
             Error(
@@ -3056,7 +3053,7 @@ let private checkStatementCore
                       Origin = None }
             )
         | Ok(SLetPat(pat, e)) ->
-            // a destructuring let cannot IMPLEMENT a signature
+            // a destructuring let cannot implement a signature
             // [D:module-signatures] — pairing is by the plain name
             let sigClash =
                 sigCtx
@@ -3115,7 +3112,7 @@ let private checkStatementCore
             match sigCtx |> Option.bind (fun sc -> Map.tryFind name sc.Pending) with
             | Some sd ->
                 // check-against-sig [D:module-signatures]: the signature's
-                // types FLOW INTO the implementation's checking; the
+                // types flow into the implementation's checking; the
                 // exported scheme is the signature's (plus the
                 // implementation's constraint residue)
                 let sigErrAt (span: Span) msg =
@@ -3190,7 +3187,7 @@ let private checkStatementCore
             | Error terr -> Error(typed StmtTag.Cmd terr)
             | Ok te ->
                 // a bool-valued chain (| succeeds) as a bare statement is a
-                // DISCARDED value, not a stream — the discard family
+                // discarded value, not a stream — the discard family
                 // [D:exit-reifiers]. `| complete` (a Completed record) joins
                 // it: same mistake, keyed on the distinctive value type.
                 let rec exitCodeSpine (t: Check.TypedExpr) =
@@ -3239,7 +3236,7 @@ let private checkStatementCore
                           Env = tenv
                           Warnings = warningsOf te }
         | Ok(SExpr e) ->
-            // statement position demands unit, so a commandish TAIL arms
+            // statement position demands unit, so a commandish tail arms
             // [D:within-scopes] — reaching through scopes and let-ins;
             // the REPL (gateExprs=false) keeps its echo instead
             let e = if gateExprs then Check.armTail e else e
@@ -3250,7 +3247,7 @@ let private checkStatementCore
             | Ok te ->
                 // the likeliest intent behind a discarded $(cmd) is "run
                 // it" — the wrapper is what is in the way, so the error
-                // names the DROP [D:district-retirement] (the wrap-it
+                // names the drop [D:district-retirement] (the wrap-it
                 // hint's principle, inverted)
                 let dropClause =
                     match e.Kind with
@@ -3291,9 +3288,9 @@ let private checkStatementCore
         | Ok(SImport(path, pathSpan, aliasOpt)) ->
             let importLine, importCol = translate ll pathSpan.Start.Col
 
-            // a module-CONTENT error (File=Some) reports at the module's OWN
+            // a module-content error (File=Some) reports at the module's own
             // site [D:modules-v1], with an "imported here" note at the import
-            // line; an import-STATEMENT error reports at the import line
+            // line; an import-statement error reports at the import line
             let importDiag (e: ImportError) =
                 match e.File with
                 | Some mf ->
@@ -3306,7 +3303,7 @@ let private checkStatementCore
                       Parse = false
                       Message = e.Message
                       File = Some mf
-                      // point at THIS level's import; the outermost (entry)
+                      // point at this level's import; the outermost (entry)
                       // level runs last, so its note (in the entry file) wins
                       Note = Some(importLine, importCol, "imported here")
                       Warnings = [] }
@@ -3352,8 +3349,8 @@ let private checkStatementCore
     finally
         Check.toPhys.Value <- None
 
-// [D:pure-stage1]: the pure region's LAW, enforced as a post-CHECK
-// layer HERE — the classifier needs the closed builtin surface, so it
+// [D:pure-stage1]: the pure region's rule, enforced as a post-check
+// layer here — the classifier needs the closed builtin surface, so it
 // lives after Builtins (Purity.fs), out of Check.fs's compile reach;
 // and every consumer — runner, REPL, -e, modules — flows through this
 // pipeline [D:one-pipeline], so the layer covers them all. A KLet
@@ -3384,8 +3381,8 @@ let checkStatement
         match teTag with
         | None -> Ok st
         | Some(te, tag) ->
-            // pureViolation now returns the COMPLETE located message
-            // (pure's "…forbids effects, but…" OR readonly's
+            // pureViolation returns the complete located message
+            // (pure's "…forbids effects, but…" or readonly's
             // "…forbids external mutation, but…") [D:pure-stage2]
             match Purity.pureViolation tenv.PureBindings te with
             | Some(span, message) ->
@@ -3414,12 +3411,12 @@ let checkStatement
                 | _ -> Ok st)
 
 // ---- unused bindings [D:unused-bindings]: whole-file threading ------------
-// The law is a WHOLE-FILE judgement (a binder's readers may sit any
-// number of statements later), so it applies POST-FOLD — beside the
-// sig-orphan law — in every consumer that folds a complete file:
+// The check is a whole-file judgement (a binder's readers may sit any
+// number of statements later), so it applies post-fold — beside the
+// sig-orphan check — in every consumer that folds a complete file:
 // analyzeLines (check / --can / LSP), the runner's check phase, the
 // module loader, and the fidelity mirror. Per-statement consumers
-// (REPL, -e, Complete) never see it. An errored statement POISONS the
+// (REPL, -e, Complete) never see it. An errored statement poisons the
 // pass for the whole file — one real error beats N echoes (the
 // hole-scheme precedent).
 
@@ -3461,8 +3458,8 @@ type UnusedTracker() =
                   UMessage = if u.UBareWildcard then bareMsg else plainMsg u.UName }
 
     /// register a top-level binder; an unread pending binder of the
-    /// same name errors AT THE EARLIER BINDER (the shadow rule —
-    /// DECIDED yes, the classic copy-paste bug)
+    /// same name errors at the earlier binder (the shadow rule —
+    /// it catches the classic copy-paste bug)
     member _.Binder (ll: LogicalLine) (name: string) (startCol: int) (endCol: int) =
         if not (Check.unusedExempt name) then
             let l, c = translate ll startCol
@@ -3492,7 +3489,7 @@ type UnusedTracker() =
 
     /// one checked statement, in file order: mark its uses, collect its
     /// block-local findings, then register its own binders (a
-    /// same-statement read of the same name reads the OUTER binding —
+    /// same-statement read of the same name reads the outer binding —
     /// no `let rec` exists)
     member this.Feed (ll: LogicalLine) (chk: CheckedStatement) =
         match chk.Kind with
@@ -3518,7 +3515,7 @@ type UnusedTracker() =
             this.Uses free
             this.Locals ll locals
 
-    /// end of file: every still-unread binder errors — SIGNED module
+    /// end of file: every still-unread binder errors — signed module
     /// members exempt (the signature is the use); an unsigned module
     /// member unread at home is dead private code
     member _.Flush (signedNames: Set<string>) (isModule: bool) : UnusedFinding list =
@@ -3540,13 +3537,13 @@ type UnusedTracker() =
             (List.ofSeq found) @ flushed |> List.sortBy (fun f -> f.ULine, f.UCol)
 
 // ---- possible re-enumeration [D:reenum-warning]: whole-file threading -----
-// The hazard is a WHOLE-FILE judgement like the unused law (a second
+// The hazard is a whole-file judgement like the unused check (a second
 // pull may sit any number of statements later), so it applies
-// POST-FOLD in analyzeLines — check / --json / --can / the LSP all
+// post-fold in analyzeLines — check / --json / --can / the LSP all
 // inherit it; the REPL states the same hazard on its binding echo
-// instead. WARNING severity: advisory, never a gate — check still
-// exits 0. Poisoned (any errored statement) = silent, the unused law's
-// rule: one real error beats advisory noise.
+// instead. Warning severity: advisory, never a gate — check still
+// exits 0. Poisoned (any errored statement) = silent, the unused
+// check's rule: one real error beats advisory noise.
 
 type ReenumFinding =
     { RLine: int
@@ -3570,7 +3567,7 @@ type ReenumTracker() =
 
     /// walk one statement tree: count enumerating uses of the tracked
     /// set (top-level and any qualifying block-locals), a warning at
-    /// the SECOND and later sites — the first pull is the binding's
+    /// the second and later sites — the first pull is the binding's
     /// point, the second is where the command silently runs again
     let consume (ll: LogicalLine) (te: Check.TypedExpr) =
         let tracked0 =
@@ -3613,7 +3610,7 @@ type ReenumTracker() =
         | KModule _
         | KImport _ -> ()
         | KLet(name, _, te) ->
-            // RHS uses first (a same-name rebind reads the OUTER binding
+            // RHS uses first (a same-name rebind reads the outer binding
             // — no `let rec` exists); the alias rule, classified: a
             // whole-RHS bare name neither pulls nor carries the
             // tracking onto the alias
@@ -3657,8 +3654,8 @@ type ReenumTracker() =
 // ---- the newTempDir footgun [D:newtempdir-lint]: whole-file threading -----
 // A newTempDir binding and its delete can sit any number of statements
 // apart (`let d = Path.newTempDir ()` … work … `Dir.deleteAll d`), so the
-// pairing is a WHOLE-FILE judgement — the re-enumeration tracker's shape
-// exactly. Fed post-check per statement, flushed after the fold; WARNING
+// pairing is a whole-file judgement — the re-enumeration tracker's shape
+// exactly. Fed post-check per statement, flushed after the fold; warning
 // severity (advisory, check still exits 0); poisoned on any errored
 // statement (one real error beats advisory noise). Modules never bind a
 // command/effect `let`, so the pairing cannot arise there — the tracker is
@@ -3685,7 +3682,7 @@ type TempDirTracker() =
         id
 
     /// walk one statement tree: a delete of an open binder (top-level or a
-    /// qualifying block-local) warns ONCE at the delete site
+    /// qualifying block-local) warns once at the delete site
     let consume (ll: LogicalLine) (te: Check.TypedExpr) =
         let tracked0 =
             tracked |> Seq.map (fun kv -> kv.Key, kv.Value) |> Map.ofSeq
@@ -3742,7 +3739,7 @@ type TempDirTracker() =
         if poisoned then [] else List.ofSeq found
 
 // ---- the module loader [D:modules-v1] ------------------------------------
-// A module's OWN base env: builtins (strict) + prelude + Self, with
+// A module's own base env: builtins (strict) + prelude + Self, with
 // Self.scriptPath = the module's own path. Pure — no stdin/args/Session
 // wiring, so loading a module never disturbs the entry's process facts.
 let private moduleBaseEnvs (absPath: string) : TypeEnv * Eval.Env =
@@ -3752,18 +3749,18 @@ let private moduleBaseEnvs (absPath: string) : TypeEnv * Eval.Env =
         Modules = te.Modules |> Map.add "Self" selfMembers },
     ve |> Map.add "Self.scriptPath" (Eval.VStr absPath)
 
-// the ONE import path resolver [D:modules-v1]: absolute + normalized (for
-// identity and, later, caching); symlinks stay UNRESOLVED — the Path.glob
+// the one import path resolver [D:modules-v1]: absolute + normalized (for
+// identity and, later, caching); symlinks stay unresolved — the Path.glob
 // precedent, two links to one file are two files.
 let private resolveImportPath (importingAbsPath: string) (path: string) : string =
     let dir = IO.Path.GetDirectoryName importingAbsPath
 
     if path.StartsWith "weir:" then
-        // the vendored namespace [D:add-module] — SHAPE-scoped, never a
+        // the vendored namespace [D:add-module] — shape-scoped, never a
         // fallback: `weir:` always resolves via the .weir/ walk (a file
         // literally containing a colon keeps the ./ spelling). Both bare
-        // import shapes were already meaningful (R1's probe), so the
-        // vendored spelling had to be distinct.
+        // import shapes were already meaningful, so the vendored
+        // spelling had to be distinct.
         let name = path.Substring 5
 
         match Contracts.findWeirDir dir with
@@ -3774,14 +3771,14 @@ let private resolveImportPath (importingAbsPath: string) (path: string) : string
                 modPath
             else
                 // one namespace, two homes [D:schema-types]: vendored
-                // modules FIRST, then generated types (.weir/types/ —
-                // `weir gen types` output); a missing name still teaches
+                // modules first, then generated types (.weir/types/ —
+                // `weir gen types` output); a missing name still errors
                 // through the modules path below
                 let typesPath = IO.Path.GetFullPath(IO.Path.Combine(wd, "types", name + ".weir"))
 
                 if IO.File.Exists typesPath then typesPath else modPath
         | Error _ ->
-            // no .weir/ anywhere: a display path for the not-found teach
+            // no .weir/ anywhere: a display path for the not-found error
             IO.Path.GetFullPath(IO.Path.Combine(dir, ".weir", "modules", name + ".weir"))
     else
         IO.Path.GetFullPath(IO.Path.Combine(dir, path))
@@ -3800,8 +3797,8 @@ let private deriveModuleName (absPath: string) : string option =
     else
         None
 
-// does evaluating this RHS at import RUN a command? — the weak purity rule
-// [D:modules-v1]. Eager positions only, STOPS at lambdas: a command in a
+// does evaluating this RHS at import run a command? — the weak purity rule
+// [D:modules-v1]. Eager positions only, stops at lambdas: a command in a
 // lambda body is deferred, so a param-ful `let f r = git …` is a function,
 // not an import-time effect; only a paramless `let x = git …` is rejected.
 // The walk lives in Check beside the re-enumeration machinery that
@@ -3814,11 +3811,11 @@ let runsCommandT: Check.TypedExpr -> bool = Check.runsCommandT
 // disk (decision 14).
 let importSourceOverride: (string -> string list option) option ref = ref None
 
-// the import read, ONCE into a Result [D:lockfile-confinement]: an
-// unreadable file (mode 000) crashed check because Exists-then-ReadAllLines
-// was unguarded, and the two-call shape (isNone then get) also raced a
-// file deleted between them. Absent -> None (today's "no file at …");
-// present-but-unreadable -> Error naming the path (a NEW located
+// the import read, once into a Result [D:lockfile-confinement]: an
+// unguarded Exists-then-ReadAllLines crashes on an unreadable file
+// (mode 000), and the two-call shape (isNone then get) races a file
+// deleted between them. Absent -> None (the "no file at …" message);
+// present-but-unreadable -> Error naming the path (a located
 // diagnostic, never a crash). The buffer override (LSP) is absent-or-present
 // by its own contract, so it maps to Ok.
 type private ImportRead =
@@ -3844,13 +3841,13 @@ let private readImportSource (absPath: string) : ImportRead =
             IUnreadable ex.Message
 
 // resolve + check an imported module to a LoadedModule, or an ImportError.
-// THE GRAPH [D:modules-v1]: `cache` (normalized abs path -> module) checks a
-// shared module ONCE (diamonds); `chain` is the current DFS path of importing
+// The graph [D:modules-v1]: `cache` (normalized abs path -> module) checks a
+// shared module once (diamonds); `chain` is the current DFS path of importing
 // files, so a repeat is a cycle. Transitive: a reached module's own imports
 // resolve too, sharing the cache with this module pushed on the chain.
 // sigContract [D:unused-bindings]: a #sig file is a module whose
-// members (version, exhaustive, Cmd) are read by the SIG LOADER, not by
-// the module's own text — the loader is the use, so the unused law
+// members (version, exhaustive, Cmd) are read by the sig loader, not by
+// the module's own text — the loader is the use, so the unused check
 // stays off for that one consumer
 let rec loadModuleCachedWith
     (sigContract: bool)
@@ -3862,7 +3859,7 @@ let rec loadModuleCachedWith
     : Result<LoadedModule, ImportError> =
     let absPath = resolveImportPath importingAbsPath path
 
-    // an import-STATEMENT error reports at the import line (File=None)
+    // an import-statement error reports at the import line (File=None)
     let stmt msg =
         Error
             { File = None
@@ -3892,7 +3889,7 @@ let rec loadModuleCachedWith
 
         stmt $"import cycle: {loop}"
     elif cache.ContainsKey absPath then
-        // a diamond's shared module is checked ONCE; re-alias per import site
+        // a diamond's shared module is checked once; re-alias per import site
         let cached = cache[absPath]
 
         Ok
@@ -3900,7 +3897,7 @@ let rec loadModuleCachedWith
                 Alias = importAs |> Option.defaultValue cached.NaturalName }
     else
 
-    // read the source ONCE [D:lockfile-confinement] — no Exists/read race,
+    // read the source once [D:lockfile-confinement] — no Exists/read race,
     // and present-but-unreadable is its own located diagnostic, not a crash
     match readImportSource absPath with
     | IAbsent ->
@@ -3932,12 +3929,12 @@ let rec loadModuleCachedWith
                     stmt
                         $"cannot derive a module name from '{IO.Path.GetFileName absPath}'; name it (module Name) or import it as a name (import \"…\" as Name)"
                 | Some alias ->
-                    // transitive: a reached module's OWN imports resolve, sharing
+                    // transitive: a reached module's own imports resolve, sharing
                     // the cache, with this module pushed on the chain
                     let childLoader: ImportLoader =
                         fun p _ a -> loadModuleCachedWith false cache (absPath :: chain) absPath p a
 
-                    // a module-CONTENT error reports at the module's OWN site
+                    // a module-content error reports at the module's own site
                     let at line col msg : Result<_, ImportError> =
                         Error
                             { File = Some absPath
@@ -3961,8 +3958,8 @@ let rec loadModuleCachedWith
                         | (ll: LogicalLine) :: tail ->
                             match checkStatement true (Some sc) resolver childLoader tenv ll with
                             | Error d ->
-                                // a DEEPER module's error (File already set)
-                                // propagates unchanged; this module's OWN error
+                                // a deeper module's error (File already set)
+                                // propagates unchanged; this module's own error
                                 // takes this module's site
                                 match d.File with
                                 | Some _ ->
@@ -4025,12 +4022,12 @@ let rec loadModuleCachedWith
                     match go baseTenv SigContext.empty [] [] rest with
                     | Error e -> Error e
                     | Ok(finalTenv, sc, implLines, moduleBody) ->
-                        // sig without impl = check error AT THE SIG
+                        // sig without impl = check error at the sig
                         // [D:module-signatures]; impl without sig = private
                         let orphan =
                             sc.Pending |> Map.toList |> List.sortBy (fun (_, sd) -> sd.Line) |> List.tryHead
 
-                        // a signed member's /// doc belongs on the SIGNATURE
+                        // a signed member's /// doc belongs on the signature
                         // (one home) [D:module-signatures]
                         let docOnImpl =
                             lazy
@@ -4068,8 +4065,8 @@ let rec loadModuleCachedWith
                         | Some(l, c, msg) -> at l c msg
                         | None ->
 
-                            // a module exports only its OWN types (from its Body's
-                            // decls), NOT what it transitively imported (no re-export,
+                            // a module exports only its own types (from its Body's
+                            // decls), not what it transitively imported (no re-export,
                             // decision 3); Members already exclude imported ones
                             // (those live under Modules[·], not Values)
                             let typeDefs =
@@ -4079,10 +4076,10 @@ let rec loadModuleCachedWith
                                         Map.tryFind decl.Name finalTenv.Types |> Option.map (fun d -> decl.Name, d)
                                     | _ -> None)
 
-                            // the export split [D:module-signatures]: the SIGNATURE
+                            // the export split [D:module-signatures]: the signature
                             // is the export — signed members and declared types'
                             // constructors cross; unsigned members stay private
-                            // (carried for the import-of-private teaching only)
+                            // (carried for the import-of-private error only)
                             let ctorNames =
                                 typeDefs
                                 |> List.collect (fun (_, d) ->
@@ -4121,10 +4118,10 @@ let rec loadModuleCachedWith
             | Error _ -> notAModule
 
 // the module-body replayer [D:modules-v1]: evaluate a checked module's Body
-// in its OWN clean env (Self.scriptPath is the module's; process facts ride
-// from the entry), exposing a NESTED import's members as `alias.member` for
+// in its own clean env (Self.scriptPath is the module's; process facts ride
+// from the entry), exposing a nested import's members as `alias.member` for
 // this module's own lets. Returns the module's venv (bindings under bare
-// names); the caller exposes THIS module's Members qualified.
+// names); the caller exposes this module's Members qualified.
 let rec replayModule (procFacts: (string * Eval.Value) list) (lm: LoadedModule) : Eval.Env =
     let _, mBase0 = moduleBaseEnvs lm.AbsPath
     let mBase = procFacts |> List.fold (fun m (k, v) -> Map.add k v m) mBase0
@@ -4162,8 +4159,8 @@ let rec replayModule (procFacts: (string * Eval.Value) list) (lm: LoadedModule) 
 // the -e / REPL import loader [D:modules-v1]: there is no file to resolve
 // relative paths against, so import is script-only (decision 12)
 /// add-time validation for a fetched module file [D:add-module]: the
-/// SAME loader imports use — is-a-module, the module purity rules, a
-/// full typecheck — with imports REFUSED first: vendored modules are
+/// same loader imports use — is-a-module, the module purity rules, a
+/// full typecheck — with imports refused first: vendored modules are
 /// leaves for now (a current boundary, not a permanent one). Returns
 /// the member count for the add's report line.
 let checkVendoredModule (absPath: string) : Result<int, string> =
@@ -4201,10 +4198,10 @@ let scriptOnlyImport: ImportLoader =
 
 // ---------------------------------------------------------------------------
 // weir check [--json] [D:check-lsp-chain]. Check-everything, no
-// evaluation BY CONSTRUCTION (this function cannot reach Eval).
-// Statement-level error RECOVERY: a failed statement records its diag
+// evaluation by construction (this function cannot reach Eval).
+// Statement-level error recovery: a failed statement records its diag
 // and checking continues with the env unchanged, so a multi-error file
-// reports every independent error. Codes are SEEDED from the message
+// reports every independent error. Codes are seeded from the message
 // families (structured codes at error origin are the parked upgrade).
 
 type Diagnostic =
@@ -4267,8 +4264,8 @@ let jsonBuild (build: System.Text.Json.Utf8JsonWriter -> unit) : string =
 
 let writeDiag (w: System.Text.Json.Utf8JsonWriter) (d: Diagnostic) =
     w.WriteStartObject()
-    // ONE file identity per document [D:ci-matrix-triage round 26]: an
-    // imported module's diag carried the RESOLVED path while the
+    // one file identity per document [D:ci-matrix-triage round 26]: an
+    // imported module's diag carried the resolved path while the
     // importer's carried argv's spelling verbatim — on Windows the same
     // dir under two spellings (8.3 vs long, / vs \), breaking any
     // consumer that groups by file. GetFullPath is the one spelling.
@@ -4294,12 +4291,11 @@ let writeDiag (w: System.Text.Json.Utf8JsonWriter) (d: Diagnostic) =
     w.WriteString("message", d.Message)
     w.WriteEndObject()
 
-// doc-comment ALIGNMENT lint [D:doc-comments]: a `///` attaches to the
+// doc-comment alignment lint [D:doc-comments]: a `///` attaches to the
 // declaration below it, so it must sit at that declaration's indent —
-// the entry anchor, exactly as an attribute line does. Docs are INERT
+// the entry anchor, exactly as an attribute line does. Docs are inert
 // (dropped before assembly), so a misaligned one cannot mis-parse: this
-// is a LINT, not the parse-time attribute machinery. Pinned both ways
-// (doc above a field, doc above a union case).
+// is a lint, not the parse-time attribute machinery.
 let private docMisalignments (path: string) (lines: string list) : Diagnostic list =
     let indent (s: string) = s.Length - s.TrimStart().Length
     let arr = List.toArray lines
@@ -4345,17 +4341,17 @@ let private docMisalignments (path: string) (lines: string list) : Diagnostic li
 
     List.ofSeq diags
 
-// full analysis for tooling (the LSP re-frames this): diagnostics AND
+// full analysis for tooling (the LSP re-frames this): diagnostics and
 // the successfully-checked statements with their logical lines — plus
 // the initial env, so consumers can pick the in-scope env per position
 // external contracts: schema validation [D:yaml-schemas]. Walks every
-// typed district carrying a `schema=` declaration; STRUCTURAL checks
-// always, VALUE checks where the splice's type permits. Check-time
-// only, and it reads VENDORED files exclusively — never the network
-// (the never-fetch-during-check pin).
-/// resolve a schema NAME from a script's path to Ok (weirDir, vendored
-/// file) — the walk the checker uses, with its restore-vs-add teaching
-/// on a miss; the schema= hover and definition resolve through THIS
+// typed district carrying a `schema=` declaration; structural checks
+// always, value checks where the splice's type permits. Check-time
+// only, and it reads vendored files exclusively — check never fetches
+// from the network.
+/// resolve a schema name from a script's path to Ok (weirDir, vendored
+/// file) — the walk the checker uses, with its restore-vs-add guidance
+/// on a miss; the schema= hover and definition resolve through this
 /// function so the editor and the checker cannot diverge [D:schema-hover]
 let resolveSchemaFile (path: string) (name: string) : Result<string * string, string> =
     let fromDir =
@@ -4448,16 +4444,16 @@ let schemaDiagnostics (path: string) (pairs: (LogicalLine * CheckedStatement) li
 // ---- external contracts: command signatures [D:command-signatures] --------
 // a loaded signature's checkable surface. Subs: kebab-cased subcommand
 // -> (long-flag set, explicit-short set); the "" key is the flag-only
-// shape (Cmd declared as a record). Shorts are EXPLICIT [<Short>] only —
+// shape (Cmd declared as a record). Shorts are explicit [<Short>] only —
 // weir's own derivation is a convention, and a signature records a
-// foreign tool's FACTS.
+// foreign tool's facts.
 type SigInfo =
     { Tool: string
       DeclLine: int
       Exhaustive: bool
       Subs: Map<string, Set<string> * Set<string>>
-      // the resolved sig FILE, its recorded version, and each surface's
-      // record TYPE name — what hover/definition need to reach the
+      // the resolved sig file, its recorded version, and each surface's
+      // record type name — what hover/definition need to reach the
       // declaration site [D:lsp-cross-file]
       SigPath: string
       Version: string
@@ -4469,11 +4465,11 @@ let private sigFlagSets (def: RecordDef) : Set<string> * Set<string> =
         | Some specs -> specs |> List.exists (fun (n, _) -> n = "Positional")
         | None -> false
 
-    // a [<Wire "type">] field carries the FLAG spelling the field name
-    // cannot (keywords) [D:sig-version-probe] — the language-wide wire
-    // teach, honored here
-    // ALL Wire specs count [D:sig-version-probe]: a field may carry one
-    // per accepted spelling (claude lists --allowedTools AND
+    // a [<Wire "type">] field carries the flag spelling the field name
+    // cannot (keywords) [D:sig-version-probe] — the language-wide Wire
+    // convention, honored here
+    // All Wire specs count [D:sig-version-probe]: a field may carry one
+    // per accepted spelling (claude lists --allowedTools and
     // --allowed-tools; both camelize to one field)
     let wiresOf f =
         match Map.tryFind f def.Attrs with
@@ -4494,10 +4490,10 @@ let private sigFlagSets (def: RecordDef) : Set<string> * Set<string> =
     longs, shorts
 
 /// a PATH-y tool name ("./rooz/v3/lib/jp", "~/.azure/bin/bicep") maps
-/// to ONE flat filename under .weir/sigs — separators become '_'
+/// to one flat filename under .weir/sigs — separators become '_'
 /// [D:scoped-sigs]. Never a nested tree, and never Path.Combine on the
-/// raw name: an absolute tool path made Combine DISCARD the sigs dir
-/// and aim outside .weir entirely.
+/// raw name: given an absolute tool path Combine discards the sigs dir
+/// and aims outside .weir entirely.
 let sigFileName (tool: string) : string =
     (tool
      |> String.map (fun c ->
@@ -4509,7 +4505,7 @@ let sigFileName (tool: string) : string =
     + ".weir"
 
 /// load the signatures a file declared; errors become diagnostics at
-/// the declaring line. The sig file is an ordinary weir MODULE
+/// the declaring line. The sig file is an ordinary weir module
 /// (decl-only + weak purity for free): `module X`, `let version =
 /// "<--version's first line>"`, optionally `let exhaustive = true`, and
 /// the surface as the type named `Cmd`.
@@ -4538,8 +4534,8 @@ let loadSigs (path: string) (decls: SigDecl list) : Diagnostic list * SigInfo li
     for decl in decls do
         if decl.Tool = "" then
             diags.Add(mk decl.Line "malformed #sig — usage: #sig <tool> [\"path/to/sig.weir\"]")
-        // quoted tool names searched for a file named "tool".weir,
-        // quotes and all — the directive takes a BARE word (only the
+        // a quoted tool name would search for a file named "tool".weir,
+        // quotes and all — the directive takes a bare word (only the
         // override path is quoted) [D:sig-version-probe]
         elif decl.Tool.StartsWith "\"" || decl.Tool.EndsWith "\"" then
             let bare = decl.Tool.Trim '"'
@@ -4597,7 +4593,7 @@ let loadSigs (path: string) (decls: SigDecl list) : Diagnostic list * SigInfo li
                                 | _ -> None
                             | _ -> None)
 
-                    // `let version` is OPTIONAL [D:sig-version-probe]: a
+                    // `let version` is optional [D:sig-version-probe]: a
                     // tool that does not answer --version has no identity
                     // to record — absence is a stated fact, not a defect
                     let recordOf name =
@@ -4656,13 +4652,13 @@ let loadSigs (path: string) (decls: SigDecl list) : Diagnostic list * SigInfo li
 
     List.ofSeq diags, List.ofSeq infos
 
-/// unknown-flag checking (v1: flags ONLY — L2) over every command whose
-/// head has a declared signature. Partial signatures WARN; exhaustive
-/// ones ERROR. A subcommand word matching no declared case disables
+/// unknown-flag checking (v1: flags only — L2) over every command whose
+/// head has a declared signature. Partial signatures warn; exhaustive
+/// ones error. A subcommand word matching no declared case disables
 /// flag checking for that command (L2's discipline: no operand model).
 /// the source lines of a file the way imports read them (open editor
 /// buffers first when the LSP is driving, else disk) — cross-file hover
-/// and definition read the TARGET file through the same channel
+/// and definition read the target file through the same channel
 /// [D:lsp-cross-file]
 let targetSourceLines (absPath: string) : string list option =
     // hover/definition want present-or-not; an unreadable target is
@@ -4672,7 +4668,7 @@ let targetSourceLines (absPath: string) : string list option =
     | IAbsent
     | IUnreadable _ -> None
 
-/// the signatures a file's #sig head declares, loaded; QUIET on load
+/// the signatures a file's #sig head declares, loaded; quiet on load
 /// errors — diagnostics are analyzeLines' job [D:lsp-cross-file]
 let sigInfosForFile (path: string) (rawLines: string list) : SigInfo list =
     let _, _, decls = scriptBody rawLines
@@ -4705,7 +4701,7 @@ let sigCmdDiagnostics
                 (match te.Kind with
                  | Check.TECmd(Check.THeadLit prog, args, _) -> [ prog, args ]
                  | _ ->
-                     // reified commands DESUGAR the ECmd away — the chain
+                     // reified commands desugar the ECmd away — the chain
                      // becomes a `|succeeded`-family builtin applied to the
                      // prog string and an argv list [D:command-signatures]:
                      // recover (prog, words) from that application spine so
@@ -4713,7 +4709,7 @@ let sigCmdDiagnostics
                      let rec spine (e: Check.TypedExpr) (acc: Check.TypedExpr list) =
                          match e.Kind with
                          | Check.TEApp(f, a) -> spine f (a :: acc)
-                         // a COMMAND reifier carries (prog, argv) [D:desugar-namespace];
+                         // a command reifier carries (prog, argv) [D:desugar-namespace];
                          // a library desugar does not — never recover a command from it
                          | Check.TEVar n when Weir.Effects.isCommandReifier n -> Some(n, acc)
                          | _ -> None
@@ -4722,7 +4718,7 @@ let sigCmdDiagnostics
                      | Some(_, args) ->
                          let prog =
                              // orFail's spine carries (msg, prog, argv) —
-                             // the prog is the LAST string before the list
+                             // the prog is the last string before the list
                              args
                              |> List.choose (fun a ->
                                  match a.Kind with
@@ -4731,7 +4727,7 @@ let sigCmdDiagnostics
                              |> List.tryLast
 
                          let words =
-                             // a SPLATTED reified argv is a Seq.append fold
+                             // a splatted reified argv is a Seq.append fold
                              // [D:desugar-capture]: the literal chunks are
                              // TEList descendants — collect them all (the
                              // spliced seq's own words stay runtime-unknowable)
@@ -4767,7 +4763,7 @@ let sigCmdDiagnostics
                         match Map.tryFind "" si.Subs with
                         | Some fs -> Some(None, fs)
                         | None ->
-                            // the LONGEST run of leading sub words wins
+                            // the longest run of leading sub words wins
                             // [D:scoped-sigs]: `issue list` matches the
                             // IssueList case before falling back to Issue —
                             // tokens join kebab-style, the loader's own key
@@ -4790,14 +4786,14 @@ let sigCmdDiagnostics
                             match hit with
                             | Some hit -> Some hit
                             | None ->
-                                // a SUB-LESS line on a scoped sig checks the
-                                // GLOBALS — R2's own invariant: what rides
-                                // every case is global, so the intersection
-                                // IS the global set [D:scoped-sigs]. Empty
-                                // intersection (hand-written unions that
-                                // never duplicate) keeps the L2 skip —
-                                // claude's flag-only lines check, git's
-                                // sub-less lines stay silent
+                                // a sub-less line on a scoped sig checks the
+                                // globals: what rides every case is global,
+                                // so the intersection is the global set
+                                // [D:scoped-sigs]. Empty intersection
+                                // (hand-written unions that never duplicate)
+                                // keeps the L2 skip — claude's flag-only
+                                // lines check, git's sub-less lines stay
+                                // silent
                                 match si.Subs |> Map.toList |> List.map snd with
                                 | [] -> None
                                 | (l0, s0) :: rest ->
@@ -4810,8 +4806,8 @@ let sigCmdDiagnostics
                     match surface with
                     | None -> [] // no matching subcommand, no shared globals: L2 stops here
                     | Some(subName, (longs, shorts)) ->
-                        // a scoped surface names its CASE in the warn
-                        // [D:scoped-sigs] — the scoping's visible dividend
+                        // a scoped surface names its case in the warning
+                        // [D:scoped-sigs]
                         let toolAndSub =
                             match subName with
                             | Some sub -> $"{si.Tool} {sub}"
@@ -4856,7 +4852,7 @@ let sigCmdDiagnostics
 
                                 check acc rest
                             | (w, sp) :: rest when w.StartsWith "-" && w.Length = 2 && not (System.Char.IsDigit w[1]) ->
-                                // a surface that recorded NO shorts has no
+                                // a surface that recorded no shorts has no
                                 // evidence to warn on (BSD grep's help is
                                 // usage-only — the harvest sees longs, never
                                 // the short bundle) [D:sig-version-probe]
@@ -4873,13 +4869,13 @@ let sigCmdDiagnostics
 
 // ---- `weir add sig <tool>`: generation [D:command-signatures] --------------
 // Three sources in fidelity order, the chosen one recorded in the
-// provenance comment AND the lock's Url slot ("generated:<source>"):
+// provenance comment and the lock's Url slot ("generated:<source>"):
 // a completion endpoint (`<tool> completion fish` — Cobra/clap emit
 // parseable `complete` lines), a shipped fish completion file, then
-// `--help` scraping. v1 generates a FLAT surface (one Cmd record —
+// `--help` scraping. v1 generates a flat surface (one Cmd record —
 // flags across the whole line); splitting into subcommand records is
 // the hand edit the provenance comment invites. The generated file
-// VALIDATES (loads as a signature) before anything persists.
+// is validated (loads as a signature) before anything persists.
 module SigGen =
     let private runToolWith (anyExit: bool) (tool: string) (args: string) : string option =
         // probeRung's guards [D:sig-version-probe]: null stdin (a
@@ -4969,7 +4965,7 @@ module SigGen =
         let flags = System.Collections.Generic.Dictionary<string, Flag>()
 
         // Go-flag rows (micro): `-clean` / `-config-dir dir`, description
-        // on the NEXT line — single-dash multi-char is a LONG (Go accepts
+        // on the next line — single-dash multi-char is a long (Go accepts
         // --clean too); the last flag with no doc adopts a following
         // deeper prose line
         let mutable lastDocless: string option = None
@@ -4986,8 +4982,8 @@ module SigGen =
             let m =
                 System.Text.RegularExpressions.Regex.Match(
                     line,
-                    // `+s, --no-sort` — fzf-style OFF toggles: the +x is
-                    // skipped, never recorded as a short. The TAIL is
+                    // `+s, --no-sort` — fzf-style off toggles: the +x is
+                    // skipped, never recorded as a short. The tail is
                     // walked procedurally: az spells rows as
                     // `--flag --alias -s [Required] : doc`
                     "^\\s+(?:(?:-(\\w)|\\+\\w),?\\s+)?--([a-zA-Z][a-zA-Z0-9-]*)(.*)$"
@@ -5025,7 +5021,7 @@ module SigGen =
                 let aliases = ResizeArray<string>()
 
                 // walk the tail: aliases and shorts join the flag, arg
-                // shapes (=X, <x>, [X], BARE-CAPS) are skipped, and the
+                // shapes (=X, <x>, [X], bare all-caps) are skipped, and the
                 // doc starts at az's `:` or the first prose word
                 let mutable rest = m.Groups[3].Value.TrimStart()
                 let mutable walking = true
@@ -5079,8 +5075,8 @@ module SigGen =
 
         flags.Values |> List.ofSeq
 
-    // the LAST-RESORT pass [D:sig-version-probe]: a usage-table help
-    // (weir's own: `weir check [--json] <script>`) has no flag ROWS, so
+    // the last-resort pass [D:sig-version-probe]: a usage-table help
+    // (weir's own: `weir check [--json] <script>`) has no flag rows, so
     // the structured scrape finds nothing — harvest every --flag token
     // instead, docless. Only ever consulted at zero structured hits;
     // partial by default covers the imprecision.
@@ -5106,7 +5102,7 @@ module SigGen =
         for raw in helpText.Split '\n' do
             let line = raw.TrimEnd()
 
-            // a heading is NON-indented and names commands — with a
+            // a heading is non-indented and names commands — with a
             // colon (Cobra's "Available Commands:") or as an all-caps
             // banner (jira's "MAIN COMMANDS" / "OTHER COMMANDS")
             if
@@ -5134,13 +5130,13 @@ module SigGen =
 
         List.ofSeq subs
 
-    // the SUBCOMMAND WALK [D:sig-version-probe]: Cobra-family tools
+    // the subcommand walk [D:sig-version-probe]: Cobra-family tools
     // (jira, kubectl) keep the real flags under `tool sub --help` — the
     // flat surface unions them (flags checked across the whole line is
     // the flat model's own charter). Depth 2 (`jira issue list`),
     // budget-capped; structured rows only, never the harvest (a
     // sub-page harvest over-collects).
-    // provenance KEPT [D:scoped-sigs]: flags group under their LEVEL-1
+    // provenance kept [D:scoped-sigs]: flags group under their level-1
     // subcommand (deeper levels flatten into their root's group), so
     // the emitter can scope. Depth 4 (`kustomize edit add resource`),
     // breadth-first under the budget — levels complete in order, so a
@@ -5152,8 +5148,8 @@ module SigGen =
         let mutable probed = 0
         let mutable answered = 0
 
-        // BREADTH-first: level 1 completes before level 2 spends a
-        // probe — depth-first let an early subcommand's children starve
+        // breadth-first: level 1 completes before level 2 spends a
+        // probe — depth-first lets an early subcommand's children starve
         // the rest of docker's forty top-level commands
         // help/completion are advertised everywhere and walk nowhere
         let noise sub = sub = "help" || sub = "completion"
@@ -5217,7 +5213,7 @@ module SigGen =
                 | fs -> "help", fs
 
             match walkSubFlags tool text with
-            // the walk's outcome is OBSERVABLE either way [D:sig-version-probe]:
+            // the walk's outcome is observable either way [D:sig-version-probe]:
             // "help" alone cannot say whether subcommands were never
             // advertised, never answered, or answered nothing — the counts do
             | [], 0, _ -> source, top, []
@@ -5239,14 +5235,14 @@ module SigGen =
         s.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\r", "").Replace("\n", "\\n")
 
     let generate (weirDir: string) (tool: string) : Result<string, string> =
-        // FLAG probes are safe on any tool; a bare word is NOT — `code
-        // completion fish` OPENED VS CODE on two files
+        // Flag probes are safe on any tool; a bare word is not — `code
+        // completion fish` opens VS Code on two files
         // [D:sig-version-probe]. Bare-word probes (completion fish, the
-        // version word) run only when the tool's own --help ADVERTISES
+        // version word) run only when the tool's own --help advertises
         // that subcommand.
         match Contracts.probeVersionFlag Proc.resolveProg tool with
         | Contracts.ToolAbsent ->
-            // a file that EXISTS but would not run is a different wrong
+            // a file that exists but would not run is a different wrong
             // turn than a missing tool — `add sig rooz/v3/xr.yaml` is a
             // data file, not a binary
             if IO.File.Exists tool then
@@ -5257,7 +5253,7 @@ module SigGen =
             let topHelp = runTool tool "--help"
 
             // exit-0 help only gates and walks; a refused --help still
-            // yields its usage dump to the HARVEST below
+            // yields its usage dump to the harvest below
             let harvestOnly =
                 match topHelp with
                 | Some _ -> None
@@ -5265,9 +5261,9 @@ module SigGen =
 
             let advertised = topHelp |> Option.map subcommandTokens |> Option.defaultValue []
 
-            // a tool that refuses --version has NO recorded identity
+            // a tool that refuses --version has no recorded identity
             // [D:sig-version-probe] — the refusal's usage dump is not a
-            // version, and recording it leaked paths into the sig
+            // version, and recording it leaks paths into the sig
             let version =
                 match rung1 with
                 | Contracts.ToolVersion raw -> Some(raw.Trim())
@@ -5307,9 +5303,9 @@ module SigGen =
                 Error
                     $"'{tool}': found no flags to record (probed: completion fish, shipped fish files, --help) — write .weir/sigs/{tool}.weir by hand"
             | flags, subGroups ->
-                // a path-y tool name must still mint a LEGAL module
-                // name: letters and digits only, letter-first (the
-                // absolute-path case minted `module /Users…`)
+                // a path-y tool name must still mint a legal module
+                // name: letters and digits only, letter-first (an
+                // absolute path would otherwise mint `module /Users…`)
                 let moduleName =
                     let core = tool |> String.filter System.Char.IsLetterOrDigit
 
@@ -5321,10 +5317,10 @@ module SigGen =
                 let line (l: string) = sb.AppendLine l |> ignore
 
                 // one record body, shared by the flat shape and every
-                // union case: same-camel spellings MERGE (the field
-                // carries ONE Wire for the spelling its kebab does not
-                // cover), shorts dedup WITHIN the record (per case —
-                // docker's -a on all and all-tags live apart now), and
+                // union case: same-camel spellings merge (the field
+                // carries one Wire for the spelling its kebab does not
+                // cover), shorts dedup within the record (per case —
+                // docker's -a on all and all-tags live apart), and
                 // keyword longs take the Flag suffix
                 let renderRecord (name: string) (flags: Flag list) =
                     line $"type {name} = {{"
@@ -5372,7 +5368,7 @@ module SigGen =
 
                     line "}"
 
-                // a case name from a sub PATH ("issue list" ->
+                // a case name from a sub path ("issue list" ->
                 // IssueList): PascalCase of the camel of the kebab-joined
                 // tokens — kebabFlag round-trips it to the key the
                 // checker builds from the line's own words
@@ -5410,9 +5406,9 @@ module SigGen =
                 if subGroups.IsEmpty then
                     renderRecord "Cmd" flags
                 else
-                    // R2, load-bearing (phase 0.3: no global merge exists
-                    // in the checker): top-level flags JOIN every case —
-                    // and so do each ANCESTOR path's flags (`jira issue
+                    // load-bearing: no global merge exists in the
+                    // checker, so top-level flags join every case —
+                    // and so do each ancestor path's flags (`jira issue
                     // list` carries issue's own flags too); nearest
                     // definition wins on a field collision
                     let globalByField = flags |> List.map (fun f -> fieldName f.Long, f)
@@ -5459,7 +5455,7 @@ module SigGen =
 
                 let text = sb.ToString()
 
-                // VALIDATE BEFORE WRITE [D:add-validates]: the generated
+                // validate before write [D:add-validates]: the generated
                 // signature must itself load as one; nothing persists if
                 // it does not
                 let tmp =
@@ -5479,8 +5475,8 @@ module SigGen =
 
                     match probe with
                     | d :: _, _ ->
-                        // name the offending LINE — three generator bugs
-                        // arrived blind before this did [D:sig-version-probe]
+                        // name the offending line — without it a generator
+                        // bug reports blind [D:sig-version-probe]
                         let atLine =
                             match text.Split '\n' |> Array.tryItem (d.Line - 1) with
                             | Some l when l.Trim() <> "" -> $" at line {d.Line}: {l.Trim()}"
@@ -5554,16 +5550,15 @@ let analyzeLines
 
     Extern.refresh ()
 
-    // CHECK-ONLY consumers assume unknown heads are commands, so a
+    // Check-only consumers assume unknown heads are commands, so a
     // script for uninstalled tools still parses; each head missing
-    // from PATH becomes a WARNING (cmd-not-found). The RUNNER keeps
+    // from PATH becomes a warning (cmd-not-found). The runner keeps
     // hard resolution — same pipeline, explicitly different resolver
-    // input (the gateExprs pattern), the verdict difference pinned
-    // [D:assume-resolver].
+    // input (the gateExprs pattern) [D:assume-resolver].
 
-    // ASSEMBLY RECOVERY [D:assembly-recovery]: drop the line the
+    // Assembly recovery [D:assembly-recovery]: drop the line the
     // error names and retry, keeping each drop as a diagnostic. The
-    // RUNNER keeps hard assembly failure; tooling-only.
+    // runner keeps hard assembly failure; tooling-only.
     let assemblyDiags = ResizeArray<Diagnostic>()
 
     let rec assembleRecovering (attempts: int) (input: (int * string) list) =
@@ -5640,9 +5635,9 @@ let analyzeLines
             @ (Check.childExprs te |> List.collect cmdHeads)
 
         // module-signature pairing state [D:module-signatures] — module
-        // files only; scripts pass None so the form refuses with the
-        // teaching. The whole-file laws (orphan, doc-on-impl) are judged
-        // after the fold, mirroring the module loader.
+        // files only; scripts pass None so the form refuses with its
+        // explanation. The whole-file rules (orphan, doc-on-impl) are
+        // judged after the fold, mirroring the module loader.
         let mutable sigState = if isModule then Some SigContext.empty else None
         let sigImplLines = ResizeArray<string * int>()
 
@@ -5671,17 +5666,17 @@ let analyzeLines
 
         for ll in logicalLines do
           if not budgetStop then
-            // ONE spelling for the head warning, shared by the Ok walk
+            // one spelling for the head warning, shared by the Ok walk
             // (typed) and the Error walk (parse-level) below
             let warnMissingHead (prog: string) (startCol: int) =
                 let wl, wc = translate ll startCol
 
-                // a near-miss BINDING bridges the check/run
+                // a near-miss binding bridges the check/run
                 // verdict split: the runner reads this head in
                 // expression mode and errors "unbound 'xx' —
                 // did you mean 'xr'?"; check's command reading
                 // must surface the same candidate
-                // a missing PROGRAM suggests programs — externals and
+                // a missing program suggests programs — externals and
                 // lowercase user bindings; a constructor (YMap) is never
                 // a plausible command (PLAN-dx-review D5)
                 let hint =
@@ -5714,11 +5709,11 @@ let analyzeLines
             | Ok chk ->
                 chk.Warnings |> List.iter warn
 
-                // a duplicate type declaration is an ERROR, not a silent
-                // replacement [D:dup-type-decl] — the replacement was
-                // RETROACTIVE (code above the redeclaration re-resolved
+                // a duplicate type declaration is an error, not a silent
+                // replacement [D:dup-type-decl] — replacement would be
+                // retroactive (code above the redeclaration re-resolves
                 // against the winner). Scripts only; the REPL replaces
-                // by ruling.
+                // by design.
                 (match chk.Kind with
                  | KType decl ->
                      match declaredTypes.TryGetValue decl.Name with
@@ -5817,16 +5812,16 @@ let analyzeLines
                 tempDirTracker.Poison()
                 d.Warnings |> List.iter warn
 
-                // [PLAN-diagnostics-arc B5+B6]: an ERRORED statement
+                // [PLAN-diagnostics-arc B5+B6]: an errored statement
                 // still (a) surfaces its command-head warnings — no
                 // typed tree exists, so the walk is parse-level — and
-                // (b) binds its let NAMES to hole schemes so downstream
-                // uses don't cascade as "unbound". SUPPRESSION WITH
-                // DEFERRAL, deliberately: a hole unifies with anything,
+                // (b) binds its let names to hole schemes so downstream
+                // uses don't cascade as "unbound". Suppression with
+                // deferral, deliberately: a hole unifies with anything,
                 // so a later genuine mismatch against the real type may
                 // surface only after this error is fixed — one real
                 // error beats N echoes. (The poison-type alternative —
-                // suppressing downstream errors that MENTION the name —
+                // suppressing downstream errors that mention the name —
                 // needs a new type node through unify; declined as
                 // disproportionate.)
                 (match Parser.parseLine (assumeResolver tenv) ll.Text with
@@ -5872,7 +5867,7 @@ let analyzeLines
                          | SLetPat(pat, _) -> patVars pat
                          | _ -> []
 
-                     // an ERRORED implementation still discharges its
+                     // an errored implementation still discharges its
                      // pending signature — one real error beats a trailing
                      // orphan echo [D:module-signatures]
                      (match sigState with
@@ -5891,8 +5886,8 @@ let analyzeLines
                  | Error _ -> ())
 
                 // multi-file [D:modules-v1]: a module error carries File +
-                // PhysLine/Col into that OTHER file; its Note is the "imported
-                // here" pointer at the import line in THIS file
+                // PhysLine/Col into that other file; its Note is the "imported
+                // here" pointer at the import line in this file
                 diags.Add
                     { File = d.File |> Option.defaultValue path
                       Line = d.PhysLine
@@ -5922,7 +5917,7 @@ let analyzeLines
                 if Check.isBudgetMessage d.Message then
                     budgetStop <- true
 
-        // the whole-file signature laws [D:module-signatures]: every
+        // the whole-file signature rules [D:module-signatures]: every
         // remaining pending sig is an orphan; a /// doc on a signed
         // member's implementation names its one home
         (match sigState with
@@ -5956,9 +5951,9 @@ let analyzeLines
                  | None -> ()
          | None -> ())
 
-        // the unused-binding law [D:unused-bindings]: whole-file, so it
+        // the unused-binding check [D:unused-bindings]: whole-file, so it
         // judges after the fold; poisoned (any errored statement) = silent.
-        // A file under .weir/sigs/ is a SIG CONTRACT — its members
+        // A file under .weir/sigs/ is a sig contract — its members
         // (version, exhaustive, Cmd) are read by the sig loader, so the
         // loader is the use and a direct `weir check` agrees with it
         (let isSigContract =
@@ -6008,10 +6003,10 @@ let analyzeLines
 
         (let sigLoadDiags, sigInfos = loadSigs path sigDecls
 
-         // POSITION ORDER, not accumulation order (rider D1): assembly
-         // diagnostics are gathered before parsing, so unsorted output led
+         // position order, not accumulation order (rider D1): assembly
+         // diagnostics are gathered before parsing, so unsorted output leads
          // with "line 4" for a file that was not plausible from byte one.
-         // Sorted at the ONE return, so check / --json / --can / the LSP
+         // Sorted at the one return, so check / --json / --can / the LSP
          // all inherit it [D:one-pipeline]; stable, so same-position
          // diagnostics keep their emission order.
          List.ofSeq assemblyDiags
@@ -6029,7 +6024,7 @@ let analyzeLines
 
 /// diagnostic rendering shared by `check` and `check --can`
 /// [D:can-report] — one spelling for both consumers
-/// `parsedAny` is "did ANY statement parse" — the conservative half of the
+/// `parsedAny` is "did any statement parse" — the conservative half of the
 /// not-weir heuristic (rider D4). Without it a real script with a broken
 /// first line would be told it is not weir at all.
 let printDiags (json: bool) (parsedAny: bool) (diags: Diagnostic list) : unit =
@@ -6043,10 +6038,10 @@ let printDiags (json: bool) (parsedAny: bool) (diags: Diagnostic list) : unit =
     else
         let c = Color.onStdout.Value
 
-        // rider D4: a file that failed at its FIRST statement and produced NO
+        // rider D4: a file that failed at its first statement and produced no
         // parsed statement anywhere is probably not a weir script — say so
-        // ONCE instead of leaving the reader to infer it from a list. It
-        // PRECEDES the detail rather than replacing it (a reader who wants
+        // once instead of leaving the reader to infer it from a list. It
+        // precedes the detail rather than replacing it (a reader who wants
         // the parse errors keeps them), and never appears in --json, where a
         // gate wants real diagnostics and not a human affordance. No
         // extension rule: this also covers shebang files, stdin and
@@ -6093,7 +6088,7 @@ let checkOnly (json: bool) (path: string) : int =
 // [D:doc-help] the `///` first-line help for the fields of the type decl
 // on `ll`, keyed by field name. A field's DocAttach sits at the field's own
 // physical line, so scope by the decl's physical lines (its Segments); a
-// field name is unique within a decl. An EMPTY first line -> no help entry
+// field name is unique within a decl. An empty first line -> no help entry
 // (silence beats a mystery), same as no doc.
 let private fieldDocsFor (rawLines: string list) (ll: LogicalLine) : Map<string, string> =
     let physLines = ll.Segments |> List.map (fun (_, p, _) -> p) |> Set.ofList
@@ -6121,11 +6116,10 @@ let run (path: string) (scriptArgs: string list) : int =
 
         let body, bodyOffset, runSigDecls = scriptBody rawLines
 
-        // COLUMN-0 only: a directive is a statement-position thing.
+        // Column-0 only: a directive is a statement-position thing.
         // Indented `#` lines are continuations — inside a yaml district
         // they are content (`#!/bin/sh` in a block scalar, `#` comments)
-        // [D:block-scalars]; anywhere else they fail the parse as the
-        // junk they are
+        // [D:block-scalars]; anywhere else they fail the parse
         let directiveError =
             body
             |> List.mapi (fun i l -> i, l.TrimEnd())
@@ -6146,7 +6140,7 @@ let run (path: string) (scriptArgs: string list) : int =
             1
         | None ->
             // the script's own absolute path [D:script-path]: resolved
-            // against the STARTUP cwd, before any cd; symlinks stay
+            // against the startup cwd, before any cd; symlinks stay
             // unresolved (the bash-$0 behavior)
             let absScriptPath = IO.Path.GetFullPath path
 
@@ -6155,7 +6149,7 @@ let run (path: string) (scriptArgs: string list) : int =
 
             let rawByLine = body |> List.mapi (fun i l -> bodyOffset + i + 1, l) |> Map.ofList
 
-            // comment-only lines are TRANSPARENT [D:comment-transparency]
+            // comment-only lines are transparent [D:comment-transparency]
             let assembled = body |> List.mapi (fun i l -> bodyOffset + i + 1, l) |> assemble // raw lines: assemble classifies/strips internally
 
             match assembled with
@@ -6165,7 +6159,7 @@ let run (path: string) (scriptArgs: string list) : int =
             | Ok logicalLines ->
 
                 // a module file is not runnable [D:modules-v1] — the marker
-                // is what makes this message possible (an empty SCRIPT is a
+                // is what makes this message possible (an empty script is a
                 // different, "nothing to run", situation)
                 let moduleMarker =
                     logicalLines
@@ -6179,15 +6173,15 @@ let run (path: string) (scriptArgs: string list) : int =
                     let cache = System.Collections.Generic.Dictionary<string, LoadedModule>()
                     fun p _ alias -> loadModuleCachedWith false cache [ absScriptPath ] absScriptPath p alias
 
-                // signatures load ONCE, before the check fold; a load
+                // signatures load once, before the check fold; a load
                 // failure (missing/malformed sig) is a check error —
                 // absence is loud, never a silent fallback
                 // [D:command-signatures]
                 let sigLoadDiags, runSigInfos = loadSigs path runSigDecls
                 let runDeclaredTypes = System.Collections.Generic.Dictionary<string, int * bool>()
 
-                // unused bindings gate the RUN too [D:unused-bindings] —
-                // check error = zero side effects, this law included
+                // unused bindings gate the run too [D:unused-bindings] —
+                // check error = zero side effects, this check included
                 let runUnused = UnusedTracker()
 
                 let checkedProgram =
@@ -6209,7 +6203,7 @@ let run (path: string) (scriptArgs: string list) : int =
                                     let sameFileMsg =
                                         if d.Parse then
                                             if d.HasCol then
-                                                // the ORIGINAL source line + caret — never
+                                                // the original source line + caret — never
                                                 // the assembled text
                                                 let src = rawByLine |> Map.tryFind d.PhysLine |> Option.defaultValue ""
 
@@ -6240,7 +6234,7 @@ let run (path: string) (scriptArgs: string list) : int =
                                             + $":\n{src}\n{underline}\n{d.Message}"
 
                                     // multi-file [D:modules-v1]: a module error
-                                    // renders at its OWN file + an "imported here"
+                                    // renders at its own file + an "imported here"
                                     // note at the import line
                                     let locatedMsg =
                                         match d.File with
@@ -6267,7 +6261,7 @@ let run (path: string) (scriptArgs: string list) : int =
                                             $"{path}:{wl}:{wc}: " + Color.yellow c "warning" + $": {wm}"
                                         )
 
-                                    // signature warnings PRINT, signature errors
+                                    // signature warnings print, signature errors
                                     // gate exactly as schemas do
                                     // [D:command-signatures]
                                     let sigDs = sigCmdDiagnostics path runSigInfos [ (ll, chk) ]
@@ -6277,7 +6271,7 @@ let run (path: string) (scriptArgs: string list) : int =
                                             $"{path}:{d.Line}:{d.Col}: " + Color.yellow c "warning" + $": {d.Message}"
                                         )
 
-                                    // schema contracts gate the RUN too — check
+                                    // schema contracts gate the run too — check
                                     // before effects [D:yaml-schemas]
                                     match
                                         (sigDs |> List.filter (fun d -> d.Severity = "error"))
@@ -6383,7 +6377,7 @@ let run (path: string) (scriptArgs: string list) : int =
                                  "a module declares; it does not run. To run a script from a script, invoke it as a command"
                          )
                      | None ->
-                         // a signature that fails to LOAD is a check
+                         // a signature that fails to load is a check
                          // error — nothing runs [D:command-signatures]
                          match sigLoadDiags with
                          | d :: _ -> Error(located path d.Line d.Message)
@@ -6393,8 +6387,8 @@ let run (path: string) (scriptArgs: string list) : int =
                     Console.Error.WriteLine msg
                     1
                 | Ok _ when not (runUnused.Flush Set.empty false |> List.isEmpty) ->
-                    // the unused-binding law [D:unused-bindings]: judged after
-                    // the whole-file fold, before ANY line runs
+                    // the unused-binding check [D:unused-bindings]: judged after
+                    // the whole-file fold, before any line runs
                     let c = Color.onStderr.Value
 
                     for f in runUnused.Flush Set.empty false do
@@ -6423,10 +6417,10 @@ let run (path: string) (scriptArgs: string list) : int =
                             | CImport lm ->
                                 try
                                     // replay the module (its Body, including any
-                                    // nested imports) and expose ITS members as
+                                    // nested imports) and expose its members as
                                     // `alias.member` [D:modules-v1]
                                     // process facts (incl. entryPath) ride from
-                                    // the entry; the module keeps its OWN scriptPath
+                                    // the entry; the module keeps its own scriptPath
                                     let procFacts =
                                         [ "Self.pid"; "Self.args"; "Self.stdin"; "Self.entryPath" ]
                                         |> List.choose (fun k -> Map.tryFind k venv |> Option.map (fun v -> k, v))
@@ -6485,7 +6479,7 @@ let run (path: string) (scriptArgs: string list) : int =
                             | CCmd te ->
                                 try
                                     // the bare command statement at a tty
-                                    // INHERITS stdout [D:colour-inherit]: the
+                                    // inherits stdout [D:colour-inherit]: the
                                     // child sees the terminal (isatty true,
                                     // colour on) and weir never holds the
                                     // bytes; redirected output keeps the
@@ -6494,9 +6488,9 @@ let run (path: string) (scriptArgs: string list) : int =
                                     (match te.Kind with
                                      | _ when Eval.inheritsStdout te ->
                                          // no mid-line tidy: a DSR query
-                                         // HANGS under a non-answering
-                                         // terminal (the pty harness proved
-                                         // it) — bash's posture, wart and all
+                                         // hangs under a non-answering
+                                         // terminal — bash's posture, wart
+                                         // and all
                                          Console.Out.Flush()
                                          Eval.inheritCommandStatement venv te
                                      | _ -> printResult (Eval.eval venv te))

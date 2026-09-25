@@ -1,7 +1,7 @@
 module Weir.Contracts
 
 // External contracts [D:contracts-spine]: vendored, pinned artifacts
-// that constrain what the CHECKER accepts and contribute NOTHING at
+// that constrain what the checker accepts and contribute nothing at
 // run time. Four properties, each load-bearing: vendored (checked in
 // under .weir/, never fetched during check), pinned (exact identity,
 // no ranges — pairwise comparisons, not a dependency graph), check-time
@@ -19,15 +19,14 @@ open Weir.Ast
 open Weir.Types
 
 // ---- the path/name boundary [D:lockfile-confinement] -----------------------
-// A path that came from OUTSIDE (a lock entry, an `--as` name) is joined
+// A path that came from outside (a lock entry, an `--as` name) is joined
 // with a base and then used; a hostile or fat-fingered value must not
-// reach a write/read outside `.weir/`. Two guards, ONE copy each — the
+// reach a write/read outside `.weir/`. Two guards, one copy each — the
 // confining join (Path.under's lexical core, Session-free so it lives
-// here, before Builtins) and the plain-name validator (the rule
-// `add module` had inline, extracted so `add schema`/`sig`/`gen types`
-// share it).
+// here, before Builtins) and the plain-name validator (`add module`'s
+// rule, shared with `add schema`/`sig`/`gen types`).
 
-/// absolute/rooted on ANY platform — refused by shape, the safe
+/// absolute/rooted on any platform — refused by shape, the safe
 /// direction (a script must confine identically on Linux and Windows).
 /// Mirrors Builtins.absoluteShaped [D:path-under]; kept here so the lock
 /// read (before Builtins) can confine.
@@ -36,8 +35,8 @@ let private absoluteShapedPath (p: string) : bool =
     || p.StartsWith "\\"
     || (p.Length >= 2 && System.Char.IsLetter p[0] && p[1] = ':')
 
-/// the CONFINING join, Path.under's lexical core [D:path-under]: join
-/// `rel` under an ALREADY-RESOLVED `root` and return the confined
+/// the confining join, Path.under's lexical core [D:path-under]: join
+/// `rel` under an already-resolved `root` and return the confined
 /// absolute path, or Error when `rel` escapes (absolute, or `..` past the
 /// base). Purely textual — GetFullPath never touches disk, so a symlink
 /// out is textually under (the same bound Path.under states). `root` is
@@ -51,22 +50,22 @@ let confineUnder (root: string) (rel: string) : Result<string, string> =
         let sep = string Path.DirectorySeparatorChar
         let prefix = if baseDir.EndsWith sep then baseDir else baseDir + sep
 
-        // SEGMENT-WISE, never prefix-string-wise (`/safe/uploads-evil`
-        // starts with `/safe/uploads` and is NOT under it)
+        // segment-wise, never prefix-string-wise (`/safe/uploads-evil`
+        // starts with `/safe/uploads` and is not under it)
         if joined = baseDir || joined.StartsWith prefix then
             Ok joined
         else
             Error $"'{rel}' escapes the base — it must stay under it"
 
 // ---- symlink-resolving confinement [D:lockfile-symlink-confinement] ---------
-// confineUnder is purely LEXICAL — GetFullPath normalizes `..` without
-// touching disk, so a symlink OUT (an intermediate dir like `.weir/schemas`
+// confineUnder is purely lexical — GetFullPath normalizes `..` without
+// touching disk, so a symlink out (an intermediate dir like `.weir/schemas`
 // → outside, or a final component that is itself a link) escapes a
-// lexically-clean path. This layer resolves the REAL filesystem object and
-// requires it under the REAL root, closing DA-04.
+// lexically-clean path. This layer resolves the real filesystem object and
+// requires it under the real root, closing DA-04.
 
-/// segment-wise containment of an ALREADY-RESOLVED path under an
-/// ALREADY-RESOLVED root — the same rule confineUnder's textual check uses
+/// segment-wise containment of an already-resolved path under an
+/// already-resolved root — the same rule confineUnder's textual check uses
 /// (`/safe/uploads-evil` is not under `/safe/uploads`), applied to real
 /// paths. Both arguments are absolute; the empty tail (path == root) is in.
 let private underResolved (realRoot: string) (realPath: string) : bool =
@@ -75,7 +74,7 @@ let private underResolved (realRoot: string) (realPath: string) : bool =
     let prefix = if root.EndsWith sep then root else root + sep
     realPath = root || realPath.StartsWith prefix
 
-/// the REAL path of `p` when it exists (symlinks resolved to their final
+/// the real path of `p` when it exists (symlinks resolved to their final
 /// target), or None when it does not. Uses .NET link resolution — a
 /// non-link returns itself, a link chases to the final target; a broken
 /// link resolves to a non-existent target and reads as None here.
@@ -96,7 +95,7 @@ let private realPathOf (p: string) : string option =
     with _ ->
         None
 
-/// resolve `path`'s symlinks up to its DEEPEST EXISTING ancestor, then
+/// resolve `path`'s symlinks up to its deepest existing ancestor, then
 /// re-append the not-yet-existing lexical tail. Nothing on disk is created.
 /// Returns the real absolute path a write/read would actually land on, or
 /// Error when an existing ancestor cannot be resolved. `path` is absolute
@@ -115,15 +114,15 @@ let private resolveExistingPrefix (path: string) : Result<string, string> =
 
     walk (Path.TrimEndingDirectorySeparator path) []
 
-/// the REAL-PATH confinement [D:lockfile-symlink-confinement]: `dest` is
+/// the real-path confinement [D:lockfile-symlink-confinement]: `dest` is
 /// already lexically confined under `root` (confineUnder ran), but a
-/// symlink on the way — an intermediate dir OR the final component — can
-/// still redirect the actual object OUTSIDE. Resolve BOTH the root and the
+/// symlink on the way — an intermediate dir or the final component — can
+/// still redirect the actual object outside. Resolve both the root and the
 /// destination's existing prefix to their real paths and require the
 /// destination under the root. The final component is checked too: if it
 /// exists as a link out, realPathOf chases it and the check fails.
 let confineRealUnder (root: string) (dest: string) : Result<string, string> =
-    // resolve BOTH sides through their existing prefixes: a not-yet-created
+    // resolve both sides through their existing prefixes: a not-yet-created
     // root (the add fallback, a fresh tree) resolves to its lexical self —
     // there is no symlink to follow when nothing exists, so confinement
     // matches the lexical result until a real symlinked component appears.
@@ -136,21 +135,22 @@ let confineRealUnder (root: string) (dest: string) : Result<string, string> =
         else
             Error $"'{dest}' resolves through a symlink to outside .weir/ — the real object escapes the vendor directory"
 
-/// POSIX open(2) with O_NOFOLLOW on the FINAL component, the TOCTOU-tight
+/// POSIX open(2) with O_NOFOLLOW on the final component, the TOCTOU-tight
 /// write [D:lockfile-symlink-confinement]: the parent is realpath-verified
-/// under root by the caller, and O_NOFOLLOW makes the kernel REFUSE if the
+/// under root by the caller, and O_NOFOLLOW makes the kernel refuse if the
 /// final name is a symlink — so the check and the open refer to the same
 /// object with no replacement window on the leaf. Unix only; the Windows
 /// path falls back to the realpath preflight (its residual window is
 /// stated in the ledger).
 module private Posix =
-    // the WHOLE open(2) flag set is per-OS [D:lockfile-symlink-confinement]:
+    // the whole open(2) flag set is per-OS [D:lockfile-symlink-confinement]:
     // O_WRONLY agrees (0x0001) but O_CREAT/O_TRUNC/O_NOFOLLOW differ between
-    // Linux and macOS/BSD (fcntl.h). Only branching O_NOFOLLOW left the
-    // Linux O_CREAT (0x0040) / O_TRUNC (0x0200) meaning the WRONG bits on
-    // macOS (O_ASYNC / O_CREAT), so a re-write over a longer existing file
-    // was never truncated — stale trailing bytes broke the restore-repair
-    // hash. writeFlags () ORs the correct set for the running OS.
+    // Linux and macOS/BSD (fcntl.h). Branching only O_NOFOLLOW would leave
+    // the Linux O_CREAT (0x0040) / O_TRUNC (0x0200) meaning the wrong bits
+    // on macOS (O_ASYNC / O_CREAT), so a re-write over a longer existing
+    // file is never truncated — stale trailing bytes break the
+    // restore-repair hash. writeFlags () ORs the correct set for the
+    // running OS.
     [<Literal>]
     let private O_WRONLY = 0x0001 // same on Linux and macOS
 
@@ -175,12 +175,12 @@ module private Posix =
     [<DllImport("libc", SetLastError = true)>]
     extern int private ``open``(string pathname, int flags, int mode)
 
-    // set the mode on the ALREADY-OPEN fd [D:lockfile-symlink-confinement]: libc
-    // open(2) is VARIADIC (mode_t is a `...` arg), and on ARM64 macOS a
-    // variadic trailing arg travels on the STACK — the fixed-signature
+    // set the mode on the already-open fd [D:lockfile-symlink-confinement]:
+    // libc open(2) is variadic (mode_t is a `...` arg), and on ARM64 macOS
+    // a variadic trailing arg travels on the stack — the fixed-signature
     // `open` P/Invoke above passes mode positionally, supplying garbage
     // there, so the leaf lands with a wrong/zero mode and a later
-    // File.ReadAllBytes hits Permission denied. fchmod is NON-variadic
+    // File.ReadAllBytes hits Permission denied. fchmod is non-variadic
     // (two fixed args), so its P/Invoke is register-exact on every ABI;
     // applied to the fd already held it re-follows nothing — the
     // O_NOFOLLOW leaf confinement stands.
@@ -196,7 +196,7 @@ module private Posix =
         else
             O_WRONLY ||| O_CREAT_LINUX ||| O_TRUNC_LINUX ||| O_NOFOLLOW_LINUX
 
-    /// write bytes creating/truncating the final component, REFUSING to
+    /// write bytes creating/truncating the final component, refusing to
     /// follow a symlinked leaf (ELOOP). Returns Error on any libc failure,
     /// naming the leaf — the caller turns that into the located refusal.
     let writeNoFollow (path: string) (bytes: byte[]) : Result<unit, string> =
@@ -207,7 +207,7 @@ module private Posix =
             // ELOOP (40 on Linux, 62 on macOS) is the symlinked-leaf refusal
             Error $"cannot open '{path}' without following symlinks (errno {err})"
         else
-            // NAIL the mode on the open fd before writing [D:lockfile-symlink-confinement]:
+            // nail the mode on the open fd before writing [D:lockfile-symlink-confinement]:
             // the variadic-open mode arg is unreliable on ARM64 macOS, so the
             // 0o644 passed above may not have taken — fchmod on the fd we hold
             // makes the leaf 0o644 regardless (no re-follow; the O_NOFOLLOW
@@ -230,7 +230,7 @@ module private Posix =
 let writeConfined (root: string) (dest: string) (bytes: byte[]) : Result<unit, string> =
     let parent = Path.GetDirectoryName dest
 
-    // the PARENT must resolve under root — an intermediate symlink out is
+    // the parent must resolve under root — an intermediate symlink out is
     // caught here even when the leaf does not yet exist
     match confineRealUnder root parent with
     | Error e -> Error e
@@ -253,12 +253,12 @@ let writeConfined (root: string) (dest: string) (bytes: byte[]) : Result<unit, s
             else
                 Posix.writeNoFollow dest bytes
 
-/// a vendored name safe as a FILE-NAME segment [D:lockfile-confinement]:
+/// a vendored name safe as a file-name segment [D:lockfile-confinement]:
 /// the F14 guard at the argv crossing — no separators, no `..`, no
 /// leading dot, no absolute shape, so `--as` can only ever name a file
-/// directly inside its kind's directory. Hyphens ARE allowed (a schema
+/// directly inside its kind's directory. Hyphens are allowed (a schema
 /// name like `k8s-configmap` is legitimate); the stricter identifier
-/// rule an import ALIAS needs is `plainName`, layered on top by
+/// rule an import alias needs is `plainName`, layered on top by
 /// `add module`. This is the confinement floor every `--as` shares; the
 /// lock-read confinement is the defence in depth behind it.
 let vendorNameSafe (name: string) : bool =
@@ -268,7 +268,7 @@ let vendorNameSafe (name: string) : bool =
     && not (name.StartsWith ".")
     && name |> Seq.forall (fun c -> System.Char.IsLetterOrDigit c || c = '_' || c = '-' || c = '.')
 
-/// a plain NAME that can also be an import ALIAS: a letter, then
+/// a plain name that can also be an import alias: a letter, then
 /// letters/digits/_ — the rule `add module` enforces (its name becomes a
 /// module alias, so no hyphen, no dot). Stricter than vendorNameSafe.
 let plainName (name: string) : bool =
@@ -278,7 +278,7 @@ let plainName (name: string) : bool =
 
 // ---- discovery -------------------------------------------------------------
 
-/// walk UP from `fromDir` to the first `.weir/`; stop there. Bounded by
+/// walk up from `fromDir` to the first `.weir/`; stop there. Bounded by
 /// a `.git` (dir or file — worktrees) and the filesystem root. The
 /// error names both what was looked for and where the walk stopped.
 let findWeirDir (fromDir: string) : Result<string, string> =
@@ -302,38 +302,37 @@ let findWeirDir (fromDir: string) : Result<string, string> =
 // ---- the lockfile ----------------------------------------------------------
 
 // per artifact: kind, name, source url, sha256 of the file bytes, and
-// the path relative to .weir/. THE LOCKFILE IS THE MANIFEST (a
+// the path relative to .weir/. The lockfile is the manifest (a
 // deliberate choice — no ranges means nothing for a separate manifest
 // to hold): `weir add` writes it, `weir restore` re-materializes from
 // it, `weir verify` checks it. Absent until the first add.
 type LockEntry =
     { Kind: string
       Name: string
-      // for a GENERATED artifact (a signature) there is no URL: the
+      // for a generated artifact (a signature) there is no URL: the
       // slot records the generation source instead ("generated:help",
       // "generated:completion-fish", …) [D:command-signatures] — the
-      // ninth ruling's edge: the lock is still the record of intent,
-      // and the intent of a generated entry is "this signature
-      // describes the tool I had"
+      // lock is still the record of intent, and a generated entry's
+      // intent is "this signature describes the tool I had"
       Url: string
       Sha256: string
       Path: string
-      // sig entries only: the tool's VERBATIM --version output at
+      // sig entries only: the tool's verbatim --version output at
       // generation time — denormalized from the file (hash-protected,
       // so they cannot drift apart) so verify needs no weir parser
       Version: string option }
 
-/// the CONFINED dest for a lock entry [D:lockfile-confinement] — every
+/// the confined dest for a lock entry [D:lockfile-confinement] — every
 /// consumer (restore/verify/gen types) resolves an entry's Path through
-/// THIS, PER ENTRY: a hostile path (absolute, `..`) is a located refusal
+/// this, per entry: a hostile path (absolute, `..`) is a located refusal
 /// naming the entry, never a write/read outside `.weir/`. Per-entry, not
 /// whole-lock: a tampered entry does not strand the benign siblings — the
 /// hostile one refuses, the rest proceed.
 let entryDest (weirDir: string) (e: LockEntry) : Result<string, string> =
-    // TWO gates [D:lockfile-symlink-confinement]: the lexical confineUnder
-    // (an absolute/`..` path), THEN the real-path check (a symlinked
+    // two gates [D:lockfile-symlink-confinement]: the lexical confineUnder
+    // (an absolute/`..` path), then the real-path check (a symlinked
     // intermediate dir or final component that redirects the actual object
-    // outside .weir/ — DA-04). Both refuse PER ENTRY, naming the entry, so
+    // outside .weir/ — DA-04). Both refuse per entry, naming the entry, so
     // a benign sibling still restores.
     let tampered () =
         $"{e.Kind} {e.Name}: the lock records path '{e.Path}', which escapes .weir/ — a lock entry must stay under the vendor directory; this lock was tampered with or hand-edited"
@@ -419,18 +418,18 @@ let writeLock (weirDir: string) (entries: LockEntry list) : unit =
 // ---- fetch (ruling 4: each failure mode its own message) -------------------
 
 // the credential headers the contract client carries [D:contract-redirect]:
-// GitHub's Authorization and GitLab's PRIVATE-TOKEN. On a CROSS-ORIGIN
-// redirect these are DROPPED — the contract-fetch client is a SEPARATE
+// GitHub's Authorization and GitLab's PRIVATE-TOKEN. On a cross-origin
+// redirect these are dropped — the contract-fetch client is a separate
 // client from Http.send, and a bare HttpClient re-sends them (DA-05: the
-// PRIVATE-TOKEN leaked to a redirect target the BCL does not protect, since
-// its built-in drop covers Authorization only). The set is lowercased for a
+// BCL's built-in drop covers Authorization only, so PRIVATE-TOKEN would
+// reach the redirect target). The set is lowercased for a
 // case-insensitive match, the same shape [D:secret-redirect] uses.
 let private contractSensitiveHeaders: Set<string> =
     Set.ofList [ "authorization"; "private-token" ]
 
 let fetchBytesWith (headers: (string * string) list) (url: string) : Result<byte[] * string option, string> =
     try
-        // auto-redirect OFF so the contract client controls the
+        // auto-redirect off so the contract client controls the
         // credential-drop on an origin change [D:contract-redirect] — the
         // default handler would re-send PRIVATE-TOKEN to the redirect target
         use handler = new Net.Http.HttpClientHandler()
@@ -441,7 +440,7 @@ let fetchBytesWith (headers: (string * string) list) (url: string) : Result<byte
         // the explicit follow loop [D:contract-redirect], Http.send's shape:
         // per-message headers (not DefaultRequestHeaders, which cannot be
         // filtered per hop), dropping the credential headers on a
-        // cross-origin change. Covers BOTH the API-resolution request and the
+        // cross-origin change. Covers both the API-resolution request and the
         // artifact download — every fetchBytesWith caller.
         let mutable curUrl = url
         let mutable curHeaders = headers
@@ -506,8 +505,8 @@ let fetchBytesWith (headers: (string * string) list) (url: string) : Result<byte
 let fetchBytes (url: string) : Result<byte[] * string option, string> = fetchBytesWith [] url
 
 /// the single most likely user error for `add schema <url>` is a
-/// GitHub/GitLab FILE PAGE where the raw URL was meant — recognize the
-/// host and OFFER the rewritten raw URL, because the fix is a URL edit
+/// GitHub/GitLab file page where the raw URL was meant — recognize the
+/// host and offer the rewritten raw URL, because the fix is a URL edit
 /// the user may not know how to construct [D:add-validates]
 let rawUrlHint (url: string) : string =
     let m =
@@ -525,11 +524,12 @@ let rawUrlHint (url: string) : string =
             " — if this is a GitHub or GitLab file page, use the raw URL"
 
 // ---- remote module sources [D:add-module] ----------------------------------
-// The shorthand is CLI SUGAR ONLY — the lock never sees it: a plain URL
+// The shorthand is CLI sugar only — the lock never sees it: a plain URL
 // plus content hash goes in, host-agnostic, so restore/verify stay
-// generic. Host-first with the `//` repo/path separator REQUIRED on
+// generic. Host-first with the `//` repo/path separator required on
 // every host (GitLab nests groups, so the boundary must be spelled; a
-// host-conditional parse is a guess). Tag in, FULL SHA stored. An
+// host-conditional parse is a guess). A tag goes in, the full SHA is
+// stored. An
 // explicit @ref is required — weir does not guess a default branch.
 
 /// the env var a host's token is read from — never stored anywhere
@@ -542,7 +542,7 @@ let private hostToken (host: string) : string option =
     | "" -> None
     | t -> Some t
 
-/// GitHub answers 404 (not 403) for private-without-auth — the teach
+/// GitHub answers 404 (not 403) for private-without-auth — the hint
 /// must fire on both, or every private repo reads as a typo
 let hintPrivate (host: string) (e: string) : string =
     if e.Contains "answered 404" || e.Contains "answered 403" then
@@ -663,7 +663,7 @@ let resolveModuleSpec (spec: string) : Result<ResolvedModuleSource, string> =
 
 /// the shared vendoring tail: write the artifact and upsert its lock
 /// entry together, or neither. Returns (sha256, prior entry's sha) so
-/// the caller can render added/updated — a re-add IS the update path,
+/// the caller can render added/updated — a re-add is the update path,
 /// and the sha change is the review signal.
 let vendorFile
     (weirDir: string)
@@ -695,7 +695,7 @@ let vendorFile
         let others = entries |> List.filter (fun e -> not (e.Kind = kind && e.Name = name))
 
         // even a vendored kind directory (.weir/modules) can be a symlink
-        // OUT [D:lockfile-symlink-confinement] — writeConfined realpath-
+        // out [D:lockfile-symlink-confinement] — writeConfined realpath-
         // verifies the parent and opens the leaf O_NOFOLLOW
         match writeConfined weirDir dest bytes with
         | Error w -> Error w
@@ -714,18 +714,18 @@ let vendorFile
 // ---- the JSON Schema subset [D:yaml-schemas] -------------------------------
 
 // corpus-measured (six real k8s standalone-strict schemas), then grown
-// for the raw k8s OpenAPI shape [D:schema-types]: IN — type (string or
-// array-of-strings, the nullable spelling), properties, required,
-// items, additionalProperties (bool or schema), enum, oneOf RESTRICTED
-// to scalar-type alternatives (every corpus occurrence is the
-// IntOrString idiom), anyOf (all-scalar folds like oneOf; otherwise the
-// alternatives are kept as SChoice — first-variant for the generator,
-// unvalidated for the district), `nullable: true` (the OpenAPI 3.0
-// spelling), allOf of ONE schema plus annotations (the k8s
-// $ref-with-description idiom), and IN-DOCUMENT $ref
+// for the raw k8s OpenAPI shape [D:schema-types]. In the subset: type
+// (string or array-of-strings, the nullable spelling), properties,
+// required, items, additionalProperties (bool or schema), enum, oneOf
+// restricted to scalar-type alternatives (every corpus occurrence is
+// the IntOrString idiom), anyOf (all-scalar folds like oneOf; otherwise
+// the alternatives are kept as SChoice — first-variant for the
+// generator, unvalidated for the district), `nullable: true` (the
+// OpenAPI 3.0 spelling), allOf of one schema plus annotations (the k8s
+// $ref-with-description idiom), and in-document $ref
 // (#/definitions/<name>, #/$defs/<name>, #/components/schemas/<name>)
-// resolved against ROOT-level holders. Annotations accepted and
-// ignored: description, format, title, $schema, x-*. EVERYTHING else
+// resolved against root-level holders. Annotations accepted and
+// ignored: description, format, title, $schema, x-*. Everything else
 // rejects with a teaching error naming the keyword and its JSON path —
 // a cross-file $ref's teaching names the standalone variants (refs
 // inlined at publish).
@@ -735,7 +735,7 @@ type Schema =
     | SEnum of values: string list
     | SObject of props: (string * Schema) list * required: string list * additional: AdditionalProps
     | SArray of items: Schema
-    // an in-document reference, resolved via SchemaDoc.Defs — the NAME
+    // an in-document reference, resolved via SchemaDoc.Defs — the name
     // is kept (the generator mints type names from it) [D:schema-types]
     | SRef of name: string
     // a general anyOf: alternatives in document order [D:schema-types]
@@ -749,7 +749,7 @@ and AdditionalProps =
     | OpenProps
     | Vals of Schema
 
-/// a parsed schema DOCUMENT: the root shape plus the root-level shared
+/// a parsed schema document: the root shape plus the root-level shared
 /// definitions in-document $ref resolves against [D:schema-types]
 type SchemaDoc =
     { Root: Schema
@@ -795,7 +795,7 @@ let private refTarget (r: string) : string option =
         else
             None)
 
-/// an allOf member that carries ONLY annotations (description, x-*, …)
+/// an allOf member that carries only annotations (description, x-*, …)
 /// contributes no shape — the k8s idiom wraps one $ref with one of these
 let private annotationOnly (el: Text.Json.JsonElement) : bool =
     el.ValueKind = Text.Json.JsonValueKind.Object
@@ -808,8 +808,8 @@ let rec private parseNode (path: string) (el: Text.Json.JsonElement) : Result<Sc
     if el.ValueKind <> Text.Json.JsonValueKind.Object then
         Error $"at {where}: a schema node must be an object"
     else
-        // reject unknown keywords FIRST, so the teaching names them; the
-        // definition HOLDERS are known at the ROOT only [D:schema-types]
+        // reject unknown keywords first, so the teaching names them; the
+        // definition holders are known at the root only [D:schema-types]
         let mutable rejection = None
 
         for p in el.EnumerateObject() do
@@ -882,7 +882,7 @@ let rec private parseNode (path: string) (el: Text.Json.JsonElement) : Result<Sc
 
             match getProp "$ref" with
             | Some r when r.ValueKind = Text.Json.JsonValueKind.String ->
-                // a $ref node IS the reference — siblings are annotations
+                // a $ref node is the reference — siblings are annotations
                 // (draft-4 semantics, the k8s shape) [D:schema-types]
                 let raw = r.GetString()
 
@@ -897,7 +897,7 @@ let rec private parseNode (path: string) (el: Text.Json.JsonElement) : Result<Sc
 
                 match getProp "allOf" with
                 | Some members ->
-                    // ONE schema plus annotations flattens (the k8s
+                    // one schema plus annotations flattens (the k8s
                     // $ref-with-description idiom); anything else stays
                     // outside the subset [D:schema-types]
                     let substantive =
@@ -940,7 +940,7 @@ let rec private parseNode (path: string) (el: Text.Json.JsonElement) : Result<Sc
                             match getProp "anyOf" with
                             | Some alts ->
                                 // all-scalar folds like oneOf; otherwise the
-                                // alternatives are KEPT — first-variant for the
+                                // alternatives are kept — first-variant for the
                                 // generator, unvalidated for the district
                                 // [D:schema-types]
                                 (match scalarAlts alts with
@@ -1039,10 +1039,10 @@ let rec private refsOf (s: Schema) : string list =
     | SEnum _ -> []
 
 /// parse a vendored schema file's text into the subset tree — the root
-/// shape plus the ROOT-level definition holders (definitions / $defs /
+/// shape plus the root-level definition holders (definitions / $defs /
 /// components.schemas) in-document $ref resolves against; every $ref is
-/// checked to resolve HERE, so consumers never meet a dangling name.
-/// Errors carry the schema NAME and the JSON path of the offender.
+/// checked to resolve here, so consumers never meet a dangling name.
+/// Errors carry the schema name and the JSON path of the offender.
 let parseSchema (name: string) (text: string) : Result<SchemaDoc, string> =
     try
         use doc = Text.Json.JsonDocument.Parse text
@@ -1097,7 +1097,7 @@ let parseSchema (name: string) (text: string) : Result<SchemaDoc, string> =
     with ex ->
         Error $"schema {name}: not valid JSON — {ex.Message}"
 
-/// follow a chain of PURE refs to a shape (a ref-to-a-ref); a ref CYCLE
+/// follow a chain of pure refs to a shape (a ref-to-a-ref); a ref cycle
 /// with no shape in between lands on SAny — validation relaxes, the
 /// generator notes [D:schema-types]
 let rec deref (defs: Map<string, Schema>) (seen: Set<string>) (s: Schema) : Schema =
@@ -1109,7 +1109,7 @@ let rec deref (defs: Map<string, Schema>) (seen: Set<string>) (s: Schema) : Sche
         | None -> SAny
     | s -> s
 
-/// `additionalProperties: false` present ANYWHERE in the document — a
+/// `additionalProperties: false` present anywhere in the document — a
 /// schema without one cannot fire unknown-field checks [D:yaml-schemas];
 /// add warns off this fact, the schema= hover renders it [D:schema-hover]
 let rec anyClosedProps (el: Text.Json.JsonElement) : bool =
@@ -1124,10 +1124,10 @@ let rec anyClosedProps (el: Text.Json.JsonElement) : bool =
     | _ -> false
 
 // ---- add / restore / verify ------------------------------------------------
-// `add <kind>` is KIND-AWARE (acquiring differs per kind: a schema is
-// a url fetch; a signature will GENERATE from the installed tool; a
+// `add <kind>` is kind-aware (acquiring differs per kind: a schema is
+// a url fetch; a signature will generate from the installed tool; a
 // module will clone at a ref); `restore` and `verify` are
-// kind-agnostic BY CONSTRUCTION — every lock entry is source + hash +
+// kind-agnostic by construction — every lock entry is source + hash +
 // path, so they need to know nothing about the artifact.
 
 /// `weir add schema <url> --as <name>`: fetch, write under the kind
@@ -1136,8 +1136,8 @@ let addFetched (weirDir: string) (kind: string) (name: string) (url: string) : R
     match fetchBytes url with
     | Error e -> Error e
     | Ok(bytes, contentType) ->
-        // [D:add-validates]: add validates EVERYTHING the checker will
-        // later require and writes NOTHING if it cannot — an artifact
+        // [D:add-validates]: add validates everything the checker will
+        // later require and writes nothing if it cannot — an artifact
         // that passes add and fails at check has already put a broken
         // entry in the one file restore and verify trust. Gates in
         // order; the first failure returns with .weir/ untouched.
@@ -1168,7 +1168,7 @@ let addFetched (weirDir: string) (kind: string) (name: string) (url: string) : R
                     "valid JSON, but not a schema — no $schema, type, properties, or $defs at the top level; nothing was written"
             else
 
-                // the subset check runs AT ADD, not at first use: the failure
+                // the subset check runs at add, not at first use: the failure
                 // lands where the user can act, and an out-of-subset schema
                 // never reaches the lockfile
                 let subset =
@@ -1184,9 +1184,9 @@ let addFetched (weirDir: string) (kind: string) (name: string) (url: string) : R
                     match readLock weirDir with
                     | Error e -> Error e
                     | Ok entries ->
-                        // a schema with no `additionalProperties: false` ANYWHERE cannot
+                        // a schema with no `additionalProperties: false` anywhere cannot
                         // fire unknown-field checks — the feature's whole point — so a
-                        // silently-inert contract warns at ADD time (the vacuous-pin
+                        // silently-inert contract warns at add time (the vacuous-pin
                         // class). Plain `-standalone` k8s variants have exactly this
                         // shape; `-standalone-strict` is the load-bearing variant.
                         if kind = "schema" then
@@ -1235,17 +1235,17 @@ let restore (weirDir: string) : Result<string list, string> =
         let results =
             entries
             |> List.map (fun e ->
-                // CONFINE PER ENTRY [D:lockfile-confinement]: a hostile
-                // path refuses HERE (located, naming the entry) and writes
+                // confine per entry [D:lockfile-confinement]: a hostile
+                // path refuses here (located, naming the entry) and writes
                 // nothing; a benign sibling still restores. restore
-                // overwrites only its OWN artifacts inside .weir/, never a
+                // overwrites only its own artifacts inside .weir/, never a
                 // path outside it — the confinement makes "outside"
                 // unreachable [D:lockfile-confinement]
                 match entryDest weirDir e with
                 | Error refusal -> Error refusal
                 | Ok dest ->
 
-                // a PRESENT-BUT-MODIFIED url artifact is drift from the
+                // a present-but-modified url artifact is drift from the
                 // lock's intent — restore repairs it by refetching, the
                 // same hash-checked path an absent file takes (a
                 // deliberate local edit is a re-add, not an edit-in-place)
@@ -1256,8 +1256,8 @@ let restore (weirDir: string) : Result<string list, string> =
                 if presentAndTrue then
                     Ok $"{e.Kind} {e.Name}: present"
                 elif e.Url.StartsWith "generated:" then
-                    // the ruled restore behaviour for a GENERATED entry
-                    // [D:command-signatures]: NEVER regenerate (that would
+                    // the ruled restore behaviour for a generated entry
+                    // [D:command-signatures]: never regenerate (that would
                     // make a checked-in signature depend on the machine
                     // running restore). Present = confirmed by the verify
                     // pass; absent = it was never checked in, and only
@@ -1307,15 +1307,15 @@ let restore (weirDir: string) : Result<string list, string> =
             )
 
 /// the version probe's three honest answers [D:sig-version-probe]:
-/// absent, speaks, or REFUSES every rung — a nonzero exit's output is
+/// absent, speaks, or refuses every rung — a nonzero exit's output is
 /// a usage dump (paths included), never an identity; recording it
-/// leaked the error text into committed sigs
+/// would leak the error text into committed sigs
 type VersionProbe =
     | ToolAbsent
     | RefusesVersionFlag
     | ToolVersion of string
 
-/// probe output is PARSED, so terminal escapes are noise — a colored
+/// probe output is parsed, so terminal escapes are noise — a colored
 /// help banner fails an all-caps test (ToUpper turns the CSI final
 /// byte `m` into `M`), and a colored version would store escapes in
 /// the sig [D:sig-version-probe]
@@ -1323,7 +1323,7 @@ let stripAnsi (text: string) : string =
     Text.RegularExpressions.Regex.Replace(text, "\x1b\\[[0-9;?]*[A-Za-z]", "")
 
 /// one probe rung: spawn `<tool> <arg>` and read the exit code.
-/// stdin is NULL and the cwd a fresh temp dir — probing the bare
+/// stdin is null and the cwd a fresh temp dir — probing the bare
 /// `version` word must not hang a stdin-reader (`grep version`) or
 /// serve a local VERSION file as the identity (`cat version`)
 /// [D:sig-version-probe]
@@ -1337,7 +1337,7 @@ let private probeRung (resolve: string -> string) (tool: string) (arg: string) :
         psi.WorkingDirectory <- IO.Path.GetTempPath()
         use p = Diagnostics.Process.Start psi
         p.StandardInput.Close()
-        // ASYNC reads, then the bounded wait — a synchronous ReadToEnd
+        // async reads, then the bounded wait — a synchronous ReadToEnd
         // blocks before any timeout can fire if the child holds stdout
         let outTask = p.StandardOutput.ReadToEndAsync()
         let errTask = p.StandardError.ReadToEndAsync()
@@ -1360,7 +1360,7 @@ let private probeRung (resolve: string -> string) (tool: string) (arg: string) :
             match stripAnsi (if out.Trim() <> "" then out else err) with
             | blank when blank.Trim() = "" -> RefusesVersionFlag
             | text ->
-                // the IDENTITY is the FIRST line, whitespace-collapsed
+                // the identity is the first line, whitespace-collapsed
                 // [D:sig-version-probe]: az's --version is a whole
                 // environment report — machine paths, dependency lists,
                 // even a volatile update marker; the headline is the
@@ -1374,11 +1374,11 @@ let private probeRung (resolve: string -> string) (tool: string) (arg: string) :
     with _ ->
         ToolAbsent
 
-/// the LADDER — `--version`, then the `version` subcommand (jira,
-/// kubectl, terraform, go, gh). Two rungs ONLY, both stated: the
+/// the ladder — `--version`, then the `version` subcommand (jira,
+/// kubectl, terraform, go, gh). Two rungs only, both stated: the
 /// single-dash spellings are excluded by ruling (`-v` is verbose on
 /// half the world, and `ls -v` exits 0 with a listing as the
-/// "identity"). FENCED to the two commands allowed to ask the
+/// "identity"). Fenced to the two commands allowed to ask the
 /// environment (`weir verify`, `weir add sig`); check/completion
 /// never call this [D:command-signatures]
 /// `resolve` is the spawn-side PATHEXT resolution (Proc.resolveProg —
@@ -1389,20 +1389,20 @@ let probeToolVersion (resolve: string -> string) (tool: string) : VersionProbe =
     | RefusesVersionFlag -> probeRung resolve tool "version"
     | answer -> answer
 
-/// the rungs SEPARATELY, for the add side's gated ladder
-/// [D:sig-version-probe]: a FLAG probe is safe on any tool; a bare
+/// the rungs separately, for the add side's gated ladder
+/// [D:sig-version-probe]: a flag probe is safe on any tool; a bare
 /// word is not (`code completion fish` opened VS Code on two files) —
 /// the add side runs the word rung only when the tool's help
 /// advertises a `version` subcommand. verify keeps the full ladder:
-/// it only probes tools with a RECORDED version, i.e. tools that
+/// it only probes tools with a recorded version, i.e. tools that
 /// answered a rung at add time.
 let probeVersionFlag (resolve: string -> string) (tool: string) : VersionProbe = probeRung resolve tool "--version"
 
 let probeVersionWord (resolve: string -> string) (tool: string) : VersionProbe = probeRung resolve tool "version"
 
-/// `weir verify`, two-arm shaped (ruling: today the hash arm; the
-/// signature arm — tool `--version` against the recorded identity —
-/// landed beside it [D:command-signatures]).
+/// `weir verify`, two arms: the hash arm, and the signature arm —
+/// tool `--version` against the recorded identity
+/// [D:command-signatures].
 type VerifyFinding =
     | Absent of LockEntry
     | Modified of LockEntry * actual: string
@@ -1421,8 +1421,8 @@ let verify (resolve: string -> string) (weirDir: string) : Result<string list * 
         let findings = ResizeArray<VerifyFinding>()
 
         for e in entries do
-            // CONFINE PER ENTRY [D:lockfile-confinement]: verify must not
-            // READ outside .weir/ either — a hostile path is a MODIFIED-class
+            // confine per entry [D:lockfile-confinement]: verify must not
+            // read outside .weir/ either — a hostile path is a Modified-class
             // finding naming the escape, never a read of the escaped file
             match entryDest weirDir e with
             | Error refusal ->
@@ -1444,7 +1444,7 @@ let verify (resolve: string -> string) (weirDir: string) : Result<string list * 
                     lines.Add
                         $"{e.Kind} {e.Name}: MODIFIED — sha256 {actual.Substring(0, 12)}…, lock records {e.Sha256.Substring(0, 12)}…"
                 else
-                    // the VERSION arm — sig entries compare the tool's
+                    // the version arm — sig entries compare the tool's
                     // verbatim --version against the recorded identity;
                     // exact match, no tolerance [D:command-signatures]
                     match e.Version with
@@ -1472,11 +1472,11 @@ let verify (resolve: string -> string) (weirDir: string) : Result<string list * 
 
 // ---- validation against a district template [D:yaml-schemas] ---------------
 //
-// STRUCTURAL validation always (unknown fields, missing required
-// fields, misplaced nesting); VALUE validation where types permit
-// (a splice checks by its weir TYPE; enum/pattern constraints on
+// Structural validation always (unknown fields, missing required
+// fields, misplaced nesting); value validation where types permit
+// (a splice checks by its weir type; enum/pattern constraints on
 // splices do not check). `for`-generated entries and key splices
-// RELAX the unknown/required checks for the map they touch — dynamic
+// relax the unknown/required checks for the map they touch — dynamic
 // keys may supply what the checker cannot see. All stated in docs.
 
 let private levenshtein (a: string) (b: string) =
@@ -1503,7 +1503,7 @@ let private didYouMean (k: string) (props: (string * Schema) list) =
         | best :: _ -> $" — did you mean '{best}'?"
         | [] -> ""
 
-/// the scalar kind a weir TYPE guarantees, or None when the type
+/// the scalar kind a weir type guarantees, or None when the type
 /// cannot speak (Yaml nodes, unresolved template parameters)
 let rec private tyKind (t: Ty) : string option =
     match t with
@@ -1536,7 +1536,7 @@ let private literalKind (raw: string) (quoted: bool) =
             | Ok _ -> "number"
             | Error _ -> "string"
 
-// paths are ALWAYS in the message (ruling: a few characters buys a
+// paths are always in the message (ruling: a few characters buys a
 // self-contained CI log — the span still carries editor identity).
 // The root renders without a suffix so shallow messages stay terse.
 let private atPath (p: string) = if p = "" then "" else $" at {p}"
@@ -1544,7 +1544,7 @@ let private atPath (p: string) = if p = "" then "" else $" at {p}"
 let private fieldName (p: string) =
     if p = "" then "this value" else $"field {p}"
 
-// enum rendering: a SINGLE allowed value states it plainly (k8s `kind`
+// enum rendering: a single allowed value states it plainly (k8s `kind`
 // is a one-element enum — the common case); longer lists cap at 6 with
 // an honest remainder count, never a decorative ellipsis
 let private enumText (values: string list) =
@@ -1573,7 +1573,7 @@ let rec validateTpl
     // derefs to SAny (the template drives every other recursion, so it
     // always terminates) [D:schema-types]
     | SRef _, tpl -> validateTpl name defs path (deref defs Set.empty schema) tpl
-    // a general anyOf is UNVALIDATED — a value legal under any variant
+    // a general anyOf is unvalidated — a value legal under any variant
     // must not error, and the checker picks no variant (stated
     // relaxation, never a false positive) [D:schema-types]
     | SChoice _, _ -> []
@@ -1606,7 +1606,7 @@ let rec validateTpl
                         | OpenProps -> []
                         | Closed -> [ kspan, $"schema {name}: unknown field '{k}'{atPath path}{didYouMean k props}" ]
                 | Check.TYtPair(Check.TYtKeySplice _, v) ->
-                    // a dynamic key: unknowable at check; its VALUE still
+                    // a dynamic key: unknowable at check; its value still
                     // checks when the schema constrains all values
                     match additional with
                     | Vals s -> validateTpl name defs path s v
@@ -1673,7 +1673,7 @@ and private spliceCheck
     (schema: Schema)
     (te: Check.TypedExpr)
     : (Span * string) list =
-    // value validation WHERE TYPES PERMIT: the splice's weir type is
+    // value validation where types permit: the splice's weir type is
     // all the checker can see. Yaml-typed and unresolved splices skip;
     // enum constraints on splices skip (stated).
     match schema with

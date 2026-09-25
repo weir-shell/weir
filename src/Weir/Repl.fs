@@ -7,45 +7,46 @@ open Weir.Types
 
 let private prompt = "weir> "
 
-// the prompt's status tint [D:red-prompt]: TRUE after an entry ends in
-// a printed error (parse, check, or eval), FALSE after one executes
-// clean — a REIFIED nonzero exit (`cmd | exitCode`, `| complete`) is
-// DATA and never reddens (the reifier family's point); directives
+// The prompt's status tint [D:red-prompt]: true after an entry ends in
+// a printed error (parse, check, or eval), false after one executes
+// clean. A reified nonzero exit (`cmd | exitCode`, `| complete`) is
+// data and never reddens (the reifier family's point); directives
 // clear like any succeeding entry; blank/comment no-ops leave it
-// untouched (bash's own $? behavior for empty input). Column math
-// everywhere counts prompt.Length — the tint is zero-width.
+// untouched (bash's own $? behavior for empty input). The tint is
+// zero-width — column math everywhere counts prompt.Length.
 let mutable private lastErrored = false
 
-// the kill-ring [D:repl-killring]: the last text a kill verb removed
-// (Ctrl+U/Ctrl+K/Ctrl+W), yanked back by Ctrl+Y. Session-scoped (readline
-// parity) so a kill on one line yanks into a later one. Last kill wins —
-// no consecutive-kill accumulation (the simple, predictable v1).
+// The kill-ring [D:repl-killring]: the last text a kill verb removed
+// (Ctrl+U/Ctrl+K/Ctrl+W), yanked back by Ctrl+Y. Session-scoped
+// (readline parity) so a kill on one line yanks into a later one. The
+// last kill wins; consecutive kills do not accumulate.
 let mutable private killRing = ""
 
-// the streamed-statement latch [D:repl-it]: Some <source text> while the
-// CURRENT `it` binding came from a streamed statement (the inherit path
-// [D:colour-inherit] — the child wrote the terminal itself, weir never
-// held the bytes, so `it` bound `()`, FSI-parity). Any other
-// expression/command REBINDS `it` and clears it; a `let`, a `type`, a
-// directive, or a check error leaves it (`it` is still the stream's
-// unit). Read by the misuse teach: a type error on a line that USES the
-// unit-bound `it` appends the capture repair with the command verbatim.
+// The streamed-statement latch [D:repl-it]: Some <source text> while
+// the current `it` binding came from a streamed statement (the inherit
+// path [D:colour-inherit] — the child wrote the terminal itself, weir
+// never held the bytes, so `it` bound `()`, FSI parity). Any other
+// expression/command rebinds `it` and clears the latch; a `let`, a
+// `type`, a directive, or a check error leaves it (`it` is still the
+// stream's unit). Read by the misuse teach: a type error on a line
+// that uses the unit-bound `it` appends the capture repair with the
+// command verbatim.
 let mutable private lastStreamed: string option = None
 
-// the session's live ALIAS NAMES [D:command-head-alias]: a ref like
+// the session's live alias names [D:command-head-alias]: a ref like
 // currentEnv (the loop refreshes both), read by the one membership
-// below and the Tab pool — the alias TABLE itself stays in State
+// below and the Tab pool — the alias table itself stays in State
 let private currentAliasNames: Set<string> ref = ref Set.empty
 
-// the session VALUES ride the same way [D:value-key-complete]: the
-// map-key completion slot PEEKS at a bound value's keys — a table
+// the session values ride the same way [D:value-key-complete]: the
+// map-key completion slot peeks at a bound value's keys — a table
 // read, never an evaluation
 let private currentVals: Eval.Env ref = ref Map.empty
 
-// the session resolver's verdict [D:repl-color]: ONE membership feeding
-// the live prompt's head tint AND the #help example tint [D:help-tint]
-// — values, modules, the command-callable externs, and the session's
-// alias heads [D:command-head-alias] — never two lists
+// the session resolver's verdict [D:repl-color]: one membership check
+// feeding both the live prompt's head tint and the #help example tint
+// [D:help-tint] — values, modules, the command-callable externs, and
+// the session's alias heads [D:command-head-alias] — never two lists
 let private knownInWith (aliases: Set<string>) (env: TypeEnv) (n: string) : bool =
     Map.containsKey n env.Values
     || Map.containsKey n env.Modules
@@ -55,26 +56,26 @@ let private knownInWith (aliases: Set<string>) (env: TypeEnv) (n: string) : bool
 let private knownIn (env: TypeEnv) : string -> bool =
     knownInWith currentAliasNames.Value env
 
-// the session TRANSCRIPT [D:repl-save]: the ACCEPTED statements, in
-// order, that `#save` DISTILLS into a runnable .weir file (option B — a
+// The session transcript [D:repl-save]: the accepted statements, in
+// order, that `#save` distills into a runnable .weir file (option B — a
 // session is scratch; #save crystallizes its definitions and guarantees
 // the output `weir check`s clean). A statement lands here only after it
-// CHECKS and EVALUATES clean (errored lines drop).
+// checks and evaluates clean (errored lines drop).
 //
-// `PhysText` is the statement's REAL physical source — a multi-line
-// heredoc/`type`/binding carries its newlines + indentation, NOT the
+// `PhysText` is the statement's real physical source — a multi-line
+// heredoc/`type`/binding carries its newlines + indentation, not the
 // assembler's control-char-joined logical line (`ll.Text`), so a kept
 // definition round-trips through `weir check`. `Kind` classifies the
-// statement so #save can KEEP definitions and DROP scratch:
-//   - `TDef name` — a `type` decl or a NAMED `let` binding (a real
+// statement so #save can keep definitions and drop scratch:
+//   - `TDef name` — a `type` decl or a named `let` binding (a real
 //     binder, not `_`-prefixed / a `_r<n>` discard). #save keeps these,
 //     deduping by name (last wins), and checks each survivor.
 //   - `TDiscard` — a non-unit expression/command echo (bare scratch).
 //     Dropped; it never carried reuse value.
 //   - `TOther` — a unit statement (an effect echo). Dropped from the
 //     distilled file (a session's effects are not definitions).
-// Directives never record; #infer records the DRAFTED type decls (each a
-// `TDef`) instead of the directive line.
+// Directives never record; #infer records the drafted type decls (each
+// a `TDef`) instead of the directive line.
 type private TranscriptKind =
     | TDef of name: string
     | TDiscard
@@ -87,7 +88,7 @@ type private TranscriptLine =
 
 let private transcript = System.Collections.Generic.List<TranscriptLine>()
 
-// record a KEPT definition (type or named let) with its physical source
+// record a kept definition (type or named let) with its physical source
 let private recordDef (name: string) (physText: string) (text: string) =
     transcript.Add
         { Text = text
@@ -108,7 +109,7 @@ let private recordOther (physText: string) (text: string) =
           PhysText = physText
           Kind = TOther }
 
-// the PHYSICAL source of a logical line [D:repl-save]: a multi-line
+// the physical source of a logical line [D:repl-save]: a multi-line
 // statement (a heredoc, a `type` decl, a block let) assembled `ll.Text`
 // with the group-separator sentinel — unparseable in a file. Every
 // segment carries its physical line number, so the real source is those
@@ -126,9 +127,9 @@ let private physicalSource (srcLines: string[]) (ll: Script.LogicalLine) : strin
     | [] -> ll.Text
     | _ -> lineNos |> List.map (fun n -> srcLines[n - 1]) |> String.concat "\n"
 
-// how an accepted statement RECORDS [D:repl-save]: a `type` decl or a
-// NAMED `let` binds a definition (`Some (TDef name)`); a `_`-prefixed or
-// `_r<n>` discard binder is scratch (`Some TDiscard` — it carried no
+// how an accepted statement records [D:repl-save]: a `type` decl or a
+// named `let` binds a definition (`Some (TDef name)`); a `_`-prefixed
+// or `_r<n>` discard binder is scratch (`Some TDiscard` — it carried no
 // reuse value); a non-unit expression/command echo is scratch too
 // (`Some TDiscard`); a unit statement is an effect echo (`Some TOther`);
 // a module/import/sig never records (`None`).
@@ -143,11 +144,11 @@ let private recordKind (chk: Script.CheckedStatement) : TranscriptKind option =
     match chk.Kind with
     | Script.KLet(name, _, _) -> Some(if isNamedBinder name then TDef name else TDiscard)
     | Script.KLetPat(_, schemes, _) ->
-        // a destructuring binds several names (the schemes list); keep it
-        // as a definition when ANY binder is real (the line reads its RHS
-        // once). dedup keys on the FIRST real name — a destructuring is
-        // rarely reshadowed whole, and the check-guarantee catches any
-        // survivor that still fails
+        // a destructuring binds several names (the schemes list); keep
+        // it as a definition when any binder is real (the line reads its
+        // RHS once). Dedup keys on the first real name — a destructuring
+        // is rarely reshadowed whole, and the check guarantee catches
+        // any survivor that still fails
         let names = schemes |> List.map fst
 
         match names |> List.filter isNamedBinder with
@@ -196,8 +197,8 @@ module private Term =
             | Some buf -> tcsetattr (0, 0, buf) |> ignore
             | None -> ()
 
-    // the SHELL's cooked termios, captured at run() before the editor's
-    // first raw entry — ISIG included. Eval runs under THIS disposition
+    // the shell's cooked termios, captured at run() before the editor's
+    // first raw entry — ISIG included. Eval runs under this disposition
     // [D:repl-isig], so a ^C is a group SIGINT and a foreground child
     // dies the way it does in a script; the editor's raw config (ISIG
     // alone cleared — TreatControlCAsInput's footprint) re-asserts at
@@ -218,16 +219,16 @@ module private Term =
             | None -> ()
 
     /// the editor-active gate for the watchdog below — children run
-    /// during EVAL, when this is false, so the watchdog never fights an
+    /// during eval, when this is false, so the watchdog never fights an
     /// interactive child (fzf, an editor) for the terminal
     let editorActive = ref false
 
     let mutable private watchdogStarted = false
 
-    /// .NET's restore lands ASYNC after the child's reap — later than any
-    /// single re-assert at editor entry can outwait. A watchdog re-applies
-    /// the raw config whenever the live termios drifts while the editor
-    /// owns the prompt.
+    /// .NET's restore lands asynchronously after the child's reap —
+    /// later than any single re-assert at editor entry can outwait. A
+    /// watchdog re-applies the raw config whenever the live termios
+    /// drifts while the editor owns the prompt.
     let startWatchdog () =
         if not (System.OperatingSystem.IsWindows()) && not watchdogStarted then
             watchdogStarted <- true
@@ -263,7 +264,7 @@ type private Alias = { Exe: string; Prefix: string list }
 /// and its target, or a message. Single-hop is enforced later against the
 /// whole table.
 let private parseAliasLine (body: string) : Result<string * Alias, string> =
-    // body is the text AFTER `#alias`
+    // body is the text after `#alias`
     match
         body.Trim()
         |> fun s -> System.Text.RegularExpressions.Regex.Match(s, @"^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$")
@@ -293,7 +294,7 @@ type private State =
     { TypeEnv: TypeEnv
       Values: Eval.Env
       // REPL-only, populated from init.weir's #alias lines (and a live
-      // `#alias` at the prompt). Consulted ONLY in command-head position,
+      // `#alias` at the prompt). Consulted only in command-head position,
       // before PATH; never threaded to scripts/-e.
       Aliases: Map<string, Alias> }
 
@@ -306,7 +307,7 @@ let private initial =
 
 let private currentEnv = ref initial.TypeEnv
 
-/// the reference dump [D:reference]: the SAME one source #help and hover
+/// the reference dump [D:reference]: the same source #help and hover
 /// read — builtinDocs plus the typed signatures — emitted as JSON for
 /// the site's generated reference pages (weir docs-json). Modules carry
 /// their members with signatures; the form heads (retry/poll/within…)
@@ -401,28 +402,28 @@ let docsJson () : string =
     w.Flush()
     Text.Encoding.UTF8.GetString(ms.ToArray())
 
-// ---- the REPL config [D:repl-quality]: INERT data (values that tune an
-// affordance, never anything that runs), read ONLY by the REPL. It lives in
-// THIS module by design — scripts never touch Repl.fs, so `weir script.weir`
-// provably ignores it; that is the property the whole language exists to keep.
+// ---- the REPL config [D:repl-quality]: inert data (values that tune an
+// affordance, never anything that runs), read only by the REPL. It lives
+// in this module by design — scripts never touch Repl.fs, so `weir
+// script.weir` provably ignores it; that is the property the whole
+// language exists to keep.
 type private ReplConfig =
     { HistorySize: int
       HistoryDedup: bool
       HistoryPath: string
       FinderFlags: string list
-      // REVIVED [D:echo-cap]: cut as unwired once (repl-quality) — the
-      // wiring exists now (the session cap), so the key is real again
+      // feeds the session echo cap [D:echo-cap]
       EchoElems: int }
 
-// config/state dirs come from Builtins [D:path-home] — the ONE impl the
-// Path.home/configHome/stateHome members also expose (was duplicated here)
+// config/state dirs come from Builtins [D:path-home] — the same impl
+// the Path.home/configHome/stateHome members also expose
 let private configHome () = Builtins.configDir ()
 let private stateHome () = Builtins.stateDir ()
 
 let private defaultConfig =
     { HistorySize = 5000
       HistoryDedup = true
-      // STATE, not config — history is data the REPL produced, not settings
+      // state, not config — history is data the REPL produced, not settings
       HistoryPath = Path.Combine(stateHome (), "weir", "history")
       FinderFlags = [ "--height"; "40%"; "--reverse" ]
       EchoElems = 100 }
@@ -431,8 +432,8 @@ let private configKeys =
     set [ "historySize"; "historyDedup"; "historyPath"; "finderFlags"; "echoElems" ]
 
 // read $XDG_CONFIG_HOME/weir/config.json (fallback ~/.config/weir/config.json);
-// unknown keys are REJECTED with did-you-mean (a typo silently doing nothing is
-// the config-file's vacuous pin). Absent file / parse error -> defaults.
+// unknown keys are rejected with did-you-mean — a typo must not silently
+// do nothing. Absent file / parse error -> defaults.
 let private loadConfig () : ReplConfig =
     let path = Path.Combine(configHome (), "weir", "config.json")
 
@@ -482,7 +483,7 @@ let private loadConfig () : ReplConfig =
 
 let private config = loadConfig ()
 
-// the SESSION echo cap [D:echo-cap]: config seeds it, #echo moves it;
+// the session echo cap [D:echo-cap]: config seeds it, #echo moves it;
 // None = uncapped. A non-positive config value cannot mean anything
 // (Seq.truncate refuses it) — say so once and keep the default.
 let mutable private echoCap: int option =
@@ -494,10 +495,11 @@ let mutable private echoCap: int option =
 
 let private historyFile = config.HistoryPath
 
-// the table's tint is POSITIONAL [D:table-polish]: echoTable's lines
-// stay plain (one law, tests untouched) — the printer knows line 0 is
-// the header, line 1 the rule, a trailing "…" the clip row. Cells are
-// DATA and stay untinted; NO_COLOR and piped ride Color's own gate.
+// the table's tint is positional [D:table-polish]: echoTable's lines
+// stay plain (one law, its pinned output unchanged) — the printer knows
+// line 0 is the header, line 1 the rule, a trailing "…" the clip row.
+// Cells are data and stay untinted; NO_COLOR and piped ride Color's
+// own gate.
 let private printTable (lines: string list) =
     let on = Types.Color.onStdout.Value
 
@@ -514,16 +516,16 @@ let private printTable (lines: string list) =
 let private echoMeta (s: string) =
     Console.WriteLine(Types.Color.dim Types.Color.onStdout.Value s)
 
-// the `let`-echo meta line [D:echo-teaching-consistency]: name, type, and
-// the SAME truncation-teaching tail the bare-expression echo carries — one
-// spelling so a clipped `let` bind can never look like it silently dropped
-// data (the tail is printed AFTER the lines, so it stays visible).
-// The meta also states the bound seq's STATE [D:reenum-warning]: a
-// command-backed unforced seq re-runs its command on each use and the
-// echo says so; a materialized one is frozen; a pure lazy seq stays
-// unannotated — silence is the default, only the hazard and its
-// resolution speak. Both ride the one parenthetical, the state joined
-// before the truncation teaching.
+// the `let`-echo meta line [D:echo-teaching-consistency]: name, type,
+// and the same truncation-teaching tail the bare-expression echo
+// carries — one spelling, so a clipped `let` bind can never look like
+// it silently dropped data (the tail is printed after the lines, so it
+// stays visible). The meta also states the bound seq's state
+// [D:reenum-warning]: a command-backed unforced seq re-runs its command
+// on each use and the echo says so; a materialized one is frozen; a
+// pure lazy seq stays unannotated — silence is the default, only the
+// hazard and its resolution speak. Both ride the one parenthetical, the
+// state joined before the truncation teaching.
 let letEchoMeta (name: string) (ty: Ty) (state: string option) (hint: string option) : string =
     let tail =
         match state, hint with
@@ -552,13 +554,12 @@ let letSeqState (te: Check.TypedExpr) (v: Eval.Value) : string option =
 
 // the misuse repair after a streamed statement [D:repl-it]: `it` is
 // unit-bound (the stream's `()`), so using it where unit fails the check
-// is a located TYPE error — this line rides after it, naming the repair
+// is a located type error — this line rides after it, naming the repair
 // (re-type the command as a `let`; the value path captures). The command
 // text rides verbatim when it is one clean physical line;
 // sentinel-joined (assembled) source falls back to the generic spelling.
-// The standing per-command teaching this replaced (v0.0.43's streamed
-// parenthetical) taught on every command — noise; the teach now fires
-// only at the misuse.
+// The teach fires only at the misuse — a standing per-command teaching
+// was noise.
 let streamedItRepair (source: string option) : string =
     let cmd =
         match source with
@@ -581,17 +582,17 @@ let private termWidth () =
 
 // ---------------------------------------------------------------------------
 // The owned line editor [D:owned-line-editor]: bash key semantics —
-// Ctrl+C cancels the LINE, Ctrl+D on an empty line is EOF.
+// Ctrl+C cancels the line, Ctrl+D on an empty line is EOF.
 
-// history holds LOGICAL entries [D:repl-multiline] — a multi-line match is
-// ONE entry, recalled whole. In-memory entries carry real newlines.
+// history holds logical entries [D:repl-multiline] — a multi-line match
+// is one entry, recalled whole. In-memory entries carry real newlines.
 let private history = ResizeArray<string>()
 
-// on disk: one entry per FILE LINE (the cap counts lines = entries, the
-// file stays greppable), newlines backslash-ESCAPED per entry — `\` -> `\\`,
-// newline -> `\n`. Decode reverses. A legacy plain-line file reads fine;
-// a legacy entry containing a literal `\n` (a weir string like
-// Str.split "\n") decodes with a real newline — accepted NOW, pre-adoption,
+// on disk: one entry per file line (the cap counts lines = entries, the
+// file stays greppable), newlines backslash-escaped per entry — `\` ->
+// `\\`, newline -> `\n`. Decode reverses. A legacy plain-line file reads
+// fine; a legacy entry containing a literal `\n` (a weir string like
+// Str.split "\n") decodes with a real newline — accepted pre-adoption,
 // while the fix is an amendment and not a migration [D:repl-multiline].
 let private encodeEntry (entry: string) =
     entry.Replace("\\", "\\\\").Replace("\n", "\\n")
@@ -610,9 +611,9 @@ let private decodeEntry (line: string) =
 
     sb.ToString()
 
-// the one-line DISPLAY form for search UIs [D:repl-multiline] — fzf matches
-// per line, so a multi-line entry feeds as its lines joined with ⏎ (every
-// line stays searchable, unlike first-line-plus-ellipsis)
+// the one-line display form for search UIs [D:repl-multiline] — fzf
+// matches per line, so a multi-line entry feeds as its lines joined
+// with ⏎ (every line stays searchable, unlike first-line-plus-ellipsis)
 let private displayEntry (entry: string) = entry.Replace("\n", " ⏎ ")
 
 // the history file is created 0600 [D:repl-quality] — a REPL line can carry a
@@ -639,7 +640,7 @@ let private ensureHistoryFile () =
 let private loadHistory () =
     if File.Exists historyFile then
         let lines = File.ReadAllLines historyFile
-        // front-truncate to the cap ONCE at load (per-line append never
+        // front-truncate to the cap once at load (per-line append never
         // rewrites during a session — durability)
         let capped =
             if lines.Length > config.HistorySize then
@@ -653,8 +654,8 @@ let private loadHistory () =
 
         history.AddRange(capped |> Array.map decodeEntry)
 
-// per-ENTRY append with consecutive-dup dedup (readline's ignoredups);
-// the dedup compares WHOLE entries [D:repl-multiline]
+// per-entry append with consecutive-dup dedup (readline's ignoredups);
+// the dedup compares whole entries [D:repl-multiline]
 let private appendHistory (entry: string) =
     let dup =
         config.HistoryDedup && history.Count > 0 && history[history.Count - 1] = entry
@@ -669,12 +670,12 @@ let private appendHistory (entry: string) =
             ()
 
 // #history [N] [D:repl-history]: dump the session's history with the
-// file's PATH in the header — a user cannot cat what they cannot find,
-// and nothing in argv expands (`~` is a literal), so the path IS the
-// answer to "where does history live". Entries render DECODED, one per
+// file's path in the header — a user cannot cat what they cannot find,
+// and nothing in argv expands (`~` is a literal), so the path is the
+// answer to "where does history live". Entries render decoded, one per
 // line via displayEntry (a multi-line entry stays one greppable line —
 // the fzf display form), numbered by their real position. The in-memory
-// `history` is the source, so the dump reflects THIS session including
+// `history` is the source, so the dump reflects this session including
 // the line-per-entry appends not yet load-capped. Bare = all (cat
 // parity); a positive N = the last N (tail).
 let private historyDirective (arg: string) : string =
@@ -702,26 +703,27 @@ let private historyDirective (arg: string) : string =
 // completion's wordStartAt) so field chains hop segment by segment
 let private isWordChar (c: char) = Char.IsLetterOrDigit c || c = '_'
 
-// completion's word rule is Complete's, never a copy — the copy is how the
-// two drifted from filesystemComplete when argv paths landed
+// completion's word rule delegates to Complete rather than keeping a
+// copy — copies are how the two drift apart
 let private wordStartAt (text: string) (pos: int) = Complete.wordStartAt text pos
 
-// ---- history search [D:repl-quality]: fzf when present (the good path,
-// its spawn-and-restore proven), a minimal built-in otherwise. NEVER a
-// "install fzf" message — behavior is defined either way. Returns the chosen
-// line (whole line replaces the buffer), or None on cancel (buffer unchanged).
+// ---- history search [D:repl-quality]: fzf when present (the good
+// path), a minimal built-in otherwise; never an "install fzf" message —
+// behavior is defined either way. Returns the chosen line (the whole
+// line replaces the buffer), or None on cancel (buffer unchanged).
 
 let private fzfSearch (query: string) : string option =
     try
         let psi = Diagnostics.ProcessStartInfo "fzf"
 
-        // history lines are weir CODE, and weir's glyphs are fzf QUERY
-        // OPERATORS in its extended-search mode (`^` prefix-anchor vs the
-        // force-PATH sigil, `|` OR vs the pipe, `$` suffix, `!` negation) —
-        // typing `^ls` would EXCLUDE every `^ls …` entry. Literal fuzzy
-        // matching is the correct default for searching code, so extended
-        // mode is off HERE (correctness, not style); fzf is last-flag-wins,
-        // so finderFlags can restore it with `--extended`.
+        // history lines are weir code, and weir's glyphs are fzf query
+        // operators in its extended-search mode (`^` prefix-anchor vs
+        // the force-PATH sigil, `|` OR vs the pipe, `$` suffix, `!`
+        // negation) — typing `^ls` would exclude every `^ls …` entry.
+        // Literal fuzzy matching is the correct default for searching
+        // code, so extended mode is off here (correctness, not style);
+        // fzf is last-flag-wins, so finderFlags can restore it with
+        // `--extended`.
         psi.ArgumentList.Add "--no-extended"
 
         for f in config.FinderFlags do
@@ -735,12 +737,12 @@ let private fzfSearch (query: string) : string option =
         psi.RedirectStandardOutput <- true
         psi.UseShellExecute <- false // fzf draws its UI on /dev/tty directly
         use p = Diagnostics.Process.Start psi
-        // feed history most-recent-first as one-line DISPLAY forms (fzf
+        // feed history most-recent-first as one-line display forms (fzf
         // matches per line); the selection maps back to the full entry —
         // identical displays imply identical text, so the map is lossless
         let byDisplay = Collections.Generic.Dictionary<string, string>()
 
-        // the selection can land BEFORE the feed completes (fzf exits on
+        // the selection can land before the feed completes (fzf exits on
         // Enter while lines still stream) — the feed's broken pipe is a
         // normal outcome, not a cancel; the selection is still whole on
         // stdout, so only the feed wears the guard [D:repl-quality]
@@ -761,10 +763,10 @@ let private fzfSearch (query: string) : string option =
         p.WaitForExit()
 
         // fzf (≥0.52) pushes the kitty keyboard protocol on the tty; a
-        // quirky exit can leave it PUSHED, after which Ctrl+C arrives as
-        // CSI-u DATA (\x1b[99;5u) instead of SIGINT — the unkillable-child
-        // incident [D:binary-echo]. Pop unconditionally: popping an empty
-        // stack is a no-op by the protocol's own spec.
+        // quirky exit can leave it pushed, after which Ctrl+C arrives as
+        // CSI-u data (\x1b[99;5u) instead of SIGINT, leaving the child
+        // unkillable [D:binary-echo]. Pop unconditionally: popping an
+        // empty stack is a no-op by the protocol's own spec.
         if not Console.IsOutputRedirected then
             Console.Out.Write "\x1b[<u"
             Console.Out.Flush()
@@ -824,12 +826,13 @@ let private historySearch (query: string) : string option =
     else
         minimalSearch query
 
-// is the buffer a COMPLETE statement? [D:repl-multiline] — the assembler
-// answers STRUCTURE (open brackets, pending bindings, dangling openers);
-// a parse failure AT THE VERY END of the assembled text means "more input
-// wanted". A mid-text failure is a real error and SUBMITS (the message
-// shows) — the user is never trapped adding newlines.
-// at the REPL a leading-space FIRST line has no statement above to
+// is the buffer a complete statement? [D:repl-multiline] — the
+// assembler answers structure (open brackets, pending bindings,
+// dangling openers); a parse failure at the very end of the assembled
+// text means "more input wanted". A mid-text failure is a real error
+// and submits (the message shows) — the user is never trapped adding
+// newlines.
+// At the REPL a leading-space first line has no statement above to
 // continue, so its indentation carries no meaning [D:windows-s2]: the
 // whole buffer dedents by the first line's indent (relative structure
 // inside the entry is preserved — a pasted indented block keeps its
@@ -854,8 +857,8 @@ let private bufferComplete (bufLines: string list) : bool =
 
     if List.isEmpty numbered then
         true
-    // weir strings are SINGLE-LINE: a line ending inside one can never be
-    // completed by more input — submit (the parse error shows) rather
+    // weir strings are single-line: a line ending inside one can never
+    // be completed by more input — submit (the parse error shows) rather
     // than trap the user growing an unfixable buffer
     elif bufLines |> List.exists Script.endsInsideString then
         true
@@ -874,8 +877,8 @@ let private bufferComplete (bufLines: string list) : bool =
                     | Some c -> c <= ll.Text.TrimEnd().Length
                     | None -> true)
 
-// the continuation prompt — SAME WIDTH as "weir> " so column math is
-// uniform across rows [D:repl-multiline]
+// the continuation prompt — the same width as "weir> " so column math
+// is uniform across rows [D:repl-multiline]
 let private contPrompt = "  ... "
 
 // the live editor's repaint hook for SIGWINCH (full repaint on resize;
@@ -883,7 +886,7 @@ let private contPrompt = "  ... "
 let private activeRedraw: (unit -> unit) option ref = ref None
 
 /// returns None on EOF (Ctrl+D at an empty buffer); Some entry (lines
-/// joined with \n) otherwise. The buffer is TWO-DIMENSIONAL
+/// joined with \n) otherwise. The buffer is two-dimensional
 /// [D:repl-multiline]: a list of lines plus a (row, col) cursor; the
 /// horizontal machinery applies per line unchanged.
 let private readLineTty () : string option =
@@ -893,7 +896,7 @@ let private readLineTty () : string option =
     let mutable col = 0
     let mutable histIdx = history.Count // one past the end = the new entry
     let mutable draft = ""
-    // display rows between the region TOP and the cursor at the last
+    // display rows between the region top and the cursor at the last
     // paint — the way back up through wraps
     let mutable lastCursorDisplay = 0
 
@@ -905,18 +908,18 @@ let private readLineTty () : string option =
 
     // display rows a buffer line occupies at width w (prompt included);
     // a line filling its final row exactly leaves the terminal
-    // wrap-PENDING, which the ceil and the \r\n emission agree about
+    // wrap-pending, which the ceil and the \r\n emission agree about
     let dispRows (w: int) (len: int) = max 1 ((6 + len + w - 1) / w)
 
-    // (display-row offset from region top, display column) of the cursor.
-    // At an EXACT wrap boundary ((6+col) % w = 0) the logical column has
-    // two screen positions [D:windows-findings]: MID-line the true one is
-    // START of the next row (that row exists — more text is painted on
-    // it); at END of line it is the wrap-PENDING cell (the terminal never
-    // wrapped, so the next row does not exist) — the last column, named
-    // explicitly rather than emitted as an off-screen w that the terminal
-    // clamps (the clamp was the column-N ambiguity: two logical columns
-    // painted at one cell, then the crossing jumped two)
+    // (display-row offset from region top, display column) of the
+    // cursor. At an exact wrap boundary ((6+col) % w = 0) the logical
+    // column has two screen positions [D:windows-findings]: mid-line the
+    // true one is the start of the next row (that row exists — more text
+    // is painted on it); at end of line it is the wrap-pending cell (the
+    // terminal never wrapped, so the next row does not exist) — the last
+    // column, named explicitly rather than emitted as an off-screen w
+    // for the terminal to clamp (the clamp paints two logical columns at
+    // one cell, and the crossing then jumps two)
     let cursorDisplay (w: int) =
         let mutable above = 0
 
@@ -956,10 +959,10 @@ let private readLineTty () : string option =
 
         let mutable totalRows = 0
 
-        // the dedent's THIRD consumer [D:windows-s3]: head verdicts run
-        // on the DEDENTED text (what will parse), painted back behind the
+        // the dedent's third consumer [D:windows-s3]: head verdicts run
+        // on the dedented text (what will parse), painted back behind the
         // typed prefix — bufferComplete, submission, and the colorizer
-        // must share ONE dedent or the verdict and the paint split
+        // must share one dedent or the verdict and the paint split
         let bufTexts = [ for i in 0 .. lines.Count - 1 -> lines[i].ToString() ]
         let dedented = dedentEntry bufTexts
 
@@ -987,7 +990,7 @@ let private readLineTty () : string option =
             if i < lines.Count - 1 then
                 out.Append "\r\n" |> ignore
 
-        // the paint leaves the cursor at the END of the last line; walk
+        // the paint leaves the cursor at the end of the last line; walk
         // back up to the (row, col) target
         let curDisplay, curCol = cursorDisplay w
         let up = totalRows - 1 - curDisplay
@@ -1029,7 +1032,7 @@ let private readLineTty () : string option =
         col <- 0
         redraw ()
 
-    // park the cursor at the region end (echoes print BELOW the buffer)
+    // park the cursor at the region end (echoes print below the buffer)
     let toEnd () =
         row <- lines.Count - 1
         col <- lines[row].Length
@@ -1037,11 +1040,12 @@ let private readLineTty () : string option =
 
     let mutable result: string option option = None
 
-    // a slow child's exit can leave the terminal COOKED (ICRNL on) behind
-    // .NET's cached config — every later Enter then arrives as '\n', the
-    // force-newline key, and the buffer can never submit again. Re-assert
-    // the known-good raw mode at editor entry; the caller flags the
-    // editor active so the watchdog holds it [D:repl-cooked-trap].
+    // a slow child's exit can leave the terminal cooked (ICRNL on)
+    // behind .NET's cached config — every later Enter then arrives as
+    // '\n', the force-newline key, and the buffer can never submit
+    // again. Re-assert the known-good raw mode at editor entry; the
+    // caller flags the editor active so the watchdog holds it
+    // [D:repl-cooked-trap].
     Term.reassert ()
     Term.startWatchdog ()
 
@@ -1052,18 +1056,18 @@ let private readLineTty () : string option =
         let alt = k.Modifiers.HasFlag ConsoleModifiers.Alt
 
         match k.Key with
-        // Alt+Enter (and Ctrl+J below): FORCE a newline even when the
+        // Alt+Enter (and Ctrl+J below): force a newline even when the
         // statement is complete — formatting, not a second statement
-        // (an entry stays ONE statement) [D:repl-multiline]
+        // (an entry stays one statement) [D:repl-multiline]
         | ConsoleKey.Enter when alt -> insertNewline ()
         | _ when k.KeyChar = '\n' -> insertNewline ()
         | ConsoleKey.Enter ->
-            // submit when the statement is COMPLETE; grow the buffer when
+            // submit when the statement is complete; grow the buffer when
             // it is not — the parser's own answer, not an approximation
             let text = bufText ()
             let bufList = lines |> Seq.map (fun sb -> sb.ToString()) |> List.ofSeq
 
-            // blank-line ESCAPE [D:windows-s2]: Enter on an empty FINAL
+            // blank-line escape [D:windows-s2]: Enter on an empty final
             // line closes a pending buffer even when incomplete — the
             // parse error shows and the input is kept, instead of Ctrl+C
             // being the only (input-losing) way out of an uncompletable
@@ -1109,7 +1113,7 @@ let private readLineTty () : string option =
                 lines.RemoveAt(row + 1)
                 redraw ()
         | ConsoleKey.C when ctrl ->
-            // abandon the WHOLE buffer, keep the session
+            // abandon the whole buffer, keep the session
             toEnd ()
             Console.WriteLine "^C"
             result <- Some(Some "")
@@ -1119,7 +1123,7 @@ let private readLineTty () : string option =
             Console.WriteLine()
             result <- Some(Some "")
         | ConsoleKey.R when ctrl ->
-            // history search [D:repl-quality]: the selection REPLACES the
+            // history search [D:repl-quality]: the selection replaces the
             // whole buffer (an entry is a statement, not an insertion); a
             // cancel leaves the buffer untouched
             (match historySearch (displayEntry (bufText ())) with
@@ -1205,7 +1209,7 @@ let private readLineTty () : string option =
                 cur().Remove(col, cur().Length - col) |> ignore
                 redraw ()
         | ConsoleKey.W when ctrl ->
-            // kill the previous WORD → the ring [D:repl-killring] — the
+            // kill the previous word → the ring [D:repl-killring] — the
             // Ctrl+Left range (skip separators, then the word)
             let t = cur().ToString()
             let mutable p = col
@@ -1228,8 +1232,9 @@ let private readLineTty () : string option =
                 col <- col + killRing.Length
                 redraw ()
         | ConsoleKey.UpArrow ->
-            // Up WITHIN the buffer; history only from the FIRST line
-            // (the fish/ipython convention; Ctrl+R is the explicit path)
+            // Up moves within the buffer; history only from the first
+            // line (the fish/ipython convention; Ctrl+R is the explicit
+            // path)
             if row > 0 then
                 row <- row - 1
                 col <- min col lines[row].Length
@@ -1242,7 +1247,7 @@ let private readLineTty () : string option =
                 setBuffer history[histIdx]
         | ConsoleKey.DownArrow ->
             // Down within the buffer; at the last line, forward through
-            // history ONLY while already browsing it — a fresh buffer's
+            // history only while already browsing it — a fresh buffer's
             // last line is a no-op (Up's asymmetry) [D:repl-multiline]
             if row < lines.Count - 1 then
                 row <- row + 1
@@ -1253,13 +1258,13 @@ let private readLineTty () : string option =
 
                 setBuffer (if histIdx = history.Count then draft else history[histIdx])
         | ConsoleKey.Tab ->
-            // completion operates on the CURRENT line (per-line machinery)
+            // completion operates on the current line (per-line machinery)
             let text = cur().ToString()
             let ws = wordStartAt text col
-            // suggest's contract: text ends at the CURSOR — the tail past
-            // it must not leak into the word (the mid-line receipt: the
-            // typed closer ` })` became part of the prefix and killed
-            // every match); insertion below re-attaches the tail
+            // suggest's contract: text ends at the cursor — the tail
+            // past it must not leak into the word (a typed closer like
+            // ` })` would join the prefix and kill every match);
+            // insertion below re-attaches the tail
             let suggestions =
                 // the session entry: alias heads join the head-slot pool
                 // [D:command-head-alias]; the session values feed the
@@ -1292,13 +1297,13 @@ let private readLineTty () : string option =
                      col <- ws + prefix.Length
                      redraw ()
                  else
-                     // park at the region end so the list prints BELOW the
-                     // buffer — but the tracked (row, col) must survive:
-                     // toEnd() mutates it, and the repaint then put the real
-                     // cursor at end-of-buffer, past any text after the
-                     // cursor (one bug, no state — a second Tab completed
-                     // from where the cursor genuinely was)
-                     // [D:windows-findings]
+                     // park at the region end so the list prints below
+                     // the buffer — but the tracked (row, col) must
+                     // survive: toEnd() mutates them, and without the
+                     // restore the repaint would leave the real cursor
+                     // at end-of-buffer, past any text after the cursor,
+                     // so a second Tab would complete from the wrong
+                     // place [D:windows-findings]
                      let keepRow, keepCol = row, col
                      toEnd ()
                      Console.WriteLine()
@@ -1316,18 +1321,18 @@ let private readLineTty () : string option =
     activeRedraw.Value <- None
     result |> Option.defaultValue None
 
-// ROOTED: a collected PosixSignalRegistration disposes and stops
+// rooted: a collected PosixSignalRegistration disposes and stops
 // cancelling — the sweep-hook roots set the precedent [D:exit-hook]
 let mutable private sigintSurvival: obj option = None
 
-// TRUE only when the tty editor exists [D:repl-isig]: the eval-boundary
-// toggle is that editor's un-doing, and the TreatControlCAsInput SETTER
+// true only when the tty editor exists [D:repl-isig]: the eval-boundary
+// toggle undoes that editor, and the TreatControlCAsInput setter
 // throws on Windows with redirected input ("the handle is invalid" — a
 // piped REPL has no console). POSIX-scoped like the rest of the split.
 let mutable private ttyEval = false
 
 let private setupLineEditor () =
-    // the shell's cooked termios FIRST — the editor's raw config has
+    // the shell's cooked termios first — the editor's raw config has
     // not been established yet, so this is the one moment the
     // surrounding disposition (ISIG included) is knowable [D:repl-isig]
     Term.snapshotCooked ()
@@ -1335,7 +1340,7 @@ let private setupLineEditor () =
     Console.TreatControlCAsInput <- true // Ctrl+C is a KEY (cancel line), not SIGINT
 
     // the REPL survives SIGINT (bash parity) [D:repl-isig]: with ISIG
-    // restored around eval, a ^C is a GROUP signal — the child dies,
+    // restored around eval, a ^C is a group signal — the child dies,
     // the session must not. Cancel suppresses default termination; the
     // exit-hook sweep skips the survived case (Session.replSurvivesSigint).
     if not (OperatingSystem.IsWindows()) then
@@ -1363,31 +1368,31 @@ let private setupLineEditor () =
 
     loadHistory ()
 
-// one-line pushback for the redirected accumulator [D:repl-multiline]: a
-// peeked line that did NOT attach to the current statement belongs to the
-// NEXT one — it must survive across readInput calls (a fresh statement is
-// a fresh readRedirected call), so it lives at module scope, not inside
-// the function
+// one-line pushback for the redirected accumulator [D:repl-multiline]:
+// a peeked line that did not attach to the current statement belongs to
+// the next one — it must survive across readInput calls (a fresh
+// statement is a fresh readRedirected call), so it lives at module
+// scope, not inside the function
 let mutable private pendingLine: string option = None
 
-// the redirected-stdin ACCUMULATOR [D:repl-multiline]: a piped REPL
-// (printf '…' | weir) has no tty line editor, so it reads physical lines
-// with Console.ReadLine. A statement that spans lines (heredoc, a
+// the redirected-stdin accumulator [D:repl-multiline]: a piped REPL
+// (printf '…' | weir) has no tty line editor, so it reads physical
+// lines with Console.ReadLine. A statement that spans lines (heredoc, a
 // multi-line `type`, an open `if`/`for`/`match` block, a leading-`|>`
-// pipeline, an unbalanced bracket) must ASSEMBLE the way a SCRIPT does —
-// Script.assemble is the ONE authority (never a second parser). The tty
-// editor cannot look ahead (the user types), so it submits on the first
-// complete buffer; a pipe HAS the rest of the input, so it reads
-// script-like: keep the current statement open while the NEXT physical
+// pipeline, an unbalanced bracket) must assemble the way a script does
+// — Script.assemble is the one authority (never a second parser). The
+// tty editor cannot look ahead (the user types), so it submits on the
+// first complete buffer; a pipe has the rest of the input, so it reads
+// script-like: keep the current statement open while the next physical
 // line still attaches to it (a `|>` tail, an offside `else`, a district
 // body). Return one logical statement (lines \n-joined) so the loop's
 // existing single/multiline arms handle it unchanged.
 //
 // A directive line (#help/#quit/#infer/…) is one line by definition —
-// returned immediately, its own multi-line handling (#infer) untouched. A
-// blank/comment-only first line has no statement to open, so it returns
-// alone (the no-op arm). AT EOF with an unclosed buffer: return what
-// accumulated and let it error normally — the tty editor's
+// returned immediately, its own multi-line handling (#infer) untouched.
+// A blank/comment-only first line has no statement to open, so it
+// returns alone (the no-op arm). At EOF with an unclosed buffer: return
+// what accumulated and let it error normally — the tty editor's
 // blank-line/Ctrl+D escape does the same at its equivalent boundary.
 let private readRedirected () : string =
     let readLine () =
@@ -1397,11 +1402,12 @@ let private readRedirected () : string =
             l
         | None -> Console.ReadLine()
 
-    // the completed statement's prompts, emitted ONCE at return so the
-    // eval output that follows keeps its order [D:repl-multiline] — a peek
-    // reads the next statement's line BEFORE this one evaluates, so the
-    // prompt cannot be written at read time. weir> for the first line,
-    // "  ... " (same width) for each continuation, mirroring the tty.
+    // the completed statement's prompts, emitted once at return so the
+    // eval output that follows keeps its order [D:repl-multiline] — a
+    // peek reads the next statement's line before this one evaluates, so
+    // the prompt cannot be written at read time. weir> for the first
+    // line, "  ... " (same width) for each continuation, mirroring the
+    // tty.
     let emitPrompts (buf: string list) =
         buf
         |> List.iteri (fun i _ -> Console.Write(if i = 0 then prompt else contPrompt))
@@ -1424,7 +1430,7 @@ let private readRedirected () : string =
             let acc' = line :: acc
             let buf = List.rev acc'
 
-            // a FRESH first line that is a directive, blank, or
+            // a fresh first line that is a directive, blank, or
             // comment-only is complete on its own — it opens no statement
             // for later lines to continue
             let firstLineComplete =
@@ -1437,7 +1443,7 @@ let private readRedirected () : string =
             elif not (bufferComplete buf) then
                 go acc' // structurally incomplete — read the body
             else
-                // complete AS-IS; peek whether the next line continues it
+                // complete as-is; peek whether the next line continues it
                 match readLine () with
                 | null -> ret buf
                 | next when Script.pipedAttaches buf next -> go (next :: acc')
@@ -1477,9 +1483,9 @@ let private printWarnings (state: State) (te: Check.TypedExpr) =
         Console.WriteLine(Types.Color.yellow Types.Color.onStdout.Value (underline w.Span))
         Console.WriteLine(Check.formatWarning w))
 
-// ---- the #help glance sources [D:help-glance], defined HERE because the
-// function-value echo [D:repl-fn-echo] composes from the SAME pieces —
-// one renderer for #help and the echo, never a second copy.
+// ---- the #help glance sources [D:help-glance], defined here because
+// the function-value echo [D:repl-fn-echo] composes from the same
+// pieces — one renderer for #help and the echo, never a second copy.
 
 let private glanceWidth () =
     if Console.IsOutputRedirected then
@@ -1503,8 +1509,8 @@ let private memberGlance (qualified: string) : string =
 // ---- the tty help render [D:help-tint] -------------------------------
 // A doc's `code` spans tint cyan at a colored tty, the backticks
 // themselves dropped — the span reads as code, not markdown source.
-// ONE function, called by every REPL help print (the #help dispatch,
-// #find's selection and fallback) AND the function-value echo's glance
+// One function, called by every REPL help print (the #help dispatch,
+// #find's selection and fallback) and the function-value echo's glance
 // line [D:repl-fn-echo]; replDocText and piped output keep the literal
 // backticks (the pinned byte surface — and the stripped tty, NO_COLOR /
 // TERM=dumb, falls back to that spelling so the span boundary is never
@@ -1521,22 +1527,22 @@ let renderHelpText (color: bool) (s: string) : string =
         s
 
 // ---- the function-value echo [D:repl-fn-echo]: a bare expression
-// evaluating to a FUNCTION renders a mini-help instead of the opaque
+// evaluating to a function renders a mini-help instead of the opaque
 // `<builtin> : ty` / `<fun> : ty` line.
-//   - a BUILTIN named by an identifier (a bare alias like `find`
+//   - a builtin named by an identifier (a bare alias like `find`
 //     resolves to its home, `Seq.find`): the tinted signature + the
-//     doc's first line — EXACTLY the #help composition
+//     doc's first line — exactly the #help composition
 //     (formatSignatureWith + the glance source), one renderer; piped
 //     keeps the plain spelling (the byte discipline).
-//   - a SESSION-DEFINED function named bare: `name : <normalized
-//     scheme>` + a dim second line with its recorded definition's FIRST
+//   - a session-defined function named bare: `name : <normalized
+//     scheme>` + a dim second line with its recorded definition's first
 //     physical line (the #save transcript keeps per-name physical
-//     source; a redefinition shows the LAST accepted), clipped to
+//     source; a redefinition shows the last accepted), clipped to
 //     width, `…` when the definition is multi-line.
 //   - anonymous/composed closures: `<fun>`/`<builtin>` `: ty` as
 //     before — nothing to name; vars normalized only.
 
-/// the LAST accepted definition's first physical line for a session
+/// the last accepted definition's first physical line for a session
 /// name, plus whether the definition spans more lines
 let private lastDefLine (name: string) : (string * bool) option =
     seq { transcript.Count - 1 .. -1 .. 0 }
@@ -1594,7 +1600,7 @@ let functionEchoLines
                   Types.Color.dim color (clipTo width def) ]
         | _ -> None
 
-/// the live wrapper: keys on the VALUE being a function and the
+/// the live wrapper: keys on the value being a function and the
 /// expression being a plain name — anything else declines
 let private functionEcho (env: TypeEnv) (te: Check.TypedExpr) (v: Eval.Value) : string list option =
     match v with
@@ -1627,17 +1633,18 @@ let private printHint (state: State) (line: string) =
         line
     |> Option.iter (fun h -> Console.WriteLine $"hint: {h}")
 
-// the LAST-RESULT binding [D:repl-it], FSI-parity (user-ruled reversal):
-// EXPRESSIONS and COMMANDS rebind `it` — always, unit included (a
-// streamed bare command binds `it := ()`; a unit expression likewise). A
-// `let` does NOT rebind (FSI: `let o = 10;;` binds no it); a directive
-// leaves `it` untouched; a fresh session's `it` is unbound. `_` is taken
-// (the `_.field` lambda shorthand and the `let _ =` discard), so `it` is
-// the spelling; it collides with nothing and is REPL-only (scripts/-e
-// never see it, like the bare aliases). Both the TypeEnv scheme AND the
-// value bind, so the next line both checks and evaluates against `it`.
-// Rebinding clears the streamed latch — `it` is no longer the stream's
-// unit (the streamed arm re-sets it after this).
+// The last-result binding [D:repl-it], FSI parity: expressions and
+// commands rebind `it` — always, unit included (a streamed bare
+// command binds `it := ()`; a unit expression likewise). A `let` does
+// not rebind (FSI: `let o = 10;;` binds no it); a directive leaves
+// `it` untouched; a fresh session's `it` is unbound. `_` is taken
+// (the `_.field` lambda shorthand and the `let _ =` discard), so `it`
+// is the spelling; it collides with nothing and is REPL-only
+// (scripts/-e never see it, like the bare aliases). Both the TypeEnv
+// scheme and the value bind, so the next line both checks and
+// evaluates against `it`. Rebinding clears the streamed latch — `it`
+// is no longer the stream's unit (the streamed arm re-sets it after
+// this).
 let private bindIt (ty: Ty) (v: Eval.Value) (env: State) : State =
     lastStreamed <- None
 
@@ -1659,10 +1666,10 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
             | DUnion cases -> Eval.constructorValues cases
             | DRecord _ -> []
 
-        // the REPL REPLACES on redeclaration (ruled [D:dup-type-decl] —
-        // scripts error instead); the note exists because the probe
-        // showed the confusing half: an old value still ECHOES with its
-        // fields while field ACCESS resolves against the new shape
+        // the REPL replaces on redeclaration [D:dup-type-decl] —
+        // scripts error instead; the note exists because the confusing
+        // half is real: an old value still echoes with its fields
+        // while field access resolves against the new shape
         if Map.containsKey decl.Name state.TypeEnv.Types then
             Console.WriteLine $"type {decl.Name} redeclared; earlier values keep the old shape"
         else
@@ -1702,16 +1709,16 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
             let v = Eval.eval state.Values te
 
             if v <> Eval.VUnit then
-                // ONE enumeration for the whole echo [D:echo-once] — the
+                // one enumeration for the whole echo [D:echo-once] — the
                 // table probe and the line rendering share a cached
-                // prefix; the STORED value keeps the original seq (the
+                // prefix; the stored value keeps the original seq (the
                 // lazy re-run law is the binding's, not the echo's)
                 let ev = Eval.echoPrep v
 
                 // the presentation echoes, tty-only (piped REPL output
                 // is pinned surface): records tabulate [D:repl-table],
-                // seq<string> shows its LINES [D:echo-lines] — keyed on
-                // the TYPE, never the content — the literal otherwise
+                // seq<string> shows its lines [D:echo-lines] — keyed on
+                // the type, never the content — the literal otherwise
                 // the cap in effect [D:echo-cap]: the session's at a
                 // tty; the piped surface keeps its pinned constant
                 let cap =
@@ -1737,16 +1744,18 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
                          Eval.echoTable cap (termWidth ()) ev)
                 with
                 | Some(lines, hint) ->
-                    // the lines/table FIRST, the meta+teaching LAST
+                    // the lines/table first, the meta+teaching last
                     // [D:echo-teaching-consistency]: a truncation footer
                     // printed before 100 lines scrolls off the top, so a
-                    // clipped `let` bind looked like it silently dropped
-                    // data — the bare-expression echo already prints the
-                    // footer last (visible), and the two arms must agree
-                    // DATA at the tty is sanitized [D:binary-echo]: the
-                    // echo is weir's own rendering, so a filename carrying
-                    // ANSI/CR must not wreck the terminal (the table's tint
-                    // is added inside printTable, around sanitized cells)
+                    // clipped `let` bind can look like it silently
+                    // dropped data — the bare-expression echo already
+                    // prints the footer last (visible), and the two arms
+                    // must agree
+                    // data at the tty is sanitized [D:binary-echo]: the
+                    // echo is weir's own rendering, so a filename
+                    // carrying ANSI/CR must not wreck the terminal (the
+                    // table's tint is added inside printTable, around
+                    // sanitized cells)
                     (if te.Ty = TSeq TStr then
                          lines |> List.iter (fun l -> Console.WriteLine(Eval.sanitizeTtyData l))
                      else
@@ -1758,8 +1767,8 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
                     let tail = Eval.echoTail hint
                     Console.WriteLine $"{name} : {formatEchoTy te.Ty} = {Eval.sanitizeTtyData rendered}{tail}"
 
-            // a `let` binds its NAME only — it does not rebind `it`
-            // (FSI parity, user-ruled) [D:repl-it]
+            // a `let` binds its name only — it does not rebind `it`
+            // (FSI parity) [D:repl-it]
             { state with
                 TypeEnv = chk.Env
                 Values = Map.add name v state.Values }
@@ -1776,24 +1785,22 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
     | Script.KCmd te ->
         printWarnings state te
 
-        // the bare command statement at a tty INHERITS stdout
+        // the bare command statement at a tty inherits stdout
         // [D:colour-inherit]: the child writes the terminal itself —
         // isatty true, colour on — and weir never holds the bytes, so
         // the relay's guard/threshold/cap do not apply (bash's posture:
         // the child chose its bytes for a terminal it can see; gzip
-        // refuses a tty by ITSELF, which is the incident's cause
-        // removed). The echo cap governs VALUE echoes, which keep the
-        // guard. Reifiers/captures are unaffected by law (| complete is
-        // in-memory capture; $() never streams); a redirected REPL
-        // keeps the batched value path.
+        // refuses a tty by itself). The echo cap governs value echoes,
+        // which keep the guard. Reifiers/captures are unaffected
+        // (| complete is in-memory capture; $() never streams); a
+        // redirected REPL keeps the batched value path.
         match te.Kind with
         | _ when Eval.inheritsStdout te ->
             (try
                 Console.Out.Flush()
                 Eval.inheritCommandStatement state.Values te
-                // the plain meta — the v0.0.43 streamed parenthetical
-                // REVERTED (a standing teach on every command was
-                // noise); the teach now fires only at misuse, via the
+                // the plain meta — no standing per-command teach (that
+                // was noise); the teach fires only at misuse, via the
                 // latch below [D:repl-it]
                 echoMeta $": {formatEchoTy te.Ty}"
                 // FSI parity: the streamed statement binds `it := ()` —
@@ -1804,13 +1811,14 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
                 st
              with
              | Eval.ExitRequest _ -> reraise ()
-             // a BARE command statement's nonzero exit is the shell's `$?`,
+             // a bare command statement's nonzero exit is the shell's `$?`,
              // not a weir error [D:repl-cmd-fail]: the output already
-             // streamed and the session continues, so render a QUIET
-             // exit-code status (the ONLY surface for the code — there is no
-             // `$?`) instead of the loud `error:`. The raise itself is
-             // unchanged (scripts still abort; a value/reifier failure below
-             // still errors loudly). The red prompt cue rides `lastErrored`.
+             // streamed and the session continues, so render a quiet
+             // exit-code status (the only surface for the code — there is
+             // no `$?`) instead of the loud `error:`. The raise itself is
+             // unchanged (scripts still abort; a value/reifier failure
+             // below still errors loudly). The red prompt cue rides
+             // `lastErrored`.
              | :? Proc.CommandFailure as cf ->
                  lastErrored <- true
                  echoMeta $"↳ exit {cf.Code}{cf.SignalNote}"
@@ -1829,7 +1837,7 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
             (try
                 let v = Eval.eval state.Values te
 
-                // ONE enumeration for the whole echo [D:echo-once]; the
+                // one enumeration for the whole echo [D:echo-once]; the
                 // prepped (cached) value is also what binds to `it`, so a
                 // command-backed seq reused as `it` does not re-run
                 let ev = if v <> Eval.VUnit then Eval.echoPrep v else v
@@ -1862,7 +1870,7 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
                                  Eval.echoTable cap (termWidth ()) ev)
                         with
                         | Some(lines, hint) ->
-                            // DATA at the tty is sanitized [D:binary-echo]
+                            // data at the tty is sanitized [D:binary-echo]
                             (if te.Ty = TSeq TStr then
                                  lines |> List.iter (fun l -> Console.WriteLine(Eval.sanitizeTtyData l))
                              else
@@ -1875,7 +1883,7 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
                             Console.WriteLine $"{Eval.sanitizeTtyData rendered} : {formatEchoTy te.Ty}{tail}"
                 elif not Console.IsOutputRedirected then
                     // FSI parity [D:repl-it]: a unit expression/command
-                    // rebinds `it := ()`, and the tty echo SAYS so —
+                    // rebinds `it := ()`, and the tty echo says so —
                     // `it` after a streamed command shows `() : unit`,
                     // never an error. The piped surface stays silent
                     // (its bytes are pinned: unit is invisible there).
@@ -1909,7 +1917,7 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
 /// the it-matrix seam [D:repl-it]: fold statements through the real
 /// check+eval path against a fresh session and answer `it`'s bound type
 /// (None = unbound). Echo output is swallowed — these pins assert the
-/// BINDING; the pty battery pins the rendering (and the tty-only
+/// binding; the pty battery pins the rendering (and the tty-only
 /// streamed arm, which a redirected test process cannot reach).
 let itSchemeForTest (statements: string list) : string option =
     let old = Console.Out
@@ -1934,22 +1942,23 @@ let itSchemeForTest (statements: string list) : string option =
         Console.SetOut old
 
 // ---- session directives [D:repl-directives] -------------------------
-// '#' is the prefix for everything addressed to the TOOLING: file
+// '#' is the prefix for everything addressed to the tooling: file
 // directives (#sig, #schema) read at check time, session directives
 // (#help, #quit) executed now — one glyph, two lifetimes.
 
 // simple flow-wrap for name lists
-// eval runs under the SHELL's tty disposition [D:repl-isig]: ISIG on,
+// eval runs under the shell's tty disposition [D:repl-isig]: ISIG on,
 // so ^C reaches the foreground child as a group SIGINT (the script
 // path's exact behaviour) — weir itself survives via the cancel
 // registration in setupLineEditor. The finally closes the eval->prompt
 // window; both no-op when there is no tty (piped REPL, Windows).
 let private evalChecked (source: string) (state: State) (chk: Script.CheckedStatement) : State =
-    // the PROPERTY is the load-bearing half [D:repl-isig]: .NET re-applies
-    // ITS OWN terminal notion when a child spawns (probed: a raw tcsetattr
-    // sticks for ~10ms and the child still sees -isig), so the notion must
-    // change — TreatControlCAsInput=false makes .NET's spawn-time config
-    // agree with the cooked termios the restore sets now
+    // the property is the load-bearing half [D:repl-isig]: .NET
+    // re-applies its own terminal notion when a child spawns (a raw
+    // tcsetattr sticks for ~10ms and the child still sees -isig), so the
+    // notion must change — TreatControlCAsInput=false makes .NET's
+    // spawn-time config agree with the cooked termios the restore sets
+    // now
     if ttyEval then
         Console.TreatControlCAsInput <- false
         Term.restoreCooked ()
@@ -1962,11 +1971,11 @@ let private evalChecked (source: string) (state: State) (chk: Script.CheckedStat
             Term.reassert ()
 
 // ---- the #help glance [D:help-glance]: one name per line, each with
-// the FIRST LINE of its one-source doc (builtinDocs / moduleBlurbs),
+// the first line of its one-source doc (builtinDocs / moduleBlurbs),
 // clipped to the terminal — glanceable by construction. Piped output
-// uses a FIXED width so the byte surface stays deterministic. The
-// glance sources (glanceWidth/clipTo/memberGlance) live ABOVE the eval
-// path now — the function-value echo shares them [D:repl-fn-echo].
+// uses a fixed width so the byte surface stays deterministic. The
+// glance sources (glanceWidth/clipTo/memberGlance) live above the eval
+// path — the function-value echo shares them [D:repl-fn-echo].
 
 /// a module's member names — completion's source (the module map plus
 /// the bespoke checker arms), the same derivation `#help Module` shows
@@ -1993,14 +2002,14 @@ let private glanceTable (width: int) (rows: (string * string) list) : string =
             clipTo width ("  " + n.PadRight pad + g))
     |> String.concat "\n"
 
-/// ONE SOURCE [D:repl-directives]: the hover's own composition — the
+/// one source [D:repl-directives]: the hover's own composition — the
 /// annotated signature (formatSignature over the builtinDocs params)
 /// plus renderBuiltinDoc. A hover improvement lifts #help for free.
-/// `color` [D:help-tint]: at a tty the signature tints STRUCTURALLY at
+/// `color` [D:help-tint]: at a tty the signature tints structurally at
 /// composition (sigTintStyle — the input colorizer's palette) and the
 /// Example renders through Script.colorizeRepl itself — an example is
-/// weir code, so the live prompt and #help share one brain; false is
-/// the pinned piped/--repl-doc byte surface, untouched.
+/// weir code, so the live prompt and #help share one renderer; false
+/// is the pinned piped/--repl-doc byte surface, untouched.
 let private memberHelp (color: bool) (te: TypeEnv) (name: string) : string option =
     let style = if color then sigTintStyle else plainSigStyle
     let fmtSig = formatSignatureWith style
@@ -2032,7 +2041,7 @@ let private memberHelp (color: bool) (te: TypeEnv) (name: string) : string optio
 
 // the init file's /// docs [D:repl-init]: position-keyed attachments
 // mapped to binding names at load, so #help on a session name answers
-// with its doc — and a failed init leaves this EMPTY, never stale
+// with its doc — and a failed init leaves this empty, never stale
 let mutable private initDocs: Map<string, string list> = Map.empty
 
 let private helpDirective (color: bool) (te: TypeEnv) (arg: string) : string =
@@ -2063,7 +2072,7 @@ let private helpDirective (color: bool) (te: TypeEnv) (arg: string) : string =
         + "Modules:\n"
         + glanceTable (glanceWidth ()) mods
     | name when Map.containsKey name te.Modules ->
-        // members from COMPLETION'S source — the module map plus the
+        // members from completion's source — the module map plus the
         // bespoke checker arms — never a copy; each with its doc's first
         // line from builtinDocs, the one member-text source [D:help-glance]
         let members = moduleMembersOf te name
@@ -2103,12 +2112,12 @@ let private helpDirective (color: bool) (te: TypeEnv) (arg: string) : string =
 
                 $"type {name} = {cases}"
             | None ->
-                // a dotted typo did-you-means within its MODULE's members
+                // a dotted typo did-you-means within its module's members
                 match name.Split '.' with
                 | [| m; mem |] when Map.containsKey m te.Modules ->
                     $"#help: {m} has no member '{mem}'{didYouMean mem (te.Modules[m] |> Map.keys)}"
                 | _ ->
-                    // the documentable universe, ONE source shared with the
+                    // the documentable universe, one source shared with the
                     // #help-arg completion slot [D:help-arg-complete] — so
                     // what #help documents and what #help <TAB> offers, and
                     // the did-you-mean over misses, cannot drift
@@ -2117,13 +2126,13 @@ let private helpDirective (color: bool) (te: TypeEnv) (arg: string) : string =
                     $"#help: unknown name '{name}'{didYouMean name pool}"
 
 /// the headless doc render [D:help-find]: `weir --repl-doc <name>`
-/// prints the EXACT `#help <name>` text for weir's own builtin surface
+/// prints the exact `#help <name>` text for weir's own builtin surface
 /// to stdout — read-only, no user code, no eval. #find's fzf --preview
 /// is the caller; the e2e pin holds the byte equality.
 let replDocText (name: string) : string =
     helpDirective false initial.TypeEnv name
 
-// the tty help render moved above the eval path (the function-value
+// the tty help render lives above the eval path (the function-value
 // echo shares it) [D:help-tint] [D:repl-fn-echo]
 let private renderHelp (s: string) : string =
     renderHelpText Types.Color.onStdout.Value s
@@ -2133,7 +2142,7 @@ let private renderHelp (s: string) : string =
 let private renderHelpDirective (te: TypeEnv) (arg: string) : string =
     renderHelp (helpDirective Types.Color.onStdout.Value te arg)
 
-// ---- #find [D:help-find]: fuzzy help search over ONE candidate set —
+// ---- #find [D:help-find]: fuzzy help search over one candidate set —
 // every module (`Seq — blurb`) and every member (`Seq.map — glance`),
 // the same sources #help renders, never a second copy. fzf at a tty
 // (with a live --preview via the headless doc render); a minimal
@@ -2173,8 +2182,8 @@ let private findFzf (te: TypeEnv) (query: string) : string option =
     try
         let psi = Diagnostics.ProcessStartInfo "fzf"
 
-        // candidate names carry weir glyphs' MODULE dots only, but the
-        // same ruling as Ctrl+R holds: literal fuzzy matching is the
+        // candidate names carry weir glyphs' module dots only, but the
+        // same reasoning as Ctrl+R holds: literal fuzzy matching is the
         // correct default, and last-flag-wins lets finderFlags restore
         // `--extended` [D:repl-quality]
         psi.ArgumentList.Add "--no-extended"
@@ -2254,28 +2263,28 @@ let helpTintedForTest (arg: string) : string =
     renderHelpText true (helpDirective true initial.TypeEnv arg)
 
 /// the example tint's resolver, exposed so the pins can call the input
-/// colorizer with the SAME verdict the help render uses [D:help-tint]
+/// colorizer with the same verdict the help render uses [D:help-tint]
 let knownForTest: string -> bool = knownIn initial.TypeEnv
 
 /// the alias-aware membership's seam [D:command-head-alias]: the pins
-/// call the ONE membership with an explicit alias set — no ref poking
+/// call the one membership with an explicit alias set — no ref poking
 let knownWithAliasesForTest (aliases: Set<string>) : string -> bool = knownInWith aliases initial.TypeEnv
 let findFallbackForTest (query: string) : string = findFallback initial.TypeEnv query
 let findCandidatesForTest () : string list = findCandidates initial.TypeEnv
 
 // ---- #infer [D:repl-infer]: draft named types from a sample ----------
-// The directive OWNS its parse (string-match, like #help): split the
+// The directive owns its parse (string-match, like #help): split the
 // line on the literal ` from ` and ` as ` markers, evaluate the source
-// as an ordinary weir expression ONCE, parse the resulting seq<string>
-// by the named adapter, walk it to a set of named `type` decls, INJECT
+// as an ordinary weir expression once, parse the resulting seq<string>
+// by the named adapter, walk it to a set of named `type` decls, inject
 // them into the session TypeEnv (the same path a typed `type` line
 // takes), and print `defined: …` plus any inference notes. `check`
-// stays evaluation-free — this is the RUNTIME's exploration surface.
+// stays evaluation-free — this is the runtime's exploration surface.
 
 /// split "src from fmt as Name" on the literal markers; source may be
 /// empty (defaults to `it`). Returns (source, format, name) or an error.
 let private parseInfer (rest: string) : Result<string * string * string, string> =
-    // find ` as ` LAST (a name has no spaces), ` from ` before it
+    // find ` as ` last (a name has no spaces), ` from ` before it
     let asIdx = rest.LastIndexOf " as "
 
     if asIdx < 0 then
@@ -2286,7 +2295,7 @@ let private parseInfer (rest: string) : Result<string * string * string, string>
         let fromIdx = head.LastIndexOf " from "
 
         if fromIdx < 0 then
-            // allow "#infer from json as N": the head IS " from …" with an
+            // allow "#infer from json as N": the head is " from …" with an
             // empty source when it starts with the marker
             if head.TrimStart().StartsWith "from " then
                 let fmt = head.TrimStart().Substring(5).Trim()
@@ -2298,7 +2307,7 @@ let private parseInfer (rest: string) : Result<string * string * string, string>
             let fmt = head.Substring(fromIdx + 6).Trim()
             Ok(source, fmt, name)
 
-/// evaluate a source EXPRESSION to a seq<string> for the adapter (checked
+/// evaluate a source expression to a seq<string> for the adapter (checked
 /// against the session env, evaluated once); teaches on a non-seq<string>
 let private evalSource (state: State) (source: string) : Result<string list, string> =
     let ll = Script.singleLine (Script.stripComment source)
@@ -2344,12 +2353,12 @@ let private evalSource (state: State) (source: string) : Result<string list, str
                 with ex ->
                     Error $"#infer: evaluating the source raised: {ex.Message}"
 
-/// inject the decl TEXT (multi-line `type` blocks) into the session,
-/// the drafted-type diagnostic [D:infer-diagnostic]: the drafted text is
-/// weir's OWN synthesis, so a check failure is a generated-field bug the
-/// user must SEE — number the drafted lines and render the offending one
-/// with a caret, the same shape weir's normal parse/type errors use
-/// (line:col + snippet), so the user can tell WHICH generated field is bad.
+/// the drafted-type diagnostic [D:infer-diagnostic]: the drafted text
+/// is weir's own synthesis, so a check failure is a generated-field bug
+/// the user must see — number the drafted lines and render the
+/// offending one with a caret, the same shape weir's normal parse/type
+/// errors use (line:col + snippet), so the user can tell which
+/// generated field is bad.
 let formatDraftedDiag (physical: string list) (d: Script.StmtDiag) : string =
     let line = physical |> List.tryItem (d.PhysLine - 1) |> Option.defaultValue ""
 
@@ -2367,10 +2376,11 @@ let formatDraftedDiag (physical: string list) (d: Script.StmtDiag) : string =
           "  " + line
           "  " + Types.Color.red on caret ]
 
+/// inject the decl text (multi-line `type` blocks) into the session,
 /// returning the new state and the ordered list of defined type names.
 /// Reuses the assembler + checkStatement — the multiline submission path.
 let private injectDecls (state: State) (declText: string list) : Result<State * string list, string> =
-    // each decl is a MULTI-LINE `type` block — split to physical lines so
+    // each decl is a multi-line `type` block — split to physical lines so
     // the assembler groups them (the multiline-submission path)
     let physical = declText |> List.collect (fun d -> d.Split '\n' |> List.ofArray)
 
@@ -2436,7 +2446,7 @@ let private inferDirective (state: State) (rest: string) : State =
                 Console.WriteLine $"#infer: the type name '{name}' must start with an uppercase letter"
                 state
             elif Set.contains name (Infer.takenTypeNames Check.builtinTypeNames.Keys) then
-                // the 'as'-name is the USER'S choice [D:repl-infer]: a
+                // the 'as'-name is the user's choice [D:repl-infer]: a
                 // builtin name could never be referenced (the builtin
                 // wins every use), and renaming their choice silently
                 // would be worse — refuse with the teaching
@@ -2450,7 +2460,7 @@ let private inferDirective (state: State) (rest: string) : State =
                     Console.WriteLine msg
                     state
                 | Ok lines ->
-                    // derived names dodge EVERY name the session already
+                    // derived names dodge every name the session already
                     // resolves [D:repl-infer] — a taken landing would be
                     // injected-and-shadowed, never usable
                     let taken =
@@ -2467,7 +2477,7 @@ let private inferDirective (state: State) (rest: string) : State =
                             state
                         | Ok(state', defined) ->
                             // the drafted types are session declarations —
-                            // record each as a `TDef` carrying its CLEAN
+                            // record each as a `TDef` carrying its clean
                             // multi-line text (not the assembler's
                             // control-char-joined logical line) so #save
                             // distills runnable `type` decls, deduped by name
@@ -2491,24 +2501,25 @@ let private inferDirective (state: State) (rest: string) : State =
 
                             state'
 
-// ---- #save [D:repl-save]: DISTILL the session to a runnable script ----
+// ---- #save [D:repl-save]: distill the session to a runnable script ----
 // Option B: a REPL session is scratch; `#save <path>` crystallizes its
-// reusable DEFINITIONS and GUARANTEES the written file `weir check`s
-// clean. It KEEPS `type` decls and NAMED `let` bindings (the transcript's
-// `TDef`s — carrying their real multi-line source), DROPS the bare-echo
-// scratch and unit effect echoes, DEDUPS a re-declared name to its LAST
-// definition (survivor order preserved), then AUTO-QUALIFIES bare aliases
-// (map -> Seq.map) and formats. The CHECK GUARANTEE is the last gate: a
-// survivor that still does not check — a named binding whose RHS
-// references session-only state (`let gobeldy = it`), or one left unused
-// once its consumers dropped — is removed, and #save prints a
-// dropped-count note. Injected #infer types are ordinary `type` decls.
+// reusable definitions and guarantees the written file `weir check`s
+// clean. It keeps `type` decls and named `let` bindings (the
+// transcript's `TDef`s — carrying their real multi-line source), drops
+// the bare-echo scratch and unit effect echoes, dedups a re-declared
+// name to its last definition (survivor order preserved), then
+// auto-qualifies bare aliases (map -> Seq.map) and formats. The check
+// guarantee is the last gate: a survivor that still does not check — a
+// named binding whose RHS references session-only state
+// (`let gobeldy = it`), or one left unused once its consumers dropped —
+// is removed, and #save prints a dropped-count note. Injected #infer
+// types are ordinary `type` decls.
 
-// one distilled STATEMENT: its dedup key (a type/binder name) and its
+// one distilled statement: its dedup key (a type/binder name) and its
 // physical source lines (already qualified)
 type private DistillStmt = { Key: string; Lines: string list }
 
-// DEDUP by key, keeping the LAST definition, preserving survivor order.
+// dedup by key, keeping the last definition, preserving survivor order.
 // A re-declared `type Color`/rebound `let x` keeps only its final form.
 let private dedupLast (stmts: DistillStmt list) : DistillStmt list =
     let lastIdx =
@@ -2519,9 +2530,9 @@ let private dedupLast (stmts: DistillStmt list) : DistillStmt list =
     stmts |> List.mapi (fun i s -> i, s) |> List.filter (fun (i, s) -> Map.find s.Key lastIdx = i) |> List.map snd
 
 // a `cmd-not-found` diagnostic that names the REPL-only `it` [D:repl-it]:
-// `it` can NEVER be a real script command (a warning at check time, but
+// `it` can never be a real script command (a warning at check time, but
 // in a distilled file it is always a session-only reference), so #save
-// treats it as a DROP trigger — the `let x = it` the guarantee must
+// treats it as a drop trigger — the `let x = it` the guarantee must
 // remove. The message is `command not found on PATH: it{. hint | — …}`,
 // so a `PATH: it` followed by a word boundary is the exact signal.
 let private namesSessionIt (d: Script.Diagnostic) : bool =
@@ -2535,7 +2546,7 @@ let private namesSessionIt (d: Script.Diagnostic) : bool =
 // the distill-fatal diagnostics for a candidate file, [] when clean.
 // Line-split each block, assemble the file, analyze it (the synthetic
 // path is used only for import resolution — none here — and messages).
-// Distill-fatal = any error-severity diagnostic OR a session-only `it`
+// Distill-fatal = any error-severity diagnostic or a session-only `it`
 // reference (a warning the guarantee still must act on).
 let private candidateErrors (stmts: DistillStmt list) : Script.Diagnostic list =
     let lines = stmts |> List.collect (fun s -> s.Lines)
@@ -2546,13 +2557,13 @@ let private candidateErrors (stmts: DistillStmt list) : Script.Diagnostic list =
         let diags, _, _, _ = Script.analyzeLines "#save" lines
         diags |> List.filter (fun d -> d.Severity = "error" || namesSessionIt d)
 
-// PROTECT a self-contained-but-unused named `let` [D:repl-save]: the
+// protect a self-contained-but-unused named `let` [D:repl-save]: the
 // unused-binding law refuses a top-level `let x = <<<…>>>` that nothing
-// reads, but a distilled DEFINITION is the product, not scratch — so it
-// is KEPT, its binder `_`-prefixed (the deliberate-discard escape, which
-// the law exempts) rather than dropped. This is NOT a session-only-state
-// drop and is NOT counted. A `type` decl never needs this (types do not
-// trip unused-binding). Only the FIRST line carries the binder.
+// reads, but a distilled definition is the product, not scratch — so it
+// is kept, its binder `_`-prefixed (the deliberate-discard escape, which
+// the law exempts) rather than dropped. This is not a session-only-state
+// drop and is not counted. A `type` decl never needs this (types do not
+// trip unused-binding). Only the first line carries the binder.
 let private protectUnusedLet (s: DistillStmt) : DistillStmt =
     match s.Lines with
     | first :: rest ->
@@ -2572,19 +2583,19 @@ let private protectUnusedLet (s: DistillStmt) : DistillStmt =
             s
     | [] -> s
 
-// THE CHECK GUARANTEE [D:repl-save]: return the survivors that check
-// clean, plus the count DROPPED for referencing session-only state. Two
+// The check guarantee [D:repl-save]: return the survivors that check
+// clean, plus the count dropped for referencing session-only state. Two
 // moves, in order:
-//   1. PROTECT — if the only errors are unused-binding, `_`-prefix those
+//   1. Protect — if the only errors are unused-binding, `_`-prefix those
 //      named lets (a self-contained definition is kept, not dropped) and
 //      recheck. Not counted as a drop.
-//   2. DROP — otherwise remove the LAST survivor whose removal lets the
+//   2. Drop — otherwise remove the last survivor whose removal lets the
 //      rest check (falling back to the last survivor for progress), the
 //      one that referenced session-only state (`it`, an unbound name).
-// A binding used only by a LATER survivor is kept (the whole-file check
+// A binding used only by a later survivor is kept (the whole-file check
 // sees the forward reference). The loop always shrinks the candidate set
 // or resolves the unused set, so it terminates.
-// which survivor OWNS a candidate-file line? blocks are concatenated in
+// Which survivor owns a candidate-file line? Blocks are concatenated in
 // order, each contributing `Lines.Length` physical lines — so a running
 // offset maps a 1-based file line to the survivor index containing it.
 let private ownerOf (kept: DistillStmt list) (fileLine: int) : int option =
@@ -2610,10 +2621,10 @@ let rec private guaranteeChecks (kept: DistillStmt list) (dropped: int) : Distil
         match kept with
         | [] -> [], dropped
         | _ ->
-            // the survivors OWNING a session-only-state error (an `it`
-            // reference, an unbound name) — these are DROPPED with a note.
-            // A bare unused-binding is NOT here: it means a self-contained
-            // definition nothing reads, which is PROTECTED, not dropped.
+            // the survivors owning a session-only-state error (an `it`
+            // reference, an unbound name) — these are dropped with a note.
+            // A bare unused-binding is not here: it means a self-contained
+            // definition nothing reads, which is protected, not dropped.
             let sessionErrs = errs |> List.filter (fun d -> not (d.Code = "unused-binding"))
 
             let ownersToDrop =
@@ -2629,13 +2640,13 @@ let rec private guaranteeChecks (kept: DistillStmt list) (dropped: int) : Distil
 
                 guaranteeChecks kept' (dropped + List.length ownersToDrop)
             | [] ->
-                // only unused-binding errors remain — PROTECT exactly the
+                // only unused-binding errors remain — protect exactly the
                 // lets the findings point at (a definition is the product,
-                // kept not dropped) and recheck. SURGICAL by necessity: a
-                // binder a LATER survivor reads is not unused, and renaming
+                // kept not dropped) and recheck. Surgical by necessity: a
+                // binder a later survivor reads is not unused, and renaming
                 // it would orphan its readers into phantom commands
                 // (`let _base = …` + `let _total = base |> …` — the rename
-                // broke the chain the session built). If nothing could be
+                // breaks the chain the session built). If nothing could be
                 // protected (a block-local finding, an already-`_` binder),
                 // drop the finding's owner for progress.
                 let unusedOwners =
@@ -2665,7 +2676,7 @@ let distillDefs
     (aliasOf: string -> (string * string list) option)
     (defs: (string * string) list)
     : string list * int =
-    // a resolver that parses alias NAMES as external heads (so an aliased
+    // a resolver that parses alias names as external heads (so an aliased
     // command line parses to an ECmd) but never rewrites them, so the head
     // keeps its source name and span for the desugar [D:command-head-alias]
     let desugarR =
@@ -2673,7 +2684,7 @@ let distillDefs
             IsExternal = (fun n -> r.IsExternal n || (aliasOf n).IsSome)
             AliasHead = fun _ -> None }
 
-    // qualify bare module aliases, THEN desugar command-head aliases (both
+    // qualify bare module aliases, then desugar command-head aliases (both
     // per physical line, span-based; a multi-line heredoc/type keeps its
     // real newlines)
     let rewrite (line: string) =
@@ -2692,7 +2703,7 @@ let private saveDirective (state: State) (path: string) : unit =
     if path = "" then
         Console.WriteLine "#save <path> — a destination path is required (e.g. #save explore.weir)"
     else
-        // KEEP only definitions (types + named lets); DROP scratch echoes
+        // keep only definitions (types + named lets); drop scratch echoes
         // and unit effect echoes
         let defs =
             [ for entry in transcript do
@@ -2754,7 +2765,7 @@ let rec private loop (state: State) =
         line.Split '\n'
         |> Array.forall (fun l -> Script.classifyLine l <> Script.LineKind.Code)
         ->
-        // blank AND comment-only entries are a NO-OP at the prompt
+        // blank and comment-only entries are a no-op at the prompt
         // [D:repl-directives]: nothing follows for a comment to be
         // transparent to — no message is the right answer
         loop state
@@ -2803,7 +2814,7 @@ let rec private loop (state: State) =
             loop state
         elif t = "#alias" || t.StartsWith "#alias " then
             // a live command-head alias [D:command-head-alias]. init.weir is
-            // the canonical place; a bare `#alias` LISTS the table, a
+            // the canonical place; a bare `#alias` lists the table, a
             // `#alias name = cmd …` adds one (same single-hop rule)
             let body = t.Substring(6)
 
@@ -2839,7 +2850,7 @@ let rec private loop (state: State) =
                 elif word = "#sig" || word = "#schema" then
                     $"{word} is a file directive, read at check time — it has no effect in the REPL"
                 else
-                    // the did-you-mean pool is the dispatch's ONE source
+                    // the did-you-mean pool is the dispatch's one source
                     // (Complete.sessionDirectives) [D:repl-directives]
                     let pool = Complete.sessionDirectives |> List.map (fun d -> "#" + d)
                     $"unknown directive '{word}' — #help lists them{didYouMean word pool}"
@@ -2847,7 +2858,7 @@ let rec private loop (state: State) =
 
             loop state
     | entry when entry.Contains '\n' ->
-        // a MULTILINE entry [D:repl-multiline]: the same assembler the
+        // a multiline entry [D:repl-multiline]: the same assembler the
         // script runner uses turns the buffer into logical lines — the
         // submitted text means exactly what the same lines mean in a file
         Extern.refresh ()
@@ -2897,11 +2908,12 @@ let rec private loop (state: State) =
                                 Types.Color.red Types.Color.onStdout.Value (String(' ', max 0 (d.PhysCol - 1)) + "^")
                             )
 
-                            // LABEL BOTH KINDS [D:not-weir-shape]: a bare parse message was the one
-                            // place in weir that shows an error without saying it is one (check says
-                            // `error [parse]`, the runner says `parse error:`). It hid because
-                            // FParsec's backtrack note carried the word "error", so the pin meaning
-                            // "the error shows" passed on parser noise; removing that noise surfaced it.
+                            // label both kinds [D:not-weir-shape]: an
+                            // unlabelled parse message would be the one
+                            // place in weir that shows an error without
+                            // saying it is one (check says
+                            // `error [parse]`, the runner says
+                            // `parse error:`)
                             Console.WriteLine(
                                 if d.Parse then
                                     $"parse error: {d.Message}"
@@ -2920,7 +2932,7 @@ let rec private loop (state: State) =
                             let st' = evalChecked ll.Text st chk
 
                             (if not lastErrored then
-                                 // carry the REAL physical source (newlines +
+                                 // carry the real physical source (newlines +
                                  // indentation), not the sentinel-joined
                                  // `ll.Text` — a kept heredoc/type must
                                  // round-trip through `weir check` [D:repl-save]
@@ -2941,9 +2953,9 @@ let rec private loop (state: State) =
 
         let next =
             // [D:one-pipeline]: a single-line LogicalLine feeds
-            // checkStatement; the REPL only renders. Comment-STRIPPED
+            // checkStatement; the REPL only renders. Comment-stripped
             // first, like scripts (the assembler) and -e do — the
-            // multiline arm rides the assembler, this arm never did
+            // multiline arm strips via the assembler, this arm here
             // [D:repl-directives]; a district cannot occur here (marker
             // lines open the multiline buffer)
             let ll = Script.singleLine (Script.stripComment line)
@@ -2987,8 +2999,8 @@ let rec private loop (state: State) =
                 (if not d.Parse && lastStreamed.IsSome && referencesIt line then
                      Console.WriteLine(streamedItRepair lastStreamed))
 
-                // hint only where the pre-pipeline REPL hinted (expression
-                // and let forms; type/binder-pattern errors stayed bare)
+                // hint only for expression and let forms;
+                // type/binder-pattern errors stay bare
                 (match d.Tag with
                  | Some(Script.StmtTag.Let | Script.StmtTag.Expr | Script.StmtTag.Cmd) when d.Span.IsSome ->
                      printHint state line
@@ -2999,7 +3011,7 @@ let rec private loop (state: State) =
                 let next = evalChecked ll.Text state chk
 
                 (if not lastErrored then
-                     // a single-line entry: physical source IS its own text
+                     // a single-line entry: physical source is its own text
                      match recordKind chk with
                      | Some(TDef name) -> recordDef name ll.Text ll.Text
                      | Some TDiscard -> recordDiscard ll.Text ll.Text
@@ -3012,12 +3024,12 @@ let rec private loop (state: State) =
 
 
 // ---- the init file [D:repl-init] ----------------------------------------
-// config dir/weir/init.weir: an implicitly-loaded, DECLARATION-ONLY file
-// (the module rule, applied to the prompt) plus one #session directive
-// for the four settings a declaration cannot express. Loading is
-// ALL-OR-NOTHING: a broken init reports its located weir error and the
-// session starts with none of it — safe to continue past ONLY because
-// nothing in the file can run. This is not an exception to
+// config dir/weir/init.weir: an implicitly-loaded, declaration-only
+// file (the module rule, applied to the prompt) plus one #session
+// directive for the four settings a declaration cannot express. Loading
+// is all-or-nothing: a broken init reports its located weir error and
+// the session starts with none of it — safe to continue past only
+// because nothing in the file can run. This is not an exception to
 // check-before-run: the init is not part of any program; a failed init
 // means fewer names, never a program that half-ran.
 
@@ -3080,10 +3092,10 @@ let private splitSessionBlock
             rest <- (i + 1, "") :: rest
         elif inBlock then
             if t <> "" then
-                // a FIELD-START (`key = …`) dedents 4 and gains a 'let '
+                // a field-start (`key = …`) dedents 4 and gains a 'let '
                 // prefix — 4 chars out, 4 in, columns survive. Every
                 // other line (list entries, closers) passes through
-                // UNTOUCHED: still indented, still a continuation of the
+                // untouched: still indented, still a continuation of the
                 // synthesized let, columns exact
                 let isFieldStart =
                     System.Text.RegularExpressions.Regex.IsMatch(t, "^[A-Za-z_][A-Za-z0-9_]*\s*=")
@@ -3169,12 +3181,12 @@ let private applySessionField
         (match Eval.eval venv te with
          | Eval.VSeq pairs ->
              // the session's base reality, not an overlay: set the
-             // PROCESS env once, before the first prompt — exactly what
+             // process env once, before the first prompt — exactly what
              // exec'ing weir with this environment would mean. Env.get,
              // Env.vars, and every spawn see it with no new machinery;
              // within env and the sigils layer over it as they layer
              // over any inherited env. (No unset: an entry adds or
-             // overrides, never hides — stated, not discovered.)
+             // overrides, never hides.)
              for pv in pairs do
                  match pv with
                  | Eval.VTuple [ Eval.VStr k; Eval.VStr v ] -> Environment.SetEnvironmentVariable(k, v)
@@ -3187,7 +3199,7 @@ let private applySessionField
         let hint = didYouMean k (Set.ofList sessionKeys)
         err $"unknown #session key '{k}'{hint} (the keys: cwd, env, logLevel, echoCap)"
 
-/// load the init file into the session; ALL-OR-NOTHING. Returns the
+/// load the init file into the session; all-or-nothing. Returns the
 /// state to start with and prints the one report line (stderr — a piped
 /// session's stdout stays data).
 let private loadInit (baseState: State) : State =
@@ -3225,8 +3237,8 @@ let private loadInit (baseState: State) : State =
                 initDiag path d.PhysLine d.PhysCol (srcLine d.PhysLine) d.Message
 
             // the #alias table [D:command-head-alias] — a malformed line is
-            // a LOUD init error (all-or-nothing), and a define-time
-            // alias-of-alias is REJECTED (single-hop by construction: the
+            // a loud init error (all-or-nothing), and a define-time
+            // alias-of-alias is rejected (single-hop by construction: the
             // stored Exe is always a real program, never a table name)
             let aliasTable: Result<Map<string, Alias>, unit> =
                 let mutable tbl: Map<string, Alias> = Map.empty
@@ -3252,8 +3264,8 @@ let private loadInit (baseState: State) : State =
                         if bad.IsNone then
                             match parseAliasLine body with
                             // a self-shadow (`#alias ls = ls --color`) targets
-                            // the REAL binary, bypassable with `^ls` — legal.
-                            // Only a target naming a DIFFERENT alias is rejected.
+                            // the real binary, bypassable with `^ls` — legal.
+                            // Only a target naming a different alias is rejected.
                             | Ok(name, alias) when alias.Exe <> name && Map.containsKey alias.Exe tbl ->
                                 bad <- Some(lineNo, name, alias.Exe)
                             | _ -> ()
@@ -3308,7 +3320,7 @@ let private loadInit (baseState: State) : State =
                                             try
                                                 applySessionField path lines ll name te strictVenv
                                             with ex ->
-                                                // a RAISING value (File.read on a missing
+                                                // a raising value (File.read on a missing
                                                 // path…) fails the load like any other
                                                 // located error, never a raw trace
                                                 // [D:init-eval-guard]
@@ -3425,11 +3437,13 @@ let private loadInit (baseState: State) : State =
                                             venv <- bindings |> List.fold (fun m (n, v) -> Map.add n v m) venv
                                         | _ -> ()
                                     with ex ->
-                                        // a raising let fails the load LOCATED
-                                        // [D:init-eval-guard]; names stay
-                                        // all-or-nothing (nothing below binds). An effect an
-                                        // earlier let already ran is the file's own doing —
-                                        // the load reports, it cannot unwrite
+                                        // a raising let fails the load with a
+                                        // located error [D:init-eval-guard];
+                                        // names stay all-or-nothing (nothing
+                                        // below binds). An effect an earlier
+                                        // let already ran is the file's own
+                                        // doing — the load reports, it cannot
+                                        // unwrite
                                         initDiag path ll.Head 1 (srcLine ll.Head) ex.Message
                                         evalFailed <- true
 
