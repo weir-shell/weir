@@ -1190,7 +1190,8 @@ osrun=$(printf '%s\n%s\n%s\n' \
   'print p.n' \
   '#quit' | $BIN 2>&1)
 echo "$osrun" | grep -qF "defined: Ping (1 type)" || fail "#infer let over a command must draft: $osrun"
-[ "$(wc -l < "$oscount")" = "1" ] || fail "#infer let must run the source exactly once, ran $(wc -l < "$oscount")"
+# -eq, not =: BSD/macOS wc -l pads the count with leading spaces
+[ "$(wc -l < "$oscount")" -eq 1 ] || fail "#infer let must run the source exactly once, ran $(wc -l < "$oscount")"
 # a top-level array binds seq<Name>; the directive picks the seq spelling
 osarr=$(printf '%s\n%s\n%s\n' \
   'let ns = ["[{\"name\": \"a\"}, {\"name\": \"b\"}]"]' \
