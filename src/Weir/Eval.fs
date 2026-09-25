@@ -1736,7 +1736,7 @@ let rec private yamlConvert (shape: Yaml.Shape) (node: Yaml.Node) : Value =
         failwith $"from yaml: line {line}: a block scalar is a string; this field expects bool"
     | Yaml.SRec(name, fields), Yaml.NMap(entries, line) ->
         // extra keys are ignored (as in from-json); a missing or null
-        // required field suggests Option (the json-option precedent)
+        // required field suggests Option (matching json-option)
         let get fname =
             entries |> List.tryFind (fun (k, _) -> k = fname)
 
@@ -2252,7 +2252,7 @@ let private scopeDef (sharedDef: RecordDef) (payloadDef: RecordDef option) : Rec
 
 // pass 1 of the shared-flags scan: shared flags float, and the first
 // non-flag token anchors as the case selector (an unknown flag
-// consumes no value, per precedent)
+// consumes no value, as everywhere else)
 let private argvFindCase (sharedDef: RecordDef) (argv: string list) : (int * string) option =
     let sharedLong =
         sharedDef.Fields

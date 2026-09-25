@@ -1,8 +1,8 @@
 module Weir.Argv
 
-// CLI schema POLICY, extracted from the checker: kebab derivation,
+// CLI schema policy, kept apart from the checker: kebab derivation,
 // short-flag tables, minted --no-X twins, Default/shape/collision
-// validation. It runs at CHECK time by necessity (no reflection — the
+// validation. It runs at check time by necessity (no reflection — the
 // Args.load/Env.load arms read declarations), but it is policy, not
 // typing; the checker keeps the arms (resolution, typed-node
 // construction, error-span plumbing) and calls in here.
@@ -10,7 +10,7 @@ module Weir.Argv
 open Weir.Types
 
 // short-flag resolution: a letter is owned or contested; contested
-// letters derive for NOBODY and error with candidates at invocation
+// letters derive for no flag and error with candidates at invocation
 type ShortOwner =
     | ShortOf of longFlag: string
     | AmbiguousShort of longFlags: string list
@@ -44,9 +44,10 @@ let private attrOf (def: RecordDef) (field: string) (attr: string) =
     |> Map.tryFind field
     |> Option.bind (List.tryFind (fun (n, _) -> n = attr))
 
-// the derived --help text for a field: the `///` doc's FIRST line
-// [D:doc-help]. `[<Doc>]` retired — one source, hover and --help agree
-// by construction. The runner populated `def.Docs` from the source.
+// the derived --help text for a field: the `///` doc's first line
+// [D:doc-help]. There is no separate `[<Doc>]` attribute — one source,
+// so hover and --help agree by construction. The runner populates
+// `def.Docs` from the source.
 let docOf (def: RecordDef) (field: string) : string option = Map.tryFind field def.Docs
 
 // [D:default-attr]: the resting-point literal, when declared
@@ -122,10 +123,10 @@ let explicitShorts (def: RecordDef) : (string * string) list =
         | _ -> None)
 
 // ---- the Default resting-point validators [D:default-attr] --------
-// TWO rules ON PURPOSE, adjacent so the divergence reads as decided
-// rather than copied wrong: Env.load ACCEPTS [<Default false>] (an
-// env-backed bool genuinely rests at false), Args.load REJECTS it as
-// redundant (flag PRESENCE already rests at false) — the flip cell.
+// Two rules on purpose, adjacent so the divergence reads as decided
+// rather than copied wrong: Env.load accepts [<Default false>] (an
+// env-backed bool genuinely rests at false), Args.load rejects it as
+// redundant (flag presence already rests at false) — the flip cell.
 
 let badEnvDefault (def: RecordDef) : string option =
     def.Fields
@@ -211,13 +212,13 @@ let private dupFlag (label: string) (def: RecordDef) : string option =
     | Some(flag, (a, _) :: (b, _) :: _) -> Some $"{label}fields '{a}' and '{b}' derive the same flag '--{flag}'"
     | _ -> None
 
-/// Args.load field validation, chained in the arms' original order:
-/// Default cells, then field shapes, then flag collisions
-/// `[<Wire>]` is REJECTED at Args.load [D:wire-keys]: argv is weir's OWN
+/// Args.load field validation, chained in order: Default cells, then
+/// field shapes, then flag collisions.
+/// `[<Wire>]` is rejected at Args.load [D:wire-keys]: argv is weir's own
 /// boundary, not a foreign document's, so there is no wire to match. Flags are
-/// DERIVED (`dryRun` -> `--dry-run`) and the naming controls already exist —
+/// derived (`dryRun` -> `--dry-run`) and the naming controls already exist —
 /// `[<Short "C">]` and `[<NoShort>]`. A Wire here would be a fourth naming
-/// mechanism for a surface that has three. Refused at the CALL SITE, not the
+/// mechanism for a surface that has three. Refused at the call site, not the
 /// declaration: a Wire-carrying record is perfectly legal (Env.load and the
 /// adapters honour it), using it with Args.load is not.
 let private wireAtArgs (label: string) (def: RecordDef) : string option =

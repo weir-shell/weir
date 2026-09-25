@@ -1,8 +1,8 @@
 module Tripwires
 
-// Tests named for INCIDENTAL protections: each pins a mechanism that currently
+// Tests named for incidental protections: each pins a mechanism that currently
 // shields a soundness-checklist item. If a test here fails because you changed
-// the named mechanism on purpose, the referenced checklist item REOPENS —
+// the named mechanism on purpose, the referenced checklist item reopens —
 // write direct tests for it before proceeding.
 
 open Expecto
@@ -24,14 +24,14 @@ let tripwires =
     testList
         "Tripwires"
         [ test "the occurs check catches self-application directly (checklist 1.1, reopened by [D:higher-order-params])" {
-              // funParams USED to shield 1.1: refusing to apply a bare
-              // variable, occurs-cycle constructions never reached `occurs`.
-              // [D:higher-order-params] added arrow-var unification at
-              // application — HOFs now infer (`fun f -> f 1` is
-              // (int -> 'a) -> 'a) — which reopened 1.1. These are the direct
-              // tests the shield's own comment demanded: self-application now
-              // reaches `occurs` and is rejected as an infinite type, still
-              // WITHOUT hanging (the typecheck terminates to reach the pin).
+              // With arrow-var unification at application
+              // [D:higher-order-params], HOFs infer (`fun f -> f 1` is
+              // (int -> 'a) -> 'a), so occurs-cycle constructions reach
+              // `occurs` — funParams (which refuses to apply a bare
+              // variable) no longer shields 1.1 by itself. These direct
+              // tests pin it: self-application reaches `occurs` and is
+              // rejected as an infinite type, without hanging (the
+              // typecheck terminates to reach the pin).
               Expect.stringContains (checkErr "fun f -> f f").Message "infinite type" ""
               Expect.stringContains (checkErr "fun f -> f.x f").Message "infinite type" ""
           }
@@ -46,7 +46,7 @@ let tripwires =
           }
           test "envFreeVars reaches vars transitively through row constraints (checklist 3.x)" {
               // 'g' below has type ('a -> bool) -> seq<'a> where 'a occurs in
-              // the enclosing parameter y's type ONLY inside y's row
+              // the enclosing parameter y's type only inside y's row
               // constraints (y itself is a bare var). Generalizing 'a at the
               // let would let the two uses instantiate independently — unsound.
               // envFreeVars avoids this because it expands rows via finalTy
@@ -62,7 +62,7 @@ let tripwires =
           test "instantiate deep-copies row constraints per use site (checklist 3.1)" {
               // A generalized scheme's row snapshot is immutable; instantiate
               // renames every quantified var (rows included) and installs a
-              // FRESH Rows entry per use. If instantiations ever alias a shared
+              // fresh Rows entry per use. If instantiations ever alias a shared
               // Rows entry, discharging one use would poison its siblings and
               // this reuse at two different field types would fail.
               let declare input e =
@@ -93,7 +93,7 @@ let tripwires =
           }
           test "class constraints on env-free vars stay ambient (Session A, checklist 3.x analog)" {
               // g's parameter unifies with the enclosing lambda's y — an
-              // env-free var. The Eq constraint from == must NOT be scooped
+              // env-free var. The Eq constraint from == must not be scooped
               // into g's scheme (the var is not generalized), so g stays
               // monomorphic and the second use at string errors. If this
               // stops erroring, constraint scooping over-generalized — the
@@ -104,7 +104,7 @@ let tripwires =
                   ""
           }
           test "Ord never decomposes (Session B): orderable fields do not make a record orderable" {
-              // Ord is int|string|bool EXACTLY — if this stops erroring,
+              // Ord is int|string|bool exactly — if this stops erroring,
               // someone added structural Ord decomposition without the
               // receipts (records/unions ordering is parked, message-named)
               Expect.stringContains (checkErr "ls |> Seq.sortBy (fun f -> f)").Message "cannot sort" ""
@@ -118,7 +118,7 @@ let tripwires =
           }
           test "binder generalization respects env-free vars (per-name scoop)" {
               // the tuple component ties to the enclosing lambda's y — its
-              // var is env-free and must NOT generalize through the binder;
+              // var is env-free and must not generalize through the binder;
               // the second use at string errors. The destructuring analog
               // of the transitive-reachability tripwire.
               Expect.stringContains
@@ -138,7 +138,7 @@ let tripwires =
           test "update returns the SOURCE row, not a fresh one (record-update identity)" {
               // the generalized-updater story rests on identity: if the
               // update arm ever returns a fresh row, this formats as two
-              // DIFFERENT rows and updaters stop generalizing — reopen
+              // different rows and updaters stop generalizing — reopen
               // the row-identity question before proceeding
               let ty =
                   match Weir.Parser.parseExpr "fun r -> { r with N = r.N + 1 }" with
@@ -154,7 +154,7 @@ let tripwires =
           }
           test "check and eval share ONE compiled regex per literal (regex-pattern arity honesty)" {
               // the arity the checker read and the instance eval matches
-              // against are the same object BY CONSTRUCTION — replacing
+              // against are the same object by construction — replacing
               // the cache with per-site compilation reopens the
               // arity/match agreement question [D:regex-pattern]
               match Weir.Check.compileRegex "(x)(y)", Weir.Check.compileRegex "(x)(y)" with

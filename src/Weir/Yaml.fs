@@ -10,7 +10,7 @@ module Weir.Yaml
 
 // the check-time-resolved target shape for `from yaml T` — eval has no
 // env.Types, so what eval needs is packed into the typed node at check
-// (the [D:env-enums] precedent)
+// (the pattern [D:env-enums] set)
 type Shape =
     | SInt
     | SFloat

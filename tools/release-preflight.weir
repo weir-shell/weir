@@ -1,8 +1,7 @@
-/// Release preflight: every burned tag came from a precondition that was
-/// checkable before `git tag` — the wrong commit tagged (v0.0.25), a red
-/// gate shipped (v0.0.26), the zed-pin/grammar race (v0.0.30). Run this
-/// from the repo root immediately before tagging; it refuses with the
-/// specific teaching, or prints the post-tag ritual.
+/// Release preflight: each gate exists because a release once shipped
+/// without it — the ledger carries the stories. Run this from the repo
+/// root immediately before tagging; it refuses with the specific
+/// teaching, or prints the post-tag ritual.
 ///
 ///     weir tools/release-preflight.weir --tag v0.0.31
 
@@ -29,7 +28,7 @@ let firstHeading =
     |> Seq.where (fun l -> Str.startsWith "## " l)
     |> Seq.head
 
-// -- the gates that burned releases before ----------------------------------
+// -- the release gates ------------------------------------------------------
 // | complete, not | succeeds: a sub-check's own error is the diagnosis —
 // swallowing it once misread a transient api.github.com 504 as "the rev
 // ritual is due"
@@ -43,7 +42,7 @@ let zedPinRes = weir ci/zed-rev-current.weir | complete
 
 // -- the grammar repo must not already target the new tag --------------------
 // (its TARGET bump belongs after the release publishes; pushing it early
-// moves grammar main and re-stales the zed pin — the v0.0.30 race)
+// moves grammar main and re-stales the zed pin)
 // a transient 5xx retries; a 4xx is a fact
 let targetResp =
     retry attempts=3 delay=5s
@@ -62,12 +61,12 @@ let grammarTarget = targetResp.body |> Seq.head |> Str.trim
 let checks =
     [ ("clean working tree", dirty == 0, $"{dirty} uncommitted change(s) — commit or stash first")
       ("on main", branch == "main", $"on '{branch}' — releases tag main")
-      ("local == origin/main", localSha == originSha, $"local {localSha} vs origin {originSha} — push or pull first (the v0.0.25 burn)")
+      ("local == origin/main", localSha == originSha, $"local {localSha} vs origin {originSha} — push or pull first")
       ("tag is free", tagTaken == 0, $"{cli.tag} already exists")
       ("changelog top section is this tag", firstHeading == $"## {cli.tag}", $"top section is '{firstHeading}'")
       ("changelog content", changelogRes.exitCode == 0, subDetail "ci/changelog-check.weir refused" changelogRes)
-      ("grammar-currency", grammarRes.exitCode == 0, subDetail "push tree-sitter-weir first (the v0.0.26 burn)" grammarRes)
-      ("zed pin == grammar main", zedPinRes.exitCode == 0, subDetail "if the pin is truly stale, land the bump BEFORE tagging (the v0.0.30 burn)" zedPinRes)
+      ("grammar-currency", grammarRes.exitCode == 0, subDetail "push tree-sitter-weir first" grammarRes)
+      ("zed pin == grammar main", zedPinRes.exitCode == 0, subDetail "if the pin is truly stale, land the bump before tagging" zedPinRes)
       ("grammar targets the PREVIOUS release", grammarTarget <> cli.tag, $"tree-sitter-weir already targets {cli.tag} — its TARGET bump belongs after the release publishes") ]
 
 checks

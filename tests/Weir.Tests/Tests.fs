@@ -58,8 +58,8 @@ let private env =
     let e =
         preludeTypeEnv
         |> declare "type Job = Running of int | Stopped"
-        // a 2-param generic union — the type-system fixture that Result
-        // used to be, now a local declaration [D:no-result]
+        // a 2-param generic union — the Result-shaped type-system
+        // fixture; a local declaration, not a prelude type [D:no-result]
         |> declare "type Either<'a, 'e> = Left of 'a | Right of 'e"
         // a record with an Option<scalar> field — the JSON-boundary fixture [D:json-option]
         |> declare "type JOpt = { name: string; age: Option<int> }"
@@ -1043,8 +1043,8 @@ let boundaryTests =
                   ""
           }
           test "ls rows no longer cross the wire: Size is non-representable there [D:size]" {
-              // this used to roundtrip when bytes was an int — the type
-              // change is a wire-boundary change, stated and pinned
+              // an int bytes field would roundtrip here — the Size type
+              // is a wire-boundary change, stated and pinned
               let m = (checkErr "ls |> to json").Message
 
               // the first refusing field moved with the reshape: kind's
@@ -3308,8 +3308,8 @@ let completionTests =
           test "a $name splice in argv completes session bindings [D:argv-splice-complete]" {
               // `$` is not a word char, so the word starts after it and the
               // before-text ends with `$`: `--location $l<TAB>` must offer the
-              // binding `location` (bare — the $ is already typed), not the
-              // empty filesystem match it used to.
+              // binding `location` (bare — the $ is already typed), never
+              // an empty filesystem match.
               let envL =
                   { env with
                       Values =
@@ -3384,7 +3384,7 @@ let completionTests =
               Expect.isFalse (List.contains "within" got) "never a keyword in the slot"
 
               // a typed prefix narrows to fields — the keyword-in-fragment
-              // fix: `h` used to complete to `within`
+              // guard: `h` must not complete to `within`
               let text2 = "{ Http.get \"u\" with h"
               let got2 = suggest text2 (text2.Length - 1)
               Expect.contains got2 "headers" "the h-field"
@@ -3715,7 +3715,7 @@ let completionTests =
               // completion.
               let expectedOffered =
                   Set
-                      [ "within" // [D:within-scopes] — offered, the for/do precedent
+                      [ "within" // [D:within-scopes] — offered, as for/do is
                         "let"
                         "in"
                         "fun"
@@ -3919,9 +3919,9 @@ let completionTests =
               Expect.equal (sgs "src |> Seq.map (fun e -> e.") [] "a string element offers no fields"
           }
           test "the empty prompt offers the session directives, not the flood [D:empty-prompt-directives]" {
-              // `suggest "" 0` used to return 1130 (954 PATH execs + the
-              // universe) via `StartsWith ""`. A fresh Tab now teaches the
-              // REPL's affordances, `#help` first.
+              // guards `suggest "" 0` against the `StartsWith ""` flood
+              // (1130 items: 954 PATH execs + the universe). A fresh Tab
+              // teaches the REPL's affordances, `#help` first.
               Expect.equal (suggest "" 0) [ "#help"; "#find"; "#echo"; "#infer"; "#save"; "#history"; "#quit" ] "the curated directive set"
 
               // filtered completion is unaffected (a real prefix at a head).
@@ -5616,7 +5616,7 @@ let typedArgvTests =
                   Expect.stringContains both "is not a LvlE" "enum problem present"
                   Expect.stringContains both "is not an int" "int problem collected alongside"
 
-                  // empty is a miss with candidates (the int precedent), not None
+                  // empty is a miss with candidates (as with ints), not None
                   set "LOGE_ZZQ" ""
                   set "PORTE_ZZQ" "1"
 
@@ -6248,9 +6248,10 @@ let replEchoTests =
               Expect.equal hint (Some(Weir.Eval.unforcedHint 10)) "the honest lever, not a rendering-changing pipe"
           }
           test "the WHOLE echo enumerates its source once [D:echo-once]" {
-              // echoTable's probe + echoValue's rendering used to pull the
-              // lazy source twice — a bare command's child ran twice per
-              // echo (and its second cooked-tty window ate the next Enter)
+              // pins echoTable's probe + echoValue's rendering to a single
+              // pull of the lazy source — a double pull runs a bare
+              // command's child twice per echo (and its second cooked-tty
+              // window eats the next Enter)
               let pulls = ref 0
 
               let counted =
@@ -7053,7 +7054,7 @@ let statementLetTests =
           test "a NESTED statement body grants through the assembler's paren wrap (the fuzzer's catch)" {
               // the assembler wraps a multi-statement if body in parens;
               // bodies are statement territory even there ([D:interior-arming]
-              // precedent) — the exprParen-gated grant refused this shape
+              // applies) — the exprParen-gated grant refused this shape
               // until deep fuzz caught it [D:statement-lets]
               Expect.isEmpty
                   (checkDiags
@@ -7113,7 +7114,7 @@ let statementLetTests =
           test "refused contexts teach $() with the ACTUAL context named — dash argv included" {
               // the hardened teaching [D:statement-lets]: fires whether or
               // not the expression parse would survive to the pipe (npx's
-              // `--no-install` used to die raw at the double dash)
+              // `--no-install` must not die raw at the double dash)
               for rhs in [ "sh -c \"echo x\" | complete"; "npx --no-install vsce package | complete" ] do
                   let ds =
                       checkDiags
@@ -8820,7 +8821,7 @@ let hoverResidueTests =
 let schemaHoverTests =
     // the schema= name hovers its file facts [D:schema-hover] — a
     // vendored file, not an env.Types entry, so the type-argument arm
-    // could not render it and the district's type used to leak
+    // cannot render it; guards against the district's type leaking
     let withSchemas (f: string -> string list -> string -> unit) =
         let td =
             System.IO.Path.Combine(
@@ -9821,7 +9822,7 @@ let semanticTokenTests =
               | other -> failtest $"expected ONE error, got {other}"
           }
           test "Args/Env.load near-miss shapes teach ONE-type-name [PLAN-diagnostics-arc A1]" {
-              // `Args.load C md` (a space inside the type name) used to
+              // `Args.load C md` (a space inside the type name) must not
               // fall through to "module Args has no member 'load'" — a
               // lie: load is an arm, not a member
               Expect.stringContains (checkErr "Args.load").Message "takes ONE record or union type name" "zero args"
@@ -12020,8 +12021,8 @@ let agentFindingsTests =
               | Ok _ -> failtest "the steam shape must refuse"
           }
           test "the path-splice refusal text is pinned EXACTLY [D:splice-path-hint]" {
-              // byte-equality on a shipped teaching message (formerly the
-              // homepage quote; the hero now quotes [D:argv-concat]'s)
+              // byte-equality on a shipped teaching message (the hero
+              // quotes [D:argv-concat]'s, not this one)
               match Weir.Parser.parseLine cmdResolver "rm -rf ./tt3/$build" with
               | Error msg ->
                   // EndsWith: the parser frames the message with position
@@ -12999,7 +13000,7 @@ let childEnvTests =
           }
           test "THE DEDENT FLOOR: unaligned dedents ERROR instead of silently joining [D:district-retirement]" {
               // the silent-swallow class (legal-parse-wrong-meaning): a
-              // statement dedenting from a nested block used to space-join
+              // statement dedenting from a nested block must not space-join
               // — absorbed as argv after a command line. Four shapes, one
               // floor: within, block-let, for, if.
               let shapes =
@@ -19880,7 +19881,7 @@ let bytesTests =
                   System.IO.File.Delete out
           } ]
 
-// the port-driven member batch (v0.0.46) [D:port-members] — each gap
+// the port-driven member batch [D:port-members] — each gap
 // cited from the asdf/acme findings, each edge pinned; plus the two
 // ports' diagnostic teachings
 let portMembersTests =
@@ -21786,7 +21787,7 @@ let fromTableTests =
               Expect.equal (run "let table = 5 in table + 1") (VInt 6L) "no new reserved word"
           } ]
 
-// the v0.0.48 security cut [D:attr-int-overflow][D:head-word-bound]
+// the security cut [D:attr-int-overflow][D:head-word-bound]
 // [D:cli-exception-guard]: three front-end hardening pins — none may
 // crash the tool; each fails as a located diagnostic, never a SIGABRT.
 let hardeningTests =

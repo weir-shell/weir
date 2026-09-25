@@ -28,7 +28,7 @@ let sessionDirectives = [ "help"; "find"; "echo"; "infer"; "save"; "history"; "q
 // #infer-injected ones included). Both `#help`'s unknown-name pool
 // (Repl.fs) and the #help-arg completion slot read this, so what
 // `#help X` documents and what `#help <TAB>` offers cannot drift
-// (the sessionDirectives precedent). Modules also document their
+// (as sessionDirectives does). Modules also document their
 // members via `#help Module.member`; the qualified names live in the
 // slot itself, keyed off env.Modules.
 let helpNames (env: TypeEnv) : string list =
@@ -201,7 +201,7 @@ let wordStartAt (text: string) (pos: int) : int =
 // the topLet binder up to its `=`, lexically [D:let-rhs-head] — the
 // shape whose RHS the grammar grants command mode (topLet's
 // command-first RHS; a destructuring let's RHS is expression-only).
-// A stated subset (the pathParamAt precedent): identifier and `()`
+// A stated subset (matching pathParamAt): identifier and `()`
 // params only — a parenthesized/record param pattern falls through,
 // and a keyword in a binder slot is the letKeywordGuard's error, not
 // a head slot. `let pure` leads legally; a lone `pure` does not bind.
@@ -622,7 +622,7 @@ let suggestScopedWith
                                     )
                                     ->
                                     // unresolved source — the declared-fields
-                                    // fallback, the dotted arm's precedent;
+                                    // fallback, as the dotted arm does;
                                     // a bare unbound identifier source gets
                                     // nothing instead [D:complete-argv]
                                     env.Types

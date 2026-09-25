@@ -30,9 +30,9 @@ let cli = Args.load Cli
 let sumLines = File.read cli.sums |> Seq.freeze
 
 // the anchor is a line that is exactly the placeholder (trimmed), not
-// one that merely mentions it — v0.0.2's header comment named the
-// placeholder and got replaced by six raw checksum lines executing at
-// the top of the served script
+// one that merely mentions it — matching a mere mention (a header
+// comment naming the placeholder) would splice raw checksum lines into
+// the served script as executing text
 let expand line =
     if Str.trim line == "@WEIR_SHA256SUMS@" then
         sumLines

@@ -2,13 +2,13 @@
 # The FSI-parity `it` flow [D:repl-it] and the function-value echo
 # [D:repl-fn-echo]: a bare command statement at a tty streams (the
 # inherit path [D:colour-inherit]) and binds `it := ()` — the meta is
-# the plain `: seq<string>` (the v0.0.43 streamed parenthetical
-# reverted), `it` right after echoes `() : unit` with no error, and
-# misusing the unit `it` appends the capture repair with the command
-# verbatim. A `let` binds no `it` (FSI: `let o = 10;;`); the fresh
-# session and the piped REPL are pinned unchanged. Named function
-# values echo a mini-help: builtins the #help signature + glance,
-# session functions their name, scheme, and recorded definition line.
+# the plain `: seq<string>`, `it` right after echoes `() : unit` with
+# no error, and misusing the unit `it` appends the capture repair with
+# the command verbatim. A `let` binds no `it` (FSI: `let o = 10;;`);
+# the fresh session and the piped REPL are pinned unchanged. Named
+# function values echo a mini-help: builtins the #help signature +
+# glance, session functions their name, scheme, and recorded
+# definition line.
 import os
 import pty
 import re
@@ -70,8 +70,7 @@ def session(lines_with_settle):
 
 
 # --- (a): the FSI-parity flow — a bare command streams, the meta is the
-# plain type (the v0.0.43 parenthetical reverted), and `it` right after
-# echoes `() : unit`, no error ---
+# plain type, and `it` right after echoes `() : unit`, no error ---
 cmd = 'sh -c "echo STREAMED-OUT"'
 out = session([(cmd.encode() + b"\r", 1.2), (b"it\r", 0.8)])
 if "STREAMED-OUT" not in out:

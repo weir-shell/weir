@@ -2,7 +2,7 @@ module Fuzz.Runner
 
 // Executes generated programs against the AOT binary. The stamp gate is
 // the standing mechanism [D:masking-mechanized]: assert binary stamp ==
-// HEAD (plus source-mtime freshness) ONCE before any run — a fuzzer
+// HEAD (plus source-mtime freshness) once before any run — a fuzzer
 // reporting against a stale binary is a masked-failure factory.
 
 open System

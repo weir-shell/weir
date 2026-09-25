@@ -4,13 +4,13 @@ open Expecto
 open Weir
 open Weir.Types
 
-// PROBES [D:repl-infer]: the four unknowns the plan demands answered
+// Probes [D:repl-infer]: the four unknowns the plan demands answered
 // before building — kept as living tests.
 
 let private preludeTypeEnv, _preludeValueEnv =
     Weir.Prelude.extend Weir.Builtins.typeEnv Weir.Builtins.valueEnv
 
-// the REAL taken set a fresh session starts from [D:repl-infer] — the
+// the real taken set a fresh session starts from [D:repl-infer] — the
 // existing drafting pins below run against it, so they double as the
 // zero-movement guarantee: no builtin hit, no renaming
 let private takenBase: Set<string> =
@@ -26,7 +26,7 @@ let private inject (tenv: TypeEnv) (line: string) : Result<TypeEnv, string> =
     | Ok chk -> Ok chk.Env
     | Error d -> Error d.Message
 
-// inject a possibly MULTI-LINE statement (a `type` decl block) via the
+// inject a possibly multi-line statement (a `type` decl block) via the
 // assembler — the path the REPL's multiline arm uses.
 let private injectBlock (tenv: TypeEnv) (text: string) : Result<TypeEnv, string> =
     let numbered =
@@ -54,7 +54,7 @@ let probes =
     testList
         "infer probes"
         [ test "P1: injecting a type decl makes 'from json Name' check" {
-              // inject the type, then a line that USES it must check
+              // inject the type, then a line that uses it must check
               match inject preludeTypeEnv "type Item = { id: int }" with
               | Error e -> failtestf "type injection failed: %s" e
               | Ok env1 ->
@@ -97,8 +97,8 @@ let probes =
               // null field
               let _, n2 = Infer.inferDecls Parser.keywords takenBase "T" (Infer.IObj [ "v", Infer.INull ])
               Expect.isTrue (n2 |> List.exists (fun n -> n.Contains "null value")) "null note"
-              // heterogeneous = a TYPE CONFLICT for one key across the
-              // array's elements [D:repl-infer] — differing key SETS are
+              // heterogeneous = a type conflict for one key across the
+              // array's elements [D:repl-infer] — differing key sets are
               // the merge's ordinary work, never a note
               let het =
                   Infer.IObj
@@ -108,13 +108,13 @@ let probes =
               Expect.isTrue (n3 |> List.exists (fun n -> n.Contains "heterogeneous")) "heterogeneous note"
           } ]
 
-// render the inferred declarations to ONE string for substring pins
+// render the inferred declarations to one string for substring pins
 let private renderJson (topName: string) (json: string) : string =
     match Infer.infer Parser.keywords takenBase Infer.Json topName [ json ] with
     | Ok(decls, _) -> String.concat "\n" decls
     | Error e -> failtestf "infer failed: %s" e
 
-// a session that CHECKS the injected decls followed by a `from json`
+// a session that checks the injected decls followed by a `from json`
 // use — the round-trip that proves injection lights up the field.
 let private checksAfterInject (decls: string list) (useLine: string) : Result<unit, string> =
     let mutable env = preludeTypeEnv
@@ -131,7 +131,7 @@ let private checksAfterInject (decls: string list) (useLine: string) : Result<un
     | None -> Ok()
 
 // run a full multi-line program from a temp file; returns its exit code
-// (0 = clean) — the in-process read/write ROUNDTRIP driver
+// (0 = clean) — the in-process read/write roundtrip driver
 let private runFile (lines: string list) : int =
     let path =
         System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-infer-{System.Guid.NewGuid():N}.weir")
@@ -178,7 +178,7 @@ let inferRules =
           }
 
           test "dedup: same field name + same shape -> one type" {
-              // two 'spec' objects, IDENTICAL shape -> a single Spec type
+              // two 'spec' objects, identical shape -> a single Spec type
               let out = renderJson "Root" "{\"a\": {\"spec\": {\"n\": 1}}, \"b\": {\"spec\": {\"n\": 2}}}"
               let count =
                   System.Text.RegularExpressions.Regex.Matches(out, "type Spec = \\{").Count
@@ -187,7 +187,7 @@ let inferRules =
           }
 
           test "collision: same field name + different shape -> parent prefix" {
-              // two 'spec' objects with DIFFERENT shapes under different parents
+              // two 'spec' objects with different shapes under different parents
               let out =
                   renderJson "Root" "{\"pod\": {\"spec\": {\"cpu\": 1}}, \"container\": {\"spec\": {\"image\": \"x\"}}}"
               // the first Spec keeps the name; the second parent-prefixes
@@ -204,10 +204,10 @@ let inferRules =
           }
 
           test "PROBE PIN: the parser rejects EVERY keyword in field position [D:infer-wire-sanitize]" {
-              // the sanitizer's reserved set IS Parser.keywords — this pin
+              // the sanitizer's reserved set is Parser.keywords — this pin
               // holds field-name legality to that set: if the parser ever
               // accepts a keyword as a field name (or the set moves), it
-              // fails HERE, not by silent drift in #infer's drafts
+              // fails here, not by silent drift in #infer's drafts
               for kw in Parser.keywords do
                   match injectBlock preludeTypeEnv $"type T = {{ {kw}: int }}" with
                   | Ok _ ->
@@ -279,7 +279,7 @@ let inferRules =
               // [<Wire "">] refuses at check ('expects the wire key as a
               // string') and a field name cannot be empty — the machinery
               // cannot address an empty key, so the sanitizer drops it
-              // LOUDLY and the readers' extra-key tolerance carries the rest
+              // loudly and the readers' extra-key tolerance carries the rest
               match Infer.infer Parser.keywords takenBase Infer.Json "Ek" [ "{\"\": 1, \"a\": 2}" ] with
               | Error e -> failtestf "infer failed: %s" e
               | Ok(decls, notes) ->
@@ -301,8 +301,8 @@ let inferRules =
           }
 
           test "an object of ONLY an empty key is an open map — mapping keys are data, '' included" {
-              // MOVED PIN [D:repl-infer]: the empty key is unspellable as
-              // a FIELD, but a mapping's keys are data — the map detection
+              // [D:repl-infer]: the empty key is unspellable as
+              // a field, but a mapping's keys are data — the map detection
               // (one value shape, every key non-identifier) outranks the
               // drop rule, so nothing is dropped and nothing goes opaque
               let decls, notes =
@@ -314,7 +314,7 @@ let inferRules =
           }
 
           test "the record path still goes opaque when ONLY empty keys remain and values conflict" {
-              // the map detection needs ONE value shape — without it the
+              // the map detection needs one value shape — without it the
               // record path drops the unspellable keys and lands opaque
               let decls, notes =
                   Infer.inferDecls
@@ -346,7 +346,7 @@ let inferRules =
 
           test "PROBE PIN: the parser eats the primitive spellings in FIELD position — a decl under one is injected-and-shadowed [D:repl-infer]" {
               // the taken set's primitive completion holds exactly because
-              // `secret: Secret` in a drafted decl means the PRIMITIVE,
+              // `secret: Secret` in a drafted decl means the primitive,
               // whatever the session injects under that name — if the
               // parser ever lets a session decl win here, this fails and
               // takenTypeNames must be revisited
@@ -365,7 +365,7 @@ let inferRules =
                       | other -> failtestf "unexpected decl body: %A" other
                   | other -> failtestf "unexpected parse: %A" other
 
-              // the shadow is REAL end-to-end: the decl injects, then a
+              // the shadow is real end-to-end: the decl injects, then a
               // record carrying the field refuses the Secret wire crossing
               match injectBlock preludeTypeEnv "type Secret = {\n    secretName: string\n}" with
               | Error m -> failtestf "the shadowed decl still injects (probe assumption): %s" m
@@ -426,9 +426,9 @@ let inferRules =
           }
 
           test "a 'yaml' field dodges the prelude type: RootYaml drafted, and the draft checks + reads [D:repl-infer]" {
-              // before the guard this died at injection — checkDecl
+              // without the rename guard this dies at injection — checkDecl
               // refuses a registered builtin name ('Yaml' is a built-in
-              // type), so #infer errored instead of drafting
+              // type), so #infer would error instead of drafting
               match Infer.infer Parser.keywords takenBase Infer.Json "Root" [ "{\"yaml\": {\"a\": 1}}" ] with
               | Error e -> failtestf "infer failed: %s" e
               | Ok(decls, notes) ->
@@ -502,7 +502,7 @@ let inferRules =
                        && n.Contains "drafted as an open mapping seq<string * _>"))
                   "the map note, pinned wording"
 
-              // NOT a map without value uniformity: the same keys over
+              // not a map without value uniformity: the same keys over
               // mixed value shapes stay a [<Wire>]'d record
               match Infer.infer Parser.keywords takenBase Infer.Json "Root" [ "{\"labels\": {\"k8s-app\": \"w\", \"helm.sh/chart\": 2, \"app\": \"x\"}}" ] with
               | Error e -> failtestf "infer failed: %s" e
@@ -528,7 +528,7 @@ let inferRules =
           }
 
           test "metadata zero-movement: identifier-uniform objects stay records [D:repl-infer]" {
-              // identifier keys, IDENTICAL across elements — schema, never
+              // identifier keys, identical across elements — schema, never
               // a mapping, even though every value shares one shape
               let sample =
                   "{\"items\": [{\"metadata\": {\"name\": \"a\", \"namespace\": \"x\"}}, {\"metadata\": {\"name\": \"b\", \"namespace\": \"y\"}}]}"
@@ -544,12 +544,12 @@ let inferRules =
           }
 
           test "differing sibling keys with MIXED value types stay a record, not a coincidental bool map [D:repl-infer]" {
-              // the k8s securityContext bug: sibling objects carry different
+              // the k8s securityContext shape: sibling objects carry different
               // keys (runAsNonRoot / readOnly / runAsGroup) whose values only
-              // COINCIDENTALLY agree in the first pair (bool, bool), then an
-              // int. The pairwise fold drafted Map<string, bool> and a later
-              // `from json` REJECTED the int ("expected bool, got Number").
-              // Value uniformity is now judged over ALL siblings, so mixed
+              // coincidentally agree in the first pair (bool, bool), then an
+              // int. A pairwise fold would draft Map<string, bool> and a later
+              // `from json` would reject the int ("expected bool, got Number");
+              // value uniformity is judged over all siblings, so mixed
               // values keep a record with each field typed.
               let sample =
                   "{\"items\": [{\"sc\": {\"runAsNonRoot\": true}}, {\"sc\": {\"readOnly\": false}}, {\"sc\": {\"runAsGroup\": 1000}}]}"
@@ -577,8 +577,8 @@ let inferRules =
                            && n.Contains "drafted as seq<string * string>"))
                       "the empty-map note, pinned wording"
 
-                  // the draft READS its own sample through BOTH adapters —
-                  // the opaque-Yaml draft could not cross the json boundary
+                  // the draft reads its own sample through both adapters —
+                  // an opaque-Yaml draft could not cross the json boundary
                   let script =
                       decls
                       @ [ "let j = [\"{\\\"resources\\\": {}}\"] |> from json Spec"
@@ -602,7 +602,7 @@ let inferRules =
                     "if not (Str.contains \"\\\"labels\\\":{\\\"k8s-app\\\":\\\"w\\\"\" out) then fail $\"the mapping did not write as an object: {out}\""
                     "let rt = [out] |> from json Meta"
                     "if (rt.labels |> Seq.length) <> 2 then fail \"the roundtrip lost pairs\""
-                    // the EMPTY mapping writes [] and reads back empty —
+                    // the empty mapping writes [] and reads back empty —
                     // the writer's own empty spelling, tolerated on read
                     "let e = [\"{\\\"name\\\": \\\"x\\\", \\\"labels\\\": {}}\"] |> from json Meta"
                     "let eout = e |> to json |> Seq.exactlyOne"
@@ -722,7 +722,7 @@ let saveQualify =
           } ]
 
 // ---- the table drafting arm [D:from-table] ----------------------------
-// `#infer … from table as Name` drafts the ROW record: header offsets
+// `#infer … from table as Name` drafts the row record: header offsets
 // name the columns, a per-column token scan types them, empty/`<none>`
 // cells draft Option with a note, and a note says the value reads as
 // seq<Name>. The fixtures pad by width so header and cell offsets agree

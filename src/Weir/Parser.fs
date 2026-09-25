@@ -156,10 +156,9 @@ let private withLetCmd (v: bool) (p: Parser<'a, unit>) : Parser<'a, unit> =
 // [D:statement-lets] a statement body grants command-mode lets — the
 // top-level law, one body deeper. Unconditional on parens: bodies are
 // statement territory even inside (assembler-wrapped) parens — the
-// [D:interior-arming] precedent, and the fuzzer caught the gated
-// version refusing a nested if's let behind the assembler's wrap. A
-// flag already up (the spine) is never re-tagged, so its inheritance
-// is untouched.
+// pattern [D:interior-arming] set, and a paren-gated version refuses
+// a nested if's let behind the assembler's wrap. A flag already up
+// (the spine) is never re-tagged, so its inheritance is untouched.
 let private withStmtLetCmd (p: Parser<'a, unit>) : Parser<'a, unit> =
     fun stream ->
         if letCmdOk.Value then
@@ -281,8 +280,8 @@ let private str_ws s = pstring s >>. ws
 // teaching, kept) — stops at the machine boundary. Same width as
 // " ; " (3 chars) so every span mapping through the segment table is
 // byte-identical. Unproduceable: assemble rejects any source line
-// carrying it, so it reaches the grammar only from the assembler (the
-// '|'-key precedent — a token user text cannot form).
+// carrying it, so it reaches the grammar only from the assembler (as
+// the '|' keys do — a token user text cannot form).
 [<Literal>]
 let sibSep = '\u001F'
 
@@ -1956,7 +1955,7 @@ binderParamRef.Value <-
 binderPatRef.Value <- commaPats
 
 // the anonymous shape's field-list parser is set after tySyn and
-// fieldNameDecl exist (forward ref, the sigilChain precedent)
+// fieldNameDecl exist (forward ref, as sigilChain does)
 // [D:anon-records]
 let private anonShape, private anonShapeRef =
     createParserForwardedToRef<(string * Ty) list, unit> ()
@@ -2076,8 +2075,8 @@ let private toExpr =
 // the guard and a recursive walk would overflow the call stack. That
 // is a Property-3 crash on the width axis, and the depth-graph gate
 // [D:depth-coverage] is blind to it (unbounded recursion over a
-// bounded-depth structure). The post-parse iterative gate has the same
-// precedent for the AST walk. Caller uses the names as a Set, so
+// bounded-depth structure). The post-parse iterative gate does the
+// same for the AST walk. Caller uses the names as a Set, so
 // pop-order is immaterial.
 let private patLeafNames (p: Pattern) : string list =
     let names = System.Collections.Generic.List<string>()
@@ -2509,7 +2508,7 @@ let private ifExprBody =
         getPosition
         (keyword "if" >>. ifCond)
         // bodies are statement territory even inside (assembler-wrapped)
-        // parens [D:interior-arming] — the lambda-body precedent; and
+        // parens [D:interior-arming] — the pattern lambda-body set; and
         // statement bodies grant command lets [D:statement-lets]
         (keyword "then" >>. withStmtLetCmd (withExprParen false seqExpr))
         (many (
@@ -2535,8 +2534,8 @@ let private ifExprBody =
               Span = { Start = pos p; End = endPos } })
 
 // for/do [D:for-do]: the general effect loop -- F#'s own statement form,
-// desugared at parse to `xs |> Seq.iter (fun p -> body)` (the reifier
-// precedent: the typed tree never sees `for`, so checking, warnings,
+// desugared at parse to `xs |> Seq.iter (fun p -> body)` (as the
+// reifier does: the typed tree never sees `for`, so checking, warnings,
 // hover, and eval all ride the existing machinery). A bare command body
 // is implicit `!(...)` -- `for f in files do git add $f` streams and
 // raises per iteration, the natural shell shape; known heads fall
