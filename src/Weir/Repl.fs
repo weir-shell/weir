@@ -23,10 +23,53 @@ let mutable private prompt = "weir> "
 let mutable private promptWidth = 6
 let mutable private promptWarned = false
 
-/// display width of a prompt: what the terminal shows once escape
-/// sequences are dropped
+/// terminal cell width of one rune — the wcwidth ranges, approximated:
+/// zero for combining marks and format characters (ZWJ and friends),
+/// two for the CJK blocks, fullwidth forms, and the emoji planes, one
+/// otherwise. Terminals disagree at the edges (VS16-promoted dingbats);
+/// the unambiguous ranges cover prompts in practice.
+let private runeWidth (r: System.Text.Rune) =
+    match System.Text.Rune.GetUnicodeCategory r with
+    | Globalization.UnicodeCategory.NonSpacingMark
+    | Globalization.UnicodeCategory.EnclosingMark
+    | Globalization.UnicodeCategory.Format -> 0
+    | _ ->
+        let cp = r.Value
+
+        let wide =
+            (cp >= 0x1100 && cp <= 0x115F) // Hangul Jamo
+            || (cp >= 0x2E80 && cp <= 0x303E) // CJK radicals, punctuation
+            || (cp >= 0x3041 && cp <= 0x33FF) // kana, CJK symbols
+            || (cp >= 0x3400 && cp <= 0x4DBF) // CJK ext A
+            || (cp >= 0x4E00 && cp <= 0x9FFF) // CJK unified
+            || (cp >= 0xA000 && cp <= 0xA4CF) // Yi
+            || (cp >= 0xAC00 && cp <= 0xD7A3) // Hangul syllables
+            || (cp >= 0xF900 && cp <= 0xFAFF) // CJK compatibility
+            || (cp >= 0xFE30 && cp <= 0xFE4F) // CJK compat forms
+            || (cp >= 0xFF00 && cp <= 0xFF60) // fullwidth forms
+            || (cp >= 0xFFE0 && cp <= 0xFFE6)
+            || (cp >= 0x1F300 && cp <= 0x1F9FF) // emoji
+            || (cp >= 0x1FA00 && cp <= 0x1FAFF)
+            || (cp >= 0x20000 && cp <= 0x3FFFD) // CJK ext B+
+
+        if wide then 2 else 1
+
+/// display width of a prompt: terminal cells once escape sequences are
+/// dropped — rune-aware, so CJK and emoji count their two cells and
+/// combining marks count none [D:session-prompt]
 let private visibleWidth (s: string) =
-    System.Text.RegularExpressions.Regex.Replace(s, "\x1b\\[[0-9;?]*[A-Za-z]", "").Length
+    let stripped =
+        System.Text.RegularExpressions.Regex.Replace(s, "\x1b\\[[0-9;?]*[A-Za-z]", "")
+
+    let mutable w = 0
+
+    for r in stripped.EnumerateRunes() do
+        w <- w + runeWidth r
+
+    w
+
+/// the width seam for tests [D:session-prompt] (as parseAliasLineForTest is)
+let visibleWidthForTest = visibleWidth
 
 /// compute the prompt for the next entry: default when no provider or
 /// redirected (a piped session's prompt mirror stays fixed — a provider

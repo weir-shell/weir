@@ -21214,6 +21214,14 @@ let aliasTests =
               Expect.isTrue (Weir.Repl.parseAliasLineForTest "kb = kustomize build" |> Result.isOk) "with prefix"
               Expect.isTrue (Weir.Repl.parseAliasLineForTest "= kubectl" |> Result.isError) "no name"
               Expect.isTrue (Weir.Repl.parseAliasLineForTest "k" |> Result.isError) "no ="
+          }
+          test "(k) the prompt's visible width is terminal cells [D:session-prompt]" {
+              Expect.equal (Weir.Repl.visibleWidthForTest "weir> ") 6 "plain ascii"
+              Expect.equal (Weir.Repl.visibleWidthForTest "\x1b[32mX\x1b[0m> ") 3 "SGR is zero-width"
+              Expect.equal (Weir.Repl.visibleWidthForTest "中> ") 4 "CJK counts two cells"
+              Expect.equal (Weir.Repl.visibleWidthForTest "🌿> ") 4 "an emoji counts two cells"
+              Expect.equal (Weir.Repl.visibleWidthForTest "é> ") 3 "a combining mark counts none"
+              Expect.equal (Weir.Repl.visibleWidthForTest " x> ") 5 "a private-use glyph counts one"
           } ]
 
 // ---- dynamic command heads [D:dynamic-head] --------------------------
