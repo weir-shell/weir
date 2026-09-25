@@ -5,7 +5,7 @@ open FParsec
 open Weir.Types
 open Weir.Ast
 
-// public: the REPL colorizer reuses THIS set [D:repl-color] — one
+// public: the REPL colorizer reuses this set [D:repl-color] — one
 // keyword source, no drift
 let keywords =
     Set
@@ -42,8 +42,8 @@ let keywords =
           "readonly"
           // the plan/apply capture [D:plan-apply]: a `plan` block head —
           // the third standalone withinKinds head. Reserved so a bare
-          // `plan` never resolves as an identifier or command head; in a
-          // language that HAS plan/apply, `let plan = …` is a confusing
+          // `plan` never resolves as an identifier or command head; with
+          // plan/apply in the language, `let plan = …` is a confusing
           // shadow (the `let match =` class). apply/preview stay ordinary
           // members, no reservation.
           "plan"
@@ -78,8 +78,8 @@ type Resolver =
       // the strict-context teaching names the qualified spelling
       BareHome: string -> string option
       // a command-head alias [D:command-head-alias], REPL-only: a short
-      // name -> (real exe, fixed prefix args). Consulted ONLY in
-      // command-head position and BEFORE PATH; the `^` sigil skips it.
+      // name -> (real exe, fixed prefix args). Consulted only in
+      // command-head position, before PATH; the `^` sigil skips it.
       // Single-hop by construction (the table stores exes, never aliases).
       // Scripts/-e supply the always-None resolver, so aliases never leak.
       AliasHead: string -> (string * string list) option }
@@ -97,25 +97,25 @@ let private ambientResolver =
           AliasHead = fun _ -> None })
 
 // Block-let command RHS [D:block-let-cmd][D:statement-lets]:
-// context-derived — TRUE along the spine a top-level let's RHS
+// context-derived — true along the spine a top-level let's RHS
 // assembles into (its let-in chain included; inheritance through
-// parens and lambda bodies untouched, [D:multiline-lambda]) AND
-// wherever a STATEMENT body opens (if/elif/else, for, match arms,
-// every within kind + always blocks, pure); FALSE in expression
+// parens and lambda bodies untouched, [D:multiline-lambda]) and
+// wherever a statement body opens (if/elif/else, for, match arms,
+// every within kind + always blocks, pure); false in expression
 // territory — paren interiors, lambda bodies off the spine, and the
 // bare single-line let-in (REPL/-e), holding the original in-swallow
 // park's boundary.
 let private letCmdOk = new System.Threading.ThreadLocal<bool>(fun () -> false)
 
-// [D:statement-lets] the grant's SOURCE tag: TRUE when the current
+// [D:statement-lets] tags the grant's source: true when the current
 // letCmdOk came from a statement body, so paren interiors and lambda
-// bodies clear THAT grant while the spine's flag rides through them
+// bodies clear that grant while the spine's flag rides through them
 // exactly as before.
 let private letCmdStmt = new System.Threading.ThreadLocal<bool>(fun () -> false)
 
-// plain parens are EXPRESSION territory [D:interior-arming]: the
+// plain parens are expression territory [D:interior-arming]: the
 // interior-command element does not apply there ($()/!() are the
-// command parens) — but a lambda BODY re-enables it even inside parens
+// command parens) — but a lambda body re-enables it even inside parens
 // (`xs |> Seq.iter (fun f -> git add $f)` is the idiom)
 let private exprParen = new System.Threading.ThreadLocal<bool>(fun () -> false)
 
@@ -129,8 +129,8 @@ let private withExprParen (v: bool) (p: Parser<'a, unit>) : Parser<'a, unit> =
         finally
             exprParen.Value <- saved
 
-// The inline command condition [D:if-succeeds]: TRUE only while an
-// if/elif CONDITION parses — gates the then-stop in reifierEnd exactly
+// The inline command condition [D:if-succeeds]: true only while an
+// if/elif condition parses — gates the then-stop in reifierEnd exactly
 // as letCmdOk gates the in-stop, so a `then` after a reifier ends the
 // condition there and nowhere else.
 let private ifCondOk = new System.Threading.ThreadLocal<bool>(fun () -> false)
@@ -153,7 +153,7 @@ let private withLetCmd (v: bool) (p: Parser<'a, unit>) : Parser<'a, unit> =
         finally
             letCmdOk.Value <- saved
 
-// [D:statement-lets] a statement body GRANTS command-mode lets — the
+// [D:statement-lets] a statement body grants command-mode lets — the
 // top-level law, one body deeper. Unconditional on parens: bodies are
 // statement territory even inside (assembler-wrapped) parens — the
 // [D:interior-arming] precedent, and the fuzzer caught the gated
@@ -176,10 +176,10 @@ let private withStmtLetCmd (p: Parser<'a, unit>) : Parser<'a, unit> =
                 letCmdOk.Value <- savedOk
                 letCmdStmt.Value <- savedStmt
 
-// [D:statement-lets] spans that parsed as a GRANTED command-let RHS in
-// an earlier attempt of the SAME line: a backtrack that re-reaches one
+// [D:statement-lets] spans that parsed as a granted command-let RHS in
+// an earlier attempt of the same line: a backtrack that re-reaches one
 // through a refused route (a re-parse after unrelated junk killed the
-// first route) is an artifact, and no refusal FATAL — the hardened
+// first route) is an artifact, and no refusal fatal — the hardened
 // teaching, the reifier-stage guard, the bare-pipe hint — may steal
 // the true error's site from inside it (the fuzz arbitration property
 // caught exactly that theft). Cleared per line.
@@ -189,7 +189,7 @@ let private grantedRhsRanges =
 let private inGrantedRange (off: int64) : bool =
     grantedRhsRanges.Value |> Seq.exists (fun struct (s, e) -> off >= s && off < e)
 
-// [D:statement-lets] the hardened teaching names the ACTUAL refusing
+// [D:statement-lets] the hardened teaching names the actual refusing
 // context ("inside a lambda body, a command needs $(…)") — innermost
 // setter wins; the default covers the genuine single-line spelling
 // (REPL/-e/top level), the one place no setter has run.
@@ -207,8 +207,8 @@ let private withExprCtxName (n: string) (p: Parser<'a, unit>) : Parser<'a, unit>
             exprCtxName.Value <- saved
 
 // [D:statement-lets] paren interiors and lambda bodies are expression
-// territory for the STATEMENT grant only — the spine's flag keeps its
-// standing ride through both ([D:multiline-lambda], untouched).
+// territory for the statement grant only — the spine's flag still
+// rides through both ([D:multiline-lambda], untouched).
 let private clearStmtLetCmd (p: Parser<'a, unit>) : Parser<'a, unit> =
     fun stream ->
         if letCmdStmt.Value then
@@ -235,12 +235,13 @@ let private withIfCond (v: bool) (p: Parser<'a, unit>) : Parser<'a, unit> =
         finally
             ifCondOk.Value <- saved
 
-// TRUE while a match arm's BODY parses [D:match-arm-commands]: a command
-// chain there ends at the next arm's `| <pattern> ->`, so `| _ -> git pull`
-// streams without a sigil. A DEPTH counter, not a flag — a nested match's
-// inner arms restore the outer value on exit, and arm attribution stays
-// innermost-wins (the rule expressions already live by). Gated so the
-// `|`-boundary lookahead is paid only inside arm bodies.
+// Nonzero while a match arm's body parses [D:match-arm-commands]: a
+// command chain there ends at the next arm's `| <pattern> ->`, so
+// `| _ -> git pull` streams without a sigil. A depth counter, not a
+// flag — a nested match's inner arms restore the outer value on exit,
+// and arm attribution stays innermost-wins (the rule expressions
+// already live by). Gated so the `|`-boundary lookahead is paid only
+// inside arm bodies.
 let private matchArmDepth = new System.Threading.ThreadLocal<int>(fun () -> 0)
 
 let private withMatchArm (v: bool) (p: Parser<'a, unit>) : Parser<'a, unit> =
@@ -275,20 +276,20 @@ let private ws: Parser<unit, unit> = spaces
 let private str_ws s = pstring s >>. ws
 
 // The sibling sentinel [D:sibling-sentinel]: the assembler joins body
-// statement-siblings with THIS instead of ';' so command mode — which
+// statement-siblings with this instead of ';' so command mode — which
 // swallows a user-typed ';' as a bareword arg (the prior-bleed
-// teaching, kept) — STOPS at the machine boundary. Same width as
+// teaching, kept) — stops at the machine boundary. Same width as
 // " ; " (3 chars) so every span mapping through the segment table is
 // byte-identical. Unproduceable: assemble rejects any source line
-// carrying it, so it reaches the grammar ONLY from the assembler (the
+// carrying it, so it reaches the grammar only from the assembler (the
 // '|'-key precedent — a token user text cannot form).
 [<Literal>]
 let sibSep = '\u001F'
 
 let sibSepStr = System.String(sibSep, 1)
 
-// the district CONTENT terminator [D:district-terminates]: a district
-// (`yaml`/`<<<`) that closes MID-STATEMENT — a following `|>`, `in`, or
+// the district content terminator [D:district-terminates]: a district
+// (`yaml`/`<<<`) that closes mid-statement — a following `|>`, `in`, or
 // sibling — has the assembler append this after its content, so
 // districtTail knows where content ends and the expression grammar
 // resumes (heredocDistrict is already an opp term, so the pipe composes
@@ -299,18 +300,18 @@ let districtClose = '\u001E'
 
 let districtCloseStr = System.String(districtClose, 1)
 
-// the record/list FIELD separator [D:field-sep-sentinel]: the assembler
-// joins newline-separated record fields and list elements with THIS, not
+// the record/list field separator [D:field-sep-sentinel]: the assembler
+// joins newline-separated record fields and list elements with this, not
 // a bare `;`, so a field value's own `;`-sequencing (a lambda body, a
 // block) cannot swallow the separator and the next field. seqExpr does
-// NOT sequence on it (only `;` and sibSep) — it ends the field, and the
+// not sequence on it (only `;` and sibSep) — it ends the field, and the
 // record/list sepBy splits on it. Same unproduceability contract as sibSep.
 [<Literal>]
 let fieldSep = '\u001D'
 
 let fieldSepStr = System.String(fieldSep, 1)
 
-/// a record/list/decl field separator: an explicit `;` OR the assembler's
+/// a record/list/decl field separator: an explicit `;` or the assembler's
 /// field sentinel [D:field-sep-sentinel] — a field value's `;` cannot
 /// reach here (seqExpr stops at the sentinel), so fields split cleanly
 let private fieldSepP: Parser<unit, unit> = (str_ws ";" <|> str_ws fieldSepStr) |>> ignore
@@ -321,7 +322,7 @@ let private fieldSepP: Parser<unit, unit> = (str_ws ";" <|> str_ws fieldSepStr) 
 let isYamlMarkerPiece (piece: string) =
     // marker-local modifier suffixes — `schema=<name>` [D:yaml-schemas],
     // `patch` / `by=<key>` [D:yaml-nodes] — strip them (right to left),
-    // then apply the marker law. The residue must still BE the marker,
+    // then apply the marker law. The residue must still be the marker,
     // so `run patch` stays a command.
     let isModifier (tok: string) =
         tok = "patch"
@@ -342,12 +343,12 @@ let isYamlMarkerPiece (piece: string) =
         else
             go <- false
 
-    // TOKEN-PRECISE arming [D:yaml-district]: a district marker is only
-    // ever a BARE `yaml` (the next-line form) or an assignment RHS
-    // (`let d = yaml`). `yaml` preceded by ARGV — `-o yaml`,
+    // Token-precise arming [D:yaml-district]: a district marker is only
+    // ever a bare `yaml` (the next-line form) or an assignment RHS
+    // (`let d = yaml`). `yaml` preceded by argv — `-o yaml`,
     // `--format yaml`, a trailing bare word — is a command, not a
-    // marker. So the residue arms iff its tokens are EXACTLY ["yaml"]
-    // or its last two are EXACTLY ["="; "yaml"]. This subsumes the
+    // marker. So the residue arms iff its tokens are exactly ["yaml"]
+    // or its last two are exactly ["="; "yaml"]. This subsumes the
     // `to yaml`/`from yaml` adapters (["to";"yaml"]/["from";"yaml"] are
     // not `= yaml`) and excludes `>= yaml`/`== yaml` (the token before
     // `yaml` is `>=`/`==`, never `=`).
@@ -357,7 +358,7 @@ let isYamlMarkerPiece (piece: string) =
     (n = 1 && toks[0] = "yaml")
     || (n >= 2 && toks[n - 1] = "yaml" && toks[n - 2] = "=")
 
-/// the marker suffix's LENGTH in a marker piece — `yaml` plus its
+/// the marker suffix's length in a marker piece — `yaml` plus its
 /// modifiers (`patch`, `by=`, `schema=`); the REPL colorizer's tint
 /// region, derived from the same strip loop so they cannot disagree
 let yamlMarkerLen (piece: string) : int =
@@ -385,7 +386,7 @@ let yamlMarkerLen (piece: string) : int =
 
 /// Line-end `<<<` / `$<<<` arms a heredoc district [D:text-block] — the
 /// yaml district's sibling. The block forms mirror the string forms:
-/// plain and $-interpolated; the marker law is yaml's. A GLYPH, not a
+/// plain and $-interpolated; the marker law is yaml's. A glyph, not a
 /// word, so no identifier is soft-reserved and `$<<<` can never read
 /// as a splice [D:text-block].
 let isHeredocMarkerPiece (piece: string) =
@@ -394,7 +395,7 @@ let isHeredocMarkerPiece (piece: string) =
     || piece = "$<<<"
     || piece.EndsWith " $<<<"
     // `$$<<<` [D:heredoc-splice] — the splice-interpolated block: `$name` /
-    // `${expr}` substitute, braces are LITERAL (JSON/config templating);
+    // `${expr}` substitute, braces are literal (JSON/config templating);
     // the shell-heredoc twin of `$<<<`'s `{expr}` holes
     || piece = "$$<<<"
     || piece.EndsWith " $$<<<"
@@ -413,22 +414,22 @@ let private spanned (p: Parser<'a, unit>) : Parser<'a * Span, unit> =
 let private rawWord = many1Satisfy2L isIdentStart isIdentCont "identifier"
 
 // the two-pipe cliff [D:pipe-hint]: a bare `|` after a completed
-// EXPRESSION is not an operator — name the spelling instead of
+// expression is not an operator — name the spelling instead of
 // dumping the token set (`||` and `|>` belong to the expression
 // grammar and never reach this check)
-// failFatally, ANCHORED [D:anchor-before-read]: raise the fatal at a
+// failFatally, anchored [D:anchor-before-read]: raise the fatal at a
 // captured position, not wherever the stream drifted after consuming the
 // trigger. Consuming the trigger first is what clears the competing
 // "expected" errors at that spot (a plain lookAhead-restore keeps the
 // fatal non-consuming, so <|> merges them back in); seeking to the anchor
-// then reports ON the trigger. `run` reads err.Position, so the seek is
+// then reports on the trigger. `run` reads err.Position, so the seek is
 // the whole mechanism.
 let private failFatallyAt (anchor: Position) (msg: string) : Parser<'a, unit> =
     fun stream ->
         stream.Seek anchor.Index
         Reply(ReplyStatus.FatalError, messageError msg)
 
-// same anchor by COLUMN, for sites whose token is already captured as a
+// same anchor by column, for sites whose token is already captured as a
 // Span (parse runs on one assembled logical line, so Index = Col - 1)
 let private failFatallyAtCol (col: int) (msg: string) : Parser<'a, unit> =
     fun stream ->
@@ -452,8 +453,8 @@ let private reifierWordEnd: Parser<unit, unit> =
     )
 
 let private barePipeHint: Parser<unit, unit> =
-    // a bare `|` after a completed EXPRESSION [D:pipe-hint]; anchor the
-    // caret ON the `|`, not the ws after it [D:anchor-before-read].
+    // a bare `|` after a completed expression [D:pipe-hint]; anchor the
+    // caret on the `|`, not the ws after it [D:anchor-before-read].
     // Inside a granted command-let span the hint stands down
     // [D:statement-lets] — a refused re-parse there is backtrack
     // artifact, and its fatal would steal the true error's site.
@@ -488,7 +489,7 @@ let private keyword s =
     attempt (pstring s .>> notFollowedBy (satisfy isIdentCont)) .>> ws
 
 // internal backtrack labels [D:label-leaks]: bookkeeping for the
-// combinators, NEVER a user-facing repair — the marker lets the dump
+// combinators, never a user-facing repair — the marker lets the dump
 // cleaner drop them from FParsec's 'Other error messages' pile, closing
 // the leak as a class (deliberate teaching stays on failFatally)
 let internalLabelMarker = "\u0006"
@@ -510,11 +511,11 @@ let private expr, private exprRef = createParserForwardedToRef<Expr, unit> ()
 
 let private mkExpr (kind, span) = { Kind = kind; Span = span }
 
-// e1 ; e2 — block sequencing. Deployed at BODY positions (then/else,
-// arm and lambda bodies, let-in bodies, parens, statements) and GREEDY
-// there: `if c then a ; b` sequences INSIDE the then-branch, matching
+// e1 ; e2 — block sequencing. Deployed at body positions (then/else,
+// arm and lambda bodies, let-in bodies, parens, statements) and greedy
+// there: `if c then a ; b` sequences inside the then-branch, matching
 // the block-shaped source it assembles from. This diverges from F#
-// VERBOSE grouping (named divergence row) — the alternative made
+// verbose grouping (named divergence row) — the alternative made
 // assembled if-blocks silently unconditional (see the Session-2
 // stop-and-report in NOTES).
 let private seqExpr, private seqExprRef = createParserForwardedToRef<Expr, unit> ()
@@ -575,7 +576,7 @@ let private intLit =
                       .>> notFollowedBy (satisfy (fun c -> System.Char.IsLetter c || c = '_'))
                   )
               )
-              // fraction digits OPTIONAL so `1.` reaches its teaching;
+              // fraction digits optional so `1.` reaches its teaching;
               // `..` (a range) backtracks before consuming [D:floats]
               .>>. opt (
                   attempt (
@@ -615,7 +616,7 @@ let private intLit =
             match m, sfx with
             | Some _, _ -> failFatallyAt at "units of measure are not supported; use bare int"
             | _, Some(("KB" | "MB" | "GB" | "TB") as si, _) ->
-                // the SI suffixes are AMBIGUOUS in the wild [D:size] —
+                // the SI suffixes are ambiguous in the wild [D:size] —
                 // 10^n in SI, 2^n in common usage — and weir refuses to
                 // guess; Size.parse reads them (the writer chose)
                 failFatallyAt
@@ -645,12 +646,12 @@ let private intLit =
                     failFatallyAt at "float literals need digits on both sides of the point (write 1.0)"
                 | Some(Some fr, Some su), _ ->
                     if isSizeUnit su then
-                        // 1.5MiB is TEXT, not a literal [D:size]
+                        // 1.5MiB is text, not a literal [D:size]
                         failFatallyAt
                             at
                             $"decimal size literals do not exist — decimals are a rendering; write whole units ({digits}.{fr}{su} — e.g. 1.5MiB is 1536KiB) or Size.parse"
                     else
-                        // 2.5s is a RENDERING, not a literal [D:duration]
+                        // 2.5s is a rendering, not a literal [D:duration]
                         failFatallyAt
                             at
                             $"decimal duration literals do not exist — decimals are a rendering; write the ms form (2.5s is 2500ms)"
@@ -677,7 +678,7 @@ let private intLit =
     .>> ws
 
 // the one escape decoder — plain strings and interp text share it.
-// A backslash followed by a LETTER is overwhelmingly a Windows path
+// A backslash followed by a letter is overwhelmingly a Windows path
 // [D:windows-findings]: name the repair (the verbatim string), not just
 // the constraint — every Windows user hits this in their first hour.
 // Non-letter invalid escapes keep the bare expecting-list (a hint on an
@@ -704,10 +705,10 @@ let private stringChar =
 // DepthExceeded: the open quote usually sits inside an attempt
 // (topLet's RHS), and a fatal inside an attempt is not a fatal — the
 // exception unwinds straight to parseLineFull with the teaching.
-// Per kind [D:interp-raw]: the OPENER anchors the report and the
-// missing closer is NAMED. Each literal gates its getPosition-bind
+// Per kind [D:interp-raw]: the opener anchors the report and the
+// missing closer is named. Each literal gates its getPosition-bind
 // behind followedBy — the bind reconstructs the combinator chain per
-// call, and ungated it runs at EVERY atom position (the 50k-op fuzz
+// call, and ungated it runs at every atom position (the 50k-op fuzz
 // spine pays it ~200k times)
 exception private UnclosedString of Pos * string * string
 
@@ -728,10 +729,10 @@ let private strLit =
         |>> mkExpr
         .>> ws
 
-// raw strings [D:raw-strings] — F#'s two kinds, single-line, oracle
-// probe-pinned BEFORE implementation: @"..." verbatim (backslashes
+// raw strings [D:raw-strings] — F#'s two kinds, single-line, pinned by
+// oracle probes before implementation: @"..." verbatim (backslashes
 // literal, "" = one embedded quote) and """...""" (no escapes at
-// all; closes at the FIRST triple, so a trailing extra quote is an
+// all; closes at the first triple, so a trailing extra quote is an
 // error — FCS's verdict on the quad-closer edge).
 let private verbatimBody =
     manyStrings (choice [ many1Satisfy (fun c -> c <> '"'); attempt (pstring "\"\"") >>% "\"" ])
@@ -779,13 +780,13 @@ let private wordAtom =
 let private unitLit =
     spanned (attempt (pchar '(' >>. ws >>. pchar ')') >>% EUnit) |>> mkExpr .>> ws
 
-// (op): an operator as a VALUE, unapplied only [D:operator-values].
+// (op): an operator as a value, unapplied only [D:operator-values].
 // Admitted (+ - * / > < >= <= == <>): the checker desugars to the
 // lambda, so overload-by-context, int defaulting, and the Eq/Ord
-// classes all inherit the infix answers. Refused HERE with reasons:
+// classes all inherit the infix answers. Refused here with reasons:
 // && || (a value cannot short-circuit), |> | (grammar, not functions),
 // >> << (composition already yields the composed function). Longest
-// tokens first — the trie question is the choice's order.
+// tokens first — the choice's order does the trie's job.
 let private opValue =
     spanned (
         attempt (
@@ -830,7 +831,7 @@ let private opValue =
     .>> ws
 
 let private parens =
-    // (e) groups; tuples come from the comma INSIDE seqExpr (the
+    // (e) groups; tuples come from the comma inside seqExpr (the
     // bare-comma amendment moved the comma into the expression grammar)
     // — and a statement body's let-cmd grant stops here [D:statement-lets]
     spanned (
@@ -844,7 +845,7 @@ let private parens =
 let private fieldAssign =
     identSpanned .>> str_ws "=" .>>. commaExpr |>> fun ((n, s), v) -> n, s, v
 
-// record literal OR copy-and-update [D:record-update]: after `{`,
+// record literal or copy-and-update [D:record-update]: after `{`,
 // try the field-assign head; else parse a (compound-free) source and
 // expect `with` — the bounded backtrack. Paths carry the nested
 // I.X sugar; the checker walks them.
@@ -854,8 +855,8 @@ let private updateAssign =
     (attrsRejectHere >>% Unchecked.defaultof<_>)
     <|> (updatePath .>> str_ws "=" .>>. commaExpr)
 
-// `{ <keyword> = ` is a field-assign with a reserved name — DOMINATE
-// [D:anchor-before-read] BEFORE the literal-vs-update commit-check
+// `{ <keyword> = ` is a field-assign with a reserved name — dominate
+// [D:anchor-before-read] before the literal-vs-update commit-check
 // [D:arm-commit], which would otherwise bury it in the update path. The
 // decision is inside the attempt (a real field backtracks, no consume);
 // only the fatal escapes, and `{` has already committed the atom.
@@ -872,13 +873,13 @@ let private keywordFieldGuard: Parser<ExprKind, unit> =
 
 // anonymous record literal [D:anon-literals]: `{| field = expr; … |}`,
 // F#'s spelling — the canonical synthetic-nominal name is minted at
-// CHECK (values sit here, not types; the parse-time pendingAnonDefs
-// push cannot serve this form). `{|` is one token, no interior ws
-// (FCS-matched; the grammars already tokenize it so). Fences are
-// fatal teachings [D:label-leaks]: punning and the `:` type-spelling
-// confusion fire per-field so `{| a = 1; b |}` teaches at 'b'; the
-// EMPTY form is refused though F# admits {||} — the named divergence
-// edge (COMING-FROM), Map.ofPairs [] already writes {}.
+// check time (values sit here, not types; the parse-time
+// pendingAnonDefs push cannot serve this form). `{|` is one token, no
+// interior ws (FCS-matched; the grammars already tokenize it so).
+// Fences are fatal teachings [D:label-leaks]: punning and the `:`
+// type-spelling confusion fire per-field so `{| a = 1; b |}` teaches
+// at 'b'; the empty form is refused though F# admits {||} — a named
+// divergence edge (COMING-FROM), Map.ofPairs [] already writes {}.
 let private anonRecordLit =
     let punFence: Parser<string * Span * Expr, unit> =
         attempt (
@@ -925,9 +926,9 @@ let private recordLit =
         >>. (keywordFieldGuard
              <|> choice
                      [ // the consumed-separator law's record instance
-                       // [D:arm-commit]: the literal COMMITS on its head
+                       // [D:arm-commit]: the literal commits on its head
                        // (`ident =`, not `==`) — a deep field failure reports
-                       // at ITS site instead of rewinding the whole literal
+                       // at its own site instead of rewinding the whole literal
                        // into the update alternative's shallower dump
                        attempt (lookAhead (identSpanned .>> str_ws "=" .>> notFollowedBy (pchar '=')))
                        >>. (sepBy1 fieldAssign fieldSepP .>> pchar '}')
@@ -955,7 +956,7 @@ let private dotdot = pstring ".." .>> ws
 // access, parenthesized anything) — reject-rather-than-guess. The attempt on
 // fieldSuffix keeps the first dot of '..' out of field-access parsing. The
 // negative-literal form predates general prefix minus [D:prefix-minus] and stays:
-// range steps allow the SPACED form ([10.. -1 ..1]) that adjacency rejects.
+// range steps allow the spaced form ([10.. -1 ..1]) that adjacency rejects.
 // rangeTerm is a forward ref: it needs atom, which needs listLit.
 let private negIntLit =
     spanned (
@@ -963,9 +964,9 @@ let private negIntLit =
         >>= fun digits ->
             match System.Int64.TryParse digits with
             | true, n -> preturn (EInt(-n))
-            // NOT anchored [D:anchor-before-read]: seeking to the '-' would
+            // not anchored [D:anchor-before-read]: seeking to the '-' would
             // drop the fatal into the unary-minus operator's contested spot
-            // and merge its expecting-list — a message-domination FINDING,
+            // and merge its expecting-list — a message-domination finding,
             // coupled to that separate class; the clean message wins here
             | false, _ -> failFatally $"int literal out of range (64-bit): -{digits}"
     )
@@ -1023,7 +1024,7 @@ let private interpChar =
           escapedChar ]
 
 // inside an interpolation hole [D:anchor-before-read]: a stray '\' at
-// EXPRESSION level produced a dump a reader turned into a false rule
+// expression level produced a dump a reader turned into a false rule
 // ("strings are not allowed inside holes" — PLAN-dx-review D3); weir
 // has no expression-level escape, so the char can teach directly
 let private inHole = new System.Threading.ThreadLocal<bool>(fun () -> false)
@@ -1055,7 +1056,7 @@ let private interpLit =
         |>> mkExpr
         .>> ws
 
-// the raw interpolated literal [D:interp-raw]: escapes OFF, holes ON —
+// the raw interpolated literal [D:interp-raw]: escapes off, holes on —
 // a backslash is a backslash, a bare " (or "") is content, `{` opens a
 // hole. No brace escape exists (raw means no escapes): a literal brace
 // belongs to the ordinary $"..." form, and the {{ attempt teaches.
@@ -1084,7 +1085,7 @@ let private interpRawLit =
         |>> mkExpr
         .>> ws
 
-// $@"…" does not exist — ONE raw interpolated spelling [D:interp-raw]
+// $@"…" does not exist — one raw interpolated spelling [D:interp-raw]
 // (two spellings for one capability is what this project removes)
 let private dollarAtTeach: Parser<Expr, unit> =
     lookAhead (pstring "$@\"") >>. getPosition
@@ -1092,16 +1093,16 @@ let private dollarAtTeach: Parser<Expr, unit> =
         failFatallyAt p "no $@\"…\" — the raw interpolated spelling is $\"\"\"…\"\"\" (escapes off, {holes} on)"
 
 // Command-mode sigils: explicit, delimited guest entry for command
-// chains in expression position. Interior grammar is IDENTICAL to a
+// chains in expression position. Interior grammar is identical to a
 // statement-level chain (cmdLine — same segments, splices, pipes,
 // | complete, bareword heads incl. command-callables; the sigil makes
 // the intent unambiguous, unlike the bare let-RHS which excludes
 // builtins). $(chain) captures the value; !(chain) desugars to
 // (chain) |> print — eager, streaming, raising, unit.
 // [D:env-sugar-layers]: sigils take an optional env slot between glyph
-// and paren — $e(...) / !e(...), e : seq<EnvVar>, applied to EVERY
+// and paren — $e(...) / !e(...), e : seq<EnvVar>, applied to every
 // spawn in the interior chain (segments and | complete alike, threaded
-// at construction). The ident must be GLUED to both glyph and paren;
+// at construction). The ident must be glued to both glyph and paren;
 // with a space the parse falls back ($name splice, plain paren).
 let mutable private sigilChainImpl: Expr option -> Parser<Expr, unit> =
     fun _ -> ifail "sigilChain not initialized"
@@ -1110,7 +1111,7 @@ let private sigilChain (envO: Expr option) : Parser<Expr, unit> =
     fun stream -> (sigilChainImpl envO) stream
 
 // value-headed pipelines [D:value-headed-pipe]: after an expression, a
-// bare `|` whose head resolves EXTERNAL feeds the value as stdin
+// bare `|` whose head resolves external feeds the value as stdin
 // (`snips | sha256sum` ≡ `snips |> feed "sha256sum" []`). A known/library
 // head keeps the barePipeHint teaching. Forward-declared (needs the
 // command grammar below); set after cmdLineWith.
@@ -1120,7 +1121,7 @@ let mutable private valueHeadedTailImpl: Expr -> Parser<Expr, unit> =
 let private valueHeadedTail (lhs: Expr) : Parser<Expr, unit> =
     fun stream -> (valueHeadedTailImpl lhs) stream
 
-// after seqExpr, EITHER a value-headed pipeline OR the barePipeHint
+// after seqExpr, either a value-headed pipeline or the barePipeHint
 // (which fatals on a bare `|` into an expression, else passes)
 let private pipeOrHint (lhs: Expr) : Parser<Expr, unit> =
     valueHeadedTail lhs <|> (barePipeHint >>% lhs)
@@ -1131,7 +1132,7 @@ let private sigilOpen (glyph: char) : Parser<Expr option, unit> =
         |>> fun (nameO, span) -> nameO |> Option.map (fun n -> { Kind = EVar n; Span = span })
     )
 
-// `| exitCode` STREAMS; capture/discard contexts are destination
+// `| exitCode` streams; capture/discard contexts are destination
 // conflicts [D:exit-reifiers] — reject at parse with the teaching text
 let rec private exitCodeSpine (e: Expr) : bool =
     match e.Kind with
@@ -1140,7 +1141,7 @@ let rec private exitCodeSpine (e: Expr) : bool =
     | _ -> false
 
 // [D:statement-lets] which reifier heads a probed chain — the hardened
-// teaching's evidence: a refused-context RHS that PARSES as a reifier
+// teaching's evidence: a refused-context RHS that parses as a reifier
 // chain is a command the position cannot take, whether or not the
 // expression grammar would survive its argv (`--flag` heads die there
 // before the pipe is ever seen). App spines head the desugar; a post-
@@ -1172,7 +1173,7 @@ let private captureSigil =
                      <?> "')' — close the sigil on this line, or bind with 'let x = <command>' at statement level")
     )
     |>> (fun (chain, span) ->
-        // the capture ASSERTION survives to the statement gate
+        // the capture assertion survives to the statement gate
         // [D:district-retirement]: $() never arms, in any position
         { Kind = ECapture { chain with Span = span }
           Span = span })
@@ -1184,9 +1185,9 @@ let private effectSigil =
         >>= fun envO ->
             ws >>. sigilChain envO
             >>= fun chain ->
-                // ANCHORED [D:anchor-before-read], like the sequence guard:
+                // anchored [D:anchor-before-read], like the sequence guard:
                 // the unanchored spelling leaves the competing "expected"
-                // errors at the drift position, which then LEAD and push the
+                // errors at the drift position, which then lead and push the
                 // repair under "Other error messages"
                 (if exitCodeSpine chain then
                      failFatallyAtCol chain.Span.Start.Col exitCodeDiscardMsg
@@ -1202,7 +1203,7 @@ let private effectSigil =
 
 // prefix minus [D:prefix-minus] — F#'s adjacency rule: `-` is prefix
 // when the previous char cannot end an operand (start, space, `(`,
-// `[`, `{`, `=`, ...) AND the operand is glued to the glyph. In an
+// `[`, `{`, `=`, ...) and the operand is glued to the glyph. In an
 // application chain `f -1` means `f (-1)`; `x-1` and `x - 1` stay
 // infix. Desugars to `0 - e`, so typing and eval are untouched.
 let private postfixAtomFwd, private postfixAtomFwdRef =
@@ -1210,7 +1211,7 @@ let private postfixAtomFwd, private postfixAtomFwdRef =
 
 let private negAtom =
     attempt (
-        // the trailing '-': `--` is ONE operator token in F# (unknown,
+        // the trailing '-': `--` is one operator token in F# (unknown,
         // rejected) — prefix minus never rides a preceding minus, which
         // also keeps `tool --flag` lines parse-failing into the
         // missing-command diagnosis instead of silently typechecking
@@ -1227,8 +1228,8 @@ let private negAtom =
         .>> pchar '-'
         .>> notFollowedBy (anyOf " \t>")
     )
-    // the attempt covers only the prefix DETECTION [D:anchor-before-read]:
-    // once committed to prefix-minus the operand parses OUTSIDE it, so a
+    // the attempt covers only the prefix detection [D:anchor-before-read]:
+    // once committed to prefix-minus the operand parses outside it, so a
     // failing operand (an out-of-range literal) propagates its fatal
     // instead of being swallowed by the attempt (a fatal inside an attempt
     // is not a fatal) and merged into a dump
@@ -1238,7 +1239,7 @@ let private negAtom =
             let span = { Start = pos p; End = e.Span.End }
 
             // fold into the literal for the non-int scalars [D:floats]:
-            // the 0 - e desugar would MIX types (0 is an int)
+            // the 0 - e desugar would mix types (0 is an int)
             match e.Kind with
             | EFloat f -> { Kind = EFloat(-f); Span = span }
             | EDur n -> { Kind = EDur(-n); Span = span }
@@ -1248,15 +1249,15 @@ let private negAtom =
                   Span = span }
 
 // Depth guard [D:depth-guard]: unbounded expression depth blows the
-// native stack — the recursive-descent parser on deep NESTING (parens/
+// native stack — the recursive-descent parser on deep nesting (parens/
 // brackets), and check/eval's tree-walk on a deep left-spine (a long
 // `a + a + …` chain parses shallow but builds a deep AST). One ceiling,
-// two enforcement points: `deepen` stops nesting DURING the parse
+// two enforcement points: `deepen` stops nesting during the parse
 // (before the parser itself overflows); the post-parse gate in
 // parseLineFull catches the spine. The limit sits far above any real
 // program (corpus max nesting is ~11) and well below the crash floor
 // (~6000). "Margin for smaller stacks" cannot be a constant — macOS
-// test-host threads overflowed at ~420 of the 500 — so deepen ALSO
+// test-host threads overflowed at ~420 of the 500 — so deepen also
 // probes the actual stack; the ceiling bounds cost, the probe bounds
 // the resource, and capacity between them is platform-dependent by
 // design [D:depth-guard].
@@ -1274,7 +1275,7 @@ exception private DepthExceeded of Pos
 
 // the stack probe only engages past a shallow floor: depth <= 64
 // cannot overflow even the 512KB macOS test-host stack (it died at
-// ~420 of 500), and probing on every SHALLOW attempt made long flat
+// ~420 of 500), and probing on every shallow attempt made long flat
 // spines pay 10x for the guards on the opp's term alternatives
 let private stackProbeFloor = 64
 
@@ -1300,7 +1301,7 @@ let private comprehensionLit, private comprehensionLitRef =
     createParserForwardedToRef<Expr, unit> ()
 
 // a leading '.' before a digit is the .5 spelling [D:floats]: teach
-// the full form (attempted AFTER intLit — digits-first literals never
+// the full form (attempted after intLit — digits-first literals never
 // reach it; `_.name` and command paths live in other grammars)
 let private holeBackslashTeaching: Parser<Expr, unit> =
     fun stream ->
@@ -1345,7 +1346,7 @@ let private atom =
 let private fieldSuffix = pchar '.' >>. spanned rawWord .>> ws
 
 // xs[i] desugars to Seq.item i xs — F# 6 dotless-indexing whitespace
-// rule: NO space = indexing; a space means application (f [1; 2] stays
+// rule: no space = indexing; a space means application (f [1; 2] stays
 // an application of a list). Immediacy is checked against the target's
 // span end (spans record positions before trailing whitespace).
 let private indexDesugar (target: Expr) (idx: Expr) (endPos: Pos) : Expr =
@@ -1363,7 +1364,7 @@ let private indexDesugar (target: Expr) (idx: Expr) (endPos: Pos) : Expr =
         )
       Span = span }
 
-// the block forms sit among the opp's term ALTERNATIVES, tried and
+// the block forms sit among the opp's term alternatives, tried and
 // failed on every term of a flat spine — the guard engages only when
 // the form's keyword is actually ahead, so a failing alternative pays
 // one cheap lookahead, not the ThreadLocal/try cost [D:depth-guard]
@@ -1377,7 +1378,7 @@ let private deepenAfter (kws: string list) (p: Parser<'a, unit>) : Parser<'a, un
 let private indexExpr = deepen expr
 
 let private postfixAtom =
-    // one suffix step; the chain is a LOOP, not recursion — a long
+    // one suffix step; the chain is a loop, not recursion — a long
     // field chain (a.b.b.…) must not grow the parser stack
     // [D:depth-guard]
     let oneSuffix (target: Expr) : Parser<Expr, unit> =
@@ -1509,8 +1510,8 @@ let private appChain =
           Span = Span.union f.Span a.Span })
 
 // Binder patterns [D:pattern-binders]: params are plain
-// idents, `()`, or PARENTHESIZED irrefutable patterns (F# also requires
-// the parens in param position). Refutability is a CHECK error.
+// idents, `()`, or parenthesized irrefutable patterns (F# also requires
+// the parens in param position). Refutability is a check-time error.
 let private binderParam, private binderParamRef =
     createParserForwardedToRef<Pattern, unit> ()
 
@@ -1519,7 +1520,7 @@ let private binderParam, private binderParamRef =
 let private binderPat, private binderPatRef =
     createParserForwardedToRef<Pattern, unit> ()
 
-// duplicate params reject in BOTH sugar positions [D:fun-sugar];
+// duplicate params reject in both sugar positions [D:fun-sugar];
 // explicit nested lambdas may still shadow.
 let private rejectDupParams (ps: Pattern list) =
     let named =
@@ -1539,7 +1540,7 @@ let private rejectDupParams (ps: Pattern list) =
                 None)
 
     match dup with
-    // anchor on the SECOND binder, not the '=' that closed the params
+    // anchor on the second binder, not the '=' that closed the params
     // [D:anchor-before-read]
     | Some(n, p2) -> failFatallyAtCol p2.PSpan.Start.Col $"duplicate parameter '{n}'"
     | None -> preturn ()
@@ -1563,7 +1564,7 @@ let private curryParams (ps: Pattern list) (value: Expr) : Expr =
 let private lambdaBody =
     // fun a b -> e desugars to nested lambdas [D:fun-sugar] — the
     // lambda-side twin of let-param sugar, same param set, same
-    // curryParams, zero checker surface. The body INHERITS the spine
+    // curryParams, zero checker surface. The body inherits the spine
     // flag [D:multiline-lambda]: block lets in a lambda body on a
     // let-RHS spine take command RHS like any other spine position —
     // and the params extend the ambient resolver for the body, so
@@ -1605,7 +1606,7 @@ let private lambdaBody =
                     Span = { Start = pos p; End = body.Span.End } }
 
 // let f x y = e desugars to nested lambdas [D:let-param-sugar].
-// Params are plain idents OR () — the unit param pins its type in the
+// Params are plain idents or () — the unit param pins its type in the
 // checker (the name "()" is unforgeable through declarations); other
 // pattern params stay rejected.
 
@@ -1647,7 +1648,7 @@ let private letInBody =
                       fun stream ->
                           if letCmdOk.Value then
                               // a granted success memoizes its span so a
-                              // later refused re-parse of the SAME text never
+                              // later refused re-parse of the same text never
                               // teaches over the true error [D:statement-lets]
                               let off = stream.Index
                               let reply = letRhsCmd stream
@@ -1661,10 +1662,10 @@ let private letInBody =
                           else
                               // the hardened teaching [D:statement-lets]: probe
                               // the RHS under a granted flag — a chain that
-                              // parses WITH a reifier is a command this
+                              // parses with a reifier is a command this
                               // expression context refuses, so teach $() at
-                              // the head, naming the ACTUAL context; the probe
-                              // consumes nothing and fires BEFORE the
+                              // the head, naming the actual context; the probe
+                              // consumes nothing and fires before the
                               // expression parse, so a `--flag` argv teaches
                               // exactly like one that survives to the pipe. A
                               // reifier-free chain falls through — the
@@ -1709,10 +1710,10 @@ let private letInBody =
                           finally
                               ambientResolver.Value <- saved
 
-                  // a bare `let name =` with NOTHING after it gets its own
+                  // a bare `let name =` with nothing after it gets its own
                   // first-reached diagnosis [D:windows-findings] — without
                   // this the report was a 12-item expecting list with the
-                  // spine-only gate's INTERNAL label leaking underneath as
+                  // spine-only gate's internal label leaking underneath as
                   // a false "specific" diagnosis
                   (followedBy eof
                    >>. fun stream -> failFatally $"this binding has no value — give '{name}' a right-hand side" stream)
@@ -1742,14 +1743,14 @@ let private mkOpp (withPipe: bool) =
     opp.AddOperator(InfixOperator("||", ws, 2, Associativity.Left, binOp "||"))
     opp.AddOperator(InfixOperator("&&", ws, 3, Associativity.Left, binOp "&&"))
     opp.AddOperator(InfixOperator("==", ws, 4, Associativity.Left, binOp "=="))
-    // '=' parses AND always rejects at check with the equality teaching
+    // '=' parses and always rejects at check with the equality teaching
     // (PLAN-dx-review D3): failing the parse here buried the repair
     // under the expecting-list dump
     opp.AddOperator(InfixOperator("=", notFollowedBy (pchar '=') >>. ws, 4, Associativity.Left, binOp "="))
     opp.AddOperator(InfixOperator("<>", ws, 4, Associativity.Left, binOp "<>"))
     opp.AddOperator(InfixOperator(">=", ws, 4, Associativity.Left, binOp ">="))
     opp.AddOperator(InfixOperator("<=", ws, 4, Associativity.Left, binOp "<="))
-    // composition [D:composition-operators] at the PIPE's level:
+    // composition [D:composition-operators] at the pipe's level:
     // `xs |> f >> g` is `(xs |> f) >> g` (F#'s shared infix class) —
     // the idiom needs parens, `xs |> (f >> g)`. OPP's operator trie
     // keeps > / >= / >> apart.
@@ -1772,7 +1773,7 @@ let private segOpp = mkOpp false
 let private pat, private patRef = createParserForwardedToRef<Pattern, unit> ()
 
 let private patWord =
-    // the keyword check DOMINATES [D:anchor-before-read], outside the
+    // the keyword check dominates [D:anchor-before-read], outside the
     // word's own attempt: a keyword is never a valid pattern, so where the
     // context is committed (a match arm past its `|`, a lambda past `fun`)
     // the fatal surfaces the teaching; where an outer attempt encloses it
@@ -1831,7 +1832,7 @@ let private patSeq =
 // irrefutable record patterns [D:record-patterns]: the literal's field
 // spelling (`Name = pat`, ;-separated) at a pattern position — `{` was
 // a parse error in every pattern position, so the arm is unambiguous.
-// {} parses and the CHECKER refuses it (a parse-time fatal is
+// {} parses and the checker refuses it (a parse-time fatal is
 // swallowed by enclosing attempts [D:anchor-residue-ab]); refutability
 // and duplicate fields are the checker's too (did-you-mean, spans).
 let private patRecordArm =
@@ -1900,7 +1901,7 @@ let private patCore =
                             "Regex patterns take a LITERAL string; computed patterns live on the expression side (Str.isMatch / Str.rmatch)" ]
               elif Char.IsUpper w[0] then
                   choice
-                      [ // a QUALIFIED case in pattern position [D:qualified-name-teach]
+                      [ // a qualified case in pattern position [D:qualified-name-teach]
                         // teaches the law instead of a bare expecting-list: the
                         // scrutinee's type resolves the bare name, imported
                         // unions included — the qualifier has no meaning here
@@ -1954,14 +1955,14 @@ binderParamRef.Value <-
 
 binderPatRef.Value <- commaPats
 
-// the anonymous shape's field-list parser is SET after tySyn and
+// the anonymous shape's field-list parser is set after tySyn and
 // fieldNameDecl exist (forward ref, the sigilChain precedent)
 // [D:anon-records]
 let private anonShape, private anonShapeRef =
     createParserForwardedToRef<(string * Ty) list, unit> ()
 
-// a QUALIFIED type name in the adapter slot [D:qualified-name-teach]
-// teaches: an imported module's types resolve by their PLAIN name
+// a qualified type name in the adapter slot [D:qualified-name-teach]
+// teaches: an imported module's types resolve by their plain name
 // (types live flat across the module boundary; the alias qualifies
 // values, never this slot) — same law as module signatures
 let private bareAdapterName (w: string) : Parser<string, unit> =
@@ -1975,20 +1976,20 @@ let private bareAdapterName (w: string) : Parser<string, unit> =
 let private fromExpr =
     spanned (
         keyword "from" >>. ident
-        // the STREAM cardinality word [D:wire-unions]: `from yaml stream T`
+        // the stream cardinality word [D:wire-unions]: `from yaml stream T`
         // reads N `---` documents, each as T. Marker-local like `schema=` —
         // never a reserved identifier (the slot's names are uppercase, so
         // the lowercase word is unambiguous here)
         .>>. opt (attempt (pstring "stream" .>> notFollowedBy (satisfy isIdentCont)) .>> ws)
         .>>. opt (
-            // the slot takes a record NAME, the narrow seq<…> wrap
+            // the slot takes a record name, the narrow seq<…> wrap
             // [D:from-json-seq], or an anonymous shape `{| f: ty |}`
             // [D:anon-records] — never the general type grammar (tySyn
-            // is reachable only INSIDE the shape's fields; the admitted
+            // is reachable only inside the shape's fields; the admitted
             // set stays closed)
             (anonShape |>> fun fs -> FromAnon fs, false)
-            // the qualified spelling is recognized WHOLE first, so the
-            // fatal fires OUTSIDE the slot's attempt (a fatal inside it
+            // the qualified spelling is recognized whole first, so the
+            // fatal fires outside the slot's attempt (a fatal inside it
             // demotes to a backtrack note) [D:qualified-name-teach]
             <|> (attempt (
                      identSpanned
@@ -2007,7 +2008,7 @@ let private fromExpr =
                 >>= fun (w, _) ->
                     if w = "Map" then
                         // Map<string, Name|{|…|}> [D:map-string]: the
-                        // key slot is LITERALLY `string` (the narrowing);
+                        // key slot is literally `string` (the narrowing);
                         // the value slot is the seq< > rule's set
                         between
                             (str_ws "<")
@@ -2063,20 +2064,21 @@ let private toExpr =
         { Kind = ETo(fmt, streamW.IsSome)
           Span = span }
 
-// every name a pattern BINDS [D:interior-arming]: arm bodies and for
-// bodies must know their binders at PARSE, or the assume resolver
+// every name a pattern binds [D:interior-arming]: arm bodies and for
+// bodies must know their binders at parse time, or the assume resolver
 // claims a binder head as a phantom command (`| t :: _ -> t` read `t`
 // as an external) — the same bindings-beat-PATH extension lambda
-// params and let-in names already get
-// ITERATIVE (explicit work-stack), not recursive [D:pattern-width]: the
-// name walk recurses once per LEAF, and the parse depth guard counts
-// NESTING not leaf count — so a flat-reading but wide pattern (a
-// `a :: a :: … :: _` cons chain, a long tuple) slips past the guard and
-// a recursive walk would overflow the call stack. A Property-3 crash on
-// the WIDTH axis, the depth-graph gate [D:depth-coverage] is blind to
-// it (unbounded recursion over a bounded-depth structure). The
-// post-parse iterative gate has the same precedent for the AST walk.
-// Caller uses the names as a Set, so pop-order is immaterial.
+// params and let-in names already get.
+// Iterative (explicit work-stack), not recursive [D:pattern-width]: a
+// recursive name walk recurses once per leaf, and the parse depth
+// guard counts nesting, not leaf count — so a flat-reading but wide
+// pattern (an `a :: a :: … :: _` cons chain, a long tuple) slips past
+// the guard and a recursive walk would overflow the call stack. That
+// is a Property-3 crash on the width axis, and the depth-graph gate
+// [D:depth-coverage] is blind to it (unbounded recursion over a
+// bounded-depth structure). The post-parse iterative gate has the same
+// precedent for the AST walk. Caller uses the names as a Set, so
+// pop-order is immaterial.
 let private patLeafNames (p: Pattern) : string list =
     let names = System.Collections.Generic.List<string>()
     let stack = System.Collections.Generic.Stack<Pattern>()
@@ -2112,9 +2114,9 @@ let private withPatNames (p: Pattern) (inner: Parser<'a, unit>) : Parser<'a, uni
             ambientResolver.Value <- saved
 
 let private matchArm =
-    // bare-comma tuple PATTERNS [D:bare-comma]: the arm rides the same
+    // bare-comma tuple patterns [D:bare-comma]: the arm rides the same
     // one-or-tuple production as binder positions — `when`/`->` are not
-    // commas, so the guard sits OUTSIDE the tuple by construction
+    // commas, so the guard sits outside the tuple by construction
     commaPats
     >>= fun p ->
         // the body is arm-body territory [D:match-arm-commands]: a command
@@ -2128,13 +2130,13 @@ let private matchArm =
         |>> fun (guard, body) -> p, guard, body
 
 // within <kind> <binder> + block [D:within-scopes]: a scoped resource
-// as an ordinary EXPRESSION — the body is a plain expression block
+// as an ordinary expression — the body is a plain expression block
 // (statements sequence, commands arm, the last expression is the
-// value), so mode-from-position needs no rule. Session 1: kind `tmp`.
+// value), so mode-from-position needs no rule.
 let private withinExprBody =
     getPosition .>> keyword "within"
     >>= fun p ->
-        // the dangle SPACE-joins the first body statement (the
+        // the dangle space-joins the first body statement (the
         // then-convention); siblings arrive sentineled
         let block =
             opt (str_ws ";" <|> str_ws sibSepStr)
@@ -2143,9 +2145,9 @@ let private withinExprBody =
 
         // the bare scope [D:within-always]: no resource, the exit
         // discipline alone — a body then the `always` segment, run on
-        // EVERY exit path (normal, raise, exit; signals via the hook).
+        // every exit path (normal, raise, exit; signals via the hook).
         // Discriminated by kind-table membership: the first body
-        // statement space-joins the head, so a non-kind word here IS
+        // statement space-joins the head, so a non-kind word here is
         // the bare form's body (a typo'd kind surfaces at the missing
         // always segment, which names both readings).
         let bareForm =
@@ -2172,8 +2174,8 @@ let private withinExprBody =
                         fail "not a scope kind"
             )
             >>= fun (kind, _) ->
-                // dispatch off the kind UNION [D:within-kind-union]: the
-                // table resolves the word, then every kind claims its FORM
+                // dispatch off the kind union [D:within-kind-union]: the
+                // table resolves the word, then every kind claims its form
                 // here or the build fails; the teaching list still derives
                 // from the table [D:within-kinds]
                 match Ast.withinKinds |> List.tryFind (fun k -> k.Name = kind) with
@@ -2196,9 +2198,9 @@ let private withinExprBody =
                         // posture (unreachable while it is a keyword)
                         failFatally "'plan' is its own head — write `plan` and an indented block, not `within plan`"
                     | Ast.WithinProc ->
-                        // the scoped process [D:scoped-procs]: binder `=` then ONE
+                        // the scoped process [D:scoped-procs]: binder `=` then one
                         // command line (the block-let RHS grammar — splices, ^, the
-                        // argv law); a pipeline refuses — the scope owns ONE child,
+                        // argv law); a pipeline refuses — the scope owns one child,
                         // compose inside sh -c
                         identSpanned .>> ws .>> str_ws "="
                         >>= fun (binder, bspan) ->
@@ -2222,7 +2224,7 @@ let private withinExprBody =
                                           Span = { Start = pos p; End = body.Span.End } }
                     | Ast.WithinServe ->
                         // the scoped listener [D:http-serve]: binder `=`
-                        // then TWO atoms — a config record and a handler
+                        // then two atoms — a config record and a handler
                         // lambda (`{ port = 8080 } handler`). Atoms, never
                         // greedy exprs (the within-cd argument rule), so
                         // the config and handler stay two words and the
@@ -2245,7 +2247,7 @@ let private withinExprBody =
                                             EWithin(wk.Id, Some(binder, bspan), Some cfgE, Some handlerE, body)
                                           Span = { Start = pos p; End = body.Span.End } }
                     | Ast.WithinTmp ->
-                        // a binding kind PRODUCES its resource: a binder, joining
+                        // a binding kind produces its resource: a binder, joining
                         // bindings-beat-PATH (the patLeafNames class, 5th site)
                         identSpanned
                         >>= fun (binder, bspan) ->
@@ -2261,7 +2263,7 @@ let private withinExprBody =
                     | Ast.WithinCd
                     | Ast.WithinEnv
                     | Ast.WithinLock ->
-                        // a consuming kind takes a value: ONE ATOM (a literal, a
+                        // a consuming kind takes a value: one atom (a literal, a
                         // name, a paren, an interpolation) — never a greedy expr,
                         // which would swallow the space-joined first statement.
                         // lock alone takes an optional timeout= key (Duration),
@@ -2280,23 +2282,23 @@ let private withinExprBody =
 
         kinded <|> bareForm
 
-// retry/poll [D:retry-poll]: `retry attempts=5 delay=30s` desugars AT
-// PARSE to `retry { Retry.defaults with attempts = 5; delay = 30s }` —
-// the SAME nodes the manual spelling builds, so the equivalence is by
+// retry/poll [D:retry-poll]: `retry attempts=5 delay=30s` desugars at
+// parse to `retry { Retry.defaults with attempts = 5; delay = 30s }` —
+// the same nodes the manual spelling builds, so the equivalence is by
 // construction. Keys are atoms (parenthesize compounds — the within-cd
-// argument rule); with no keys, ONE atom is the options value
+// argument rule); with no keys, one atom is the options value
 // (`retry fast`); the head never falls through to the body.
 let private withinExpr = deepenAfter [ "within" ] withinExprBody // [D:depth-guard]
 
 // the purity assertion [D:pure-stage1]: a bare `pure` head + block — a
 // withinKinds sibling through the union (no binder, no arg, and never
-// `within pure`); the LAW (the body reaches no effect) is enforced by
+// `within pure`); the law (the body reaches no effect) is enforced by
 // the checked-statement pipeline, not here
 let private pureExprBody =
     getPosition .>> keyword "pure"
     >>= fun p ->
         ((opt (str_ws ";" <|> str_ws sibSepStr)
-          // the parser ADMITS command lets here [D:statement-lets]; the
+          // the parser admits command lets here [D:statement-lets]; the
           // purity checker refuses them with its own located teaching —
           // the better span than a parse error at the head
           >>. (withStmtLetCmd (withExprParen false seqExpr) <?> "the pure block's body"))
@@ -2310,14 +2312,14 @@ let private pureExpr = deepenAfter [ "pure" ] pureExprBody // [D:depth-guard]
 
 // the read-only assertion [D:pure-stage2]: a bare `readonly` head
 // + block — the second standalone withinKinds head (no binder, no arg,
-// never `within readonly`); the LAW (the body reaches no external
+// never `within readonly`); the law (the body reaches no external
 // mutation) is enforced by the checked-statement pipeline, ambient reads
 // admitted
 let private readonlyExprBody =
     getPosition .>> keyword "readonly"
     >>= fun p ->
         ((opt (str_ws ";" <|> str_ws sibSepStr)
-          // the parser ADMITS command lets here [D:statement-lets]; the
+          // the parser admits command lets here [D:statement-lets]; the
           // read-only checker refuses a mutating command with its own
           // located teaching (a reading command is allowed)
           >>. (withStmtLetCmd (withExprParen false seqExpr)
@@ -2333,7 +2335,7 @@ let private readonlyExpr =
 
 // the plan/apply capture [D:plan-apply]: a bare `plan` head + block — the
 // third standalone withinKinds head (no binder, no arg, never `within
-// plan`). Unlike pure/readonly it CHANGES the value: the region
+// plan`). Unlike pure/readonly it changes the value: the region
 // yields a Plan (the body's external mutations captured as Ops, reads
 // still run). The body admits command lets like the other standalone
 // heads; a `proc` inside is refused by the checked-statement pipeline.
@@ -2367,12 +2369,12 @@ let private retryExprBody =
                 |> List.tryFind (fun (_, g) -> g.Length > 1)
              with
              | Some(k, g) ->
-                 // anchor ON the second spelling [D:anchor-before-read]
+                 // anchor on the second spelling [D:anchor-before-read]
                  let ((_, ks), _) = g[1]
                  failFatallyAtCol ks.Start.Col $"duplicate key '{k}' — each option is given once"
              | None -> preturn ())
             >>= fun () ->
-                // watch= is a HEAD key [D:scoped-procs]: peeled before
+                // watch= is a head key [D:scoped-procs]: peeled before
                 // the record desugar — a live handle is per-call, not
                 // configuration, so it never enters the options record
                 let watchE =
@@ -2392,8 +2394,8 @@ let private retryExprBody =
                      postfixAtom <?> $"{headWord}'s options (key=value pairs or a {famName} record)"
                  | _ ->
                      let defaults =
-                         // an INTERNAL, un-shadowable key [D:desugar-capture]
-                         // — the same VALUE Retry.defaults names publicly
+                         // an internal, un-shadowable key [D:desugar-capture]
+                         // — the same value Retry.defaults names publicly
                          { Kind = EVar(if isPoll then "|pollDefaults" else "|retryDefaults")
                            Span = { Start = pos p; End = pos p } }
 
@@ -2433,11 +2435,11 @@ let private matchExprBody =
         // precedence [D:bare-comma]: `match a, b with` builds the tuple;
         // `with` is reserved, so it terminates the comma chain cleanly
         (keyword "match" >>. commaExpr .>> keyword "with")
-        // a consumed '|' COMMITS to its arm [D:arm-commit] — the
+        // a consumed '|' commits to its arm [D:arm-commit] — the
         // consumed-separator law's second instance (seq-commit's twin):
-        // a failing arm RHS reports at ITS OWN site instead of silently
-        // ending the arm list, whose leftover '|' then counterfeited
-        // the bare-pipe fatal's "completed expression" customer
+        // a failing arm RHS reports at its own site instead of silently
+        // ending the arm list, whose leftover '|' then wrongly read as
+        // a completed expression to the bare-pipe fatal
         (opt (str_ws "|") >>. matchArm .>>. many (str_ws "|" >>. matchArm))
         (fun p scrut (arm0, rest) ->
             let arms = arm0 :: rest
@@ -2487,8 +2489,8 @@ let private functionExprBody =
                 )
               Span = span }
 
-// the condition takes a COMMAND CHAIN too [D:if-succeeds]: the let-RHS
-// acceptance gate one position over — the command grammar is ATTEMPTED
+// the condition takes a command chain too [D:if-succeeds]: the let-RHS
+// acceptance gate one position over — the command grammar is attempted
 // first (its head backtracks on keywords and known bindings, so
 // `if ok then` and `if true then` stay expression mode by the same
 // bindings-beat-PATH rule), and the expression grammar is the
@@ -2500,13 +2502,13 @@ let private functionExpr = deepenAfter [ "function" ] functionExprBody // [D:dep
 let private ifCond: Parser<Expr, unit> = withIfCond true ifCondCmd <|> expr
 
 let private ifExprBody =
-    // elif is SPELLING [D:elif]: `elif c then e` desugars at parse to
+    // elif is pure spelling [D:elif]: `elif c then e` desugars at parse to
     // `else if c then e` — zero checker surface; the trailing else
     // stays optional under the unit rule, F#'s chain exactly
     pipe5
         getPosition
         (keyword "if" >>. ifCond)
-        // bodies are STATEMENT territory even inside (assembler-wrapped)
+        // bodies are statement territory even inside (assembler-wrapped)
         // parens [D:interior-arming] — the lambda-body precedent; and
         // statement bodies grant command lets [D:statement-lets]
         (keyword "then" >>. withStmtLetCmd (withExprParen false seqExpr))
@@ -2533,9 +2535,9 @@ let private ifExprBody =
               Span = { Start = pos p; End = endPos } })
 
 // for/do [D:for-do]: the general effect loop -- F#'s own statement form,
-// desugared AT PARSE to `xs |> Seq.iter (fun p -> body)` (the reifier
+// desugared at parse to `xs |> Seq.iter (fun p -> body)` (the reifier
 // precedent: the typed tree never sees `for`, so checking, warnings,
-// hover, and eval all ride the existing machinery). A BARE COMMAND body
+// hover, and eval all ride the existing machinery). A bare command body
 // is implicit `!(...)` -- `for f in files do git add $f` streams and
 // raises per iteration, the natural shell shape; known heads fall
 // through to the expression body exactly as the statement classifier
@@ -2549,10 +2551,10 @@ let private seqSepAhead: Parser<unit, unit> =
 let private forExprBody =
     let cmdBody =
         attempt (
-            // a MULTI-LINE body yields to seqExpr [D:interior-arming]:
+            // a multi-line body yields to seqExpr [D:interior-arming]:
             // eating only the first chain here stranded the siblings
             // outside the binder's scope
-            // the guard REJECTS but its message never surfaces: this whole
+            // the guard rejects but its message never surfaces: this whole
             // parser sits inside `attempt`, so the failure backtracks and the
             // expression alternative reports the line instead. Load-bearing
             // as a rejection, invisible as a teaching — removing it accepts a
@@ -2581,8 +2583,8 @@ let private forExprBody =
                     let span = { Start = pos p; End = body.Span.End }
                     let mk k = { Kind = k; Span = span }
                     let iter = mk (EVar "|seqIter")
-                    // the PIPE shape, not plain application [D:for-binder]:
-                    // EPipe infers the SOURCE first, so the binder's type
+                    // the pipe shape, not plain application [D:for-binder]:
+                    // EPipe infers the source first, so the binder's type
                     // is known when the body checks — a constructor match
                     // on the binder resolves (the applied shape checked
                     // the lambda blind and refused it)
@@ -2590,9 +2592,9 @@ let private forExprBody =
 
 // [for p in xs -> e] [D:for-do]: F#'s list comprehension, desugared to
 // `xs |> Seq.map (fun p -> e) |> Seq.freeze` -- Seq.freeze keeps the list
-// literal's EAGERNESS contract. The desugar bypasses EList entirely, so
+// literal's eagerness contract. The desugar bypasses EList entirely, so
 // list-literal inference (the empty-list fresh var, element unification)
-// is untouched -- the session finding: same path as the statement form.
+// is untouched -- same path as the statement form.
 let private forExpr = deepenAfter [ "for" ] forExprBody // [D:depth-guard]
 
 comprehensionLitRef.Value <-
@@ -2609,7 +2611,7 @@ comprehensionLitRef.Value <-
         let field name =
             mk (EVar(if name = "map" then "|seqMap" else "|seqFreeze"))
 
-        // the PIPE shape [D:for-binder] — the comprehension's twin of the
+        // the pipe shape [D:for-binder] — the comprehension's twin of the
         // statement form's fix: source first, so the binder types
         let mapped =
             mk (EPipe(source, mk (EApp(field "map", mk (ELambdaPat(binder, elem))))))
@@ -2618,12 +2620,12 @@ comprehensionLitRef.Value <-
     .>> ws
 
 // ---- the yaml district [D:yaml-district] ---------------------------------
-// `yaml` followed by the machine sentinel can ONLY come from the
+// `yaml` followed by the machine sentinel can only come from the
 // assembler's wrap (the sentinel is unproduceable), so `yaml` needs no
 // reservation — a binding named yaml never collides. The tail is
-// sentinel-separated VERBATIM block lines with indentation RELATIVE to
+// sentinel-separated verbatim block lines with indentation relative to
 // the block's first line; the template parser reconstructs the 2D
-// structure, and fragment parses run PADDED so every span lands at its
+// structure, and fragment parses run padded so every span lands at its
 // true logical column (translate then maps it physically).
 
 // run a weir sub-parser on a fragment at logical column `col` — the
@@ -2649,13 +2651,13 @@ let private runFragment (col: int) (frag: string) (p: Parser<'a, unit>) : Result
     | Success(v, _, _) -> Result.Ok v
     | Failure(msg, _, _) -> Result.Error(fragmentErrorLine msg)
 
-// runFragment plus WHERE — the padded run's column is already the true
-// logical column, so a heredoc line's hole errors land on the offending
-// character [D:text-block]. The `col - 1` pad is column bookkeeping ONLY:
-// skip EXACTLY it (never `ws`, which would also eat the fragment's own
-// leading indent) so `$<<<` preserves relative indentation byte-for-byte
-// like plain `<<<` — the twins differ ONLY in hole interpolation
-// [D:text-block].
+// runFragment plus the error position — the padded run's column is
+// already the true logical column, so a heredoc line's hole errors land
+// on the offending character [D:text-block]. The `col - 1` pad is
+// column bookkeeping only: skip exactly that many spaces (never `ws`,
+// which would also eat the fragment's own leading indent) so `$<<<`
+// preserves relative indentation byte-for-byte like plain `<<<` — the
+// twins differ only in hole interpolation [D:text-block].
 let private runFragmentAt (col: int) (frag: string) (p: Parser<'a, unit>) : Result<'a, string * int> =
     match run (skipManyMinMaxSatisfy (col - 1) (col - 1) (fun c -> c = ' ') >>. p .>> eof) (System.String(' ', col - 1) + frag) with
     | Success(v, _, _) -> Result.Ok v
@@ -2666,8 +2668,8 @@ let private isIdentWord (w: string) =
     && (System.Char.IsLetter w[0] || w[0] = '_')
     && w |> Seq.forall (fun c -> System.Char.IsLetterOrDigit c || c = '_')
 
-// a template VALUE slot: a whole-slot splice ($name / $(expr)), or a
-// subset scalar. Mid-text `$` is LITERAL (compute with $(...) instead).
+// a template value slot: a whole-slot splice ($name / $(expr)), or a
+// subset scalar. Mid-text `$` is literal (compute with $(...) instead).
 let private tplValueSlot (col: int) (text: string) : Result<YamlTpl, string * int> =
     let lead = text.Length - text.TrimStart().Length
     let t = text.Trim()
@@ -2699,7 +2701,7 @@ let private tplValueSlot (col: int) (text: string) : Result<YamlTpl, string * in
     else
         match Yaml.scalarCore t with
         | Result.Error m -> Result.Error(m, tCol)
-        // the empty slot is null — carried as an empty PLAIN scalar,
+        // the empty slot is null — carried as an empty plain scalar,
         // constructed as YNull at eval
         | Result.Ok None -> Result.Ok(YtScalar("", false, mkSpan 0))
         | Result.Ok(Some(txt, q)) -> Result.Ok(YtScalar(txt, q, mkSpan t.Length))
@@ -2722,7 +2724,7 @@ let private tplForHeader (col: int) (text: string) : Result<Pattern * Expr, stri
             Result.Error($"in this for: {m}", col)
 
 // block scalar content in a district [D:block-scalars]: the lines are
-// BYTES — consumed here, before the splice/for scanners ever see them,
+// bytes — consumed here, before the splice/for scanners ever see them,
 // so `$name`, `$(expr)`, and `for x in xs` survive verbatim. Blank
 // district lines ride the sentinel as empty verbatim lines (the
 // assembler's yaml-blank join) and become newlines here.
@@ -2770,8 +2772,8 @@ let private tplBlockScalar
             )
 
 // structure-transparency for template lines [D:district-hash]: blanks
-// and full-line comment shapes are BYTES inside block-scalar content
-// (consumed before these loops) and invisible to STRUCTURE everywhere
+// and full-line comment shapes are bytes inside block-scalar content
+// (consumed before these loops) and invisible to structure everywhere
 // else — one predicate, consumed by the units skip, the extent scan,
 // the nested-content counter, and the nested-indent probe (the fourth
 // site was found by the fuzz production's comment-insertion transform)
@@ -2785,7 +2787,7 @@ type private TplUnit =
     | UFor of Pattern * Expr * YamlTpl // body block, context-checked later
 
 // the district's block walker recurses per nesting level and cannot
-// wear `deepen` (not an FParsec parser) — it carries the SAME counter
+// wear `deepen` (not an FParsec parser) — it carries the same counter
 // and stack probe by hand [D:depth-guard]; depth-coverage.py recognizes
 // the spelling
 let rec private parseTplBlock
@@ -2858,7 +2860,7 @@ and private parseTplBlockBody
             found
 
         // collect the units at exactly this indent; blank lines are
-        // structure-transparent (they are BYTES only inside a block
+        // structure-transparent (they are bytes only inside a block
         // scalar's content [D:block-scalars])
         let rec units i acc =
             if i >= fin then
@@ -2866,7 +2868,7 @@ and private parseTplBlockBody
             else
                 let col, rel, textRaw = lines[i]
 
-                // mid-line ` #` on a STRUCTURE line is a comment — YAML's
+                // mid-line ` #` on a structure line is a comment — YAML's
                 // own rule, the read side's rule, now the district's too
                 // [D:district-hash]; quoted regions and $() holes are
                 // data, and block content was consumed as bytes before
@@ -2875,7 +2877,7 @@ and private parseTplBlockBody
 
                 if tplTransparent text then
                     // blanks and full-line `#` comments are structure-
-                    // transparent; both are BYTES inside a block scalar's
+                    // transparent; both are bytes inside a block scalar's
                     // content, which consumed its lines before this loop
                     units (i + 1) acc
                 elif rel < indent then
@@ -2890,7 +2892,7 @@ and private parseTplBlockBody
                         j <- j + 1
 
                     // blanks and `#` lines ride the extent but are not
-                    // structure — nested-block decisions count CONTENT
+                    // structure — nested-block decisions count content
                     let hasNested =
                         seq { i + 1 .. j - 1 }
                         |> Seq.exists (fun k ->
@@ -2944,7 +2946,7 @@ and private parseTplBlockBody
                                     match Yaml.splitKey 0 inlinePart with
                                     | Some _ ->
                                         // compact map item: the first entry lives on
-                                        // this line at a VIRTUAL rel of item+2
+                                        // this line at a virtual rel of item+2
                                         let shifted =
                                             Array.append [| (inlineCol, indent + 2, inlinePart) |] lines[i + 1 .. j - 1]
 
@@ -3110,11 +3112,11 @@ let private districtTail: Parser<(int * int * string)[] * int, unit> =
             let content = part.Substring rel
 
             if content.TrimEnd() <> "" then
-                // UNTRIMMED: trailing whitespace is bytes inside a
+                // untrimmed: trailing whitespace is bytes inside a
                 // block scalar; structure decisions Trim on their own
                 lineList.Add((partStart + rel, rel, content))
             else
-                // a blank district line is BYTES inside a block
+                // a blank district line is bytes inside a block
                 // scalar [D:block-scalars]; the structure loops skip it
                 lineList.Add((partStart, 0, ""))
 
@@ -3163,10 +3165,10 @@ let private yamlDistrictBody: Parser<Expr, unit> =
 let private yamlDistrict = deepenAfter [ "yaml" ] yamlDistrictBody // [D:depth-guard]
 
 // ---- the heredoc district [D:text-block] -----------------------------------
-// Multiline content as LINES — the yaml district's content half with
+// Multiline content as lines — the yaml district's content half with
 // the structure stripped away. `<<<` is the plain form: every byte is
 // content, $ stays $. `$<<<` is the interpolated form: {expr} holes,
-// {{ }} literal braces, $ STILL literal — the block forms mirror the
+// {{ }} literal braces, $ still literal — the block forms mirror the
 // string forms. Both yield seq<string> (a list of line strings), so
 // File.write, command stdin and Seq composition take them unchanged.
 
@@ -3183,10 +3185,10 @@ let private heredocInterpLine: Parser<InterpPart<Expr> list, unit> =
          <|> (getPosition
               >>= fun p -> failFatallyAt p "a literal } in a $<<< line is }} ('{' opens a hole, '{{' a literal brace)"))
 
-// a $$<<< SPLICE line [D:heredoc-splice]: `$name` / `${expr}` substitute,
-// `$$` is a literal `$`, and braces/quotes are LITERAL (JSON just passes
+// a $$<<< splice line [D:heredoc-splice]: `$name` / `${expr}` substitute,
+// `$$` is a literal `$`, and braces/quotes are literal (JSON just passes
 // through). Reuses EInterp — the holes' node — so check and eval are
-// unchanged; only the SURFACE (splices, not `{}` holes) differs. A `$` not
+// unchanged; only the surface (splices, not `{}` holes) differs. A `$` not
 // starting a name or `${` is a literal `$` (so `$1`/`$-` survive).
 let private heredocSplicePart: Parser<InterpPart<Expr>, unit> =
     choice
@@ -3251,7 +3253,7 @@ let private heredocDistrictBody: Parser<Expr, unit> =
                 match err with
                 | Some(col, msg) -> failFatallyAtCol col msg
                 | None ->
-                    // trailing blanks CLIP — the block-scalar ruling
+                    // trailing blanks clip — the block-scalar ruling
                     // ([D:block-scalars]: |+ rejected): a blank separating
                     // the block from the next statement is layout, not
                     // content. Interior blanks stay bytes.
@@ -3340,7 +3342,7 @@ let private foldSeqExpr (all: Expr list) : Expr =
     |> Option.defaultWith (fun () -> failwith "foldSeqExpr: empty")
 
 // the sequencing separator [D:seq-commit][D:sibling-sentinel]: a
-// user-typed ';' OR the machine sibling sentinel. Both COMMIT (no
+// user-typed ';' or the machine sibling sentinel. Both commit (no
 // attempt) — a failing element must not un-consume the separator.
 // the sentinel is unproduceable [D:sibling-sentinel], so it must never
 // surface in an expected-set — relabel the whole separator as ';', the
@@ -3349,18 +3351,18 @@ let private seqSep = (str_ws ";" <|> str_ws sibSepStr) <?> "';'"
 
 // interior command statements [D:interior-arming]: a command line is a
 // legal statement wherever a block sequences (if bodies, lambda bodies,
-// block-lets) — parsed by the SAME chain grammar as a let-RHS. ARMING
-// is positional: a NON-FINAL command arms as an effect here (EPipe into
-// print — the for/do desugar, generalized); the FINAL element stays the
-// plain chain (capture-typed, the block's value) and the CHECKER arms
+// block-lets) — parsed by the same chain grammar as a let-RHS. Arming
+// is positional: a non-final command arms as an effect here (EPipe into
+// print — the for/do desugar, generalized); the final element stays the
+// plain chain (capture-typed, the block's value) and the checker arms
 // it when the context demands unit (the if-body case). Known heads and
 // keywords fall through to the expression grammar exactly as the
 // statement classifier decides.
-// foreign control-flow words TEACH weir's spelling at statement
+// foreign control-flow words teach weir's spelling at statement
 // positions (PLAN-dx-review D4) — reserved words, so they can never
 // resolve as identifiers or PATH programs; the guard dominates the
 // expecting-list [D:anchor-before-read]
-/// the foreign words' KEYS, public so the diagnostic funnel can strip them
+/// the foreign words' keys, public so the diagnostic funnel can strip them
 /// from expecting-lists — a word reserved only to say "weir does not have
 /// this" must never be offered as something the parser expects. One source:
 /// this list, never a second copy.
@@ -3389,7 +3391,7 @@ let private stmtElem: Parser<Choice<Expr, Expr>, unit> =
             else
                 letRhsCmd stream
 
-    // a value-headed pipe on a body statement belongs to THAT statement
+    // a value-headed pipe on a body statement belongs to that statement
     // [D:within-tail-pipe]: claim the `| cmd` tail per element, so a
     // block's inline pipe cannot escape to the enclosing expression
     // (`(within …) | cmd` spawned after the scope restored). Chain-classed
@@ -3456,12 +3458,12 @@ let private armSeq (all: Choice<Expr, Expr> list) : Parser<Expr, unit> =
         )
 
 seqExprRef.Value <-
-    // a consumed separator COMMITS to its element [D:seq-commit]: a
+    // a consumed separator commits to its element [D:seq-commit]: a
     // failing element must not un-consume it — the backtrack would
-    // re-parse the tail OUTSIDE its let-in scope, where check's
+    // re-parse the tail outside its let-in scope, where check's
     // assume-resolver claims the then-unknown binding as a phantom command
-    // …EXCEPT when the next segment is a trailing `until`/`always`
-    // keyword: the separator backs out so the OWNING parser (retry, the
+    // …except when the next segment is a trailing `until`/`always`
+    // keyword: the separator backs out so the owning parser (retry, the
     // bare within) consumes it — commands in the body already stopped
     // at the sentinel [D:until-argv-join]
     stmtElem
@@ -3488,7 +3490,7 @@ let private cmdWordChar c =
     && c <> '"'
     && c <> '\''
     && c <> '$'
-    // command mode STOPS at the machine sibling boundary
+    // command mode stops at the machine sibling boundary
     // [D:sibling-sentinel]; a user ';' is still a bareword (prior-bleed)
     && c <> sibSep
     // and at the record/list field boundary [D:field-sep-sentinel]
@@ -3517,8 +3519,8 @@ let private notMidWord (teach: string) : Parser<unit, unit> =
     <|> preturn ()
 
 // does the word-under-construction (back to the last whitespace) contain a
-// path separator? [D:argv-splat] — a PATH splice wants interpolation or
-// Path.combine, NOT the space repair, which would split one path into two
+// path separator? [D:argv-splat] — a path splice wants interpolation or
+// Path.combine, not the space repair, which would split one path into two
 // arguments (`./dir/ $x` is a directory and a separate operand). Non-
 // consuming: peeks backward over the already-read word from the `$`.
 let private wordHasPathSep: Parser<bool, unit> =
@@ -3540,9 +3542,9 @@ let private wordHasPathSep: Parser<bool, unit> =
 
         Reply found
 
-// argv pieces do not CONCATENATE [D:argv-splat]: every piece is one
+// argv pieces do not concatenate [D:argv-splat]: every piece is one
 // whole word, and before this guard an adjacent piece silently became
-// its OWN argument — `$root/*` ran as `$root` then `/*` (the Steam
+// its own argument — `$root/*` ran as `$root` then `/*` (the Steam
 // shape, reproduced), `--flag="v"` passed `--flag=` and `v` separately.
 // A piece may start only after whitespace, `|`, an opener, or the
 // sibling sentinel; the `$`-starting pieces keep notMidWord's more
@@ -3561,7 +3563,7 @@ let private spliceVar =
     // gate the mid-word check behind the `$` (as splat gates behind `$@`)
     // so it fires only on an actual splice, never on a plain bareword. The
     // hint is context-sensitive [D:splice-path-hint]: a path-ish word leads with
-    // interpolation/Path.combine (the space repair is WRONG for a path), a
+    // interpolation/Path.combine (the space repair is wrong for a path), a
     // flag-ish word leads with the space.
     lookAhead (pchar '$')
     >>. (wordHasPathSep
@@ -3607,8 +3609,8 @@ let private cmdArgStops (stopAtIn: bool) (stopAtThen: bool) =
 
     let bareword =
         // the machine boundary, arg face [D:yaml-district]: a bareword
-        // GLUED to the sentinel can only be the assembler's yaml wrap
-        // (`yaml schema=x` + glued sentinel) — statement joins SPACE it.
+        // glued to the sentinel can only be the assembler's yaml wrap
+        // (`yaml schema=x` + glued sentinel) — statement joins space it.
         // Refusing here makes the command path fall through to the
         // district arm, exactly as the head guard does for bare `yaml`.
         let core =
@@ -3622,7 +3624,7 @@ let private cmdArgStops (stopAtIn: bool) (stopAtThen: bool) =
         let core = if stopAtThen then stopWord "then" >>. core else core
         if stopAtIn then stopWord "in" >>. core else core
 
-    // each guard is GATED on its piece's opener (notMidWord's shape) so
+    // each guard is gated on its piece's opener (notMidWord's shape) so
     // the fatal fires only where a piece genuinely starts — never on the
     // `|` of `hi |grep` or the `)` that closes a capture
     choice
@@ -3646,10 +3648,10 @@ type private HeadKind =
     | BuiltinHead
     // a command-head alias resolved to (real exe, fixed prefix args)
     // [D:command-head-alias]: the ECmd fold swaps the head to the exe and
-    // PREPENDS the prefix as literal argv (before the user's own args)
+    // prepends the prefix as literal argv (before the user's own args)
     | AliasedHead of exe: string * prefix: string list
-    // ^$name / ^$(…) — a force-external VALUE head [D:dynamic-head]:
-    // the program string resolves at RUN; argv stays typed argv
+    // ^$name / ^$(…) — a force-external value head [D:dynamic-head]:
+    // the program string resolves at run time; argv stays typed argv
     | DynamicHead of display: string * head: Expr
 
 let private commandSegment
@@ -3661,7 +3663,7 @@ let private commandSegment
     // ^$name / ^$(…) — the dynamic head [D:dynamic-head]: `^` gains a
     // `$`-splice alternative beside the literal — a runtime string can
     // never be a weir binding, so a dynamic head is necessarily external
-    // and `^` already says exactly that. The value is ONE program, never
+    // and `^` already says exactly that. The value is one program, never
     // re-lexed; the fatal spellings (^$@, ^$", bare ^$) are guarded
     // ahead of the segment so their teachings survive the backtrack.
     let dynHead =
@@ -3675,24 +3677,24 @@ let private commandSegment
                 let span = { Start = pos startP; End = e.Span.End }
                 DynamicHead(disp, e), disp, span
 
-    // the head word is BOUNDED [D:head-word-bound]: a resolvable command
+    // the head word is bounded [D:head-word-bound]: a resolvable command
     // head is a PATH entry (a filename component, <=255 bytes), so an
-    // unbounded `cmdWord` here only ever helps the DOOMED command-mode
+    // unbounded `cmdWord` here only ever helps the doomed command-mode
     // attempt on a `;`-spine (`let x = b;b;b;…`) — where `;` is a bareword
-    // char, so the head scan swallowed the WHOLE remaining line before
+    // char, so the head scan swallowed the whole remaining line before
     // failing, once per bareword: O(N^2). Capping the scan keeps every
     // resolvable head byte-identical and makes the doomed attempt linear.
     let cmdHeadWord = manyMinMaxSatisfy 1 1024 cmdWordChar
 
     let litHead =
         spanned (opt (pchar '^') .>>. cmdHeadWord)
-        // the machine boundary [D:yaml-district]: a head GLUED to the
+        // the machine boundary [D:yaml-district]: a head glued to the
         // sentinel can only be the assembler's yaml-district wrap
         // (statement joins always space the sentinel) — never a command
         .>> notFollowedBy (pchar sibSep)
         // …and its marker+modifier face [D:yaml-schemas][D:yaml-nodes]:
         // a modifier suffix (` patch [by=<key>]` and/or ` schema=<name>`)
-        // GLUED to the sentinel is the same wrap (`yaml patch`,
+        // glued to the sentinel is the same wrap (`yaml patch`,
         // `yaml schema=x`); no user argv is ever glued, so the whole
         // segment refuses here and the parse falls through to the
         // district arm. The check-side resolver assumes unknown heads
@@ -3724,9 +3726,9 @@ let private commandSegment
                 if forced.IsSome then
                     failFatally "'[' cannot begin a command; use cmd \"[\" [...] to run the external"
                 else
-                    // [D:value-headed-pipe] this fail is DISCARDED at statement
+                    // [D:value-headed-pipe] this fail is discarded at statement
                     // level (the expression grammar takes the list); it only
-                    // SURFACES in command-only contexts — a district or sigil
+                    // surfaces in command-only contexts — a district or sigil
                     // interior — where it should teach the value-headed spelling
                     fail
                         "'[' is command mode here (a district or sigil interior takes command lines); feed a value into a command with a value-headed pipeline bound outside the block — `let out = xs | prog`"
@@ -3737,7 +3739,7 @@ let private commandSegment
                 else
                     failFatally $"command not found: {w}{didYouMean w (r.ExternalNames())}"
             elif isIdentLike w && (r.AliasHead w).IsSome then
-                // the alias table is consulted BEFORE builtins and PATH, so
+                // the alias table is consulted before builtins and PATH, so
                 // an alias shadowing a real name (`#alias ls = ls --color`)
                 // wins here and `^ls` (above) is the bypass [D:command-head-alias]
                 match r.AliasHead w with
@@ -3754,7 +3756,7 @@ let private commandSegment
 
     let head = dynHead <|> litHead
 
-    // the fatal `^$` spellings [D:dynamic-head], guarded OUTSIDE the
+    // the fatal `^$` spellings [D:dynamic-head], guarded outside the
     // head attempt (the `$@`-head guard's mechanism) so the teachings
     // survive the backtrack: a splat head, an interpolated head, and a
     // bare `^$` each name their repair
@@ -3809,9 +3811,9 @@ let private commandSegment
             { Kind = ECmd(HeadDyn(disp, he), args, sigilEnv)
               Span = fullSpan }
         | AliasedHead(exe, prefix) ->
-            // swap the head to the real exe, PREPEND the fixed prefix as
+            // swap the head to the real exe, prepend the fixed prefix as
             // literal argv words; the user's argv stays typed and unchanged
-            // (`k get $x` still passes $x as ONE arg) [D:command-head-alias].
+            // (`k get $x` still passes $x as one arg) [D:command-head-alias].
             // Prefix words carry the head's own span (source-free, but
             // located at the alias head for diagnostics).
             let prefixArgs = prefix |> List.map (fun a -> { Kind = EStr a; Span = span })
@@ -3848,7 +3850,7 @@ type private Seg =
     | Stage of Expr
     | CompleteMarker of Span
     // the exit-code reifiers [D:exit-reifiers] — complete's family,
-    // ONE rule (single external segment, nothing follows)
+    // one rule (single external segment, nothing follows)
     | SucceedsMarker of Span
     | ExitCodeMarker of Span
     | OrFailMarker of Expr * Span
@@ -3881,9 +3883,9 @@ let private reifierEnd =
             else
                 ifail "no then-stop here" stream
 
-    // a reifier also ends at a STATEMENT boundary [D:interior-arming] —
+    // a reifier also ends at a statement boundary [D:interior-arming] —
     // without this, `| orFail "m"` as an interior statement demoted the
-    // reifier to a bareword stage (the addendum's cmd-not-found mystery)
+    // reifier to a bareword stage (the addendum's cmd-not-found case)
     lookAhead (
         choice
             [ pipeSep |>> ignore
@@ -3945,14 +3947,14 @@ let private lineMarker =
 
 // fold a parsed pipeline — an initial head expression plus piped stages
 // and reifier markers — into one Expr. Shared by the command-headed
-// chain and the value-headed chain [D:value-headed-pipe]: the ONLY
+// chain and the value-headed chain [D:value-headed-pipe]: the only
 // difference is the head (a command segment vs an expression value), so
 // the stage/reifier desugar is one function. A reifier's segment must be
 // a single external command; a value threaded into it (`xs | grep |
 // complete`) carries as the ECmd's stdin position.
-// the error carries the OFFENDING segment's span [D:anchor-before-read]
+// the error carries the offending segment's span [D:anchor-before-read]
 // so the caller anchors on it, not the chain's drifted end
-// the RIGHT-HAND SIDE decides the glyph [D:pipe-rhs-decides]: `|` when the
+// the right-hand side decides the glyph [D:pipe-rhs-decides]: `|` when the
 // stage is a program or a reifier (command grammar), `|>` when it is a
 // function. A mismatch is the teaching error, anchored on the glyph.
 let private requiredPipeOp (seg: Seg) : string =
@@ -3992,7 +3994,7 @@ let private foldChain (h: Expr) (rest: ((string * Span) * Seg) list) : Result<Ex
                         | Stage _ -> "", acc.Span, "", "", "", []
 
                     // a chain head is command-ish (an external segment or a
-                    // command→command pipe); a VALUE head is anything else
+                    // command→command pipe); a value head is anything else
                     let isCommandish (e: Expr) =
                         match e.Kind with
                         | ECmd _
@@ -4000,9 +4002,9 @@ let private foldChain (h: Expr) (rest: ((string * Span) * Seg) list) : Result<Ex
                         | _ -> false
 
                     // a reified segment's mixed literal+splat argv denotes a
-                    // seq VALUE [D:splat-reifier-chains]: contiguous non-splat
+                    // seq value [D:splat-reifier-chains]: contiguous non-splat
                     // args chunk into list literals, each splat splices its
-                    // interior seq WHOLE, folded with Seq.append. Element =
+                    // interior seq whole, folded with Seq.append. Element =
                     // one word carries through the builtin's argv (the same
                     // boundary as spawn-argv-build); ESplat never leaves argv
                     // in the AST. Splat-free argv keeps the plain list node.
@@ -4079,13 +4081,13 @@ let private foldChain (h: Expr) (rest: ((string * Span) * Seg) list) : Result<Ex
                             |> List.fold (fun f a -> { Kind = EApp(f, a); Span = span }) headVar
 
                         Result.Ok applied
-                    // a VALUE-headed single external segment [D:value-headed-pipe]:
-                    // `xs | grep foo | complete` reifies grep WITH xs as stdin —
+                    // a value-headed single external segment [D:value-headed-pipe]:
+                    // `xs | grep foo | complete` reifies grep with xs as stdin —
                     // the stdin-carrying twin, value appended. Only when the LHS
                     // is a value: a command→command LHS is the multi-external
                     // case below, rejected as always (the family's single-segment
                     // rule, unchanged).
-                    // exec REPLACES this process — there is no parent left to
+                    // exec replaces this process — there is no parent left to
                     // feed a piped stdin, so the value-headed route is refused
                     // [D:exec] (the stdin twin is never emitted)
                     | EPipe(stdinE, { Kind = ECmd(_, _, None) }) when not (isCommandish stdinE) && stageName = "exec" ->
@@ -4104,8 +4106,8 @@ let private foldChain (h: Expr) (rest: ((string * Span) * Seg) list) : Result<Ex
                             |> List.fold (fun f a -> { Kind = EApp(f, a); Span = span }) headVar
 
                         Result.Ok applied
-                    // a capture sigil CLOSES its chain at the ')' — the
-                    // composition exists INSIDE the parens [D:exit-reifiers]:
+                    // a capture sigil closes its chain at the ')' — the
+                    // composition exists inside the parens [D:exit-reifiers]:
                     // teach the spelling, not just the law
                     | ECapture inner ->
                         let sigil =
@@ -4118,20 +4120,20 @@ let private foldChain (h: Expr) (rest: ((string * Span) * Seg) list) : Result<Ex
                             $"'{stageName}' must directly follow a single external command segment — the capture sigil closes its chain at the ')'; the reifier composes inside the parens: {sigil}(cmd | {stageName})",
                             mspan
                         )
-                    // a reifier needs a SINGLE external segment [D:exit-reifiers]:
+                    // a reifier needs a single external segment [D:exit-reifiers]:
                     // a multi-external chain is rejected as always (no new law)
                     | _ -> Result.Error($"'{stageName}' must directly follow a single external command segment", mspan))
         (Result.Ok h)
 
 // the pipe glyph, captured with its span [D:pipe-rhs-decides] — foldChain
-// checks it against the RIGHT-HAND stage kind (| for a program/reifier, |>
-// for a function) and anchors the teaching error ON the glyph
+// checks it against the right-hand stage kind (| for a program/reifier, |>
+// for a function) and anchors the teaching error on the glyph
 let private pipeSepSpanned: Parser<string * Span, unit> =
     spanned (attempt (pstring "|>") <|> pstring "|") .>> ws
 
 // the fifth refusal cell [D:reifier-family-complete]: a stage that
-// BEGINS with a reifier name whose marker did not match (off the
-// let-RHS spine, or trailing argv) must TEACH, never resolve the name
+// begins with a reifier name whose marker did not match (off the
+// let-RHS spine, or trailing argv) must teach, never resolve the name
 // on PATH — ambient PATH deciding what runs is the shape Property 2
 // exists to deny. `^name` stays the escape for a real tool of that
 // name (the caret refuses this guard by construction).
@@ -4152,7 +4154,7 @@ let private reifierStageGuard: Parser<Seg, unit> =
     >>= fun (at, name) -> failFatallyAt at (reifierHereMsg name)
 
 // '||' in a command chain is the bash prior (PLAN-dx-review D2): the
-// first '|' reads as the pipe, so the SECOND lands at a stage position
+// first '|' reads as the pipe, so the second lands at a stage position
 // — teach the branch idiom instead of the stage expecting-list
 let private doublePipeGuard: Parser<Seg, unit> =
     attempt (getPosition .>> pchar '|')
@@ -4162,7 +4164,7 @@ let private doublePipeGuard: Parser<Seg, unit> =
             "'||' does not chain commands in weir — branch on the exit instead: if cmd | succeeds then ... else ... (a literal '||' argument needs quotes)"
 
 // the match-arm boundary [D:match-arm-commands]: inside an arm body a
-// `|` that opens the NEXT arm (`| <pattern> ->` or `| <pattern> when`)
+// `|` that opens the next arm (`| <pattern> ->` or `| <pattern> when`)
 // ends the command chain rather than reading as a pipe stage. The `->`
 // / `when` requirement is the discriminator — `| complete`, `| grep`,
 // `| orFail "m"` have neither, so a reifier or program stage still binds
@@ -4216,7 +4218,7 @@ let private cmdLine (r: Resolver) : Parser<Expr, unit> = cmdLineWith true cmdArg
 // re-entering atom [D:depth-guard]
 sigilChainImpl <- fun envO -> deepen (fun stream -> (cmdLineWith true cmdArg envO ambientResolver.Value) stream)
 
-// a single bare pipe `|` — NOT `|>` (expression pipe) or `||` (or)
+// a single bare pipe `|` — not `|>` (expression pipe) or `||` (or)
 let private singlePipe: Parser<unit, unit> =
     attempt (pchar '|' .>> notFollowedBy (anyOf "|>")) >>. ws
 
@@ -4227,7 +4229,7 @@ valueHeadedTailImpl <-
             let r = ambientResolver.Value
 
             // gate [D:value-headed-pipe]: a single `|` then a head that
-            // resolves to an EXTERNAL command (an ECmd — a known/library
+            // resolves to an external command (an ECmd — a known/library
             // head fails commandSegment and falls through to barePipeHint).
             // The lookAhead consumes nothing; the stages re-parse from `|`.
             let externalHeaded =
@@ -4248,7 +4250,7 @@ valueHeadedTailImpl <-
 
 // let-RHS command lines stop at a bareword `in` (see cmdArgWith), and
 // command-callable builtins (cd) stay ordinary functions there —
-// `let workdir = cd target` must apply the BINDING target, never read
+// `let workdir = cd target` must apply the binding target, never read
 // it as a bareword.
 let private cmdLineLetRhs (r: Resolver) : Parser<Expr, unit> =
     cmdLineWith false (cmdArgWith true) None r
@@ -4271,13 +4273,13 @@ tySynRef.Value <-
         choice
             [
               // a parenthesised type [D:function-types]: needed for a
-              // function DOMAIN (`(unit -> string) -> string`) and so the
+              // function domain (`(unit -> string) -> string`) and so the
               // rendered form round-trips — formatTy parenthesises a
               // function domain, so the reader must accept those parens.
               // Committing on '(' is right: nothing else opens with it.
               between (str_ws "(") (str_ws ")") tySyn
-              // the one-level rule REVERSED [D:anon-nesting]: the shape
-              // parses anywhere a type is written — the canonical name IS
+              // the one-level rule reversed [D:anon-nesting]: the shape
+              // parses anywhere a type is written — the canonical name is
               // the type (synthetic-nominal recursion for free); the fields
               // ride the pending table for the registration seams to drain
               anonShape
@@ -4308,8 +4310,8 @@ tySynRef.Value <-
                   | "seq" -> ws >>. between (str_ws "<") (str_ws ">") tySyn |>> TSeq
                   | w when keywords.Contains w -> fail $"'{w}' is a keyword"
                   | w ->
-                      // a QUALIFIED type name (`M.Spec`) dominates with the
-                      // law [D:modules-v1]: imported types resolve by PLAIN
+                      // a qualified type name (`M.Spec`) dominates with the
+                      // law [D:modules-v1]: imported types resolve by plain
                       // name (qualified type names are deferred), so the dot
                       // teaches instead of dying as a bare parse error
                       getPosition .>>. opt (attempt (pchar '.' >>. rawWord))
@@ -4323,7 +4325,7 @@ tySynRef.Value <-
                               ws >>. opt (between (str_ws "<") (str_ws ">") (sepBy1 tySyn (str_ws ",")))
                               |>> fun args -> TNamed(w, Option.defaultValue [] args) ]
         // t1 * t2 [* ...] is a tuple type [D:tuples-reversal]; `a -> b` is
-        // a function type [D:function-types] — RIGHT-associative and LOOSER
+        // a function type [D:function-types] — right-associative and looser
         // than `*` and generics (`int * string -> bool` is
         // `(int * string) -> bool`), matching the render path formatTy uses
         |> fun atom ->
@@ -4358,14 +4360,14 @@ let private attrArgLit =
               )
           )
           // [<Default 0.5>] — attrArgLit is its own tiny lexer
-          // [D:floats], the Duration session's recorded gotcha
+          // [D:floats]
           .>>. opt (attempt (pchar '.' >>. many1Satisfy isDigit))
           // the integer arms parse the digits into int64 [D:attr-int-overflow]:
-          // a raw `int64 digits` cast THROWS OverflowException past the 64-bit
+          // a raw `int64 digits` cast throws OverflowException past the 64-bit
           // range (SIGABRT for the whole tool); TryParse turns it into the
           // integer-literal parser's located teaching. The fraction arm goes to
           // Double (finite-only, never throws). The unit arms also bound their
-          // multiply so a large-but-in-range base cannot SILENTLY WRAP past
+          // multiply so a large-but-in-range base cannot silently wrap past
           // Int64.MaxValue — the same range refusal, one shape.
           >>= fun (((at, digits), sfx), frac) ->
               let outOfRange () =
@@ -4412,15 +4414,15 @@ let private attrSpec =
 
 let private attrList = str_ws "[<" >>. sepBy1 attrSpec fieldSepP .>> str_ws ">]"
 
-// a record-decl field name DOMINATES on a keyword [D:anchor-before-read]:
+// a record-decl field name dominates on a keyword [D:anchor-before-read]:
 // typeDecl is committed past `type T = {`, so the fatal propagates (no
 // enclosing attempt to swallow it, unlike the shared `ident`)
 let private fieldNameDecl: Parser<string, unit> =
     getPosition .>>. spanned rawWord .>> ws
     >>= fun (at, (w, _)) ->
         if keywords.Contains w then
-            // the repair has a name now [D:wire-keys]: a wire key that
-            // is a keyword rides the attribute on a DECLARED record
+            // the repair has a name [D:wire-keys]: a wire key that
+            // is a keyword rides the attribute on a declared record
             failFatallyAt
                 at
                 $"'{w}' is a keyword — for a wire key spelled '{w}', name the field and carry the key: [<Wire \"{w}\">] {w}Field: …"
@@ -4436,7 +4438,7 @@ let private recordBody =
 
 // `{| f: ty; … |}` — the adapter slot's anonymous shape
 // [D:anon-records]: field names follow the declared-record law
-// (fieldNameDecl), field types are the ONE type grammar (tySyn); no
+// (fieldNameDecl), field types are the one type grammar (tySyn); no
 // attrs, no docs — a foreign shape read once. `{|` is unambiguous in
 // the slot (a record literal/update cannot sit there), and tySyn does
 // not nest the form (a nested object needs a declared record).
@@ -4451,7 +4453,7 @@ let private caseDecl =
     // ride here; validation is the checker's (position-scoped registry)
     // peek-validate-then-consume: a post-consumption fail reports past
     // the word (its trailing ws even crosses physical lines) — lookAhead
-    // restores the position so the error lands ON the constructor
+    // restores the position so the error lands on the constructor
     opt attrList
     .>>. (lookAhead rawWord
           >>= fun w ->
@@ -4472,7 +4474,7 @@ let private typeParams =
 let private typeDecl =
     // a declaration-level attribute list precedes `type`
     // [D:attr-positions] ([<Tag "kind">] type K = …); once attrs are
-    // consumed the decl is COMMITTED — anything but `type` next gets
+    // consumed the decl is committed — anything but `type` next gets
     // the position teaching, never a backtrack into expression land
     getPosition .>>. opt attrList
     >>= fun (p, attrs) ->
@@ -4495,14 +4497,13 @@ let private typeDecl =
             <|> failFatally "attributes attach to record fields, union cases, and type declarations"
         | None -> core
 
-// A top-level let RHS admits command mode (agent-dogfooding finding, two
-// independent hits): the RHS occupies the rest of the logical line, so
-// commit-to-command semantics carry over. Expression-level `let ... in`
-// stays expression-only — a greedy command grammar would eat `in x` as
-// barewords.
+// A top-level let RHS admits command mode: the RHS occupies the rest
+// of the logical line, so commit-to-command semantics carry over.
+// Expression-level `let ... in` stays expression-only — a greedy
+// command grammar would eat `in x` as barewords.
 let private topLet (r: Resolver) =
     attempt (
-        // `let pure f …` [D:pure-stage1]: weir's FIRST post-let modifier
+        // `let pure f …` [D:pure-stage1]: weir's first post-let modifier
         // (no let rec/inline/mutable exists) — a new let-head production,
         // one token, no list; desugars below to a body-spanning pure block
         keyword "let" >>. opt (attempt (keyword "pure")) .>>. (ident .>>. many binderParam) .>> str_ws "="
@@ -4528,8 +4529,8 @@ let private topLet (r: Resolver) =
                         IsKnown = fun n -> Set.contains n paramNames || r.IsKnown n }
 
                 // command-first body [D:sibling-sentinel]: the command
-                // is ONE statement; the sentinel-separated tail (inner
-                // block-lets and expressions) sequences AFTER it, so
+                // is one statement; the sentinel-separated tail (inner
+                // block-lets and expressions) sequences after it, so
                 // `cmd ⟨sib⟩ let x = … in body` parses as a real ESeq
                 // instead of command mode over-running the boundary. A
                 // user ';' after the command is still a bareword arg
@@ -4539,7 +4540,7 @@ let private topLet (r: Resolver) =
                     // [D:statement-lets]: topLet's attempt swallows the
                     // arming fatals (the exit-discard teaching among
                     // them), and the refused re-parse behind it must
-                    // fall through to the SAME teaching, not the $() one
+                    // fall through to the same teaching, not the $() one
                     (fun stream ->
                         let off = stream.Index
                         let reply = (cmdLineLetRhs r') stream
@@ -4555,7 +4556,7 @@ let private topLet (r: Resolver) =
 
                 // the RHS spine carries the flag + the param-extended
                 // resolver, so interior block lets parse commands with
-                // params AND earlier block names known [D:block-let-cmd]
+                // params and earlier block names known [D:block-let-cmd]
                 let withSpine (p: Parser<'a, unit>) : Parser<'a, unit> =
                     fun stream ->
                         let saved = ambientResolver.Value
@@ -4573,7 +4574,7 @@ let private topLet (r: Resolver) =
                     let value =
                         match pureMod with
                         | Some _ ->
-                            // the modifier IS a pure region spanning the
+                            // the modifier is a pure region spanning the
                             // whole RHS (params included — the region
                             // wraps the curried lambda) [D:pure-stage1]
                             { Kind = EWithin(Ast.WithinPure, None, None, None, curried)
@@ -4584,19 +4585,19 @@ let private topLet (r: Resolver) =
     )
 
 // `let <keyword>` [D:anchor-before-read]: a keyword in the binder-name
-// slot is always an error — DOMINATE at the word so its teaching is not
-// buried under the let-parsers' merged backtrack. Must fire OUTSIDE any
+// slot is always an error — dominate at the word so its teaching is not
+// buried under the let-parsers' merged backtrack. Must fire outside any
 // attempt (topLet's attempt would swallow the fatal); the peek engages
-// ONLY when the name is reserved, so every real binder falls through.
+// only when the name is reserved, so every real binder falls through.
 let private letKeywordGuard: Parser<Stmt, unit> =
     // scan the whole binder region for a keyword [D:anchor-before-read]:
-    // the name, its params, AND any destructure/param PATTERN. Finding a
+    // the name, its params, and any destructure/param pattern. Finding a
     // reserved word in an identifier slot between `let` and the top-level
-    // `=` is a LEXICAL question, so the scan collects barewords while
+    // `=` is a lexical question, so the scan collects barewords while
     // skipping pattern delimiters ( ) [ ] { } , ; _ — no pattern parse,
-    // no nesting logic. Fires OUTSIDE any attempt (a stmtWith alternative
+    // no nesting logic. Fires outside any attempt (a stmtWith alternative
     // before topLet/SLetPat, whose attempts would swallow the fatal); the
-    // scan STOPS at `=`, so a keyword in the RHS never counts as a binder.
+    // scan stops at `=`, so a keyword in the RHS never counts as a binder.
     let binderTok =
         choice
             [ getPosition .>>. spanned rawWord .>> ws |>> Some
@@ -4607,14 +4608,14 @@ let private letKeywordGuard: Parser<Stmt, unit> =
         >>= fun toks ->
             match
                 (match toks |> List.choose id with
-                 // `let pure f …` [D:pure-stage1]: a LEADING `pure` with a
+                 // `let pure f …` [D:pure-stage1]: a leading `pure` with a
                  // binder after it is the purity modifier, not a binder —
                  // topLet owns it; `let pure = …` (nothing after) still
                  // teaches the keyword
                  | (_, ("pure", _)) :: (_ :: _ as rest) -> rest
                  | other -> other)
                 |> List.tryPick (fun (at, (w, _)) ->
-                    // true/false are LITERAL patterns, not keyword names
+                    // true/false are literal patterns, not keyword names
                     // (patWord's rule) — a refutable binder, not a parse error
                     if keywords.Contains w && w <> "true" && w <> "false" then
                         Some(at, w)
@@ -4626,10 +4627,10 @@ let private letKeywordGuard: Parser<Stmt, unit> =
     )
     >>= fun (at, w) -> failFatallyAt at $"'{w}' is a keyword"
 
-// `let name : <ty>` with NO `=` [D:module-signatures] — a SIGNATURE
+// `let name : <ty>` with no `=` [D:module-signatures] — a signature
 // declaration. The headless form was a parse error before, so committing
 // after the `:` claims unowned ground; the module-vs-script law is the
-// CHECKER's (scripts refuse with a teaching), so the parse succeeds
+// checker's (scripts refuse with a teaching), so the parse succeeds
 // everywhere and the error can carry the file kind.
 let private letSig: Parser<Stmt, unit> =
     attempt (keyword "let" >>. identSpanned .>> str_ws ":")
@@ -4660,7 +4661,7 @@ let private moduleDecl: Parser<Stmt, unit> =
         (opt (upperName "a module name") .>> eof)
         (fun (_, kwSpan) nameOpt -> SModule(Option.map fst nameOpt, kwSpan))
 
-// `import "path"` / `import "path" as Name` — the path is a LITERAL string
+// `import "path"` / `import "path" as Name` — the path is a literal string
 // (resolution is check-time); anything else gets the teaching error
 let private importDecl: Parser<Stmt, unit> =
     keyword "import"
@@ -4704,14 +4705,14 @@ let private noExternals =
       BareHome = (fun _ -> None)
       AliasHead = fun _ -> None }
 
-// Structured failure: the position travels as DATA
+// Structured failure: the position travels as data
 // [D:structured-parse-failure]. Message text is unchanged; Col is
 // Some only for the single-logical-line case the runner translates.
 type ParseFailure = { Message: string; Col: int option }
 
 // Iterative max-depth probe [D:depth-guard] — the checker/evaluator
 // walk the tree recursively, so a spine past the ceiling would overflow
-// THEIR stack; this measures depth WITHOUT recursing (an explicit
+// their stack; this measures depth without recursing (an explicit
 // stack), then early-exits at the first over-limit node. Catches the
 // operator/application/pipe/sequencing spines that parse shallow —
 // and the pattern spines (a bare cons chain), which nest the same way.
@@ -4767,9 +4768,9 @@ let stmtExprs (s: Stmt) : Expr list =
     | SModule _
     | SImport _ -> []
 
-// expr |> cmd [D:pipe-rhs-decides]: the `|>` OPERATOR fed a value into a
-// PROGRAM (its RHS is headed by an external command). foldChain catches the
-// command-CHAIN mismatches; this catches the value-headed operator form,
+// expr |> cmd [D:pipe-rhs-decides]: the `|>` operator fed a value into a
+// program (its RHS is headed by an external command). foldChain catches the
+// command-chain mismatches; this catches the value-headed operator form,
 // anchored on the offending program name.
 let private pipeToCommand (r: Resolver) (root: Expr) : (Span * string option) option =
     let rec cmdHead (bound: Set<string>) (e: Expr) =
@@ -4784,7 +4785,7 @@ let private pipeToCommand (r: Resolver) (root: Expr) : (Span * string option) op
         | EApp(f, _) -> cmdHead bound f
         | _ -> None
 
-    // STATEMENT-LOCAL binders are in scope for this walk [D:statement-lets]:
+    // Statement-local binders are in scope for this walk [D:statement-lets]:
     // a block-local `let pad …` inside a function body is not in the
     // resolver's env (that map holds completed statements only), and
     // under check's assume-command rule any command-shaped word claims

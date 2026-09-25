@@ -9,13 +9,13 @@ BIN="${WEIR_BIN:-$HOME/.local/bin/weir}"
 EXPR_MAX_MS="${WEIR_MAX_EXPR_MS:-18}"
 CMD_MAX_MS="${WEIR_MAX_CMD_MS:-42}"
 
-# stale-binary guard [D:masking-mechanized]: the ONE shared gate — timing
+# stale-binary guard [D:masking-mechanized]: the one shared gate — timing
 # a stale binary measures the wrong build
 "$(dirname "$0")/check-fresh.sh" "$BIN"
 
-# the gates are PINNED ON LINUX (dev-container medians); BSD date has no
+# the gates are pinned on Linux (dev-container medians); BSD date has no
 # %N, and a subprocess ms-clock's overhead would swamp the 6-14ms medians
-# being measured — an explicit STATED skip, never a silent pass
+# being measured — an explicit, stated skip, never a silent pass
 # [D:vacuous-probe-audit]
 if [ "$(date +%N)" = "N" ] || [ -z "$(date +%N)" ]; then
     echo "timing: SKIPPED — no nanosecond clock on this platform; the gates are pinned on Linux (ci/local.sh runs the clean-room numbers)" >&2
@@ -37,7 +37,7 @@ $BIN -e '1 + 1' > /dev/null # warm the fs cache
 EXPR_SNIPPET='ls |> Seq.where (fun f -> f.bytes > 1MiB) |> Seq.take 5'
 CMD_SNIPPET='echo hi |> Seq.take 1'
 
-# pre-flight each snippet OUTSIDE the timing substitution
+# pre-flight each snippet outside the timing substitution
 # [D:masking-mechanized]: set -e is disabled inside $(...), so a snippet
 # the binary rejects would otherwise time the error path 15 times
 $BIN -e "$EXPR_SNIPPET" > /dev/null
@@ -59,9 +59,9 @@ done | sort -n | awk '{a[NR]=$1} END {print a[int(NR/2)+1]}')
 
 CHECK_MAX_MS="${WEIR_MAX_CHECK_MS:-40}"
 
-# the gates are pinned on LINUX (the header's law); elsewhere the
-# medians are ADVISORY — spawn overhead (Windows CreateProcess +
-# Defender ~50-100ms) swamps the 6-14ms being measured, so a FAIL
+# the gates are pinned on Linux (as the header says); elsewhere the
+# medians are advisory — spawn overhead (Windows CreateProcess +
+# Defender ~50-100ms) swamps the 6-14ms being measured, so a failure
 # there reads as a regression and is only the runner's tax. Print the
 # numbers, say what they are, exit 0.
 if [ "$(uname -s)" != "Linux" ]; then

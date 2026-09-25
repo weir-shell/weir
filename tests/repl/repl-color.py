@@ -53,9 +53,9 @@ if not re.search(r"\x1b\[31mzzznope\x1b\[0m", t):
     failures.append("unresolved head must paint red")
 
 # the yaml district marker tints like the `!` markers [D:yaml-district];
-# the `to yaml` adapter must NOT (the classifier is shared, not a second one)
+# the `to yaml` adapter must not (the classifier is shared, not a second one)
 # the marker line opens the multiline buffer (Enter-completeness), so
-# cancel with Ctrl+C — Ctrl+D is EOF only at an EMPTY buffer
+# cancel with Ctrl+C — Ctrl+D is EOF only at an empty buffer
 t3 = run({}, ["let d = yaml\r", "\x03"])
 if not re.search(r"\x1b\[36myaml\x1b\[0m", t3):
     failures.append("line-end yaml marker must tint cyan")
@@ -66,14 +66,14 @@ t4 = run({}, ["x |> to yaml\r"])
 if re.search(r"\x1b\[36myaml\x1b\[0m", t4):
     failures.append("`to yaml` adapter must NOT tint as a marker")
 
-# the TRIPLE pin [D:windows-s3]: a leading-space line (a) EXECUTES,
-# (b) COMPLETES on the first Enter (no continuation prompt), and
+# the triple pin [D:windows-s3]: a leading-space line (a) executes,
+# (b) completes on the first Enter (no continuation prompt), and
 # (c) still paints its head verdict — the session-2 pair pin let (c)
 # regress because the colorizer was the dedent's unenumerated third
 # consumer
 t6 = run({}, ["  echo tri-out\r"])
 plain6 = re.sub(r"\x1b\[[0-9;?]*[a-zA-Z]|\x1b=", "", t6)
-# the echoed VALUE — only execution produces it (the lines form
+# the echoed value — only execution produces it (the lines form
 # [D:echo-lines]: a string seq presents as its lines + the type footer)
 if "\ntri-out" not in plain6 or ": seq<string>" not in plain6:
     failures.append(f"leading-space line must execute: {plain6[-200:]!r}")
@@ -82,8 +82,8 @@ if "  ... " in plain6:
 if not re.search(r"\x1b\[1;34mecho\x1b\[0m", t6):  # the known-head paint (bold+blue)
     failures.append("leading-space head must keep its verdict paint")
 
-# the within KIND paints as part of the form [D:within-kinds]: `within`
-# is a keyword (blue), and `cd`/`tmp`/`env` after it are the SAME blue —
+# the within kind paints as part of the form [D:within-kinds]: `within`
+# is a keyword (blue), and `cd`/`tmp`/`env` after it are the same blue —
 # not an identifier's colour. The block opens a multiline buffer, so
 # cancel with Ctrl+C.
 t7 = run({}, ["within cd helperDir\r", "\x03"])
@@ -93,7 +93,7 @@ if not re.search(r"\x1b\[34mcd\x1b\[0m", t7):
     failures.append("the within KIND must paint as the form, not an identifier")
 
 # Log.* at the prompt: stderr interleaves after evaluation, the next
-# prompt still renders (the harness completing IS the no-corruption
+# prompt still renders (the harness completing is the no-corruption
 # check) [D:log-module]
 t6 = run({}, ['Log.info "ping"\r', "let z = 1\r"])
 if "INFO" not in t6 or "ping" not in t6:
@@ -105,11 +105,11 @@ t8 = run({"TERM": "dumb"}, ["let s = 1\r"])
 if ANSI.search(t8):
     failures.append("TERM=dumb must suppress every color span")
 
-# `weir check` REPORTS on stdout [D:colored-diagnostics]: diagnostics
-# ARE its output — colored when stdout is a tty, plain when redirected
+# `weir check` reports on stdout [D:colored-diagnostics]: diagnostics
+# are its output — colored when stdout is a tty, plain when redirected
 # (capture-safe). The runner's errors go to stderr; that is a different
 # command's law. The previous pin asserted colored-stderr and passed by
-# matching .NET's terminfo INIT noise (ESC[?1h ESC=) on the pty — with
+# matching .NET's terminfo init noise (ESC[?1h ESC=) on the pty — with
 # TERM unset (CI) the init vanishes and so did the pin's evidence.
 import tempfile as _tf
 _d = _tf.mkdtemp()
@@ -145,7 +145,7 @@ def run_check(argv_path, keep_fd, redirect_fd, outfile):
             pass
     return out.decode(errors="replace"), open(outfile).read()
 
-# tty stdout: the diagnostic arrives THERE, colored; stderr carries none
+# tty stdout: the diagnostic arrives there, colored; stderr carries none
 pty_out, err_file = run_check(_d + "/bad.weir", 1, 2, _d + "/err.txt")
 if "casing-law" not in pty_out or "\x1b[" not in pty_out:
     failures.append(
@@ -153,7 +153,7 @@ if "casing-law" not in pty_out or "\x1b[" not in pty_out:
 if "casing-law" in err_file:
     failures.append(f"stderr must carry no diagnostic: {err_file[-200:]!r}")
 
-# redirected stdout: the diagnostic is PLAIN in the capture (pipe-safe)
+# redirected stdout: the diagnostic is plain in the capture (pipe-safe)
 _pty_err, out_file = run_check(_d + "/bad.weir", 2, 1, _d + "/out.txt")
 if "casing-law" not in out_file or "\x1b[" in out_file:
     failures.append(
@@ -161,7 +161,7 @@ if "casing-law" not in out_file or "\x1b[" in out_file:
 
 t2 = run({"NO_COLOR": "1"}, ["let s = 1\r"])
 # the editor's own control sequences (\r, [K, cursor moves) are fine;
-# COLOR codes must be absent entirely
+# color codes must be absent entirely
 if ANSI.search(t2):
     failures.append("NO_COLOR must suppress every color span")
 
@@ -180,7 +180,7 @@ if ANSI.search(tt2):
     failures.append("NO_COLOR must strip the table's dressing too")
 
 # --- the prompt's status tint [D:red-prompt]: red after an entry that
-# ERRORED, plain after one that succeeds; a reified nonzero exit is
+# errored, plain after one that succeeds; a reified nonzero exit is
 # data and stays quiet; NO_COLOR strips it with everything else ------
 rp = run({}, ["nope\r", "1 + 1\r"])
 if "\x1b[31mweir> " not in rp:
@@ -225,9 +225,9 @@ if "Yaml.inferShape (lines: seq<string>) : string" not in ANSI.sub("", hs2):
     failures.append(f"NO_COLOR must keep the plain signature spelling: {hs2[-400:]!r}")
 
 # --- the let-RHS is a head slot [D:let-rhs-head]: the RHS head carries
-# the SAME live verdict as the statement head — a known binding bold,
+# the same live verdict as the statement head — a known binding bold,
 # an unknown red, `^` forced to PATH; a session alias is a known head
-# at BOTH positions and `^` skips the table [D:command-head-alias].
+# at both positions and `^` skips the table [D:command-head-alias].
 # The buffer cancels with Ctrl+C (the paint is the probe, no Enter) ----
 lr1 = run({}, ["let x = print 1", "\x03"])
 if "\x1b[1mprint\x1b[0m" not in lr1:

@@ -1,22 +1,22 @@
 module Weir.Infer
 
-// #infer's COMPOSABLE CORE [D:repl-infer]: sample VALUE -> a set of named
-// `type` declarations, the `weir add schema` category. NOTHING here
-// evaluates weir or touches the session; it turns a concrete JSON/YAML
-// document into DECLARATION TEXT (the REPL directive is a thin wrapper
-// that also injects). check stays evaluation-free and untouched — this
-// file is never on a check path.
+// The composable core of #infer [D:repl-infer]: a sample value becomes
+// a set of named `type` declarations (the `weir add schema` category).
+// Nothing here evaluates weir or touches the session; a concrete
+// JSON/YAML document is turned into declaration text (the REPL
+// directive is a thin wrapper that also injects). This file is never
+// on a check path, so check stays evaluation-free.
 
 open System
 
-// the schema-less intermediate — the ONE shape both adapters lower into,
-// so the walker and the auto-naming pass are written once. Scalars carry
-// no value (inference wants the TYPE, not the datum); objects keep field
-// ORDER (declaration order is wire order — the record-order law).
-// IOpt and IMap are MERGE verdicts [D:repl-infer], produced only by the
-// array-element merge and the open-map detection below — the adapters
-// never emit them: a key absent in some elements is IOpt (drafts
-// Option), an object whose keys are data is IMap (drafts the mapping
+// The schema-less intermediate: the one shape both adapters lower
+// into, so the walker and the auto-naming pass are written once.
+// Scalars carry no value (inference wants the type, not the datum);
+// objects keep field order (declaration order is wire order). IOpt and
+// IMap are merge verdicts [D:repl-infer], produced only by the
+// array-element merge and the open-map detection below, never by the
+// adapters: a key absent in some elements is IOpt (drafts Option), an
+// object whose keys are data is IMap (drafts the mapping
 // seq<string * V>).
 type INode =
     | IStr
@@ -29,9 +29,9 @@ type INode =
     | IOpt of INode
     | IMap of INode
 
-// a printed NOTE [D:repl-infer]: the inference's honesty channel — every
-// place the sample cannot decide (empty array, null field, heterogeneous
-// array) surfaces here rather than guessing silently.
+// A printed note [D:repl-infer]: every place the sample cannot decide
+// (empty array, null field, heterogeneous array) surfaces here rather
+// than guessing silently.
 type Note = string
 
 // ---- adapters: text -> INode ------------------------------------------
@@ -46,9 +46,9 @@ let rec private ofJsonElement (el: System.Text.Json.JsonElement) : INode =
     | System.Text.Json.JsonValueKind.False -> IBool
     | System.Text.Json.JsonValueKind.Null -> INull
     | System.Text.Json.JsonValueKind.Number ->
-        // the adapter's own widening [D:floats-boundaries]: a decimal
-        // token in this position is float, an integer token is int (the
-        // raw token tells them apart, exactly as the from-json reader does)
+        // number widening [D:floats-boundaries]: a decimal token is
+        // float, an integer token is int — the raw token tells them
+        // apart, exactly as the from-json reader does
         let raw = el.GetRawText()
 
         if raw.Contains '.' || raw.Contains 'e' || raw.Contains 'E' then
@@ -57,7 +57,7 @@ let rec private ofJsonElement (el: System.Text.Json.JsonElement) : INode =
             IInt
     | _ -> IStr
 
-/// join the sample lines and parse ONE JSON document into an INode
+/// join the sample lines and parse one JSON document into an INode
 let private jsonNode (lines: string seq) : Result<INode, string> =
     let text = String.Join("\n", lines)
 
@@ -84,7 +84,7 @@ let private jsonlNode (lines: string seq) : Result<INode, string> =
     | Some e -> Error e
     | None -> Ok(IArr(List.ofSeq docs))
 
-// classify an UNQUOTED yaml scalar (quoted is always a string) — the
+// classify an unquoted yaml scalar (quoted is always a string) — the
 // yaml number/bool boundary, integer-or-float by the token's shape
 let private classifyYamlScalar (text: string) : INode =
     let t = text.Trim()
@@ -108,7 +108,7 @@ let rec private ofYamlNode (n: Yaml.Node) : INode =
     | Yaml.NSeq(items, _) -> IArr(items |> List.map ofYamlNode)
     | Yaml.NMap(entries, _) -> IObj(entries |> List.map (fun (k, v) -> k, ofYamlNode v))
 
-/// parse ONE yaml document into an INode
+/// parse one yaml document into an INode
 let private yamlNode (lines: string seq) : Result<INode, string> =
     let numbered = lines |> Seq.mapi (fun i l -> i + 1, l) |> List.ofSeq
 
@@ -124,8 +124,9 @@ let capitalize (s: string) : string =
     else string (Char.ToUpperInvariant s[0]) + s.Substring 1
 
 // sanitize a wire key into an identifier stem: keep letters/digits/_,
-// split on the rest, camel-join. `metadata.name` / `kube-system` become
-// legible type stems; a leading digit is dropped from the head.
+// split on the rest, camel-join. `metadata.name` / `kube-system`
+// become legible type stems; a head that starts with a digit is
+// repaired.
 let identStem (key: string) : string =
     let parts =
         System.Text.RegularExpressions.Regex.Split(key, "[^A-Za-z0-9]+")
@@ -139,13 +140,14 @@ let identStem (key: string) : string =
     | c when Char.IsDigit c[0] -> "N" + c
     | c -> c
 
-/// BEST-EFFORT singularisation [D:repl-infer]: the seq-element namer.
-/// Conservative — when a word does not obviously pluralise (data, status,
-/// metadata, series) it is LEFT AS-IS, so the fallback is the field name.
+/// Best-effort singularisation [D:repl-infer] for naming seq elements.
+/// Conservative: a word that does not obviously pluralise (data,
+/// status, metadata, series) is left as-is, so the fallback is the
+/// field name.
 let singularize (s: string) : string =
     let lower = s.ToLowerInvariant()
 
-    // words that are already singular OR do not pluralise the -s way
+    // words that are already singular or do not pluralise the -s way
     let invariant = set [ "data"; "status"; "metadata"; "series"; "info"; "spec"; "news" ]
 
     if Set.contains lower invariant then
@@ -160,16 +162,16 @@ let singularize (s: string) : string =
         s
 
 // ---- the taken-name guard ---------------------------------------------
-// A drafted type must never LAND on a type name the session already
-// resolves [D:repl-infer]: `type Secret = { … }` injects, but every
-// `secret: Secret` annotation still resolves to the PRIMITIVE (the
+// A drafted type must not land on a type name the session already
+// resolves [D:repl-infer]: `type Secret = { … }` injects, but a
+// `secret: Secret` annotation still resolves to the primitive (the
 // parser eats Secret/Duration/Instant/Size/Bytes before any declared
-// type), and a registered builtin name (Yaml, Option, Retry, …) refuses
-// at checkDecl — either way the draft is shadowed or dead. Callers
-// thread the LIVE name set (env Types keys, Check.builtinTypeNames —
-// both compile after this file, the Parser.keywords precedent); the
-// primitive spellings are completed HERE from the renderer
-// (Types.formatTy), so no name is hand-spelled.
+// type), and a registered builtin name (Yaml, Option, Retry, …)
+// refuses at checkDecl — either way the draft is shadowed or dead.
+// Callers thread the live name set (env Types keys,
+// Check.builtinTypeNames — both compile after this file, as
+// Parser.keywords does); the primitive spellings are completed here
+// from the renderer (Types.formatTy), so no name is hand-spelled.
 
 /// the taken type-name set for a draft: the caller's live names
 /// (session Types keys and/or the registered builtin nominals)
@@ -181,12 +183,13 @@ let takenTypeNames (liveNames: string seq) : Set<string> =
     |> Set.union (Set.ofSeq liveNames)
 
 // ---- the walker + naming pass -----------------------------------------
-// The registry disambiguates: a desired name maps to the shapes claimed
-// under it. Same field-name SAME shape dedups to one type; same name
-// DIFFERENT shape — or a name the environment already holds (`taken`) —
-// parent-prefixes (PodSpec / ContainerSpec, VolumeSecret). Children
-// resolve BEFORE their parent references them (bottom-up), so a field's
-// rendered type already carries the child's final name.
+// The registry disambiguates: a desired name maps to the shapes
+// claimed under it. The same name with the same shape dedups to one
+// type; the same name with a different shape — or a name the
+// environment already holds (`taken`) — gets a parent prefix
+// (PodSpec / ContainerSpec, VolumeSecret). Children resolve before
+// their parent references them (bottom-up), so a field's rendered
+// type already carries the child's final name.
 
 type Registry(taken: Set<string>) =
     // desiredName -> list of (structural signature, finalName, fields)
@@ -201,7 +204,7 @@ type Registry(taken: Set<string>) =
 
     /// claim a record type for an object with `fields` (rendered field
     /// types), desiring `desired` (derived from the wire key `srcKey`),
-    /// whose parent stem is `parentStem`. Returns the FINAL type name
+    /// whose parent stem is `parentStem`. Returns the final type name
     /// to reference.
     member this.Claim (desired: string) (srcKey: string) (parentStem: string) (fields: (string * string) list) : string =
         let sign =
@@ -221,8 +224,8 @@ type Registry(taken: Set<string>) =
         match bucket |> Seq.tryFind (fun (s, _, _) -> s = sign) with
         | Some(_, fin, _) -> fin // DEDUP: same name, same shape
         | None ->
-            // a name is unusable when a sibling claim holds it OR the
-            // environment does — a taken landing would be shadowed
+            // a name is unusable when a sibling claim or the
+            // environment holds it — a taken landing would be shadowed
             let inUse n =
                 Set.contains n taken || bucket |> Seq.exists (fun (_, f, _) -> f = n)
 
@@ -230,8 +233,9 @@ type Registry(taken: Set<string>) =
                 if bucket.Count = 0 && not (Set.contains desired taken) then
                     desired
                 else
-                    // COLLISION (same name different shape, or taken by
-                    // the environment) — parent-prefix, numeric fallback
+                    // collision (same name different shape, or taken
+                    // by the environment): parent-prefix, then a
+                    // numeric fallback
                     let pfx = capitalize parentStem + desired
 
                     if pfx <> desired && not (inUse pfx) then
@@ -255,13 +259,13 @@ type Registry(taken: Set<string>) =
 let private isIdentStart c = System.Char.IsLetter c || c = '_'
 let private isIdentCont c = System.Char.IsLetterOrDigit c || c = '_'
 
-// a key with identifier SHAPE (the grammar only — a reserved word still
-// counts: `type:` is a schema key on real wires, so keywords never vote
+// a key with identifier shape — grammar only, so a reserved word still
+// counts (`type:` is a schema key on real wires; keywords never vote
 // an object into a mapping) [D:repl-infer]
 let private isIdentShaped (k: string) : bool =
     k.Length > 0 && isIdentStart k[0] && k |> Seq.forall isIdentCont
 
-/// Option is a MERGE verdict, never nested and never over null: an
+/// Option is a merge verdict, never nested and never over null: an
 /// absent-or-null key wraps once; a further merge folds into the wrap
 let private iopt (n: INode) : INode =
     match n with
@@ -269,34 +273,36 @@ let private iopt (n: INode) : INode =
     | IOpt _ -> n
     | _ -> IOpt n
 
-// THE OPEN-MAP DETECTION LAW [D:repl-infer], value half: an object's
-// entries carry ONE value shape — every value structurally identical,
-// none null, at least one entry. Without one value type there is no V
+// Open-map detection [D:repl-infer], value half: the object's entries
+// carry one value shape — every value structurally identical, none
+// null, at least one entry. Without a single value type there is no V
 // to write in seq<string * V>, so the object stays a record.
 let private uniformValue (vals: INode list) : INode option =
     match vals |> List.distinct with
     | [ v ] when v <> INull -> Some v
     | _ -> None
 
-// THE OPEN-MAP DETECTION LAW [D:repl-infer], key half (a): the keys look
-// like DATA — a MAJORITY (strictly more than half) would need [<Wire>]
-// sanitization, i.e. are not identifier-shaped (k8s labels/annotations:
-// dots, slashes, dashes). Both halves must hold. The other trigger, (b),
-// lives in the merge: sibling elements of one array carrying DIFFERENT
-// key sets for the same object. An object with identifier-shaped keys
-// identical across elements is schema, never a mapping.
+// Open-map detection [D:repl-infer], key half (a): the keys look like
+// data — a majority (strictly more than half) are not
+// identifier-shaped, i.e. would need [<Wire>] sanitization (k8s
+// labels/annotations: dots, slashes, dashes). Both halves must hold.
+// The other trigger, (b), lives in the merge: sibling elements of one
+// array carrying different key sets for the same object. An object
+// with identifier-shaped keys identical across elements is schema,
+// not a mapping.
 let private detectOpenMap (fields: (string * INode) list) : INode option =
     match uniformValue (fields |> List.map snd) with
     | Some v when 2 * (fields |> List.filter (fst >> isIdentShaped >> not) |> List.length) > List.length fields -> Some v
     | _ -> None
 
 // ---- the array-element merge [D:repl-infer] ---------------------------
-// The element type is the UNION of every element's shape: object key
-// sets union (a key absent in some elements drafts Option); a key whose
-// sibling key sets DIFFER under one uniform value shape is an open map
-// (detection half b); a genuine TYPE CONFLICT keeps the FIRST element's
-// shape with a printed verify note (never a silent guess). `path` is the
-// wire-key path from the array's own key down — the note's address.
+// The element type is the union of every element's shape: object key
+// sets union (a key absent in some elements drafts Option); a key
+// whose sibling key sets differ under one uniform value shape is an
+// open map (detection half b); a genuine type conflict keeps the first
+// element's shape with a printed verify note rather than a silent
+// guess. `path` is the wire-key path from the array's own key down —
+// the address the notes use.
 
 let rec private mergeTwo (note: Note -> unit) (path: string) (a: INode) (b: INode) : INode =
     match a, b with
@@ -314,15 +320,16 @@ let rec private mergeTwo (note: Note -> unit) (path: string) (a: INode) (b: INod
         a
 
 and private mergeObjs (note: Note -> unit) (path: string) (xs: (string * INode) list) (ys: (string * INode) list) : INode =
-    // ALWAYS the record union here; the open-map verdict (detection half b)
-    // is DEFERRED to openMaps over the fully-merged shape [D:repl-infer].
-    // Value uniformity must hold across ALL siblings, not a pair — the
-    // pairwise fold committed to a map from a coincidentally-uniform early
-    // pair, then absorbed a later CONFLICTING value first-wins (a k8s
-    // securityContext with a bool field then an int field drafted
-    // Map<string, bool> and rejected the int). The record merge: union of
-    // keys in first-seen order; a shared key merges recursively, a one-sided
-    // key drafts Option (which is how differing key sets read downstream).
+    // Always the record union here; the open-map verdict (detection
+    // half b) is deferred to openMaps over the fully-merged shape
+    // [D:repl-infer]. Value uniformity must hold across all siblings,
+    // not one pair — a pairwise verdict can commit to a map from a
+    // coincidentally-uniform early pair, then absorb a later
+    // conflicting value first-wins (a k8s securityContext with a bool
+    // field then an int field drafted Map<string, bool> and rejected
+    // the int). The record merge: union of keys in first-seen order; a
+    // shared key merges recursively, a one-sided key drafts Option
+    // (which is how differing key sets read downstream).
     let kx = xs |> List.map fst |> Set.ofList
     let ym = Map.ofList ys
 
@@ -340,14 +347,15 @@ and private mergeObjs (note: Note -> unit) (path: string) (xs: (string * INode) 
 
     IObj(fromX @ fromY)
 
-// the open-map verdict, DEFERRED to the fully-merged shape (detection half
-// b) [D:repl-infer]: an object whose keys DIFFER across the array's
-// elements — every field OPTIONAL after the union, none shared — AND whose
-// values share ONE shape has data keys, drafted seq<string * V>. Deciding
-// here rather than in the pairwise merge is what lets value uniformity be
-// judged over ALL siblings (a securityContext's bool+int values are not
-// uniform, so it stays a record; a ConfigMap data's all-string values are).
-// Walks bottom-up so a nested map is settled before its parent is judged.
+// The open-map verdict, deferred to the fully-merged shape (detection
+// half b) [D:repl-infer]: an object whose keys differ across the
+// array's elements — every field optional after the union, none
+// shared — and whose values share one shape has data keys, drafted
+// seq<string * V>. Deciding here rather than in the pairwise merge is
+// what lets value uniformity be judged over all siblings (a
+// securityContext's bool+int values are not uniform, so it stays a
+// record; a ConfigMap data's all-string values are). Walks bottom-up
+// so a nested map is settled before its parent is judged.
 let rec private openMaps (note: Note -> unit) (path: string) (node: INode) : INode =
     match node with
     | IObj fields ->
@@ -367,9 +375,9 @@ let rec private openMaps (note: Note -> unit) (path: string) (node: INode) : INo
     | IMap v -> IMap(openMaps note path v)
     | _ -> node
 
-/// merge every non-null element of an array into ONE element shape (null
-/// elements never decide a shape — the adapters' existing posture), then
-/// settle open maps over the full result
+/// merge every non-null element of an array into one element shape
+/// (null elements never decide a shape, consistent with the adapters),
+/// then settle open maps over the full result
 let private mergeElems (note: Note -> unit) (path: string) (items: INode list) : INode option =
     match items |> List.filter ((<>) INull) with
     | [] -> None
@@ -396,29 +404,30 @@ let rec private shapeOf (reg: Registry) (desired: string) (srcKey: string) (pare
         // merge; here the value shape renders [D:repl-infer]
         $"seq<string * {shapeOf reg (capitalize (singularize (identStem desired))) srcKey parentStem v}>"
     | IObj [] ->
-        // an EMPTY mapping [D:yaml-empty-flow] (`{}` — kubectl's
-        // resources/securityContext/…): an open map with zero entries —
-        // no evidence for V, so string, said aloud (the empty-array
-        // posture; the mapping shape reads on BOTH wire boundaries,
-        // which an opaque Yaml field does not)
+        // an empty mapping [D:yaml-empty-flow] (`{}` — kubectl's
+        // resources/securityContext/…): an open map with zero entries.
+        // No evidence for V, so string, with a note (as for empty
+        // arrays); the mapping shape reads on both wire boundaries,
+        // which an opaque Yaml field does not
         reg.AddNote $"an empty mapping under '{desired}' — no entries to infer, drafted as seq<string * string> (edit if the real shape is known)"
         "seq<string * string>"
     | IObj fields ->
         match detectOpenMap fields with
         | Some v ->
-            // THE OPEN-MAP LAW, detection half (a) [D:repl-infer]: one
-            // value shape + a majority of non-identifier keys — the keys
+            // open-map detection half (a) [D:repl-infer]: one value
+            // shape plus a majority of non-identifier keys — the keys
             // are data (k8s labels/annotations), so the draft is the
-            // mapping, not a [<Wire>]-riddled record; mapping keys need
-            // no sanitizing, an empty-string key included
+            // mapping, not a record full of [<Wire>]; mapping keys
+            // need no sanitizing, an empty-string key included
             reg.AddNote $"'{srcKey}' has mostly non-identifier keys — its keys are data, drafted as an open mapping seq<string * _>"
             $"seq<string * {shapeOf reg (capitalize (singularize (identStem desired))) srcKey parentStem v}>"
         | None ->
-            // an EMPTY-STRING key is unspellable BOTH ways
-            // [D:infer-wire-sanitize]: a field name cannot be empty and
-            // [<Wire>] refuses an empty wire key — so the key is DROPPED
-            // from the draft, loudly (the readers tolerate an undeclared
-            // key, so the drafted type still reads the sample)
+            // an empty-string key is unspellable either way
+            // [D:infer-wire-sanitize]: a field name cannot be empty
+            // and [<Wire>] refuses an empty wire key — so the key is
+            // dropped from the draft, with a note (the readers
+            // tolerate an undeclared key, so the drafted type still
+            // reads the sample)
             let spellable = fields |> List.filter (fun (k, _) -> k <> "")
 
             if List.length spellable < List.length fields then
@@ -427,14 +436,14 @@ let rec private shapeOf (reg: Registry) (desired: string) (srcKey: string) (pare
 
             match spellable with
             | [] ->
-                // nothing spellable remains — the opaque-Yaml posture (the
-                // record path's dead end; the drop note already fired)
+                // nothing spellable remains — fall back to opaque
+                // Yaml; the drop note already fired
                 "Yaml"
             | spellable ->
-                // the collision prefix is the ENCLOSING record's stem: a
-                // `spec` under `pod` disambiguates to `PodSpec`. So each
-                // field's child carries THIS record's stem as its
-                // parentStem, not the field's.
+                // the collision prefix is the enclosing record's stem
+                // (a `spec` under `pod` disambiguates to `PodSpec`),
+                // so each field's child carries this record's stem as
+                // its parentStem, not the field's
                 let thisStem = identStem desired
 
                 let rendered =
@@ -450,7 +459,7 @@ let rec private shapeOf (reg: Registry) (desired: string) (srcKey: string) (pare
             reg.AddNote $"an empty array under '{desired}' — element type unknown, inferred seq<string> (edit if known)"
             "seq<string>"
         | _ ->
-            // ARRAY ELEMENTS MERGE [D:repl-infer]: the element type is
+            // array elements merge [D:repl-infer]: the element type is
             // the union of every element's shape — absent keys draft
             // Option, conflicts keep the first with a verify note
             match mergeElems reg.AddNote srcKey items with
@@ -458,11 +467,11 @@ let rec private shapeOf (reg: Registry) (desired: string) (srcKey: string) (pare
                 reg.AddNote $"an all-null array under '{desired}' — inferred seq<Option<string>> (edit if known)"
                 "seq<Option<string>>"
             | Some elem ->
-                // the element of a seq-of-record takes the SINGULARISED
+                // the element of a seq-of-record takes the singularised
                 // field name; a seq of scalars is seq<scalar>. The
-                // element's collision prefix is the record enclosing the
-                // seq FIELD (parentStem), so two same-named seqs under
-                // different parents disambiguate.
+                // element's collision prefix is the record enclosing
+                // the seq field (parentStem), so two same-named seqs
+                // under different parents disambiguate.
                 let elemDesired = capitalize (singularize (identStem desired))
                 let inner = shapeOf reg elemDesired srcKey parentStem elem
                 $"seq<{inner}>"
@@ -471,15 +480,15 @@ let rec private shapeOf (reg: Registry) (desired: string) (srcKey: string) (pare
 
 // a wire key that a weir field name cannot spell rides the [<Wire>]
 // attribute on a legal identifier [D:wire-keys]/[D:infer-wire-sanitize]:
-// KEYWORD keys (`in`, `let`, `match`, … — the parser rejects EVERY
-// keyword in field position, probe-pinned) AND keys that are not valid
-// weir identifiers (k8s labels: `k8s-app`, `node.kubernetes.io/os`,
-// `helm.sh/chart`). A key that IS a legal, non-reserved identifier
-// stays verbatim — zero churn. The reserved set is the PARSER'S OWN
+// keyword keys (`in`, `let`, `match`, … — the parser rejects every
+// keyword in field position) and keys that are not valid weir
+// identifiers (k8s labels: `k8s-app`, `node.kubernetes.io/os`,
+// `helm.sh/chart`). A key that is a legal, non-reserved identifier
+// stays verbatim — zero churn. The reserved set is the parser's own
 // (Weir.Parser.keywords), threaded in by every caller because Parser
-// compiles after this file — one source, never a hand copy, no drift.
+// compiles after this file — one source, no hand copy to drift.
 
-/// a key weir can spell as a field name AS-IS: a legal identifier that
+/// a key weir can spell as a field name as-is: a legal identifier that
 /// is not a reserved word
 let private isCleanFieldName (reserved: Set<string>) (f: string) : bool =
     isIdentShaped f && not (Set.contains f reserved)
@@ -516,17 +525,17 @@ let private toIdent (reserved: Set<string>) (key: string) : string =
     let camel =
         if camel = "" || not (isIdentStart camel[0]) then "f" + camel else camel
 
-    // any OTHER reserved word (`in`, `let`, `match`, …) — or a camel
-    // result that LANDS on one (`in-` camelizes to `in`) — takes the
-    // parser's own repair spelling: `in` → `inField`
+    // any other reserved word (`in`, `let`, `match`, …) — or a camel
+    // result that lands on one (`in-` camelizes to `in`) — takes the
+    // parser's repair spelling: `in` → `inField`
     if Set.contains camel reserved then camel + "Field" else camel
 
 /// a record's fields as (fieldName, wireKeyOrNone, ty): clean keys keep
 /// their name and carry no wire attribute; others sanitize to a deduped
 /// valid identifier and carry [<Wire "key">]. Dedup is deterministic:
-/// CLEAN keys (the user's own spellings) reserve their names FIRST, then
-/// sanitized names take the next free `base`/`base2`/`base3`… — so a
-/// sanitized key never steals a clean field's name.
+/// clean keys (the user's own spellings) reserve their names first,
+/// then sanitized names take the next free `base`/`base2`/`base3`… —
+/// so a sanitized key never steals a clean field's name.
 let resolveFieldNames (reserved: Set<string>) (fields: (string * string) list) : (string * string option * string) list =
     let used = System.Collections.Generic.HashSet<string>()
 
@@ -555,7 +564,7 @@ let resolveFieldNames (reserved: Set<string>) (fields: (string * string) list) :
 
             name, Some key, ty)
 
-/// render claimed records as `type` decls, house style — the ONE
+/// render claimed records as `type` decls, house style — the single
 /// emitter tail, shared by #infer and the schema→types generator
 /// [D:schema-types] (field names ride the Wire sanitizer either way)
 let renderDecls (reserved: Set<string>) (decls: (string * (string * string) list) list) : string list =
@@ -574,15 +583,15 @@ let renderDecls (reserved: Set<string>) (decls: (string * (string * string) list
 
         $"type {name} = {{\n{body}\n}}")
 
-/// the inferred DECLARATIONS + printed notes, for a sample already lowered
-/// to an INode with a chosen top name. A top OBJECT is the named record;
-/// a top ARRAY (or jsonl) names the ELEMENT (the user writes seq<Name>).
-/// `reserved` is the parser's own keyword set (Weir.Parser.keywords);
-/// `taken` is the in-scope type-name set (takenTypeNames over the live
-/// env) that derived names must dodge — both threaded in because their
-/// sources compile after this file.
+/// the inferred declarations plus printed notes, for a sample already
+/// lowered to an INode with a chosen top name. A top object is the
+/// named record; a top array (or jsonl) names the element (the user
+/// writes seq<Name>). `reserved` is the parser's own keyword set
+/// (Weir.Parser.keywords); `taken` is the in-scope type-name set
+/// (takenTypeNames over the live env) that derived names must dodge —
+/// both threaded in because their sources compile after this file.
 let inferDecls (reserved: Set<string>) (taken: Set<string>) (topName: string) (node: INode) : string list * Note list =
-    // the top name is the CALLER'S choice, exempt from the guard: the
+    // the top name is the caller's choice, exempt from the guard: the
     // REPL refuses a builtin 'as'-name outright, and re-inferring under
     // a session name re-declares it (the REPL's redeclare semantics)
     let reg = Registry(Set.remove topName taken)
@@ -619,16 +628,17 @@ let inferDecls (reserved: Set<string>) (taken: Set<string>) (topName: string) (n
     renderDecls reserved reg.Decls, reg.Notes
 
 // ---- the aligned-table drafting arm [D:from-table] --------------------
-// A table never lowers to INode: Option-ness is a PER-COLUMN merge over
-// every row (any empty/`<none>` cell), which the first-element walker
-// cannot see — so the column scan lives here and Table.fs owns the text
-// model (columns, cells, match keys).
+// A table never lowers to INode: Option-ness is a per-column merge
+// over every row (any empty/`<none>` cell), which the first-element
+// walker cannot see — so the column scan lives here and Table.fs owns
+// the text model (columns, cells, match keys).
 
-/// derive a field name from a table HEADER: split on non-alnum runs,
-/// lowercase the ALL-CAPS segments (headers shout), camel-join —
-/// `NAME`→name, `POD-TEMPLATE-HASH`→podTemplateHash, `CONTAINER ID`→
-/// containerId. Reserved-word landings keep toIdent's historical
-/// spellings (`TYPE`→kind); the rest take the `Field` suffix repair.
+/// derive a field name from a table header: split on non-alnum runs,
+/// lowercase the all-caps segments (headers are usually uppercase),
+/// camel-join — `NAME`→name, `POD-TEMPLATE-HASH`→podTemplateHash,
+/// `CONTAINER ID`→containerId. Reserved-word landings keep toIdent's
+/// historical spellings (`TYPE`→kind); the rest take the `Field`
+/// suffix repair.
 let private tableFieldName (reserved: Set<string>) (header: string) : string =
     let segs =
         System.Text.RegularExpressions.Regex.Split(header, "[^A-Za-z0-9]+")
@@ -665,12 +675,13 @@ let private tableIntRx = System.Text.RegularExpressions.Regex "^-?[0-9]+$"
 let private tableFloatRx =
     System.Text.RegularExpressions.Regex "^-?[0-9]+\.[0-9]+([eE][-+]?[0-9]+)?$|^-?[0-9]+[eE][-+]?[0-9]+$"
 
-/// draft the ROW record from a table sample [D:from-table]: per-column
+/// draft the row record from a table sample [D:from-table]: per-column
 /// token scan over the data rows (all-int → int, else float/bool by
-/// token, else string); ANY empty/`<none>` cell → Option<T> + a note;
-/// a note says the value reads as seq<Name> (the bare-top-array
-/// precedent). The `as` name is the caller's own — the taken-name
-/// guard is the caller's refusal, exactly as inferDecls' top name.
+/// token, else string); any empty/`<none>` cell → Option<T> plus a
+/// note; a note says the value reads as seq<Name> (as for a bare
+/// top-level array). The `as` name is the caller's own — the
+/// taken-name guard is the caller's refusal, exactly as for
+/// inferDecls' top name.
 let private tableDecls (reserved: Set<string>) (topName: string) (lines: string seq) : Result<string list * Note list, string> =
     let numbered = lines |> Seq.mapi (fun i l -> i + 1, l) |> List.ofSeq
 
@@ -729,7 +740,7 @@ let private tableDecls (reserved: Set<string>) (topName: string) (lines: string 
 
                         baseName + string n
 
-                // the Wire decision is the READ-side recovery test: a
+                // the Wire decision is the read-side recovery test: a
                 // field whose normalized name still matches the header
                 // needs no attribute; anything lossier carries the raw
                 // header verbatim [D:from-table]
@@ -782,16 +793,16 @@ let infer
     : Result<string list * Note list, string> =
     match fmt with
     | Table ->
-        // the top name is the CALLER'S choice (the REPL refuses builtin
+        // the top name is the caller's choice (the REPL refuses builtin
         // landings), and a flat row drafts no nested types — `taken`
         // has nothing left to guard here
         ignore taken
         tableDecls reserved topName lines
     | fmt -> nodeOf fmt lines |> Result.map (fun node -> inferDecls reserved taken topName node)
 
-/// the composable BUILTIN body: sample lines -> declaration TEXT (the
+/// the composable builtin body: sample lines -> declaration text (the
 /// notes ride as trailing `//` comment lines so the one-string return
-/// stays honest outside the REPL). Raises on a parse failure, the
+/// stays honest outside the REPL). Raises on a parse failure, per the
 /// builtin-raise convention.
 let inferShapeText (reserved: Set<string>) (taken: Set<string>) (fmt: Format) (topName: string) (lines: string seq) : string =
     match infer reserved taken fmt topName lines with

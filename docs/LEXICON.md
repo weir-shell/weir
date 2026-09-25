@@ -8,7 +8,7 @@ corpus-mining regime, and the process idioms the ledgers speak in.
 jobs — DECISIONS indexes rulings, PROCESS holds rules, SEMANTICS states
 laws, NOTES is chronological archaeology. This is a fifth with a job
 none of them do: it **defines the terms the other four use**. The
-repo's "never a fourth prose store" rule was about a DEBT store, not
+repo's "never a fourth prose store" rule was about a debt store, not
 vocabulary. The lexicon honours it by construction: **it defines, it
 does not decide.** Every entry that corresponds to a ruling points at
 its `[D:key]`; every entry that corresponds to a rule points at

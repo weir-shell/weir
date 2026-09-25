@@ -1,14 +1,14 @@
 #!/usr/bin/env weir
 // The tree-sitter grammar currency gate [D:grammar-currency] — the check
-// in the repo that KNOWS the language moved. The grammar repo can only
+// in the repo that knows the language moved. The grammar repo can only
 // compare itself against a target it chose; weir compares the grammar's
-// PUBLISHED main against its own gate-verified manifest, so a keyword
+// published main against its own gate-verified manifest, so a keyword
 // landing here without a grammar bump goes red where the release flow
-// sees it. CONTENT comparison, not SHA bookkeeping: it extracts the
+// sees it. Content comparison, not SHA bookkeeping: it extracts the
 // keyword/within/adapter sets from grammar.js with the same shapes the
 // grammar repo's own ci/check.sh uses, so the two gates cannot disagree
 // about what agreement means. Public repo — a plain fetch, no token.
-// Runs at RELEASE and on the weekly schedule, never on PRs: a keyword
+// Runs at release and on the weekly schedule, never on PRs: a keyword
 // PR cannot fix this red (the grammar lives elsewhere), and
 // red-that-cannot-be-fixed-here trains people to ignore red.
 //

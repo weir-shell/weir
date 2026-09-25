@@ -8,7 +8,7 @@
 // WEIR_FUZZ_STRICT_SPANS=0 is the archaeology off-switch.
 
 // the literal-vs-computed boundary [D:default-attr], both shapes:
-// count's default is a LITERAL (the attribute); seed's is COMPUTED
+// count's default is a literal (the attribute); seed's is computed
 // (fresh nanoseconds — Option + code)
 type Cli = {
     /// FsCheck replay seed (fresh nanoseconds when omitted)
@@ -25,7 +25,7 @@ cd $root
 
 // hold the deep-run lock [D:masking-mechanized] so publish.sh refuses
 // to swap the binary underfoot mid-run — the one window the start-of-run
-// freshness gate can't close. The holder is THIS weir process (a child
+// freshness gate can't close. The holder is this weir process (a child
 // sh reports its parent's pid), alive for the whole run; a crash leaves
 // a stale lock that publish clears by liveness.
 ci/deep-lock.sh acquire $"{Self.pid}" | orFail "a deep fuzz run is already live — wait for it or kill it"
@@ -33,7 +33,7 @@ ci/deep-lock.sh acquire $"{Self.pid}" | orFail "a deep fuzz run is already live 
 let seed =
     match cli.seed with
     | Some n -> $"{n}"
-    // normalized through int: %N pads with LEADING ZEROS, and the
+    // normalized through int: %N pads with leading zeros, and the
     // harness echoes the seed it parsed — "027" vs "27" would trip the
     // receipt check on formatting, not config [D:observed-report]
     | None -> $(date +%N) |> Seq.exactlyOne |> Str.toInt |> fun n -> $"{n}"
@@ -53,15 +53,15 @@ within tmp d
               ("WEIR_FUZZ_COUNT", count)
               ("WEIR_FUZZ_REPORT", report) ]
 
-    // orFail streams the test output live AND carries the reproduce
+    // orFail streams the test output live and carries the reproduce
     // line on failure [D:exit-reifiers]
     within env fenv
         dotnet test tests/Weir.Fuzz/Weir.Fuzz.fsproj | orFail $"deep fuzz FAILED — reproduce with: tools/fuzz.weir --seed {seed} --count {count}"
 
-    // the instrument reports what it MEASURED [D:observed-report]: the
+    // the instrument reports what it measured [D:observed-report]: the
     // harness writes back the config it actually read; missing or
-    // mismatched means the run did NOT execute the requested fuzz —
-    // fail LOUD (the silent-defaults window is the receipt)
+    // mismatched means the run did not execute the requested fuzz —
+    // fail loudly (the receipt closes the silent-defaults window)
     let observed = File.read report |> Seq.exactlyOne
 
     if observed <> $"seed={seed} count={count}" then

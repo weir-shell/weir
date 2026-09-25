@@ -4,8 +4,8 @@ open System
 open Weir.Ast
 open Weir.Types
 
-// -e takes a PROGRAM: newlines are statement boundaries exactly as in
-// a file (assemble handles blocks and comment stripping), and a LONE
+// -e takes a program: newlines are statement boundaries exactly as in
+// a file (assemble handles blocks and comment stripping), and a lone
 // declaration is still refused with its kind's teaching — the property
 // is "-e evaluates something and shows you the result", a deliberate
 // divergence from python -c and friends [D:e-programs]. Strict like
@@ -87,9 +87,8 @@ let private evalOnce (input: string) : int =
             1
         | Ok checked' ->
             // reading (b) [D:e-programs]: every statement may declare,
-            // but the PROGRAM must end in an expression — the four kind
-            // teachings survive, pointed at exactly the case they were
-            // written for
+            // but the program must end in an expression — each kind
+            // keeps its own specific refusal message
             let lastKindError =
                 match checked' |> List.tryLast with
                 | Some(_, chk) ->
@@ -158,13 +157,14 @@ let private evalOnce (input: string) : int =
                                 execAll venv (idx + 1) tail
                             | Script.KExpr te
                             | Script.KCmd te ->
-                                // the LAST statement is the result — the -e echo
+                                // the last statement is the result — the -e echo
                                 let v = Eval.eval venv te
 
                                 if v <> Eval.VUnit then
-                                    // the -e echo wears the same binary
-                                    // refusal as the REPL's [D:binary-echo]
-                                    // — it was the one echo path without it
+                                    // the -e echo applies the same
+                                    // binary refusal as the REPL's
+                                    // [D:binary-echo], so every echo
+                                    // path shares it
                                     let v = Eval.echoPrep v
 
                                     // the -e echo shares the REPL echo's var
@@ -197,17 +197,18 @@ let private evalOnce (input: string) : int =
 [<EntryPoint>]
 let main argv =
 
-    // captured output is DATA: LF on every platform [D:lf-output] — the
-    // content-bytes input ruling's dual (a line ending is not data). A
-    // tty is DISPLAY and keeps the platform newline: Windows raw-mode
-    // rendering needs CRLF, and bytes only matter where they persist.
+    // captured output is data: LF on every platform [D:lf-output] —
+    // the dual of the content-bytes input ruling (a line ending is
+    // not data). A tty is display and keeps the platform newline:
+    // Windows raw-mode rendering needs CRLF, and bytes only matter
+    // where they persist.
     if Console.IsOutputRedirected then
         Console.Out.NewLine <- "\n"
 
     if Console.IsErrorRedirected then
         Console.Error.NewLine <- "\n"
 
-    // WEIR_LOG validates ONCE, before anything runs — an invalid level
+    // WEIR_LOG validates once, before anything runs — an invalid level
     // is a loud startup error, never a silent fallback [D:log-module]
     match Builtins.initLogLevel () with
     | Error msg ->
@@ -215,13 +216,14 @@ let main argv =
         exit 2
     | Ok() -> ()
 
-    // top-level CLI guard [D:cli-exception-guard]: check/run/fmt/-e run
-    // the front end, and a RESIDUAL exception there (a parser edge the
-    // located teachings miss) otherwise aborts with a raw stack trace and
-    // exit 134 — the whole crash class. Mirror the LSP's per-document
-    // guard: turn it into a located lint diagnostic with a non-zero exit.
-    // `exit`/`fail` never reach here (Environment.Exit terminates;
-    // ExitRequest is caught inside run/-e), and it is re-raised in case.
+    // top-level CLI guard [D:cli-exception-guard]: check/run/fmt/-e
+    // run the front end, and a residual exception there (a parser edge
+    // the located teachings miss) would otherwise abort with a raw
+    // stack trace and exit 134; this guard covers that whole class.
+    // Mirrors the LSP's per-document guard: turn it into a located
+    // lint diagnostic with a non-zero exit. `exit`/`fail` never reach
+    // here (Environment.Exit terminates; ExitRequest is caught inside
+    // run/-e), and it is re-raised in case.
     let dispatch () =
         match Array.toList argv with
         | [ "-e"; input ] -> evalOnce input
@@ -278,20 +280,20 @@ let main argv =
             Console.Error.WriteLine "usage: weir fmt [--check] <script>"
             2
         // external contracts [D:contracts-spine]: `add <kind>` is
-        // KIND-AWARE (acquiring differs per kind); `restore`/`verify`
-        // operate on the LOCKFILE and are kind-agnostic by construction.
+        // kind-aware (acquiring differs per kind); `restore`/`verify`
+        // operate on the lockfile and are kind-agnostic by construction.
         // All resolve .weir/ from the CWD; check never does any of this.
         | [ "add"; "schema"; url; "--as"; name ] ->
             let weirDir =
                 match Contracts.findWeirDir "." with
                 | Ok d -> d
-                // computed, NOT created [D:add-validates]: a failed add must
+                // computed, not created [D:add-validates]: a failed add must
                 // leave the tree byte-identical, including no empty .weir/
                 | Error _ -> IO.Path.GetFullPath ".weir"
 
             // the vendor-name guard at the argv crossing [D:lockfile-confinement]
             // — the name becomes the vendored file, so a separator/`..`/absolute
-            // `--as` must refuse BEFORE the fetch, writing nothing (F14). Hyphens
+            // `--as` must refuse before the fetch, writing nothing (F14). Hyphens
             // are fine (k8s-configmap); only path-escaping shapes refuse.
             if not (Contracts.vendorNameSafe name) then
                 Console.Error.WriteLine
@@ -330,8 +332,8 @@ let main argv =
 
             // R5: the alias namespace — a builtin module's name is reserved,
             // and the name must be able to derive an import alias. The
-            // plain-name rule is now Contracts.plainName [D:lockfile-confinement]
-            // — the ONE spelling every `--as` kind shares
+            // plain-name rule is Contracts.plainName [D:lockfile-confinement]
+            // — the one spelling every `--as` kind shares
             let nameOk = Contracts.plainName name
 
             let derivedAlias =
@@ -366,7 +368,7 @@ let main argv =
                          Console.Error.WriteLine $"weir add module: {e}; nothing was written"
                          1
                      | Ok(bytes, _) ->
-                         // validate BEFORE any .weir/ write [D:add-validates]:
+                         // validate before any .weir/ write [D:add-validates]:
                          // a module that does not check must not land
                          let tmp = IO.Path.Combine(IO.Path.GetTempPath(), $"weir-add-{name}.weir")
                          IO.File.WriteAllBytes(tmp, bytes)
@@ -379,8 +381,8 @@ let main argv =
 
                          match checked' with
                          | Error e ->
-                             // the teach names the SOURCE, not the temp file
-                             // validation ran against
+                             // the error names the source, not the temp
+                             // file validation ran against
                              let e = e.Replace(tmp, src.Url)
                              Console.Error.WriteLine $"weir add module: {e}; nothing was written"
                              1
@@ -394,8 +396,8 @@ let main argv =
                              | Ok(hash, prior) ->
                                  (match prior with
                                   | Some old when old <> hash ->
-                                      // a re-add IS the update path: the sha pair is
-                                      // the signal there is a diff to review
+                                      // a re-add is the update path: the sha
+                                      // pair signals there is a diff to review
                                       Console.WriteLine
                                           $"updated module {name}: {old.Substring(0, 12)}… → {hash.Substring(0, 12)}…"
                                   | Some _ -> Console.WriteLine $"module {name}: unchanged ({hash.Substring(0, 12)}…)"
@@ -449,12 +451,12 @@ let main argv =
                 "usage: weir verify — vendored contracts against the lock (absent/modified are findings; exit 1)"
 
             2
-        // the schema→types generator [D:schema-types]: LOCKED schema →
+        // the schema→types generator [D:schema-types]: locked schema →
         // a decl-only weir module the user owns. `gen`, not `add`: add's
         // invariant is artifact-plus-lock-entry together, and the generated
-        // module is deliberately UNLOCKED (user-owned after generation —
-        // regeneration is an explicit re-run, the sigs/restore posture).
-        // Reads only the vendored file: never fetches (the offline law).
+        // module is deliberately unlocked (user-owned after generation —
+        // regeneration is an explicit re-run, as with sigs/restore).
+        // Reads only the vendored file: never fetches (the offline rule).
         | "gen" :: "types" :: rest ->
             let usage =
                 "usage: weir gen types --schema <name> [--as <TypeName>] [--out <path>|-]\n       generate weir type declarations from a locked schema (.weir/types/<name>.weir by default)"
@@ -489,7 +491,7 @@ let main argv =
                          match entries |> List.tryFind (fun e -> e.Kind = "schema" && e.Name = name) with
                          | None -> fail1 $"no locked schema '{name}' — add it: weir add schema <url> --as {name}"
                          | Some entry ->
-                             // gen types WRITES weir source, so it is the
+                             // gen types writes weir source, so it is the
                              // highest-value consumer of the lock-read
                              // confinement [D:lockfile-confinement]: resolve the
                              // schema file through entryDest, refusing a hostile
@@ -505,7 +507,7 @@ let main argv =
                                  let actual = Contracts.sha256Hex bytes
 
                                  if actual <> entry.Sha256 then
-                                     // generation must be reproducible FROM THE LOCK:
+                                     // generation must be reproducible from the lock:
                                      // a drifted file would stamp a hash the bytes
                                      // do not carry
                                      fail1
@@ -552,7 +554,7 @@ let main argv =
                                              | Error e -> fail1 e
                                              | Ok gen ->
                                                  // add-validates [D:add-validates]: the emitted
-                                                 // module must CHECK before anything lands — a
+                                                 // module must check before anything lands — a
                                                  // schema producing unrepresentable weir refuses
                                                  // with the located reason
                                                  let tmp =
@@ -583,11 +585,12 @@ let main argv =
                                                      | out ->
                                                          let dest, importPath, confineWrite =
                                                              match out with
-                                                             // --out is a user-CHOSEN path (combine, not
-                                                             // under — the user controls it); the DEFAULT
-                                                             // .weir/types/ path is vendor-directory
-                                                             // territory and confines through a symlinked
-                                                             // `types` dir [D:lockfile-symlink-confinement]
+                                                             // --out is a user-chosen path (combined as
+                                                             // given, not confined — the user controls
+                                                             // it); the default .weir/types/ path is
+                                                             // vendor-directory territory and confines
+                                                             // through a symlinked `types` dir
+                                                             // [D:lockfile-symlink-confinement]
                                                              | Some p -> IO.Path.GetFullPath p, $"\"{p}\"", false
                                                              | None ->
                                                                  IO.Path.Combine(weirDir, "types", name + ".weir"),
@@ -636,7 +639,7 @@ let main argv =
         | path :: rest when not (path.StartsWith "-") -> Script.run path rest
         // teaching arms, not dumps [D:windows-v1]: a mistyped option gets a
         // did-you-mean; a mis-quoted -e gets its arity named (on Windows a
-        // ONE-expression intent often arrives shell-split into many argv)
+        // one-expression intent often arrives shell-split into many argv)
         | [ "-e" ] ->
             Console.Error.WriteLine "weir -e takes exactly one argument: the program"
             2

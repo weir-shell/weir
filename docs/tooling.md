@@ -1,8 +1,8 @@
 # Tooling
 
-Reference is the language. Tooling is everything around it — this
-page is for someone setting up a project, a pipeline, or an editor,
-rather than someone writing a line of weir. Its two manuals sit
+The reference covers the language; tooling is everything around it —
+this page is for someone setting up a project, a pipeline, or an
+editor, rather than someone writing a line of weir. Its two manuals sit
 alongside: [Editors](editors.md) and [The REPL](repl.md).
 
 ## The CLI

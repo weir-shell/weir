@@ -4,7 +4,7 @@
 # inherit path [D:colour-inherit]) and binds `it := ()` — the meta is
 # the plain `: seq<string>` (the v0.0.43 streamed parenthetical
 # reverted), `it` right after echoes `() : unit` with no error, and
-# MISUSING the unit `it` appends the capture repair with the command
+# misusing the unit `it` appends the capture repair with the command
 # verbatim. A `let` binds no `it` (FSI: `let o = 10;;`); the fresh
 # session and the piped REPL are pinned unchanged. Named function
 # values echo a mini-help: builtins the #help signature + glance,
@@ -47,7 +47,7 @@ def session(lines_with_settle):
         os.write(fd, line)
         drain(settle)
     os.write(fd, b"\x04")
-    # deadline-bounded reap — a hang FAILS instead of wedging the battery
+    # deadline-bounded reap — a hang fails instead of wedging the battery
     deadline = time.time() + 15
     reaped = False
     while time.time() < deadline:
@@ -70,7 +70,7 @@ def session(lines_with_settle):
 
 
 # --- (a): the FSI-parity flow — a bare command streams, the meta is the
-# PLAIN type (the 43 parenthetical reverted), and `it` right after
+# plain type (the v0.0.43 parenthetical reverted), and `it` right after
 # echoes `() : unit`, no error ---
 cmd = 'sh -c "echo STREAMED-OUT"'
 out = session([(cmd.encode() + b"\r", 1.2), (b"it\r", 0.8)])
@@ -86,7 +86,7 @@ if "unbound variable" in out:
     failures.append(f"(a) it is BOUND after a streamed command — no unbound error: {out!r}")
 
 # --- (b): misuse — the unit `it` where unit fails the check gets the
-# located type error PLUS the capture repair with the command verbatim ---
+# located type error plus the capture repair with the command verbatim ---
 out = session([(cmd.encode() + b"\r", 1.2), (b"it |> map Str.trim\r", 0.8)])
 if f"to capture: let x = {cmd}" not in out:
     failures.append(f"(b) the misuse teach must carry the streamed command verbatim: {out!r}")
@@ -101,8 +101,8 @@ if "#infer: the source has type unit" not in out:
 if f"to capture: let x = {cmd}" not in out:
     failures.append(f"(b2) the #infer misuse must append the capture repair: {out!r}")
 
-# --- (c): a `let` binds its NAME, never `it` — FSI parity (`let o = 10;;`
-# binds no it); a fresh-session `it` after a let is the PLAIN unbound
+# --- (c): a `let` binds its name, never `it` — FSI parity (`let o = 10;;`
+# binds no it); a fresh-session `it` after a let is the plain unbound
 # error, no repair ---
 out = session([(b'let y = sh -c "echo CAP-OUT"\r', 1.2), (b"it\r", 0.8), (b"y\r", 0.8)])
 if "CAP-OUT" not in out:
@@ -119,7 +119,7 @@ if "unbound variable 'it'" not in out:
 if "to capture:" in out:
     failures.append(f"(d) the repair must not fire without a prior streamed statement: {out!r}")
 
-# --- (e): piped REPL — the bare command takes the VALUE path, binds
+# --- (e): piped REPL — the bare command takes the value path, binds
 # `it`, and the byte surface is unmoved (no streamed note, no unit echo) ---
 p = subprocess.run(
     [WEIR],
@@ -134,7 +134,7 @@ if "streamed" in p.stdout or "streamed" in p.stderr:
 if "() : unit" in p.stdout:
     failures.append(f"(e) piped: unit stays invisible on the pinned byte surface: {p.stdout!r}")
 
-# --- (f): a bare BUILTIN function echoes the #help mini-help — the
+# --- (f): a bare builtin function echoes the #help mini-help — the
 # qualified signature plus the doc's first line, one renderer ---
 out = session([(b"Seq.map\r", 0.8)])
 if "Seq.map (f: 'a -> 'b) (xs: seq<'a>) : seq<'b>" not in out:
@@ -144,13 +144,13 @@ if "Apply a function to every element, lazily." not in out:
 if "<builtin>" in out:
     failures.append(f"(f) the opaque <builtin> line must be gone for a named builtin: {out!r}")
 
-# --- (f2): a bare ALIAS names its home ---
+# --- (f2): a bare alias names its home ---
 out = session([(b"find\r", 0.8)])
 if "Seq.find (pred:" not in out:
     failures.append(f"(f2) the bare alias must echo its qualified home Seq.find: {out!r}")
 
 # --- (g): a session-defined function echoes name : scheme + its
-# recorded definition's first line; redefinition shows the LAST accepted ---
+# recorded definition's first line; redefinition shows the last accepted ---
 out = session(
     [
         (b"let f x = x + 1\r", 0.8),
@@ -167,8 +167,8 @@ if out.count("let f x = x + 1") < 2:
 if out.count("let f x = x + 2") < 2:
     failures.append(f"(g) redefinition must show the LAST accepted definition: {out!r}")
 
-# --- (h): a bare command that EXITS NONZERO renders a QUIET exit-code
-# status (there is no $?, so the code must show), NOT the loud `error:` —
+# --- (h): a bare command that exits nonzero renders a quiet exit-code
+# status (there is no $?, so the code must show), not the loud `error:` —
 # the raise is caught on the inherit path and the session continues
 # [D:repl-cmd-fail]. `it` after binds () like any streamed command.
 out = session([(b'sh -c "echo OUT; exit 3"\r', 1.2), (b"it\r", 0.8), (b'print "after"\r', 0.8)])
@@ -183,7 +183,7 @@ if "() : unit" not in out:
 if "after" not in out:
     failures.append(f"(h) the session must continue past a failed command: {out!r}")
 
-# --- (h2): a VALUE-position command failure stays the LOUD error — there
+# --- (h2): a value-position command failure stays the loud error — there
 # it aborted a computation, not a shell `$?` [D:repl-cmd-fail] ---
 out = session([(b'let x = $(sh -c "exit 4")\r', 1.0)])
 if "error: command failed with exit code 4" not in out:

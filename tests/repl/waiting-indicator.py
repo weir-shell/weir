@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # The waiting indicator [D:waiting-indicator]: draws on stderr at a tty
-# during weir's OWN blocking work (after a 500ms grace), is erased
+# during weir's own blocking work (after a 500ms grace), is erased
 # before anything else prints, never appears for fast calls, and the
 # piped byte surface does not move. Asserts on the pty stream.
 import os
@@ -41,7 +41,7 @@ def run(lines, settle=0.4):
         os.write(fd, l.encode())
         drain(settle)
     os.write(fd, b"\x04")
-    # deadline-bounded: drain until the child is reaped — a hang FAILS
+    # deadline-bounded: drain until the child is reaped — a hang fails
     # here instead of wedging the battery
     deadline = time.time() + 15
     reaped = False
@@ -67,7 +67,7 @@ def run(lines, settle=0.4):
 
 failures = []
 
-# a slow sleep: the spinner appears (grace passed) and is ERASED —
+# a slow sleep: the spinner appears (grace passed) and is erased —
 # after the erase sequence no spinner glyph remains on the stream tail
 t = run(["Duration.sleep 1300ms\r"], settle=1.8)
 if not SPINNER.search(t):
@@ -81,13 +81,13 @@ else:
     if SPINNER.search(after):
         failures.append(f"spinner bytes after the final erase: {after[-200:]!r}")
 
-# a fast call: the 500ms grace keeps it SILENT
+# a fast call: the 500ms grace keeps it silent
 t2 = run(["Duration.sleep 120ms\r"], settle=0.7)
 if SPINNER.search(t2) or "sleeping" in t2:
     failures.append(f"a fast call must stay silent: {t2[-200:]!r}")
 
-# a child owning the terminal: NEVER drawn over — sleep here is the
-# COREUTILS command (weir never shadows it), i.e. a spawned child
+# a child owning the terminal: never drawn over — sleep here is the
+# coreutils command (weir never shadows it), i.e. a spawned child
 t3 = run(["sh -c \"sleep 0.9; echo child-done\"\r"], settle=1.5)
 if SPINNER.search(t3):
     failures.append(f"indicator must never draw while a child owns the terminal: {t3[-200:]!r}")

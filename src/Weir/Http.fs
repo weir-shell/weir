@@ -9,25 +9,26 @@ open System
 open System.Net.Http
 
 // the request as flat primitives: auth and secret headers are already
-// resolved to plain header pairs by the caller (Builtins), so THIS module
-// never sees a Secret — the reveal happened at the boundary, deliberately
+// resolved to plain header pairs by the caller (Builtins), so this
+// module never sees a Secret — the reveal happened at the boundary,
+// deliberately
 type Req =
     { Method: string
       Url: string
       // header pairs, in order, auth included; duplicates preserved
       Headers: (string * string) list
-      // the CREDENTIAL header names [D:secret-redirect]: auth's
+      // the credential header names [D:secret-redirect]: auth's
       // Authorization plus every secretHeaders name (case-insensitive).
-      // On a CROSS-ORIGIN redirect these are DROPPED, exactly as the BCL
+      // On a cross-origin redirect these are dropped, exactly as the BCL
       // drops Authorization — so weir's two credential channels agree
       // (the auth union rode .NET's rule for free; secretHeaders did not).
       // Empty for a request with no credentials.
       SensitiveHeaders: Set<string>
-      // (contentType, body) — the body is the EXACT bytes to send, no
+      // (contentType, body) — the body is the exact bytes to send, no
       // re-encoding, no newline stripping (the whole point over curl -d)
       Body: (string * string) option
       TimeoutMs: int
-      // TLS verification OFF for THIS request [D:http-s2]: a loud
+      // TLS verification off for this request [D:http-s2]: a loud
       // per-request opt-out for self-signed clusters — never global
       Insecure: bool }
 
@@ -54,10 +55,10 @@ let private rootMessage (ex: exn) : string =
 
     (inner ex).Message
 
-/// classify by exception TYPE down the chain, never by message text:
+/// classify by exception type down the chain, never by message text:
 /// timeout is the TaskCanceledException HttpClient.Timeout throws (weir
-/// passes no cancellation tokens, so cancellation IS timeout), TLS is
-/// AuthenticationException, DNS/refused are SocketErrorCode
+/// passes no cancellation tokens, so cancellation means timeout), TLS
+/// is AuthenticationException, DNS/refused are SocketErrorCode
 let classifyTransport (timeoutMs: int) (port: int) (ex: exn) : TransportError =
     let rec walk (e: exn) =
         match e with
@@ -78,16 +79,16 @@ let classifyTransport (timeoutMs: int) (port: int) (ex: exn) : TransportError =
 let private fmtMs (ms: int) : string =
     if ms % 1000 = 0 then $"{ms / 1000}s" else $"{ms}ms"
 
-/// redact a URL's userinfo for a diagnostic [D:url-redact]: a credential in
-/// `scheme://user:pass@host/...` prints VERBATIM otherwise (terminal, CI
-/// log, REPL). Replace the whole `user:pass` span (between `://` and the
-/// first `@` before the path/query/fragment) with `***`, keeping scheme
-/// and everything from the host on — a credential-FREE URL is returned
-/// UNCHANGED, so the target is still named in full. Purely TEXTUAL so it
-/// works on a URL `Uri` could not parse (exactly the transport fallback's
-/// case). The authority ends at the first `/`, `?` or `#`; an `@` only
-/// counts as a userinfo separator BEFORE that, so an `@` in a path or query
-/// is left alone.
+/// redact a URL's userinfo for a diagnostic [D:url-redact]: a credential
+/// in `scheme://user:pass@host/...` would otherwise print verbatim
+/// (terminal, CI log, REPL). Replace the whole `user:pass` span (between
+/// `://` and the first `@` before the path/query/fragment) with `***`,
+/// keeping scheme and everything from the host on — a credential-free
+/// URL is returned unchanged, so the target is still named in full.
+/// Purely textual, so it works on a URL `Uri` could not parse (exactly
+/// the transport fallback's case). The authority ends at the first `/`,
+/// `?` or `#`; an `@` only counts as a userinfo separator before that,
+/// so an `@` in a path or query is left alone.
 let redactUrl (url: string) : string =
     match url.IndexOf "://" with
     | -1 -> url
@@ -115,10 +116,10 @@ let transportMessage (host: string) (err: TransportError) : string =
     | TlsUntrusted -> $"cannot establish TLS with {host} — the certificate is not trusted"
     | OtherTransport root -> $"cannot reach {host} — {root}"
 
-/// two URLs share an ORIGIN [D:secret-redirect] iff scheme, host and port
+/// two URLs share an origin [D:secret-redirect] iff scheme, host and port
 /// all match (a port change is a different origin — the same rule the BCL
 /// uses to decide whether Authorization survives a redirect). A parse
-/// failure on either side is treated as a DIFFERENT origin (fail safe: a
+/// failure on either side is treated as a different origin (fail safe: a
 /// URL weir cannot compare must not keep the credential).
 let sameOrigin (a: Uri) (b: Uri) : bool =
     a.Scheme = b.Scheme
@@ -137,21 +138,21 @@ let isRedirect (code: int) : bool =
 [<Literal>]
 let private maxRedirects = 50
 
-/// send the request. Status is DATA — a 4xx/5xx is Ok with that status,
-/// never an Error [D:http]. Error is TRANSPORT failure only, classified
+/// send the request. Status is data — a 4xx/5xx is Ok with that status,
+/// never an Error [D:http]. Error is transport failure only, classified
 /// [D:transport-words] — the worded message plus the case, so the caller
 /// can append a case-specific repair (Builtins: insecure on TlsUntrusted).
 ///
-/// Redirects are followed EXPLICITLY [D:secret-redirect], not by the
-/// handler's AllowAutoRedirect: on a CROSS-ORIGIN hop the SensitiveHeaders
-/// (auth's Authorization + every secretHeaders name) are DROPPED, exactly
+/// Redirects are followed explicitly [D:secret-redirect], not by the
+/// handler's AllowAutoRedirect: on a cross-origin hop the SensitiveHeaders
+/// (auth's Authorization + every secretHeaders name) are dropped, exactly
 /// as the BCL drops Authorization — so weir's two credential channels stop
 /// disagreeing (the review's F4). Same-origin hops keep every header.
 let send (req: Req) : Result<Resp, string * TransportError> =
     try
-        // a per-request handler only when insecure — the default path keeps
-        // the plain HttpClient (TLS verification ON) [D:http-s2]. Auto-redirect
-        // is OFF so weir controls the credential-drop on an origin change
+        // the insecure callback is set per request only — the default
+        // path keeps TLS verification on [D:http-s2]. Auto-redirect is
+        // off so weir controls the credential-drop on an origin change
         // [D:secret-redirect] — the BCL would re-send secretHeaders.
         use handler = new HttpClientHandler()
         handler.AllowAutoRedirect <- false
@@ -162,13 +163,13 @@ let send (req: Req) : Result<Resp, string * TransportError> =
         use client = new HttpClient(handler)
         client.Timeout <- TimeSpan.FromMilliseconds(float req.TimeoutMs)
 
-        // build one request message for a hop: `method`/`url`, the CURRENT
+        // build one request message for a hop: `method`/`url`, the current
         // header set (already credential-filtered by the caller loop), the
         // body when the method still carries one, and the UA default.
         let buildMessage (method: string) (url: string) (headers: (string * string) list) (body: (string * string) option) =
             let msg = new HttpRequestMessage(HttpMethod(method), url)
 
-            // the body is attached BEFORE headers so a content-header (e.g. a
+            // the body is attached before headers so a content-header (e.g. a
             // caller-set Content-Type override) can land on the content
             match body with
             | Some(ct, b) ->
@@ -193,14 +194,14 @@ let send (req: Req) : Result<Resp, string * TransportError> =
                     | c -> c.Headers.TryAddWithoutValidation(k, v) |> ignore
 
             // the default User-Agent [D:http-ua]: weir/<stamp>, the same
-            // string --version prints — applied at SEND time, never a field
-            // in Http.defaults, so the request RECORD stays stable across
+            // string --version prints — applied at send time, never a field
+            // in Http.defaults, so the request record stays stable across
             // releases (a pinned/shown request must not break on a version
             // bump; the cost — show req omits a header the wire carries — is
             // stated in the docs). A caller's User-Agent is already on the
             // message (headers and secretHeaders both arrive merged in
-            // req.Headers) and BLOCKS this: header names compare
-            // case-insensitively, so exactly one is ever sent. A DEFAULT, not
+            // req.Headers) and blocks this: header names compare
+            // case-insensitively, so exactly one is ever sent. A default, not
             // a fixed header — the explicit pair is the override spelling.
             if not (msg.Headers.Contains "User-Agent") then
                 msg.Headers.TryAddWithoutValidation("User-Agent", $"weir/{Weir.Version.current}")
@@ -239,9 +240,9 @@ let send (req: Req) : Result<Resp, string * TransportError> =
                 // a relative Location resolves against the current URL
                 let nextUri = if loc.IsAbsoluteUri then loc else Uri(fromUri, loc)
 
-                // CROSS-ORIGIN? then drop the credential headers — the F4 fix
-                // [D:secret-redirect], the same drop the BCL does for
-                // Authorization, now covering secretHeaders too
+                // on a cross-origin hop, drop the credential headers — the
+                // F4 fix [D:secret-redirect], the same drop the BCL does
+                // for Authorization, now covering secretHeaders too
                 if not (sameOrigin fromUri nextUri) && not (Set.isEmpty req.SensitiveHeaders) then
                     curHeaders <-
                         curHeaders
@@ -284,26 +285,26 @@ let send (req: Req) : Result<Resp, string * TransportError> =
                 u.Host, u.Port
             with _ ->
                 // the URL would not parse — the fallback names it in the
-                // error, so REDACT its userinfo [D:url-redact] (a
+                // error, so redact its userinfo [D:url-redact] (a
                 // `user:pass@host` credential must not print verbatim)
                 redactUrl req.Url, 0
 
         let err = classifyTransport req.TimeoutMs port ex
         Error(transportMessage host err, err)
 
-/// Basic auth is an ENCODING, not a prefix: base64(user:pass) [D:http] —
+/// Basic auth is an encoding, not a prefix: base64(user:pass) [D:http] —
 /// which is why it is a union case the runner encodes, not a header a
 /// caller would build by hand and get wrong
 let basicToken (user: string) (password: string) : string =
     let raw = Text.Encoding.UTF8.GetBytes($"{user}:{password}")
     Convert.ToBase64String raw
 
-/// the header-injection byte class [D:http-header-bytes]: CR, LF or NUL in
-/// a header NAME or VALUE forges a second header / splits a response.
-/// Refused at BOTH crossings (the client send path and a serve response) —
-/// the same one-boundary refusal the argv NUL guard performs, never the
-/// silent forge (client) or drop (server) the review found. Shared so the
-/// two directions agree byte-for-byte.
+/// the header-injection byte class [D:http-header-bytes]: CR, LF or NUL
+/// in a header name or value forges a second header / splits a response.
+/// Refused at both crossings (the client send path and a serve response)
+/// — the same one-boundary refusal the argv NUL guard performs, never
+/// the silent forge (client) or drop (server) the review found. Shared
+/// so the two directions agree byte-for-byte.
 let private headerByteName (c: char) : string option =
     match int c with
     | 13 -> Some "CR"
@@ -311,8 +312,8 @@ let private headerByteName (c: char) : string option =
     | 0 -> Some "NUL"
     | _ -> None
 
-/// the offending byte's name and where it sits (NAME or VALUE), or None if
-/// the pair is clean — the caller words the located refusal
+/// the offending byte's name and where it sits (name or value), or None
+/// if the pair is clean — the caller words the located refusal
 let headerInjection (name: string, value: string) : (string * string) option =
     match name |> Seq.tryPick headerByteName with
     | Some b -> Some(b, "name")
@@ -321,10 +322,10 @@ let headerInjection (name: string, value: string) : (string * string) option =
         | Some b -> Some(b, "value")
         | None -> None
 
-/// the located refusal message [D:http-header-bytes], the argv-NUL guard's
-/// register: name the header, the byte, and where it sat. `who` is the
-/// crossing ("request header" / "response header") so the two directions
-/// read the same shape.
+/// the located refusal message [D:http-header-bytes], worded like the
+/// argv-NUL guard's: name the header, the byte, and where it sat. `who`
+/// is the crossing ("request header" / "response header") so the two
+/// directions read the same shape.
 let headerInjectionMessage (who: string) (name: string) (byteName: string) (where: string) : string =
     $"{who} '{name}' carries a {byteName} byte in its {where} — that forges a second header (response splitting / header injection); a header name or value cannot contain CR, LF or NUL"
 

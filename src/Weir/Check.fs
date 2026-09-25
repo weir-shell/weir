@@ -3,7 +3,7 @@ module Weir.Check
 open Weir.Ast
 open Weir.Types
 
-// Origin [D:row-provenance]: a PHYSICAL (line, col, len) override for
+// Origin [D:row-provenance]: a physical (line, col, len) override for
 // where the error points — set when the true cause lives in another
 // statement, whose logical spans this statement cannot translate.
 type TypeError =
@@ -22,22 +22,22 @@ let formatWarning (w: Warning) : string =
 // The logical-col -> (physLine, physCol) translator for the statement
 // being checked [D:row-provenance]: Script sets it around each
 // checkStatement; None for non-statement consumers (Complete, tests),
-// where provenance simply does not record.
+// where provenance is not recorded.
 let toPhys: System.Threading.ThreadLocal<(int -> int * int) option> =
     new System.Threading.ThreadLocal<_>(fun () -> None)
 
-// Args.load targets [D:typed-argv] — the record is the flags shape,
-// the union is the subcommand front door (case -> payload def)
+// Args.load targets [D:typed-argv] — a record is the flags shape, a
+// union is the subcommand entry point (case -> payload def)
 type ArgsTarget =
     | ArgsRecord of RecordDef
     | ArgsUnion of def: UnionDef * payloads: Map<string, RecordDef>
     // shared flags by containment [D:shared-flags]: the outer record's
-    // scalar fields are shared flags; its ONE union-typed field is the
-    // subcommand slot
+    // scalar fields are shared flags; its single union-typed field is
+    // the subcommand slot
     | ArgsShared of outer: RecordDef * unionField: string * udef: UnionDef * payloads: Map<string, RecordDef>
 
-// retired names teach their replacement [D:seq-force] — one
-// table, both lookup sites
+// retired names teach their replacement [D:seq-force] — one table
+// serves both lookup sites
 let private retiredMember (m: string) (field: string) : string option =
     match m, field with
     | "Seq", "toList" -> Some "weir has no list type; 'Seq.freeze' is the materializer"
@@ -46,16 +46,16 @@ let private retiredMember (m: string) (field: string) : string option =
     | "Seq", "force" -> Some "renamed 'Seq.freeze' — the result is a frozen snapshot (pulls never re-run)"
     | "Option", "defaultTo" -> Some "renamed 'Option.defaultValue' (F# parity); a lazy default is 'Option.defaultWith'"
     // one operation, one name [D:seq-gaps]: the F# spelling wins where
-    // one exists (collect), and the weir spelling keeps its seat (where)
+    // one exists (collect); otherwise the weir spelling stays (where)
     | "Seq", "flatMap" -> Some "F# parity names it 'Seq.collect'"
     | "Seq", "filter" -> Some "weir's filter is 'Seq.where' — one name per operation"
-    // a preference REVERSAL [D:first-retired]: the synonym's readability
-    // reason did not fall — it was outweighed by the same rule that
-    // retired filter
+    // a reversed preference [D:first-retired]: the synonym's
+    // readability argument still holds but is outweighed by the same
+    // one-name rule that retired filter
     | "Seq", "first" -> Some "weir's first is 'Seq.take' — one name per operation"
     | _ -> None
 
-// retired FIELDS teach their replacement at the access site
+// retired fields teach their replacement at the access site
 // [D:filerow] — "no field" on a renamed field is the wrong lesson
 let private retiredField (record: string) (field: string) : string option =
     match record, field with
@@ -75,11 +75,11 @@ let private retiredBare (name: string) : string option =
     | "first" -> Some "weir's first is 'Seq.take' (bare: 'take') — one name per operation"
     | _ -> None
 
-/// Members that live as bespoke checker ARMS, not as entries in a
+/// Members that live as bespoke checker arms, not as entries in a
 /// module's member map: `Args.load`/`Env.load` resolve a record/union
-/// TYPE name, so their scheme is not a plain member. Completion must
+/// type name, so their scheme is not a plain member. Completion must
 /// still offer them, and the "no member" error must read them as
-/// known-but-misused, not a typo — one source so the two stay in step.
+/// known-but-misused, not a typo — one source keeps the two in step.
 let specialModuleMembers: Map<string, string list> =
     Map [ "Args", [ "load" ]; "Env", [ "load" ] ]
 
@@ -90,7 +90,7 @@ let private isSpecialMember (m: string) (field: string) : bool =
     |> List.contains field
 
 // the adapter slot's top level [D:wire-unions]: a declared record, or
-// a TAGGED union dispatching on its wire discriminator
+// a tagged union dispatching on its wire discriminator
 type JsonTop =
     | TopRec of RecordDef
     | TopUnion of UnionDef
@@ -144,7 +144,7 @@ and TypedKind =
         seqOf: bool *
         mapOf: bool
     // from yaml T [D:yaml-v1]: eval has no env.Types, so the checker packs
-    // the RESOLVED target tree (the [D:env-enums] precedent)
+    // the resolved target tree (the [D:env-enums] precedent)
     | TEFromYaml of tyName: string * shape: Yaml.Shape * stream: bool
     | TETo of
         format: string *
@@ -163,7 +163,7 @@ and TypedKind =
     | TELetPat of binder: Pattern * value: TypedExpr * body: TypedExpr
     | TELambdaPat of binder: Pattern * body: TypedExpr
     | TEInterp of parts: InterpPart<TypedExpr> list
-    // the yaml district's TYPED template [D:yaml-district]; patchBy
+    // the yaml district's typed template [D:yaml-district]; patchBy
     // [D:yaml-nodes]: Some by = a `yaml patch` district (YamlPatch)
     | TEYaml of TypedYamlTpl * schema: string option * patchBy: string option option
 
@@ -243,8 +243,8 @@ let rec private firstTombstone (tpl: YamlTpl) : Span option =
 
 let private mismatch (span: Span) (expected: Ty) (actual: Ty) =
     // a built request where a URL string is expected is the fetch/send
-    // misreading exactly (`Http.get u |> Http.fetch`) — name the pair's
-    // split instead of leaving a bare type mismatch [D:fetch-naming]
+    // confusion (`Http.get u |> Http.fetch`) — name the pair's split
+    // instead of leaving a bare type mismatch [D:fetch-naming]
     let hint =
         match expected, actual with
         | TStr, TNamed("HttpRequest", _) -> " — a built request runs through Http.send; Http.fetch takes a bare URL"
@@ -279,9 +279,9 @@ let private substParams (ps: string list) (args: Ty list) (ty: Ty) : Ty =
 
     go ty
 
-// The two splice sites [D:interp-show]: a hole RENDERS for a human
-// (Show is the law), a command argument becomes an argv WORD for a
-// program (scalar-exact — no bet on the child's parser)
+// The two splice sites [D:interp-show]: a hole renders for a human
+// (Show is the rule), a command argument becomes an argv word for a
+// program (scalar-exact — no guessing at the child's parser)
 type private SpliceSite =
     | Hole
     | CmdArg
@@ -294,8 +294,8 @@ type private Pending =
       Span: Span
       Describe: Ty -> string }
 
-// == on floats is representation, not a promise weir makes [D:floats]:
-// the Eq exclusion's teaching names the idiom
+// == on floats compares representations, which weir does not vouch
+// for [D:floats]; the Eq exclusion's message names the idiom
 let rec private tyHasFloat (ty: Ty) : bool =
     match ty with
     | TFloat -> true
@@ -312,39 +312,39 @@ type private Ctx =
     { mutable Fresh: int
       mutable Subst: Map<string, Ty>
       mutable Rows: Map<string, Map<string, Ty * Span>>
-      // physical field-access origins for INSTANTIATED row vars
+      // physical field-access origins for instantiated row vars
       // [D:row-provenance], rehydrated from the scheme's RowOrigins
       mutable RowOrigins: Map<string, (string * int * int * int) list>
       mutable Cons: Map<string, Pending list>
-      // splice/hole vars whose scalar defaulting is DEFERRED to the
-      // statement boundary [D:splice-default-last]: defaulting fired
-      // early once and rejected `1 |> (fun k -> $"{k}")` — order, not
-      // rule; the shape check defers with it
+      // splice/hole vars whose scalar defaulting is deferred to the
+      // statement boundary [D:splice-default-last]: early defaulting
+      // rejected `1 |> (fun k -> $"{k}")` — the issue is order, not
+      // the rule; the shape check defers with it
       mutable PendingSplices: (string * Span * SpliceSite) list
-      // the inference budget [D:depth-guard]'s post-parse sibling:
+      // the inference budget, [D:depth-guard]'s post-parse sibling:
       // HM inference is DEXPTIME (a 7-line file can double its type
-      // per line), and "no answer, forever" is as wrong as a crash —
+      // per line), and never answering is as wrong as a crash — so
       // resolution work is counted and exhaustion becomes a located
-      // diagnostic. The ceiling is a COST bound, orders of magnitude
-      // above any real program, re-askable on a receipt
+      // diagnostic. The ceiling is a cost bound, orders of magnitude
+      // above any real program, revisable given evidence
       mutable Work: int
       // the span the exhaustion diagnostic anchors on — the innermost
       // unification site's, kept current by bind (resolve has no span)
       mutable WorkSpan: Span
       // the innermost bind's operands, for the evidence probe: at
-      // exhaustion these are the types whose SIZE is or is not the story
+      // exhaustion these are the types whose size is or is not the cause
       mutable WorkTys: Ty * Ty
-      // point-free print uses (Seq.iter print) DEFER their sentinel to
+      // point-free print uses (Seq.iter print) defer their sentinel to
       // the statement boundary like splices do [D:splice-default-last]:
       // a use-site-determined type passes printArgTy there, an
       // undetermined one keeps the string default (PLAN-dx-review D7)
       mutable PendingPrints: (string * Span) list
       // physical positions of bare holes whose var took the string
-      // DEFAULT this statement (PLAN-dx-review D6) — ride the let's
+      // default this statement (PLAN-dx-review D6) — ride the let's
       // scheme so a later call-site mismatch can name the anchor
       mutable HoleDefaulted: (int * int) list }
 
-// exhaustion carries whether type SIZE is actually in evidence — the
+// exhaustion carries whether type size is actually in evidence — the
 // message must not claim "your type grew too large" merely because the
 // budget ran out (a future second non-termination shape gets an honest
 // generic answer, not a confidently wrong specific one)
@@ -373,7 +373,7 @@ let private freshName (ctx: Ctx) (prefix: string) : string =
     $"{prefix}{ctx.Fresh}"
 
 // resolve is the step every type walk pays (occurs, finalTy, bind,
-// row merges), so it is where the budget TICKS; the raise site
+// row merges), so it is where the budget ticks; the raise site
 // disarms the counter first so the evidence probe below can walk
 // without re-triggering
 let rec private resolveNoTick (ctx: Ctx) (ty: Ty) : Ty =
@@ -388,7 +388,7 @@ let rec private resolveNoTick (ctx: Ctx) (ty: Ty) : Ty =
         | None -> ty
     | t -> t
 
-// a BOUNDED size probe for the budget's evidence check: walks at most
+// a bounded size probe for the budget's evidence check: walks at most
 // `floor` nodes and answers "is this type at least that big" — never
 // O(actual size), because at exhaustion the actual size can be 2^n
 let private typeAtLeast (ctx: Ctx) (floor: int) (ty: Ty) : bool =
@@ -528,7 +528,7 @@ let private instantiate (ctx: Ctx) (span: Span) (sch: Scheme) : Ty =
             | TNamed(n, args) -> TNamed(n, args |> List.map rename)
             | t -> t
 
-        // constraints freshen WITH the vars (deep-copy discipline): the
+        // constraints freshen with the vars (deep-copy discipline): the
         // instantiation site's span becomes the demanding site
         for KeyValue(v, clss) in sch.Cs do
             match Map.tryFind v mapping with
@@ -567,12 +567,12 @@ let private envFreeVars (ctx: Ctx) (env: TypeEnv) : Set<string> =
     env.Values
     |> Map.fold (fun acc _ sch -> acc + (tyVars (finalTy ctx sch.Ty) - sch.Forall)) Set.empty
 
-// The class solver (Session A: Eq only). Concrete types run the shape
-// predicate; applied constructors decompose structurally; bare vars
-// (and row vars) carry the constraint forward — bind discharges them
-// the moment they resolve. Failure formats the ORIGINAL demanded type
-// (matching the pre-class message families). Fully erased: no runtime
-// presence — the stop-and-report budget's hard line.
+// The class solver. Concrete types run the shape predicate; applied
+// constructors decompose structurally; bare vars (and row vars) carry
+// the constraint forward — bind discharges them the moment they
+// resolve. Failure formats the original demanded type (matching the
+// pre-class message families). Fully erased: the classes have no
+// runtime presence.
 let private demand (ctx: Ctx) (env: TypeEnv) (p: Pending) (ty0: Ty) : Result<unit, TypeError> =
     let pend (name: string) =
         ctx.Cons <- Map.add name (p :: (Map.tryFind name ctx.Cons |> Option.defaultValue [])) ctx.Cons
@@ -605,17 +605,17 @@ let private demand (ctx: Ctx) (env: TypeEnv) (p: Pending) (ty0: Ty) : Result<uni
 
             match p.Cls, t with
             // Eq: no function or seq anywhere, recursively
-            // Secret admits Eq [D:secret] (did the token change?) but NOT
-            // Ord — sorting secrets is meaningless; constant-time is not
-            // claimed (weir is not a crypto library)
+            // Secret admits Eq [D:secret] (did the token change?) but
+            // not Ord — sorting secrets is meaningless; constant-time is
+            // not claimed (weir is not a crypto library)
             | Cls.Eq, (TInt | TStr | TBool | TUnit | TDur | TSize | TInstant | TBytes | TSecret) -> true
-            // floats are EXCLUDED from Eq [D:floats] — finite-only kept
+            // floats are excluded from Eq [D:floats] — finite-only kept
             // equality reflexive; representation (0.1 + 0.2) is the trap
             // that remains, and weir does not vouch for it
             | Cls.Eq, TFloat -> false
             | Cls.Eq, (TFun _ | TSeq _) -> false
             | Cls.Eq, TTuple ts -> ts |> List.forall (ok seen)
-            // plan/apply's Op and Plan are Eq-admitted BY DESIGN
+            // plan/apply's Op and Plan are Eq-admitted by design
             // [D:plan-apply]: the testing story is `plan <block> ==
             // [WriteFile("x", c)]`, and Op carries a seq (file content)
             // that the generic decompose would reject. The value-level Eq
@@ -629,24 +629,24 @@ let private demand (ctx: Ctx) (env: TypeEnv) (p: Pending) (ty0: Ty) : Result<uni
             | Cls.Show, TFun _ -> false
             | Cls.Show, TSeq elem -> ok seen elem
             | Cls.Show, TTuple ts -> ts |> List.forall (ok seen)
-            // Map renders (sorted) iff its VALUES do [D:map-string];
+            // Map renders (sorted) iff its values do [D:map-string];
             // Eq stays excluded like seq (no conditional instances —
             // the closed class system is untouched)
             | Cls.Show, TNamed("Map", [ TStr; inner ]) -> ok seen inner
             // a handle shows (pid + state) [D:scoped-procs]; Eq/Ord
             // stay excluded by construction (the decompose fall-through)
             | Cls.Show, TNamed("Proc", []) -> true
-            // a Plan shows (its ops, Secrets masked) [D:plan-apply] — the
-            // preview/diff story; def-less, so it needs its own arm
+            // a Plan shows (its ops, Secrets masked) [D:plan-apply] —
+            // preview/diff needs it; def-less, so it gets its own arm
             | Cls.Show, TNamed("Plan", []) -> true
             | Cls.Show, TNamed(n, targs) -> decompose n targs
-            // Ord: int | string | bool EXACTLY — no decomposition, no
-            // record/union ordering (no receipts; the message names it)
-            // Duration joins Ord [D:duration] — the first widening since
-            // the class set closed; elapsed > timeout is the point
-            // floats join Ord [D:floats]: total BECAUSE finite-only
-            // Instant joins Ord [D:instant] — before/after IS comparison
-            // (Duration's own admission argument, one type later)
+            // Ord: exactly the scalar set below — no decomposition, no
+            // record/union ordering (no demonstrated need; the message
+            // names the set). Duration joins Ord [D:duration] —
+            // elapsed > timeout is the point; floats join Ord
+            // [D:floats], total because finite-only; Instant joins Ord
+            // [D:instant] — before/after is comparison (Duration's own
+            // admission argument, one type later)
             | Cls.Ord, (TInt | TFloat | TStr | TBool | TDur | TSize | TInstant) -> true
             | Cls.Ord, _ -> false
             // vars and row vars are consumed by the outer match arms;
@@ -659,7 +659,7 @@ let private demand (ctx: Ctx) (env: TypeEnv) (p: Pending) (ty0: Ty) : Result<uni
         err p.Span (p.Describe(finalTy ctx ty0))
 
 // the splice law, shared by the eager check and the deferred
-// discharge [D:interp-show]: holes consult the Show CLASS (one arm
+// discharge [D:interp-show]: holes consult the Show class (one arm
 // asking beats a second list — the next Show type needs no edit
 // here); command arguments stay the scalar-exact list, with the
 // Duration arm naming the deliberate spellings
@@ -672,7 +672,7 @@ let private spliceAdmit (ctx: Ctx) (env: TypeEnv) (site: SpliceSite) (span: Span
         match site with
         | Hole ->
             match ty with
-            // a Secret does NOT interpolate [D:secret]: `$"token: {s}"` is
+            // a Secret does not interpolate [D:secret]: `$"token: {s}"` is
             // how a secret reaches a log line. show renders ***; using the
             // value is the deliberate Secret.reveal
             | TSecret ->
@@ -718,7 +718,7 @@ let private dischargeCons (ctx: Ctx) (env: TypeEnv) (v: string) (t: Ty) : Result
 
 let rec private bind (ctx: Ctx) (env: TypeEnv) (span: Span) (expected: Ty) (actual: Ty) : Result<unit, TypeError> =
     // the budget ticks in resolve (the step every walk pays); bind
-    // keeps the ANCHOR and the evidence operands current so exhaustion
+    // keeps the anchor and the evidence operands current so exhaustion
     // deep in a walk points at the innermost unification site
     ctx.WorkSpan <- span
     ctx.WorkTys <- expected, actual
@@ -765,9 +765,9 @@ and private dischargeRow
         dischargeCons ctx env r (TNamed(name, targs))
         |> Result.bind (fun () ->
 
-            // cross-statement provenance [D:row-provenance]: point at the
-            // recorded ACCESS, meet as the message note — shared by the
-            // no-field arm AND the field-TYPE-mismatch arm (the sibling)
+            // cross-statement provenance [D:row-provenance]: point at
+            // the recorded access, note the meet in the message —
+            // shared by the no-field and field-type-mismatch arms
             let atAccess field fspan (baseMsg: string) : Result<unit, TypeError> =
                 let origin =
                     Map.tryFind r ctx.RowOrigins
@@ -841,13 +841,13 @@ and private mergeRows (ctx: Ctx) (env: TypeEnv) (r1: string) (r2: string) : Resu
                 ctx.Rows <- Map.add r2 (Map.add field (ft, fspan) fields2) ctx.Rows
                 Ok())
 
-// The sentinel scheme registered for the print builtin. The quantified name
-// is unforgeable through declarations (ctx-fresh names are aN/rN), so a
-// structural comparison against this scheme is exactly "print, unshadowed".
-// PRECEDENT WITH A CEILING: this is the ONE place a builtin's ergonomics
-// buys checker complexity (the sentinel + printArgTy + the three
-// special-cased arms) — justified for the most-used builtin, NOT to be
-// extended to a second builtin without a bless.
+// The sentinel scheme registered for the print builtin. The quantified
+// name is unforgeable through declarations (ctx-fresh names are aN/rN),
+// so a structural comparison against this scheme means exactly "print,
+// unshadowed". This is the one place a builtin's ergonomics buys
+// checker complexity (the sentinel + printArgTy + the three
+// special-cased arms) — justified for the most-used builtin; do not
+// extend it to a second builtin without an explicit ruling.
 let printScheme: Scheme =
     { Forall = Set.singleton "__print"
       Cs = Map.empty
@@ -892,9 +892,9 @@ let distinctScheme: Scheme =
       HoleDefaults = [] }
 
 
-// the sequenced-unit message, ONE home for its two arms (the infer and
-// check-mode ESeq twins were verbatim duplicates — a drift hazard the
-// dedupe re-run closed [D:maintenance-2])
+// the sequenced-unit message, one home for its two arms — the infer
+// and check-mode ESeq twins share it so they cannot drift
+// [D:maintenance-2]
 let private seqUnitError (first: Expr) (ty: Ty) : string =
     let drop =
         match first.Kind with
@@ -909,7 +909,7 @@ let private seqUnitError (first: Expr) (ty: Ty) : string =
 // fresh var no position should have to name. Shared by the unit-position
 // carves (ESeq head, else-less if) and the statement gate.
 let rec divergesTo (x: Expr) : bool =
-    // exec REPLACES the process [D:exec] — a diverging reifier like
+    // exec replaces the process [D:exec] — a diverging reifier like
     // fail/exit; its desugar is a `|execed`/`|execedEnv` application spine
     let rec execSpine (e: Expr) =
         match e.Kind with
@@ -934,7 +934,7 @@ let private printArgTy (ctx: Ctx) (env: TypeEnv) (span: Span) (ty: Ty) : Result<
     match resolve ctx ty with
     | TVar _ as v -> bind ctx env span TStr v |> Result.map (fun () -> TStr)
     | (TStr | TInt | TFloat | TBool) as t -> Ok t
-    // unit is printable as NOTHING [D:exit-reifiers]: the !() sigil
+    // unit prints as nothing [D:exit-reifiers]: the !() sigil
     // desugar wraps interiors in print, and `| orFail` interiors are
     // unit — one rule instead of a shadow drain builtin
     | TUnit -> Ok TUnit
@@ -950,7 +950,7 @@ let private printArgTy (ctx: Ctx) (env: TypeEnv) (span: Span) (ty: Ty) : Result<
         err span "print will not render a Secret — show s prints ***, or Secret.reveal s to print its value"
     | TBytes ->
         // Bytes refuses print [D:bytes] — raw bytes wreck a terminal
-        // (the gzip receipt); the exits are deliberate
+        // (gzip output, say); the alternatives are deliberate
         err span "print will not render Bytes — Bytes.toBase64 b for text, or File.writeBytes path b for a file"
     | t -> err span $"print takes a string, int, float, bool, or seq<string>; this is {formatTy t}"
 
@@ -988,11 +988,11 @@ let rec private typeBinOp
 
     match op, resolve ctx l.Ty, resolve ctx r.Ty with
     // '=' parses only to carry this teaching (PLAN-dx-review D3): the
-    // docs' most-emphasised difference deserves better than a dump
+    // docs' most-emphasised difference deserves a real message
     | "=", _, _ -> err opSpan "use '==' for equality; '=' binds in let and record fields"
     // composition [D:composition-operators] — fully parametric, typed
     // like a builtin scheme: (a -> b) >> (b -> c) : a -> c, `<<`
-    // mirrored. FIRST in the match: the scalar-defaulting arms below
+    // mirrored. First in the match: the scalar-defaulting arms below
     // must never touch function operands. A non-function LHS on `>>`
     // gets the redirect-aware message (bash muscle memory).
     | (">>" | "<<"), lt, _ ->
@@ -1030,8 +1030,8 @@ let rec private typeBinOp
     | _, ((TInt | TFloat | TStr | TBool | TDur | TSize | TInstant) as t), TVar _ ->
         retryAfter (bind ctx env r.Span t r.Ty)
     | ("==" | "<>"), a, b ->
-        // Eq via the class solver (Session A): concrete failures keep the
-        // pre-class message verbatim; unresolved operands now DEFER (the
+        // Eq via the class solver: concrete failures keep the
+        // pre-class message verbatim; unresolved operands defer (the
         // constraint rides the var) instead of rejecting at the operator
         bind ctx env opSpan a b
         |> Result.bind (fun () ->
@@ -1049,9 +1049,9 @@ let rec private typeBinOp
     | _, TVar _, TVar _ -> err opSpan $"cannot infer the operand types of '{op}'; pipe data in or use concrete values"
     | _, TRowVar _, _
     | _, _, TRowVar _ -> err opSpan $"operator '{op}' is not defined for records"
-    // modulo is INT-ONLY [D:modulo]: weir floats are finite-only and
+    // modulo is int-only [D:modulo]: weir floats are finite-only and
     // IEEE `x % 0.0` is NaN — float modulo would need a divergent
-    // raise, declined until its own ruling; the teach names the exits
+    // raise, declined until its own ruling; the message names the exits
     | "%", TFloat, _
     | "%", _, TFloat ->
         err
@@ -1083,7 +1083,7 @@ let rec private typeBinOp
             opSpan
             "duration ÷ duration has no unit — Duration.toMillis d1 / Duration.toMillis d2 gives the integer ratio"
     | (">" | "<" | ">=" | "<="), TDur, TDur -> Ok TBool
-    // Instant arithmetic [D:instant]: two points SUBTRACT to the
+    // Instant arithmetic [D:instant]: two points subtract to the
     // Duration between them; a point shifts by a Duration (both
     // spellings — addition commutes); points never add
     | "-", TInstant, TInstant -> Ok TDur
@@ -1130,13 +1130,13 @@ let rec private spine (e: Expr) : Expr * Expr list =
         head, args @ [ arg ]
     | _ -> e, []
 
-// the RECURSIVE json field law [D:recursive-fields]: a field is
+// the recursive json field law [D:recursive-fields]: a field is
 // admitted if it is a scalar (int, float, string, bool), an Option of
 // an admitted type, a record whose fields are all admitted, or a seq
-// of an admitted type. `seen` is the ORDERED declaration path (the
-// yaml guard's job, but a cycle names its path); `path` locates the
-// offending field from the top — a recursive law's failures are deep
-// and a category list alone will not find them.
+// of an admitted type. `seen` is the ordered declaration path (the
+// yaml guard's job, but here a cycle can name its path); `path`
+// locates the offending field from the top — a recursive law's
+// failures are deep and a category list alone will not find them.
 let private jsonAdmittedSet =
     "json fields are int, float, string, bool, Option of an admitted type, a record of admitted fields, seq of an admitted type, a seq<string * T> mapping, or Map<string, T> of one"
 
@@ -1156,7 +1156,7 @@ let rec private jsonAdmitted
     | TBool -> Ok()
     | TSize ->
         // parked [D:size]: JSON has no size convention (bytes-int and a
-        // string both defensible; the choice wants a receipt)
+        // string both defensible; the choice waits for evidence)
         err
             span
             $"{at}Size is not representable in JSON — convert explicitly (Size.toBytes into an int field, or show for a string)"
@@ -1182,7 +1182,7 @@ let rec private jsonAdmitted
     | TNamed("Option", [ TNamed("Option", _) ]) ->
         err span $"{at}Option<Option<…>> has no JSON reading; flatten the type"
     | TNamed("Option", [ inner ]) -> jsonAdmitted span env seen path inner
-    // the open MAPPING seq<string * V> — yaml's [D:yaml-v1] pair-seq law
+    // the open mapping seq<string * V> — yaml's [D:yaml-v1] pair-seq law
     // at the json boundary [D:repl-infer]: a JSON object whose keys are
     // data reads/writes as pairs, admitted iff V is
     | TSeq(TTuple [ TStr; v ]) -> jsonAdmitted span env seen path v
@@ -1190,7 +1190,7 @@ let rec private jsonAdmitted
     // the ID-keyed object [D:map-string]: Map<string, T> is a JSON
     // object whose keys are data — admitted iff T is
     | TNamed("Map", [ TStr; inner ]) -> jsonAdmitted span env seen path inner
-    // a non-string key reaches here through an ANONYMOUS shape (declared
+    // a non-string key reaches here through an anonymous shape (declared
     // types validate at declaration) — same teaching as validateTy
     | TNamed("Map", [ k; _ ]) ->
         err
@@ -1208,7 +1208,7 @@ let rec private jsonAdmitted
             allOk def.Fields (fun (fn, fty) ->
                 jsonAdmitted span env (n :: seen) (if path = "" then fn else $"{path}.{fn}") fty)
         | Some(Record _) -> err span $"{at}'{n}' is generic; the JSON boundary needs monomorphic records"
-        // a TAGGED union crosses [D:wire-unions]: every case's payload
+        // a tagged union crosses [D:wire-unions]: every case's payload
         // record must admit; the [<Other>] case is string-or-nothing by
         // declaration, admitted by construction
         | Some(Union udef) when udef.Tag.IsSome ->
@@ -1318,7 +1318,7 @@ let private xmlableRecord (span: Span) (env: TypeEnv) (def: RecordDef) : Result<
         xmlFieldOk span def name ty name
         |> Result.bind (fun () -> xmlAdmitted span env [ def.Name ] name ty))
 
-// the aligned-table boundary [D:from-table]: a row is FLAT — each field
+// the aligned-table boundary [D:from-table]: a row is flat — each field
 // reads one column's cell, so the admitted set is the scalars and Option
 // of one (an empty or `<none>` cell reads as None). No nested records,
 // seqs, or Maps: a cell is one aligned column's text.
@@ -1341,11 +1341,11 @@ let private tableableRecord (span: Span) (def: RecordDef) : Result<unit, TypeErr
 
 // the defs a shape reaches, for the reader [D:recursive-fields]: eval
 // converts nested objects without an env, so the closure rides the
-// typed node (the yamlShape pattern, by table instead of by tree)
-// the write-side rename table [D:wire-keys]: attrs are erased from
-// VALUES, so `to json`/`to yaml` carry their record->field->wire map
-// on the NODE, computed here at check (the adapter consumed the
-// attribute at consumption — the attribute law's shape)
+// typed node (the yamlShape pattern, by table instead of by tree).
+// Also the write-side rename table [D:wire-keys]: attrs are erased
+// from values, so `to json`/`to yaml` carry their record->field->wire
+// map on the node, computed here at check (the attribute binds at
+// consumption, per the attribute law)
 let rec wireRenamesOf (env: TypeEnv) (ty: Ty) : Map<string, Map<string, string>> =
     let defs = jsonDefsClosure env Map.empty ty
 
@@ -1367,7 +1367,7 @@ let rec wireRenamesOf (env: TypeEnv) (ty: Ty) : Map<string, Map<string, string>>
 and private jsonDefsClosure (env: TypeEnv) (acc: Map<string, RecordDef>) (ty: Ty) : Map<string, RecordDef> =
     match ty with
     | TNamed("Option", [ inner ]) -> jsonDefsClosure env acc inner
-    // the mapping's VALUE type carries the defs [D:repl-infer]
+    // the mapping's value type carries the defs [D:repl-infer]
     | TSeq(TTuple [ TStr; inner ]) -> jsonDefsClosure env acc inner
     | TSeq elem -> jsonDefsClosure env acc elem
     | TNamed("Map", [ TStr; inner ]) -> jsonDefsClosure env acc inner
@@ -1376,7 +1376,7 @@ and private jsonDefsClosure (env: TypeEnv) (acc: Map<string, RecordDef>) (ty: Ty
         | Some(Record def) ->
             def.Fields
             |> List.fold (fun a (_, fty) -> jsonDefsClosure env a fty) (Map.add n def acc)
-        // the closure walks THROUGH a tagged union [D:wire-unions]: its
+        // the closure walks through a tagged union [D:wire-unions]: its
         // payload records ride so the reader/renames reach them (payloads
         // cannot reference the union back — declaration order forbids it)
         | Some(Union udef) when udef.Tag.IsSome ->
@@ -1395,7 +1395,7 @@ and private jsonDefsClosure (env: TypeEnv) (acc: Map<string, RecordDef>) (ty: Ty
 let rec private jsonUnionsClosure (env: TypeEnv) (acc: Map<string, UnionDef>) (ty: Ty) : Map<string, UnionDef> =
     match ty with
     | TNamed("Option", [ inner ]) -> jsonUnionsClosure env acc inner
-    // the mapping's VALUE type carries the unions [D:repl-infer]
+    // the mapping's value type carries the unions [D:repl-infer]
     | TSeq(TTuple [ TStr; inner ]) -> jsonUnionsClosure env acc inner
     | TSeq elem -> jsonUnionsClosure env acc elem
     | TNamed("Map", [ TStr; inner ]) -> jsonUnionsClosure env acc inner
@@ -1413,10 +1413,10 @@ let rec private jsonUnionsClosure (env: TypeEnv) (acc: Map<string, UnionDef>) (t
         | _ -> acc
     | _ -> acc
 
-// the WRITER's case table [D:wire-unions]: caseName -> (tagField,
+// the writer's case table [D:wire-unions]: caseName -> (tagField,
 // tagValue, isOther) over every tagged union the serialized type
 // reaches — a VUnion value carries no type name, so cases key the
-// table, and two reachable unions sharing a case name refuse HERE
+// table, and two reachable unions sharing a case name refuse here
 // (declarable under [D:ambiguous-ctor], unwritable in one closure)
 let private unionWriteTable
     (span: Span)
@@ -1447,8 +1447,8 @@ let private unionWriteTable
 
     go Map.empty Map.empty entries
 
-// ---- the yaml TREE law [D:yaml-v1] — richer than json's flat-row law
-// because YAML is a DOCUMENT format, not a row stream: scalars, nested
+// ---- the yaml tree law [D:yaml-v1] — richer than json's flat-row law
+// because YAML is a document format, not a row stream: scalars, nested
 // monomorphic records, seq<elem>, seq<string * elem> (an open mapping),
 // Option anywhere (None omits / null reads None). `seen` guards
 // declaration cycles.
@@ -1471,7 +1471,7 @@ let rec private yamlShape (span: Span) (env: TypeEnv) (seen: Set<string>) (ty: T
     | TFloat -> Ok Yaml.SFloat
     | TStr -> Ok Yaml.SStr
     | TBool -> Ok Yaml.SBool
-    // the opaque `Yaml` NODE reads structure whole [D:yaml-empty-flow] —
+    // the opaque `Yaml` node reads structure whole [D:yaml-empty-flow] —
     // the read sibling of yamlableOut's `Yaml`-renders-directly case
     | TNamed("Yaml", []) -> Ok Yaml.SNode
     | TNamed("Option", [ TNamed("Option", _) ]) -> err span "Option<Option<…>> has no yaml reading; flatten the type"
@@ -1494,7 +1494,7 @@ let rec private yamlShape (span: Span) (env: TypeEnv) (seen: Set<string>) (ty: T
                     (Ok [])
                 |> Result.map (fun fs -> Yaml.SRec(n, List.rev fs))
             | Some(Record _) -> err span $"'{n}' is generic; the yaml boundary needs monomorphic records"
-            // a TAGGED union dispatches on its wire discriminator
+            // a tagged union dispatches on its wire discriminator
             // [D:wire-unions]; case payloads shape recursively
             | Some(Union udef) when udef.Tag.IsSome ->
                 udef.Cases
@@ -1532,10 +1532,10 @@ let rec private yamlShape (span: Span) (env: TypeEnv) (seen: Set<string>) (ty: T
     | ty ->
         err span $"type {formatTy ty} cannot cross the yaml boundary (scalars, records, seqs, seq<string * _>, Option)"
 
-// the to-side: the same law, plus `Yaml` NODES render directly
+// the to-side: the same law, plus `Yaml` nodes render directly
 let rec private yamlableOut (span: Span) (env: TypeEnv) (seen: Set<string>) (path: string) (ty: Ty) : Result<unit, TypeError> =
     // path threads the field name so a function (or any un-yamlable type)
-    // nested in a record/union is NAMED, matching the JSON law
+    // nested in a record/union is named, matching the JSON law
     // [D:function-types] — the two boundaries admit different sets, but
     // both point at the offending field, not just its type
     let at = if path = "" then "" else $"field '{path}': "
@@ -1575,7 +1575,7 @@ let rec private yamlableOut (span: Span) (env: TypeEnv) (seen: Set<string>) (pat
                             yamlableOut span env (seen.Add n) (if path = "" then fn else $"{path}.{fn}") fty))
                     (Ok())
             | Some(Record _) -> err span $"{at}'{n}' is generic; the yaml boundary needs monomorphic records"
-            // a TAGGED union renders [D:wire-unions] — every payload must
+            // a tagged union renders [D:wire-unions] — every payload must
             | Some(Union udef) when udef.Tag.IsSome ->
                 udef.Cases
                 |> List.fold
@@ -1601,7 +1601,7 @@ let rec private yamlableOut (span: Span) (env: TypeEnv) (seen: Set<string>) (pat
             $"{at}type {formatTy ty} cannot cross the yaml boundary (scalars, records, seqs, seq<string * _>, Option, Yaml)"
 
 // One Regex instance per distinct literal, shared by check and eval
-// (the snippet-hash-cache precedent). INTERPRETED mode only —
+// (the snippet-hash-cache precedent). Interpreted mode only —
 // RegexOptions.Compiled is Reflection.Emit, banned by the AOT rule
 // [D:regex-pattern].
 let private regexCache =
@@ -1614,15 +1614,15 @@ let compileRegex (pat: string) : Result<System.Text.RegularExpressions.Regex, st
         try
             let rx = System.Text.RegularExpressions.Regex pat
 
-            // named groups REJECT [D:no-named-groups]: .NET numbers
-            // positional groups FIRST and named ones after — the outlier
-            // among engines, so binders would follow neither the pattern's
-            // reading order nor the user's Perl/Python experience. Weir
-            // names captures at the BINDER instead. Detection by the
-            // ENGINE'S OWN group table — lookbehind (?<= (?<! and
-            // non-capturing (?: create no groups, so they can never
-            // false-positive here (the one place a hand-rolled scan could
-            // go wrong).
+            // named groups are rejected [D:no-named-groups]: .NET
+            // numbers positional groups first and named ones after —
+            // the outlier among engines, so binders would follow
+            // neither the pattern's reading order nor the user's
+            // Perl/Python experience. Weir names captures at the
+            // binder instead. Detection uses the engine's own group
+            // table — lookbehind (?<= (?<! and non-capturing (?:
+            // create no groups, so they cannot false-positive here
+            // (the one place a hand-rolled scan could go wrong).
             let named =
                 rx.GetGroupNames()
                 |> Array.tryFind (fun n -> not (n |> Seq.forall System.Char.IsDigit))
@@ -1643,20 +1643,20 @@ let casingError (span: Span) (name: string) : Result<'a, TypeError> =
         ($"binding names start lowercase; uppercase names are types, modules, and constructors"
          + $" — bind '{name.ToLowerInvariant()}' (a record field keeps its name: let region = cfg.AWS_REGION)")
 
-// builtins WITHOUT a qualified spelling are reserved as binder names
+// builtins without a qualified spelling are reserved as binder names
 // [D:reserve-builtins]: shadowing one removes the capability for the
 // whole file with no way back — unlike a PATH command (^x forces) or a
 // bare alias (Seq.max survives `let max = …`). Populated by Builtins
-// at construction: the DERIVED no-home set, never a hand copy.
+// at construction: the derived no-home set, never a hand copy.
 let reservedBinderNames: Set<string> ref = ref Set.empty
 
-// the KNOWN builtin name that is BOTH a module and a builtin value
-// [D:repl-infer]: `Json` names HttpBody's `Json` constructor AND the
+// the known builtin name that is both a module and a builtin value
+// [D:repl-infer]: `Json` names HttpBody's `Json` constructor and the
 // Json module (Json.inferShape). A constructor value has no record
-// fields, so `Json.<member>` can only mean the module — but a USER
+// fields, so `Json.<member>` can only mean the module — but a user
 // union case shadowing a module name must still error ordinarily
-// [D:desugar-capture], so the module-preference is scoped to this fixed
-// builtin set, never a general value/module tie-break.
+// [D:desugar-capture], so the module preference is scoped to this
+// fixed builtin set, never a general value/module tie-break.
 let moduleValueOverlap: Set<string> = Set [ "Json" ]
 
 let rec private isIrrefutablePat (p: Pattern) =
@@ -1665,10 +1665,10 @@ let rec private isIrrefutablePat (p: Pattern) =
     | PVar _
     | PUnit -> true
     | PTuple ps -> ps |> List.forall isIrrefutablePat
-    // by CHILDREN, the tuple rule [D:refutable-record-patterns]: one
-    // refutable field pattern makes the whole record pattern refutable,
-    // which is what keeps it out of binder positions and out of
-    // completing a match
+    // judged by children, like tuples [D:refutable-record-patterns]:
+    // one refutable field pattern makes the whole record pattern
+    // refutable, which is what keeps it out of binder positions and
+    // out of completing a match
     | PRecord fields -> fields |> List.forall (snd >> isIrrefutablePat)
     | PBool _
     | PInt _
@@ -1707,11 +1707,11 @@ let checkBinderName (span: Span) (name: string) : Result<unit, TypeError> =
         Ok()
 
 let rec private checkPattern (ctx: Ctx) (env: TypeEnv) (ty: Ty) (p: Pattern) : Result<(string * Ty) list, TypeError> =
-    // a pattern whose shape DETERMINES a type binds an unresolved
+    // a pattern whose shape determines a type binds an unresolved
     // scrutinee instead of demanding one [D:record-pattern-rows] — the
     // arms unify against the row a record pattern emits, so a literal
     // under a field works exactly as it does under a known record.
-    // CONSTRUCTOR patterns are absent by design: `Some` names a case
+    // Constructor patterns are absent by design: `Some` names a case
     // from a closed set, which is the one requirement that needs the
     // nominal type first.
     let determined =
@@ -1735,7 +1735,7 @@ let rec private checkPattern (ctx: Ctx) (env: TypeEnv) (ty: Ty) (p: Pattern) : R
     | Error e -> Error e
     | Ok() ->
 
-        // the arms read the RESOLVED type: the prebind above lands in
+        // the arms read the resolved type: the prebind above lands in
         // ctx.Subst, so the raw parameter would still read as a bare var
         let ty = resolve ctx ty
 
@@ -1833,11 +1833,12 @@ let rec private checkPattern (ctx: Ctx) (env: TypeEnv) (ty: Ty) (p: Pattern) : R
             | TUnit -> Ok []
             | ty -> err p.PSpan $"'()' patterns need a unit value; this one has type {formatTy ty}"
         | PRecord fields ->
-            // record patterns [D:record-patterns]: partial field mention is
-            // the point, and children may be REFUTABLE [D:refutable-record-
-            // patterns] — coverage needs no field-value analysis because a
-            // refutable child makes the whole pattern refutable, and a
-            // refutable pattern never completes a match (the literal rule)
+            // record patterns [D:record-patterns]: partial field
+            // mention is the point, and children may be refutable
+            // [D:refutable-record-patterns] — coverage needs no
+            // field-value analysis because a refutable child makes the
+            // whole pattern refutable, and a refutable pattern never
+            // completes a match (the literal rule)
             result {
                 do! recordPatDups p.PSpan fields
 
@@ -1865,10 +1866,10 @@ let rec private checkPattern (ctx: Ctx) (env: TypeEnv) (ty: Ty) (p: Pattern) : R
                     | Some(Union _) -> return! err p.PSpan $"{typeName} is a union; match on its cases, not fields"
                     | None -> return! err p.PSpan $"unknown type '{typeName}'"
                 | ty ->
-                    // an UNRESOLVED scrutinee gets the row the binder position
+                    // an unresolved scrutinee gets the row the binder position
                     // already emits [D:record-pattern-rows]: a field pattern
-                    // names a FIELD, so the requirement is a row carrying it —
-                    // nominal identity is the CONSTRUCTOR pattern's need (a
+                    // names a field, so the requirement is a row carrying it —
+                    // nominal identity is the constructor pattern's need (a
                     // closed case set to validate and cover against), and that
                     // law does not transfer. Mirrors EField's TVar/TRowVar arms,
                     // so unification and [D:row-provenance] are inherited.
@@ -1887,7 +1888,7 @@ let rec private checkPattern (ctx: Ctx) (env: TypeEnv) (ty: Ty) (p: Pattern) : R
                         let existing = Map.tryFind r ctx.Rows |> Option.defaultValue Map.empty
 
                         // each mentioned field joins the row (an arm mentioning
-                        // a new field ACCUMULATES, exactly as a body reading
+                        // a new field accumulates, exactly as a body reading
                         // p.name and p.age does), keyed by the field-name span
                         let fieldTys =
                             fields
@@ -1920,9 +1921,9 @@ let rec private checkPattern (ctx: Ctx) (env: TypeEnv) (ty: Ty) (p: Pattern) : R
                 err p.PSpan $"this tuple pattern has {List.length ps} elements; the value has {List.length ts}"
             | ty ->
                 // the bare-comma precedence footgun [D:user-language-messages]:
-                // `code, _ :: rest` parses as a TUPLE whose last element is a
+                // `code, _ :: rest` parses as a tuple whose last element is a
                 // cons (`,` groups looser than `::`), so a seq value lands here,
-                // not a tuple. The repair IS the grouping, so NAME it — but only
+                // not a tuple. The repair is the grouping, so name it — but only
                 // on the unambiguous shape (a trailing cons against a seq); any
                 // other tuple-vs-non-tuple keeps the plain message.
                 let hint =
@@ -1962,14 +1963,14 @@ let rec private checkPattern (ctx: Ctx) (env: TypeEnv) (ty: Ty) (p: Pattern) : R
                         | Some ap -> checkPattern ctx env payloadTy ap
                         | None -> err p.PSpan $"'{ctor}' carries {formatTy payloadTy}; add a pattern for it"
                 | Some(Record _) ->
-                    // stale-message casualty of [D:record-patterns]: a record
-                    // now HAS a pattern form, so the repair names it
+                    // records have a pattern form [D:record-patterns],
+                    // so the repair names it
                     err
                         p.PSpan
                         $"{typeName} is a record; match it with a name, '_', or a record pattern ({{ field = binder }})"
                 | None -> err p.PSpan $"unknown type '{typeName}'"
-            // an UNRESOLVED scrutinee is almost always a param — params
-            // are not typed FROM patterns, so the teaching names both
+            // an unresolved scrutinee is almost always a param — params
+            // are not typed from patterns, so the teaching names both
             // repairs instead of a bare type variable
             | TVar _ ->
                 err
@@ -1978,10 +1979,10 @@ let rec private checkPattern (ctx: Ctx) (env: TypeEnv) (ty: Ty) (p: Pattern) : R
                      + "Two repairs: inline the lambda at its use site (a typed pipe position types the binder there), or match on already-typed data")
             | ty -> err p.PSpan $"constructor patterns need a union value; this one has type {formatTy ty}"
 
-// A binder pattern's SHAPE: fresh vars at the leaves, TUnit at (),
+// A binder pattern's shape: fresh vars at the leaves, TUnit at (),
 // tuples composed — bound against the RHS type, so components resolve
-// by unification. Refutable kinds (literals, constructors) are the
-// located check error the plan's contract names.
+// by unification. Refutable kinds (literals, constructors) are a
+// located check error.
 // The casing law [D:lowercase-binds] applies at every binder
 // position; fields and match patterns are deliberately untouched.
 
@@ -2004,10 +2005,10 @@ let rec private binderShape (ctx: Ctx) (env: TypeEnv) (p: Pattern) : Result<Ty *
         |> Result.map (fun (ts, bs) -> TTuple(List.rev ts), bs)
     | PRecord fields ->
         // the row seat [D:record-patterns]: the pattern's fields become
-        // row constraints keyed by the FIELD-NAME span — the exact map a
-        // field ACCESS writes (EField's TVar arm), so unification,
+        // row constraints keyed by the field-name span — the exact map a
+        // field access writes (EField's TVar arm), so unification,
         // generalization, and [D:row-provenance] are all inherited; a
-        // param destructuring { Names = n } generalizes to ANY record
+        // param destructuring { Names = n } generalizes to any record
         // carrying the field, like `fun c -> c.Names` does
         result {
             do! recordPatDups p.PSpan fields
@@ -2042,7 +2043,7 @@ let rec private binderShape (ctx: Ctx) (env: TypeEnv) (p: Pattern) : Result<Ty *
     | PCase _ -> err p.PSpan "this pattern can fail; use match"
 
 // row provenance [D:row-provenance]: field-access positions for the
-// given row vars, PHYSICAL — logical spans cannot cross the statement
+// given row vars, physical — logical spans cannot cross the statement
 // boundary. A field that arrived via an instantiated scheme keeps its
 // original origin over the local span. Empty when no translator is
 // ambient (Complete, tests).
@@ -2066,11 +2067,11 @@ let private rowOriginsFor (ctx: Ctx) (vars: Set<string>) : Map<string, (string *
                           field, pl, pc, fspan.End.Col - fspan.Start.Col ]))
         |> Map.ofList
 
-// THE scheme-scooping rule, one implementation: free vars beyond the
-// env generalize; their pending constraints scoop INTO the scheme
-// (removed from ctx). Previously verbatim ×3 (both ELet arms + the
-// binding case below) — a scooping fix in one copy and not the others
-// would have been a silent generalization bug.
+// The scheme-scooping rule, one implementation: free vars beyond the
+// env generalize; their pending constraints scoop into the scheme
+// (removed from ctx). Shared by both ELet arms and the binding case
+// below, so a scooping fix cannot land in one copy and miss the
+// others (that would be a silent generalization bug).
 let private generalizeLet (ctx: Ctx) (env: TypeEnv) (valueTy: Ty) : Scheme =
     let fa = tyVars valueTy - envFreeVars ctx env
     let origins = rowOriginsFor ctx fa
@@ -2083,7 +2084,7 @@ let private generalizeLet (ctx: Ctx) (env: TypeEnv) (valueTy: Ty) : Scheme =
             |> Option.map (fun ps -> v, ps |> List.map _.Cls |> Set.ofList))
         |> Map.ofList
 
-    // scooped constraints move INTO the scheme
+    // scooped constraints move into the scheme
     ctx.Cons <- cs |> Map.fold (fun m v _ -> Map.remove v m) ctx.Cons
 
     { Forall = fa
@@ -2093,13 +2094,13 @@ let private generalizeLet (ctx: Ctx) (env: TypeEnv) (valueTy: Ty) : Scheme =
       HoleDefaults = [] }
 
 // per-name generalization for destructuring binders: each bound name's
-// type generalizes INDEPENDENTLY against the env (constraints scooped
+// type generalizes independently against the env (constraints scooped
 // per name from the shared ctx) — generalizeLet's per-name sibling
 let private generalizeBinding (ctx: Ctx) (env: TypeEnv) (name: string, ty: Ty) : string * Scheme =
     name, generalizeLet ctx env (finalTy ctx ty)
 
 // Exhaustiveness [D:exhaustiveness-hard-error]. Only unguarded arms
-// count — a guarded arm can fail at runtime. Coverage is RECURSIVE
+// count — a guarded arm can fail at runtime. Coverage is recursive
 // through union payloads (Some (Some x) / Some None / None is
 // exhaustive): a hard error must not reject genuinely-total matches.
 let rec private missingCases (env: TypeEnv) (ty: Ty) (pats: Pattern list) : string list =
@@ -2137,10 +2138,10 @@ let rec private missingCases (env: TypeEnv) (ty: Ty) (pats: Pattern list) : stri
 
                     uncovered)
                 |> List.map fst
-            // a RECORD scrutinee is a product like a tuple
+            // a record scrutinee is a product like a tuple
             // [D:refutable-record-patterns]: only an irrefutable arm
             // completes it (the guard above already returned for those),
-            // so anything reaching here leaves the catch-all owing
+            // so anything reaching here still owes the catch-all
             | Some(Record _) -> [ "_" ]
             | _ -> []
         | TBool ->
@@ -2150,8 +2151,8 @@ let rec private missingCases (env: TypeEnv) (ty: Ty) (pats: Pattern list) : stri
                   "false" ]
         | TInt
         | TStr ->
-            // literal patterns never complete a match alone (F#'s rule,
-            // oracle-pinned): a var or wildcard arm must close it
+            // literal patterns never complete a match alone (F#'s
+            // rule): a var or wildcard arm must close it
             [ "_" ]
         | TTuple _ ->
             // bounded rule: only an all-irrefutable tuple arm (or _/var)
@@ -2236,10 +2237,10 @@ let private exhaustive
                     err span $"match is not exhaustive; missing: {missingList}"
             | ty -> err span $"match on {formatTy ty} needs a catch-all pattern"
 
-// [D:lambda-core] Flag 7 discharged: the five lambda arms (infer:
-// unit/name/pattern; check-mode: name/pattern) share ONE assembly
-// core — env extension, body typing, TFun construction. Each adapter
-// keeps only its judgment delta (domain source + body strategy).
+// [D:lambda-core]: the five lambda arms (infer: unit/name/pattern;
+// check-mode: name/pattern) share one assembly core — env extension,
+// body typing, TFun construction. Each adapter keeps only its
+// judgment delta (domain source + body strategy).
 let private lambdaCore
     (env: TypeEnv)
     (span: Span)
@@ -2257,21 +2258,21 @@ let private lambdaCore
               Span = span }
     }
 
-/// the union types declaring a case of this name [D:ambiguous-ctor] — DERIVED
-/// from the type table and shared with #help, so a hover cannot answer
-/// confidently where the checker refuses
-/// from the declared types, so a later declaration cannot miss the collision.
-/// env.Values holds one entry per name, so by the time a bare use is resolved
-/// the earlier constructor is already overwritten; the ownership question has
-/// to be asked of the type table, not the value table.
+/// the union types declaring a case of this name [D:ambiguous-ctor] —
+/// derived from the type table and shared with #help, so a hover cannot
+/// answer confidently where the checker refuses, and a later
+/// declaration cannot miss the collision. env.Values holds one entry
+/// per name, so by the time a bare use is resolved the earlier
+/// constructor is already overwritten; ownership must be asked of the
+/// type table, not the value table.
 let ctorOwners (env: TypeEnv) (name: string) : string list =
     // uppercase only: the casing law makes every constructor uppercase, so
     // this skips the scan for ordinary bindings
     if name.Length = 0 || not (System.Char.IsUpper name[0]) then
         []
     else
-        // IMPORTED types are excluded: they live flat in `Types` so signatures
-        // and field access resolve, but their cases are not in scope BARE
+        // imported types are excluded: they live flat in `Types` so signatures
+        // and field access resolve, but their cases are not in scope bare
         // (access is always qualified), so they are not candidates for this
         // name and must not make a local declaration look ambiguous
         let imported =
@@ -2314,8 +2315,8 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
             let! topts = check ctx env opts famTy
 
             // watch= is poll's key [D:scoped-procs]: poll waits for
-            // ready (a watched child dying IS the answer); retry
-            // retries FAILURES — a dead process is not a transient one
+            // ready (a watched child dying is the answer); retry
+            // retries failures — a dead process is not a transient one
             do!
                 match watch with
                 | Some w when not isPoll ->
@@ -2331,7 +2332,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
 
             match until with
             | Some((b, _), pred) ->
-                // a bool body IS its own predicate [D:retry-poll]: an
+                // a bool body is its own predicate [D:retry-poll]: an
                 // until segment on top of one is a contradiction
                 match resolve ctx tbody.Ty with
                 | TBool ->
@@ -2391,9 +2392,9 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
         // statement gate; typing sees straight through
         infer ctx env inner
     | EAlways(body, cleanup) ->
-        // the bare scope [D:within-always]: the scope's type IS the
+        // the bare scope [D:within-always]: the scope's type is the
         // body's; the always block is teardown and must be unit. exit
-        // is REFUSED inside always (lexically — a shadowing binding is
+        // is refused inside always (lexically — a shadowing binding is
         // still refused): an exit during teardown of an unwinding
         // scope is almost never meant, and it would swap the original
         // error for a code. retry/poll stay legal — a cleanup that
@@ -2425,13 +2426,13 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
     | EWithin(kind, binder, arg, opts, body) ->
         // the arg types are the kinds' contracts [D:within-scopes] and live
         // in withinContracts, shared with the check direction; the scope's
-        // type IS the body's type
+        // type is the body's type
         result {
             let! targ, topts, benv = withinContracts ctx env kind binder arg opts
             let! tbody = infer ctx benv body
 
-            // the scope's type IS the body's [D:within-scopes] — EXCEPT a
-            // plan block, which REIFIES the body's mutations and yields a
+            // the scope's type is the body's [D:within-scopes] — except a
+            // plan block, which reifies the body's mutations and yields a
             // Plan [D:plan-apply] (the body's own value is discarded — it
             // runs for its capture, not its result)
             let scopeTy =
@@ -2481,7 +2482,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
     | EVar name ->
         match Map.tryFind name env.Values with
         | Some sch ->
-            // a bare constructor with two declarations is AMBIGUOUS, never
+            // a bare constructor with two declarations is ambiguous, never
             // last-wins [D:ambiguous-ctor] — the record-literal path's answer
             // to the same question. Pattern positions need no twin: PCase
             // resolves against the scrutinee's type, and an unresolved
@@ -2517,7 +2518,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                 // no history claim [D:bare-rule]: most of these were
                 // never bare — the wording matches the multi-home arm's
                 | [ one ] ->
-                    // `dir` is DOS/cmd muscle memory for a LISTING, and
+                    // `dir` is DOS/cmd muscle memory for a listing, and
                     // Path.dir is the parent-of-a-path function — the
                     // qualified redirect alone sends the reader somewhere
                     // semantically unrelated [D:dir-teach]
@@ -2541,8 +2542,8 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                             "scriptPath is script-only (the running script's absolute path; absent in the REPL and -e)"
                     | None when name = "List" || name = "Array" ->
                         // the commonest .NET prior (PLAN-dx-review D5): a
-                        // wrong suggestion ('Post') sent readers somewhere
-                        // confidently — the registry answer is the repair
+                        // confident wrong suggestion ('Post') is worse
+                        // than none — answer from the registry instead
                         err
                             expr.Span
                             $"'{name}' is not a weir module — weir's sequences are 'Seq' (Seq.length, Seq.map, ...; one sequence type)"
@@ -2550,7 +2551,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                         // same-kind candidates only (PLAN-dx-review D5): a
                         // lowercase name never suggests a constructor and
                         // an uppercase one never suggests a binding — but a
-                        // candidate differing ONLY by case stays (Exit ->
+                        // candidate differing only by case stays (Exit ->
                         // exit is the rename teaching [D:exit-rename])
                         let sameCase (c: string) =
                             (c.Length > 0 && System.Char.IsUpper c[0] = System.Char.IsUpper name[0])
@@ -2587,7 +2588,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
         }
     | ELetPat(pat, value, body) ->
         result {
-            // binder judged FIRST: casing/refutability errors beat any
+            // binder judged first: casing/refutability errors beat any
             // error inside the value (the binder is what the user wrote)
             let! shape, binds = binderShape ctx env pat
             let! tvalue = infer ctx env value
@@ -2608,7 +2609,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                   Span = expr.Span }
         }
     | ELambda("()", pspan, body) ->
-        // the unit param PINS its type — desugaring to an unconstrained
+        // the unit param pins its type — desugaring to an unconstrained
         // fresh var would generalize (`cleanup 5` would typecheck); the
         // "()" name is unforgeable, and no binding is added
         lambdaCore env expr.Span (fun tb -> TELambda("()", pspan, tb)) TUnit [] (fun e -> infer ctx e body)
@@ -2624,16 +2625,16 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
     | EApp _ ->
         let head, args = spine expr
 
-        // unapplied ONLY [D:operator-values]: a partially applied infix
+        // unapplied only [D:operator-values]: a partially applied infix
         // operator reads backwards — (>) 10 would mean fun x -> 10 > x,
-        // which is exactly the direction authors get wrong (the
-        // field-predicates exploration's evidence). The teaching shows
-        // both spellings so the direction is chosen, not guessed — and
-        // offers them as interchangeable ONLY for a commutative op.
+        // which is exactly the direction authors get wrong. The
+        // teaching shows both spellings so the direction is chosen,
+        // not guessed — and offers them as interchangeable only for a
+        // commutative op.
         match head.Kind with
         | EOpValue op ->
             // the commutative set: ops where fun x -> x op v and
-            // fun x -> v op x are the SAME function at every type the
+            // fun x -> v op x are the same function at every type the
             // checker could see here (== and <> are symmetric; * is
             // scalar multiplication at all its overloads, both operand
             // orders admitted). + is excluded: it concatenates strings
@@ -2654,15 +2655,14 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                  + $"which reads backwards; {directions}")
         | _ ->
 
-            // the WRAP-IT hint [D:district-retirement]: a bare command in an
-            // expression FRAGMENT reads as an application of its unbound head
+            // the wrap-it hint [D:district-retirement]: a bare command in an
+            // expression fragment reads as an application of its unbound head
             // word — the repair is the wrapper, so the rejection names it
             // (did-you-mean coexists; the specific teachings — module homes,
-            // retirements, scriptPath — keep their own arms via fall-through)
-            // `m[k]` is refused, and the refusal TEACHES [D:accessor-teaching]:
-            // the doc promised Map.get here while the raw unification error
-            // arrived instead (`|seqItem`'s int index meets the KEY first, so
-            // the caret landed on the key and never mentioned Map). The
+            // retirements, scriptPath — keep their own arms via fall-through).
+            // `m[k]` is refused, and the refusal teaches [D:accessor-teaching]:
+            // the raw unification error pointed at the key (`|seqItem`'s int
+            // index meets the key first) and never mentioned Map — so the
             // target is inferred first, before the index can mis-report.
             let mapIndexHint =
                 match head.Kind, args with
@@ -2703,9 +2703,9 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
 
                 // the named / qualified record literal [D:modules-v1]: `Ctx { .. }`
                 // parses as EApp(EVar Ctx, ERecord) and `Git.Ctx { .. }` as
-                // EApp(EField(Git, Ctx), ERecord). A record TYPE name is never a
-                // value, so this only fires where a bare application would ERROR —
-                // zero movement on `Some { .. }` (Some is a ctor, not a type).
+                // EApp(EField(Git, Ctx), ERecord). A record type name is never a
+                // value, so this only fires where a bare application would error —
+                // no change to `Some { .. }` (Some is a ctor, not a type).
                 let namedRecord (typeName: string) (fields: (string * Span * Expr) list) =
                     result {
                         let def =
@@ -2785,7 +2785,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                      | EVar tyName ->
                          match typeDefFor env tyName with
                          | Some(Record def) when def.Params.IsEmpty ->
-                             // an ENUM field [D:env-enums]: a monomorphic union,
+                             // an enum field [D:env-enums]: a monomorphic union,
                              // every case 0-arity — the declared set becomes a
                              // boundary conversion exactly like int/bool
                              let unionOf ft =
@@ -2810,7 +2810,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                                  | TBool
                                  | TDur
                                  | TSize
-                                 // env is THE secret channel in CI [D:secret]:
+                                 // env is the secret channel in CI [D:secret]:
                                  // secrets.GITHUB_TOKEN becomes an env var, so a
                                  // Secret field is the main producer, not a
                                  // compromise (the non-claim is in SECURITY.md)
@@ -2822,7 +2822,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                                      true
                                  | ty -> isEnum ty
 
-                             // a payload-carrying case is a SCHEMA error, named at
+                             // a payload-carrying case is a schema error, named at
                              // check time — env values are single tokens
                              let payloadCase =
                                  def.Fields
@@ -2884,13 +2884,13 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                                                  arg.Span
                                                  $"'{f}': an enum field takes no Default (attribute literals are string/int/bool) — spell the resting point Option<{n}> with Option.defaultValue"
                                          | None ->
-                                             // the resting-point cells under ENV's field law
+                                             // the resting-point cells under env's field law
                                              // [D:default-attr]: text bools carry no presence
-                                             // semantics, so BOTH Default literals are legal
-                                             // here (the Args-side false-is-redundant cell
-                                             // flips — validation is the consumer's arm)
-                                             // [D:default-attr]: bool-false is LEGAL here — the
-                                             // flip cell; both Default rules sit adjacent in Argv
+                                             // semantics, so both Default literals are legal
+                                             // here — the Args-side false-is-redundant cell
+                                             // flips (validation is the consumer's arm).
+                                             // Bool-false is legal here [D:default-attr];
+                                             // both Default rules sit adjacent in Argv
                                              match Argv.badEnvDefault def with
                                              | Some msg -> err arg.Span msg
                                              | None ->
@@ -2913,11 +2913,12 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                 | EField({ Kind = EVar "Args" }, "load", _), [ arg ] when
                     not (Map.containsKey "Args" env.Values) && Map.containsKey "Args" env.Modules
                     ->
-                    // Args.load T — the sixth typed-boundary instance [D:typed-argv]:
-                    // Env.load's sibling; the union acceptance is the delta
-                    // script-mode signal = the Self module [D:self-module] (injected
-                    // per-run by baseEnvs; absent in the REPL and -e). Args.load reads
-                    // Session.ScriptArgs at eval, so this is purely the availability gate.
+                    // Args.load T — a typed-boundary instance [D:typed-argv]:
+                    // Env.load's sibling; the union acceptance is the delta.
+                    // The script-mode signal is the Self module [D:self-module]
+                    // (injected per-run by baseEnvs; absent in the REPL and -e).
+                    // Args.load reads Session.ScriptArgs at eval, so this is
+                    // purely the availability gate.
                     (if not (Map.containsKey "Self" env.Modules) then
                          err expr.Span "Args.load is script-only (Self.args is not available here)"
                      else
@@ -2961,7 +2962,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                          | EVar tyName ->
                              match typeDefFor env tyName with
                              | Some(Record def) when def.Params.IsEmpty ->
-                                 // the field law [D:shared-flags]: at most ONE
+                                 // the field law [D:shared-flags]: at most one
                                  // union-typed field — the subcommand slot; its
                                  // scalar siblings are shared flags
                                  let unionFields =
@@ -2988,8 +2989,8 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                                      result {
                                          let sharedDef = Argv.sharedOf def uf
 
-                                         // the subcommand slot derives no flag —
-                                         // Default has nothing to rest [D:default-attr]
+                                         // the subcommand slot derives no flag, so
+                                         // Default has nothing to rest on [D:default-attr]
                                          do!
                                              (match
                                                  def.Attrs
@@ -3005,10 +3006,10 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                                          do! validateFields arg.Span "" sharedDef
                                          let! payloads = unionPayloads arg.Span udef
 
-                                         // a name declared in BOTH tiers is a schema
+                                         // a name declared in both tiers is a schema
                                          // error — reject-don't-guess; the runtime
-                                         // scanner never faces the question
-                                         // minted --no-X twins ride in both tiers'
+                                         // scanner never faces the question.
+                                         // Minted --no-X twins ride in both tiers'
                                          // namespaces [D:default-attr]
                                          let sharedFlags =
                                              (sharedDef.Fields |> List.map (fun (f, _) -> Argv.kebabFlag f))
@@ -3101,7 +3102,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
 
             match fmt, resolve ctx targ.Ty with
             | "json", ty ->
-                // ONE document [D:to-jsonl]: the top level admits exactly
+                // One document [D:to-jsonl]: the top level admits exactly
                 // what an element admits — record → object, seq → array,
                 // None → null; the per-element (NDJSON) form is 'to jsonl'
                 do!
@@ -3172,11 +3173,11 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                         toExpr.Span
                         "a patch is instructions for a merge, not a document — Yaml.merge applies it; there is nothing to render"
             | "yaml", ty ->
-                // to yaml [D:yaml-seq-doc]: ONE document — a record is a
-                // mapping, a seq a SEQUENCE document (json's array, one
-                // format over), pairing with `from yaml T`/`from yaml
-                // seq<T>`. A top-level seq<string * _> stays ONE mapping
-                // document. The `---` stream is `to yaml stream`.
+                // to yaml [D:yaml-seq-doc]: one document — a record is a
+                // mapping, a seq a sequence document (the yaml analogue
+                // of json's array), pairing with `from yaml T`/`from
+                // yaml seq<T>`. A top-level seq<string * _> stays one
+                // mapping document. The `---` stream is `to yaml stream`.
                 do!
                     match ty with
                     | TSeq(TTuple [ TStr; _ ]) -> yamlableOut toExpr.Span env Set.empty "" ty
@@ -3213,7 +3214,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
         result {
             let! targ = infer ctx env arg
             // a value-headed pipeline [D:value-headed-pipe] feeds the LHS as
-            // stdin — seq<string> EXACTLY, with the twin teachings pointing
+            // stdin — seq<string> exactly, with the twin teachings pointing
             // each mistake at its fix (a command-headed chain never reaches
             // the error path: its LHS is already seq<string>)
             do!
@@ -3259,10 +3260,10 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
             { Kind = EBinOp(op, _, _)
               Span = opSpan }) when op <> ">>" && op <> "<<" ->
         // Scalar operators yield values, never functions, so piping into
-        // one is always wrong — and usually a precedence surprise
-        // (agent-dogfooding finding). Composition is the exception
-        // [D:composition-operators]: `xs |> f >> g` pipes into the
-        // composed FUNCTION, the F# idiom, and takes the general arm.
+        // one is always wrong — and usually a precedence surprise.
+        // Composition is the exception [D:composition-operators]:
+        // `xs |> f >> g` pipes into the composed function, the F#
+        // idiom, and takes the general arm.
         err
             opSpan
             $"'{op}' binds tighter than '|>', so this parses as xs |> (a {op} b); parenthesize the pipeline: (xs |> f) {op} value"
@@ -3283,12 +3284,12 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
     | EField({ Kind = EVar m }, field, fieldSpan) when
         Map.containsKey m env.Modules
         && (not (Map.containsKey m env.Values)
-            // a BUILTIN module name that ALSO names a builtin value
+            // a builtin module name that also names a builtin value
             // [D:repl-infer]: `Json` is both a module (Json.inferShape) and
             // HttpBody's `Json` constructor. That constructor has no record
             // fields, so `Json.field` could only ever be a module member —
-            // resolve it there when the member exists. Scoped to the KNOWN
-            // builtin overlaps (moduleValueOverlap) so a USER union case
+            // resolve it there when the member exists. Scoped to the known
+            // builtin overlaps (moduleValueOverlap) so a user union case
             // that shadows a module name still produces an ordinary
             // field-access error [D:desugar-capture].
             || (Set.contains m moduleValueOverlap && env.Modules[m] |> Map.containsKey field))
@@ -3306,7 +3307,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                 match retiredMember m field with
                 | Some teach -> return! err fieldSpan $"'{m}.{field}' is retired: {teach}"
                 | None when isSpecialMember m field ->
-                    // load is a bespoke ARM, not a member — reaching here
+                    // load is a bespoke arm, not a member — reaching here
                     // means the shape missed it: a space inside the type
                     // name (two arguments), extra arguments, or none
                     // [PLAN-diagnostics-arc A1]
@@ -3317,7 +3318,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                     // an unsigned member exists but does not export
                     // [D:module-signatures] — teach the migration (the
                     // signature to add, its inferred type included);
-                    // did-you-mean stays scoped to the SIGNED members
+                    // did-you-mean stays scoped to the signed members
                     match env.ModulePrivate |> Map.tryFind m |> Option.bind (Map.tryFind field) with
                     | Some priv ->
                         let hint = didYouMean field (Map.keys members)
@@ -3384,8 +3385,8 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
             | ty -> return! err target.Span $"only records have fields; this expression has type {formatTy ty}"
         }
     | ESlice(target, lo, hi) ->
-        // the language's first TYPE-DIRECTED node [D:range-slicing]: the
-        // target's resolved type picks substring vs subsequence. Bounds are
+        // a type-directed node [D:range-slicing]: the target's
+        // resolved type picks substring vs subsequence. Bounds are
         // ints; an unconstrained target defaults to a sequence (the `x[i]`
         // precedent — `|seqItem` unifies to seq), so a string slice needs a
         // known-string target and `fun xs -> xs[a..b]` is seq-typed.
@@ -3424,7 +3425,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                     err target.Span $"a slice `x[a..b]` works on a string or a sequence; this expression is {formatTy other}"
         }
     | EOpValue op ->
-        // desugar to EXACTLY `fun a b -> a op b` [D:operator-values]:
+        // desugar to exactly `fun a b -> a op b` [D:operator-values]:
         // every typing question — overload-by-context, int defaulting,
         // the Eq/Ord class solving — inherits the infix answers
         // verbatim, and eval sees an ordinary lambda.
@@ -3433,10 +3434,10 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
         result {
             let! tleft = infer ctx env left
 
-            // composition rejects a non-function LHS BEFORE the RHS is
+            // composition rejects a non-function LHS before the RHS is
             // inferred: bash-append lines (`cmd >> file`) usually carry
             // an unbound RHS, and the redirect hint must beat the
-            // "unbound variable" error. A PIPE on the left is the
+            // "unbound variable" error. A pipe on the left is the
             // shared-precedence gotcha (`xs |> f >> g` is
             // `(xs |> f) >> g`, F#'s parse) and gets the parenthesize
             // hint instead [D:composition-operators]
@@ -3467,9 +3468,9 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                   Span = expr.Span }
         }
     | EUpdate(source, updates) ->
-        // copy-and-update [D:record-update]. Result type IS the
+        // copy-and-update [D:record-update]. Result type is the
         // source's type — nominal stays nominal (update never adds
-        // fields), a row source keeps ITS OWN row variable (identity,
+        // fields), a row source keeps its own row variable (identity,
         // not a fresh row), which is what lets a row-typed updater
         // generalize. Paths walk nested records (the F# 8 I.X sugar);
         // rows demand a field per hop, mirroring EField.
@@ -3481,7 +3482,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
             | None ->
 
                 // subjectSpan = the expression whose type must be a record:
-                // the SOURCE at the first hop, the previous field at deeper
+                // the source at the first hop, the previous field at deeper
                 // ones — the non-record error blames the non-record, never
                 // the field being assigned [D:update-span]
                 let rec updOne
@@ -3611,7 +3612,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                     return! err expr.Span $"ambiguous record literal; it matches: {nameList}"
         }
     // the anonymous literal [D:anon-literals]: fields infer, the
-    // canonical name is minted HERE (the parse-time push cannot — it
+    // canonical name is minted here (the parse-time push cannot — it
     // sees values, not types) and registered both mid-statement
     // (AnonLitDefs) and for the next statement's drain. The typed
     // node is TERecord — eval/writers/LSP gain no arms.
@@ -3631,7 +3632,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                         (Ok [])
                     |> Result.map List.rev
 
-                // ground types only: the canonical name IS the type,
+                // ground types only: the canonical name is the type,
                 // so it cannot carry an inference variable — the
                 // named divergence anon-literal-mono (F# admits the
                 // generic form; declared records serve it here)
@@ -3664,13 +3665,13 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
         }
     | EFrom(fmt, shape, seqOf, streamOf) ->
         result {
-            // resolve the slot's payload to a NAME [D:anon-records]: a
+            // resolve the slot's payload to a name [D:anon-records]: a
             // declared name passes through; an anonymous shape resolves
             // to its canonical name, whose def withAnonDefs registered
             // at typecheck entry — one lookup path serves both, so the
-            // anonymous form validates EXACTLY as a declared record does
+            // anonymous form validates exactly as a declared record does.
             // Map<string, T> in the slot [D:map-string]: peel the wrap
-            // first — the inner shape then resolves through the SAME
+            // first — the inner shape then resolves through the same
             // name path a bare slot does, so anon composition is free
             let inner, mapOf =
                 match shape with
@@ -3709,7 +3710,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                     let n = defaultArg tyName "T"
                     err expr.Span $"'from jsonl T' already yields seq<T> — write from jsonl {n}"
                 elif mapOf && fmt = "jsonl" then
-                    // one object per LINE vs ONE keyed object — the two
+                    // one object per line vs one keyed object — the two
                     // shapes cannot both be the top level [D:map-string]
                     let n = defaultArg tyName "T"
 
@@ -3728,15 +3729,15 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                     err expr.Span $"a table reads rows, not a keyed object — write from table {n} (it yields seq<{n}>)"
                 elif fmt = "xml" && (seqOf || mapOf || streamOf) then
                     // XML has a single root element [D:from-xml] — no seq /
-                    // stream / Map wrap; a repeated child is a seq< > FIELD
+                    // stream / Map wrap; a repeated child is a seq< > field
                     let n = defaultArg tyName "T"
                     err expr.Span $"'from xml' reads one document's root element — write from xml {n} (XML has a single root)"
                 else
                     Ok()
 
             match fmt, tyName with
-            // from json T reads ONE DOCUMENT -> T (pretty-printed bodies
-            // pipe straight in); from json seq<T> reads one ARRAY
+            // from json T reads one document -> T (pretty-printed bodies
+            // pipe straight in); from json seq<T> reads one array
             // document -> seq<T> — the declared type decides what the top
             // level must be, never the input [D:from-json-seq]; from
             // jsonl T reads one document per element -> seq<T>
@@ -3764,7 +3765,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                         { Kind = TEFrom(fmt, TopRec def, defs, udefs, seqOf, mapOf)
                           Ty = TFun(TSeq TStr, resultTy)
                           Span = expr.Span }
-                // a TAGGED union in the slot [D:wire-unions]: each document
+                // a tagged union in the slot [D:wire-unions]: each document
                 // dispatches on the tag — `from jsonl KDoc` reads mixed
                 // NDJSON, `from json seq<KDoc>` a mixed array
                 | Some(Union udef) when udef.Tag.IsSome ->
@@ -3794,10 +3795,10 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
 
                 return! err expr.Span $"'from {fmt}' needs a record name, e.g. from {fmt} FileRow{seqHint}"
             | "yaml", Some name ->
-                // from yaml T reads ONE DOCUMENT -> T (a mapping at the
-                // top); from yaml seq<T> reads one SEQUENCE document ->
+                // from yaml T reads one document -> T (a mapping at the
+                // top); from yaml seq<T> reads one sequence document ->
                 // seq<T> [D:yaml-seq]; from yaml stream T reads N `---`
-                // documents, EACH as T -> seq<T> [D:wire-unions] — the
+                // documents, each as T -> seq<T> [D:wire-unions] — the
                 // heterogeneous bundle is stream over a tagged union,
                 // two orthogonal spellings composed. The declared type
                 // decides the top level, never the input.
@@ -3812,7 +3813,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                         { Kind = TEFromYaml(name, shape, streamOf)
                           Ty = TFun(TSeq TStr, declared)
                           Span = expr.Span }
-                // a TAGGED union in the slot [D:wire-unions] — yamlShape
+                // a tagged union in the slot [D:wire-unions] — yamlShape
                 // builds the dispatch node; untagged keeps the teaching
                 | Some(Union udef) when udef.Tag.IsSome ->
                     let perDoc = if seqOf then TSeq(TNamed(name, [])) else TNamed(name, [])
@@ -3836,7 +3837,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                     err
                         expr.Span
                         "'from yaml' needs a record name, e.g. from yaml Deployment — or seq<Deployment> for a top-level sequence, or stream Deployment for '---' documents"
-            // from xml T reads one document's ROOT element -> T
+            // from xml T reads one document's root element -> T
             // [D:from-xml]: field names match child elements, [<Attr>]
             // reads an attribute, [<Elem "X">] names a repeated child, a
             // record is a nested element. Read-only, monomorphic records
@@ -3889,7 +3890,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
     | EYaml(tpl, schema, patchBy) ->
         result {
             // patch districts [D:yaml-nodes]: typed YamlPatch, tombstones
-            // admitted; schema= refuses (a patch is PARTIAL — required
+            // admitted; schema= refuses (a patch is partial — required
             // fields legitimately absent, whole-document validation
             // cannot apply). A plain district refuses tombstones at
             // their span, naming the kind that admits them.
@@ -3917,7 +3918,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
         checkDynHead ctx env display he
     | ECmd(head, args, envO) ->
         result {
-            // $@ demands seq<string> EXACTLY [D:argv-splat]; the twin
+            // $@ demands seq<string> exactly [D:argv-splat]; the twin
             // teachings point each mistake at its honest spelling
             let checkArg (a: Expr) =
                 match a.Kind with
@@ -3974,7 +3975,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                         return Some te
                     }
 
-            // a dynamic head is ONE program [D:dynamic-head]: string
+            // a dynamic head is one program [D:dynamic-head]: string
             // exactly, never re-lexed; a seq capture refuses with the
             // bind-and-pick teaching (which line would run?)
             let! thead =
@@ -4127,7 +4128,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                     else
                         Ok()
 
-                // a commandish then-TAIL arms before typing
+                // a commandish then-tail arms before typing
                 // [D:interior-arming] — `if force then git clean -fd`
                 // is the effect form; the teaching text below is
                 // untouched for everything else
@@ -4173,14 +4174,15 @@ and private checkSpine
         let arity = args.Length + (if piped.IsSome then 1 else 0)
 
         // applying a callee whose type is still an unconstrained variable
-        // IS the constraint that it is a function [D:higher-order-params]:
-        // unify it with a fresh arrow so the arguments constrain the params
-        // and the result flows — textbook HM, and exactly what the CALL site
-        // already does (a param not applied in its body infers its arrow
-        // from the caller). Two var flavours, one move: a __hole var (a
-        // cascade-suppression binding whose let already errored) shapes into
-        // __hole fresh vars so the application stays SILENT [PLAN-diagnostics-arc
-        // B6]; an ordinary parameter uses ordinary fresh vars and infers.
+        // is itself the constraint that it is a function
+        // [D:higher-order-params]: unify it with a fresh arrow so the
+        // arguments constrain the params and the result flows — textbook
+        // HM, matching what the call site already does (a param not
+        // applied in its body infers its arrow from the caller). Two var
+        // flavours, one move: a __hole var (a cascade-suppression binding
+        // whose let already errored) shapes into __hole fresh vars so the
+        // application stays silent [PLAN-diagnostics-arc B6]; an ordinary
+        // parameter uses ordinary fresh vars and infers.
         do!
             match finalTy ctx thead.Ty with
             | TVar v ->
@@ -4212,8 +4214,8 @@ and private checkSpine
 
                 match thead.Kind with
                 | TEVar name when available > 0 ->
-                    // point AT the first extra argument, not the head — and
-                    // when it sits on a different PHYSICAL line, the extra
+                    // point at the first extra argument, not the head — and
+                    // when it sits on a different physical line, the extra
                     // args are an indented continuation the writer likely
                     // meant as a separate statement [D:over-apply-continuation]
                     let extra = List.tryItem available args
@@ -4303,7 +4305,7 @@ and private checkSpine
             return applied
     }
 
-// a command CHAIN by AST shape — the parser's isCommandish, check-side
+// a command chain by AST shape — the parser's isCommandish, check-side
 // [D:interior-arming]
 and private isCmdChain (e: Expr) =
     match e.Kind with
@@ -4311,8 +4313,8 @@ and private isCmdChain (e: Expr) =
     | EPipe(_, { Kind = ECmd _ }) -> true
     | _ -> false
 
-// arm the TAIL of a statement body [D:interior-arming]: a commandish
-// final expression under a unit demand is the EFFECT form — rewrite it
+// arm the tail of a statement body [D:interior-arming]: a commandish
+// final expression under a unit demand is the effect form — rewrite it
 // to the same `|> print` the statement positions get, recursing through
 // sequences. Pure AST pre-pass so teaching errors keep their text.
 and armTail (e: Expr) : Expr =
@@ -4336,7 +4338,7 @@ and armTail (e: Expr) : Expr =
         | ELet(n, ns, v, b) ->
             { Kind = ELet(n, ns, v, armTail b)
               Span = e.Span }
-        // a statement-position match arms each arm's TAIL
+        // a statement-position match arms each arm's tail
         // [D:match-arm-commands] — a command arm streams, exactly as an
         // if body's; arms then unify at unit instead of at seq<string>
         // (the discard the raw match would report). Value position never
@@ -4347,7 +4349,7 @@ and armTail (e: Expr) : Expr =
         | _ -> e
 
 // an exit-code spine discarded where unit is demanded keeps its
-// tailored teaching (was the district cell's text) [D:district-retirement]
+// tailored teaching [D:district-retirement]
 and private isExitCodeSpine (e: Expr) =
     let rec head (x: Expr) =
         match x.Kind with
@@ -4358,8 +4360,8 @@ and private isExitCodeSpine (e: Expr) =
     | EVar n -> n.StartsWith "|exitCoded"
     | _ -> false
 
-/// the scope's ARG and BINDER contracts [D:within-scopes] — ONE resolver for
-/// both type directions, dispatched KIND-FIRST on the union
+/// the scope's arg and binder contracts [D:within-scopes] — one resolver for
+/// both type directions, dispatched kind-first on the union
 /// [D:within-kind-union] so a new kind must claim its arg contract or the
 /// build fails. A kind resolved in one direction and not the other drops
 /// its node silently, and the eval side cannot tell a dropped node from a
@@ -4387,22 +4389,22 @@ and private withinContracts
                 match arg with
                 | Some a -> check ctx env a TStr |> Result.map Some
                 | None -> Ok None
-            // proc's arg is the COMMAND node [D:scoped-procs] — typed as any
+            // proc's arg is the command node [D:scoped-procs] — typed as any
             // command (the parser guarantees ECmd), evaluated by the scope as
             // a spawn, never as a statement
             | WithinProc ->
                 match arg with
                 | Some a -> infer ctx env a |> Result.map Some
                 | None -> Ok None
-            // serve's arg is the CONFIG record [D:http-serve] — a
+            // serve's arg is the config record [D:http-serve] — a
             // ServerConfig `{ port; maxConcurrent }`; the handler rides
             // opts (below), typed against the request->response function.
-            // bodyTimeout is OPTIONAL in the literal [D:serve-body-timeout]:
+            // bodyTimeout is optional in the literal [D:serve-body-timeout]:
             // a bare `{ port; maxConcurrent }` literal is accepted and the
             // timeout rests at its default, so the field addition does not
             // break existing serve scripts. The generic record resolver
-            // matches by EXACT field set, so the two-field literal is
-            // checked HERE against the allowed shape; any non-literal
+            // matches by exact field set, so the two-field literal is
+            // checked here against the allowed shape; any non-literal
             // config (a variable, `{ ServerConfig.defaults with … }`)
             // falls through to the ordinary ServerConfig check.
             | WithinServe ->
@@ -4437,7 +4439,7 @@ and private withinContracts
                 | None -> Ok None
             | WithinTmp -> Ok None
             // pure carries no resource [D:pure-stage1] — no arg, no
-            // binder; its LAW is enforced by the checked-statement
+            // binder; its law is enforced by the checked-statement
             // pipeline's post-check layer (the classifier lives after
             // Builtins, out of this file's compile reach). readonly
             // is the same shape, its law the ambient/mutation ceiling
@@ -4448,7 +4450,7 @@ and private withinContracts
             | WithinReadonly
             | WithinPlan -> Ok None
 
-        // opts is a Duration for lock (timeout=), the HANDLER function
+        // opts is a Duration for lock (timeout=), the handler function
         // for serve [D:http-serve], and absent elsewhere — the kind
         // decides its type, so a dropped node cannot masquerade
         let! topts =
@@ -4487,7 +4489,7 @@ and private withinContracts
 and private check (ctx: Ctx) (env: TypeEnv) (expr: Expr) (expected: Ty) : Result<TypedExpr, TypeError> =
     match expr.Kind, resolve ctx expected with
     // interior arming's check half [D:interior-arming]: a command chain
-    // where UNIT is demanded (a checked lambda body, a sequence tail
+    // where unit is demanded (a checked lambda body, a sequence tail
     // under unit) is the effect form — `files |> Seq.iter (fun f ->
     // git add $f)` works without a district
     | (ECmd _ | EPipe(_, { Kind = ECmd _ })), TUnit when isCmdChain expr ->
@@ -4502,7 +4504,7 @@ and private check (ctx: Ctx) (env: TypeEnv) (expr: Expr) (expected: Ty) : Result
                 )
               Span = expr.Span }
             TUnit
-    // the check direction rides INTO a scope's body [D:within-scopes] —
+    // the check direction rides into a scope's body [D:within-scopes] —
     // a statement-position `within` demands unit of the block, arming a
     // final command exactly as any block does
     | ECapture inner, _ -> check ctx env inner expected
@@ -4532,7 +4534,7 @@ and private check (ctx: Ctx) (env: TypeEnv) (expr: Expr) (expected: Ty) : Result
                   Span = expr.Span }
         }
     // a plan block yields a Plan regardless of the body's type
-    // [D:plan-apply]: the body runs for its CAPTURE, its own value is
+    // [D:plan-apply]: the body runs for its capture, its own value is
     // discarded — so infer the body (not check it against `expected`)
     // and unify the region's Plan with the expectation
     | EWithin(WithinPlan, binder, arg, opts, body), _ ->
@@ -4557,7 +4559,7 @@ and private check (ctx: Ctx) (env: TypeEnv) (expr: Expr) (expected: Ty) : Result
                   Ty = tbody.Ty
                   Span = expr.Span }
         }
-    // the check direction rides THROUGH a sequence to its final
+    // the check direction rides through a sequence to its final
     // expression [D:interior-arming] — F#'s rule, and what lets a
     // final command in a unit-demanded block arm
     | ESeq(first, rest), _ ->
@@ -4586,7 +4588,7 @@ and private check (ctx: Ctx) (env: TypeEnv) (expr: Expr) (expected: Ty) : Result
         // spelled-out lambda would
         check ctx env (opValueLambda op expr.Span) expected
     | ELambdaPat(pat, body), TFun(dom, cod) ->
-        // check-mode twin: the binder shape binds against the PUSHED
+        // check-mode twin: the binder shape binds against the pushed
         // domain before the body runs, so piped element types reach
         // the components ahead of any hole defaulting
         result {
@@ -4600,7 +4602,7 @@ and private check (ctx: Ctx) (env: TypeEnv) (expr: Expr) (expected: Ty) : Result
 
             let typeBody e =
                 match body.Kind, resolve ctx cod with
-                // a NESTED lambda against a function cod pushes through
+                // a nested lambda against a function cod pushes through
                 // [D:seq-fold]: the inner domain may already be resolved
                 // (a piped element type), and the infer fallback would
                 // drop it
@@ -4647,7 +4649,7 @@ and private check (ctx: Ctx) (env: TypeEnv) (expr: Expr) (expected: Ty) : Result
             return te
         }
 
-// the dynamic head's type law [D:dynamic-head]: string EXACTLY — the
+// the dynamic head's type law [D:dynamic-head]: string exactly — the
 // value is one program, never re-lexed. A seq capture cannot answer
 // "which line is the program", so it refuses with the bind-and-pick
 // teaching instead of deciding implicitly.
@@ -4674,9 +4676,9 @@ and private checkScalarSplice (ctx: Ctx) (env: TypeEnv) (site: SpliceSite) (arg:
 
         match resolve ctx targ.Ty with
         | TVar v ->
-            // DEFER [D:splice-default-last]: the enclosing statement's
-            // inference may still resolve v (the pipe-into-lambda
-            // repro); default-or-reject happens at the boundary
+            // defer [D:splice-default-last]: the enclosing statement's
+            // inference may still resolve v (pipe-into-lambda, say);
+            // default-or-reject happens at the boundary
             ctx.PendingSplices <- (v, arg.Span, site) :: ctx.PendingSplices
             return targ
         | ty ->
@@ -4685,10 +4687,10 @@ and private checkScalarSplice (ctx: Ctx) (env: TypeEnv) (site: SpliceSite) (arg:
     }
 
 // the yaml district's template typing [D:yaml-district]: splices carry
-// the LIFTABLE law (string/int/float/bool, Yaml, Option of one, seq of
-// those),
-// key splices are strings, `for` binders bind like lambda params over
-// the source's element type, literal duplicate keys are check errors.
+// the liftable law (string/int/float/bool, Yaml, Option of one, seq of
+// those), key splices are strings, `for` binders bind like lambda
+// params over the source's element type, literal duplicate keys are
+// check errors.
 and private yamlSpliceable (ctx: Ctx) (ty: Ty) : bool =
     match resolve ctx ty with
     | TInt
@@ -4696,7 +4698,7 @@ and private yamlSpliceable (ctx: Ctx) (ty: Ty) : bool =
     | TStr
     | TBool
     | TNamed("Yaml", []) -> true
-    // an unresolved var (a template parameter) defers to the VALUE-driven
+    // an unresolved var (a template parameter) defers to the value-driven
     // lift at eval — the sortBy posture: no type-class constraint exists,
     // so concrete violations check-error and polymorphic ones become a
     // located runtime failure naming the law
@@ -4810,10 +4812,10 @@ and private checkYamlItem (ctx: Ctx) (env: TypeEnv) (item: YamlTplItem) : Result
         }
 
 // the deferred splice resolution — runs at every statement boundary
-// (typecheckWith / typecheckBinder), BEFORE finalization walks:
-// still-unresolved holes default to string (the original rule, moved),
-// resolved-to-scalar holes pass, anything else gets the ORIGINAL
-// rejection at the hole's span [D:splice-default-last]
+// (typecheckWith / typecheckBinder), before finalization walks:
+// still-unresolved holes default to string, resolved-to-scalar holes
+// pass, anything else gets the original rejection at the hole's span
+// [D:splice-default-last]
 let private resolvePendingSplices (ctx: Ctx) (env: TypeEnv) : Result<unit, TypeError> =
     ctx.PendingSplices
     |> List.rev
@@ -4823,7 +4825,7 @@ let private resolvePendingSplices (ctx: Ctx) (env: TypeEnv) : Result<unit, TypeE
             |> Result.bind (fun () ->
                 match resolve ctx (TVar v) with
                 | TVar _ ->
-                    // the string DEFAULT fires — record the hole's
+                    // the string default fires — record the hole's
                     // physical anchor for the scheme (D6); only interp
                     // holes teach (a cmd splice defaulting is the argv
                     // law, not a surprise)
@@ -4912,12 +4914,12 @@ let rec private finalizeExpr (ctx: Ctx) (te: TypedExpr) : TypedExpr =
         Ty = finalTy ctx te.Ty }
 
 // typecheckWith: the statement-boundary rule for class constraints.
-// Residue = pendings still riding UNRESOLVED vars that appear in the
+// Residue = pendings still riding unresolved vars that appear in the
 // statement's final type — the caller's generalization scoops them
-// (generalizeWith). A pending on a var OUTSIDE the final type is
-// AMBIGUOUS (no defaulting, no ambiguity resolution): error asking
-// for context, the reject-don't-guess posture one step later than the
-// old at-the-operator rule.
+// (generalizeWith). A pending on a var outside the final type is
+// ambiguous (no defaulting, no ambiguity resolution): error asking
+// for context — reject-don't-guess, applied at the boundary rather
+// than at the operator.
 // The statement-level destructuring binder: check the RHS, bind the
 // binder shape against it, generalize per name. Residual/ambiguous
 // constraints follow typecheckWith's boundary rule.
@@ -4997,7 +4999,7 @@ let withAnonDefs (env: TypeEnv) (expr: Expr) : TypeEnv =
 // budget exhaustion surfaces as an ordinary located TypeError; the
 // text names what the author can act on, never the internal counter.
 // The two messages are named so the whole-file collectors can recognize
-// a budget diagnostic beside its single source and STOP the multi-error
+// a budget diagnostic beside its single source and stop the multi-error
 // fold on it (one burn bounds the file) [D:budget-stop-first].
 let budgetMsgSized =
     "this expression's type grew too large to infer — split the expression into smaller bindings, or annotate the intended type"
@@ -5116,7 +5118,7 @@ let typecheckWithCore
                     |> Map.ofList
 
                 // origins ride out with the residue [D:row-provenance]:
-                // the SLet scheme is built OUTSIDE this ctx
+                // the SLet scheme is built outside this ctx
                 Ok(te, residue, rowOriginsFor ctx resultVars, List.rev ctx.HoleDefaulted)
 
 // every TypedExpr embedded in a typed yaml template — splices, key
@@ -5203,9 +5205,9 @@ let childExprs (te: TypedExpr) : TypedExpr list =
 // ---- unused bindings [D:unused-bindings] ----------------------------------
 // The usage core: a scoped walk of the typed tree. Free names propagate
 // upward minus each form's bound set; let-class binders (TELet/TELetPat)
-// are TRACKED — an unread one collects as a located finding — while
+// are tracked — an unread one collects as a located finding — while
 // params, arm patterns, retry `until`, `within` and yaml `for` binders
-// SHADOW only (the exempt classes). `let x = x + 1` reads the OUTER x:
+// shadow only (the exempt classes). `let x = x + 1` reads the outer x:
 // the RHS walks before the binder registers (no `let rec` exists).
 
 /// every named binder in a pattern, with its span
@@ -5224,7 +5226,7 @@ let unusedExempt (n: string) = n.StartsWith "_"
 type UnusedLocal =
     { UName: string
       USpan: Span
-      // a bare `_` as the WHOLE let binder — the anonymous swallow
+      // a bare `_` as the whole let binder — the anonymous discard
       UBareWildcard: bool }
 
 /// free names used in a typed statement tree, plus its unused
@@ -5356,7 +5358,7 @@ let typecheck (env: TypeEnv) (expr: Expr) : Result<TypedExpr, TypeError> =
     typecheckWith env expr |> Result.map (fun (te, _, _, _) -> te)
 
 // ---- check-against-sig [D:module-signatures] ------------------------------
-// A signed module member is checked WITH its signature's types flowing
+// A signed module member is checked with its signature's types flowing
 // in (the lambda spine is checked bidirectionally: each param takes the
 // signature's domain, so constructor patterns and operators inside the
 // body resolve), never infer-then-compare. The caller (the module
@@ -5366,7 +5368,7 @@ type SigFailure =
     // an ordinary located error inside the implementation (sig types
     // already flowed in — the span is the honest place)
     | SigBody of TypeError
-    // the implementation's SHAPE does not unify with the signature
+    // the implementation's shape does not unify with the signature
     | SigShape of implTy: Ty * span: Span
     // a signature type variable the implementation pins to a concrete
     // type — the implementation is less general than its signature
@@ -5382,7 +5384,7 @@ let private typecheckAgainstSigCore (env: TypeEnv) (sigTy: Ty) (expr: Expr) : Re
     let ctx = newCtx ()
 
     // instantiate the signature's vars as fresh unification vars and
-    // REMEMBER the mapping: generality is judged at the end — a sig var
+    // remember the mapping: generality is judged at the end — a sig var
     // still resolving to an unbound var (distinct per sig var) is the
     // still-as-general verdict; anything else names what pinned it
     let sigVars = tyVars sigTy |> Set.toList
@@ -5401,7 +5403,7 @@ let private typecheckAgainstSigCore (env: TypeEnv) (sigTy: Ty) (expr: Expr) : Re
     let expected0 = inst sigTy
 
     // the bidirectional spine: a lambda meets a function-shaped
-    // expectation by taking the DOMAIN as its param type and checking
+    // expectation by taking the domain as its param type and checking
     // the body against the codomain; everything else infers and unifies
     // (`wrap` rebuilds the full implementation type for the mismatch
     // report — the domains are the signature's by construction)
@@ -5456,7 +5458,7 @@ let private typecheckAgainstSigCore (env: TypeEnv) (sigTy: Ty) (expr: Expr) : Re
         | Ok() ->
             let te = finalizeExpr ctx te
 
-            // generality: each sig var must still resolve to an UNBOUND
+            // generality: each sig var must still resolve to an unbound
             // var, and no two to the same one
             let resolved = mapping |> List.map (fun (v, f) -> v, finalTy ctx (TVar f))
 
@@ -5488,10 +5490,10 @@ let private typecheckAgainstSigCore (env: TypeEnv) (sigTy: Ty) (expr: Expr) : Re
                 match merged with
                 | Some(v1, v2) -> Error(SigMerged(v1, v2, expr.Span))
                 | None ->
-                    // constraint residue rides the EXPORTED scheme keyed by
+                    // constraint residue rides the exported scheme keyed by
                     // the signature's own var names (the sig grammar spells
                     // no constraints; the implementation's demands are the
-                    // truth) — a residue on any OTHER var is stranded,
+                    // truth) — a residue on any other var is stranded,
                     // exactly as the plain-let boundary rules
                     let backMap = varOf |> Map.ofList
 
@@ -5536,17 +5538,17 @@ let typecheckAgainstSig (env: TypeEnv) (sigTy: Ty) (expr: Expr) : Result<TypedEx
         Error(SigBody(budgetError span sized))
 
 // the def-less builtin nominals beside Map [D:scoped-procs][D:yaml-nodes]:
-// type constructors with NO Record/Union entry. ONE list — Prelude's
+// type constructors with no Record/Union entry. One list — Prelude's
 // built-in-name registration and validateTy's arity table both read it,
-// so a nominal cannot be registered-but-unnameable (the YamlPatch
-// signature gap: the privacy teaching suggested a sig validateTy refused)
-// Plan is an OPAQUE nominal [D:plan-apply]: its runtime rep is a record
+// so a nominal cannot be registered-but-unnameable (otherwise the
+// privacy teaching could suggest a signature validateTy refuses).
+// Plan is an opaque nominal [D:plan-apply]: its runtime rep is a record
 // of captured Ops, but the value surface is the `Plan.*` members
 // (ops/preview/apply/isEmpty) plus `==` — never a field, so a user
 // `plan.ops` field-access is not offered. Def-less like Proc/YamlPatch.
 // Server is def-less like Proc [D:http-serve]: its runtime rep is a
-// listener handle, its value surface the `Server.*` members (port), never
-// a field — so a user `srv.port` field-access is not offered.
+// listener handle, its value surface the `Server.*` members (port),
+// never a field — so a user `srv.port` field-access is not offered.
 let deflessBuiltinNominals = [ "Proc"; "YamlPatch"; "Plan"; "Server" ]
 
 let rec private validateTy
@@ -5570,7 +5572,7 @@ let rec private validateTy
     | TSecret -> Ok()
     | TSeq t -> validateTy env selfName selfArity allowed span t
     | TTuple ts -> allOk ts (validateTy env selfName selfArity allowed span)
-    // Map is STRUCTURAL, string-keyed only [D:map-string] — the key
+    // Map is structural, string-keyed only [D:map-string] — the key
     // slot refuses anything else with the narrowing's reason
     | TNamed("Map", [ TStr; v ]) -> validateTy env selfName selfArity allowed span v
     | TNamed("Map", [ k; _ ]) ->
@@ -5606,10 +5608,10 @@ let rec private validateTy
         | Some a when a <> targs.Length -> err span $"'{n}' expects {a} type argument(s), got {targs.Length}"
         | Some _ -> allOk targs (validateTy env selfName selfArity allowed span)
 
-// a SIGNATURE's type validates like a declaration's [D:module-signatures]:
+// a signature's type validates like a declaration's [D:module-signatures]:
 // unknown names and generic arities refuse at the sig; its type vars are
 // implicitly quantified (every 'a is its own universal). Returns the env
-// WITH any anonymous shapes the sig's parse minted, so they persist.
+// with any anonymous shapes the sig's parse minted, so they persist.
 let validateSigTy (env: TypeEnv) (span: Span) (ty: Ty) : Result<TypeEnv, TypeError> =
     let env = withDefList env (pendingAnonRecords ())
 
@@ -5619,7 +5621,7 @@ let validateSigTy (env: TypeEnv) (span: Span) (ty: Ty) : Result<TypeEnv, TypeErr
 // errors; registered-but-unconsumed is legal-and-inert. Validation
 // happens at attachment; consumers bind at consumption.
 // where an attribute may attach [D:attr-positions] — the registry is
-// POSITION-SCOPED: a registered name in the wrong position teaches its
+// position-scoped: a registered name in the wrong position teaches its
 // home; an unknown name keeps the did-you-mean
 type private AttrPos =
     | FieldPos
@@ -5647,16 +5649,16 @@ let private attrRegistry: Map<string, (AttrArg option -> string option) * AttrPo
            | None -> None
            | Some _ -> Some "takes no argument"),
            [ FieldPos ])
-          // [<Positional>] returns for SIGNATURES [D:command-signatures]:
+          // [<Positional>] exists for signatures [D:command-signatures]:
           // foreign CLIs have operands and a signature describes theirs
-          // (its drop was about weir's own CLIs); inert everywhere else,
-          // the attribute law
+          // (the earlier removal concerned weir's own CLIs); inert
+          // everywhere else, per the attribute law
           "Positional",
           ((function
            | None -> None
            | Some _ -> Some "takes no argument"),
            [ FieldPos ])
-          // [<Doc>] RETIRED [D:doc-help] — a `///` above the field is the one
+          // [<Doc>] is retired [D:doc-help] — a `///` above the field is the one
           // source; a stale `[<Doc "x">]` is now the ordinary unknown-attribute
           // error (the did-you-mean over the remaining names).
           "Default",
@@ -5666,7 +5668,7 @@ let private attrRegistry: Map<string, (AttrArg option -> string option) * AttrPo
            [ FieldPos ])
           // the wire key [D:wire-keys]: reserved words and illegal
           // identifiers are ordinary JSON/YAML keys — the field keeps a
-          // weir name, the attribute names the wire; a union CASE's tag
+          // weir name, the attribute names the wire; a union case's tag
           // value rides the same name [D:wire-unions]
           "Wire",
           ((function
@@ -5689,7 +5691,7 @@ let private attrRegistry: Map<string, (AttrArg option -> string option) * AttrPo
            | _ -> Some "expects the element name as a string, e.g. [<Elem \"ProjectReference\">] refs: seq<Ref>"),
            [ FieldPos ])
           // [D:wire-unions] pre-registration [D:attr-positions]: Tag and
-          // Other VALIDATE here and BIND at the boundary session — the
+          // Other validate here and bind at the boundary — the
           // attribute law's shape (validation at attachment, binding at
           // consumption)
           "Tag",
@@ -5703,12 +5705,12 @@ let private attrRegistry: Map<string, (AttrArg option -> string option) * AttrPo
            | Some _ -> Some "takes no argument"),
            [ CasePos ]) ]
 
-// two fields resolving to ONE wire key is nonsense on every adapter —
+// two fields resolving to one wire key is nonsense on every adapter —
 // refused at the declaration, not discovered at the boundary
 // [D:wire-keys]
 let private validateWireCollisions (recName: string) (fields: (string * Ty * AttrSpec list) list) =
     // a collision always involves at least one [<Wire>] (field names
-    // are unique), so ONE side carries a span — report there
+    // are unique), so one side carries a span — report there
     let wireOf (name: string, _: Ty, specs: AttrSpec list) =
         specs
         |> List.tryPick (fun a ->
@@ -5754,7 +5756,7 @@ let private validateAttrsAt (pos: AttrPos) (owner: string) (specs: AttrSpec list
                     err a.ASpan $"unknown attribute '{a.AName}'{hint}"
                 | Some(validate, positions) ->
                     if not (List.contains pos positions) then
-                        // the wrong position names the HOME, not did-you-mean
+                        // the wrong position names the home, not did-you-mean
                         // [D:attr-positions]
                         let homes = positions |> List.map attrPosName |> String.concat " or "
                         err a.ASpan $"'{a.AName}' attaches to {homes}, not {attrPosName pos}"
@@ -5789,22 +5791,22 @@ let private validateShortCollisions (fields: (string * Ty * AttrSpec list) list)
     go Map.empty explicitShorts
 
 // the built-in type names, registered once by Prelude.extend
-// [D:desugar-capture]: a user redeclaring one silently RETYPED every
-// builtin referencing it (type Retry = { x: int } re-broke the retry
-// sugar through the TYPE after the value was made un-shadowable)
-// concurrent: tests build envs in PARALLEL (the oracle found the
-// plain HashSet corrupting under simultaneous extends)
+// [D:desugar-capture]: a user redeclaring one would silently retype
+// every builtin referencing it (type Retry = { x: int } would break
+// the retry sugar through the type even with the value un-shadowable).
+// Concurrent because tests build envs in parallel — a plain HashSet
+// corrupts under simultaneous extends.
 let builtinTypeNames: System.Collections.Concurrent.ConcurrentDictionary<string, byte> =
     System.Collections.Concurrent.ConcurrentDictionary<string, byte>()
 
-// the prelude REPLAYS its own declarations on every extend (tests build
+// the prelude replays its own declarations on every extend (tests build
 // envs repeatedly) — exempt it; the ThreadLocal keeps parallel test
 // runs isolated (the toPhys pattern)
 let preludeLoading: System.Threading.ThreadLocal<bool> =
     new System.Threading.ThreadLocal<bool>(fun () -> false)
 
 let checkDecl (env: TypeEnv) (decl: Decl) : Result<TypeEnv, TypeError> =
-    // a declared record's anon FIELD shapes drain here [D:anon-nesting]
+    // a declared record's anon field shapes drain here [D:anon-nesting]
     // — registered before validation so the names resolve, and they
     // ride the returned env like any registration
     let env = withDefList env (pendingAnonRecords ())
@@ -5826,7 +5828,7 @@ let checkDecl (env: TypeEnv) (decl: Decl) : Result<TypeEnv, TypeError> =
                     | Some dup -> return! err decl.Span $"duplicate field '{dup}'"
                     | None ->
                         // no registered attribute attaches to a record
-                        // DECLARATION [D:attr-positions] — each teaches its home
+                        // declaration [D:attr-positions] — each teaches its home
                         do! validateAttrsAt RecordDeclPos $"record '{decl.Name}'" decl.Attrs
 
                         let plain = fields |> List.map (fun (n, t, _) -> n, t)
@@ -5887,7 +5889,7 @@ let checkDecl (env: TypeEnv) (decl: Decl) : Result<TypeEnv, TypeError> =
                                 | Some ty -> validateTy env decl.Name selfArity allowed decl.Span ty
                                 | None -> Ok())
 
-                        // the tag BINDS here [D:wire-unions] — the union
+                        // the tag binds here [D:wire-unions] — the union
                         // becomes a wire type, and the declaration laws
                         // fire only when [<Tag>] is present
                         let tag =
@@ -5924,7 +5926,7 @@ let checkDecl (env: TypeEnv) (decl: Decl) : Result<TypeEnv, TypeError> =
                                                 decl.Span
                                                 $"a tagged union is monomorphic — '{decl.Name}' is generic, and the wire boundary needs concrete cases"
 
-                                    // the writers key VUnion values by CASE NAME
+                                    // the writers key VUnion values by case name
                                     // [D:wire-unions] — Option's and Yaml's own
                                     // encodings must stay unmistakable
                                     do!
@@ -5965,7 +5967,7 @@ let checkDecl (env: TypeEnv) (decl: Decl) : Result<TypeEnv, TypeError> =
                                                 | Some(TNamed(pn, [])) ->
                                                     match typeDefFor env pn with
                                                     | Some(Record rdef) when rdef.Params.IsEmpty ->
-                                                        // the tag rides the UNION — a payload
+                                                        // the tag rides the union — a payload
                                                         // spelling it (by name or wire key)
                                                         // would write it twice
                                                         match
@@ -5992,7 +5994,7 @@ let checkDecl (env: TypeEnv) (decl: Decl) : Result<TypeEnv, TypeError> =
                                                         $"a tagged union's case carries a declared record (or nothing) — '{c}' carries {formatTy ty}")
 
                                     // two cases resolving to one tag value —
-                                    // the wire-key collision rule, one law over
+                                    // the wire-key collision rule again
                                     let values =
                                         cases
                                         |> List.map (fun (c, _, specs) ->
@@ -6085,9 +6087,9 @@ let warnings (te: TypedExpr) : Warning list =
                              "'>>' does not redirect in weir — pipe to File.append: "
                              + "cmd |> File.append \"out.txt\" "
                              + "(if you meant a literal '>>' argument, ignore this)" }
-                 // the two commonest bash chaining glyphs were the
-                 // family's missing members (PLAN-dx-review D2): the
-                 // pass-through is deliberate, the SILENCE was the defect
+                 // the two commonest bash chaining glyphs
+                 // (PLAN-dx-review D2): the pass-through is deliberate;
+                 // staying silent about it would be the defect
                  | TEStr "&&" ->
                      acc.Add
                          { Span = a.Span
@@ -6115,7 +6117,7 @@ let warnings (te: TypedExpr) : Warning list =
 // enumerated at two or more sites without a visible force is the lazy
 // re-run hazard. The RHS judgement is the module weak-purity walk
 // (runsCommandT — the [D:modules-v1] rule, moved here so the checker
-// and the loader share one spelling): eager positions only, STOPS at
+// and the loader share one spelling): eager positions only, stops at
 // lambdas — a command in a lambda body is deferred, so a param-ful
 // `let f r = git …` is a function, not a command-backed value.
 
@@ -6190,9 +6192,9 @@ type ReenumEvent =
 
 /// enumerating uses of tracked (command-backed, unforced) bindings in
 /// one statement tree, source order, shadow-aware. Conservative and
-/// stated: EVERY read of the name counts as a possible pull — piped,
+/// stated: every read of the name counts as a possible pull — piped,
 /// an adapter/for source, an argv splice, printed/echoed, or passed as
-/// an argument (a callee may pull) — EXCEPT a plain alias (`let y = x`,
+/// an argument (a callee may pull) — except a plain alias (`let y = x`,
 /// the whole RHS): binding alone does not enumerate, and the alias name
 /// is not tracked onward. Block-local lets that qualify join the
 /// tracked set for their own body (fresh ids from the caller's well).
@@ -6256,12 +6258,12 @@ let reenumEvents (nextId: unit -> int) (tracked0: Map<string, int>) (root: Typed
 
 // ---- the newTempDir footgun [D:newtempdir-lint] --------------------------
 // `Path.newTempDir` bound then `Dir.delete`/`Dir.deleteAll`'d in the same
-// scope is the MANUAL spelling of a `within tmp d` block — and a worse one:
-// `within` removes the directory on scope exit AND on Ctrl+C/kill (the exit
+// scope is the manual spelling of a `within tmp d` block — and a worse one:
+// `within` removes the directory on scope exit and on Ctrl+C/kill (the exit
 // hook sweeps it), which a straight-line delete misses when the body raises
-// or the process is signalled. newTempDir EARNS its place for the escaping
+// or the process is signalled. newTempDir earns its place for the escaping
 // case (a directory that outlives the block — a cross-process handoff), so
-// an UNMATCHED bind (no in-scope delete) is exactly that legitimate use and
+// an unmatched bind (no in-scope delete) is exactly that legitimate use and
 // stays silent [D:gap-a-remainder]. The warning fires only when the pairing
 // is visible, mirroring the re-enumeration walk's scope discipline.
 

@@ -1,11 +1,11 @@
 #!/usr/bin/env weir
-// The wrap-hazard gate: a paragraph line WRAPPED so its continuation
+// The wrap-hazard gate: a paragraph line wrapped so its continuation
 // starts with '>' is eaten by CommonMark — a blockquote may interrupt a
 // paragraph, so the '>' becomes quote syntax and the rest of the span
 // renders broken (`if resp.status >= 400` lost its operator this way).
 // A real blockquote is fine: its previous line is blank, or another
-// quote line. Fenced content is exempt. Prose is what nothing executes,
-// so this class needs its own gate — the fences cannot catch it.
+// quote line. Fenced content is exempt. Nothing executes prose, so this
+// class needs its own gate — the fences cannot catch it.
 
 type St = {
     InFence: bool

@@ -109,7 +109,7 @@ let retries = 3 // why: registry flakes under load
 echo retrying $retries times // trailing works on command lines too
 ```
 
-`///` is the doc comment, and it pays its way: it attaches to the
+`///` is the doc comment: it attaches to the
 declaration right below it (a blank line breaks the link; an
 attribute line is transparent, so `///` above or below a field's
 `[<...>]` both attach) and renders on hover and in completion — on
@@ -265,7 +265,7 @@ record (`Seq.fold (fun c x -> { c with Total = c.Total + x }) initial` —
 derive, don't mutate). Lambdas take several params (`fun acc x ->`),
 desugaring exactly like `let f a b =`.
 
-Multi-statement lambdas read best MULTILINE. A `(fun ... ->` dangling
+Multi-statement lambdas read best spread over lines. A `(fun ... ->` dangling
 at line end opens a body block — any statements are legal inside,
 nested `let`s and commands included — and the block closes at its own
 `)`, attached to the last body line or alone. A single line with
@@ -433,8 +433,7 @@ print target.Name
 Weir has two modes, and the head word of a statement picks one: a
 name bound in scope (or a builtin) makes the line an expression —
 ordinary application; an unbound bareword runs the external program
-of that name. Builtins shadow PATH; `^ls` forces the real one, and
-params shadow PATH inside their own body.
+of that name. Builtins shadow PATH; `^ls` forces the real one.
 
 ```weir
 let greet name = print $"hi {name}"
@@ -467,7 +466,10 @@ shadow PATH inside their own body, so `let f x = x` stays the
 identity whatever happens to be installed. When the expectation is
 one line, `Seq.exactlyOne` says so — `Seq.head` takes the first and
 silently accepts more, hiding a wrong-arity output; save `head` for
-"the first of many".
+"the first of many". And when the whole point of the command is that
+one line, the `| line` reifier is the direct spelling —
+`let tree = git rev-parse HEAD | line` binds it as a `string`
+([Exit codes](#exit-codes-from-command-to-value)).
 
 One rule to know about `!`: weir has no `!`-negation. Negation is the
 word `not`; `!` means *do it*. Two markers bring full command chains
@@ -534,6 +536,11 @@ What weir's command lines do not do:
 - no glob expansion — use the function `Path.glob`
 - no `&&` — write two statements
 - no `$VAR` expansion — splice weir bindings instead
+- no `~` expansion — `~` and `$HOME` stay literal words; `Path.home ()`
+  (and the XDG trio `Path.configHome`/`Path.stateHome`/
+  `Path.cacheHome`, each a pure `unit -> string` with platform-native
+  resolution) builds the path in an interpolation:
+  `cat $"{Path.home ()}/.bashrc"`
 - no redirects — `>` and `>>` pass through as literal argv, with a
   warning naming what to use instead (`cmd |> File.write "out.txt"`,
   or `File.append`)
@@ -635,6 +642,22 @@ let conf = $<<<
 
 conf |> File.write "app.conf"
 File.read "app.conf" |> Seq.iter print
+```
+
+The third form, `$$<<<`, is the splice heredoc for brace-heavy text —
+JSON, config: `$name` and `${expr}` substitute, `$$` is a literal
+`$`, and braces and quotes stay literal, so a pasted JSON blob
+templates directly with no brace-doubling. It substitutes raw, like
+any text template — a value carrying a `"` or a newline can break
+the output, so reach for `to json` when a value is untrusted:
+
+```weir
+let host = "srv.example"
+let port = 5432
+$$<<<
+    { "server": "$host", "port": ${port}, "lit": "$$" }
+|> File.write "srv.json"
+File.read "srv.json" |> Seq.iter print
 ```
 
 ### Scoped resources: `within` and `always`
@@ -818,6 +841,28 @@ output — fzf's selection and its cancel code — use `complete`.
 sh -c "exit 3" | exitCode // a bare statement discards the code — bind or match it
 ```
 
+Two more reifiers share the pipe-stage spelling. `cmd | line`
+captures a one-value command (`git rev-parse HEAD`,
+`az … --query X -o tsv`, `id -un`) as its single trimmed line of
+stdout, a `string` — the direct form of the
+`$(cmd) |> Seq.exactlyOne` capture. It raises on a nonzero exit and
+on zero or two-plus lines, and composes with the env sigil
+(`$e(cmd | line)`) and a value head (`xs | grep foo | line`):
+
+```weir
+let scope = printf "id-abc" | line
+print $"scope {scope}"
+```
+
+And `cmd | exec` replaces the running weir process with the command —
+POSIX `execve`, so weir keeps its pid and, as a container
+entrypoint, the application receives signals directly with no
+forwarding or reaping layer (Windows spawns, waits, and exits with
+the child's code). It never returns, diverging like `fail`/`exit`,
+so it is a legal bare statement; it takes a literal or dynamic
+(`^$cmd`) head and an env overlay (`$e(cmd | exec)`), and refuses a
+piped stdin — there is no parent left to feed the replacement.
+
 ## What the editor colors mean
 
 With the LSP attached, editors color weir's one novel boundary — the
@@ -864,10 +909,9 @@ let e = Env.fromFile "demo.env"
 print (Env.get "GREETING" |> Option.defaultValue "parent stays clean")
 ```
 
-The env name attaches directly to the marker: `$e(...)` or
-`!e(...)`. A `!name` at the end of a line does the same
-for a whole command block — every command in the indented block below
-it runs with that environment:
+A `!name` at the end of a line widens the overlay to a whole command
+block — every command in the indented block below it runs with that
+environment — and `within env e` scopes it the `within` way:
 
 ```weir
 ["STAGE=prod"] |> File.write "stage.env"
@@ -987,7 +1031,6 @@ literals or parser, `show` round-trips, and boundary rules.
 
 ### Time: durations as values
 
-Time is a type, not a bare int whose unit lives in a comment.
 A `Duration` stores integer milliseconds; the literals are
 single-unit (`500ms`, `30s`, `2m`, `1h`) and `show` renders the
 compound shape (`90500ms` shows `1m30.5s`) that `Duration.parse`
@@ -1407,6 +1450,9 @@ pods |> Seq.where (fun p -> p.restarts > 0) |> Seq.iter (fun p -> print p.name)
 
 In a live script that is `kubectl get po |> from table Pod` — and
 `#infer it from table as Pod` in the REPL drafts the record for you.
+`az … -o table` output reads too: the dashes rule az draws under the
+header is skipped when it is the first data row, so nothing declares
+a garbage row ([Adapters](reference/adapters.md#aligned-tables)).
 Reading such a binding twice wants a `|> Seq.freeze` tail: each pull
 of an unforced command-backed seq re-runs `kubectl`, and the checker
 warns if you skip it.
@@ -1931,9 +1977,9 @@ Dir.create "wb"
 ## Declaring a tool: command signatures
 
 Weir checks that `bicep` exists; a signature closes the next gap —
-`bicep build --outfil x` becomes a check-time catch instead of a 3am
-failure (a flat signature checks flags, so `--outfil` is the caught
-typo). Generate one from the installed binary, then declare it per
+`bicep build --outfil x` becomes a check-time catch instead of a
+runtime failure (a flat signature checks flags, so `--outfil` is the
+caught typo). Generate one from the installed binary, then declare it per
 script (prose here because signatures need a `.weir/` tree; the e2e
 battery holds the runnable truth):
 
@@ -2090,6 +2136,8 @@ The boundaries are where the guarantee stops being honest:
 - **`proc` is refused in a plan.** weir cannot see past a spawned
   binary — it reads and writes opaquely — so plan is dry-run for
   *file/config orchestration*, not "dry-run for any script".
+  `cmd | exec` is refused the same way: a process replacement
+  cannot be captured.
 - **`apply` inside a plan is refused** (a mutation cannot be captured);
   build the plan in the block, apply it outside. Nested `plan`
   composes — each yields its own value.

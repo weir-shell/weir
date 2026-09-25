@@ -1,8 +1,8 @@
 #!/usr/bin/env weir
-// The keyword table in docs/reference/lexical.md is a RENDERING of
+// The keyword table in docs/reference/lexical.md is a rendering of
 // editors/grammar-manifest.json [D:grammar-currency] — the same gated
 // artifact the editor grammars answer to — never a hand-list. The four
-// KINDS are hand-classified here, completeness-checked both ways: a
+// kinds are hand-classified here, completeness-checked both ways: a
 // keyword the manifest gains that this file has not classified fails
 // loudly, so the classification cannot silently lag the language.
 //

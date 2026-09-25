@@ -1,4 +1,4 @@
-# The harness-truth library [D:masking-mechanized] — ONE helper, all
+# The harness-truth library [D:masking-mechanized] — one helper, all
 # census/stamp checks inherit (the one-scanner pattern applied to
 # harnesses). dev/PROCESS.md: harness assertions are claims too.
 import os
@@ -14,7 +14,7 @@ def assert_fresh(weir_bin, repo_root):
     masked failure the gate exists to prevent). Exits nonzero on stale."""
     gate = os.path.join(repo_root, "ci", "check-fresh.sh")
     # Windows cannot exec a .sh (WinError 193) — route through the
-    # battery's OWN bash (WEIR_BASH: a bare `bash` resolves System32's
+    # battery's own bash (WEIR_BASH: a bare `bash` resolves System32's
     # WSL stub on the native PATH); POSIX untouched
     cmd = (
         [gate, weir_bin]

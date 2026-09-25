@@ -25,7 +25,7 @@ and PatternKind =
     | PRecord of ((string * Span) * Pattern) list
     | PCase of ctor: string * arg: Pattern option
     // the bespoke Regex pattern [D:regex-pattern] — one pattern kind,
-    // NOT a general active-pattern mechanism. The literal is kept
+    // not a general active-pattern mechanism. The literal is kept
     // verbatim (its backslashes belong to the regex engine); litSpan
     // aims check errors at the literal, not the whole pattern.
     | PRegex of pattern: string * litSpan: Span * raw: bool * binder: Pattern
@@ -39,39 +39,40 @@ type InterpPart<'e> =
     | IStr of string
     | IExpr of 'e
 
-// the kind as a UNION [D:within-kind-union]: every kind-matching
+// the kind as a union [D:within-kind-union]: every kind-matching
 // consumer (parser dispatch, Check's contracts, Eval, Can) dispatches
-// on THIS type kind-first, so a new case is a BUILD failure (FS0025
+// on this type kind-first, so a new case is a build failure (FS0025
 // under [D:host-strictness]) at each of them, never a silent gap
 type WithinKindId =
     | WithinTmp
     | WithinCd
     | WithinEnv
     | WithinProc
-    // the scoped HTTP listener [D:http-serve]: the socket lifetime IS
-    // the block — served until the scope exits (normal, raise, SIGINT/
-    // SIGTERM), the listener closed on every path (the port frees).
-    // Binds a `Server` handle; takes a config atom + a handler atom.
+    // the scoped HTTP listener [D:http-serve]: the socket lives
+    // exactly as long as the block — served until the scope exits
+    // (normal, raise, SIGINT/SIGTERM), the listener closed on every
+    // path (the port frees). Binds a `Server` handle; takes a config
+    // atom + a handler atom.
     | WithinServe
     | WithinLock
     // the purity assertion [D:pure-stage1] — the family's first
-    // STANDALONE head: spelled `pure`, never `within pure`
+    // standalone head: spelled `pure`, never `within pure`
     | WithinPure
-    // the read-only assertion [D:pure-stage2] — a STANDALONE head one
-    // tier up the lattice from pure: the body reaches no EXTERNAL
-    // MUTATION (ambient reads are fine); spelled `readonly`, never
+    // the read-only assertion [D:pure-stage2] — a standalone head one
+    // tier up the lattice from pure: the body reaches no external
+    // mutation (ambient reads are fine); spelled `readonly`, never
     // `within readonly`
     | WithinReadonly
-    // the plan/apply capture [D:plan-apply] — a STANDALONE head like
-    // pure/readonly, but it CHANGES the value: the body's external
-    // MUTATIONS are captured as Ops (reads still run) and the region
+    // the plan/apply capture [D:plan-apply] — a standalone head like
+    // pure/readonly, but it changes the value: the body's external
+    // mutations are captured as Ops (reads still run) and the region
     // yields a `Plan`. Spelled `plan`, never `within plan`.
     | WithinPlan
 
-// the `within` kinds as DATA — one table, three consumers (the
+// the `within` kinds as data — one table, three consumers (the
 // parser's dispatch, hover, completion) [D:within-kinds]. Binds is the
-// form's central asymmetry: tmp PRODUCES a binder, cd/env CONSUME an
-// atom. Standalone marks a kind spelled as its OWN head (pure) — the
+// form's central asymmetry: tmp produces a binder, cd/env consume an
+// atom. Standalone marks a kind spelled as its own head (pure) — the
 // `within <kind>` surfaces (dispatch, hover, completion, the teaching
 // list) filter it out [D:pure-stage1]. The editor grammars list the
 // same closed set by necessity (separate files); the inventory guard
@@ -99,15 +100,17 @@ let withinKinds: WithinKind list =
         Binds = false
         Standalone = false
         Doc = "an environment overlay for the block's children" }
-      // the no-orphan law [D:scoped-procs]: the scope IS the lifetime
+      // the no-orphan law [D:scoped-procs]: the process lives exactly
+      // as long as the block
       { Id = WithinProc
         Name = "proc"
         Binds = true
         Standalone = false
         Doc = "a background process, tree-killed and reaped when the block exits" }
-      // the scoped HTTP listener [D:http-serve]: the socket lifetime IS
-      // the block, freed on every exit path (the no-orphan law, port
-      // edition). Binds a Server handle; a config atom + a handler atom.
+      // the scoped HTTP listener [D:http-serve]: the socket lives
+      // exactly as long as the block, freed on every exit path (the
+      // no-orphan law applied to ports). Binds a Server handle; takes
+      // a config atom + a handler atom.
       { Id = WithinServe
         Name = "serve"
         Binds = true
@@ -120,16 +123,16 @@ let withinKinds: WithinKind list =
         Binds = false
         Standalone = false
         Doc = "an advisory file lock, held for the block, released on every exit (kill -9 included)" }
-      // [D:pure-stage1]: in the FAMILY (the union's exhaustiveness, the
-      // grammar inventory) but its own head — the one kind that scopes
-      // a LAW instead of a resource
+      // [D:pure-stage1]: in the family (the union's exhaustiveness,
+      // the grammar inventory) but its own head — the one kind that
+      // scopes a law instead of a resource
       { Id = WithinPure
         Name = "pure"
         Binds = false
         Standalone = true
         Doc = "a purity assertion: the block's body must reach no effect" }
       // [D:pure-stage2]: one tier up from pure — the body must reach no
-      // EXTERNAL MUTATION; ambient reads (fs.read, env, clock, query-net)
+      // external mutation; ambient reads (fs.read, env, clock, query-net)
       // are allowed. Its own head, never `within readonly`.
       { Id = WithinReadonly
         Name = "readonly"
@@ -137,8 +140,8 @@ let withinKinds: WithinKind list =
         Standalone = true
         Doc = "a read-only assertion: the block's body must reach no external mutation (ambient reads are allowed)" }
       // [D:plan-apply]: the third standalone head — like readonly it
-      // partitions ambient/mutation, but instead of REFUSING mutation it
-      // CAPTURES it as an Op; the region yields a Plan. Its own head,
+      // partitions ambient/mutation, but instead of refusing mutation it
+      // captures it as an Op; the region yields a Plan. Its own head,
       // never `within plan`.
       { Id = WithinPlan
         Name = "plan"
@@ -165,14 +168,14 @@ let withinKindList =
         let front = names |> List.take (names.Length - 1) |> String.concat ", "
         $"{front}, or {List.last names}"
 
-/// the exit-code discard teaching [D:exit-reifiers], ONE string for every
-/// site that refuses a discarded `| exitCode`: the parser's sigil and
-/// sequence guards and the checker's else-less if. Shared because the copies
-/// drifted — two spellings of the dash across four sites, none of them pinned
+/// the exit-code discard teaching [D:exit-reifiers], one string for
+/// every site that refuses a discarded `| exitCode`: the parser's
+/// sigil and sequence guards and the checker's else-less if. Shared
+/// because separate unpinned copies drifted apart
 let exitCodeDiscardMsg =
     "this discards the exit code — bind it (let rc = <command> | exitCode), match on it, or drop '| exitCode'"
 
-// the adapter type slot's payload [D:anon-records]: a declared NAME,
+// the adapter type slot's payload [D:anon-records]: a declared name,
 // or an anonymous field list `{| f: ty; … |}` (adapter slot only —
 // there is no anonymous literal, and tySyn does not nest it)
 type FromShape =
@@ -192,11 +195,11 @@ and ExprKind =
     | ESize of bytes: int64
     // retry/poll [D:retry-poll]: a two-segment compound — options
     // record, block body yielding 'a, optional `until` binder+predicate
-    // block (absent = the body IS the predicate, form yields unit)
+    // block (absent = the body is the predicate, form yields unit)
     | ERetry of
         poll: bool *
         opts: Expr *
-        // poll's watched handle [D:scoped-procs]: a HEAD key, never an
+        // poll's watched handle [D:scoped-procs]: a head key, never an
         // options field — a live handle is per-call, not configuration,
         // so the record form deliberately cannot spell it
         watch: Expr option *
@@ -213,16 +216,16 @@ and ExprKind =
     | EField of target: Expr * field: string * fieldSpan: Span
     // a slice `x[lo..hi]` [D:range-slicing]: inclusive, clamping; lo/hi
     // absent for the open ends (`x[..hi]`, `x[lo..]`). Type-directed at
-    // CHECK (string -> substring, seq -> subsequence), the one node whose
+    // check (string -> substring, seq -> subsequence), the one node whose
     // meaning the parser cannot fix.
     | ESlice of target: Expr * lo: Expr option * hi: Expr option
     | EBinOp of op: string * left: Expr * right: Expr
-    // an operator as a VALUE, unapplied only [D:operator-values] —
+    // an operator as a value, unapplied only [D:operator-values] —
     // the checker desugars it to `fun a b -> a op b` verbatim
     | EOpValue of op: string
     | ERecord of fields: (string * Span * Expr) list
     // an anonymous record literal [D:anon-literals] — typed as its
-    // canonical synthetic-nominal name; the TYPED node is TERecord
+    // canonical synthetic-nominal name; the typed node is TERecord
     | EAnonRecord of fields: (string * Span * Expr) list
     | EMatch of scrutinee: Expr * arms: (Pattern * Expr option * Expr) list
     | EIf of cond: Expr * thn: Expr * els: Expr option
@@ -234,30 +237,31 @@ and ExprKind =
     | ELetPat of binder: Pattern * value: Expr * body: Expr
     | ELambdaPat of binder: Pattern * body: Expr
     // within <kind> … + block [D:within-scopes]: a scoped resource.
-    // The kinds are ASYMMETRIC by design: tmp PRODUCES a path (binder,
-    // no arg); cd and env CONSUME one (arg, no binder) — which is why
+    // The kinds are asymmetric by design: tmp produces a path (binder,
+    // no arg); cd and env consume one (arg, no binder) — which is why
     // the form is `within <kind> <args…>`, not one fixed shape
     | EWithin of kind: WithinKindId * binder: (string * Span) option * arg: Expr option * opts: Expr option * body: Expr
     // the bare scope [D:within-always]: no resource, just the exit
-    // discipline — body, then the always block on EVERY exit path
+    // discipline — body, then the always block on every exit path
     | EAlways of body: Expr * cleanup: Expr
     // the $() capture assertion [D:district-retirement]: $() means
-    // CAPTURE in every position — the wrapper marks the chain so
+    // capture in every position — the wrapper marks the chain so
     // statement arming never touches it; erased at check
     | ECapture of Expr
     | ECmd of head: CmdHead * args: Expr list * env: Expr option
     // a dynamic head reified [D:dynamic-head]: the `|completed` family
-    // takes the program as a string ARGUMENT, so a `^$` head rides the
+    // takes the program as a string argument, so a `^$` head rides the
     // desugar as this wrapper — typed string-exactly at check, erased
     | EDynProg of display: string * head: Expr
     // $@xs / $@(expr) — N argv words [D:argv-splat]
     | ESplat of Expr
     // copy-and-update [D:record-update]: paths carry nested sugar
-    // (I.X); the checker walks them, eval overlays — source ONCE
+    // (I.X); the checker walks them, eval overlays — the source is
+    // evaluated once
     | EUpdate of source: Expr * updates: ((string * Span) list * Expr) list
     | EInterp of parts: InterpPart<Expr> list
     // the yaml district [D:yaml-district]: a checked block literal — the
-    // template tree parsed at CHECK time; splices and `for` sources are
+    // template tree parsed at check time; splices and `for` sources are
     // ordinary Exprs, so typing/hover/eval ride existing machinery.
     // patchBy [D:yaml-nodes]: None = a plain yaml district; Some by = a
     // `yaml patch` district (typed YamlPatch), by = the optional
@@ -266,7 +270,7 @@ and ExprKind =
 
 and YamlTpl =
     | YtScalar of raw: string * quoted: bool * span: Span
-    // a literal block scalar [D:block-scalars]: content is BYTES,
+    // a literal block scalar [D:block-scalars]: content is bytes,
     // consumed before the splice/for scanners run, already chomped
     | YtBlock of text: string * span: Span
     | YtSplice of Expr
@@ -278,24 +282,24 @@ and YamlTpl =
 
 and YamlTplEntry =
     | YtPair of key: YamlTplKey * value: YamlTpl
-    // `for p in xs` under a MAPPING: the body yields entries per element
+    // `for p in xs` under a mapping: the body yields entries per element
     | YtForEntries of binder: Pattern * source: Expr * body: YamlTplEntry list
 
 and YamlTplItem =
     | YtItem of YamlTpl
-    // `for p in xs` under a SEQUENCE: the body yields items per element
+    // `for p in xs` under a sequence: the body yields items per element
     | YtForItems of binder: Pattern * source: Expr * body: YamlTplItem list
     // `- $- <content>` [D:yaml-nodes]: remove the sequence item matching
     // the content (by the merge key under `by=`, else by equality)
     | YtDropItem of YamlTpl * span: Span
 
 and YamlTplKey =
-    // the key SPAN feeds schema validation's located errors [D:yaml-schemas]
+    // the key span feeds schema validation's located errors [D:yaml-schemas]
     | YtKeyLit of string * span: Span
     | YtKeySplice of Expr
 
 // the command head [D:dynamic-head]: a literal program name (the argv
-// law's static case), or a `^$`-spliced VALUE resolved at run — display
+// law's static case), or a `^$`-spliced value resolved at run — display
 // is the source spelling ($name / $(…)) for messages
 and CmdHead =
     | HeadLit of string
@@ -467,8 +471,8 @@ type Stmt =
     | SExpr of Expr
     | SCmd of Expr
     | SType of Decl
-    // `let name : <ty>` with no `=` [D:module-signatures] — a SIGNATURE
-    // declaration, and the signature IS the export (unsigned module
+    // `let name : <ty>` with no `=` [D:module-signatures] — a signature
+    // declaration; the signature acts as the export (unsigned module
     // members are private; scripts refuse the form)
     | SSig of name: string * ty: Ty * nameSpan: Span
     // the module marker [D:modules-v1] — `module` (name from filename) or
@@ -478,9 +482,10 @@ type Stmt =
     // literal string; alias (uppercase) is the namespace override
     | SImport of path: string * pathSpan: Span * alias: (string * Span) option
 
-// Span-free sexpr rendering — the parse-SHAPE language. Two consumers:
-// the test suite's parse pins and fmt's respace safety check (a
-// formatted statement must sexpr-match its original) [D:fmt-respace].
+// Span-free sexpr rendering — renders the parse shape only. Two
+// consumers: the test suite's parse pins and fmt's respace safety
+// check (a formatted statement must sexpr-match its original)
+// [D:fmt-respace].
 let rec sexprPat (p: Pattern) : string =
     match p.PKind with
     | PWildcard -> "_"

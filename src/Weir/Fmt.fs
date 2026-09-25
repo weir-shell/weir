@@ -17,13 +17,13 @@ let collectBareUses (e: Expr) : (Span * string) list =
     List.ofSeq acc
 
 // ---------------------------------------------------------------------------
-// weir fmt <script> [D:fmt-v1] + intra-line respace [D:fmt-respace]
-// (v2, on the update-example receipt): collapse space runs, pad
-// record braces, tidy `;` — under a PARSE-SHAPE safety check: each
-// respaced statement must sexpr-match its original (same permissive
-// resolver both sides) or that statement REVERTS to its pre-respace
-// text. Comments keep their text; re-flowing stays parked.
-// Pipe-headed lines keep the column-0 shell style if they use it.
+// weir fmt <script> [D:fmt-v1] plus intra-line respace [D:fmt-respace]
+// (v2): collapse space runs, pad record braces, tidy `;` — under a
+// parse-shape safety check: each respaced statement must sexpr-match
+// its original (same permissive resolver on both sides) or that
+// statement reverts to its pre-respace text. Comments keep their
+// text; re-flowing stays parked. Pipe-headed lines keep the column-0
+// shell style if they use it.
 
 // `///` doc canonicalization [D:doc-comments]: a doc rides the indent of
 // the declaration it attaches to (the line right after the run, if that
@@ -53,12 +53,12 @@ let private canonicalizeDocs (out: string list) : string list =
     List.ofArray arr
 
 // district markers ride the binding line [D:district-canonical]: a
-// marker ALONE on a continuation line (`let x =` / `    <<<`) merges
+// marker alone on a continuation line (`let x =` / `    <<<`) merges
 // up onto the line it continues — the assembler joins the two with a
-// single space, so the merged line assembles to the SAME logical text
+// single space, so the merged line assembles to the same logical text
 // and the rewrite is lossless by construction (the caller verifies and
 // reverts wholesale on any mismatch). Content lines are bytes and stay
-// put — their indentation is RELATIVE to the first content line, so
+// put — their indentation is relative to the first content line, so
 // the main pass re-anchors them under the merged marker's depth. A
 // close line between the binding indent and the old marker indent
 // (`    |> f` under a next-line marker) outdents with the marker, or
@@ -69,8 +69,9 @@ let private canonicalizeDistrictMarkers (body: string list) : string list =
     let indentOf (s: string) = s |> Seq.takeWhile ((=) ' ') |> Seq.length
     let isBlank (s: string) = s.Trim() = ""
 
-    // the WHOLE piece is the marker — `<<<`, `$<<<`, `yaml` plus its
-    // marker-line modifiers (`patch`, `by=`, `schema=`), nothing else
+    // the whole piece must be the marker — `<<<`, `$<<<`, `yaml` plus
+    // its marker-line modifiers (`patch`, `by=`, `schema=`), nothing
+    // else
     let markerOnly (piece: string) =
         match (Script.classifyPiece piece).Marker with
         | Script.MarkerKind.NoMarker -> false
@@ -78,7 +79,7 @@ let private canonicalizeDistrictMarkers (body: string list) : string list =
         | _ -> Parser.yamlMarkerLen piece = piece.Length
 
     let out = ResizeArray<string>()
-    // the arming marker line's ORIGINAL indent while its content pends
+    // the arming marker line's original indent while its content pends
     let mutable armed: int option = None
     // after a merge: the merged line's indent, waiting for the close line
     let mutable pendingShift: int option = None
@@ -130,7 +131,7 @@ let private canonicalizeDistrictMarkers (body: string list) : string list =
                         // the physically previous line, and it must be code
                         // (adjacency: blanks and comments never sit between),
                         // shallower, and comment-free (a trailing comment has
-                        // no seat once the marker takes the line end)
+                        // nowhere to go once the marker takes the line end)
                         let prevRaw = arr[i - 1]
                         let prev = out[out.Count - 1]
 
@@ -175,9 +176,10 @@ let private formatLinesCore (body: string list) : Result<string list, string> =
     let texts (lls: Script.LogicalLine list) = lls |> List.map (fun ll -> ll.Text)
 
     let body =
-        // adopt the canonical marker layout ONLY under proof: the merged
-        // lines must assemble to the byte-identical logical text
-        // [D:district-canonical] — anything else keeps the source layout
+        // adopt the canonical marker layout only under proof: the
+        // merged lines must assemble to the byte-identical logical
+        // text [D:district-canonical] — anything else keeps the source
+        // layout
         let candidate = canonicalizeDistrictMarkers body
 
         if candidate = body then
@@ -192,21 +194,21 @@ let private formatLinesCore (body: string list) : Result<string list, string> =
     | Ok originalLogical ->
 
         // open indent levels, deepest first [D:fmt-depth-model]: any
-        // deeper line opens a level, a line AT a level returns to it,
+        // deeper line opens a level, a line at a level returns to it,
         // col-0 resets — depth preserves every relational comparison
         // the assembler makes (=, <, >), so re-assembly is
         // join-for-join identical.
         let mutable levels: int list = []
         // open brackets, annotated: (kind, column, stroustrup, opener
-        // line's formatted indent). A DANGLING opener (line ends at the
+        // line's formatted indent). A dangling opener (line ends at the
         // bracket, or a `{ ... with` header) takes Stroustrup rules —
         // entries at opener-indent+4, closers at opener-indent; an
         // inline opener keeps column alignment [D:fmt-stroustrup]
         let mutable braces: (char * int * bool * int * int option) list = []
         // district: Some(markerOrigIndent, markerDepth) while inside a
-        // district block — yaml is the ONE surviving marker
-        // [D:district-retirement], so yamlDistrict is always true here; a
-        // yaml district's RELATIVE indentation is semantic
+        // district block — yaml is the one surviving marker
+        // [D:district-retirement], so yamlDistrict is always true here;
+        // a yaml district's relative indentation is semantic
         // [D:yaml-district] — its lines keep their offset from the
         // block's first line (the base), re-anchored at marker+1
         let mutable district: (int * int) option = None
@@ -225,15 +227,15 @@ let private formatLinesCore (body: string list) : Result<string list, string> =
 
                 if raw.Trim() = "" then
                     // blanks never end statements [D:body-blanks]: all
-                    // state survives the gap; the col-0 branches already
-                    // reset levels/matches at real statement boundaries,
-                    // which IS the deferred decision the plan asks for
+                    // state survives the gap; the col-0 branches reset
+                    // levels/matches at real statement boundaries
                     ""
                 elif code.Trim() = "" then
                     // comment-only: transparent to assembly [D:comment-transparency];
-                    // keep it verbatim and leave formatter state alone —
-                    // EXCEPT inside a yaml district, where the line is
-                    // CONTENT [D:content-bytes] and rides the re-anchor
+                    // keep it verbatim and leave formatter state alone
+                    // — except inside a yaml district, where the line
+                    // is content [D:content-bytes] and rides the
+                    // re-anchor
                     let cIndent = raw |> Seq.takeWhile ((=) ' ') |> Seq.length
 
                     match district with
@@ -262,7 +264,7 @@ let private formatLinesCore (body: string list) : Result<string list, string> =
                                     yamlBase <- Some indent
                                     indent
 
-                            // bytes: trailing whitespace AND a content-
+                            // bytes: trailing whitespace and a content-
                             // leading tab survive [D:content-bytes] — strip
                             // only the space indentation
                             String.replicate ((mDepth + 1) * 4 + (indent - b)) " "
@@ -292,7 +294,7 @@ let private formatLinesCore (body: string list) : Result<string list, string> =
                                 String.replicate col " " + content
                             | (kind, top, false, _, anchor) :: _ ->
                                 // bracket continuation: align under the first
-                                // entry's MEASURED column [D:field-alignment]
+                                // entry's measured column [D:field-alignment]
                                 let col =
                                     match anchor with
                                     | Some a -> a
@@ -317,7 +319,7 @@ let private formatLinesCore (body: string list) : Result<string list, string> =
                                         match matches with
                                         | (mi, col, None) :: rest ->
                                             // the first pipe after a match head
-                                            // IS an arm; its indent anchors the
+                                            // is an arm; its indent anchors the
                                             // arm set [D:fmt-match-arms]
                                             matches <- (mi, col, Some indent) :: rest
                                             Some col
@@ -357,7 +359,7 @@ let private formatLinesCore (body: string list) : Result<string list, string> =
 
                                     line
 
-                        // re-annotate: entries pushed on THIS line learn
+                        // re-annotate: entries pushed on this line learn
                         // their style from where the line leaves its opener
                         let raw = braces |> List.map (fun (k, c, _, _, _) -> k, c)
                         let newRaw = Script.braceStack raw formatted
@@ -383,9 +385,9 @@ let private formatLinesCore (body: string list) : Result<string list, string> =
                                 let stroustrup = c = trimmed.Length - 1 || (k = '{' && trimmed.EndsWith " with")
 
                                 // the sibling anchor is the first entry's
-                                // MEASURED column [D:field-alignment] — never
-                                // offset arithmetic (a `[ x` list anchors at
-                                // +2 like a brace)
+                                // measured column [D:field-alignment], not
+                                // offset arithmetic (a `[ x` list anchors
+                                // at +2 like a brace)
                                 let anchor =
                                     let mutable j = c + 1
 
@@ -409,10 +411,10 @@ let private formatLinesCore (body: string list) : Result<string list, string> =
                 Error "fmt safety check failed: reformatting would change the parse; file left unchanged"
             else
                 // ---- v2: intra-line respace under the shape guard ----
-                // [D:fmt-respace] — a fixed permissive resolver on BOTH
-                // sides, so sexpr differences can only come from the
-                // respacing itself
-                // Script.assumeResolver: command-SHAPED heads only —
+                // [D:fmt-respace] — a fixed permissive resolver on
+                // both sides, so sexpr differences can only come from
+                // the respacing itself.
+                // Script.assumeResolver: command-shaped heads only —
                 // an always-true IsExternal would claim `{Lomo` as a
                 // head and make every let-RHS a command
                 let shapeResolver = Script.assumeResolver Builtins.typeEnv
@@ -426,7 +428,7 @@ let private formatLinesCore (body: string list) : Result<string list, string> =
                     formatted
                     |> List.map (fun raw ->
                         // respace the code only; the gap before a
-                        // trailing comment is ALIGNMENT and survives
+                        // trailing comment is alignment and survives
                         let code = Script.stripComment raw
                         let codeTrim = code.TrimEnd()
 
@@ -463,14 +465,15 @@ let private formatLinesCore (body: string list) : Result<string list, string> =
 let formatLines (body: string list) : Result<string list, string> =
     formatLinesCore body |> Result.map canonicalizeDocs
 
-// #save's bare-alias QUALIFIER [D:repl-save]: a saved script is STRICT,
-// where bare aliases (`map`, `where`, `startsWith`) do not exist — so
-// each single-home bare name is rewritten to its qualified spelling
-// (`Seq.map`, `Str.startsWith`) using the SAME `bareAliasHomes` map the
-// checker's did-you-mean reads. Span-based (parse, collect EVar uses,
-// replace right-to-left) so it never touches a string literal or a field
-// name that happens to spell a bare alias. A SINGLE physical line
-// (the REPL transcript's logical-line text); parse failure -> unchanged.
+// #save's bare-alias qualifier [D:repl-save]: a saved script is
+// strict, where bare aliases (`map`, `where`, `startsWith`) do not
+// exist — so each single-home bare name is rewritten to its qualified
+// spelling (`Seq.map`, `Str.startsWith`) using the same
+// `bareAliasHomes` map the checker's did-you-mean reads. Span-based
+// (parse, collect EVar uses, replace right-to-left) so it never
+// touches a string literal or a field name that happens to spell a
+// bare alias. Operates on a single physical line (the REPL
+// transcript's logical-line text); parse failure leaves it unchanged.
 let qualifyBareAliases (r: Parser.Resolver) (line: string) : string =
     match Parser.parseLineFull r line with
     | Error _ -> line
@@ -498,7 +501,7 @@ let qualifyBareAliases (r: Parser.Resolver) (line: string) : string =
                     acc)
             line
 
-// collect COMMAND-HEAD spans and their head names [D:command-head-alias]:
+// collect command-head spans and their head names [D:command-head-alias]:
 // an ECmd's head is the literal program name, and its token sits at the
 // ECmd span's start (length = the name). Only heads, never a name in an
 // argument or a string — so `k` as an argv word or inside `"k"` is
@@ -525,15 +528,17 @@ let collectCmdHeads (e: Expr) : (Span * string) list =
     walk e
     List.ofSeq acc
 
-// DESUGAR command-head aliases for `#save` [D:command-head-alias]: rewrite
-// each command HEAD that is an alias back to its real invocation (exe +
-// fixed prefix args), span-based, so the saved script is alias-free and
-// `weir check` clean. Mirrors `qualifyBareAliases`' discipline exactly.
+// Desugar command-head aliases for `#save` [D:command-head-alias]:
+// rewrite each command head that is an alias back to its real
+// invocation (exe + fixed prefix args), span-based, so the saved
+// script is alias-free and `weir check` clean. Mirrors
+// `qualifyBareAliases`' discipline exactly.
 //
-// The resolver `r` must resolve alias NAMES as external heads (so `k get
-// po` parses as an ECmd) WITHOUT rewriting them (AliasHead = None), so the
-// head keeps its source name and span; `aliasOf` supplies the desugaring.
-// A single physical line; parse failure -> unchanged.
+// The resolver `r` must resolve alias names as external heads (so
+// `k get po` parses as an ECmd) without rewriting them (AliasHead =
+// None), so the head keeps its source name and span; `aliasOf`
+// supplies the desugaring. Operates on a single physical line; parse
+// failure leaves it unchanged.
 let desugarAliasHeads (r: Parser.Resolver) (aliasOf: string -> (string * string list) option) (line: string) : string =
     match Parser.parseLineFull r line with
     | Error _ -> line

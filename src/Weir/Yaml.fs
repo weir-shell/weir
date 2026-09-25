@@ -1,34 +1,34 @@
 module Weir.Yaml
 
-// The OWNED strict-YAML subset [D:yaml-v1] — scalars, block maps, block
+// The owned strict-YAML subset [D:yaml-v1] — scalars, block maps, block
 // sequences, `#` comments; multi-doc `---`; literal block scalars `|`
-// and `|-` [D:block-scalars]. NOT parsed, each a teaching error:
+// and `|-` [D:block-scalars]. Not parsed, each with a teaching error:
 // anchors/aliases, tags, flow style, directives, complex keys, folded
-// scalars (`>`), `|+`, explicit indentation indicators. The
-// config-format spike's receipt: the subset is small enough to OWN —
-// weir's own error positions, zero dependency bytes.
+// scalars (`>`), `|+`, explicit indentation indicators. The subset is
+// small enough to own outright — weir's own error positions, zero
+// dependency bytes.
 
-// the check-time-resolved TARGET SHAPE for `from yaml T` — eval has no
-// env.Types (the [D:env-enums] precedent: pack what eval needs into the
-// typed node at check)
+// the check-time-resolved target shape for `from yaml T` — eval has no
+// env.Types, so what eval needs is packed into the typed node at check
+// (the [D:env-enums] precedent)
 type Shape =
     | SInt
     | SFloat
     | SStr
     | SBool
     | SOpt of Shape
-    // (field, WIRE key, shape) [D:wire-keys] — matching reads the wire,
+    // (field, wire key, shape) [D:wire-keys] — matching reads the wire,
     // construction writes the field
     | SRec of name: string * fields: (string * string * Shape) list
     | SSeq of Shape
     // seq<string * X> — an open mapping (labels/annotations)
     | SPairs of Shape
-    // the opaque `Yaml` NODE [D:yaml-empty-flow]: a field whose shape is
+    // the opaque `Yaml` node [D:yaml-empty-flow]: a field whose shape is
     // undecided (e.g. #infer's empty-mapping fallback) reads structure
     // whole into the public Yaml union — the read sibling of the write
     // side, which already renders Yaml nodes directly
     | SNode
-    // a TAGGED union [D:wire-unions]: the tag field picks the case;
+    // a tagged union [D:wire-unions]: the tag field picks the case;
     // cases carry (name, tagValue, payload record shape option); other
     // is the [<Other>] fallback (name, carries-the-tag-string)
     | SUnion of
@@ -37,14 +37,14 @@ type Shape =
         cases: (string * string * Shape option) list *
         other: (string * bool) option
 
-// the INTERNAL node tree — quotedness and positions ride here; the
+// the internal node tree — quotedness and positions ride here; the
 // public `Yaml` union (prelude) carries neither, because construction
 // never needs them and typed conversion does
 type Node =
     | NScalar of raw: string * quoted: bool * line: int
     // blockness is quotedness's sibling [D:block-scalars]: a block scalar
-    // is unambiguously a STRING (an int/bool field errors on one), and
-    // the case IS the internal record of the form
+    // is unambiguously a string (an int/bool field errors on one), and
+    // this case is the internal record of the form
     | NBlock of text: string * line: int
     | NNull of line: int
     | NSeq of items: Node list * line: int
@@ -68,13 +68,13 @@ let indentOf (s: string) =
 
     i
 
-// strip a trailing ` #comment` OUTSIDE quotes — YAML's own lexical rule
-// (a yaml-text scanner, not a second weir-text quote machine)
-// ONE machine, two faces [D:district-hash]: the plain face is YAML's
-// lexical rule alone; the district face ALSO skips $(...) splice
+// strip a trailing ` #comment` outside quotes — YAML's own lexical rule
+// (a yaml-text scanner, not a second weir-text quote machine).
+// One machine, two faces [D:district-hash]: the plain face is YAML's
+// lexical rule alone; the district face also skips $(...) splice
 // holes, whose interior is weir expression text (weir string rules:
-// double with backslash escapes, single raw) — a `#` inside a hole or
-// inside quotes is data, a whitespace-preceded `#` outside both is a
+// double with backslash escapes, single raw). A `#` inside a hole or
+// inside quotes is data; a whitespace-preceded `#` outside both is a
 // comment.
 let private commentCutAt (holes: bool) (s: string) : int =
     let mutable inD = false // yaml double quote (backslash escapes)
@@ -131,10 +131,10 @@ let private stripTrailingComment (s: string) =
     let cut = commentCutAt false s
     (if cut >= 0 then s.Substring(0, cut) else s).TrimEnd()
 
-/// the district face [D:district-hash]: a whitespace-preceded `#` on a
-/// district STRUCTURE line is a comment (YAML's own rule — the read
-/// side already said so); quoted regions and $(...) holes are data.
-/// Block-scalar content never reaches this (consumed as bytes first).
+/// The district face [D:district-hash]: a whitespace-preceded `#` on a
+/// district structure line is a comment (YAML's own rule, matching the
+/// read side); quoted regions and $(...) holes are data. Block-scalar
+/// content never reaches this (consumed as bytes first).
 let stripDistrictComment (s: string) =
     let cut = commentCutAt true s
     (if cut >= 0 then s.Substring(0, cut) else s).TrimEnd()
@@ -142,8 +142,8 @@ let stripDistrictComment (s: string) =
 // a scalar token: quoted (double: \" \\ \n \t \r \N \L \P \xNN \uNNNN
 // unescaped — the emitter's own escape set, so weir reads what weir
 // writes; single: '' = ') or plain (raw, trimmed). Rejections carry
-// the subset's teaching. The CORE is position-free so the yaml
-// DISTRICT's template parser reuses it (one machine); parseScalar
+// the subset's teaching. The core is position-free so the yaml
+// district's template parser reuses it (one machine); parseScalar
 // wraps it with the line prefix.
 // Ok None = null (empty); Ok (Some (text, quoted)) = a scalar.
 let scalarCore (raw: string) : Result<(string * bool) option, string> =
@@ -243,7 +243,7 @@ let scalarCore (raw: string) : Result<(string * bool) option, string> =
     elif t.StartsWith "!" then
         Error "tags are outside the yaml subset"
     elif t.StartsWith "|" || t.StartsWith ">" then
-        // block scalars live in VALUE positions (mapping value, sequence
+        // block scalars live in value positions (mapping value, sequence
         // item, whole document) and are intercepted there; a header
         // reaching the scalar path is misplaced [D:block-scalars]
         Error
@@ -257,8 +257,8 @@ let private parseScalar (lineNo: int) (raw: string) : Result<Node, string> =
     | Ok None -> Ok(NNull lineNo)
     | Ok(Some(text, quoted)) -> Ok(NScalar(text, quoted, lineNo))
 
-// the ONLY flow forms the block-only subset admits [D:yaml-empty-flow]:
-// the EMPTY collections `{}` and `[]` (inner whitespace tolerated),
+// the only flow forms the block-only subset admits [D:yaml-empty-flow]:
+// the empty collections `{}` and `[]` (inner whitespace tolerated),
 // unambiguous at zero elements where the Norway/ambiguity class that
 // justifies block-only cannot fire. Populated flow stays rejected by
 // scalarCore's teaching. `{}` → empty mapping, `[]` → empty sequence.
@@ -315,7 +315,7 @@ let splitKey (lineNo: int) (s: string) : (string * string) option =
 
 // ---- multi-line quoted flow scalars [D:quoted-fold] ------------------------
 
-// find the CLOSING quote in a fragment already inside a quoted scalar:
+// find the closing quote in a fragment already inside a quoted scalar:
 // double skips backslash escapes, single treats '' as the escaped
 // quote — the scan that decides where the value ends
 let private closeQuoteAt (dq: bool) (s: string) : int option =
@@ -339,16 +339,16 @@ let private closeQuoteAt (dq: bool) (s: string) : int option =
 
     if found < 0 then None else Some found
 
-/// a quoted scalar whose closing quote sits on a LATER line
-/// [D:quoted-fold]. Continuation lines come from the RAW source (blank
+/// A quoted scalar whose closing quote sits on a later line
+/// [D:quoted-fold]. Continuation lines come from the raw source (blank
 /// lines and `#`-shaped lines are bytes inside the quotes, exactly the
-/// block-scalar rule) and are CONSUMED by the scalar. YAML's flow
+/// block-scalar rule) and are consumed by the scalar. YAML's flow
 /// folding: a line break folds to one space, each empty continuation
 /// line to one newline; continuation indentation strips (lines must sit
 /// right of the owning key/dash column); trailing space before the
-/// closing quote is content. Escapes resolve AFTER folding through
+/// closing quote is content. Escapes resolve after folding, through
 /// scalarCore — one machine — so `''` and the double-quote escape set
-/// work mid-continuation (a `\`-escaped line break is NOT supported).
+/// work mid-continuation (a `\`-escaped line break is not supported).
 /// Returns the node and the last raw line consumed.
 let private multilineQuoted
     (raw: (int * string)[])
@@ -435,7 +435,7 @@ let private multilineQuoted
 
 // ---- block scalars [D:block-scalars] --------------------------------------
 
-/// classify a value slot as a block scalar header: Ok keep? for `|`/`|-`,
+/// Classify a value slot as a block scalar header: Ok keep? for `|`/`|-`,
 /// a teaching error for the rejected forms, None for a non-header
 let blockHeader (rest: string) : Result<bool, string> option =
     let t = rest.Trim()
@@ -461,10 +461,10 @@ let blockHeader (rest: string) : Result<bool, string> option =
     else
         None
 
-/// content comes from the RAW lines (blank lines and `#`-shaped lines
-/// are BYTES inside a block scalar — the filtered view already dropped
+/// Content comes from the raw lines (blank lines and `#`-shaped lines
+/// are bytes inside a block scalar — the filtered view already dropped
 /// them), bounded by the first non-blank line at or left of the parent
-/// indent. Chomping is SEMANTIC: `|` yields one trailing newline, `|-`
+/// indent. Chomping is semantic: `|` yields one trailing newline, `|-`
 /// none; interior blanks become newlines; more-indented lines keep
 /// their extra indentation.
 let private blockScalar
@@ -485,7 +485,7 @@ let private blockScalar
         let no, line = raw[i]
 
         if line.Trim() = "" then
-            // a whitespace-only line is kept RAW: bytes beyond the
+            // a whitespace-only line is kept raw: bytes beyond the
             // block's indentation are content (PyYAML agrees), bytes
             // at-or-below it are an empty line — extraction decides
             content.Add(no, line.TrimEnd '\r')
@@ -514,9 +514,9 @@ let private blockScalar
                 |> Seq.map (fun (_, l) -> if l.Length > cIndent then l.Substring cIndent else "")
                 |> Seq.toArray
 
-            // trailing EMPTY lines drop for both forms (keeping them is
+            // trailing empty lines drop for both forms (keeping them is
             // |+'s job, rejected); a trailing whitespace line beyond the
-            // indent is content and STAYS — dropping it loses bytes
+            // indent is content and stays — dropping it loses bytes
             let mutable last = extracted.Length
 
             while last > 0 && extracted[last - 1] = "" do
@@ -525,7 +525,7 @@ let private blockScalar
             let body = extracted[.. last - 1] |> String.concat "\n"
             Ok(NBlock((if keep then body + "\n" else body), headerNo))
 
-/// the last content line's number, for the extent-consistency guard
+/// The last content line's number, for the extent-consistency guard
 let private blockLastNo (raw: (int * string)[]) (headerNo: int) (parentIndent: int) : int =
     let mutable last = headerNo
     let mutable i = 0
@@ -559,9 +559,9 @@ let private blockLastNo (raw: (int * string)[]) (headerNo: int) (parentIndent: i
 // re-scan within the cap is a known follow-up, not fixed here.
 let private maxDepth = 500
 
-// numbered CONTENT lines (blank and full-line-comment lines already
+// numbered content lines (blank and full-line-comment lines already
 // dropped, trailing comments stripped) → one document node. `raw` is
-// the UNFILTERED source — block scalar content reads from it
+// the unfiltered source — block scalar content reads from it
 // [D:block-scalars], because inside a block those dropped lines are bytes.
 // `depth` counts the mapping/sequence nesting level [D:yaml-depth].
 let rec private parseBlock
@@ -593,9 +593,9 @@ let rec private parseBlock
         | None -> blockScalar rawSrc no parentIndent keep
 
     // a quoted value whose closing quote sits on a later line
-    // [D:quoted-fold]: the continuation lines belong to the SCALAR and
+    // [D:quoted-fold]: the continuation lines belong to the scalar and
     // must never reach the block parser. None = not that form — the
-    // single-line paths rule (a closed scalar, the other teachings,
+    // single-line paths handle it (a closed scalar, the other teachings,
     // scalarCore's own unclosed error when no continuation exists)
     let quotedValue (no: int) (parentIndent: int) (i: int) (j: int) (s: string) : Result<Node, string> option =
         let t = s.Trim()
@@ -612,14 +612,14 @@ let rec private parseBlock
                 | Error e -> Some(Error e)
                 | Ok(node, lastNo) ->
                     // the extent guard, as blockValue's: a deeper line
-                    // AFTER the closing quote has no owner
+                    // after the closing quote has no owner
                     match lines[i + 1 .. j - 1] |> Array.tryFind (fun (n2, _) -> n2 > lastNo) with
                     | Some(n2, _) ->
                         Some(Error $"line {n2}: this line sits inside the quoted scalar's indentation but after its closing quote")
                     | None -> Some(Ok node)
 
     // is the (content) line at `k` a block-sequence item at exactly
-    // `col`? kubectl's zero-indent form puts a sequence at the SAME
+    // `col`? kubectl's zero-indent form puts a sequence at the same
     // column as its parent mapping key
     let isSeqAt (col: int) (k: int) =
         k < fin
@@ -630,7 +630,7 @@ let rec private parseBlock
     // the extent of a same-indent block sequence starting at `k`: the
     // run of lines at indent >= col, stopping at the first line that
     // dedents below `col` (a sibling mapping key sits at exactly `col`
-    // but is NOT a `- ` line, so it too begins the sequence's parse —
+    // but is not a `- ` line, so it too begins the sequence's parse —
     // the sequence loop itself stops on the first non-`- ` line at col)
     let seqExtent (col: int) (k: int) =
         let mutable e = k + 1
@@ -654,7 +654,7 @@ let rec private parseBlock
         let firstBody = firstRaw.Substring indent
 
         if firstBody.StartsWith "- " || firstBody.TrimEnd() = "-" then
-            // a block SEQUENCE: items at exactly this indent
+            // a block sequence: items at exactly this indent
             let rec items i acc =
                 if i >= fin then
                     Ok(List.rev acc)
@@ -669,7 +669,7 @@ let rec private parseBlock
                     elif not (raw.Substring(indent).StartsWith "- " || raw.Substring(indent).TrimEnd() = "-") then
                         Ok(List.rev acc)
                     else
-                        // the item's content: rest of this line at VIRTUAL
+                        // the item's content: rest of this line at virtual
                         // indent+2, plus deeper lines until the next sibling
                         let mutable j = i + 1
 
@@ -694,7 +694,7 @@ let rec private parseBlock
                                         // an empty flow collection as a sequence item
                                         Ok node
                                     | None when
-                                        // POPULATED flow in item position: `- {a: 1}`
+                                        // populated flow in item position: `- {a: 1}`
                                         // would otherwise be mis-split into a compact
                                         // map key `{a` — route it to the scalar path so
                                         // the block-only teaching fires [D:yaml-empty-flow]
@@ -730,7 +730,7 @@ let rec private parseBlock
         else
             match splitKey firstNo firstBody with
             | Some _ ->
-                // a block MAP: entries at exactly this indent
+                // a block map: entries at exactly this indent
                 let rec entries i acc (seen: Set<string>) =
                     if i >= fin then
                         Ok(List.rev acc)
@@ -755,8 +755,8 @@ let rec private parseBlock
                                         j <- j + 1
 
                                     // a valueless key followed by a block sequence at
-                                    // the SAME indent (kubectl's zero-indent form): the
-                                    // sequence IS the value — consume its whole extent
+                                    // the same indent (kubectl's zero-indent form): the
+                                    // sequence is the value — consume its whole extent
                                     let seqValue =
                                         rest.Trim() = "" && j = i + 1 && isSeqAt indent (i + 1)
 
@@ -806,7 +806,7 @@ let rec private parseBlock
                         | Some node -> Ok node
                         | None -> parseScalar firstNo firstBody
 
-/// parse numbered raw lines into DOCUMENTS (`---` separated, indent-0
+/// Parse numbered raw lines into documents (`---` separated, indent-0
 /// separators only; a leading `---` is allowed)
 let parseDocs (numbered: (int * string) list) : Result<Node list, string> =
     let content =
@@ -871,7 +871,7 @@ let private looksNumeric (s: string) =
 
 let private ambiguousPlain =
     // the reverse-Norway set: a plain rendering a YAML reader would
-    // mis-TYPE — booleans in three casings (the 1.1 legacy set), null
+    // mis-type — booleans in three casings (the 1.1 legacy set), null
     // forms, and the float specials (.inf/.nan families) — a reader
     // types those as floats
     set
@@ -926,11 +926,11 @@ let private needsQuote (s: string) =
     || s
        |> Seq.exists (fun c -> System.Char.IsControl c || c = '\u2028' || c = '\u2029')
 
-/// render a STRING scalar per the quoting law [D:yaml-v1]: plain when a
+/// Render a string scalar per the quoting law [D:yaml-v1]: plain when a
 /// reader cannot mis-type it, double-quoted otherwise — the
 /// reverse-Norway rule: `"no"`, `"007"`, `"1e5"` get quotes so no YAML
 /// reader turns them into bool/number. Every control character and
-/// unicode line break is ESCAPED inside the quotes (\r \N \L \P, \xNN
+/// unicode line break is escaped inside the quotes (\r \N \L \P, \xNN
 /// for the rest): a raw CR/NEL/LS in a quoted scalar is a line break
 /// to a YAML reader and the value changes
 let renderScalar (s: string) : string =

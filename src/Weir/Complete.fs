@@ -2,33 +2,29 @@ module Weir.Complete
 
 open Weir.Types
 
-// keyword suggestions DERIVE from the parser's set — one source of
-// truth [D:keyword-completion]; the hand-kept copy here predated
-// if/then/else/elif/when and silently under-offered them for six
-// weeks. The exclusions, each with its reason:
-//   rec, mutable — reserved words with NO meaning (offering them
-//     suggests a spelling whose only outcome is the reserved-word
-//     teaching error)
-//   function — reserved for the parked match-lambda sugar; same fate
-// rec/mutable/function are reserved-for-teaching; the foreign
-// control-flow words (PLAN-dx-review D4) exist only to teach weir's
-// spelling — offering any of them would suggest a word that can never
-// parse
+// keyword suggestions derive from the parser's set — one source of
+// truth [D:keyword-completion]; a hand-kept copy silently under-offers
+// newly added keywords. The exclusions: rec and mutable are reserved
+// words with no meaning (offering them suggests a spelling whose only
+// outcome is the reserved-word teaching error); function is reserved
+// for the parked match-lambda sugar; the foreign control-flow words
+// (PLAN-dx-review D4) exist only to teach weir's spelling — none of
+// them can ever parse.
 let unsuggestedKeywords =
     Set [ "rec"; "mutable"; "function"; "while"; "return"; "try"; "def" ]
 
 let private keywords = Weir.Parser.keywords - unsuggestedKeywords |> Set.toList
 
-// the SESSION DIRECTIVES, one source [D:repl-directives] — the set the
+// the session directives, one source [D:repl-directives] — the set the
 // REPL's dispatch string-matches (Repl.fs) and #help documents, `#help`
 // first. Both completion slots read this: the line-head '#' slot (bare
 // names — the editor's word starts after the '#') and the empty-prompt
 // head [D:empty-prompt-directives] (the '#'-prefixed teaching set).
 let sessionDirectives = [ "help"; "find"; "echo"; "infer"; "save"; "history"; "quit" ]
 
-// the `#help` DOCUMENTABLE universe, one source [D:help-arg-complete]:
-// the bare names `#help <name>` can DOCUMENT — modules, top-level
-// forms/members (user values), and TYPES (records AND unions, the
+// the `#help` documentable universe, one source [D:help-arg-complete]:
+// the bare names `#help <name>` can document — modules, top-level
+// forms/members (user values), and types (records and unions, the
 // #infer-injected ones included). Both `#help`'s unknown-name pool
 // (Repl.fs) and the #help-arg completion slot read this, so what
 // `#help X` documents and what `#help <TAB>` offers cannot drift
@@ -50,9 +46,9 @@ let private recordFields (env: TypeEnv) (ty: Ty) : (string * Ty) list option =
         | _ -> None
     | _ -> None
 
-// unbound lowercase names in the prefix become HOLES (fresh type
+// unbound lowercase names in the prefix become holes (fresh type
 // vars): the pipe source often mentions enclosing params
-// (`targetEnv t |> ...`) whose VALUES are unknown but irrelevant —
+// (`targetEnv t |> ...`) whose values are unknown but irrelevant —
 // a known function's result type falls out of unification anyway
 // [D:hole-completion]
 let private holeNames (env: TypeEnv) (e: Weir.Ast.Expr) : string list =
@@ -80,9 +76,9 @@ let private withHoles (env: TypeEnv) (e: Weir.Ast.Expr) : TypeEnv =
                 Values = Map.add n sch te.Values })
         env
 
-// the TYPE FLOWING INTO this position: the type of the value the pipe
+// the type flowing into this position: the type of the value the pipe
 // carries to the completion word. A `seq` unwraps to its element (the
-// `_.`/lambda-param over each row); a SCALAR flows through as itself —
+// `_.`/lambda-param over each row); a scalar flows through as itself —
 // `from yaml T` yields one document `TNamed(name,[])`, not a seq, so a
 // record piped into `_.`/`r |> _.` must type to the record, not `None`.
 // The sole caller routes through `recordFields`, which returns `None`
@@ -105,12 +101,12 @@ let private pipelineElemTy (env: TypeEnv) (text: string) : Ty option =
                 | t -> Some t
             | Error _ -> None
 
-/// text ENDS AT THE CURSOR (both callers truncate — the LSP's `upto`,
+/// text ends at the cursor (both callers truncate — the LSP's `upto`,
 /// the REPL's Substring): the word runs from wordStart to the end
 // filesystem completion [D:repl-quality] for an explicit path word (has a
 // `/` or leads with `~`): list the directory, keep prefix matches, expand
-// `~`, trailing `/` on directories. NEVER runs anything — a directory read
-// only. Callers pass words that already look like paths.
+// `~`, trailing `/` on directories. Never runs anything — a directory
+// read only. Callers pass words that already look like paths.
 let private filesystemComplete (word: string) : string list =
     let expanded =
         if word.StartsWith "~" then
@@ -129,8 +125,8 @@ let private filesystemComplete (word: string) : string list =
     let prefix = expanded.Substring(slash + 1)
 
     try
-        // the SESSION cwd, not the process cwd [F1]: weir never chdir's the
-        // process, so a relative dir here resolves against the STARTUP
+        // the session cwd, not the process cwd [F1]: weir never chdir's the
+        // process, so a relative dir here resolves against the startup
         // directory and goes stale the moment a script or the REPL cd's —
         // completion then vouches for a path File.read immediately rejects.
         // Session.resolve is what File.read and Path.glob already use.
@@ -143,11 +139,11 @@ let private filesystemComplete (word: string) : string list =
         |> Array.filter (fun e ->
             let name = System.IO.Path.GetFileName e
             // the dotfile law, mirrored from Path.glob: a leading `.` must be
-            // TYPED to be offered, so a bare Tab does not bury real entries
+            // typed to be offered, so a bare Tab does not bury real entries
             // under .git/.DS_Store
             name.StartsWith prefix && (prefix.StartsWith "." || not (name.StartsWith ".")))
         |> Array.map (fun e ->
-            // the candidate must EXTEND the typed word — the editor
+            // the candidate must extend the typed word — the editor
             // replaces the word with it, so a shape the user never
             // typed (./x for a bare name) re-prepends on every tab
             // [D:complete-argv]
@@ -166,14 +162,12 @@ let private filesystemComplete (word: string) : string list =
     with _ ->
         []
 
-/// where the completion WORD starts, scanning back from the cursor. ONE rule,
-/// consulted by the REPL and the LSP alike: each had a verbatim copy, and when
-/// argv path completion landed only `filesystemComplete` learned about `/` —
-/// the callers kept cutting the word AT the slash, so `micro ci/e` completed
-/// against the CWD and `micro ci/` listed it whole. A path separator is part
-/// of the word; `~` leads a home path; `-` is ordinary in real filenames
-/// (`ci/check-fresh.sh` is in this repo, and without it the word restarts at
-/// the hyphen and the bug returns for every hyphenated name).
+/// where the completion word starts, scanning back from the cursor. One
+/// rule, consulted by the REPL and the LSP alike — diverging copies once
+/// cut the word at the slash, completing `micro ci/e` against the cwd. A
+/// path separator is part of the word; `~` leads a home path; `-` is
+/// ordinary in real filenames (`ci/check-fresh.sh` is in this repo) —
+/// without it the word restarts at the hyphen for every hyphenated name.
 let wordStartAt (text: string) (pos: int) : int =
     let isWordChar (c: char) =
         System.Char.IsLetterOrDigit c
@@ -188,11 +182,11 @@ let wordStartAt (text: string) (pos: int) : int =
     while i > 0 && isWordChar text[i - 1] do
         i <- i - 1
 
-    // a Windows DRIVE PREFIX belongs to the path it introduces: `:` is not a
+    // a Windows drive prefix belongs to the path it introduces: `:` is not a
     // word char (it separates a record field from its type, and a yaml key
     // from its value), so the scan stops after `C:` and leaves a driveless
     // `/Users/…` that resolves nowhere. Extend across exactly the drive
-    // shape — ONE letter, itself preceded by a non-word char — so `key:value`
+    // shape — one letter, itself preceded by a non-word char — so `key:value`
     // and `{ a: 1 }` are untouched.
     if
         i >= 2
@@ -207,14 +201,14 @@ let wordStartAt (text: string) (pos: int) : int =
 // the topLet binder up to its `=`, lexically [D:let-rhs-head] — the
 // shape whose RHS the grammar grants command mode (topLet's
 // command-first RHS; a destructuring let's RHS is expression-only).
-// Subset, stated (the pathParamAt precedent): identifier and `()`
+// A stated subset (the pathParamAt precedent): identifier and `()`
 // params only — a parenthesized/record param pattern falls through,
 // and a keyword in a binder slot is the letKeywordGuard's error, not
 // a head slot. `let pure` leads legally; a lone `pure` does not bind.
 let private letBinder =
     System.Text.RegularExpressions.Regex @"^let\s+(?:[A-Za-z_]\w*|\(\s*\))(?:\s+(?:[A-Za-z_]\w*|\(\s*\)))*\s*="
 
-/// the text AFTER a top-level let binder's `=`, or None when `stmt`
+/// the text after a top-level let binder's `=`, or None when `stmt`
 /// does not open with one
 let private letRhsCut (stmt: string) : string option =
     let m = letBinder.Match stmt
@@ -239,13 +233,13 @@ let private letRhsCut (stmt: string) : string option =
         else
             None
 
-// the command HEAD SLOT, one source [D:let-rhs-head]: where a live
+// the command head slot, one source [D:let-rhs-head]: where a live
 // head verdict and the head-completion pool apply — the statement
-// start, and a top-level let's RHS. BOTH surfaces read this predicate
+// start, and a top-level let's RHS. Both surfaces read this predicate
 // (the Tab pool here, the live colorizer in Script.colorizeRepl), so
 // tint and completion cannot disagree about where a head stands. The
 // two head flavours stay distinct for the colorizer's red: an unknown
-// UPPERCASE statement head would fail ([D:constructors-not-heads]),
+// uppercase statement head would fail ([D:constructors-not-heads]),
 // the same word at the let-RHS is a legal constructor application.
 [<RequireQualifiedAccess>]
 type HeadSlot =
@@ -256,7 +250,7 @@ type HeadSlot =
     | Forced
 
 /// the slot verdict for the word starting right after `before`
-/// [D:let-rhs-head]. Statement head = an EMPTY statement prefix,
+/// [D:let-rhs-head]. Statement head = an empty statement prefix,
 /// deliberately untrimmed: the colorizer's continuation lines (a yaml
 /// district body among them) must not read as heads, while the
 /// completer's own TrimEnd already collapses a whitespace prefix.
@@ -278,7 +272,7 @@ let headSlotAt (before: string) : HeadSlot =
         | Some rest when rest.Trim() = "" -> if forced then HeadSlot.Forced else HeadSlot.LetRhs
         | _ -> HeadSlot.No
 
-// a word in command ARGV completes as a PATH [D:complete-argv]: after
+// a word in command argv completes as a path [D:complete-argv]: after
 // a literal command head everything is an argv word — fields, members,
 // and the keyword pool are expression furniture (`micro publish.`
 // offered every record field weir knows, unioned). The head test is
@@ -293,7 +287,7 @@ let private commandArgvPosition (env: TypeEnv) (before: string) : bool =
     // a top-level let's RHS is a first-class command position
     // [D:let-rhs-head]: strip the binder and judge the remainder
     // exactly as a statement — argv after the RHS head follows the
-    // statement-head rule. A yaml district marker RHS keeps the OLD
+    // statement-head rule. A yaml district marker RHS keeps the old
     // path (the ` = ` disqualifier below): `let d = yaml …` is form,
     // not a command, and its schema=/modifier slots sit later in the
     // chain [D:yaml-schemas]
@@ -313,7 +307,7 @@ let private commandArgvPosition (env: TypeEnv) (before: string) : bool =
 
     // |> and a spaced = are expression furniture — `xs |> from` is a
     // pipeline whose head happens to be unbound, not a command
-    // an unclosed '(' puts the cursor in EXPRESSION position — a
+    // an unclosed '(' puts the cursor in expression position — a
     // command's parenthesized argument is the interior grammar
     let parenDepth =
         stmt
@@ -342,22 +336,20 @@ let private commandArgvPosition (env: TypeEnv) (before: string) : bool =
             && not (Map.containsKey h env.Values)
             && not (Map.containsKey h env.Modules)
 
-// a word at a path PARAMETER position [D:path-param-completion]:
-// `cd w` offered keywords and bare members around the one real
-// candidate — cd is a builtin, so the argv gate correctly does not
-// apply; the question that generalises is "does this parameter want a
-// path?". The registry IS builtinDocs' named params — every module
-// member has an entry (the docs-coverage pin), so a param named
-// path/src/dst (base within Path) marks the position and a new
-// member's docs enrol it automatically. SUBSET, stated: flat calls
-// only — word-count resolves the argument index, so a quoted argument
-// containing spaces or a nested call miscounts and falls through to
-// the general pool.
+// a word at a path parameter position [D:path-param-completion]:
+// cd is a builtin, so the argv gate correctly does not apply — the
+// question that generalises is "does this parameter want a path?".
+// The registry is builtinDocs' named params — every module member has
+// an entry (the docs-coverage pin), so a param named path/src/dst
+// (base within Path) marks the position and a new member's docs enrol
+// it automatically. A stated subset: flat calls only — word-count
+// resolves the argument index, so a quoted argument containing spaces
+// or a nested call miscounts and falls through to the general pool.
 let private pathParamAt (before: string) : bool =
     let seg =
         let cutAfter (marker: string) (s: string) =
             // Ordinal, load-bearing: culture-sensitive LastIndexOf
-            // treats the U+001F sibling separator as IGNORABLE and
+            // treats the U+001F sibling separator as ignorable and
             // "matches" past the end
             match s.LastIndexOf(marker, System.StringComparison.Ordinal) with
             | -1 -> s
@@ -387,9 +379,9 @@ let private pathParamAt (before: string) : bool =
             | None -> false
         | _ -> false
 
-// binder evidence in the raw TEXT [D:complete-argv]: lambda params,
+// binder evidence in the raw text [D:complete-argv]: lambda params,
 // let/for/within binders are lexically visible even when no typed tree
-// exists — the declared-fields fallback keys on THIS, so an unbound
+// exists — the declared-fields fallback keys on this, so an unbound
 // scrutinee offers nothing (a wrong suggestion is worse than none, the
 // D5 rule) while a mid-edit param keeps the high-signal union
 let private lexicallyBound (name: string) (text: string) : bool =
@@ -400,7 +392,7 @@ let private lexicallyBound (name: string) (text: string) : bool =
         re @"\bfun\s+([A-Za-z_]\w*(?:\s+[A-Za-z_]\w*)*)"
         |> List.collect (fun g -> g.Split(' ', System.StringSplitOptions.RemoveEmptyEntries) |> Array.toList)
 
-    // a let's PARAMS are binders too: `let quality t =` binds t
+    // a let's params are binders too: `let quality t =` binds t
     let letParams =
         re @"\blet\s+[A-Za-z_]\w*((?:\s+[A-Za-z_]\w*)+)\s*="
         |> List.collect (fun g -> g.Split(' ', System.StringSplitOptions.RemoveEmptyEntries) |> Array.toList)
@@ -412,7 +404,7 @@ let private lexicallyBound (name: string) (text: string) : bool =
     @ re @"\bwithin\s+\w+\s+([A-Za-z_]\w*)"
     |> List.contains name
 
-// the binder SCOPE can be wider than the completion text: the LSP
+// the binder scope can be wider than the completion text: the LSP
 // completes one line but its binders (a let's params two lines up)
 // live in the whole document [D:complete-argv]
 // `aliasHeads` [D:command-head-alias]: the session's alias names — they
@@ -434,21 +426,20 @@ let suggestScopedWith
 
     let before = text.Substring(0, min wordStart text.Length).TrimEnd()
 
-    // the word butts against an OPEN quote [D:repl-path-quote]: a
+    // the word butts against an open quote [D:repl-path-quote]: a
     // completion word inside a string literal has no space before it —
     // wordStartAt stops at the `"` (not a word char), so the char at
     // wordStart-1 is the opening quote. `File.read "./w<TAB>` completes
-    // WITHIN the quotes; the path-quoting below must not add a second.
+    // within the quotes; the path-quoting below must not add a second.
     let insideOpenQuote =
         wordStart > 0 && wordStart <= text.Length && text[wordStart - 1] = '"'
 
     // session directives complete at a line-head '#' [D:repl-directives]:
-    // '#' is not a word char to the editor, so the word starts AFTER it
-    // — `#he` used to complete to `head` (the '#' ignored), `#` listed
-    // the general pool. Bare names returned so the editor's replacement
-    // yields `#help`, never `##help`. The set mirrors Repl's dispatch
-    // (session directives only — #sig/#schema are file directives and
-    // the unknown-directive teaching already routes them).
+    // '#' is not a word char to the editor, so the word starts after it.
+    // Bare names are returned so the editor's replacement yields `#help`,
+    // never `##help`. The set mirrors Repl's dispatch (session directives
+    // only — #sig/#schema are file directives and the unknown-directive
+    // teaching already routes them).
     let directiveSlot =
         let raw = text.Substring(0, min wordStart text.Length)
         raw.TrimStart() = "#"
@@ -456,14 +447,14 @@ let suggestScopedWith
     // the `#help <arg>` slot [D:help-arg-complete]: a sibling to
     // directiveSlot — it fires when the text before the word is
     // `#help` (completing `#help <TAB>`) or `#help <partial>`, and
-    // offers the #help DOCUMENTABLE universe (helpNames — modules,
-    // types, user forms) BARE (so the editor yields `#help Patatas`,
-    // never doubling the `#help `). This is the gap: an #infer'd type
-    // lives only in env.Types, which the general/head pool never
-    // surfaces, so it was documentable but not completable. Qualified
-    // `#help Module.member` mirrors #help's dotted arm when a module
-    // prefix is typed. Scoped to this slot — the general pool is
-    // untouched.
+    // offers the #help documentable universe (helpNames — modules,
+    // types, user forms) bare, so the editor yields `#help Patatas`
+    // without doubling the `#help `. This fills the gap where an
+    // #infer'd type lives only in env.Types, which the general/head
+    // pool never surfaces — documentable but not completable.
+    // Qualified `#help Module.member` mirrors #help's dotted arm when
+    // a module prefix is typed. Scoped to this slot — the general pool
+    // is untouched.
     let helpArgSlot =
         // the whole line up to the cursor, trimmed of the word — must
         // reduce to exactly `#help` (the directive owns the rest of its
@@ -497,15 +488,15 @@ let suggestScopedWith
     else
 
 
-        // the record-update WITH slot [D:with-slot]: after `{ source with `,
-        // the closed candidate set is the SOURCE's record fields — never the
-        // general pool (typing `h` there completed to `within`, a keyword
-        // that cannot appear in an expression fragment). The source is found
-        // by slicing back to each `{` and letting the PARSER validate the
-        // slice (no second quote machine [D:one-scanner]); `match x with`
-        // has no parsing brace-slice, so it falls through untouched.
+        // the record-update `with` slot [D:with-slot]: after `{ source with `,
+        // the closed candidate set is the source's record fields — never the
+        // general pool (a keyword cannot appear in an expression fragment).
+        // The source is found by slicing back to each `{` and letting the
+        // parser validate the slice (no second quote machine [D:one-scanner]);
+        // `match x with` has no parsing brace-slice, so it falls through
+        // untouched.
         // resolve `{ <source> ...` back to its record def: slice at each
-        // '{' and let the PARSER validate (the with-slot machinery, shared)
+        // '{' and let the parser validate (the with-slot machinery, shared)
         let sourceDefOf (upto: string) : RecordDef option =
             [ for i in 0 .. upto.Length - 1 do
                   if upto[i] = '{' then
@@ -530,9 +521,9 @@ let suggestScopedWith
                                 | _ -> None
                             | _ -> None)
 
-        // the typed VALUE slot [D:typed-value-slot]: `{ src with field =
-        // <prefix>` — the field's DECLARED type is known, so the candidate
-        // set is CLOSED where the type is: a union's cases, bool's two
+        // the typed value slot [D:typed-value-slot]: `{ src with field =
+        // <prefix>` — the field's declared type is known, so the candidate
+        // set is closed where the type is: a union's cases, bool's two
         // values (plus bool bindings), a unit type's module and bindings.
         // Other types fall through to the general pool.
         let valueSlotCandidates: string list option =
@@ -632,7 +623,7 @@ let suggestScopedWith
                                     ->
                                     // unresolved source — the declared-fields
                                     // fallback, the dotted arm's precedent;
-                                    // a bare UNBOUND identifier source gets
+                                    // a bare unbound identifier source gets
                                     // nothing instead [D:complete-argv]
                                     env.Types
                                     |> Map.toList
@@ -646,21 +637,21 @@ let suggestScopedWith
                                 | ty ->
                                     match recordFields env ty with
                                     | Some fields -> Some(fields |> List.map fst)
-                                    // a known NON-record has no updatable
+                                    // a known non-record has no updatable
                                     // fields — a closed set with no members
                                     // beats the general pool (the nats pin's
                                     // reasoning)
                                     | None -> Some [])
 
-        // EXPRESSION-position path completion QUOTES [D:repl-path-quote]:
+        // expression-position path completion quotes [D:repl-path-quote]:
         // a bare filesystem path is not a valid weir expression, so
         // `File.read ./x<TAB>` must yield `File.read "./x"` (a string
         // literal parses; a bare path does not). The distinction is the
-        // slot's, reusing the existing head/argv machinery: a COMMAND-argv
-        // path stays BARE (`cat ./x`, `ls ./dir`, `./script`), and a path a
-        // builtin's string PARAMETER wants (File.read/cd/Path.*) — or one in
+        // slot's, reusing the existing head/argv machinery: a command-argv
+        // path stays bare (`cat ./x`, `ls ./dir`, `./script`), and a path a
+        // builtin's string parameter wants (File.read/cd/Path.*) — or one in
         // plain expression furniture (after `=`, a `|>` stage, a `(`) — gets
-        // quoted. An already-OPEN quote never doubles: the completion lands
+        // quoted. An already-open quote never doubles: the completion lands
         // inside it. A directory keeps its trailing `/` inside the quotes.
         let expressionSlot (before: string) : bool =
             pathParamAt before
@@ -691,7 +682,7 @@ let suggestScopedWith
             Extern.names () |> Set.filter (fun n -> n.StartsWith word && n <> word) |> Set.toList
         elif commandArgvPosition env before then
             // argv position [D:complete-argv]: paths, nothing else — the
-            // pool, fields, and members are expression furniture. EXCEPT a
+            // pool, fields, and members are expression furniture. Except a
             // `$name` splice [D:argv-splice-complete]: `$` is not a word
             // char, so the word starts after it and `before` ends with `$`;
             // offer the session's bindings (bare — the `$` is already typed),
@@ -708,7 +699,7 @@ let suggestScopedWith
             else
                 filesystemComplete word
         elif pathParamAt before then
-            // a path position wants paths AND string bindings — `cd
+            // a path position wants paths and string bindings — `cd
             // target` applies the binding, so hard-removing identifiers
             // would break documented weir; keywords and bare members
             // cannot be arguments here [D:path-param-completion]
@@ -721,11 +712,11 @@ let suggestScopedWith
                     else
                         None)
 
-            // this branch fires for a BARE word (no `/`) at a builtin path
-            // param — it stays UNQUOTED [D:repl-path-quote]: `cd w`/`File.copy
+            // this branch fires for a bare word (no `/`) at a builtin path
+            // param — it stays unquoted [D:repl-path-quote]: `cd w`/`File.copy
             // … dst` complete the bare stem (the [D:path-param-completion]
-            // pins), and a string BINDING here IS already a valid expression.
-            // An EXPLICIT path word (`File.read ./x`, with a `/` or `~`) took
+            // pins), and a string binding here is already a valid expression.
+            // An explicit path word (`File.read ./x`, with a `/` or `~`) took
             // the quoting branch above before reaching here.
             (filesystemComplete word @ stringBindings)
             |> List.filter (fun c -> c.StartsWith word && c <> word)
@@ -747,7 +738,7 @@ let suggestScopedWith
             | Some members ->
                 let prefix = word.Substring(head.Length + 1)
 
-                // bespoke ARMS (`Args.load`/`Env.load`) are not in the member
+                // bespoke arms (`Args.load`/`Env.load`) are not in the member
                 // map — offer them too, from the one source the checker uses
                 let special =
                     Weir.Check.specialModuleMembers |> Map.tryFind head |> Option.defaultValue []
@@ -785,13 +776,13 @@ let suggestScopedWith
 
                 match finalTy with
                 | Some ty ->
-                    // resolved head: fields if a record, NOTHING if a known
+                    // resolved head: fields if a record, nothing if a known
                     // non-record (the nats pin — the fallback must not fire)
                     match recordFields env ty with
                     | Some fields -> render (fields |> List.map fst)
                     | None -> []
                 | None when lexicallyBound head binderScope ->
-                    // UNRESOLVABLE but lexically BOUND head (a lambda
+                    // unresolvable but lexically bound head (a lambda
                     // param, a mid-edit binder): no typed tree, but the
                     // nominal records keep the fallback high-signal —
                     // every declared record's fields
@@ -805,7 +796,7 @@ let suggestScopedWith
                     |> List.distinct
                     |> render
                 | None ->
-                    // UNBOUND head: no binding, no type, no basis for any
+                    // unbound head: no binding, no type, no basis for any
                     // candidate — nothing beats the union of everything
                     // [D:complete-argv]
                     []
@@ -825,8 +816,8 @@ let suggestScopedWith
              && (b.Length = "within".Length
                  || not (System.Char.IsLetterOrDigit b[b.Length - 7] || b[b.Length - 7] = '_')))
         then
-            // the within KIND slot [D:within-kinds]: a closed set off the one
-            // table — the kinds and NOTHING else (an identifier cannot sit
+            // the within kind slot [D:within-kinds]: a closed set off the one
+            // table — the kinds and nothing else (an identifier cannot sit
             // there); the schema= shape, its mechanism kin
             Weir.Ast.withinKinds
             // a standalone head (pure) is not a `within` kind [D:pure-stage1]
@@ -845,9 +836,9 @@ let suggestScopedWith
                      || b[b.Length - kw.Length - 1] = '_'
                  )))
         then
-            // the from/to ADAPTER slot [D:form-word-hover]: direction-aware, off
+            // the from/to adapter slot [D:form-word-hover]: direction-aware, off
             // the one source (builtinDocs keys) — `to ` never offers a read-only
-            // adapter; a closed set, so NOTHING else completes here (the within
+            // adapter; a closed set, so nothing else completes here (the within
             // and schema= slots' third sibling — closed-set slot completion)
             let dir = if (before.TrimEnd()).EndsWith "from" then "from" else "to"
 
@@ -857,11 +848,11 @@ let suggestScopedWith
             before.EndsWith "schema="
             && Weir.Parser.isYamlMarkerPiece (before.Substring(0, before.Length - 7).TrimEnd())
         then
-            // the vendored schema NAMES [D:yaml-schemas] — `schema` itself is
-            // MARKER-LOCAL, deliberately not a Parser.keywords member (that
+            // the vendored schema names [D:yaml-schemas] — `schema` itself is
+            // marker-local, deliberately not a Parser.keywords member (that
             // would reserve the identifier); the district marker context
             // offers it and its completions instead
-            // the session cwd, as above — `.` here is the startup dir forever
+            // the session cwd, as above — a bare `.` would be the startup dir
             match Weir.Contracts.findWeirDir (Session.Cwd()) with
             | Ok weirDir ->
                 let dir = System.IO.Path.Combine(weirDir, "schemas")
@@ -903,21 +894,20 @@ let suggestScopedWith
             else
                 names
         elif word = "" && before = "" then
-            // an EMPTY prompt at a statement head [D:empty-prompt-directives]:
-            // `StartsWith ""` used to match the WHOLE pool — 954 PATH execs +
-            // the modules/keywords/constructors universe, sorted, unusable. A
-            // fresh Tab now teaches the REPL's affordances instead: the session
+            // an empty prompt at a statement head [D:empty-prompt-directives]:
+            // matching the whole pool (hundreds of PATH execs plus the
+            // modules/keywords/constructors universe) is unusable, so a
+            // fresh Tab teaches the REPL's affordances instead: the session
             // directives, `#help` first (which itself lists the modules and
             // members). The argv-position empty Tab is unaffected — its cwd
             // listing is useful, and it keys on `before` being non-empty below.
             sessionDirectives |> List.map (fun d -> "#" + d)
         else
-            // command HEADS at a head slot (the statement head and the
+            // command heads at a head slot (the statement head and the
             // let-RHS, headSlotAt's verdict [D:let-rhs-head]): PATH
             // executables + command-callable builtins join the name pool;
             // in argv position cwd files join instead — the two
-            // interactive contexts completion could not serve before
-            // [D:repl-quality]
+            // interactive contexts [D:repl-quality]
             let cwdEntries () =
                 try
                     System.IO.Directory.GetFileSystemEntries(Session.Cwd())
@@ -931,12 +921,12 @@ let suggestScopedWith
             let extra =
                 match headSlotAt before with
                 | (HeadSlot.Stmt | HeadSlot.LetRhs) when word <> "" ->
-                    // both head slots take the SAME pool [D:let-rhs-head]:
+                    // both head slots take the same pool [D:let-rhs-head]:
                     // the statement head and the let-RHS — PATH, the
                     // command-callable builtins, and the session's alias
                     // heads [D:command-head-alias]. An empty word at the
                     // let-RHS stays pool-only (the empty-prompt rationale
-                    // — never the 900-name dump); the empty statement
+                    // — never the whole-pool dump); the empty statement
                     // head routed to the directive teaching above
                     (Extern.names () |> Set.toList)
                     @ (Builtins.commandCallable |> Set.toList)
@@ -944,11 +934,11 @@ let suggestScopedWith
                 | _ when word <> "" -> cwdEntries ()
                 | _ -> []
 
-            // a union-case CONSTRUCTOR never starts a statement
+            // a union-case constructor never starts a statement
             // [D:constructors-not-heads]: `WriteFile …`/`Bearer …` as a head
             // is a discarded value (a check error). They pass isUserName, so
-            // the pool can't tell one from a function — subtract them AT THE
-            // STATEMENT HEAD (before empty) only, derived from env.Types'
+            // the pool can't tell one from a function — subtract them at the
+            // statement head (before empty) only, derived from env.Types'
             // Union cases (the one source). An expression/argument position
             // (before non-empty — a list literal, a `let … in`) keeps them,
             // where a constructor is valid.
@@ -976,24 +966,24 @@ let suggestScopedWith
 let suggestScoped (env: TypeEnv) (binderScope: string) (text: string) (wordStart: int) : string list =
     suggestScopedWith Set.empty env binderScope text wordStart
 
-// value-aware MAP-KEY completion [D:value-key-complete]: an open
-// map's keys are DATA (`data: seq<string * string>` from #infer), so
+// value-aware map-key completion [D:value-key-complete]: an open
+// map's keys are data (`data: seq<string * string>` from #infer), so
 // no static pool can know them — but the session's Values table can.
-// Inside the OPEN string literal keying a pipe-form Map lookup
+// Inside the open string literal keying a pipe-form Map lookup
 // (get/tryGet/has — the Map surface's lookup members), when the
-// receiver is a BARE session binding (`it` included) whose stored
-// value is a map or a MATERIALIZED pair-seq, the value's own keys
+// receiver is a bare session binding (`it` included) whose stored
+// value is a map or a materialized pair-seq, the value's own keys
 // complete. Reading the table is peeking, never evaluating: an
-// unforced seq offers NOTHING (pulling a command-backed seq would run
+// unforced seq offers nothing (pulling a command-backed seq would run
 // its command — the never-executes law's sharp edge), and a pipeline
 // receiver (`cm |> from json … |> _.data |> Map.tryGet "`) offers
 // nothing (its value would need evaluating; bind first — `let d = …`
 // — and the keys complete). Once the lookup shape is detected the
-// slot is CLAIMED: keys or nothing, never the general pool (a keyword
+// slot is claimed: keys or nothing, never the general pool (a keyword
 // inside a key literal is the wrong-suggestion class). Pipe-form
 // only, stated: in the applied spelling (`Map.get "k" m`) the
-// receiver FOLLOWS the key, so nothing exists to peek at while the
-// literal is typed. Subset, stated: the literal scan is a naive quote
+// receiver follows the key, so nothing exists to peek at while the
+// literal is typed. A stated subset: the literal scan is a naive quote
 // count — an escaped quote in the key falls outside it (the slot then
 // does not fire). The completion inserts the key bare, inside the
 // quotes — the user owns the closer, the path-in-quotes convention
@@ -1050,7 +1040,7 @@ let private valueKeySlot (values: Map<string, Weir.Eval.Value>) (text: string) (
 
             let literal = text.Substring(segStart + qi + 1)
             let word = if wordStart >= text.Length then "" else text.Substring wordStart
-            // the candidate must EXTEND the typed word [D:complete-argv]:
+            // the candidate must extend the typed word [D:complete-argv]:
             // the literal may reach left of the word (a space inside a
             // typed key) — strip that stem from each offered key
             let stem = literal.Substring(0, literal.Length - word.Length)
@@ -1062,18 +1052,17 @@ let private valueKeySlot (values: Map<string, Weir.Eval.Value>) (text: string) (
             |> List.sort
             |> Some
 
-// Error-recovery completion [D:repair-completion]: the caller
-// REPAIRS the broken statement (dangling
-// `.prefix` blanked, closers appended) and this types the repaired
-// text — holes for stragglers — then reads the head identifier's
-// INFERRED type at its column. Row types from the statement's other
-// uses of the param surface here.
-/// the single-text entry: the completion text IS the binder scope
+// Error-recovery completion [D:repair-completion]: the caller repairs
+// the broken statement (dangling `.prefix` blanked, closers appended)
+// and this types the repaired text — holes for stragglers — then reads
+// the head identifier's inferred type at its column. Row types from
+// the statement's other uses of the param surface here.
+/// the single-text entry: the completion text is the binder scope
 /// (the REPL's one logical line)
 let suggest (env: TypeEnv) (text: string) (wordStart: int) : string list = suggestScoped env text text wordStart
 
 /// the REPL's entry: the session's alias heads join the head-slot
-/// pool [D:command-head-alias], and the session VALUES feed the
+/// pool [D:command-head-alias], and the session values feed the
 /// map-key slot [D:value-key-complete] — keys when the slot claims,
 /// the general machinery otherwise
 let suggestSession
@@ -1114,7 +1103,7 @@ let fieldsAtRepaired
             match Weir.Check.typecheck envH e with
             | Error _ -> None
             | Ok te ->
-                // ANY occurrence serves: a param's uses share one type,
+                // any occurrence serves: a param's uses share one type,
                 // and the cursor's own occurrence was blanked away
                 let rec find (best: Ty option) (node: Weir.Check.TypedExpr) =
                     let best =
@@ -1128,9 +1117,9 @@ let fieldsAtRepaired
         |> Option.bind (fun ty ->
             match ty with
             | TRowVar(_, fields) ->
-                // an OPEN row (the `..` tail) is compatible with any
+                // an open row (the `..` tail) is compatible with any
                 // declared record it fits inside — offer those records'
-                // FULL field sets too, so editing the one line that
+                // full field sets too, so editing the one line that
                 // demanded a field does not hide it [D:open-row-compat]
                 let known = fields |> List.map fst
 

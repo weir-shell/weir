@@ -7,15 +7,15 @@ open Weir.Types
 open Weir.Eval
 
 let fileRow: RecordDef =
-    // the STATED surface [D:ls-truth] — what FileSystemInfo offers and
-    // which parts are in lives in the DECISIONS row; symlink is OUT
-    // with its reason (Windows semantics unverifiable off-matrix)
+    // the stated surface [D:ls-truth]: what FileSystemInfo offers and
+    // which parts are included live in the decision row; symlink is
+    // excluded (Windows semantics unverifiable off-matrix)
     { Name = "FileRow"
       Params = []
       Fields =
-        // DECLARATION order is display order now [D:record-order] —
-        // name leads (the ls-rider's ask), path trails (the widest
-        // column reads best at the edge)
+        // declaration order is display order [D:record-order] — name
+        // leads (the ls-rider's ask), path trails (the widest column
+        // reads best at the edge)
         [ "name", TStr
           // kind, not isDirectory [D:filerow]: a fact, not an answer —
           // and it extends (Symlink needed no new column). `type` is a
@@ -24,7 +24,7 @@ let fileRow: RecordDef =
           // the one fact no File.* query can answer [D:filerow]
           "target", TNamed("Option", [ TStr ])
           "bytes", TSize
-          // the file's OWN fact [D:instant]: replaced age (derived,
+          // the file's own fact [D:instant] — unlike age (derived,
           // snapshotted per pull, stale after binding)
           "modified", TInstant
           "hidden", TBool
@@ -46,7 +46,7 @@ let fileKind: UnionDef =
 
 let seqFileRow = TSeq(TNamed(fileRow.Name, []))
 
-/// values in DECLARATION ORDER; the keys come from the def, so a key
+/// values in declaration order; the keys come from the def, so a key
 /// mismatch cannot be written and an arity slip throws here at the
 /// construction site [D:record-keys]
 let recordOf (def: RecordDef) (values: Value list) : Value =
@@ -75,15 +75,15 @@ let private lsRow (info: FileSystemInfo) : Value =
     let isDir = info.Attributes.HasFlag FileAttributes.Directory
 
     let bytes =
-        // a directory's "size" is a lie on every platform — 0 with the
-        // flag is honest [D:ls-truth]
+        // a directory's "size" is meaningless on every platform — 0
+        // plus the kind flag is honest [D:ls-truth]
         match info with
         | :? FileInfo as f when not isDir -> f.Length
         | _ -> 0L
 
     let hidden =
         // one meaning across platforms: the dot-name (POSIX's whole
-        // convention) OR the attribute (Windows's real bit)
+        // convention) or the attribute (Windows's real bit)
         info.Name.StartsWith "." || info.Attributes.HasFlag FileAttributes.Hidden
 
     let kind =
@@ -109,7 +109,7 @@ let private lsRow (info: FileSystemInfo) : Value =
 let private realLs: Value =
     VSeq(
         Seq.delay (fun () ->
-            // the WHOLE directory — files AND subdirectories (GetFiles
+            // the whole directory — files and subdirectories (GetFiles
             // silently halved the listing for a month) [D:ls-truth]
             let cwd = Session.Cwd()
 
@@ -120,7 +120,7 @@ let private realLs: Value =
                 | :? System.UnauthorizedAccessException -> failwith $"ls: permission denied: {cwd}"
                 | :? System.IO.IOException as e -> failwith $"ls: cannot access {cwd} — {e.Message}"
 
-            // SORTED BY NAME, ordinal [D:ls-sort]: the third discovery
+            // sorted by name, ordinal [D:ls-sort]: the third discovery
             // surface joins Dir.list/Path.glob's rule (F# string compare
             // is ordinal — case-sensitive, uppercase first, never the
             // locale; coreutils ls inherits LC_COLLATE, weir does not)
@@ -248,7 +248,7 @@ let private cdImpl: Value =
                 failwith $"cd: no such directory: {resolved}"
 
             Session.setCwd resolved
-            // return what was STORED, so cd and pwd cannot disagree on shape
+            // return what was stored, so cd and pwd cannot disagree on shape
             VStr(Session.Cwd())
         | v -> unreachable $"the checker rejects 'cd' on {formatValue v}")
 
@@ -273,7 +273,7 @@ let private windowedImpl: Value =
                     failwith $"windowed: the window size must be positive; got {n}"
                 else
                     // lazy per the family: windows are produced as the
-                    // source is pulled; a short source yields the EMPTY
+                    // source is pulled; a short source yields the empty
                     // seq (F#'s rule — no partial final window). Windows
                     // are views over the same (memoized-once) elements.
                     VSeq(items |> Seq.windowed (int n) |> Seq.map (fun w -> VSeq(Seq.ofArray w)))
@@ -283,7 +283,7 @@ let private lastImpl: Value =
     VBuiltin(fun v ->
         match v with
         | VSeq items ->
-            // ASSERTS non-empty (the X/tryX rule); forces the whole
+            // asserts non-empty (the X/tryX rule); forces the whole
             // source by necessity
             let mutable acc = ValueNone
 
@@ -324,7 +324,7 @@ let completedDef: RecordDef =
       Attrs = Map.empty
       Docs = Map.empty }
 
-// completedWith is the shared body; completed IS the empty overlay and
+// completedWith is the shared body; completed is the empty overlay and
 // completedEnv the env-sigil desugar target — the cmd/cmdEnv pattern.
 let private completedWith (overlay: (string * string) list) : Value =
     VBuiltin(fun progV ->
@@ -344,9 +344,9 @@ let private completedWith (overlay: (string * string) list) : Value =
 let private completedImpl: Value = completedWith []
 
 // the exit-code reifiers [D:exit-reifiers], under the one law: output
-// goes where the meaning goes. succeeds is exitCode == 0 EXACTLY,
-// output captured-and-discarded (a predicate is silent); orFail and
-// exitCode STREAM (their output is for the human — the result travels
+// goes where the meaning goes. succeeds is exactly exitCode == 0,
+// output captured and discarded (a predicate is silent); orFail and
+// exitCode stream (their output is for the human — the result travels
 // separately): orFail raises `msg (exit N)` on nonzero, exitCode
 // yields the code as int and never raises.
 let private succeededWith (overlay: (string * string) list) : Value =
@@ -383,11 +383,12 @@ let private exitCodedWith (overlay: (string * string) list) : Value =
                 VInt(int64 (Proc.streamCode overlay (Proc.resolveProg prog) argv))
             | _ -> unreachable "the checker rejects 'exitCoded' on these arguments"))
 
-// process replacement [D:exec]: Proc.exec REPLACES the image (execve) —
-// it NEVER returns on success, and raises on a missing/failed exec, so the
-// VBuiltin's own result is unreachable. Diverging (typed tA), like
-// fail/exit. The overlay lands on this process before the handoff, so the
-// replacement inherits it (the env-sigil route `$e(cmd | exec)`).
+// process replacement [D:exec]: Proc.exec replaces the image (execve)
+// — it never returns on success, and raises on a missing/failed exec,
+// so the VBuiltin's own result is unreachable. Diverging (typed tA),
+// like fail/exit. The overlay lands on this process before the
+// handoff, so the replacement inherits it (the env-sigil route
+// `$e(cmd | exec)`).
 let private execedWith (overlay: (string * string) list) : Value =
     VBuiltin(fun progV ->
         VBuiltin(fun argsV ->
@@ -404,12 +405,13 @@ let private execedWith (overlay: (string * string) list) : Value =
                 unreachable "exec returned — execve replaces the image or raises"
             | _ -> unreachable "the checker rejects 'exec' on these arguments"))
 
-// the single-line capture [D:reify-line]: `cmd | line` reads a one-value
-// CLI (`az … -o tsv`, `git rev-parse`, `id -un`) as a trimmed STRING —
-// the `$(cmd) |> Seq.exactlyOne` idiom as a first-class reifier. It
-// CAPTURES stdout and raises on a nonzero exit (the `$(…)` path via
-// Proc.linesWith), then ASSERTS exactly one line: a value was expected,
-// so 0 or 2+ lines is the caller's mistake, named.
+// the single-line capture [D:reify-line]: `cmd | line` reads a
+// one-value CLI (`az … -o tsv`, `git rev-parse`, `id -un`) as a
+// trimmed string — the `$(cmd) |> Seq.exactlyOne` idiom as a
+// first-class reifier. It captures stdout and raises on a nonzero
+// exit (the `$(…)` path via Proc.linesWith), then asserts exactly one
+// line: a value was expected, so 0 or 2+ lines is the caller's
+// mistake, named.
 let private oneLine (prog: string) (argv: string list) (lines: seq<string>) : Value =
     match List.ofSeq lines with
     | [ one ] -> VStr(one.Trim())
@@ -438,12 +440,12 @@ let private linedWithIn (overlay: (string * string) list) : Value =
                 | _ -> unreachable "the checker rejects 'lineIn' on these arguments")))
 
 // stdin-carrying reifier twins [D:value-headed-pipe]: `xs | grep foo |
-// complete` reifies the segment WITH the value as stdin. INTERNAL —
-// the public expression-position spellings (completed/succeeded/…) keep
-// their arities exactly; these take a trailing seq<string>. The input
-// param was always on Proc.completeWith / the streaming Spec — session
-// 1's named seam, now reached. (Env twins are unpopulated: a value-headed
-// pipe carries no env sigil today — spawn-park pressure note in NOTES.)
+// complete` reifies the segment with the value as stdin. Internal —
+// the public expression-position spellings (completed/succeeded/…)
+// keep their arities exactly; these take a trailing seq<string>. The
+// input param was already on Proc.completeWith / the streaming Spec.
+// (Env twins are unpopulated: a value-headed pipe carries no env
+// sigil today — spawn-park pressure note in NOTES.)
 let private completedWithIn (overlay: (string * string) list) : Value =
     VBuiltin(fun progV ->
         VBuiltin(fun argsV ->
@@ -545,8 +547,8 @@ let private rmatchImpl: Value =
                     VUnion("None", None)
             | _ -> unreachable "the checker rejects 'rmatch' on these arguments"))
 
-// rmatchAll [D:rmatch-all]: every match's group seq, LAZILY — the
-// plural of rmatch, no Option (absence IS the empty seq). Walks via
+// rmatchAll [D:rmatch-all]: every match's group seq, lazily — the
+// plural of rmatch, no Option (absence is the empty seq). Walks via
 // Match/NextMatch so a match is computed only when the consumer pulls
 // it (the pull-count guarantee); the inner group seq is finite per
 // match. `(?s)`/`(?m)` inline flags cover DOTALL/MULTILINE, so no
@@ -571,7 +573,7 @@ let private rmatchAllImpl: Value =
 
 // rsplit [D:str-fields]: split on every regex match — split's empties
 // law verbatim (adjacent matches and edges yield empty pieces).
-// Between-match pieces ONLY: capture groups never interleave (Go's
+// Between-match pieces only: capture groups never interleave (Go's
 // regexp Split, not .NET's Regex.Split wart). A bad pattern raises in
 // the r-family's error class (compiledOrRaise).
 let private rsplitImpl: Value =
@@ -599,14 +601,13 @@ let private rsplitImpl: Value =
 // Path.glob [D:path-glob] — the standard subset (`*` within-segment,
 // `**` cross-segment, `?`, `[abc]`/`[!abc]`), bash's laws: `*` never
 // matches dotfiles (a `.`-leading segment does); sorted per level
-// (deterministic output); LAZY against the cwd at ENUMERATION (the
-// cd seam — `|> Seq.freeze` pins the answer now); symlinked dirs
-// NOT traversed by `**` (bash ≥4.3 globstar parity — loop-immune by
-// law; explicit segments still follow links); unreadable dirs
-// skipped (a pattern is discovery, not assertion); no matches = the
-// empty seq. Hand-rolled: the FileSystemGlobbing probe found the
-// library unable to express the dotfile law (and unrestorable
-// offline) — the plan's fallback clause, taken and reported.
+// (deterministic output); lazy against the cwd at enumeration (the
+// cd seam — `|> Seq.freeze` pins the answer now); `**` does not
+// traverse symlinked dirs (bash ≥4.3 globstar parity — loop-immune;
+// explicit segments still follow links); unreadable dirs skipped (a
+// pattern is discovery, not assertion); no matches = the empty seq.
+// Hand-rolled: FileSystemGlobbing cannot express the dotfile law
+// (and is unrestorable offline).
 let private globSegRegex (seg: string) : System.Text.RegularExpressions.Regex =
     let sb = System.Text.StringBuilder("^")
     let mutable i = 0
@@ -736,12 +737,12 @@ let private str2Bool (name: string) (f: string -> string -> bool) : Value =
 let private vSome (v: Value) : Value = VUnion("Some", Some v)
 let private vNone: Value = VUnion("None", None)
 
-// the cardinality ASSERTION [D:exactly-one]: head silently accepts a
+// the cardinality assertion [D:exactly-one]: head silently accepts a
 // second element, so a wrong-arity command output passes quietly at
-// the boundary where it is most likely. TWO distinct messages — a
+// the boundary where it is most likely. Two distinct messages — a
 // source that produced nothing and one that produced more are
 // different bugs; collapsing them wastes the member. The more-case
-// stops at the SECOND element (never a count): the source may be
+// stops at the second element, never a count: the source may be
 // infinite, and enumerating it to report a number is the hang the
 // lazy law forbids.
 let private exactlyOneImpl: Value =
@@ -855,7 +856,7 @@ let private splitImpl: Value =
             | VStr sep, VStr s -> VSeq(s.Split sep |> Seq.map VStr)
             | _ -> unreachable "the checker rejects 'split' on these arguments"))
 
-// field splitting [D:str-fields]: whitespace RUNS delimit and empties
+// field splitting [D:str-fields]: whitespace runs delimit and empties
 // never appear — POSIX field splitting, Go's strings.Fields. The
 // whitespace class is trim's (Char.IsWhiteSpace: a null separator
 // array means "split on whitespace" by String.Split's own contract).
@@ -869,7 +870,7 @@ let private fieldsImpl: Value =
             )
         | v -> unreachable $"the checker rejects 'fields' on {formatValue v}")
 
-// split at the FIRST occurrence, tail INTACT [D:split-once] — Rust's
+// split at the first occurrence, tail intact [D:split-once] — Rust's
 // split_once shape (Go's Cut, Python's partition are the same
 // correction): "at most one split" is a different operation from
 // "split into pieces", and Str.split + a seq pattern silently misses
@@ -994,7 +995,7 @@ let private strReplicateImpl: Value =
                     VStr(String.replicate (int n) s)
             | _ -> unreachable "the checker rejects 'Str.replicate' on these arguments"))
 
-// .NET PadLeft/PadRight semantics, deliberately: width is the TOTAL
+// .NET PadLeft/PadRight semantics, deliberately: width is the total
 // width, spaces pad, an already-longer string is unchanged
 let private padImpl (name: string) (f: int -> string -> string) : Value =
     VBuiltin(fun wV ->
@@ -1127,31 +1128,31 @@ let private rangeImpl: Value =
                     )
                 | _ -> unreachable "the checker rejects non-int range bounds")))
 
-// Data parallelism, NOT concurrency machinery (see the async rejection):
-// eager, input-order results, ceiling-64 degree, first worker error
-// rethrown. Output interleaving from piter workers is line-atomic and
-// owned by the user, as with any parallel tool.
-// the fan-out ceiling [D:tasks-underneath]: 64, stated — well above any
-// core count because arms are I/O-bound by domain; the cap exists so an
-// unbounded fan-out over 10k items is not a well-mannered fork bomb
-// WEIR_LOG (trace|debug|info|warn|off), read ONCE at startup; it
-// changes what is PRINTED, never what the script computes. There is
-// deliberately NO Log.error: an error silenced by WEIR_LOG=off is the
+// Data parallelism, not concurrency machinery (see the async
+// rejection): eager, input-order results, ceiling-64 degree, first
+// worker error rethrown. Output interleaving from piter workers is
+// line-atomic and owned by the user, as with any parallel tool.
+// the fan-out ceiling [D:tasks-underneath]: 64, stated — well above
+// any core count because arms are I/O-bound by domain; the cap keeps
+// an unbounded fan-out over 10k items from becoming a fork bomb.
+// WEIR_LOG (trace|debug|info|warn|off), read once at startup; it
+// changes what is printed, never what the script computes. There is
+// deliberately no Log.error: an error silenced by WEIR_LOG=off is the
 // one message a user needs — unconditional messages are `printerr`,
-// stopping is `fail`; `warn` is the TOP of the filterable range.
+// stopping is `fail`; `warn` is the top of the filterable range.
 
 let logLevelNames = [ "trace"; "debug"; "info"; "warn"; "off" ]
 
 let parseLogLevel (s: string) : Result<int, string> =
-    // case-insensitive like every env-loaded enum (the SKILL rule:
-    // env is the channel where DEBUG/Debug/debug all mean debug)
+    // case-insensitive like every env-loaded enum (the skill file's
+    // rule: env is the channel where DEBUG/Debug/debug all mean debug)
     let lowered = s.ToLowerInvariant()
 
     match logLevelNames |> List.tryFindIndex ((=) lowered) with
     | Some i -> Ok i
     | None -> Error $"WEIR_LOG={s}: unknown log level (one of trace|debug|info|warn|off)"
 
-// default info (ruled): Log.info is useful without ceremony,
+// the default is info: Log.info is useful without ceremony,
 // debug/trace are opt-in, WEIR_LOG=off is genuine silence
 let mutable private logThreshold = 2
 
@@ -1167,7 +1168,7 @@ let initLogLevel () : Result<unit, string> =
     | "" -> Ok()
     | v -> parseLogLevel v |> Result.map (fun i -> logThreshold <- i)
 
-/// is DEBUG (or trace) enabled? Public so a diagnostic renderer can keep
+/// is debug (or trace) enabled? Public so a diagnostic renderer can keep
 /// parser-internal detail reachable by weir's own developers without putting
 /// it in front of users — the alternative to deleting the capability.
 let debugEnabled () : bool = logThreshold <= 1
@@ -1185,17 +1186,17 @@ let private logAt (level: int) (code: string) (label: string) (msg: string) =
 
 let private parallelCeiling = 64
 
-// the DEFAULT ceiling is a LADDER over nesting depth [D:parallel-ladder]:
-// 64 / 8 / 1 — a fan-out inside a worker gets a smaller ceiling, and
-// one nested TWICE runs serially (depth 2 and beyond hit the ladder's
-// 1), so the product is <= 512 at any depth
+// the default ceiling is a ladder over nesting depth
+// [D:parallel-ladder]: 64 / 8 / 1 — a fan-out inside a worker gets a
+// smaller ceiling, and one nested twice runs serially (depth 2 and
+// beyond hit the ladder's 1), so the product is <= 512 at any depth
 // (two reasonable call sites in different files can no longer compose
-// into a width nobody chose). Measured before the constants were
-// fixed: the 64x8 shape runs 512 arms in one round at ~26MB peak RSS
-// (.NET commits thread stacks lazily — the 512MB reserve-math worst
-// case does not materialise). An EXPLICIT `With n` is the author's
-// number and is never reduced — nesting pmapWith 64 in pmapWith 64
-// stays possible and stays the author's decision.
+// into a width nobody chose). Measured: the 64x8 shape runs 512 arms
+// in one round at ~26MB peak RSS (.NET commits thread stacks lazily —
+// the 512MB reserve-math worst case does not materialise). An
+// explicit `With n` is the author's number and is never reduced —
+// nesting pmapWith 64 in pmapWith 64 stays possible and stays the
+// author's decision.
 let private parallelLadder = [| parallelCeiling; 8; 1 |]
 
 let private defaultParallelCeiling (label: string) : int =
@@ -1213,11 +1214,11 @@ let private defaultParallelCeiling (label: string) : int =
 
 // the plan-capture refusal for parallel/race combinators
 // [D:plan-parallel-refusal]: PlanMode's capture frame is thread-local
-// (Eval), so a callback dispatched to a worker thread runs WITHOUT it
+// (Eval), so a callback dispatched to a worker thread runs without it
 // — a native mutation inside the arm would execute for real while the
-// plan reports empty. Refuse on the CALLING thread (where the frame IS
-// active) before any Task is scheduled; combinators outside a plan are
-// unaffected.
+// plan reports empty. Refuse on the calling thread (where the frame
+// is active) before any Task is scheduled; combinators outside a plan
+// are unaffected.
 let private refuseParallelInPlan (combinator: string) =
     if PlanMode.active () then
         failwith
@@ -1232,10 +1233,10 @@ let private runParallelWith (degree: int) (f: Value) (items: seq<Value>) : Value
     // fork the ambient session: workers inherit the parent cwd; cd inside
     // a worker is worker-local and dies at the join
     let parentCwd = Session.Cwd()
-    // arms BLOCK (child waits, sleeps, network) — LongRunning gives each
-    // active worker a dedicated thread, sidestepping the pool's slow
-    // injection heuristic; the ceiling is RESOURCE protection, not CPU
-    // sizing [D:tasks-underneath]
+    // arms block (child waits, sleeps, network) — LongRunning gives
+    // each active worker a dedicated thread, sidestepping the pool's
+    // slow injection heuristic; the ceiling is resource protection,
+    // not CPU sizing [D:tasks-underneath]
     let workers = min degree (max 1 arr.Length)
     let mutable next = -1
     let errors = System.Collections.Concurrent.ConcurrentDictionary<int, exn>()
@@ -1250,8 +1251,8 @@ let private runParallelWith (degree: int) (f: Value) (items: seq<Value>) : Value
                 try
                     out[i] <- apply f arr[i]
                 with e ->
-                    // every arm still RUNS (data parallelism does not
-                    // half-finish); the FIRST error by INPUT ORDER
+                    // every arm still runs (data parallelism does not
+                    // half-finish); the first error by input order
                     // rethrows after the join
                     errors[i] <- e
             finally
@@ -1277,12 +1278,12 @@ let private runParallelWith (degree: int) (f: Value) (items: seq<Value>) : Value
 
     out
 
-// the race [D:seq-pfirst]: the FIRST SUCCESS wins; losers' spawned
+// the race [D:seq-pfirst]: the first success wins; losers' spawned
 // process trees are killed via their RaceGroup, so their failures are
-// swallowed BY CONSTRUCTION. Loser arm THREADS are cooperative: the
+// swallowed by construction. Loser arm threads are cooperative: the
 // kill reaches processes (what arms actually wait on); a pure-compute
 // loser finishes in the background and is discarded. All-failed
-// rethrows the first error by INPUT ORDER; empty input raises.
+// rethrows the first error by input order; empty input raises.
 let private runRaceWith (degree: int) (f: Value) (items: seq<Value>) : Value =
     if degree < 1 then
         failwith $"parallel degree must be at least 1, got {degree}"
@@ -1518,7 +1519,7 @@ let private skipImpl: Value =
         VBuiltin(fun s ->
             match n, s with
             | VInt i, VSeq items ->
-                // LAZY still [D:message-ownership]: the count is checked as
+                // still lazy [D:message-ownership]: the count is checked as
                 // the seq is walked, not by probing its length up front
                 VSeq(
                     seq {
@@ -1539,7 +1540,7 @@ let private skipImpl: Value =
 
 // ---- the Seq-gaps cohort [D:seq-gaps] ------------------------------
 
-// lazy, F#'s collect (flatMap elsewhere): the reservation paying out
+// lazy, F#'s collect (flatMap elsewhere)
 let private collectImpl: Value =
     VBuiltin(fun f ->
         VBuiltin(fun s ->
@@ -1584,7 +1585,7 @@ let private indexedImpl: Value =
         | VSeq items -> VSeq(items |> Seq.mapi (fun i x -> VTuple [ VInt(int64 i); x ]))
         | v -> unreachable $"the checker rejects 'indexed' on {formatValue v}")
 
-// FORCING: reversal needs the whole input (named in when-do-I-force)
+// forcing: reversal needs the whole input (named in when-do-I-force)
 let private revImpl: Value =
     VBuiltin(fun s ->
         match s with
@@ -1657,7 +1658,7 @@ let private reduceImpl: Value =
                 | ValueNone -> failwith "reduce: empty sequence"
             | v -> unreachable $"the checker rejects 'reduce' on {formatValue v}"))
 
-// fold with intermediates, INITIAL STATE FIRST (F# semantics); lazy
+// fold with intermediates, initial state first (F# semantics); lazy
 let private scanImpl: Value =
     VBuiltin(fun folder ->
         VBuiltin(fun init ->
@@ -1698,7 +1699,7 @@ let private pickImpl: Value =
                     | None -> failwith "pick: no matching element"
             | v -> unreachable $"the checker rejects 'pick' on {formatValue v}"))
 
-// set difference, F#'s argument order: the EXCLUSIONS first, the
+// set difference, F#'s argument order: the exclusions first, the
 // source last (data-last holds) — the exclusion set materializes on
 // the first pull, the source streams
 let private exceptImpl: Value =
@@ -1782,7 +1783,7 @@ let private sortPlainImpl (name: string) (flip: bool) : Value =
             )
         | v -> unreachable $"the checker rejects '{name}' on {formatValue v}")
 
-// the mean of ints IS a float — what floats were added for; empty
+// the mean of ints is a float — what floats were added for; empty
 // raises (absence is Option's job, and 0 would be a guess)
 let private averageImpl: Value =
     VBuiltin(fun s ->
@@ -1861,7 +1862,7 @@ let private seqMembers: (string * Ty * Value) list =
       "tryFind", TFun(TFun(tA, TBool), TFun(TSeq tA, TNamed("Option", [ tA ]))), tryFindImpl
       "isEmpty", TFun(TSeq tA, TBool), isEmptyImpl
       "length", TFun(TSeq tA, TInt), seqLengthImpl
-      // fold [D:seq-fold]: STRICT (an infinite source does not
+      // fold [D:seq-fold]: strict (an infinite source does not
       // return); state-first folder; constraint-free by construction
       "fold", TFun(TFun(tA, TFun(tB, tA)), TFun(tA, TFun(TSeq tB, tA))), foldImpl
       "choose", TFun(TFun(tA, TNamed("Option", [ tB ])), TFun(TSeq tA, TSeq tB)), chooseImpl
@@ -1920,22 +1921,22 @@ let private seqMembers: (string * Ty * Value) list =
 // the encoding law [D:encoding-law]: weir encodes and decodes UTF-8 at
 // every boundary — what gets read, written, hashed, and base64'd is
 // UTF-8 bytes (in-memory representation is not the law's business).
-// Strict decode: invalid bytes are an ERROR, never U+FFFD corruption
-// wearing a success.
+// Strict decode: invalid bytes are an error, never U+FFFD corruption
+// presented as success.
 let private utf8Strict = System.Text.UTF8Encoding(false, true)
 
-// the same, emitting a leading BOM — File.write reaches for it ONLY to
+// the same, emitting a leading BOM — File.write reaches for it only to
 // preserve a BOM an overwritten file already had [D:encoding-law]
 let private utf8Bom = System.Text.UTF8Encoding(true, true)
 
 // liberal-in: unpadded standard-alphabet base64 pads before decoding;
 // encoding emits padded (the one stated default). URL-safe (-_) is
-// PARKED with the JWT trigger [D:encoding-law].
+// parked with the JWT trigger [D:encoding-law].
 let private base64Bytes (s: string) : byte[] =
     let t = s.Trim()
     System.Convert.FromBase64String(t + System.String('=', (4 - t.Length % 4) % 4))
 
-// bytes -> text is the SAME gate fromBase64 wears [D:encoding-law]:
+// bytes -> text is the same gate fromBase64 wears [D:encoding-law]:
 // strict UTF-8, and NUL is non-text (the byte the binary detector
 // keys on, and the one that truncates at every C boundary)
 let private utf8TextOf (name: string) (b: byte[]) : Result<string, string> =
@@ -1960,7 +1961,7 @@ let private fromBase64Text (name: string) (s: string) : Result<string, string> =
         // NUL is non-text too [D:encoding-law]: it is valid UTF-8, but
         // it is the byte the binary detector keys on [D:binary-echo],
         // and a NUL-bearing string silently truncates at every C
-        // boundary (argv, env) — binary payloads wait for BYTES
+        // boundary (argv, env) — binary payloads belong in Bytes
         if System.Array.IndexOf(b, 0uy) >= 0 then
             Error
                 $"{name}: the decoded content is not text (it contains NUL bytes — binary payloads need the BYTES type, not string)"
@@ -1992,7 +1993,7 @@ let private strMembers: (string * Ty * Value) list =
       "padRight", TFun(TInt, TFun(TStr, TStr)), padImpl "padRight" (fun w (s: string) -> s.PadRight(w, ' '))
       "toInt", TFun(TStr, TInt), toIntImpl
       "tryToInt", TFun(TStr, TNamed("Option", [ TInt ])), tryToIntImpl
-      // sha256 ONLY [D:encoding-law]: md5 is broken (offering it invites
+      // sha256 only [D:encoding-law]: md5 is broken (offering it invites
       // its use), sha1 deprecated, sha512 has no receipt — one member,
       // one algorithm, more on receipt. Lowercase hex = sha256sum parity
       // (the tool it replaces).
@@ -2067,19 +2068,21 @@ let private pathCombineImpl: Value =
             | VStr x, VStr y -> VStr(Path.Combine(x, y))
             | _ -> unreachable "the checker rejects 'Path.combine' on these arguments"))
 
-/// `Path.under` [D:path-under] — the CONFINING join. `Path.combine` keeps BCL
-/// semantics (an absolute second argument WINS; `..` is not normalised) and is
-/// the primitive for paths you control; `under` is the one to reach for with
-/// input you do not. PURELY TEXTUAL by design: it confines the PATH, never the
-/// resolved target, so a symlink inside the base pointing out is textually
-/// under and is NOT confined. Following links would mean touching the disk,
-/// which makes the check impure, racy (TOCTOU) and dependent on the path
-/// existing — the same register as `Secret` being a rendering marker.
+/// `Path.under` [D:path-under] — the confining join. `Path.combine`
+/// keeps BCL semantics (an absolute second argument wins; `..` is not
+/// normalised) and is the primitive for paths you control; `under` is
+/// the one for input you do not. Purely textual by design: it confines
+/// the path, never the resolved target, so a symlink inside the base
+/// pointing out is textually under and is not confined. Following
+/// links would mean touching the disk, which makes the check impure,
+/// racy (TOCTOU) and dependent on the path existing — the same
+/// register as `Secret` being a rendering marker.
 let private absoluteShaped (p: string) : bool =
-    // refused on EVERY platform, not only where the host OS agrees: a script
-    // must confine identically on Linux and Windows, and refusing the SHAPE is
-    // the safe direction. Covers /x and \x, a drive root or drive-RELATIVE
-    // `C:x` (the BCL treats both as rooted), and UNC `\\server\share`.
+    // refused on every platform, not only where the host OS agrees: a
+    // script must confine identically on Linux and Windows, and
+    // refusing the shape is the safe direction. Covers /x and \x, a
+    // drive root or drive-relative `C:x` (the BCL treats both as
+    // rooted), and UNC `\\server\share`.
     p.StartsWith "/"
     || p.StartsWith "\\"
     || (p.Length >= 2 && System.Char.IsLetter p[0] && p[1] = ':')
@@ -2089,7 +2092,7 @@ let private pathUnderImpl: Value =
         VBuiltin(fun b ->
             match a, b with
             | VStr basePath, VStr name ->
-                // the base is normalised FIRST, and a RELATIVE base resolves
+                // the base is normalised first, and a relative base resolves
                 // against the session cwd at call time — Path.glob's
                 // resolve-at-use rule, and the cwd every runtime surface reads
                 let root = Path.TrimEndingDirectorySeparator(Session.resolve basePath)
@@ -2101,7 +2104,7 @@ let private pathUnderImpl: Value =
                 if absoluteShaped name then
                     escape ()
                 else
-                    // normalise THEN confine: rejecting literal `..` segments is
+                    // normalise then confine: rejecting literal `..` segments is
                     // neither sufficient (separators and encodings get past a
                     // textual scan) nor necessary (`a/b/../c` is legitimately
                     // inside). GetFullPath is lexical — it never touches disk.
@@ -2109,7 +2112,7 @@ let private pathUnderImpl: Value =
                     let sep = string Path.DirectorySeparatorChar
                     let prefix = if root.EndsWith sep then root else root + sep
 
-                    // SEGMENT-WISE, not prefix-string-wise: `/safe/uploads-evil`
+                    // segment-wise, not prefix-string-wise: `/safe/uploads-evil`
                     // starts with `/safe/uploads` as a string and is not under
                     // it — the classic bug in every hand-rolled version
                     if joined = root || joined.StartsWith prefix then
@@ -2118,11 +2121,11 @@ let private pathUnderImpl: Value =
                         escape ()
             | _ -> unreachable "the checker rejects 'Path.under' on these arguments"))
 
-// the LEXICAL normalize: collapse '.' and '..' segments in TEXT — no
+// the lexical normalize: collapse '.' and '..' segments in text — no
 // filesystem touch, no cwd resolution, symlinks never followed. The
-// third spelling beside its siblings: combine KEEPS '..' (paths you
-// control), under REFUSES an escape (paths you do not), normalize
-// COLLAPSES the text — for the legitimate escape (a project reference
+// third spelling beside its siblings: combine keeps '..' (paths you
+// control), under refuses an escape (paths you do not), normalize
+// collapses the text — for the legitimate escape (a project reference
 // leaving its own directory) both siblings decline. A relative path
 // keeps its leading '..'s; at an absolute root '..' swallows.
 let private pathNormalize (p: string) : string =
@@ -2152,21 +2155,21 @@ let private pathNormalize (p: string) : string =
                 out.Add ".."
         | s -> out.Add s
 
-    // ONE output shape on every platform [D:lf-output]'s sibling law:
-    // '/' — Windows accepts it, and both porting receipts normalize TO
-    // it (the originals do .Replace('\\', "/"))
+    // one output shape on every platform ([D:lf-output]'s sibling
+    // law): '/' — Windows accepts it, and both porting receipts
+    // normalize to it (the originals do .Replace('\\', "/"))
     let body = String.concat "/" (List.ofSeq out)
 
     if rooted then "/" + body
     elif body = "" then "."
     else body
 
-// home + XDG dirs [D:path-home], the ONE implementation the REPL's
+// home + XDG dirs [D:path-home], the one implementation the REPL's
 // config/state paths also use: Windows maps to SpecialFolder
 // (%APPDATA% / %LOCALAPPDATA%), POSIX to the XDG_* var else the ~
-// fallback. Re-read per call — the environment can change. These replace
-// the argv-expansion weir does NOT do (no `~`, no `$HOME`): a typed value
-// to interpolate, injection-proof by construction.
+// fallback. Re-read per call — the environment can change. These
+// replace the argv expansion weir does not do (no `~`, no `$HOME`): a
+// typed value to interpolate, injection-proof by construction.
 let xdgDir (var: string) (fallback: string) : string =
     match System.Environment.GetEnvironmentVariable var with
     | null
@@ -2214,7 +2217,7 @@ let private pathMembers: (string * Ty * Value) list =
       "configHome", TFun(TUnit, TStr), VBuiltin(fun _ -> VStr(configDir ()))
       "stateHome", TFun(TUnit, TStr), VBuiltin(fun _ -> VStr(stateDir ()))
       "cacheHome", TFun(TUnit, TStr), VBuiltin(fun _ -> VStr(cacheDir ()))
-      // the QUERY (pure): the system temp root, no trailing separator
+      // the query (pure): the system temp root, no trailing separator
       "tempRoot",
       TFun(TUnit, TStr),
       VBuiltin(fun _ ->
@@ -2223,9 +2226,9 @@ let private pathMembers: (string * Ty * Value) list =
                   .GetTempPath()
                   .TrimEnd(System.IO.Path.DirectorySeparatorChar, System.IO.Path.AltDirectorySeparatorChar)
           ))
-      // the CREATOR (side effect visible in the name): a fresh unique
+      // the creator (side effect visible in the name): a fresh unique
       // dir, `within tmp`'s spelling exactly (weir-tmp- prefix, guid);
-      // cleanup is the CALLER's or the OS's — `within tmp` is the
+      // cleanup is the caller's or the OS's — `within tmp` is the
       // scoped-cleanup spelling
       "newTempDir",
       TFun(TUnit, TStr),
@@ -2246,10 +2249,10 @@ let private optionIterImpl: Value =
             | VUnion("None", None) -> VUnit
             | v -> unreachable $"the checker rejects 'Option.iter' on {formatValue v}"))
 
-// fallback FIRST so the pipe reads data-last (F#'s order):
+// fallback first so the pipe reads data-last (F#'s order):
 // `opt |> Option.orElse fallback`. Stays in Option, where
 // defaultValue unwraps. The fallback is an ordinary (eager) argument;
-// an orElseWith twin is PARKED on the defaultWith precedent.
+// an orElseWith twin is parked on the defaultWith precedent.
 let private optionOrElseImpl: Value =
     VBuiltin(fun fallback ->
         VBuiltin(fun opt ->
@@ -2308,12 +2311,12 @@ let envVarDef: RecordDef =
       Attrs = Map.empty
       Docs = Map.empty }
 
-// Env.fromFile parses the DOTENV SUBSET only: KEY=VALUE, optional
-// single/double quotes around VALUE, # full-line and trailing
+// Env.fromFile parses the dotenv subset only: KEY=VALUE, optional
+// single/double quotes around the value, # full-line and trailing
 // comments, blank lines. No export keyword, no $VAR references, no
-// command substitution — sourcing is shell EVALUATION; this is a
+// command substitution — sourcing is shell evaluation; this is a
 // parser, and anything needing evaluation is a per-line boundary
-// error naming the sh escape. (The formalization scanner is NOT
+// error naming the sh escape. (The formalization scanner is not
 // reused here: it speaks weir-string quote rules and lives in a later
 // compile unit; dotenv's quoting is its own three-case grammar.)
 let private dotenvEscape =
@@ -2397,8 +2400,8 @@ let private envFromFileImpl: Value =
                     let resolved = Session.resolve path
 
                     // the File-family guards, in Env.fromFile's own words —
-                    // a missing .env leaked FileNotFoundException's text
-                    // until the wider sweep [D:transport-words]
+                    // a missing .env must not leak
+                    // FileNotFoundException's text [D:transport-words]
                     if Directory.Exists resolved then
                         failwith $"Env.fromFile: {resolved} is a directory"
 
@@ -2422,7 +2425,7 @@ let private envFromFileImpl: Value =
         | v -> unreachable $"the checker rejects 'Env.fromFile' on {formatValue v}")
 
 // Env.pair / Env.ofPairs [D:seq-fold] — inline-env construction
-// for a known nominal type (NOT an anonymous-records case).
+// for a known nominal type (not an anonymous-records case).
 let private envPairImpl: Value =
     VBuiltin(fun n ->
         VBuiltin(fun v ->
@@ -2460,10 +2463,10 @@ let private envMembers: (string * Ty * Value) list =
       TSeq(TNamed(envVarDef.Name, [])),
       VSeq(
           Seq.delay (fun () ->
-              // hashtable order is noise — the sweep's one sibling of
-              // the ls gap [D:ls-sort]: sorted by name, the same ordinal
-              // rule. (fromFile/ofPairs stay in GIVEN order — there the
-              // order is the author's information, the YMap argument.)
+              // hashtable order is noise [D:ls-sort]: sorted by name,
+              // the same ordinal rule. (fromFile/ofPairs stay in given
+              // order — there the order is the author's information,
+              // the YMap argument.)
               System.Environment.GetEnvironmentVariables()
               |> Seq.cast<System.Collections.DictionaryEntry>
               |> Seq.sortBy (fun e -> string e.Key)
@@ -2471,15 +2474,14 @@ let private envMembers: (string * Ty * Value) list =
       )
       "fromFile", TFun(TStr, TSeq(TNamed(envVarDef.Name, []))), envFromFileImpl ]
 
-// the read-side guards [D:sized-findings]: the delete side pre-checked
-// with weir-shaped messages while the read side leaked raw .NET
-// exceptions (FileNotFoundException's words, not weir's) — the same
-// split the floats session refused to pin. Pre-check the common
-// failures with the DELETE side's shapes (the path named, no second
-// family); wrap the residual (permissions, exotic IO) so no raw .NET
-// message reaches a user. Encoding never throws here — ReadAllLines
-// substitutes replacement chars, so is-a-directory / not-found /
-// permission are the whole enumerable surface.
+// the read-side guards [D:sized-findings]: reads must give the same
+// weir-shaped messages as the delete side, never raw .NET exception
+// text. Pre-check the common failures with the delete side's shapes
+// (the path named, no second family); wrap the residual (permissions,
+// exotic IO) so no raw .NET message reaches a user. Encoding never
+// throws here — ReadAllLines substitutes replacement chars, so
+// is-a-directory / not-found / permission are the whole enumerable
+// surface.
 let private readGuard (op: string) (r: string) : unit =
     if System.IO.Directory.Exists r then
         failwith $"{op}: {r} is a directory"
@@ -2504,19 +2506,20 @@ let private ioGuarded (op: string) (r: string) (f: unit -> 'a) : 'a =
 
 // ---- plan/apply capture [D:plan-apply] ------------------------------
 // The mutation builtins consult PlanMode: inside a `plan` block they
-// CAPTURE an Op (a `VUnion` of the prelude `Op` type) and return VUnit
-// instead of performing. Ambient reads do NOT call these — they run.
-// Each helper returns Some VUnit (captured — the builtin returns it) or
-// None (not planning — the builtin performs). The Op carries the USER's
-// path (apply re-resolves through the normal builtin); the RESOLVED path
-// is the known-after-apply target key. Content is FORCED here (ruling 6:
-// every plan is all-data, preview == apply) — a lazy `seq<string>`
-// captured raw would let a read run at apply time, breaking the snapshot;
-// forcing NOW runs its reads under the plan's own frame (a nested
-// mutation in the content is captured/refused).
+// capture an Op (a `VUnion` of the prelude `Op` type) and return
+// VUnit instead of performing. Ambient reads do not call these — they
+// run. Each helper returns Some VUnit (captured — the builtin returns
+// it) or None (not planning — the builtin performs). The Op carries
+// the user's path (apply re-resolves through the normal builtin); the
+// resolved path is the known-after-apply target key. Content is
+// forced here (ruling 6: every plan is all-data, preview == apply) —
+// a lazy `seq<string>` captured raw would let a read run at apply
+// time, breaking the snapshot; forcing now runs its reads under the
+// plan's own frame (a nested mutation in the content is
+// captured/refused).
 
 /// capture a WriteFile op (File.write): force the content seq to data now.
-/// The captured path is the RESOLVED absolute path [D:plan-path-bound]:
+/// The captured path is the resolved absolute path [D:plan-path-bound]:
 /// the target is fixed at capture, so apply writes exactly the previewed
 /// location regardless of the apply-time cwd.
 let private capWrite (resolved: string) (lines: Value seq) : Value option =
@@ -2528,7 +2531,7 @@ let private capWrite (resolved: string) (lines: Value seq) : Value option =
         None
 
 /// capture a one-path op (DeleteFile / MakeDir / DeleteDir): stores the
-/// RESOLVED absolute path [D:plan-path-bound]
+/// resolved absolute path [D:plan-path-bound]
 let private capPath1 (case: string) (resolved: string) : Value option =
     if PlanMode.active () then
         PlanMode.capture (VUnion(case, Some(VStr resolved))) [ resolved ]
@@ -2536,10 +2539,10 @@ let private capPath1 (case: string) (resolved: string) : Value option =
     else
         None
 
-/// capture a two-path op (Copy / Move): the DESTINATION is the target a
-/// later read would see stale (the source is read, not written). BOTH
-/// paths are stored RESOLVED absolute [D:plan-path-bound] — apply replays
-/// the exact captured source and destination, cwd-independent.
+/// capture a two-path op (Copy / Move): the destination is the target a
+/// later read would see stale (the source is read, not written). Both
+/// paths are stored resolved absolute [D:plan-path-bound] — apply
+/// replays the exact captured source and destination, cwd-independent.
 let private capPath2 (case: string) (resolvedSrc: string) (resolvedDst: string) : Value option =
     if PlanMode.active () then
         PlanMode.capture (VUnion(case, Some(VTuple [ VStr resolvedSrc; VStr resolvedDst ]))) [ resolvedDst ]
@@ -2547,7 +2550,7 @@ let private capPath2 (case: string) (resolvedSrc: string) (resolvedDst: string) 
     else
         None
 
-/// a mutation builtin with NO Plan Op in v1 REFUSES inside a plan
+/// a mutation builtin with no Plan Op in v1 refuses inside a plan
 /// [D:plan-apply] — the kind-first discipline: an uncaptured mutation
 /// cannot silently perform under a plan. File.append/writeBytes are the
 /// two fs.write members outside the v1 Op union.
@@ -2570,7 +2573,7 @@ let private fileMembers: (string * Ty * Value) list =
               VSeq(ioGuarded "File.read" r (fun () -> File.ReadAllLines r) |> Seq.map VStr)
           | v -> unreachable $"the checker rejects 'File.read' on {formatValue v}")
       // a token in a file is a real pattern [D:secret]: a mounted k8s /
-      // docker secret IS a file. ONE member (a family would be parked):
+      // docker secret is a file. One member (a family would be parked):
       // the whole content is the secret, trailing newlines trimmed (the
       // tooling convention — `echo tok > f` adds one, k8s does not)
       "readSecret",
@@ -2597,7 +2600,7 @@ let private fileMembers: (string * Ty * Value) list =
                   writeGuard "File.write" r
 
                   ioGuarded "File.write" r (fun () ->
-                      // ONE handle for peek + truncate + write — a separate
+                      // one handle for peek + truncate + write — a separate
                       // read-open racing the write-open trips a Windows sharing
                       // violation [D:encoding-law]. Peek the existing first
                       // bytes to decide the BOM, truncate, then write.
@@ -2605,7 +2608,7 @@ let private fileMembers: (string * Ty * Value) list =
                           new FileStream(r, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.Read)
 
                       // preserve an existing UTF-8 BOM; a new or no-BOM file
-                      // stays bare, so this never ADDS a BOM
+                      // stays bare, so this never adds a BOM
                       let head = Array.zeroCreate 3
                       let n = fs.Read(head, 0, 3)
                       let keepBom = n = 3 && head[0] = 0xEFuy && head[1] = 0xBBuy && head[2] = 0xBFuy
@@ -2656,7 +2659,7 @@ let private fileMembers: (string * Ty * Value) list =
           | v -> unreachable $"the checker rejects 'File.exists' on {formatValue v}") ]
 
 // fail keeps exit-1 (message-carrying); `exit n` is the propagation
-// spelling [D:exit-rename] — both DIVERGE (`-> 'a`, F#'s typing), so a
+// spelling [D:exit-rename] — both diverge (`-> 'a`, F#'s typing), so a
 // fail/exit arm sits opposite a value arm [D:fail-bottom].
 let private exitImpl: Value =
     VBuiltin(fun v ->
@@ -2665,9 +2668,9 @@ let private exitImpl: Value =
         | v -> unreachable $"the checker rejects 'exit' on {formatValue v}")
 
 // ---- the Log module [D:log-module] -----------------------------------------
-// Levelled diagnostics that respect the pipeline: EVERY member writes
-// to STDERR, unconditionally — stdout is DATA (what pipes carry, what
-// $() captures), and that is a law, not a default. Level control is
+// Levelled diagnostics that respect the pipeline: every member writes
+// to stderr, unconditionally — stdout is data (what pipes carry, what
+// $() captures), and that is a law, not a default.
 let private logMember (level: int) (code: string) (label: string) : Value =
     VBuiltin(fun v ->
         match v with
@@ -2676,7 +2679,7 @@ let private logMember (level: int) (code: string) (label: string) : Value =
             VUnit
         | v -> unreachable $"the checker rejects logging {formatValue v}")
 
-// the With twins: the thunk runs ONLY when the level passes — the
+// the With twins: the thunk runs only when the level passes — the
 // Option.defaultWith precedent for the expensive-argument case (weir
 // has no lazy argument position, stated in the docs)
 let private logWithMember (level: int) (code: string) (label: string) : Value =
@@ -2702,15 +2705,15 @@ let private logMembers: (string * Ty * Value) list =
 
 // ---- the filesystem family [D:fs-members] ---------------------------
 // copy/move take (src, dst) — the universal convention; neither arg is
-// "the data", so data-last does not apply. Destinations REFUSE to
+// "the data", so data-last does not apply. Destinations refuse to
 // overwrite (reject-don't-guess; the overwriting spelling is an
-// explicit File.delete first). Dir.create is the ONE idempotent
-// exception: an existing directory IS create's post-condition, where
+// explicit File.delete first). Dir.create is the one idempotent
+// exception: an existing directory is create's post-condition, where
 // an existing copy destination is data the caller did not ask to
 // destroy. Every path resolves against the session cwd.
 // a two-path fs mutation [D:plan-apply]: `opCase` is its Plan Op (Copy /
-// Move) — inside a plan it CAPTURES (src, dst) and records the dst as the
-// known-after-apply target; otherwise it performs f.
+// Move) — inside a plan it captures (src, dst) and records the dst as
+// the known-after-apply target; otherwise it performs f.
 let private fsStr2 (name: string) (opCase: string) (f: string -> string -> unit) : Value =
     VBuiltin(fun a ->
         VBuiltin(fun b ->
@@ -2727,7 +2730,7 @@ let private fsStr2 (name: string) (opCase: string) (f: string -> string -> unit)
 
 let private fsMoreFileMembers: (string * Ty * Value) list =
     [ "mode",
-      // the narrow fact stays a QUERY, not a column [D:filerow]:
+      // the narrow fact stays a query, not a column [D:filerow]:
       // rwxr-xr-x shaped; None on Windows — the platform limit stated,
       // never invented [D:ls-truth]. The receipt: the 0600 check that
       // should precede File.readSecret
@@ -2761,9 +2764,9 @@ let private fsMoreFileMembers: (string * Ty * Value) list =
               | :? System.PlatformNotSupportedException -> VUnion("None", None)
               | :? System.IO.FileNotFoundException
               | :? System.IO.DirectoryNotFoundException ->
-                  // the READ follows; existence does not
+                  // the read follows; existence does not
                   // [D:mode-existence]: a path with a row (File.stat/ls
-                  // describe the LINK) fails here for the honest reason,
+                  // describe the link) fails here for the honest reason,
                   // never as absent
                   if isNull (FileInfo(r).LinkTarget) then
                       failwith $"File.mode: no such path: {r}"
@@ -2771,10 +2774,10 @@ let private fsMoreFileMembers: (string * Ty * Value) list =
                       failwith $"File.mode: dangling symlink: {r} — no target to read a mode from"
           | v -> unreachable $"the checker rejects 'File.mode' on {formatValue v}")
       "isExecutable",
-      // the mode string's 'x', as a bool [D:port-members]: the OWNER
+      // the mode string's 'x', as a bool [D:port-members]: the owner
       // execute bit (the bit an installer sets), replacing the stringly
       // `File.mode |> Str.contains "x"`. Follows a symlink like mode;
-      // a missing path raises. WINDOWS POSTURE, stated not guessed
+      // a missing path raises. Windows posture, stated not guessed
       // [D:ls-truth]: there is no execute bit there — the answer is by
       // extension (.exe/.bat/.cmd/.com), CreateProcess's own law.
       TFun(TStr, TBool),
@@ -2799,7 +2802,7 @@ let private fsMoreFileMembers: (string * Ty * Value) list =
                   VBool(List.contains ext [ ".exe"; ".bat"; ".cmd"; ".com" ])
               | :? System.IO.FileNotFoundException
               | :? System.IO.DirectoryNotFoundException ->
-                  // the READ follows; existence does not [D:mode-existence]
+                  // the read follows; existence does not [D:mode-existence]
                   if isNull (FileInfo(r).LinkTarget) then
                       failwith $"File.isExecutable: no such path: {r}"
                   else
@@ -2832,7 +2835,7 @@ let private fsMoreFileMembers: (string * Ty * Value) list =
                   VUnit
               | _ -> unreachable "the checker rejects 'File.writeBytes' on these arguments"))
       "sha256",
-      // STREAMS internally [D:bytes] — the value type is bounded, the
+      // streams internally [D:bytes] — the value type is bounded, the
       // implementation is not required to materialise; the install
       // story hashes files bigger than a value should be
       TFun(TStr, TStr),
@@ -2889,8 +2892,8 @@ let private fsMoreFileMembers: (string * Ty * Value) list =
 
           System.IO.File.Move(src, dst))
       "size",
-      // Size, not int [D:size] — the type is the POINT: show can render
-      // what the type names (the one intended break of the session)
+      // Size, not int [D:size] — the type is the point: show can
+      // render what the type names (a deliberate break)
       TFun(TStr, TSize),
       VBuiltin(fun v ->
           match v with
@@ -2904,9 +2907,9 @@ let private fsMoreFileMembers: (string * Ty * Value) list =
               VSize (System.IO.FileInfo r).Length
           | v -> unreachable $"the checker rejects 'File.size' on {formatValue v}")
       "stat",
-      // the bridge from paths to rows [D:file-stat]: ls's OWN
+      // the bridge from paths to rows [D:file-stat]: ls's own
       // constructor over one resolved path, so the two producers cannot
-      // diverge. Describes the LINK, not its target (the ls agreement);
+      // diverge. Describes the link, not its target (the ls agreement);
       // raises when absent — a dangling symlink is a row, not an absence
       TFun(TStr, TNamed(fileRow.Name, [])),
       VBuiltin(fun v ->
@@ -2915,7 +2918,7 @@ let private fsMoreFileMembers: (string * Ty * Value) list =
               let r = Session.resolve p
               PlanMode.checkRead "File.stat" r
 
-              // FileInfo.Exists is the path's OWN fact (true for a
+              // FileInfo.Exists is the path's own fact (true for a
               // dangling link); a directory — or a link to one — takes
               // the DirectoryInfo shape, as the enumeration does
               let fi = FileInfo r
@@ -3006,8 +3009,8 @@ let private dirMembers: (string * Ty * Value) list =
               if not (System.IO.Directory.Exists r) then
                   failwith $"Dir.list: no such directory: {r}"
 
-              // full paths, files AND directories, SORTED (the glob
-              // precedent), EAGER (a listing is bounded); ** recursion
+              // full paths, files and directories, sorted (the glob
+              // precedent), eager (a listing is bounded); ** recursion
               // is Path.glob's job
               VSeq(
                   ioGuarded "Dir.list" r (fun () ->
@@ -3025,10 +3028,10 @@ let private dirMembers: (string * Ty * Value) list =
               if not (System.IO.Directory.Exists r) then
                   failwith $"Dir.stat: no such directory: {r}"
 
-              // the ROWS form of Dir.list [D:dir-stat]: ls's own
+              // the rows form of Dir.list [D:dir-stat]: ls's own
               // enumeration and row constructor over the named
               // directory, so the discovery surfaces cannot diverge;
-              // EAGER like list (a listing is bounded)
+              // eager like list (a listing is bounded)
               VSeq(
                   ioGuarded "Dir.stat" r (fun () ->
                       DirectoryInfo(r).GetFileSystemInfos()
@@ -3047,7 +3050,7 @@ let private dirMembers: (string * Ty * Value) list =
               failwith $"Dir.move: destination exists: {dst}"
 
           System.IO.Directory.Move(src, dst))
-      // copying a directory MEANS copying its contents — there is no
+      // copying a directory means copying its contents — there is no
       // non-recursive reading, so the delete/deleteAll naming split does
       // not repeat here (no Dir.copyAll) [D:sized-findings]. The family's
       // overwrite rule unchanged: refuse an existing destination;
@@ -3079,10 +3082,9 @@ let private floatFn (name: string) (f: float -> Value) : Value =
         | VFloat x -> f x
         | v -> unreachable $"the checker rejects 'Float.{name}' on {formatValue v}")
 
-// the X.parse/X.tryParse pair builder [D:maintenance-2]: three families
-// (Float, Size, Duration) each spelled this 18-line pair with drift
-// (some used the vSome/vNone helpers, some VUnion literally) — the
-// dedupe re-run collapsed them onto one shape. parse RAISES with
+// the X.parse/X.tryParse pair builder [D:maintenance-2]: one shape
+// for the three families (Float, Size, Duration), which had drifted
+// apart when each spelled the pair by hand. parse raises with
 // "{label}.parse: {e}"; tryParse wraps Option. (The toInt/fromBase64
 // pairs stay separate: their message shapes differ.)
 let private parsePairImpl (label: string) (parser: string -> Result<'a, string>) (ctor: 'a -> Value) =
@@ -3117,7 +3119,7 @@ let private floatMembers: (string * Ty * Value) list =
       TFun(TFloat, TInt),
       floatFn "toInt" (fun x ->
           // truncates toward zero, the int-division rule; out of the
-          // 64-bit range RAISES (the checkedInt posture)
+          // 64-bit range raises (the checkedInt posture)
           if x >= 9.2233720368547758e18 || x <= -9.2233720368547758e18 then
               failwith $"Float.toInt: out of int range: {formatFloat x}"
           else
@@ -3334,9 +3336,8 @@ let private durationMembers: (string * Ty * Value) list =
           match v with
           | VDur n -> VInt n
           | v -> unreachable $"the checker rejects 'Duration.toMillis' on {formatValue v}")
-      // float-returning and LOSSLESS [D:floats] — the truncation that
-      // kept it unshipped is gone; Duration's own parse/render path
-      // stays integer
+      // float-returning and lossless [D:floats]; Duration's own
+      // parse/render path stays integer
       "toSeconds",
       TFun(TDur, TFloat),
       VBuiltin(fun v ->
@@ -3364,14 +3365,14 @@ let private durationMembers: (string * Ty * Value) list =
           | v -> unreachable $"the checker rejects averaging {formatValue v}")
           VDur
       // the one consumer worth landing with the type — module-qualified
-      // so the coreutils sleep is NEVER shadowed (bindings-beat-PATH
+      // so the coreutils sleep is never shadowed (bindings-beat-PATH
       // would flip `sleep 5`'s meaning)
       "sleep",
       TFun(TDur, TUnit),
       VBuiltin(fun v ->
           match v with
           | VDur n ->
-              // a negative duration REJECTS, located — the deadline
+              // a negative duration rejects, located — the deadline
               // idiom (sleep (deadline - now)) must not silently no-op
               // on a past deadline [D:duration]
               if n < 0L then
@@ -3387,7 +3388,7 @@ let private durationMembers: (string * Ty * Value) list =
           | v -> unreachable $"the checker rejects 'Duration.sleep' on {formatValue v}") ]
 
 let private secretMembers: (string * Ty * Value) list =
-    // a marker the renderers respect [D:secret] — of ASSERTS secrecy (the
+    // a marker the renderers respect [D:secret] — of asserts secrecy (the
     // safe direction, for computed secrets), reveal is the one guarded exit
     [ "of",
       TFun(TStr, TSecret),
@@ -3416,14 +3417,14 @@ let private secretMembers: (string * Ty * Value) list =
 
 let private httpMethodName (v: Value) : string =
     match v with
-    // Other carries its verb VERBATIM to the wire [D:serve-method] — the
+    // Other carries its verb verbatim to the wire [D:serve-method] — the
     // one method whose name is data, so a request built with `Other v`
     // (e.g. a proxy echo) sends v; the listed cases are their own names
     | VUnion("Other", Some(VStr m)) -> m
     | VUnion(m, None) -> m.ToUpperInvariant()
     | v -> unreachable $"the checker rejects a non-method {formatValue v}"
 
-// the ambient/mutation class of an `Http.send` request VALUE at EVAL
+// the ambient/mutation class of an `Http.send` request value at eval
 // time [D:pure-stage2] — the per-method net split, resolved where the
 // interpreter holds the request (the slice [PLAN-plan-apply] intercepts
 // at eval). The method rides the request record as VUnion(case, None);
@@ -3434,9 +3435,9 @@ let httpRequestClass (reqV: Value) : Weir.Effects.EffectClass =
     | VRecord("HttpRequest", f) -> Weir.Effects.httpMethodClass (httpMethodName (recGet "method" f))
     | v -> unreachable $"the checker rejects a request on {formatValue v}"
 
-/// the EVAL-time effect class of a builtin CALL [D:pure-stage2]: the
+/// the eval-time effect class of a builtin call [D:pure-stage2]: the
 /// name places every fixed-class effect (Effects.effectClass), and
-/// `Http.send`'s per-method class is resolved from the request VALUE the
+/// `Http.send`'s per-method class is resolved from the request value the
 /// interpreter holds at the call site. This is the partition made
 /// consultable at eval — plan/apply's actual dependency. Returns None
 /// for a name that is not classified-effectful (a pure builtin).
@@ -3451,10 +3452,11 @@ let effectClassOfCall (name: string) (args: Value list) : Weir.Effects.EffectCla
         | [] -> None
     | _ -> Weir.Effects.effectClass name
 
-// auth is a UNION the runner encodes [D:http]: Basic is base64(user:pass),
-// an ENCODING no caller should build by hand. The Secret is REVEALED here —
-// the one deliberate reveal (the value reaches the socket in the clear, a
-// stated non-claim, the argv analogue)
+// auth is a union the runner encodes [D:http]: Basic is
+// base64(user:pass), an encoding no caller should build by hand. The
+// Secret is revealed here — the one deliberate reveal (the value
+// reaches the socket in the clear, a stated non-claim, the argv
+// analogue)
 let private authHeaders (v: Value) : (string * string) list =
     match v with
     | VUnion("NoAuth", None) -> []
@@ -3466,12 +3468,12 @@ let private httpBodyOf (v: Value) : (string * string) option =
     match v with
     | VUnion("NoBody", None) -> None
     // Json carries pre-serialized `to json` lines [D:http]: send joins them
-    // with \n and sets the content type — BYTE-EXACT, the whole point over
+    // with \n and sets the content type — byte-exact, the whole point over
     // curl -d (which strips the newlines)
     | VUnion("Json", Some(VSeq lines)) -> Some("application/json", lines |> Seq.map asString |> String.concat "\n")
     | VUnion("Text", Some(VStr s)) -> Some("text/plain", s)
-    // Stream is the SERVER response's chunked case [D:http-serve]; on the
-    // CLIENT send path it MATERIALIZES (request-body streaming is out of
+    // Stream is the server response's chunked case [D:http-serve]; on the
+    // client send path it materializes (request-body streaming is out of
     // scope v1) — the lines join like Json's, kept well-defined, never a
     // crash
     | VUnion("Stream", Some(VSeq lines)) -> Some("text/plain", lines |> Seq.map asString |> String.concat "\n")
@@ -3503,7 +3505,7 @@ let private httpDefaults: Value =
           "insecure", VBool false ]
     )
 
-// translate the request record to Http.Req, send, RAISE on transport
+// translate the request record to Http.Req, send, raise on transport
 // failure (status is data — the caller decides) [D:http]
 let private runRequest (reqV: Value) : Http.Resp =
     match reqV with
@@ -3514,7 +3516,7 @@ let private runRequest (reqV: Value) : Http.Resp =
         let secret = headerPairs (get "secretHeaders")
 
         // the credential channels [D:secret-redirect]: auth's Authorization
-        // AND every secretHeaders name are dropped on a cross-origin
+        // and every secretHeaders name are dropped on a cross-origin
         // redirect, so the two channels agree (F4). Names are lowercased for
         // a case-insensitive match, the same casing Http.send filters on.
         let sensitive =
@@ -3540,10 +3542,11 @@ let private runRequest (reqV: Value) : Http.Resp =
                  | VBool b -> b
                  | v -> unreachable $"insecure {formatValue v}") }
 
-        // refuse a header name or value carrying CR/LF/NUL at the SEND
-        // boundary [D:http-header-bytes]: the outbound face of the review's
-        // F3 — TryAddWithoutValidation would otherwise forge a second header
-        // on the wire. One crossing, the argv-NUL guard's shape.
+        // refuse a header name or value carrying CR/LF/NUL at the send
+        // boundary [D:http-header-bytes]: the outbound face of review
+        // finding F3 — TryAddWithoutValidation would otherwise forge a
+        // second header on the wire. One crossing, the argv-NUL
+        // guard's shape.
         Http.refuseHeaderInjection "request header" failwith req.Headers
 
         let host =
@@ -3562,13 +3565,13 @@ let private runRequest (reqV: Value) : Http.Resp =
         | Error(msg, _) -> failwith msg
     | v -> unreachable $"the checker rejects a request on {formatValue v}"
 
-// the response body under weir's ONE line law [D:http-body-lines]: a
+// the response body under weir's one line law [D:http-body-lines]: a
 // raw `.Split('\n')` kept a trailing-newline body's final "" (so a
 // one-line file arrived as two elements), carried a stray \r on a CRLF
 // body, and turned an empty body into [""] — none of which File.read
 // (ReadAllLines) or command output (ReadLine) do. StringReader.ReadLine
-// is the SAME reader command output uses, so `curl url` and
-// `Http.fetch url` now agree exactly. Public for the line-law pin.
+// is the same reader command output uses, so `curl url` and
+// `Http.fetch url` agree exactly. Public for the line-law pin.
 let bodyLines (body: string) : string list =
     [ use r = new StringReader(body)
       let mutable line = r.ReadLine()
@@ -3580,11 +3583,11 @@ let bodyLines (body: string) : string list =
 let private respBodyLines (resp: Http.Resp) : seq<Value> =
     resp.Body |> bodyLines |> List.map VStr :> seq<Value>
 
-// status is DATA [D:http]: a 4xx/5xx binds, never raises (the `| complete`
-// posture for exit codes); ONLY transport failure raises
+// status is data [D:http]: a 4xx/5xx binds, never raises (the `| complete`
+// posture for exit codes); only transport failure raises
 // a captured send's placeholder response [D:plan-apply]: a mutating
-// Http.send inside a plan does NOT run (it is a pending HttpSend Op), so
-// it has no real response. It yields an EMPTY response (status 0) — the
+// Http.send inside a plan does not run (it is a pending HttpSend Op), so
+// it has no real response. It yields an empty response (status 0) — the
 // body ran for its capture, its value is discarded; a script that reads
 // this response inside the plan is reading a not-yet-sent request, the
 // http analogue of known-after-apply.
@@ -3593,10 +3596,10 @@ let private plannedResponse: Value =
 
 let private httpSendImpl: Value =
     VBuiltin(fun reqV ->
-        // reads (GET/HEAD/OPTIONS/QUERY) RUN even inside a plan — they
-        // inform it; only a MUTATING method is captured as an Op
-        // [D:plan-apply] (the per-method class resolves from the request
-        // VALUE, the eval hook pure-stage2 confirmed)
+        // reads (GET/HEAD/OPTIONS/QUERY) run even inside a plan — they
+        // inform it; only a mutating method is captured as an Op
+        // [D:plan-apply] (the per-method class resolves from the
+        // request value)
         if PlanMode.active () && httpRequestClass reqV = Weir.Effects.Mutation then
             PlanMode.capture (VUnion("HttpSend", Some reqV)) []
             plannedResponse
@@ -3610,10 +3613,10 @@ let private httpSendImpl: Value =
                   "body", VSeq(respBodyLines resp) ]
             ))
 
-// a CONSTRUCTOR [D:http-s2]: `Http.get u` = `{ Http.defaults with method =
-// Get; url = u }` byte-identically (pinned) — a record PRODUCER, not a
-// builder combinator; names only the method, the one thing already
-// enumerated. The common case stops naming the record.
+// a constructor [D:http-s2]: `Http.get u` = `{ Http.defaults with
+// method = Get; url = u }` byte-identically (pinned) — a record
+// producer, not a builder combinator; names only the method, the one
+// thing already enumerated. The common case stops naming the record.
 let private httpCtor (methodCase: string) : Value =
     VBuiltin(fun urlV ->
         match urlV, httpDefaults with
@@ -3623,7 +3626,7 @@ let private httpCtor (methodCase: string) : Value =
 
 // the raising shorthand [D:http-s2]: GET, raise on non-2xx naming the
 // status, body only — the `curl -sf` analogue. Two names, no boolean:
-// Http.fetch RAISES, Http.send RETURNS (the same 404 send binds as data)
+// Http.fetch raises, Http.send returns (the same 404 send binds as data)
 let private httpFetchImpl: Value =
     VBuiltin(fun urlV ->
         match urlV, httpDefaults with
@@ -3631,7 +3634,7 @@ let private httpFetchImpl: Value =
             let resp = runRequest (VRecord("HttpRequest", recSet "url" (VStr url) f))
 
             if resp.Status < 200 || resp.Status >= 300 then
-                // REDACT the URL's userinfo [D:url-redact]: a `user:pass@`
+                // redact the URL's userinfo [D:url-redact]: a `user:pass@`
                 // credential must not print verbatim in the status error
                 // (terminal / CI / REPL); a credential-free URL is unchanged
                 failwith $"{Http.redactUrl url} answered {resp.Status}"
@@ -3639,14 +3642,13 @@ let private httpFetchImpl: Value =
                 VSeq(respBodyLines resp)
         | v, _ -> unreachable $"the checker rejects 'Http.fetch' on {formatValue v}")
 
-// the query-string builder [D:http-s2] — NAMED withQuery so it does not
-// collide with `query` the METHOD constructor. Percent-encodes each key
+// the query-string builder [D:http-s2] — named withQuery so it does not
+// collide with `query` the method constructor. Percent-encodes each key
 // and value: `$"{base}/search?q={term}"` can escape a path or break on a
-// raw `&`; this cannot. (The non-claim's PATH half still stands.)
+// raw `&`; this cannot. (The non-claim's path half still stands.)
 let private httpWithQueryImpl: Value =
-    // DATA-LAST [D:sized-findings]: the URL is the pipeline operand
-    // (`url |> Http.withQuery [(k, v)]`) — the audit found it
-    // operand-first, flipped while Http is young enough to be free
+    // data-last [D:sized-findings]: the URL is the pipeline operand
+    // (`url |> Http.withQuery [(k, v)]`)
     VBuiltin(fun paramsV ->
         VBuiltin(fun baseV ->
             match baseV, paramsV with
@@ -3688,8 +3690,9 @@ let private httpMembers: (string * Ty * Value) list =
 // A Plan is a VRecord("Plan", ["ops", VSeq ops]) built by the `plan`
 // region (Eval). Its ops are Op VUnions. The members inspect (ops /
 // isEmpty), render (preview — Secrets masked by formatValue), and
-// perform (apply — replay through the NORMAL mutation path, sequential,
-// STOPS at the first failing Op with prior ops DONE, NO rollback).
+// perform (apply — replay through the normal mutation path,
+// sequential, stopping at the first failing Op with prior ops done,
+// no rollback).
 
 let private planOps (v: Value) : Value seq =
     match v with
@@ -3714,14 +3717,14 @@ let private previewOp (op: Value) : string =
     | VUnion("HttpSend", Some req) -> $"http send {formatValue req}"
     | v -> formatValue v
 
-// perform one Op through the real IO [D:plan-apply] — the SAME effect
+// perform one Op through the real IO [D:plan-apply] — the same effect
 // the captured builtin would have had (apply runs with no active plan
 // frame, so the mutation builtins would perform too; applyOp performs
 // directly to keep the replay self-contained). Overwrite/existence rules
 // match the builtins (copy/move refuse an existing destination).
-// paths were resolved to absolute AT CAPTURE [D:plan-path-bound], so apply
-// replays the exact captured target — no re-resolve against the apply-time
-// cwd (that was DA-03: a relative capture rebound to apply's cwd).
+// paths were resolved to absolute at capture [D:plan-path-bound], so
+// apply replays the exact captured target — no re-resolve against the
+// apply-time cwd (DA-03: a relative capture rebound to apply's cwd).
 let private applyOp (op: Value) : unit =
     match op with
     | VUnion("WriteFile", Some(VTuple [ VStr r; VSeq lines ])) ->
@@ -3799,8 +3802,8 @@ let private planApplyImpl: Value =
             failwith
                 "Plan.apply is refused inside a 'plan' block — a mutation cannot be coherently captured; apply the plan OUTSIDE the block"
 
-        // sequential, in capture order; STOPS at the first failing Op
-        // (prior ops stay done); NO rollback — the non-claim, stated
+        // sequential, in capture order; stops at the first failing Op
+        // (prior ops stay done); no rollback — the non-claim, stated
         for op in planOps v do
             applyOp op
 
@@ -3816,7 +3819,7 @@ let private planMembers: (string * Ty * Value) list =
 
 
 // ---- Map<string, T> [D:map-string]: the ID-keyed object ------------
-// String keys ONLY: every receipt has them (JSON object keys ARE
+// String keys only: every receipt has them (JSON object keys are
 // strings), and int keys would make Map the first Ord-constrained
 // container. Data-last throughout; get asserts, tryGet asks.
 let private mapTy (v: Ty) = TNamed("Map", [ TStr; v ])
@@ -3826,7 +3829,7 @@ let private asMap (name: string) =
     | VMap m -> m
     | v -> unreachable $"the checker rejects '{name}' on {formatValue v}"
 
-// the scoped-process surface [D:scoped-procs]: the handle is DATA —
+// the scoped-process surface [D:scoped-procs]: the handle is data —
 // pid/running/wait make the lifecycle inspectable, stop is the early
 // teardown (the scope's own exit is then a no-op), tail reads the
 // spill (the child's last words; poll-watch errors carry it free)
@@ -3865,10 +3868,10 @@ let private procMembers: (string * Ty * Value) list =
           VUnit)
       "tail", TFun(procTy, TSeq TStr), VBuiltin(fun v -> VSeq(procTail (asProc "Proc.tail" v) |> List.map VStr)) ]
 
-// the scoped-listener surface [D:http-serve]: the handle is DATA — port
+// the scoped-listener surface [D:http-serve]: the handle is data — port
 // reads the bound port (a computed port is knowable), running reports
 // whether the socket is still open. The within-serve scope owns the
-// lifetime; there is no `stop` member (the scope IS the teardown, unlike
+// lifetime; there is no `stop` member (the scope is the teardown, unlike
 // Proc where an early stop is meaningful).
 let private serverTy = TNamed("Server", [])
 
@@ -3883,8 +3886,8 @@ let private serverMembers: (string * Ty * Value) list =
       TFun(serverTy, TBool),
       VBuiltin(fun v -> VBool(not (asServer "Server.running" v).Closed))
       // the stream-producer failure channel [D:serve-stream]: a Stream
-      // body whose producer raised mid-flight is NOT a raise out of the
-      // handler (it aborts the client's body instead) — it surfaces HERE,
+      // body whose producer raised mid-flight is not a raise out of the
+      // handler (it aborts the client's body instead) — it surfaces here,
       // Proc.wait's data-not-raise shape, so a monitoring loop can tell a
       // truncated stream from a clean one. Occurrence order; empty until a
       // producer fails.
@@ -3892,7 +3895,7 @@ let private serverMembers: (string * Ty * Value) list =
       TFun(serverTy, TSeq TStr),
       VBuiltin(fun v -> VSeq(Serve.streamErrors (asServer "Server.streamErrors" v) |> List.map VStr)) ]
 
-// Net [D:scoped-procs]: ONE readiness probe — poll's body. Remote
+// Net [D:scoped-procs]: one readiness probe — poll's body. Remote
 // hosts on a receipt; localhost is the scoped-process pattern.
 let private netMembers: (string * Ty * Value) list =
     [ "portOpen",
@@ -3903,7 +3906,7 @@ let private netMembers: (string * Ty * Value) list =
               if port < 1L || port > 65535L then
                   failwith $"Net.portOpen: a port is 1..65535; got {port}"
 
-              // a RAW v4 socket to the loopback ADDRESS — never the
+              // a raw v4 socket to the loopback address — never the
               // host-string path (getaddrinfo on a loaded macOS runner
               // turned "127.0.0.1" into ~400ms per probe and the poll
               // starved past its own timeout)
@@ -3972,7 +3975,7 @@ let private mapMembers: (string * Ty * Value) list =
       VBuiltin(fun v ->
           match v with
           | VSeq items ->
-              // duplicate keys: LAST WINS, matching the JSON boundary's
+              // duplicate keys: last wins, matching the JSON boundary's
               // stated law — never a silent first-wins split
               items
               |> Seq.fold
@@ -4159,7 +4162,7 @@ let private treeMembers: (string * Ty * Value) list =
 // round-trip is composition (File.read |> Yaml.parse |> Yaml.merge p
 // |> to yaml |> File.write), so the one mutation stays visible.
 
-// structural node equality: YMap order-INsensitive (a reordered mapping
+// structural node equality: YMap order-insensitive (a reordered mapping
 // is the same document), YSeq order-sensitive; seqs forced
 let rec private yamlEq (a: Value) (b: Value) : bool =
     match a, b with
@@ -4183,7 +4186,7 @@ let rec private yamlEq (a: Value) (b: Value) : bool =
     | VUnion(na, pa), VUnion(nb, pb) -> na = nb && pa = pb
     | _ -> false
 
-// a patch subtree INSERTED where no target exists: tombstones mean
+// a patch subtree inserted where no target exists: tombstones mean
 // absence, and absent it already is — they strip to nothing
 let rec private stripDrops (v: Value) : Value option =
     match v with
@@ -4321,18 +4324,18 @@ let private yamlMergeImpl: Value =
             | VUnion("|ypatch", Some(VTuple [ VStr by; tree ])) -> yamlMerge by tree doc
             | v -> unreachable $"the checker admits only a yaml patch district here: {formatValue v}"))
 
-// #infer's COMPOSABLE CORE as a builtin [D:repl-infer]: a sample's LINES
-// -> the declaration TEXT (ONE string, newline-separated), so
-// `sample |> Json.inferShape |> print` scaffolds a type OUTSIDE the REPL.
-// The REPL directive is a thin wrapper that ALSO injects. The default top
-// name is `Root` — the directive supplies the real `as` name. Raises on a
-// parse failure (the builtin-raise law).
+// #infer's composable core as a builtin [D:repl-infer]: a sample's
+// lines -> the declaration text (one string, newline-separated), so
+// `sample |> Json.inferShape |> print` scaffolds a type outside the
+// REPL. The REPL directive is a thin wrapper that also injects. The
+// default top name is `Root` — the directive supplies the real `as`
+// name. Raises on a parse failure (the builtin-raise law).
 let private inferShapeImpl (fmt: Infer.Format) : Value =
     VBuiltin(fun v ->
         match v with
         | VSeq items ->
             let lines = items |> Seq.map asString
-            // the builtin's BASELINE taken set [D:repl-infer]: no session
+            // the builtin's baseline taken set [D:repl-infer]: no session
             // env here, so builtin + prelude nominals (registered by
             // prelude-close, populated by call time) + the primitives
             let taken = Infer.takenTypeNames Check.builtinTypeNames.Keys
@@ -4390,18 +4393,19 @@ let private moduleTable: (string * (string * Ty * Value) list) list =
       "Float", floatMembers ]
 
 // ---- builtin docs [D:builtin-docs] (PLAN-doc-comments half 2) --------
-// OUT-OF-BAND, exactly as half 1: Value/Eval/Check never see a doc. The
-// Example is executable DATA (run by the doc-example test), not prose
-// parsed from a literal — so a builtin hover is the only doc that cannot
-// rot. Rendered TYPE-FIRST by the LSP (half 1's declHover layout), so the
-// Summary never restates the signature; the Pointer names the LAW or
-// boundary a member obeys (quoted from SEMANTICS/DECISIONS, not memory).
+// Out-of-band, exactly as half 1: Value/Eval/Check never see a doc.
+// The Example is executable data (run by the doc-example test), not
+// prose parsed from a literal — so a builtin hover is the only doc
+// that cannot rot. Rendered type-first by the LSP (half 1's declHover
+// layout), so the Summary never restates the signature; the Pointer
+// names the law or boundary a member obeys (quoted from
+// SEMANTICS/DECISIONS, not memory).
 type BuiltinDoc =
     { Summary: string
       Example: string option
       Pointer: string option
       // parameter names for the annotated hover signature
-      // [D:annotated-signature] — a SEPARATE field, never parsed out of
+      // [D:annotated-signature] — a separate field, never parsed out of
       // the prose (that is D1's F#-literal trap). Empty -> arrow fallback.
       // Half 2's writing pass names every parameter; this is a sample.
       Params: string list }
@@ -4421,7 +4425,7 @@ let private named (ps: string list) (d: BuiltinDoc) : BuiltinDoc = { d with Para
 let builtinDocs: Map<string, BuiltinDoc> =
     Map
         [
-          // ---- the FORM heads [D:scoped-procs]: #help retry/poll/within
+          // ---- the form heads [D:scoped-procs]: #help retry/poll/within
           // answer like any member — the docs live here, one source
           "retry",
           bd
@@ -4445,7 +4449,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
               (Some "within tmp d\n    print d")
               (Some "within proc srv = <command> binds a Proc handle; the tree is killed and reaped at scope exit")
           // the purity assertion's two spellings [D:pure-stage1] — its
-          // OWN head, never `within pure`
+          // own head, never `within pure`
           "pure",
           bd
               "A purity assertion for an indented block: the body must reach no effect (filesystem, command, network, environment, console, clock) — a reachable effect is a check error naming the offender. Opt-in only: weir stays effect-normal, and code outside a pure region is never gated."
@@ -5770,7 +5774,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
               (Some "the reifier law: the meaning is the value.")
 
           // ---- types: a hover renders the structure; the value here is
-          // WHEN you get one ----
+          // when you get one ----
           "Completed", bd "A finished command: exitCode, stdout, stderr. You get one from `| complete`." None None
           "FileRow",
           bd
@@ -5779,7 +5783,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
               None
           "EnvVar", bd "A name/value environment pair. From `Env.vars` / `pair` / `ofPairs` / `fromFile`." None None ]
 
-/// the boundary adapters a direction supports, DERIVED from the doc keys
+/// the boundary adapters a direction supports, derived from the doc keys
 /// (`from json` / `to yaml` …) [D:form-word-hover] — the one source the
 /// adapters' own hovers already read, so the `from`/`to` discovery hover,
 /// the completion, and the colorizer cannot drift from it. `dir` is
@@ -5841,9 +5845,9 @@ let renderBuiltinDocWith (tintCode: string -> string) (d: BuiltinDoc) : string =
 let renderBuiltinDoc (d: BuiltinDoc) : string = renderBuiltinDocWith id d
 
 // ---- module blurbs [D:help-glance] -----------------------------------
-// ONE terse line per module for the bare-#help glance and the #find
+// One terse line per module for the bare-#help glance and the #find
 // candidate lines — builtinDocs' sibling, same out-of-band posture.
-// COMPLETENESS is unit-pinned two ways against typeEnv.Modules (the
+// Completeness is unit-pinned two ways against typeEnv.Modules (the
 // gen-lexical pattern): a new module without a blurb fails loud, and a
 // blurb for a retired module fails too.
 let moduleBlurbs: Map<string, string> =
@@ -5878,26 +5882,24 @@ let moduleBlurbs: Map<string, string> =
           "Tree", "parent-first effect walks over discovered children"
           "Yaml", "YAML nodes: parse, merge (strategic patch), inferShape" ]
 
-// the ALLOWLIST [D:bare-allowlist]: only these modules contribute bare
-// aliases to the REPL. Inverted from a blocklist after
-// three collisions (Secret.map stole bare `map` — 22 unrelated tests
-// failed naming a module they never mentioned; Http.head stole `head`;
-// Option/Float were earlier rounds): a blocklist made every NEW module
-// unsafe by default, a collision away from the next hot-path-named
-// member. Widening this set is a deliberate act with a recorded reason,
-// never a side effect of adding a module.
+// the allowlist [D:bare-allowlist]: only these modules contribute
+// bare aliases to the REPL. An allowlist, not a blocklist: a blocklist
+// made every new module unsafe by default, one hot-path-named member
+// away from a collision (Secret.map stole bare `map`; Http.head stole
+// `head`). Widening this set is a deliberate act with a recorded
+// reason, never a side effect of adding a module.
 let bareAliasModules: Set<string> = Set [ "Seq"; "Str" ]
 
-// THE BARE-MEMBER RULE [D:bare-partition]: unambiguous means bare — a
-// member is bare iff its name has exactly ONE home among the
+// the bare-member rule [D:bare-partition]: unambiguous means bare — a
+// member is bare iff its name has exactly one home among the
 // allowlisted modules; a two-home name is qualified-only on both sides
-// (a bare slot holds ONE value: Map.ofList silently resolved `contains`
+// (a bare slot holds one value: Map.ofList silently resolved `contains`
 // to Str's and the Seq hot path errored with "expected string" — the
 // derivation makes that accident structurally unrepeatable). The
-// curation is bareAliasModules plus the PINNED collision set: a new
-// collision DEMOTES a bare name, so the gate fails until someone
+// curation is bareAliasModules plus the pinned collision set: a new
+// collision demotes a bare name, so the gate fails until someone
 // decides.
-// The derivation is factored over the table so the PROPERTY is
+// The derivation is factored over the table so the property is
 // pinnable: a non-allowlisted module with a `map`/`head` member must
 // contribute nothing, and a colliding name must vanish from the set.
 let private singleHomed (table: (string * (string * Ty * Value) list) list) =
@@ -5934,7 +5936,7 @@ let private printerrImpl: Value =
             VUnit
         | v -> unreachable $"the checker rejects 'printerr' on {formatValue v}")
 
-// cmdEnv/runEnv [D:child-env-overlay] via Proc.linesWith (lines IS
+// cmdEnv/runEnv [D:child-env-overlay] via Proc.linesWith (lines is
 // linesWith [] — one spawn path by construction). The overlay seq is
 // forced inside the delay, so Env.fromFile boundary errors keep
 // raise-at-force semantics.
@@ -6001,7 +6003,7 @@ let private entries: (string * Ty * Value) list =
       // or branch that fails/exits unifies with the value the others make
       "fail", TFun(TStr, tA), failImpl
       "exit", TFun(TInt, tA), exitImpl
-      // the interactive read [D:prompt]: message to STDERR (a piped
+      // the interactive read [D:prompt]: message to stderr (a piped
       // stdout stays data), one line from stdin; EOF refuses — no
       // phantom input
       "prompt",
@@ -6048,23 +6050,23 @@ let private printImpl: Value =
             writeLines items
             VUnit
         | (VStr _ | VInt _ | VFloat _ | VBool _) as scalar ->
-            // DATA bound for a tty is sanitized [D:binary-echo]; a
+            // data bound for a tty is sanitized [D:binary-echo]; a
             // redirected stdout stays byte-faithful
             System.Console.WriteLine(
                 sanitizeIfTty System.Console.IsOutputRedirected (scalarString "print argument" scalar)
             )
 
             VUnit
-        // unit prints NOTHING [D:exit-reifiers] — the !() sigil
+        // unit prints nothing [D:exit-reifiers] — the !() sigil
         // desugar's interior may be unit (| orFail)
         | VUnit -> VUnit
         | v -> unreachable $"the checker rejects 'print' on {formatValue v}")
 
 let commandCallable: Set<string> = Set [ "cd" ]
 
-// desugar-internal aliases [D:desugar-capture]: every name a DESUGAR
+// desugar-internal aliases [D:desugar-capture]: every name a desugar
 // references, re-registered under a `|`-prefixed un-typeable key (the
-// reifier precedent, second use) — the SAME scheme and value OBJECTS
+// reifier precedent, second use) — the same scheme and value objects
 // as the public members, so the sugar and the manual spelling cannot
 // diverge (pinned by reference equality). A user constructor named
 // Seq or a shadowed print no longer changes what a rewrite means.
@@ -6076,7 +6078,7 @@ let internalAliases: (string * Ty * Value) list =
         |> List.find (fun (n, _, _) -> n = field)
         |> fun (_, ty, v) -> ty, v
 
-    // the (key, module, field) list is Effects.libraryDesugars — the ONE
+    // the (key, module, field) list is Effects.libraryDesugars — the one
     // copy [D:desugar-namespace], read here to resolve each to its Value
     // and by the Purity/Can/Effects classifiers to read a library key as
     // its target member
@@ -6099,7 +6101,7 @@ let bareAliases: Set<string> =
     bareAliasHomes |> Map.toSeq |> Seq.map fst |> Set.ofSeq
 
 // the collision set, derived — every name here is qualified-only on
-// both sides. The GATE pins its exact contents [D:bare-partition]: a
+// both sides. The gate pins its exact contents [D:bare-partition]: a
 // new collision silently demotes a bare name, which must be decided.
 let bareTwoHome: Set<string> =
     moduleTable
@@ -6118,9 +6120,9 @@ let private sortByScheme: Scheme =
       RowOrigins = Map.empty
       HoleDefaults = [] }
 
-// the cohort's constrained schemes [D:seq-gaps]: Ord on the ELEMENT for
-// the key-less sorts and extrema, Ord on the KEY for the By twins
-// (sortBy's shape), Eq on the KEY for the projection twins, Eq on the
+// the cohort's constrained schemes [D:seq-gaps]: Ord on the element for
+// the key-less sorts and extrema, Ord on the key for the By twins
+// (sortBy's shape), Eq on the key for the projection twins, Eq on the
 // element for set difference
 let private ordSeqToElem: Scheme =
     { Forall = Set.singleton "a"
@@ -6173,8 +6175,8 @@ let private eqSeqEqual: Scheme =
       RowOrigins = Map.empty
       HoleDefaults = [] }
 
-// members whose signature is a CONSTRAINED scheme, not a plain
-// generalization — applied at the module map AND at the bare slot
+// members whose signature is a constrained scheme, not a plain
+// generalization — applied at the module map and at the bare slot
 // [D:bare-partition]: a bare `sortBy` must keep its Ord key, or the
 // bare spelling would be laxer than the qualified one
 let private seqSchemeOverrides: (string * Scheme) list =
@@ -6199,7 +6201,7 @@ let typeEnv: TypeEnv =
         |> List.map (fun (n, ty, _) -> n, generalize ty)
         |> Map.ofList
         // FileKind's constructors [D:filerow] — values like any user
-        // union's cases, NOT bare members (no alias machinery)
+        // union's cases, not bare members (no alias machinery)
         |> fun vs ->
             fileKind.Cases
             |> List.fold (fun acc (c, _) -> Map.add c (generalize (TNamed(fileKind.Name, []))) acc) vs
@@ -6252,16 +6254,16 @@ let valueEnv: Env =
     @ mangled
     |> Map.ofList
 
-// the reserved-binder set [D:reserve-builtins]: builtins with NO
-// qualified spelling — derived from the flat entries (bare ALIASES
+// the reserved-binder set [D:reserve-builtins]: builtins with no
+// qualified spelling — derived from the flat entries (bare aliases
 // keep the standing values-shadow-builtins rule: Seq.max is the
 // escape `let max = …` leaves open; these have none)
-// escapes that are NOT aliases [D:dir-stat]: `ls` (a value) and
+// escapes that are not aliases [D:dir-stat]: `ls` (a value) and
 // Dir.stat (a function) are not one value with two names, so no
-// bareAliasHomes entry — that map MEANS alias (strict mode removes its
-// names; hover claims the home). But [D:strict-only]'s criterion is an
-// ESCAPE's existence, and `Dir.stat "."` is ls's way back: shadowing
-// ls no longer strands the rows.
+// bareAliasHomes entry — that map means alias (strict mode removes
+// its names; hover claims the home). But [D:strict-only]'s criterion
+// is an escape's existence, and `Dir.stat "."` is ls's way back:
+// shadowing ls no longer strands the rows.
 let private escapeBearers: Set<string> = Set [ "ls" ]
 
 Check.reservedBinderNames.Value <-
@@ -6269,7 +6271,7 @@ Check.reservedBinderNames.Value <-
     |> List.filter (fun n ->
         not (n.StartsWith "|")
         && not (n.Contains ".")
-        // a bare ALIAS keeps the standing shadow rule — its qualified
+        // a bare alias keeps the standing shadow rule — its qualified
         // home is the way back (`let max = …` leaves Seq.max reachable)
         && not (Map.containsKey n bareAliasHomes)
         && not (Set.contains n escapeBearers))

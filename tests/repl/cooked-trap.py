@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # The cooked-terminal trap [D:repl-cooked-trap] + the one-enumeration
-# echo [D:echo-once]: a bare command's child runs ONCE per echo (the
+# echo [D:echo-once]: a bare command's child runs once per echo (the
 # table probe and the line rendering used to enumerate the lazy seq
-# twice), and after a slow child the next Enter still SUBMITS (the
+# twice), and after a slow child the next Enter still submits (the
 # second child run's cooked-tty window used to swallow it as '\n').
 import os
 import pty
@@ -40,7 +40,7 @@ def session(lines_with_settle, tail=1.0):
         os.write(fd, line)
         drain(settle)
     os.write(fd, b"\x04")
-    # deadline-bounded reap — a hang FAILS instead of wedging the battery
+    # deadline-bounded reap — a hang fails instead of wedging the battery
     deadline = time.time() + 15
     reaped = False
     while time.time() < deadline:
@@ -62,7 +62,7 @@ def session(lines_with_settle, tail=1.0):
     return plain, reaped
 
 
-# 1. one enumeration per echo: the child's side effect happens ONCE
+# 1. one enumeration per echo: the child's side effect happens once
 marker = f"/tmp/weir-once-{os.getpid()}.log"
 plain, reaped = session([(f'sh -c "echo run >> {marker}; echo out"\r'.encode(), 1.2)])
 runs = len(open(marker).readlines()) if os.path.exists(marker) else 0
@@ -73,7 +73,7 @@ if runs != 1:
 if not reaped:
     failures.append("session 1 did not exit on ^D")
 
-# 2. the trap scenario: type the next line SOON after a slow child —
+# 2. the trap scenario: type the next line soon after a slow child —
 # inside what used to be the second run's cooked window — and it must
 # still evaluate and the REPL must still exit on ^D
 plain, reaped = session([

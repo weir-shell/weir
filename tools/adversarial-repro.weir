@@ -1,6 +1,6 @@
 #!/usr/bin/env weir
 // Repro harness for dev/plans/PLAN-adversarial-review.md. Each finding probe
-// prints OK when the finding is FIXED and anything else (or a nonzero exit)
+// prints OK when the finding is fixed and anything else (or a nonzero exit)
 // when it still reproduces, so one script is both the bug report and the gate.
 //
 //     weir tools/adversarial-repro.weir --bin ./path/to/weir
@@ -9,27 +9,27 @@
 // F5), and so do the binding names, so a fixer never translates between the
 // two documents.
 //
-// Probes run as CHILD processes against the binary under test: F2a RAISES
+// Probes run as child processes against the binary under test: F2a raises
 // today, and a raise is not data in-process (no general try) — a child's exit
 // code is. That also follows the behavioral-pins rule: measure the built
 // binary, not a parse shape.
 //
-// LOUD, and in every direction:
-//   - a probe that fails to RUN counts as reproducing, never as a pass;
-//   - a MISSING INSTRUMENT (PyYAML, `timeout`) is a named SKIP that keeps its
-//     finding OPEN — absence is never a pass;
+// Loud, and in every direction:
+//   - a probe that fails to run counts as reproducing, never as a pass;
+//   - a missing instrument (PyYAML, `timeout`) is a named skip that keeps its
+//     finding open — absence is never a pass;
 //   - "fixed" for a depth/budget probe means exit 1, a located diagnostic. A
-//     crash (>=128) is NOT a fix, so those probes test == 1, never <> n.
+//     crash (>=128) is not a fix, so those probes test == 1, never <> n.
 //
-// Positive controls are INDEPENDENT OF EVERY FINDING'S STATE — a control that
+// Positive controls are independent of every finding's state — a control that
 // passes only while a bug exists is measuring the bug twice, not controlling.
 //   - control-sees-broken: the OK/BROKEN channel can report failure.
 //   - control-shallow-checks: the depth runner tells a clean check from a crash.
-//   - control-oracle-rejects: the external YAML oracle FAILS on a STRUCTURAL
+//   - control-oracle-rejects: the external YAML oracle fails on a structural
 //     mismatch (emit "abc", tell the oracle to expect "xyz") — it never reuses
 //     a finding's payload, so it stays valid after every fix lands.
 //
-// Note the shape of this file: every command-running helper is a TOP-LEVEL
+// Note the shape of this file: every command-running helper is a top-level
 // function, because F3 is that a block `let` with a command RHS silently loses
 // its reifier off the topLet spine.
 
@@ -55,8 +55,8 @@ let probeF2b = <<<
     let back = { k = orig } |> to yaml |> from yaml Doc
     print (if back.k == orig then "OK" else "BROKEN")
 
-// F3, RE-POINTED at the teaching: the shipped fix makes the off-spine
-// boundary TEACH (the fifth refusal cell) rather than degrade to a
+// F3, re-pointed at the teaching: the shipped fix makes the off-spine
+// boundary teach (the fifth refusal cell) rather than degrade to a
 // PATH lookup — supporting the reifier there is a separate bless
 // question. The probe asserts the located teaching, and silent
 // success (the old degradation running a PATH tool) stays BROKEN.
@@ -65,10 +65,10 @@ let probeF3 = <<<
         let r = sh -c "exit 7" | complete
         print (if r.exitCode == 7 then "OK" else "BROKEN")
 
-// F4, RE-POINTED at the rejection (the plan's acceptance rule): fix (1)
-// landed, so the base64 construction must REFUSE with the not-text
+// F4, re-pointed at the rejection (the plan's acceptance rule): fix (1)
+// landed, so the base64 construction must refuse with the not-text
 // teaching; and because NUL still has routes in (File.read of a
-// NUL-bearing file), the argv boundary must refuse ON ITS OWN with the
+// NUL-bearing file), the argv boundary must refuse on its own with the
 // truncation diagnostic. Silent truncation (a child seeing 1 byte)
 // stays BROKEN.
 let probeF4construct = <<<
@@ -79,8 +79,8 @@ let probeF4argv nulPath = $<<<
     let v = File.read "{nulPath}" |> Seq.head
     python3 -c "import sys; print(len(sys.argv[1]))" $v
 
-// F5: the POST-PARSE seam. Parse depth here is ~1 — no parse-depth guard can
-// ever see this file — but each line DOUBLES the inferred type, so the
+// F5: the post-parse seam. Parse depth here is ~1 — no parse-depth guard can
+// ever see this file — but each line doubles the inferred type, so the
 // checker's tree walk never returns. This is the probe a parser-only fix would
 // sail past, which is the whole reason it exists separately.
 let inferBomb =
@@ -96,8 +96,8 @@ let inferBomb =
 let probeControl = [ @"print ""BROKEN""" ]
 
 // ---- the external interop oracle -------------------------------------------
-// F2c/F2d name an INTEROP property, so weir cannot referee them: the question
-// is what a DIFFERENT YAML reader makes of weir's bytes. sh -c is the stated
+// F2c/F2d name an interop property, so weir cannot referee them: the question
+// is what a different YAML reader makes of weir's bytes. sh -c is the stated
 // escape for what weir cannot do itself (repo scripting policy).
 
 let checker = <<<
@@ -131,7 +131,7 @@ let runProbe path =
     r
 
 // stderr merged in: the re-pointed F3/F4 verdicts read the teaching
-// text of a REFUSAL, which lands on stderr
+// text of a refusal, which lands on stderr
 let runProbeMerged path =
     let r = sh -c $"'{cli.bin}' '{path}' 2>&1" | complete
     r
@@ -140,7 +140,7 @@ let checkExit path =
     let r = sh -c $"'{cli.bin}' check '{path}' >/dev/null 2>&1" | complete
     r.exitCode
 
-// a HANG is not a crash: rc >= 128 cannot see it, so this seam needs a clock
+// a hang is not a crash: rc >= 128 cannot see it, so this seam needs a clock
 let timedCheckExit path =
     let r = sh -c $"timeout 20 '{cli.bin}' check '{path}' >/dev/null 2>&1" | complete
     r.exitCode
@@ -189,7 +189,7 @@ let control d name lines =
     print $"  {name}: {word}"
     ok
 
-// emit and expect are SEPARATE payloads, so a control can assert a structural
+// emit and expect are separate payloads, so a control can assert a structural
 // mismatch instead of borrowing a finding's value
 let interopRun d name emitB64 expectB64 =
     let probePath = $"{d}/{name}.weir"
@@ -207,7 +207,7 @@ let interop d name b64 =
     fixed
 
 let interopControl d =
-    // emit "abc", tell the oracle to expect "xyz": the oracle MUST reject.
+    // emit "abc", tell the oracle to expect "xyz": the oracle must reject.
     // Independent of every finding, so it stays valid after the fixes land.
     let res = interopRun d "control-oracle-rejects" "YWJj" "eHl6"
     let rejected = not (fst res)
@@ -220,7 +220,7 @@ let depthExit d name head =
     File.write path [head; @"print ""x"""]
     checkExit path
 
-// 1 = a located diagnostic, which IS the fix. 0 means the probe stopped
+// 1 = a located diagnostic, which is the fix. 0 means the probe stopped
 // reaching the seam (re-point it deeper); >=128 is a crash, never a fix.
 let depthWord code =
     if code == 1 then "fixed"
@@ -249,7 +249,7 @@ within tmp d
 
     print $"  F3-reifier-in-block-let: {f3Word}"
 
-    // F4 verdicts run OUTSIDE the probe (both faces are REJECTIONS now,
+    // F4 verdicts run outside the probe (both faces are rejections now,
     // and a raise is not data in-process)
     File.write $"{d}/f4-construct.weir" probeF4construct
     sh -c $"printf 'a\\0b' > '{d}/f4-nul.bin'"

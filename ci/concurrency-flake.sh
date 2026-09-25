@@ -4,29 +4,29 @@
 #     ci/concurrency-flake.sh /path/to/weir [N]
 #
 # Concurrency findings do not reproduce on demand: a green run proves the bug
-# did not happen THIS TIME. So every probe runs N times and reports a RATE,
-# never a verdict, and timing is FORCED rather than awaited — the arm that
+# did not happen this time. So every probe runs N times and reports a rate,
+# never a verdict, and timing is forced rather than awaited — the arm that
 # should win is made slow and the loser fast, so a claimed ordering is tested
 # against the schedule that would break it.
 #
-# TWO-LAYER BY NECESSITY: weir cannot referee its own orphans, because a
+# Two layers by necessity: weir cannot referee its own orphans, because a
 # process that outlives the script is by definition invisible to the script.
-# The orphan ledger therefore runs HERE, after weir exits. This is the same
+# The orphan ledger therefore runs here, after weir exits. This is the same
 # shape as the yaml interop referee and for the same reason. (Logged as a
 # scripting-policy fallback in dev/NOTES-agent.md.)
 #
-# INSTRUMENT SAFETY — read before editing. Three separate self-match failures
+# Instrument safety — read before editing. Three separate self-match failures
 # were hit while writing this, all of the genus dev/PROCESS.md documents
 # ("count processes by name, never by a pattern the measuring command also
 # carries"):
 #   * `pgrep -fc "sleep 3133"` counted its own shell — baseline 1, not 0.
-#   * `ps -eo args= -C sleep` silently IGNORED -C on this box, listed every
+#   * `ps -eo args= -C sleep` silently ignored -C on this box, listed every
 #     process, and matched the harness's own argv for two distinct markers.
-#   * `pkill -f "sleep 2.31341"` KILLED THE HARNESS SHELL (exit 143), which
+#   * `pkill -f "sleep 2.31341"` killed the harness shell (exit 143), which
 #     surfaced as two silent no-output runs and one phantom orphan count that
 #     was very nearly reported as a weir defect.
 # Hence: ledger() and reap() both filter on comm ($2=="sleep") via awk, so the
-# measuring shell is excluded STRUCTURALLY rather than by luck. Do not
+# measuring shell is excluded structurally rather than by luck. Do not
 # reintroduce `pgrep -f` or `pkill -f` here.
 
 set -u
@@ -35,7 +35,7 @@ N="${2:-200}"
 work=$(mktemp -d)
 trap 'reap 3134 >/dev/null 2>&1; rm -rf "$work"' EXIT
 
-# ---- the resource ledger (runs AFTER weir exits) ----------------------------
+# ---- the resource ledger (runs after weir exits) ----------------------------
 
 ledger() { # marker -> count of live `sleep` processes carrying it
     ps -eo pid,comm,args 2>/dev/null | awk -v m="$1" '$2=="sleep" && index($0,m)>0' | wc -l
@@ -270,10 +270,10 @@ printf "  %-30s %s/20  CONTROL: must be 20\n" "top-level: overlay per item" "$ct
 [ "$ctlgood" -eq 20 ] || { echo "CONTROL FAILED: the top-level overlay path is broken too — probe suspect" >&2; exit 1; }
 
 # ---- ceilings: the base cap and the nesting ladder [D:parallel-ladder] ------
-# Width is asserted through WALL TIME under forced sleeps (the review's
+# Width is asserted through wall time under forced sleeps (the review's
 # 0.4 method): K arms at ceiling C over a T-sleep take ceil(K/C) rounds.
 # Thresholds sit between rounds with wide margins, so load skews toward
-# EXTRA rounds (a fail-toward-red instrument, per the harness rule).
+# extra rounds (a fail-toward-red instrument, per the harness rule).
 
 cat > "$work/ceil64.weir" <<'WEOF'
 [1..64] |> Seq.piter (fun _ -> Duration.sleep 400ms)

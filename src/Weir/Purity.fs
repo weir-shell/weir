@@ -1,43 +1,43 @@
 module Weir.Purity
 
-// The purity classifier — [D:pure]'s display-stage judgement, moved
-// out of Can.fs so the ENFORCEMENT stage can reach it [D:pure-stage1]:
-// Check.fs compiles before Builtins and cannot see the closed builtin
-// surface, so the `pure` region's law lives in the checked-statement
-// pipeline's post-check layer (Script.fs) and the classifier sits
-// HERE, between Builtins and Script. Can.pureTopBindings (which needs
+// The purity classifier for [D:pure], placed so the enforcement stage
+// can reach it [D:pure-stage1]: Check.fs compiles before Builtins and
+// cannot see the closed builtin surface, so the `pure` region's rule
+// lives in the post-check layer (Script.fs) and the classifier sits
+// between Builtins and Script. Can.pureTopBindings (which needs
 // Script's types) stays in Can.fs and delegates.
 //
-// A binding is pure when its body can reach NO effect — exposed as a
+// A binding is pure when its body can reach no effect — exposed as a
 // boolean only (labels stay internal; `only`/`readonly` tiers
-// expose them later). CONSERVATIVE by construction: an unknown
+// expose them later). Conservative by construction: an unknown
 // callable (a function-typed param, an applied field, an import's
-// member) forfeits — the judgement may miss, it can never lie.
+// member) forfeits — the judgement may miss a pure binding, but it
+// never claims purity falsely.
 
 open Weir.Types
 open Weir.Ast
 open Weir.Check
 
-// whole effectful MODULES (new members default impure — the safe drift
-// direction), plus the effectful members of otherwise-pure modules and
-// the bare effectful names. `fail` stays pure (control flow, not an
-// external touch); `exit` does not (it takes the process down). The
-// effectful-name classification (the sets and the predicate) MOVED to
-// Effects.fs [D:pure-stage2] so the ambient/mutation partition can gate
-// on the SAME judgement — a name outside it is pure and has no class.
+// Covers whole effectful modules (new members default impure — the
+// safe drift direction), the effectful members of otherwise-pure
+// modules, and the bare effectful names. `fail` stays pure (control
+// flow, not an external touch); `exit` does not (it takes the process
+// down). The classification (the sets and the predicate) lives in
+// Effects.fs [D:pure-stage2] so the ambient/mutation partition gates
+// on the same judgement — a name outside it is pure and has no class.
 let private effectfulName = Weir.Effects.effectfulName
 
-// the CLOSED builtin surface: a dotted or bare name found here is pure
-// unless classified above — exhaustive by construction, so a pure
-// member (Str.trim) never falls into the unknown-callable bucket
+// The closed builtin surface: a dotted or bare name found here is
+// pure unless classified above — exhaustive by construction, so a
+// pure member (Str.trim) never falls into the unknown-callable bucket
 let private builtinNames =
     lazy (Weir.Builtins.valueEnv |> Map.toSeq |> Seq.map fst |> Set.ofSeq)
 
-// a bare UPPERCASE name in expression position is a union CONSTRUCTOR:
-// binders start lowercase (Check.casingError's law) and a module never
-// survives check as a value — so a function type here is a payload
-// arrow, not a callable that could reach an effect. Data by
-// construction, pure [D:pure-stdin-ctors]
+// A bare uppercase name in expression position is a union
+// constructor: binders start lowercase (Check.casingError's rule) and
+// a module never survives check as a value — so a function type here
+// is a payload arrow, not a callable that could reach an effect. Data
+// by construction, hence pure [D:pure-stdin-ctors]
 let private isCtorName (n: string) =
     not (n.Contains ".") && n.Length > 0 && System.Char.IsUpper n[0]
 
@@ -49,10 +49,10 @@ let rec tyHasFun (t: Ty) =
     | TNamed(_, args) -> args |> List.exists tyHasFun
     | _ -> false
 
-// pattern-bound names SHADOW: a binder from a pattern is an unknown to
-// this judgement (data passes, an unknown callable forfeits) — leaving
-// the OUTER name visible through it could make the judgement lie, the
-// one direction [D:pure] forbids
+// Pattern-bound names shadow: a binder from a pattern is an unknown
+// to this judgement (data passes, an unknown callable forfeits).
+// Leaving the outer name visible through it could make the judgement
+// claim purity falsely, the one direction [D:pure] forbids
 let rec private patBound (p: Pattern) : string list =
     match p.PKind with
     | PVar n -> [ n ]
@@ -62,7 +62,7 @@ let private dropPat (p: Pattern) (env: Map<string, bool>) =
     patBound p |> List.fold (fun e n -> Map.remove n e) env
 
 /// conservative purity of a typed expression; `env` carries the purity
-/// of KNOWN user bindings (earlier top-level lets, local lets)
+/// of known user bindings (earlier top-level lets, local lets)
 let rec isPureExpr (env: Map<string, bool>) (te: TypedExpr) : bool =
     let headOf (e: TypedExpr) =
         let rec go (e: TypedExpr) =
@@ -75,16 +75,16 @@ let rec isPureExpr (env: Map<string, bool>) (te: TypedExpr) : bool =
     match te.Kind with
     | TECmd _ -> false
     | TEWithin(kind, _, _, _, body) ->
-        // a pure REGION is itself pure exactly when its body is (the
+        // a pure region is itself pure exactly when its body is (the
         // region asserts, it does not touch); every resource kind is
         // an effect [D:pure-stage1]
         (match kind with
-         // pure/readonly ASSERT, they do not touch — the region is
+         // pure/readonly assert, they do not touch — the region is
          // pure iff its body is (an ambient read inside a readonly
          // block still makes it impure) [D:pure-stage1] [D:pure-stage2].
-         // A plan region [D:plan-apply] is transparent to the OUTER law:
-         // its ambient reads still RUN when the plan is built, so the
-         // region is pure iff its body is.
+         // A plan region [D:plan-apply] is transparent here: its
+         // ambient reads still run when the plan is built, so it too
+         // is pure iff its body is.
          | WithinPure
          | WithinReadonly
          | WithinPlan -> isPureExpr env body
@@ -106,8 +106,8 @@ let rec isPureExpr (env: Map<string, bool>) (te: TypedExpr) : bool =
             match Map.tryFind n env with
             | Some p -> p
             | None ->
-                // a data-typed unknown is inert; an unknown CALLABLE
-                // could do anything — no badge
+                // a data-typed unknown is inert; an unknown callable
+                // could do anything, so no purity claim
                 not (tyHasFun te.Ty)
     | TELet(n, _, v, b) ->
         let pv = isPureExpr env v
@@ -116,9 +116,9 @@ let rec isPureExpr (env: Map<string, bool>) (te: TypedExpr) : bool =
     | TELambda(p, _, b) -> isPureExpr (Map.remove p env) b
     | TELambdaPat(p, b) -> isPureExpr (dropPat p env) b
     | TEApp(_, _) ->
-        // applying a COMPUTED function (a field's value, a match result)
-        // is an unknown call; var heads resolve through the rules above,
-        // inline lambdas through their bodies
+        // applying a computed function (a field's value, a match
+        // result) is an unknown call; var heads resolve through the
+        // rules above, inline lambdas through their bodies
         (match (headOf te).Kind with
          | TEVar _
          | TELambda _
@@ -127,19 +127,19 @@ let rec isPureExpr (env: Map<string, bool>) (te: TypedExpr) : bool =
         && (Check.childExprs te |> List.forall (isPureExpr env))
     | _ -> Check.childExprs te |> List.forall (isPureExpr env)
 
-// the teaching's OBJECT: what a classified-effectful name does, in the
-// internal labels' vocabulary [D:pure-stage1] — one phrase per family,
-// offender + span only in v1 (the plan's full call-trace rendering is
-// a recorded simplification)
-// the fs.write ∪ fs.delete membership lives in Effects [D:pure-stage2] —
-// the ONE set both the partition and this teaching vocabulary read
+// The teaching text: what a classified-effectful name does, in the
+// internal labels' vocabulary [D:pure-stage1] — one phrase per
+// family, offender + span only in v1 (full call-trace rendering is a
+// recorded simplification).
+// The fs.write ∪ fs.delete membership lives in Effects [D:pure-stage2]
+// — the one set both the partition and this teaching vocabulary read
 let private fsWriteMembers = Weir.Effects.fsWriteMembers
 
 let rec private effectPhrase (n: string) : string =
     // a `|`-name is an internal desugar key that must never surface
-    // [D:desugar-namespace][D:user-language-messages]: a library desugar
-    // reads as its target member; a command reifier speaks as the command
-    // it runs, WITHOUT its key
+    // [D:desugar-namespace][D:user-language-messages]: a library
+    // desugar reads as its target member; a command reifier is
+    // described as the command it runs, without its key
     match Weir.Effects.libraryDesugarTarget n with
     | Some target -> effectPhrase target
     | None when n.StartsWith "|" -> "this runs a command"
@@ -166,7 +166,7 @@ let rec private effectPhrase (n: string) : string =
             | [| "Log"; _ |] -> $"'{n}' writes logs"
             | _ -> $"'{n}' is effectful"
 
-/// the FIRST effectful node under a pure region, with its span — the
+/// the first effectful node under a pure region, with its span — the
 /// located teaching's payload [D:pure-stage1]. Mirrors isPureExpr's
 /// judgement exactly (same env discipline, same conservatism); where
 /// isPureExpr answers false, this names why and where.
@@ -184,10 +184,11 @@ let rec firstEffect (env: Map<string, bool>) (te: TypedExpr) : (Span * string) o
     | TEWithin(kind, _, _, _, body) ->
         (match kind with
          // a nested pure/readonly region asserts, it does not touch —
-         // the pure ceiling still walks its body (an ambient read inside a
-         // readonly block is an effect pure forbids) [D:pure-stage2].
-         // A plan region [D:plan-apply] is transparent to the outer pure
-         // ceiling — its reads run when the plan builds.
+         // the pure ceiling still walks its body (an ambient read
+         // inside a readonly block is an effect pure forbids)
+         // [D:pure-stage2]. A plan region [D:plan-apply] is
+         // transparent to the outer pure ceiling — its reads run when
+         // the plan builds.
          | WithinPure
          | WithinReadonly
          | WithinPlan -> firstEffect env body
@@ -232,16 +233,16 @@ let rec firstEffect (env: Map<string, bool>) (te: TypedExpr) : (Span * string) o
     | _ -> Check.childExprs te |> List.tryPick (firstEffect env)
 
 // the mutation-class phrase: effectPhrase names the effect; this
-// appends its CLASS so the readonly teaching says both what the
-// offender does AND that it is external mutation [D:pure-stage2]
+// appends its class so the readonly teaching says both what the
+// offender does and that it is external mutation [D:pure-stage2]
 let private mutationPhrase (n: string) : string = effectPhrase n
 
-// resolve an `Http.send` request argument's METHOD case at CHECK time
+// resolve an `Http.send` request argument's method case at check time
 // [D:pure-stage2] — the per-method net split's check-time half. A
 // literal constructor (`Http.post u`) or an explicit `method = Post`
 // update is determinable; anything else is None (the caller
 // conservatively treats an unresolved send as mutation — over-refusing
-// is licensed, admitting a mutation is not).
+// is acceptable, admitting a mutation is not).
 let rec private httpSendMethod (arg: TypedExpr) : string option =
     match arg.Kind with
     // pipes/apps: strip to the constructor head
@@ -257,7 +258,7 @@ let rec private httpSendMethod (arg: TypedExpr) : string option =
             Some(m.ToUpperInvariant())
         | _ -> None
     // { Http.post u with method = Get; … } — an explicit method update
-    // WINS (last write); otherwise the source's constructor decides
+    // wins (last write); otherwise the source's constructor decides
     | TEUpdate(src, ups) ->
         match ups |> List.tryPick (fun (path, v) -> if path = [ "method" ] then Some v else None) with
         | Some { Kind = TEVar case } -> Some(case.ToUpperInvariant())
@@ -269,21 +270,22 @@ let rec private httpSendMethod (arg: TypedExpr) : string option =
         | _ -> None
     | _ -> None
 
-// the EXTERNAL-MUTATION class of an Http.send call given its request
-// argument [D:pure-stage2]: a determinable idempotent method is Ambient
-// (allowed); anything else — a mutating verb OR an unresolved method —
-// is Mutation (conservative)
+// the external-mutation class of an Http.send call given its request
+// argument [D:pure-stage2]: a determinable idempotent method is
+// Ambient (allowed); anything else — a mutating verb or an unresolved
+// method — is Mutation (conservative)
 let private httpSendIsMutation (arg: TypedExpr option) : bool =
     match arg |> Option.bind httpSendMethod with
     | Some m -> Weir.Effects.httpMethodClass m = Weir.Effects.Mutation
     | None -> true // unknown method — refuse (the safe direction)
 
-/// the FIRST external-MUTATION node under a `readonly` region, with
+/// the first external-mutation node under a `readonly` region, with
 /// its span [D:pure-stage2] — the ambient/mutation partition's ceiling
 /// walk. Ambient effects (fs.read, env, clock, query-net, Self.stdin)
-/// PASS; only external mutation (fs.write, fs.delete, proc, mutating-net,
-/// console, an unknown callable) is reported. Same env discipline and
-/// conservatism as firstEffect; reuses Effects.effectClass as the line.
+/// pass; only external mutation (fs.write, fs.delete, proc,
+/// mutating-net, console, an unknown callable) is reported. Same env
+/// discipline and conservatism as firstEffect; reuses
+/// Effects.effectClass as the line.
 let rec firstMutation (env: Map<string, bool>) (te: TypedExpr) : (Span * string) option =
     let headOf (e: TypedExpr) =
         let rec go (e: TypedExpr) =
@@ -301,19 +303,19 @@ let rec firstMutation (env: Map<string, bool>) (te: TypedExpr) : (Span * string)
     | TEWithin(kind, _, arg, opts, body) ->
         (match kind with
          // a nested pure/readonly region asserts, does not touch —
-         // walk its body for mutations (a pure body has none, trivially
-         // read-only; the pin `pure ⊂ readonly`)
+         // walk its body for mutations (a pure body has none, so it
+         // is trivially read-only; `pure ⊂ readonly`)
          | WithinPure
          | WithinReadonly ->
              [ arg; opts ] |> List.choose id |> List.tryPick (firstMutation env)
              |> Option.orElseWith (fun () -> firstMutation env body)
-         // a plan region [D:plan-apply] performs NO external mutation: its
-         // captured builtins do not run (they append Ops), only its
-         // ambient reads execute — so a `plan` block is read-only. The
-         // captured mutations are the Plan's DATA, not effects here;
-         // Plan.apply (a later call) is where they'd run.
+         // a plan region [D:plan-apply] performs no external
+         // mutation: its captured builtins do not run (they append
+         // Ops), only its ambient reads execute — so a `plan` block
+         // is read-only. The captured mutations are the Plan's data,
+         // not effects here; they would run at a later Plan.apply.
          | WithinPlan -> None
-         // tmp/cd/env/proc/lock all scope a RESOURCE: tmp/proc mutate,
+         // tmp/cd/env/proc/lock all scope a resource: tmp/proc mutate,
          // cd/env/lock change the process/child world — every within
          // resource is external mutation for the read-only ceiling
          | WithinTmp
@@ -322,8 +324,8 @@ let rec firstMutation (env: Map<string, bool>) (te: TypedExpr) : (Span * string)
          | WithinProc
          | WithinServe
          | WithinLock -> Some(te.Span, $"'within {withinKindName kind}' scopes a resource (external mutation)"))
-    // Env.load/Args.load READ the environment/arguments — ambient input,
-    // allowed; keep walking children (an argument could mutate)
+    // Env.load/Args.load read the environment/arguments — ambient
+    // input, allowed; keep walking children (an argument could mutate)
     | TEEnvLoad _
     | TEArgsLoad _ -> Check.childExprs te |> List.tryPick (firstMutation env)
     // retry/poll waits on the clock — ambient; walk the body for mutation
@@ -341,19 +343,20 @@ let rec firstMutation (env: Map<string, bool>) (te: TypedExpr) : (Span * string)
         elif builtinNames.Force().Contains n || isCtorName n then
             None
         else
-            // a user binding: reading DATA is never a mutation — even a
-            // value computed from an impure command holds data once bound
-            // (the command ran OUTSIDE the block). Only a CALLABLE can
-            // mutate when applied: a function-typed binding proven
-            // mutation-free passes; one that is impure or unknown forfeits
-            // (an application would run it — the conservatism line)
+            // a user binding: reading data is never a mutation — even
+            // a value computed from an impure command holds data once
+            // bound (the command ran outside the block). Only a
+            // callable can mutate when applied: a function-typed
+            // binding proven mutation-free passes; one that is impure
+            // or unknown forfeits (an application would run it)
             if not (tyHasFun te.Ty) then
                 None
             else
-                // conservatism [D:pure-stage1]: PureBindings tracks PURITY,
-                // not mutation-freeness, so a read-only function reads as
-                // impure here — refusing it over-refuses (licensed; a
-                // refusal never lies) rather than track a second env
+                // conservatism [D:pure-stage1]: PureBindings tracks
+                // purity, not mutation-freeness, so a read-only
+                // function reads as impure here — over-refusing is
+                // acceptable (a refusal never admits a mutation) and
+                // avoids tracking a second env
                 match Map.tryFind n env with
                 | Some true -> None // proven pure ⊂ mutation-free
                 | Some false -> Some(te.Span, $"'{n}' may reach an effect — a function not proven pure forfeits read-only")
@@ -366,7 +369,8 @@ let rec firstMutation (env: Map<string, bool>) (te: TypedExpr) : (Span * string)
         |> Option.orElseWith (fun () -> firstMutation (dropPat p env) b)
     | TELambda(p, _, b) -> firstMutation (Map.remove p env) b
     | TELambdaPat(p, b) -> firstMutation (dropPat p env) b
-    // `req |> Http.send` — the piped send: the request is the pipe's ARG
+    // `req |> Http.send` — the piped send: the request is the pipe's
+    // argument
     | TEPipe(reqArg, { Kind = TEVar "Http.send" }) ->
         if httpSendIsMutation (Some reqArg) then
             Some(te.Span, "'Http.send' talks to the network (external mutation — a mutating HTTP method)")
@@ -385,9 +389,10 @@ let rec firstMutation (env: Map<string, bool>) (te: TypedExpr) : (Span * string)
              if httpSendIsMutation reqArg then
                  Some((headOf te).Span, "'Http.send' talks to the network (external mutation — a mutating HTTP method)")
              else
-                 // ambient (query method): walk ONLY the argument for a
-                 // nested mutation — NOT the `Http.send` head var (whose
-                 // TEVar arm would re-report the network as mutation)
+                 // ambient (query method): walk only the argument for
+                 // a nested mutation — not the `Http.send` head var,
+                 // whose TEVar arm would re-report the network as
+                 // mutation
                  reqArg |> Option.bind (firstMutation env)
          | TEVar _
          | TELambda _
@@ -399,16 +404,17 @@ let rec firstMutation (env: Map<string, bool>) (te: TypedExpr) : (Span * string)
              ))
     | _ -> Check.childExprs te |> List.tryPick (firstMutation env)
 
-/// the FIRST plan-scope refusal under a `plan` region [D:plan-apply]:
-/// unlike readonly, fs/http MUTATIONS are fine (they are captured
-/// as Ops) — but `proc` HARD-REFUSES (a spawned binary reads AND writes
-/// opaquely, uncapturable) and `apply` INSIDE a plan refuses (a mutation
-/// cannot be coherently captured). A nested `plan` region COMPOSES: this
-/// walk stops at it (its own pureViolation arm re-enters), so a nested
-/// plan's proc is caught by the inner region, not double-reported here.
+/// the first plan-scope refusal under a `plan` region [D:plan-apply]:
+/// unlike readonly, fs/http mutations are fine (they are captured as
+/// Ops) — but `proc` is refused (a spawned binary reads and writes
+/// opaquely, uncapturable) and `apply` inside a plan is refused (a
+/// mutation cannot be coherently captured). A nested `plan` region
+/// composes: this walk stops at it (its own pureViolation arm
+/// re-enters), so a nested plan's proc is caught by the inner region,
+/// not double-reported here.
 let rec firstPlanRefusal (te: TypedExpr) : (Span * string) option =
     match te.Kind with
-    // a command IS proc — the uncapturable spawn
+    // a command is a proc spawn — uncapturable
     | TECmd(h, _, _) ->
         Some(
             te.Span,
@@ -428,9 +434,10 @@ let rec firstPlanRefusal (te: TypedExpr) : (Span * string) option =
                 te.Span,
                 "'Plan.apply' is refused inside 'plan' — a mutation cannot be coherently captured; build the plan here, apply it OUTSIDE the block"
             )
-        // a COMMAND reifier targets a spawn (proc) — refused; a LIBRARY
-        // desugar (|seqIter/…) targets a plain member and is captured like
-        // any weir-native op, never refused [D:desugar-namespace]
+        // a command reifier targets a spawn (proc) — refused; a
+        // library desugar (|seqIter/…) targets a plain member and is
+        // captured like any weir-native op, never refused
+        // [D:desugar-namespace]
         | _ when Weir.Effects.isCommandReifier n ->
             Some(
                 te.Span,
@@ -447,22 +454,22 @@ let rec pureViolation (env: Map<string, bool>) (te: TypedExpr) : (Span * string)
     match te.Kind with
     | TEWithin(kind, _, arg, opts, body) ->
         (match kind with
-         // pure: the located teaching names the offender's effect family
-         // [D:pure-stage1] — the FULL message lives here now (was wrapped
-         // in Script) so the readonly ceiling can carry its own
+         // pure: the located teaching names the offender's effect
+         // family [D:pure-stage1] — the full message is built here so
+         // the readonly ceiling can carry its own
          | WithinPure ->
              firstEffect env body
              |> Option.map (fun (span, phrase) -> span, $"this 'pure' block forbids effects, but {phrase}")
          // the read-only ceiling [D:pure-stage2]: ambient reads pass,
          // external mutation refuses — the located teaching names the
-         // offender AND its class
+         // offender and its class
          | WithinReadonly ->
              (firstMutation env body
               |> Option.map (fun (span, phrase) ->
                   span, $"this 'readonly' block forbids external mutation, but {phrase} — reads are allowed"))
-         // the plan scope [D:plan-apply]: fs/http mutations are CAPTURED
-         // (fine), proc and nested apply REFUSE — then keep walking the
-         // body for nested pure/readonly/plan regions
+         // the plan scope [D:plan-apply]: fs/http mutations are
+         // captured (fine), proc and nested apply refuse — then keep
+         // walking the body for nested pure/readonly/plan regions
          | WithinPlan ->
              firstPlanRefusal body
              |> Option.orElseWith (fun () -> pureViolation env body)

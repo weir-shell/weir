@@ -44,7 +44,7 @@ let taken = git tag -l $tag |> Seq.length
 if taken <> 0 then
     fail $"{tag} already exists — registries never reuse a version; bump editors/vscode/package.json"
 
-// the vsix must build BEFORE the tag: a manifest or .vscodeignore slip
+// the vsix must build before the tag: a manifest or .vscodeignore slip
 // is fixable here, unrecoverable after the registries see the version.
 // Both scopes release on the fail path too (the tmp dir is absolute, so
 // the cd cannot orphan it)

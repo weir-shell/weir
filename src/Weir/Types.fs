@@ -1,19 +1,19 @@
 module Weir.Types
 
-// reifier desugar targets carry an un-typeable '|' prefix
-// [D:drop-reify-builtins] — identifiers are [A-Za-z_].. so `| complete`
-// resolves them while user code cannot name them. Suggestion/completion
+// Reifier desugar targets carry an un-typeable '|' prefix
+// [D:drop-reify-builtins]: identifiers start [A-Za-z_], so `| complete`
+// resolves while user code cannot name it. Suggestion and completion
 // pools filter to user-typeable names.
 let isUserName (n: string) =
     n.Length > 0 && (System.Char.IsLetter n[0] || n[0] = '_')
 
-// the parse/decode error EXCERPT [D:excerpt]: a parse/decode builtin that
-// embeds the caller's WHOLE input in its error turns a 500KB invalid input
-// into ~500KB of stderr (a log flood, and it prints the prefix of whatever
-// derived value was fed in). Bound it: an input of 64 chars or fewer is
-// quoted IN FULL (the common typo stays fully readable, unchanged); a
-// longer one shows a 64-char HEAD and names the true length. The call site
-// keeps its own surrounding quotes, so only the body is bounded.
+// Parse/decode error excerpt [D:excerpt]: a builtin that embeds the
+// caller's whole input in its error turns a 500KB invalid input into
+// ~500KB of stderr (a log flood, printing the prefix of whatever
+// derived value was fed in). So it is bounded: an input of 64 chars or
+// fewer is quoted in full (the common typo stays readable, unchanged);
+// a longer one shows a 64-char head and names the true length. The call
+// site keeps its own surrounding quotes, so only the body is bounded.
 [<Literal>]
 let excerptHead = 64
 
@@ -25,34 +25,34 @@ let excerpt (s: string) : string =
 
 type Ty =
     | TInt
-    // FINITE-only floats [D:floats]: NaN/Infinity are unrepresentable —
+    // finite-only floats [D:floats]: NaN/Infinity are unrepresentable —
     // checked arithmetic raises, every boundary parse rejects them
     | TFloat
     | TStr
     | TBool
     | TUnit
-    // bytes as a type [D:size]: an INTEGER of bytes (int64 — ~8 EiB
-    // ceiling); decimals exist only in parse and render, the Duration
-    // pattern copied
+    // bytes as a type [D:size]: an integer count of bytes (int64 —
+    // ~8 EiB ceiling); decimals exist only in parse and render,
+    // following the Duration pattern
     | TSize
     // the non-text value [D:bytes]: an in-memory byte array, opt-in at
-    // both ends (readBytes/toUtf8 in, writeBytes/fromUtf8 out) — the
-    // capture law's scoping applies (bounded, in-memory; unbounded
+    // both ends (readBytes/toUtf8 in, writeBytes/fromUtf8 out); the
+    // capture law's scoping applies (bounded, in-memory — unbounded
     // data streams to a sink instead)
     | TBytes
-    // time as a type [D:duration]: an INTEGER of milliseconds; decimals
-    // exist only in parsing and rendering — the no-floats law's answer
-    // to the time want
+    // time as a type [D:duration]: an integer count of milliseconds;
+    // decimals exist only in parsing and rendering — how the no-floats
+    // law accommodates time
     | TDur
     // a point on the UTC timeline [D:instant]: integer ms since the
-    // Unix epoch — instants ONLY (no local zones, no calendar
+    // Unix epoch — instants only (no local zones, no calendar
     // arithmetic; t + 1d is exactly 24h, never next-day-same-wall-time)
     | TInstant
     // a marker the renderers respect [D:secret]: a plain string the
     // rendering machinery refuses to print — show is ***, interpolation
-    // and the wire boundaries refuse; Secret.reveal is the one exit. NOT
-    // storage, NOT memory protection (the in-memory value is a plain
-    // string) — flow control at the boundaries weir owns
+    // and the wire boundaries refuse; Secret.reveal is the one exit.
+    // Not storage and not memory protection (the in-memory value is a
+    // plain string) — flow control at the boundaries weir owns
     | TSecret
     | TFun of domain: Ty * codomain: Ty
     | TSeq of element: Ty
@@ -101,13 +101,14 @@ let rec formatTy (ty: Ty) : string =
         let argStr = args |> List.map formatTy |> String.concat ", "
         $"{name}<{argStr}>"
 
-/// an anonymous record's CANONICAL name [D:anon-records]: fields
-/// sorted by name, rendered as the type's own spelling — the name IS
-/// the display form, so formatTy/type errors render it with no extra
-/// arm, '{' keeps it un-typeable (no collision with declared names,
-/// excluded from suggestion pools by isUserName), and two same-shape
-/// anonymous types get the same name and so unify; a declared record
-/// with the same shape stays a DIFFERENT type (nominal law untouched)
+/// An anonymous record's canonical name [D:anon-records]: fields
+/// sorted by name, rendered as the type's own spelling. The name is
+/// also the display form, so formatTy and type errors render it with
+/// no extra arm; the leading '{' keeps it un-typeable (no collision
+/// with declared names, excluded from suggestion pools by isUserName);
+/// two same-shape anonymous types get the same name and so unify. A
+/// declared record with the same shape stays a different type — the
+/// nominal law is untouched.
 let anonRecordName (fields: (string * Ty) list) : string =
     let body =
         fields
@@ -117,14 +118,14 @@ let anonRecordName (fields: (string * Ty) list) : string =
 
     "{| " + body + " |}"
 
-// NESTED anonymous shapes [D:anon-nesting]: tySyn admits the form
-// anywhere a type is written (the REPL shape-exploration receipt that
-// reversed the one-level rule), and each nested shape it parses lands
-// HERE — the registration seams (withAnonDefs, checkDecl) drain it
-// into the env, so every existing TNamed lookup resolves the inner
-// defs with zero new resolution points. Backtracked parses may leave
-// entries; registering an unreachable hidden name is benign, so the
-// drain never needs parse-success bookkeeping. ThreadLocal: parsing is
+// Nested anonymous shapes [D:anon-nesting]: tySyn admits the form
+// anywhere a type is written (reversing the earlier one-level rule for
+// REPL shape exploration), and each nested shape it parses lands here.
+// The registration seams (withAnonDefs, checkDecl) drain it into the
+// env, so every existing TNamed lookup resolves the inner defs with no
+// new resolution points. Backtracked parses may leave entries behind;
+// registering an unreachable hidden name is benign, so the drain needs
+// no parse-success bookkeeping. ThreadLocal because parsing is
 // per-thread; workers never share an accumulator.
 let pendingAnonDefs: System.Threading.ThreadLocal<ResizeArray<string * (string * Ty) list>> =
     new System.Threading.ThreadLocal<_>(fun () -> ResizeArray())
@@ -136,10 +137,10 @@ let drainAnonDefs () : (string * (string * Ty) list) list =
     pendingAnonDefs.Value.Clear()
     xs
 
-/// per-part styling for the annotated signature [D:help-tint]: the tty
+/// Per-part styling for the annotated signature [D:help-tint]: the tty
 /// help render tints name/types/punctuation structurally at composition;
-/// plain (id everywhere) is the hover and piped spelling — ONE
-/// composition, never a second signature formatter
+/// plain (id everywhere) is the hover and piped spelling. One
+/// composition — never a second signature formatter.
 type SigStyle =
     { Name: string -> string
       Ty: string -> string
@@ -147,18 +148,19 @@ type SigStyle =
 
 let plainSigStyle: SigStyle = { Name = id; Ty = id; Punct = id }
 
-/// the annotated DECLARATION form for hover [D:annotated-signature]:
+/// The annotated declaration form for hover [D:annotated-signature]:
 /// `name (p1: t1) (p2: t2) : result`, decomposing `ty` by the given
 /// parameter names (the arrow tail beyond the named params is the
 /// result). Valid F# declaration syntax — claims nothing false. Zero
 /// names -> `name : ty`, no empty parens. The plain arrow `formatTy`
 /// stays the fallback (unnamed values) and the truth for type errors.
 let formatSignatureWith (st: SigStyle) (name: string) (paramNames: string list) (ty: Ty) : string =
-    // presentation guards [D:sig-render]: an internal sentinel
+    // presentation guards [D:sig-render]: the internal sentinel
     // quantifier ('__print) renders as plain 'a — the accepted set is
-    // the member's prose, and a double-underscore name is not a type a
-    // user can write; a unit param renders as bare `()` — the
-    // declaration form (`let cleanup () =`), never an annotated binder
+    // described in the member's prose, and a double-underscore name is
+    // not a type a user can write; a unit param renders as bare `()` —
+    // the declaration form (`let cleanup () =`), never an annotated
+    // binder
     let rec sanitize t =
         match t with
         | TVar v when v.StartsWith "__" -> TVar "a"
@@ -194,15 +196,15 @@ let formatSignatureWith (st: SigStyle) (name: string) (paramNames: string list) 
 let formatSignature (name: string) (paramNames: string list) (ty: Ty) : string =
     formatSignatureWith plainSigStyle name paramNames ty
 
-/// ECHO var normalization [D:repl-fn-echo]: the checker's fresh names
-/// ('a1, 'a2, 'b3…) rename to 'a, 'b, … in first-appearance order —
-/// DISPLAY ONLY, for the echo's `: ty` metadata. SHARED by exactly two
+/// Echo var normalization [D:repl-fn-echo]: the checker's fresh names
+/// ('a1, 'a2, 'b3…) rename to 'a, 'b, … in first-appearance order.
+/// Display only, for the echo's `: ty` metadata, shared by exactly two
 /// consumers: the REPL echo meta lines and the `-e` last-statement echo
-/// (formatEchoTy below is their one spelling). Type ERRORS, hover, and
+/// (formatEchoTy below is their one spelling). Type errors, hover, and
 /// `#help` signatures keep their own formatting untouched — errors name
 /// the checker's internal vars, #help renders canonical schemes already.
-/// Row-var NAMES never render (formatTy shows `{ fields; .. }`), so only
-/// TVar names rename; nested row FIELDS recurse.
+/// Row-var names never render (formatTy shows `{ fields; .. }`), so only
+/// TVar names rename; nested row fields recurse.
 let normalizeEchoVars (ty: Ty) : Ty =
     let mapping = System.Collections.Generic.Dictionary<string, string>()
 
@@ -237,7 +239,7 @@ let normalizeEchoVars (ty: Ty) : Ty =
 
     go ty
 
-/// the one echo type spelling [D:repl-fn-echo] — normalizeEchoVars
+/// The one echo type spelling [D:repl-fn-echo] — normalizeEchoVars
 /// composed with formatTy; every echo meta line renders through it
 let formatEchoTy (ty: Ty) : string = formatTy (normalizeEchoVars ty)
 
@@ -274,15 +276,15 @@ type Scheme =
     { Forall: Set<string>
       Cs: Map<string, Set<Cls>>
       Ty: Ty
-      // row-field PROVENANCE [D:row-provenance]: quantified row var ->
-      // (field, physLine, physCol, len) of the access that demanded it —
-      // translated to PHYSICAL at generalization (spans die at statement
-      // boundaries), rehydrated at instantiation, reported by the
-      // row-vs-record discharge
+      // row-field provenance [D:row-provenance]: quantified row var ->
+      // (field, physLine, physCol, len) of the access that demanded it
+      // — translated to physical positions at generalization (spans die
+      // at statement boundaries), rehydrated at instantiation, reported
+      // by the row-vs-record discharge
       RowOrigins: Map<string, (string * int * int * int) list>
-      // hole-default PROVENANCE (PLAN-dx-review D6): the physical
+      // hole-default provenance (PLAN-dx-review D6): the physical
       // (line, col) of each bare interpolation hole whose var took the
-      // string DEFAULT at this statement's boundary — a later call-site
+      // string default at this statement's boundary — a later call-site
       // mismatch names the defaulting decision instead of blaming the
       // call
       HoleDefaults: (int * int) list }
@@ -344,19 +346,20 @@ type RecordDef =
     { Name: string
       Params: string list
       Fields: (string * Ty) list
-      // check-time data, FULLY ERASED [D:attributes] — never reaches
+      // check-time data, fully erased [D:attributes] — never reaches
       // eval, Value, show, json, or equatability
       Attrs: Map<string, (string * AttrArg option) list>
-      // field -> the `///` doc's FIRST line, the derived --help text
+      // field -> the `///` doc's first line, the derived --help text
       // [D:doc-help]. `--help` reads this instead of the retired
       // [<Doc>] attribute; hover still reads the full doc out-of-band.
       // Same check-time-erased nature as Attrs.
       Docs: Map<string, string> }
 
-/// the wire-key attribute's ONE reader [D:wire-keys]: a field carrying
-/// [<Wire "…">] uses that string as its ADAPTER key (json/jsonl/yaml —
-/// and csv when it lands); everywhere else the attribute is inert
-/// (Args/Env derive from the field name, documented verbatim)
+/// The wire-key attribute's single reader [D:wire-keys]: a field
+/// carrying [<Wire "…">] uses that string as its adapter key
+/// (json/jsonl/yaml — and csv when it lands); everywhere else the
+/// attribute is inert (Args/Env derive from the field name, documented
+/// verbatim)
 let wireName (def: RecordDef) (field: string) : string =
     match Map.tryFind field def.Attrs with
     | Some specs ->
@@ -368,7 +371,7 @@ let wireName (def: RecordDef) (field: string) : string =
         |> Option.defaultValue field
     | None -> field
 
-/// the XML attribute a field reads [D:from-xml]: Some name when the field
+/// The XML attribute a field reads [D:from-xml]: Some name when the field
 /// carries [<Attr>] (name defaults to the field) — else None (an element)
 let xmlAttr (def: RecordDef) (field: string) : string option =
     match Map.tryFind field def.Attrs with
@@ -381,7 +384,7 @@ let xmlAttr (def: RecordDef) (field: string) : string option =
             | _ -> None)
     | None -> None
 
-/// the element name a seq< > field reads [D:from-xml]: the [<Elem "X">]
+/// The element name a seq< > field reads [D:from-xml]: the [<Elem "X">]
 /// override, else the supplied fallback (the element type / field name)
 let xmlElem (def: RecordDef) (field: string) (fallback: string) : string =
     match Map.tryFind field def.Attrs with
@@ -400,7 +403,7 @@ type UnionDef =
       Cases: (string * Ty option) list
       // the wire discriminator [D:wire-unions]: Some field-name when
       // the union is tagged — the key that admits it at the json/yaml
-      // boundaries. CaseWires holds the [<Wire>] OVERRIDES only (a
+      // boundaries. CaseWires holds only the [<Wire>] overrides (a
       // case's tag value defaults to its name — caseWire resolves);
       // OtherCase names the [<Other>] fallback. All three inert when
       // Tag is None.
@@ -408,7 +411,7 @@ type UnionDef =
       CaseWires: Map<string, string>
       OtherCase: string option }
 
-/// a tagged case's tag VALUE — the [<Wire>] override or the case name
+/// A tagged case's tag value — the [<Wire>] override or the case name
 let caseWire (def: UnionDef) (case: string) : string =
     Map.tryFind case def.CaseWires |> Option.defaultValue case
 
@@ -421,7 +424,7 @@ type TypeEnv =
       // purity of earlier top-level bindings [D:pure-stage1]: written by
       // the checked-statement pipeline's post-check layer (the classifier
       // lives after Builtins, so Check.fs itself never computes it),
-      // carried HERE so every consumer that threads the env — scripts,
+      // carried here so every consumer that threads the env — scripts,
       // modules, the REPL — gets `pure` transitivity for free
       PureBindings: Map<string, bool>
       Modules: Map<string, Map<string, Scheme>>
@@ -432,24 +435,24 @@ type TypeEnv =
       // records provenance so the qualified literal `Git.Ctx { .. }`
       // can confirm the module owns that type. Empty for single-file.
       ModuleTypes: Map<string, Set<string>>
-      // imported modules' PRIVATE members [D:module-signatures]:
+      // imported modules' private members [D:module-signatures]:
       // alias -> unsigned member name -> its inferred scheme. Never
       // resolvable — carried so the import-of-private error can teach
       // the migration (the signature to add, type included). Empty
       // for builtin modules and single-file runs.
       ModulePrivate: Map<string, Map<string, Scheme>>
-      // anonymous LITERAL defs minted mid-statement [D:anon-literals]:
+      // anonymous literal defs minted mid-statement [D:anon-literals]:
       // a literal's canonical name exists only after inference — too
       // late for the withAnonDefs pre-walk — so the check arm writes
       // it here; `{ env with … }` copies share the instance, making
-      // the def visible to the REST of the statement (to json's
+      // the def visible to the rest of the statement (to json's
       // admitted walk, field access, pattern rows). The arm also
       // pushes to pendingAnonDefs, so the next statement's drain
       // persists it into Types proper. Replaced fresh per typecheck
       // entry — one run is one thread.
       AnonLitDefs: System.Collections.Generic.Dictionary<string, TypeDef> }
 
-/// the ONE type-name lookup [D:anon-literals]: declared/registered
+/// The single type-name lookup [D:anon-literals]: declared/registered
 /// types first, then the mid-statement anonymous-literal table —
 /// the table only ever holds '{'-canonical names, so the fallback
 /// is inert for every user-spellable name
@@ -520,9 +523,9 @@ let sigTintStyle: SigStyle =
       Punct = Color.dim true }
 
 // the waiting indicator [D:waiting-indicator]: whoever owns the terminal
-// and is working draws the progress — so it wraps ONLY weir's own
-// blocking operations (Http.send, Duration.sleep, retry/poll waits) and
-// NEVER a spawned child (the child owns the terminal; drawing over its
+// and is working draws the progress — so it wraps only weir's own
+// blocking operations (Http.send, Duration.sleep, retry/poll waits),
+// never a spawned child (the child owns the terminal; drawing over its
 // output is the corruption shells avoid). Stderr, tty-only, a 500ms
 // grace so fast calls stay silent, erased before anything else prints —
 // stdout is never touched, so the piped byte surface cannot move.
@@ -578,12 +581,12 @@ module Waiting =
                 Threading.Interlocked.Decrement(&depth) |> ignore
 
 // ---- Duration text [D:duration] — the boundary where decimals live.
-// Storage is integer ms; these two are the ONLY places decimal text
+// Storage is integer ms; these two are the only places decimal text
 // exists, and no float appears in either direction.
 
-/// the Go shape: largest-unit-first compound, zero components dropped,
+/// The Go shape: largest-unit-first compound, zero components dropped,
 /// sub-second seconds as a decimal (1.5s), pure ms as Nms. Round-trips
-/// through parseDurationMs (pinned).
+/// through parseDurationMs (pinned in tests).
 // floats render shortest-round-trippable [D:floats], and an integral
 // float keeps a visible decimal so a float never renders identically
 // to an int
@@ -607,10 +610,10 @@ let parseFloat (text: string) : Result<float, string> =
     | true, _ -> Error $"not a finite float: '{excerpt text}'"
     | _ -> Error $"not a float: '{excerpt text}'"
 
-// sizes render BINARY units [D:size] — KiB/MiB/GiB/TiB, one decimal
-// above bytes (TRUNCATED tenths: a REPORT, not an encoding — base-1024
-// decimals do not terminate, so unlike Duration's show this is lossy
-// by design; toBytes is the exact exit), plain bytes with no decimal.
+// sizes render binary units [D:size] — KiB/MiB/GiB/TiB, one decimal
+// above bytes, plain bytes with no decimal. Tenths truncate: a report,
+// not an encoding — base-1024 decimals do not terminate, so unlike
+// Duration's show this is lossy by design; toBytes is the exact exit.
 // Integer math throughout (no float, the grep-clean bar).
 let formatSize (totalBytes: int64) : string =
     let sign = if totalBytes < 0L then "-" else ""
@@ -635,10 +638,10 @@ let formatSize (totalBytes: int64) : string =
         else
             $"{sign}{whole}.{dec} {name}"
 
-// parse reads FOREIGN text [D:size]: binary units at 1024-powers, the
-// SI spellings as powers of TEN (the writer chose the unit — unlike a
+// parse reads foreign text [D:size]: binary units at 1024-powers, the
+// SI spellings as powers of ten (the writer chose the unit — unlike a
 // literal, where weir would be guessing), optional space, decimals
-// down to whole bytes (sub-byte precision rejects, the sub-ms rule)
+// down to whole bytes (sub-byte precision rejects, as sub-ms does)
 let parseSize (text: string) : Result<int64, string> =
     let t = text.Trim()
     let neg = t.StartsWith "-"
@@ -666,7 +669,7 @@ let parseSize (text: string) : Result<int64, string> =
             Error
                 $"not a size: '{excerpt text}' — unknown unit '{m.Groups[3].Value}' (binary KiB/MiB/GiB/TiB, SI KB/MB/GB/TB, or B)"
         | Some(_, unit) ->
-            // CHECKED arithmetic — the parser obeys the same no-silent-wrap
+            // checked arithmetic — the parser obeys the same no-silent-wrap
             // law as int arithmetic, and overflow gets its own words
             // (never Int64.Parse's) [D:transport-words]
             try
@@ -722,8 +725,8 @@ let formatDuration (totalMs: int64) : string =
 
 // the ISO reader: full timestamps (Z or a numeric offset, normalized
 // to UTC on the way in; fractional seconds truncate to ms) and the
-// bare date (midnight UTC). The format LIST is the law — never the
-// platform parser's leniency (invariant M/d/yyyy must not slip in).
+// bare date (midnight UTC). Only this format list is accepted — never
+// the platform parser's leniency (invariant M/d/yyyy must not slip in).
 let private instantFormats =
     [| "yyyy-MM-dd'T'HH:mm:ssK"
        "yyyy-MM-dd'T'HH:mm:ss.FFFFFFFK"
@@ -759,10 +762,11 @@ let formatInstant (ms: int64) : string =
 
 // the named-format reader [D:instant] — a strptime subset for log
 // lines: %Y %m %d %H %M %S %f %z, %% for a literal percent, everything
-// else literal text. PREFIX semantics: the format's end ends the read
+// else literal text. Prefix semantics: the format's end ends the read
 // (a log line's tail rides free — slicing is the use case). No %z
 // means UTC, stated. The format must carry a full date — year-less
-// log formats (syslog) need the year supplied; re-open on receipts.
+// log formats (syslog) need the year supplied; revisit given real
+// cases.
 let parseInstantWithMs (fmt: string) (text: string) : Result<int64, string> =
     let mutable fi = 0
     let mutable ti = 0
@@ -918,8 +922,8 @@ let parseInstantWithMs (fmt: string) (text: string) : Result<int64, string> =
         with _ ->
             Error $"not a real date/time: {y:D4}-{mo:D2}-{d:D2} {h:D2}:{mi:D2}:{sec:D2}"
 
-/// parse "30s" / "2.5s" / "1h30m" / "-90s" to ms — compound components
-/// largest-first not required; decimals convert by INTEGER math and
+/// Parse "30s" / "2.5s" / "1h30m" / "-90s" to ms — compound components
+/// largest-first not required; decimals convert by integer math and
 /// sub-millisecond precision is rejected rather than rounded.
 let parseDurationMs (text: string) : Result<int64, string> =
     let t = text.Trim()
@@ -984,7 +988,7 @@ let parseDurationMs (text: string) : Result<int64, string> =
                                     acc
                                     (Checked.(+) (Checked.(*) whole unit) ((Checked.(*) fracVal unit) / pow10)))
 
-    // CHECKED like the size parser — overflow in its own words, never
+    // checked like the size parser — overflow in its own words, never
     // Int64.Parse's [D:transport-words]
     try
         go 0 0L |> Result.map (fun v -> if neg then -v else v)

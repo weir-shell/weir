@@ -1,7 +1,7 @@
 #!/usr/bin/env weir
 // jira-branch: pick an issue, branch, empty-commit. --clean resets first.
-// The nu-translation origin script — final form: the cleanup is a
-// command district (line-end ! + bare command lines, zero per-line tax).
+// Originally a nu translation; in its final form the cleanup is a
+// command district (line-end ! + bare command lines, no per-line tax).
 
 type Issue = { Key: string; Title: string }
 

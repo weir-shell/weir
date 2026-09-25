@@ -1,5 +1,5 @@
 /// Release preflight: every burned tag came from a precondition that was
-/// checkable BEFORE `git tag` — the wrong commit tagged (v0.0.25), a red
+/// checkable before `git tag` — the wrong commit tagged (v0.0.25), a red
 /// gate shipped (v0.0.26), the zed-pin/grammar race (v0.0.30). Run this
 /// from the repo root immediately before tagging; it refuses with the
 /// specific teaching, or prints the post-tag ritual.
@@ -23,14 +23,14 @@ let originSha = git rev-parse origin/main |> Seq.exactlyOne
 
 let tagTaken = git tag -l (cli.tag) |> Seq.length
 
-// -- the changelog names this tag at the TOP --------------------------------
+// -- the changelog names this tag at the top --------------------------------
 let firstHeading =
     File.read "CHANGELOG.md"
     |> Seq.where (fun l -> Str.startsWith "## " l)
     |> Seq.head
 
 // -- the gates that burned releases before ----------------------------------
-// | complete, not | succeeds: a sub-check's OWN error is the diagnosis —
+// | complete, not | succeeds: a sub-check's own error is the diagnosis —
 // swallowing it once misread a transient api.github.com 504 as "the rev
 // ritual is due"
 let subDetail teaching r =
@@ -41,8 +41,8 @@ let changelogRes = weir ci/changelog-check.weir --tag (cli.tag) | complete
 let grammarRes = weir ci/grammar-currency.weir | complete
 let zedPinRes = weir ci/zed-rev-current.weir | complete
 
-// -- the grammar repo must NOT already target the new tag --------------------
-// (its TARGET bump belongs AFTER the release publishes; pushing it early
+// -- the grammar repo must not already target the new tag --------------------
+// (its TARGET bump belongs after the release publishes; pushing it early
 // moves grammar main and re-stales the zed pin — the v0.0.30 race)
 // a transient 5xx retries; a 4xx is a fact
 let targetResp =

@@ -3,11 +3,11 @@
 # .github/workflows/ci.yml's linux job). Post-stage ritual: run this before
 # pushing.
 #
-# PARTIAL, and stated rather than implied: the commit-area check is
+# Partial coverage, stated rather than implied: the commit-area check is
 # PR-only in ci.yml (it needs a base sha) and is not run here; the macos
 # and windows jobs have no local mirror at all.
 #
-# The repo is COPIED into the image as build context, not bind-mounted:
+# The repo is copied into the image as build context, not bind-mounted:
 # bind mounts silently break with remote docker daemons (paths resolve on
 # the daemon host -> empty /work), FUSE checkouts, and unlabeled SELinux.
 # Context upload works everywhere. WEIR_CI_ENGINE=podman for rootless.

@@ -1,19 +1,19 @@
 #!/usr/bin/env weir
-// Release ASSET COMPLETENESS [D:release-assets]: v0.0.40 published with
+// Release asset completeness [D:release-assets]: v0.0.40 published with
 // 5 of 10 assets — `gh release create` hit a transient HTTP 500
 // mid-asset-upload, the manual recovery re-created the release with
-// what had survived, the draft review missed it, and a PUBLISHED
+// what had survived, the draft review missed it, and a published
 // release is immutable: nothing repaired it, v0.0.41 superseded. This
 // check makes the class visible by machine: every expected asset must
-// be PRESENT, state == "uploaded", and non-empty.
+// be present, state == "uploaded", and non-empty.
 //
-// The expected-asset list's ONE copy lives HERE — release.yml's upload
+// The expected-asset list has a single copy, here — release.yml's upload
 // step and ci/release-published.weir both defer to this script rather
 // than restate the list.
 //
 //   ci/release-assets.weir --tag v0.0.41
 //
-// Auth: GH_TOKEN/GITHUB_TOKEN when set (a DRAFT is invisible to the
+// Auth: GH_TOKEN/GITHUB_TOKEN when set (a draft is invisible to the
 // anonymous API — release.yml's gate passes the job token); anonymous
 // otherwise (published releases on a public repo read fine).
 
@@ -57,8 +57,8 @@ let send url =
 type Asset = { name: string; state: string; size: int }
 type Release = { tag_name: string; draft: bool; assets: seq<Asset> }
 
-// GET /releases/tags/<tag> answers PUBLISHED releases only — a DRAFT
-// 404s there even authenticated — so on 404 fall back to LISTING
+// GET /releases/tags/<tag> answers published releases only — a draft
+// 404s there even authenticated — so on 404 fall back to listing
 // releases: drafts ride the list when the token can see them.
 let byTag = send $"https://api.github.com/repos/{repo}/releases/tags/{cli.tag}"
 
@@ -80,7 +80,7 @@ let rel =
 
 let assets = rel.assets |> Seq.freeze
 
-// present AND finished AND non-empty: a 500 can leave a GHOST asset —
+// present, finished, and non-empty: a 500 can leave a ghost asset —
 // created server-side, state never reaching "uploaded" — and a ghost
 // looks present in a name-only scan
 let verdict name =

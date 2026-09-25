@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # The deep-run lock [D:masking-mechanized] — closes the one window
-# ci/check-fresh.sh cannot: a republish DURING a live deep fuzz run
+# ci/check-fresh.sh cannot: a republish during a live deep fuzz run
 # swaps the binary underfoot, so a metamorphic property compares P
 # against T(P) across two builds and fails against a half-swapped
 # binary (a manufactured failure, the harness-truth class). The deep
 # driver (tools/fuzz.weir) holds this lock for the run; publish.sh
-# refuses to install while a LIVE holder exists. One file, one
+# refuses to install while a live holder exists. One file, one
 # liveness definition, shared by both — the check-fresh.sh pattern.
 #
 #   deep-lock.sh acquire <pid>   # claim it (refuse if a live run holds it)
@@ -16,13 +16,13 @@ set -euo pipefail
 
 LOCK="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/.weir-deep-run.lock"
 
-# a lock is LIVE only if its recorded pid is still running; a pid that
-# has died (crashed run, no release) leaves a STALE lock that any actor
+# a lock is live only if its recorded pid is still running; a pid that
+# has died (crashed run, no release) leaves a stale lock that any actor
 # may clear — staleness is decidable, so the lock never wedges.
 live_holder() {
     [ -f "$LOCK" ] || return 1
     local h
-    # an UNREADABLE or garbage lock is not a STALE lock — refusing to
+    # an unreadable or garbage lock is not a stale lock — refusing to
     # guess beats silently clearing a live one [D:vacuous-probe-audit]
     if ! h=$(cat "$LOCK" 2>/dev/null); then
         echo "deep-lock: $LOCK exists but is unreadable — inspect it; refusing to treat as stale" >&2

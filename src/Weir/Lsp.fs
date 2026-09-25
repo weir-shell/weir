@@ -3,8 +3,8 @@ module Weir.Lsp
 // weir lsp — v1 [D:lsp-v1]: diagnostics, hover, completion over
 // stdio JSON-RPC. Hand-rolled loop (Ionide.LanguageServerProtocol
 // carries a reflection serializer the trimmer discipline bans).
-// Whole-file re-check per didChange; the server owns NO type state
-// between checks — per-document TEXT is the only state (stale-cache
+// Whole-file re-check per didChange; the server owns no type state
+// between checks — per-document text is the only state (stale-cache
 // bugs refused by construction).
 
 open System
@@ -13,8 +13,8 @@ open Weir.Ast
 open Weir.Check
 
 // ---- JSON reading: System.Text.Json's DOM (JsonDocument) ----------
-// AOT-SAFE by design [D:lsp-v1]: the DOM reader is reflection-free
-// and trim-annotated — the ban is on REFLECTION SERIALIZERS
+// AOT-safe by design [D:lsp-v1]: the DOM reader is reflection-free
+// and trim-annotated — the ban is on reflection serializers
 // (JsonSerializer<T> over F# records), not on this.
 
 open System.Text.Json
@@ -66,7 +66,7 @@ let private send (payload: string) =
     stdout'.Flush()
 
 // message ids are numbers or strings per JSON-RPC; carried as a value
-// so the WRITER quotes them, never interpolation
+// so the writer quotes them, never interpolation
 type private MsgId =
     | IdNum of int
     | IdStr of string
@@ -99,7 +99,7 @@ let private notify (method: string) (writeParams: Text.Json.Utf8JsonWriter -> un
     )
 
 // ---- semantic tokens [D:semantic-tokens]: the mode boundary made
-// visible. Mode spans ONLY — expression land emits nothing (TextMate
+// visible. Mode spans only — expression land emits nothing (TextMate
 // keeps lexical coloring; the server overlays the one distinction
 // statics cannot make). Token types: 0 = weirCommandHead, 1 = weirArgv,
 // 2 = weirSplice.
@@ -113,8 +113,8 @@ let semanticTokensFor (lines: string list) : (int * int * int * int) list =
     let lineArr = List.toArray lines
     let out = ResizeArray<int * int * int * int>()
 
-    // the synthetic-span rule [D:semantic-tokens]: emit ONLY when the
-    // logical slice appears VERBATIM at its translated physical home —
+    // the synthetic-span rule [D:semantic-tokens]: emit only when the
+    // logical slice appears verbatim at its translated physical home —
     // spans anchored on inserted join/wrap text emit nothing rather
     // than a mislocated token
     let emitSpan (ll: Script.LogicalLine) (startCol: int) (len: int) (ty: int) =
@@ -194,7 +194,7 @@ let semanticTokensFor (lines: string list) : (int * int * int * int) list =
 
     // reified chains (| succeeds/complete/orFail) desugar the ECmd into
     // an application spine — recognize it so the command still tokens
-    // (the reifier NAME stays lexical: grammar, not argv)
+    // (the reifier name stays lexical: grammar, not argv)
     let reifierHeads =
         set
             [ "|succeeded"
@@ -279,12 +279,12 @@ let semanticTokensFor (lines: string list) : (int * int * int * int) list =
 // ---- analysis helpers ---------------------------------------------
 
 // URIs on the wire, filesystem paths for import resolution [D:modules-v1].
-// HAND-ROLLED both directions [D:windows-s3]: System.Uri refuses a bare
-// C:\ path (a one-letter "scheme"), which killed the server on its first
-// Windows refresh — and the pair must ROUND-TRIP (path -> uri -> path is
+// Hand-rolled both directions [D:windows-s3]: System.Uri refuses a bare
+// C:\ path (a one-letter "scheme"), which would kill the server on a
+// Windows refresh — and the pair must round-trip (path -> uri -> path is
 // identity, both platforms) or the mirror bug survives a one-way fix.
-// Drive letters: lowercase on the wire (the VS Code convention), UPPER on
-// the way back (the platform's canonical spelling).
+// Drive letters: lowercase on the wire (the VS Code convention),
+// uppercase on the way back (the platform's canonical spelling).
 let uriToPath (uri: string) : string =
     if not (uri.StartsWith "file:") then
         uri
@@ -335,13 +335,13 @@ let pathToUri (path: string) : string =
 
 let private analyze (uri: string) (text: string) =
     let lines = text.Replace("\r\n", "\n").Split('\n') |> Array.toList
-    // analyze against the real PATH so imports resolve relative to the file;
+    // analyze against the real path so imports resolve relative to the file;
     // diagnostics come back File-identified (the entry + its modules)
     let path = uriToPath uri
     let diags, stmts, env0, lls = Script.analyzeLines path lines
     diags, stmts, env0, lls
 
-// find the containing logical line among ALL assembled lines
+// find the containing logical line among all assembled lines
 let private logicalAt (lls: Script.LogicalLine list) (line: int) (col: int) =
     lls
     |> List.tryPick (fun ll ->
@@ -401,8 +401,7 @@ let private nodeAt (te: TypedExpr) (col: int) : TypedExpr option =
 let private isWord (c: char) = Char.IsLetterOrDigit c || c = '_'
 
 // word-bounded search for `name` in text[from..bound), 1-based col —
-// the ONE search behind binderCol and the type-member lookup (was
-// written twice, one session apart)
+// the one search behind binderCol and the type-member lookup
 let private wordFind (name: string) (text: string) (from: int) (bound: int) : int option =
     let mutable i = max 0 from
     let mutable found = None
@@ -438,7 +437,7 @@ let private wordAt (text: string) (jcol: int) : string option =
     else
         None
 
-// the word at the cursor when it is a LET BINDER (the non-space text
+// the word at the cursor when it is a let binder (the non-space text
 // before it ends with the `let` keyword) [PLAN-diagnostics-arc A2]
 let private letBinderAt (text: string) (jcol: int) : string option =
     wordAt text jcol
@@ -454,7 +453,7 @@ let private letBinderAt (text: string) (jcol: int) : string option =
         && (before.Length = 3 || not (isWord before[before.Length - 4])))
 
 // the innermost inner-let binding `name` whose span contains the
-// column: hover shows the bound VALUE's type (the binder is not an
+// column: hover shows the bound value's type (the binder is not an
 // expression node — nodeAt alone sees the enclosing let-in, whose
 // type is the body's) [PLAN-diagnostics-arc A2]
 let rec private innerLetType (name: string) (jcol: int) (te: Check.TypedExpr) : Ty option =
@@ -468,7 +467,7 @@ let rec private innerLetType (name: string) (jcol: int) (te: Check.TypedExpr) : 
             Some tvalue.Ty
         | _ -> None
 
-// a lambda PARAM binder at the column shows its OWN type (the domain of
+// a lambda param binder at the column shows its own type (the domain of
 // the enclosing lambda), not the arrow type nodeAt would surface — the
 // param binder is not an expression node, so nodeAt falls back to the
 // lambda itself and shows `dom -> cod` for the parameter [D:lsp-v1]
@@ -493,7 +492,7 @@ let rec private patScope (p: Ast.Pattern) (scope: Map<string, Span>) : Map<strin
     | Ast.PCase(_, Some inner) -> patScope inner scope
     | _ -> scope
 
-// lexical resolution for LOCAL binders [PLAN-diagnostics-arc C]: find
+// lexical resolution for local binders [PLAN-diagnostics-arc C]: find
 // the use (the TEVar at the column) while carrying the enclosing
 // binder scope — innermost wins. Returns Some(Some span) = locally
 // bound there; Some None = use found, top-level territory; None = the
@@ -535,14 +534,14 @@ let rec private localDef
     | _ -> Check.childExprs te |> List.tryPick (localDef scope name jcol)
 
 /// hover text at (1-based physical line, col), or None. Pure — the
-/// handler and the unit pins share this. TYPE FIRST, then the `///`
+/// handler and the unit pins share this. Type first, then the `///`
 /// doc, when the cursor is on a documented name [D:doc-comments]. Type
-/// priority: an inner-let BINDER shows its bound value's type; a lambda
-/// PARAM binder shows its own type (the domain, not the arrow nodeAt
+/// priority: an inner-let binder shows its bound value's type; a lambda
+/// param binder shows its own type (the domain, not the arrow nodeAt
 /// would find); else the typed node at the column; else the statement's
 /// top-level scheme [D:lsp-v1].
-/// hover for a `type` declaration position (KType): the type NAME
-/// renders its definition, a FIELD name its type, a union CASE its
+/// hover for a `type` declaration position (KType): the type name
+/// renders its definition, a field name its type, a union case its
 /// signature — so "type first" holds at the field/case/type positions
 /// too [D:doc-comments].
 let private declHover (decl: Ast.Decl) (word: string) : string option =
@@ -584,10 +583,10 @@ let private declHover (decl: Ast.Decl) (word: string) : string option =
             |> List.tryPick (fun (n, tyO, _) -> if n = word then Some(caseSig (n, tyO)) else None)
 
 /// a keyword, an operator, punctuation, whitespace, or the wildcard `_`
-/// hovers as NOTHING — never the enclosing node's type [D:hover-silence].
+/// hovers as nothing — never the enclosing node's type [D:hover-silence].
 /// A wrong `unit`/`int` on the most-hovered tokens teaches the user that
-/// hover lies; null is the honest answer. Runs BEFORE the enclosing-node
-/// fallback, scoped by what the cursor is ON — identifiers, numbers, and
+/// hover lies; null is the honest answer. Runs before the enclosing-node
+/// fallback, scoped by what the cursor is on — identifiers, numbers, and
 /// bool literals still answer.
 let private onSilentToken (text: string) (jcol: int) : bool =
     if jcol < 1 || jcol > text.Length then
@@ -605,12 +604,12 @@ let private onSilentToken (text: string) (jcol: int) : bool =
         else
             true // operator / punctuation / whitespace
 
-// hoverType is defined AFTER definitionFor — it composes with it for the
+// hoverType is defined after definitionFor — it composes with it for the
 // Group 1a lookup (a usage / field / case reference resolves to its
 // declaration site, and the `///` doc is read there) [D:hover-completeness].
 
-/// the type of a local binder (a pattern PAYLOAD binder, an inner let)
-/// read from a USE of it in the typed tree — the binder position itself
+/// the type of a local binder (a pattern payload binder, an inner let)
+/// read from a use of it in the typed tree — the binder position itself
 /// is no expression node, but its uses carry the type [Group 2].
 let rec private varUseType (name: string) (te: Check.TypedExpr) : Ty option =
     match te.Kind with
@@ -626,7 +625,7 @@ let rec private lambdaParamNames (te: Check.TypedExpr) : string list =
     | _ -> []
 
 /// render a let binding's hover [D:annotated-signature]: the param
-/// SIGNATURE (`f (x) : ret`) when there is a named param, else the flat
+/// signature (`f (x) : ret`) when there is a named param, else the flat
 /// value type (`name : ty`) — matching F#, which names only named params,
 /// so an all-`()` (unit) or param-less binding hovers as its value type
 let private sigOrFlat (name: string) (ps: string list) (ty: Ty) : string =
@@ -648,7 +647,7 @@ let rec private innerLetSig (name: string) (jcol: int) (te: Check.TypedExpr) : s
 
 // ---- cross-file navigation [D:lsp-cross-file] ---------------------
 // the server retains nothing between requests, so a cross-file target
-// RE-ANALYZES the target file's lines, read through the import channel
+// re-analyzes the target file's lines, read through the import channel
 // (open buffers first, then disk) — the same stateless discipline as
 // every other request
 
@@ -685,7 +684,7 @@ let private typeSiteIn
                 (pl, pc, (member_ |> Option.defaultValue tyName).Length))
         | _ -> None)
 
-// the LAST top-level binder `n` among stmts; the entry file bounds the
+// the last top-level binder `n` among stmts; the entry file bounds the
 // search by the use site, a module file has no use site to bound by
 let private letSiteIn
     (stmts: (Script.LogicalLine * Script.CheckedStatement) list)
@@ -705,7 +704,7 @@ let private letSiteIn
             let pl, pc = Script.translate ll bc
             (pl, pc, n.Length))
 
-    // the SIGNATURE is the declaration a member reference lands on
+    // the signature is the declaration a member reference lands on
     // [D:module-signatures] — the API home (doc included); the impl is
     // one hop below it in the source
     let sigSite =
@@ -786,7 +785,7 @@ let rec private cmdSurfaceAt (jcol: int) (te: Check.TypedExpr) : (string * int *
 /// the flag's field in its signature, resolved the way the unknown-flag
 /// check resolves surfaces (record = the "" sub; union = the first
 /// non-dash word): (record name, field, field type, sig lines, sig stmts)
-// the record a LINE's flags live in: the longest run of leading sub
+// the record a line's flags live in: the longest run of leading sub
 // words, kebab-joined — the checker's own rule [D:scoped-sigs]
 let private sigRecordFor (si: Script.SigInfo) (words: (string * Span) list) : string option =
     match Map.tryFind "" si.SubRecords with
@@ -843,24 +842,24 @@ let private sigFlagField (si: Script.SigInfo) (words: (string * Span) list) (w: 
                 | _ -> None)))
 
 /// definition site for the identifier at (1-based physical line, col):
-/// Some (target file or None for THIS one, physLine, physCol,
+/// Some (target file or None for this one, physLine, physCol,
 /// nameLength), or None. Pure — the handler and the unit pins share
 /// this. Scope: top-level let/letpat binders; record fields (access +
-/// literal), union cases (expression AND pattern position), and type
-/// names, resolving to the KType declaration site IN THE FILE THAT
-/// DECLARES IT (an imported type re-analyzes its module); qualified
+/// literal), union cases (expression and pattern position), and type
+/// names, resolving to the KType declaration site in the file that
+/// declares it (an imported type re-analyzes its module); qualified
 /// module members; the import path itself; a signed command's head
 /// (the sig file) and flags (the field declaration) [D:lsp-cross-file].
 // cursor within the `schema=<name>` token of a district marker
-// [D:schema-hover]. The joined text's FIRST occurrence is the head's
+// [D:schema-hover]. The joined text's first occurrence is the head's
 // (body data joins after it), so the span needs no sentinel walk.
 let private onSchemaToken (name: string) (text: string) (jcol: int) : bool =
     let idx = text.IndexOf("schema=" + name)
 
     idx >= 0 && jcol - 1 >= idx && jcol - 1 < idx + "schema=".Length + name.Length
 
-// the declared schema NAME when the cursor sits on its token: off the
-// TEYaml node itself — the name is a vendored FILE, not an env.Types
+// the declared schema name when the cursor sits on its token: off the
+// TEYaml node itself — the name is a vendored file, not an env.Types
 // entry, so the type-argument arm cannot render it [D:schema-hover]
 let private schemaTokenAt (chk: Script.CheckedStatement) (text: string) (jcol: int) : string option =
     teOf chk
@@ -885,10 +884,7 @@ let definitionTarget
             | Script.KImport lm -> Some lm
             | _ -> None)
 
-    // the KType declaring `tyName`: a member's column sits after the
-    // first `=`, the type name's before it (joined text spans the
-    // whole multi-line declaration; translate maps back to physical)
-    // local KType first; else the IMPORT that declared the type (imported
+    // local KType first; else the import that declared the type (imported
     // types merge in unqualified, so the name alone picks the module)
     let typeSite (tyName: string) (member_: string option) =
         match typeSiteIn stmts tyName member_ with
@@ -917,7 +913,7 @@ let definitionTarget
 
     let letSite (useHead: int) (n: string) = letSiteIn stmts (Some useHead) n
 
-    // a PCase whose CTOR WORD contains the column (a payload binder is
+    // a PCase whose ctor word contains the column (a payload binder is
     // a local binder — the binder-span park, not this)
     let rec patCaseAt (jcol: int) (p: Ast.Pattern) : string option =
         let deeper =
@@ -948,7 +944,7 @@ let definitionTarget
     |> Option.bind (fun (useLl, chk, jcol) ->
         match chk.Kind with
         | Script.KImport lm ->
-            // definition ON THE IMPORT PATH opens the imported file; a
+            // definition on the import path opens the imported file; a
             // path that does not resolve never reaches here (the failed
             // import leaves no KImport statement) [D:lsp-cross-file]
             let q1 = useLl.Text.IndexOf '"'
@@ -962,7 +958,7 @@ let definitionTarget
 
             let env = chk.Env
 
-            // a signed command's HEAD opens its signature file; a FLAG jumps
+            // a signed command's head opens its signature file; a flag jumps
             // to its field declaration; an unsigned head stays quiet
             // [D:lsp-cross-file]
             let sigSite () =
@@ -986,7 +982,7 @@ let definitionTarget
                                     typeSiteIn sigStmts rn (Some f)
                                     |> Option.map (fun (pl, pc, len) -> Some si.SigPath, pl, pc, len))
                             | None ->
-                                // a SUB token jumps to its case's RECORD
+                                // a sub token jumps to its case's record
                                 // declaration [D:scoped-sigs] — the record
                                 // the checker would pick for this line
                                 words
@@ -1011,7 +1007,7 @@ let definitionTarget
                 |> Option.bind (fun te -> nodeAt te jcol)
                 |> Option.bind (fun node ->
                     match node.Kind with
-                    // a qualified MODULE member: the member word jumps to its
+                    // a qualified module member: the member word jumps to its
                     // declaration in the module file, the alias word to the
                     // file itself [D:lsp-cross-file] (a dotted builtin matches
                     // no import and stays on its own arms)
@@ -1033,7 +1029,7 @@ let definitionTarget
                             // expression-position union case
                             unionOf env n |> Option.bind (fun tn -> typeSite tn (Some n))
                         else
-                            // LOCAL binders first — lexical, innermost wins
+                            // local binders first — lexical, innermost wins
                             // (params, inner lets, pattern payload binders);
                             // the top-level scan is the fallback
                             // [PLAN-diagnostics-arc C]
@@ -1069,7 +1065,7 @@ let definitionTarget
                     | Check.TEFromYaml(tyName, _, _) ->
                         wordAt useLl.Text jcol
                         |> Option.bind (fun w -> if w = tyName then typeSite tyName None else None)
-                    // `Env.load T` / `Args.load T`: the target TYPE name jumps to
+                    // `Env.load T` / `Args.load T`: the target type name jumps to
                     // its declaration — the bespoke arm absorbs the argument, so
                     // it is no TEVar; resolve it off the load node's own def
                     | Check.TEEnvLoad(def, _) ->
@@ -1084,7 +1080,7 @@ let definitionTarget
 
                         wordAt useLl.Text jcol
                         |> Option.bind (fun w -> if w = tyName then typeSite tyName None else None)
-                    // the schema= NAME opens the vendored file [D:schema-hover]
+                    // the schema= name opens the vendored file [D:schema-hover]
                     // — the checker's own resolution; a not-vendored name
                     // stays quiet (the hover carries the teaching)
                     | Check.TEYaml(_, Some sname, _) when onSchemaToken sname useLl.Text jcol ->
@@ -1093,7 +1089,7 @@ let definitionTarget
                          | Error _ -> None)
                     | _ -> None)
                 |> Option.orElseWith sigSite
-                // a TYPE NAME the node walk does not claim
+                // a type name the node walk does not claim
                 // [D:lsp-typename]: declarations are not expressions —
                 // the payload after `of`, a field's type in a record
                 // decl — so a word-level fallback resolves any declared
@@ -1112,7 +1108,7 @@ let definitionTarget
                             None)))
 
 /// the single-file view of definitionTarget: Some (physLine, physCol,
-/// nameLength) when the definition is in THIS file, None otherwise —
+/// nameLength) when the definition is in this file, None otherwise —
 /// the unit pins' surface; the handler serves definitionTarget
 let definitionFor (lines: string list) (line: int) (col: int) : (int * int * int) option =
     definitionTarget "defn" lines line col
@@ -1120,10 +1116,10 @@ let definitionFor (lines: string list) (line: int) (col: int) : (int * int * int
         | None, pl, pc, len -> Some(pl, pc, len)
         | _ -> None)
 
-// the within FORM answers [D:within-kinds] — one table, three
+// the within form answers [D:within-kinds] — one table, three
 // consumers. The kind hovers its doc + binds/consumes nature; the
-// `within` keyword itself ANSWERS (a form that carries weir's novelty;
-// ordinary keywords keep the silence guard); a binding kind's BINDER
+// `within` keyword itself answers (a form that carries weir's novelty;
+// ordinary keywords keep the silence guard); a binding kind's binder
 // is always the resource's type — a use-less binder must not fall
 // through to the enclosing node's type (the same wrong-answer class).
 let private withinFormHover (text: string) (jcol: int) : string option =
@@ -1169,12 +1165,12 @@ let private withinFormHover (text: string) (jcol: int) : string option =
                     else
                         None))
 
-// the from/to FORM answers with the DISCOVERY surface [D:form-word-hover]
-// — the adapter LIST, which nothing else in the editor provides. The
-// adapters' OWN words already hover (their builtinDocs entry); this fills
+// the from/to form answers with the discovery surface [D:form-word-hover]
+// — the adapter list, which nothing else in the editor provides. The
+// adapters' own words already hover (their builtinDocs entry); this fills
 // only the bare keyword, and the list is derived from that same source so
 // the two cannot drift. Direction-aware: `to` omits the read-only ones.
-// The form-word hover rule: a keyword that names a FORM answers; a
+// The form-word hover rule: a keyword that names a form answers; a
 // punctuation-in-word-form keyword keeps the silence guard [D:form-word-hover].
 let private adapterFormHover (text: string) (jcol: int) : string option =
     wordAt text jcol
@@ -1192,8 +1188,8 @@ let private adapterFormHover (text: string) (jcol: int) : string option =
             )
         | _ -> None)
 
-// retry/poll/until answer as FORMS [D:form-word-hover] — the stated
-// rule's remaining customers. The KEY lists derive from the prelude
+// retry/poll/until answer as forms [D:form-word-hover] — the stated
+// rule's remaining customers. The key lists derive from the prelude
 // options records (env.Types Retry/Poll — the same shapes the
 // key=value head desugars over), so a new key appears here with no
 // second edit; a hand-written list would drift.
@@ -1224,12 +1220,12 @@ let private retryPollFormHover (env: TypeEnv) (text: string) (jcol: int) : strin
                 "until <name> — the predicate segment of a retry/poll VALUE body: names the body's binding and decides when the loop stops"
         | _ -> None)
 
-/// a FORM-WORD hover: within/from/to/retry/poll/until and their
+/// a form-word hover: within/from/to/retry/poll/until and their
 /// form-words — the union of the form hovers [D:form-word-hover]. Gated
-/// by the ONE caller to CODE position (the same letters inside a string
+/// by the one caller to code position (the same letters inside a string
 /// or comment are data) — a new form hover joins this union and the
 /// gate covers it; never a second path.
-// `function` answers as a FORM [D:function-keyword]: the implicit-match
+// `function` answers as a form [D:function-keyword]: the implicit-match
 // lambda — the meaning plus the pointer to match, the fourth form word
 // under the stated rule
 let private functionFormHover (text: string) (jcol: int) : string option =
@@ -1241,7 +1237,7 @@ let private functionFormHover (text: string) (jcol: int) : string option =
                 "function | <pattern> -> <expr> | … — a one-parameter fun whose body matches that parameter (fun x -> match x with …); arms take guards exactly as match does"
         | _ -> None)
 
-// the ATTRIBUTE names answer inside their brackets [D:lsp-typename]:
+// the attribute names answer inside their brackets [D:lsp-typename]:
 // [<Tag>]/[<Other>]/[<Short>]… are no expression nodes, so the word
 // falls to a registry-doc lookup, gated to a position between `[<`
 // and `>]` (the same letters as a binder stay silent)
@@ -1252,7 +1248,7 @@ let private attrHover (text: string) (jcol: int) : string option =
         let upto = text.Substring(0, min (max (jcol - 1) 0) text.Length)
         upto.LastIndexOf "[<" > upto.LastIndexOf ">]")
 
-// the STREAM cardinality word answers as a form [D:form-word-hover] —
+// the stream cardinality word answers as a form [D:form-word-hover] —
 // only beside its adapter (a binding named stream stays a binding)
 let private streamFormHover (text: string) (jcol: int) : string option =
     wordAt text jcol
@@ -1286,8 +1282,8 @@ let private formWordHover (env: TypeEnv) (text: string) (jcol: int) : string opt
 
 /// is the (1-based) physical column inside a string literal or a trailing
 /// comment on this physical line? [D:within-kinds] The form hovers run
-/// BEFORE the silence guard (they answer for keywords it would silence),
-/// so their string/comment exclusion lives here — on the PHYSICAL line,
+/// before the silence guard (they answer for keywords it would silence),
+/// so their string/comment exclusion lives here — on the physical line,
 /// never the joined logical text whose sentinels confuse the scanner.
 let private inStringOrComment (lines: string list) (line: int) (col: int) : bool =
     if line < 1 || line > List.length lines then
@@ -1298,9 +1294,9 @@ let private inStringOrComment (lines: string list) (line: int) (col: int) : bool
         (col >= 1 && col <= text.Length && (Script.inStringMask text)[col - 1])
         || col - 1 >= (Script.stripComment text).Length
 
-/// the TYPE ARGUMENT's own hover: `Config` in `from json Config` (and
+/// the type argument's own hover: `Config` in `from json Config` (and
 /// from yaml / Env.load / Args.load) is no expression node — the bespoke
-/// arm absorbs it — so the enclosing adapter's ARROW type used to answer
+/// arm absorbs it — so the enclosing adapter's arrow type would answer
 /// [D:form-word-hover]. Rendered byte-equal to declHover's shape at the
 /// declaration, so the two positions cannot drift.
 let private typeDefHover (env: TypeEnv) (tyName: string) : string option =
@@ -1322,12 +1318,12 @@ let private typeDefHover (env: TypeEnv) (tyName: string) : string option =
                 | None -> cn)
             |> String.concat " | ")
 
-// the schema= name's hover [D:schema-hover]: FILE facts, not type facts
+// the schema= name's hover [D:schema-hover]: file facts, not type facts
 // — the resolved vendored path, the lock's provenance, and whether the
 // schema can catch unknown fields (the line validation working depends
 // on). Sources: the lockfile and the vendored file, read per hover — no
 // cache, the stateless discipline. A miss or an unusable file renders
-// the CHECKER's words for that state, never a second phrasing.
+// the checker's words for that state, never a second phrasing.
 let private schemaHover (path: string) (name: string) : string option =
     match Script.resolveSchemaFile path name with
     | Error e -> Some e
@@ -1383,11 +1379,11 @@ let private schemaHover (path: string) (name: string) : string option =
                     + String.concat "\n" ([ file; source ] @ what)
                 )
 
-/// hover text at (1-based physical line, col), or None. Pure. TYPE first,
+/// hover text at (1-based physical line, col), or None. Pure. Type first,
 /// then the `///` doc. Silence guard first [D:hover-silence]; then the
-/// type from the binder/param/typed-node/scheme, with a field IN A LITERAL
-/// resolved to the FIELD's type (not the record's) [Group 1c]; then the
-/// doc — at the cursor for a declaration, or at the RESOLVED declaration
+/// type from the binder/param/typed-node/scheme, with a field in a literal
+/// resolved to the field's type (not the record's) [Group 1c]; then the
+/// doc — at the cursor for a declaration, or at the resolved declaration
 /// site for a usage / field / case reference (definitionFor) [Group 1a],
 /// else the builtin's [D:builtin-docs].
 let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string option =
@@ -1404,19 +1400,19 @@ let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string 
         && (schemaTokenAt chk ll.Text jcol).IsSome
         ->
         // the schema= name: file facts off the checker's resolution
-        // [D:schema-hover] — never the district's own type (the
-        // enclosing-node leak this arm retires)
+        // [D:schema-hover] — never the district's own type (an
+        // enclosing-node leak otherwise)
         schemaTokenAt chk ll.Text jcol |> Option.bind (schemaHover path)
     | Some(ll, chk, jcol) when not (onSilentToken ll.Text jcol) ->
-        // an inner-let binder hovers as its ANNOTATED signature (names +
+        // an inner-let binder hovers as its annotated signature (names +
         // types), degrading to the arrow when it has no named params
         let binderSig =
             letBinderAt ll.Text jcol
             |> Option.bind (fun name -> teOf chk |> Option.bind (innerLetSig name jcol))
 
-        // a top-level PATTERN binder (`let key, title = …`) hovers its
+        // a top-level pattern binder (`let key, title = …`) hovers its
         // own scheme [D:pat-binder-hover]: KLetPat carries name→scheme
-        // pairs, so the lookup is by word — gated LEFT of the `=` so an
+        // pairs, so the lookup is by word — gated left of the `=` so an
         // RHS use of the same name keeps its expression hover
         let patBinderTy =
             match chk.Kind with
@@ -1435,8 +1431,8 @@ let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string 
         let paramTy = teOf chk |> Option.bind (paramTypeAt jcol)
         let node = teOf chk |> Option.bind (fun te -> nodeAt te jcol)
 
-        // Group 1c: a field NAME in a record literal `{ Field = … }` hovers
-        // as the FIELD's type, not the record's (nodeAt sees only TERecord)
+        // Group 1c: a field name in a record literal `{ Field = … }` hovers
+        // as the field's type, not the record's (nodeAt sees only TERecord)
         let fieldInLiteral =
             match node with
             | Some { Kind = Check.TERecord(recName, _) } ->
@@ -1449,10 +1445,10 @@ let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string 
                     | _ -> None)
             | _ -> None
 
-        // Group 2: a union CASE — in a pattern (`| Pulled n ->`) or as a
+        // Group 2: a union case — in a pattern (`| Pulled n ->`) or as a
         // value (`Pulled ctx`) — hovers as its constructor signature. Keyed
         // off the word (pattern positions are no expression node); skipped
-        // at the type DECLARATION, where declHover renders it instead.
+        // at the type declaration, where declHover renders it instead.
         let constructorSig =
             match chk.Kind with
             | Script.KType _ -> None
@@ -1475,8 +1471,8 @@ let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string 
 
         let word = wordAt ll.Text jcol
 
-        // an EXACT use of a name (TEVar at the cursor) wins; else a pattern
-        // PAYLOAD binder resolved from a use of it [Group 2]; else the
+        // an exact use of a name (TEVar at the cursor) wins; else a pattern
+        // payload binder resolved from a use of it [Group 2]; else the
         // enclosing node's type; else the binder-name scheme / declaration.
         let exactUse =
             match node with
@@ -1485,7 +1481,7 @@ let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string 
 
         // a builtin hovers as its annotated signature (names from the doc,
         // types from the node) [D:annotated-signature]. A zero-param value
-        // (`Self.pid : int`) renders name-and-type with no parens; a FUNCTION
+        // (`Self.pid : int`) renders name-and-type with no parens; a function
         // with no named params degrades to the arrow (fallback below).
         let builtinSig =
             node
@@ -1499,10 +1495,10 @@ let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string 
                     | _ -> Some(formatSignature name d.Params n.Ty)
                 | _ -> None)
 
-        // a MODULE member at a use site hovers as its annotated signature,
+        // a module member at a use site hovers as its annotated signature,
         // the builtin rendering shared [D:lsp-cross-file]: params read off
         // the module's typed body; a function with no named params
-        // degrades to the arrow, a VALUE renders name-and-type
+        // degrades to the arrow, a value renders name-and-type
         let moduleMemberSig =
             node
             |> Option.bind (fun nd ->
@@ -1528,7 +1524,7 @@ let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string 
                 | _ -> None)
 
         // ---- signed commands [D:lsp-cross-file]: the head hovers its
-        // identity off the sig FILE alone (the version is the RECORDED
+        // identity off the sig file alone (the version is the recorded
         // one — no spawn, so it works with the tool off PATH); a flag
         // hovers its field's type, and the field's /// doc rides below
         let sigSurface =
@@ -1586,7 +1582,7 @@ let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string 
                 word
                 |> Option.bind (fun w -> teOf chk |> Option.bind (varUseType w))
                 |> Option.map formatTy)
-            // the type ARGUMENT in a boundary form hovers ITS OWN shape,
+            // the type argument in a boundary form hovers its own shape,
             // not the enclosing arrow [D:form-word-hover] — placed just
             // before the node fallback so nothing that answered earlier
             // moves; only the leak case changes
@@ -1613,11 +1609,11 @@ let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string 
             |> Option.orElseWith (fun () -> node |> Option.map (fun n -> formatTy n.Ty))
             |> Option.orElseWith (fun () ->
                 match chk.Kind with
-                // a top-level let hovers as its annotated signature, ON the
+                // a top-level let hovers as its annotated signature, on the
                 // binder name only — never a fallback for an unresolved spot
                 | Script.KLet(name, sch, te) when word = Some name ->
                     // the purity badge, display stage of [D:pure]: the
-                    // RARE pure function is surfaced; effectful stays
+                    // rare pure function is surfaced; effectful stays
                     // the unbadged norm (weir is effect-normal), and a
                     // missing badge is conservative, never a lie
                     let badge =
@@ -1632,12 +1628,12 @@ let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string 
                             ""
 
                     Some(sigOrFlat name (lambdaParamNames te) sch.Ty + badge)
-                // a member SIGNATURE line hovers the sig verbatim
+                // a member signature line hovers the sig verbatim
                 // [D:module-signatures]
                 | Script.KSig(name, sd) when word = Some name -> Some $"{name} : {formatTy sd.Ty}"
                 | Script.KType decl -> word |> Option.bind (declHover decl)
                 | _ -> None)
-            // a referenced TYPE NAME anywhere hovers its shape
+            // a referenced type name anywhere hovers its shape
             // [D:lsp-typename]: a field's type in a record decl, the
             // payload after `of` — no expression node covers these, so
             // the word resolves against env.Types (declHover already
@@ -1651,9 +1647,9 @@ let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string 
                     else
                         None))
 
-        // the boundary-form nodes span the WHOLE form (`Env.load TokenEnv`),
+        // the boundary-form nodes span the whole form (`Env.load TokenEnv`),
         // so gate each to the word that names it — hovering the module `Env`
-        // or the type argument must NOT surface `load`'s doc; only `load` does
+        // or the type argument must not surface `load`'s doc; only `load` does
         let nodeDoc =
             node
             |> Option.bind (fun n ->
@@ -1673,7 +1669,7 @@ let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string 
         let builtinDoc =
             nodeDoc |> Option.orElse wordDoc |> Option.map Builtins.renderBuiltinDoc
 
-        // the `///` doc: at the cursor for a DECLARATION site (half 1's key)
+        // the `///` doc: at the cursor for a declaration site
         let sourceDoc =
             Script.docAttachments lines
             |> List.tryPick (fun d ->
@@ -1682,7 +1678,7 @@ let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string 
                 else
                     None)
 
-        // Group 1a: a usage / field / case REFERENCE resolves to its
+        // Group 1a: a usage / field / case reference resolves to its
         // declaration site (definitionFor), and the doc is read there —
         // shadowing falls out (definitionFor is innermost-wins)
         let usageDoc =
@@ -1717,7 +1713,7 @@ let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string 
     | _ -> None
 
 /// hoverAt with no file identity — the unit pins' single-file surface
-/// (imports and signatures resolve relative to the REAL path, so the
+/// (imports and signatures resolve relative to the real path, so the
 /// handler serves hoverAt)
 let hoverType (lines: string list) (line: int) (col: int) : string option = hoverAt "hover" lines line col
 
@@ -1734,7 +1730,7 @@ let run (debug: bool) : int =
     // read from its (possibly unsaved) buffer, else disk (decision 14)
     Script.importSourceOverride.Value <-
         Some(fun absPath ->
-            // match by DECODED path, not a re-derived URI spelling — a
+            // match by decoded path, not a re-derived URI spelling — a
             // dependency open under the client's own spelling (%6C…) must
             // still read from its buffer [D:lsp-uri-spelling]
             let buffered =
@@ -1752,7 +1748,7 @@ let run (debug: bool) : int =
     // transport hardening [D:lsp-transport-caps]: the framing layer never
     // allocates for a client-supplied length before reading — an unbounded
     // Content-Length (or an unbounded header line) is an OOM otherwise. Two
-    // fixed caps bound memory, and an oversized body is DRAINED (not
+    // fixed caps bound memory, and an oversized body is drained (not
     // allocated) so the stream stays framed and the session survives.
     let maxMessageBytes = 64 * 1024 * 1024 // 64MB accepted body ceiling
     let maxHeaderLineBytes = 64 * 1024 // 64KB per header line
@@ -1804,7 +1800,7 @@ let run (debug: bool) : int =
         if eof || contentLength < 0 then
             Choice3Of3() // EOF or malformed — stop serving
         elif contentLength > maxMessageBytes then
-            // OVERSIZED: do NOT allocate contentLength. Drain the declared
+            // oversized: do not allocate contentLength. Drain the declared
             // body in fixed chunks to keep the stream synced, then drop the
             // message as an id-less no-op and keep serving [D:lsp-transport-caps]
             let mutable remaining = contentLength
@@ -1883,7 +1879,7 @@ let run (debug: bool) : int =
             w.WriteEndArray()
             w.WriteEndObject())
 
-    // re-check EVERY open doc, publish PER URI [D:modules-v1]: a module's
+    // re-check every open doc, publish per URI [D:modules-v1]: a module's
     // diagnostics land on the module's own file (even unopened), and an
     // importer re-checks when a dependency it reads changes. Files that went
     // clean since last cycle are published empty (cleared).
@@ -1897,7 +1893,7 @@ let run (debug: bool) : int =
             clientUris[uriToPath kv.Key] <- kv.Key
 
         for kv in Seq.toList docs do
-            // per-DOC resilience [D:windows-s3]: one bad document (a
+            // per-doc resilience [D:windows-s3]: one bad document (a
             // malformed client URI) logs and skips — the other open docs
             // still analyze and publish; the request-level guard is only
             // the backstop
@@ -1905,13 +1901,13 @@ let run (debug: bool) : int =
                 let diags, _, _, _ = analyze kv.Key kv.Value
 
                 for d in diags do
-                    // publish under the CLIENT's OWN URI string when the
+                    // publish under the client's own URI string when the
                     // file is an open doc [D:lsp-uri-spelling]: clients
                     // spell URIs their way (VS Code's c%3A), and a
                     // re-derived spelling splits one document into two —
                     // the diagnostic lands on ours, the every-open-doc
                     // empty publish lands on theirs, and the squiggle
-                    // BLINKS once and clears
+                    // blinks once and clears
                     let du =
                         match clientUris.TryGetValue d.File with
                         | true, u -> u
@@ -1926,7 +1922,7 @@ let run (debug: bool) : int =
             with ex ->
                 Console.Error.WriteLine $"weir lsp: skipping '{kv.Key}': {ex.Message}"
 
-        // one publish per relevant URI: a file with diagnostics, every OPEN
+        // one publish per relevant URI: a file with diagnostics, every open
         // doc (empty if clean), and any previously-diagnosed file now clean
         let toPublish = Collections.Generic.Dictionary<string, Script.Diagnostic list>()
 
@@ -2005,18 +2001,17 @@ let run (debug: bool) : int =
                         | Some l, Some c -> Some(l + 1, c + 1) // to 1-based
                         | _ -> None)
 
-                // a malformed REQUEST (bad URI, bad params) must not kill
-                // the server [D:windows-s3]: the Windows hand-run watched it
-                // die 5x on one bad path and give up — one bad document
-                // becomes a logged skip, the server keeps serving
+                // a malformed request (bad URI, bad params) must not kill
+                // the server [D:windows-s3] — one bad document becomes a
+                // logged skip, the server keeps serving
                 try
                     match method with
                     | "initialize" ->
                         // resolve relative-path command heads against the
-                        // WORKSPACE ROOT, not the server's launch cwd — which
-                        // the editor chooses and Zed/VS Code choose differently,
-                        // so `ci/deep-lock.sh` was a command in one and an
-                        // unbound var in the other. rootUri (or the first
+                        // workspace root, not the server's launch cwd — editors
+                        // choose that differently (Zed vs VS Code), so the same
+                        // relative head can be a command in one and an unbound
+                        // var in the other. rootUri (or the first
                         // workspaceFolder) is a file:// URI; on absence keep cwd.
                         (jStr "rootUri" ps
                          |> Option.orElseWith (fun () -> jFirst "workspaceFolders" ps |> Option.bind (jStr "uri")))
@@ -2030,7 +2025,7 @@ let run (debug: bool) : int =
                         |> Option.iter (fun id ->
                             respond id (fun w ->
                                 // serverInfo.version reads Weir.Version.current — the
-                                // SAME source as `--version` [D:masking-mechanized], so an
+                                // same source as `--version` [D:masking-mechanized], so an
                                 // editor and the CLI report one stamp. The value is
                                 // <tag>+<hash>, all JSON-safe chars, so the placeholder
                                 // splice needs no escaping.
@@ -2047,7 +2042,7 @@ let run (debug: bool) : int =
                              match jStr "uri" td, jStr "text" td with
                              | Some uri, Some text ->
                                  docs[uri] <- text
-                                 // re-check all: this doc AND any open importer of it
+                                 // re-check all: this doc and any open importer of it
                                  refreshAll ()
                              | _ -> ()
                          | None -> ())
@@ -2254,8 +2249,8 @@ let run (debug: bool) : int =
 
                         idStr |> Option.iter (fun id -> respond id writeResult)
                     | "textDocument/formatting" ->
-                        // client-sent text only (the SECURITY non-claim holds);
-                        // editor options are IGNORED — weir fmt is canonical.
+                        // client-sent text only (the security non-claim holds);
+                        // editor options are ignored — weir fmt is canonical.
                         // formatLines keeps unparseable statements verbatim, so
                         // format-on-save on a broken file still normalizes what
                         // it can; an assemble failure returns no edits.
@@ -2296,7 +2291,7 @@ let run (debug: bool) : int =
                             | Some(uri, text), Some(line, col) ->
                                 let _, stmts, env0, allLls = analyze uri text
 
-                                // env in scope: after the last statement ABOVE the line
+                                // env in scope: after the last statement above the line
                                 let env =
                                     stmts
                                     |> List.filter (fun (ll, _) -> ll.Head < line)
@@ -2313,8 +2308,8 @@ let run (debug: bool) : int =
 
                                 let word = upto.Substring wordStart
 
-                                // the within KIND slot [D:within-kinds] — the
-                                // ITEMS come from Complete.suggest (the schema=
+                                // the within kind slot [D:within-kinds] — the
+                                // items come from Complete.suggest (the schema=
                                 // mechanism kin); this gate only scopes the
                                 // binds/consumes detail to the slot
                                 let kindSlot =
@@ -2352,9 +2347,9 @@ let run (debug: bool) : int =
                                                     && dotIdx >= head.Length
                                                     && ll.Text.Substring(dotIdx - head.Length, head.Length) = head
                                                 then
-                                                    // blank the WHOLE head.prefix to a neutral
-                                                    // "" — leaving a bare row-typed head behind
-                                                    // broke positions with scalar rules (printerr)
+                                                    // blank the whole head.prefix to a neutral
+                                                    // "" — a bare row-typed head left behind
+                                                    // breaks positions with scalar rules (printerr)
                                                     let span = head.Length + 1 + prefix.Length
 
                                                     let before = ll.Text.Substring(0, dotIdx - head.Length)
@@ -2365,9 +2360,9 @@ let run (debug: bool) : int =
                                                         Parser.parseLine (Script.assumeResolver env) t
 
                                                     // two repair candidates: close dangling
-                                                    // delimiters AT THE CURSOR (mid-statement
+                                                    // delimiters at the cursor (mid-statement
                                                     // edits — the suffix stays outside the
-                                                    // string), else at the END (last-line edits)
+                                                    // string), else at the end (last-line edits)
                                                     let candB =
                                                         let prefixDone = before + filler
                                                         prefixDone + Script.closers prefixDone + after
@@ -2391,12 +2386,12 @@ let run (debug: bool) : int =
                                     else
                                         None
 
-                                // sig FLAG completion [D:sig-flag-completion]: a
+                                // sig flag completion [D:sig-flag-completion]: a
                                 // `-`-word after a sig'd tool offers the sig's own
                                 // longs, kebab spelling — without this, editors
-                                // word-complete the sig FILE's camelCase field
+                                // word-complete the sig file's camelCase field
                                 // names, which the checker then rightly rejects
-                                // the nearest sig'd tool to the LEFT — the flag
+                                // the nearest sig'd tool to the left — the flag
                                 // arm and the sub-token arm share it
                                 let nearestSig =
                                     let path =
@@ -2417,8 +2412,8 @@ let run (debug: bool) : int =
                                     |> List.sortByDescending fst
                                     |> List.tryHead
 
-                                // sub TOKENS complete at every depth
-                                // [D:scoped-sigs]: the Subs keys ARE the
+                                // sub tokens complete at every depth
+                                // [D:scoped-sigs]: the Subs keys are the
                                 // kebab-joined paths, so the next segment
                                 // un-glues from the run typed so far — the
                                 // same conflation the checker's key join
@@ -2436,7 +2431,7 @@ let run (debug: bool) : int =
                                                 |> Array.skipWhile (fun t -> t.StartsWith "-")
                                                 |> Array.takeWhile (fun t -> not (t.StartsWith "-"))
                                                 |> Array.toList
-                                                // the word being typed is the PREFIX, not the run
+                                                // the word being typed is the prefix, not the run
                                                 |> fun ts ->
                                                     if word <> "" && ts <> [] && List.last ts = word then
                                                         ts |> List.take (ts.Length - 1)
@@ -2460,7 +2455,7 @@ let run (debug: bool) : int =
                                     if word.StartsWith "-" then
                                         nearestSig
                                         |> Option.map (fun (toolAt, si) ->
-                                            // SCOPED sigs complete their matched
+                                            // scoped sigs complete their matched
                                             // case only [D:scoped-sigs]: the first
                                             // non-flag word after the tool picks
                                             // the set; before one exists, the
@@ -2485,7 +2480,7 @@ let run (debug: bool) : int =
                                                 match sub with
                                                 | Some fs -> [ fs ]
                                                 | None ->
-                                                    // sub-less: the GLOBALS (the case
+                                                    // sub-less: the globals (the case
                                                     // intersection, the checker's own
                                                     // rule); union-of-cases only when
                                                     // nothing is shared [D:scoped-sigs]
@@ -2509,7 +2504,7 @@ let run (debug: bool) : int =
                                                 |> Seq.sort
                                                 |> List.ofSeq
 
-                                            // a single dash offers the SHORTS too
+                                            // a single dash offers the shorts too
                                             let shorts =
                                                 if word = "-" then
                                                     sets
@@ -2532,7 +2527,7 @@ let run (debug: bool) : int =
                                     | _ when not sigFlags.IsEmpty -> sigFlags
                                     | _ when not sigSubTokens.IsEmpty -> sigSubTokens
                                     | _ ->
-                                        // binders may sit on EARLIER lines —
+                                        // binders may sit on earlier lines —
                                         // the whole doc is the binder scope
                                         Complete.suggestScoped env text upto wordStart
 
@@ -2551,8 +2546,8 @@ let run (debug: bool) : int =
                                         items
 
                                 // completion detail [D:doc-comments]: the `///`
-                                // doc for a documented name. Name-keyed HERE (a
-                                // completion item IS a name; last-wins on a shared
+                                // doc for a documented name. Name-keyed here (a
+                                // completion item is a name; last-wins on a shared
                                 // name) — the position-keyed map stays for hover
                                 let docByName =
                                     Script.docAttachments (List.ofArray lines)

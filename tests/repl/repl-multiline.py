@@ -4,8 +4,8 @@
 # buffer (history only from the first line), Ctrl+J force-newline, multiline
 # history entries (encoded storage, whole-entry recall), the fzf display
 # form (one line per entry, ⏎-joined) mapped back to the full entry, Esc
-# abandon, and wrap math at TWO terminal widths. Assertions ride evaluated
-# OUTPUT, never cursor positions (the driver lesson — drivers lie about
+# abandon, and wrap math at two terminal widths. Assertions ride evaluated
+# output, never cursor positions (the driver lesson — drivers lie about
 # cursors; values do not).
 import os, pty, signal, sys, time, select, re, tempfile, fcntl, struct, termios
 
@@ -30,7 +30,7 @@ def run(keys, cols=80, seed=None, path=None, until=None, deadline=20.0):
     fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 24, cols, 0, 0))
     # SIGWINCH after the ioctl: .NET may have cached the width at console
     # init (a per-run race — macOS lost it where Linux never did); the
-    # signal invalidates the cache so the pty size ALWAYS wins
+    # signal invalidates the cache so the pty size always wins
     os.kill(pid, signal.SIGWINCH)
     time.sleep(0.8)
     for s, dl in keys:
@@ -70,7 +70,7 @@ t, _ = run([("match 1 with\r", 0.4), ("| _ -> 9\r", 0.6), ("#quit\r", 0.3)])
 if "9 : int" not in t:
     failures.append(f"Enter-incomplete must grow, then submit when complete: {t[-300:]!r}")
 
-# --- 2. Ctrl+J forces newlines even when complete; Up moves WITHIN the
+# --- 2. Ctrl+J forces newlines even when complete; Up moves within the
 # buffer; a line above the cursor edits; Enter submits the whole statement
 keys = [("match 1 with", 0.3), ("\n", 0.2),
         ('| 2 -> "two"', 0.3), ("\n", 0.2),
@@ -84,7 +84,7 @@ t, _ = run(keys)
 if '"two" : string' not in t:
     failures.append(f"Up-within-buffer edit of the scrutinee must change the result: {t[-300:]!r}")
 
-# --- 3. both ways, identical meaning: the same lines as a SCRIPT
+# --- 3. both ways, identical meaning: the same lines as a script
 d3 = tempfile.mkdtemp()
 open(d3 + "/m.weir", "w").write('print (match 2 with\n| 2 -> "two"\n| _ -> "no")\n')
 import subprocess
@@ -93,13 +93,13 @@ if sc.stdout.strip() != "two":
     failures.append(f"script twin must print two: {sc.stdout!r} {sc.stderr!r}")
 # (the REPL evaluated "two" in pin 2 — same statement text, same value)
 
-# --- 4. a multiline history entry recalls WHOLE via Up at the first line
+# --- 4. a multiline history entry recalls whole via Up at the first line
 t, _ = run([("\x1b[A", 0.4), ("\r", 0.6), ("mm + 1\r", 0.5), ("#quit\r", 0.3)],
            seed="let mm =\\n    41\n")
 if "mm : int = 41" not in t or "42 : int" not in t:
     failures.append(f"multiline recall must return the whole block-let: {t[-300:]!r}")
 
-# --- 5. the fzf feed is the one-line DISPLAY form, mapped back to the entry
+# --- 5. the fzf feed is the one-line display form, mapped back to the entry
 d5 = tempfile.mkdtemp()
 os.makedirs(d5 + "/bin")
 with open(d5 + "/bin/fzf", "w") as f:
@@ -129,12 +129,12 @@ for cols in (30, 80):
     if "55 : int" not in t:
         failures.append(f"wrapped line at width {cols} must edit and evaluate: {t[-300:]!r}")
 
-# --- 7b. CURSOR COLUMN at a wrap boundary [D:windows-findings] — the
+# --- 7b. cursor column at a wrap boundary [D:windows-findings] — the
 # column-N ambiguity: at width W, logical column W has two screen
-# positions; mid-line the true one is START of the next row, end-of-line
-# the wrap-PENDING last column. These assertions parse OUR OWN emitted
-# positioning escapes (deterministic — the "drivers lie about cursors"
-# law bans querying the DRIVER, not replaying what weir wrote): the tail
+# positions; mid-line the true one is the start of the next row,
+# end-of-line the wrap-pending last column. These assertions parse our
+# own emitted positioning escapes (deterministic — the "drivers lie about
+# cursors" law bans querying the driver, not replaying what weir wrote): the tail
 # after the final \r is the last redraw's column move.
 def runraw(keys, cols=80):
     d = tempfile.mkdtemp()
@@ -147,12 +147,12 @@ def runraw(keys, cols=80):
     fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 24, cols, 0, 0))
     # SIGWINCH after the ioctl: .NET may have cached the width at console
     # init (a per-run race — macOS lost it where Linux never did); the
-    # signal invalidates the cache so the pty size ALWAYS wins
+    # signal invalidates the cache so the pty size always wins
     os.kill(pid, signal.SIGWINCH)
     time.sleep(0.8)
     for s, dl in keys:
         os.write(fd, s.encode()); time.sleep(dl)
-    # QUIESCENCE-driven drain: the old 50-iteration budget counted READS,
+    # quiescence-driven drain: the old 50-iteration budget counted reads,
     # so a loaded runner's steady repaint stream exhausted it with keys
     # still queued (the raw tail showed the 32nd of 35 repaints). Read
     # until 1.5s of silence — the editor idle means every repaint flushed.
@@ -180,9 +180,9 @@ def last_col_move(raw):
 # each probe sends dozens of separate ESC[C sequences; .NET's ReadKey
 # decodes escapes under an inter-byte timeout, and a loaded runner
 # (macOS) can split one — a lone ESC decodes wrong and the cursor
-# drifts by a few columns (cols that fit NEITHER width's math were the
-# tell). 0.15s pacing triples the margin, and ONE retry re-runs the
-# whole probe: the pin is weir's column MATH, which is deterministic —
+# drifts by a few columns (cols that fit neither width's math were the
+# tell). 0.15s pacing triples the margin, and one retry re-runs the
+# whole probe: the pin is weir's column math, which is deterministic —
 # only the byte-delivery timing is not. Assertions stay exact; the raw
 # tail rides the failure so a split escape is visible in the report.
 def colpin(desc, keys, want, cols):
@@ -196,7 +196,7 @@ def colpin(desc, keys, want, cols):
 
 for cols, boundary in ((30, 24), (40, 34)):  # (6+col) % cols == 0
     body = [("x" * (boundary + 16), 0.5), ("\x01", 0.3)]
-    # mid-line boundary: Right onto it must paint START of the next row (col 0)
+    # mid-line boundary: Right onto it must paint the start of the next row (col 0)
     colpin("mid-line wrap boundary must paint (next row)",
            body + [("\x1b[C", 0.15)] * boundary, 0, cols)
     # one more Right: column 1 (adjacent positions differ by exactly one)
@@ -205,13 +205,13 @@ for cols, boundary in ((30, 24), (40, 34)):  # (6+col) % cols == 0
     # Left back across: the mirror returns to col 0
     colpin("Left across the boundary must mirror to",
            body + [("\x1b[C", 0.15)] * (boundary + 1) + [("\x1b[D", 0.3)], 0, cols)
-    # END of line exactly at the boundary: wrap-PENDING — the last column,
+    # end of line exactly at the boundary: wrap-pending — the last column,
     # named explicitly (cols-1), never an off-screen col the terminal clamps
     colpin("exact-fill end-of-line must paint the pending",
            [("x" * boundary, 0.5)], cols - 1, cols)
 
 # --- 7c. completion keeps the tracked cursor [D:windows-findings]: Tab
-# with text AFTER the cursor shows the list, then typing continues at the
+# with text after the cursor shows the list, then typing continues at the
 # cursor, not end-of-line (value-asserted: the tail lands inside the parens)
 t, _ = run([('print ("a" |> Str.t)', 0.4), ("\x1b[D", 0.2),   # before the )
             ("\t", 0.5),                                       # list (no insert)
@@ -227,50 +227,48 @@ t, _ = run([('print (show ("ab" |> Str.sta))', 0.4), ("\x1b[D", 0.1), ("\x1b[D",
 if "true" not in t:
     failures.append(f"common-prefix completion must leave the cursor after the insertion: {t[-300:]!r}")
 
-# --- 8. an UNCLOSED STRING submits (weir strings are single-line — more
-# input can never fix it; growing would trap the user; found when the
-# repl-color probe hung on `let s = @"raw` + Enter)
+# --- 8. an unclosed string submits (weir strings are single-line — more
+# input can never fix it; growing would trap the user)
 t, _ = run([('let s = @"raw\r', 0.5), ("7 * 7\r", 0.5), ("#quit\r", 0.3)])
 if "49 : int" not in t:
     failures.append(f"an unclosed string must submit (error) and free the prompt: {t[-300:]!r}")
 
-# --- 9a. a leading-space FIRST line has no statement above to continue —
-# it dedents and EXECUTES (the Windows runbook's find; a Linux regression
-# from the multiline session's adoption of the script assembler)
-# [D:windows-s2]
+# --- 9a. a leading-space first line has no statement above to continue —
+# it dedents and executes (a Linux regression from the multiline
+# session's adoption of the script assembler) [D:windows-s2]
 t, _ = run([("  1 + 1\r", 0.5), ("#quit\r", 0.3)])
 if "2 : int" not in t:
     failures.append(f"a leading-space first line must execute: {t[-300:]!r}")
 
-# --- 9b. the OTHER half: an indented buffer dedents WHOLE (relative
+# --- 9b. the other half: an indented buffer dedents whole (relative
 # structure preserved), and an indented line inside the open buffer
 # still continues it
 t, _ = run([("  match 1 with\r", 0.4), ("  | _ -> 8\r", 0.6), ("#quit\r", 0.3)])
 if "8 : int" not in t:
     failures.append(f"an indented entry must dedent whole and still assemble: {t[-300:]!r}")
 
-# --- 9c. blank-line ESCAPE: Enter on an empty final line closes a
-# PENDING buffer (the error shows, the prompt frees) — the general
+# --- 9c. blank-line escape: Enter on an empty final line closes a
+# pending buffer (the error shows, the prompt frees) — the general
 # protection against every uncompletable state [D:windows-s2]
 t, _ = run([("match 1 with\r", 0.4), ("\r", 0.5), ("5 + 5\r", 0.5), ("#quit\r", 0.3)])
 if "10 : int" not in t:
     failures.append(f"a blank Enter must close a pending buffer: {t[-300:]!r}")
-# the KEEPS-THE-INPUT half [D:windows-s3]: the buffer was SUBMITTED (its
-# parse error shows), not discarded the way Ctrl+C discards
-# asserts the LABEL, not the bare word: this pin passed on FParsec's
+# the keeps-the-input half [D:windows-s3]: the buffer was submitted (its
+# parse error shows), not discarded the way Ctrl+C discards.
+# Asserts the label, not the bare word: this pin once passed on FParsec's
 # "Note: The error occurred..." noise rather than on weir saying anything,
 # and only failed once that noise was removed [D:not-weir-shape].
 # "parse error" can only come from weir.
 if "match" not in t or "parse error" not in t:
     failures.append(f"the escaped buffer must submit and show its error: {t[-300:]!r}")
 
-# --- 9d. ...but Ctrl+J's DELIBERATE blank line stays composing
+# --- 9d. ...but Ctrl+J's deliberate blank line stays composing
 t, _ = run([("match 1 with", 0.3), ("\n", 0.2), ("\n", 0.2), ("| _ -> 6\r", 0.6), ("#quit\r", 0.3)])
 if "6 : int" not in t:
     failures.append(f"a Ctrl+J blank inside composition must not submit: {t[-300:]!r}")
 
-# --- dup-type in the REPL: redeclaration REPLACES with the note; earlier
-# values keep the old shape [D:dup-type-decl] — the walk's last partial
+# --- dup-type in the REPL: redeclaration replaces with the note; earlier
+# values keep the old shape [D:dup-type-decl]
 keys = [("type T = { a: int }\r", 0.4),
         ("let v = [\"{\\\"a\\\":1}\"] |> from json T\r", 0.6),
         ("type T = { b: string }\r", 0.4),
@@ -280,7 +278,7 @@ if "type T redeclared; earlier values keep the old shape" not in t:
     failures.append(f"the REPL redeclare note must state the replace semantics: {t[-300:]!r}")
 
 # --- the table echo [D:repl-table]: a seq of same-shaped records
-# tabulates under a tty; PIPED output keeps the line rendering (the
+# tabulates under a tty; piped output keeps the line rendering (the
 # pinned surface) — the gate is per-stream, so both halves assert
 d = tempfile.mkdtemp()
 open(d + "/a.txt", "w").write("x" * 70000)
@@ -313,9 +311,9 @@ if "unforced" in t2:
 if "pipe to" in t2:
     failures.append(f"the retired pipe-to hint resurfaced: {t2[-300:]!r}")
 
-# --- the LINES form [D:echo-lines]: seq<string> presents as its lines
+# --- the lines form [D:echo-lines]: seq<string> presents as its lines
 # at a tty (footer keeps the type + the unforced sentence); other seq
-# types keep the literal; the PIPED surface keeps the literal exactly
+# types keep the literal; the piped surface keeps the literal exactly
 t3, _ = run([("[\"lineA\"; \"lineB\"] |> Seq.freeze\r", 0.9)])
 if "\nlineA" not in t3 or "\nlineB" not in t3:
     failures.append(f"a string seq must echo as LINES at a tty: {t3[-300:]!r}")
