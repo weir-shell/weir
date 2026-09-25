@@ -392,13 +392,25 @@ checked after they bind:
 
 ```text
 let sigil () =
-    let branch = git branch --show-current | line
-    $"({branch}) weir> "
+    let dir = pwd |> Seq.head |> Path.fileName
+    let g = git branch --show-current | complete
+
+    let branch =
+        if g.exitCode == 0 then
+            g.stdout |> Seq.tryHead |> Option.defaultValue ""
+        else
+            ""
+
+    let tag = if branch == "" then "" else $" ({branch})"
+    $"≋ {dir}{tag}> "
 
 #session {
     prompt = sigil
 }
 ```
+
+That renders `≋ weir (main)> ` inside a repo and `≋ tmp> ` outside
+one — the `| complete` capture keeps a missing repo from raising.
 
 Colors work — SGR escapes are zero-width for the column math, and a
 reset is appended so they cannot bleed into what you type. Newlines
