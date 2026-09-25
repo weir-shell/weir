@@ -21215,6 +21215,18 @@ let aliasTests =
               Expect.isTrue (Weir.Repl.parseAliasLineForTest "= kubectl" |> Result.isError) "no name"
               Expect.isTrue (Weir.Repl.parseAliasLineForTest "k" |> Result.isError) "no ="
           }
+          test "(k2) the prompt sanitizer keeps SGR alone [D:session-prompt]" {
+              let san = Weir.Repl.sanitizePromptForTest
+              Expect.equal (san "\x1b[32mX\x1b[0m> ") "\x1b[32mX\x1b[0m> \x1b[0m" "SGR survives, reset appended"
+              Expect.equal (san "\x1b]0;evil title\x07x> ") "x> " "an OSC title (BEL-terminated) drops whole"
+              Expect.equal (san "\x1b]8;;http://evil\x1b\\x> ") "x> " "an OSC hyperlink (ST-terminated) drops whole"
+              Expect.equal (san "\x1b]52;c;payload\x07x> ") "x> " "an OSC clipboard write drops whole"
+              Expect.equal (san "\x1bP+q544e\x1b\\x> ") "x> " "a DCS drops whole"
+              Expect.equal (san "\x1b[2Ax> ") "x> " "a non-SGR CSI (cursor move) drops whole"
+              Expect.equal (san "x\x1b") "x" "a dangling ESC drops alone"
+              Expect.equal (san "a\nb\tc") "a b c" "controls flatten to spaces"
+              Expect.equal (san "\x1b]0;unterminated x> ") "]0;unterminated x> " "an unterminated OSC loses its ESC; the rest is inert text"
+          }
           test "(k) the prompt's visible width is terminal cells [D:session-prompt]" {
               Expect.equal (Weir.Repl.visibleWidthForTest "weir> ") 6 "plain ascii"
               Expect.equal (Weir.Repl.visibleWidthForTest "\x1b[32mX\x1b[0m> ") 3 "SGR is zero-width"

@@ -2479,7 +2479,23 @@ WEOF
     n=$(echo "$spout" | grep -cF "using the default prompt")
     [ "$n" = "1" ] || fail "the fallback note prints once per session, got $n"
     echo "$spout" | grep -qF "weir> " || fail "the fallback must render the default prompt: $spout"
-    echo "e2e ok: #session prompt — an init provider paints at a tty (commands run when called), a raising one falls back to the default with one note"
+    # escape injection [D:session-prompt]: only SGR passes — an OSC
+    # (title/clipboard) from attacker-influenced provider output must
+    # not reach the terminal (CWE-150)
+    cat > "$spdir/cfg/weir/init.weir" <<'WEOF'
+let evil () =
+    let esc = $(sh -c "printf '\\033]0;pwned\\007\\033[35mI'") |> Seq.head
+    esc + "> "
+
+#session {
+    prompt = evil
+}
+WEOF
+    spout=$(printf 'SLEEP 900\nSEND 1\\r\nSLEEP 300\nSEND #quit\\r\n' \
+        | XDG_CONFIG_HOME="$spdir/cfg" XDG_STATE_HOME="$spdir/state" python3 "$ptyrun" 10 "$BIN")
+    echo "$spout" | grep -qF ']0;pwned' && fail "an OSC in provider output must be stripped: $spout" || true
+    echo "$spout" | grep -qF '35mI> ' || fail "the SGR beside the dropped OSC survives: $spout"
+    echo "e2e ok: #session prompt — an init provider paints at a tty (commands run when called), a raising one falls back with one note, and only SGR escapes pass"
 else
     echo "e2e skip: streaming-echo pty pins (POSIX + python3)"
 fi

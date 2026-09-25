@@ -59,7 +59,7 @@ let private runeWidth (r: System.Text.Rune) =
 /// combining marks count none [D:session-prompt]
 let private visibleWidth (s: string) =
     let stripped =
-        System.Text.RegularExpressions.Regex.Replace(s, "\x1b\\[[0-9;?]*[A-Za-z]", "")
+        System.Text.RegularExpressions.Regex.Replace(s, "\x1b\\[[0-9;:?]*[A-Za-z]", "")
 
     let mutable w = 0
 
@@ -71,26 +71,76 @@ let private visibleWidth (s: string) =
 /// the width seam for tests [D:session-prompt] (as parseAliasLineForTest is)
 let visibleWidthForTest = visibleWidth
 
-/// compute the prompt for the next entry: default when no provider or
+/// provider output carries SGR color only [D:session-prompt]: OSC
+/// (title, clipboard, hyperlink), DCS, and non-SGR CSI drive the
+/// terminal, and the output can carry attacker-influenced bytes (a
+/// directory name with an ESC in it) — so `ESC [ … m` survives, every
+/// other escape family is dropped whole, and a dangling ESC never
+/// reaches the paint (CWE-150). Runs before control-flattening: the
+/// OSC/DCS terminators (BEL, `ESC \`) must still be present to bound
+/// what gets dropped. computePrompt below: default when no provider or
 /// redirected (a piped session's prompt mirror stays fixed — a provider
-/// could run commands per piped line); otherwise the provider's output,
-/// control characters flattened, colors closed with a reset so they
-/// cannot bleed into the typed text. A raising provider falls back to
-/// the default and says so once per session.
+/// could run commands per piped line); otherwise the provider's output
+/// sanitized here, a raising provider falling back to the default with
+/// one note per session.
+let private keepSgrOnly (s: string) =
+    let rx (pat: string) =
+        System.Text.RegularExpressions.Regex(
+            pat,
+            System.Text.RegularExpressions.RegexOptions.Singleline
+        )
+
+    // \G anchors each Match(s, i) at i — no scanning past the ESC
+    let sgr = rx "\\G\x1b\\[[0-9;:]*m"
+    let csi = rx "\\G\x1b\\[[0-9;:?]*[ -/]*[@-~]"
+    let osc = rx "\\G\x1b\\].*?(\x07|\x1b\\\\)"
+    let dcs = rx "\\G\x1b[PX^_].*?\x1b\\\\"
+
+    let sb = Text.StringBuilder()
+    let mutable i = 0
+
+    while i < s.Length do
+        if s.[i] = '\x1b' then
+            let kept = sgr.Match(s, i)
+
+            if kept.Success then
+                sb.Append kept.Value |> ignore
+                i <- i + kept.Length
+            else
+                let dropped =
+                    [ csi; osc; dcs ]
+                    |> List.tryPick (fun r ->
+                        let m = r.Match(s, i)
+                        if m.Success then Some m.Length else None)
+
+                // an unparseable/unterminated sequence loses its ESC
+                // alone — the rest stays as visible text, driving nothing
+                i <- i + (dropped |> Option.defaultValue 1)
+        else
+            sb.Append s.[i] |> ignore
+            i <- i + 1
+
+    sb.ToString()
+
+/// the sanitizer seam for tests [D:session-prompt]: escapes filtered to
+/// SGR, remaining controls flattened, colors closed with a reset
+let sanitizePromptForTest (raw: string) =
+    let safe = keepSgrOnly raw
+
+    let flat =
+        safe
+        |> String.map (fun c ->
+            if System.Char.IsControl c && c <> '\x1b' then ' ' else c)
+
+    if flat.Contains '\x1b' then flat + "\x1b[0m" else flat
+
 let private computePrompt () =
     match promptProvider with
     | None -> defaultPrompt
     | Some _ when Console.IsInputRedirected -> defaultPrompt
     | Some f ->
         try
-            let raw = f ()
-
-            let flat =
-                raw
-                |> String.map (fun c ->
-                    if System.Char.IsControl c && c <> '\x1b' then ' ' else c)
-
-            if flat.Contains '\x1b' then flat + "\x1b[0m" else flat
+            f () |> sanitizePromptForTest
         with ex ->
             if not promptWarned then
                 promptWarned <- true

@@ -413,7 +413,9 @@ That renders `≋ weir (main)> ` inside a repo and `≋ tmp> ` outside
 one — the `| complete` capture keeps a missing repo from raising.
 
 Colors work — SGR escapes are zero-width for the column math, and a
-reset is appended so they cannot bleed into what you type. Newlines
+reset is appended so they cannot bleed into what you type. Only SGR
+passes: any other escape family in the output (window-title,
+clipboard, hyperlink sequences) is stripped. Newlines
 and other control characters flatten to spaces; the continuation
 prompt pads to the same width. A raising provider falls back to the
 default `weir> ` and says so once on stderr; later failures stay
