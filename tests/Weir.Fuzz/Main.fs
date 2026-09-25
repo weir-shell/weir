@@ -5,10 +5,10 @@ module Fuzz.Main
 //   Invariant 1 (metamorphic equivalence): semantics-neutral transforms
 //     — blank/comment insertion, whole-block re-indent, district ↔
 //     `!(...)`, bare command RHS ↔ `$(...)`, block siblings ↔ `;`,
-//     Stroustrup ↔ inline brackets, and ALL COMPOSED — leave the AOT
+//     Stroustrup ↔ inline brackets, and all composed — leave the AOT
 //     binary's (rc, stdout, stderr) byte-identical.
 //   Invariant 2 (total assembly): assembler/parser/checker return a
-//     Result/diagnostic on every generated program AND every mutated
+//     Result/diagnostic on every generated program and every mutated
 //     neighbor (deletion, indent perturbation, duplication, swap) — no
 //     exception, no hang.
 //   Invariant 3 (span soundness): an injected bad token is reported on
@@ -43,9 +43,9 @@ let private strictSpans = envInt "WEIR_FUZZ_STRICT_SPANS" 1 = 1
 
 // the observed-config report [D:observed-report]: an instrument
 // reports what it measured, never what it was asked for — the driver
-// (tools/fuzz.weir) reads this back and fails LOUD on any mismatch
-// with its requested values (the deep runs that silently ran the
-// defaults are the receipt)
+// (tools/fuzz.weir) reads this back and fails loudly on any mismatch
+// with its requested values (otherwise a deep run silently runs the
+// defaults)
 match Environment.GetEnvironmentVariable "WEIR_FUZZ_REPORT" with
 | null
 | "" -> ()
@@ -55,10 +55,10 @@ type Arbs =
     static member Program() : Arbitrary<Program> =
         Arb.fromGenShrink (genProgram, shrinkProgram)
 
-// invariant 3's DETECTOR CORE [D:walk-findings]: both span properties
-// and the positive controls call THIS, so a control cannot pass against
-// a copy while the real detector rots (the compareRuns/totalityCore
-// mechanism, third instance)
+// invariant 3's detector core [D:walk-findings]: both span properties
+// and the positive controls call this, so a control cannot pass against
+// a copy while the real detector rots (the same mechanism as
+// compareRuns/totalityCore)
 type SpanVerdict =
     | SpanOk
     | SpanNoDiag of string
@@ -90,8 +90,8 @@ let private cfg =
 let private showProgram (lines: string list) =
     lines |> List.map (fun l -> "  |" + l) |> String.concat "\n"
 
-// invariant 1's detector CORE, extracted so the positive control can
-// call it and assert it fires BY NAME [D:walk-findings] — Ok means
+// invariant 1's detector core, extracted so the positive control can
+// call it and assert it fires by name [D:walk-findings] — Ok means
 // byte-identical (rc, stdout, stderr); Error carries the invariant's
 // own failure text
 let private compareRuns (baseLines: string list) (transformed: string list) : Result<unit, string> =
@@ -140,7 +140,7 @@ let private metamorphic (name: string) (transform: Random -> Program -> string l
             | Ok() -> ()
             | Error m -> failtest m)
 
-// invariant 2's detector CORE [D:walk-findings]: run `work` under a
+// invariant 2's detector core [D:walk-findings]: run `work` under a
 // hang bound; Error names throw-or-hang
 let private totalityCore (timeoutMs: int) (label: string) (work: unit -> unit) : Result<unit, string> =
     let task = System.Threading.Tasks.Task.Run work
@@ -160,11 +160,11 @@ let private totality (lines: string list) =
     | Error m -> failtestf "%s\non:\n%s" m (showProgram lines)
 
 // the depth guard's acceptance [D:depth-guard]: a pathological-depth
-// input must DIAGNOSE (an error, not silent acceptance) within the
+// input must diagnose (an error, not silent acceptance) within the
 // hang bound and without crashing the process — a segfault here takes
-// the whole test runner down, so survival IS the no-crash pin.
+// the whole test runner down, so survival is the no-crash pin.
 // 15s, not 5: the biggest seed is ~0.6s of real work, but these run
-// in PARALLEL with the process-spawning metamorphic properties and a
+// in parallel with the process-spawning metamorphic properties and a
 // loaded runner multiplies wall-clock several-fold; a real hang is
 // infinite, so the wider bound loses no detection.
 let private depthDiagnoses (label: string) (line: string) =
@@ -186,7 +186,7 @@ let private depthDiagnoses (label: string) (line: string) =
     | [] -> failtestf "%s: expected an error diagnostic, got none" label
     | _ -> ()
 
-// the TIME axis of invariant 2 [D:depth-guard]: ANY non-termination is
+// the time axis of invariant 2 [D:depth-guard]: any non-termination is
 // the failure — a hang and a crash are different failures, and exit
 // codes cannot see the first. Same detector as depthDiagnoses, lines
 // instead of a line.
@@ -260,18 +260,18 @@ let tests =
           metamorphic "splat-of-literal and inline words agree [D:argv-splat]" (fun rnd p ->
               Transform.splatInline rnd p)
 
-          // the laws must hold under COMPOSITION — where they have
-          // historically failed
+          // the laws must hold under composition, not just one at a
+          // time — composition is where equivalence laws break
           metamorphic "all transforms composed stay output-neutral" (fun rnd p -> Some(Transform.composedAll rnd p))
 
-          // the value-headed pipe ≡ feed equivalence law RETIRED
+          // no value-headed pipe ≡ feed equivalence law here
           // [D:drop-command-builtins]: feed is dropped, so there is no second
           // spelling to compare. The value-headed pipe is pinned by e2e + unit.
 
           // splat-in-reifier equivalence [D:splat-reifier-chains]:
           // `echo m $@([ws]) | reifier` ≡ the inline-words spelling,
           // byte-identical — the splat's elements ride the builtin's argv
-          // with word integrity intact. A DEDICATED generator (reifier
+          // with word integrity intact. A dedicated generator (reifier
           // chains are outside the main grammar's shape list, like the
           // depth axis); adversarial words are pinned by unit + e2e.
           testPropertyWithConfig cfg "splatted reifier chain ≡ inline words, byte-identical"
@@ -324,16 +324,16 @@ let tests =
               totality (Mutate.swapLines rnd (Mutate.duplicateLine rnd lines))
 
           // Invariant 2's depth axis [D:depth-guard]: the generator
-          // favors breadth, so extreme DEPTH is pinned here explicitly —
-          // the three safe-by-design-review fixtures (two were SEGV, one
-          // was O(2^n)) become standing seeds, plus a generated sweep.
+          // favors breadth, so extreme depth is pinned here explicitly —
+          // standing fixture seeds (each name records the failure class
+          // it guards against), plus a generated sweep.
           test "deep parens diagnose-or-bound (was SEGV ~6000)" { depthDiagnoses "parens" (deepNest "(" ")" 20000) }
           test "long operator spine diagnoses-or-bound (was SEGV in check)" { depthDiagnoses "opspine" (opSpine 50000) }
           test "nested brackets diagnose-or-bound (was O(2^n))" { depthDiagnoses "brackets" (deepNest "[" "]" 2000) }
           test "nested records diagnose-or-bound" { depthDiagnoses "records" (deepNest "{a=" "}" 2000) }
 
-          // the TYPE and PATTERN axes, plus the axes the coverage gate
-          // surfaced (index/let-in/fun/elif/field/sigil) — every
+          // the type and pattern axes, plus
+          // index/let-in/fun/elif/field/sigil — every
           // constructor that nests, per the fuzzer-grammar-membership
           // rule [D:depth-guard]
           test "deep seq<> type diagnoses-or-bounds (was SEGV)" {
@@ -439,7 +439,7 @@ let tests =
           }
           test "long elif chain diagnoses-or-bounds (was SEGV)" {
               // 5000 clauses: 10x the ceiling; each clause pays the full
-              // stmtElem alternative cost, and 20000 ran into the hang
+              // stmtElem alternative cost, and 20000 runs into the hang
               // bound under parallel test load without adding coverage
               depthDiagnoses "elif" ("let x = if true then 1 " + String.replicate 5000 "elif true then 1 " + "else 2")
           }
@@ -451,7 +451,7 @@ let tests =
           }
 
           // the post-parse seam [D:depth-guard]: parse depth ~1, but each
-          // line DOUBLES the inferred type — the inference budget must
+          // line doubles the inferred type — the inference budget must
           // convert "no answer, forever" into a located diagnostic
           test "the inference bomb diagnoses inside the budget (was: hang, forever)" {
               diagnosesWithinBound
@@ -501,11 +501,11 @@ let tests =
                   let physLine = idx + 1
                   let extent = line.Length + 5
 
-                  // [D:diag-arbitration]: the PRIMARY error lands at the
-                  // true physical site — no backtrack-note escape hatch.
-                  // The hatch existed for the district-wrap class (the
-                  // consumed-separator law [D:seq-commit][D:arm-commit]
-                  // closed it), so the assertion holds the primary itself.
+                  // [D:diag-arbitration]: the primary error lands at the
+                  // true physical site — no backtrack-note escape hatch;
+                  // the consumed-separator law [D:seq-commit][D:arm-commit]
+                  // covers the district-wrap class, so the assertion
+                  // holds the primary itself.
                   match spanSoundCore injected physLine extent with
                   | SpanOk -> ()
                   | SpanNoDiag m -> failtestf "%s:\n%s" m (showProgram injected)
@@ -527,8 +527,8 @@ let tests =
               | []
               | [ _ ] -> () // need two distinct sites to arbitrate between
               | _ ->
-                  // [D:diag-arbitration]: "furthest the parser REACHED", not
-                  // "latest in the file" — with two obstructions the FIRST is
+                  // [D:diag-arbitration]: "furthest the parser reached", not
+                  // "latest in the file" — with two obstructions the first is
                   // where the parse stops, so the shallower (first-reached)
                   // junk owns the report; a deeper junk downstream must not
                   // steal it or corrupt its position.
@@ -555,12 +555,12 @@ let tests =
                       if strictSpans then
                           failtestf "first-reached %s\n%s" m (showProgram injected)
 
-          // check agrees with run [PLAN-refactor-followups 1]: the tree's
+          // check agrees with run [PLAN-refactor-followups 1]: the
           // most-repeated failure shape is the assume-resolver (check)
           // and the hard resolver (run) disagreeing about what a name
-          // is — five incidents, one predicate (Script.assumeResolver),
-          // and until now nothing asserting agreement. For every
-          // generated program: parse each logical line under BOTH
+          // is — one predicate (Script.assumeResolver), so agreement
+          // needs a standing assertion. For every
+          // generated program: parse each logical line under both
           // resolvers (same sexpr), then check under both (same
           // verdict). Generated heads are echo/real, so the hard
           // resolver resolves them exactly as the runner would.
@@ -678,15 +678,14 @@ let tests =
 
 
 // ---- positive controls [D:walk-findings] ----------------------------
-// A control that ran once is not a control: the DECISIONS walk found
-// the equality detector's bring-up evidence gone from the tree, so
-// nothing distinguished "the detector works" from "the detector never
+// A control that ran once is not a control: without standing controls
+// nothing distinguishes "the detector works" from "the detector never
 // fires" — the vacuous-probe class at the harness's own root. Each
-// control below feeds its invariant's detector a case that MUST fail,
+// control below feeds its invariant's detector a case that must fail,
 // and asserts the failure carries the invariant's own words (a control
 // that passes because something threw is the disease it treats). These
-// are cheap (fixed inputs, two spawns) and run in the SMOKE, so they
-// cannot drift back to bring-up status.
+// are cheap (fixed inputs, two spawns) and run in the smoke, so they
+// cannot drift to bring-up-only status.
 [<Tests>]
 let positiveControls =
     testList

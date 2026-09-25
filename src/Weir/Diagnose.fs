@@ -19,7 +19,7 @@ let hint
         let head = trimmed |> Seq.takeWhile isIdentCont |> System.String.Concat
         let tail = trimmed.Substring(head.Length).TrimStart()
 
-        // Command-callable heads (cd) parse in COMMAND mode even
+        // Command-callable heads (cd) parse in command mode even
         // though they are bindings — the hint must not claim
         // "expression mode" for them.
         if head = "" || tail = "" || not (isKnown head) || isCommandCallable head then

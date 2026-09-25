@@ -6,24 +6,24 @@ open Weir.Types
 // Option is the only prelude type: weir's error model is exceptions
 // (`fail`/partial builtins), exit codes, and `Completed` from command
 // interaction — never a Result value. `Option` earns its place (the
-// `try*` family returns one); a Result nothing produced or consumed was
-// removed [D:no-result].
+// `try*` family returns one); a Result type nothing would produce or
+// consume has no place [D:no-result].
 let source =
     [ "type Option<'a> = Some of 'a | None"
-      // the YAML node union [D:yaml-v1] — declared in weir's OWN source
-      // (the Option precedent), so constructors, Show, and the class laws
-      // all fall out of existing machinery. Value-domain answers, probed:
-      // Show renders the recursion; Eq REJECTS it by the existing no-seq
-      // rule with its own teaching text (no new rule). YMap preserves KEY
-      // ORDER (the user-controlled escape from record-field alphabetical
-      // rendering); no float case — weir has no float scalar.
+      // the YAML node union [D:yaml-v1] — declared in weir's own source
+      // (as Option is), so constructors, Show, and the class laws
+      // all fall out of existing machinery. Value-domain behavior:
+      // Show renders the recursion; Eq rejects it by the existing no-seq
+      // rule with its own teaching text (no new rule). YMap preserves key
+      // order (the user-controlled escape from record-field alphabetical
+      // rendering).
       "type Yaml = YStr of string | YInt of int | YFloat of float | YBool of bool | YNull | YSeq of seq<Yaml> | YMap of seq<string * Yaml>"
-      // the bounded-loop option records [D:retry-poll] — the types ARE
+      // the bounded-loop option records [D:retry-poll] — the types are
       // the reference: keys, shapes, and (via Retry.defaults /
       // Poll.defaults) the resting values
       "type Retry = { attempts: int; delay: Duration; timeout: Option<Duration> }"
       "type Poll = { timeout: Duration; interval: Duration }"
-      // the typed request boundary [D:http] — field names are PUBLIC API
+      // the typed request boundary [D:http] — field names are public API
       // Other carries a well-formed but unlisted verb [D:serve-method]:
       // a proxy may forward TRACE/QUERY-shaped tokens the union does not
       // name, so the server reads it as `Other v` (route on it, answer 405
@@ -32,23 +32,23 @@ let source =
       "type HttpMethod = Get | Post | Put | Delete | Patch | Head | Options | Query | Other of string"
       "type Auth = NoAuth | Bearer of Secret | Basic of string * Secret"
       // the shared body union [D:http] [D:http-serve]: NoBody/Json/Text
-      // are the client-and-server cases; Stream is the SERVER response's
+      // are the client-and-server cases; Stream is the server response's
       // lazy line source — pulled and written chunked as produced
-      // (SSE-shaped), the streaming precedent print sets, server-side. On
-      // the CLIENT send path a Stream body materializes (request-body
+      // (SSE-shaped), the pattern print set for streaming, server-side. On
+      // the client send path a Stream body materializes (request-body
       // streaming is out of scope v1).
       "type HttpBody = NoBody | Json of seq<string> | Text of string | Stream of seq<string>"
       "type HttpRequest = { method: HttpMethod; url: string; auth: Auth; headers: seq<string * string>; secretHeaders: seq<string * Secret>; body: HttpBody; timeout: Duration; insecure: bool }"
       "type HttpResponse = { status: int; headers: seq<string * string>; body: seq<string> }"
-      // the SERVER boundary [D:http-serve] — the ring protocol study's
+      // the server boundary [D:http-serve] — the ring protocol study's
       // minimal surface. One family: HttpMethod + header pairs + the body
-      // union are SHARED with the client; the server records differ where
+      // union are shared with the client; the server records differ where
       // the wire differs (a path+query, not a url; no auth/timeout — those
       // are client concerns). maxConcurrent is the handler ceiling, the
       // pmapWith concurrency-law on the scope.
       // bodyTimeout bounds the request-body read [D:serve-body-timeout]:
-      // a slow client dribbling its body no longer parks a handler slot
-      // unboundedly. OPTIONAL in the config literal — omit it and it rests
+      // a slow client dribbling its body cannot park a handler slot
+      // unboundedly. Optional in the config literal — omit it and it rests
       // at 30s (the serve config accepts `{ port; maxConcurrent }` and
       // `{ port; maxConcurrent; bodyTimeout }` both); exhaustion refuses
       // the request (408), bounded.
@@ -87,7 +87,7 @@ let extend (typeEnv: TypeEnv) (valueEnv: Eval.Env) : TypeEnv * Eval.Env =
             | _ -> failwith $"prelude: expected a declaration: {line}")
         (typeEnv, valueEnv)
     |> fun (te, ve) ->
-        // register every type name present at prelude-close as BUILT-IN
+        // register every type name present at prelude-close as built-in
         // [D:desugar-capture]: a later user declaration of one is a
         // located error, not a silent retype of the builtins behind it
         Check.preludeLoading.Value <- false
@@ -95,11 +95,11 @@ let extend (typeEnv: TypeEnv) (valueEnv: Eval.Env) : TypeEnv * Eval.Env =
         for name in te.Types |> Map.keys do
             Check.builtinTypeNames.TryAdd(name, 0uy) |> ignore
 
-        // def-LESS builtins: type constructors with no Record/Union
+        // def-less builtins: type constructors with no Record/Union
         // entry — Map [D:map-string], the Proc handle [D:scoped-procs],
         // and the patch district's type [D:yaml-nodes]. Without this a
         // user `type Proc = …` would silently retype every scoped-process
-        // binder behind it. The arity-0 pair rides Check's ONE list, so
+        // binder behind it. The arity-0 pair rides Check's one list, so
         // registration and signature nameability cannot drift.
         for name in "Map" :: Check.deflessBuiltinNominals do
             Check.builtinTypeNames.TryAdd(name, 0uy) |> ignore

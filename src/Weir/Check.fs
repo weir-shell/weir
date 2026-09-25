@@ -144,7 +144,7 @@ and TypedKind =
         seqOf: bool *
         mapOf: bool
     // from yaml T [D:yaml-v1]: eval has no env.Types, so the checker packs
-    // the resolved target tree (the [D:env-enums] precedent)
+    // the resolved target tree (the pattern [D:env-enums] set)
     | TEFromYaml of tyName: string * shape: Yaml.Shape * stream: bool
     | TETo of
         format: string *
@@ -621,7 +621,7 @@ let private demand (ctx: Ctx) (env: TypeEnv) (p: Pending) (ty0: Ty) : Result<uni
             // that the generic decompose would reject. The value-level Eq
             // (Value.Equals) forces the seqs and compares them; the Secret
             // in HttpSend compares via VSecret's own Eq. Explicit carve-out
-            // (the Proc-Show precedent — a named type gets its own arm).
+            // (as Proc-Show does — a named type gets its own arm).
             | Cls.Eq, TNamed(("Op" | "Plan"), _) -> true
             | Cls.Eq, TNamed(n, targs) -> decompose n targs
             // Show: no function anywhere; seqs render fine
@@ -1601,7 +1601,7 @@ let rec private yamlableOut (span: Span) (env: TypeEnv) (seen: Set<string>) (pat
             $"{at}type {formatTy ty} cannot cross the yaml boundary (scalars, records, seqs, seq<string * _>, Option, Yaml)"
 
 // One Regex instance per distinct literal, shared by check and eval
-// (the snippet-hash-cache precedent). Interpreted mode only —
+// (same shape as the snippet-hash-cache). Interpreted mode only —
 // RegexOptions.Compiled is Reflection.Emit, banned by the AOT rule
 // [D:regex-pattern].
 let private regexCache =
@@ -3387,8 +3387,8 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
     | ESlice(target, lo, hi) ->
         // a type-directed node [D:range-slicing]: the target's
         // resolved type picks substring vs subsequence. Bounds are
-        // ints; an unconstrained target defaults to a sequence (the `x[i]`
-        // precedent — `|seqItem` unifies to seq), so a string slice needs a
+        // ints; an unconstrained target defaults to a sequence (as `x[i]`
+        // does — `|seqItem` unifies to seq), so a string slice needs a
         // known-string target and `fun xs -> xs[a..b]` is seq-typed.
         result {
             let! ttarget = infer ctx env target
@@ -3721,7 +3721,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                     let n = defaultArg tyName "T"
                     err expr.Span $"'from yaml' does not take Map<string, {n}> yet — 'from json' does"
                 elif fmt = "table" && seqOf then
-                    // the jsonl precedent: rows are already plural
+                    // matching jsonl: rows are already plural
                     let n = defaultArg tyName "Row"
                     err expr.Span $"'from table {n}' already yields seq<{n}> — write from table {n}"
                 elif fmt = "table" && mapOf then
@@ -4054,7 +4054,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
             let! tscrutinee = infer ctx env scrutinee
 
             // Bool patterns default an unresolved scrutinee to bool — the same
-            // defaulting precedent as the operator and splice rules.
+            // defaulting as in the operator and splice rules.
             do!
                 match resolve ctx tscrutinee.Ty with
                 | TVar _ when arms |> List.exists (fun (p, _, _) -> p.PKind.IsPBool) ->
@@ -5594,7 +5594,7 @@ let rec private validateTy
         let arity =
             if n = selfName then
                 Some selfArity
-            // nameable like any nominal, the Map precedent (arity 0)
+            // nameable like any nominal, as Map is (arity 0)
             elif List.contains n deflessBuiltinNominals then
                 Some 0
             else

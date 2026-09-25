@@ -1322,7 +1322,7 @@ let private readLineTty () : string option =
     result |> Option.defaultValue None
 
 // rooted: a collected PosixSignalRegistration disposes and stops
-// cancelling — the sweep-hook roots set the precedent [D:exit-hook]
+// cancelling — the pattern the sweep-hook roots set [D:exit-hook]
 let mutable private sigintSurvival: obj option = None
 
 // true only when the tty editor exists [D:repl-isig]: the eval-boundary
@@ -2253,7 +2253,7 @@ let private findDirective (te: TypeEnv) (query: string) =
     else
         Console.WriteLine(renderHelp (findFallback te query))
 
-/// test seams [D:help-find] (the parseAliasLineForTest precedent): the
+/// test seams [D:help-find] (as parseAliasLineForTest does): the
 /// deterministic pieces, against the builtin session env
 let helpTextForTest (arg: string) : string = helpDirective false initial.TypeEnv arg
 

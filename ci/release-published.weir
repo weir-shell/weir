@@ -4,15 +4,13 @@
 // does not make the installers serve the release; a human must publish.
 // The check is latest's tag == the newest stable tag, never bare
 // reachability: once any release is published /latest answers 200
-// forever, so a 200 proves nothing about the tag just cut (the blind
-// spot that let a publish-wait poll report v0.0.31 shipped while
-// /latest still served v0.0.29). A burned tag ages out on its own: the
-// next release makes a newer tag the newest, and the burned one is
-// never demanded again (the v0.0.30 precedent) — but the aging-out
-// window is red and blocks the superseding release's own PR (the check
-// eating its repair, the shape [D:release-assets] reversed with
-// known-incomplete): ci/release-burned.yaml acknowledges the burn for
-// that window [D:burned-tag-ack].
+// forever, so a 200 proves nothing about the tag just cut. A burned
+// tag ages out on its own: the next release makes a newer tag the
+// newest, and the burned one is never demanded again — but the
+// aging-out window is red and blocks the superseding release's own PR
+// (the check eating its repair, the shape [D:release-assets] reversed
+// with known-incomplete): ci/release-burned.yaml acknowledges the burn
+// for that window [D:burned-tag-ack].
 
 let repo = "weir-shell/weir"
 
@@ -81,8 +79,8 @@ if rel.status == 200 then
     let latest = (rel.body |> from json {| tag_name: string |}).tag_name
     if latest == newest then
         print $"releases/latest is {latest} — the newest stable tag is published"
-        // published is necessary, not sufficient [D:release-assets]:
-        // v0.0.40 published with 5 of 10 assets (a transient 500
+        // published is necessary, not sufficient [D:release-assets]: a
+        // release once published with half its assets (a transient 500
         // mid-upload + a partial manual recovery slipped past the draft
         // review), and a published release is immutable. The expected
         // asset list's single copy lives in ci/release-assets.weir —

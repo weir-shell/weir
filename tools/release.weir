@@ -1,7 +1,7 @@
 /// The interactive release driver: preflight, then each mutation of the
 /// ritual behind its own confirm — cut+push the tag, wait for the
 /// publish, bump the grammar's TARGET, prepare the zed rev bump. The
-/// ordering that burned v0.0.25/26/30 lives in this script, not in
+/// ordering the gates exist for lives in this script, not in
 /// memory. Run from the weir repo root, at a terminal:
 ///
 ///     weir tools/release.weir --tag v0.0.31

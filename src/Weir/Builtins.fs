@@ -1810,8 +1810,8 @@ let private averageImpl: Value =
         | v -> unreachable $"the checker rejects 'average' on {formatValue v}")
 
 // the per-type sums and means [D:seq-gaps]: Seq.sum stays seq<int> ->
-// int; Float/Size/Duration own theirs (module-qualified, the
-// Duration.sleep precedent) — a general numeric sum needs a class weir
+// int; Float/Size/Duration own theirs (module-qualified, as
+// Duration.sleep is) — a general numeric sum needs a class weir
 // does not have
 let private typedSumImpl (name: string) (get: Value -> int64) (mk: int64 -> Value) : Value =
     VBuiltin(fun s ->
@@ -2252,7 +2252,7 @@ let private optionIterImpl: Value =
 // fallback first so the pipe reads data-last (F#'s order):
 // `opt |> Option.orElse fallback`. Stays in Option, where
 // defaultValue unwraps. The fallback is an ordinary (eager) argument;
-// an orElseWith twin is parked on the defaultWith precedent.
+// an orElseWith twin would follow defaultWith's shape; parked.
 let private optionOrElseImpl: Value =
     VBuiltin(fun fallback ->
         VBuiltin(fun opt ->
@@ -2679,8 +2679,8 @@ let private logMember (level: int) (code: string) (label: string) : Value =
             VUnit
         | v -> unreachable $"the checker rejects logging {formatValue v}")
 
-// the With twins: the thunk runs only when the level passes — the
-// Option.defaultWith precedent for the expensive-argument case (weir
+// the With twins: the thunk runs only when the level passes — the same
+// shape as Option.defaultWith for the expensive-argument case (weir
 // has no lazy argument position, stated in the docs)
 let private logWithMember (level: int) (code: string) (label: string) : Value =
     VBuiltin(fun f ->
@@ -3009,8 +3009,8 @@ let private dirMembers: (string * Ty * Value) list =
               if not (System.IO.Directory.Exists r) then
                   failwith $"Dir.list: no such directory: {r}"
 
-              // full paths, files and directories, sorted (the glob
-              // precedent), eager (a listing is bounded); ** recursion
+              // full paths, files and directories, sorted (as glob
+              // does), eager (a listing is bounded); ** recursion
               // is Path.glob's job
               VSeq(
                   ioGuarded "Dir.list" r (fun () ->
@@ -6066,7 +6066,7 @@ let commandCallable: Set<string> = Set [ "cd" ]
 
 // desugar-internal aliases [D:desugar-capture]: every name a desugar
 // references, re-registered under a `|`-prefixed un-typeable key (the
-// reifier precedent, second use) — the same scheme and value objects
+// reifier's trick, second use) — the same scheme and value objects
 // as the public members, so the sugar and the manual spelling cannot
 // diverge (pinned by reference equality). A user constructor named
 // Seq or a shadowed print no longer changes what a rewrite means.

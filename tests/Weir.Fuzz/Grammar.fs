@@ -2,7 +2,7 @@ module Fuzz.Grammar
 
 // The generator grammar of the assembler fuzzer [D:fuzz-harness].
 // Valid-by-construction programs from a combinator grammar of weir's
-// LINE SHAPES — the subject is line-shape composition, never type
+// line shapes — the subject is line-shape composition, never type
 // complexity, so expression bodies stay trivial (unique print/echo
 // markers, small ints, safe strings). The committed coverage statement
 // (which shapes this grammar can produce, which it cannot yet) lives
@@ -65,10 +65,10 @@ type Stmt =
     | SLetMatch of string * MatchE
     | SLetUnionMatch of name: string * uVar: string * arms: (string * string option * Expr) list
     | SPrint of Expr
-    // floats [D:floats]: Eq is EXCLUDED, so float expressions never
+    // floats [D:floats]: Eq is excluded, so float expressions never
     // join the CCmp "==" arms — arithmetic, Ord comparisons and
-    // show/interp are the float surface (the first class decision to
-    // shape the generator; stated in GRAMMAR.md)
+    // show/interp are the float surface (a class decision that shapes
+    // the generator; stated in GRAMMAR.md)
     | SFloat of name: string * a: float * op: string * b: float * cmp: float option
     // retry/poll [D:retry-poll]: single-attempt deterministic shapes —
     // the until threshold sits below the value, so the first attempt
@@ -84,7 +84,7 @@ type Stmt =
     | SEcho of string list
     | SDistrict of bid: int * headed: Cond option * cmds: string list list
     | SCmdLet of binder: string * words: string list
-    // command-RHS block lets in STATEMENT bodies [D:statement-lets]:
+    // command-RHS block lets in statement bodies [D:statement-lets]:
     // an if-body `let` takes the command grammar (bare and `| complete`
     // spellings) — self-contained: the binder's reader renders beside
     // it, so nothing escapes the body and the unused-binding law holds
@@ -92,14 +92,14 @@ type Stmt =
     | SBodyCmdLet of binder: string * marker: string * word: string * reify: bool
     | SSeqPrint of string // xs |> print (seq<string> binders only)
     // a `readonly` block [D:pure-stage2]: a bare head + an indented
-    // PURE body (an int expression — pure is trivially read-only, so
+    // pure body (an int expression — pure is trivially read-only, so
     // it checks clean under the ambient-input ceiling), bound and read.
-    // The pure precedent left the generator untouched (`readonly` is
-    // ungenerable as a v{n}/w{n} name); this extends it so invariant 1
-    // exercises the new parser+checker path.
+    // `readonly` is ungenerable as a v{n}/w{n} name (as `pure` is), so
+    // without this shape nothing would reach the head; it exists so
+    // invariant 1 exercises the readonly parser+checker path.
     | SReadonly of binder: string * body: Expr
     // a `plan` block [D:plan-apply]: a bare head + an indented body that
-    // File.writes a fixed path (a captured mutation — the write does NOT
+    // File.writes a fixed path (a captured mutation — the write does not
     // perform, it appends a WriteFile Op), bound and read via Plan.isEmpty
     // — so invariant 1 exercises the plan parser + the eval interception.
     | SPlan of binder: string
@@ -123,7 +123,7 @@ type Stmt =
         closerAlone: bool
     // a yaml district [D:yaml-district]: literal keys, scalar/splice
     // values, one optional nested map; rendered with a trailing
-    // `binder |> to yaml |> print` so output identity SEES it
+    // `binder |> to yaml |> print` so output identity sees it
     | SYaml of bid: int * binder: string * entries: (string * YVal) list
 
 and YVal =
@@ -141,7 +141,7 @@ type Program = { Stmts: Stmt list }
 
 // ---------------------------------------------------------------------------
 // Rendering. `extra bid` adds uniform indent to that block's lines —
-// the re-indent transform IS a render config (offside is relative), so
+// the re-indent transform is a render config (offside is relative), so
 // transformed programs are well-formed by construction too.
 
 let private atomic =
@@ -177,7 +177,7 @@ let private renderPat (a: LitArm) : string =
     | ALit(e, _) -> renderExpr e
     | AGuard(b, c, _) -> $"{b} when {renderCond c}"
 
-// Render configuration: every field is a semantics-NEUTRAL spelling
+// Render configuration: every field is a semantics-neutral spelling
 // choice the ledger claims equivalent, so a transformed program is
 // well-formed by construction.
 type RenderCfg =
@@ -214,7 +214,7 @@ let private printArg (e: Expr) =
     | e -> $"({renderExpr e})"
 
 // Lines carry a tag for the span-soundness invariant: true = expression
-// territory (an appended bad token must error HERE); false = command
+// territory (an appended bad token must error here); false = command
 // territory (junk becomes argv, not an error).
 // ---------------------------------------------------------------------------
 // defs/uses — names are program-unique, so dependency closure for the
@@ -325,9 +325,9 @@ let rec stmtUses (s: Stmt) : string list =
     | SIterLambda _
     | SMapLambda _ -> []
 
-// every name a RENDER of this statement references, recursive and
+// every name a render of this statement references, recursive and
 // unfiltered [D:unused-bindings]: the renamer's oracle. Differs from
-// stmtUses two ways — nested block bodies contribute their OWN uses
+// stmtUses two ways — nested block bodies contribute their own uses
 // (a block-local binder's reader is inside the block), and the
 // statements that render a trailing self-print (SFloat, SRetryPoll,
 // SYaml) count as their own readers, exactly as the emitted text does.
@@ -415,7 +415,7 @@ let renderTagged (cfg: RenderCfg) (p: Program) : (string * bool) list =
     let rec emitMatch (ind: int) (m: MatchE) =
         // head at ind; arms at ind + extra (a group may sit deeper
         // than its head uniformly).
-        // A third of FLAT matches render as the `function` spelling
+        // A third of flat matches render as the `function` spelling
         // [D:function-keyword] — `(function | arms) scrut` is the same
         // match by definition, so every invariant must hold across the
         // alternation; the coin is Bid parity (deterministic per seed)
@@ -474,14 +474,14 @@ let renderTagged (cfg: RenderCfg) (p: Program) : (string * bool) list =
         match s with
         | SLet(v, e) -> emit ind $"let {bindName v} = {renderExpr e}"
         | SReadonly(v, body) ->
-            // a bare `readonly` head [D:pure-stage2] + a PURE body
+            // a bare `readonly` head [D:pure-stage2] + a pure body
             // (trivially read-only — checks clean), bound and read
             emit ind $"let {bindName v} ="
             emit (ind + 4) "readonly"
             emit (ind + 8) (renderExpr body)
             emit ind $"print $\"{{{v}}}\""
         | SPlan v ->
-            // a bare `plan` head [D:plan-apply] + a CAPTURED write (the
+            // a bare `plan` head [D:plan-apply] + a captured write (the
             // write does not perform — it becomes a WriteFile Op); bound
             // and read via Plan.isEmpty (which forces the ops seq)
             emit ind $"let {bindName v} ="
@@ -552,7 +552,7 @@ let renderTagged (cfg: RenderCfg) (p: Program) : (string * bool) list =
         | STypeRec(n, fields, style) ->
             // inline styles have no line above the field for a `///` doc, so
             // they carry none; only the own-line RStroustrup style docs its
-            // fields [D:doc-help] (the [<Doc>] attribute retired)
+            // fields [D:doc-help]
             let fieldText (_attr, f, ty) = $"{f}: {tyText ty}"
 
             let style =
@@ -571,12 +571,11 @@ let renderTagged (cfg: RenderCfg) (p: Program) : (string * bool) list =
                 for (attr, f, ty) in fields do
                     match attr with
                     | Some d ->
-                        // a `///` doc + its field form ONE entry, both at the
+                        // a `///` doc + its field form one entry, both at the
                         // anchor column (the doc-alignment lint governs this).
-                        // TAG FALSE: a doc line is COMMENT territory — junk
-                        // appended to it becomes legal doc TEXT, never an
-                        // error (the span invariant must not target it; the
-                        // fresh-seed find of the coverage audit)
+                        // Tagged false: a doc line is comment territory — junk
+                        // appended to it becomes legal doc text, never an
+                        // error, so the span invariant must not target it
                         emitCmd entryInd $"/// {d}"
                         emit entryInd $"{f}: {tyText ty}"
                     | None -> emit entryInd $"{f}: {tyText ty}"
@@ -732,7 +731,7 @@ let renderTagged (cfg: RenderCfg) (p: Program) : (string * bool) list =
             | _ -> emitCmd ind ("echo " + String.concat " " words)
         | SDistrict(bid, headed, cmds) when cfg.ExplicitDistrict bid ->
             // the arming equivalence [D:interior-arming]: a bare command
-            // statement = `!(...)` — the retirement's surviving transform
+            // statement = `!(...)` — the bare-vs-!() spelling, per line
             let line cmd = "!(echo " + String.concat " " cmd + ")"
 
             match headed with
@@ -745,12 +744,12 @@ let renderTagged (cfg: RenderCfg) (p: Program) : (string * bool) list =
                 for cmd in cmds do
                     emitCmd ind (line cmd)
         | SDistrict(bid, headed, cmds) ->
-            // RETARGETED at the district retirement
-            // [D:district-retirement]: the same coverage now renders the
-            // ARMING rule's spelling — bare command statements (headed:
-            // in an if body; standalone: at the statement level) — and
-            // the ExplicitDistrict transform is the bare-vs-!() sigil
-            // EQUIVALENCE, the arming rule's own metamorphic property
+            // districts are retired [D:district-retirement]: this
+            // coverage renders the arming rule's spelling — bare command
+            // statements (headed: in an if body; standalone: at the
+            // statement level) — and the ExplicitDistrict transform is
+            // the bare-vs-!() sigil equivalence, the arming rule's own
+            // metamorphic property
             (match headed with
              | Some c -> emitCmd ind $"if {renderCond c} then"
              | None -> ())
@@ -779,7 +778,7 @@ let renderTagged (cfg: RenderCfg) (p: Program) : (string * bool) list =
                 emit ind $"{bindName g} |> print"
         | SSeqPrint x -> emit ind $"{x} |> print"
         | SYaml(bid, d, entries) ->
-            // marker line: NON-error territory — under the assume
+            // marker line: non-error territory — under the assume
             // resolver, junk after `yaml` re-reads as a command's argv
             // (the verdict-split shape the agreement property hunts),
             // so the span invariant must not target it
@@ -858,8 +857,8 @@ let blockIds (p: Program) : int list =
 // ---------------------------------------------------------------------------
 // Generator. Scope threads in-scope names by type; Fresh/Marker/Bid are
 // global counters (unique names make the shrinker's closure sound).
-// Placement rules the probes established: bare command statements
-// (echo, standalone districts) are TOP-LEVEL/if-body only — inside a
+// Placement rules: bare command statements
+// (echo, standalone districts) are top-level/if-body only — inside a
 // let-block body a bare command line becomes the let's command RHS and
 // `;`-joins its successor; headed districts (`if ... then !`) are legal
 // in nested positions; type declarations are top-level only.
@@ -929,12 +928,12 @@ let private genSafeWord: Gen<string> =
         return $"w{n}"
     }
 
-// generated int VALUES stay <= intCap by CONSTRUCTION [D:generator-overflow]:
+// generated int values stay <= intCap by construction [D:generator-overflow]:
 // a program reusing `let vN = v(N-1) * v(N-1)` across statements grows
 // 99^(2^N) and overflows int64 at runtime — weir's overflow detection then
 // rejects the base, and the metamorphic harness needs base rc=0. Bounding the
 // value keeps every generated program runnable; the assembler invariants care
-// about STRUCTURE, not magnitude, so `var * var` (excluded to hold the bound)
+// about structure, not magnitude, so `var * var` (excluded to hold the bound)
 // costs no coverage — its rendering is identical to any other EBin.
 let private intCap = 1_000_000_000L
 
@@ -1212,9 +1211,9 @@ let rec genStmt (sc: Scope) (depth: int) (inBlock: bool) : Gen<Stmt * Scope> =
                       return SRetryPoll(v, isPoll, value), sc
                   }
 
-          // a `readonly` block [D:pure-stage2]: a PURE int body,
+          // a `readonly` block [D:pure-stage2]: a pure int body,
           // trivially read-only, so it checks clean under the ambient
-          // ceiling — exercises the new standalone head + the enforcement
+          // ceiling — exercises the standalone head + the enforcement
           if not inBlock then
               yield
                   2,
@@ -1644,7 +1643,7 @@ let rec genStmt (sc: Scope) (depth: int) (inBlock: bool) : Gen<Stmt * Scope> =
 
 // unit-typed statements only (if bodies). Every if body is expression
 // territory — a bare command line is an unbound variable there, at any
-// nesting; districts are THE command spelling in bodies.
+// nesting; districts are the command spelling in bodies.
 and genUnitStmt (sc: Scope) (depth: int) (inBlock: bool) : Gen<Stmt * Scope> =
     let candidates =
         [ yield
@@ -1656,7 +1655,7 @@ and genUnitStmt (sc: Scope) (depth: int) (inBlock: bool) : Gen<Stmt * Scope> =
               }
 
           // a command-RHS let in the statement body [D:statement-lets]:
-          // the new position's fuzz coverage — bare and reified
+          // this position's fuzz coverage — bare and reified
           // spellings, the binder read in place
           yield
               2,
@@ -1737,7 +1736,7 @@ let shrinkProgram (p: Program) : seq<Program> =
 
 // ---------------------------------------------------------------------------
 // Transforms (invariant 1) and mutators (invariant 2). Blank and
-// comment insertion are LINE surgery on the rendered program (the laws
+// comment insertion are line surgery on the rendered program (the laws
 // claim total transparency — any position is fair); re-indent is a
 // render config (offside is relative).
 
@@ -1763,8 +1762,8 @@ module Transform =
 
         ls
 
-    // trailing comments are transparent on any CODE line
-    // [D:trailing-comments]; district content is BYTES (appending would
+    // trailing comments are transparent on any code line
+    // [D:trailing-comments]; district content is bytes (appending would
     // change output) and blanks keep their line class
     let appendTrailing (rnd: Random) (lines: string list) : string list =
         let mask = Weir.Script.districtContentMask lines
@@ -1894,7 +1893,7 @@ module Transform =
 
     // everything at once: random subsets of every spelling flip + one
     // re-indent, then comment and blank surgery over the result — the
-    // laws must hold under COMPOSITION
+    // laws must hold under composition
     let composedAll (rnd: Random) (p: Program) : string list =
         let sub (xs: 'a list) =
             Set.ofList (xs |> List.filter (fun _ -> rnd.Next 2 = 0))

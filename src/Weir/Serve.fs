@@ -4,38 +4,38 @@ module Weir.Serve
 // (like Http.fs, the client twin): primitives in, primitives out, no
 // Value dependency, so Builtins owns the Value<->primitive translation.
 // HttpListener is already AOT-linked (System.Net), so this adds ~0
-// dependency bytes. This module OWNS the socket lifetime: Serve.start
+// dependency bytes. This module owns the socket lifetime: Serve.start
 // opens the listener, the caller drives an accept loop, Serve.stop
 // closes it — the within-serve scope wires stop to the finally +
-// signal hook so the socket frees on EVERY exit [D:http-serve].
+// signal hook so the socket frees on every exit [D:http-serve].
 
 open System
 open System.Net
 open System.Text
 
-// the request as flat primitives, the SERVER mirror of Http.Req: no
+// the request as flat primitives, the server mirror of Http.Req: no
 // url (path + query instead), no auth/timeout/insecure (client
 // concerns) — the shared family is HttpMethod + header pairs + the
 // body union, never a second copy [D:http-serve]
 type SReq =
     { Method: string
       Path: string
-      // the raw query string WITHOUT the leading '?' (empty when none);
+      // the raw query string without the leading '?' (empty when none);
       // the handler splits it (weir's Str.splitOnce / Http.withQuery
       // shape), so the server stays out of query-DSL business
       Query: string
       Headers: (string * string) list
       Body: string }
 
-// the response body, the server side of the SHARED HttpBody union
+// the response body, the server side of the shared HttpBody union
 // [D:http-serve]: NoBody/Text/Json mirror the client cases; Stream is
-// the SERVER-ONLY case — a lazy line source written chunked as it is
-// pulled (SSE-shaped), the streaming precedent print sets, server-side
+// the server-only case — a lazy line source written chunked as it is
+// pulled (SSE-shaped), the pattern print set for streaming, server-side
 type SBody =
     | RNoBody
     | RText of string
     | RJson of string
-    // the lazy body [D:http-serve]: each element written and FLUSHED as
+    // the lazy body [D:http-serve]: each element written and flushed as
     // produced, so a client sees bytes before the seq ends (the
     // incremental law the acceptance pins). Chunked transfer, one SSE
     // `data:` line per element.
@@ -46,35 +46,35 @@ type SResp =
       Headers: (string * string) list
       Body: SBody }
 
-// the listener handle: the socket lifetime lives HERE, closed by stop
+// the listener handle: the socket lifetime lives here, closed by stop
 // on every scope exit path [D:http-serve]
 type Handle =
     { Listener: HttpListener
       Port: int
       mutable Closed: bool
       // the stream-producer failure channel [D:serve-stream]: a Stream
-      // body whose producer raises mid-flight records its message HERE
+      // body whose producer raises mid-flight records its message here
       // (Server.streamError surfaces it, Proc.wait's shape); it is not a
       // raise out of the handler. Guarded by its own lock — worker threads
       // write it, the scope reads it.
       StreamErrors: System.Collections.Generic.List<string>
       StreamErrorLock: obj }
 
-/// open the listener on loopback:port. Raises a WORDED error on a bind
+/// open the listener on loopback:port. Raises a worded error on a bind
 /// failure (a port already taken is the common one — the acceptance's
 /// "second bind succeeds after close" pins the inverse) [D:http-serve]
 let start (port: int) : Handle =
     // loopback only — v1 is a reverse-proxy posture, no public bind,
     // no TLS (TLS is the proxy's, a stated bounded-out) [D:http-serve].
-    // The loopback NAMES sit beside each other on the one port
+    // The loopback names sit beside each other on the one port
     // [D:serve-loopback-names]: a client saying Host: localhost must
     // reach the handler, not .NET's prefix-miss 404 — a `+`/`*` bind
     // would answer it but expose the server past loopback, the
     // regression this refuses.
     let v4 = [ $"http://127.0.0.1:{port}/"; $"http://localhost:{port}/" ]
-    // the ::1 name is GUARDED [D:serve-loopback-names]: a host with no
-    // IPv6 loopback makes Start() throw and DISPOSE the listener, so a
-    // failed start cannot reuse it — build once WITH ::1, and on failure
+    // the ::1 name is guarded [D:serve-loopback-names]: a host with no
+    // IPv6 loopback makes Start() throw and dispose the listener, so a
+    // failed start cannot reuse it — build once with ::1, and on failure
     // build a fresh listener on the v4 names alone (an IPv6-less host
     // still serves both 127.0.0.1 and localhost).
     let build (prefixes: string list) =
@@ -130,7 +130,7 @@ let stop (h: Handle) : unit =
         with _ ->
             ()
 
-/// pull ONE request, or None when the listener has been stopped (the
+/// pull one request, or None when the listener has been stopped (the
 /// signal/scope-exit path). Blocks until a connection arrives or the
 /// socket closes. This is the accept-loop's step; the caller owns the
 /// concurrency ceiling around the handler it runs per request.
@@ -148,7 +148,7 @@ let accept (h: Handle) : HttpListenerContext option =
 /// [D:serve-method]: no control chars, whitespace, or separators. A
 /// malformed token is refused at the boundary (400), the same byte-class
 /// refusal Bundle C's header guard performs; a well-formed unlisted verb
-/// (TRACE, a proxy's own) is PRESERVED, carried to the handler as Other.
+/// (TRACE, a proxy's own) is preserved, carried to the handler as Other.
 let methodTokenOk (m: string) : bool =
     not (String.IsNullOrEmpty m)
     && m
@@ -167,12 +167,12 @@ exception BodyReadTimeout
 /// raised when a handler-returned response header carries CR/LF/NUL
 /// [D:http-header-bytes] — the inbound-response face of the review's F3.
 /// A distinguishable signal (BodyReadTimeout's shape) so the accept loop
-/// refuses the response WITHOUT emitting the injecting header (never the
-/// silent drop the review found) and surfaces the located message to the
-/// script through the stream-error channel. Carries the located refusal.
+/// refuses the response without emitting the injecting header (never a
+/// silent drop) and surfaces the located message to the script through
+/// the stream-error channel. Carries the located refusal.
 exception ResponseHeaderInjection of message: string
 
-/// read the whole body under a DEADLINE [D:serve-body-timeout]: a slow
+/// read the whole body under a deadline [D:serve-body-timeout]: a slow
 /// client dribbling bytes cannot park the slot forever. The read runs on
 /// a task the deadline cancels; exhaustion raises BodyReadTimeout. The
 /// underlying socket read is not itself cancellable, so the task is
@@ -197,9 +197,9 @@ let readRequest (ctx: HttpListenerContext) (bodyTimeoutMs: int) : SReq =
 
     // GetValues over the indexer [D:http-serve]: for a header the parser
     // folded to a comma-joined value, GetValues yields the pieces as
-    // separate pairs (the wire-order-pairs intent). NOTE the platform
-    // limit behind F10: the managed HttpListener collapses REPEATED
-    // request headers (three `X-Forwarded-For` lines) to the LAST value at
+    // separate pairs (the wire-order-pairs intent). Note the platform
+    // limit behind F10: the managed HttpListener collapses repeated
+    // request headers (three `X-Forwarded-For` lines) to the last value at
     // parse time — those earlier values never reach this code, so faithful
     // duplicate preservation is not reachable through HttpListener's
     // parsed headers (see the session report).
@@ -233,28 +233,28 @@ let readRequest (ctx: HttpListenerContext) (bodyTimeoutMs: int) : SReq =
       Headers = headers
       Body = body }
 
-/// write a response to a context. A Stream body is written CHUNKED and
-/// FLUSHED per element (the incremental law); every other body is a
+/// write a response to a context. A Stream body is written chunked and
+/// flushed per element (the incremental law); every other body is a
 /// single buffered write. Always closes the response (frees the
 /// connection) even on a mid-stream client disconnect [D:http-serve].
 ///
-/// `onStreamFailure` is the DESIGNATED CHANNEL for a Stream PRODUCER
+/// `onStreamFailure` is the designated channel for a Stream producer
 /// raising mid-body [D:serve-stream]: modelled on `within proc`'s
-/// scoped-child surfacing, a producer failure does NOT raise out of the
-/// handler — it aborts the response WITHOUT the terminating chunk (so the
+/// scoped-child surfacing, a producer failure does not raise out of the
+/// handler — it aborts the response without the terminating chunk (so the
 /// client's own HTTP layer sees a truncated/broken body) and reports the
 /// message here, where the serve scope surfaces it to the script (a
-/// Server member, Proc.wait's shape). A CLIENT disconnect is NOT a
+/// Server member, Proc.wait's shape). A client disconnect is not a
 /// producer failure: it ends enumeration and closes cleanly, unreported.
 /// abort a chunked response on a producer failure [D:serve-stream]. The
-/// INTENT is to leave the client a TRUNCATED body (no zero-length chunk),
+/// intent is to leave the client a truncated body (no zero-length chunk),
 /// but the managed HttpListener emits the terminator on both Close() and
 /// Abort() and exposes no public way to suppress it; the only mechanism
 /// found reaches into HttpListener's private fields, which the AOT trimmer
 /// refuses (IL2075) — see the session report. So (a) degrades to a plain
-/// Abort here, and the DESIGNATED CHANNEL (b) — Server.streamErrors — is
+/// Abort here, and the designated channel (b) — Server.streamErrors — is
 /// the reliable, script-observable signal: a monitoring loop reads it and
-/// learns its producer died, which the pre-fix silent path never allowed.
+/// learns its producer died (a silent abort would hide that).
 let private abortWithoutTrailer (out: HttpListenerResponse) : unit =
     try
         out.Abort()
@@ -293,7 +293,7 @@ let writeResponse (ctx: HttpListenerContext) (resp: SResp) (onStreamFailure: str
         | RStream lines ->
             // SSE-shaped chunked stream [D:http-serve]: no ContentLength
             // (SendChunked instead), text/event-stream, one `data:` line
-            // per element, FLUSHED so the client sees each before the seq
+            // per element, flushed so the client sees each before the seq
             // ends.
             if isNull out.ContentType then
                 out.ContentType <- "text/event-stream"
@@ -334,9 +334,9 @@ let writeResponse (ctx: HttpListenerContext) (resp: SResp) (onStreamFailure: str
 
             match producerError with
             | Some msg ->
-                // NO terminating chunk [D:serve-stream]: the client's HTTP
-                // layer must read a TRUNCATED chunked body (no 0-length
-                // terminator) so it can TELL the stream died — a proper
+                // no terminating chunk [D:serve-stream]: the client's HTTP
+                // layer must read a truncated chunked body (no 0-length
+                // terminator) so it can tell the stream died — a proper
                 // terminator after a failure is the one outcome that must
                 // not survive.
                 abortWithoutTrailer out

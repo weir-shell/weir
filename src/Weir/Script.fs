@@ -431,8 +431,8 @@ let dangleEnders = [| "="; "then"; "else"; "with"; "->" |]
 
 // a within head [D:within-scopes]: `within <kind> <args…>` (optionally
 // behind `let <name> =`) opens its block — the head ends with arbitrary
-// argument words, so the classifier keys on the keyword, the yaml-marker
-// precedent (a lexical rule shared by assembler and REPL, never a parse)
+// argument words, so the classifier keys on the keyword, as the yaml
+// marker does (a lexical rule shared by assembler and REPL, never a parse)
 let isWithinHead (piece: string) : bool =
     let t = piece.Trim()
 
@@ -1339,7 +1339,7 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                             || raw[0] = '\t'
                             || raw[0] = '|'
                             // a col-0 `until` continues its retry/poll —
-                            // the col-0 `|` arm precedent [D:retry-poll]
+                            // matching the col-0 `|` arm [D:retry-poll]
                             || raw.StartsWith "until "
                             || raw.TrimEnd() = "until"
                             // a col-0 `always` continues its bare within
@@ -3417,8 +3417,8 @@ let checkStatement
 // analyzeLines (check / --can / LSP), the runner's check phase, the
 // module loader, and the fidelity mirror. Per-statement consumers
 // (REPL, -e, Complete) never see it. An errored statement poisons the
-// pass for the whole file — one real error beats N echoes (the
-// hole-scheme precedent).
+// pass for the whole file — one real error beats N echoes (matching
+// the hole scheme).
 
 type UnusedFinding =
     { ULine: int
@@ -3625,7 +3625,7 @@ type ReenumTracker() =
                 let id = fresh ()
 
                 // the repair rides the binding's own source when it is
-                // one clean line (the streamed-it precedent); assembled
+                // one clean line (as streamed-it does); assembled
                 // (sentinel-joined) text falls back to the generic
                 // spelling
                 let repair =
@@ -3750,8 +3750,8 @@ let private moduleBaseEnvs (absPath: string) : TypeEnv * Eval.Env =
     ve |> Map.add "Self.scriptPath" (Eval.VStr absPath)
 
 // the one import path resolver [D:modules-v1]: absolute + normalized (for
-// identity and, later, caching); symlinks stay unresolved — the Path.glob
-// precedent, two links to one file are two files.
+// identity and, later, caching); symlinks stay unresolved — as in
+// Path.glob, two links to one file are two files.
 let private resolveImportPath (importingAbsPath: string) (path: string) : string =
     let dir = IO.Path.GetDirectoryName importingAbsPath
 
@@ -4552,7 +4552,7 @@ let loadSigs (path: string) (decls: SigDecl list) : Diagnostic list * SigInfo li
             match resolved with
             | Error e -> diags.Add(mk decl.Line e)
             | Ok sigFile when not (IO.File.Exists sigFile) ->
-                // the checker can tell restore from add (the schema precedent)
+                // the checker can tell restore from add (matching schema)
                 let locked =
                     match Contracts.findWeirDir scriptDir with
                     | Ok weirDir ->

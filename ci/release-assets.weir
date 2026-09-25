@@ -1,11 +1,9 @@
 #!/usr/bin/env weir
-// Release asset completeness [D:release-assets]: v0.0.40 published with
-// 5 of 10 assets — `gh release create` hit a transient HTTP 500
-// mid-asset-upload, the manual recovery re-created the release with
-// what had survived, the draft review missed it, and a published
-// release is immutable: nothing repaired it, v0.0.41 superseded. This
-// check makes the class visible by machine: every expected asset must
-// be present, state == "uploaded", and non-empty.
+// Release asset completeness [D:release-assets]: a release can publish
+// with assets missing (a transient upload failure plus a manual
+// recovery), and a published release is immutable — so completeness is
+// machine-checked: every expected asset must be present,
+// state == "uploaded", and non-empty.
 //
 // The expected-asset list has a single copy, here — release.yml's upload
 // step and ci/release-published.weir both defer to this script rather

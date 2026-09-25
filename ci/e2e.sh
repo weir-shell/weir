@@ -1326,7 +1326,7 @@ rm -rf "$cmdir"
 # a redirected REPL (printf … | weir) reads physical lines but must
 # assemble a statement that spans several — heredoc, a multi-line `type`,
 # an offside if/match block, a leading-`|>` pipeline — the way a script
-# does. The bug (v0.0.35): each physical line parsed alone, so a heredoc
+# does. The failure mode: each physical line parsed alone, so a heredoc
 # body was "unbound variable 'a'". Reuses bufferComplete + Script.assemble
 # (no second parser); a peeked line stays only if it still attaches.
 
@@ -2457,7 +2457,7 @@ fi
 if [ "$IS_WINDOWS" != "1" ] && command -v python3 >/dev/null 2>&1; then
     ptyrun="$(dirname "$0")/../tests/pty/pty-run.py"
 
-    # the incident, cured twice: under inheritance gzip sees the real
+    # two cures, both pinned: under inheritance gzip sees the real
     # terminal and refuses by itself (fast, its own message, exit 1)
     # [D:colour-inherit] — and a stdin-reading child that does hang
     # dies to ^C naming 130 with the session surviving [D:repl-isig]
@@ -5491,7 +5491,7 @@ expect "glob: * excludes dotfiles, sorted" "other.json
 top.json" "$out"
 expect "glob: a dot segment matches them" ".hidden.json" "$out"
 expect "glob: ** crosses segments, skips unreadable dirs and symlinks" "src/a/b/three.fs" "$out"
-# an effectiveness gate, not an euid gate (the locked.txt precedent):
+# an effectiveness gate, not an euid gate (as with locked.txt):
 # root ignores modes and Windows chmod is inert — test whether the
 # denial actually took
 if [ -r "$pgdir/deny/secret.fs" ]; then
@@ -5678,7 +5678,7 @@ echo "e2e ok: NUL refuses at the spawn boundary (argv and env), naming the trunc
 # echo (the record echo leaked what the seq echo refused); the -e echo
 # wears the same guard. Needs a pty — `script` — and SKIPs by name
 # where absent (absence is never a pass).
-# the pty instrument is probed, not assumed (the `timeout` precedent):
+# the pty instrument is probed, not assumed (as `timeout` is):
 # macOS ships BSD script, whose syntax has no -e/-c — command -v passes
 # and the invocation dies. A failing probe is a named SKIP.
 if command -v script >/dev/null 2>&1 && script -qec true /dev/null >/dev/null 2>&1; then
@@ -7322,7 +7322,7 @@ echo "e2e ok: Duration (defaults rest, both boundaries parse, rejection locates,
 indir=$(mkweirtmp)
 # the cert-expiry acceptance: openssl's own enddate spelling (month
 # name, padded day) through the named-format reader — the use case
-# that had no weir spelling (openssl-gated, the TLS block's precedent)
+# that had no weir spelling (openssl-gated, as the TLS block is)
 if command -v openssl >/dev/null 2>&1; then
     insubj="/CN=inst"
     [ "$IS_WINDOWS" = "1" ] && insubj="//CN=inst"
@@ -8697,9 +8697,9 @@ gsums=$(awk "/<<'WEIR_SUMS'/{f=1;next} /^WEIR_SUMS\$/{f=0} f" "$gendir/install.s
 gexp=$(printf '%s\n' "$gsums" | grep " $name\$" | cut -d' ' -f1)
 gact=$($HASHTOOL "$gendir/$name" | cut -d' ' -f1)
 [ -n "$gexp" ] && [ "$gexp" = "$gact" ] || fail "embedded checksum ($gexp) must match the real binary ($gact)"
-# each checksum appears exactly once — inside the heredoc. v0.0.2's
-# generator replaced a comment that mentioned the placeholder, planting
-# a second, bare copy of the sums at the top of the served script,
+# each checksum appears exactly once — inside the heredoc. A generator
+# that replaces a comment merely mentioning the placeholder plants a
+# second, bare copy of the sums at the top of the served script,
 # executed as commands before set -eu could object.
 [ "$(grep -cF "$gexp" "$gendir/install.sh")" -eq 1 ] || fail "a checksum appears outside the heredoc — the anchor matched a mention, not the placeholder line"
 echo "e2e ok: gen-install.weir — pins the tag, embeds SHA256SUMS once, embedded checksum matches the binary"
@@ -8779,7 +8779,7 @@ echo "e2e ok: lexical keyword table current (generated from the grammar manifest
 # ---- prose wrap hazard: '>' at a wrapped line's start -----------------------
 # CommonMark lets a blockquote interrupt a paragraph, so a wrap that
 # lands '>' at line start eats the character and breaks the span —
-# prose damage no fence can catch (the Http >= 400 incident).
+# prose damage no fence can catch (e.g. an Http >= 400 rewording).
 (cd "$ROOT" && "$BIN" ci/wrap-hazard.weir) || fail "wrap hazard in rendered docs — see lines above"
 echo "e2e ok: no mid-paragraph '>' wrap hazards in rendered docs"
 
@@ -9731,7 +9731,7 @@ fi
 
 rm -rf "$svdir"
 
-# ---- v0.0.48 security cut: three front-end hardening pins ------------------
+# ---- front-end hardening pins: three security cuts -------------------------
 # each triggered a SIGABRT/DoS on the base; the fix makes each a located
 # diagnostic (exit != 134) or linear time. Only e2e drives the whole
 # binary, so it is where the exit code (not just the message) is pinned.

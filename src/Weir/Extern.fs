@@ -5,14 +5,14 @@ open System.IO
 
 let mutable private cache: Set<string> option = None
 
-// per-PROGRAM resolution memo [D:head-word-bound]: exists() is called once
-// per command head; a bareword ';'-spine (20k identical heads) rescanning
-// PATH×PATHEXT each time was ~20s on POSIX / >800s on Windows. Memoise the
-// SCAN RESULT per name — O(1) amortised per DISTINCT program, while a
-// one-command line still pays a SINGLE scan (not the full-PATH enumeration
-// names() does for completion). ConcurrentDictionary: heads resolve off
-// worker threads. Cleared with the name cache so a mid-run PATH change is
-// seen after refresh().
+// per-program resolution memo [D:head-word-bound]: exists() is called once
+// per command head; without it a bareword ';'-spine (20k identical heads)
+// rescans PATH×PATHEXT each time — ~20s on POSIX / >800s on Windows.
+// Memoise the scan result per name — O(1) amortised per distinct program,
+// while a one-command line still pays a single scan (not the full-PATH
+// enumeration names() does for completion). ConcurrentDictionary: heads
+// resolve off worker threads. Cleared with the name cache so a mid-run
+// PATH change is seen after refresh().
 let mutable private existsCache =
     System.Collections.Concurrent.ConcurrentDictionary<string, bool>()
 
@@ -69,9 +69,9 @@ let private isPathy (prog: string) =
     prog.Contains '/'
     || (OperatingSystem.IsWindows() && (prog.Contains '\\' || prog.Contains ':'))
 
-/// the SPAWN-side resolution [D:windows-s2]: CreateProcess appends only
+/// the spawn-side resolution [D:windows-s2]: CreateProcess appends only
 /// .exe to a bare name — a .bat/.cmd (any PATHEXT) implementation needs
-/// its REAL file name handed over. Walks PATH per-dir: the name
+/// its real file name handed over. Walks PATH per-dir: the name
 /// as-given first (the stated rule), then each PATHEXT in order.
 /// POSIX callers never need it (resolveProg passes bare names through).
 let resolveFile (prog: string) : string option =
@@ -91,7 +91,7 @@ let resolveFile (prog: string) : string option =
 
 let exists (prog: string) : bool =
     // parse-time NUL guard [D:nul-path]: a NUL-bearing head is not a real
-    // program, so it is not-found — this returns BEFORE Session.resolve,
+    // program, so it is not-found — this returns before Session.resolve,
     // whose raise would abort the process here (the parse resolver runs
     // outside the runtime try). The classifier then emits its ordinary
     // located missing-command diagnostic instead of a SIGABRT. The
@@ -104,7 +104,7 @@ let exists (prog: string) : bool =
         File.Exists resolved
         || pathExts () |> List.exists (fun e -> File.Exists(resolved + e))
     else
-        // per-program memo (not names()): a distinct name pays ONE scan
+        // per-program memo (not names()): a distinct name pays one scan
         // then hits the cache; a one-command line does not enumerate all
         // of PATH. Live per-name scan, so a file created after refresh()
         // is still seen on its first query [D:head-word-bound].

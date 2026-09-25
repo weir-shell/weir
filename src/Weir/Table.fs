@@ -1,8 +1,8 @@
 module Weir.Table
 
-// the aligned-table boundary's TEXT model [D:from-table]: kubectl/docker-
-// style output — one header row, aligned data rows — sliced by HEADER
-// OFFSETS, never whitespace runs, so a cell value with spaces ("Up 2
+// the aligned-table boundary's text model [D:from-table]: kubectl/docker-
+// style output — one header row, aligned data rows — sliced by header
+// offsets, never whitespace runs, so a cell value with spaces ("Up 2
 // hours", a free-text message column) survives intact. Both tools pad
 // columns with 3+ spaces (Go's text/tabwriter, padding 3) while a
 // two-word header ("CONTAINER ID", "NOMINATED NODE") keeps its single
@@ -17,7 +17,7 @@ open System
 type Column = { Header: string; Start: int }
 
 /// split a header line into columns [D:from-table]: a column boundary is
-/// a run of 2+ spaces; a SINGLE interior space rides inside one header
+/// a run of 2+ spaces; a single interior space rides inside one header
 let columns (header: string) : Column list =
     let cols = ResizeArray<Column>()
     let mutable i = 0
@@ -47,7 +47,7 @@ let columns (header: string) : Column list =
     List.ofSeq cols
 
 /// slice one data line by the header's columns [D:from-table]: column i
-/// spans [start_i, start_{i+1}), the LAST column runs to end of line; a
+/// spans [start_i, start_{i+1}), the last column runs to end of line; a
 /// line shorter than a column's start yields the empty cell. Cells trim.
 let cells (cols: Column list) (line: string) : string list =
     let arr = List.toArray cols
@@ -83,7 +83,7 @@ let isAbsent (cell: string) : bool = cell = "" || cell = "<none>"
 
 /// az `-o table` (and other tabulate-style tools) draw a rule line of
 /// dashes under the header — `--------  ----------  -----` [D:from-table-az].
-/// A row that is ONLY dashes and spaces (with at least one dash) is that
+/// A row that is only dashes and spaces (with at least one dash) is that
 /// separator, never data: every cell would be dashes, which no real row is.
 let isSeparatorRow (line: string) : bool =
     line.Trim() <> ""
@@ -101,7 +101,7 @@ let parse (lines: (int * string) list) : Result<Column list * (int * string list
         let cols = columns header
 
         // az `-o table` puts a dashes separator row between the header and
-        // the data [D:from-table-az]; drop it when it is the FIRST data row.
+        // the data [D:from-table-az]; drop it when it is the first data row.
         // kubectl/docker have none, so a real first data row is untouched —
         // the skip is conditional on that row actually being a separator.
         let rows =
