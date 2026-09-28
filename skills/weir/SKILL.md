@@ -2269,7 +2269,7 @@ not the teaching.
 - `Float`: `abs` `average` `near` `ofInt` `parse` `round` `sum` `toInt` `tryParse`
 - `Instant`: `epochMs` `now` `ofEpochMs` `parse` `parseWith` `tryParse` `tryParseWith`
 - `Json`: `inferShape`
-- `Table`: `inferShape`
+- `Table`: `inferShape` `render`
 - `Yaml`: `parse` `merge` `inferShape`
 - `Http`: `defaults` `delete` `fetch` `get` `head` `options` `patch` `post` `put` `query` `send` `withQuery`
 - `Log`: `debug` `debugWith` `info` `infoWith` `trace` `traceWith` `warn` `warnWith`

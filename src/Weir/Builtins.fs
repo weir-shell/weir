@@ -4459,7 +4459,41 @@ let private jsonModuleMembers: (string * Ty * Value) list =
     [ "inferShape", TFun(TSeq TStr, TStr), inferShapeImpl Infer.Json ]
 
 let private tableModuleMembers: (string * Ty * Value) list =
-    [ "inferShape", TFun(TSeq TStr, TStr), inferShapeImpl Infer.Table ]
+    [ "inferShape", TFun(TSeq TStr, TStr), inferShapeImpl Infer.Table
+      // the display renderer the REPL echo already uses [D:tty-color],
+      // exposed to scripts: a seq of same-shaped records -> aligned column
+      // lines to `print`. This is DISPLAY, distinct from the refused wire
+      // `to table` (a table is not a round-trip format). Width tracks the
+      // terminal when colour is on, unclamped when piped; no tint (the
+      // caller colours). A non-record seq fails with the repair.
+      "render",
+      TFun(TSeq tA, TSeq TStr),
+      VBuiltin(fun v ->
+          match v with
+          | VSeq items ->
+              // force once — a display consumes every row anyway, and this
+              // avoids the re-enumeration echoTable + an emptiness peek
+              // would otherwise cost a command-backed seq
+              let rows = List.ofSeq items
+
+              if List.isEmpty rows then
+                  VSeq Seq.empty // no rows, no shape to infer — print nothing
+              else
+                  let width =
+                      if Types.Color.onStdout.Value then
+                          try
+                              Some(max 20 System.Console.WindowWidth)
+                          with _ ->
+                              None
+                      else
+                          None
+
+                  match Eval.echoTable None width (VSeq(rows :> seq<Value>)) with
+                  | Some(lines, _) -> VSeq(lines |> List.map VStr :> seq<Value>)
+                  | None ->
+                      failwith
+                          "Table.render needs a seq of same-shaped records with scalar fields; for other sequences use Seq.map show"
+          | _ -> unreachable $"the checker rejects 'Table.render' on {formatValue v}") ]
 
 let private moduleTable: (string * (string * Ty * Value) list) list =
     [ "Seq", seqMembers
@@ -5915,6 +5949,12 @@ let builtinDocs: Map<string, BuiltinDoc> =
               (Some "print (Table.inferShape [\"NAME   RESTARTS\"; \"web-1  0\"])")
               (Some "the `weir add schema` category: external structure -> a declaration you own; check and `from table` stay untouched.")
            |> named [ "lines" ])
+          "Table.render",
+          (bd
+              "Render a seq of same-shaped records as aligned column lines (a bold-header, width-clamped table — the same layout the REPL echoes) for `print`. Display, not a wire format: there is no `to table` back out (a table does not round-trip; use `to json`/`to yaml` for that). Width tracks the terminal, unclamped when piped; a non-record seq is a located error."
+              (Some "ls |> Table.render |> Seq.iter print")
+              None
+           |> named [ "rows" ])
 
           // ---- reifiers: turn a command chain into a value [D:exit-reifiers].
           // Surface names; the typed tree carries the un-typeable |completed

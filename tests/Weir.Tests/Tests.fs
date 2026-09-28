@@ -19822,6 +19822,23 @@ let ttySanitizeTests =
               // and they type as string -> string (composable, print-ready)
               Expect.equal (formatTy (checkOk "Color.green").Ty) "string -> string" "the helper's type"
               Expect.equal (formatTy (checkOk "Color.sgr").Ty) "string -> string -> string" "sgr takes a code then text"
+          }
+          test "Table.render lays a seq of records into aligned columns [D:tty-color]" {
+              let src =
+                  "[{| name = \"web\"; n = 0 |}; {| name = \"db-x\"; n = 3 |}] |> Table.render |> Seq.freeze"
+
+              let lines = run src |> forceSeq |> List.map (fun v -> match v with VStr s -> s | _ -> "")
+              // a header row, a rule row, then one row per record
+              Expect.equal lines.Length 4 "header + rule + two data rows"
+              Expect.stringContains lines[0] "name" "the header names the fields"
+              Expect.stringContains lines[0] "n" "…and the int column"
+              // columns align: the two data rows share the name-column width
+              Expect.stringContains lines[2] "web" "first record's cell"
+              Expect.stringContains lines[3] "db-x" "second record's cell"
+              // a non-record seq is a located error, not a silent nothing
+              Expect.throwsC (fun () -> run "[1; 2; 3] |> Table.render |> Seq.freeze" |> ignore) id
+              |> _.Message
+              |> fun m -> Expect.stringContains m "Table.render needs a seq of" "the repair is named"
           } ]
 
 let logLevelTests =

@@ -4,6 +4,12 @@
 
 ### Added
 
+- **`Table.render` — a seq of records to aligned column lines.** The
+  table layout the REPL echoes, exposed for `print`: `rows |> Table.render
+  |> Seq.iter print`. Display, not a wire format (no `to table` back out).
+  Tracks the terminal width interactively, unclamped when piped; an empty
+  seq prints nothing, a non-record seq is a located error.
+
 - **A `Color` module for terminal color.** `Color.red`/`green`/`yellow`/
   `blue`/`magenta`/`cyan`/`gray` and `bold`/`dim`/`underline` (each
   `string -> string`, nesting to combine), plus `Color.sgr code s` for

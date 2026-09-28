@@ -120,6 +120,17 @@ carriage-return overwrites) to visible `\xNN`, so untrusted data can
 color nothing it shouldn't. `Color.sgr` is the raw-code escape hatch
 for 256-color and truecolor.
 
+`Table.render` lays a seq of same-shaped records into aligned columns —
+the same table the REPL echoes — as lines for `print`:
+
+```weir
+ls |> Seq.take 5 |> Table.render |> Seq.iter print
+```
+
+It is display, not a wire format (there is no `to table` back out; a
+table does not round-trip — `to json`/`to yaml` for data). It tracks
+the terminal width interactively and stays unclamped when piped.
+
 ## Comments
 
 `//` runs to the end of the line, full-line or trailing — command
