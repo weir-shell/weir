@@ -542,6 +542,20 @@ sendI({"jsonrpc": "2.0", "method": "textDocument/didChange",
 init_diags()
 klabels = complete_at(INIT_URI, 3, 5, 11)  # after 'e' at a field-name slot
 expect(set(klabels) == {"echoCap", "env"}, f"a field-name slot offers the #session keys, closed: {klabels}")
+# #session field validation: an unknown key, and a value of the wrong
+# type for its key, are errors (the value-as-expression check alone would
+# miss both) [D:session-prompt]
+init_change('#session {\n    echoCpa = 5\n}\n')
+expect("session-key" in [d["code"] for d in init_diags()], "an unknown #session key is flagged")
+init_change('#session {\n    cwd = 42\n}\n')
+tdiags = init_diags()
+expect(any(d["code"] == "session-type" and "expects string" in d["message"] for d in tdiags),
+       f"a wrong-typed #session value is flagged: {[d['code'] for d in tdiags]}")
+# a #alias command completes against PATH (git is present in a git CI)
+init_change('#alias g = gi\n')
+init_diags()
+acmd = complete_at(INIT_URI, 0, 13, 12)  # after 'gi' in the alias command
+expect(any(l.startswith("git") for l in acmd), f"a #alias command completes against PATH: {acmd[:6]}")
 sendI({"jsonrpc": "2.0", "id": 2, "method": "shutdown", "params": {}}); readI()
 sendI({"jsonrpc": "2.0", "method": "exit", "params": {}}); pI.wait(timeout=5)
 

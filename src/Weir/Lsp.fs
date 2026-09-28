@@ -413,13 +413,112 @@ let private effectiveLines (uri: string) (text: string) : string list =
     else
         raw
 
+// #session field validation [D:session-prompt]: the value-as-let-RHS check
+// (via the rewrite) catches errors IN a value, but not an unknown key or a
+// value of the wrong type for its key. This adds those, from the init
+// loader's own key -> type table (applySessionField [D:repl-init]).
+let private knownSessionKeys = Set [ "cwd"; "env"; "logLevel"; "echoCap"; "prompt" ]
+
+let private expectedFieldTypes (key: string) : Ty list =
+    match key with
+    | "cwd"
+    | "logLevel" -> [ TStr ]
+    | "echoCap" -> [ TInt ]
+    | "env" -> [ TSeq(TTuple [ TStr; TStr ]) ]
+    | "prompt" -> [ TStr; TFun(TUnit, TStr) ]
+    | _ -> []
+
+let private sessionFieldDiags
+    (file: string)
+    (raw: string list)
+    (stmts: (Script.LogicalLine * Script.CheckedStatement) list)
+    : Script.Diagnostic list =
+    let fieldStart =
+        System.Text.RegularExpressions.Regex @"^(\s{0,4})([A-Za-z_][A-Za-z0-9_]*)(\s*=\s*)(.*)$"
+
+    let mutable inBlock = false
+    let acc = ResizeArray<Script.Diagnostic>()
+
+    raw
+    |> List.iteri (fun i l ->
+        let t = l.Trim()
+
+        if inBlock then
+            if t = "}" then
+                inBlock <- false
+            else
+                let m = fieldStart.Match l
+
+                if m.Success then
+                    let key = m.Groups.[2].Value
+                    let lineNo = i + 1
+                    let keyCol = m.Groups.[1].Value.Length + 1
+
+                    if not (Set.contains key knownSessionKeys) then
+                        acc.Add
+                            { File = file
+                              Line = lineNo
+                              Col = keyCol
+                              EndLine = Some lineNo
+                              EndCol = Some(keyCol + key.Length)
+                              Severity = "error"
+                              Code = "session-key"
+                              Message =
+                                $"unknown #session key '{key}' — the keys: cwd, env, logLevel, echoCap, prompt" }
+                    else
+                        // the value's inferred type (the rewritten `let <binder>
+                        // = value` on this line); a value that errored is not in
+                        // stmts — that error already shows, so skip it here
+                        match stmts |> List.tryFind (fun (ll, _) -> ll.Head = lineNo) with
+                        | Some(_, chk) ->
+                            match chk.Kind with
+                            | Script.KLet(_, _, te) ->
+                                let valStr = formatTy te.Ty
+                                let exp = expectedFieldTypes key
+                                // a generic/ambiguous value (an empty list ->
+                                // seq<'a>) carries a tyvar — do not flag it
+                                let hasTyVar = valStr.Contains "'"
+
+                                if not hasTyVar && not (exp |> List.exists (fun e -> formatTy e = valStr)) then
+                                    let valCol =
+                                        m.Groups.[1].Value.Length
+                                        + key.Length
+                                        + m.Groups.[3].Value.Length
+                                        + 1
+
+                                    let expStr = exp |> List.map formatTy |> String.concat " or "
+
+                                    acc.Add
+                                        { File = file
+                                          Line = lineNo
+                                          Col = valCol
+                                          EndLine = Some lineNo
+                                          EndCol = Some(l.Length + 1)
+                                          Severity = "error"
+                                          Code = "session-type"
+                                          Message = $"#session {key} expects {expStr}, got {valStr}" }
+                            | _ -> ()
+                        | None -> ()
+        elif t.StartsWith "#session" then
+            inBlock <- t.EndsWith "{")
+
+    List.ofSeq acc
+
 let private analyze (uri: string) (text: string) =
     // analyze against the real path so imports resolve relative to the file;
     // diagnostics come back File-identified (the entry + its modules)
     let path = uriToPath uri
+    let raw = text.Replace("\r\n", "\n").Split('\n') |> Array.toList
     let lines = effectiveLines uri text
 
     let diags, stmts, env0, lls = Script.analyzeLines path lines
+
+    let diags =
+        if isReplInitPath path then
+            diags @ sessionFieldDiags path raw stmts
+        else
+            diags
+
     diags, stmts, env0, lls
 
 // find the containing logical line among all assembled lines
@@ -2383,7 +2482,19 @@ let run (debug: bool) : int =
                                 // the effective lines (init directives rewritten,
                                 // column-preserving) so a #session field value
                                 // completes as the let-RHS it becomes [D:session-prompt]
-                                let lines = effectiveLines uri text |> Array.ofList
+                                let effLines = effectiveLines uri text |> Array.ofList
+                                let origLines = text.Replace("\r\n", "\n").Split('\n')
+
+                                // a #alias line is blanked in effectiveLines, so
+                                // its command completes off the ORIGINAL line
+                                // [D:command-head-alias]; everything else uses the
+                                // rewritten lines
+                                let onAliasLine =
+                                    isReplInitPath (uriToPath uri)
+                                    && line - 1 < origLines.Length
+                                    && origLines[line - 1].TrimStart().StartsWith "#alias "
+
+                                let lines = if onAliasLine then origLines else effLines
                                 let lineText = if line - 1 < lines.Length then lines[line - 1] else ""
                                 let upto = lineText.Substring(0, min (col - 1) lineText.Length)
 
@@ -2391,6 +2502,23 @@ let run (debug: bool) : int =
                                 let wordStart = Complete.wordStartAt upto upto.Length
 
                                 let word = upto.Substring wordStart
+
+                                // #alias command slot: in the first word after `=`
+                                // (the command head), offer PATH commands
+                                let aliasCmd =
+                                    if
+                                        onAliasLine
+                                        && System.Text.RegularExpressions.Regex.IsMatch(
+                                            upto,
+                                            @"^\s*#alias\s+[A-Za-z_][A-Za-z0-9_]*\s*=\s*[^\s]*$"
+                                        )
+                                    then
+                                        Extern.names ()
+                                        |> Seq.filter (fun n -> n.StartsWith word)
+                                        |> Seq.truncate 100
+                                        |> List.ofSeq
+                                    else
+                                        []
 
                                 // the within kind slot [D:within-kinds] — the
                                 // items come from Complete.suggest (the schema=
@@ -2634,6 +2762,7 @@ let run (debug: bool) : int =
                                 let items =
                                     match repaired with
                                     | Some fields when not fields.IsEmpty -> fields
+                                    | _ when not aliasCmd.IsEmpty -> aliasCmd
                                     | _ when not sessionKeys.IsEmpty -> sessionKeys
                                     | _ when not sigFlags.IsEmpty -> sigFlags
                                     | _ when not sigSubTokens.IsEmpty -> sigSubTokens
