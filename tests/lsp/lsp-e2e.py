@@ -519,6 +519,29 @@ for _ in range(6):
     if m.get("method") == "textDocument/publishDiagnostics" and nuri(m["params"]["uri"]) == nuri(STRAY):
         expect(len(m["params"]["diagnostics"]) > 0, "a stray init.weir is a normal script — #session flagged")
         break
+# completion INSIDE a #session field value: a declared name completes (the
+# field is rewritten to its let-RHS, column-preserving) [D:session-prompt]
+def complete_at(uri, l, c, rid):
+    sendI({"jsonrpc": "2.0", "id": rid, "method": "textDocument/completion",
+           "params": {"textDocument": {"uri": uri}, "position": {"line": l, "character": c}}})
+    m = readI()
+    while m.get("id") != rid:
+        m = readI()
+    res = m["result"]
+    return [i["label"] for i in (res["items"] if isinstance(res, dict) else res)]
+sendI({"jsonrpc": "2.0", "method": "textDocument/didChange",
+       "params": {"textDocument": {"uri": INIT_URI},
+                  "contentChanges": [{"text": 'let greeter () = "> "\n\n#session {\n    prompt = gr\n}\n'}]}})
+init_diags()
+labels = complete_at(INIT_URI, 3, 14, 10)  # after 'gr' in the value
+expect("greeter" in labels, f"a declared name completes in a #session field value: {labels[:8]}")
+# completion at a field-NAME position offers the #session keys (closed set)
+sendI({"jsonrpc": "2.0", "method": "textDocument/didChange",
+       "params": {"textDocument": {"uri": INIT_URI},
+                  "contentChanges": [{"text": 'let greeter () = "> "\n\n#session {\n    e\n}\n'}]}})
+init_diags()
+klabels = complete_at(INIT_URI, 3, 5, 11)  # after 'e' at a field-name slot
+expect(set(klabels) == {"echoCap", "env"}, f"a field-name slot offers the #session keys, closed: {klabels}")
 sendI({"jsonrpc": "2.0", "id": 2, "method": "shutdown", "params": {}}); readI()
 sendI({"jsonrpc": "2.0", "method": "exit", "params": {}}); pI.wait(timeout=5)
 

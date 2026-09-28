@@ -4,6 +4,14 @@
 
 ### Added
 
+- **The LSP understands `init.weir`.** The REPL's own
+  `<configHome>/weir/init.weir` no longer flags `#session`/`#alias` as
+  parse errors, and inside the `#session` block the field values complete
+  and check as ordinary expressions (`prompt = <TAB>` offers your declared
+  functions) while a field-name slot completes the keys (`cwd`, `env`,
+  `logLevel`, `echoCap`, `prompt`). A real declaration error still shows,
+  and a stray `init.weir` elsewhere stays a normal script.
+
 - **`Term.width` — the terminal columns, live.** `Term.width () : int`,
   queried each call (a resize shows), falling back to 80 when there is no
   terminal (piped/redirected) rather than raising. The `tput cols`
