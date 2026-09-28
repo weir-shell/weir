@@ -14165,6 +14165,15 @@ let siblingSentinelTests =
               noLeak [ "let f t ="; "    git status"; "    print a b )" ] // lists ';' in expected-set
               noLeak [ "let f t ="; "    git status"; "    let e = ("; "    print e" ]
           }
+          test "the expected-set collapses a token relabelled by two branches [D:clean-parse-dump]" {
+              // `within tmp d -> …` misses the scope's block; more than one
+              // alternative relabels the separator to ';', so the set had
+              // rendered `';' or ';'` — one ';' now
+              let ds = diags [ "within tmp d -> print d" ]
+              let d = ds |> List.find (fun d -> d.Severity = "error")
+              Expect.isFalse (d.Message.Contains "';' or ';'") $"duplicate token in the expected-set: {d.Message}"
+              Expect.stringContains d.Message "the scope's block or ';'" "the deduped expected-set"
+          }
           test "no-leak: internal backtrack labels never surface [D:label-leaks]" {
               // the record-brace sitting carried 'whitespace before [
               // means application' in its Other-error-messages tail with

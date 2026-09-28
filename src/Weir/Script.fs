@@ -2813,6 +2813,11 @@ let private cleanParseDump (ll: LogicalLine) (msg: string) : string =
                     |> Array.map (fun (t: string) -> t.Trim())
                     |> Array.filter (fun t -> t <> "" && not (bannedTokens.Contains t))
                     |> List.ofArray
+                    // two alternatives can carry the same relabelled token
+                    // [D:clean-parse-dump]: the separator renders `';'` from
+                    // more than one branch, so the set read `';' or ';'` —
+                    // collapse to distinct, first spelling kept
+                    |> List.distinct
 
                 let rendered =
                     match toks with
