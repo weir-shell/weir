@@ -41,6 +41,15 @@
   to visible `\xNN`. Colored output (the `Color` module, a colored
   prompt banner) reaches the screen; untrusted data still can't hijack it.
 
+### Fixed
+
+- **A quoted directory completion keeps the caret inside the quotes.**
+  Completing `cd /wor<TAB>` to `cd "/work/"` now leaves the cursor before
+  the closing quote, so the next segment continues the same string literal
+  and a re-`TAB` nests (`cd "/work/sub…"`). It had landed past the quote,
+  where the next keystroke fell outside the string and re-`TAB` completed
+  against the whole environment.
+
 ## v0.0.54
 
 ### Added
