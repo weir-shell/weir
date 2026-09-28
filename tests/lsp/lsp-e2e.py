@@ -7,10 +7,11 @@ BIN = os.environ.get("WEIR_BIN", os.path.expanduser("~/.local/bin/weir"))
 # a known config home so the init.weir case can address the REPL's own
 # init path (<configHome>/weir/init.weir) — the LSP only init-treats that
 # exact file, not a stray init.weir elsewhere. Set before the LSP launches
-# so its configDir() sees it (both spellings for POSIX / Windows).
+# so its configDir() sees it. POSIX only: on Windows configDir() reads
+# SpecialFolder.ApplicationData, which %APPDATA% does not override, so the
+# init.weir probes below are skipped there (see the guard near their site).
 _CFG = os.path.realpath(tempfile.mkdtemp())  # long form: Windows 8.3, macOS /tmp symlink
 os.environ["XDG_CONFIG_HOME"] = _CFG
-os.environ["APPDATA"] = _CFG
 import sys as _sys
 _sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "lib"))
 from harness import assert_fresh
@@ -477,87 +478,101 @@ send2({"jsonrpc": "2.0", "method": "exit", "params": {}}); p2.wait(timeout=5)
 # col-0 #session was reported as "expecting identifier"), but ONLY for
 # the REPL's own <configHome>/weir/init.weir, and a real declaration
 # error must still surface. Isolated process (re-publishes desync a
-# shared stream); _CFG is this run's XDG_CONFIG_HOME.
-pI = subprocess.Popen([BIN, "lsp"], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
-PROCS.append(pI)
-def sendI(obj):
-    b = json.dumps(obj).encode()
-    pI.stdin.write(f"Content-Length: {len(b)}\r\n\r\n".encode() + b); pI.stdin.flush()
-def readI():
-    length = None
-    while True:
-        line = pI.stdout.readline().strip()
-        if line.startswith(b"Content-Length:"): length = int(line.split(b":")[1])
-        elif line == b"": break
-    return json.loads(pI.stdout.read(length))
-def init_diags():
+# shared stream). The setup redirects the config home via
+# XDG_CONFIG_HOME, which is POSIX-only: on Windows configDir() resolves
+# through SpecialFolder.ApplicationData (the
+# real roaming AppData) — %APPDATA% does not override it — so the test
+# cannot plant init.weir where the LSP looks. The only Windows-specific
+# code path is the case-insensitive path compare in isReplInitPath; the
+# behavior it guards (directive suppression, field validation, value/key
+# completion) is platform-agnostic and exercised here on POSIX.
+if os.name == "nt":
+    print("ok: init.weir LSP probes skipped on Windows (configDir uses SpecialFolder, not %APPDATA%)")
+else:
+    pI = subprocess.Popen([BIN, "lsp"], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+    PROCS.append(pI)
+    def sendI(obj):
+        b = json.dumps(obj).encode()
+        pI.stdin.write(f"Content-Length: {len(b)}\r\n\r\n".encode() + b); pI.stdin.flush()
+    def readI():
+        length = None
+        while True:
+            line = pI.stdout.readline().strip()
+            if line.startswith(b"Content-Length:"): length = int(line.split(b":")[1])
+            elif line == b"": break
+        return json.loads(pI.stdout.read(length))
+    def init_diags():
+        for _ in range(6):
+            m = readI()
+            if m.get("method") == "textDocument/publishDiagnostics" and nuri(m["params"]["uri"]) == nuri(INIT_URI):
+                return m["params"]["diagnostics"]
+        expect(False, "no diagnostics for the init uri")
+    def init_change(text):
+        sendI({"jsonrpc": "2.0", "method": "textDocument/didChange",
+               "params": {"textDocument": {"uri": INIT_URI},
+                          "contentChanges": [{"text": text}]}})
+    sendI({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"rootUri": furi(repo)}}); readI()
+    sendI({"jsonrpc": "2.0", "method": "initialized", "params": {}})
+    INIT_URI = furi(os.path.join(_CFG, "weir", "init.weir"))
+    sendI({"jsonrpc": "2.0", "method": "textDocument/didOpen",
+           "params": {"textDocument": {"uri": INIT_URI,
+                      "text": 'let prompt () = "> "\n\n#session {\n    prompt = prompt\n}\n'}}})
+    expect(init_diags() == [], "#session/#alias must not be flagged in init.weir")
+    # a genuine declaration error still surfaces (suppression is surgical) —
+    # prompt stays defined so the field is clean; Bad is the error
+    sendI({"jsonrpc": "2.0", "method": "textDocument/didChange",
+           "params": {"textDocument": {"uri": INIT_URI},
+                      "contentChanges": [{"text": 'let prompt () = "> "\nlet Bad = 1\n\n#session {\n    prompt = prompt\n}\n'}]}})
+    expect("casing-law" in [d["code"] for d in init_diags()], "a real init declaration error still shows")
+    # a stray init.weir NOT under the config dir stays a normal script — its
+    # #session is flagged (proving the path check, not the basename)
+    STRAY = furi(os.path.join(tempfile.mkdtemp(), "init.weir"))
+    sendI({"jsonrpc": "2.0", "method": "textDocument/didOpen",
+           "params": {"textDocument": {"uri": STRAY, "text": "#session {\n    x = 1\n}\n"}}})
     for _ in range(6):
         m = readI()
-        if m.get("method") == "textDocument/publishDiagnostics" and nuri(m["params"]["uri"]) == nuri(INIT_URI):
-            return m["params"]["diagnostics"]
-    expect(False, "no diagnostics for the init uri")
-sendI({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"rootUri": furi(repo)}}); readI()
-sendI({"jsonrpc": "2.0", "method": "initialized", "params": {}})
-INIT_URI = furi(os.path.join(_CFG, "weir", "init.weir"))
-sendI({"jsonrpc": "2.0", "method": "textDocument/didOpen",
-       "params": {"textDocument": {"uri": INIT_URI,
-                  "text": 'let prompt () = "> "\n\n#session {\n    prompt = prompt\n}\n'}}})
-expect(init_diags() == [], "#session/#alias must not be flagged in init.weir")
-# a genuine declaration error still surfaces (suppression is surgical) —
-# prompt stays defined so the field is clean; Bad is the error
-sendI({"jsonrpc": "2.0", "method": "textDocument/didChange",
-       "params": {"textDocument": {"uri": INIT_URI},
-                  "contentChanges": [{"text": 'let prompt () = "> "\nlet Bad = 1\n\n#session {\n    prompt = prompt\n}\n'}]}})
-expect("casing-law" in [d["code"] for d in init_diags()], "a real init declaration error still shows")
-# a stray init.weir NOT under the config dir stays a normal script — its
-# #session is flagged (proving the path check, not the basename)
-STRAY = furi(os.path.join(tempfile.mkdtemp(), "init.weir"))
-sendI({"jsonrpc": "2.0", "method": "textDocument/didOpen",
-       "params": {"textDocument": {"uri": STRAY, "text": "#session {\n    x = 1\n}\n"}}})
-for _ in range(6):
-    m = readI()
-    if m.get("method") == "textDocument/publishDiagnostics" and nuri(m["params"]["uri"]) == nuri(STRAY):
-        expect(len(m["params"]["diagnostics"]) > 0, "a stray init.weir is a normal script — #session flagged")
-        break
-# completion INSIDE a #session field value: a declared name completes (the
-# field is rewritten to its let-RHS, column-preserving) [D:session-prompt]
-def complete_at(uri, l, c, rid):
-    sendI({"jsonrpc": "2.0", "id": rid, "method": "textDocument/completion",
-           "params": {"textDocument": {"uri": uri}, "position": {"line": l, "character": c}}})
-    m = readI()
-    while m.get("id") != rid:
+        if m.get("method") == "textDocument/publishDiagnostics" and nuri(m["params"]["uri"]) == nuri(STRAY):
+            expect(len(m["params"]["diagnostics"]) > 0, "a stray init.weir is a normal script — #session flagged")
+            break
+    # completion INSIDE a #session field value: a declared name completes (the
+    # field is rewritten to its let-RHS, column-preserving) [D:session-prompt]
+    def complete_at(uri, l, c, rid):
+        sendI({"jsonrpc": "2.0", "id": rid, "method": "textDocument/completion",
+               "params": {"textDocument": {"uri": uri}, "position": {"line": l, "character": c}}})
         m = readI()
-    res = m["result"]
-    return [i["label"] for i in (res["items"] if isinstance(res, dict) else res)]
-sendI({"jsonrpc": "2.0", "method": "textDocument/didChange",
-       "params": {"textDocument": {"uri": INIT_URI},
-                  "contentChanges": [{"text": 'let greeter () = "> "\n\n#session {\n    prompt = gr\n}\n'}]}})
-init_diags()
-labels = complete_at(INIT_URI, 3, 14, 10)  # after 'gr' in the value
-expect("greeter" in labels, f"a declared name completes in a #session field value: {labels[:8]}")
-# completion at a field-NAME position offers the #session keys (closed set)
-sendI({"jsonrpc": "2.0", "method": "textDocument/didChange",
-       "params": {"textDocument": {"uri": INIT_URI},
-                  "contentChanges": [{"text": 'let greeter () = "> "\n\n#session {\n    e\n}\n'}]}})
-init_diags()
-klabels = complete_at(INIT_URI, 3, 5, 11)  # after 'e' at a field-name slot
-expect(set(klabels) == {"echoCap", "env"}, f"a field-name slot offers the #session keys, closed: {klabels}")
-# #session field validation: an unknown key, and a value of the wrong
-# type for its key, are errors (the value-as-expression check alone would
-# miss both) [D:session-prompt]
-init_change('#session {\n    echoCpa = 5\n}\n')
-expect("session-key" in [d["code"] for d in init_diags()], "an unknown #session key is flagged")
-init_change('#session {\n    cwd = 42\n}\n')
-tdiags = init_diags()
-expect(any(d["code"] == "session-type" and "expects string" in d["message"] for d in tdiags),
-       f"a wrong-typed #session value is flagged: {[d['code'] for d in tdiags]}")
-# a #alias command completes against PATH (git is present in a git CI)
-init_change('#alias g = gi\n')
-init_diags()
-acmd = complete_at(INIT_URI, 0, 13, 12)  # after 'gi' in the alias command
-expect(any(l.startswith("git") for l in acmd), f"a #alias command completes against PATH: {acmd[:6]}")
-sendI({"jsonrpc": "2.0", "id": 2, "method": "shutdown", "params": {}}); readI()
-sendI({"jsonrpc": "2.0", "method": "exit", "params": {}}); pI.wait(timeout=5)
+        while m.get("id") != rid:
+            m = readI()
+        res = m["result"]
+        return [i["label"] for i in (res["items"] if isinstance(res, dict) else res)]
+    sendI({"jsonrpc": "2.0", "method": "textDocument/didChange",
+           "params": {"textDocument": {"uri": INIT_URI},
+                      "contentChanges": [{"text": 'let greeter () = "> "\n\n#session {\n    prompt = gr\n}\n'}]}})
+    init_diags()
+    labels = complete_at(INIT_URI, 3, 14, 10)  # after 'gr' in the value
+    expect("greeter" in labels, f"a declared name completes in a #session field value: {labels[:8]}")
+    # completion at a field-NAME position offers the #session keys (closed set)
+    sendI({"jsonrpc": "2.0", "method": "textDocument/didChange",
+           "params": {"textDocument": {"uri": INIT_URI},
+                      "contentChanges": [{"text": 'let greeter () = "> "\n\n#session {\n    e\n}\n'}]}})
+    init_diags()
+    klabels = complete_at(INIT_URI, 3, 5, 11)  # after 'e' at a field-name slot
+    expect(set(klabels) == {"echoCap", "env"}, f"a field-name slot offers the #session keys, closed: {klabels}")
+    # #session field validation: an unknown key, and a value of the wrong
+    # type for its key, are errors (the value-as-expression check alone would
+    # miss both) [D:session-prompt]
+    init_change('#session {\n    echoCpa = 5\n}\n')
+    expect("session-key" in [d["code"] for d in init_diags()], "an unknown #session key is flagged")
+    init_change('#session {\n    cwd = 42\n}\n')
+    tdiags = init_diags()
+    expect(any(d["code"] == "session-type" and "expects string" in d["message"] for d in tdiags),
+           f"a wrong-typed #session value is flagged: {[d['code'] for d in tdiags]}")
+    # a #alias command completes against PATH (git is present in a git CI)
+    init_change('#alias g = gi\n')
+    init_diags()
+    acmd = complete_at(INIT_URI, 0, 13, 12)  # after 'gi' in the alias command
+    expect(any(l.startswith("git") for l in acmd), f"a #alias command completes against PATH: {acmd[:6]}")
+    sendI({"jsonrpc": "2.0", "id": 2, "method": "shutdown", "params": {}}); readI()
+    sendI({"jsonrpc": "2.0", "method": "exit", "params": {}}); pI.wait(timeout=5)
 
 # ---- modules: per-URI diagnostics + buffer-over-disk (session 4) ----
 # A module's error lands on the module's OWN uri (even when only the entry is
