@@ -10,6 +10,11 @@
   bare `let x = <src>` would — the leading `#infer` had been hiding
   the statement context.
 
+- **A successful init load is silent.** `init.weir` loading clean no
+  longer prints `init: N name(s) from …` — the session opens straight
+  on the prompt. Only failure still reports (`init: not loaded` plus the
+  located error); a missing init stays silent as before.
+
 - **Parked library members, unparked.** `Str.rsplitOnce`/`tryRsplitOnce`
   (split at the last separator — `user@host:port`, `[::1]:port`),
   `Option.orElseWith` (orElse with a lazy `unit -> Option` fallback), and

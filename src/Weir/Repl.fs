@@ -3938,15 +3938,11 @@ let private loadInit (baseState: State) : State =
 
                                 initDocs <- docs
 
-                                if names > 0 || not (List.isEmpty fieldLines) || not (Map.isEmpty aliasMap) then
-                                    let aliasNote =
-                                        if Map.isEmpty aliasMap then
-                                            ""
-                                        else
-                                            $", {Map.count aliasMap} alias(es)"
-
-                                    Console.Error.WriteLine $"init: {names} name(s){aliasNote} from {path}"
-
+                                // a successful load is silent [D:repl-init]:
+                                // only failure reports (notLoaded above), so
+                                // the session opens straight on the prompt —
+                                // the loaded names/settings/prompt are their
+                                // own evidence it worked
                                 { TypeEnv = tenv
                                   Values = venv
                                   Aliases = aliasMap }

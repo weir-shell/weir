@@ -455,10 +455,10 @@ argv straight through — `k get po` — reach for `#alias` below.
 
 Loading is all-or-nothing: a broken init prints its located weir
 error plus `init: not loaded`, and the session starts with none of
-it — safe precisely because nothing in the file can run. A missing
-init is silent; a loaded one reports one line
-(`init: 3 name(s), 2 alias(es) from …`). `#help` on an init name
-shows its `///` doc.
+it — safe precisely because nothing in the file can run. A successful
+load is silent (a missing init too) — the names, settings, and prompt
+you defined are their own evidence; only failure speaks. `#help` on an
+init name shows its `///` doc.
 
 ## `#alias`: command-head aliases
 
