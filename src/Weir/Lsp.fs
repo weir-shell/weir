@@ -393,7 +393,13 @@ let private isReplInitPath (path: string) : bool =
         let initPath =
             System.IO.Path.Combine(Builtins.configDir (), "weir", "init.weir")
 
-        System.IO.Path.GetFullPath path = System.IO.Path.GetFullPath initPath
+        let a = System.IO.Path.GetFullPath path
+        let b = System.IO.Path.GetFullPath initPath
+        // Windows paths are case-insensitive; POSIX is exact
+        if System.OperatingSystem.IsWindows() then
+            System.String.Equals(a, b, System.StringComparison.OrdinalIgnoreCase)
+        else
+            a = b
     with _ ->
         false
 

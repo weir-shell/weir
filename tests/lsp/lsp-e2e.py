@@ -8,7 +8,7 @@ BIN = os.environ.get("WEIR_BIN", os.path.expanduser("~/.local/bin/weir"))
 # init path (<configHome>/weir/init.weir) — the LSP only init-treats that
 # exact file, not a stray init.weir elsewhere. Set before the LSP launches
 # so its configDir() sees it (both spellings for POSIX / Windows).
-_CFG = tempfile.mkdtemp()
+_CFG = os.path.realpath(tempfile.mkdtemp())  # long form: Windows 8.3, macOS /tmp symlink
 os.environ["XDG_CONFIG_HOME"] = _CFG
 os.environ["APPDATA"] = _CFG
 import sys as _sys
