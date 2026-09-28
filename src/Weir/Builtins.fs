@@ -3474,6 +3474,23 @@ let private colorHelper (code: string) : Value =
         | VStr s -> wrapSgr code s
         | v -> unreachable $"the checker rejects a Color helper on {formatValue v}")
 
+// the Term module [D:tty-color]: live terminal facts. width () queries the
+// terminal each call (so a resize is reflected); when there is no terminal
+// (piped, redirected) or the query fails, it falls back to 80 rather than
+// raising — a pipe has no width, and a tool sizing its output should not
+// crash. The columns primitive the git-status/tput-cols shapes wanted.
+let private termMembers: (string * Ty * Value) list =
+    [ "width",
+      TFun(TUnit, TInt),
+      VBuiltin(fun _ ->
+          let w =
+              try
+                  System.Console.WindowWidth
+              with _ ->
+                  0
+
+          VInt(int64 (if w > 0 then w else 80))) ]
+
 let private colorMembers: (string * Ty * Value) list =
     [ "red", TFun(TStr, TStr), colorHelper "31"
       "green", TFun(TStr, TStr), colorHelper "32"
@@ -4541,6 +4558,7 @@ let private moduleTable: (string * (string * Ty * Value) list) list =
       "Bytes", bytesMembers
       "Secret", secretMembers
       "Color", colorMembers
+      "Term", termMembers
       // the bounded-loop option templates [D:retry-poll]: the resting
       // values the key=value head desugars over
       "Retry",
@@ -5835,6 +5853,12 @@ let builtinDocs: Map<string, BuiltinDoc> =
               (Some "print (Color.sgr \"38;5;208\" \"orange\")")
               None
            |> named [ "code"; "s" ])
+          "Term.width",
+          (bd
+              "The terminal width in columns, queried live (a resize is reflected). Falls back to 80 when there is no terminal (piped or redirected) rather than raising — the columns primitive for sizing output (`tput cols`)."
+              (Some "print (show (Term.width ()))")
+              None
+           |> named [ "()" ])
           "Size.parse",
           (bd
               "Parse size text: binary units at 1024 (1.5MiB), the SI spellings at powers of ten (1MB is 10^6 — the writer chose the unit), B for bytes; sub-byte precision raises."
@@ -6087,6 +6111,7 @@ let moduleBlurbs: Map<string, string> =
           "Retry", "retry's options record: defaults"
           "Secret", "rendering-masked values: of, map, reveal"
           "Color", "terminal colour: red/green/…, bold/dim/underline, sgr — auto-off when piped"
+          "Term", "terminal facts: width (columns; 80 when there is no terminal)"
           "Self", "the process's own facts: args, stdin, pid, paths — and prompt"
           "Seq", "lazy sequence pipeline ops: map, where, fold, pmap"
           "Size", "byte sizes: binary-unit literals, arithmetic, parse"

@@ -1980,6 +1980,18 @@
       ]
     },
     {
+      "name": "Term",
+      "members": [
+        {
+          "name": "width",
+          "signature": "Term.width () : int",
+          "summary": "The terminal width in columns, queried live (a resize is reflected). Falls back to 80 when there is no terminal (piped or redirected) rather than raising \u2014 the columns primitive for sizing output (\u0060tput cols\u0060).",
+          "example": "print (show (Term.width ()))",
+          "pointer": null
+        }
+      ]
+    },
+    {
       "name": "Tree",
       "members": [
         {

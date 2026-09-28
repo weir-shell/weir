@@ -4,6 +4,11 @@
 
 ### Added
 
+- **`Term.width` — the terminal columns, live.** `Term.width () : int`,
+  queried each call (a resize shows), falling back to 80 when there is no
+  terminal (piped/redirected) rather than raising. The `tput cols`
+  primitive for sizing output.
+
 - **`Table.render` — a seq of records to aligned column lines.** The
   table layout the REPL echoes, exposed for `print`: `rows |> Table.render
   |> Seq.iter print`. Display, not a wire format (no `to table` back out).

@@ -19839,6 +19839,13 @@ let ttySanitizeTests =
               Expect.throwsC (fun () -> run "[1; 2; 3] |> Table.render |> Seq.freeze" |> ignore) id
               |> _.Message
               |> fun m -> Expect.stringContains m "Table.render needs a seq of" "the repair is named"
+          }
+          test "Term.width falls back to 80 with no terminal [D:tty-color]" {
+              // the test process's stdout is captured — no terminal — so the
+              // fallback path answers (a real tty width is pinned in e2e); it
+              // never raises, which is the point for a piped tool
+              Expect.equal (run "Term.width ()") (VInt 80L) "no terminal → 80"
+              Expect.equal (formatTy (checkOk "Term.width").Ty) "unit -> int" "queried live, so a function"
           } ]
 
 let logLevelTests =
