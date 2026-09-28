@@ -1,5 +1,32 @@
 # Changelog
 
+## v0.0.54
+
+### Added
+
+- **`#infer let`'s RHS colors and completes as a statement.** In
+  `#infer let x = <src> …`, the source now gets the same syntax
+  coloring and tab-completion (bindings, command heads, members) a
+  bare `let x = <src>` would — the leading `#infer` had been hiding
+  the statement context.
+
+- **A successful init load is silent.** `init.weir` loading clean no
+  longer prints `init: N name(s) from …` — the session opens straight
+  on the prompt. Only failure still reports (`init: not loaded` plus the
+  located error); a missing init stays silent as before.
+
+- **Parked library members, unparked.** `Str.rsplitOnce`/`tryRsplitOnce`
+  (split at the last separator — `user@host:port`, `[::1]:port`),
+  `Option.orElseWith` (orElse with a lazy `unit -> Option` fallback), and
+  `Seq.tryReduce` (reduce's Option twin — `None` on empty). Each fills in
+  next to its existing sibling.
+
+- **`Bytes` now slices — `b[a..b]`, `b[..b]`, `b[a..]`.** The range
+  slice operator was string/seq only; `Bytes` joins as the third
+  target, same inclusive-clamping contract, slicing to `Bytes`. A
+  single `b[i]` still isn't a bracket form (use `Bytes.sub start len`);
+  it now teaches that instead of leaking a `seq` type error.
+
 ## v0.0.53
 
 ### Added

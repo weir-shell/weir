@@ -182,6 +182,33 @@ One deliberate split: `Seq.sum` is for ints, and `Float`/`Size`/
 `Duration` each own their `sum` and `average`
 (`ls |> Seq.map _.bytes |> Size.sum`).
 
+### Indexing and slicing
+
+A single element comes out with brackets — `xs[0]` is `Seq.item 0 xs`,
+raising on a negative or out-of-range index. The bracket must sit
+against the value (`xs[0]`); `f [0]` with a space is an application,
+the F# whitespace rule. `_[0]` is shorthand for `fun x -> x[0]`.
+
+A range slices, and it is **inclusive at both ends and clamping** —
+out of range or reversed gives the empty result, never a raise:
+
+```weir
+let xs = [10; 20; 30; 40; 50]
+print (show (xs[1..3]))   // [20; 30; 40] — inclusive
+print (show (xs[..2]))    // [10; 20; 30] — open start
+print (show (xs[3..]))    // [40; 50] — open end
+print (show (xs[3..100])) // [40; 50] — clamped, no raise
+print ("weir"[1..2])      // ei — strings slice the same way
+```
+
+Slicing works on **sequences, strings, and `Bytes`**; each slices to
+its own type (a seq stays a seq, lazily — a bounded slice of an
+infinite source terminates). `Bytes` slices too (`b[1..3]`), but has
+no single `b[i]`: take one byte's window with `Bytes.sub start len`.
+There is no from-the-end `xs[^1]` (`^` is the command sigil — reach
+for `Seq.last`/`Seq.rev`), and no `xs.[i]` (weir indexes without the
+dot). A `Map` is not indexed with brackets either — `Map.get k m`.
+
 ## Records, unions, and tuples
 
 Tuples cover transient pairs: `(a, b)` literals, `int * string`

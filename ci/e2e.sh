@@ -3108,6 +3108,12 @@ rgout=$($BIN -e 'let xs = [10; 20; 30; 40] in xs[1..2] |> Seq.freeze' 2>&1)
 echo "$rgout" | grep -qF "20; 30" || fail "range slicing (inclusive) drifted: $rgout"
 strout=$($BIN -e '"abcdefghi"[3..7]' 2>&1)
 echo "$strout" | grep -qF "defgh" || fail "string slice drifted: $strout"
+# Bytes is the third slice target [D:range-slicing] — inclusive, to Bytes;
+# a single b[i] teaches the byte forms (indexing parked)
+byout=$($BIN -e 'Bytes.toBase64 ((Bytes.fromBase64 "AAECAwQF")[1..3])' 2>&1)
+echo "$byout" | grep -qF "AQID" || fail "Bytes slice drifted (expected bytes 1..3): $byout"
+biout=$($BIN -e 'let b = Bytes.fromBase64 "AAEC" in b[0]' 2>&1 || true)
+echo "$biout" | grep -qF "no b[i] index on Bytes" || fail "b[i] must teach the byte forms: $biout"
 feout=$($BIN -e 'let xs = [1; 2; 3] in xs[^1]' 2>&1 || true)
 echo "$feout" | grep -qF "from-the-end" || fail "from-end (^n) must teach the decline: $feout"
 # the accessor teachings that stand [D:accessor-teaching]: the dotted
@@ -3117,7 +3123,7 @@ echo "$dtout" | grep -qF "without the dot" || fail "the dotted indexer teaches: 
 mkout=$($BIN -e 'let m = Map.ofPairs [("a", 1)] in m["a"]' 2>&1 || true)
 echo "$mkout" | grep -qF "Map.get" || fail "m[k] teaches Map.get (the doc's promise): $mkout"
 [ "$($BIN -e 'let xs = [1; 2; 3] in xs[1]' 2>&1 | tail -1)" = "2 : int" ] || fail "the ordinary indexer still works"
-echo "e2e ok: accessor teachings (range, dotted, m[k]) — the ordinary indexer untouched"
+echo "e2e ok: accessor teachings (range on seq/str/Bytes, dotted, m[k], b[i]) — the ordinary indexer untouched"
 
 # --- the casing law (2026-07-21) ---------------------------------------
 
@@ -8931,9 +8937,9 @@ let big threshold =
 WEOF
 iout=$(printf 'pwd\nprint (Env.get "EDITOR" |> Option.defaultValue "unset")\n#echo\n#help pu\nsh -c "echo child-sees-$PAGER"\n#quit\n' \
     | XDG_CONFIG_HOME="$initcfg" XDG_STATE_HOME="$initcfg/state" "$BIN" 2>&1)
-# count + file name only — Windows prints native separators, the
-# fixture path is bash-form; the path spelling is not the claim
-echo "$iout" | grep -q "init: 3 name(s) from .*init\.weir" || fail "init count line missing: $iout"
+# a successful load is silent [D:repl-init] — no report line; the
+# effects below (cwd, env, echoCap, #help doc) are the proof it loaded
+echo "$iout" | grep -q "^init:" && fail "a successful init must be silent, not report: $iout" || true
 # the fixture's unique dirname + /work, separator-agnostic: pwd echoes
 # the native (escape-doubled) spelling on Windows
 echo "$iout" | grep -q "$(basename "$initcfg").*work" || fail "init cwd not applied"
@@ -8999,7 +9005,10 @@ let sigil () = "custom> "
 }
 WEOF
 iout=$(printf '1 + 1\n#quit\n' | XDG_CONFIG_HOME="$initcfg" XDG_STATE_HOME="$initcfg/state" "$BIN" 2>&1)
-echo "$iout" | grep -qF "init: 1 name(s)" || fail "a prompt provider must load: $iout"
+# load is silent on success [D:repl-init]: no "not loaded" failure, and
+# the session evaluates — the provider loaded (a pipe ignores the prompt)
+echo "$iout" | grep -qF "init: not loaded" && fail "a valid prompt provider must load, not error: $iout" || true
+echo "$iout" | grep -qF "2" || fail "the session evaluates after loading the prompt provider: $iout"
 echo "$iout" | grep -qF "weir> " || fail "a redirected session must keep the default prompt mirror: $iout"
 echo "$iout" | grep -qF "custom> " && fail "a redirected session must not run the prompt provider" || true
 # the value expression stays command-free like every field — the

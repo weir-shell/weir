@@ -3376,6 +3376,23 @@ let completionTests =
               // a `Module.` prefix mirrors #help's dotted member help
               Expect.contains (ask "#help Seq.ma" 6) "Seq.map" "qualified members complete"
           }
+          test "`#infer let x = <src>` completes the RHS as its let-statement [D:infer-one-shot]" {
+              // the one-shot RHS is an ordinary source expression: strip the
+              // `#infer ` prefix and complete `let x = <src>` — so members
+              // (and bindings/heads, the same code as a normal let-RHS)
+              // surface where the leading `#infer` used to hide them
+              let ask (text: string) =
+                  suggest text (Weir.Complete.wordStartAt text text.Length)
+
+              // a member completes in the RHS — the delegation fires
+              Expect.contains (ask "#infer let y = xs |> Seq.ma") "Seq.map" "a member completes in the RHS"
+              // the strip is the delta: `#infer ` off, only the let form
+              Expect.equal (Weir.Complete.inferLetStrip "#infer let y = x") (Some 7) "strips '#infer '"
+              Expect.equal (Weir.Complete.inferLetStrip "#infer from json as N") None "only the let form strips"
+              Expect.equal (Weir.Complete.inferLetStrip "let y = x") None "a plain let is not touched"
+              // the general/head pool is unchanged outside the prefix
+              Expect.isFalse (List.contains "Seq.map" (ask "Seq.z")) "no leak on a non-member word"
+          }
           test "the `with ` slot offers the source record's fields [D:with-slot]" {
               let text = "{ Http.defaults with "
               let got = suggest text text.Length
@@ -4920,6 +4937,36 @@ let stringTests =
               // the Option twin, and absence as None
               expectValue "Str.trySplitOnce \"=\" \"k=v\"" (VUnion("Some", Some(VTuple [ VStr "k"; VStr "v" ])))
               expectValue "Str.trySplitOnce \"=\" \"none\"" (VUnion("None", None))
+          }
+          test "rsplitOnce splits at the LAST separator [D:split-once]" {
+              // the from-the-right receipt: user@host:port, [::1]:port
+              expectValue "Str.rsplitOnce \":\" \"[::1]:8080\"" (VTuple [ VStr "[::1]"; VStr "8080" ])
+              expectValue "Str.rsplitOnce \"@\" \"a@b@host\"" (VTuple [ VStr "a@b"; VStr "host" ])
+              // multi-char, and empty edges (never absences)
+              expectValue "Str.rsplitOnce \"::\" \"a::b::c\"" (VTuple [ VStr "a::b"; VStr "c" ])
+              expectValue "Str.rsplitOnce \"/\" \"x/\"" (VTuple [ VStr "x"; VStr "" ])
+
+              let msgOf src =
+                  Expect.throwsC (fun () -> run src |> ignore) id |> _.Message
+
+              Expect.equal (msgOf "Str.rsplitOnce \":\" \"abc\"") "rsplitOnce: no \":\" in the input" "raises, naming the separator"
+              Expect.equal (msgOf "Str.rsplitOnce \"\" \"abc\"") "rsplitOnce: the separator cannot be empty" "empty separator refused"
+              // the Option twin
+              expectValue "Str.tryRsplitOnce \":\" \"a:b:c\"" (VUnion("Some", Some(VTuple [ VStr "a:b"; VStr "c" ])))
+              expectValue "Str.tryRsplitOnce \":\" \"none\"" (VUnion("None", None))
+          }
+          test "Option.orElseWith runs the fallback thunk only on None [D:gap-a-remainder]" {
+              // Some short-circuits — the thunk never fires
+              expectValue "(Some 1) |> Option.orElseWith (fun () -> Some 2)" (VUnion("Some", Some(VInt 1L)))
+              // None takes the thunk's result
+              expectValue "None |> Option.orElseWith (fun () -> Some 2)" (VUnion("Some", Some(VInt 2L)))
+              // laziness: a raising thunk is untouched when the option is Some
+              expectValue "(Some 1) |> Option.orElseWith (fun () -> fail \"boom\")" (VUnion("Some", Some(VInt 1L)))
+          }
+          test "Seq.tryReduce is reduce's Option twin — None on empty [D:try-convention]" {
+              expectValue "[1; 2; 3; 4] |> Seq.tryReduce (fun a b -> a + b)" (VUnion("Some", Some(VInt 10L)))
+              // empty (from a filter) is None, where reduce would raise
+              expectValue "[1; 2] |> Seq.where (fun n -> n > 9) |> Seq.tryReduce (fun a b -> a + b)" (VUnion("None", None))
           }
           test "Str.fields: whitespace runs collapse, empties never appear [D:str-fields]" {
               // tabs and spaces mixed — one whitespace class (trim's)
@@ -16426,6 +16473,27 @@ let accessorTeachingTests =
 
               Expect.equal (formatTy (checkOk "\"abcdef\"[1..3]").Ty) "string" "a string slices to a string"
           }
+          test "Bytes slices to Bytes — the third type-directed target [D:range-slicing]" {
+              for src in
+                  [ "let b = Bytes.fromBase64 \"AAECAwQF\" in b[1..3]"
+                    "let b = Bytes.fromBase64 \"AAECAwQF\" in b[..2]"
+                    "let b = Bytes.fromBase64 \"AAECAwQF\" in b[3..]" ] do
+                  Expect.equal (formatTy (checkOk src).Ty) "Bytes" $"'{src}' slices to Bytes"
+
+              // inclusive, clamping — the same contract as string/seq
+              expectValue
+                  "Bytes.toBase64 ((Bytes.fromBase64 \"AAECAwQF\")[1..3])"
+                  (VStr "AQID") // bytes 1,2,3 of 0..5
+              expectValue "Bytes.toBase64 ((Bytes.fromBase64 \"AAEC\")[10..20])" (VStr "") // out of range
+              expectValue "Bytes.toBase64 ((Bytes.fromBase64 \"AAEC\")[3..1])" (VStr "") // reversed
+          }
+          test "b[i] on Bytes teaches the byte forms — indexing stays parked [D:range-slicing]" {
+              let msg = (checkErr "let b = Bytes.fromBase64 \"AAEC\" in b[0]").Message
+              Expect.stringContains msg "no b[i] index on Bytes" "names the refusal"
+              Expect.stringContains msg "b[a..b]" "points at slicing"
+              Expect.stringContains msg "Bytes.sub" "and the window form"
+              Expect.isFalse (msg.Contains "expected seq") "not the leaky desugar type"
+          }
           test "from-the-end indexing (^n) is declined — ^ is command-force [D:range-slicing]" {
               match Weir.Parser.parseExpr "let xs = [1; 2; 3] in xs[^1]" with
               | Ok _ -> failtest "xs[^1] must be refused"
@@ -21441,7 +21509,7 @@ let helpUxTests =
                   "the defaultValue row carries its glance"
 
               let memberRows = lines |> Array.filter (fun l -> l.StartsWith "  ") |> Array.length
-              Expect.equal memberRows 7 "one row per member, exactly"
+              Expect.equal memberRows 8 "one row per member, exactly"
           }
           test "(c) bare #help: modules one per line with blurbs; #find is listed" {
               let t = Weir.Repl.helpTextForTest ""

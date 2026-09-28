@@ -826,6 +826,13 @@
           "summary": "The option itself when Some, else the fallback (fallback first, so it pipes data-last). Stays in Option \u2014 Option.defaultValue is the one that unwraps. The fallback is an ordinary argument, evaluated even when the option is Some.",
           "example": "None |\u003E Option.orElse (Some 1)",
           "pointer": null
+        },
+        {
+          "name": "orElseWith",
+          "signature": "Option.orElseWith (f: unit -\u003E Option\u003C\u0027a\u003E) (opt: Option\u003C\u0027a\u003E) : Option\u003C\u0027a\u003E",
+          "summary": "orElse with a lazy fallback: a unit -\u003E Option thunk, run only when the option is None \u2014 for an expensive second lookup you do not want to pay on a hit.",
+          "example": "None |\u003E Option.orElseWith (fun () -\u003E Some 1)",
+          "pointer": null
         }
       ]
     },
@@ -1519,6 +1526,13 @@
           "pointer": null
         },
         {
+          "name": "tryReduce",
+          "signature": "Seq.tryReduce (f: \u0027a -\u003E \u0027a -\u003E \u0027a) (xs: seq\u003C\u0027a\u003E) : Option\u003C\u0027a\u003E",
+          "summary": "reduce\u0027s Option twin: Some result, or None on an empty sequence (where reduce raises \u2014 there is no seed to return).",
+          "example": "[1; 2] |\u003E Seq.where (fun n -\u003E n \u003E 9) |\u003E Seq.tryReduce (\u002B)",
+          "pointer": null
+        },
+        {
           "name": "where",
           "signature": "Seq.where (pred: \u0027a -\u003E bool) (xs: seq\u003C\u0027a\u003E) : seq\u003C\u0027a\u003E",
           "summary": "Keep the elements a predicate accepts, lazily.",
@@ -1723,6 +1737,13 @@
           "pointer": null
         },
         {
+          "name": "rsplitOnce",
+          "signature": "Str.rsplitOnce (sep: string) (s: string) : string * string",
+          "summary": "splitOnce from the right: split at the last occurrence into (before, after); raises when the separator is absent (tryRsplitOnce is the Option twin). For host:port where the host may itself hold colons.",
+          "example": "Str.rsplitOnce \u0022:\u0022 \u0022[::1]:8080\u0022 |\u003E snd |\u003E print",
+          "pointer": null
+        },
+        {
           "name": "sha256",
           "signature": "Str.sha256 (s: string) : string",
           "summary": "The SHA-256 digest of the string\u0027s UTF-8 bytes, lowercase hex (sha256sum parity). sha256 only for now.",
@@ -1832,6 +1853,13 @@
           "signature": "Str.tryIndexOf (needle: string) (s: string) : Option\u003Cint\u003E",
           "summary": "The index of a substring as an Option.",
           "example": "Str.tryIndexOf \u0022b\u0022 \u0022abc\u0022",
+          "pointer": null
+        },
+        {
+          "name": "tryRsplitOnce",
+          "signature": "Str.tryRsplitOnce (sep: string) (s: string) : Option\u003Cstring * string\u003E",
+          "summary": "rsplitOnce\u0027s Option twin: Some (before, after) at the last occurrence, None when the separator is absent.",
+          "example": "match Str.tryRsplitOnce \u0022@\u0022 \u0022a@b@host\u0022 with | Some (u, h) -\u003E print h | None -\u003E print \u0022no\u0022",
           "pointer": null
         },
         {

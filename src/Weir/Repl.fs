@@ -1119,7 +1119,19 @@ let private readLineTty () : string option =
 
             let painted =
                 if Types.Color.onStdout.Value then
-                    text.Substring(0, text.Length - ded.Length) + Script.colorizeRepl isKnown ded
+                    let dedentPrefix = text.Substring(0, text.Length - ded.Length)
+
+                    // a one-shot `#infer let x = <src>` colors as the
+                    // `let x = <src>` statement it wraps [D:infer-one-shot]:
+                    // colorizing the whole line let the leading `#infer`
+                    // hide the source's known names — so paint `#infer `
+                    // plain and colorize the rest as that statement
+                    match Complete.inferLetStrip ded with
+                    | Some off ->
+                        dedentPrefix
+                        + ded.Substring(0, off)
+                        + Script.colorizeRepl isKnown (ded.Substring off)
+                    | None -> dedentPrefix + Script.colorizeRepl isKnown ded
                 else
                     text
 
@@ -3926,15 +3938,11 @@ let private loadInit (baseState: State) : State =
 
                                 initDocs <- docs
 
-                                if names > 0 || not (List.isEmpty fieldLines) || not (Map.isEmpty aliasMap) then
-                                    let aliasNote =
-                                        if Map.isEmpty aliasMap then
-                                            ""
-                                        else
-                                            $", {Map.count aliasMap} alias(es)"
-
-                                    Console.Error.WriteLine $"init: {names} name(s){aliasNote} from {path}"
-
+                                // a successful load is silent [D:repl-init]:
+                                // only failure reports (notLoaded above), so
+                                // the session opens straight on the prompt —
+                                // the loaded names/settings/prompt are their
+                                // own evidence it worked
                                 { TypeEnv = tenv
                                   Values = venv
                                   Aliases = aliasMap }

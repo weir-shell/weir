@@ -15,6 +15,18 @@ let unsuggestedKeywords =
 
 let private keywords = Weir.Parser.keywords - unsuggestedKeywords |> Set.toList
 
+/// the `#infer ` prefix on a one-shot `#infer let <name> = <src>` line
+/// [D:infer-one-shot]: dropping it leaves an ordinary `let <name> = <src>`
+/// statement, so coloring and completion strip `#infer ` and treat the
+/// rest as that statement — the RHS keeps its value/head context, which
+/// stripping to the bare source would lose. Returns the offset of `let`,
+/// or None when this is not a one-shot line.
+let inferLetStrip (line: string) : int option =
+    let m =
+        System.Text.RegularExpressions.Regex.Match(line, @"^\s*#infer\s+(?=let\s+[A-Za-z_][A-Za-z0-9_]*\s*=)")
+
+    if m.Success then Some m.Length else None
+
 // the session directives, one source [D:repl-directives] — the set the
 // REPL's dispatch string-matches (Repl.fs) and #help documents, `#help`
 // first. Both completion slots read this: the line-head '#' slot (bare
@@ -411,13 +423,24 @@ let private lexicallyBound (name: string) (text: string) : bool =
 // resolve in command-head position only, so they join exactly the
 // head-slot pool (never argv, never the `^`-forced PATH pool: the
 // sigil skips the table). Scripts and the LSP pass none (REPL-only).
-let suggestScopedWith
+let rec suggestScopedWith
     (aliasHeads: Set<string>)
     (env: TypeEnv)
     (binderScope: string)
     (text: string)
     (wordStart: int)
     : string list =
+    // a one-shot `#infer let x = <src>` completes as the `let x = <src>`
+    // statement it wraps [D:infer-one-shot]: strip `#infer ` and recurse,
+    // so the RHS keeps its let-value context (bare names and heads both
+    // surface; the leading `#infer` was hiding it). The stripped text is
+    // a plain `let`, so this recurses at most once.
+    match inferLetStrip text with
+    | Some off when wordStart >= off ->
+        let stmt = text.Substring off
+        suggestScopedWith aliasHeads env stmt stmt (wordStart - off)
+    | _ ->
+
     let word =
         if wordStart >= text.Length then
             ""
