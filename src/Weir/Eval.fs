@@ -491,18 +491,35 @@ let private cappedPull (cap: int option) (items: seq<Value>) : Value list * bool
     | None -> items |> List.ofSeq, false
 
 // hostile bytes from data must not reach a terminal [D:binary-echo]:
+// the length of an SGR sequence (`ESC [ [0-9;:]* m`) starting at i, or
+// 0 [D:tty-color]. SGR sets display attributes only — colour, bold,
+// underline, reset — so it cannot move the cursor, clear the screen,
+// set the title, or write the clipboard; keeping it is safe where the
+// other escape families are not.
+let private sgrLenAt (s: string) (i: int) : int =
+    if i + 1 < s.Length && s.[i + 1] = '[' then
+        let mutable j = i + 2
+
+        while j < s.Length && (System.Char.IsDigit s.[j] || s.[j] = ';' || s.[j] = ':') do
+            j <- j + 1
+
+        if j < s.Length && s.[j] = 'm' then j - i + 1 else 0
+    else
+        0
+
 // [D:binary-echo] already ruled that a NUL-bearing echo refuses a tty;
 // this is the same rule one class wider, covering the data a renderer
-// prints. A filename or field carrying ANSI/OSC escapes, a bare ESC,
-// or C0/C1 controls can clear the screen, set the window title, or —
-// quietest of all — use CR so the name the user reads is not the name
-// on disk. So tty-bound data renderers neutralize those bytes: ESC
-// (the introducer), C0 controls except \t and \n, DEL, and the C1
-// range render as a visible \xNN escape so the text stays honest.
-// Applied only when the sink is a tty and only to data — weir's own
-// colouring (added around already-sanitized data) and redirected
-// output are untouched, so a pipe stays byte-faithful and colour
-// still works.
+// prints. A filename or field carrying OSC/DCS escapes, a bare ESC, a
+// cursor/screen CSI, or C0/C1 controls can clear the screen, set the
+// window title, write the clipboard, or — quietest of all — use CR so
+// the name the user reads is not the name on disk. So tty-bound data
+// renderers neutralize those bytes: the ESC introducer, C0 controls
+// except \t and \n, DEL, and the C1 range render as a visible \xNN
+// escape so the text stays honest. SGR sequences are the one exception
+// [D:tty-color]: display-only, so intentional colour (the Color module,
+// a coloured prompt) survives while every terminal-driving family stays
+// neutralized. Applied only at a tty and only to data — redirected
+// output is byte-faithful.
 let sanitizeTtyData (s: string) : string =
     // hostile = ESC (0x1B) the introducer, DEL (0x7F), any C0 control
     // (< 0x20) except TAB and LF, and the C1 range (0x80..0x9F)
@@ -514,15 +531,29 @@ let sanitizeTtyData (s: string) : string =
         s
     else
         let sb = System.Text.StringBuilder(s.Length)
-
         let hex = "0123456789abcdef"
+        let mutable i = 0
 
-        for c in s do
-            if hostile c then
+        while i < s.Length do
+            let c = s.[i]
+
+            if int c = 0x1B then
+                match sgrLenAt s i with
+                | 0 ->
+                    // a non-SGR escape (OSC/DCS/cursor CSI/lone ESC): the
+                    // introducer renders visible; the rest is now inert text
+                    sb.Append "\\x1b" |> ignore
+                    i <- i + 1
+                | n ->
+                    sb.Append(s.Substring(i, n)) |> ignore // SGR kept verbatim
+                    i <- i + n
+            elif hostile c then
                 let n = int c
                 sb.Append("\\x").Append(hex[(n >>> 4) &&& 0xF]).Append(hex[n &&& 0xF]) |> ignore
+                i <- i + 1
             else
                 sb.Append c |> ignore
+                i <- i + 1
 
         sb.ToString()
 

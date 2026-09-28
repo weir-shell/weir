@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.0.55
+
+### Added
+
+- **A `Color` module for terminal color.** `Color.red`/`green`/`yellow`/
+  `blue`/`magenta`/`cyan`/`gray` and `bold`/`dim`/`underline` (each
+  `string -> string`, nesting to combine), plus `Color.sgr code s` for
+  256-color/truecolor. Context-aware: emits the escape only at a terminal
+  with color on, plain when piped or `NO_COLOR` — so `print (Color.green x)`
+  colors interactively and stays plain in a pipe, no guarding.
+
+### Changed
+
+- **`print` keeps color at a terminal.** The tty data-sanitizer now lets
+  SGR (color/attribute) escapes through — display-only, so they can't
+  drive the terminal — while still neutralizing every other family (OSC
+  title/clipboard, DCS, cursor/screen moves, carriage-return overwrites)
+  to visible `\xNN`. Colored output (the `Color` module, a colored
+  prompt banner) reaches the screen; untrusted data still can't hijack it.
+
 ## v0.0.54
 
 ### Added

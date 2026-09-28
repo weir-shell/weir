@@ -2497,6 +2497,23 @@ WEOF
 
     echo "e2e ok: colour inherit — bare statements see the terminal, captures see the pipe, ordering holds, redirected unchanged, and the runner/REPL 2x2 agrees"
 
+    # ---- the Color module + print keeps SGR at a tty [D:tty-color] ----------
+    # Color.green emits SGR that print passes through at a terminal; the
+    # pty harness reprs a real ESC as \x1b and a defanged one as \\x1b, so
+    # the real-SGR pin is: the [32m code present, NOT doubled-backslash
+    cout=$(printf 'SLEEP 300\n' | python3 "$ptyrun" 4 "$BIN" -e 'print (Color.green "OKMARK")' 2>&1)
+    echo "$cout" | grep -qF '[32mOKMARK' || fail "Color.green must colour at a tty: $cout"
+    echo "$cout" | grep -qF '\\x1b[32mOKMARK' && fail "print defanged the SGR instead of keeping it: $cout" || true
+    # injection: an OSC clipboard escape in a printed value is defanged to
+    # visible \x1b (repr'd \\x1b), the SGR colour beside it kept
+    inj=$(printf 'SLEEP 300\n' | python3 "$ptyrun" 4 "$BIN" -e 'print ((Color.red "SAFE") + (Str.fromUtf8 (Bytes.fromBase64 "Gw==")) + "]52;c;PWN")' 2>&1)
+    echo "$inj" | grep -qF '[31mSAFE' || fail "the SGR beside injected data survives: $inj"
+    echo "$inj" | grep -qF ']52;c;PWN' || fail "the OSC payload should still be present as inert text: $inj"
+    echo "$inj" | grep -qF '\\x1b]52' || fail "an OSC in printed data must be defanged (visible \\x1b): $inj"
+    # piped (not a tty): Color returns plain, no escapes at all
+    [ "$($BIN -e 'print (Color.green "plain")')" = "plain" ] || fail "Color must be plain when piped"
+    echo "e2e ok: Color module — SGR reaches the tty via print, OSC in data stays defanged, piped output is plain"
+
     # ---- the #session prompt at a tty [D:session-prompt] -------------------
     # the provider (an init function that runs a command) paints in place
     # of the default, once per entry read; a raising provider falls back

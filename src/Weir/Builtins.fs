@@ -3453,6 +3453,48 @@ let private durationMembers: (string * Ty * Value) list =
               VUnit
           | v -> unreachable $"the checker rejects 'Duration.sleep' on {formatValue v}") ]
 
+// the Color module [D:tty-color]: SGR-wrapping helpers so intentional
+// colour needs no escape-cobbling. Context-aware — each emits the escape
+// only when colour is on (a tty, no NO_COLOR; the same onStdout flag the
+// tool's own output honours) and returns the plain string otherwise, so
+// `print (Color.green x)` colours at a terminal and stays plain when
+// piped. print keeps SGR at a tty [D:tty-color], so these survive to the
+// screen; every other escape family a value carries is still neutralized.
+let private colorEsc = string (char 0x1b) // the ESC byte [D:tty-color]
+
+let private wrapSgr (code: string) (s: string) : Value =
+    if Types.Color.onStdout.Value then
+        VStr(colorEsc + "[" + code + "m" + s + colorEsc + "[0m")
+    else
+        VStr s
+
+let private colorHelper (code: string) : Value =
+    VBuiltin(fun v ->
+        match v with
+        | VStr s -> wrapSgr code s
+        | v -> unreachable $"the checker rejects a Color helper on {formatValue v}")
+
+let private colorMembers: (string * Ty * Value) list =
+    [ "red", TFun(TStr, TStr), colorHelper "31"
+      "green", TFun(TStr, TStr), colorHelper "32"
+      "yellow", TFun(TStr, TStr), colorHelper "33"
+      "blue", TFun(TStr, TStr), colorHelper "34"
+      "magenta", TFun(TStr, TStr), colorHelper "35"
+      "cyan", TFun(TStr, TStr), colorHelper "36"
+      "gray", TFun(TStr, TStr), colorHelper "90"
+      "bold", TFun(TStr, TStr), colorHelper "1"
+      "dim", TFun(TStr, TStr), colorHelper "2"
+      "underline", TFun(TStr, TStr), colorHelper "4"
+      // the escape hatch for 256-colour / truecolor: a raw SGR parameter
+      // string (`38;5;208`, `38;2;255;128;0`) the caller owns
+      "sgr",
+      TFun(TStr, TFun(TStr, TStr)),
+      VBuiltin(fun codeV ->
+          VBuiltin(fun sV ->
+              match codeV, sV with
+              | VStr code, VStr s -> wrapSgr code s
+              | _ -> unreachable "the checker rejects 'Color.sgr' on these arguments")) ]
+
 let private secretMembers: (string * Ty * Value) list =
     // a marker the renderers respect [D:secret] — of asserts secrecy (the
     // safe direction, for computed secrets), reveal is the one guarded exit
@@ -4464,6 +4506,7 @@ let private moduleTable: (string * (string * Ty * Value) list) list =
       "Size", sizeMembers
       "Bytes", bytesMembers
       "Secret", secretMembers
+      "Color", colorMembers
       // the bounded-loop option templates [D:retry-poll]: the resting
       // values the key=value head desugars over
       "Retry",
@@ -5739,6 +5782,25 @@ let builtinDocs: Map<string, BuiltinDoc> =
               (Some "Secret.map (fun t -> \"Bearer \" + t) (Secret.of \"x\")")
               None
            |> named [ "f"; "s" ])
+          // Color [D:tty-color]: wrap a string in an SGR colour/attribute,
+          // auto-off when piped or NO_COLOR — `print (Color.green x)` colours
+          // at a terminal, plain elsewhere. Nest to combine.
+          "Color.red", (bd "Wrap in red — off when piped/NO_COLOR." (Some "print (Color.red \"error\")") None |> named [ "s" ])
+          "Color.green", (bd "Wrap in green — off when piped/NO_COLOR." (Some "print (Color.green \"ok\")") None |> named [ "s" ])
+          "Color.yellow", (bd "Wrap in yellow — off when piped/NO_COLOR." (Some "print (Color.yellow \"warn\")") None |> named [ "s" ])
+          "Color.blue", (bd "Wrap in blue — off when piped/NO_COLOR." (Some "print (Color.blue \"info\")") None |> named [ "s" ])
+          "Color.magenta", (bd "Wrap in magenta — off when piped/NO_COLOR." (Some "print (Color.magenta \"x\")") None |> named [ "s" ])
+          "Color.cyan", (bd "Wrap in cyan — off when piped/NO_COLOR." (Some "print (Color.cyan \"x\")") None |> named [ "s" ])
+          "Color.gray", (bd "Wrap in gray (bright black) — off when piped/NO_COLOR." (Some "print (Color.gray \"muted\")") None |> named [ "s" ])
+          "Color.bold", (bd "Wrap in bold — off when piped/NO_COLOR; nest with a colour." (Some "print (Color.bold (Color.red \"!\"))") None |> named [ "s" ])
+          "Color.dim", (bd "Wrap in dim — off when piped/NO_COLOR." (Some "print (Color.dim \"note\")") None |> named [ "s" ])
+          "Color.underline", (bd "Wrap in underline — off when piped/NO_COLOR." (Some "print (Color.underline \"link\")") None |> named [ "s" ])
+          "Color.sgr",
+          (bd
+              "Wrap in a raw colour code — the escape hatch for 256-colour (`38;5;208`) and truecolor (`38;2;r;g;b`); off when piped/NO_COLOR."
+              (Some "print (Color.sgr \"38;5;208\" \"orange\")")
+              None
+           |> named [ "code"; "s" ])
           "Size.parse",
           (bd
               "Parse size text: binary units at 1024 (1.5MiB), the SI spellings at powers of ten (1MB is 10^6 — the writer chose the unit), B for bytes; sub-byte precision raises."
@@ -5984,6 +6046,7 @@ let moduleBlurbs: Map<string, string> =
           "Server", "scoped HTTP listener handles: port, running (see within serve)"
           "Retry", "retry's options record: defaults"
           "Secret", "rendering-masked values: of, map, reveal"
+          "Color", "terminal colour: red/green/…, bold/dim/underline, sgr — auto-off when piped"
           "Self", "the process's own facts: args, stdin, pid, paths — and prompt"
           "Seq", "lazy sequence pipeline ops: map, where, fold, pmap"
           "Size", "byte sizes: binary-unit literals, arithmetic, parse"

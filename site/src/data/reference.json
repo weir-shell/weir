@@ -88,6 +88,88 @@
       ]
     },
     {
+      "name": "Color",
+      "members": [
+        {
+          "name": "blue",
+          "signature": "Color.blue (s: string) : string",
+          "summary": "Wrap in blue \u2014 off when piped/NO_COLOR.",
+          "example": "print (Color.blue \u0022info\u0022)",
+          "pointer": null
+        },
+        {
+          "name": "bold",
+          "signature": "Color.bold (s: string) : string",
+          "summary": "Wrap in bold \u2014 off when piped/NO_COLOR; nest with a colour.",
+          "example": "print (Color.bold (Color.red \u0022!\u0022))",
+          "pointer": null
+        },
+        {
+          "name": "cyan",
+          "signature": "Color.cyan (s: string) : string",
+          "summary": "Wrap in cyan \u2014 off when piped/NO_COLOR.",
+          "example": "print (Color.cyan \u0022x\u0022)",
+          "pointer": null
+        },
+        {
+          "name": "dim",
+          "signature": "Color.dim (s: string) : string",
+          "summary": "Wrap in dim \u2014 off when piped/NO_COLOR.",
+          "example": "print (Color.dim \u0022note\u0022)",
+          "pointer": null
+        },
+        {
+          "name": "gray",
+          "signature": "Color.gray (s: string) : string",
+          "summary": "Wrap in gray (bright black) \u2014 off when piped/NO_COLOR.",
+          "example": "print (Color.gray \u0022muted\u0022)",
+          "pointer": null
+        },
+        {
+          "name": "green",
+          "signature": "Color.green (s: string) : string",
+          "summary": "Wrap in green \u2014 off when piped/NO_COLOR.",
+          "example": "print (Color.green \u0022ok\u0022)",
+          "pointer": null
+        },
+        {
+          "name": "magenta",
+          "signature": "Color.magenta (s: string) : string",
+          "summary": "Wrap in magenta \u2014 off when piped/NO_COLOR.",
+          "example": "print (Color.magenta \u0022x\u0022)",
+          "pointer": null
+        },
+        {
+          "name": "red",
+          "signature": "Color.red (s: string) : string",
+          "summary": "Wrap in red \u2014 off when piped/NO_COLOR.",
+          "example": "print (Color.red \u0022error\u0022)",
+          "pointer": null
+        },
+        {
+          "name": "sgr",
+          "signature": "Color.sgr (code: string) (s: string) : string",
+          "summary": "Wrap in a raw colour code \u2014 the escape hatch for 256-colour (\u006038;5;208\u0060) and truecolor (\u006038;2;r;g;b\u0060); off when piped/NO_COLOR.",
+          "example": "print (Color.sgr \u002238;5;208\u0022 \u0022orange\u0022)",
+          "pointer": null
+        },
+        {
+          "name": "underline",
+          "signature": "Color.underline (s: string) : string",
+          "summary": "Wrap in underline \u2014 off when piped/NO_COLOR.",
+          "example": "print (Color.underline \u0022link\u0022)",
+          "pointer": null
+        },
+        {
+          "name": "yellow",
+          "signature": "Color.yellow (s: string) : string",
+          "summary": "Wrap in yellow \u2014 off when piped/NO_COLOR.",
+          "example": "print (Color.yellow \u0022warn\u0022)",
+          "pointer": null
+        }
+      ]
+    },
+    {
       "name": "Dir",
       "members": [
         {
