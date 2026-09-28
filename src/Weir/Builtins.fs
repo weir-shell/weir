@@ -901,6 +901,35 @@ let private trySplitOnceImpl: Value =
                     | i -> vSome (VTuple [ VStr(s.Substring(0, i)); VStr(s.Substring(i + sep.Length)) ])
             | _ -> unreachable "the checker rejects 'trySplitOnce' on these arguments"))
 
+// split at the last occurrence [D:split-once] — splitOnce from the
+// right (Rust's rsplit_once): `user@host:port` wants the last colon,
+// a path its last `/`. Same at-most-one-split shape, LastIndexOf.
+let private rsplitOnceImpl: Value =
+    VBuiltin(fun sep ->
+        VBuiltin(fun subject ->
+            match sep, subject with
+            | VStr sep, VStr s ->
+                if sep = "" then
+                    failwith "rsplitOnce: the separator cannot be empty"
+                else
+                    match s.LastIndexOf sep with
+                    | -1 -> failwith $"rsplitOnce: no \"{sep}\" in the input"
+                    | i -> VTuple [ VStr(s.Substring(0, i)); VStr(s.Substring(i + sep.Length)) ]
+            | _ -> unreachable "the checker rejects 'rsplitOnce' on these arguments"))
+
+let private tryRsplitOnceImpl: Value =
+    VBuiltin(fun sep ->
+        VBuiltin(fun subject ->
+            match sep, subject with
+            | VStr sep, VStr s ->
+                if sep = "" then
+                    failwith "tryRsplitOnce: the separator cannot be empty"
+                else
+                    match s.LastIndexOf sep with
+                    | -1 -> vNone
+                    | i -> vSome (VTuple [ VStr(s.Substring(0, i)); VStr(s.Substring(i + sep.Length)) ])
+            | _ -> unreachable "the checker rejects 'tryRsplitOnce' on these arguments"))
+
 let private joinImpl: Value =
     VBuiltin(fun sep ->
         VBuiltin(fun s ->
@@ -1658,6 +1687,27 @@ let private reduceImpl: Value =
                 | ValueNone -> failwith "reduce: empty sequence"
             | v -> unreachable $"the checker rejects 'reduce' on {formatValue v}"))
 
+// reduce's Option twin [D:try-convention]: reduce on an empty sequence
+// is genuinely undefined (no seed), so None is the honest answer where
+// reduce raises
+let private tryReduceImpl: Value =
+    VBuiltin(fun folder ->
+        VBuiltin(fun s ->
+            match s with
+            | VSeq items ->
+                let mutable acc = ValueNone
+
+                for x in items do
+                    acc <-
+                        match acc with
+                        | ValueNone -> ValueSome x
+                        | ValueSome a -> ValueSome(apply (apply folder a) x)
+
+                match acc with
+                | ValueSome a -> vSome a
+                | ValueNone -> vNone
+            | v -> unreachable $"the checker rejects 'tryReduce' on {formatValue v}"))
+
 // fold with intermediates, initial state first (F# semantics); lazy
 let private scanImpl: Value =
     VBuiltin(fun folder ->
@@ -1905,6 +1955,7 @@ let private seqMembers: (string * Ty * Value) list =
       "countBy", TFun(TFun(tA, tB), TFun(TSeq tA, TSeq(TTuple [ tB; TInt ]))), countByImpl
       "distinctBy", TFun(TFun(tA, tB), TFun(TSeq tA, TSeq tA)), distinctByImpl
       "reduce", TFun(TFun(tA, TFun(tA, tA)), TFun(TSeq tA, tA)), reduceImpl
+      "tryReduce", TFun(TFun(tA, TFun(tA, tA)), TFun(TSeq tA, TNamed("Option", [ tA ]))), tryReduceImpl
       "scan", TFun(TFun(tA, TFun(tB, tA)), TFun(tA, TFun(TSeq tB, TSeq tA))), scanImpl
       "tryPick", TFun(TFun(tA, TNamed("Option", [ tB ])), TFun(TSeq tA, TNamed("Option", [ tB ]))), tryPickImpl
       "pick", TFun(TFun(tA, TNamed("Option", [ tB ])), TFun(TSeq tA, tB)), pickImpl
@@ -1984,6 +2035,8 @@ let private strMembers: (string * Ty * Value) list =
       "fields", TFun(TStr, TSeq TStr), fieldsImpl
       "splitOnce", TFun(TStr, TFun(TStr, TTuple [ TStr; TStr ])), splitOnceImpl
       "trySplitOnce", TFun(TStr, TFun(TStr, TNamed("Option", [ TTuple [ TStr; TStr ] ]))), trySplitOnceImpl
+      "rsplitOnce", TFun(TStr, TFun(TStr, TTuple [ TStr; TStr ])), rsplitOnceImpl
+      "tryRsplitOnce", TFun(TStr, TFun(TStr, TNamed("Option", [ TTuple [ TStr; TStr ] ]))), tryRsplitOnceImpl
       "join", TFun(TStr, TFun(TSeq TStr, TStr)), joinImpl
       "replace", TFun(TStr, TFun(TStr, TFun(TStr, TStr))), replaceImpl
       "length", TFun(TStr, TInt), strLenImpl
@@ -2252,7 +2305,6 @@ let private optionIterImpl: Value =
 // fallback first so the pipe reads data-last (F#'s order):
 // `opt |> Option.orElse fallback`. Stays in Option, where
 // defaultValue unwraps. The fallback is an ordinary (eager) argument;
-// an orElseWith twin would follow defaultWith's shape; parked.
 let private optionOrElseImpl: Value =
     VBuiltin(fun fallback ->
         VBuiltin(fun opt ->
@@ -2261,11 +2313,25 @@ let private optionOrElseImpl: Value =
             | VUnion("None", None) -> fallback
             | v -> unreachable $"the checker rejects 'Option.orElse' on {formatValue v}"))
 
+// the lazy twin of orElse — defaultWith's shape [D:gap-a-remainder]: the
+// fallback is a thunk, run only on None, so an expensive second lookup
+// does not fire when the first hit
+let private optionOrElseWithImpl: Value =
+    VBuiltin(fun f ->
+        VBuiltin(fun opt ->
+            match opt with
+            | VUnion("Some", _) -> opt
+            | VUnion("None", None) -> apply f VUnit
+            | v -> unreachable $"the checker rejects 'Option.orElseWith' on {formatValue v}"))
+
 let private optionMembers: (string * Ty * Value) list =
     [ "iter", TFun(TFun(tA, TUnit), TFun(TNamed("Option", [ tA ]), TUnit)), optionIterImpl
       "orElse",
       TFun(TNamed("Option", [ tA ]), TFun(TNamed("Option", [ tA ]), TNamed("Option", [ tA ]))),
       optionOrElseImpl
+      "orElseWith",
+      TFun(TFun(TUnit, TNamed("Option", [ tA ])), TFun(TNamed("Option", [ tA ]), TNamed("Option", [ tA ]))),
+      optionOrElseWithImpl
       "map", TFun(TFun(tA, tB), TFun(TNamed("Option", [ tA ]), TNamed("Option", [ tB ]))), mapOptionImpl
       "bind",
       TFun(TFun(tA, TNamed("Option", [ tB ])), TFun(TNamed("Option", [ tA ]), TNamed("Option", [ tB ]))),
@@ -4817,6 +4883,12 @@ let builtinDocs: Map<string, BuiltinDoc> =
               (Some "[1; 2; 3] |> Seq.reduce (+)")
               None
           |> named [ "f"; "xs" ]
+          "Seq.tryReduce",
+          bd
+              "reduce's Option twin: Some result, or None on an empty sequence (where reduce raises — there is no seed to return)."
+              (Some "[1; 2] |> Seq.where (fun n -> n > 9) |> Seq.tryReduce (+)")
+              None
+          |> named [ "f"; "xs" ]
           "Seq.scan",
           bd
               "Fold emitting every intermediate state, the seed first, lazily."
@@ -4952,6 +5024,12 @@ let builtinDocs: Map<string, BuiltinDoc> =
               (Some "None |> Option.orElse (Some 1)")
               None
            |> named [ "fallback"; "opt" ])
+          "Option.orElseWith",
+          (bd
+              "orElse with a lazy fallback: a unit -> Option thunk, run only when the option is None — for an expensive second lookup you do not want to pay on a hit."
+              (Some "None |> Option.orElseWith (fun () -> Some 1)")
+              None
+           |> named [ "f"; "opt" ])
           "Option.map",
           (bd "Apply a function inside a Some, pass None through." (Some "Option.map (fun x -> x + 1) (Some 5)") None
            |> named [ "f"; "opt" ])
@@ -5081,6 +5159,18 @@ let builtinDocs: Map<string, BuiltinDoc> =
           (bd
               "splitOnce's Option twin: Some (before, after) at the first occurrence, None when the separator is absent — the `KEY=VALUE` parser's shape."
               (Some "match Str.trySplitOnce \"=\" \"key=val\" with | Some (k, v) -> print k | None -> print \"no\"")
+              None
+           |> named [ "sep"; "s" ])
+          "Str.rsplitOnce",
+          (bd
+              "splitOnce from the right: split at the last occurrence into (before, after); raises when the separator is absent (tryRsplitOnce is the Option twin). For host:port where the host may itself hold colons."
+              (Some "Str.rsplitOnce \":\" \"[::1]:8080\" |> snd |> print")
+              None
+           |> named [ "sep"; "s" ])
+          "Str.tryRsplitOnce",
+          (bd
+              "rsplitOnce's Option twin: Some (before, after) at the last occurrence, None when the separator is absent."
+              (Some "match Str.tryRsplitOnce \"@\" \"a@b@host\" with | Some (u, h) -> print h | None -> print \"no\"")
               None
            |> named [ "sep"; "s" ])
           "Str.join",

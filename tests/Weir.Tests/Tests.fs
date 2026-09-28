@@ -4938,6 +4938,36 @@ let stringTests =
               expectValue "Str.trySplitOnce \"=\" \"k=v\"" (VUnion("Some", Some(VTuple [ VStr "k"; VStr "v" ])))
               expectValue "Str.trySplitOnce \"=\" \"none\"" (VUnion("None", None))
           }
+          test "rsplitOnce splits at the LAST separator [D:split-once]" {
+              // the from-the-right receipt: user@host:port, [::1]:port
+              expectValue "Str.rsplitOnce \":\" \"[::1]:8080\"" (VTuple [ VStr "[::1]"; VStr "8080" ])
+              expectValue "Str.rsplitOnce \"@\" \"a@b@host\"" (VTuple [ VStr "a@b"; VStr "host" ])
+              // multi-char, and empty edges (never absences)
+              expectValue "Str.rsplitOnce \"::\" \"a::b::c\"" (VTuple [ VStr "a::b"; VStr "c" ])
+              expectValue "Str.rsplitOnce \"/\" \"x/\"" (VTuple [ VStr "x"; VStr "" ])
+
+              let msgOf src =
+                  Expect.throwsC (fun () -> run src |> ignore) id |> _.Message
+
+              Expect.equal (msgOf "Str.rsplitOnce \":\" \"abc\"") "rsplitOnce: no \":\" in the input" "raises, naming the separator"
+              Expect.equal (msgOf "Str.rsplitOnce \"\" \"abc\"") "rsplitOnce: the separator cannot be empty" "empty separator refused"
+              // the Option twin
+              expectValue "Str.tryRsplitOnce \":\" \"a:b:c\"" (VUnion("Some", Some(VTuple [ VStr "a:b"; VStr "c" ])))
+              expectValue "Str.tryRsplitOnce \":\" \"none\"" (VUnion("None", None))
+          }
+          test "Option.orElseWith runs the fallback thunk only on None [D:gap-a-remainder]" {
+              // Some short-circuits — the thunk never fires
+              expectValue "(Some 1) |> Option.orElseWith (fun () -> Some 2)" (VUnion("Some", Some(VInt 1L)))
+              // None takes the thunk's result
+              expectValue "None |> Option.orElseWith (fun () -> Some 2)" (VUnion("Some", Some(VInt 2L)))
+              // laziness: a raising thunk is untouched when the option is Some
+              expectValue "(Some 1) |> Option.orElseWith (fun () -> fail \"boom\")" (VUnion("Some", Some(VInt 1L)))
+          }
+          test "Seq.tryReduce is reduce's Option twin — None on empty [D:try-convention]" {
+              expectValue "[1; 2; 3; 4] |> Seq.tryReduce (fun a b -> a + b)" (VUnion("Some", Some(VInt 10L)))
+              // empty (from a filter) is None, where reduce would raise
+              expectValue "[1; 2] |> Seq.where (fun n -> n > 9) |> Seq.tryReduce (fun a b -> a + b)" (VUnion("None", None))
+          }
           test "Str.fields: whitespace runs collapse, empties never appear [D:str-fields]" {
               // tabs and spaces mixed — one whitespace class (trim's)
               Expect.equal
@@ -21479,7 +21509,7 @@ let helpUxTests =
                   "the defaultValue row carries its glance"
 
               let memberRows = lines |> Array.filter (fun l -> l.StartsWith "  ") |> Array.length
-              Expect.equal memberRows 7 "one row per member, exactly"
+              Expect.equal memberRows 8 "one row per member, exactly"
           }
           test "(c) bare #help: modules one per line with blurbs; #find is listed" {
               let t = Weir.Repl.helpTextForTest ""

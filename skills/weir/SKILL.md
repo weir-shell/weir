@@ -2275,7 +2275,7 @@ not the teaching.
 - `Log`: `debug` `debugWith` `info` `infoWith` `trace` `traceWith` `warn` `warnWith`
 - `Map`: `add` `count` `get` `has` `keys` `ofPairs` `pairs` `remove` `tryGet` `values`
 - `Net`: `portOpen`
-- `Option`: `defaultValue` `defaultWith` `iter` `map` `orElse`
+- `Option`: `defaultValue` `defaultWith` `iter` `map` `orElse` `orElseWith`
 - `Path`: `cacheHome` `combine` `configHome` `dir` `extension` `fileName` `glob` `home` `newTempDir` `stateHome` `stem` `tempRoot` `under` — `home`/`configHome`/`stateHome`/`cacheHome` (each `unit -> string`) are the typed stand-in for `~`/`$HOME`, which never expand in argv: `cat $"{Path.home ()}/.bashrc"`
 - `Poll`: `defaults`
 - `Proc`: `pid` `running` `stop` `tail` `wait`
@@ -2283,7 +2283,7 @@ not the teaching.
 - `Retry`: `defaults`
 - `Secret`: `map` `of` `reveal`
 - `Self`: `args` `entryPath` `pid` `scriptPath` `stdin` (script-only — absent in the REPL, so `#help` does not list it)
-- `Seq`: `append` `average` `choose` `chunkBySize` `collect` `concat` `contains` `countBy` `distinct` `distinctBy` `equal` `except` `exactlyOne` `exists` `find` `fold` `forall` `freeze` `groupBy` `head` `indexed` `isEmpty` `item` `iter` `last` `length` `map` `max` `maxBy` `min` `minBy` `pairwise` `pfirst` `pfirstWith` `pick` `piter` `piterWith` `pmap` `pmapWith` `range` `reduce` `replicate` `rev` `scan` `skip` `skipWhile` `sort` `sortBy` `sortByDescending` `sortDescending` `sum` `take` `takeWhile` `tryExactlyOne` `tryFind` `tryHead` `tryItem` `tryLast` `tryPick` `where` `windowed` `zip`
+- `Seq`: `append` `average` `choose` `chunkBySize` `collect` `concat` `contains` `countBy` `distinct` `distinctBy` `equal` `except` `exactlyOne` `exists` `find` `fold` `forall` `freeze` `groupBy` `head` `indexed` `isEmpty` `item` `iter` `last` `length` `map` `max` `maxBy` `min` `minBy` `pairwise` `pfirst` `pfirstWith` `pick` `piter` `piterWith` `pmap` `pmapWith` `range` `reduce` `replicate` `rev` `scan` `skip` `skipWhile` `sort` `sortBy` `sortByDescending` `sortDescending` `sum` `take` `takeWhile` `tryExactlyOne` `tryFind` `tryHead` `tryItem` `tryLast` `tryPick` `tryReduce` `where` `windowed` `zip`
 - `Bytes`: `fromBase64` `fromHex` `hmacSha256` `length` `sha256` `sub` `toBase64` `toHex` `tryFromBase64`
 - `Size`: `average` `bytes` `parse` `sum` `toBytes` `tryParse`
-- `Str`: `contains` `endsWith` `fields` `fromBase64` `isMatch` `join` `length` `padLeft` `padRight` `replace` `replicate` `rmatch` `rmatchAll` `rsplit` `sha256` `split` `splitOnce` `startsWith` `sub` `toBase64` `toInt` `toLower` `toUpper` `toUtf8` `trim` `trimEnd` `trimStart` `tryFromBase64` `tryFromUtf8` `tryIndexOf` `trySplitOnce` `tryToInt` `fromUtf8`
+- `Str`: `contains` `endsWith` `fields` `fromBase64` `isMatch` `join` `length` `padLeft` `padRight` `replace` `replicate` `rmatch` `rmatchAll` `rsplit` `rsplitOnce` `sha256` `split` `splitOnce` `startsWith` `sub` `toBase64` `toInt` `toLower` `toUpper` `toUtf8` `trim` `trimEnd` `trimStart` `tryFromBase64` `tryFromUtf8` `tryIndexOf` `tryRsplitOnce` `trySplitOnce` `tryToInt` `fromUtf8`

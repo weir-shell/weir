@@ -10,6 +10,12 @@
   bare `let x = <src>` would — the leading `#infer` had been hiding
   the statement context.
 
+- **Parked library members, unparked.** `Str.rsplitOnce`/`tryRsplitOnce`
+  (split at the last separator — `user@host:port`, `[::1]:port`),
+  `Option.orElseWith` (orElse with a lazy `unit -> Option` fallback), and
+  `Seq.tryReduce` (reduce's Option twin — `None` on empty). Each fills in
+  next to its existing sibling.
+
 - **`Bytes` now slices — `b[a..b]`, `b[..b]`, `b[a..]`.** The range
   slice operator was string/seq only; `Bytes` joins as the third
   target, same inclusive-clamping contract, slicing to `Bytes`. A
