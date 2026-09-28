@@ -333,11 +333,67 @@ let pathToUri (path: string) : string =
         else
             "file:///" + encoded
 
+// init.weir carries init-only directives (#session, #alias) the script
+// checker does not know [D:repl-init] — flagging `#session` at col 0 as a
+// parse error. For diagnostics, blank the `#session {`/`}`/`#alias` lines
+// (keeping line numbers so declarations report at their real positions),
+// and rewrite each `key = value` field to `let _ = value` so the field's
+// value is still checked AND counts as a use of the names it references —
+// otherwise a `let` used only by `prompt = f` would look unused.
+let private stripInitDirectives (lines: string list) : string list =
+    let fieldStart =
+        System.Text.RegularExpressions.Regex @"^(\s*)([A-Za-z_][A-Za-z0-9_]*)(\s*=\s*)(.*)$"
+
+    let mutable inBlock = false
+
+    [ for l in lines do
+          let t = l.Trim()
+
+          if inBlock then
+              if t = "}" then
+                  inBlock <- false
+                  yield ""
+              else
+                  let m = fieldStart.Match l
+
+                  if m.Success then
+                      // `<indent>key = value` -> `let _<key> = value` at col 0:
+                      // a top-level statement (an indented let would read as a
+                      // nested `let … in` wanting a body) that checks the value
+                      // and counts the names it references. The `_`-prefixed,
+                      // key-unique binder draws no discard/unused warning.
+                      yield "let _" + m.Groups.[2].Value + " = " + m.Groups.[4].Value
+                  else
+                      yield l // a continuation line (list entry) is part of the value
+          elif t.StartsWith "#session" then
+              inBlock <- t.EndsWith "{"
+              yield ""
+          elif t = "#alias" || t.StartsWith "#alias " then
+              yield ""
+          else
+              yield l ]
+
 let private analyze (uri: string) (text: string) =
-    let lines = text.Replace("\r\n", "\n").Split('\n') |> Array.toList
+    let raw = text.Replace("\r\n", "\n").Split('\n') |> Array.toList
     // analyze against the real path so imports resolve relative to the file;
     // diagnostics come back File-identified (the entry + its modules)
     let path = uriToPath uri
+
+    // only the REPL's own init file gets init-directive handling — a
+    // stray init.weir elsewhere is a normal script [D:repl-init]. Match
+    // the canonical path (<configHome>/weir/init.weir, XDG/%APPDATA%
+    // honoured), normalized both sides.
+    let isReplInit =
+        try
+            let initPath =
+                System.IO.Path.Combine(Builtins.configDir (), "weir", "init.weir")
+
+            System.IO.Path.GetFullPath path = System.IO.Path.GetFullPath initPath
+        with _ ->
+            false
+
+    let lines = if isReplInit then stripInitDirectives raw else raw
+
     let diags, stmts, env0, lls = Script.analyzeLines path lines
     diags, stmts, env0, lls
 

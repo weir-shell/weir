@@ -1,9 +1,16 @@
 #!/usr/bin/env python3
 """LSP integration test: speaks the protocol over stdio against the AOT
 binary. Invoked by ci/e2e.sh; exits nonzero with a reason on failure."""
-import json, os, pathlib, subprocess, sys, threading
+import json, os, pathlib, subprocess, sys, tempfile, threading
 
 BIN = os.environ.get("WEIR_BIN", os.path.expanduser("~/.local/bin/weir"))
+# a known config home so the init.weir case can address the REPL's own
+# init path (<configHome>/weir/init.weir) — the LSP only init-treats that
+# exact file, not a stray init.weir elsewhere. Set before the LSP launches
+# so its configDir() sees it (both spellings for POSIX / Windows).
+_CFG = tempfile.mkdtemp()
+os.environ["XDG_CONFIG_HOME"] = _CFG
+os.environ["APPDATA"] = _CFG
 import sys as _sys
 _sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "lib"))
 from harness import assert_fresh
@@ -101,6 +108,10 @@ send({"jsonrpc": "2.0", "method": "textDocument/didChange",
 diag = read_msg()
 expect(diag["params"]["diagnostics"] == [], "diagnostics should clear")
 
+# init.weir carries init-only directives (#session/#alias) the script
+# checker does not know — the LSP must not flag them (the col-0 #session
+# was reported as "expecting identifier"). A real declaration error still
+# shows, so the suppression is surgical, not a blanket mute.
 # hover the binding RHS -> a type string
 send({"jsonrpc": "2.0", "id": 2, "method": "textDocument/hover",
       "params": {"textDocument": {"uri": URI}, "position": {"line": 0, "character": 5}}})
@@ -460,6 +471,56 @@ for _ in range(5):
         break
 send2({"jsonrpc": "2.0", "id": 2, "method": "shutdown", "params": {}}); read2()
 send2({"jsonrpc": "2.0", "method": "exit", "params": {}}); p2.wait(timeout=5)
+
+# init.weir carries init-only directives (#session/#alias) the script
+# checker does not know [D:repl-init] — the LSP must not flag them (the
+# col-0 #session was reported as "expecting identifier"), but ONLY for
+# the REPL's own <configHome>/weir/init.weir, and a real declaration
+# error must still surface. Isolated process (re-publishes desync a
+# shared stream); _CFG is this run's XDG_CONFIG_HOME.
+pI = subprocess.Popen([BIN, "lsp"], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+PROCS.append(pI)
+def sendI(obj):
+    b = json.dumps(obj).encode()
+    pI.stdin.write(f"Content-Length: {len(b)}\r\n\r\n".encode() + b); pI.stdin.flush()
+def readI():
+    length = None
+    while True:
+        line = pI.stdout.readline().strip()
+        if line.startswith(b"Content-Length:"): length = int(line.split(b":")[1])
+        elif line == b"": break
+    return json.loads(pI.stdout.read(length))
+def init_diags():
+    for _ in range(6):
+        m = readI()
+        if m.get("method") == "textDocument/publishDiagnostics" and nuri(m["params"]["uri"]) == nuri(INIT_URI):
+            return m["params"]["diagnostics"]
+    expect(False, "no diagnostics for the init uri")
+sendI({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"rootUri": furi(repo)}}); readI()
+sendI({"jsonrpc": "2.0", "method": "initialized", "params": {}})
+INIT_URI = furi(os.path.join(_CFG, "weir", "init.weir"))
+sendI({"jsonrpc": "2.0", "method": "textDocument/didOpen",
+       "params": {"textDocument": {"uri": INIT_URI,
+                  "text": 'let prompt () = "> "\n\n#session {\n    prompt = prompt\n}\n'}}})
+expect(init_diags() == [], "#session/#alias must not be flagged in init.weir")
+# a genuine declaration error still surfaces (suppression is surgical) —
+# prompt stays defined so the field is clean; Bad is the error
+sendI({"jsonrpc": "2.0", "method": "textDocument/didChange",
+       "params": {"textDocument": {"uri": INIT_URI},
+                  "contentChanges": [{"text": 'let prompt () = "> "\nlet Bad = 1\n\n#session {\n    prompt = prompt\n}\n'}]}})
+expect("casing-law" in [d["code"] for d in init_diags()], "a real init declaration error still shows")
+# a stray init.weir NOT under the config dir stays a normal script — its
+# #session is flagged (proving the path check, not the basename)
+STRAY = furi(os.path.join(tempfile.mkdtemp(), "init.weir"))
+sendI({"jsonrpc": "2.0", "method": "textDocument/didOpen",
+       "params": {"textDocument": {"uri": STRAY, "text": "#session {\n    x = 1\n}\n"}}})
+for _ in range(6):
+    m = readI()
+    if m.get("method") == "textDocument/publishDiagnostics" and nuri(m["params"]["uri"]) == nuri(STRAY):
+        expect(len(m["params"]["diagnostics"]) > 0, "a stray init.weir is a normal script — #session flagged")
+        break
+sendI({"jsonrpc": "2.0", "id": 2, "method": "shutdown", "params": {}}); readI()
+sendI({"jsonrpc": "2.0", "method": "exit", "params": {}}); pI.wait(timeout=5)
 
 # ---- modules: per-URI diagnostics + buffer-over-disk (session 4) ----
 # A module's error lands on the module's OWN uri (even when only the entry is
