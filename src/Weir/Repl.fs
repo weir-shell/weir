@@ -1119,7 +1119,19 @@ let private readLineTty () : string option =
 
             let painted =
                 if Types.Color.onStdout.Value then
-                    text.Substring(0, text.Length - ded.Length) + Script.colorizeRepl isKnown ded
+                    let dedentPrefix = text.Substring(0, text.Length - ded.Length)
+
+                    // a one-shot `#infer let x = <src>` colors as the
+                    // `let x = <src>` statement it wraps [D:infer-one-shot]:
+                    // colorizing the whole line let the leading `#infer`
+                    // hide the source's known names — so paint `#infer `
+                    // plain and colorize the rest as that statement
+                    match Complete.inferLetStrip ded with
+                    | Some off ->
+                        dedentPrefix
+                        + ded.Substring(0, off)
+                        + Script.colorizeRepl isKnown (ded.Substring off)
+                    | None -> dedentPrefix + Script.colorizeRepl isKnown ded
                 else
                     text
 

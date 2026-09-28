@@ -3376,6 +3376,23 @@ let completionTests =
               // a `Module.` prefix mirrors #help's dotted member help
               Expect.contains (ask "#help Seq.ma" 6) "Seq.map" "qualified members complete"
           }
+          test "`#infer let x = <src>` completes the RHS as its let-statement [D:infer-one-shot]" {
+              // the one-shot RHS is an ordinary source expression: strip the
+              // `#infer ` prefix and complete `let x = <src>` — so members
+              // (and bindings/heads, the same code as a normal let-RHS)
+              // surface where the leading `#infer` used to hide them
+              let ask (text: string) =
+                  suggest text (Weir.Complete.wordStartAt text text.Length)
+
+              // a member completes in the RHS — the delegation fires
+              Expect.contains (ask "#infer let y = xs |> Seq.ma") "Seq.map" "a member completes in the RHS"
+              // the strip is the delta: `#infer ` off, only the let form
+              Expect.equal (Weir.Complete.inferLetStrip "#infer let y = x") (Some 7) "strips '#infer '"
+              Expect.equal (Weir.Complete.inferLetStrip "#infer from json as N") None "only the let form strips"
+              Expect.equal (Weir.Complete.inferLetStrip "let y = x") None "a plain let is not touched"
+              // the general/head pool is unchanged outside the prefix
+              Expect.isFalse (List.contains "Seq.map" (ask "Seq.z")) "no leak on a non-member word"
+          }
           test "the `with ` slot offers the source record's fields [D:with-slot]" {
               let text = "{ Http.defaults with "
               let got = suggest text text.Length

@@ -4,6 +4,12 @@
 
 ### Added
 
+- **`#infer let`'s RHS colors and completes as a statement.** In
+  `#infer let x = <src> …`, the source now gets the same syntax
+  coloring and tab-completion (bindings, command heads, members) a
+  bare `let x = <src>` would — the leading `#infer` had been hiding
+  the statement context.
+
 - **`Bytes` now slices — `b[a..b]`, `b[..b]`, `b[a..]`.** The range
   slice operator was string/seq only; `Bytes` joins as the third
   target, same inclusive-clamping contract, slicing to `Bytes`. A
