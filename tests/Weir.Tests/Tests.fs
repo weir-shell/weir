@@ -21322,7 +21322,11 @@ let replSaveDistillTests =
 // `^` skips it and it is single-hop by construction.
 
 let private aliasTable: Map<string, string * string list> =
-    Map.ofList [ ("k", ("kubectl", [])); ("kb", ("kustomize", [ "build" ])); ("ls", ("ls", [ "--color" ])) ]
+    Map.ofList
+        [ ("k", ("kubectl", []))
+          ("kb", ("kustomize", [ "build" ]))
+          ("ls", ("ls", [ "--color" ]))
+          ("up", ("cd", [ ".." ])) ]
 
 let private aliasOf n = Map.tryFind n aliasTable
 
@@ -21432,6 +21436,16 @@ let aliasTests =
               Expect.isTrue (Weir.Repl.parseAliasLineForTest "kb = kustomize build" |> Result.isOk) "with prefix"
               Expect.isTrue (Weir.Repl.parseAliasLineForTest "= kubectl" |> Result.isError) "no name"
               Expect.isTrue (Weir.Repl.parseAliasLineForTest "k" |> Result.isError) "no ="
+          }
+          test "(k) an alias to the builtin cd APPLIES it, never spawns /usr/sbin/cd [D:command-head-alias]" {
+              // #alias up = cd .. — `up` must resolve cd as the builtin (the
+              // application EApp(cd, "..")), not ECmd(HeadLit "cd", …), which
+              // spawned the external /usr/sbin/cd with too many arguments
+              match Weir.Parser.parseLine aliasResolver "up" with
+              | Ok(SCmd { Kind = EApp({ Kind = EVar "cd" }, { Kind = EStr ".." }) })
+              | Ok(SExpr { Kind = EApp({ Kind = EVar "cd" }, { Kind = EStr ".." }) }) -> ()
+              | Ok other -> failtest $"expected cd applied to '..', got {other}"
+              | Error e -> failtest $"parse failed: {e}"
           }
           test "(k2) the prompt sanitizer keeps SGR alone [D:session-prompt]" {
               let san = Weir.Repl.sanitizePromptForTest

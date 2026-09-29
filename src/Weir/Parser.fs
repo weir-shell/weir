@@ -3818,6 +3818,26 @@ let private commandSegment
                  | [] -> span.End
                  | _ -> (List.last args).Span.End) }
 
+        // cd (the one command-callable builtin) is APPLIED, not spawned —
+        // `EApp(EVar "cd", arg)`, defaulting to "~" (home) with no arg. Used
+        // by a bare builtin head AND by an alias that resolves to it
+        // (`#alias up = cd ..`) [D:command-head-alias]: the alias must not
+        // fall through to HeadLit, which would spawn the external /usr/sbin/cd.
+        let buildBuiltinApp (name: string) (nameSpan: Span) (callArgs: Expr list) =
+            let headVar = { Kind = EVar name; Span = nameSpan }
+
+            let effectiveArgs =
+                match callArgs with
+                | [] -> [ { Kind = EStr "~"; Span = nameSpan } ]
+                | _ -> callArgs
+
+            effectiveArgs
+            |> List.fold
+                (fun acc arg ->
+                    { Kind = EApp(acc, arg)
+                      Span = Span.union acc.Span arg.Span })
+                headVar
+
         match kind with
         | ExternalHead ->
             { Kind = ECmd(HeadLit prog, args, sigilEnv)
@@ -3832,23 +3852,16 @@ let private commandSegment
             // Prefix words carry the head's own span (source-free, but
             // located at the alias head for diagnostics).
             let prefixArgs = prefix |> List.map (fun a -> { Kind = EStr a; Span = span })
+            let allArgs = prefixArgs @ args
 
-            { Kind = ECmd(HeadLit exe, prefixArgs @ args, sigilEnv)
-              Span = fullSpan }
-        | BuiltinHead ->
-            let headVar = { Kind = EVar prog; Span = span }
-
-            let effectiveArgs =
-                match args with
-                | [] -> [ { Kind = EStr "~"; Span = span } ]
-                | _ -> args
-
-            effectiveArgs
-            |> List.fold
-                (fun acc arg ->
-                    { Kind = EApp(acc, arg)
-                      Span = Span.union acc.Span arg.Span })
-                headVar
+            if r.IsCommandCallable exe then
+                // the alias resolves to a builtin (cd) — apply it, never
+                // HeadLit (that would spawn the external /usr/sbin/cd)
+                buildBuiltinApp exe span allArgs
+            else
+                { Kind = ECmd(HeadLit exe, allArgs, sigilEnv)
+                  Span = fullSpan }
+        | BuiltinHead -> buildBuiltinApp prog span args
 
 let private pipeSep = (attempt (pstring "|>") <|> pstring "|") .>> ws
 

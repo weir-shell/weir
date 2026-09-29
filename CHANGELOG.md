@@ -43,6 +43,13 @@
 
 ### Fixed
 
+- **An alias to the `cd` builtin runs the builtin.** `#alias up = cd ..`
+  now performs weir's `cd`, not the external `/usr/sbin/cd` (which failed
+  with "too many arguments"). Aliases remain resolution-table entries, not
+  macros — `$(…)`, pipes and `&&`/`||` in a body are literal argument words;
+  for a shortcut that needs those, write a nullary function in `init.weir`
+  (`let root () = cd $(git rev-parse --show-toplevel | line)`).
+
 - **`weir fmt` aligns a parenthesized match's arms under the `m`.** A
   `(match … )` nested in an arm body had its arms indented to the block
   depth instead of under the `match` keyword (the head detector missed the
