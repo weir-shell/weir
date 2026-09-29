@@ -43,6 +43,11 @@
 
 ### Fixed
 
+- **Tab completion works inside an interpolation hole.** `$"{Path.<TAB>`
+  now completes `Path`'s members — the `{ … }` interior is an ordinary
+  expression. It had offered nothing: the opaque `$"…"` made the completer
+  read the line as a command and try a filesystem completion of `Path.`.
+
 - **`ls`, `pwd` and a relative `Path.glob` capture the directory where
   they're written, not where they're forced.** A `within cd "dir"` block
   whose trailing `ls`/`pwd`/`glob` was echoed (or otherwise forced) after

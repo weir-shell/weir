@@ -3251,7 +3251,19 @@ let private suggest text (wordStart: int) =
 let completionTests =
     testList
         "Completion"
-        [ test "argv path completion keeps the directory prefix [D:complete-argv]" {
+        [ test "completion works inside an interpolation hole [D:interp-hole-complete]" {
+              // `$"{Path.<TAB>` must complete Path's members — the hole's
+              // interior is an ordinary expression. Before the fix the opaque
+              // `$"…"` made the slot read `micro $"{Path.` as command-argv and
+              // try a filesystem completion of `Path.` (nothing).
+              let hole = "micro $\"{Path."
+              let inHole = suggest hole (Weir.Complete.wordStartAt hole hole.Length)
+              let bare = suggest "Path." (Weir.Complete.wordStartAt "Path." 5)
+              Expect.isNonEmpty inHole "the hole offers Path members"
+              Expect.isTrue (inHole |> List.forall (fun s -> s.StartsWith "Path.")) $"all Path members: {inHole}"
+              Expect.equal inHole bare "the hole completes exactly as its bare interior expression"
+          }
+          test "argv path completion keeps the directory prefix [D:complete-argv]" {
               // the word rule is where this lived: both callers cut the word at the
               // slash, so `micro ci/e` completed against the CWD and `micro ci/`
               // listed it whole. filesystemComplete was always correct — the
