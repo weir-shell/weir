@@ -3141,7 +3141,7 @@ echo "$uedbg" | grep -qF "backtracked after" || fail "WEIR_LOG=debug must KEEP t
 echo "e2e ok: Unknown Error(s) joins the backtrack suppression (both ways)"
 
 # range slicing at the binary [D:range-slicing] — inclusive/clamping,
-# type-directed (str vs seq), with the from-end (^n) decline
+# type-directed (str vs seq), with from-end (^n) index and bounds
 rgout=$($BIN -e 'let xs = [10; 20; 30; 40] in xs[1..2] |> Seq.freeze' 2>&1)
 echo "$rgout" | grep -qF "20; 30" || fail "range slicing (inclusive) drifted: $rgout"
 strout=$($BIN -e '"abcdefghi"[3..7]' 2>&1)
@@ -3152,8 +3152,13 @@ byout=$($BIN -e 'Bytes.toBase64 ((Bytes.fromBase64 "AAECAwQF")[1..3])' 2>&1)
 echo "$byout" | grep -qF "AQID" || fail "Bytes slice drifted (expected bytes 1..3): $byout"
 biout=$($BIN -e 'let b = Bytes.fromBase64 "AAEC" in b[0]' 2>&1 || true)
 echo "$biout" | grep -qF "no b[i] index on Bytes" || fail "b[i] must teach the byte forms: $biout"
-feout=$($BIN -e 'let xs = [1; 2; 3] in xs[^1]' 2>&1 || true)
-echo "$feout" | grep -qF "from-the-end" || fail "from-end (^n) must teach the decline: $feout"
+# from-the-end (^n) index and slice bounds [D:range-slicing]
+feout=$($BIN -e 'let xs = [1; 2; 3] in xs[^1]' 2>&1)
+echo "$feout" | grep -qF "3 : int" || fail "from-end index xs[^1] must be the last: $feout"
+febout=$($BIN -e 'let xs = [10; 20; 30] in xs[..^2] |> Seq.freeze' 2>&1)
+echo "$febout" | grep -qF "10; 20" || fail "from-end bound xs[..^2] (all-but-last) drifted: $febout"
+festr=$($BIN -e '"abcde"[^2..]' 2>&1)
+echo "$festr" | grep -qF "de" || fail "from-end string slice drifted: $festr"
 # the accessor teachings that stand [D:accessor-teaching]: the dotted
 # indexer and Map-index still refuse (only the range form flipped)
 dtout=$($BIN -e 'let xs = [1; 2; 3] in xs.[0]' 2>&1 || true)

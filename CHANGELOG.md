@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.0.58
+
+### Added
+
+- **From-the-end indexing and slicing (`^n`).** `xs[^1]` is the last
+  element, `xs[..^2]` is all-but-last, `xs[^2..]` the last two, and
+  `xs[^3..^1]` counts from the end at both bounds — F#'s spelling, where
+  `^n` = length − n. Works on strings, seqs, and `Bytes`. This reverses
+  the earlier decline: `^` is the command-force sigil only at a command
+  head, and a bracket interior is unambiguous. A `^`-bound resolves
+  against the length, so a from-end *sequence* slice forces the sequence
+  (forward open-ended slices stay lazy).
+
 ## v0.0.57
 
 ### Added

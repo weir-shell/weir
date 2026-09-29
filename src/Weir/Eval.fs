@@ -3105,51 +3105,70 @@ and eval (env: Env) (te: TypedExpr) : Value =
             | Some v -> v
             | None -> unreachable $"the checker rejects unknown field '{field}' on {name}"
         | v -> unreachable $"the checker rejects field access on {formatValue v}"
-    | TESlice(target, lo, hi, on) ->
+    | TESlice(target, lo, hi, on, loFromEnd, hiFromEnd) ->
         // inclusive, clamping [D:range-slicing]: an absent bound is an open
         // end (lo -> 0, hi -> last), out-of-range and reversed yield the
         // empty result, never a raise. A bounded seq truncates (so an
-        // infinite source does not hang); an open end skips lazily.
-        let boundOr dflt o =
+        // infinite source does not hang); an open end skips lazily. A
+        // `^`-bound counts from the end (F#'s `^n` = length - n), which
+        // needs the length, so a from-end SEQ slice forces (as Seq.last does).
+        let boundVal o =
             match o with
-            | None -> dflt
+            | None -> None
             | Some e ->
                 match eval env e with
-                | VInt n -> int n
+                | VInt n -> Some(int n)
                 | v -> unreachable $"the checker guarantees an int slice bound; got {formatValue v}"
 
-        let a = max 0 (boundOr 0 lo)
+        let loV = boundVal lo
+        let hiV = boundVal hi
 
-        // the closed upper bound for a finite target of length n (an
-        // absent hi is the last element; a present one clamps to n - 1)
-        let closedHi n =
-            match hi with
-            | None -> n - 1
-            | Some _ -> min (boundOr 0 hi) (n - 1)
+        // resolve a bound to an absolute index given the target's length
+        let absLo len =
+            match loV with
+            | None -> 0
+            | Some v -> if loFromEnd then len - v else v
+
+        // the closed (inclusive) upper index, clamped to len - 1; an absent
+        // hi is the last element
+        let absHi len =
+            match hiV with
+            | None -> len - 1
+            | Some v -> min (if hiFromEnd then len - v else v) (len - 1)
 
         match on with
         | Check.SliceStr ->
             match eval env target with
             | VStr s ->
-                let b = closedHi s.Length
+                let a = max 0 (absLo s.Length)
+                let b = absHi s.Length
                 if a > b then VStr "" else VStr(s.Substring(a, b - a + 1))
             | v -> unreachable $"the checker guarantees a string slice target; got {formatValue v}"
         | Check.SliceBytes ->
             match eval env target with
             | VBytes arr ->
-                let b = closedHi arr.Length
+                let a = max 0 (absLo arr.Length)
+                let b = absHi arr.Length
                 if a > b then VBytes [||] else VBytes(Array.sub arr a (b - a + 1))
             | v -> unreachable $"the checker guarantees a Bytes slice target; got {formatValue v}"
         | Check.SliceSeq ->
             match eval env target with
             | VSeq items ->
-                let dropped = items |> Seq.indexed |> Seq.skipWhile (fun (i, _) -> i < a) |> Seq.map snd
+                if loFromEnd || hiFromEnd then
+                    // a from-end bound needs the length — force the seq
+                    let arr = Seq.toArray items
+                    let a = max 0 (absLo arr.Length)
+                    let b = absHi arr.Length
+                    if a > b then VSeq Seq.empty else VSeq(Array.sub arr a (b - a + 1))
+                else
+                    // the lazy path (infinite-safe): open end skips lazily,
+                    // a bounded hi truncates
+                    let a = max 0 (Option.defaultValue 0 loV)
+                    let dropped = items |> Seq.indexed |> Seq.skipWhile (fun (i, _) -> i < a) |> Seq.map snd
 
-                match hi with
-                | None -> VSeq dropped
-                | Some _ ->
-                    let b = boundOr 0 hi
-                    if a > b then VSeq Seq.empty else VSeq(dropped |> Seq.truncate (b - a + 1))
+                    match hiV with
+                    | None -> VSeq dropped
+                    | Some b -> if a > b then VSeq Seq.empty else VSeq(dropped |> Seq.truncate (b - a + 1))
             | v -> unreachable $"the checker guarantees a sequence slice target; got {formatValue v}"
     | TEBinOp("&&", l, r) ->
         (match eval env l with

@@ -2014,10 +2014,13 @@ print (f 1)
   `xs[..b]`/`xs[a..]`. `xs[i]` stays the single-element accessor (raises
   out of range; = `Seq.item i xs`) and `Str.sub start len` the
   offset-and-length string form; Bytes has no single `b[i]` (`Bytes.sub
-  start len` takes one byte's window). From-the-end (`xs[^1]`) is
-  declined — `^` is the command-force sigil; `Seq.last`/`Seq.rev` reach
-  the end. `xs.[i]` (F#'s dotted indexer) is refused naming the dotless
-  spelling [D:accessor-teaching].
+  start len` takes one byte's window). FROM-THE-END is `^n` (F#'s
+  spelling, `^n` = length − n) — `xs[^1]` is the last element, and it
+  works as a slice bound too: `xs[..^2]` is all-but-last, `xs[^2..]` the
+  last two, `xs[^3..^1]` both ends from the end. A `^`-bound resolves
+  against the length, so a from-end SEQ slice FORCES the sequence (like
+  `Seq.last`); forward open-ended slices stay lazy. `xs.[i]` (F#'s dotted
+  indexer) is refused naming the dotless spelling [D:accessor-teaching].
   Membership: `Seq.contains x xs` (equatable elements),
   `Seq.exists`/`Seq.forall` with predicates. Whole-seq comparison is
   `Seq.equal xs ys` [D:port-members] — element-wise, length-sensitive,

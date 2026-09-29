@@ -119,7 +119,13 @@ and TypedKind =
     // a slice [D:range-slicing]; `on` picks the eval (substring,
     // subsequence, or sub-bytes) — the type-directed choice the checker
     // resolved
-    | TESlice of target: TypedExpr * lo: TypedExpr option * hi: TypedExpr option * on: SliceOn
+    | TESlice of
+        target: TypedExpr *
+        lo: TypedExpr option *
+        hi: TypedExpr option *
+        on: SliceOn *
+        loFromEnd: bool *
+        hiFromEnd: bool
     | TEBinOp of op: string * left: TypedExpr * right: TypedExpr
     | TERecord of record: string * fields: (string * TypedExpr) list
     | TEMatch of scrutinee: TypedExpr * arms: (Pattern * TypedExpr option * TypedExpr) list
@@ -3407,12 +3413,14 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                           Span = expr.Span }
             | ty -> return! err target.Span $"only records have fields; this expression has type {formatTy ty}"
         }
-    | ESlice(target, lo, hi) ->
+    | ESlice(target, lo, hi, loEnd, hiEnd) ->
         // a type-directed node [D:range-slicing]: the target's
         // resolved type picks substring vs subsequence. Bounds are
         // ints; an unconstrained target defaults to a sequence (as `x[i]`
         // does — `|seqItem` unifies to seq), so a string slice needs a
         // known-string target and `fun xs -> xs[a..b]` is seq-typed.
+        // A `^`-bound is from-the-end [D:range-slicing]; the flag rides to
+        // eval, which resolves it against the length (forcing a seq).
         result {
             let! ttarget = infer ctx env target
 
@@ -3427,17 +3435,17 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
             match resolve ctx ttarget.Ty with
             | TStr ->
                 return
-                    { Kind = TESlice(ttarget, tlo, thi, SliceStr)
+                    { Kind = TESlice(ttarget, tlo, thi, SliceStr, loEnd, hiEnd)
                       Ty = TStr
                       Span = expr.Span }
             | TBytes ->
                 return
-                    { Kind = TESlice(ttarget, tlo, thi, SliceBytes)
+                    { Kind = TESlice(ttarget, tlo, thi, SliceBytes, loEnd, hiEnd)
                       Ty = TBytes
                       Span = expr.Span }
             | TSeq elem ->
                 return
-                    { Kind = TESlice(ttarget, tlo, thi, SliceSeq)
+                    { Kind = TESlice(ttarget, tlo, thi, SliceSeq, loEnd, hiEnd)
                       Ty = TSeq elem
                       Span = expr.Span }
             | TVar _ ->
@@ -3445,7 +3453,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                 do! bind ctx env target.Span ttarget.Ty (TSeq elem)
 
                 return
-                    { Kind = TESlice(ttarget, tlo, thi, SliceSeq)
+                    { Kind = TESlice(ttarget, tlo, thi, SliceSeq, loEnd, hiEnd)
                       Ty = TSeq elem
                       Span = expr.Span }
             | other ->
@@ -4888,8 +4896,8 @@ let rec private finalizeExpr (ctx: Ctx) (te: TypedExpr) : TypedExpr =
         | TEApp(f, a) -> TEApp(finalizeExpr ctx f, finalizeExpr ctx a)
         | TEPipe(a, f) -> TEPipe(finalizeExpr ctx a, finalizeExpr ctx f)
         | TEField(t, f) -> TEField(finalizeExpr ctx t, f)
-        | TESlice(t, lo, hi, s) ->
-            TESlice(finalizeExpr ctx t, Option.map (finalizeExpr ctx) lo, Option.map (finalizeExpr ctx) hi, s)
+        | TESlice(t, lo, hi, s, loEnd, hiEnd) ->
+            TESlice(finalizeExpr ctx t, Option.map (finalizeExpr ctx) lo, Option.map (finalizeExpr ctx) hi, s, loEnd, hiEnd)
         | TEBinOp(op, l, r) -> TEBinOp(op, finalizeExpr ctx l, finalizeExpr ctx r)
         | TEUpdate(src, ups) -> TEUpdate(finalizeExpr ctx src, ups |> List.map (fun (p, v) -> p, finalizeExpr ctx v))
         | TERecord(n, fields) -> TERecord(n, fields |> List.map (fun (f, v) -> f, finalizeExpr ctx v))
@@ -5199,7 +5207,7 @@ let childExprs (te: TypedExpr) : TypedExpr list =
     | TEApp(f, a) -> [ f; a ]
     | TEPipe(a, f) -> [ a; f ]
     | TEField(t, _) -> [ t ]
-    | TESlice(t, lo, hi, _) -> t :: (Option.toList lo @ Option.toList hi)
+    | TESlice(t, lo, hi, _, _, _) -> t :: (Option.toList lo @ Option.toList hi)
     | TEBinOp(_, l, r) -> [ l; r ]
     | TERecord(_, fields) -> fields |> List.map snd
     | TEMatch(s, arms) -> s :: (arms |> List.collect (fun (_, g, b) -> (g |> Option.toList) @ [ b ]))
