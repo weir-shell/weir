@@ -43,6 +43,14 @@
 
 ### Fixed
 
+- **REPL history dedupes properly (erasedups, keep-last).** A re-entered
+  command now moves to the most-recent position and its earlier copy is
+  erased, so history is a clean recency-ordered set — Up-arrow, `#history`
+  and the Ctrl+R finder each show a command once. Previously only *adjacent*
+  duplicates were dropped (readline `ignoredups`), and the finder fed every
+  entry to fzf so re-runs listed repeatedly. Duplicate lines already in the
+  history file are collapsed on load. Off with `historyDedup = false`.
+
 - **Tab completion works inside an interpolation hole.** `$"{Path.<TAB>`
   now completes `Path`'s members — the `{ … }` interior is an ordinary
   expression. It had offered nothing: the opaque `$"…"` made the completer

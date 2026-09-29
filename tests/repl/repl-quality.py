@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # REPL quality probes [D:repl-quality]: persistent history (XDG_STATE path,
-# consecutive-dup dedup, 0600), Ctrl+R history search via a stub fzf (the
+# erasedups keep-last dedup [D:repl-history-dedup], 0600), Ctrl+R history search via a stub fzf (the
 # spawn-feed-select-restore mechanics, deterministic without real fzf) and
 # the minimal built-in fallback when fzf is absent. Runs the real binary
 # under a pty; asserts on evaluated output, not on redraw escapes.
@@ -51,6 +51,20 @@ else:
     mode = stat.S_IMODE(os.stat(hf).st_mode)
     if mode != 0o600:
         failures.append(f"history file not 0600: {oct(mode)}")
+
+# --- 1b. erasedups keep-last [D:repl-history-dedup]: a re-entered line moves
+# to the most-recent position and its earlier copy is erased — NON-consecutive
+# dedup (ignoredups would have left "1 + 1" at the front and again at the end).
+# Also seed a pre-existing dup to exercise dedup-on-load.
+d1b = tempfile.mkdtemp()
+os.makedirs(d1b + "/state/weir", exist_ok=True)
+open(d1b + "/state/weir/history", "w").write("seeded\nseeded\n")
+run_repl({"XDG_STATE_HOME": d1b + "/state", "XDG_CONFIG_HOME": d1b + "/cfg"},
+         [('1 + 1\r', 0.3), ('2 + 2\r', 0.3), ('1 + 1\r', 0.3), ('#quit\r', 0.3)])
+lines1b = [l for l in open(d1b + "/state/weir/history").read().splitlines() if l]
+noquit = [l for l in lines1b if l != "#quit"]
+if noquit != ["seeded", "2 + 2", "1 + 1"]:
+    failures.append(f"erasedups keep-last / load-dedup wrong (expected each once, re-entry last): {lines1b}")
 
 # --- 2. Ctrl+R via a stub fzf: the selection replaces the line, and the
 # invocation carries --no-extended before the config flags (weir glyphs
@@ -144,4 +158,4 @@ if failures:
     for f in failures:
         print("repl-quality FAIL:", f)
     sys.exit(1)
-print("repl-quality: history (XDG/dedup/0600), Ctrl+R fzf-stub + minimal fallback, #find fzf-stub (--no-extended + --repl-doc preview), let-RHS head Tab (alias inserts at the RHS and the statement head) hold")
+print("repl-quality: history (XDG/erasedups keep-last/load-dedup/0600), Ctrl+R fzf-stub + minimal fallback, #find fzf-stub (--no-extended + --repl-doc preview), let-RHS head Tab (alias inserts at the RHS and the statement head) hold")

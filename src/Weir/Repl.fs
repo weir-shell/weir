@@ -791,19 +791,48 @@ let private loadHistory () =
             else
                 lines
 
-        if capped.Length <> lines.Length then
+        let decoded = capped |> Array.map decodeEntry
+
+        // erasedups on load [D:repl-history-dedup]: keep each entry's LAST
+        // (most-recent) occurrence, order otherwise preserved — a file that
+        // accumulated duplicates loads clean, so every recall surface (Up,
+        // #history, the finder) sees each command once
+        let deduped =
+            if config.HistoryDedup then
+                let seen = Collections.Generic.HashSet<string>()
+
+                [| for e in Array.rev decoded do
+                       if seen.Add e then
+                           yield e |]
+                |> Array.rev
+            else
+                decoded
+
+        if deduped.Length <> lines.Length then
             ensureHistoryFile ()
-            File.WriteAllLines(historyFile, capped)
+            File.WriteAllLines(historyFile, deduped |> Array.map encodeEntry)
 
-        history.AddRange(capped |> Array.map decodeEntry)
+        history.AddRange deduped
 
-// per-entry append with consecutive-dup dedup (readline's ignoredups);
-// the dedup compares whole entries [D:repl-multiline]
+// per-entry append with erasedups [D:repl-history-dedup]: a re-entered
+// line moves to the most-recent position — earlier copies drop, so history
+// is a recency-ordered set (each command once). On a dedup hit the file is
+// rewritten (an earlier line must go); otherwise it is appended.
 let private appendHistory (entry: string) =
-    let dup =
-        config.HistoryDedup && history.Count > 0 && history[history.Count - 1] = entry
+    if config.HistoryDedup then
+        let removed = history.RemoveAll(System.Predicate(fun e -> e = entry))
+        history.Add entry
 
-    if not dup then
+        try
+            ensureHistoryFile ()
+
+            if removed > 0 then
+                File.WriteAllLines(historyFile, history |> Seq.map encodeEntry)
+            else
+                File.AppendAllText(historyFile, encodeEntry entry + Environment.NewLine)
+        with _ ->
+            ()
+    else
         history.Add entry
 
         try
@@ -893,10 +922,13 @@ let private fzfSearch (query: string) : string option =
             for i in history.Count - 1 .. -1 .. 0 do
                 let d = displayEntry history[i]
 
+                // feed each unique line once, most-recent-first, so the
+                // finder never lists a command twice [D:repl-history-dedup]
+                // (erasedups already keeps history unique; this also holds
+                // when dedup is off and for legacy duplicate display forms)
                 if not (byDisplay.ContainsKey d) then
                     byDisplay[d] <- history[i]
-
-                p.StandardInput.WriteLine d
+                    p.StandardInput.WriteLine d
 
             p.StandardInput.Close()
         with :? IO.IOException ->
