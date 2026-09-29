@@ -1373,6 +1373,26 @@ let private indexDesugar (target: Expr) (idx: Expr) (endPos: Pos) : Expr =
         )
       Span = span }
 
+// xs[^n] — F#'s from-the-end single index [D:range-slicing]: the element
+// n from the end (`^1` is the last). Reuses the slice machinery —
+// `|seqItem 0 (xs[^n..^n])` — so length resolution and the out-of-range
+// raise are the slice's; the index expr is evaluated for both bounds, so
+// keep it a literal or a binding.
+let private fromEndIndexDesugar (target: Expr) (idx: Expr) (endPos: Pos) : Expr =
+    let span =
+        { Start = target.Span.Start
+          End = endPos }
+
+    let slice =
+        { Kind = ESlice(target, Some idx, Some idx, true, true)
+          Span = span }
+
+    let seqItem = { Kind = EVar "|seqItem"; Span = span }
+    let zero = { Kind = EInt 0L; Span = span }
+
+    { Kind = EApp({ Kind = EApp(seqItem, zero); Span = span }, slice)
+      Span = span }
+
 // the block forms sit among the opp's term alternatives, tried and
 // failed on every term of a flat spine — the guard engages only when
 // the form's keyword is actually ahead, so a failing alternative pays
@@ -1394,41 +1414,35 @@ let private postfixAtom =
         let immediate (p: Position) =
             int p.Line = target.Span.End.Line && int p.Column = target.Span.End.Col
 
-        // xs[^n] — F#'s from-the-end index [D:range-slicing]: declined,
-        // because `^` is weir's command-force sigil (`^ls`), one glyph one
-        // meaning. Detected right after `[` so the reflex gets a pointer,
-        // not a bare expecting-list.
-        let fromEndGuard =
-            attempt (
-                getPosition
-                >>= fun p ->
-                    if immediate p then
-                        pchar '[' >>. ws >>. followedBy (pchar '^') >>% p
-                    else
-                        ifail "whitespace before [ means application"
-            )
-            >>= fun at ->
-                failFatallyAt
-                    at
-                    "from-the-end indexing (`^n`) is not a weir feature — `^` is the command-force sigil; reach the end with Seq.last/Seq.tryLast, or Seq.rev"
+        // xs[a..b], xs[..b], xs[a..], xs[..], and the from-end `^` bounds
+        // xs[^2..], xs[..^1], xs[^3..^1] [D:range-slicing]. A bound is an
+        // optional `^` (from the end) then an index expr; `..` is not an
+        // expr, so an absent bound is an open end.
+        let bound =
+            opt (attempt (opt (pchar '^') .>>. indexExpr) |>> fun (caret, e) -> (e, caret.IsSome))
 
-        // xs[a..b], xs[..b], xs[a..], xs[..] — a slice [D:range-slicing].
-        // The interior bounds are general expressions and `..` is not one,
-        // so `opt indexExpr` stops before the `..`; an absent bound is an
-        // open end. Leads indexNext (which has no `..`): tried first, it
-        // backtracks to the single-index form when no `..` is present.
         let sliceNext =
             attempt (
                 getPosition
                 >>= fun p ->
                     if immediate p then
-                        pchar '[' >>. ws >>. opt indexExpr .>> str_ws ".."
-                        .>>. opt indexExpr
+                        pchar '[' >>. ws >>. bound .>> str_ws ".."
+                        .>>. bound
                         .>> pchar ']'
                         .>>. getPosition
                         .>> ws
-                        |>> fun ((lo, hi), endP) ->
-                            { Kind = ESlice(target, lo, hi)
+                        |>> fun ((loB, hiB), endP) ->
+                            let lo, loEnd =
+                                match loB with
+                                | Some(e, b) -> Some e, b
+                                | None -> None, false
+
+                            let hi, hiEnd =
+                                match hiB with
+                                | Some(e, b) -> Some e, b
+                                | None -> None, false
+
+                            { Kind = ESlice(target, lo, hi, loEnd, hiEnd)
                               Span =
                                 { Start = target.Span.Start
                                   End = pos endP } }
@@ -1453,16 +1467,21 @@ let private postfixAtom =
                 getPosition
                 >>= fun p ->
                     if immediate p then
-                        pchar '[' >>. ws >>. indexExpr .>> pchar ']' .>>. getPosition .>> ws
-                        |>> fun (idx, endP) -> indexDesugar target idx (pos endP)
+                        pchar '[' >>. ws >>. opt (pchar '^') .>>. indexExpr .>> pchar ']'
+                        .>>. getPosition
+                        .>> ws
+                        |>> fun ((caret, idx), endP) ->
+                            match caret with
+                            | Some _ -> fromEndIndexDesugar target idx (pos endP)
+                            | None -> indexDesugar target idx (pos endP)
                     else
                         ifail "whitespace before [ means application"
             )
 
         // the guards lead: dotBracketGuard detects xs.[i] (fatal teach),
-        // fromEndGuard the `[^n` reflex, sliceNext the `..` forms,
-        // indexNext the single index
-        dotBracketGuard <|> fromEndGuard <|> sliceNext <|> fieldNext <|> indexNext
+        // sliceNext the `..` forms (incl. `^` from-end bounds), indexNext
+        // the single index (incl. `^n` from-end)
+        dotBracketGuard <|> sliceNext <|> fieldNext <|> indexNext
 
     let suffixes (target: Expr) : Parser<Expr, unit> =
         fun stream ->

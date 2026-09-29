@@ -16591,10 +16591,16 @@ let accessorTeachingTests =
               Expect.stringContains msg "Bytes.sub" "and the window form"
               Expect.isFalse (msg.Contains "expected seq") "not the leaky desugar type"
           }
-          test "from-the-end indexing (^n) is declined — ^ is command-force [D:range-slicing]" {
-              match Weir.Parser.parseExpr "let xs = [1; 2; 3] in xs[^1]" with
-              | Ok _ -> failtest "xs[^1] must be refused"
-              | Error m -> Expect.stringContains m "from-the-end" "names the decline"
+          test "from-the-end indexing and slicing (^n) work [D:range-slicing]" {
+              // ^n is length - n (F#'s spelling); reverses the earlier decline
+              expectValue "let xs = [1; 2; 3] in xs[^1]" (VInt 3L) // last
+              expectValue "let xs = [1; 2; 3] in xs[^2]" (VInt 2L)
+              // slice bounds: all-but-last, last-two, both-ends from end
+              expectValue "let xs = [1; 2; 3] in Seq.sum xs[..^2]" (VInt 3L) // [1;2]
+              expectValue "let xs = [1; 2; 3] in Seq.sum xs[^2..]" (VInt 5L) // [2;3]
+              expectValue "let xs = [1; 2; 3] in Seq.sum xs[^3..^1]" (VInt 6L) // [1;2;3]
+              expectValue "\"abcde\"[^2..]" (VStr "de")
+              expectValue "\"abcde\"[..^2]" (VStr "abcd")
           }
           test "the F# dotted indexer teaches the dotless spelling" {
               match Weir.Parser.parseExpr "let xs = [1; 2; 3] in xs.[0]" with
