@@ -67,11 +67,11 @@ let sendGh req =
 // published releases only (a draft has no tag association until the click)
 for e in burned do
     if verKey e.tag < verKey newest then
-        print $"note: burned entry {e.tag} ('{e.reason}') aged out — {newest} supersedes it; remove it at leisure"
+        print $"note: burned {e.tag} aged out ({newest} supersedes) — remove it at leisure"
     else
         let r = sendGh (Http.get $"https://api.github.com/repos/{repo}/releases/tags/{e.tag}")
         if r.status == 200 then
-            fail $"ci/release-burned.yaml lists {e.tag} ('{e.reason}') as burned but that release IS published — stale entry, remove it"
+            fail $"ci/release-burned.yaml lists {e.tag} as burned but it IS published — remove the stale entry"
 
 let rel = sendGh (Http.get $"https://api.github.com/repos/{repo}/releases/latest")
 
@@ -101,22 +101,22 @@ if rel.status == 200 then
         for e in knownIncomplete do
             let sweep = weir ci/release-assets.weir --tag (e.tag) | complete
             if sweep.exitCode == 0 then
-                fail $"ci/release-known-incomplete.yaml lists {e.tag} ('{e.reason}') but that release IS complete — stale entry, remove it"
+                fail $"ci/release-known-incomplete.yaml lists {e.tag} but it IS complete — remove the stale entry"
 
         match knownIncomplete |> Seq.tryFind (fun e -> e.tag == latest) with
         | Some e ->
-            print $"releases/latest {latest} is KNOWN-incomplete ({e.reason}) — acknowledged in ci/release-known-incomplete.yaml; immutable, superseded by the next complete release"
+            print $"releases/latest {latest} is known-incomplete ({e.reason}) — acknowledged, superseded by the next release"
         | None ->
-            weir ci/release-assets.weir --tag $latest | orFail $"releases/latest {latest} is published but INCOMPLETE (verdicts above) — a published release is immutable, so nothing repairs {latest} in place: fix forward, cut and publish release vNEXT (the supersede path) and acknowledge {latest} in ci/release-known-incomplete.yaml"
+            weir ci/release-assets.weir --tag $latest | orFail $"releases/latest {latest} is published but INCOMPLETE (see above) — fix forward: publish vNEXT and acknowledge {latest} in ci/release-known-incomplete.yaml"
 
         exit 0
-    fail $"releases/latest is {latest} but the newest stable tag is {newest} — that tag was pushed and never PUBLISHED, and the installers silently keep serving {latest}. If its draft exists: gh release edit {newest} --draft=false (or the Releases page); if the release run never built (a red gate), fix and re-release — or burn the tag: acknowledge it in ci/release-burned.yaml (tag + reason) and cut the next release; the gate then demands the newest unburned tag"
+    fail $"{newest} is unpublished (latest is still {latest}). Publish it — gh release edit {newest} --draft=false — or burn it in ci/release-burned.yaml"
 
 // a 404 is the missing-publish state with no release published yet —
 // /latest excluding drafts answers 404, never 403. Any other status is
 // the API refusing the query, and the draft repair would be the wrong
 // teach for it.
 if rel.status == 404 then
-    fail $"releases/latest 404s but v* tag(s) exist — [D:releases] produces DRAFTS, which /latest excludes; the installers 404. PUBLISH THE DRAFT: gh release edit {newest} --draft=false (or the Releases page)"
+    fail $"no release published yet ({newest} is a draft). Publish it — gh release edit {newest} --draft=false"
 
-fail $"releases/latest returned {rel.status} — the API refused the query, not a release state (an unpublished draft answers 404, and this is not one). Most often the unauthenticated rate limit on shared CI egress IPs: set GITHUB_TOKEN, or retry"
+fail $"releases/latest returned {rel.status} — the API refused the query (usually the CI rate limit): set GITHUB_TOKEN or retry"
