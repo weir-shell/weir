@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.0.57
+
+### Added
+
+- **Command chaining: `| and` and `| or` (bash `&&`/`||`).** `cmd | and
+  next` runs `next` only if `cmd` succeeded; `cmd | or next` runs `next`
+  only if `cmd` failed. Both stream their output and chain
+  (`mkdir d | and cd d | and build`), and the right-hand side is a full
+  command line so a builtin like `cd` works as an operand. They fill the
+  one-liner gap the statement rule left — especially in the REPL — where
+  before you needed separate lines or `if … | succeeds then …`.
+  Right-associative (differs from bash's left-associativity for *mixed*
+  `and`/`or` chains); `| or`'s left must be a single external command.
+
 ## v0.0.56
 
 ### Fixed

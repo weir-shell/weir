@@ -1120,6 +1120,16 @@ let mutable private valueHeadedTailImpl: Expr -> Parser<Expr, unit> =
 let private valueHeadedTail (lhs: Expr) : Parser<Expr, unit> =
     fun stream -> (valueHeadedTailImpl lhs) stream
 
+// the RHS of `| and` / `| or` [D:cmd-chaining]: a full command line, so
+// the chain is right-associative and the left of an `or` is always a
+// single command segment. Forward-declared — needs the command grammar
+// below; set after cmdLineWith.
+let mutable private cmdChainRhsImpl: bool -> Parser<Expr, unit> -> Expr option -> Resolver -> Parser<Expr, unit> =
+    fun _ _ _ _ -> ifail "cmdChainRhs not initialized"
+
+let private cmdChainRhs bh ap se r : Parser<Expr, unit> =
+    fun stream -> (cmdChainRhsImpl bh ap se r) stream
+
 // after seqExpr, either a value-headed pipeline or the barePipeHint
 // (which fatals on a bare `|` into an expression, else passes)
 let private pipeOrHint (lhs: Expr) : Parser<Expr, unit> =
@@ -3889,6 +3899,10 @@ type private Seg =
     // the single-line capture [D:reify-line] — `cmd | line` reifies to
     // the one trimmed stdout line as a string
     | LineMarker of Span
+    // command chaining [D:cmd-chaining] — bash &&/||: the RHS is a full
+    // command line (right-associative), captured whole
+    | AndMarker of Expr * Span
+    | OrMarker of Expr * Span
 
 let private reifierEnd =
     // the let-RHS chain also ends at bare `in` [D:block-let-cmd] —
@@ -3973,6 +3987,21 @@ let private lineMarker =
     )
     |>> fun (_, span) -> LineMarker span
 
+// `cmd | and <rest>` / `cmd | or <rest>` [D:cmd-chaining]: bash &&/||.
+// The RHS is a full command line, parsed right-associatively (so `a | or
+// b | or c` reads `a | or (b | or c)` and the left of each `or` is a lone
+// command). `notFollowedBy cmdWordChar` keeps a command whose name begins
+// with `and`/`or` (`android-tool`) an ordinary stage, not a marker.
+let private andMarker bh ap se r : Parser<Seg, unit> =
+    attempt (spanned (pstring "and" .>> notFollowedBy (satisfy cmdWordChar)) .>> ws)
+    .>>. cmdChainRhs bh ap se r
+    |>> fun ((_, span), rhs) -> AndMarker(rhs, span)
+
+let private orMarker bh ap se r : Parser<Seg, unit> =
+    attempt (spanned (pstring "or" .>> notFollowedBy (satisfy cmdWordChar)) .>> ws)
+    .>>. cmdChainRhs bh ap se r
+    |>> fun ((_, span), rhs) -> OrMarker(rhs, span)
+
 // fold a parsed pipeline — an initial head expression plus piped stages
 // and reifier markers — into one Expr. Shared by the command-headed
 // chain and the value-headed chain [D:value-headed-pipe]: the only
@@ -4010,6 +4039,86 @@ let private foldChain (h: Expr) (rest: ((string * Span) * Seg) list) : Result<Ex
                     Result.Ok
                         { Kind = EPipe(acc, seg)
                           Span = Span.union acc.Span seg.Span }
+                | AndMarker(rhs, _) ->
+                    // `cmd | and <rest>` = bash &&: stream the left (raising on
+                    // failure — the right is then skipped), then the right
+                    // [D:cmd-chaining]. `!()`'s |print streams+raises; a nested
+                    // and/or is already a unit effect, so it passes through.
+                    let streamOf (e: Expr) =
+                        match e.Kind with
+                        | ECmd _
+                        | EPipe(_, { Kind = ECmd _ }) ->
+                            { Kind = EPipe(e, { Kind = EVar "|print"; Span = e.Span })
+                              Span = e.Span }
+                        // a builtin command (cd) or a nested and/or returns a
+                        // value/unit, not a stream — run it for effect and
+                        // discard, so the chain stays unit [D:cmd-chaining]
+                        | _ ->
+                            { Kind = ELet("_chain", e.Span, e, { Kind = EUnit; Span = e.Span })
+                              Span = e.Span }
+
+                    Result.Ok
+                        { Kind = ESeq(streamOf acc, streamOf rhs)
+                          Span = Span.union acc.Span rhs.Span }
+                | OrMarker(rhs, sp) ->
+                    // `cmd | or <rest>` = bash ||: stream the left capturing its
+                    // exit code (no raise); on nonzero, stream the right
+                    // [D:cmd-chaining]. Right-associative, so the left is a single
+                    // command segment, reified through the exitCode family's vars.
+                    let streamOf (e: Expr) =
+                        match e.Kind with
+                        | ECmd _
+                        | EPipe(_, { Kind = ECmd _ }) ->
+                            { Kind = EPipe(e, { Kind = EVar "|print"; Span = e.Span })
+                              Span = e.Span }
+                        // a builtin command (cd) or a nested and/or returns a
+                        // value/unit, not a stream — run it for effect and
+                        // discard, so the chain stays unit [D:cmd-chaining]
+                        | _ ->
+                            { Kind = ELet("_chain", e.Span, e, { Kind = EUnit; Span = e.Span })
+                              Span = e.Span }
+
+                    let isCommandish (e: Expr) =
+                        match e.Kind with
+                        | ECmd _
+                        | EPipe(_, { Kind = ECmd _ }) -> true
+                        | _ -> false
+
+                    let progArgOf (h: CmdHead) (span: Span) =
+                        match h with
+                        | HeadLit prog -> { Kind = EStr prog; Span = span }
+                        | HeadDyn(disp, he) -> { Kind = EDynProg(disp, he); Span = he.Span }
+
+                    let apply headVar parts =
+                        parts
+                        |> List.fold (fun f a -> { Kind = EApp(f, a); Span = Span.union acc.Span sp }) headVar
+
+                    let codeResult =
+                        match acc.Kind with
+                        | ECmd(h, args, cenv) ->
+                            let headVar =
+                                match cenv with
+                                | Some e ->
+                                    { Kind = EApp({ Kind = EVar "|exitCodedEnv"; Span = sp }, e)
+                                      Span = sp }
+                                | None -> { Kind = EVar "|exitCoded"; Span = sp }
+
+                            Result.Ok(apply headVar [ progArgOf h acc.Span; { Kind = EList args; Span = acc.Span } ])
+                        | EPipe(stdinE, { Kind = ECmd(h, args, None) }) when not (isCommandish stdinE) ->
+                            let headVar = { Kind = EVar "|exitCodedIn"; Span = sp }
+                            Result.Ok(apply headVar [ progArgOf h acc.Span; { Kind = EList args; Span = acc.Span }; stdinE ])
+                        | _ -> Result.Error("'or' must directly follow a single external command segment", sp)
+
+                    match codeResult with
+                    | Result.Error e -> Result.Error e
+                    | Result.Ok codeExpr ->
+                        let cond =
+                            { Kind = EBinOp("==", codeExpr, { Kind = EInt 0L; Span = sp })
+                              Span = sp }
+
+                        Result.Ok
+                            { Kind = EIf(cond, { Kind = EUnit; Span = sp }, Some(streamOf rhs))
+                              Span = Span.union acc.Span rhs.Span }
                 | (CompleteMarker _ | SucceedsMarker _ | ExitCodeMarker _ | OrFailMarker _ | ExecMarker _ | LineMarker _ as marker) ->
                     let stageName, mspan, plainVar, envVar, stdinVar, extraArgs =
                         match marker with
@@ -4019,7 +4128,10 @@ let private foldChain (h: Expr) (rest: ((string * Span) * Seg) list) : Result<Ex
                         | OrFailMarker(msg, sp) -> "orFail", sp, "|orFailed", "|orFailedEnv", "|orFailedIn", [ msg ]
                         | ExecMarker sp -> "exec", sp, "|execed", "|execedEnv", "|execedIn", []
                         | LineMarker sp -> "line", sp, "|lined", "|linedEnv", "|linedIn", []
-                        | Stage _ -> "", acc.Span, "", "", "", []
+                        // unreachable — the outer arm matched only the six above
+                        | Stage _
+                        | AndMarker _
+                        | OrMarker _ -> "", acc.Span, "", "", "", []
 
                     // a chain head is command-ish (an external segment or a
                     // command→command pipe); a value head is anything else
@@ -4223,6 +4335,8 @@ let private pipedStages (builtinHeads: bool) (argP: Parser<Expr, unit>) (sigilEn
               <|> orFailMarker
               <|> execMarker
               <|> lineMarker
+              <|> andMarker builtinHeads argP sigilEnv r
+              <|> orMarker builtinHeads argP sigilEnv r
               <|> reifierStageGuard
               <|> (segment builtinHeads argP sigilEnv r |>> Stage))
     )
@@ -4245,6 +4359,10 @@ let private cmdLine (r: Resolver) : Parser<Expr, unit> = cmdLineWith true cmdArg
 // deepen: sigils nest through command args ($(cmd $(cmd …))) without
 // re-entering atom [D:depth-guard]
 sigilChainImpl <- fun envO -> deepen (fun stream -> (cmdLineWith true cmdArg envO ambientResolver.Value) stream)
+
+// the `| and`/`| or` RHS is a full command line, depth-guarded for the
+// right-associative recursion [D:cmd-chaining]
+cmdChainRhsImpl <- fun bh ap se r -> deepen (fun stream -> (cmdLineWith bh ap se r) stream)
 
 // a single bare pipe `|` — not `|>` (expression pipe) or `||` (or)
 let private singlePipe: Parser<unit, unit> =

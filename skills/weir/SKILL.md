@@ -1342,6 +1342,23 @@ within tmp d
   value head). `print ()` is silent (unit
   prints nothing — the rule that lets orFail sit in effect
   positions).
+- Command chaining [D:cmd-chaining]: `cmd | and <rest>` / `cmd | or
+  <rest>` are bash's `&&`/`||`. `| and` runs the right only if the left
+  SUCCEEDED (the left raises on failure, so the right is skipped); `| or`
+  runs the right only if the left FAILED (its nonzero exit is the branch,
+  no raise). Both STREAM and yield unit; the RHS is a full command line,
+  so they chain (`a | and b | and c`) and a builtin like `cd` is a legal
+  operand (`mkdir d | and cd d`). Right-associative — `a | or b | or c` is
+  `a | or (b | or c)`, which DIFFERS from bash's left-assoc for MIXED
+  chains, so split mixed logic across lines when precedence matters.
+  `| or`'s left must be a single external command (a builtin raises
+  rather than exit-codes). This is not for aliases — `#alias` is a
+  resolution table, not a macro.
+
+```weir
+sh -c "exit 1" | or echo "fell back"
+echo built | and echo linked
+```
 - Capture is IN MEMORY: `| complete` holds the whole output as one
   byte buffer + line offsets (~2x the text in RSS; lines decode
   per pull). Unbounded output is still unbounded — for gigabyte or
