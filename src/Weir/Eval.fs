@@ -2757,6 +2757,17 @@ let private envPairsOf (v: Value) : (string * string) list =
         |> List.ofSeq
     | _ -> unreachable "the checker rejects non-seq overlays"
 
+// eval-time cwd capture for the ambient bare values `ls`/`pwd`
+// [D:ambient-capture]: a bare value reads Session.Cwd() at force time, so
+// a listing built inside `within cd` but forced after it exits (the REPL
+// echo) resolved against the restored cwd — `Dir.stat`/`Dir.list` were
+// right because they snapshot at the call. A rebinder snapshots the cwd
+// where the identifier is EVALUATED (the same closure rule the command
+// pipe uses), keyed by the builtin's own object so a user shadow
+// (`let ls = …`) is returned untouched. Populated by Builtins at load.
+let ambientRebinders =
+    System.Collections.Generic.Dictionary<string, Value * (unit -> Value)>()
+
 // the explicit sigil env only — ambient `within env` layers apply in
 // Proc's starters themselves [D:within-scopes], so every spawn
 // (reifier desugars, cmd/into included) obeys the outer-first rule,
@@ -2968,7 +2979,13 @@ and eval (env: Env) (te: TypedExpr) : Value =
     | TEUnit -> VUnit
     | TEVar name ->
         match Map.tryFind name env with
-        | Some v -> v
+        | Some v ->
+            // an ambient bare value rebinds to eval-time cwd capture, but
+            // only while the name still holds the builtin's own object — a
+            // shadow returns as-is [D:ambient-capture]
+            match ambientRebinders.TryGetValue name with
+            | true, (original, rebind) when obj.ReferenceEquals(v, original) -> rebind ()
+            | _ -> v
         | None -> unreachable $"the checker rejects unbound variable '{name}'"
     | TELet(name, _, value, body) -> eval (Map.add name (eval env value) env) body
     | TELetPat(pat, value, body) ->

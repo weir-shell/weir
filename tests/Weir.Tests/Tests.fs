@@ -4307,14 +4307,27 @@ let session2Tests =
                   Weir.Session.setCwd (System.IO.Directory.GetCurrentDirectory())
           }
 
-          test "pwd builtin tracks Session.Cwd lazily" {
+          test "pwd captures the cwd where it is evaluated, not at force time [D:ambient-capture]" {
               skipOnWindows ()
 
               try
+                  // bound BEFORE the cd, pwd keeps the cwd at its evaluation —
+                  // a later cd does not retro-change an escaped seq (the
+                  // within-cd echo bug); the read is snapshotted at reference
+                  Weir.Session.setCwd "/"
+
                   Expect.equal
                       (run "let p = pwd in let d = cd \"/tmp\" in p" |> forceSeq)
+                      [ VStr "/" ]
+                      "pwd is bound to the cwd at its evaluation, before the cd"
+
+                  // bound AFTER the cd, it sees the new dir
+                  Weir.Session.setCwd "/"
+
+                  Expect.equal
+                      (run "let d = cd \"/tmp\" in pwd" |> forceSeq)
                       [ VStr "/tmp" ]
-                      "pwd re-reads Session.Cwd per enumeration"
+                      "pwd bound after the cd sees the new cwd"
               finally
                   Weir.Session.setCwd (System.IO.Directory.GetCurrentDirectory())
           }
@@ -8170,6 +8183,48 @@ let planApplyTests =
                   Expect.isFalse
                       (System.IO.File.Exists(System.IO.Path.Combine(root, "B", "copied.txt")))
                       "the copy did NOT rebind to B — DA-03"
+              finally
+                  System.IO.Directory.Delete(root, true)
+          }
+          // [D:ambient-capture] the read side of the same closure rule: a
+          // lazy `ls`/`glob` built inside `within cd A` but FORCED after the
+          // scope exits (the REPL echo, or under cd B) still lists A — the
+          // cwd is captured where the identifier/call is evaluated, not at
+          // force time (the within-cd `ls` bug, matching Dir.list/Dir.stat).
+          test "AMB: ls and glob capture the within-cd cwd at eval, not at force [D:ambient-capture]" {
+              let root = td ()
+              let dirA = weirPath (System.IO.Path.Combine(root, "A"))
+              let dirB = weirPath (System.IO.Path.Combine(root, "B"))
+
+              let prog =
+                  [ $"Dir.create \"{dirA}\""
+                    $"Dir.create \"{dirB}\""
+                    $"File.write \"{dirA}/Aonly.txt\" [\"x\"]"
+                    $"File.write \"{dirB}/Bonly.txt\" [\"x\"]"
+                    // ls escapes unforced, then forced under cd B
+                    "let rows ="
+                    $"    within cd \"{dirA}\""
+                    "        ls"
+                    "let names ="
+                    $"    within cd \"{dirB}\""
+                    "        rows |> Seq.map (fun r -> r.name) |> Seq.freeze"
+                    "let joined = Str.join \",\" names"
+                    "if not (Str.contains \"Aonly.txt\" joined) then fail \"ls lost A\""
+                    "if Str.contains \"Bonly.txt\" joined then fail \"ls rebound to the force-time cwd B\""
+                    // a relative glob, same escape
+                    "let g ="
+                    $"    within cd \"{dirA}\""
+                    "        Path.glob \"*\""
+                    "let gnames ="
+                    $"    within cd \"{dirB}\""
+                    "        g |> Seq.freeze"
+                    "let gjoined = Str.join \",\" gnames"
+                    "if not (Str.contains \"Aonly.txt\" gjoined) then fail \"glob lost A\""
+                    "if Str.contains \"Bonly.txt\" gjoined then fail \"glob rebound to B\""
+                    "print \"ok\"" ]
+
+              try
+                  Expect.equal (runFile prog) 0 "ls and glob captured A at eval time, not B at force"
               finally
                   System.IO.Directory.Delete(root, true)
           }

@@ -106,26 +106,29 @@ let private lsRow (info: FileSystemInfo) : Value =
           VBool hidden
           VStr info.FullName ]
 
-let private realLs: Value =
-    VSeq(
-        Seq.delay (fun () ->
-            // the whole directory — files and subdirectories (GetFiles
-            // silently halved the listing for a month) [D:ls-truth]
-            let cwd = Session.Cwd()
+let private lsEnumerate (cwd: string) : seq<Value> =
+    // the whole directory — files and subdirectories (GetFiles
+    // silently halved the listing for a month) [D:ls-truth]
+    let infos =
+        try
+            DirectoryInfo(cwd).GetFileSystemInfos()
+        with
+        | :? System.UnauthorizedAccessException -> failwith $"ls: permission denied: {cwd}"
+        | :? System.IO.IOException as e -> failwith $"ls: cannot access {cwd} — {e.Message}"
 
-            let infos =
-                try
-                    DirectoryInfo(cwd).GetFileSystemInfos()
-                with
-                | :? System.UnauthorizedAccessException -> failwith $"ls: permission denied: {cwd}"
-                | :? System.IO.IOException as e -> failwith $"ls: cannot access {cwd} — {e.Message}"
+    // sorted by name, ordinal [D:ls-sort]: the third discovery
+    // surface joins Dir.list/Path.glob's rule (F# string compare
+    // is ordinal — case-sensitive, uppercase first, never the
+    // locale; coreutils ls inherits LC_COLLATE, weir does not)
+    infos |> Array.sortBy (fun i -> i.Name) |> Seq.map lsRow
 
-            // sorted by name, ordinal [D:ls-sort]: the third discovery
-            // surface joins Dir.list/Path.glob's rule (F# string compare
-            // is ordinal — case-sensitive, uppercase first, never the
-            // locale; coreutils ls inherits LC_COLLATE, weir does not)
-            infos |> Array.sortBy (fun i -> i.Name) |> Seq.map lsRow)
-    )
+// cwd bound at construction — the eval-time capture Eval's rebinder uses
+// [D:ambient-capture]; the directory read stays lazy inside the delay
+let private lsForCwd (cwd: string) : Value = VSeq(Seq.delay (fun () -> lsEnumerate cwd))
+
+// the env entry reads the cwd at force time (the non-reference fallback);
+// a `ls` reference rebinds to eval-time capture [D:ambient-capture]
+let private realLs: Value = VSeq(Seq.delay (fun () -> lsEnumerate (Session.Cwd())))
 
 let private whereImpl: Value =
     VBuiltin(fun pred ->
@@ -252,6 +255,11 @@ let private cdImpl: Value =
             VStr(Session.Cwd())
         | v -> unreachable $"the checker rejects 'cd' on {formatValue v}")
 
+// cwd bound at construction — the eval-time capture Eval's rebinder uses
+// [D:ambient-capture]
+let private pwdForCwd (cwd: string) : Value = VSeq(Seq.singleton (VStr cwd))
+
+// force-time fallback; a `pwd` reference rebinds to eval-time capture
 let private pwdImpl: Value =
     VSeq(Seq.delay (fun () -> Seq.singleton (VStr(Session.Cwd()))))
 
@@ -633,13 +641,12 @@ let private globSegRegex (seg: string) : System.Text.RegularExpressions.Regex =
     sb.Append "$" |> ignore
     System.Text.RegularExpressions.Regex(sb.ToString())
 
-let private globWalk (pattern: string) : seq<string> =
+let private globWalk (rootFs: string) (pattern: string) : seq<string> =
     seq {
         let isAbs = pattern.StartsWith "/"
 
         let segs = pattern.Split('/') |> Array.filter (fun s -> s <> "") |> Array.toList
 
-        let rootFs = if isAbs then "/" else Session.Cwd()
         let rootDisplay = if isAbs then "/" else ""
 
         let entriesOf (dirFs: string) =
@@ -718,7 +725,13 @@ let private globWalk (pattern: string) : seq<string> =
 let private globImpl: Value =
     VBuiltin(fun patV ->
         match patV with
-        | VStr pat -> VSeq(Seq.delay (fun () -> globWalk pat |> Seq.map VStr))
+        | VStr pat ->
+            // capture the cwd where glob is CALLED [D:ambient-capture]: a
+            // relative pattern binds the scope it was written in, so a lazy
+            // glob escaping `within cd` still walks that directory (an
+            // absolute pattern ignores the cwd). The walk stays lazy.
+            let rootFs = if pat.StartsWith "/" then "/" else Session.Cwd()
+            VSeq(Seq.delay (fun () -> globWalk rootFs pat |> Seq.map VStr))
         | _ -> unreachable "the checker rejects 'glob' on this argument")
 
 let private str1 (name: string) (f: string -> string) : Value =
@@ -6498,3 +6511,10 @@ Check.reservedBinderNames.Value <-
         && not (Map.containsKey n bareAliasHomes)
         && not (Set.contains n escapeBearers))
     |> Set.ofList
+
+// ls/pwd capture the cwd where they are EVALUATED [D:ambient-capture]:
+// keyed by the builtin's own object (the value the env still holds), so a
+// user shadow is returned untouched. Eval consults this in the identifier
+// arm. glob captures at its call, so it needs no rebinder.
+Eval.ambientRebinders["ls"] <- (realLs, (fun () -> lsForCwd (Session.Cwd())))
+Eval.ambientRebinders["pwd"] <- (pwdImpl, (fun () -> pwdForCwd (Session.Cwd())))

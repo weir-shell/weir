@@ -43,6 +43,15 @@
 
 ### Fixed
 
+- **`ls`, `pwd` and a relative `Path.glob` capture the directory where
+  they're written, not where they're forced.** A `within cd "dir"` block
+  whose trailing `ls`/`pwd`/`glob` was echoed (or otherwise forced) after
+  the block exited had listed the *outer* directory — the lazy seq read
+  the cwd at force time, after the scope restored it. They now snapshot
+  the cwd at evaluation (the same closure rule command values already
+  follow, and matching the eager `Dir.list`/`Dir.stat`). A user
+  `let ls = …` shadow is untouched.
+
 - **A quoted directory completion keeps the caret inside the quotes.**
   Completing `cd /wor<TAB>` to `cd "/work/"` now leaves the cursor before
   the closing quote, so the next segment continues the same string literal
