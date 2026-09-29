@@ -1442,7 +1442,18 @@ let private readLineTty () : string option =
              | [ one ] ->
                  let replaced = text.Substring(0, ws) + one + text.Substring col
                  cur().Clear().Append(replaced) |> ignore
-                 col <- ws + one.Length
+                 // a quoted directory completion lands the cursor INSIDE the
+                 // synthesized closing quote [D:repl-path-quote]: the next
+                 // segment then continues the same string literal and a
+                 // re-Tab nests. Past the quote it would start a fresh word
+                 // the quoting branch never re-enters (the trailing `/` marks
+                 // the directory; a quoted file is final, cursor stays after)
+                 col <-
+                     if one.StartsWith "\"" && one.EndsWith "/\"" then
+                         ws + one.Length - 1
+                     else
+                         ws + one.Length
+
                  redraw ()
              | many ->
                  // extend to the common prefix; list on a second Tab-worth

@@ -99,6 +99,38 @@ print $"{row}"
 places a hole cannot go — point-free positions (`Seq.map show`) and
 Secrets (`show` masks where interpolation refuses).
 
+### Terminal color
+
+The `Color` module wraps a string in a color or attribute — `Color.red`,
+`green`, `yellow`, `blue`, `magenta`, `cyan`, `gray`, and `bold`, `dim`,
+`underline` — each `string -> string`, nesting to combine:
+
+```weir
+print (Color.green "ok")
+print (Color.bold (Color.red "failed"))
+print (Color.sgr "38;5;208" "256-color orange")
+```
+
+It is context-aware: the escape is emitted only at a terminal with
+color on, and the plain string is returned when output is piped or
+`NO_COLOR` is set — so `weir script | grep` stays plain with no guard.
+`print` passes color through at a terminal but still neutralizes every
+*other* escape a value carries (window title, clipboard, cursor moves,
+carriage-return overwrites) to visible `\xNN`, so untrusted data can
+color nothing it shouldn't. `Color.sgr` is the raw-code escape hatch
+for 256-color and truecolor.
+
+`Table.render` lays a seq of same-shaped records into aligned columns —
+the same table the REPL echoes — as lines for `print`:
+
+```weir
+ls |> Seq.take 5 |> Table.render |> Seq.iter print
+```
+
+It is display, not a wire format (there is no `to table` back out; a
+table does not round-trip — `to json`/`to yaml` for data). It tracks
+the terminal width interactively and stays unclamped when piped.
+
 ## Comments
 
 `//` runs to the end of the line, full-line or trailing — command

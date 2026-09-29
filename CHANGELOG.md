@@ -1,5 +1,55 @@
 # Changelog
 
+## v0.0.55
+
+### Added
+
+- **The LSP understands `init.weir`.** The REPL's own
+  `<configHome>/weir/init.weir` no longer flags `#session`/`#alias` as
+  parse errors, and inside the `#session` block the field values complete
+  and check as ordinary expressions (`prompt = <TAB>` offers your declared
+  functions) while a field-name slot completes the keys (`cwd`, `env`,
+  `logLevel`, `echoCap`, `prompt`). An unknown key and a value of the wrong
+  type for its key are flagged, and a `#alias` command completes against
+  PATH. A real declaration error still shows, and a stray `init.weir`
+  elsewhere stays a normal script.
+
+- **`Term.width` — the terminal columns, live.** `Term.width () : int`,
+  queried each call (a resize shows), falling back to 80 when there is no
+  terminal (piped/redirected) rather than raising. The `tput cols`
+  primitive for sizing output.
+
+- **`Table.render` — a seq of records to aligned column lines.** The
+  table layout the REPL echoes, exposed for `print`: `rows |> Table.render
+  |> Seq.iter print`. Display, not a wire format (no `to table` back out).
+  Tracks the terminal width interactively, unclamped when piped; an empty
+  seq prints nothing, a non-record seq is a located error.
+
+- **A `Color` module for terminal color.** `Color.red`/`green`/`yellow`/
+  `blue`/`magenta`/`cyan`/`gray` and `bold`/`dim`/`underline` (each
+  `string -> string`, nesting to combine), plus `Color.sgr code s` for
+  256-color/truecolor. Context-aware: emits the escape only at a terminal
+  with color on, plain when piped or `NO_COLOR` — so `print (Color.green x)`
+  colors interactively and stays plain in a pipe, no guarding.
+
+### Changed
+
+- **`print` keeps color at a terminal.** The tty data-sanitizer now lets
+  SGR (color/attribute) escapes through — display-only, so they can't
+  drive the terminal — while still neutralizing every other family (OSC
+  title/clipboard, DCS, cursor/screen moves, carriage-return overwrites)
+  to visible `\xNN`. Colored output (the `Color` module, a colored
+  prompt banner) reaches the screen; untrusted data still can't hijack it.
+
+### Fixed
+
+- **A quoted directory completion keeps the caret inside the quotes.**
+  Completing `cd /wor<TAB>` to `cd "/work/"` now leaves the cursor before
+  the closing quote, so the next segment continues the same string literal
+  and a re-`TAB` nests (`cd "/work/sub…"`). It had landed past the quote,
+  where the next keystroke fell outside the string and re-`TAB` completed
+  against the whole environment.
+
 ## v0.0.54
 
 ### Added

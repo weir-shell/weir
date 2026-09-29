@@ -2497,6 +2497,23 @@ WEOF
 
     echo "e2e ok: colour inherit — bare statements see the terminal, captures see the pipe, ordering holds, redirected unchanged, and the runner/REPL 2x2 agrees"
 
+    # ---- the Color module + print keeps SGR at a tty [D:tty-color] ----------
+    # Color.green emits SGR that print passes through at a terminal; the
+    # pty harness reprs a real ESC as \x1b and a defanged one as \\x1b, so
+    # the real-SGR pin is: the [32m code present, NOT doubled-backslash
+    cout=$(printf 'SLEEP 300\n' | python3 "$ptyrun" 4 "$BIN" -e 'print (Color.green "OKMARK")' 2>&1)
+    echo "$cout" | grep -qF '[32mOKMARK' || fail "Color.green must colour at a tty: $cout"
+    echo "$cout" | grep -qF '\\x1b[32mOKMARK' && fail "print defanged the SGR instead of keeping it: $cout" || true
+    # injection: an OSC clipboard escape in a printed value is defanged to
+    # visible \x1b (repr'd \\x1b), the SGR colour beside it kept
+    inj=$(printf 'SLEEP 300\n' | python3 "$ptyrun" 4 "$BIN" -e 'print ((Color.red "SAFE") + (Str.fromUtf8 (Bytes.fromBase64 "Gw==")) + "]52;c;PWN")' 2>&1)
+    echo "$inj" | grep -qF '[31mSAFE' || fail "the SGR beside injected data survives: $inj"
+    echo "$inj" | grep -qF ']52;c;PWN' || fail "the OSC payload should still be present as inert text: $inj"
+    echo "$inj" | grep -qF '\\x1b]52' || fail "an OSC in printed data must be defanged (visible \\x1b): $inj"
+    # piped (not a tty): Color returns plain, no escapes at all
+    [ "$($BIN -e 'print (Color.green "plain")')" = "plain" ] || fail "Color must be plain when piped"
+    echo "e2e ok: Color module — SGR reaches the tty via print, OSC in data stays defanged, piped output is plain"
+
     # ---- the #session prompt at a tty [D:session-prompt] -------------------
     # the provider (an init function that runs a command) paints in place
     # of the default, once per entry read; a raising provider falls back
@@ -9798,15 +9815,22 @@ out=$($BIN "$svdir/timeout.weir" 2>&1) || fail "serve body-timeout run failed: $
 echo "$out" | grep -qF "status=HTTP/1.1 408" || fail "F12: a slow body must be refused with 408: $out"
 echo "e2e ok: within serve — F12 request-body read timeout refuses a slow client with 408"
 
-# (F13) tty data sanitize [D:binary-echo]: a data value carrying ANSI/CR
-# renders sanitized at a tty, while weir's own colour output is
-# unaffected; redirected output stays byte-faithful. Driven through a pty.
+# (F13) tty data sanitize [D:binary-echo]/[D:tty-color]: a data value's
+# terminal-DRIVING escapes (OSC title/clipboard, cursor/screen CSI, CR
+# name-hiding, BEL) render sanitized at a tty, while SGR colour passes
+# (display-only, cannot hijack) and weir's own colour is unaffected;
+# redirected output stays byte-faithful. Driven through a pty.
 cat > "$svdir/f13.weir" <<'WEOF'
-let name = Str.fromBase64 "G1szMW1yZWQtbmFtZQ1mdA=="
+let esc = Str.fromBase64 "Gw=="
+let bel = Str.fromBase64 "Bw=="
+let cr = Str.fromBase64 "DQ=="
+let name = esc + "[32mok" + esc + "]0;PWN" + bel + "mid" + cr + "end"
 print name
 WEOF
 cat > "$svdir/f13err.weir" <<'WEOF'
-let bad = Str.fromBase64 "G1szMW1oaWRkZW4NZXZpbA=="
+let esc = Str.fromBase64 "Gw=="
+let cr = Str.fromBase64 "DQ=="
+let bad = esc + "[31mhidden" + cr + "evil"
 fail $"file: {bad}"
 WEOF
 # F13 is driven through a real pty; Windows Python has no termios/pty
@@ -9830,15 +9854,22 @@ else:
     except OSError:
         pass
     data = b''.join(out)
-    # the DATA escapes must be neutralized: no raw ESC[31m, and the
-    # visible \x1b / \x0d forms present
-    raw_ansi = b'\x1b[31mred-name' in data
-    sanitized = (b'\\x1b' in data) and (b'\\x0d' in data)
-    print('RAW_ANSI=%s SANITIZED=%s' % (raw_ansi, sanitized))
+    # new contract [D:tty-color]: SGR (display) passes; the terminal-driving
+    # families are neutralized to visible \xNN. Assert the SPECIFIC payload
+    # sequences (the pty's own \r\n line ending is not the payload's CR).
+    sgr_kept = b'\x1b[32mok' in data          # display colour survives
+    osc_raw = b'\x1b]' in data                # raw OSC introducer must NOT appear
+    osc_vis = b'\\x1b]0;PWN' in data          # OSC defanged to visible text
+    cr_raw = b'mid\rend' in data              # the name-hiding CR must NOT appear raw
+    cr_vis = b'\\x0d' in data                 # CR visible as \x0d
+    print('SGR_KEPT=%s OSC_RAW=%s OSC_VIS=%s CR_RAW=%s CR_VIS=%s' % (sgr_kept, osc_raw, osc_vis, cr_raw, cr_vis))
 PYEOF
 )
-echo "$sanit" | grep -qF "RAW_ANSI=False" || fail "F13: raw ANSI from data must not reach the tty: $sanit"
-echo "$sanit" | grep -qF "SANITIZED=True" || fail "F13: data escapes must render as visible \\xNN at a tty: $sanit"
+echo "$sanit" | grep -qF "SGR_KEPT=True" || fail "F13: SGR colour from data should reach the tty (display-only): $sanit"
+echo "$sanit" | grep -qF "OSC_RAW=False" || fail "F13: a raw OSC from data must not reach the tty: $sanit"
+echo "$sanit" | grep -qF "OSC_VIS=True" || fail "F13: an OSC must render as visible \\x1b] at a tty: $sanit"
+echo "$sanit" | grep -qF "CR_RAW=False" || fail "F13: a name-hiding CR must not reach the tty: $sanit"
+echo "$sanit" | grep -qF "CR_VIS=True" || fail "F13: CR must render as visible \\x0d at a tty: $sanit"
 # weir's own colour survives: the error word stays coloured while the
 # data in the message is sanitized
 colour=$(python3 - "$BIN" "$svdir/f13err.weir" <<'PYEOF'
@@ -9859,16 +9890,17 @@ else:
     data = b''.join(out)
     before_data = data.split(b'file:')[0]
     weir_colour = b'\x1b[' in before_data   # weir's own error colour, raw
-    data_sanitized = (b'\\x1b' in data) and (b'\\x0d' in data)
-    print('WEIR_COLOUR=%s DATA_SANITIZED=%s' % (weir_colour, data_sanitized))
+    # the data's name-hiding CR is neutralized (its SGR is cosmetic, kept)
+    cr_safe = (b'hidden\revil' not in data) and (b'\\x0d' in data)
+    print('WEIR_COLOUR=%s DATA_SANITIZED=%s' % (weir_colour, cr_safe))
 PYEOF
 )
 echo "$colour" | grep -qF "WEIR_COLOUR=True" || fail "F13: weir's own colour must be unaffected: $colour"
-echo "$colour" | grep -qF "DATA_SANITIZED=True" || fail "F13: data in error text must be sanitized: $colour"
-# redirected (piped) output stays byte-faithful — the raw bytes survive
+echo "$colour" | grep -qF "DATA_SANITIZED=True" || fail "F13: the name-hiding CR in error text must be sanitized: $colour"
+# redirected (piped) output stays byte-faithful — every raw byte survives
 $BIN "$svdir/f13.weir" > "$svdir/f13.out" 2>/dev/null || true
-python3 -c "import sys; d=open('$svdir/f13.out','rb').read(); sys.exit(0 if (b'\x1b[31mred-name\rft' in d) else 1)" \
-    || fail "F13: redirected output must stay byte-faithful (raw ESC/CR preserved through a pipe)"
+python3 -c "import sys; d=open('$svdir/f13.out','rb').read(); sys.exit(0 if (b'\x1b[32mok\x1b]0;PWN\x07mid\rend' in d) else 1)" \
+    || fail "F13: redirected output must stay byte-faithful (raw ESC/OSC/BEL/CR preserved through a pipe)"
 echo "e2e ok: F13 tty data sanitize (data escapes neutralized at a tty, weir colour intact, pipe byte-faithful)"
 else
     echo "e2e skip: F13 tty sanitize is pty-driven — no termios/pty on Windows Python"

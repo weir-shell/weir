@@ -25,6 +25,10 @@ failures = []
 # the first Tab completes the whole word (no list step to reason about)
 work = tempfile.mkdtemp(prefix="weir-pathq-")
 open(os.path.join(work, "somefile.txt"), "w").close()
+# a nested entry for the cursor-inside-the-quote case: completing the dir
+# must land the caret before the closing quote so the next segment nests
+os.mkdir(os.path.join(work, "sub"))
+open(os.path.join(work, "sub", "deep.txt"), "w").close()
 
 
 def pty_complete(setup, prefix, settle=0.6):
@@ -102,9 +106,66 @@ if 'File.read "./somefile.txt' not in t:
 if '""' in t:
     failures.append(f"an open quote must not be doubled: {t[-400:]!r}")
 
+# (4) a quoted DIRECTORY completion lands the caret INSIDE the closing
+# quote [D:repl-path-quote]: after `cd <work>/su<Tab>` -> `cd "<work>/sub/"`
+# the next char must fall within the string and a re-Tab nest to the entry.
+# Past the quote (the bug) the char lands outside and the re-Tab lists the
+# whole environment instead. Drive it as a sequence: prefix, Tab, `d`, Tab.
+def pty_steps(steps, settle=0.6):
+    pid, fd = pty.fork()
+    if pid == 0:
+        os.execv(WEIR, ["weir"])
+    time.sleep(0.8)
+    out = b""
+
+    def drain(t):
+        nonlocal out
+        deadline = time.time() + t
+        while time.time() < deadline:
+            r, _, _ = select.select([fd], [], [], 0.1)
+            if r:
+                try:
+                    out += os.read(fd, 65536)
+                except OSError:
+                    return
+
+    drain(0.3)
+    start = len(out)
+    for s in steps:
+        os.write(fd, s.encode())
+        time.sleep(0.25)
+        drain(0.25)
+    drain(settle)
+    painted = out[start:]
+    os.write(fd, b"\x03")
+    os.write(fd, b"\x04")
+    time.sleep(0.3)
+    try:
+        while True:
+            r, _, _ = select.select([fd], [], [], 0.2)
+            if not r:
+                break
+            c = os.read(fd, 65536)
+            if not c:
+                break
+            out += c
+    except OSError:
+        pass
+    try:
+        os.close(fd)
+    except OSError:
+        pass
+    os.waitpid(pid, 0)
+    return re.sub(r"\x1b\[[0-9;]*[A-Za-z]|\x1b=|\x1b\][^\x07]*\x07", "", painted.decode(errors="replace"))
+
+
+t = pty_steps(["cd %s/su" % work, "\t", "d", "\t"])
+if ('cd "%s/sub/deep.txt"' % work) not in t:
+    failures.append(f"a quoted dir completion must leave the caret inside the quote (re-Tab must nest): {t[-400:]!r}")
+
 if failures:
     for f in failures:
         print("repl-pathquote FAIL:", f)
     sys.exit(1)
 
-print("repl-pathquote: expression-slot path completes quoted (File.read \"./somefile.txt\"), command-argv stays bare, an open quote is not doubled")
+print("repl-pathquote: expression-slot path completes quoted (File.read \"./somefile.txt\"), command-argv stays bare, an open quote is not doubled, a quoted dir keeps the caret inside so a re-Tab nests")

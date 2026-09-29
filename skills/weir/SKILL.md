@@ -2269,7 +2269,7 @@ not the teaching.
 - `Float`: `abs` `average` `near` `ofInt` `parse` `round` `sum` `toInt` `tryParse`
 - `Instant`: `epochMs` `now` `ofEpochMs` `parse` `parseWith` `tryParse` `tryParseWith`
 - `Json`: `inferShape`
-- `Table`: `inferShape`
+- `Table`: `inferShape` `render`
 - `Yaml`: `parse` `merge` `inferShape`
 - `Http`: `defaults` `delete` `fetch` `get` `head` `options` `patch` `post` `put` `query` `send` `withQuery`
 - `Log`: `debug` `debugWith` `info` `infoWith` `trace` `traceWith` `warn` `warnWith`
@@ -2282,6 +2282,8 @@ not the teaching.
 - `Server`: `port` `running`
 - `Retry`: `defaults`
 - `Secret`: `map` `of` `reveal`
+- `Color`: `red` `green` `yellow` `blue` `magenta` `cyan` `gray` `bold` `dim` `underline` `sgr` — each `string -> string`, wrapping in a colour/attribute. Context-aware: emits the escape only at a terminal with colour on (no `NO_COLOR`) and returns the plain string when piped, so `print (Color.green x)` colours interactively and stays plain in a pipe. Nest to combine (`Color.bold (Color.red "!")`); `Color.sgr "38;5;208" s` is the raw-code escape hatch for 256-colour/truecolor. `print` keeps colour (SGR) at a tty but still neutralizes every terminal-driving escape a value carries (title, clipboard, cursor, CR).
+- `Term`: `width` — `Term.width () : int`, the terminal columns queried live; falls back to 80 when there is no terminal (piped/redirected), so it never raises. The `tput cols` primitive.
 - `Self`: `args` `entryPath` `pid` `scriptPath` `stdin` (script-only — absent in the REPL, so `#help` does not list it)
 - `Seq`: `append` `average` `choose` `chunkBySize` `collect` `concat` `contains` `countBy` `distinct` `distinctBy` `equal` `except` `exactlyOne` `exists` `find` `fold` `forall` `freeze` `groupBy` `head` `indexed` `isEmpty` `item` `iter` `last` `length` `map` `max` `maxBy` `min` `minBy` `pairwise` `pfirst` `pfirstWith` `pick` `piter` `piterWith` `pmap` `pmapWith` `range` `reduce` `replicate` `rev` `scan` `skip` `skipWhile` `sort` `sortBy` `sortByDescending` `sortDescending` `sum` `take` `takeWhile` `tryExactlyOne` `tryFind` `tryHead` `tryItem` `tryLast` `tryPick` `tryReduce` `where` `windowed` `zip`
 - `Bytes`: `fromBase64` `fromHex` `hmacSha256` `length` `sha256` `sub` `toBase64` `toHex` `tryFromBase64`

@@ -333,12 +333,192 @@ let pathToUri (path: string) : string =
         else
             "file:///" + encoded
 
+// init.weir carries init-only directives (#session, #alias) the script
+// checker does not know [D:repl-init][D:session-prompt] — flagging
+// `#session` at col 0 as a parse error, and its fields as bad statements.
+// So for the REPL init file only, rewrite it into an equivalent script for
+// diagnostics AND completion: blank the `#session {`/`}`/`#alias` lines,
+// and turn each `<4-indent>key = value` field into `let <binder> = value`
+// COLUMN-PRESERVING — 4-space indent out, `let ` in, a same-length binder
+// (so the value stays at its exact column for hover/completion, and a
+// distinct `_`-led binder neither self-references the value nor warns
+// unused). The value then checks and completes as an ordinary let-RHS.
+let private sameLenBinder (key: string) : string =
+    // same length as the key, distinct from it (no self-reference), no
+    // unused/discard warning: `_` + the key's tail, e.g. prompt -> _rompt
+    if key.Length = 0 then "_" else "_" + key.Substring 1
+
+let private stripInitDirectives (lines: string list) : string list =
+    let fieldStart =
+        System.Text.RegularExpressions.Regex @"^(\s{0,4})([A-Za-z_][A-Za-z0-9_]*)(\s*=\s*)(.*)$"
+
+    let mutable inBlock = false
+
+    [ for l in lines do
+          let t = l.Trim()
+
+          if inBlock then
+              if t = "}" then
+                  inBlock <- false
+                  yield ""
+              else
+                  let m = fieldStart.Match l
+
+                  if m.Success then
+                      // `<indent>key = value` -> `let <binder> = value`; when the
+                      // indent is 4, `let ` + a same-length binder keeps the value
+                      // column exact (columns matter for hover/completion)
+                      let indent = m.Groups.[1].Value
+                      let binder = sameLenBinder m.Groups.[2].Value
+
+                      if indent.Length = 4 then
+                          yield "let " + binder + m.Groups.[3].Value + m.Groups.[4].Value
+                      else
+                          yield "let " + binder + " = " + m.Groups.[4].Value
+                  else
+                      yield l // a continuation line (list entry) is part of the value
+          elif t.StartsWith "#session" then
+              inBlock <- t.EndsWith "{"
+              yield ""
+          elif t = "#alias" || t.StartsWith "#alias " then
+              yield ""
+          else
+              yield l ]
+
+// the canonical REPL init file? — only it gets init-directive handling; a
+// stray init.weir elsewhere is a normal script [D:repl-init]. Match the
+// full path (<configHome>/weir/init.weir, XDG/%APPDATA% honoured).
+let private isReplInitPath (path: string) : bool =
+    try
+        let initPath =
+            System.IO.Path.Combine(Builtins.configDir (), "weir", "init.weir")
+
+        let a = System.IO.Path.GetFullPath path
+        let b = System.IO.Path.GetFullPath initPath
+        // Windows paths are case-insensitive; POSIX is exact
+        if System.OperatingSystem.IsWindows() then
+            System.String.Equals(a, b, System.StringComparison.OrdinalIgnoreCase)
+        else
+            a = b
+    with _ ->
+        false
+
+/// the lines the checker/completer should see for a document — init
+/// directives rewritten for the REPL init file, the raw text otherwise
+let private effectiveLines (uri: string) (text: string) : string list =
+    let raw = text.Replace("\r\n", "\n").Split('\n') |> Array.toList
+
+    if isReplInitPath (uriToPath uri) then
+        stripInitDirectives raw
+    else
+        raw
+
+// #session field validation [D:session-prompt]: the value-as-let-RHS check
+// (via the rewrite) catches errors IN a value, but not an unknown key or a
+// value of the wrong type for its key. This adds those, from the init
+// loader's own key -> type table (applySessionField [D:repl-init]).
+let private knownSessionKeys = Set [ "cwd"; "env"; "logLevel"; "echoCap"; "prompt" ]
+
+let private expectedFieldTypes (key: string) : Ty list =
+    match key with
+    | "cwd"
+    | "logLevel" -> [ TStr ]
+    | "echoCap" -> [ TInt ]
+    | "env" -> [ TSeq(TTuple [ TStr; TStr ]) ]
+    | "prompt" -> [ TStr; TFun(TUnit, TStr) ]
+    | _ -> []
+
+let private sessionFieldDiags
+    (file: string)
+    (raw: string list)
+    (stmts: (Script.LogicalLine * Script.CheckedStatement) list)
+    : Script.Diagnostic list =
+    let fieldStart =
+        System.Text.RegularExpressions.Regex @"^(\s{0,4})([A-Za-z_][A-Za-z0-9_]*)(\s*=\s*)(.*)$"
+
+    let mutable inBlock = false
+    let acc = ResizeArray<Script.Diagnostic>()
+
+    raw
+    |> List.iteri (fun i l ->
+        let t = l.Trim()
+
+        if inBlock then
+            if t = "}" then
+                inBlock <- false
+            else
+                let m = fieldStart.Match l
+
+                if m.Success then
+                    let key = m.Groups.[2].Value
+                    let lineNo = i + 1
+                    let keyCol = m.Groups.[1].Value.Length + 1
+
+                    if not (Set.contains key knownSessionKeys) then
+                        acc.Add
+                            { File = file
+                              Line = lineNo
+                              Col = keyCol
+                              EndLine = Some lineNo
+                              EndCol = Some(keyCol + key.Length)
+                              Severity = "error"
+                              Code = "session-key"
+                              Message =
+                                $"unknown #session key '{key}' — the keys: cwd, env, logLevel, echoCap, prompt" }
+                    else
+                        // the value's inferred type (the rewritten `let <binder>
+                        // = value` on this line); a value that errored is not in
+                        // stmts — that error already shows, so skip it here
+                        match stmts |> List.tryFind (fun (ll, _) -> ll.Head = lineNo) with
+                        | Some(_, chk) ->
+                            match chk.Kind with
+                            | Script.KLet(_, _, te) ->
+                                let valStr = formatTy te.Ty
+                                let exp = expectedFieldTypes key
+                                // a generic/ambiguous value (an empty list ->
+                                // seq<'a>) carries a tyvar — do not flag it
+                                let hasTyVar = valStr.Contains "'"
+
+                                if not hasTyVar && not (exp |> List.exists (fun e -> formatTy e = valStr)) then
+                                    let valCol =
+                                        m.Groups.[1].Value.Length
+                                        + key.Length
+                                        + m.Groups.[3].Value.Length
+                                        + 1
+
+                                    let expStr = exp |> List.map formatTy |> String.concat " or "
+
+                                    acc.Add
+                                        { File = file
+                                          Line = lineNo
+                                          Col = valCol
+                                          EndLine = Some lineNo
+                                          EndCol = Some(l.Length + 1)
+                                          Severity = "error"
+                                          Code = "session-type"
+                                          Message = $"#session {key} expects {expStr}, got {valStr}" }
+                            | _ -> ()
+                        | None -> ()
+        elif t.StartsWith "#session" then
+            inBlock <- t.EndsWith "{")
+
+    List.ofSeq acc
+
 let private analyze (uri: string) (text: string) =
-    let lines = text.Replace("\r\n", "\n").Split('\n') |> Array.toList
     // analyze against the real path so imports resolve relative to the file;
     // diagnostics come back File-identified (the entry + its modules)
     let path = uriToPath uri
+    let raw = text.Replace("\r\n", "\n").Split('\n') |> Array.toList
+    let lines = effectiveLines uri text
+
     let diags, stmts, env0, lls = Script.analyzeLines path lines
+
+    let diags =
+        if isReplInitPath path then
+            diags @ sessionFieldDiags path raw stmts
+        else
+            diags
+
     diags, stmts, env0, lls
 
 // find the containing logical line among all assembled lines
@@ -2299,7 +2479,22 @@ let run (debug: bool) : int =
                                     |> Option.map (fun (_, c) -> c.Env)
                                     |> Option.defaultValue env0
 
-                                let lines = text.Replace("\r\n", "\n").Split('\n')
+                                // the effective lines (init directives rewritten,
+                                // column-preserving) so a #session field value
+                                // completes as the let-RHS it becomes [D:session-prompt]
+                                let effLines = effectiveLines uri text |> Array.ofList
+                                let origLines = text.Replace("\r\n", "\n").Split('\n')
+
+                                // a #alias line is blanked in effectiveLines, so
+                                // its command completes off the ORIGINAL line
+                                // [D:command-head-alias]; everything else uses the
+                                // rewritten lines
+                                let onAliasLine =
+                                    isReplInitPath (uriToPath uri)
+                                    && line - 1 < origLines.Length
+                                    && origLines[line - 1].TrimStart().StartsWith "#alias "
+
+                                let lines = if onAliasLine then origLines else effLines
                                 let lineText = if line - 1 < lines.Length then lines[line - 1] else ""
                                 let upto = lineText.Substring(0, min (col - 1) lineText.Length)
 
@@ -2307,6 +2502,23 @@ let run (debug: bool) : int =
                                 let wordStart = Complete.wordStartAt upto upto.Length
 
                                 let word = upto.Substring wordStart
+
+                                // #alias command slot: in the first word after `=`
+                                // (the command head), offer PATH commands
+                                let aliasCmd =
+                                    if
+                                        onAliasLine
+                                        && System.Text.RegularExpressions.Regex.IsMatch(
+                                            upto,
+                                            @"^\s*#alias\s+[A-Za-z_][A-Za-z0-9_]*\s*=\s*[^\s]*$"
+                                        )
+                                    then
+                                        Extern.names ()
+                                        |> Seq.filter (fun n -> n.StartsWith word)
+                                        |> Seq.truncate 100
+                                        |> List.ofSeq
+                                    else
+                                        []
 
                                 // the within kind slot [D:within-kinds] — the
                                 // items come from Complete.suggest (the schema=
@@ -2521,9 +2733,37 @@ let run (debug: bool) : int =
                                     else
                                         []
 
+                                // #session key slot [D:session-prompt]: at a
+                                // field-name position inside the block (init file
+                                // only, nothing typed past the key yet), offer the
+                                // keys rather than the general pool
+                                let sessionKeys =
+                                    if not (isReplInitPath (uriToPath uri)) then
+                                        []
+                                    else
+                                        let orig = text.Replace("\r\n", "\n").Split('\n')
+                                        let mutable inBlock = false
+
+                                        for i in 0 .. min (line - 2) (orig.Length - 1) do
+                                            let tt = orig[i].Trim()
+
+                                            if tt.StartsWith "#session" then inBlock <- true
+                                            elif inBlock && tt = "}" then inBlock <- false
+
+                                        let cur = if line - 1 < orig.Length then orig[line - 1] else ""
+                                        let up = cur.Substring(0, min (col - 1) cur.Length)
+
+                                        if inBlock && cur.Trim() <> "}" && not (up.Contains "=") then
+                                            [ "cwd"; "echoCap"; "env"; "logLevel"; "prompt" ]
+                                            |> List.filter (fun k -> k.StartsWith word)
+                                        else
+                                            []
+
                                 let items =
                                     match repaired with
                                     | Some fields when not fields.IsEmpty -> fields
+                                    | _ when not aliasCmd.IsEmpty -> aliasCmd
+                                    | _ when not sessionKeys.IsEmpty -> sessionKeys
                                     | _ when not sigFlags.IsEmpty -> sigFlags
                                     | _ when not sigSubTokens.IsEmpty -> sigSubTokens
                                     | _ ->
@@ -2532,9 +2772,10 @@ let run (debug: bool) : int =
                                         Complete.suggestScoped env text upto wordStart
 
                                 // line-head position: PATH commands join (the
-                                // command-mode classifier's territory)
+                                // command-mode classifier's territory) — but not
+                                // in the #session key slot, which is closed
                                 let items =
-                                    if upto.Substring(0, wordStart).Trim() = "" then
+                                    if upto.Substring(0, wordStart).Trim() = "" && List.isEmpty sessionKeys then
                                         let word = upto.Substring wordStart
 
                                         items

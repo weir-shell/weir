@@ -88,6 +88,88 @@
       ]
     },
     {
+      "name": "Color",
+      "members": [
+        {
+          "name": "blue",
+          "signature": "Color.blue (s: string) : string",
+          "summary": "Wrap in blue \u2014 off when piped/NO_COLOR.",
+          "example": "print (Color.blue \u0022info\u0022)",
+          "pointer": null
+        },
+        {
+          "name": "bold",
+          "signature": "Color.bold (s: string) : string",
+          "summary": "Wrap in bold \u2014 off when piped/NO_COLOR; nest with a colour.",
+          "example": "print (Color.bold (Color.red \u0022!\u0022))",
+          "pointer": null
+        },
+        {
+          "name": "cyan",
+          "signature": "Color.cyan (s: string) : string",
+          "summary": "Wrap in cyan \u2014 off when piped/NO_COLOR.",
+          "example": "print (Color.cyan \u0022x\u0022)",
+          "pointer": null
+        },
+        {
+          "name": "dim",
+          "signature": "Color.dim (s: string) : string",
+          "summary": "Wrap in dim \u2014 off when piped/NO_COLOR.",
+          "example": "print (Color.dim \u0022note\u0022)",
+          "pointer": null
+        },
+        {
+          "name": "gray",
+          "signature": "Color.gray (s: string) : string",
+          "summary": "Wrap in gray (bright black) \u2014 off when piped/NO_COLOR.",
+          "example": "print (Color.gray \u0022muted\u0022)",
+          "pointer": null
+        },
+        {
+          "name": "green",
+          "signature": "Color.green (s: string) : string",
+          "summary": "Wrap in green \u2014 off when piped/NO_COLOR.",
+          "example": "print (Color.green \u0022ok\u0022)",
+          "pointer": null
+        },
+        {
+          "name": "magenta",
+          "signature": "Color.magenta (s: string) : string",
+          "summary": "Wrap in magenta \u2014 off when piped/NO_COLOR.",
+          "example": "print (Color.magenta \u0022x\u0022)",
+          "pointer": null
+        },
+        {
+          "name": "red",
+          "signature": "Color.red (s: string) : string",
+          "summary": "Wrap in red \u2014 off when piped/NO_COLOR.",
+          "example": "print (Color.red \u0022error\u0022)",
+          "pointer": null
+        },
+        {
+          "name": "sgr",
+          "signature": "Color.sgr (code: string) (s: string) : string",
+          "summary": "Wrap in a raw colour code \u2014 the escape hatch for 256-colour (\u006038;5;208\u0060) and truecolor (\u006038;2;r;g;b\u0060); off when piped/NO_COLOR.",
+          "example": "print (Color.sgr \u002238;5;208\u0022 \u0022orange\u0022)",
+          "pointer": null
+        },
+        {
+          "name": "underline",
+          "signature": "Color.underline (s: string) : string",
+          "summary": "Wrap in underline \u2014 off when piped/NO_COLOR.",
+          "example": "print (Color.underline \u0022link\u0022)",
+          "pointer": null
+        },
+        {
+          "name": "yellow",
+          "signature": "Color.yellow (s: string) : string",
+          "summary": "Wrap in yellow \u2014 off when piped/NO_COLOR.",
+          "example": "print (Color.yellow \u0022warn\u0022)",
+          "pointer": null
+        }
+      ]
+    },
+    {
       "name": "Dir",
       "members": [
         {
@@ -1887,6 +1969,25 @@
           "summary": "Draft the row \u0060type\u0060 declaration from an aligned-table sample (kubectl/docker style) \u2014 the composable core of \u0060#infer \u2026 from table\u0060: per-column token scan over the data rows (all-int -\u003E int, else float/bool by token, else string; a column with empty/\u0060\u003Cnone\u003E\u0060 cells -\u003E Option with a note); headers sanitize to field names, \u0060[\u003CWire\u003E]\u0060 carries a header the name cannot recover; a note says the value reads as seq\u003CRoot\u003E. You edit the emitted type. Not check-time inference (the value is a runtime sample).",
           "example": "print (Table.inferShape [\u0022NAME   RESTARTS\u0022; \u0022web-1  0\u0022])",
           "pointer": "the \u0060weir add schema\u0060 category: external structure -\u003E a declaration you own; check and \u0060from table\u0060 stay untouched."
+        },
+        {
+          "name": "render",
+          "signature": "Table.render (rows: seq\u003C\u0027a\u003E) : seq\u003Cstring\u003E",
+          "summary": "Render a seq of same-shaped records as aligned column lines (a bold-header, width-clamped table \u2014 the same layout the REPL echoes) for \u0060print\u0060. Display, not a wire format: there is no \u0060to table\u0060 back out (a table does not round-trip; use \u0060to json\u0060/\u0060to yaml\u0060 for that). Width tracks the terminal, unclamped when piped; a non-record seq is a located error.",
+          "example": "ls |\u003E Table.render |\u003E Seq.iter print",
+          "pointer": null
+        }
+      ]
+    },
+    {
+      "name": "Term",
+      "members": [
+        {
+          "name": "width",
+          "signature": "Term.width () : int",
+          "summary": "The terminal width in columns, queried live (a resize is reflected). Falls back to 80 when there is no terminal (piped or redirected) rather than raising \u2014 the columns primitive for sizing output (\u0060tput cols\u0060).",
+          "example": "print (show (Term.width ()))",
+          "pointer": null
         }
       ]
     },

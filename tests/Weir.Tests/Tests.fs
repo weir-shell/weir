@@ -19773,19 +19773,25 @@ let echoBinaryTests =
 let ttySanitizeTests =
     testList
         "tty data sanitize [D:binary-echo]"
-        [ test "ESC, CR, OSC, and C1 controls become visible \\xNN; TAB and LF pass" {
+        [ test "the terminal-driving families become visible \\xNN; SGR colour survives; TAB and LF pass [D:tty-color]" {
               // the review's own payload: clear-screen, colour, OSC title,
               // and the quiet CR that hides the real name
               let esc = string (char 0x1b)
               let bel = string (char 0x07)
               let hostile = esc + "[2Jcleared" + esc + "[31mred" + esc + "]0;PWNED" + bel + "a\rb"
               let safe = Weir.Eval.sanitizeTtyData hostile
-              Expect.isFalse (safe.Contains(char 0x1b)) "no raw ESC survives"
+              // SGR (display only) survives verbatim — colour is safe
+              Expect.stringContains safe (esc + "[31mred") "SGR colour survives raw"
+              // the terminal-driving families are neutralized to visible text
+              Expect.stringContains safe "\\x1b[2J" "clear-screen CSI defanged (ESC visible)"
+              Expect.stringContains safe "\\x1b]0;PWNED" "OSC title/clipboard defanged"
               Expect.isFalse (safe.Contains(char 0x07)) "no raw BEL survives"
               Expect.isFalse (safe.Contains '\r') "no raw CR survives — the name stays honest"
-              Expect.stringContains safe "\\x1b" "ESC renders as \\x1b"
               Expect.stringContains safe "\\x0d" "CR renders as \\x0d"
               Expect.stringContains safe "cleared" "the visible text is preserved"
+              // the ONLY raw ESC left is the SGR's; the two dangerous
+              // introducers became text
+              Expect.equal (safe.Split(char 0x1b).Length - 1) 1 "exactly one raw ESC — the SGR"
 
               // TAB and LF are not hostile — ordinary layout survives
               let layout = "a\tb\nc"
@@ -19794,6 +19800,9 @@ let ttySanitizeTests =
               // a C1 control (0x9b, the 8-bit CSI) is neutralized
               Expect.stringContains (Weir.Eval.sanitizeTtyData (string (char 0x9b))) "\\x9b" "C1 CSI renders as \\x9b"
 
+              // a lone ESC not starting an SGR is defanged
+              Expect.stringContains (Weir.Eval.sanitizeTtyData (esc + "X")) "\\x1bX" "a lone ESC is visible"
+
               // a clean string is returned unchanged
               Expect.equal (Weir.Eval.sanitizeTtyData "plain-name.txt") "plain-name.txt" "clean text untouched"
           }
@@ -19801,6 +19810,42 @@ let ttySanitizeTests =
               let hostile = string (char 0x1b) + "X"
               Expect.equal (Weir.Eval.sanitizeIfTty true hostile) hostile "redirected: raw (a pipe/file is byte-faithful)"
               Expect.stringContains (Weir.Eval.sanitizeIfTty false hostile) "\\x1b" "tty: sanitized"
+          }
+          test "Color helpers auto-off when colour is off (piped/NO_COLOR) [D:tty-color]" {
+              // the test process's stdout is captured, so onStdout is false —
+              // the helpers return the plain string, no escapes (the colour
+              // path — real SGR at a tty — is pinned in e2e). This is the
+              // 'sane' half: piping a coloured script yields plain text.
+              Expect.equal (run "Color.green \"ok\"") (VStr "ok") "green off → plain"
+              Expect.equal (run "Color.bold (Color.red \"x\")") (VStr "x") "nested off → plain"
+              Expect.equal (run "Color.sgr \"38;5;208\" \"orange\"") (VStr "orange") "raw sgr off → plain"
+              // and they type as string -> string (composable, print-ready)
+              Expect.equal (formatTy (checkOk "Color.green").Ty) "string -> string" "the helper's type"
+              Expect.equal (formatTy (checkOk "Color.sgr").Ty) "string -> string -> string" "sgr takes a code then text"
+          }
+          test "Table.render lays a seq of records into aligned columns [D:tty-color]" {
+              let src =
+                  "[{| name = \"web\"; n = 0 |}; {| name = \"db-x\"; n = 3 |}] |> Table.render |> Seq.freeze"
+
+              let lines = run src |> forceSeq |> List.map (fun v -> match v with VStr s -> s | _ -> "")
+              // a header row, a rule row, then one row per record
+              Expect.equal lines.Length 4 "header + rule + two data rows"
+              Expect.stringContains lines[0] "name" "the header names the fields"
+              Expect.stringContains lines[0] "n" "…and the int column"
+              // columns align: the two data rows share the name-column width
+              Expect.stringContains lines[2] "web" "first record's cell"
+              Expect.stringContains lines[3] "db-x" "second record's cell"
+              // a non-record seq is a located error, not a silent nothing
+              Expect.throwsC (fun () -> run "[1; 2; 3] |> Table.render |> Seq.freeze" |> ignore) id
+              |> _.Message
+              |> fun m -> Expect.stringContains m "Table.render needs a seq of" "the repair is named"
+          }
+          test "Term.width falls back to 80 with no terminal [D:tty-color]" {
+              // the test process's stdout is captured — no terminal — so the
+              // fallback path answers (a real tty width is pinned in e2e); it
+              // never raises, which is the point for a piped tool
+              Expect.equal (run "Term.width ()") (VInt 80L) "no terminal → 80"
+              Expect.equal (formatTy (checkOk "Term.width").Ty) "unit -> int" "queried live, so a function"
           } ]
 
 let logLevelTests =
