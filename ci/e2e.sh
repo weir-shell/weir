@@ -412,6 +412,27 @@ expect "POSIX one-liner via the external shell" '["a"; "b"]' "$out"
 out=$($BIN -e 'sh -c "exit 7" | complete |> _.exitCode')
 expect "sh lines can complete now (old builtin boundary gone)" "7 : int" "$out"
 
+# ---- command chaining [D:cmd-chaining]: bash &&/|| as `| and` / `| or` ----
+out=$($BIN -e "sh -c 'exit 0' | and echo yes")
+expect "| and runs the right on success" "yes" "$out"
+out=$($BIN -e "sh -c 'exit 1' | or echo fb")
+expect "| or runs the right on failure" "fb" "$out"
+out=$($BIN -e "sh -c 'exit 0' | or echo skip")
+echo "$out" | grep -qF skip && fail "| or must skip the right when the left succeeds: $out"
+echo "e2e ok: | or skips the right on success"
+out=$($BIN -e "echo a | and echo b | and echo c")
+expect "| and chains (reaches the last)" "c" "$out"
+out=$($BIN -e "sh -c 'exit 1' | or echo A | or echo B")
+expect "| or chains: the first success wins" "A" "$out"
+echo "$out" | grep -qF B && fail "| or chain must stop at the first success: $out"
+echo "e2e ok: | or chain stops at the first success"
+if $BIN -e "sh -c 'exit 1' | and echo no" >/dev/null 2>&1; then
+    fail "| and must propagate the left's failure (right skipped, nonzero exit)"
+fi
+echo "e2e ok: | and propagates the left's failure"
+out=$($BIN -e "cd / | and echo ok")
+expect "a builtin (cd) chains as an | and operand" "ok" "$out"
+
 # ---- exec: process replacement [D:exec] -----------------------------
 # exec replaces the runner (execve), so the command's own stdout and exit
 # code are the script's — there is no weir layer left to reify through.

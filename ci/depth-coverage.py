@@ -85,7 +85,11 @@ for name, start, is_rec in defs:
     if is_rec:
         rec_nodes.add(name)
 
-guard_re = re.compile(r"\s*(?:fun\s+\w+\s*->\s*)?deepen(?:After)?\b")
+# a body opens with `deepen`, optionally under a `fun <params> ->` (the
+# parameterized-parser spelling) — any arity: `fun x ->` and the
+# multi-param `fun bh ap se r -> deepen (…)` (a ref-assigned factory) both
+# count
+guard_re = re.compile(r"\s*(?:fun\s+(?:\w+\s+)*\w+\s*->\s*)?deepen(?:After)?\b")
 # the hand-rolled spelling for non-FParsec recursion (parseTplBlock):
 # the body bumps and checks the same counter deepen uses
 manual_guard_re = re.compile(r"parseDepth\.Value > maxDepth")
