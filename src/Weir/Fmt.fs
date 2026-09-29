@@ -354,8 +354,21 @@ let private formatLinesCore (body: string list) : Result<string list, string> =
 
                                     let line = String.replicate (depth * 4) " " + content
 
-                                    if piece.StartsWith "match " then
-                                        matches <- (indent, depth * 4, None) :: matches
+                                    // a match head, possibly opened by `(` on the
+                                    // same line (`(match …`), aligns its arms under
+                                    // the `m` [D:fmt-match-arms] — so the stored
+                                    // column is the keyword's OWN (line indent + its
+                                    // offset in the piece), not the line indent,
+                                    // which only coincided for a bare `match`.
+                                    // Parens are the only opener that reaches here;
+                                    // `[`/`{` ride the braces path above.
+                                    let mOff =
+                                        piece |> Seq.takeWhile (fun c -> c = '(' || c = ' ') |> Seq.length
+
+                                    let mRest = piece.Substring mOff
+
+                                    if mRest.StartsWith "match " || mRest = "match" then
+                                        matches <- (indent, depth * 4 + mOff, None) :: matches
 
                                     line
 

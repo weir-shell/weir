@@ -479,6 +479,19 @@ argv, so `k get $x` passes `$x` as one argument (the injection law
 holds), and a `k` in a string, a variable, or an argument is
 untouched — only the head token, only in command-head position.
 
+Because the body is a program plus fixed words — not a command line —
+weir syntax in it is **not interpreted**: `$(…)` captures, pipes, and
+shell `&&`/`||` become literal argument words, never evaluated. For a
+shortcut that needs those (say, cd to the repo root), write a nullary
+function in `init.weir` instead and call it with `()`:
+
+```text
+let root () = cd $(git rev-parse --show-toplevel | line)
+```
+
+The alias target *may* be a builtin like `cd` — `#alias up = cd ..`
+runs the `cd` builtin (not an external `cd`).
+
 The resolution order is **alias table → PATH**, and the `^`
 force-PATH sigil skips the table: with `#alias ls = ls --color`, a
 bare `ls x` runs `ls --color x` and `^ls x` runs the real `ls x`.

@@ -1,5 +1,48 @@
 # Changelog
 
+## v0.0.56
+
+### Fixed
+
+- **An alias to the `cd` builtin runs the builtin.** `#alias up = cd ..`
+  now performs weir's `cd`, not the external `/usr/sbin/cd` (which failed
+  with "too many arguments"). Aliases remain resolution-table entries, not
+  macros — `$(…)`, pipes and `&&`/`||` in a body are literal argument words;
+  for a shortcut that needs those, write a nullary function in `init.weir`
+  (`let root () = cd $(git rev-parse --show-toplevel | line)`).
+
+- **`weir fmt` aligns a parenthesized match's arms under the `m`.** A
+  `(match … )` nested in an arm body had its arms indented to the block
+  depth instead of under the `match` keyword (the head detector missed the
+  leading `(`). Now `(match` — and the arms below it — line up as a
+  top-level match does.
+
+- **REPL history dedupes properly (erasedups, keep-last).** A re-entered
+  command now moves to the most-recent position and its earlier copy is
+  erased, so history is a clean recency-ordered set — Up-arrow, `#history`
+  and the Ctrl+R finder each show a command once. Previously only *adjacent*
+  duplicates were dropped (readline `ignoredups`), and the finder fed every
+  entry to fzf so re-runs listed repeatedly. Duplicate lines already in the
+  history file are collapsed on load. Off with `historyDedup = false`.
+
+- **Tab completion works inside an interpolation hole.** `$"{Path.<TAB>`
+  now completes `Path`'s members — the `{ … }` interior is an ordinary
+  expression. It had offered nothing: the opaque `$"…"` made the completer
+  read the line as a command and try a filesystem completion of `Path.`.
+
+- **`ls`, `pwd` and a relative `Path.glob` capture the directory where
+  they're written, not where they're forced.** A `within cd "dir"` block
+  whose trailing `ls`/`pwd`/`glob` was echoed (or otherwise forced) after
+  the block exited had listed the *outer* directory — the lazy seq read
+  the cwd at force time, after the scope restored it. They now snapshot
+  the cwd at evaluation (the same closure rule command values already
+  follow, and matching the eager `Dir.list`/`Dir.stat`). A user
+  `let ls = …` shadow is untouched.
+
+- **A parse error's `Expecting:` list no longer doubles a token.**
+  `within tmp d -> …` reported `Expecting: the scope's block or ';' or ';'`;
+  the alternatives are de-duplicated now (`… or ';'`).
+
 ## v0.0.55
 
 ### Added

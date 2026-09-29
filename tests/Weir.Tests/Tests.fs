@@ -3251,7 +3251,19 @@ let private suggest text (wordStart: int) =
 let completionTests =
     testList
         "Completion"
-        [ test "argv path completion keeps the directory prefix [D:complete-argv]" {
+        [ test "completion works inside an interpolation hole [D:interp-hole-complete]" {
+              // `$"{Path.<TAB>` must complete Path's members — the hole's
+              // interior is an ordinary expression. Before the fix the opaque
+              // `$"…"` made the slot read `micro $"{Path.` as command-argv and
+              // try a filesystem completion of `Path.` (nothing).
+              let hole = "micro $\"{Path."
+              let inHole = suggest hole (Weir.Complete.wordStartAt hole hole.Length)
+              let bare = suggest "Path." (Weir.Complete.wordStartAt "Path." 5)
+              Expect.isNonEmpty inHole "the hole offers Path members"
+              Expect.isTrue (inHole |> List.forall (fun s -> s.StartsWith "Path.")) $"all Path members: {inHole}"
+              Expect.equal inHole bare "the hole completes exactly as its bare interior expression"
+          }
+          test "argv path completion keeps the directory prefix [D:complete-argv]" {
               // the word rule is where this lived: both callers cut the word at the
               // slash, so `micro ci/e` completed against the CWD and `micro ci/`
               // listed it whole. filesystemComplete was always correct — the
@@ -4307,14 +4319,27 @@ let session2Tests =
                   Weir.Session.setCwd (System.IO.Directory.GetCurrentDirectory())
           }
 
-          test "pwd builtin tracks Session.Cwd lazily" {
+          test "pwd captures the cwd where it is evaluated, not at force time [D:ambient-capture]" {
               skipOnWindows ()
 
               try
+                  // bound BEFORE the cd, pwd keeps the cwd at its evaluation —
+                  // a later cd does not retro-change an escaped seq (the
+                  // within-cd echo bug); the read is snapshotted at reference
+                  Weir.Session.setCwd "/"
+
                   Expect.equal
                       (run "let p = pwd in let d = cd \"/tmp\" in p" |> forceSeq)
+                      [ VStr "/" ]
+                      "pwd is bound to the cwd at its evaluation, before the cd"
+
+                  // bound AFTER the cd, it sees the new dir
+                  Weir.Session.setCwd "/"
+
+                  Expect.equal
+                      (run "let d = cd \"/tmp\" in pwd" |> forceSeq)
                       [ VStr "/tmp" ]
-                      "pwd re-reads Session.Cwd per enumeration"
+                      "pwd bound after the cd sees the new cwd"
               finally
                   Weir.Session.setCwd (System.IO.Directory.GetCurrentDirectory())
           }
@@ -6208,6 +6233,27 @@ let fmtMatchTests =
                   Expect.equal lines[2] "    | 1 ->" "outer arm at outer m"
                   Expect.equal lines[4] "        | 2 -> \"a\"" "inner arm at inner m"
                   Expect.equal lines[6] "    | _ -> \"c\"" "outer resumes after inner closes"
+              | Error e -> failtest e
+          }
+          test "a parenthesized match aligns its arms under the m, not the line indent [D:fmt-match-arms]" {
+              // `(match …` — the `m` sits one past the `(`, so the arms align at
+              // that column (9 here), not at the block-depth column (12) the
+              // old `piece.StartsWith \"match \"` check produced by missing the `(`
+              match
+                  Weir.Fmt.formatLines
+                      [ "let f x ="
+                        "    match x with"
+                        "    | Some n ->"
+                        "        (match n with"
+                        "            | 1 -> \"a\""
+                        "            | _ -> \"b\")"
+                        "    | None -> \"c\"" ]
+              with
+              | Ok lines ->
+                  Expect.equal lines[3] "        (match n with" "the parenthesized match head"
+                  Expect.equal lines[4] "         | 1 -> \"a\"" "inner arm under the m (col 9), not col 12"
+                  Expect.equal lines[5] "         | _ -> \"b\")" "inner arm under the m"
+                  Expect.equal lines[6] "    | None -> \"c\"" "outer arm resumes"
               | Error e -> failtest e
           }
           test "union cases and chain stages are not arms" {
@@ -8170,6 +8216,48 @@ let planApplyTests =
                   Expect.isFalse
                       (System.IO.File.Exists(System.IO.Path.Combine(root, "B", "copied.txt")))
                       "the copy did NOT rebind to B — DA-03"
+              finally
+                  System.IO.Directory.Delete(root, true)
+          }
+          // [D:ambient-capture] the read side of the same closure rule: a
+          // lazy `ls`/`glob` built inside `within cd A` but FORCED after the
+          // scope exits (the REPL echo, or under cd B) still lists A — the
+          // cwd is captured where the identifier/call is evaluated, not at
+          // force time (the within-cd `ls` bug, matching Dir.list/Dir.stat).
+          test "AMB: ls and glob capture the within-cd cwd at eval, not at force [D:ambient-capture]" {
+              let root = td ()
+              let dirA = weirPath (System.IO.Path.Combine(root, "A"))
+              let dirB = weirPath (System.IO.Path.Combine(root, "B"))
+
+              let prog =
+                  [ $"Dir.create \"{dirA}\""
+                    $"Dir.create \"{dirB}\""
+                    $"File.write \"{dirA}/Aonly.txt\" [\"x\"]"
+                    $"File.write \"{dirB}/Bonly.txt\" [\"x\"]"
+                    // ls escapes unforced, then forced under cd B
+                    "let rows ="
+                    $"    within cd \"{dirA}\""
+                    "        ls"
+                    "let names ="
+                    $"    within cd \"{dirB}\""
+                    "        rows |> Seq.map (fun r -> r.name) |> Seq.freeze"
+                    "let joined = Str.join \",\" names"
+                    "if not (Str.contains \"Aonly.txt\" joined) then fail \"ls lost A\""
+                    "if Str.contains \"Bonly.txt\" joined then fail \"ls rebound to the force-time cwd B\""
+                    // a relative glob, same escape
+                    "let g ="
+                    $"    within cd \"{dirA}\""
+                    "        Path.glob \"*\""
+                    "let gnames ="
+                    $"    within cd \"{dirB}\""
+                    "        g |> Seq.freeze"
+                    "let gjoined = Str.join \",\" gnames"
+                    "if not (Str.contains \"Aonly.txt\" gjoined) then fail \"glob lost A\""
+                    "if Str.contains \"Bonly.txt\" gjoined then fail \"glob rebound to B\""
+                    "print \"ok\"" ]
+
+              try
+                  Expect.equal (runFile prog) 0 "ls and glob captured A at eval time, not B at force"
               finally
                   System.IO.Directory.Delete(root, true)
           }
@@ -14164,6 +14252,15 @@ let siblingSentinelTests =
 
               noLeak [ "let f t ="; "    git status"; "    print a b )" ] // lists ';' in expected-set
               noLeak [ "let f t ="; "    git status"; "    let e = ("; "    print e" ]
+          }
+          test "the expected-set collapses a token relabelled by two branches [D:clean-parse-dump]" {
+              // `within tmp d -> …` misses the scope's block; more than one
+              // alternative relabels the separator to ';', so the set had
+              // rendered `';' or ';'` — one ';' now
+              let ds = diags [ "within tmp d -> print d" ]
+              let d = ds |> List.find (fun d -> d.Severity = "error")
+              Expect.isFalse (d.Message.Contains "';' or ';'") $"duplicate token in the expected-set: {d.Message}"
+              Expect.stringContains d.Message "the scope's block or ';'" "the deduped expected-set"
           }
           test "no-leak: internal backtrack labels never surface [D:label-leaks]" {
               // the record-brace sitting carried 'whitespace before [
@@ -21225,7 +21322,11 @@ let replSaveDistillTests =
 // `^` skips it and it is single-hop by construction.
 
 let private aliasTable: Map<string, string * string list> =
-    Map.ofList [ ("k", ("kubectl", [])); ("kb", ("kustomize", [ "build" ])); ("ls", ("ls", [ "--color" ])) ]
+    Map.ofList
+        [ ("k", ("kubectl", []))
+          ("kb", ("kustomize", [ "build" ]))
+          ("ls", ("ls", [ "--color" ]))
+          ("up", ("cd", [ ".." ])) ]
 
 let private aliasOf n = Map.tryFind n aliasTable
 
@@ -21335,6 +21436,16 @@ let aliasTests =
               Expect.isTrue (Weir.Repl.parseAliasLineForTest "kb = kustomize build" |> Result.isOk) "with prefix"
               Expect.isTrue (Weir.Repl.parseAliasLineForTest "= kubectl" |> Result.isError) "no name"
               Expect.isTrue (Weir.Repl.parseAliasLineForTest "k" |> Result.isError) "no ="
+          }
+          test "(k) an alias to the builtin cd APPLIES it, never spawns /usr/sbin/cd [D:command-head-alias]" {
+              // #alias up = cd .. — `up` must resolve cd as the builtin (the
+              // application EApp(cd, "..")), not ECmd(HeadLit "cd", …), which
+              // spawned the external /usr/sbin/cd with too many arguments
+              match Weir.Parser.parseLine aliasResolver "up" with
+              | Ok(SCmd { Kind = EApp({ Kind = EVar "cd" }, { Kind = EStr ".." }) })
+              | Ok(SExpr { Kind = EApp({ Kind = EVar "cd" }, { Kind = EStr ".." }) }) -> ()
+              | Ok other -> failtest $"expected cd applied to '..', got {other}"
+              | Error e -> failtest $"parse failed: {e}"
           }
           test "(k2) the prompt sanitizer keeps SGR alone [D:session-prompt]" {
               let san = Weir.Repl.sanitizePromptForTest

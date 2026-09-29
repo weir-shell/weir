@@ -27,6 +27,58 @@ let inferLetStrip (line: string) : int option =
 
     if m.Success then Some m.Length else None
 
+/// the interior start of the innermost still-open interpolation hole in
+/// `text` (everything up to the cursor), or None when the cursor is not
+/// inside a `$"{ … }` hole. The hole interior is an ordinary expression,
+/// so completion recurses on it — `$"{Path.<TAB>` completes Path's
+/// members, not a filesystem path. A stated subset (like the map-key
+/// scanner): a nested string inside a hole is skipped by balanced `"`,
+/// escapes are not tracked.
+let interpHoleStart (text: string) : int option =
+    let mutable i = 0
+    let mutable inStr = false // inside a $"…" interpolation string
+    let mutable depth = 0 // brace nesting inside the current hole
+    let mutable holeStart = -1 // interior start of the innermost open hole
+
+    while i < text.Length do
+        if not inStr then
+            if i + 1 < text.Length && text[i] = '$' && text[i + 1] = '"' then
+                inStr <- true
+                i <- i + 2
+            else
+                i <- i + 1
+        elif depth = 0 then
+            // inside the string's literal text, between holes
+            match text[i] with
+            | '"' -> inStr <- false
+            | '{' ->
+                depth <- 1
+                holeStart <- i + 1
+            | _ -> ()
+
+            i <- i + 1
+        else
+            // inside a hole (an expression)
+            match text[i] with
+            | '{' -> depth <- depth + 1
+            | '}' ->
+                depth <- depth - 1
+
+                if depth = 0 then
+                    holeStart <- -1
+            | '"' ->
+                // skip a nested string literal so its braces/quotes don't
+                // confuse the scan; an unterminated one runs to the end
+                i <- i + 1
+
+                while i < text.Length && text[i] <> '"' do
+                    i <- i + 1
+            | _ -> ()
+
+            i <- i + 1
+
+    if inStr && depth > 0 then Some holeStart else None
+
 // the session directives, one source [D:repl-directives] — the set the
 // REPL's dispatch string-matches (Repl.fs) and #help documents, `#help`
 // first. Both completion slots read this: the line-head '#' slot (bare
@@ -439,6 +491,17 @@ let rec suggestScopedWith
     | Some off when wordStart >= off ->
         let stmt = text.Substring off
         suggestScopedWith aliasHeads env stmt stmt (wordStart - off)
+    | _ ->
+
+    // a cursor inside a `$"{ … }` hole completes the hole's interior as an
+    // ordinary expression [D:interp-hole-complete] — otherwise the opaque
+    // `$"…"` makes the slot detector read `micro $"{Path.` as command-argv
+    // and try a filesystem completion of `Path.`. Strip to the interior
+    // and recurse (innermost hole, so this recurses at most once per hole).
+    match interpHoleStart text with
+    | Some off when wordStart >= off ->
+        let inner = text.Substring off
+        suggestScopedWith aliasHeads env inner inner (wordStart - off)
     | _ ->
 
     let word =
