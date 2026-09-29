@@ -21342,6 +21342,30 @@ let private parseWith (r: Weir.Parser.Resolver) input =
     | Ok other -> Error $"unexpected: {other}"
     | Error msg -> Error $"parse failed: {msg}"
 
+let cmdChainTests =
+    testList
+        "command chaining [D:cmd-chaining]"
+        [ test "| and desugars to a sequence (run the left, then the right)" {
+              match Weir.Parser.parseLine realResolver "git status | and git log" with
+              | Ok(SExpr { Kind = ESeq _ })
+              | Ok(SCmd { Kind = ESeq _ }) -> ()
+              | Ok other -> failtest $"expected an ESeq, got {other}"
+              | Error e -> failtest $"parse failed: {e}"
+          }
+          test "| or desugars to a conditional on the left's exit code" {
+              match Weir.Parser.parseLine realResolver "git status | or git log" with
+              | Ok(SExpr { Kind = EIf _ })
+              | Ok(SCmd { Kind = EIf _ }) -> ()
+              | Ok other -> failtest $"expected an EIf, got {other}"
+              | Error e -> failtest $"parse failed: {e}"
+          }
+          test "| or requires a single external command on its left" {
+              // cd is a builtin (it raises, it has no exit-code) — not an | or left
+              match Weir.Parser.parseLine realResolver "cd / | or git log" with
+              | Error e -> Expect.stringContains e "must directly follow a single external command" "teaches"
+              | Ok other -> failtest $"expected an error, got {other}"
+          } ]
+
 let aliasTests =
     testList
         "command-head aliases [D:command-head-alias]"
@@ -22279,6 +22303,7 @@ let allTests =
           reenumWarningTests
           tempDirLintTests
           replSaveDistillTests
+          cmdChainTests
           aliasTests
           dynamicHeadTests
           helpUxTests
