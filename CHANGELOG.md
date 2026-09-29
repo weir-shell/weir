@@ -43,6 +43,12 @@
 
 ### Fixed
 
+- **`weir fmt` aligns a parenthesized match's arms under the `m`.** A
+  `(match … )` nested in an arm body had its arms indented to the block
+  depth instead of under the `match` keyword (the head detector missed the
+  leading `(`). Now `(match` — and the arms below it — line up as a
+  top-level match does.
+
 - **REPL history dedupes properly (erasedups, keep-last).** A re-entered
   command now moves to the most-recent position and its earlier copy is
   erased, so history is a clean recency-ordered set — Up-arrow, `#history`

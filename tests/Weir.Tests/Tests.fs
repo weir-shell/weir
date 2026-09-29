@@ -6235,6 +6235,27 @@ let fmtMatchTests =
                   Expect.equal lines[6] "    | _ -> \"c\"" "outer resumes after inner closes"
               | Error e -> failtest e
           }
+          test "a parenthesized match aligns its arms under the m, not the line indent [D:fmt-match-arms]" {
+              // `(match …` — the `m` sits one past the `(`, so the arms align at
+              // that column (9 here), not at the block-depth column (12) the
+              // old `piece.StartsWith \"match \"` check produced by missing the `(`
+              match
+                  Weir.Fmt.formatLines
+                      [ "let f x ="
+                        "    match x with"
+                        "    | Some n ->"
+                        "        (match n with"
+                        "            | 1 -> \"a\""
+                        "            | _ -> \"b\")"
+                        "    | None -> \"c\"" ]
+              with
+              | Ok lines ->
+                  Expect.equal lines[3] "        (match n with" "the parenthesized match head"
+                  Expect.equal lines[4] "         | 1 -> \"a\"" "inner arm under the m (col 9), not col 12"
+                  Expect.equal lines[5] "         | _ -> \"b\")" "inner arm under the m"
+                  Expect.equal lines[6] "    | None -> \"c\"" "outer arm resumes"
+              | Error e -> failtest e
+          }
           test "union cases and chain stages are not arms" {
               match Weir.Fmt.formatLines [ "type Cmd ="; "    | First of int"; "    | Second" ] with
               | Ok lines -> Expect.equal lines[1] "    | First of int" "union case untouched"
