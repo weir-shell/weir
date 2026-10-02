@@ -130,8 +130,8 @@ destructures (`let host, port = target`,
 right-hand side anywhere a `let` goes:
 
 ```weir
-let tree = git rev-parse HEAD |> Seq.head
-print (Str.sub 0 7 tree)
+let tree = git rev-parse HEAD | line
+print tree[..6]
 ```
 
 ## `for … in … do`

@@ -24,6 +24,7 @@ representable.
 | `if grep -q pat f; then` | `if grep -q pat f \| succeeds then` — inline; bind first (`let hit = …`) when the verdict is reused |
 | `cmd > out.txt` | `cmd \|> File.write "out.txt"` — a function on the right takes `\|>` (the pipe rule) |
 | `$?` | `cmd \| exitCode` (streams, gives the code as `int`) |
+| `a && b` / `a \|\| b` | `a \| and b` / `a \| or b` |
 | `cat <<EOF … EOF \| cmd` | `let lines = <<<` + an indented block, then `lines \| cmd` — the heredoc is a value (`$<<<` for `{holes}`; `$` stays literal in both) |
 | `# comment` | `// comment` — full-line or trailing (needs a preceding space) |
 
@@ -65,8 +66,10 @@ print "unreached"
 - Redirects — `>`/`>>` pass through as literal argv words with a
   warning suggesting `cmd |> File.write "out.txt"`
   (`File.append` for `>>`).
-- `&&`, `;` chaining — one command per line; a failure already stops
-  the script, so sequential lines are the `&&` chain.
+- `;` chaining — one command per line (`;` is a literal argv word in
+  a command line); a failure already stops the script, so sequential
+  lines are the `&&` chain. For the one-liner, `&&`/`||` spell
+  `cmd | and next` / `cmd | or next`.
 - `$VAR` expansion — `Env.get "VAR"` (an `Option<string>`), then
   splice the binding.
 - `while` — the bounded loops are
@@ -139,9 +142,10 @@ echo $nope
   boundary.
 - Autoloaded functions (`~/.config/fish/functions`) —
   `import "./lib.weir" as Lib` names the dependency in the script.
-- `and` / `or` command chaining — a nonzero exit already raises when
-  the stream is forced, so sequential lines are the `and` chain; for
-  the boolean there is `cmd | succeeds`.
+- `and` / `or` command chaining — the pipe-stage spelling:
+  `cmd | and next` / `cmd | or next`; a nonzero exit also raises
+  when the stream is forced, so sequential lines chain by default,
+  and the boolean is `cmd | succeeds`.
 - Abbreviations and `alias` — weir has no rewriting layer; a short
   name is a `let`.
 - Globs expanding in argv — `Path.glob` is a function; splat a batch
@@ -450,13 +454,13 @@ invocation, no `$$` escaping, no `.PHONY`.
 | Make | weir |
 |---|---|
 | `$(VAR)` | `$var` |
-| `$(shell git rev-parse HEAD)` | `let sha = git rev-parse HEAD \|> Seq.head` |
+| `$(shell git rev-parse HEAD)` | `let sha = git rev-parse HEAD \| line` |
 | `$@`, `$<` automatic variables | ordinary named bindings — see the false friend below |
 | `VAR = …` vs `VAR := …` | one evaluation, in order — the distinction has no analogue |
 | `.PHONY: deploy` | not needed: a script, not a target namespace |
 
 ```weir
-let sha = git rev-parse --short HEAD |> Seq.head
+let sha = git rev-parse --short HEAD | line
 print $"building {sha}"
 ```
 
