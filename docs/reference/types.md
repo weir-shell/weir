@@ -2,12 +2,14 @@
 
 ## Scalars
 
-`int` (64-bit; arithmetic overflow raises rather than wrapping,
-while a range terminates at the type boundary — every yielded value
-is correct), `float`
-(always finite — a would-be `NaN` or `Infinity` raises; `==` on
-floats is a check error naming `Float.near`), `string`, `bool`,
-and `unit` — the value of an effect, written `()`.
+- `int` — 64-bit; arithmetic overflow raises rather than wrapping,
+  while a range terminates at the type boundary — every yielded
+  value is correct
+- `float` — always finite: a would-be `NaN` or `Infinity` raises,
+  and `==` on floats is a check error naming `Float.near`
+- `string`
+- `bool`
+- `unit` — the value of an effect, written `()`
 
 Nothing widens implicitly: `3 / 2` is integer division, and mixing
 sides is a type error naming `Float.ofInt`:
@@ -56,8 +58,12 @@ clamping** (out-of-range or reversed → empty, never a raise), with
 open ends `xs[..b]` / `xs[a..]`. A bounded slice truncates a lazy
 source, so `nats[0..4]` terminates. Slicing is type-directed: a `seq`
 slices to a `seq`, a `string` to a `string` (`"weir"[1..2]` is `"ei"`,
-by UTF-16 char), and `Bytes` to `Bytes`. No from-the-end `xs[^1]`
-(`^` is the command sigil) and no dotted `xs.[i]`.
+by UTF-16 char), and `Bytes` to `Bytes`. From-the-end is `^n`
+(`^n` = length − n): `xs[^1]` is the last element, `xs[..^2]`
+all-but-last, `xs[^2..]` the last two, `xs[^3..^1]` from the end at
+both bounds. A `^`-bound resolves against the length, so a from-end
+seq slice forces the sequence; forward open-ended slices stay lazy.
+No dotted `xs.[i]`.
 
 ## Tuples
 

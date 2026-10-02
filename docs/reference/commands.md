@@ -26,17 +26,23 @@ let root = "build"
 rm -rf $root/* // argv words do not concatenate — write $"{root}/*"
 ```
 
-What command lines do not do: no glob expansion (`Path.glob` is a
-function), no `$VAR` expansion (splice weir bindings), no `~`
-expansion (`Path.home ()` and the XDG trio `Path.configHome`/
-`Path.stateHome`/`Path.cacheHome` — each a pure `unit -> string`,
-resolving `%APPDATA%`/`%LOCALAPPDATA%` on Windows and the
-`$XDG_*` variables with their `~/.config`-style fallbacks on POSIX —
-build the path in an interpolation: `cat $"{Path.home ()}/.bashrc"`),
-no `&&` (write two statements), no redirects (`>` passes through as a
-literal word, with a warning naming `File.write`). For bash
-semantics, run bash: `sh -c "the line"` — and inside that quoted
-string, `$w` is sh's variable, not weir's; interpolate first
+What command lines do not do:
+
+- no glob expansion — `Path.glob` is a function
+- no `$VAR` expansion — splice weir bindings
+- no `~` expansion — `Path.home ()` and the XDG trio
+  `Path.configHome`/`Path.stateHome`/`Path.cacheHome` (each a pure
+  `unit -> string`, resolving `%APPDATA%`/`%LOCALAPPDATA%` on
+  Windows and the `$XDG_*` variables with their `~/.config`-style
+  fallbacks on POSIX) build the path in an interpolation:
+  `cat $"{Path.home ()}/.bashrc"`
+- no `&&` — write two statements, or chain with
+  [`| and` / `| or`](#exit-codes)
+- no redirects — `>` passes through as a literal word, with a
+  warning naming `File.write`
+
+For bash semantics, run bash: `sh -c "the line"` — and inside that
+quoted string, `$w` is sh's variable, not weir's; interpolate first
 (`sh -c $"echo {w}"`).
 
 ## Splices
@@ -172,6 +178,22 @@ so it is a legal bare statement; it takes a literal or dynamic
 (`^$cmd`) head and an env overlay (`$e(cmd | exec)`), refuses a
 piped stdin (no parent remains to feed the replacement), and is
 refused inside a `plan` block.
+
+Chaining on the exit is `| and` / `| or` — bash's `&&`/`||`.
+`cmd | and next` runs `next` only if `cmd` succeeded; `cmd | or next`
+runs it only if `cmd` failed (there the nonzero exit is the branch,
+not a raise). Both stream and yield unit, and the right-hand side is
+a full command line, so they chain (`mkdir d | and cd d | and build`)
+and a builtin like `cd` is a legal operand. Right-associative —
+`a | or b | or c` is `a | or (b | or c)`, which differs from bash's
+left-associativity for *mixed* `and`/`or` chains; split mixed logic
+across lines when precedence matters. `| or`'s left must be a single
+external command (a builtin raises rather than exit-codes).
+
+```weir
+sh -c "exit 1" | or echo "fell back"
+echo built | and echo linked
+```
 
 ## Signatures
 

@@ -131,6 +131,12 @@ It is display, not a wire format (there is no `to table` back out; a
 table does not round-trip — `to json`/`to yaml` for data). It tracks
 the terminal width interactively and stays unclamped when piped.
 
+`Term.width ()` is the number behind that sizing — the terminal
+columns as an `int`, queried live each call (a resize shows),
+falling back to 80 when there is no terminal (piped or redirected)
+rather than raising. The `tput cols` primitive for shaping your own
+output.
+
 ## Comments
 
 `//` runs to the end of the line, full-line or trailing — command
@@ -231,15 +237,22 @@ print (show (xs[..2]))    // [10; 20; 30] — open start
 print (show (xs[3..]))    // [40; 50] — open end
 print (show (xs[3..100])) // [40; 50] — clamped, no raise
 print ("weir"[1..2])      // ei — strings slice the same way
+print (show (xs[^1]))     // 50 — from the end: ^n = length − n
+print (show (xs[..^2]))   // [10; 20; 30; 40] — all but the last
+print (show (xs[^2..]))   // [40; 50] — the last two
 ```
 
 Slicing works on **sequences, strings, and `Bytes`**; each slices to
 its own type (a seq stays a seq, lazily — a bounded slice of an
 infinite source terminates). `Bytes` slices too (`b[1..3]`), but has
 no single `b[i]`: take one byte's window with `Bytes.sub start len`.
-There is no from-the-end `xs[^1]` (`^` is the command sigil — reach
-for `Seq.last`/`Seq.rev`), and no `xs.[i]` (weir indexes without the
-dot). A `Map` is not indexed with brackets either — `Map.get k m`.
+From-the-end is `^n` (F#'s spelling, `^n` = length − n): `xs[^1]` is
+the last element, and it works as a slice bound too — `xs[^3..^1]`
+counts from the end at both ends. A `^`-bound resolves against the
+length, so a from-end seq slice forces the sequence (like
+`Seq.last`); forward open-ended slices stay lazy. There is no
+`xs.[i]` (weir indexes without the dot), and a `Map` is not indexed
+with brackets either — `Map.get k m`.
 
 ## Records, unions, and tuples
 
@@ -593,7 +606,8 @@ rm -rf $root/* // argv words do not concatenate — write $"{root}/*"
 What weir's command lines do not do:
 
 - no glob expansion — use the function `Path.glob`
-- no `&&` — write two statements
+- no `&&` — write two statements, or chain with
+  [`| and` / `| or`](#exit-codes-from-command-to-value)
 - no `$VAR` expansion — splice weir bindings instead
 - no `~` expansion — `~` and `$HOME` stay literal words; `Path.home ()`
   (and the XDG trio `Path.configHome`/`Path.stateHome`/
@@ -922,6 +936,24 @@ so it is a legal bare statement; it takes a literal or dynamic
 (`^$cmd`) head and an env overlay (`$e(cmd | exec)`), and refuses a
 piped stdin — there is no parent left to feed the replacement.
 
+And when all you want is bash's `&&`/`||` one-liner, chain on the
+exit directly: `cmd | and next` runs `next` only if `cmd` succeeded,
+`cmd | or next` only if it failed (there the nonzero exit is the
+branch, not a raise). Both stream, and the right-hand side is a full
+command line — so chains compose and a builtin like `cd` is a legal
+operand:
+
+```weir
+sh -c "exit 1" | or echo "fell back"
+echo built | and echo linked
+```
+
+Two bash differences: chains are right-associative (`a | or b | and c`
+is `a | or (b | and c)`, which differs from bash for *mixed*
+`and`/`or` chains — split mixed logic across lines when precedence
+matters), and `| or`'s left must be a single external command (a
+builtin raises rather than exit-codes).
+
 ## What the editor colors mean
 
 With the LSP attached, editors color weir's one novel boundary — the
@@ -1233,13 +1265,17 @@ print (show (Bytes.length png))
 print (show (Str.tryFromUtf8 png))
 ```
 
-The boundaries refuse raw bytes, each naming the exit: `print`,
-`to json`/`to yaml`, argv splices and `Args.load`/`Env.load` all
-point at `Bytes.toBase64` or `File.writeBytes`; a hole or `show`
-renders a summary (`<12 B>` above), never content — raw bytes wreck
-terminals. `Bytes.length` is a `Size`; `==` is byte equality; there
-is no ordering. And to hash a file without loading it,
-`File.sha256 path` streams internally.
+The boundaries refuse raw bytes, each naming the exit:
+
+- `print`
+- `to json` / `to yaml`
+- argv splices and `Args.load` / `Env.load`
+
+Each refusal points at `Bytes.toBase64` or `File.writeBytes`; a hole
+or `show` renders a summary (`<12 B>` above), never content — raw
+bytes wreck terminals. `Bytes.length` is a `Size`; `==` is byte
+equality; there is no ordering. And to hash a file without loading
+it, `File.sha256 path` streams internally.
 
 ## Data in and out: `Http` and the adapters
 

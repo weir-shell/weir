@@ -210,16 +210,20 @@ generates `Option<…>`, `additionalProperties` generates the
 `seq<string * V>` mapping, and `$ref` definition names become type
 names (`io.k8s.api.core.v1.PodSpec` → `PodSpec`).
 
-The mapping rules, each deliberate: nullable spellings
-(`type: [.., "null"]` / `nullable: true`) fold into `Option`;
-`allOf` of one-ref-plus-annotations flattens (the k8s idiom); an
-`enum` generates `string` plus a `//` note listing the values (string
-unions are a stated follow-up); `anyOf` takes the first variant with
-a verify note; a self-referential definition stays opaque (`Yaml`)
-with a note — every place the schema could not decide is a `// note:`
-line in the file, never a silent guess. Field names ride the same
-`[<Wire>]` sanitizer `#infer` uses, so a `type:` key generates
-`[<Wire "type">] kind`.
+The mapping rules, each deliberate:
+
+- nullable spellings (`type: [.., "null"]` / `nullable: true`) fold
+  into `Option`
+- `allOf` of one-ref-plus-annotations flattens (the k8s idiom)
+- an `enum` generates `string` plus a `//` note listing the values
+  (string unions are a stated follow-up)
+- `anyOf` takes the first variant with a verify note
+- a self-referential definition stays opaque (`Yaml`) with a note
+- field names ride the same `[<Wire>]` sanitizer `#infer` uses, so a
+  `type:` key generates `[<Wire "type">] kind`
+
+Every place the schema could not decide is a `// note:` line in the
+file, never a silent guess.
 
 The generated file is **user-owned**: edit it freely — nothing
 regenerates it behind you (the signatures posture); re-running
@@ -372,7 +376,7 @@ from the same directory.
 | key | default | meaning |
 |---|---|---|
 | `historySize` | `5000` | entries kept |
-| `historyDedup` | `true` | drop consecutive duplicates |
+| `historyDedup` | `true` | erase duplicates, keep the latest — history stays a recency-ordered set |
 | `historyPath` | `<state>/weir/history` | where history lives (`$XDG_STATE_HOME`, `~/.local/state`, or `%LOCALAPPDATA%`) |
 | `finderFlags` | `["--height", "40%", "--reverse"]` | argv extras for the `Ctrl+R` fzf search |
 | `echoElems` | `100` | the echo's unforced-element cap ([the REPL](repl.md)) |
