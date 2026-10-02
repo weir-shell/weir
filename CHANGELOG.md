@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.0.59
+
+### Changed
+
+- **The dynamic-head teaching names `| line`.** A seq-typed `^$(…)`
+  head's refusal now reads `bind and pick (let tool = cmd | line),
+  then run ^$tool` — the `$(…) |> Seq.exactlyOne` spelling it taught
+  predates the `| line` reifier. The guide, the commands reference
+  and the skill carry the same spelling.
+
 ## v0.0.58
 
 ### Added
