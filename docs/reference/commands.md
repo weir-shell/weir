@@ -173,6 +173,22 @@ so it is a legal bare statement; it takes a literal or dynamic
 piped stdin (no parent remains to feed the replacement), and is
 refused inside a `plan` block.
 
+Chaining on the exit is `| and` / `| or` — bash's `&&`/`||`.
+`cmd | and next` runs `next` only if `cmd` succeeded; `cmd | or next`
+runs it only if `cmd` failed (there the nonzero exit is the branch,
+not a raise). Both stream and yield unit, and the right-hand side is
+a full command line, so they chain (`mkdir d | and cd d | and build`)
+and a builtin like `cd` is a legal operand. Right-associative —
+`a | or b | or c` is `a | or (b | or c)`, which differs from bash's
+left-associativity for *mixed* `and`/`or` chains; split mixed logic
+across lines when precedence matters. `| or`'s left must be a single
+external command (a builtin raises rather than exit-codes).
+
+```weir
+sh -c "exit 1" | or echo "fell back"
+echo built | and echo linked
+```
+
 ## Signatures
 
 `weir check` resolves every literal command head; a declared signature

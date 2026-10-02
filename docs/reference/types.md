@@ -56,8 +56,12 @@ clamping** (out-of-range or reversed → empty, never a raise), with
 open ends `xs[..b]` / `xs[a..]`. A bounded slice truncates a lazy
 source, so `nats[0..4]` terminates. Slicing is type-directed: a `seq`
 slices to a `seq`, a `string` to a `string` (`"weir"[1..2]` is `"ei"`,
-by UTF-16 char), and `Bytes` to `Bytes`. No from-the-end `xs[^1]`
-(`^` is the command sigil) and no dotted `xs.[i]`.
+by UTF-16 char), and `Bytes` to `Bytes`. From-the-end is `^n`
+(`^n` = length − n): `xs[^1]` is the last element, `xs[..^2]`
+all-but-last, `xs[^2..]` the last two, `xs[^3..^1]` from the end at
+both bounds. A `^`-bound resolves against the length, so a from-end
+seq slice forces the sequence; forward open-ended slices stay lazy.
+No dotted `xs.[i]`.
 
 ## Tuples
 

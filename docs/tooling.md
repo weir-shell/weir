@@ -372,7 +372,7 @@ from the same directory.
 | key | default | meaning |
 |---|---|---|
 | `historySize` | `5000` | entries kept |
-| `historyDedup` | `true` | drop consecutive duplicates |
+| `historyDedup` | `true` | erase duplicates, keep the latest — history stays a recency-ordered set |
 | `historyPath` | `<state>/weir/history` | where history lives (`$XDG_STATE_HOME`, `~/.local/state`, or `%LOCALAPPDATA%`) |
 | `finderFlags` | `["--height", "40%", "--reverse"]` | argv extras for the `Ctrl+R` fzf search |
 | `echoElems` | `100` | the echo's unforced-element cap ([the REPL](repl.md)) |

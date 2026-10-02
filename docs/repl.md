@@ -185,6 +185,12 @@ the history search displays them. The history file itself lives at
 carry a secret. `Path.stateHome ()` computes that base if you want to
 read it from a script.
 
+History dedupes, keep-last: a re-entered command moves to the
+most-recent position and its earlier copy is erased, so Up-arrow,
+`#history` and the `Ctrl+R` finder each show a command once
+(duplicates already in the file collapse on load). Off with
+`historyDedup = false` in the [config](tooling.md#configuration).
+
 ## The last result: `it`
 
 Expressions and commands rebind `it` — always, unit included (FSI's
