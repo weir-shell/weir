@@ -8515,6 +8515,8 @@ class H(http.server.BaseHTTPRequestHandler):
         if self.path == '/ua':
             uas = self.headers.get_all('User-Agent') or []
             body = f"{len(uas)}|{','.join(uas)}".encode()
+        if self.path == '/ct':
+            body = (self.headers.get('Content-Type', 'NONE') + '|').encode() + body
         code = 404 if self.path == '/missing' else int(self.headers.get('X-Want-Status', '200'))
         self.send_response(code); self.end_headers(); self.wfile.write(body)
     do_GET = do_POST = do_PUT = _h
@@ -8581,6 +8583,27 @@ print \$"ctor-status={r.status}"
 WEOF
     out=$($BIN "$hdir/ctor.weir" 2>&1) || { kill $hsrv 2>/dev/null || true; fail "constructor send failed: $out"; }
     echo "$out" | grep -qF "ctor-status=200" || { kill $hsrv 2>/dev/null || true; fail "constructor did not send: $out"; }
+
+    # Http DX [D:http-dx]: Json takes the value (renders at the boundary,
+    # the same bytes as the pre-rendered spelling), Form urlencodes with
+    # its content type, and Http.expect returns the body / raises naming
+    # method, url and status
+    cat > "$hdir/dx.weir" <<WEOF
+type P = { name: string; count: int }
+let r1 = Http.send { Http.defaults with method = Post; url = "http://127.0.0.1:$hport/x"; body = Json { name = "a"; count = 1 } }
+r1.body |> Seq.iter print
+let r2 = Http.send { Http.defaults with method = Post; url = "http://127.0.0.1:$hport/ct"; body = Form [("grant type", "a&b")] }
+r2.body |> Seq.iter print
+let got = Http.expect { Http.defaults with method = Post; url = "http://127.0.0.1:$hport/x"; body = Json { name = "b"; count = 2 } }
+got |> Seq.iter print
+WEOF
+    out=$($BIN "$hdir/dx.weir" 2>&1) || { kill $hsrv 2>/dev/null || true; fail "http-dx probes failed: $out"; }
+    echo "$out" | grep -qF '{"name":"a","count":1}' || { kill $hsrv 2>/dev/null || true; fail "Json value body did not render: $out"; }
+    echo "$out" | grep -qF 'application/x-www-form-urlencoded|grant%20type=a%26b' || { kill $hsrv 2>/dev/null || true; fail "Form did not urlencode with its content type: $out"; }
+    echo "$out" | grep -qF '{"name":"b","count":2}' || { kill $hsrv 2>/dev/null || true; fail "Http.expect did not return the body: $out"; }
+
+    out=$($BIN -e 'Http.expect (Http.get "http://127.0.0.1:'"$hport"'/missing") |> Seq.length |> print' 2>&1) && { kill $hsrv 2>/dev/null || true; fail "Http.expect must RAISE on 404"; } || true
+    echo "$out" | grep -qF "GET http://127.0.0.1:$hport/missing answered 404" || { kill $hsrv 2>/dev/null || true; fail "read raise must name method, url, status: $out"; }
 
     # parallel fetches via Seq.pmap
     cat > "$hdir/pmap.weir" <<WEOF

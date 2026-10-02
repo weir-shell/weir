@@ -506,13 +506,20 @@ print $"{key} -> {value}"
 - HTTP is `Http.send : HttpRequest -> HttpResponse` (a record + one
   runner, no new grammar). The common case is a CONSTRUCTOR:
   `Http.send (Http.get u)`, `Http.send { Http.post u with auth = Bearer
-  tok; body = Json (payload |> to json) }` — one per method
+  tok; body = Json payload }` — one per method
   (get/post/put/delete/patch/head/options/query), each equal to `{
   Http.defaults with method = M; url = u }`. `Http.fetch u : seq<string>`
   is the raising GET shorthand — a BARE URL in, body out (never a
   request: `Http.get u |> Http.fetch` is a type error naming the repair;
-  a built request runs through `Http.send`); raises on non-2xx — the
-  pair to send, which binds it. `url |> Http.withQuery [(k, v)]` percent-encodes
+  a built request runs through `Http.expect` or `Http.send`); raises on
+  non-2xx — the
+  pair to send, which binds it. `Http.expect : HttpRequest -> seq<string>`
+  [D:http-dx] is fetch's law for a BUILT request (the call that needed
+  `with` — auth, headers, a method): body out, raises on non-2xx naming
+  method, redacted url, status and a capped body snippet; when the error
+  body is data to inspect, `Http.send` binds it instead. A
+  mutating-method `Http.expect` inside a `plan` refuses (no response to
+  return; `Http.send` captures the Op). `url |> Http.withQuery [(k, v)]` percent-encodes
   a query string. `Http.query` is the QUERY method (idempotent, so
   `retry` around it is safe by definition). TLS verification is ON;
   `{ req with insecure = true }` disables it for ONE request (a loud
@@ -528,9 +535,15 @@ print $"{key} -> {value}"
   the base64); a `Secret` carries WHOLE (interpolating a token is a
   check error) and `show` masks it. Status is DATA (`if resp.status >=
   400 then fail …`, a 404 binds); only TRANSPORT failure raises. The
-  body is `NoBody`/`Json of seq<string>`/`Text of string` — `Json`
-  carries the caller's `to json` lines, byte-exact to the wire (the
-  curl `-d` mangling this exists to prevent). `resp.body |> from json
+  body is `NoBody`/`Json`/`Text of string`/`Form of seq<string * string>`
+  [D:http-dx] — `Json` takes the VALUE (any shape `to json` admits, the
+  same law checked at the call site) and renders at the boundary,
+  byte-exact to the wire (the curl `-d` mangling this exists to
+  prevent); a `seq<string>` payload is the pre-rendered document, so
+  `Json (x |> to json)` means what it always did. `Form` percent-encodes
+  its pairs at send (withQuery's escaper) with
+  `application/x-www-form-urlencoded` — the token-endpoint shape, never
+  hand-built `k=v&…`. `resp.body |> from json
   T` reads the response — pretty-printed or minified, one document
   either way; for a plain GET, `curl url |> from json T` is still the
   spelling. `secretHeaders` for credential headers; headers stay
@@ -606,7 +619,7 @@ print $"{key} -> {value}"
   …`, 405 by choice); `QUERY` reads as `Query`; a malformed method token
   is refused at the boundary with 400. The response `body` is an
   `HttpBody` — the SAME union the `Http` client uses (`NoBody`/`Text`/
-  `Json`), plus `Stream of seq<string>`: the runtime PULLS and FLUSHES
+  `Json`/`Form`), plus `Stream of seq<string>`: the runtime PULLS and FLUSHES
   each element as produced (chunked, SSE-shaped `data:` lines), so a lazy
   producer streams incrementally — the client sees early elements before
   the seq ends. If a `Stream` producer RAISES mid-body, the failure is
@@ -2291,7 +2304,7 @@ not the teaching.
 - `Json`: `inferShape`
 - `Table`: `inferShape` `render`
 - `Yaml`: `parse` `merge` `inferShape`
-- `Http`: `defaults` `delete` `fetch` `get` `head` `options` `patch` `post` `put` `query` `send` `withQuery`
+- `Http`: `defaults` `delete` `expect` `fetch` `get` `head` `options` `patch` `post` `put` `query` `send` `withQuery`
 - `Log`: `debug` `debugWith` `info` `infoWith` `trace` `traceWith` `warn` `warnWith`
 - `Map`: `add` `count` `get` `has` `keys` `ofPairs` `pairs` `remove` `tryGet` `values`
 - `Net`: `portOpen`

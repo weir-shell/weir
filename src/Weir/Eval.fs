@@ -3763,6 +3763,16 @@ and eval (env: Env) (te: TypedExpr) : Value =
                         // writeResponse pulls and flushes each element as
                         // produced — a slow producer streams incrementally
                         | VUnion("Stream", Some(VSeq lines)) -> Serve.RStream(lines |> Seq.map asString)
+                        // the urlencoded write [D:http-dx] — encoded by the
+                        // same shared escaper as the client send path
+                        | VUnion("Form", Some(VSeq pairs)) ->
+                            pairs
+                            |> Seq.map (fun it ->
+                                match it with
+                                | VTuple [ VStr k; VStr v ] -> k, v
+                                | bad -> unreachable $"serve form pair {formatValue bad}")
+                            |> Http.formUrlEncode
+                            |> Serve.RForm
                         | bad -> unreachable $"serve body {formatValue bad}"
 
                     { Status = status

@@ -7726,6 +7726,17 @@ let effectPartitionTests =
               Expect.equal (Weir.Builtins.effectClassOfCall "Http.send" [ reqWith "Delete" ]) (Some M) "send{delete} mutates"
               Expect.equal (Weir.Builtins.effectClassOfCall "Http.send" [ reqWith "Query" ]) (Some A) "send{query} is idempotent"
           }
+          test "Http.expect mirrors send [D:http-dx]: None by name, per-method at eval" {
+              Expect.equal (Weir.Effects.effectClass "Http.expect") None "the name defers to the request value"
+              Expect.equal (Weir.Builtins.effectClassOfCall "Http.expect" [ reqWith "Post" ]) (Some M) "read{post} mutates"
+              Expect.equal (Weir.Builtins.effectClassOfCall "Http.expect" [ reqWith "Get" ]) (Some A) "read{get} reads"
+          }
+          test "Form urlencodes with the shared escaper [D:http-dx]" {
+              Expect.equal
+                  (Weir.Http.formUrlEncode [ "grant type", "a&b"; "x", "y z" ])
+                  "grant%20type=a%26b&x=y%20z"
+                  "keys and values percent-encode; pairs join with &"
+          }
           test "eval-time resolution agrees with the name map for fixed-class calls" {
               Expect.equal (Weir.Builtins.effectClassOfCall "File.write" []) (Some M) "fs.write is mutation at eval"
               Expect.equal (Weir.Builtins.effectClassOfCall "File.read" []) (Some A) "fs.read is ambient at eval"
@@ -15407,7 +15418,7 @@ let httpTests =
               // ruled-not-renamed pair: the type error carries the split
               let m = (checkErr "Http.get \"u\" |> Http.fetch").Message
               Expect.stringContains m "expected string, got HttpRequest" "the mismatch"
-              Expect.stringContains m "runs through Http.send" "the repair"
+              Expect.stringContains m "runs through Http.expect (raising) or Http.send" "the repair names both postures"
 
               // the correct pipeline spelling stays silent
               checkOk "Http.get \"u\" |> Http.send" |> ignore
@@ -22145,6 +22156,73 @@ let hardeningTests =
               Weir.Parser.parseLine realResolver spine |> ignore
           } ]
 
+// ---- Http DX [D:http-dx]: Json-takes-the-value, Http.expect, Form ------
+let httpDxTests =
+    let checkOf lines =
+        let diags, _, _, _ = Weir.Script.analyzeLines "httpdx.weir" lines
+        diags
+
+    testList
+        "Http DX [D:http-dx]"
+        [ test "Json takes the value: a record payload checks (the to json law at the call site)" {
+              Expect.isEmpty
+                  (checkOf
+                      [ "type P = { a: int }"
+                        "let r = Http.send { Http.post \"http://x\" with body = Json { a = 1 } }"
+                        "print $\"{r.status}\"" ])
+                  "a jsonable payload is admitted"
+          }
+          test "the pre-rendered spelling is unchanged: Json (x |> to json) still checks" {
+              Expect.isEmpty
+                  (checkOf
+                      [ "type P = { a: int }"
+                        "let r = Http.send { Http.post \"http://x\" with body = Json ({ a = 1 } |> to json) }"
+                        "print $\"{r.status}\"" ])
+                  "a seq<string> payload is the pre-rendered document"
+          }
+          test "the jsonable law refuses an unjsonable payload, in to json's words" {
+              match
+                  checkOf
+                      [ "let f () = print \"x\""
+                        "let r = Http.send { Http.post \"http://x\" with body = Json {| g = f |} }"
+                        "print $\"{r.status}\"" ]
+              with
+              | [ d ] -> Expect.stringContains d.Message "not admitted" "the refusal is to json's own"
+              | ds -> failtest $"expected the one refusal, got {ds}"
+          }
+          test "Http.expect checks as HttpRequest -> seq<string>, and readonly admits only a query method" {
+              Expect.isEmpty
+                  (checkOf
+                      [ "let v ="
+                        "    readonly"
+                        "        Http.expect (Http.get \"http://x\") |> Seq.length"
+                        "print $\"{v}\"" ])
+                  "a GET read is ambient"
+
+              match
+                  checkOf
+                      [ "let v ="
+                        "    readonly"
+                        "        Http.expect (Http.post \"http://x\") |> Seq.length"
+                        "print $\"{v}\"" ]
+              with
+              | [ d ] -> Expect.stringContains d.Message "Http.expect" "the refusal names the callable"
+              | ds -> failtest $"expected the one refusal, got {ds}"
+          }
+          test "Form is an HttpBody case: pairs check, a non-pair payload refuses" {
+              Expect.isEmpty
+                  (checkOf
+                      [ "let r = Http.send { Http.post \"http://x\" with body = Form [(\"a\", \"b\")] }"
+                        "print $\"{r.status}\"" ])
+                  "pairs are the Form payload"
+
+              Expect.isNonEmpty
+                  (checkOf
+                      [ "let r = Http.send { Http.post \"http://x\" with body = Form \"a=b\" }"
+                        "print $\"{r.status}\"" ])
+                  "a raw string is not a Form payload"
+          } ]
+
 [<Tests>]
 let allTests =
     testList
@@ -22312,6 +22390,7 @@ let allTests =
           cmdChainTests
           aliasTests
           dynamicHeadTests
+          httpDxTests
           helpUxTests
           indexerTests
           envLoadTests

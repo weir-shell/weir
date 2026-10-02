@@ -37,7 +37,7 @@ let source =
       // (SSE-shaped), the pattern print set for streaming, server-side. On
       // the client send path a Stream body materializes (request-body
       // streaming is out of scope v1).
-      "type HttpBody = NoBody | Json of seq<string> | Text of string | Stream of seq<string>"
+      "type HttpBody = NoBody | Json of seq<string> | Text of string | Stream of seq<string> | Form of seq<string * string>"
       "type HttpRequest = { method: HttpMethod; url: string; auth: Auth; headers: seq<string * string>; secretHeaders: seq<string * Secret>; body: HttpBody; timeout: Duration; insecure: bool }"
       "type HttpResponse = { status: int; headers: seq<string * string>; body: seq<string> }"
       // the server boundary [D:http-serve] — the ring protocol study's

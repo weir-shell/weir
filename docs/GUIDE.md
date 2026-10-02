@@ -1285,8 +1285,9 @@ it, `File.sha256 path` streams internally.
 A typed body reaching the wire through `curl` is one flag away from
 silent corruption — `-d @-` strips newlines, `--data-binary @-`
 preserves them, and nothing errors between. `Http` closes that: the
-request is a record, `Http.send` runs it, and a `Json` body carries
-the caller's `to json` output byte-exact.
+request is a record, `Http.send` runs it, and a `Json` body renders
+its value through `to json`'s own law at the boundary — byte-exact,
+no flag to get wrong.
 
 ```weir-demo
 type Item = { name: string; count: int }
@@ -1297,7 +1298,7 @@ let created =
 let resp =
     Http.send { Http.post $"{api}/items" with
                   auth = Bearer token
-                  body = Json ({ name = "widget"; count = 3 } |> to json) }
+                  body = Json { name = "widget"; count = 3 } }
 
 if resp.status >= 400 then fail $"api said {resp.status}"
 ```
@@ -1309,16 +1310,47 @@ be used. `Http.get url` equals `{ Http.defaults with method = Get; url
 record. All eight methods have one (`get`/`post`/`put`/`delete`/
 `patch`/`head`/`options`/`query`).
 
+`Json` takes the value — any shape `to json` admits, checked by the
+same law — and a `seq<string>` payload is read as the pre-rendered
+document, so the explicit `Json (x |> to json)` spelling means the
+same thing it always did. `Form` is the urlencoded twin for token
+endpoints and legacy receivers: `body = Form [("grant_type",
+"client_credentials")]` percent-encodes each pair and sets the
+content type; the caller never hand-builds `k=v&…`.
+
 For the simplest read — a GET whose body is all you want — `Http.fetch`
 is the raising shorthand (the `curl -sf` / JS `fetch(url)` analogue):
 it takes a **bare URL** — never a request; `Http.get url |> Http.fetch`
 reads like a pipeline and is a type error that names the repair (a
-built request runs through `Http.send`). It returns the body and raises
+built request runs through `Http.expect` or `Http.send`). It returns the body and raises
 on a non-2xx naming the status, where `Http.send` binds the same
 status as data.
 
 ```weir-demo
 let item = Http.fetch $"{api}/items/1" |> from json Item
+```
+
+Between the two sits `Http.expect` — `fetch`'s raising law for a
+**built** request, the call that needed `with` (an auth header, a
+method): it returns the body and raises on non-2xx naming the
+method, the url, the status *and* a capped snippet of the error
+body. When the error body is data to inspect — a structured API
+error — `Http.send` binds status and body as values; `read`'s
+snippet is for the human reading the raise.
+
+```weir-demo
+let mine = { Http.get $"{api}/items/1" with auth = Bearer token } |> Http.expect |> from json Item
+```
+
+And a transient 5xx needs no client config — the ordinary loop is
+the retry policy (`retry` around a query method is safe by the
+method's definition):
+
+```weir-demo
+let health = retry attempts=3 delay=2s
+    Http.send (Http.get $"{api}/items/1")
+until r
+    r.status < 500
 ```
 
 When the shape belongs to a foreign API and you read it once, write

@@ -3581,7 +3581,8 @@ let httpRequestClass (reqV: Value) : Weir.Effects.EffectClass =
 /// for a name that is not classified-effectful (a pure builtin).
 let effectClassOfCall (name: string) (args: Value list) : Weir.Effects.EffectClass option =
     match name with
-    | "Http.send" ->
+    | "Http.send"
+    | "Http.expect" ->
         match args with
         | reqV :: _ -> Some(httpRequestClass reqV)
         // no request in hand (partial application): its class is the
@@ -3615,6 +3616,17 @@ let private httpBodyOf (v: Value) : (string * string) option =
     // scope v1) — the lines join like Json's, kept well-defined, never a
     // crash
     | VUnion("Stream", Some(VSeq lines)) -> Some("text/plain", lines |> Seq.map asString |> String.concat "\n")
+    // Form is the urlencoded write [D:http-dx]: pairs percent-encoded at
+    // send, never by the caller
+    | VUnion("Form", Some(VSeq pairs)) ->
+        let kvs =
+            pairs
+            |> Seq.map (fun it ->
+                match it with
+                | VTuple [ VStr k; VStr v ] -> k, v
+                | v -> unreachable $"the checker rejects a form pair {formatValue v}")
+
+        Some("application/x-www-form-urlencoded", Http.formUrlEncode kvs)
     | v -> unreachable $"the checker rejects this body {formatValue v}"
 
 let private headerPairs (v: Value) : (string * string) list =
@@ -3780,6 +3792,42 @@ let private httpFetchImpl: Value =
                 VSeq(respBodyLines resp)
         | v, _ -> unreachable $"the checker rejects 'Http.fetch' on {formatValue v}")
 
+// the raising body read for a built request [D:http-dx]: fetch's law
+// (non-2xx raises, body only) for the request that needed `with` — auth,
+// headers, a method. The raise names method, redacted url, status and a
+// capped body snippet (a minified structured error usually fits whole);
+// when the error body is data to inspect, Http.send binds it instead.
+let private httpExpectImpl: Value =
+    VBuiltin(fun reqV ->
+        match reqV with
+        | VRecord("HttpRequest", f) ->
+            // a mutating read inside a plan has no response to return —
+            // the request would be a pending Op [D:plan-apply]; refuse
+            // loudly where send captures
+            if PlanMode.active () && httpRequestClass reqV = Weir.Effects.Mutation then
+                failwith
+                    "inside a plan a mutating request is a pending Op with no response, and Http.expect needs one — Http.send captures it as the Op"
+            else
+                let resp = runRequest reqV
+
+                if resp.Status < 200 || resp.Status >= 300 then
+                    let url =
+                        match recGet "url" f with
+                        | VStr s -> s
+                        | v -> unreachable $"url {formatValue v}"
+
+                    let snippet =
+                        let flat = resp.Body.Replace("\r", " ").Replace("\n", " ").Trim()
+                        if flat.Length > 200 then flat.Substring(0, 200) + "…" else flat
+
+                    let detail = if snippet = "" then "" else $": {snippet}"
+                    let methodName = httpMethodName (recGet "method" f)
+
+                    failwith $"{methodName} {Http.redactUrl url} answered {resp.Status}{detail}"
+                else
+                    VSeq(respBodyLines resp)
+        | v -> unreachable $"the checker rejects 'Http.expect' on {formatValue v}")
+
 // the query-string builder [D:http-s2] — named withQuery so it does not
 // collide with `query` the method constructor. Percent-encodes each key
 // and value: `$"{base}/search?q={term}"` can escape a path or break on a
@@ -3814,6 +3862,7 @@ let private httpMembers: (string * Ty * Value) list =
     [ "defaults", TNamed("HttpRequest", []), httpDefaults
       "send", TFun(TNamed("HttpRequest", []), TNamed("HttpResponse", [])), httpSendImpl
       "fetch", TFun(TStr, TSeq TStr), httpFetchImpl
+      "expect", TFun(TNamed("HttpRequest", []), TSeq TStr), httpExpectImpl
       "withQuery", TFun(TSeq(TTuple [ TStr; TStr ]), TFun(TStr, TStr)), httpWithQueryImpl
       "get", ctorTy, httpCtor "Get"
       "post", ctorTy, httpCtor "Post"
@@ -5743,10 +5792,16 @@ let builtinDocs: Map<string, BuiltinDoc> =
            |> named [ "url" ])
           "Http.fetch",
           (bd
-              "The raising GET shorthand: takes a bare URL (never a request — a built request runs through Http.send), returns body only, raises on non-2xx naming the status (the `curl -sf` / JS `fetch(url)` analogue). Http.fetch raises where Http.send returns — two names, no boolean."
+              "The raising GET shorthand: takes a bare URL (never a request — a built request runs through Http.expect or Http.send), returns body only, raises on non-2xx naming the status (the `curl -sf` / JS `fetch(url)` analogue). Http.fetch raises where Http.send returns — two names, no boolean."
               None
               None
            |> named [ "url" ])
+          "Http.expect",
+          (bd
+              "The raising body read for a built request — Http.fetch's law for the request that needed `with` (auth, headers, a method): returns the body lines, raises on non-2xx naming method, url, status and a capped body snippet. When the error body is data to inspect, Http.send binds the status instead."
+              None
+              None
+           |> named [ "request" ])
           "Http.withQuery",
           (bd
               "Append a percent-encoded query string to a url — params first, the url last (data-last: `url |> Http.withQuery [(k, v)]`); keys and values are escaped, so a space or `&` cannot break the url. (not `Http.query` the method constructor.)"

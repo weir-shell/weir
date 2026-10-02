@@ -1,5 +1,34 @@
 # Changelog
 
+## v0.0.60
+
+### Added
+
+- **`Http.expect` — the raising read for a built request.** `Http.fetch`'s
+  law for the call that needed `with` (auth, headers, a method):
+  `{ Http.get url with auth = Bearer t } |> Http.expect |> from json T`
+  returns the body and raises on non-2xx naming the method, the
+  redacted url, the status and a capped snippet of the error body —
+  when the error body is data to inspect, `Http.send` still binds
+  status and body as values. Per-method effect class like `send`'s
+  (a GET read is legal in `readonly`); a mutating-method read inside
+  a `plan` refuses — there is no response to return, and `Http.send`
+  captures the Op.
+
+- **`Form` — the urlencoded body.** `body = Form [("grant_type",
+  "client_credentials")]` percent-encodes each pair at send (the
+  `withQuery` escaper) and sets `application/x-www-form-urlencoded` —
+  the token-endpoint shape, never a hand-built `k=v&…`. Shared with
+  `serve` responses like the rest of `HttpBody`.
+
+### Changed
+
+- **A `Json` body takes the value.** `body = Json { name = "w"; count =
+  3 }` checks by `to json`'s own law and renders at the boundary — the
+  `Json (x |> to json)` mouthful retires from the common path. Not
+  breaking: a `seq<string>` payload is read as the pre-rendered
+  document, so the explicit spelling means what it always did.
+
 ## v0.0.59
 
 ### Changed

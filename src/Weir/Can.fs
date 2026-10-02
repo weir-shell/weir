@@ -96,7 +96,7 @@ let private fsWrites =
           "Dir.copy"
           "Dir.move" ]
 
-let private networkMembers = Set [ "Http.send"; "Http.fetch"; "Net.portOpen" ]
+let private networkMembers = Set [ "Http.send"; "Http.expect"; "Http.fetch"; "Net.portOpen" ]
 
 let private procMembers = Set [ "Proc.stop"; "Proc.wait" ]
 
