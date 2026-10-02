@@ -34,6 +34,11 @@ THEN tag — and push no grammar between the tag and its finished
 release. If a grammar change is not ready, it waits for the next
 release; do not tag on a promise to push grammar after.
 
+The other direction is enforced too: the preflight refuses when
+tree-sitter-weir's TARGET_WEIR_RELEASE already names the tag being
+cut — the TARGET bump (and the zed pin that follows grammar main)
+is the post-publish tail of `tools/release.weir`, never pre-tag.
+
 ## The first release IS the rehearsal
 
 There is no separate rc rehearsal [D:first-release-rehearsal]. Under
@@ -70,16 +75,32 @@ site workflow's manual channel.
 
 ## The release
 
+The ritual is encoded in `tools/release.weir` — run it from the repo
+root at a terminal (`weir tools/release.weir --tag vX.Y.Z`):
+preflight first, then every mutation behind its own confirm; an
+abort leaves nothing half-done beyond the steps already confirmed,
+and the driver names what is still owed. The steps, including the
+ones that stay manual:
+
 1. **CHANGELOG first**: the release's `## <tag>` section is merged
    to main before the tag is cut (the gate checks out the tag's
    commit and refuses without it; the release body IS that section
    [D:changelog]).
-2. CI green on all three platforms at the tag commit.
-3. Tag and push. release.yml: gate → build → **draft**. In this
-   window `release-published check` goes RED on main — a stable tag
-   exists, nothing published. That is the gate's failing direction
-   observed live; publishing clears it.
-4. Review the draft: notes correct. Asset COMPLETENESS is machine
+2. CI green on all three platforms at the tag commit — manual; the
+   preflight does not ask CI.
+3. **Preflight** (`tools/release-preflight.weir`, the driver's first
+   step — refuses before anything mutates): clean working tree, on
+   main, local == origin/main, the tag free, the changelog's top
+   section names this tag (plus the content gate,
+   `ci/changelog-check.weir`), grammar currency, zed pin == grammar
+   main, and tree-sitter-weir's TARGET_WEIR_RELEASE still naming the
+   PREVIOUS release — its bump belongs after the publish; pushed
+   early it moves grammar main and re-stales the pin.
+4. Tag and push (the driver, confirmed). release.yml: gate → build →
+   **draft**. In this window `release-published check` goes RED on
+   main — a stable tag exists, nothing published. That is the gate's
+   failing direction observed live; publishing clears it.
+5. Review the draft: notes correct. Asset COMPLETENESS is machine
    checked [D:release-assets]: the publish job runs
    `ci/release-assets.weir --tag <tag>` — the one expected-asset list
    (six binaries, SHA256SUMS, install.sh, install.ps1,
@@ -88,10 +109,19 @@ site workflow's manual channel.
    Do not publish from a red publish job (the v0.0.40 burn: a
    transient 500 mid-upload plus a partial manual recovery shipped
    5 of 10 assets past this human review, immutably).
-5. Publish (NOT prerelease). The site deploys to production; the
-   post-deploy check asserts weir.sh serves the released tag, and
-   `site staleness check` guards it on every CI run thereafter.
-6. Verify the user path by hand, the rehearsal checklist run against
+6. Publish (NOT prerelease). The driver blocks on your confirm and
+   verifies each one with `ci/release-published.weir` — a draft does
+   not count. The site deploys to production; the post-deploy check
+   asserts weir.sh serves the released tag, and `site staleness
+   check` guards it on every CI run thereafter.
+7. **The post-publish tail** (the driver, in order, each confirmed):
+   bump tree-sitter-weir's TARGET_WEIR_RELEASE to the new tag,
+   commit and push; then pin `editors/zed/extension.toml` to the
+   moved grammar main — syncing `queries/highlights.scm` when it
+   changed — one commit straight on main (the owner's ruling: the
+   pin bump is the ritual's own tail, so the stale window closes in
+   the same run).
+8. Verify the user path by hand, the rehearsal checklist run against
    production:
    - `curl -sI https://weir.sh/install.sh` — 200, `text/plain`
    - `curl -fsSL https://weir.sh/install.sh | sh && weir --version`
@@ -101,7 +131,7 @@ site workflow's manual channel.
      corrupted binary refuses with `CHECKSUM MISMATCH`
    - `docker run --rm ghcr.io/weir-shell/weir:<tag> --version`, and
      `:latest` resolves to the same digest
-7. If any of it fails: delete the release, fix, cut the next number.
+9. If any of it fails: delete the release, fix, cut the next number.
    The tag stays [D:tag-immutability].
 
 ## Editor extensions — a separate cadence [D:ext-publish]
