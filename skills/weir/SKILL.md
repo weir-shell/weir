@@ -508,18 +508,14 @@ print $"{key} -> {value}"
   `Http.send (Http.get u)`, `Http.send { Http.post u with auth = Bearer
   tok; body = Json payload }` — one per method
   (get/post/put/delete/patch/head/options/query), each equal to `{
-  Http.defaults with method = M; url = u }`. `Http.fetch u : seq<string>`
-  is the raising GET shorthand — a BARE URL in, body out (never a
-  request: `Http.get u |> Http.fetch` is a type error naming the repair;
-  a built request runs through `Http.expect` or `Http.send`); raises on
-  non-2xx — the
-  pair to send, which binds it. `Http.expect : HttpRequest -> seq<string>`
-  [D:http-dx] is fetch's law for a BUILT request (the call that needed
-  `with` — auth, headers, a method): body out, raises on non-2xx naming
-  method, redacted url, status and a capped body snippet; when the error
-  body is data to inspect, `Http.send` binds it instead. A
-  mutating-method `Http.expect` inside a `plan` refuses (no response to
-  return; `Http.send` captures the Op). `url |> Http.withQuery [(k, v)]` percent-encodes
+  Http.defaults with method = M; url = u }`. `Http.expect : HttpRequest
+  -> seq<string>` [D:http-dx] is the raising read (`curl -sf`'s
+  posture): body out, raises on non-2xx naming method, redacted url,
+  status and a capped body snippet — `Http.get u |> Http.expect` is the
+  bare GET read [D:fetch-retired]; when the error body is data to
+  inspect, `Http.send` binds it instead. A mutating-method
+  `Http.expect` inside a `plan` refuses (no response to return;
+  `Http.send` captures the Op). `url |> Http.withQuery [(k, v)]` percent-encodes
   a query string. `Http.query` is the QUERY method (idempotent, so
   `retry` around it is safe by definition). TLS verification is ON;
   `{ req with insecure = true }` disables it for ONE request (a loud
@@ -726,8 +722,8 @@ let pure leak p = File.write p ["x"]
   Proc member), console writes, the mutating HTTP methods
   (POST/PUT/DELETE/PATCH), any `within` resource — but AMBIENT READS
   are fine: `fs.read`, `Env`/`Args`, the clock (`Instant.now`), the
-  query HTTP methods (`Http.fetch`/`Http.query`, and `Http.send` of a
-  GET/HEAD/OPTIONS/QUERY request), and `Self.stdin`. So
+  query HTTP methods (`Http.query`, and `Http.send`/`Http.expect` of
+  a GET/HEAD/OPTIONS/QUERY request), and `Self.stdin`. So
   `readonly == only ambient-input`, and a `pure` body (only ∅)
   is trivially read-only. A reachable mutation is a located check
   error naming the offender AND its class ("this 'readonly' block
@@ -2304,7 +2300,7 @@ not the teaching.
 - `Json`: `inferShape`
 - `Table`: `inferShape` `render`
 - `Yaml`: `parse` `merge` `inferShape`
-- `Http`: `defaults` `delete` `expect` `fetch` `get` `head` `options` `patch` `post` `put` `query` `send` `withQuery`
+- `Http`: `defaults` `delete` `expect` `get` `head` `options` `patch` `post` `put` `query` `send` `withQuery`
 - `Log`: `debug` `debugWith` `info` `infoWith` `trace` `traceWith` `warn` `warnWith`
 - `Map`: `add` `count` `get` `has` `keys` `ofPairs` `pairs` `remove` `tryGet` `values`
 - `Net`: `portOpen`

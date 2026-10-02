@@ -257,12 +257,12 @@ let rec private firstTombstone (tpl: YamlTpl) : Span option =
                 |> List.tryPick (fun e -> firstTombstone (YtMap([ e ], Unchecked.defaultof<Span>))))
 
 let private mismatch (span: Span) (expected: Ty) (actual: Ty) =
-    // a built request where a URL string is expected is the fetch/send
-    // confusion (`Http.get u |> Http.fetch`) — name the pair's split
-    // instead of leaving a bare type mismatch [D:fetch-naming]
+    // a built request where a URL string is expected — name the two
+    // run spellings instead of leaving a bare type mismatch
+    // [D:fetch-naming] [D:fetch-retired]
     let hint =
         match expected, actual with
-        | TStr, TNamed("HttpRequest", _) -> " — a built request runs through Http.expect (raising) or Http.send; Http.fetch takes a bare URL"
+        | TStr, TNamed("HttpRequest", _) -> " — a request runs through Http.expect (raising) or Http.send (status as data)"
         | _ -> ""
 
     err span $"expected {formatTy expected}, got {formatTy actual}{hint}"

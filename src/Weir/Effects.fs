@@ -50,7 +50,6 @@ let effectfulQualified =
     Set
         [ "Http.send"
           "Http.expect"
-          "Http.fetch"
           "Http.query"
           "Path.glob"
           "Path.tempRoot"
@@ -174,11 +173,10 @@ let effectClass (n: string) : EffectClass option =
         | "Instant.now" -> Some Ambient // reads the clock (ambient input)
         | "Duration.sleep" -> Some Ambient // waits on the clock — no world change
         | "Self.stdin" -> Some Ambient // reads the process's input stream
-        // Http.send/read: per-method, resolved at the request value (None here)
+        // Http.send/expect: per-method, resolved at the request value (None here)
         | "Http.send"
         | "Http.expect" -> None
-        | "Http.fetch"
-        | "Http.query" -> Some Ambient // GET shorthand / the query method — idempotent
+        | "Http.query" -> Some Ambient // the query method — idempotent
         | _ ->
             match n.Split '.' with
             | [| ("File" | "Dir"); m |] when fsWriteMembers.Contains m -> Some Mutation

@@ -7018,7 +7018,7 @@ kill $ctsrv 2>/dev/null || true
 
 # ---- Fix 1: HTTP diagnostics redact a URL's userinfo [D:url-redact] --------
 # a `user:pass@host` credential must not print verbatim when an HTTP error
-# names the URL. (a) a 500 through Http.fetch redacts the credential; a
+# names the URL. (a) a 500 through Http.expect redacts the credential; a
 # userinfo-free URL is still named in full. (b) the transport fallback (an
 # unparseable URL) redacts too.
 if command -v python3 >/dev/null 2>&1; then
@@ -7035,11 +7035,11 @@ URLEOF
     # `curl -sf` treats a 500 as failure — readiness means the listener is up
     awaitTcp "$urport" || { kill $ursrv 2>/dev/null || true; fail "the redact 500-server never came up"; }
     # (a) the credential is masked, the status still named
-    out=$($BIN -e "print (Http.fetch \"http://user:s3cr3t@127.0.0.1:$urport/\")" 2>&1) && fail "a 500 must raise" || true
+    out=$($BIN -e "print (Http.expect (Http.get \"http://user:s3cr3t@127.0.0.1:$urport/\"))" 2>&1) && fail "a 500 must raise" || true
     echo "$out" | grep -qF "***@127.0.0.1:$urport/ answered 500" || fail "the userinfo is redacted in the 500 error: $out"
     echo "$out" | grep -qiF "s3cr3t" && fail "the credential LEAKED verbatim in the 500 error: $out" || true
     # a userinfo-free URL is still named in full
-    out=$($BIN -e "print (Http.fetch \"http://127.0.0.1:$urport/\")" 2>&1) && fail "a 500 must raise" || true
+    out=$($BIN -e "print (Http.expect (Http.get \"http://127.0.0.1:$urport/\"))" 2>&1) && fail "a 500 must raise" || true
     echo "$out" | grep -qF "http://127.0.0.1:$urport/ answered 500" || fail "a credential-free URL is named in full: $out"
     kill $ursrv 2>/dev/null || true
     echo "e2e ok: an HTTP 500 redacts a URL's userinfo, names a credential-free URL in full (Fix 1a)"
@@ -7047,7 +7047,7 @@ else
     echo "e2e skip: Fix 1a userinfo-500 (python3 absent)"
 fi
 # (b) the transport fallback: an unparseable URL still masks its userinfo
-out=$($BIN -e 'print (Http.fetch "http://user:pw@ nohost")' 2>&1) && fail "an unreachable URL must raise" || true
+out=$($BIN -e 'print (Http.expect (Http.get "http://user:pw@ nohost"))' 2>&1) && fail "an unreachable URL must raise" || true
 echo "$out" | grep -qF "***@ nohost" || fail "the transport fallback redacts the unparseable URL's userinfo: $out"
 echo "$out" | grep -qiF "user:pw" && fail "the credential LEAKED in the transport fallback: $out" || true
 echo "e2e ok: the transport fallback redacts an unparseable URL's userinfo (Fix 1b)"
@@ -7529,7 +7529,7 @@ let t = cfg.token
 sh -c "curl example.com"
 if 1 == 2 then rg TODO
 ["x"] |> File.write "out.txt"
-let _body = Http.fetch "https://api.example.com/items"
+let _body = Http.get "https://api.example.com/items" |> Http.expect
 curl -H $t https://x.example
 WEOF
 canrc=0
@@ -7540,7 +7540,7 @@ echo "$out" | grep -qF "this report is incomplete: 1 opaque site" || fail "the l
 echo "$out" | grep -qF "sh (opaque)" || fail "opacity marks the runs line inline (F5): $out"
 echo "$out" | grep -qF "rg" || fail "an untaken branch still counts (capability, not behaviour): $out"
 echo "$out" | grep -qF "File.write out.txt" || fail "the literal path is named: $out"
-echo "$out" | grep -qF "Http.fetch https://api.example.com/items" || fail "the literal url is named: $out"
+echo "$out" | grep -qF "Http.expect https://api.example.com/items" || fail "the literal url is named: $out"
 echo "$out" | grep -qF "a Secret reaches the argv of curl" || fail "the ps-visible line: $out"
 echo "$out" | grep -qF "git" || fail "an imported module's externals appear transitively: $out"
 echo "$out" | grep -qF "lib.weir" || fail "the module site carries the module's own file: $out"
@@ -7975,7 +7975,7 @@ within proc srv = python3 -u -c "import socketserver,http.server as h; s=sockets
     sh -c "lsof -nP -iTCP -sTCP:LISTEN 2>/dev/null | grep $spport || echo diag-no-listener-on-$spport"
     poll timeout=12s interval=100ms watch=srv
         Net.portOpen $spport
-    let n = Http.fetch "http://127.0.0.1:$spport/" |> Seq.length
+    let n = Http.get "http://127.0.0.1:$spport/" |> Http.expect |> Seq.length
     print \$"got={n > 0}"
 print "closed"
 WEOF
@@ -8563,18 +8563,18 @@ WEOF
     echo "$out" | grep -qF "Bearer tok123" || { kill $hsrv 2>/dev/null || true; fail "Bearer not sent: $out"; }
     echo "$out" | grep -qF "Basic YWxpY2U6czNjcjN0" || { kill $hsrv 2>/dev/null || true; fail "Basic base64 wrong: $out"; }
 
-    # Http.fetch raises on non-2xx (naming the status); the same 404 that
-    # send binds as data [D:http-s2] — two names, no boolean
+    # Http.expect raises on non-2xx (naming the status); the same 404 that
+    # send binds as data [D:http-s2] — two postures, no boolean
     cat > "$hdir/fetch.weir" <<WEOF
-let ok = Http.fetch "http://127.0.0.1:$hport/x"
+let ok = Http.get "http://127.0.0.1:$hport/x" |> Http.expect
 print \$"fetch-ok lines={ok |> Seq.length}"
 let bound = Http.send (Http.get "http://127.0.0.1:$hport/missing")
 print \$"send-binds={bound.status}"
 WEOF
     out=$($BIN "$hdir/fetch.weir" 2>&1) || { kill $hsrv 2>/dev/null || true; fail "fetch/send failed: $out"; }
     echo "$out" | grep -qF "send-binds=404" || { kill $hsrv 2>/dev/null || true; fail "send must BIND a 404: $out"; }
-    out=$($BIN -e 'Http.fetch "http://127.0.0.1:'"$hport"'/missing" |> Seq.length |> print' 2>&1) && { kill $hsrv 2>/dev/null || true; fail "fetch must RAISE on 404"; } || true
-    echo "$out" | grep -qF "answered 404" || { kill $hsrv 2>/dev/null || true; fail "fetch raise must name the status: $out"; }
+    out=$($BIN -e 'Http.get "http://127.0.0.1:'"$hport"'/missing" |> Http.expect |> Seq.length |> print' 2>&1) && { kill $hsrv 2>/dev/null || true; fail "expect must RAISE on 404"; } || true
+    echo "$out" | grep -qF "answered 404" || { kill $hsrv 2>/dev/null || true; fail "the expect raise must name the status: $out"; }
 
     # a constructor round-trips through send (Http.post carries the method)
     cat > "$hdir/ctor.weir" <<WEOF
@@ -8629,15 +8629,15 @@ let r3 = { Http.get "http://127.0.0.1:$hport/ua" with headers = [("user-agent", 
 print \$"lowercase={r3.body |> Seq.head}"
 let r4 = { Http.get "http://127.0.0.1:$hport/ua" with secretHeaders = [("User-Agent", Secret.of "secret-ua")] } |> Http.send
 print \$"secret={r4.body |> Seq.head}"
-print \$"fetch={Http.fetch "http://127.0.0.1:$hport/ua" |> Seq.head}"
+print \$"expect={Http.get "http://127.0.0.1:$hport/ua" |> Http.expect |> Seq.head}"
 WEOF
     out=$($BIN "$hdir/ua.weir" 2>&1) || { kill $hsrv 2>/dev/null || true; fail "ua cell failed: $out"; }
     echo "$out" | grep -qF "default=1|weir/$stamp" || { kill $hsrv 2>/dev/null || true; fail "default UA must be weir/<--version stamp>, exactly one: $out"; }
     echo "$out" | grep -qF "explicit=1|custom-ua" || { kill $hsrv 2>/dev/null || true; fail "an explicit User-Agent must win, exactly one: $out"; }
     echo "$out" | grep -qF "lowercase=1|lower-ua" || { kill $hsrv 2>/dev/null || true; fail "a lowercase user-agent must still block the default: $out"; }
     echo "$out" | grep -qF "secret=1|secret-ua" || { kill $hsrv 2>/dev/null || true; fail "a secretHeaders User-Agent must win, exactly one: $out"; }
-    echo "$out" | grep -qF "fetch=1|weir/$stamp" || { kill $hsrv 2>/dev/null || true; fail "Http.fetch must send the default UA: $out"; }
-    echo "e2e ok: Http default User-Agent (weir/<stamp> == --version, explicit wins from both header paths, exactly one ever sent, fetch included)"
+    echo "$out" | grep -qF "expect=1|weir/$stamp" || { kill $hsrv 2>/dev/null || true; fail "Http.expect must send the default UA: $out"; }
+    echo "e2e ok: Http default User-Agent (weir/<stamp> == --version, explicit wins from both header paths, exactly one ever sent, expect included)"
 
     # F3-outbound [D:http-header-bytes]: a request header carrying CR/LF is
     # refused before send (the forge the review found on the wire), with a
@@ -9580,11 +9580,11 @@ within serve srv = { port = $svport; maxConcurrent = 4 } handler
     print \$"listening on {Server.port srv}"
     poll timeout=8s interval=100ms
         Net.portOpen $svport
-    let h = Http.fetch "http://127.0.0.1:$svport/health" |> Seq.head
+    let h = Http.get "http://127.0.0.1:$svport/health" |> Http.expect |> Seq.head
     print \$"health={h}"
-    let hl = Http.fetch "http://localhost:$svport/health" |> Seq.head
+    let hl = Http.get "http://localhost:$svport/health" |> Http.expect |> Seq.head
     print \$"health-localhost={hl}"
-    let e = Http.fetch "http://127.0.0.1:$svport/echo?name=weir" |> Seq.head
+    let e = Http.get "http://127.0.0.1:$svport/echo?name=weir" |> Http.expect |> Seq.head
     print \$"echo={e}"
     within proc probe = sh "$svdir/dualhost.sh"
         Duration.sleep 2000ms

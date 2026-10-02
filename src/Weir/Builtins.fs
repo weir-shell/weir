@@ -3720,8 +3720,8 @@ let private runRequest (reqV: Value) : Http.Resp =
 // one-line file arrived as two elements), carried a stray \r on a CRLF
 // body, and turned an empty body into [""] — none of which File.read
 // (ReadAllLines) or command output (ReadLine) do. StringReader.ReadLine
-// is the same reader command output uses, so `curl url` and
-// `Http.fetch url` agree exactly. Public for the line-law pin.
+// is the same reader command output uses, so `curl url` and an
+// `Http.expect` body agree exactly. Public for the line-law pin.
 let bodyLines (body: string) : string list =
     [ use r = new StringReader(body)
       let mutable line = r.ReadLine()
@@ -3774,25 +3774,9 @@ let private httpCtor (methodCase: string) : Value =
             VRecord("HttpRequest", f |> recSet "method" (VUnion(methodCase, None)) |> recSet "url" (VStr url))
         | v, _ -> unreachable $"the checker rejects an Http constructor on {formatValue v}")
 
-// the raising shorthand [D:http-s2]: GET, raise on non-2xx naming the
-// status, body only — the `curl -sf` analogue. Two names, no boolean:
-// Http.fetch raises, Http.send returns (the same 404 send binds as data)
-let private httpFetchImpl: Value =
-    VBuiltin(fun urlV ->
-        match urlV, httpDefaults with
-        | VStr url, VRecord("HttpRequest", f) ->
-            let resp = runRequest (VRecord("HttpRequest", recSet "url" (VStr url) f))
-
-            if resp.Status < 200 || resp.Status >= 300 then
-                // redact the URL's userinfo [D:url-redact]: a `user:pass@`
-                // credential must not print verbatim in the status error
-                // (terminal / CI / REPL); a credential-free URL is unchanged
-                failwith $"{Http.redactUrl url} answered {resp.Status}"
-            else
-                VSeq(respBodyLines resp)
-        | v, _ -> unreachable $"the checker rejects 'Http.fetch' on {formatValue v}")
-
-// the raising body read for a built request [D:http-dx]: fetch's law
+// the raising body read for a built request [D:http-dx]: the one
+// raising spelling (the bare-url Http.fetch retired into it,
+// [D:fetch-retired]) — non-2xx raises, body out; fetch's law
 // (non-2xx raises, body only) for the request that needed `with` — auth,
 // headers, a method. The raise names method, redacted url, status and a
 // capped body snippet (a minified structured error usually fits whole);
@@ -3861,7 +3845,6 @@ let private httpMembers: (string * Ty * Value) list =
 
     [ "defaults", TNamed("HttpRequest", []), httpDefaults
       "send", TFun(TNamed("HttpRequest", []), TNamed("HttpResponse", [])), httpSendImpl
-      "fetch", TFun(TStr, TSeq TStr), httpFetchImpl
       "expect", TFun(TNamed("HttpRequest", []), TSeq TStr), httpExpectImpl
       "withQuery", TFun(TSeq(TTuple [ TStr; TStr ]), TFun(TStr, TStr)), httpWithQueryImpl
       "get", ctorTy, httpCtor "Get"
@@ -5772,7 +5755,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
            |> named [ "request" ])
           "Http.get",
           (bd
-              "A request constructor — returns an HttpRequest, makes no request: `Http.get u` = `{ Http.defaults with method = Get; url = u }`; run it with Http.send. Add optionals with `with`: `Http.send { Http.get u with auth = Bearer t }`. The URL-in-body-out shorthand is Http.fetch."
+              "A request constructor — returns an HttpRequest, makes no request: `Http.get u` = `{ Http.defaults with method = Get; url = u }`; run it with Http.send (status as data) or Http.expect (raising, body out). Add optionals with `with`: `Http.send { Http.get u with auth = Bearer t }`."
               (Some "Http.get \"http://x/y\"")
               None
            |> named [ "url" ])
@@ -5790,15 +5773,9 @@ let builtinDocs: Map<string, BuiltinDoc> =
               None
               None
            |> named [ "url" ])
-          "Http.fetch",
-          (bd
-              "The raising GET shorthand: takes a bare URL (never a request — a built request runs through Http.expect or Http.send), returns body only, raises on non-2xx naming the status (the `curl -sf` / JS `fetch(url)` analogue). Http.fetch raises where Http.send returns — two names, no boolean."
-              None
-              None
-           |> named [ "url" ])
           "Http.expect",
           (bd
-              "The raising body read for a built request — Http.fetch's law for the request that needed `with` (auth, headers, a method): returns the body lines, raises on non-2xx naming method, url, status and a capped body snippet. When the error body is data to inspect, Http.send binds the status instead."
+              "The raising read (`curl -sf`'s posture): request in, body lines out, raises on non-2xx naming method, url, status and a capped body snippet — `Http.get url |> Http.expect` for the bare read, any `with`-built request the same way. When the error body is data to inspect, Http.send binds the status instead."
               None
               None
            |> named [ "request" ])

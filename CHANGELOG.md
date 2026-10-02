@@ -4,16 +4,20 @@
 
 ### Added
 
-- **`Http.expect` — the raising read for a built request.** `Http.fetch`'s
-  law for the call that needed `with` (auth, headers, a method):
-  `{ Http.get url with auth = Bearer t } |> Http.expect |> from json T`
-  returns the body and raises on non-2xx naming the method, the
-  redacted url, the status and a capped snippet of the error body —
-  when the error body is data to inspect, `Http.send` still binds
-  status and body as values. Per-method effect class like `send`'s
-  (a GET read is legal in `readonly`); a mutating-method read inside
-  a `plan` refuses — there is no response to return, and `Http.send`
-  captures the Op.
+- **`Http.expect` — the raising read.** Request in, body out:
+  `Http.get url |> Http.expect |> from json T` for the bare read, and
+  `{ Http.get url with auth = Bearer t } |> Http.expect` the moment it
+  needs `with`. A non-2xx raises naming the method, the redacted url,
+  the status and a capped snippet of the error body — when the error
+  body is data to inspect, `Http.send` still binds status and body as
+  values. Per-method effect class like `send`'s (a GET expect is legal
+  in `readonly`); a mutating-method expect inside a `plan` refuses —
+  there is no response to return, and `Http.send` captures the Op.
+
+- **Breaking: `Http.fetch` is retired.** `Http.get url |> Http.expect`
+  is the spelling — one raising read, bare or built, and `--can` still
+  names a literal url through the pipe. Pre-1.0: no retirement shim;
+  the ledger carries the ruling [D:fetch-retired].
 
 - **`Form` — the urlencoded body.** `body = Form [("grant_type",
   "client_credentials")]` percent-encodes each pair at send (the

@@ -7683,7 +7683,7 @@ let effectPartitionTests =
         "the ambient/mutation partition [D:pure-stage2]"
         [ test "effectClass per label — the fixed-class names split as the table says" {
               // ambient input (reads, changes nothing)
-              for n in [ "File.read"; "File.size"; "Dir.list"; "Path.glob"; "Env.get"; "Args.load"; "Instant.now"; "Self.stdin"; "Net.portOpen"; "Http.fetch"; "Http.query" ] do
+              for n in [ "File.read"; "File.size"; "Dir.list"; "Path.glob"; "Env.get"; "Args.load"; "Instant.now"; "Self.stdin"; "Net.portOpen"; "Http.query" ] do
                   Expect.equal (Weir.Effects.effectClass n) (Some A) $"{n} is ambient input"
               // external mutation (changes the world)
               for n in [ "File.write"; "File.append"; "File.copy"; "Dir.create"; "Dir.delete"; "Dir.deleteAll"; "Proc.stop"; "print"; "printerr"; "Log.info"; "exit"; "Path.newTempDir" ] do
@@ -7740,7 +7740,7 @@ let effectPartitionTests =
           test "eval-time resolution agrees with the name map for fixed-class calls" {
               Expect.equal (Weir.Builtins.effectClassOfCall "File.write" []) (Some M) "fs.write is mutation at eval"
               Expect.equal (Weir.Builtins.effectClassOfCall "File.read" []) (Some A) "fs.read is ambient at eval"
-              Expect.equal (Weir.Builtins.effectClassOfCall "Http.fetch" []) (Some A) "fetch is ambient at eval"
+              Expect.equal (Weir.Builtins.effectClassOfCall "Http.query" []) (Some A) "the query method is ambient at eval"
               Expect.equal (Weir.Builtins.effectClassOfCall "Str.trim" []) None "a pure builtin has no class"
           }
           test "the partition is TOTAL over every classified-effectful name effectPhrase names" {
@@ -7749,7 +7749,7 @@ let effectPartitionTests =
               // the one deliberate None, resolved per-request)
               let names =
                   [ "File.read"; "File.write"; "Dir.create"; "Dir.list"; "Env.get"; "Args.load"; "Proc.stop"
-                    "Net.portOpen"; "Http.fetch"; "Http.query"; "Log.info"; "print"; "printerr"; "exit"
+                    "Net.portOpen"; "Http.query"; "Log.info"; "print"; "printerr"; "exit"
                     "ls"; "glob"; "Path.glob"; "Path.tempRoot"; "Path.newTempDir"; "Instant.now"
                     "Duration.sleep"; "Self.stdin" ]
 
@@ -7817,7 +7817,7 @@ let readonlyBlockTests =
               Expect.stringContains e.Message "'Http.send' talks to the network" "a POST mutates"
               Expect.stringContains e.Message "mutating HTTP method" "the class names the method"
           }
-          test "Http.query and Http.fetch admit — idempotent by construction" {
+          test "Http.query and a GET expect admit — idempotent by construction" {
               Expect.isEmpty
                   (errsOf
                       [ "let x ="
@@ -7827,8 +7827,12 @@ let readonlyBlockTests =
                   "the query method is ambient (piped send resolves it)"
 
               Expect.isEmpty
-                  (errsOf [ "let x ="; "    readonly"; "        Http.fetch \"http://x\""; "x |> Seq.iter print" ])
-                  "fetch is a GET shorthand — ambient"
+                  (errsOf
+                      [ "let x ="
+                        "    readonly"
+                        "        Http.get \"http://x\" |> Http.expect"
+                        "x |> Seq.iter print" ])
+                  "a GET expect is ambient (the piped request resolves it)"
           }
           test "pure ⊂ readonly — a pure body is trivially read-only" {
               Expect.isEmpty
@@ -15413,10 +15417,10 @@ let httpTests =
               let shortMsg = msgOf "Str.toInt \"notanum\""
               Expect.stringContains shortMsg "\"notanum\"" "a short input stays fully readable"
           }
-          test "the fetch/send misreading names its repair [D:fetch-naming]" {
-              // `Http.get u |> Http.fetch` reads as a pipeline and is the
-              // ruled-not-renamed pair: the type error carries the split
-              let m = (checkErr "Http.get \"u\" |> Http.fetch").Message
+          test "a request in a string slot names its repair [D:fetch-naming] [D:fetch-retired]" {
+              // a built request where a URL string is expected: the type
+              // error names the two run spellings
+              let m = (checkErr "Http.get \"u\" |> Str.trim").Message
               Expect.stringContains m "expected string, got HttpRequest" "the mismatch"
               Expect.stringContains m "runs through Http.expect (raising) or Http.send" "the repair names both postures"
 

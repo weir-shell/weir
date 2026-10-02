@@ -1318,27 +1318,16 @@ endpoints and legacy receivers: `body = Form [("grant_type",
 "client_credentials")]` percent-encodes each pair and sets the
 content type; the caller never hand-builds `k=v&…`.
 
-For the simplest read — a GET whose body is all you want — `Http.fetch`
-is the raising shorthand (the `curl -sf` / JS `fetch(url)` analogue):
-it takes a **bare URL** — never a request; `Http.get url |> Http.fetch`
-reads like a pipeline and is a type error that names the repair (a
-built request runs through `Http.expect` or `Http.send`). It returns the body and raises
-on a non-2xx naming the status, where `Http.send` binds the same
-status as data.
+For the read where the body is all you want, `Http.expect` is the
+raising posture (the `curl -sf` analogue): request in, body out, and
+a non-2xx raises naming the method, the url, the status *and* a
+capped snippet of the error body. When the error body is data to
+inspect — a structured API error — `Http.send` binds status and body
+as values; `expect`'s snippet is for the human reading the raise.
 
 ```weir-demo
-let item = Http.fetch $"{api}/items/1" |> from json Item
-```
+let item = Http.get $"{api}/items/1" |> Http.expect |> from json Item
 
-Between the two sits `Http.expect` — `fetch`'s raising law for a
-**built** request, the call that needed `with` (an auth header, a
-method): it returns the body and raises on non-2xx naming the
-method, the url, the status *and* a capped snippet of the error
-body. When the error body is data to inspect — a structured API
-error — `Http.send` binds status and body as values; `read`'s
-snippet is for the human reading the raise.
-
-```weir-demo
 let mine = { Http.get $"{api}/items/1" with auth = Bearer token } |> Http.expect |> from json Item
 ```
 
@@ -1357,7 +1346,7 @@ When the shape belongs to a foreign API and you read it once, write
 the type inline — an **anonymous record type**:
 
 ```weir-demo
-let ip = Http.fetch "https://api.ipify.org?format=json" |> from json {| ip: string |} |> _.ip
+let ip = Http.get "https://api.ipify.org?format=json" |> Http.expect |> from json {| ip: string |} |> _.ip
 ```
 
 `seq<{| ... |}>` covers the top-level-array case. The same spelling
@@ -2146,7 +2135,7 @@ deploy.weir can (capability, not behaviour — an untaken branch still counts):
   writes:
     File.write out.txt  deploy.weir:7:10
   network:
-    Http.fetch https://api.example.com/items  deploy.weir:8:12
+    Http.expect https://api.example.com/items  deploy.weir:8:12
   secrets:
     loads token (Env.load Cfg)  deploy.weir:2:11
     a Secret reaches the argv of curl (visible in ps — weir does not hide argv)  deploy.weir:9:9
@@ -2203,7 +2192,7 @@ every effect, a `readonly` block forbids only **external
 mutation** — writing files, running commands, the mutating HTTP verbs
 (POST/PUT/DELETE/PATCH), any `within` resource — while **ambient
 reads are allowed**: reading a file, `Env`/`Args`, the clock, a query
-HTTP method (`Http.fetch`/`Http.query`, or `Http.send` of a
+HTTP method (`Http.query`, or `Http.send`/`Http.expect` of a
 GET/HEAD/OPTIONS/QUERY request), and stdin. The guarantee is
 *no external mutation*: a computation that only reads the world
 changes nothing (it does not, however, guarantee determinism — the
