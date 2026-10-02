@@ -123,7 +123,7 @@ let tool = "printf"
 ^$tool dyn-head-ok
 ```
 
-A string-typed capture heads directly (`^$(… |> Seq.exactlyOne)`); a
+A string-typed capture heads directly (`^$(… | line)`); a
 seq-typed value refuses — one program has to be chosen, and weir never
 picks a line implicitly:
 

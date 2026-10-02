@@ -2124,8 +2124,8 @@ print c.flag
   one program, argv stays typed argv (no injection; the plugin/
   callback dispatch shape without `sh -c`). It must be a string: a
   seq capture refuses with the bind-and-pick teaching
-  (`let tool = $(…) |> Seq.exactlyOne`, then `^$tool`); a
-  string-typed capture (`^$(… |> Seq.exactlyOne)`) heads directly;
+  (`let tool = cmd | line`, then `^$tool`); a
+  string-typed capture (`^$(… | line)`) heads directly;
   `^$@xs` and `^$"…"` refuse with teachings. Composes with pipes,
   `$()`, reifiers and env sigils exactly as a literal head
   (`^$tool build | complete`); `--can` reports it as not statically
