@@ -26,17 +26,23 @@ let root = "build"
 rm -rf $root/* // argv words do not concatenate — write $"{root}/*"
 ```
 
-What command lines do not do: no glob expansion (`Path.glob` is a
-function), no `$VAR` expansion (splice weir bindings), no `~`
-expansion (`Path.home ()` and the XDG trio `Path.configHome`/
-`Path.stateHome`/`Path.cacheHome` — each a pure `unit -> string`,
-resolving `%APPDATA%`/`%LOCALAPPDATA%` on Windows and the
-`$XDG_*` variables with their `~/.config`-style fallbacks on POSIX —
-build the path in an interpolation: `cat $"{Path.home ()}/.bashrc"`),
-no `&&` (write two statements), no redirects (`>` passes through as a
-literal word, with a warning naming `File.write`). For bash
-semantics, run bash: `sh -c "the line"` — and inside that quoted
-string, `$w` is sh's variable, not weir's; interpolate first
+What command lines do not do:
+
+- no glob expansion — `Path.glob` is a function
+- no `$VAR` expansion — splice weir bindings
+- no `~` expansion — `Path.home ()` and the XDG trio
+  `Path.configHome`/`Path.stateHome`/`Path.cacheHome` (each a pure
+  `unit -> string`, resolving `%APPDATA%`/`%LOCALAPPDATA%` on
+  Windows and the `$XDG_*` variables with their `~/.config`-style
+  fallbacks on POSIX) build the path in an interpolation:
+  `cat $"{Path.home ()}/.bashrc"`
+- no `&&` — write two statements, or chain with
+  [`| and` / `| or`](#exit-codes)
+- no redirects — `>` passes through as a literal word, with a
+  warning naming `File.write`
+
+For bash semantics, run bash: `sh -c "the line"` — and inside that
+quoted string, `$w` is sh's variable, not weir's; interpolate first
 (`sh -c $"echo {w}"`).
 
 ## Splices

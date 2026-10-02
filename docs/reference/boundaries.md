@@ -25,10 +25,15 @@ print $"{cli.clean} {cli.port}"
 ```
 
 `[<Short "c">]` pins a short (`"h"` is reserved for `--help`);
-`[<NoShort>]` suppresses one. The collected refusals: unknown flags
-(with a did-you-mean), unexpected arguments, missing requireds,
-unparseable values. `--help` prints the derived usage even on
-otherwise-invalid invocations.
+`[<NoShort>]` suppresses one. The collected refusals:
+
+- unknown flags (with a did-you-mean)
+- unexpected arguments
+- missing requireds
+- unparseable values
+
+`--help` prints the derived usage even on otherwise-invalid
+invocations.
 
 There are no positionals — spell operands as flags. For hand-rolled
 shapes, `Args.flag` and `Args.value` scan the raw `Self.args`.

@@ -34,10 +34,15 @@ then the two NDJSON lines.)
 
 ## The admitted shapes
 
-A field is one of: a scalar (`int`, `float`, `string`, `bool`), an
-`Option` of an admitted type, a record whose fields are all
-admitted, a `seq` of an admitted type, or a `Map<string, T>`. The
-rule is recursive; a self-referential record refuses at check,
+A field is one of:
+
+- a scalar (`int`, `float`, `string`, `bool`)
+- an `Option` of an admitted type
+- a record whose fields are all admitted
+- a `seq` of an admitted type
+- a `Map<string, T>`
+
+The rule is recursive; a self-referential record refuses at check,
 naming its cycle. A top-level JSON array declares itself:
 `from json seq<Peer>`. Integer-shaped JSON numbers widen into
 `float` fields (JSON has one number type).
@@ -73,19 +78,25 @@ duplicate keys last-win; `to json` writes the object back.
 `from yaml T` reads with the same admission rules; quoting
 disambiguates scalars (`rate: 1.5` is a number, `"1.5"` a string —
 both directions). A quoted scalar may continue on deeper-indented
-lines (kubectl's long `message:` values): the closing quote ends it,
-each line break folds to a single space, an empty continuation line
-becomes a newline, and the folded value stays a string.
-`from yaml stream T` reads a `---`-separated
-stream — N documents, each as `T`, so the heterogeneous bundle (a
-kubernetes apply file) is `from yaml stream KDoc` over a tagged
-union: the stream word is the cardinality, the union the
-per-document dispatch. An empty stream is zero documents. The write
-side mirrors the read exactly: `to yaml` writes one document — a
-record is a mapping, a seq a sequence document, a pair-seq one
-mapping — and `to yaml stream` writes one document per element, so
-every form reads back through its own name (`to yaml |> from yaml
-seq<T>`, `to yaml stream |> from yaml stream T`). A multiline
+lines (kubectl's long `message:` values):
+
+- the closing quote ends it
+- each line break folds to a single space
+- an empty continuation line becomes a newline
+- the folded value stays a string
+
+`from yaml stream T` reads a `---`-separated stream — N documents,
+each as `T`, so the heterogeneous bundle (a kubernetes apply file)
+is `from yaml stream KDoc` over a tagged union: the stream word is
+the cardinality, the union the per-document dispatch. An empty
+stream is zero documents.
+
+The write side mirrors the read exactly: `to yaml` writes one
+document — a record is a mapping, a seq a sequence document, a
+pair-seq one mapping — and `to yaml stream` writes one document per
+element, so every form reads back through its own name
+(`to yaml |> from yaml seq<T>`,
+`to yaml stream |> from yaml stream T`). A multiline
 string renders as a block scalar. The `yaml` template
 literal itself — checked structure, splices as nodes, `schema=` —
 is a language form, taught in the

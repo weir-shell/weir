@@ -135,14 +135,24 @@ field `bodyTimeout` (a `Duration`, default 30s) that bounds the
 request-body read — a slow client dribbling its body is refused with a
 408 instead of parking a handler slot.
 
-`HttpServerRequest` carries `method`, `path`, `query` (the raw string
-without the leading `?` — split it with `Str.trySplitOnce`), `headers`
-(pairs, wire order), and `body` (the request text). `method` is an
-`HttpMethod`: a well-formed verb the union does not name reads as
-`Other of string` (route on it with `| Other v ->`), `QUERY` reads as
-`Query`, and a malformed method token is refused at the boundary with a
-400. Note the platform listener collapses repeated request headers to
-the last value, so a proxied `X-Forwarded-For` chain reads the last hop
-only. Out of scope for v1, each a deliberate non-goal: TLS (put a
-reverse proxy in front), a routing DSL (the `match` is the router),
-WebSockets, request-body streaming, and HTTP/2.
+`HttpServerRequest` carries:
+
+- `method` — an `HttpMethod`: a well-formed verb the union does not
+  name reads as `Other of string` (route on it with `| Other v ->`),
+  `QUERY` reads as `Query`, and a malformed method token is refused
+  at the boundary with a 400
+- `path`
+- `query` — the raw string without the leading `?`; split it with
+  `Str.trySplitOnce`
+- `headers` — pairs, wire order; note the platform listener
+  collapses repeated request headers to the last value, so a proxied
+  `X-Forwarded-For` chain reads the last hop only
+- `body` — the request text
+
+Out of scope for v1, each a deliberate non-goal:
+
+- TLS — put a reverse proxy in front
+- a routing DSL — the `match` is the router
+- WebSockets
+- request-body streaming
+- HTTP/2

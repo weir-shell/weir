@@ -606,7 +606,8 @@ rm -rf $root/* // argv words do not concatenate — write $"{root}/*"
 What weir's command lines do not do:
 
 - no glob expansion — use the function `Path.glob`
-- no `&&` — write two statements
+- no `&&` — write two statements, or chain with
+  [`| and` / `| or`](#exit-codes-from-command-to-value)
 - no `$VAR` expansion — splice weir bindings instead
 - no `~` expansion — `~` and `$HOME` stay literal words; `Path.home ()`
   (and the XDG trio `Path.configHome`/`Path.stateHome`/
@@ -1264,13 +1265,17 @@ print (show (Bytes.length png))
 print (show (Str.tryFromUtf8 png))
 ```
 
-The boundaries refuse raw bytes, each naming the exit: `print`,
-`to json`/`to yaml`, argv splices and `Args.load`/`Env.load` all
-point at `Bytes.toBase64` or `File.writeBytes`; a hole or `show`
-renders a summary (`<12 B>` above), never content — raw bytes wreck
-terminals. `Bytes.length` is a `Size`; `==` is byte equality; there
-is no ordering. And to hash a file without loading it,
-`File.sha256 path` streams internally.
+The boundaries refuse raw bytes, each naming the exit:
+
+- `print`
+- `to json` / `to yaml`
+- argv splices and `Args.load` / `Env.load`
+
+Each refusal points at `Bytes.toBase64` or `File.writeBytes`; a hole
+or `show` renders a summary (`<12 B>` above), never content — raw
+bytes wreck terminals. `Bytes.length` is a `Size`; `==` is byte
+equality; there is no ordering. And to hash a file without loading
+it, `File.sha256 path` streams internally.
 
 ## Data in and out: `Http` and the adapters
 

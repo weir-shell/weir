@@ -2,12 +2,14 @@
 
 ## Scalars
 
-`int` (64-bit; arithmetic overflow raises rather than wrapping,
-while a range terminates at the type boundary — every yielded value
-is correct), `float`
-(always finite — a would-be `NaN` or `Infinity` raises; `==` on
-floats is a check error naming `Float.near`), `string`, `bool`,
-and `unit` — the value of an effect, written `()`.
+- `int` — 64-bit; arithmetic overflow raises rather than wrapping,
+  while a range terminates at the type boundary — every yielded
+  value is correct
+- `float` — always finite: a would-be `NaN` or `Infinity` raises,
+  and `==` on floats is a check error naming `Float.near`
+- `string`
+- `bool`
+- `unit` — the value of an effect, written `()`
 
 Nothing widens implicitly: `3 / 2` is integer division, and mixing
 sides is a type error naming `Float.ofInt`:
