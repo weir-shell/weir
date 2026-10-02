@@ -586,7 +586,7 @@ let arg = "two words"
 ```
 
 The head value must be a `string` — a seq capture refuses with a
-teaching (bind and pick the line: `let tool = $(…) |> Seq.exactlyOne`,
+teaching (bind and pick the line: `let tool = cmd | line`,
 then `^$tool`). Resolution happens at run: check does not warn about
 a program it cannot know yet, and a missing program is a located run
 error naming the value.

@@ -4704,7 +4704,7 @@ and private checkDynHead (ctx: Ctx) (env: TypeEnv) (display: string) (he: Expr) 
             return!
                 err
                     he.Span
-                    $"a dynamic head runs one program, and ^{display} is {formatTy t} — which line is it? bind and pick (let tool = $(…) |> Seq.exactlyOne), then run ^$tool"
+                    $"a dynamic head runs one program, and ^{display} is {formatTy t} — which line is it? bind and pick (let tool = cmd | line), then run ^$tool"
         | t -> return! err he.Span $"a dynamic head is a program name (string); ^{display} is {formatTy t}"
     }
 
