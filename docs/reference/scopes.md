@@ -34,7 +34,7 @@ let digest = within tmp d
     ["payload"] |> File.write $"{d}/f.txt"
     Str.sha256 (File.read $"{d}/f.txt" |> Str.join "-")
 
-print (Str.sub 0 12 digest)
+print digest[..11]
 ```
 
 ## `cd`

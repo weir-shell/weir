@@ -745,7 +745,7 @@ the last expression is the value.
 let digest = within tmp dir
     ["payload"] |> File.write $"{dir}/f.txt"
     Str.sha256 (File.read $"{dir}/f.txt" |> Str.join "-")
-print (Str.sub 0 12 digest)
+print digest[..11]
 ```
 
 An `if`/`elif` condition takes a command chain directly:
@@ -890,6 +890,8 @@ One rule: **output goes where the meaning goes.**
 | `cmd \| complete` | captured | `{ exitCode; stdout; stderr }` |
 | `cmd \| orFail "msg"` | streams | unit; raises `msg (exit N)` on nonzero |
 | `cmd \| exitCode` | streams | the code as `int`; never raises |
+| `cmd \| line` | captured | the one trimmed stdout line, a `string`; raises on nonzero or 0-or-2+ lines |
+| `cmd \| exec` | the child's | never returns — the command replaces the weir process |
 
 Predicates and inspectors are quiet/captured because their output is
 the result; asserts and control flow stream because their output is
@@ -914,7 +916,8 @@ output — fzf's selection and its cancel code — use `complete`.
 sh -c "exit 3" | exitCode // a bare statement discards the code — bind or match it
 ```
 
-Two more reifiers share the pipe-stage spelling. `cmd | line`
+The last two rows share the pipe-stage spelling without being about
+the exit code. `cmd | line`
 captures a one-value command (`git rev-parse HEAD`,
 `az … --query X -o tsv`, `id -un`) as its single trimmed line of
 stdout, a `string` — the direct form of the
@@ -1887,7 +1890,7 @@ print $"has a directory: {Str.length dir > 0}"
 ```
 
 To resolve symlinks:
-`$(realpath $"{Self.scriptPath}") |> Seq.head`
+`let real = realpath $"{Self.scriptPath}" | line`
 
 Available in scripts only — the REPL and `-e` refuse each `Self`
 member by name, since neither has a file.
@@ -2177,7 +2180,7 @@ clock and stdin are readable, hence the name).
 ```weir
 let cfg =
     readonly
-        let home = Env.get "HOME" |> Option.defaultValue "/"
+        let home = Path.home ()
         $"{home}/config"
 print cfg
 ```

@@ -90,7 +90,7 @@ print $"{files |> Seq.length} tracked"
 
 if 2 > 1 then
     git status --porcelain
-    print (($(git rev-parse HEAD) |> Seq.head) |> Str.sub 0 7)
+    print (($(git rev-parse HEAD) |> Seq.head)[..6])
 ```
 
 Two markers bring command chains into positions bare cannot reach:
@@ -141,8 +141,9 @@ captures and env overlays compose exactly as with a literal head:
 
 ## Exit codes
 
-A failing command raises when its stream is forced. Four forms turn
-the exit into a value instead; output goes where the meaning goes:
+A failing command raises when its stream is forced. The reifiers
+turn the run into a value instead; output goes where the meaning
+goes:
 
 | form | output | result |
 |---|---|---|
@@ -150,6 +151,8 @@ the exit into a value instead; output goes where the meaning goes:
 | `cmd \| complete` | captured | `{ exitCode; stdout; stderr }` |
 | `cmd \| orFail "msg"` | streams | unit; raises `msg (exit N)` on nonzero |
 | `cmd \| exitCode` | streams | the code as `int`; never raises |
+| `cmd \| line` | captured | the one trimmed stdout line, a `string`; raises on nonzero or 0-or-2+ lines |
+| `cmd \| exec` | the child's | never returns — the command replaces the weir process |
 
 ```weir
 let r = sh -c "echo out; exit 3" | complete
@@ -163,7 +166,7 @@ teaching error:
 sh -c "exit 3" | exitCode // a bare statement discards the code — bind or match it
 ```
 
-Two more reifiers share the pipe-stage spelling without being about
+The last two rows share the pipe-stage spelling without being about
 the exit code. `cmd | line` captures a one-value command's single
 trimmed stdout line as a `string` —
 `let sha = git rev-parse HEAD | line` replaces the
