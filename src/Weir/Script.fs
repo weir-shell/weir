@@ -1332,6 +1332,28 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                     acc,
                                     blankSinceHead
                                 )
+                            // a comment-only FIRST content line is bytes too
+                            // [D:block-scalars]: it arms the district and
+                            // fixes the block base exactly as any first line
+                            // does — transparency fired here once, and a
+                            // heredoc's leading `// header` line silently
+                            // vanished from the value
+                            | Some({ District = Some({ Active = None
+                                                       Yaml = true
+                                                       MarkerIndent = m } as dst) } as p) when
+                                (raw |> Seq.takeWhile ((=) ' ') |> Seq.length) > m
+                                ->
+                                let ind = raw |> Seq.takeWhile ((=) ' ') |> Seq.length
+
+                                Ok(
+                                    Some
+                                        { p with
+                                            Buf = applyJoin (JYamlLine 0) p.Buf (raw.Substring ind) lineNo ind
+                                            LastIndent = ind
+                                            District = Some { dst with Active = Some ind } },
+                                    acc,
+                                    blankSinceHead
+                                )
                             | Some p -> Ok(Some p, acc, blankSinceHead)
                             | None -> Ok(None, acc, blankSinceHead)
                         elif

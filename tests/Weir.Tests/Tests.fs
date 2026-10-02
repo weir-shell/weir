@@ -1833,6 +1833,42 @@ let boundaryTests =
                   Expect.isFalse (ll.Text.Contains Weir.Parser.sibSepStr) "no district arms on a binding named text"
               | other -> failtest $"expected two logical lines, got {other}"
           }
+          test "a comment-only line is heredoc bytes, leading included [D:block-scalars]" {
+              // comment transparency once swallowed a `//`-leading FIRST
+              // content line (the district was not yet active), so a
+              // heredoc's `// header` line vanished from the value
+              let asm lines' =
+                  match Weir.Script.assemble (lines' |> List.mapi (fun i l -> i + 1, l)) with
+                  | Ok [ ll ] -> ll.Text
+                  | other -> failtest $"assembly: {other}"
+
+              let evalStrs src =
+                  match Weir.Parser.parseLine realResolver src with
+                  | Ok(SLet(_, e)) ->
+                      match typecheck env e with
+                      | Ok te ->
+                          match Weir.Eval.eval valueEnv te with
+                          | Weir.Eval.VSeq items ->
+                              items
+                              |> Seq.map (fun v ->
+                                  match v with
+                                  | Weir.Eval.VStr s -> s
+                                  | v -> failtest $"bad item {v}")
+                              |> List.ofSeq
+                          | v -> failtest $"expected VSeq, got {v}"
+                      | Error terr -> failtest (formatError terr)
+                  | other -> failtest $"parse: {other}"
+
+              Expect.equal
+                  (evalStrs (asm [ "let t = <<<"; "    // header"; "    real" ]))
+                  [ "// header"; "real" ]
+                  "a leading comment-only line arms the district as its first byte line"
+
+              Expect.equal
+                  (evalStrs (asm [ "let t = <<<"; "    first"; "    // mid"; "    tail // stays" ]))
+                  [ "first"; "// mid"; "tail // stays" ]
+                  "mid comment-only and trailing-comment bytes both survive"
+          }
           test "a heredoc block is a seq<string>: verbatim lines, blanks survive [D:text-block]" {
               let asm lines' =
                   match Weir.Script.assemble (lines' |> List.mapi (fun i l -> i + 1, l)) with
