@@ -2171,9 +2171,20 @@ let private writePayload (keepBom: bool) (lines: Value seq) : byte[] =
         body
 
 let private bomAt (fs: FileStream) : bool =
+    // read the 3 BOM bytes FULLY [D:write-integrity]: a single Read may
+    // return fewer than asked even when more follow (APFS does, on a
+    // small just-opened file), so a one-shot read mis-reads the BOM as
+    // absent and drops it
     let head = Array.zeroCreate 3
-    let n = fs.Read(head, 0, 3)
-    n = 3 && head[0] = 0xEFuy && head[1] = 0xBBuy && head[2] = 0xBFuy
+
+    let rec fill got =
+        if got = 3 then
+            got
+        else
+            let n = fs.Read(head, got, 3 - got)
+            if n = 0 then got else fill (got + n)
+
+    fill 0 = 3 && head[0] = 0xEFuy && head[1] = 0xBBuy && head[2] = 0xBFuy
 // readers grant ReadWrite|Delete sharing [D:write-integrity]: a Windows
 // share grant cuts both ways — the .NET read default (FileShare.Read)
 // denies any live writer, and without FILE_SHARE_DELETE a held reader
