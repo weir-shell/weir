@@ -600,6 +600,20 @@
           "pointer": null
         },
         {
+          "name": "header",
+          "signature": "Http.header (name: string) (resp: HttpResponse) : Option\u003Cstring\u003E",
+          "summary": "The first value of a response header, case-insensitively \u2014 header names are case-insensitive by HTTP\u0027s own law, so this cannot miss ETag vs etag the way a hand-rolled pairs filter does. None when absent; for a legally repeating header (Set-Cookie), Http.headerAll.",
+          "example": "(HttpResponse { status = 200; headers = [(\u0022ETag\u0022, \u0022abc\u0022)]; body = [\u0022\u0022] }) |\u003E Http.header \u0022etag\u0022",
+          "pointer": null
+        },
+        {
+          "name": "headerAll",
+          "signature": "Http.headerAll (name: string) (resp: HttpResponse) : seq\u003Cstring\u003E",
+          "summary": "Every value of a response header, case-insensitively, wire order kept \u2014 the multiplicity read for headers that legally repeat (Set-Cookie). Empty when absent.",
+          "example": null,
+          "pointer": null
+        },
+        {
           "name": "options",
           "signature": "Http.options (url: string) : HttpRequest",
           "summary": "Constructor: an Options request to the url.",

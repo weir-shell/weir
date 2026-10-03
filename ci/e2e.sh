@@ -8756,6 +8756,16 @@ print \$"send-binds={bound.status}"
 WEOF
     out=$($BIN "$hdir/fetch.weir" 2>&1) || { kill $hsrv 2>/dev/null || true; fail "fetch/send failed: $out"; }
     echo "$out" | grep -qF "send-binds=404" || { kill $hsrv 2>/dev/null || true; fail "send must BIND a 404: $out"; }
+    # the header accessors [D:http-dx]: case-insensitive first hit,
+    # multiplicity in wire order
+    hdrout=$($BIN -e 'let r = HttpResponse { status = 200; headers = [("ETag", "W/1"); ("Set-Cookie", "a=1"); ("set-cookie", "b=2")]; body = [""] }
+print (show (r |> Http.header "etag"))
+print (show (r |> Http.header "absent"))
+r |> Http.headerAll "SET-COOKIE" |> Seq.iter print' 2>&1) || { kill $hsrv 2>/dev/null || true; fail "header accessors failed: $hdrout"; }
+    echo "$hdrout" | grep -qF 'Some "W/1"' || { kill $hsrv 2>/dev/null || true; fail "Http.header must hit case-insensitively: $hdrout"; }
+    echo "$hdrout" | grep -qF 'None' || { kill $hsrv 2>/dev/null || true; fail "Http.header must miss as None: $hdrout"; }
+    echo "$hdrout" | grep -qF 'a=1' && echo "$hdrout" | grep -qF 'b=2' || { kill $hsrv 2>/dev/null || true; fail "Http.headerAll must keep both cookies: $hdrout"; }
+
     out=$($BIN -e 'Http.get "http://127.0.0.1:'"$hport"'/missing" |> Http.expect |> Seq.length |> print' 2>&1) && { kill $hsrv 2>/dev/null || true; fail "expect must RAISE on 404"; } || true
     echo "$out" | grep -qF "answered 404" || { kill $hsrv 2>/dev/null || true; fail "the expect raise must name the status: $out"; }
 

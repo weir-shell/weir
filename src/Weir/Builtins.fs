@@ -4146,6 +4146,29 @@ let private httpWithQueryImpl: Value =
                     VStr(baseUrl + sep + qs)
             | v, _ -> unreachable $"the checker rejects 'Http.withQuery' on {formatValue v}"))
 
+// the header accessors [D:http-dx]: header names are case-insensitive
+// by HTTP's own law, so the naive pairs filter is wrong by default —
+// these are the one spelling that cannot miss ETag vs etag. Pairs stay
+// the representation (Set-Cookie repeats legally); headerAll is the
+// multiplicity read, wire order kept.
+let private httpHeaderImpl (all: bool) : Value =
+    VBuiltin(fun nameV ->
+        VBuiltin(fun respV ->
+            match nameV, respV with
+            | VStr name, VRecord("HttpResponse", f) ->
+                let hits =
+                    headerPairs (recGet "headers" f)
+                    |> List.filter (fun (k, _) -> System.String.Equals(k, name, System.StringComparison.OrdinalIgnoreCase))
+                    |> List.map snd
+
+                if all then
+                    VSeq(hits |> Seq.map VStr)
+                else
+                    match hits with
+                    | v :: _ -> VUnion("Some", Some(VStr v))
+                    | [] -> VUnion("None", None)
+            | v, _ -> unreachable $"the checker rejects 'Http.header' on {formatValue v}"))
+
 let private httpMembers: (string * Ty * Value) list =
     let ctorTy = TFun(TStr, TNamed("HttpRequest", []))
 
@@ -4153,6 +4176,8 @@ let private httpMembers: (string * Ty * Value) list =
       "send", TFun(TNamed("HttpRequest", []), TNamed("HttpResponse", [])), httpSendImpl
       "expect", TFun(TNamed("HttpRequest", []), TSeq TStr), httpExpectImpl
       "withQuery", TFun(TSeq(TTuple [ TStr; TStr ]), TFun(TStr, TStr)), httpWithQueryImpl
+      "header", TFun(TStr, TFun(TNamed("HttpResponse", []), TNamed("Option", [ TStr ]))), httpHeaderImpl false
+      "headerAll", TFun(TStr, TFun(TNamed("HttpResponse", []), TSeq TStr)), httpHeaderImpl true
       "get", ctorTy, httpCtor "Get"
       "post", ctorTy, httpCtor "Post"
       "put", ctorTy, httpCtor "Put"
@@ -6086,6 +6111,18 @@ let builtinDocs: Map<string, BuiltinDoc> =
               None
               None
            |> named [ "request" ])
+          "Http.header",
+          (bd
+              "The first value of a response header, case-insensitively — header names are case-insensitive by HTTP's own law, so this cannot miss ETag vs etag the way a hand-rolled pairs filter does. None when absent; for a legally repeating header (Set-Cookie), Http.headerAll."
+              (Some "(HttpResponse { status = 200; headers = [(\"ETag\", \"abc\")]; body = [\"\"] }) |> Http.header \"etag\"")
+              None
+           |> named [ "name"; "resp" ])
+          "Http.headerAll",
+          (bd
+              "Every value of a response header, case-insensitively, wire order kept — the multiplicity read for headers that legally repeat (Set-Cookie). Empty when absent."
+              None
+              None
+           |> named [ "name"; "resp" ])
           "Http.withQuery",
           (bd
               "Append a percent-encoded query string to a url — params first, the url last (data-last: `url |> Http.withQuery [(k, v)]`); keys and values are escaped, so a space or `&` cannot break the url. (not `Http.query` the method constructor.)"

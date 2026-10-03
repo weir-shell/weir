@@ -516,7 +516,11 @@ print $"{key} -> {value}"
   inspect, `Http.send` binds it instead. A mutating-method
   `Http.expect` inside a `plan` refuses (no response to return;
   `Http.send` captures the Op). `url |> Http.withQuery [(k, v)]` percent-encodes
-  a query string. `Http.query` is the QUERY method (idempotent, so
+  a query string. `resp |> Http.header "etag" : Option<string>` reads a
+  response header case-insensitively (HTTP's own law — a hand-rolled
+  pairs filter misses ETag vs etag); `Http.headerAll` is the
+  multiplicity read for repeating headers (Set-Cookie), wire order
+  kept. `Http.query` is the QUERY method (idempotent, so
   `retry` around it is safe by definition). TLS verification is ON;
   `{ req with insecure = true }` disables it for ONE request (a loud
   per-call field for self-signed clusters). `Http.defaults` is the
@@ -2305,7 +2309,7 @@ not the teaching.
 - `Json`: `inferShape`
 - `Table`: `inferShape` `render`
 - `Yaml`: `parse` `merge` `inferShape`
-- `Http`: `defaults` `delete` `expect` `get` `head` `options` `patch` `post` `put` `query` `send` `withQuery`
+- `Http`: `defaults` `delete` `expect` `get` `head` `header` `headerAll` `options` `patch` `post` `put` `query` `send` `withQuery`
 - `Log`: `debug` `debugWith` `info` `infoWith` `trace` `traceWith` `warn` `warnWith`
 - `Map`: `add` `count` `get` `has` `keys` `ofPairs` `pairs` `remove` `tryGet` `values`
 - `Net`: `portOpen`
