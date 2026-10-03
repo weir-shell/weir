@@ -1993,6 +1993,103 @@ let private utf8Strict = System.Text.UTF8Encoding(false, true)
 // preserve a BOM an overwritten file already had [D:encoding-law]
 let private utf8Bom = System.Text.UTF8Encoding(true, true)
 
+module private AppendNative =
+    [<Literal>]
+    let private O_WRONLY = 0x1
+
+    [<Literal>]
+    let private O_APPEND_LINUX = 0x400
+
+    [<Literal>]
+    let private O_APPEND_MACOS = 0x8
+
+    [<Literal>]
+    let private O_CLOEXEC_LINUX = 0x80000
+
+    [<Literal>]
+    let private O_CLOEXEC_MACOS = 0x1000000
+
+    [<Literal>]
+    let private ENOENT = 2
+
+    [<Literal>]
+    let private EINTR = 4
+
+    [<System.Runtime.InteropServices.DllImport("libc", SetLastError = true)>]
+    extern int private ``open``(string pathname, int flags, int mode)
+
+    [<System.Runtime.InteropServices.DllImport("libc", SetLastError = true)>]
+    extern nativeint private write(int fd, byte[] buf, unativeint count)
+
+    let private appendFlags () =
+        if System.OperatingSystem.IsMacOS() then
+            O_WRONLY ||| O_APPEND_MACOS ||| O_CLOEXEC_MACOS
+        else
+            O_WRONLY ||| O_APPEND_LINUX ||| O_CLOEXEC_LINUX
+
+    let private openAppend (path: string) : Microsoft.Win32.SafeHandles.SafeFileHandle =
+        let rec go attempt =
+            let fd = ``open`` (path, appendFlags (), 0)
+
+            if fd >= 0 then
+                fd
+            else
+                let errno = System.Runtime.InteropServices.Marshal.GetLastPInvokeError()
+
+                if errno = ENOENT && attempt < 3 then
+                    (try
+                        (new FileStream(path, FileMode.OpenOrCreate, FileAccess.Write, FileShare.ReadWrite))
+                            .Dispose()
+                     with _ ->
+                         ())
+
+                    go (attempt + 1)
+                else
+                    raise (IOException $"open failed (errno {errno})")
+
+        new Microsoft.Win32.SafeHandles.SafeFileHandle(nativeint (go 0), true)
+
+    let private writeAll (fd: int) (payload: byte[]) =
+        let rec go (rest: byte[]) =
+            if rest.Length > 0 then
+                let n = write (fd, rest, unativeint rest.Length)
+
+                if n < 0n then
+                    let errno = System.Runtime.InteropServices.Marshal.GetLastPInvokeError()
+
+                    if errno = EINTR then
+                        go rest
+                    else
+                        raise (IOException $"write failed (errno {errno})")
+                elif int n = rest.Length then
+                    ()
+                else
+                    go rest[int n ..]
+
+        go payload
+
+    let private appendWindows (path: string) (payload: byte[]) =
+        let rec go attempt =
+            try
+                use fs = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.Read, 1)
+                fs.Write(payload, 0, payload.Length)
+                fs.Flush true
+            with :? IOException as e when
+                not (e :? DirectoryNotFoundException)
+                && not (e :? FileNotFoundException)
+                && attempt < 6 ->
+                System.Threading.Thread.Sleep(5 <<< attempt)
+                go (attempt + 1)
+
+        go 0
+
+    let appendBytes (path: string) (payload: byte[]) : unit =
+        if System.OperatingSystem.IsWindows() then
+            appendWindows path payload
+        else
+            use sfh = openAppend path
+            writeAll (int (sfh.DangerousGetHandle())) payload
+
 // liberal-in: unpadded standard-alphabet base64 pads before decoding;
 // encoding emits padded (the one stated default). URL-safe (-_) is
 // parked with the JWT trigger [D:encoding-law].
@@ -2722,11 +2819,12 @@ let private fileMembers: (string * Ty * Value) list =
                   writeGuard "File.append" r
 
                   ioGuarded "File.append" r (fun () ->
-                      use w = new StreamWriter(r, true)
-                      w.NewLine <- "\n"
+                      let sb = System.Text.StringBuilder()
 
                       for l in lines do
-                          w.WriteLine(asString l))
+                          sb.Append(asString l).Append '\n' |> ignore
+
+                      AppendNative.appendBytes r (utf8Strict.GetBytes(sb.ToString())))
 
                   VUnit
               | _ -> unreachable "the checker rejects 'File.append' on these arguments"))

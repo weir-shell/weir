@@ -52,6 +52,19 @@
 
 ### Fixed
 
+- **`File.append` is safe under concurrent appenders.** .NET's
+  `FileMode.Append` never opens with `O_APPEND` — it seeks in
+  userspace and writes with `pwrite` at offsets computed from a stale
+  end, so two appenders overwrote each other's bytes (a stress of
+  8 writers lost lines and corrupted tails; .NET 10's own
+  `File.AppendAllBytes` carries the same race). The fd now opens
+  `O_WRONLY|O_APPEND|O_CLOEXEC` via libc on Unix and the whole call
+  goes out in one unbuffered `write(2)` — every call lands contiguous
+  and intact, and no lock ever blocks a concurrent reader. Windows
+  falls back to `FileMode.Append` + `FileShare.Read` with one write
+  and a bounded retry on the sharing violation. The payload encodes
+  once — `utf8Strict`, LF, no BOM.
+
 - **The one-line echo's type tail recedes.** `() : unit` after a unit
   entry printed as normal text while every other footer dimmed; it is
   metadata and now recedes, and a scalar echo's ` : int` tail dims the

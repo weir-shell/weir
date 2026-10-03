@@ -6285,6 +6285,119 @@ if [ "$IS_WINDOWS" != "1" ]; then
     rm -rf "$acfg" "$astub"
 fi
 
+# ---- File.append under concurrent appenders [D:append-oappend] ------------
+# N weir processes append to one file at once; every call must land
+# contiguous and intact — O_APPEND on Unix, so no writer can overwrite
+# another's bytes and no lock blocks a concurrent reader. Payload shapes
+# cycle: one short line, a three-line call, a >4KiB line, a >64KiB line,
+# each line a JSON object carrying writer id, seq and its own sha256.
+if [ "$IS_WINDOWS" != "1" ]; then
+    apdir=$(mkweirtmp)
+    cat > "$apdir/writer.weir" <<'WEOF'
+type Cli = {
+    /// writer id
+    id: int
+    /// append calls to make
+    calls: int
+    /// the shared log path
+    log: string
+}
+
+let cli = Args.load Cli
+
+let payload size tag =
+    let unit = $"{tag}-abcdefghijklmnopqrstuvwxyz0123456789-"
+    let reps = size / Str.length unit + 1
+    ([1..reps] |> Seq.map (fun _ -> unit) |> Str.join "")[0 .. size - 1]
+
+let jline q k n data =
+    let h = Str.sha256 data
+    $"{{\"w\":{cli.id},\"q\":{q + 0},\"k\":{k + 0},\"n\":{n + 0},\"h\":\"{h}\",\"d\":\"{data}\"}}"
+
+for s in [1 .. cli.calls] do
+    match s % 4 with
+    | 1 -> File.append cli.log [ jline s 1 1 (payload 40 $"w{cli.id}s{s}") ]
+    | 2 ->
+        File.append
+            cli.log
+            [ jline s 1 3 (payload 60 $"w{cli.id}s{s}a")
+              jline s 2 3 (payload 60 $"w{cli.id}s{s}b")
+              jline s 3 3 (payload 60 $"w{cli.id}s{s}c") ]
+    | 3 -> File.append cli.log [ jline s 1 1 (payload 5000 $"w{cli.id}s{s}") ]
+    | _ -> File.append cli.log [ jline s 1 1 (payload 70000 $"w{cli.id}s{s}") ]
+WEOF
+    cat > "$apdir/validate.weir" <<'WEOF'
+type Cli = {
+    /// the shared log path
+    log: string
+    /// expected writers
+    writers: int
+    /// calls per writer
+    calls: int
+}
+
+type Line = { w: int; q: int; k: int; n: int; h: string; d: string }
+type Pend = { pw: int; pq: int; pn: int; pk: int }
+
+let cli = Args.load Cli
+let raw = File.read cli.log |> Seq.freeze
+let expected = cli.writers * (cli.calls / 4 * 6)
+
+let parsed =
+    raw
+    |> Seq.map (fun l ->
+        let r = [ l ] |> from json Line
+        if Str.sha256 r.d <> r.h then fail $"checksum mismatch at w{r.w} q{r.q} k{r.k}"
+        r)
+    |> Seq.freeze
+
+let zero = { pw = 0; pq = 0; pn = 0; pk = 0 }
+
+let tail =
+    parsed
+    |> Seq.fold
+        (fun st r ->
+            if st.pn == 0 then
+                if r.k <> 1 then
+                    fail $"call starts mid-way: w{r.w} q{r.q} k{r.k}"
+
+                if r.n > 1 then
+                    { pw = r.w; pq = r.q; pn = r.n; pk = 2 }
+                else
+                    zero
+            else
+                if r.w <> st.pw || r.q <> st.pq || r.k <> st.pk then
+                    fail $"call w{st.pw} q{st.pq} not contiguous: found w{r.w} q{r.q} k{r.k} wanting k{st.pk}"
+
+                if st.pk == st.pn then zero else { st with pk = st.pk + 1 })
+        zero
+
+if tail.pn <> 0 then
+    fail $"file ends mid-call w{tail.pw} q{tail.pq}"
+
+if (raw |> Seq.length) <> expected then
+    fail $"line count {raw |> Seq.length} <> expected {expected}"
+
+print "append-stress ok"
+WEOF
+    aplog="$apdir/shared.jsonl"
+    : > "$aplog"
+    appids=""
+    for i in 1 2 3 4; do
+        "$BIN" "$apdir/writer.weir" --id "$i" --calls 16 --log "$aplog" & appids="$appids $!"
+    done
+    # a concurrent weir reader must never fail against the appenders
+    # (no locks on the O_APPEND path)
+    "$BIN" -e "File.read \"$aplog\" |> Seq.length |> show |> print" > /dev/null 2>"$apdir/reader.err" || true
+    aprc=0
+    for p in $appids; do wait "$p" || aprc=1; done
+    [ "$aprc" = "0" ] || fail "append stress: a writer failed"
+    [ -s "$apdir/reader.err" ] && fail "append stress: the concurrent reader errored: $(cat "$apdir/reader.err")" || true
+    out=$("$BIN" "$apdir/validate.weir" --log "$aplog" --writers 4 --calls 16 2>&1) || fail "append stress validation: $out"
+    echo "$out" | grep -qF "append-stress ok" || fail "append stress: $out"
+    echo "e2e ok: File.append — 4 concurrent appenders, every call contiguous and intact, reader unblocked"
+fi
+
 # ---- dynamic command heads [D:dynamic-head] ----------------------------
 # ^$name / ^$(…) force-external a value head: one program, resolved at
 # run, argv stays typed argv. Stubs echo their argv so injection safety
