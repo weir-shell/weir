@@ -518,6 +518,11 @@ else:
            "params": {"textDocument": {"uri": INIT_URI,
                       "text": 'let prompt () = "> "\n\n#session {\n    prompt = prompt\n}\n'}}})
     expect(init_diags() == [], "#session/#alias must not be flagged in init.weir")
+    # init declarations are session exports: top-level names exist to be
+    # used LATER, by the session — the loader never judges unused-ness,
+    # so neither does the editor (the script law stays for ordinary files)
+    init_change('let prompt () = "> "\nlet helper () = "h"\n\n#session {\n    prompt = prompt\n}\n')
+    expect(init_diags() == [], "a declaration unused in-file is not flagged — the session is the importer")
     # a genuine declaration error still surfaces (suppression is surgical) —
     # prompt stays defined so the field is clean; Bad is the error
     sendI({"jsonrpc": "2.0", "method": "textDocument/didChange",

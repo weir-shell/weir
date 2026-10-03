@@ -515,7 +515,14 @@ let private analyze (uri: string) (text: string) =
 
     let diags =
         if isReplInitPath path then
-            diags @ sessionFieldDiags path raw stmts
+            // init declarations are session exports [D:repl-init]: the
+            // session is the importer of every top-level name, so the
+            // script law's unused-binding judgement does not apply —
+            // the loader never judges it (checkStatement carries no
+            // whole-file unused pass), and the editor must not flag
+            // what the loader loads clean
+            (diags |> List.filter (fun d -> d.Code <> "unused-binding"))
+            @ sessionFieldDiags path raw stmts
         else
             diags
 
