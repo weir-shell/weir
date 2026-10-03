@@ -2068,20 +2068,71 @@ module private AppendNative =
 
         go payload
 
-    let private appendWindows (path: string) (payload: byte[]) =
-        let rec go attempt =
-            try
-                use fs = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.Read, 1)
-                fs.Write(payload, 0, payload.Length)
-                fs.Flush true
-            with :? IOException as e when
-                not (e :? DirectoryNotFoundException)
-                && not (e :? FileNotFoundException)
-                && attempt < 6 ->
-                System.Threading.Thread.Sleep(5 <<< attempt)
-                go (attempt + 1)
+    [<Literal>]
+    let private FILE_APPEND_DATA = 0x4u
 
-        go 0
+    [<Literal>]
+    let private SYNCHRONIZE = 0x100000u
+
+    [<Literal>]
+    let private FILE_SHARE_RWD = 0x7u
+
+    [<Literal>]
+    let private OPEN_ALWAYS = 4u
+
+    [<Literal>]
+    let private FILE_ATTRIBUTE_NORMAL = 0x80u
+
+    [<System.Runtime.InteropServices.DllImport("kernel32.dll",
+                                               SetLastError = true,
+                                               CharSet = System.Runtime.InteropServices.CharSet.Unicode)>]
+    extern nativeint private CreateFileW(
+        string lpFileName,
+        uint dwDesiredAccess,
+        uint dwShareMode,
+        nativeint lpSecurityAttributes,
+        uint dwCreationDisposition,
+        uint dwFlagsAndAttributes,
+        nativeint hTemplateFile)
+
+    [<System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)>]
+    extern bool private WriteFile(
+        nativeint hFile,
+        byte[] lpBuffer,
+        uint nNumberOfBytesToWrite,
+        uint& lpNumberOfBytesWritten,
+        nativeint lpOverlapped)
+
+    let private appendWindows (path: string) (payload: byte[]) =
+        let h =
+            CreateFileW(
+                path,
+                FILE_APPEND_DATA ||| SYNCHRONIZE,
+                FILE_SHARE_RWD,
+                0n,
+                OPEN_ALWAYS,
+                FILE_ATTRIBUTE_NORMAL,
+                0n
+            )
+
+        if h = -1n then
+            raise (IOException $"open failed (win32 {System.Runtime.InteropServices.Marshal.GetLastPInvokeError()})")
+
+        use sfh = new Microsoft.Win32.SafeHandles.SafeFileHandle(h, true)
+
+        let rec go (rest: byte[]) =
+            if rest.Length > 0 then
+                let mutable written = 0u
+
+                if not (WriteFile(sfh.DangerousGetHandle(), rest, uint rest.Length, &written, 0n)) then
+                    raise
+                        (IOException
+                            $"write failed (win32 {System.Runtime.InteropServices.Marshal.GetLastPInvokeError()})")
+
+                if int written < rest.Length then
+                    go rest[int written ..]
+
+        go payload
 
     let appendBytes (path: string) (payload: byte[]) : unit =
         if System.OperatingSystem.IsWindows() then
@@ -2123,6 +2174,34 @@ let private bomAt (fs: FileStream) : bool =
     let head = Array.zeroCreate 3
     let n = fs.Read(head, 0, 3)
     n = 3 && head[0] = 0xEFuy && head[1] = 0xBBuy && head[2] = 0xBFuy
+// readers grant ReadWrite|Delete sharing [D:write-integrity]: a Windows
+// share grant cuts both ways — the .NET read default (FileShare.Read)
+// denies any live writer, and without FILE_SHARE_DELETE a held reader
+// makes writeAtomic's rename throw. Unix is unchanged: every non-None
+// share is the same LOCK_SH.
+let private openShared (r: string) : FileStream =
+    new FileStream(r, FileMode.Open, FileAccess.Read, FileShare.ReadWrite ||| FileShare.Delete)
+
+let private readLinesShared (r: string) : string[] =
+    use sr = new StreamReader(openShared r)
+    let acc = ResizeArray()
+    let mutable line = sr.ReadLine()
+
+    while line <> null do
+        acc.Add line
+        line <- sr.ReadLine()
+
+    acc.ToArray()
+
+let private readTextShared (r: string) : string =
+    use sr = new StreamReader(openShared r)
+    sr.ReadToEnd()
+
+let private readBytesShared (r: string) : byte[] =
+    use fs = openShared r
+    use ms = new MemoryStream()
+    fs.CopyTo ms
+    ms.ToArray()
 
 // the whole-file swap behind File.writeAtomic: the payload lands in a
 // same-directory exclusive temp, is fsynced, and renames over the
@@ -2143,7 +2222,7 @@ let private atomicReplace (r: string) (lines: Value seq) : unit =
 
     let keepBom =
         File.Exists target
-        && (use fs = new FileStream(target, FileMode.Open, FileAccess.Read, FileShare.ReadWrite)
+        && (use fs = openShared target
             bomAt fs)
 
     let payload = writePayload keepBom lines
@@ -2158,6 +2237,16 @@ let private atomicReplace (r: string) (lines: Value seq) : unit =
         match System.IO.Path.GetDirectoryName target with
         | "" -> "."
         | d -> d
+
+    // a SIGKILL mid-temp strands one dot-temp; the next writer to the
+    // same target sweeps stale twins — age-keyed, never pid-keyed
+    // (containers renumber pids across namespaces)
+    for stale in System.IO.Directory.EnumerateFiles(dir, $".{System.IO.Path.GetFileName target}.weir-tmp-*") do
+        try
+            if System.DateTime.UtcNow - File.GetLastWriteTimeUtc stale > System.TimeSpan.FromMinutes 10.0 then
+                File.Delete stale
+        with _ ->
+            ()
 
     let tmp =
         System.IO.Path.Combine(
@@ -2174,9 +2263,22 @@ let private atomicReplace (r: string) (lines: Value seq) : unit =
         | Some m -> File.SetUnixFileMode(tmp, m)
         | None -> ()
 
-        File.Move(tmp, target, true)
+        if System.OperatingSystem.IsWindows() then
+            // a reader holding the target without FILE_SHARE_DELETE makes
+            // the rename throw — bounded backoff, never on not-found
+            let rec move attempt =
+                try
+                    File.Move(tmp, target, true)
+                with :? IOException as e when
+                    not (e :? DirectoryNotFoundException)
+                    && not (e :? FileNotFoundException)
+                    && attempt < 6 ->
+                    System.Threading.Thread.Sleep(5 <<< attempt)
+                    move (attempt + 1)
 
-        if not (System.OperatingSystem.IsWindows()) then
+            move 0
+        else
+            File.Move(tmp, target, true)
             AppendNative.fsyncDir dir
     with e ->
         (try
@@ -2682,7 +2784,7 @@ let private envFromFileImpl: Value =
 
                     let lines =
                         try
-                            File.ReadAllLines resolved
+                            readLinesShared resolved
                         with
                         | :? System.UnauthorizedAccessException ->
                             failwith $"Env.fromFile: permission denied: {resolved}"
@@ -2759,6 +2861,7 @@ let private readGuard (op: string) (r: string) : unit =
         failwith $"{op}: {r} is a directory"
     elif not (File.Exists r) then
         failwith $"{op}: no such file: {r}"
+
 
 let private writeGuard (op: string) (r: string) : unit =
     if System.IO.Directory.Exists r then
@@ -2842,7 +2945,7 @@ let private fileMembers: (string * Ty * Value) list =
               let r = Session.resolve path
               PlanMode.checkRead "File.read" r
               readGuard "File.read" r
-              VSeq(ioGuarded "File.read" r (fun () -> File.ReadAllLines r) |> Seq.map VStr)
+              VSeq(ioGuarded "File.read" r (fun () -> readLinesShared r) |> Seq.map VStr)
           | v -> unreachable $"the checker rejects 'File.read' on {formatValue v}")
       // a token in a file is a real pattern [D:secret]: a mounted k8s /
       // docker secret is a file. One member (a family would be parked):
@@ -2856,7 +2959,7 @@ let private fileMembers: (string * Ty * Value) list =
               let r = Session.resolve path
               PlanMode.checkRead "File.readSecret" r
               readGuard "File.readSecret" r
-              VSecret((ioGuarded "File.readSecret" r (fun () -> File.ReadAllText r)).TrimEnd('\n', '\r'))
+              VSecret((ioGuarded "File.readSecret" r (fun () -> readTextShared r)).TrimEnd('\n', '\r'))
           | v -> unreachable $"the checker rejects 'File.readSecret' on {formatValue v}")
       "write",
       TFun(TStr, TFun(TSeq TStr, TUnit)),
@@ -3099,7 +3202,7 @@ let private fsMoreFileMembers: (string * Ty * Value) list =
           | VStr p ->
               let r = Session.resolve p
               readGuard "File.readBytes" r
-              VBytes(ioGuarded "File.readBytes" r (fun () -> System.IO.File.ReadAllBytes r))
+              VBytes(ioGuarded "File.readBytes" r (fun () -> readBytesShared r))
           | v -> unreachable $"the checker rejects 'File.readBytes' on {formatValue v}")
       "writeBytes",
       TFun(TStr, TFun(TBytes, TUnit)),
@@ -3129,7 +3232,7 @@ let private fsMoreFileMembers: (string * Ty * Value) list =
 
               VStr(
                   ioGuarded "File.sha256" r (fun () ->
-                      use fs = System.IO.File.OpenRead r
+                      use fs = openShared r
 
                       System.Security.Cryptography.SHA256.HashData fs
                       |> Array.map (fun x -> x.ToString "x2")
@@ -5791,7 +5894,10 @@ let builtinDocs: Map<string, BuiltinDoc> =
               None
            |> named [ "path"; "lines" ])
           "File.append",
-          (bd "Append a sequence of lines to a file." None None
+          (bd
+              "Append a sequence of lines, safe under concurrent appenders: the whole call goes out as one kernel append (O_APPEND on Unix; append-only access on Windows), so calls land contiguous and intact and no lock blocks a concurrent reader. The atom is a single completed append — a short write (disk full, a size cap) retries and another writer may land between the parts — and the guarantee is a local-filesystem one: same-host bind mounts hold, a network filesystem (nfs, smb) does not."
+              None
+              None
            |> named [ "path"; "lines" ])
           "File.mode",
           (bd

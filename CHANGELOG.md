@@ -60,9 +60,20 @@
   preserved. The trade against `File.write` is the inode change:
   hardlinks split, held handles and `tail -f` keep the old file, and
   a Docker single-file bind mount breaks. In a plan it captures the
-  same `WriteFile` op.
+  same `WriteFile` op. A temp stranded by a kill is swept by the next
+  `writeAtomic` to the same target — age-keyed (ten minutes), never
+  pid-keyed. On Windows the rename retries briefly while a reader
+  without delete-sharing holds the target.
 
 ### Fixed
+
+- **weir's file readers no longer block Windows writers.**
+  `File.read`/`readSecret`/`readBytes`/`File.sha256` (and
+  `Env.fromFile`) open with `ReadWrite|Delete` sharing — a Windows
+  share grant cuts both ways, so the old read default denied any live
+  writer and a held reader broke `writeAtomic`'s rename. Unix
+  locking is unchanged (every non-`None` share is the same shared
+  lock).
 
 - **`File.write` cannot destroy a file it failed to write.** The old
   shape truncated first and streamed lines after, so a payload that
@@ -81,10 +92,13 @@
   `File.AppendAllBytes` carries the same race). The fd now opens
   `O_WRONLY|O_APPEND|O_CLOEXEC` via libc on Unix and the whole call
   goes out in one unbuffered `write(2)` — every call lands contiguous
-  and intact, and no lock ever blocks a concurrent reader. Windows
-  falls back to `FileMode.Append` + `FileShare.Read` with one write
-  and a bounded retry on the sharing violation. The payload encodes
-  once — `utf8Strict`, LF, no BOM.
+  and intact, and no lock ever blocks a concurrent reader. On Windows
+  the handle opens append-only (`FILE_APPEND_DATA`, full sharing) —
+  the same kernel-atomic append, no writer mutual exclusion. The
+  payload encodes once — `utf8Strict`, LF, no BOM. The atom is one
+  completed append (a short write retries, so disk-full edges can
+  split a call), and the guarantee is local-filesystem: same-host
+  bind mounts hold, a network filesystem does not.
 
 - **The one-line echo's type tail recedes.** `() : unit` after a unit
   entry printed as normal text while every other footer dimmed; it is

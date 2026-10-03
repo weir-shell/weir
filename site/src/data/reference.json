@@ -358,7 +358,7 @@
         {
           "name": "append",
           "signature": "File.append (path: string) (lines: seq\u003Cstring\u003E) : unit",
-          "summary": "Append a sequence of lines to a file.",
+          "summary": "Append a sequence of lines, safe under concurrent appenders: the whole call goes out as one kernel append (O_APPEND on Unix; append-only access on Windows), so calls land contiguous and intact and no lock blocks a concurrent reader. The atom is a single completed append \u2014 a short write (disk full, a size cap) retries and another writer may land between the parts \u2014 and the guarantee is a local-filesystem one: same-host bind mounts hold, a network filesystem (nfs, smb) does not.",
           "example": null,
           "pointer": null
         },
