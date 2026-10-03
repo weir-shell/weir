@@ -2584,21 +2584,27 @@ WEOF
         | XDG_CONFIG_HOME="$spdir/cfg" XDG_STATE_HOME="$spdir/state" python3 "$ptyrun" 10 "$BIN")
     echo "$spout" | grep -qF ']0;pwned' && fail "an OSC in provider output must be stripped: $spout" || true
     echo "$spout" | grep -qF '35mI> ' || fail "the SGR beside the dropped OSC survives: $spout"
-    # the status-carrying provider [D:prompt-status-arg]: prompt = bool
-    # -> string receives the tint — false after a bare command's nonzero
-    # exit, true again after a clean entry — so a custom prompt paints
-    # its own status colors
+    # the status-carrying provider [D:prompt-status-arg]: prompt =
+    # PromptStatus -> string — ok is the tint, exit a bare command's
+    # nonzero code (None for a non-command error) — written with a bare
+    # param (the function types as a row; the loader accepts any field
+    # set PromptStatus satisfies)
     cat > "$spdir/cfg/weir/init.weir" <<'WEOF'
-let prompt ok = if ok then "SOK> " else "SBAD> "
+let prompt st =
+    if st.ok then
+        "SOK> "
+    else
+        $"SX{st.exit |> Option.map show |> Option.defaultValue "B"}> "
 
 #session {
     prompt = prompt
 }
 WEOF
-    spout=$(printf 'SLEEP 900\nSEND sh -c "exit 3"\\r\nSLEEP 700\nSEND 1 + 1\\r\nSLEEP 400\nSEND #quit\\r\n' \
-        | XDG_CONFIG_HOME="$spdir/cfg" XDG_STATE_HOME="$spdir/state" python3 "$ptyrun" 12 "$BIN")
-    echo "$spout" | grep -qF "SBAD> " || fail "a bool provider must see false after a nonzero exit: $spout"
-    echo "$spout" | grep -qF "SOK> " || fail "a bool provider must see true on a clean entry: $spout"
+    spout=$(printf 'SLEEP 900\nSEND sh -c "exit 3"\\r\nSLEEP 700\nSEND nope\\r\nSLEEP 500\nSEND 1 + 1\\r\nSLEEP 400\nSEND #quit\\r\n' \
+        | XDG_CONFIG_HOME="$spdir/cfg" XDG_STATE_HOME="$spdir/state" python3 "$ptyrun" 14 "$BIN")
+    echo "$spout" | grep -qF "SX3> " || fail "the provider must see the bare command's exit code: $spout"
+    echo "$spout" | grep -qF "SXB> " || fail "a non-command error must carry exit = None: $spout"
+    echo "$spout" | grep -qF "SOK> " || fail "a clean entry must paint ok: $spout"
 
     echo "e2e ok: #session prompt — an init provider paints at a tty (commands run when called), a raising one falls back with one note, only SGR passes, and a bool provider carries the status"
 else
@@ -9271,7 +9277,7 @@ cat > "$INITHOME/weir/init.weir" <<'WEOF'
 }
 WEOF
 iout=$(printf '#quit\n' | XDG_CONFIG_HOME="$initcfg" XDG_STATE_HOME="$initcfg/state" "$BIN" 2>&1)
-echo "$iout" | grep -qF "prompt expects a string, a unit -> string, or a bool -> string function" || fail "a mistyped prompt must refuse with the shapes named: $iout"
+echo "$iout" | grep -qF "prompt expects a string, a unit -> string, or a PromptStatus -> string function" || fail "a mistyped prompt must refuse with the shapes named: $iout"
 
 # declaration-only: a bare command refuses with the teach
 cat > "$INITHOME/weir/init.weir" <<'WEOF'

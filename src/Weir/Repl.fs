@@ -13,10 +13,11 @@ let private defaultPrompt = "weir> "
 // in readInput — never per keystroke, never in a redirected session —
 // and its output is held stable across repaints. Set by loadInit after
 // the declarations bind, so it can call the init's own functions.
-// The bool is the status tint [D:red-prompt] [D:prompt-status-arg]:
-// true when the last entry ran clean — a custom prompt owns its
-// colors, so the tint arrives as data instead of a paint.
-let mutable private promptProvider: (bool -> string) option = None
+// The PromptStatus argument [D:red-prompt] [D:prompt-status-arg]:
+// ok is the tint (true when the last entry ran clean), exit a bare
+// command's nonzero code — a custom prompt owns its colors, so the
+// status arrives as data instead of a paint.
+let mutable private promptProvider: ((bool * int option) -> string) option = None
 
 // the prompt in effect for the entry being read; sanitized text (SGR
 // allowed), its visible width, and a same-width continuation prompt.
@@ -146,13 +147,18 @@ let sanitizePromptForTest (raw: string) =
 // zero-width — column math everywhere counts prompt.Length.
 let mutable private lastErrored = false
 
+// the tint's exit twin [D:prompt-status-arg]: a bare command's nonzero
+// code, None for every other outcome — set and cleared wherever the
+// tint is
+let mutable private lastExit: int option = None
+
 let private computePrompt () =
     match promptProvider with
     | None -> defaultPrompt
     | Some _ when Console.IsInputRedirected -> defaultPrompt
     | Some f ->
         try
-            f (not lastErrored) |> sanitizePromptForTest
+            f (not lastErrored, lastExit) |> sanitizePromptForTest
         with ex ->
             if not promptWarned then
                 promptWarned <- true
@@ -1884,6 +1890,7 @@ let private bindIt (ty: Ty) (v: Eval.Value) (env: State) : State =
 // submission paths [D:repl-multiline]
 let private evalCheckedBody (source: string) (state: State) (chk: Script.CheckedStatement) : State =
     lastErrored <- false
+    lastExit <- None
 
     match chk.Kind with
     | Script.KType decl ->
@@ -1923,6 +1930,7 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
          | Eval.ExitRequest _ -> reraise ()
          | ex ->
              lastErrored <- true
+             lastExit <- None
              Console.WriteLine(
                  Types.Color.red Types.Color.onStdout.Value "error"
                  + $": {Eval.sanitizeIfTty Console.IsOutputRedirected ex.Message}"
@@ -2002,6 +2010,7 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
          | Eval.ExitRequest _ -> reraise ()
          | ex ->
              lastErrored <- true
+             lastExit <- None
              Console.WriteLine(
                  Types.Color.red Types.Color.onStdout.Value "error"
                  + $": {Eval.sanitizeIfTty Console.IsOutputRedirected ex.Message}"
@@ -2047,10 +2056,12 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
              // `lastErrored`.
              | :? Proc.CommandFailure as cf ->
                  lastErrored <- true
+                 lastExit <- Some cf.Code
                  echoMeta $"↳ exit {cf.Code}{cf.SignalNote}"
                  bindIt TUnit Eval.VUnit state
              | ex ->
                  lastErrored <- true
+                 lastExit <- None
 
                  Console.WriteLine(
                      Types.Color.red Types.Color.onStdout.Value "error"
@@ -2127,6 +2138,7 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
              | Eval.ExitRequest _ -> reraise ()
              | ex ->
                  lastErrored <- true
+                 lastExit <- None
 
                  Console.WriteLine(
                      Types.Color.red Types.Color.onStdout.Value "error"
@@ -3225,6 +3237,7 @@ let rec private loop (state: State) =
         let t = line.Trim()
 
         lastErrored <- false
+        lastExit <- None
 
         if t = "#quit" then
             ()
@@ -3353,6 +3366,7 @@ let rec private loop (state: State) =
                         with
                         | Error d ->
                             lastErrored <- true
+                            lastExit <- None
                             // script-style rendering: the offending source
                             // line + caret + message (the buffer's echo is
                             // rows above; reprinting is deterministic)
@@ -3425,6 +3439,7 @@ let rec private loop (state: State) =
             with
             | Error d when d.Parse ->
                 lastErrored <- true
+                lastExit <- None
                 // the input sits on the prompt line above — caret under it
                 Console.WriteLine(
                     Types.Color.red Types.Color.onStdout.Value (String(' ', promptWidth + d.PhysCol - 1) + "^")
@@ -3436,6 +3451,7 @@ let rec private loop (state: State) =
                 state
             | Error d ->
                 lastErrored <- true
+                lastExit <- None
 
                 d.Span
                 |> Option.iter (underline >> Types.Color.red Types.Color.onStdout.Value >> Console.WriteLine)
@@ -4016,16 +4032,28 @@ let private loadInit (baseState: State) : State =
                                                                initDiag path ll.Head 5 (srcLine ll.Head) ex.Message
                                                                false)
                                                       // the status-carrying provider [D:prompt-status-arg]:
-                                                      // the bool is the tint — true when the last entry
-                                                      // ran clean (a bare command's nonzero exit counts
-                                                      // as not-clean; a reified exit stays data)
-                                                      | Types.TFun(Types.TBool, Types.TStr) ->
+                                                      // ok is the tint — true when the last entry ran
+                                                      // clean (a bare command's nonzero exit counts as
+                                                      // not-clean and rides in exit; a reified exit
+                                                      // stays data)
+                                                      | Types.TFun(dom, Types.TStr) when Script.promptStatusDomain dom ->
                                                           (try
                                                               let f = Eval.eval venv te
 
                                                               promptProvider <-
-                                                                  Some(fun ok ->
-                                                                      match Eval.apply f (Eval.VBool ok) with
+                                                                  Some(fun (ok, exit) ->
+                                                                      let ex =
+                                                                          match exit with
+                                                                          | Some n -> Eval.VUnion("Some", Some(Eval.VInt(int64 n)))
+                                                                          | None -> Eval.VUnion("None", None)
+
+                                                                      let st =
+                                                                          Eval.VRecord(
+                                                                              "PromptStatus",
+                                                                              [ "ok", Eval.VBool ok; "exit", ex ]
+                                                                          )
+
+                                                                      match Eval.apply f st with
                                                                       | Eval.VStr s -> s
                                                                       | _ -> defaultPrompt)
 
@@ -4039,7 +4067,7 @@ let private loadInit (baseState: State) : State =
                                                               ll.Head
                                                               5
                                                               (srcLine ll.Head)
-                                                              $"prompt expects a string, a unit -> string, or a bool -> string function (the bool: whether the last entry ran clean), got {Types.formatTy ty}"
+                                                              $"prompt expects a string, a unit -> string, or a PromptStatus -> string function (ok + a bare command's exit code), got {Types.formatTy ty}"
 
                                                           false)
                                                  | _ ->

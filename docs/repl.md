@@ -415,13 +415,23 @@ commands.
 ### `prompt`: your own prompt
 
 `prompt` takes a string, or the name of a `unit -> string` or
-`bool -> string` function declared in the same file. The `bool` form
-receives the status tint — `true` when the last entry ran clean, and
-a bare command's nonzero exit counts as not clean (a reified exit,
-`| exitCode` or `| complete`, is data and stays clean) — so a custom
-prompt paints its own red/green where the default prompt would have
-reddened. The function may run commands: it is called once per entry
-read (never per keystroke), after the previous entry finishes. Because the value names your declarations, it is
+`PromptStatus -> string` function declared in the same file.
+`PromptStatus` carries the entry status: `ok` is the tint — `true`
+when the last entry ran clean, and a bare command's nonzero exit
+counts as not clean (a reified exit, `| exitCode` or `| complete`,
+is data and stays clean) — and `exit` is that bare command's code
+(`Option<int>`, `None` for every other outcome). A custom prompt
+paints its own red/green where the default prompt would have
+reddened, and can show the code the way `↳ exit N` does. Write the
+param bare and read its fields (`st.ok`, `st.exit`): records are
+nominal and the init file takes no signatures, so the function types
+structurally and the loader accepts any field set `PromptStatus`
+satisfies. One spelling to know: `match st.exit with` cannot type an
+unresolved field (constructor patterns need a known scrutinee) —
+read it through the `Option` members instead
+(`st.exit |> Option.map show |> Option.defaultValue ""`). The
+function may run commands: it is called once per entry read (never
+per keystroke), after the previous entry finishes. Because the value names your declarations, it is
 checked after they bind:
 
 ```text

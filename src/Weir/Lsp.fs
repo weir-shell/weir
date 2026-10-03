@@ -425,7 +425,7 @@ let private expectedFieldTypes (key: string) : Ty list =
     | "logLevel" -> [ TStr ]
     | "echoCap" -> [ TInt ]
     | "env" -> [ TSeq(TTuple [ TStr; TStr ]) ]
-    | "prompt" -> [ TStr; TFun(TUnit, TStr); TFun(TBool, TStr) ]
+    | "prompt" -> [ TStr; TFun(TUnit, TStr); TFun(TNamed("PromptStatus", []), TStr) ]
     | _ -> []
 
 let private sessionFieldDiags
@@ -479,7 +479,16 @@ let private sessionFieldDiags
                                 // seq<'a>) carries a tyvar — do not flag it
                                 let hasTyVar = valStr.Contains "'"
 
-                                if not hasTyVar && not (exp |> List.exists (fun e -> formatTy e = valStr)) then
+                                let promptRow =
+                                    key = "prompt"
+                                    && (match chk.Kind with
+                                        | Script.KLet(_, _, te2) ->
+                                            (match te2.Ty with
+                                             | TFun(dom, TStr) -> Script.promptStatusDomain dom
+                                             | _ -> false)
+                                        | _ -> false)
+
+                                if not hasTyVar && not promptRow && not (exp |> List.exists (fun e -> formatTy e = valStr)) then
                                     let valCol =
                                         m.Groups.[1].Value.Length
                                         + key.Length

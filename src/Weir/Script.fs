@@ -2547,6 +2547,28 @@ let selfMembers: Map<string, Scheme> =
           // value under the mangled key); grouped here, not bare
           "prompt", generalize (TFun(TStr, TStr)) ]
 
+// the #session prompt's status domain [D:prompt-status-arg]: records
+// are nominal and init.weir admits no signatures, so a provider's
+// param types as a ROW ({ ok: bool; .. } — field access on a bare
+// param) — accepted when every named field is PromptStatus's own,
+// exactly typed; a bare unused param ('a) is accepted and simply
+// ignores the status. One predicate, read by the loader and the LSP.
+let promptStatusDomain (dom: Ty) : bool =
+    match dom with
+    | TNamed("PromptStatus", []) -> true
+    | TVar _ -> true
+    | TRowVar(_, fields) ->
+        fields
+        |> List.forall (fun (f, t) ->
+            // an unpinned var is a field the body only forwards (show,
+            // isSome) — the runtime value satisfies it; a WRONGLY pinned
+            // field (exit as Option<string>, a hole-defaulted ok) refuses
+            match f, t with
+            | "ok", (TBool | TVar _) -> true
+            | "exit", (TNamed("Option", [ TInt ]) | TNamed("Option", [ TVar _ ]) | TVar _) -> true
+            | _ -> false)
+    | _ -> false
+
 let private baseEnvs (scriptArgs: string list) (scriptPath: string) =
     let typeEnv = Builtins.typeEnvStrict
 
