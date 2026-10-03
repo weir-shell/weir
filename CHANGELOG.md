@@ -50,8 +50,8 @@
   It now arms the district as its first byte line, matching the
   stated law (every byte below the marker is content) and the
   mid-block behavior. `<<<`, `$<<<` and `$$<<<` alike; a `yaml`
-  template's leading `//` line now reaches the template parser the
-  same way a mid-block one always did.
+  template is untouched — there `//` lines are the template's own
+  comments, and a leading one stays transparent.
 
 ## v0.0.59
 

@@ -1332,14 +1332,19 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                     acc,
                                     blankSinceHead
                                 )
-                            // a comment-only FIRST content line is bytes too
-                            // [D:block-scalars]: it arms the district and
-                            // fixes the block base exactly as any first line
-                            // does — transparency fired here once, and a
+                            // a comment-only FIRST content line is bytes in a
+                            // HEREDOC [D:block-scalars]: it arms the district
+                            // and fixes the block base exactly as any first
+                            // line does — transparency fired here once, and a
                             // heredoc's leading `// header` line silently
-                            // vanished from the value
+                            // vanished from the value. Heredocs only: a yaml
+                            // template strips `//` lines as its own comments,
+                            // so a leading one stays transparent there (an
+                            // inserted comment must not fix the block base —
+                            // the fuzzer's comment-neutrality invariant)
                             | Some({ District = Some({ Active = None
                                                        Yaml = true
+                                                       Marker = MarkerKind.Heredoc
                                                        MarkerIndent = m } as dst) } as p) when
                                 (raw |> Seq.takeWhile ((=) ' ') |> Seq.length) > m
                                 ->
