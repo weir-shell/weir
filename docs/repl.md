@@ -414,10 +414,14 @@ commands.
 
 ### `prompt`: your own prompt
 
-`prompt` takes a string, or the name of a `unit -> string` function
-declared in the same file. The function may run commands: it is
-called once per entry read (never per keystroke), after the previous
-entry finishes. Because the value names your declarations, it is
+`prompt` takes a string, or the name of a `unit -> string` or
+`bool -> string` function declared in the same file. The `bool` form
+receives the status tint — `true` when the last entry ran clean, and
+a bare command's nonzero exit counts as not clean (a reified exit,
+`| exitCode` or `| complete`, is data and stays clean) — so a custom
+prompt paints its own red/green where the default prompt would have
+reddened. The function may run commands: it is called once per entry
+read (never per keystroke), after the previous entry finishes. Because the value names your declarations, it is
 checked after they bind:
 
 ```text

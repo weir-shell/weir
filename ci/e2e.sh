@@ -2584,7 +2584,23 @@ WEOF
         | XDG_CONFIG_HOME="$spdir/cfg" XDG_STATE_HOME="$spdir/state" python3 "$ptyrun" 10 "$BIN")
     echo "$spout" | grep -qF ']0;pwned' && fail "an OSC in provider output must be stripped: $spout" || true
     echo "$spout" | grep -qF '35mI> ' || fail "the SGR beside the dropped OSC survives: $spout"
-    echo "e2e ok: #session prompt — an init provider paints at a tty (commands run when called), a raising one falls back with one note, and only SGR escapes pass"
+    # the status-carrying provider [D:prompt-status-arg]: prompt = bool
+    # -> string receives the tint — false after a bare command's nonzero
+    # exit, true again after a clean entry — so a custom prompt paints
+    # its own status colors
+    cat > "$spdir/cfg/weir/init.weir" <<'WEOF'
+let prompt ok = if ok then "SOK> " else "SBAD> "
+
+#session {
+    prompt = prompt
+}
+WEOF
+    spout=$(printf 'SLEEP 900\nSEND sh -c "exit 3"\\r\nSLEEP 700\nSEND 1 + 1\\r\nSLEEP 400\nSEND #quit\\r\n' \
+        | XDG_CONFIG_HOME="$spdir/cfg" XDG_STATE_HOME="$spdir/state" python3 "$ptyrun" 12 "$BIN")
+    echo "$spout" | grep -qF "SBAD> " || fail "a bool provider must see false after a nonzero exit: $spout"
+    echo "$spout" | grep -qF "SOK> " || fail "a bool provider must see true on a clean entry: $spout"
+
+    echo "e2e ok: #session prompt — an init provider paints at a tty (commands run when called), a raising one falls back with one note, only SGR passes, and a bool provider carries the status"
 else
     echo "e2e skip: streaming-echo pty pins (POSIX + python3)"
 fi
@@ -9111,7 +9127,7 @@ cat > "$INITHOME/weir/init.weir" <<'WEOF'
 }
 WEOF
 iout=$(printf '#quit\n' | XDG_CONFIG_HOME="$initcfg" XDG_STATE_HOME="$initcfg/state" "$BIN" 2>&1)
-echo "$iout" | grep -qF "prompt expects a string or a unit -> string function, got int" || fail "a mistyped prompt must refuse with both shapes named: $iout"
+echo "$iout" | grep -qF "prompt expects a string, a unit -> string, or a bool -> string function" || fail "a mistyped prompt must refuse with the shapes named: $iout"
 
 # declaration-only: a bare command refuses with the teach
 cat > "$INITHOME/weir/init.weir" <<'WEOF'

@@ -25,6 +25,14 @@
   the token-endpoint shape, never a hand-built `k=v&…`. Shared with
   `serve` responses like the rest of `HttpBody`.
 
+- **The prompt provider carries the status.** `prompt` in the init
+  file's `#session` block now also takes a `bool -> string` function:
+  the argument is the red-prompt tint — `true` when the last entry ran
+  clean; a bare command's nonzero exit counts as not clean, a reified
+  exit (`| exitCode`, `| complete`) stays data. A custom prompt owns
+  its colors, so the status arrives as data instead of a paint:
+  `let prompt ok = if ok then Color.green "❯ " else Color.red "❯ "`.
+
 ### Changed
 
 - **A `Json` body takes the value.** `body = Json { name = "w"; count =

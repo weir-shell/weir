@@ -13,7 +13,10 @@ let private defaultPrompt = "weir> "
 // in readInput — never per keystroke, never in a redirected session —
 // and its output is held stable across repaints. Set by loadInit after
 // the declarations bind, so it can call the init's own functions.
-let mutable private promptProvider: (unit -> string) option = None
+// The bool is the status tint [D:red-prompt] [D:prompt-status-arg]:
+// true when the last entry ran clean — a custom prompt owns its
+// colors, so the tint arrives as data instead of a paint.
+let mutable private promptProvider: (bool -> string) option = None
 
 // the prompt in effect for the entry being read; sanitized text (SGR
 // allowed), its visible width, and a same-width continuation prompt.
@@ -134,22 +137,6 @@ let sanitizePromptForTest (raw: string) =
 
     if flat.Contains '\x1b' then flat + "\x1b[0m" else flat
 
-let private computePrompt () =
-    match promptProvider with
-    | None -> defaultPrompt
-    | Some _ when Console.IsInputRedirected -> defaultPrompt
-    | Some f ->
-        try
-            f () |> sanitizePromptForTest
-        with ex ->
-            if not promptWarned then
-                promptWarned <- true
-
-                Console.Error.WriteLine
-                    $"prompt: {ex.Message} — using the default prompt (later prompt errors stay quiet)"
-
-            defaultPrompt
-
 // The prompt's status tint [D:red-prompt]: true after an entry ends in
 // a printed error (parse, check, or eval), false after one executes
 // clean. A reified nonzero exit (`cmd | exitCode`, `| complete`) is
@@ -158,6 +145,22 @@ let private computePrompt () =
 // untouched (bash's own $? behavior for empty input). The tint is
 // zero-width — column math everywhere counts prompt.Length.
 let mutable private lastErrored = false
+
+let private computePrompt () =
+    match promptProvider with
+    | None -> defaultPrompt
+    | Some _ when Console.IsInputRedirected -> defaultPrompt
+    | Some f ->
+        try
+            f (not lastErrored) |> sanitizePromptForTest
+        with ex ->
+            if not promptWarned then
+                promptWarned <- true
+
+                Console.Error.WriteLine
+                    $"prompt: {ex.Message} — using the default prompt (later prompt errors stay quiet)"
+
+            defaultPrompt
 
 // The kill-ring [D:repl-killring]: the last text a kill verb removed
 // (Ctrl+U/Ctrl+K/Ctrl+W), yanked back by Ctrl+Y. Session-scoped
@@ -3985,7 +3988,7 @@ let private loadInit (baseState: State) : State =
                                                           (try
                                                               match Eval.eval venv te with
                                                               | Eval.VStr s ->
-                                                                  promptProvider <- Some(fun () -> s)
+                                                                  promptProvider <- Some(fun _ -> s)
                                                                   true
                                                               | _ -> false
                                                            with ex ->
@@ -3996,8 +3999,26 @@ let private loadInit (baseState: State) : State =
                                                               let f = Eval.eval venv te
 
                                                               promptProvider <-
-                                                                  Some(fun () ->
+                                                                  Some(fun _ ->
                                                                       match Eval.apply f Eval.VUnit with
+                                                                      | Eval.VStr s -> s
+                                                                      | _ -> defaultPrompt)
+
+                                                              true
+                                                           with ex ->
+                                                               initDiag path ll.Head 5 (srcLine ll.Head) ex.Message
+                                                               false)
+                                                      // the status-carrying provider [D:prompt-status-arg]:
+                                                      // the bool is the tint — true when the last entry
+                                                      // ran clean (a bare command's nonzero exit counts
+                                                      // as not-clean; a reified exit stays data)
+                                                      | Types.TFun(Types.TBool, Types.TStr) ->
+                                                          (try
+                                                              let f = Eval.eval venv te
+
+                                                              promptProvider <-
+                                                                  Some(fun ok ->
+                                                                      match Eval.apply f (Eval.VBool ok) with
                                                                       | Eval.VStr s -> s
                                                                       | _ -> defaultPrompt)
 
@@ -4011,7 +4032,7 @@ let private loadInit (baseState: State) : State =
                                                               ll.Head
                                                               5
                                                               (srcLine ll.Head)
-                                                              $"prompt expects a string or a unit -> string function, got {Types.formatTy ty}"
+                                                              $"prompt expects a string, a unit -> string, or a bool -> string function (the bool: whether the last entry ran clean), got {Types.formatTy ty}"
 
                                                           false)
                                                  | _ ->

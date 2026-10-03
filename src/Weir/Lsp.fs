@@ -425,7 +425,7 @@ let private expectedFieldTypes (key: string) : Ty list =
     | "logLevel" -> [ TStr ]
     | "echoCap" -> [ TInt ]
     | "env" -> [ TSeq(TTuple [ TStr; TStr ]) ]
-    | "prompt" -> [ TStr; TFun(TUnit, TStr) ]
+    | "prompt" -> [ TStr; TFun(TUnit, TStr); TFun(TBool, TStr) ]
     | _ -> []
 
 let private sessionFieldDiags
