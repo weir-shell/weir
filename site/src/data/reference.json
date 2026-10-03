@@ -572,16 +572,16 @@
           "pointer": null
         },
         {
-          "name": "fetch",
-          "signature": "Http.fetch (url: string) : seq\u003Cstring\u003E",
-          "summary": "The raising GET shorthand: takes a bare URL (never a request \u2014 a built request runs through Http.send), returns body only, raises on non-2xx naming the status (the \u0060curl -sf\u0060 / JS \u0060fetch(url)\u0060 analogue). Http.fetch raises where Http.send returns \u2014 two names, no boolean.",
+          "name": "expect",
+          "signature": "Http.expect (request: HttpRequest) : seq\u003Cstring\u003E",
+          "summary": "The raising read (\u0060curl -sf\u0060\u0027s posture): request in, body lines out, raises on non-2xx naming method, url, status and a capped body snippet \u2014 \u0060Http.get url |\u003E Http.expect\u0060 for the bare read, any \u0060with\u0060-built request the same way. When the error body is data to inspect, Http.send binds the status instead.",
           "example": null,
           "pointer": null
         },
         {
           "name": "get",
           "signature": "Http.get (url: string) : HttpRequest",
-          "summary": "A request constructor \u2014 returns an HttpRequest, makes no request: \u0060Http.get u\u0060 = \u0060{ Http.defaults with method = Get; url = u }\u0060; run it with Http.send. Add optionals with \u0060with\u0060: \u0060Http.send { Http.get u with auth = Bearer t }\u0060. The URL-in-body-out shorthand is Http.fetch.",
+          "summary": "A request constructor \u2014 returns an HttpRequest, makes no request: \u0060Http.get u\u0060 = \u0060{ Http.defaults with method = Get; url = u }\u0060; run it with Http.send (status as data) or Http.expect (raising, body out). Add optionals with \u0060with\u0060: \u0060Http.send { Http.get u with auth = Bearer t }\u0060.",
           "example": "Http.get \u0022http://x/y\u0022",
           "pointer": null
         },
