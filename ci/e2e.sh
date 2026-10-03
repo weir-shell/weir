@@ -6280,7 +6280,7 @@ if [ "$IS_WINDOWS" != "1" ]; then
     # over an alias shadows it (the function is callable); a live #alias
     # over a binding refuses with the teaching; an alias over a BUILTIN
     # name keeps resolving (cell (a)'s ls case is the canonical alias)
-    printf 'let hi () = print "the-function"\n\n#alias hi = kubectl\n' > "$acfg/weir/init.weir"
+    printf '#init\nlet hi () = print "the-function"\n\n#alias hi = kubectl\n' > "$acfg/weir/init.weir"
     out=$(printf '#quit\n' | PATH="$astub:$PATH" XDG_CONFIG_HOME="$acfg" $BIN 2>&1 || true)
     echo "$out" | grep -qF "is also declared in this file" || fail "an init alias/let collision must refuse located: $out"
     echo "$out" | grep -qF "not loaded" || fail "the alias/let collision is all-or-nothing: $out"
@@ -9241,7 +9241,7 @@ iout=$(printf '#help hi
 #quit
 ' | XDG_CONFIG_HOME="$initcfg" XDG_STATE_HOME="$initcfg/state" "$BIN" 2>&1)
 echo "$iout" | grep -qF "File.read: no such file:" || fail "a raising #session value must report its own error: $iout"
-echo "$iout" | grep -qE "init\.weir:2:" || fail "the raising #session value must be LOCATED at its line: $iout"
+echo "$iout" | grep -qE "init\.weir:3:" || fail "the raising #session value must be LOCATED at its line: $iout"
 echo "$iout" | grep -qF "init: not loaded" || fail "a raising #session value must not load"
 echo "$iout" | grep -qF "unknown name 'hi'" || fail "all-or-nothing broke after a raising #session value"
 echo "$iout" | grep -qF "Unhandled exception" && fail "a raising #session value dumped a .NET trace: $iout" || true
@@ -9255,10 +9255,25 @@ iout=$(printf '#help hi
 #quit
 ' | XDG_CONFIG_HOME="$initcfg" XDG_STATE_HOME="$initcfg/state" "$BIN" 2>&1)
 echo "$iout" | grep -qF "File.read: no such file:" || fail "a raising init let must report its own error: $iout"
-echo "$iout" | grep -qE "init\.weir:1:" || fail "the raising let must be LOCATED at its line: $iout"
+echo "$iout" | grep -qE "init\.weir:2:" || fail "the raising let must be LOCATED at its line: $iout"
 echo "$iout" | grep -qF "init: not loaded" || fail "a raising init let must not load"
 echo "$iout" | grep -qF "unknown name 'hi'" || fail "all-or-nothing broke after a raising init let"
 echo "$iout" | grep -qF "Unhandled exception" && fail "a raising init let dumped a .NET trace: $iout" || true
+
+# the marker is required [D:init-marker]: the canonical file without
+# #init refuses, located, and the session starts without it
+cat > "$INITHOME/weir/init.weir" <<'WEOF'
+let hi () = print "hi"
+
+#session {
+    echoCap = 7
+}
+WEOF
+iout=$(printf '#echo\n#quit\n' | XDG_CONFIG_HOME="$initcfg" XDG_STATE_HOME="$initcfg/state" "$BIN" 2>&1)
+echo "$iout" | grep -qF "put #init on the first line" || fail "an unmarked canonical init must refuse naming the marker: $iout"
+echo "$iout" | grep -qF "init: not loaded" || fail "an unmarked init must not load"
+echo "$iout" | grep -qF "echo cap: 7" && fail "an unmarked init must not apply its #session (echoCap leaked): $iout" || true
+echo "e2e ok: the init file requires #init — unmarked refuses, located, nothing applied"
 
 # the #session prompt [D:session-prompt], piped half: the provider
 # names an init declaration (so it checks after the declarations bind),
