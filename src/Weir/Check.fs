@@ -1721,6 +1721,29 @@ let checkBinderName (span: Span) (name: string) : Result<unit, TypeError> =
     else
         Ok()
 
+/// constructor is already overwritten; ownership must be asked of the
+/// type table, not the value table.
+let ctorOwners (env: TypeEnv) (name: string) : string list =
+    // uppercase only: the casing law makes every constructor uppercase, so
+    // this skips the scan for ordinary bindings
+    if name.Length = 0 || not (System.Char.IsUpper name[0]) then
+        []
+    else
+        // imported types are excluded: they live flat in `Types` so signatures
+        // and field access resolve, but their cases are not in scope bare
+        // (access is always qualified), so they are not candidates for this
+        // name and must not make a local declaration look ambiguous
+        let imported =
+            env.ModuleTypes |> Map.toList |> List.map snd |> List.fold Set.union Set.empty
+
+        env.Types
+        |> Map.toList
+        |> List.choose (fun (tn, d) ->
+            match d with
+            | Union u when not (imported.Contains tn) && u.Cases |> List.exists (fun (c, _) -> c = name) -> Some tn
+            | _ -> None)
+        |> List.sort
+
 let rec private checkPattern (ctx: Ctx) (env: TypeEnv) (ty: Ty) (p: Pattern) : Result<(string * Ty) list, TypeError> =
     // a pattern whose shape determines a type binds an unresolved
     // scrutinee instead of demanding one [D:record-pattern-rows] — the
@@ -1984,14 +2007,29 @@ let rec private checkPattern (ctx: Ctx) (env: TypeEnv) (ty: Ty) (p: Pattern) : R
                         p.PSpan
                         $"{typeName} is a record; match it with a name, '_', or a record pattern ({{ field = binder }})"
                 | None -> err p.PSpan $"unknown type '{typeName}'"
-            // an unresolved scrutinee is almost always a param — params
-            // are not typed from patterns, so the teaching names both
-            // repairs instead of a bare type variable
-            | TVar _ ->
-                err
-                    p.PSpan
-                    ("constructor patterns need a scrutinee whose type is already known — params are not typed from patterns. "
-                     + "Two repairs: inline the lambda at its use site (a typed pipe position types the binder there), or match on already-typed data")
+            // an unresolved scrutinee types from the constructor when it
+            // names a SINGLE owner union [D:match-scrutinee-infer] — the
+            // one-way bind the scalar defaults do, for PCase; this reaches
+            // nested payloads too (`Some (Ok n)` resolves Option's param to
+            // the owner of Ok). A mixed/ambiguous owner stays unresolved and
+            // falls to the teaching: params are not typed from patterns.
+            | TVar v ->
+                let teach () =
+                    err
+                        p.PSpan
+                        ("constructor patterns need a scrutinee whose type is already known — params are not typed from patterns. "
+                         + "Two repairs: inline the lambda at its use site (a typed pipe position types the binder there), or match on already-typed data")
+
+                match ctorOwners env ctor with
+                | [ owner ] ->
+                    match typeDefFor env owner with
+                    | Some(Union def) ->
+                        let targs = def.Params |> List.map (fun _ -> TVar(freshName ctx "a"))
+
+                        bind ctx env p.PSpan (TNamed(owner, targs)) (TVar v)
+                        |> Result.bind (fun () -> checkPattern ctx env (resolve ctx (TVar v)) p)
+                    | _ -> teach ()
+                | _ -> teach ()
             | ty -> err p.PSpan $"constructor patterns need a union value; this one has type {formatTy ty}"
 
 // A binder pattern's shape: fresh vars at the leaves, TUnit at (),
@@ -2278,29 +2316,6 @@ let private lambdaCore
 /// answer confidently where the checker refuses, and a later
 /// declaration cannot miss the collision. env.Values holds one entry
 /// per name, so by the time a bare use is resolved the earlier
-/// constructor is already overwritten; ownership must be asked of the
-/// type table, not the value table.
-let ctorOwners (env: TypeEnv) (name: string) : string list =
-    // uppercase only: the casing law makes every constructor uppercase, so
-    // this skips the scan for ordinary bindings
-    if name.Length = 0 || not (System.Char.IsUpper name[0]) then
-        []
-    else
-        // imported types are excluded: they live flat in `Types` so signatures
-        // and field access resolve, but their cases are not in scope bare
-        // (access is always qualified), so they are not candidates for this
-        // name and must not make a local declaration look ambiguous
-        let imported =
-            env.ModuleTypes |> Map.toList |> List.map snd |> List.fold Set.union Set.empty
-
-        env.Types
-        |> Map.toList
-        |> List.choose (fun (tn, d) ->
-            match d with
-            | Union u when not (imported.Contains tn) && u.Cases |> List.exists (fun (c, _) -> c = name) -> Some tn
-            | _ -> None)
-        |> List.sort
-
 let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr, TypeError> =
     match expr.Kind with
     | EInt n ->
@@ -4161,6 +4176,11 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                     bind ctx env scrutinee.Span TStr tscrutinee.Ty
                 | TVar _ when arms |> List.exists (fun (p, _, _) -> p.PKind.IsPUnit) ->
                     bind ctx env scrutinee.Span TUnit tscrutinee.Ty
+                // a constructor pattern types the scrutinee from its union
+                // [D:match-scrutinee-infer] — the per-pattern bind in
+                // checkPattern (a single-owner constructor resolves an
+                // unresolved scrutinee, nested payloads included); the
+                // shared scrutinee var carries the binding across arms
                 | _ -> Ok()
 
             let scrutTy = resolve ctx tscrutinee.Ty
@@ -4192,7 +4212,9 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                         (Ok [])
 
                 let tarms = (pat0, tguard0, tbody0) :: List.rev trest
-                do! exhaustive env expr.Span scrutTy (tarms |> List.map (fun (p, g, _) -> p, g))
+                // re-resolve: a constructor pattern may have typed the
+                // scrutinee var during arm checking [D:match-scrutinee-infer]
+                do! exhaustive env expr.Span (resolve ctx tscrutinee.Ty) (tarms |> List.map (fun (p, g, _) -> p, g))
 
                 return
                     { Kind = TEMatch(tscrutinee, tarms)

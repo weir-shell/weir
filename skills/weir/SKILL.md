@@ -984,9 +984,13 @@ refs
   catch-all or cover every case. The dual is also a hard error: an
   unguarded catch-all with arms below it (a lowercase name like
   `| clean ->` BINDS — a typo'd constructor swallows the match).
-  Constructor patterns need a scrutinee whose type is already KNOWN —
-  params are not typed FROM patterns (`let f x = match x with
-  | A -> ...` is a check error; match on typed data).
+  A constructor pattern TYPES an unresolved scrutinee from its union
+  [D:match-scrutinee-infer]: `let f x = match x with | Some n -> …
+  | None -> …` checks with no annotation, nested payloads included
+  (`Some (Ok n)` resolves the inner union too). The one exception is an
+  AMBIGUOUS case — a name two unions share (`type A = Dup` + `type B =
+  Dup`) — which stays a check error (nothing picks the union; match on
+  typed data, or rename a case).
   An arm body takes BARE COMMANDS [D:match-arm-commands] — the
   case-runner idiom, no sigil: `| "build" -> sh -c "make"`. In
   statement position each arm streams; a value-position match (a `let`
