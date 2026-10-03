@@ -411,7 +411,7 @@ millisecond startup, no `node_modules`, no `package.json`.
 | `await Promise.any(xs.map(f))` | `xs \|> Seq.pfirst f` — first arm to succeed wins, losers' processes tree-killed (`Seq.pfirstWith n` sets the ceiling); losers' failures swallowed |
 | `globby`, `fs/promises` | `Path.glob`, `File.*` / `Dir.*` |
 | `zod` schema `.parse(...)` at runtime | `from json T` and vendored JSON-schema contracts, at check time |
-| `await fetch(url).then(r => r.json())` | `Http.send { Http.defaults with url = u }` then `resp.body \|> from json T`; a plain GET is `curl url \|> from json T` |
+| `await fetch(url).then(r => r.json())` | `Http.get u \|> Http.expect \|> from json T` (raising); status-as-data is `Http.send` |
 
 ```weir
 let target = "seed.txt"

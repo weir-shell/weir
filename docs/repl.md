@@ -387,9 +387,27 @@ is honored, and piped sessions are always plain text.
 (`$XDG_CONFIG_HOME/weir/`, else `~/.config/weir/`; `%APPDATA%\weir\`
 on Windows) loads before the first prompt. It is declaration-only —
 `type` and `let`, the module rule applied to the prompt — plus one
-`#session` directive for the settings a declaration cannot express:
+`#session` directive for the settings a declaration cannot express.
+
+The file **declares itself** with `#init` on its first line. The
+loader refuses the config-dir file without it, and `#init` is what
+makes a file init-kind: a file carrying it is checked as an init
+*wherever it lives*, so you can keep it in a dotfiles repo (with full
+editor support — `#session`/`#alias` recognized, prompt declarations
+checked) and symlink it into place:
 
 ```text
+ln -s ~/dotfiles/weir/init.weir ~/.config/weir/init.weir
+```
+
+The REPL loads only `<configHome>/weir/init.weir` — which init runs
+never depends on the working directory, so a stray `init.weir` in a
+cloned repo cannot auto-load. A marked file run as a script
+(`weir init.weir`) refuses: an init is loaded, not run.
+
+```text
+#init
+
 #session {
     cwd = "/home/me/work"
     logLevel = "debug"
@@ -414,10 +432,24 @@ commands.
 
 ### `prompt`: your own prompt
 
-`prompt` takes a string, or the name of a `unit -> string` function
-declared in the same file. The function may run commands: it is
-called once per entry read (never per keystroke), after the previous
-entry finishes. Because the value names your declarations, it is
+`prompt` takes a string, or the name of a `unit -> string` or
+`PromptStatus -> string` function declared in the same file.
+`PromptStatus` carries the entry status: `ok` is the tint — `true`
+when the last entry ran clean, and a bare command's nonzero exit
+counts as not clean (a reified exit, `| exitCode` or `| complete`,
+is data and stays clean) — and `exit` is that bare command's code
+(`Option<int>`, `None` for every other outcome). A custom prompt
+paints its own red/green where the default prompt would have
+reddened, and can show the code the way `↳ exit N` does. Write the
+param bare and read its fields (`st.ok`, `st.exit`): records are
+nominal and the init file takes no signatures, so the function types
+structurally and the loader accepts any field set `PromptStatus`
+satisfies. One spelling to know: `match st.exit with` cannot type an
+unresolved field (constructor patterns need a known scrutinee) —
+read it through the `Option` members instead
+(`st.exit |> Option.map show |> Option.defaultValue ""`). The
+function may run commands: it is called once per entry read (never
+per keystroke), after the previous entry finishes. Because the value names your declarations, it is
 checked after they bind:
 
 ```text

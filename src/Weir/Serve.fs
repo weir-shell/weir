@@ -35,6 +35,9 @@ type SBody =
     | RNoBody
     | RText of string
     | RJson of string
+    // the urlencoded case [D:http-dx], pre-encoded by the caller (the
+    // shared Http.formUrlEncode) — written like RText with its own type
+    | RForm of string
     // the lazy body [D:http-serve]: each element written and flushed as
     // produced, so a client sees bytes before the seq ends (the
     // incremental law the acceptance pins). Chunked transfer, one SSE
@@ -286,6 +289,13 @@ let writeResponse (ctx: HttpListenerContext) (resp: SResp) (onStreamFailure: str
         | RJson s ->
             if isNull out.ContentType then
                 out.ContentType <- "application/json"
+
+            let bytes = Encoding.UTF8.GetBytes s
+            out.ContentLength64 <- int64 bytes.Length
+            out.OutputStream.Write(bytes, 0, bytes.Length)
+        | RForm s ->
+            if isNull out.ContentType then
+                out.ContentType <- "application/x-www-form-urlencoded"
 
             let bytes = Encoding.UTF8.GetBytes s
             out.ContentLength64 <- int64 bytes.Length

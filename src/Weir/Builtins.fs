@@ -1993,6 +1993,312 @@ let private utf8Strict = System.Text.UTF8Encoding(false, true)
 // preserve a BOM an overwritten file already had [D:encoding-law]
 let private utf8Bom = System.Text.UTF8Encoding(true, true)
 
+module private AppendNative =
+    [<Literal>]
+    let private O_WRONLY = 0x1
+
+    [<Literal>]
+    let private O_APPEND_LINUX = 0x400
+
+    [<Literal>]
+    let private O_APPEND_MACOS = 0x8
+
+    [<Literal>]
+    let private O_CLOEXEC_LINUX = 0x80000
+
+    [<Literal>]
+    let private O_CLOEXEC_MACOS = 0x1000000
+
+    [<Literal>]
+    let private ENOENT = 2
+
+    [<Literal>]
+    let private EINTR = 4
+
+    [<System.Runtime.InteropServices.DllImport("libc", SetLastError = true)>]
+    extern int private ``open``(string pathname, int flags, int mode)
+
+    [<System.Runtime.InteropServices.DllImport("libc", SetLastError = true)>]
+    extern nativeint private write(int fd, byte[] buf, unativeint count)
+
+    let private appendFlags () =
+        if System.OperatingSystem.IsMacOS() then
+            O_WRONLY ||| O_APPEND_MACOS ||| O_CLOEXEC_MACOS
+        else
+            O_WRONLY ||| O_APPEND_LINUX ||| O_CLOEXEC_LINUX
+
+    let private openAppend (path: string) : Microsoft.Win32.SafeHandles.SafeFileHandle =
+        let rec go attempt =
+            let fd = ``open`` (path, appendFlags (), 0)
+
+            if fd >= 0 then
+                fd
+            else
+                let errno = System.Runtime.InteropServices.Marshal.GetLastPInvokeError()
+
+                if errno = ENOENT && attempt < 3 then
+                    (try
+                        (new FileStream(path, FileMode.OpenOrCreate, FileAccess.Write, FileShare.ReadWrite))
+                            .Dispose()
+                     with _ ->
+                         ())
+
+                    go (attempt + 1)
+                else
+                    raise (IOException $"open failed (errno {errno})")
+
+        new Microsoft.Win32.SafeHandles.SafeFileHandle(nativeint (go 0), true)
+
+    let private writeAll (fd: int) (payload: byte[]) =
+        let rec go (rest: byte[]) =
+            if rest.Length > 0 then
+                let n = write (fd, rest, unativeint rest.Length)
+
+                if n < 0n then
+                    let errno = System.Runtime.InteropServices.Marshal.GetLastPInvokeError()
+
+                    if errno = EINTR then
+                        go rest
+                    else
+                        raise (IOException $"write failed (errno {errno})")
+                elif int n = rest.Length then
+                    ()
+                else
+                    go rest[int n ..]
+
+        go payload
+
+    [<Literal>]
+    let private FILE_APPEND_DATA = 0x4u
+
+    [<Literal>]
+    let private SYNCHRONIZE = 0x100000u
+
+    [<Literal>]
+    let private FILE_SHARE_RWD = 0x7u
+
+    [<Literal>]
+    let private OPEN_ALWAYS = 4u
+
+    [<Literal>]
+    let private FILE_ATTRIBUTE_NORMAL = 0x80u
+
+    [<System.Runtime.InteropServices.DllImport("kernel32.dll",
+                                               SetLastError = true,
+                                               CharSet = System.Runtime.InteropServices.CharSet.Unicode)>]
+    extern nativeint private CreateFileW(
+        string lpFileName,
+        uint dwDesiredAccess,
+        uint dwShareMode,
+        nativeint lpSecurityAttributes,
+        uint dwCreationDisposition,
+        uint dwFlagsAndAttributes,
+        nativeint hTemplateFile)
+
+    [<System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)>]
+    extern bool private WriteFile(
+        nativeint hFile,
+        byte[] lpBuffer,
+        uint nNumberOfBytesToWrite,
+        uint& lpNumberOfBytesWritten,
+        nativeint lpOverlapped)
+
+    let private appendWindows (path: string) (payload: byte[]) =
+        let h =
+            CreateFileW(
+                path,
+                FILE_APPEND_DATA ||| SYNCHRONIZE,
+                FILE_SHARE_RWD,
+                0n,
+                OPEN_ALWAYS,
+                FILE_ATTRIBUTE_NORMAL,
+                0n
+            )
+
+        if h = -1n then
+            raise (IOException $"open failed (win32 {System.Runtime.InteropServices.Marshal.GetLastPInvokeError()})")
+
+        use sfh = new Microsoft.Win32.SafeHandles.SafeFileHandle(h, true)
+
+        let rec go (rest: byte[]) =
+            if rest.Length > 0 then
+                let mutable written = 0u
+
+                if not (WriteFile(sfh.DangerousGetHandle(), rest, uint rest.Length, &written, 0n)) then
+                    raise
+                        (IOException
+                            $"write failed (win32 {System.Runtime.InteropServices.Marshal.GetLastPInvokeError()})")
+
+                if int written < rest.Length then
+                    go rest[int written ..]
+
+        go payload
+
+    let appendBytes (path: string) (payload: byte[]) : unit =
+        if System.OperatingSystem.IsWindows() then
+            appendWindows path payload
+        else
+            use sfh = openAppend path
+            writeAll (int (sfh.DangerousGetHandle())) payload
+
+    [<System.Runtime.InteropServices.DllImport("libc", SetLastError = true)>]
+    extern int private fsync(int fd)
+
+    let fsyncDir (dir: string) : unit =
+        let flags =
+            if System.OperatingSystem.IsMacOS() then
+                O_CLOEXEC_MACOS
+            else
+                O_CLOEXEC_LINUX
+
+        let fd = ``open`` (dir, flags, 0)
+
+        if fd >= 0 then
+            use sfh = new Microsoft.Win32.SafeHandles.SafeFileHandle(nativeint fd, true)
+            fsync (int (sfh.DangerousGetHandle())) |> ignore
+
+let private writePayload (keepBom: bool) (lines: Value seq) : byte[] =
+    let sb = System.Text.StringBuilder()
+
+    for l in lines do
+        sb.Append(asString l).Append '\n' |> ignore
+
+    let body = utf8Strict.GetBytes(sb.ToString())
+
+    if keepBom then
+        Array.append (utf8Bom.GetPreamble()) body
+    else
+        body
+
+let private bomAt (fs: FileStream) : bool =
+    // read the 3 BOM bytes FULLY [D:write-integrity]: a single Read may
+    // return fewer than asked even when more follow (APFS does, on a
+    // small just-opened file), so a one-shot read mis-reads the BOM as
+    // absent and drops it
+    let head = Array.zeroCreate 3
+
+    let rec fill got =
+        if got = 3 then
+            got
+        else
+            let n = fs.Read(head, got, 3 - got)
+            if n = 0 then got else fill (got + n)
+
+    fill 0 = 3 && head[0] = 0xEFuy && head[1] = 0xBBuy && head[2] = 0xBFuy
+// readers grant ReadWrite|Delete sharing [D:write-integrity]: a Windows
+// share grant cuts both ways — the .NET read default (FileShare.Read)
+// denies any live writer, and without FILE_SHARE_DELETE a held reader
+// makes writeAtomic's rename throw. Unix is unchanged: every non-None
+// share is the same LOCK_SH.
+let private openShared (r: string) : FileStream =
+    new FileStream(r, FileMode.Open, FileAccess.Read, FileShare.ReadWrite ||| FileShare.Delete)
+
+let private readLinesShared (r: string) : string[] =
+    use sr = new StreamReader(openShared r)
+    let acc = ResizeArray()
+    let mutable line = sr.ReadLine()
+
+    while line <> null do
+        acc.Add line
+        line <- sr.ReadLine()
+
+    acc.ToArray()
+
+let private readTextShared (r: string) : string =
+    use sr = new StreamReader(openShared r)
+    sr.ReadToEnd()
+
+let private readBytesShared (r: string) : byte[] =
+    use fs = openShared r
+    use ms = new MemoryStream()
+    fs.CopyTo ms
+    ms.ToArray()
+
+// the whole-file swap behind File.writeAtomic: the payload lands in a
+// same-directory exclusive temp, is fsynced, and renames over the
+// resolved target — a reader sees the complete old file or the complete
+// new one, never a window. The rename replaces the symlink's TARGET,
+// not the link; the inode changes (hardlinks split, held handles and
+// tail -f keep the old file, a single-file bind mount into a container breaks).
+let private atomicReplace (r: string) (lines: Value seq) : unit =
+    let target =
+        let fi = FileInfo r
+
+        if fi.Exists then
+            match fi.ResolveLinkTarget true with
+            | null -> r
+            | t -> t.FullName
+        else
+            r
+
+    let keepBom =
+        File.Exists target
+        && (use fs = openShared target
+            bomAt fs)
+
+    let payload = writePayload keepBom lines
+
+    let mode =
+        if not (System.OperatingSystem.IsWindows()) && File.Exists target then
+            Some(File.GetUnixFileMode target)
+        else
+            None
+
+    let dir =
+        match System.IO.Path.GetDirectoryName target with
+        | "" -> "."
+        | d -> d
+
+    // a SIGKILL mid-temp strands one dot-temp; the next writer to the
+    // same target sweeps stale twins — age-keyed, never pid-keyed
+    // (containers renumber pids across namespaces)
+    for stale in System.IO.Directory.EnumerateFiles(dir, $".{System.IO.Path.GetFileName target}.weir-tmp-*") do
+        try
+            if System.DateTime.UtcNow - File.GetLastWriteTimeUtc stale > System.TimeSpan.FromMinutes 10.0 then
+                File.Delete stale
+        with _ ->
+            ()
+
+    let tmp =
+        System.IO.Path.Combine(
+            dir,
+            $".{System.IO.Path.GetFileName target}.weir-tmp-{System.Environment.ProcessId}-{System.IO.Path.GetRandomFileName()}"
+        )
+
+    try
+        (use fs = new FileStream(tmp, FileMode.CreateNew, FileAccess.Write, FileShare.None)
+         fs.Write(payload, 0, payload.Length)
+         fs.Flush true)
+
+        match mode with
+        | Some m -> File.SetUnixFileMode(tmp, m)
+        | None -> ()
+
+        if System.OperatingSystem.IsWindows() then
+            // a reader holding the target without FILE_SHARE_DELETE makes
+            // the rename throw — bounded backoff, never on not-found
+            let rec move attempt =
+                try
+                    File.Move(tmp, target, true)
+                with :? IOException as e when
+                    not (e :? DirectoryNotFoundException)
+                    && not (e :? FileNotFoundException)
+                    && attempt < 6 ->
+                    System.Threading.Thread.Sleep(5 <<< attempt)
+                    move (attempt + 1)
+
+            move 0
+        else
+            File.Move(tmp, target, true)
+            AppendNative.fsyncDir dir
+    with e ->
+        (try
+            File.Delete tmp
+         with _ ->
+             ())
+
+        raise e
+
 // liberal-in: unpadded standard-alphabet base64 pads before decoding;
 // encoding emits padded (the one stated default). URL-safe (-_) is
 // parked with the JWT trigger [D:encoding-law].
@@ -2489,7 +2795,7 @@ let private envFromFileImpl: Value =
 
                     let lines =
                         try
-                            File.ReadAllLines resolved
+                            readLinesShared resolved
                         with
                         | :? System.UnauthorizedAccessException ->
                             failwith $"Env.fromFile: permission denied: {resolved}"
@@ -2566,6 +2872,7 @@ let private readGuard (op: string) (r: string) : unit =
         failwith $"{op}: {r} is a directory"
     elif not (File.Exists r) then
         failwith $"{op}: no such file: {r}"
+
 
 let private writeGuard (op: string) (r: string) : unit =
     if System.IO.Directory.Exists r then
@@ -2649,12 +2956,13 @@ let private fileMembers: (string * Ty * Value) list =
               let r = Session.resolve path
               PlanMode.checkRead "File.read" r
               readGuard "File.read" r
-              VSeq(ioGuarded "File.read" r (fun () -> File.ReadAllLines r) |> Seq.map VStr)
+              VSeq(ioGuarded "File.read" r (fun () -> readLinesShared r) |> Seq.map VStr)
           | v -> unreachable $"the checker rejects 'File.read' on {formatValue v}")
-      // a token in a file is a real pattern [D:secret]: a mounted k8s /
-      // docker secret is a file. One member (a family would be parked):
-      // the whole content is the secret, trailing newlines trimmed (the
-      // tooling convention — `echo tok > f` adds one, k8s does not)
+      // a token in a file is a real pattern [D:secret]: a mounted
+      // container secret is a file. One member (a family would be
+      // parked): the whole content is the secret, trailing newlines
+      // trimmed (the tooling convention — `echo tok > f` adds one, a
+      // mounted secret does not)
       "readSecret",
       TFun(TStr, TSecret),
       VBuiltin(fun v ->
@@ -2663,7 +2971,7 @@ let private fileMembers: (string * Ty * Value) list =
               let r = Session.resolve path
               PlanMode.checkRead "File.readSecret" r
               readGuard "File.readSecret" r
-              VSecret((ioGuarded "File.readSecret" r (fun () -> File.ReadAllText r)).TrimEnd('\n', '\r'))
+              VSecret((ioGuarded "File.readSecret" r (fun () -> readTextShared r)).TrimEnd('\n', '\r'))
           | v -> unreachable $"the checker rejects 'File.readSecret' on {formatValue v}")
       "write",
       TFun(TStr, TFun(TSeq TStr, TUnit)),
@@ -2688,26 +2996,35 @@ let private fileMembers: (string * Ty * Value) list =
 
                       // preserve an existing UTF-8 BOM; a new or no-BOM file
                       // stays bare, so this never adds a BOM
-                      let head = Array.zeroCreate 3
-                      let n = fs.Read(head, 0, 3)
-                      let keepBom = n = 3 && head[0] = 0xEFuy && head[1] = 0xBBuy && head[2] = 0xBFuy
+                      let keepBom = bomAt fs
+
+                      // LF bytes on every platform [D:lf-output] — a
+                      // written file is data (hashes, sigs, diffs).
+                      let payload = writePayload keepBom lines
 
                       fs.SetLength 0L
                       fs.Seek(0L, SeekOrigin.Begin) |> ignore
-
-                      // LF bytes on every platform [D:lf-output] — a
-                      // written file is data (hashes, sigs, diffs). leaveOpen:
-                      // `use fs` owns the handle
-                      use w =
-                          new StreamWriter(fs, (if keepBom then utf8Bom else utf8Strict), 1024, true)
-
-                      w.NewLine <- "\n"
-
-                      for l in lines do
-                          w.WriteLine(asString l))
+                      fs.Write(payload, 0, payload.Length))
 
                   VUnit
               | _ -> unreachable "the checker rejects 'File.write' on these arguments"))
+      "writeAtomic",
+      TFun(TStr, TFun(TSeq TStr, TUnit)),
+      VBuiltin(fun pathV ->
+          VBuiltin(fun linesV ->
+              match pathV, linesV with
+              | VStr path, VSeq lines ->
+                  let r = Session.resolve path
+
+                  match capWrite r lines with
+                  | Some captured -> captured
+                  | None ->
+                  writeGuard "File.writeAtomic" r
+
+                  ioGuarded "File.writeAtomic" r (fun () -> atomicReplace r lines)
+
+                  VUnit
+              | _ -> unreachable "the checker rejects 'File.writeAtomic' on these arguments"))
       "append",
       TFun(TStr, TFun(TSeq TStr, TUnit)),
       VBuiltin(fun pathV ->
@@ -2722,11 +3039,12 @@ let private fileMembers: (string * Ty * Value) list =
                   writeGuard "File.append" r
 
                   ioGuarded "File.append" r (fun () ->
-                      use w = new StreamWriter(r, true)
-                      w.NewLine <- "\n"
+                      let sb = System.Text.StringBuilder()
 
                       for l in lines do
-                          w.WriteLine(asString l))
+                          sb.Append(asString l).Append '\n' |> ignore
+
+                      AppendNative.appendBytes r (utf8Strict.GetBytes(sb.ToString())))
 
                   VUnit
               | _ -> unreachable "the checker rejects 'File.append' on these arguments"))
@@ -2896,7 +3214,7 @@ let private fsMoreFileMembers: (string * Ty * Value) list =
           | VStr p ->
               let r = Session.resolve p
               readGuard "File.readBytes" r
-              VBytes(ioGuarded "File.readBytes" r (fun () -> System.IO.File.ReadAllBytes r))
+              VBytes(ioGuarded "File.readBytes" r (fun () -> readBytesShared r))
           | v -> unreachable $"the checker rejects 'File.readBytes' on {formatValue v}")
       "writeBytes",
       TFun(TStr, TFun(TBytes, TUnit)),
@@ -2926,7 +3244,7 @@ let private fsMoreFileMembers: (string * Ty * Value) list =
 
               VStr(
                   ioGuarded "File.sha256" r (fun () ->
-                      use fs = System.IO.File.OpenRead r
+                      use fs = openShared r
 
                       System.Security.Cryptography.SHA256.HashData fs
                       |> Array.map (fun x -> x.ToString "x2")
@@ -3581,7 +3899,8 @@ let httpRequestClass (reqV: Value) : Weir.Effects.EffectClass =
 /// for a name that is not classified-effectful (a pure builtin).
 let effectClassOfCall (name: string) (args: Value list) : Weir.Effects.EffectClass option =
     match name with
-    | "Http.send" ->
+    | "Http.send"
+    | "Http.expect" ->
         match args with
         | reqV :: _ -> Some(httpRequestClass reqV)
         // no request in hand (partial application): its class is the
@@ -3615,6 +3934,17 @@ let private httpBodyOf (v: Value) : (string * string) option =
     // scope v1) — the lines join like Json's, kept well-defined, never a
     // crash
     | VUnion("Stream", Some(VSeq lines)) -> Some("text/plain", lines |> Seq.map asString |> String.concat "\n")
+    // Form is the urlencoded write [D:http-dx]: pairs percent-encoded at
+    // send, never by the caller
+    | VUnion("Form", Some(VSeq pairs)) ->
+        let kvs =
+            pairs
+            |> Seq.map (fun it ->
+                match it with
+                | VTuple [ VStr k; VStr v ] -> k, v
+                | v -> unreachable $"the checker rejects a form pair {formatValue v}")
+
+        Some("application/x-www-form-urlencoded", Http.formUrlEncode kvs)
     | v -> unreachable $"the checker rejects this body {formatValue v}"
 
 let private headerPairs (v: Value) : (string * string) list =
@@ -3708,8 +4038,8 @@ let private runRequest (reqV: Value) : Http.Resp =
 // one-line file arrived as two elements), carried a stray \r on a CRLF
 // body, and turned an empty body into [""] — none of which File.read
 // (ReadAllLines) or command output (ReadLine) do. StringReader.ReadLine
-// is the same reader command output uses, so `curl url` and
-// `Http.fetch url` agree exactly. Public for the line-law pin.
+// is the same reader command output uses, so `curl url` and an
+// `Http.expect` body agree exactly. Public for the line-law pin.
 let bodyLines (body: string) : string list =
     [ use r = new StringReader(body)
       let mutable line = r.ReadLine()
@@ -3762,23 +4092,43 @@ let private httpCtor (methodCase: string) : Value =
             VRecord("HttpRequest", f |> recSet "method" (VUnion(methodCase, None)) |> recSet "url" (VStr url))
         | v, _ -> unreachable $"the checker rejects an Http constructor on {formatValue v}")
 
-// the raising shorthand [D:http-s2]: GET, raise on non-2xx naming the
-// status, body only — the `curl -sf` analogue. Two names, no boolean:
-// Http.fetch raises, Http.send returns (the same 404 send binds as data)
-let private httpFetchImpl: Value =
-    VBuiltin(fun urlV ->
-        match urlV, httpDefaults with
-        | VStr url, VRecord("HttpRequest", f) ->
-            let resp = runRequest (VRecord("HttpRequest", recSet "url" (VStr url) f))
-
-            if resp.Status < 200 || resp.Status >= 300 then
-                // redact the URL's userinfo [D:url-redact]: a `user:pass@`
-                // credential must not print verbatim in the status error
-                // (terminal / CI / REPL); a credential-free URL is unchanged
-                failwith $"{Http.redactUrl url} answered {resp.Status}"
+// the raising body read for a built request [D:http-dx]: the one
+// raising spelling (the bare-url Http.fetch retired into it,
+// [D:fetch-retired]) — non-2xx raises, body out; fetch's law
+// (non-2xx raises, body only) for the request that needed `with` — auth,
+// headers, a method. The raise names method, redacted url, status and a
+// capped body snippet (a minified structured error usually fits whole);
+// when the error body is data to inspect, Http.send binds it instead.
+let private httpExpectImpl: Value =
+    VBuiltin(fun reqV ->
+        match reqV with
+        | VRecord("HttpRequest", f) ->
+            // a mutating read inside a plan has no response to return —
+            // the request would be a pending Op [D:plan-apply]; refuse
+            // loudly where send captures
+            if PlanMode.active () && httpRequestClass reqV = Weir.Effects.Mutation then
+                failwith
+                    "inside a plan a mutating request is a pending Op with no response, and Http.expect needs one — Http.send captures it as the Op"
             else
-                VSeq(respBodyLines resp)
-        | v, _ -> unreachable $"the checker rejects 'Http.fetch' on {formatValue v}")
+                let resp = runRequest reqV
+
+                if resp.Status < 200 || resp.Status >= 300 then
+                    let url =
+                        match recGet "url" f with
+                        | VStr s -> s
+                        | v -> unreachable $"url {formatValue v}"
+
+                    let snippet =
+                        let flat = resp.Body.Replace("\r", " ").Replace("\n", " ").Trim()
+                        if flat.Length > 200 then flat.Substring(0, 200) + "…" else flat
+
+                    let detail = if snippet = "" then "" else $": {snippet}"
+                    let methodName = httpMethodName (recGet "method" f)
+
+                    failwith $"{methodName} {Http.redactUrl url} answered {resp.Status}{detail}"
+                else
+                    VSeq(respBodyLines resp)
+        | v -> unreachable $"the checker rejects 'Http.expect' on {formatValue v}")
 
 // the query-string builder [D:http-s2] — named withQuery so it does not
 // collide with `query` the method constructor. Percent-encodes each key
@@ -3808,13 +4158,38 @@ let private httpWithQueryImpl: Value =
                     VStr(baseUrl + sep + qs)
             | v, _ -> unreachable $"the checker rejects 'Http.withQuery' on {formatValue v}"))
 
+// the header accessors [D:http-dx]: header names are case-insensitive
+// by HTTP's own law, so the naive pairs filter is wrong by default —
+// these are the one spelling that cannot miss ETag vs etag. Pairs stay
+// the representation (Set-Cookie repeats legally); headerAll is the
+// multiplicity read, wire order kept.
+let private httpHeaderImpl (all: bool) : Value =
+    VBuiltin(fun nameV ->
+        VBuiltin(fun respV ->
+            match nameV, respV with
+            | VStr name, VRecord("HttpResponse", f) ->
+                let hits =
+                    headerPairs (recGet "headers" f)
+                    |> List.filter (fun (k, _) -> System.String.Equals(k, name, System.StringComparison.OrdinalIgnoreCase))
+                    |> List.map snd
+
+                if all then
+                    VSeq(hits |> Seq.map VStr)
+                else
+                    match hits with
+                    | v :: _ -> VUnion("Some", Some(VStr v))
+                    | [] -> VUnion("None", None)
+            | v, _ -> unreachable $"the checker rejects 'Http.header' on {formatValue v}"))
+
 let private httpMembers: (string * Ty * Value) list =
     let ctorTy = TFun(TStr, TNamed("HttpRequest", []))
 
     [ "defaults", TNamed("HttpRequest", []), httpDefaults
       "send", TFun(TNamed("HttpRequest", []), TNamed("HttpResponse", [])), httpSendImpl
-      "fetch", TFun(TStr, TSeq TStr), httpFetchImpl
+      "expect", TFun(TNamed("HttpRequest", []), TSeq TStr), httpExpectImpl
       "withQuery", TFun(TSeq(TTuple [ TStr; TStr ]), TFun(TStr, TStr)), httpWithQueryImpl
+      "header", TFun(TStr, TFun(TNamed("HttpResponse", []), TNamed("Option", [ TStr ]))), httpHeaderImpl false
+      "headerAll", TFun(TStr, TFun(TNamed("HttpResponse", []), TSeq TStr)), httpHeaderImpl true
       "get", ctorTy, httpCtor "Get"
       "post", ctorTy, httpCtor "Post"
       "put", ctorTy, httpCtor "Put"
@@ -3872,19 +4247,11 @@ let private applyOp (op: Value) : unit =
             use fs =
                 new FileStream(r, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.Read)
 
-            let head = Array.zeroCreate 3
-            let n = fs.Read(head, 0, 3)
-            let keepBom = n = 3 && head[0] = 0xEFuy && head[1] = 0xBBuy && head[2] = 0xBFuy
+            let keepBom = bomAt fs
+            let payload = writePayload keepBom lines
             fs.SetLength 0L
             fs.Seek(0L, SeekOrigin.Begin) |> ignore
-
-            use w =
-                new StreamWriter(fs, (if keepBom then utf8Bom else utf8Strict), 1024, true)
-
-            w.NewLine <- "\n"
-
-            for l in lines do
-                w.WriteLine(asString l))
+            fs.Write(payload, 0, payload.Length))
     | VUnion("DeleteFile", Some(VStr r)) ->
         if not (System.IO.File.Exists r) then
             failwith $"Plan.apply (DeleteFile): no such file: {r}"
@@ -5550,15 +5917,24 @@ let builtinDocs: Map<string, BuiltinDoc> =
            |> named [ "path" ])
           "File.readSecret",
           (bd
-              "Read a file's whole content as a Secret (a mounted k8s/docker secret is a file); trailing newlines are trimmed."
+              "Read a file's whole content as a Secret (a mounted container secret is a file); trailing newlines are trimmed."
               None
               None
            |> named [ "path" ])
           "File.write",
           (bd "Write a sequence of lines to a file (overwrites)." None None
            |> named [ "path"; "lines" ])
+          "File.writeAtomic",
+          (bd
+              "Write a sequence of lines by whole-file swap: the payload lands in a same-directory temp, is fsynced, and renames over the target — a concurrent reader sees the complete old contents or the complete new, never a window, and a write that dies leaves the original intact. A symlink's target is replaced, not the link; the target's mode and an existing BOM are preserved. The inode changes: hardlinks split, held handles and tail -f keep the old file, and a single-file bind mount into a container breaks — in-place semantics stay File.write's job. Inside a plan it captures the same WriteFile op; apply performs the plan's own in-place write."
+              None
+              None
+           |> named [ "path"; "lines" ])
           "File.append",
-          (bd "Append a sequence of lines to a file." None None
+          (bd
+              "Append a sequence of lines, safe under concurrent appenders: the whole call goes out as one kernel append (O_APPEND on Unix; append-only access on Windows), so calls land contiguous and intact and no lock blocks a concurrent reader. The atom is a single completed append — a short write (disk full, a size cap) retries and another writer may land between the parts — and the guarantee is a local-filesystem one: same-host bind mounts hold, a network filesystem (nfs, smb) does not."
+              None
+              None
            |> named [ "path"; "lines" ])
           "File.mode",
           (bd
@@ -5723,7 +6099,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
            |> named [ "request" ])
           "Http.get",
           (bd
-              "A request constructor — returns an HttpRequest, makes no request: `Http.get u` = `{ Http.defaults with method = Get; url = u }`; run it with Http.send. Add optionals with `with`: `Http.send { Http.get u with auth = Bearer t }`. The URL-in-body-out shorthand is Http.fetch."
+              "A request constructor — returns an HttpRequest, makes no request: `Http.get u` = `{ Http.defaults with method = Get; url = u }`; run it with Http.send (status as data) or Http.expect (raising, body out). Add optionals with `with`: `Http.send { Http.get u with auth = Bearer t }`."
               (Some "Http.get \"http://x/y\"")
               None
            |> named [ "url" ])
@@ -5741,12 +6117,24 @@ let builtinDocs: Map<string, BuiltinDoc> =
               None
               None
            |> named [ "url" ])
-          "Http.fetch",
+          "Http.expect",
           (bd
-              "The raising GET shorthand: takes a bare URL (never a request — a built request runs through Http.send), returns body only, raises on non-2xx naming the status (the `curl -sf` / JS `fetch(url)` analogue). Http.fetch raises where Http.send returns — two names, no boolean."
+              "The raising read: request in, body lines out, raises on non-2xx naming method, url, status and a capped body snippet — `Http.get url |> Http.expect` for the bare read, any `with`-built request the same way. When the error body is data to inspect, Http.send binds the status instead."
               None
               None
-           |> named [ "url" ])
+           |> named [ "request" ])
+          "Http.header",
+          (bd
+              "The first value of a response header, case-insensitively — header names are case-insensitive by HTTP's own law, so this cannot miss ETag vs etag the way a hand-rolled pairs filter does. None when absent; for a legally repeating header (Set-Cookie), Http.headerAll."
+              (Some "(HttpResponse { status = 200; headers = [(\"ETag\", \"abc\")]; body = [\"\"] }) |> Http.header \"etag\"")
+              None
+           |> named [ "name"; "resp" ])
+          "Http.headerAll",
+          (bd
+              "Every value of a response header, case-insensitively, wire order kept — the multiplicity read for headers that legally repeat (Set-Cookie). Empty when absent."
+              None
+              None
+           |> named [ "name"; "resp" ])
           "Http.withQuery",
           (bd
               "Append a percent-encoded query string to a url — params first, the url last (data-last: `url |> Http.withQuery [(k, v)]`); keys and values are escaped, so a space or `&` cannot break the url. (not `Http.query` the method constructor.)"
@@ -5952,9 +6340,9 @@ let builtinDocs: Map<string, BuiltinDoc> =
               (Some "a pipe stage: File.read \"App.csproj\" |> from xml Proj.")
           "from table",
           bd
-              "Read aligned column output (kubectl/docker style: one header row, aligned data rows) into declared row records — yields seq<T>. Columns slice at header offsets, never whitespace runs, so a spaced value (`Up 2 hours`) survives; a header boundary is a run of 2+ spaces (`CONTAINER ID` is one column). A field matches its header by normalized name, case-insensitively (`podTemplateHash` reads `POD-TEMPLATE-HASH`); `[<Wire \"HEADER\">]` matches a raw header verbatim. Cells trim and type by the field (string/int/float/bool); an Option field reads an empty or `<none>` cell as None. Extra columns are ignored; blank lines skip; errors carry line and column. There is no `to table`."
+              "Read aligned column output (one header row, aligned data rows) into declared row records — yields seq<T>. Columns slice at header offsets, never whitespace runs, so a spaced value (`Up 2 hours`) survives; a header boundary is a run of 2+ spaces (`CONTAINER ID` is one column). A field matches its header by normalized name, case-insensitively (`podTemplateHash` reads `POD-TEMPLATE-HASH`); `[<Wire \"HEADER\">]` matches a raw header verbatim. Cells trim and type by the field (string/int/float/bool); an Option field reads an empty or `<none>` cell as None. Extra columns are ignored; blank lines skip; errors carry line and column. There is no `to table`."
               None
-              (Some "a pipe stage: kubectl get po |> from table Pod.")
+              (Some "a pipe stage: a tool's `-o table` output |> from table Pod.")
           "Yaml.parse",
           (bd
               "Parse one YAML document (the strict subset) into Yaml nodes — the typeless read: structure is held whole, undeclared keys included, where `from yaml T` would drop them. Scalars self-type exactly as district scalars do (unquoted true/3/1.5 -> YBool/YInt/YFloat; quoted or block -> YStr; empty -> YNull)."
@@ -5982,7 +6370,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
            |> named [ "lines" ])
           "Table.inferShape",
           (bd
-              "Draft the row `type` declaration from an aligned-table sample (kubectl/docker style) — the composable core of `#infer … from table`: per-column token scan over the data rows (all-int -> int, else float/bool by token, else string; a column with empty/`<none>` cells -> Option with a note); headers sanitize to field names, `[<Wire>]` carries a header the name cannot recover; a note says the value reads as seq<Root>. You edit the emitted type. Not check-time inference (the value is a runtime sample)."
+              "Draft the row `type` declaration from an aligned-table sample — the composable core of `#infer … from table`: per-column token scan over the data rows (all-int -> int, else float/bool by token, else string; a column with empty/`<none>` cells -> Option with a note); headers sanitize to field names, `[<Wire>]` carries a header the name cannot recover; a note says the value reads as seq<Root>. You edit the emitted type. Not check-time inference (the value is a runtime sample)."
               (Some "print (Table.inferShape [\"NAME   RESTARTS\"; \"web-1  0\"])")
               (Some "the `weir add schema` category: external structure -> a declaration you own; check and `from table` stay untouched.")
            |> named [ "lines" ])

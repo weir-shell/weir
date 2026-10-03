@@ -1833,6 +1833,42 @@ let boundaryTests =
                   Expect.isFalse (ll.Text.Contains Weir.Parser.sibSepStr) "no district arms on a binding named text"
               | other -> failtest $"expected two logical lines, got {other}"
           }
+          test "a comment-only line is heredoc bytes, leading included [D:block-scalars]" {
+              // comment transparency once swallowed a `//`-leading FIRST
+              // content line (the district was not yet active), so a
+              // heredoc's `// header` line vanished from the value
+              let asm lines' =
+                  match Weir.Script.assemble (lines' |> List.mapi (fun i l -> i + 1, l)) with
+                  | Ok [ ll ] -> ll.Text
+                  | other -> failtest $"assembly: {other}"
+
+              let evalStrs src =
+                  match Weir.Parser.parseLine realResolver src with
+                  | Ok(SLet(_, e)) ->
+                      match typecheck env e with
+                      | Ok te ->
+                          match Weir.Eval.eval valueEnv te with
+                          | Weir.Eval.VSeq items ->
+                              items
+                              |> Seq.map (fun v ->
+                                  match v with
+                                  | Weir.Eval.VStr s -> s
+                                  | v -> failtest $"bad item {v}")
+                              |> List.ofSeq
+                          | v -> failtest $"expected VSeq, got {v}"
+                      | Error terr -> failtest (formatError terr)
+                  | other -> failtest $"parse: {other}"
+
+              Expect.equal
+                  (evalStrs (asm [ "let t = <<<"; "    // header"; "    real" ]))
+                  [ "// header"; "real" ]
+                  "a leading comment-only line arms the district as its first byte line"
+
+              Expect.equal
+                  (evalStrs (asm [ "let t = <<<"; "    first"; "    // mid"; "    tail // stays" ]))
+                  [ "first"; "// mid"; "tail // stays" ]
+                  "mid comment-only and trailing-comment bytes both survive"
+          }
           test "a heredoc block is a seq<string>: verbatim lines, blanks survive [D:text-block]" {
               let asm lines' =
                   match Weir.Script.assemble (lines' |> List.mapi (fun i l -> i + 1, l)) with
@@ -7683,7 +7719,7 @@ let effectPartitionTests =
         "the ambient/mutation partition [D:pure-stage2]"
         [ test "effectClass per label — the fixed-class names split as the table says" {
               // ambient input (reads, changes nothing)
-              for n in [ "File.read"; "File.size"; "Dir.list"; "Path.glob"; "Env.get"; "Args.load"; "Instant.now"; "Self.stdin"; "Net.portOpen"; "Http.fetch"; "Http.query" ] do
+              for n in [ "File.read"; "File.size"; "Dir.list"; "Path.glob"; "Env.get"; "Args.load"; "Instant.now"; "Self.stdin"; "Net.portOpen"; "Http.query" ] do
                   Expect.equal (Weir.Effects.effectClass n) (Some A) $"{n} is ambient input"
               // external mutation (changes the world)
               for n in [ "File.write"; "File.append"; "File.copy"; "Dir.create"; "Dir.delete"; "Dir.deleteAll"; "Proc.stop"; "print"; "printerr"; "Log.info"; "exit"; "Path.newTempDir" ] do
@@ -7726,10 +7762,21 @@ let effectPartitionTests =
               Expect.equal (Weir.Builtins.effectClassOfCall "Http.send" [ reqWith "Delete" ]) (Some M) "send{delete} mutates"
               Expect.equal (Weir.Builtins.effectClassOfCall "Http.send" [ reqWith "Query" ]) (Some A) "send{query} is idempotent"
           }
+          test "Http.expect mirrors send [D:http-dx]: None by name, per-method at eval" {
+              Expect.equal (Weir.Effects.effectClass "Http.expect") None "the name defers to the request value"
+              Expect.equal (Weir.Builtins.effectClassOfCall "Http.expect" [ reqWith "Post" ]) (Some M) "read{post} mutates"
+              Expect.equal (Weir.Builtins.effectClassOfCall "Http.expect" [ reqWith "Get" ]) (Some A) "read{get} reads"
+          }
+          test "Form urlencodes with the shared escaper [D:http-dx]" {
+              Expect.equal
+                  (Weir.Http.formUrlEncode [ "grant type", "a&b"; "x", "y z" ])
+                  "grant%20type=a%26b&x=y%20z"
+                  "keys and values percent-encode; pairs join with &"
+          }
           test "eval-time resolution agrees with the name map for fixed-class calls" {
               Expect.equal (Weir.Builtins.effectClassOfCall "File.write" []) (Some M) "fs.write is mutation at eval"
               Expect.equal (Weir.Builtins.effectClassOfCall "File.read" []) (Some A) "fs.read is ambient at eval"
-              Expect.equal (Weir.Builtins.effectClassOfCall "Http.fetch" []) (Some A) "fetch is ambient at eval"
+              Expect.equal (Weir.Builtins.effectClassOfCall "Http.query" []) (Some A) "the query method is ambient at eval"
               Expect.equal (Weir.Builtins.effectClassOfCall "Str.trim" []) None "a pure builtin has no class"
           }
           test "the partition is TOTAL over every classified-effectful name effectPhrase names" {
@@ -7738,7 +7785,7 @@ let effectPartitionTests =
               // the one deliberate None, resolved per-request)
               let names =
                   [ "File.read"; "File.write"; "Dir.create"; "Dir.list"; "Env.get"; "Args.load"; "Proc.stop"
-                    "Net.portOpen"; "Http.fetch"; "Http.query"; "Log.info"; "print"; "printerr"; "exit"
+                    "Net.portOpen"; "Http.query"; "Log.info"; "print"; "printerr"; "exit"
                     "ls"; "glob"; "Path.glob"; "Path.tempRoot"; "Path.newTempDir"; "Instant.now"
                     "Duration.sleep"; "Self.stdin" ]
 
@@ -7806,7 +7853,7 @@ let readonlyBlockTests =
               Expect.stringContains e.Message "'Http.send' talks to the network" "a POST mutates"
               Expect.stringContains e.Message "mutating HTTP method" "the class names the method"
           }
-          test "Http.query and Http.fetch admit — idempotent by construction" {
+          test "Http.query and a GET expect admit — idempotent by construction" {
               Expect.isEmpty
                   (errsOf
                       [ "let x ="
@@ -7816,8 +7863,12 @@ let readonlyBlockTests =
                   "the query method is ambient (piped send resolves it)"
 
               Expect.isEmpty
-                  (errsOf [ "let x ="; "    readonly"; "        Http.fetch \"http://x\""; "x |> Seq.iter print" ])
-                  "fetch is a GET shorthand — ambient"
+                  (errsOf
+                      [ "let x ="
+                        "    readonly"
+                        "        Http.get \"http://x\" |> Http.expect"
+                        "x |> Seq.iter print" ])
+                  "a GET expect is ambient (the piped request resolves it)"
           }
           test "pure ⊂ readonly — a pure body is trivially read-only" {
               Expect.isEmpty
@@ -15402,12 +15453,12 @@ let httpTests =
               let shortMsg = msgOf "Str.toInt \"notanum\""
               Expect.stringContains shortMsg "\"notanum\"" "a short input stays fully readable"
           }
-          test "the fetch/send misreading names its repair [D:fetch-naming]" {
-              // `Http.get u |> Http.fetch` reads as a pipeline and is the
-              // ruled-not-renamed pair: the type error carries the split
-              let m = (checkErr "Http.get \"u\" |> Http.fetch").Message
+          test "a request in a string slot names its repair [D:fetch-naming] [D:fetch-retired]" {
+              // a built request where a URL string is expected: the type
+              // error names the two run spellings
+              let m = (checkErr "Http.get \"u\" |> Str.trim").Message
               Expect.stringContains m "expected string, got HttpRequest" "the mismatch"
-              Expect.stringContains m "runs through Http.send" "the repair"
+              Expect.stringContains m "runs through Http.expect (raising) or Http.send" "the repair names both postures"
 
               // the correct pipeline spelling stays silent
               checkOk "Http.get \"u\" |> Http.send" |> ignore
@@ -21643,6 +21694,7 @@ let helpUxTests =
                         "TCP"
                         "URL"
                         "EOF" // end of file
+                        "BOM" // byte-order mark, the File.write preservation
                         "FIFO" // Frontier.fold's queue discipline
                         "MIME" // MIME wrap (base64)
                         "POSIX"
@@ -22145,6 +22197,73 @@ let hardeningTests =
               Weir.Parser.parseLine realResolver spine |> ignore
           } ]
 
+// ---- Http DX [D:http-dx]: Json-takes-the-value, Http.expect, Form ------
+let httpDxTests =
+    let checkOf lines =
+        let diags, _, _, _ = Weir.Script.analyzeLines "httpdx.weir" lines
+        diags
+
+    testList
+        "Http DX [D:http-dx]"
+        [ test "Json takes the value: a record payload checks (the to json law at the call site)" {
+              Expect.isEmpty
+                  (checkOf
+                      [ "type P = { a: int }"
+                        "let r = Http.send { Http.post \"http://x\" with body = Json { a = 1 } }"
+                        "print $\"{r.status}\"" ])
+                  "a jsonable payload is admitted"
+          }
+          test "the pre-rendered spelling is unchanged: Json (x |> to json) still checks" {
+              Expect.isEmpty
+                  (checkOf
+                      [ "type P = { a: int }"
+                        "let r = Http.send { Http.post \"http://x\" with body = Json ({ a = 1 } |> to json) }"
+                        "print $\"{r.status}\"" ])
+                  "a seq<string> payload is the pre-rendered document"
+          }
+          test "the jsonable law refuses an unjsonable payload, in to json's words" {
+              match
+                  checkOf
+                      [ "let f () = print \"x\""
+                        "let r = Http.send { Http.post \"http://x\" with body = Json {| g = f |} }"
+                        "print $\"{r.status}\"" ]
+              with
+              | [ d ] -> Expect.stringContains d.Message "not admitted" "the refusal is to json's own"
+              | ds -> failtest $"expected the one refusal, got {ds}"
+          }
+          test "Http.expect checks as HttpRequest -> seq<string>, and readonly admits only a query method" {
+              Expect.isEmpty
+                  (checkOf
+                      [ "let v ="
+                        "    readonly"
+                        "        Http.expect (Http.get \"http://x\") |> Seq.length"
+                        "print $\"{v}\"" ])
+                  "a GET read is ambient"
+
+              match
+                  checkOf
+                      [ "let v ="
+                        "    readonly"
+                        "        Http.expect (Http.post \"http://x\") |> Seq.length"
+                        "print $\"{v}\"" ]
+              with
+              | [ d ] -> Expect.stringContains d.Message "Http.expect" "the refusal names the callable"
+              | ds -> failtest $"expected the one refusal, got {ds}"
+          }
+          test "Form is an HttpBody case: pairs check, a non-pair payload refuses" {
+              Expect.isEmpty
+                  (checkOf
+                      [ "let r = Http.send { Http.post \"http://x\" with body = Form [(\"a\", \"b\")] }"
+                        "print $\"{r.status}\"" ])
+                  "pairs are the Form payload"
+
+              Expect.isNonEmpty
+                  (checkOf
+                      [ "let r = Http.send { Http.post \"http://x\" with body = Form \"a=b\" }"
+                        "print $\"{r.status}\"" ])
+                  "a raw string is not a Form payload"
+          } ]
+
 [<Tests>]
 let allTests =
     testList
@@ -22312,6 +22431,7 @@ let allTests =
           cmdChainTests
           aliasTests
           dynamicHeadTests
+          httpDxTests
           helpUxTests
           indexerTests
           envLoadTests

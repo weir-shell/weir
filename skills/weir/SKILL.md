@@ -506,14 +506,21 @@ print $"{key} -> {value}"
 - HTTP is `Http.send : HttpRequest -> HttpResponse` (a record + one
   runner, no new grammar). The common case is a CONSTRUCTOR:
   `Http.send (Http.get u)`, `Http.send { Http.post u with auth = Bearer
-  tok; body = Json (payload |> to json) }` — one per method
+  tok; body = Json payload }` — one per method
   (get/post/put/delete/patch/head/options/query), each equal to `{
-  Http.defaults with method = M; url = u }`. `Http.fetch u : seq<string>`
-  is the raising GET shorthand — a BARE URL in, body out (never a
-  request: `Http.get u |> Http.fetch` is a type error naming the repair;
-  a built request runs through `Http.send`); raises on non-2xx — the
-  pair to send, which binds it. `url |> Http.withQuery [(k, v)]` percent-encodes
-  a query string. `Http.query` is the QUERY method (idempotent, so
+  Http.defaults with method = M; url = u }`. `Http.expect : HttpRequest
+  -> seq<string>` [D:http-dx] is the raising read (`curl -sf`'s
+  posture): body out, raises on non-2xx naming method, redacted url,
+  status and a capped body snippet — `Http.get u |> Http.expect` is the
+  bare GET read [D:fetch-retired]; when the error body is data to
+  inspect, `Http.send` binds it instead. A mutating-method
+  `Http.expect` inside a `plan` refuses (no response to return;
+  `Http.send` captures the Op). `url |> Http.withQuery [(k, v)]` percent-encodes
+  a query string. `resp |> Http.header "etag" : Option<string>` reads a
+  response header case-insensitively (HTTP's own law — a hand-rolled
+  pairs filter misses ETag vs etag); `Http.headerAll` is the
+  multiplicity read for repeating headers (Set-Cookie), wire order
+  kept. `Http.query` is the QUERY method (idempotent, so
   `retry` around it is safe by definition). TLS verification is ON;
   `{ req with insecure = true }` disables it for ONE request (a loud
   per-call field for self-signed clusters). `Http.defaults` is the
@@ -528,9 +535,15 @@ print $"{key} -> {value}"
   the base64); a `Secret` carries WHOLE (interpolating a token is a
   check error) and `show` masks it. Status is DATA (`if resp.status >=
   400 then fail …`, a 404 binds); only TRANSPORT failure raises. The
-  body is `NoBody`/`Json of seq<string>`/`Text of string` — `Json`
-  carries the caller's `to json` lines, byte-exact to the wire (the
-  curl `-d` mangling this exists to prevent). `resp.body |> from json
+  body is `NoBody`/`Json`/`Text of string`/`Form of seq<string * string>`
+  [D:http-dx] — `Json` takes the VALUE (any shape `to json` admits, the
+  same law checked at the call site) and renders at the boundary,
+  byte-exact to the wire (the curl `-d` mangling this exists to
+  prevent); a `seq<string>` payload is the pre-rendered document, so
+  `Json (x |> to json)` means what it always did. `Form` percent-encodes
+  its pairs at send (withQuery's escaper) with
+  `application/x-www-form-urlencoded` — the token-endpoint shape, never
+  hand-built `k=v&…`. `resp.body |> from json
   T` reads the response — pretty-printed or minified, one document
   either way; for a plain GET, `curl url |> from json T` is still the
   spelling. `secretHeaders` for credential headers; headers stay
@@ -606,7 +619,7 @@ print $"{key} -> {value}"
   …`, 405 by choice); `QUERY` reads as `Query`; a malformed method token
   is refused at the boundary with 400. The response `body` is an
   `HttpBody` — the SAME union the `Http` client uses (`NoBody`/`Text`/
-  `Json`), plus `Stream of seq<string>`: the runtime PULLS and FLUSHES
+  `Json`/`Form`), plus `Stream of seq<string>`: the runtime PULLS and FLUSHES
   each element as produced (chunked, SSE-shaped `data:` lines), so a lazy
   producer streams incrementally — the client sees early elements before
   the seq ends. If a `Stream` producer RAISES mid-body, the failure is
@@ -713,8 +726,8 @@ let pure leak p = File.write p ["x"]
   Proc member), console writes, the mutating HTTP methods
   (POST/PUT/DELETE/PATCH), any `within` resource — but AMBIENT READS
   are fine: `fs.read`, `Env`/`Args`, the clock (`Instant.now`), the
-  query HTTP methods (`Http.fetch`/`Http.query`, and `Http.send` of a
-  GET/HEAD/OPTIONS/QUERY request), and `Self.stdin`. So
+  query HTTP methods (`Http.query`, and `Http.send`/`Http.expect` of
+  a GET/HEAD/OPTIONS/QUERY request), and `Self.stdin`. So
   `readonly == only ambient-input`, and a `pure` body (only ∅)
   is trivially read-only. A reachable mutation is a located check
   error naming the offender AND its class ("this 'readonly' block
@@ -1608,7 +1621,12 @@ type Bad = C of int
   (`weir/init.weir`) also takes `#alias name = cmd [args...]` lines
   [D:command-head-alias] — a REPL-only command-head alias (`#alias k =
   kubectl` makes `k get po` run `kubectl get po`, argv bare and
-  injection-safe; `^k` forces PATH; single-hop), and `#save` desugars
+  injection-safe; `^k` forces PATH; single-hop). A session BINDING
+  shadows the table [D:alias-binding-shadow] — resolution is session
+  lets, then aliases, then builtins/PATH — and defining an alias over
+  a bound name refuses (live, and located all-or-nothing at init
+  load); an alias over a BUILTIN name (`#alias ls = ls --color`) is
+  the canonical case and keeps resolving. `#save` desugars
   alias heads back to the real invocation so the saved file is
   alias-free. Aliases never reach scripts or `-e`. At the prompt,
   `#help <Module>` glances one member per line (name + its doc's
@@ -2285,13 +2303,13 @@ not the teaching.
 - `Dir`: `copy` `create` `delete` `deleteAll` `exists` `list` `move` `stat`
 - `Duration`: `average` `h` `m` `ms` `parse` `s` `sleep` `sum` `toMillis` `toSeconds` `tryParse`
 - `Env`: `fromFile` `get` `load` `ofPairs` `pair` `vars`
-- `File`: `append` `copy` `delete` `exists` `isExecutable` `move` `read` `readBytes` `readSecret` `sha256` `size` `write` `writeBytes`
+- `File`: `append` `copy` `delete` `exists` `isExecutable` `move` `read` `readBytes` `readSecret` `sha256` `size` `write` `writeAtomic` `writeBytes` — `append` is kernel-atomic for CONCURRENT appenders (O_APPEND on Unix, one write per call: calls land contiguous and intact, no lock ever blocks a reader) [D:append-oappend]; `write` is in-place (same inode, hardlinks/held handles/`tail -f`/bind mounts keep working) and leaves the file untouched when its payload raises; `writeAtomic` is the whole-file swap (same-dir temp + fsync + rename): a reader sees complete old or complete new, never a window — but the INODE CHANGES (hardlinks split, held handles and `tail -f` keep the old file, a Docker single-file bind mount breaks); it replaces a symlink's TARGET and preserves mode and an existing BOM [D:write-integrity]
 - `Float`: `abs` `average` `near` `ofInt` `parse` `round` `sum` `toInt` `tryParse`
 - `Instant`: `epochMs` `now` `ofEpochMs` `parse` `parseWith` `tryParse` `tryParseWith`
 - `Json`: `inferShape`
 - `Table`: `inferShape` `render`
 - `Yaml`: `parse` `merge` `inferShape`
-- `Http`: `defaults` `delete` `fetch` `get` `head` `options` `patch` `post` `put` `query` `send` `withQuery`
+- `Http`: `defaults` `delete` `expect` `get` `head` `header` `headerAll` `options` `patch` `post` `put` `query` `send` `withQuery`
 - `Log`: `debug` `debugWith` `info` `infoWith` `trace` `traceWith` `warn` `warnWith`
 - `Map`: `add` `count` `get` `has` `keys` `ofPairs` `pairs` `remove` `tryGet` `values`
 - `Net`: `portOpen`

@@ -2542,6 +2542,7 @@ WEOF
     spdir=$(mkweirtmp)
     mkdir -p "$spdir/cfg/weir" "$spdir/state"
     cat > "$spdir/cfg/weir/init.weir" <<'WEOF'
+#init
 let sigil () =
     let n = $(sh -c "echo demo") |> Seq.head
     $"({n}) weir> "
@@ -2555,6 +2556,7 @@ WEOF
     echo "$spout" | grep -qF "(demo) weir> " || fail "the #session prompt must paint at a tty: $spout"
     echo "$spout" | grep -qF "2" || fail "an entry under a custom prompt must still evaluate: $spout"
     cat > "$spdir/cfg/weir/init.weir" <<'WEOF'
+#init
 let boom () =
     if 1 == 1 then fail "nope" else "x> "
 
@@ -2572,6 +2574,7 @@ WEOF
     # (title/clipboard) from attacker-influenced provider output must
     # not reach the terminal (CWE-150)
     cat > "$spdir/cfg/weir/init.weir" <<'WEOF'
+#init
 let evil () =
     let esc = $(sh -c "printf '\\033]0;pwned\\007\\033[35mI'") |> Seq.head
     esc + "> "
@@ -2584,7 +2587,30 @@ WEOF
         | XDG_CONFIG_HOME="$spdir/cfg" XDG_STATE_HOME="$spdir/state" python3 "$ptyrun" 10 "$BIN")
     echo "$spout" | grep -qF ']0;pwned' && fail "an OSC in provider output must be stripped: $spout" || true
     echo "$spout" | grep -qF '35mI> ' || fail "the SGR beside the dropped OSC survives: $spout"
-    echo "e2e ok: #session prompt — an init provider paints at a tty (commands run when called), a raising one falls back with one note, and only SGR escapes pass"
+    # the status-carrying provider [D:prompt-status-arg]: prompt =
+    # PromptStatus -> string — ok is the tint, exit a bare command's
+    # nonzero code (None for a non-command error) — written with a bare
+    # param (the function types as a row; the loader accepts any field
+    # set PromptStatus satisfies)
+    cat > "$spdir/cfg/weir/init.weir" <<'WEOF'
+#init
+let prompt st =
+    if st.ok then
+        "SOK> "
+    else
+        $"SX{st.exit |> Option.map show |> Option.defaultValue "B"}> "
+
+#session {
+    prompt = prompt
+}
+WEOF
+    spout=$(printf 'SLEEP 900\nSEND sh -c "exit 3"\\r\nSLEEP 700\nSEND nope\\r\nSLEEP 500\nSEND 1 + 1\\r\nSLEEP 400\nSEND #quit\\r\n' \
+        | XDG_CONFIG_HOME="$spdir/cfg" XDG_STATE_HOME="$spdir/state" python3 "$ptyrun" 14 "$BIN")
+    echo "$spout" | grep -qF "SX3> " || fail "the provider must see the bare command's exit code: $spout"
+    echo "$spout" | grep -qF "SXB> " || fail "a non-command error must carry exit = None: $spout"
+    echo "$spout" | grep -qF "SOK> " || fail "a clean entry must paint ok: $spout"
+
+    echo "e2e ok: #session prompt — an init provider paints at a tty (commands run when called), a raising one falls back with one note, only SGR passes, and a bool provider carries the status"
 else
     echo "e2e skip: streaming-echo pty pins (POSIX + python3)"
 fi
@@ -6204,7 +6230,7 @@ if [ "$IS_WINDOWS" != "1" ]; then
     printf '#!/bin/sh\necho "kustomize-argv:$*"\n' > "$astub/kustomize" && chmod +x "$astub/kustomize"
     printf '#!/bin/sh\necho "realls-argv:$*"\n' > "$astub/ls" && chmod +x "$astub/ls"
     mkdir -p "$acfg/weir"
-    printf '#alias k  = kubectl\n#alias kb = kustomize build\n#alias ls = ls --color\n' > "$acfg/weir/init.weir"
+    printf '#init\n#alias k  = kubectl\n#alias kb = kustomize build\n#alias ls = ls --color\n' > "$acfg/weir/init.weir"
 
     # (a) a head alias resolves; the rest stays bare argv
     out=$(printf 'k get po -o yaml\n#quit\n' | PATH="$astub:$PATH" XDG_CONFIG_HOME="$acfg" $BIN 2>/dev/null)
@@ -6230,26 +6256,191 @@ if [ "$IS_WINDOWS" != "1" ]; then
     echo "$out" | grep -qF "unbound variable 'k'" || fail "a script must not see aliases (no leak): $out"
 
     # (f) a malformed #alias is a loud init error (all-or-nothing)
-    printf '#alias = kubectl\n' > "$acfg/weir/init.weir"
+    printf '#init\n#alias = kubectl\n' > "$acfg/weir/init.weir"
     out=$(printf '#quit\n' | PATH="$astub:$PATH" XDG_CONFIG_HOME="$acfg" $BIN 2>&1 || true)
     echo "$out" | grep -qF "malformed #alias" || fail "a malformed #alias must be a loud init error: $out"
     echo "$out" | grep -qF "not loaded" || fail "a malformed init is all-or-nothing: $out"
 
     # (g) an alias-of-alias is rejected at define time (single-hop)
-    printf '#alias k = kubectl\n#alias kk = k\n' > "$acfg/weir/init.weir"
+    printf '#init\n#alias k = kubectl\n#alias kk = k\n' > "$acfg/weir/init.weir"
     out=$(printf '#quit\n' | PATH="$astub:$PATH" XDG_CONFIG_HOME="$acfg" $BIN 2>&1 || true)
     echo "$out" | grep -qF "single-hop" || fail "an alias-of-alias must be rejected: $out"
 
     # (h) #save desugars alias heads: the saved script is alias-free and checks
-    printf '#alias k  = kubectl\n#alias kb = kustomize build\n' > "$acfg/weir/init.weir"
+    printf '#init\n#alias k  = kubectl\n#alias kb = kustomize build\n' > "$acfg/weir/init.weir"
     out=$(printf 'let pods = k get po -o json\nlet note = "k is a letter"\n#save %s/saved.weir\n#quit\n' "$acfg" \
         | PATH="$astub:$PATH" XDG_CONFIG_HOME="$acfg" $BIN 2>/dev/null)
     echo "$out" | grep -qF "#save: wrote" || fail "#save must write with aliases active: $out"
     grep -qF "kubectl get po -o json" "$acfg/saved.weir" || fail "#save must desugar the alias head: $(cat "$acfg/saved.weir")"
     grep -qF '"k is a letter"' "$acfg/saved.weir" || fail "#save desugar must leave a string spelling the alias untouched: $(cat "$acfg/saved.weir")"
     PATH="$astub:$PATH" $BIN check "$acfg/saved.weir" || fail "the desugared #save output must check clean: $(cat "$acfg/saved.weir")"
-    echo "e2e ok: #alias resolves head->exe (+prefix), injection-safe, ^-bypass, REPL-only, malformed=loud, single-hop, #save desugars alias-free"
+
+    # (i) a session binding shadows the alias table [D:alias-binding-shadow]:
+    # an init declaring both refuses located (all-or-nothing); a live let
+    # over an alias shadows it (the function is callable); a live #alias
+    # over a binding refuses with the teaching; an alias over a BUILTIN
+    # name keeps resolving (cell (a)'s ls case is the canonical alias)
+    printf '#init\nlet hi () = print "the-function"\n\n#alias hi = kubectl\n' > "$acfg/weir/init.weir"
+    out=$(printf '#quit\n' | PATH="$astub:$PATH" XDG_CONFIG_HOME="$acfg" $BIN 2>&1 || true)
+    echo "$out" | grep -qF "is also declared in this file" || fail "an init alias/let collision must refuse located: $out"
+    echo "$out" | grep -qF "not loaded" || fail "the alias/let collision is all-or-nothing: $out"
+    rm -f "$acfg/weir/init.weir"
+    out=$(printf '#alias hi = kubectl\nlet hi () = print "the-function"\nhi ()\n#quit\n' | PATH="$astub:$PATH" XDG_CONFIG_HOME="$acfg" $BIN 2>&1)
+    echo "$out" | grep -qF "the-function" || fail "a session binding must shadow the alias (hi () callable): $out"
+    out=$(printf 'let hi () = print "the-function"\n#alias hi = kubectl\nhi ()\n#quit\n' | PATH="$astub:$PATH" XDG_CONFIG_HOME="$acfg" $BIN 2>&1)
+    echo "$out" | grep -qF "would never resolve" || fail "a live #alias over a binding must refuse with the teaching: $out"
+    echo "$out" | grep -qF "the-function" || fail "the binding must stay callable after the refused #alias: $out"
+
+    echo "e2e ok: #alias resolves head->exe (+prefix), injection-safe, ^-bypass, REPL-only, malformed=loud, single-hop, #save desugars alias-free, bindings shadow the table"
     rm -rf "$acfg" "$astub"
+fi
+
+# ---- File.append under concurrent appenders [D:append-oappend] ------------
+# N weir processes append to one file at once; every call must land
+# contiguous and intact — O_APPEND on Unix, so no writer can overwrite
+# another's bytes and no lock blocks a concurrent reader. Payload shapes
+# cycle: one short line, a three-line call, a >4KiB line, a >64KiB line,
+# each line a JSON object carrying writer id, seq and its own sha256.
+if [ "$IS_WINDOWS" != "1" ]; then
+    apdir=$(mkweirtmp)
+    cat > "$apdir/writer.weir" <<'WEOF'
+type Cli = {
+    /// writer id
+    id: int
+    /// append calls to make
+    calls: int
+    /// the shared log path
+    log: string
+}
+
+let cli = Args.load Cli
+
+let payload size tag =
+    let unit = $"{tag}-abcdefghijklmnopqrstuvwxyz0123456789-"
+    let reps = size / Str.length unit + 1
+    ([1..reps] |> Seq.map (fun _ -> unit) |> Str.join "")[0 .. size - 1]
+
+let jline q k n data =
+    let h = Str.sha256 data
+    $"{{\"w\":{cli.id},\"q\":{q + 0},\"k\":{k + 0},\"n\":{n + 0},\"h\":\"{h}\",\"d\":\"{data}\"}}"
+
+for s in [1 .. cli.calls] do
+    match s % 4 with
+    | 1 -> File.append cli.log [ jline s 1 1 (payload 40 $"w{cli.id}s{s}") ]
+    | 2 ->
+        File.append
+            cli.log
+            [ jline s 1 3 (payload 60 $"w{cli.id}s{s}a")
+              jline s 2 3 (payload 60 $"w{cli.id}s{s}b")
+              jline s 3 3 (payload 60 $"w{cli.id}s{s}c") ]
+    | 3 -> File.append cli.log [ jline s 1 1 (payload 5000 $"w{cli.id}s{s}") ]
+    | _ -> File.append cli.log [ jline s 1 1 (payload 70000 $"w{cli.id}s{s}") ]
+WEOF
+    cat > "$apdir/validate.weir" <<'WEOF'
+type Cli = {
+    /// the shared log path
+    log: string
+    /// expected writers
+    writers: int
+    /// calls per writer
+    calls: int
+}
+
+type Line = { w: int; q: int; k: int; n: int; h: string; d: string }
+type Pend = { pw: int; pq: int; pn: int; pk: int }
+
+let cli = Args.load Cli
+let raw = File.read cli.log |> Seq.freeze
+let expected = cli.writers * (cli.calls / 4 * 6)
+
+let parsed =
+    raw
+    |> Seq.map (fun l ->
+        let r = [ l ] |> from json Line
+        if Str.sha256 r.d <> r.h then fail $"checksum mismatch at w{r.w} q{r.q} k{r.k}"
+        r)
+    |> Seq.freeze
+
+let zero = { pw = 0; pq = 0; pn = 0; pk = 0 }
+
+let tail =
+    parsed
+    |> Seq.fold
+        (fun st r ->
+            if st.pn == 0 then
+                if r.k <> 1 then
+                    fail $"call starts mid-way: w{r.w} q{r.q} k{r.k}"
+
+                if r.n > 1 then
+                    { pw = r.w; pq = r.q; pn = r.n; pk = 2 }
+                else
+                    zero
+            else
+                if r.w <> st.pw || r.q <> st.pq || r.k <> st.pk then
+                    fail $"call w{st.pw} q{st.pq} not contiguous: found w{r.w} q{r.q} k{r.k} wanting k{st.pk}"
+
+                if st.pk == st.pn then zero else { st with pk = st.pk + 1 })
+        zero
+
+if tail.pn <> 0 then
+    fail $"file ends mid-call w{tail.pw} q{tail.pq}"
+
+if (raw |> Seq.length) <> expected then
+    fail $"line count {raw |> Seq.length} <> expected {expected}"
+
+print "append-stress ok"
+WEOF
+    aplog="$apdir/shared.jsonl"
+    : > "$aplog"
+    appids=""
+    for i in 1 2 3 4; do
+        "$BIN" "$apdir/writer.weir" --id "$i" --calls 16 --log "$aplog" & appids="$appids $!"
+    done
+    # a concurrent weir reader must never fail against the appenders
+    # (no locks on the O_APPEND path)
+    "$BIN" -e "File.read \"$aplog\" |> Seq.length |> show |> print" > /dev/null 2>"$apdir/reader.err" || true
+    aprc=0
+    for p in $appids; do wait "$p" || aprc=1; done
+    [ "$aprc" = "0" ] || fail "append stress: a writer failed"
+    [ -s "$apdir/reader.err" ] && fail "append stress: the concurrent reader errored: $(cat "$apdir/reader.err")" || true
+    out=$("$BIN" "$apdir/validate.weir" --log "$aplog" --writers 4 --calls 16 2>&1) || fail "append stress validation: $out"
+    echo "$out" | grep -qF "append-stress ok" || fail "append stress: $out"
+    echo "e2e ok: File.append — 4 concurrent appenders, every call contiguous and intact, reader unblocked"
+fi
+
+# ---- File.write integrity + File.writeAtomic [D:write-integrity] ----------
+# a File.write whose content raises mid-enumeration must leave the file
+# byte-identical (the payload encodes before the truncate); writeAtomic
+# swaps whole files — BOM and mode preserved, a symlink's target
+# replaced (the link intact), no temp litter on any path
+if [ "$IS_WINDOWS" != "1" ]; then
+    widir=$(mkweirtmp)
+    # weir's own digest/mode readers keep the cell off GNU-only coreutils
+    # (macOS has no sha256sum, and stat -c is GNU-only) — dogfooded and
+    # portable; the BOM bytes read through od -N3 | tr (the proven form)
+    bom3() { od -An -tx1 -N3 "$1" | tr -d ' '; }
+    printf 'precious original\nsecond line\n' > "$widir/keep.txt"
+    before=$($BIN -e "print (File.sha256 \"$widir/keep.txt\")")
+    $BIN -e "File.write \"$widir/keep.txt\" ([1; 2; 3] |> Seq.map (fun i -> if i == 2 then fail \"boom\" else show i))" 2>/dev/null && fail "the raising write must raise"
+    after=$($BIN -e "print (File.sha256 \"$widir/keep.txt\")")
+    [ "$before" = "$after" ] || fail "a raising File.write must leave the file byte-identical"
+
+    printf '\xef\xbb\xbfbom line\n' > "$widir/bom.txt"
+    $BIN -e "File.writeAtomic \"$widir/bom.txt\" [\"swapped\"]" || fail "writeAtomic failed"
+    [ "$(bom3 "$widir/bom.txt")" = "efbbbf" ] || fail "writeAtomic must preserve an existing BOM"
+
+    printf 'plain\n' > "$widir/mode.txt" && chmod 640 "$widir/mode.txt"
+    $BIN -e "File.writeAtomic \"$widir/mode.txt\" [\"replaced\"]" || fail "writeAtomic failed"
+    [ "$($BIN -e "print (File.mode \"$widir/mode.txt\" |> Option.defaultValue \"none\")")" = "rw-r-----" ] || fail "writeAtomic must preserve the target's mode"
+    [ "$(bom3 "$widir/mode.txt")" = "efbbbf" ] && fail "writeAtomic must not add a BOM" || true
+
+    printf 'target orig\n' > "$widir/t.txt" && ln -s t.txt "$widir/l.txt"
+    $BIN -e "File.writeAtomic \"$widir/l.txt\" [\"via link\"]" || fail "writeAtomic through a symlink failed"
+    grep -qF "via link" "$widir/t.txt" || fail "writeAtomic must replace the symlink's target"
+    [ -L "$widir/l.txt" ] || fail "the symlink itself must survive"
+
+    ls "$widir"/.*weir-tmp* >/dev/null 2>&1 && fail "writeAtomic left temp litter" || true
+    echo "e2e ok: File.write leaves a file untouched on a raising payload; writeAtomic swaps whole (BOM, mode, symlink target, no litter)"
 fi
 
 # ---- dynamic command heads [D:dynamic-head] ----------------------------
@@ -7018,7 +7209,7 @@ kill $ctsrv 2>/dev/null || true
 
 # ---- Fix 1: HTTP diagnostics redact a URL's userinfo [D:url-redact] --------
 # a `user:pass@host` credential must not print verbatim when an HTTP error
-# names the URL. (a) a 500 through Http.fetch redacts the credential; a
+# names the URL. (a) a 500 through Http.expect redacts the credential; a
 # userinfo-free URL is still named in full. (b) the transport fallback (an
 # unparseable URL) redacts too.
 if command -v python3 >/dev/null 2>&1; then
@@ -7035,11 +7226,11 @@ URLEOF
     # `curl -sf` treats a 500 as failure — readiness means the listener is up
     awaitTcp "$urport" || { kill $ursrv 2>/dev/null || true; fail "the redact 500-server never came up"; }
     # (a) the credential is masked, the status still named
-    out=$($BIN -e "print (Http.fetch \"http://user:s3cr3t@127.0.0.1:$urport/\")" 2>&1) && fail "a 500 must raise" || true
+    out=$($BIN -e "print (Http.expect (Http.get \"http://user:s3cr3t@127.0.0.1:$urport/\"))" 2>&1) && fail "a 500 must raise" || true
     echo "$out" | grep -qF "***@127.0.0.1:$urport/ answered 500" || fail "the userinfo is redacted in the 500 error: $out"
     echo "$out" | grep -qiF "s3cr3t" && fail "the credential LEAKED verbatim in the 500 error: $out" || true
     # a userinfo-free URL is still named in full
-    out=$($BIN -e "print (Http.fetch \"http://127.0.0.1:$urport/\")" 2>&1) && fail "a 500 must raise" || true
+    out=$($BIN -e "print (Http.expect (Http.get \"http://127.0.0.1:$urport/\"))" 2>&1) && fail "a 500 must raise" || true
     echo "$out" | grep -qF "http://127.0.0.1:$urport/ answered 500" || fail "a credential-free URL is named in full: $out"
     kill $ursrv 2>/dev/null || true
     echo "e2e ok: an HTTP 500 redacts a URL's userinfo, names a credential-free URL in full (Fix 1a)"
@@ -7047,7 +7238,7 @@ else
     echo "e2e skip: Fix 1a userinfo-500 (python3 absent)"
 fi
 # (b) the transport fallback: an unparseable URL still masks its userinfo
-out=$($BIN -e 'print (Http.fetch "http://user:pw@ nohost")' 2>&1) && fail "an unreachable URL must raise" || true
+out=$($BIN -e 'print (Http.expect (Http.get "http://user:pw@ nohost"))' 2>&1) && fail "an unreachable URL must raise" || true
 echo "$out" | grep -qF "***@ nohost" || fail "the transport fallback redacts the unparseable URL's userinfo: $out"
 echo "$out" | grep -qiF "user:pw" && fail "the credential LEAKED in the transport fallback: $out" || true
 echo "e2e ok: the transport fallback redacts an unparseable URL's userinfo (Fix 1b)"
@@ -7529,7 +7720,7 @@ let t = cfg.token
 sh -c "curl example.com"
 if 1 == 2 then rg TODO
 ["x"] |> File.write "out.txt"
-let _body = Http.fetch "https://api.example.com/items"
+let _body = Http.get "https://api.example.com/items" |> Http.expect
 curl -H $t https://x.example
 WEOF
 canrc=0
@@ -7540,7 +7731,7 @@ echo "$out" | grep -qF "this report is incomplete: 1 opaque site" || fail "the l
 echo "$out" | grep -qF "sh (opaque)" || fail "opacity marks the runs line inline (F5): $out"
 echo "$out" | grep -qF "rg" || fail "an untaken branch still counts (capability, not behaviour): $out"
 echo "$out" | grep -qF "File.write out.txt" || fail "the literal path is named: $out"
-echo "$out" | grep -qF "Http.fetch https://api.example.com/items" || fail "the literal url is named: $out"
+echo "$out" | grep -qF "Http.expect https://api.example.com/items" || fail "the literal url is named: $out"
 echo "$out" | grep -qF "a Secret reaches the argv of curl" || fail "the ps-visible line: $out"
 echo "$out" | grep -qF "git" || fail "an imported module's externals appear transitively: $out"
 echo "$out" | grep -qF "lib.weir" || fail "the module site carries the module's own file: $out"
@@ -7975,7 +8166,7 @@ within proc srv = python3 -u -c "import socketserver,http.server as h; s=sockets
     sh -c "lsof -nP -iTCP -sTCP:LISTEN 2>/dev/null | grep $spport || echo diag-no-listener-on-$spport"
     poll timeout=12s interval=100ms watch=srv
         Net.portOpen $spport
-    let n = Http.fetch "http://127.0.0.1:$spport/" |> Seq.length
+    let n = Http.get "http://127.0.0.1:$spport/" |> Http.expect |> Seq.length
     print \$"got={n > 0}"
 print "closed"
 WEOF
@@ -8515,6 +8706,8 @@ class H(http.server.BaseHTTPRequestHandler):
         if self.path == '/ua':
             uas = self.headers.get_all('User-Agent') or []
             body = f"{len(uas)}|{','.join(uas)}".encode()
+        if self.path == '/ct':
+            body = (self.headers.get('Content-Type', 'NONE') + '|').encode() + body
         code = 404 if self.path == '/missing' else int(self.headers.get('X-Want-Status', '200'))
         self.send_response(code); self.end_headers(); self.wfile.write(body)
     do_GET = do_POST = do_PUT = _h
@@ -8561,18 +8754,28 @@ WEOF
     echo "$out" | grep -qF "Bearer tok123" || { kill $hsrv 2>/dev/null || true; fail "Bearer not sent: $out"; }
     echo "$out" | grep -qF "Basic YWxpY2U6czNjcjN0" || { kill $hsrv 2>/dev/null || true; fail "Basic base64 wrong: $out"; }
 
-    # Http.fetch raises on non-2xx (naming the status); the same 404 that
-    # send binds as data [D:http-s2] — two names, no boolean
+    # Http.expect raises on non-2xx (naming the status); the same 404 that
+    # send binds as data [D:http-s2] — two postures, no boolean
     cat > "$hdir/fetch.weir" <<WEOF
-let ok = Http.fetch "http://127.0.0.1:$hport/x"
+let ok = Http.get "http://127.0.0.1:$hport/x" |> Http.expect
 print \$"fetch-ok lines={ok |> Seq.length}"
 let bound = Http.send (Http.get "http://127.0.0.1:$hport/missing")
 print \$"send-binds={bound.status}"
 WEOF
     out=$($BIN "$hdir/fetch.weir" 2>&1) || { kill $hsrv 2>/dev/null || true; fail "fetch/send failed: $out"; }
     echo "$out" | grep -qF "send-binds=404" || { kill $hsrv 2>/dev/null || true; fail "send must BIND a 404: $out"; }
-    out=$($BIN -e 'Http.fetch "http://127.0.0.1:'"$hport"'/missing" |> Seq.length |> print' 2>&1) && { kill $hsrv 2>/dev/null || true; fail "fetch must RAISE on 404"; } || true
-    echo "$out" | grep -qF "answered 404" || { kill $hsrv 2>/dev/null || true; fail "fetch raise must name the status: $out"; }
+    # the header accessors [D:http-dx]: case-insensitive first hit,
+    # multiplicity in wire order
+    hdrout=$($BIN -e 'let r = HttpResponse { status = 200; headers = [("ETag", "W/1"); ("Set-Cookie", "a=1"); ("set-cookie", "b=2")]; body = [""] }
+print (show (r |> Http.header "etag"))
+print (show (r |> Http.header "absent"))
+r |> Http.headerAll "SET-COOKIE" |> Seq.iter print' 2>&1) || { kill $hsrv 2>/dev/null || true; fail "header accessors failed: $hdrout"; }
+    echo "$hdrout" | grep -qF 'Some "W/1"' || { kill $hsrv 2>/dev/null || true; fail "Http.header must hit case-insensitively: $hdrout"; }
+    echo "$hdrout" | grep -qF 'None' || { kill $hsrv 2>/dev/null || true; fail "Http.header must miss as None: $hdrout"; }
+    echo "$hdrout" | grep -qF 'a=1' && echo "$hdrout" | grep -qF 'b=2' || { kill $hsrv 2>/dev/null || true; fail "Http.headerAll must keep both cookies: $hdrout"; }
+
+    out=$($BIN -e 'Http.get "http://127.0.0.1:'"$hport"'/missing" |> Http.expect |> Seq.length |> print' 2>&1) && { kill $hsrv 2>/dev/null || true; fail "expect must RAISE on 404"; } || true
+    echo "$out" | grep -qF "answered 404" || { kill $hsrv 2>/dev/null || true; fail "the expect raise must name the status: $out"; }
 
     # a constructor round-trips through send (Http.post carries the method)
     cat > "$hdir/ctor.weir" <<WEOF
@@ -8581,6 +8784,27 @@ print \$"ctor-status={r.status}"
 WEOF
     out=$($BIN "$hdir/ctor.weir" 2>&1) || { kill $hsrv 2>/dev/null || true; fail "constructor send failed: $out"; }
     echo "$out" | grep -qF "ctor-status=200" || { kill $hsrv 2>/dev/null || true; fail "constructor did not send: $out"; }
+
+    # Http DX [D:http-dx]: Json takes the value (renders at the boundary,
+    # the same bytes as the pre-rendered spelling), Form urlencodes with
+    # its content type, and Http.expect returns the body / raises naming
+    # method, url and status
+    cat > "$hdir/dx.weir" <<WEOF
+type P = { name: string; count: int }
+let r1 = Http.send { Http.defaults with method = Post; url = "http://127.0.0.1:$hport/x"; body = Json { name = "a"; count = 1 } }
+r1.body |> Seq.iter print
+let r2 = Http.send { Http.defaults with method = Post; url = "http://127.0.0.1:$hport/ct"; body = Form [("grant type", "a&b")] }
+r2.body |> Seq.iter print
+let got = Http.expect { Http.defaults with method = Post; url = "http://127.0.0.1:$hport/x"; body = Json { name = "b"; count = 2 } }
+got |> Seq.iter print
+WEOF
+    out=$($BIN "$hdir/dx.weir" 2>&1) || { kill $hsrv 2>/dev/null || true; fail "http-dx probes failed: $out"; }
+    echo "$out" | grep -qF '{"name":"a","count":1}' || { kill $hsrv 2>/dev/null || true; fail "Json value body did not render: $out"; }
+    echo "$out" | grep -qF 'application/x-www-form-urlencoded|grant%20type=a%26b' || { kill $hsrv 2>/dev/null || true; fail "Form did not urlencode with its content type: $out"; }
+    echo "$out" | grep -qF '{"name":"b","count":2}' || { kill $hsrv 2>/dev/null || true; fail "Http.expect did not return the body: $out"; }
+
+    out=$($BIN -e 'Http.expect (Http.get "http://127.0.0.1:'"$hport"'/missing") |> Seq.length |> print' 2>&1) && { kill $hsrv 2>/dev/null || true; fail "Http.expect must RAISE on 404"; } || true
+    echo "$out" | grep -qF "GET http://127.0.0.1:$hport/missing answered 404" || { kill $hsrv 2>/dev/null || true; fail "read raise must name method, url, status: $out"; }
 
     # parallel fetches via Seq.pmap
     cat > "$hdir/pmap.weir" <<WEOF
@@ -8606,15 +8830,15 @@ let r3 = { Http.get "http://127.0.0.1:$hport/ua" with headers = [("user-agent", 
 print \$"lowercase={r3.body |> Seq.head}"
 let r4 = { Http.get "http://127.0.0.1:$hport/ua" with secretHeaders = [("User-Agent", Secret.of "secret-ua")] } |> Http.send
 print \$"secret={r4.body |> Seq.head}"
-print \$"fetch={Http.fetch "http://127.0.0.1:$hport/ua" |> Seq.head}"
+print \$"expect={Http.get "http://127.0.0.1:$hport/ua" |> Http.expect |> Seq.head}"
 WEOF
     out=$($BIN "$hdir/ua.weir" 2>&1) || { kill $hsrv 2>/dev/null || true; fail "ua cell failed: $out"; }
     echo "$out" | grep -qF "default=1|weir/$stamp" || { kill $hsrv 2>/dev/null || true; fail "default UA must be weir/<--version stamp>, exactly one: $out"; }
     echo "$out" | grep -qF "explicit=1|custom-ua" || { kill $hsrv 2>/dev/null || true; fail "an explicit User-Agent must win, exactly one: $out"; }
     echo "$out" | grep -qF "lowercase=1|lower-ua" || { kill $hsrv 2>/dev/null || true; fail "a lowercase user-agent must still block the default: $out"; }
     echo "$out" | grep -qF "secret=1|secret-ua" || { kill $hsrv 2>/dev/null || true; fail "a secretHeaders User-Agent must win, exactly one: $out"; }
-    echo "$out" | grep -qF "fetch=1|weir/$stamp" || { kill $hsrv 2>/dev/null || true; fail "Http.fetch must send the default UA: $out"; }
-    echo "e2e ok: Http default User-Agent (weir/<stamp> == --version, explicit wins from both header paths, exactly one ever sent, fetch included)"
+    echo "$out" | grep -qF "expect=1|weir/$stamp" || { kill $hsrv 2>/dev/null || true; fail "Http.expect must send the default UA: $out"; }
+    echo "e2e ok: Http default User-Agent (weir/<stamp> == --version, explicit wins from both header paths, exactly one ever sent, expect included)"
 
     # F3-outbound [D:http-header-bytes]: a request header carrying CR/LF is
     # refused before send (the forge the review found on the wire), with a
@@ -8956,6 +9180,7 @@ else
 fi
 mkdir -p "$INITHOME/weir" "$initcfg/work"
 cat > "$INITHOME/weir/init.weir" <<WEOF
+#init
 #session {
     cwd = "$initcfg/work"
     logLevel = "debug"
@@ -8992,6 +9217,7 @@ echo "$iout" | grep -qF "push the current branch and set upstream" || fail "#hel
 echo "$iout" | grep -qF "child-sees-less -R" || fail "init env not inherited by a child"
 # all-or-nothing: a typo'd #session key reports located, loads nothing
 cat > "$INITHOME/weir/init.weir" <<'WEOF'
+#init
 #session {
     echoCpa = 50
 }
@@ -9009,6 +9235,7 @@ echo "$iout" | grep -qF "unknown name 'hi'" || fail "all-or-nothing broke: a bin
 # prompt. The trace-absence assertion is the claim — the located line
 # alone would pass on a build that also dumped a stack.
 cat > "$INITHOME/weir/init.weir" <<'WEOF'
+#init
 #session {
     cwd = File.read "/no/such/file/xyz" |> Seq.head
 }
@@ -9018,12 +9245,13 @@ iout=$(printf '#help hi
 #quit
 ' | XDG_CONFIG_HOME="$initcfg" XDG_STATE_HOME="$initcfg/state" "$BIN" 2>&1)
 echo "$iout" | grep -qF "File.read: no such file:" || fail "a raising #session value must report its own error: $iout"
-echo "$iout" | grep -qE "init\.weir:2:" || fail "the raising #session value must be LOCATED at its line: $iout"
+echo "$iout" | grep -qE "init\.weir:3:" || fail "the raising #session value must be LOCATED at its line: $iout"
 echo "$iout" | grep -qF "init: not loaded" || fail "a raising #session value must not load"
 echo "$iout" | grep -qF "unknown name 'hi'" || fail "all-or-nothing broke after a raising #session value"
 echo "$iout" | grep -qF "Unhandled exception" && fail "a raising #session value dumped a .NET trace: $iout" || true
 
 cat > "$INITHOME/weir/init.weir" <<'WEOF'
+#init
 let bad = File.read "/no/such/file/xyz" |> Seq.head
 let hi () = print "hi"
 WEOF
@@ -9031,16 +9259,32 @@ iout=$(printf '#help hi
 #quit
 ' | XDG_CONFIG_HOME="$initcfg" XDG_STATE_HOME="$initcfg/state" "$BIN" 2>&1)
 echo "$iout" | grep -qF "File.read: no such file:" || fail "a raising init let must report its own error: $iout"
-echo "$iout" | grep -qE "init\.weir:1:" || fail "the raising let must be LOCATED at its line: $iout"
+echo "$iout" | grep -qE "init\.weir:2:" || fail "the raising let must be LOCATED at its line: $iout"
 echo "$iout" | grep -qF "init: not loaded" || fail "a raising init let must not load"
 echo "$iout" | grep -qF "unknown name 'hi'" || fail "all-or-nothing broke after a raising init let"
 echo "$iout" | grep -qF "Unhandled exception" && fail "a raising init let dumped a .NET trace: $iout" || true
+
+# the marker is required [D:init-marker]: the canonical file without
+# #init refuses, located, and the session starts without it
+cat > "$INITHOME/weir/init.weir" <<'WEOF'
+let hi () = print "hi"
+
+#session {
+    echoCap = 7
+}
+WEOF
+iout=$(printf '#echo\n#quit\n' | XDG_CONFIG_HOME="$initcfg" XDG_STATE_HOME="$initcfg/state" "$BIN" 2>&1)
+echo "$iout" | grep -qF "put #init on the first line" || fail "an unmarked canonical init must refuse naming the marker: $iout"
+echo "$iout" | grep -qF "init: not loaded" || fail "an unmarked init must not load"
+echo "$iout" | grep -qF "echo cap: 7" && fail "an unmarked init must not apply its #session (echoCap leaked): $iout" || true
+echo "e2e ok: the init file requires #init — unmarked refuses, located, nothing applied"
 
 # the #session prompt [D:session-prompt], piped half: the provider
 # names an init declaration (so it checks after the declarations bind),
 # and a redirected session ignores it — the prompt mirror stays the
 # fixed default (a provider could run commands per piped line)
 cat > "$INITHOME/weir/init.weir" <<'WEOF'
+#init
 let sigil () = "custom> "
 
 #session {
@@ -9057,6 +9301,7 @@ echo "$iout" | grep -qF "custom> " && fail "a redirected session must not run th
 # the value expression stays command-free like every field — the
 # command belongs inside the function the field names
 cat > "$INITHOME/weir/init.weir" <<'WEOF'
+#init
 #session {
     prompt = $(sh -c "echo x") |> Seq.head
 }
@@ -9066,15 +9311,17 @@ echo "$iout" | grep -qF "a #session value cannot run a command" || fail "a comma
 echo "$iout" | grep -qF "init: not loaded" || fail "a refused prompt value must not load"
 # the type gate names both accepted shapes
 cat > "$INITHOME/weir/init.weir" <<'WEOF'
+#init
 #session {
     prompt = 42
 }
 WEOF
 iout=$(printf '#quit\n' | XDG_CONFIG_HOME="$initcfg" XDG_STATE_HOME="$initcfg/state" "$BIN" 2>&1)
-echo "$iout" | grep -qF "prompt expects a string or a unit -> string function, got int" || fail "a mistyped prompt must refuse with both shapes named: $iout"
+echo "$iout" | grep -qF "prompt expects a string, a unit -> string, or a PromptStatus -> string function" || fail "a mistyped prompt must refuse with the shapes named: $iout"
 
 # declaration-only: a bare command refuses with the teach
 cat > "$INITHOME/weir/init.weir" <<'WEOF'
+#init
 git status
 WEOF
 iout=$(printf '#quit
@@ -9557,11 +9804,11 @@ within serve srv = { port = $svport; maxConcurrent = 4 } handler
     print \$"listening on {Server.port srv}"
     poll timeout=8s interval=100ms
         Net.portOpen $svport
-    let h = Http.fetch "http://127.0.0.1:$svport/health" |> Seq.head
+    let h = Http.get "http://127.0.0.1:$svport/health" |> Http.expect |> Seq.head
     print \$"health={h}"
-    let hl = Http.fetch "http://localhost:$svport/health" |> Seq.head
+    let hl = Http.get "http://localhost:$svport/health" |> Http.expect |> Seq.head
     print \$"health-localhost={hl}"
-    let e = Http.fetch "http://127.0.0.1:$svport/echo?name=weir" |> Seq.head
+    let e = Http.get "http://127.0.0.1:$svport/echo?name=weir" |> Http.expect |> Seq.head
     print \$"echo={e}"
     within proc probe = sh "$svdir/dualhost.sh"
         Duration.sleep 2000ms

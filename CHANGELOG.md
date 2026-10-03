@@ -1,5 +1,153 @@
 # Changelog
 
+## v0.0.60
+
+### Added
+
+- **`Http.expect` — the raising read.** Request in, body out:
+  `Http.get url |> Http.expect |> from json T` for the bare read, and
+  `{ Http.get url with auth = Bearer t } |> Http.expect` the moment it
+  needs `with`. A non-2xx raises naming the method, the redacted url,
+  the status and a capped snippet of the error body — when the error
+  body is data to inspect, `Http.send` still binds status and body as
+  values. Per-method effect class like `send`'s (a GET expect is legal
+  in `readonly`); a mutating-method expect inside a `plan` refuses —
+  there is no response to return, and `Http.send` captures the Op.
+
+- **Breaking: `Http.fetch` is retired.** `Http.get url |> Http.expect`
+  is the spelling — one raising read, bare or built, and `--can` still
+  names a literal url through the pipe. Pre-1.0: no retirement shim;
+  the ledger carries the ruling [D:fetch-retired].
+
+- **`Form` — the urlencoded body.** `body = Form [("grant_type",
+  "client_credentials")]` percent-encodes each pair at send (the
+  `withQuery` escaper) and sets `application/x-www-form-urlencoded` —
+  the token-endpoint shape, never a hand-built `k=v&…`. Shared with
+  `serve` responses like the rest of `HttpBody`.
+
+- **The prompt provider carries the status.** `prompt` in the init
+  file's `#session` block now also takes a `PromptStatus -> string`
+  function: `ok` is the red-prompt tint — `true` when the last entry
+  ran clean; a bare command's nonzero exit counts as not clean, a
+  reified exit (`| exitCode`, `| complete`) stays data — and `exit`
+  carries that bare command's code (`Option<int>`). A custom prompt
+  owns its colors, so the status arrives as data instead of a paint:
+  `let prompt st = if st.ok then Color.green "❯ " else Color.red "❯ "`
+  — and the record grows without breaking a consumer. Records are
+  nominal and init takes no signatures, so a provider types as a row;
+  the loader accepts any field set `PromptStatus` satisfies.
+
+### Changed
+
+- **A `Json` body takes the value.** `body = Json { name = "w"; count =
+  3 }` checks by `to json`'s own law and renders at the boundary — the
+  `Json (x |> to json)` mouthful retires from the common path. Not
+  breaking: a `seq<string>` payload is read as the pre-rendered
+  document, so the explicit spelling means what it always did.
+
+- **`weir fmt` pads the unambiguous operators.** `let x =dirty ||
+  staged||stashed` formats to `let x = dirty || staged || stashed` —
+  one space around `=`, `==`, `<>`, `<=`, `>=`, `&&`, `||`, `|>` and
+  `+` where it was missing. Never `-` (adjacency is meaning: `f -1`
+  passes an argument) and never bare `<`/`>`/`*`/`/` (types, globs,
+  paths); command argv stays byte-inert under the existing parse-shape
+  guard, which gained an expression-only twin so a spaced ident chain
+  is not mistaken for argv.
+
+- **`File.writeAtomic` — the whole-file swap.** Same signature as
+  `File.write`: the payload lands in a same-directory temp, is
+  fsynced, and renames over the target (the directory fsynced after) —
+  a concurrent reader sees the complete old contents or the complete
+  new, never a window, and a write that dies mid-way leaves the
+  original intact, no temp litter. A symlink's target is replaced
+  (the link survives); the target's mode and an existing BOM are
+  preserved. The trade against `File.write` is the inode change:
+  hardlinks split, held handles and `tail -f` keep the old file, and
+  a Docker single-file bind mount breaks. In a plan it captures the
+  same `WriteFile` op. A temp stranded by a kill is swept by the next
+  `writeAtomic` to the same target — age-keyed (ten minutes), never
+  pid-keyed. On Windows the rename retries briefly while a reader
+  without delete-sharing holds the target.
+
+### Fixed
+
+- **weir's file readers no longer block Windows writers.**
+  `File.read`/`readSecret`/`readBytes`/`File.sha256` (and
+  `Env.fromFile`) open with `ReadWrite|Delete` sharing — a Windows
+  share grant cuts both ways, so the old read default denied any live
+  writer and a held reader broke `writeAtomic`'s rename. Unix
+  locking is unchanged (every non-`None` share is the same shared
+  lock).
+
+- **`File.write` cannot destroy a file it failed to write.** The old
+  shape truncated first and streamed lines after, so a payload that
+  raised mid-enumeration — a lazy seq whose element fails, a command
+  that dies mid-stream — left the old contents destroyed and the file
+  partial, and a concurrent reader could watch the empty window. The
+  whole payload now encodes (LF, BOM decision included) before the
+  truncate, and lands in one write — a failing payload leaves the file
+  byte-identical. `Plan.apply`'s `WriteFile` performs the same way.
+
+- **`File.append` is safe under concurrent appenders.** .NET's
+  `FileMode.Append` never opens with `O_APPEND` — it seeks in
+  userspace and writes with `pwrite` at offsets computed from a stale
+  end, so two appenders overwrote each other's bytes (a stress of
+  8 writers lost lines and corrupted tails; .NET 10's own
+  `File.AppendAllBytes` carries the same race). The fd now opens
+  `O_WRONLY|O_APPEND|O_CLOEXEC` via libc on Unix and the whole call
+  goes out in one unbuffered `write(2)` — every call lands contiguous
+  and intact, and no lock ever blocks a concurrent reader. On Windows
+  the handle opens append-only (`FILE_APPEND_DATA`, full sharing) —
+  the same kernel-atomic append, no writer mutual exclusion. The
+  payload encodes once — `utf8Strict`, LF, no BOM. The atom is one
+  completed append (a short write retries, so disk-full edges can
+  split a call), and the guarantee is local-filesystem: same-host
+  bind mounts hold, a network filesystem does not.
+
+- **The one-line echo's type tail recedes.** `() : unit` after a unit
+  entry printed as normal text while every other footer dimmed; it is
+  metadata and now recedes, and a scalar echo's ` : int` tail dims the
+  same way (the value itself stays plain). Piped bytes unchanged.
+
+- **The init file declares itself with `#init`.** A required head
+  directive (first line) replaces path-based detection: a file
+  carrying `#init` is checked as an init *wherever it lives*, so the
+  config file can be authored in a dotfiles repo — editor support and
+  all — and symlinked into `<configHome>/weir/init.weir`. The loader
+  refuses the config file without the marker (pre-1.0, no shim). What
+  the REPL *loads* is unchanged — only `<configHome>/weir/init.weir`,
+  so which init runs never depends on the working directory; `#init`
+  is the authoring marker, the symlink is the apply step. Running a
+  marked file as a script refuses: an init is loaded, not run.
+
+- **A session binding shadows a same-named alias.** The alias table
+  hijacked a bound head: `#alias hi = echo` next to `let hi () = …`
+  made the function uncallable — `hi ()` was even a parse error — and
+  both definitions were accepted silently, live and from `init.weir`.
+  Resolution now follows the line-decider's law: a bound name heads an
+  expression; the alias table resolves unbound heads (still above
+  builtins and PATH, so `#alias ls = ls --color` keeps working).
+  Defining an alias over an existing binding refuses with a teaching —
+  at the prompt, and as a located all-or-nothing error at init load.
+
+- **The editor no longer flags an init declaration as unused.** An
+  init file declares names *for the session* — the session is the
+  importer of every top-level name — and the loader never judges
+  unused-ness. The LSP ran the whole-script law there, so every prompt
+  helper wore an `[unused-binding]` error the loader would never raise.
+  That judgement now stays out of any `#init` file; an ordinary script
+  keeps it.
+
+- **A heredoc's leading `//` line is content, not a comment.** A
+  comment-only line as a block's *first* content line was swallowed by
+  comment transparency before the district activated — a
+  `// <auto-generated/>` header silently vanished from a `<<<` value.
+  It now arms the district as its first byte line, matching the
+  stated law (every byte below the marker is content) and the
+  mid-block behavior. `<<<`, `$<<<` and `$$<<<` alike; a `yaml`
+  template is untouched — there `//` lines are the template's own
+  comments, and a leading one stays transparent.
+
 ## v0.0.59
 
 ### Changed

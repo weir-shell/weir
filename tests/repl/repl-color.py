@@ -185,7 +185,8 @@ if ANSI.search(tt2):
 rp = run({}, ["nope\r", "1 + 1\r"])
 if "\x1b[31mweir> " not in rp:
     failures.append(f"the prompt must redden after an error: {rp[-300:]!r}")
-_tail = rp[rp.rindex("2 : int"):] if "2 : int" in rp else rp
+_anchor = "2\x1b[2m : int" if "2\x1b[2m : int" in rp else "2 : int"
+_tail = rp[rp.rindex(_anchor):] if _anchor in rp else rp
 if "\x1b[31mweir> " in _tail:
     failures.append(f"the prompt must clear after a success: {_tail[-200:]!r}")
 rp2 = run({}, ['let rc = sh -c "exit 3" | exitCode\r'])

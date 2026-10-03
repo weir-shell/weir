@@ -88,6 +88,7 @@ let private fsReads =
 let private fsWrites =
     Set
         [ "File.write"
+          "File.writeAtomic"
           "File.append"
           "File.copy"
           "Dir.create"
@@ -96,7 +97,20 @@ let private fsWrites =
           "Dir.copy"
           "Dir.move" ]
 
-let private networkMembers = Set [ "Http.send"; "Http.fetch"; "Net.portOpen" ]
+let private networkMembers = Set [ "Http.send"; "Http.expect"; "Net.portOpen" ]
+
+// the request constructors — the one-ctor-deep shapes whose literal url
+// a send/expect report can name [D:fetch-retired]
+let private httpCtorMembers =
+    Set
+        [ "Http.get"
+          "Http.post"
+          "Http.put"
+          "Http.delete"
+          "Http.patch"
+          "Http.head"
+          "Http.options"
+          "Http.query" ]
 
 let private procMembers = Set [ "Proc.stop"; "Proc.wait" ]
 
@@ -144,6 +158,15 @@ let rec private walkExpr
     let literalStr (e: TypedExpr) =
         match e.Kind with
         | TEStr s -> Some s
+        | _ -> None
+
+    // a request argument's literal url, one constructor deep
+    // [D:fetch-retired]: `Http.get "lit"` (and its method siblings)
+    // names the url; a `with`-updated or computed request is the bare
+    // fact
+    let requestUrlLit (e: TypedExpr) =
+        match e.Kind with
+        | TEApp({ Kind = TEVar ctor }, { Kind = TEStr lit }) when httpCtorMembers.Contains ctor -> Some lit
         | _ -> None
 
     let mutable skipChildren = false
@@ -242,7 +265,6 @@ let rec private walkExpr
          (match literalStr arg with
           | Some lit when fsReads.Contains qual -> add (FsRead(qual, Some lit)) te.Span
           | Some lit when fsWrites.Contains qual -> add (FsWrite(qual, Some lit)) te.Span
-          | Some lit when qual = "Http.fetch" -> add (Network(qual, Some lit)) te.Span
           | Some lit when qual = "Env.get" -> add (EnvRead $"{lit} (Env.get)") te.Span
           | Some lit when qual = "File.readSecret" ->
               add (FsRead(qual, Some lit)) te.Span
@@ -254,12 +276,20 @@ let rec private walkExpr
               elif fsWrites.Contains qual then
                   add (FsWrite(qual, None)) te.Span
               elif networkMembers.Contains qual then
-                  add (Network(qual, None)) te.Span
+                  // an `Http.get "lit"`-shaped request names its url
+                  add (Network(qual, requestUrlLit arg)) te.Span
               elif qual = "Env.get" then
                   add (EnvRead "a named variable (Env.get)") te.Span)
 
          // the fn side is fully handled; walk only the argument
          walkExpr binds site acc arg
+         skipChildren <- true
+     // the piped idiom (`Http.get u |> Http.expect`) [D:fetch-retired]:
+     // upgrade the bare network fact with the request's literal url; the
+     // member var is fully handled, so walk only the request side
+     | TEPipe(reqArg, { Kind = TEVar q }) when networkMembers.Contains q ->
+         add (Network(q, requestUrlLit reqArg)) te.Span
+         walkExpr binds site acc reqArg
          skipChildren <- true
      | TEApp({ Kind = TEVar "exit" }, _) -> add (Terminates "exit") te.Span
      | TEApp({ Kind = TEVar "fail" }, _) -> add (Terminates "fail") te.Span

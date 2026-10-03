@@ -66,6 +66,14 @@ skill lines and targeted hints).
   `readonlyExpr`, fuzz `SDeterministic`->`SReadonly`.
 
 ## friction
+- 2026-10-03 | init.weir load errors attribute to the wrong physical
+  line: a `+`-led continuation parse error inside a prompt function
+  (the `+` lines were block siblings by the layout law) reported at
+  4:31 — the first let-command line — not at the offending line ~36.
+  The flattened-declaration attribution limit is known and parked
+  (NOTES: "parse errors attribute to the head line"), but in the init
+  loader the miss sent a session's worth of bisecting at the wrong
+  statement. The Http UA entry below CLOSED by [D:http-ua].
 - 2026-08-20 | Http sends NO default User-Agent, and github.com's API
   403s such requests — a status that reads as an auth failure, not a
   missing header. Every mainstream client sends a default UA (curl,

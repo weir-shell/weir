@@ -299,6 +299,15 @@ let basicToken (user: string) (password: string) : string =
     let raw = Text.Encoding.UTF8.GetBytes($"{user}:{password}")
     Convert.ToBase64String raw
 
+/// the urlencoded body [D:http-dx]: pairs percent-encoded with the same
+/// escaper withQuery uses, so a space or `&` in a value cannot break the
+/// body — the OAuth-token-endpoint shape, shared by the client send path
+/// and a serve response
+let formUrlEncode (pairs: (string * string) seq) : string =
+    pairs
+    |> Seq.map (fun (k, v) -> $"{Uri.EscapeDataString k}={Uri.EscapeDataString v}")
+    |> String.concat "&"
+
 /// the header-injection byte class [D:http-header-bytes]: CR, LF or NUL
 /// in a header name or value forges a second header / splits a response.
 /// Refused at both crossings (the client send path and a serve response)

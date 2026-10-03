@@ -168,11 +168,15 @@ let inStringMask (s: string) : bool[] =
     mask
 
 // Canonical intra-line spacing [D:fmt-respace], bounded: collapse
-// space runs, pad record braces, tidy `;`. String interiors and
-// leading indent untouched. Fmt applies this under a parse-shape
-// safety check — any statement whose sexpr changes reverts — so a
-// rule misfiring on a command line (argv `{x}`, literal `;`) can
-// never change meaning, only be skipped.
+// space runs, pad record braces, tidy `;`, and pad the unambiguous
+// binary operators (`=`, `==`, `<>`, `<=`, `>=`, `&&`, `||`, `|>`,
+// `+` — never `-`, whose adjacency is meaning [D:operator-values],
+// and never bare `<`/`>`/`*`/`/`, which live in types, globs and
+// paths). String interiors and leading indent untouched. Fmt applies
+// this under a parse-shape safety check — any statement whose sexpr
+// changes reverts — so a rule misfiring on a command line (argv
+// `{x}`, literal `;`, an `a||b` word, `attempts=3`) can never change
+// meaning, only be skipped.
 let respaceLine (line: string) : string =
     let mask = inStringMask line
     let indent = line |> Seq.takeWhile ((=) ' ') |> Seq.length
@@ -183,34 +187,76 @@ let respaceLine (line: string) : string =
 
     let mutable i = 0
 
+    // the operator at i, length included — two-char first, then the
+    // single `=`/`+` with their neighbor guards (`=` next to another
+    // operator char is that operator's own business, not a binding)
+    let opAt (i: int) : int option =
+        let two =
+            i + 1 < line.Length
+            && not mask[i + 1]
+            && (match line[i], line[i + 1] with
+                | '=', '='
+                | '<', '>'
+                | '<', '='
+                | '>', '='
+                | '&', '&'
+                | '|', '|'
+                | '|', '>' -> true
+                | _ -> false)
+
+        if two then
+            Some 2
+        else
+            let prev = if i = 0 then ' ' else line[i - 1]
+            let next = if i + 1 < line.Length then line[i + 1] else ' '
+            let opChar (ch: char) = "=<>&|+-*/^!." |> Seq.contains ch
+
+            match line[i] with
+            | '=' when not (opChar prev) && not (opChar next) -> Some 1
+            | '+' when not (opChar prev) && not (opChar next) -> Some 1
+            | _ -> None
+
     while i < line.Length do
         let c = line[i]
 
         if i < indent || mask[i] then
             sb.Append c |> ignore
+            i <- i + 1
         else
-            match c with
-            | ' ' when lastEmitted () = ' ' -> () // collapse runs
-            | '{' when
-                i + 1 < line.Length
-                && line[i + 1] <> ' '
-                && line[i + 1] <> '{'
-                && lastEmitted () <> '{'
-                ->
-                sb.Append "{ " |> ignore
-            | '}' when lastEmitted () <> ' ' -> sb.Append " }" |> ignore
-            | ';' ->
-                // no space before, one after
-                while sb.Length > indent && lastEmitted () = ' ' do
-                    sb.Remove(sb.Length - 1, 1) |> ignore
-
-                sb.Append ';' |> ignore
-
-                if i + 1 < line.Length && line[i + 1] <> ' ' then
+            match opAt i with
+            | Some len ->
+                if lastEmitted () <> ' ' then
                     sb.Append ' ' |> ignore
-            | c -> sb.Append c |> ignore
 
-        i <- i + 1
+                sb.Append(line.Substring(i, len)) |> ignore
+
+                if i + len < line.Length && line[i + len] <> ' ' then
+                    sb.Append ' ' |> ignore
+
+                i <- i + len
+            | None ->
+                (match c with
+                 | ' ' when lastEmitted () = ' ' -> () // collapse runs
+                 | '{' when
+                     i + 1 < line.Length
+                     && line[i + 1] <> ' '
+                     && line[i + 1] <> '{'
+                     && lastEmitted () <> '{'
+                     ->
+                     sb.Append "{ " |> ignore
+                 | '}' when lastEmitted () <> ' ' -> sb.Append " }" |> ignore
+                 | ';' ->
+                     // no space before, one after
+                     while sb.Length > indent && lastEmitted () = ' ' do
+                         sb.Remove(sb.Length - 1, 1) |> ignore
+
+                     sb.Append ';' |> ignore
+
+                     if i + 1 < line.Length && line[i + 1] <> ' ' then
+                         sb.Append ' ' |> ignore
+                 | c -> sb.Append c |> ignore)
+
+                i <- i + 1
 
     sb.ToString()
 
@@ -244,6 +290,72 @@ let classifyLine (raw: string) : LineKind =
         LineKind.CommentOnly
     else
         LineKind.Code
+
+// the init file declares itself [D:init-marker]: `#init` as the first
+// code line makes a file init-kind WHEREVER it lives — authorable in a
+// dotfiles repo, applied by symlinking into <configHome>/weir/init.weir
+// (the REPL loads only that path: which init runs must never depend on
+// the cwd). The marker is REQUIRED — the canonical file without it
+// refuses at load — so a file's kind is always in the file.
+let isInitMarked (lines: string list) : bool =
+    lines
+    |> List.tryFind (fun l -> classifyLine l = LineKind.Code)
+    |> Option.map (fun l -> (stripComment l).Trim() = "#init")
+    |> Option.defaultValue false
+
+// init.weir carries init-only directives (#session, #alias) the script
+// checker does not know [D:repl-init][D:session-prompt] — rewrite them
+// into an equivalent script for diagnostics AND completion: blank the
+// `#init`/`#session {`/`}`/`#alias` lines, and turn each
+// `<4-indent>key = value` field into `let <binder> = value`
+// COLUMN-PRESERVING — 4-space indent out, `let ` in, a same-length
+// binder (so the value stays at its exact column for hover/completion,
+// and a distinct `_`-led binder neither self-references the value nor
+// warns unused).
+let sameLenBinder (key: string) : string =
+    // same length as the key, distinct from it (no self-reference), no
+    // unused/discard warning: `_` + the key's tail, e.g. prompt -> _rompt
+    if key.Length = 0 then "_" else "_" + key.Substring 1
+
+let stripInitDirectives (lines: string list) : string list =
+    let fieldStart =
+        System.Text.RegularExpressions.Regex @"^(\s{0,4})([A-Za-z_][A-Za-z0-9_]*)(\s*=\s*)(.*)$"
+
+    let mutable inBlock = false
+
+    [ for l in lines do
+          let t = l.Trim()
+
+          if inBlock then
+              if t = "}" then
+                  inBlock <- false
+                  yield ""
+              else
+                  let m = fieldStart.Match l
+
+                  if m.Success then
+                      // `<indent>key = value` -> `let <binder> = value`; when the
+                      // indent is 4, `let ` + a same-length binder keeps the value
+                      // column exact (columns matter for hover/completion)
+                      let indent = m.Groups.[1].Value
+                      let binder = sameLenBinder m.Groups.[2].Value
+
+                      if indent.Length = 4 then
+                          yield "let " + binder + m.Groups.[3].Value + m.Groups.[4].Value
+                      else
+                          yield "let " + binder + " = " + m.Groups.[4].Value
+                  else
+                      yield l // a continuation line (list entry) is part of the value
+          elif t = "#init" then
+              yield ""
+          elif t.StartsWith "#session" then
+              inBlock <- t.EndsWith "{"
+              yield ""
+          elif t = "#alias" || t.StartsWith "#alias " then
+              yield ""
+          else
+              yield l ]
+
 
 /// a col-0 `else`/`elif` line continues its open `if` [D:toplevel-if-else]
 /// — the top-level block form (`if c then <block>` then a dedented
@@ -1329,6 +1441,33 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                     Some
                                         { p with
                                             Buf = applyJoin (JYamlLine(ind - bse)) p.Buf (raw.Substring ind) lineNo ind },
+                                    acc,
+                                    blankSinceHead
+                                )
+                            // a comment-only FIRST content line is bytes in a
+                            // HEREDOC [D:block-scalars]: it arms the district
+                            // and fixes the block base exactly as any first
+                            // line does — transparency fired here once, and a
+                            // heredoc's leading `// header` line silently
+                            // vanished from the value. Heredocs only: a yaml
+                            // template strips `//` lines as its own comments,
+                            // so a leading one stays transparent there (an
+                            // inserted comment must not fix the block base —
+                            // the fuzzer's comment-neutrality invariant)
+                            | Some({ District = Some({ Active = None
+                                                       Yaml = true
+                                                       Marker = MarkerKind.Heredoc
+                                                       MarkerIndent = m } as dst) } as p) when
+                                (raw |> Seq.takeWhile ((=) ' ') |> Seq.length) > m
+                                ->
+                                let ind = raw |> Seq.takeWhile ((=) ' ') |> Seq.length
+
+                                Ok(
+                                    Some
+                                        { p with
+                                            Buf = applyJoin (JYamlLine 0) p.Buf (raw.Substring ind) lineNo ind
+                                            LastIndent = ind
+                                            District = Some { dst with Active = Some ind } },
                                     acc,
                                     blankSinceHead
                                 )
@@ -2473,6 +2612,28 @@ let selfMembers: Map<string, Scheme> =
           // the interactive read [D:prompt] — static (Builtins holds the
           // value under the mangled key); grouped here, not bare
           "prompt", generalize (TFun(TStr, TStr)) ]
+
+// the #session prompt's status domain [D:prompt-status-arg]: records
+// are nominal and init.weir admits no signatures, so a provider's
+// param types as a ROW ({ ok: bool; .. } — field access on a bare
+// param) — accepted when every named field is PromptStatus's own,
+// exactly typed; a bare unused param ('a) is accepted and simply
+// ignores the status. One predicate, read by the loader and the LSP.
+let promptStatusDomain (dom: Ty) : bool =
+    match dom with
+    | TNamed("PromptStatus", []) -> true
+    | TVar _ -> true
+    | TRowVar(_, fields) ->
+        fields
+        |> List.forall (fun (f, t) ->
+            // an unpinned var is a field the body only forwards (show,
+            // isSome) — the runtime value satisfies it; a WRONGLY pinned
+            // field (exit as Option<string>, a hole-defaulted ok) refuses
+            match f, t with
+            | "ok", (TBool | TVar _) -> true
+            | "exit", (TNamed("Option", [ TInt ]) | TNamed("Option", [ TVar _ ]) | TVar _) -> true
+            | _ -> false)
+    | _ -> false
 
 let private baseEnvs (scriptArgs: string list) (scriptPath: string) =
     let typeEnv = Builtins.typeEnvStrict
@@ -5540,6 +5701,15 @@ let analyzeLines
     (path: string)
     (rawLines: string list)
     : Diagnostic list * (LogicalLine * CheckedStatement) list * TypeEnv * LogicalLine list =
+    // an #init-marked file checks as the init it is [D:init-marker]:
+    // directives rewritten, and its declarations are session exports —
+    // the unused-binding judgement does not apply (the loader never
+    // judges it)
+    let initMarked = isInitMarked rawLines
+
+    let rawLines =
+        if initMarked then stripInitDirectives rawLines else rawLines
+
     let body, bodyOffset, sigDecls = scriptBody rawLines
     let numbered = body |> List.mapi (fun i l -> bodyOffset + i + 1, l)
 
@@ -6025,7 +6195,10 @@ let analyzeLines
          @ sigCmdDiagnostics path sigInfos (List.ofSeq stmts)
          |> List.sortWith (fun a b ->
              let byLine = compare a.Line b.Line
-             if byLine <> 0 then byLine else compare a.Col b.Col)),
+             if byLine <> 0 then byLine else compare a.Col b.Col)
+         // init declarations are session exports [D:init-marker]: the
+         // unused-binding judgement does not apply to a marked file
+         |> List.filter (fun d -> not (initMarked && d.Code = "unused-binding"))),
         List.ofSeq stmts,
         typeEnv0,
         logicalLines
@@ -6139,7 +6312,9 @@ let run (path: string) (scriptArgs: string list) : int =
                 located
                     path
                     (bodyOffset + i + 1)
-                    (if l.TrimStart().StartsWith "#session" then
+                    (if l.TrimStart().StartsWith "#init" then
+                         "an init file is not runnable — the REPL loads it; author it anywhere with #init on the first line and symlink it to the config dir (weir/init.weir)"
+                     elif l.TrimStart().StartsWith "#session" then
                          "#session lives in the REPL init file (config dir, weir/init.weir) — a script takes its settings from flags and env"
                      else
                          $"unknown or misplaced directive: {l} (directives belong at the file head)")

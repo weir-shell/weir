@@ -49,7 +49,7 @@ let effectfulModules =
 let effectfulQualified =
     Set
         [ "Http.send"
-          "Http.fetch"
+          "Http.expect"
           "Http.query"
           "Path.glob"
           "Path.tempRoot"
@@ -126,7 +126,7 @@ let rec effectfulName (n: string) =
 // and Purity.effectPhrase (the teaching vocabulary) read, so the two
 // cannot drift.
 let fsWriteMembers =
-    Set [ "write"; "append"; "copy"; "create"; "delete"; "deleteAll"; "move" ]
+    Set [ "write"; "writeAtomic"; "append"; "copy"; "create"; "delete"; "deleteAll"; "move" ]
 
 // the mutating HTTP methods — the per-method net split's source of truth,
 // shared by the check-time literal path and eval-time resolution. Method
@@ -173,10 +173,10 @@ let effectClass (n: string) : EffectClass option =
         | "Instant.now" -> Some Ambient // reads the clock (ambient input)
         | "Duration.sleep" -> Some Ambient // waits on the clock — no world change
         | "Self.stdin" -> Some Ambient // reads the process's input stream
-        // Http.send: per-method, resolved at the request value (None here)
-        | "Http.send" -> None
-        | "Http.fetch"
-        | "Http.query" -> Some Ambient // GET shorthand / the query method — idempotent
+        // Http.send/expect: per-method, resolved at the request value (None here)
+        | "Http.send"
+        | "Http.expect" -> None
+        | "Http.query" -> Some Ambient // the query method — idempotent
         | _ ->
             match n.Split '.' with
             | [| ("File" | "Dir"); m |] when fsWriteMembers.Contains m -> Some Mutation

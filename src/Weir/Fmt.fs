@@ -432,10 +432,26 @@ let private formatLinesCore (body: string list) : Result<string list, string> =
                 // head and make every let-RHS a command
                 let shapeResolver = Script.assumeResolver Builtins.typeEnv
 
-                let shape (text: string) =
-                    match Parser.parseLine shapeResolver text with
+                // the expression-only twin [D:fmt-respace]: under it no
+                // head is a command, so an ident-headed RHS (`dirty ||
+                // staged`) keeps its expression shape once spaced — the
+                // assume-resolver reads the spaced form as argv and would
+                // veto every operator respace on such a line. A real
+                // command line refuses to parse here (argv is not an
+                // expression), so the assume side still guards argv.
+                let exprResolver =
+                    { shapeResolver with
+                        IsExternal = (fun _ -> false)
+                        IsCommandCallable = (fun _ -> false)
+                        AliasHead = (fun _ -> None) }
+
+                let shapeWith (r: Parser.Resolver) (text: string) =
+                    match Parser.parseLine r text with
                     | Ok stmt -> Some(sexprStmt stmt)
                     | Error _ -> None
+
+                let shape = shapeWith shapeResolver
+                let shapeExpr = shapeWith exprResolver
 
                 let respaced =
                     formatted
@@ -458,13 +474,23 @@ let private formatLinesCore (body: string list) : Result<string list, string> =
                     let revertLines =
                         List.zip formattedLogical respacedLogical
                         |> List.collect (fun (o, n) ->
-                            match shape o.Text, shape n.Text with
-                            | Some a, Some b when a = b -> []
-                            | sa, sb ->
+                            // shape agreement under EITHER resolver keeps
+                            // the respace [D:fmt-respace]: the assume side
+                            // proves command lines unchanged, the
+                            // expression side proves ident-headed
+                            // expressions unchanged
+                            let agreesUnder shapeOf =
+                                match shapeOf o.Text, shapeOf n.Text with
+                                | Some a, Some b -> a = b
+                                | _ -> false
+
+                            if agreesUnder shape || agreesUnder shapeExpr then
+                                []
+                            else
                                 if System.Environment.GetEnvironmentVariable "WEIR_FMT_DEBUG" <> null then
                                     // %A is reflection printing — FSharp.Core's AOT-flagged
                                     // corner [D:aot-warnings]; interpolation stays AOT-safe
-                                    eprintfn $"REVERT {sa} vs {sb} for {o.Text} ||| {n.Text}"
+                                    eprintfn $"REVERT {shape o.Text} vs {shape n.Text} for {o.Text} ||| {n.Text}"
 
                                 n.Segments |> List.map (fun (_, pl, _) -> pl))
                         |> Set.ofList
