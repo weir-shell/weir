@@ -2208,7 +2208,7 @@ let private readBytesShared (r: string) : byte[] =
 // resolved target — a reader sees the complete old file or the complete
 // new one, never a window. The rename replaces the symlink's TARGET,
 // not the link; the inode changes (hardlinks split, held handles and
-// tail -f keep the old file, a Docker single-file bind mount breaks).
+// tail -f keep the old file, a single-file bind mount into a container breaks).
 let private atomicReplace (r: string) (lines: Value seq) : unit =
     let target =
         let fi = FileInfo r
@@ -2947,10 +2947,11 @@ let private fileMembers: (string * Ty * Value) list =
               readGuard "File.read" r
               VSeq(ioGuarded "File.read" r (fun () -> readLinesShared r) |> Seq.map VStr)
           | v -> unreachable $"the checker rejects 'File.read' on {formatValue v}")
-      // a token in a file is a real pattern [D:secret]: a mounted k8s /
-      // docker secret is a file. One member (a family would be parked):
-      // the whole content is the secret, trailing newlines trimmed (the
-      // tooling convention — `echo tok > f` adds one, k8s does not)
+      // a token in a file is a real pattern [D:secret]: a mounted
+      // container secret is a file. One member (a family would be
+      // parked): the whole content is the secret, trailing newlines
+      // trimmed (the tooling convention — `echo tok > f` adds one, a
+      // mounted secret does not)
       "readSecret",
       TFun(TStr, TSecret),
       VBuiltin(fun v ->
@@ -5905,7 +5906,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
            |> named [ "path" ])
           "File.readSecret",
           (bd
-              "Read a file's whole content as a Secret (a mounted k8s/docker secret is a file); trailing newlines are trimmed."
+              "Read a file's whole content as a Secret (a mounted container secret is a file); trailing newlines are trimmed."
               None
               None
            |> named [ "path" ])
@@ -5914,7 +5915,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
            |> named [ "path"; "lines" ])
           "File.writeAtomic",
           (bd
-              "Write a sequence of lines by whole-file swap: the payload lands in a same-directory temp, is fsynced, and renames over the target — a concurrent reader sees the complete old contents or the complete new, never a window, and a write that dies leaves the original intact. A symlink's target is replaced, not the link; the target's mode and an existing BOM are preserved. The inode changes: hardlinks split, held handles and tail -f keep the old file, and a Docker single-file bind mount breaks — in-place semantics stay File.write's job. Inside a plan it captures the same WriteFile op; apply performs the plan's own in-place write."
+              "Write a sequence of lines by whole-file swap: the payload lands in a same-directory temp, is fsynced, and renames over the target — a concurrent reader sees the complete old contents or the complete new, never a window, and a write that dies leaves the original intact. A symlink's target is replaced, not the link; the target's mode and an existing BOM are preserved. The inode changes: hardlinks split, held handles and tail -f keep the old file, and a single-file bind mount into a container breaks — in-place semantics stay File.write's job. Inside a plan it captures the same WriteFile op; apply performs the plan's own in-place write."
               None
               None
            |> named [ "path"; "lines" ])
@@ -6107,7 +6108,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
            |> named [ "url" ])
           "Http.expect",
           (bd
-              "The raising read (`curl -sf`'s posture): request in, body lines out, raises on non-2xx naming method, url, status and a capped body snippet — `Http.get url |> Http.expect` for the bare read, any `with`-built request the same way. When the error body is data to inspect, Http.send binds the status instead."
+              "The raising read: request in, body lines out, raises on non-2xx naming method, url, status and a capped body snippet — `Http.get url |> Http.expect` for the bare read, any `with`-built request the same way. When the error body is data to inspect, Http.send binds the status instead."
               None
               None
            |> named [ "request" ])
@@ -6328,9 +6329,9 @@ let builtinDocs: Map<string, BuiltinDoc> =
               (Some "a pipe stage: File.read \"App.csproj\" |> from xml Proj.")
           "from table",
           bd
-              "Read aligned column output (kubectl/docker style: one header row, aligned data rows) into declared row records — yields seq<T>. Columns slice at header offsets, never whitespace runs, so a spaced value (`Up 2 hours`) survives; a header boundary is a run of 2+ spaces (`CONTAINER ID` is one column). A field matches its header by normalized name, case-insensitively (`podTemplateHash` reads `POD-TEMPLATE-HASH`); `[<Wire \"HEADER\">]` matches a raw header verbatim. Cells trim and type by the field (string/int/float/bool); an Option field reads an empty or `<none>` cell as None. Extra columns are ignored; blank lines skip; errors carry line and column. There is no `to table`."
+              "Read aligned column output (one header row, aligned data rows) into declared row records — yields seq<T>. Columns slice at header offsets, never whitespace runs, so a spaced value (`Up 2 hours`) survives; a header boundary is a run of 2+ spaces (`CONTAINER ID` is one column). A field matches its header by normalized name, case-insensitively (`podTemplateHash` reads `POD-TEMPLATE-HASH`); `[<Wire \"HEADER\">]` matches a raw header verbatim. Cells trim and type by the field (string/int/float/bool); an Option field reads an empty or `<none>` cell as None. Extra columns are ignored; blank lines skip; errors carry line and column. There is no `to table`."
               None
-              (Some "a pipe stage: kubectl get po |> from table Pod.")
+              (Some "a pipe stage: a tool's `-o table` output |> from table Pod.")
           "Yaml.parse",
           (bd
               "Parse one YAML document (the strict subset) into Yaml nodes — the typeless read: structure is held whole, undeclared keys included, where `from yaml T` would drop them. Scalars self-type exactly as district scalars do (unquoted true/3/1.5 -> YBool/YInt/YFloat; quoted or block -> YStr; empty -> YNull)."
@@ -6358,7 +6359,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
            |> named [ "lines" ])
           "Table.inferShape",
           (bd
-              "Draft the row `type` declaration from an aligned-table sample (kubectl/docker style) — the composable core of `#infer … from table`: per-column token scan over the data rows (all-int -> int, else float/bool by token, else string; a column with empty/`<none>` cells -> Option with a note); headers sanitize to field names, `[<Wire>]` carries a header the name cannot recover; a note says the value reads as seq<Root>. You edit the emitted type. Not check-time inference (the value is a runtime sample)."
+              "Draft the row `type` declaration from an aligned-table sample — the composable core of `#infer … from table`: per-column token scan over the data rows (all-int -> int, else float/bool by token, else string; a column with empty/`<none>` cells -> Option with a note); headers sanitize to field names, `[<Wire>]` carries a header the name cannot recover; a note says the value reads as seq<Root>. You edit the emitted type. Not check-time inference (the value is a runtime sample)."
               (Some "print (Table.inferShape [\"NAME   RESTARTS\"; \"web-1  0\"])")
               (Some "the `weir add schema` category: external structure -> a declaration you own; check and `from table` stay untouched.")
            |> named [ "lines" ])
