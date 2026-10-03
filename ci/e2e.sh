@@ -2542,6 +2542,7 @@ WEOF
     spdir=$(mkweirtmp)
     mkdir -p "$spdir/cfg/weir" "$spdir/state"
     cat > "$spdir/cfg/weir/init.weir" <<'WEOF'
+#init
 let sigil () =
     let n = $(sh -c "echo demo") |> Seq.head
     $"({n}) weir> "
@@ -2555,6 +2556,7 @@ WEOF
     echo "$spout" | grep -qF "(demo) weir> " || fail "the #session prompt must paint at a tty: $spout"
     echo "$spout" | grep -qF "2" || fail "an entry under a custom prompt must still evaluate: $spout"
     cat > "$spdir/cfg/weir/init.weir" <<'WEOF'
+#init
 let boom () =
     if 1 == 1 then fail "nope" else "x> "
 
@@ -2572,6 +2574,7 @@ WEOF
     # (title/clipboard) from attacker-influenced provider output must
     # not reach the terminal (CWE-150)
     cat > "$spdir/cfg/weir/init.weir" <<'WEOF'
+#init
 let evil () =
     let esc = $(sh -c "printf '\\033]0;pwned\\007\\033[35mI'") |> Seq.head
     esc + "> "
@@ -2590,6 +2593,7 @@ WEOF
     # param (the function types as a row; the loader accepts any field
     # set PromptStatus satisfies)
     cat > "$spdir/cfg/weir/init.weir" <<'WEOF'
+#init
 let prompt st =
     if st.ok then
         "SOK> "
@@ -6226,7 +6230,7 @@ if [ "$IS_WINDOWS" != "1" ]; then
     printf '#!/bin/sh\necho "kustomize-argv:$*"\n' > "$astub/kustomize" && chmod +x "$astub/kustomize"
     printf '#!/bin/sh\necho "realls-argv:$*"\n' > "$astub/ls" && chmod +x "$astub/ls"
     mkdir -p "$acfg/weir"
-    printf '#alias k  = kubectl\n#alias kb = kustomize build\n#alias ls = ls --color\n' > "$acfg/weir/init.weir"
+    printf '#init\n#alias k  = kubectl\n#alias kb = kustomize build\n#alias ls = ls --color\n' > "$acfg/weir/init.weir"
 
     # (a) a head alias resolves; the rest stays bare argv
     out=$(printf 'k get po -o yaml\n#quit\n' | PATH="$astub:$PATH" XDG_CONFIG_HOME="$acfg" $BIN 2>/dev/null)
@@ -6252,18 +6256,18 @@ if [ "$IS_WINDOWS" != "1" ]; then
     echo "$out" | grep -qF "unbound variable 'k'" || fail "a script must not see aliases (no leak): $out"
 
     # (f) a malformed #alias is a loud init error (all-or-nothing)
-    printf '#alias = kubectl\n' > "$acfg/weir/init.weir"
+    printf '#init\n#alias = kubectl\n' > "$acfg/weir/init.weir"
     out=$(printf '#quit\n' | PATH="$astub:$PATH" XDG_CONFIG_HOME="$acfg" $BIN 2>&1 || true)
     echo "$out" | grep -qF "malformed #alias" || fail "a malformed #alias must be a loud init error: $out"
     echo "$out" | grep -qF "not loaded" || fail "a malformed init is all-or-nothing: $out"
 
     # (g) an alias-of-alias is rejected at define time (single-hop)
-    printf '#alias k = kubectl\n#alias kk = k\n' > "$acfg/weir/init.weir"
+    printf '#init\n#alias k = kubectl\n#alias kk = k\n' > "$acfg/weir/init.weir"
     out=$(printf '#quit\n' | PATH="$astub:$PATH" XDG_CONFIG_HOME="$acfg" $BIN 2>&1 || true)
     echo "$out" | grep -qF "single-hop" || fail "an alias-of-alias must be rejected: $out"
 
     # (h) #save desugars alias heads: the saved script is alias-free and checks
-    printf '#alias k  = kubectl\n#alias kb = kustomize build\n' > "$acfg/weir/init.weir"
+    printf '#init\n#alias k  = kubectl\n#alias kb = kustomize build\n' > "$acfg/weir/init.weir"
     out=$(printf 'let pods = k get po -o json\nlet note = "k is a letter"\n#save %s/saved.weir\n#quit\n' "$acfg" \
         | PATH="$astub:$PATH" XDG_CONFIG_HOME="$acfg" $BIN 2>/dev/null)
     echo "$out" | grep -qF "#save: wrote" || fail "#save must write with aliases active: $out"
@@ -9172,6 +9176,7 @@ else
 fi
 mkdir -p "$INITHOME/weir" "$initcfg/work"
 cat > "$INITHOME/weir/init.weir" <<WEOF
+#init
 #session {
     cwd = "$initcfg/work"
     logLevel = "debug"
@@ -9208,6 +9213,7 @@ echo "$iout" | grep -qF "push the current branch and set upstream" || fail "#hel
 echo "$iout" | grep -qF "child-sees-less -R" || fail "init env not inherited by a child"
 # all-or-nothing: a typo'd #session key reports located, loads nothing
 cat > "$INITHOME/weir/init.weir" <<'WEOF'
+#init
 #session {
     echoCpa = 50
 }
@@ -9225,6 +9231,7 @@ echo "$iout" | grep -qF "unknown name 'hi'" || fail "all-or-nothing broke: a bin
 # prompt. The trace-absence assertion is the claim — the located line
 # alone would pass on a build that also dumped a stack.
 cat > "$INITHOME/weir/init.weir" <<'WEOF'
+#init
 #session {
     cwd = File.read "/no/such/file/xyz" |> Seq.head
 }
@@ -9240,6 +9247,7 @@ echo "$iout" | grep -qF "unknown name 'hi'" || fail "all-or-nothing broke after 
 echo "$iout" | grep -qF "Unhandled exception" && fail "a raising #session value dumped a .NET trace: $iout" || true
 
 cat > "$INITHOME/weir/init.weir" <<'WEOF'
+#init
 let bad = File.read "/no/such/file/xyz" |> Seq.head
 let hi () = print "hi"
 WEOF
@@ -9257,6 +9265,7 @@ echo "$iout" | grep -qF "Unhandled exception" && fail "a raising init let dumped
 # and a redirected session ignores it — the prompt mirror stays the
 # fixed default (a provider could run commands per piped line)
 cat > "$INITHOME/weir/init.weir" <<'WEOF'
+#init
 let sigil () = "custom> "
 
 #session {
@@ -9273,6 +9282,7 @@ echo "$iout" | grep -qF "custom> " && fail "a redirected session must not run th
 # the value expression stays command-free like every field — the
 # command belongs inside the function the field names
 cat > "$INITHOME/weir/init.weir" <<'WEOF'
+#init
 #session {
     prompt = $(sh -c "echo x") |> Seq.head
 }
@@ -9282,6 +9292,7 @@ echo "$iout" | grep -qF "a #session value cannot run a command" || fail "a comma
 echo "$iout" | grep -qF "init: not loaded" || fail "a refused prompt value must not load"
 # the type gate names both accepted shapes
 cat > "$INITHOME/weir/init.weir" <<'WEOF'
+#init
 #session {
     prompt = 42
 }
@@ -9291,6 +9302,7 @@ echo "$iout" | grep -qF "prompt expects a string, a unit -> string, or a PromptS
 
 # declaration-only: a bare command refuses with the teach
 cat > "$INITHOME/weir/init.weir" <<'WEOF'
+#init
 git status
 WEOF
 iout=$(printf '#quit

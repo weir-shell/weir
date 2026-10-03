@@ -109,6 +109,17 @@
   metadata and now recedes, and a scalar echo's ` : int` tail dims the
   same way (the value itself stays plain). Piped bytes unchanged.
 
+- **The init file declares itself with `#init`.** A required head
+  directive (first line) replaces path-based detection: a file
+  carrying `#init` is checked as an init *wherever it lives*, so the
+  config file can be authored in a dotfiles repo — editor support and
+  all — and symlinked into `<configHome>/weir/init.weir`. The loader
+  refuses the config file without the marker (pre-1.0, no shim). What
+  the REPL *loads* is unchanged — only `<configHome>/weir/init.weir`,
+  so which init runs never depends on the working directory; `#init`
+  is the authoring marker, the symlink is the apply step. Running a
+  marked file as a script refuses: an init is loaded, not run.
+
 - **A session binding shadows a same-named alias.** The alias table
   hijacked a bound head: `#alias hi = echo` next to `let hi () = …`
   made the function uncallable — `hi ()` was even a parse error — and

@@ -387,9 +387,27 @@ is honored, and piped sessions are always plain text.
 (`$XDG_CONFIG_HOME/weir/`, else `~/.config/weir/`; `%APPDATA%\weir\`
 on Windows) loads before the first prompt. It is declaration-only —
 `type` and `let`, the module rule applied to the prompt — plus one
-`#session` directive for the settings a declaration cannot express:
+`#session` directive for the settings a declaration cannot express.
+
+The file **declares itself** with `#init` on its first line. The
+loader refuses the config-dir file without it, and `#init` is what
+makes a file init-kind: a file carrying it is checked as an init
+*wherever it lives*, so you can keep it in a dotfiles repo (with full
+editor support — `#session`/`#alias` recognized, prompt declarations
+checked) and symlink it into place:
 
 ```text
+ln -s ~/dotfiles/weir/init.weir ~/.config/weir/init.weir
+```
+
+The REPL loads only `<configHome>/weir/init.weir` — which init runs
+never depends on the working directory, so a stray `init.weir` in a
+cloned repo cannot auto-load. A marked file run as a script
+(`weir init.weir`) refuses: an init is loaded, not run.
+
+```text
+#init
+
 #session {
     cwd = "/home/me/work"
     logLevel = "debug"

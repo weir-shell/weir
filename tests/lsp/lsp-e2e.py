@@ -516,18 +516,31 @@ else:
     INIT_URI = furi(os.path.join(_CFG, "weir", "init.weir"))
     sendI({"jsonrpc": "2.0", "method": "textDocument/didOpen",
            "params": {"textDocument": {"uri": INIT_URI,
-                      "text": 'let prompt () = "> "\n\n#session {\n    prompt = prompt\n}\n'}}})
+                      "text": '#init\nlet prompt () = "> "\n\n#session {\n    prompt = prompt\n}\n'}}})
     expect(init_diags() == [], "#session/#alias must not be flagged in init.weir")
+    # the marker is required: the canonical file without #init flags it
+    init_change('let prompt () = "> "\n\n#session {\n    prompt = prompt\n}\n')
+    expect("init-marker" in [d["code"] for d in init_diags()], "the canonical init without #init must flag init-marker")
+    # a MARKED file anywhere is init-kind: no script-law noise
+    STRAY_MARKED = furi(os.path.join(tempfile.mkdtemp(), "init.weir"))
+    sendI({"jsonrpc": "2.0", "method": "textDocument/didOpen",
+           "params": {"textDocument": {"uri": STRAY_MARKED,
+                      "text": '#init\nlet helper () = "h"\n\n#session {\n    echoCap = 9\n}\n'}}})
+    for _ in range(6):
+        m = readI()
+        if m.get("method") == "textDocument/publishDiagnostics" and nuri(m["params"]["uri"]) == nuri(STRAY_MARKED):
+            expect(m["params"]["diagnostics"] == [], f"a #init-marked file is init-kind anywhere: {m['params']['diagnostics']}")
+            break
     # init declarations are session exports: top-level names exist to be
     # used LATER, by the session — the loader never judges unused-ness,
     # so neither does the editor (the script law stays for ordinary files)
-    init_change('let prompt () = "> "\nlet helper () = "h"\n\n#session {\n    prompt = prompt\n}\n')
+    init_change('#init\nlet prompt () = "> "\nlet helper () = "h"\n\n#session {\n    prompt = prompt\n}\n')
     expect(init_diags() == [], "a declaration unused in-file is not flagged — the session is the importer")
     # a genuine declaration error still surfaces (suppression is surgical) —
     # prompt stays defined so the field is clean; Bad is the error
     sendI({"jsonrpc": "2.0", "method": "textDocument/didChange",
            "params": {"textDocument": {"uri": INIT_URI},
-                      "contentChanges": [{"text": 'let prompt () = "> "\nlet Bad = 1\n\n#session {\n    prompt = prompt\n}\n'}]}})
+                      "contentChanges": [{"text": '#init\nlet prompt () = "> "\nlet Bad = 1\n\n#session {\n    prompt = prompt\n}\n'}]}})
     expect("casing-law" in [d["code"] for d in init_diags()], "a real init declaration error still shows")
     # a stray init.weir NOT under the config dir stays a normal script — its
     # #session is flagged (proving the path check, not the basename)
@@ -551,30 +564,30 @@ else:
         return [i["label"] for i in (res["items"] if isinstance(res, dict) else res)]
     sendI({"jsonrpc": "2.0", "method": "textDocument/didChange",
            "params": {"textDocument": {"uri": INIT_URI},
-                      "contentChanges": [{"text": 'let greeter () = "> "\n\n#session {\n    prompt = gr\n}\n'}]}})
+                      "contentChanges": [{"text": '#init\nlet greeter () = "> "\n\n#session {\n    prompt = gr\n}\n'}]}})
     init_diags()
-    labels = complete_at(INIT_URI, 3, 14, 10)  # after 'gr' in the value
+    labels = complete_at(INIT_URI, 4, 14, 10)  # after 'gr' in the value (#init shifts +1)
     expect("greeter" in labels, f"a declared name completes in a #session field value: {labels[:8]}")
     # completion at a field-NAME position offers the #session keys (closed set)
     sendI({"jsonrpc": "2.0", "method": "textDocument/didChange",
            "params": {"textDocument": {"uri": INIT_URI},
-                      "contentChanges": [{"text": 'let greeter () = "> "\n\n#session {\n    e\n}\n'}]}})
+                      "contentChanges": [{"text": '#init\nlet greeter () = "> "\n\n#session {\n    e\n}\n'}]}})
     init_diags()
-    klabels = complete_at(INIT_URI, 3, 5, 11)  # after 'e' at a field-name slot
+    klabels = complete_at(INIT_URI, 4, 5, 11)  # after 'e' at a field-name slot (#init shifts +1)
     expect(set(klabels) == {"echoCap", "env"}, f"a field-name slot offers the #session keys, closed: {klabels}")
     # #session field validation: an unknown key, and a value of the wrong
     # type for its key, are errors (the value-as-expression check alone would
     # miss both) [D:session-prompt]
-    init_change('#session {\n    echoCpa = 5\n}\n')
+    init_change('#init\n#session {\n    echoCpa = 5\n}\n')
     expect("session-key" in [d["code"] for d in init_diags()], "an unknown #session key is flagged")
-    init_change('#session {\n    cwd = 42\n}\n')
+    init_change('#init\n#session {\n    cwd = 42\n}\n')
     tdiags = init_diags()
     expect(any(d["code"] == "session-type" and "expects string" in d["message"] for d in tdiags),
            f"a wrong-typed #session value is flagged: {[d['code'] for d in tdiags]}")
     # a #alias command completes against PATH (git is present in a git CI)
-    init_change('#alias g = gi\n')
+    init_change('#init\n#alias g = gi\n')
     init_diags()
-    acmd = complete_at(INIT_URI, 0, 13, 12)  # after 'gi' in the alias command
+    acmd = complete_at(INIT_URI, 1, 13, 12)  # after 'gi' in the alias command (#init shifts +1)
     expect(any(l.startswith("git") for l in acmd), f"a #alias command completes against PATH: {acmd[:6]}")
     sendI({"jsonrpc": "2.0", "id": 2, "method": "shutdown", "params": {}}); readI()
     sendI({"jsonrpc": "2.0", "method": "exit", "params": {}}); pI.wait(timeout=5)

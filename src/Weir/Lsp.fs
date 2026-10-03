@@ -343,48 +343,6 @@ let pathToUri (path: string) : string =
 // (so the value stays at its exact column for hover/completion, and a
 // distinct `_`-led binder neither self-references the value nor warns
 // unused). The value then checks and completes as an ordinary let-RHS.
-let private sameLenBinder (key: string) : string =
-    // same length as the key, distinct from it (no self-reference), no
-    // unused/discard warning: `_` + the key's tail, e.g. prompt -> _rompt
-    if key.Length = 0 then "_" else "_" + key.Substring 1
-
-let private stripInitDirectives (lines: string list) : string list =
-    let fieldStart =
-        System.Text.RegularExpressions.Regex @"^(\s{0,4})([A-Za-z_][A-Za-z0-9_]*)(\s*=\s*)(.*)$"
-
-    let mutable inBlock = false
-
-    [ for l in lines do
-          let t = l.Trim()
-
-          if inBlock then
-              if t = "}" then
-                  inBlock <- false
-                  yield ""
-              else
-                  let m = fieldStart.Match l
-
-                  if m.Success then
-                      // `<indent>key = value` -> `let <binder> = value`; when the
-                      // indent is 4, `let ` + a same-length binder keeps the value
-                      // column exact (columns matter for hover/completion)
-                      let indent = m.Groups.[1].Value
-                      let binder = sameLenBinder m.Groups.[2].Value
-
-                      if indent.Length = 4 then
-                          yield "let " + binder + m.Groups.[3].Value + m.Groups.[4].Value
-                      else
-                          yield "let " + binder + " = " + m.Groups.[4].Value
-                  else
-                      yield l // a continuation line (list entry) is part of the value
-          elif t.StartsWith "#session" then
-              inBlock <- t.EndsWith "{"
-              yield ""
-          elif t = "#alias" || t.StartsWith "#alias " then
-              yield ""
-          else
-              yield l ]
-
 // the canonical REPL init file? — only it gets init-directive handling; a
 // stray init.weir elsewhere is a normal script [D:repl-init]. Match the
 // full path (<configHome>/weir/init.weir, XDG/%APPDATA% honoured).
@@ -408,8 +366,13 @@ let private isReplInitPath (path: string) : bool =
 let private effectiveLines (uri: string) (text: string) : string list =
     let raw = text.Replace("\r\n", "\n").Split('\n') |> Array.toList
 
-    if isReplInitPath (uriToPath uri) then
-        stripInitDirectives raw
+    // directives rewrite for every init file [D:init-marker]: a marked
+    // one anywhere, and the canonical path even unmarked (so its only
+    // actionable diagnostic, add #init, is not buried under script-law
+    // noise). All downstream consumers — diagnostics, hover, completion
+    // — read this stripped form, column-preserving.
+    if Script.isInitMarked raw || isReplInitPath (uriToPath uri) then
+        Script.stripInitDirectives raw
     else
         raw
 
@@ -521,17 +484,36 @@ let private analyze (uri: string) (text: string) =
     let lines = effectiveLines uri text
 
     let diags, stmts, env0, lls = Script.analyzeLines path lines
+    let marked = Script.isInitMarked raw
+    let canonical = isReplInitPath path
 
+    // an init file (marked anywhere, or the canonical path) checks as
+    // the init it is [D:init-marker]: its declarations are session
+    // exports, so the script law's unused-binding judgement does not
+    // apply — the loader never judges it (checkStatement carries no
+    // whole-file unused pass) — and its #session fields are validated
     let diags =
-        if isReplInitPath path then
-            // init declarations are session exports [D:repl-init]: the
-            // session is the importer of every top-level name, so the
-            // script law's unused-binding judgement does not apply —
-            // the loader never judges it (checkStatement carries no
-            // whole-file unused pass), and the editor must not flag
-            // what the loader loads clean
+        if canonical || marked then
             (diags |> List.filter (fun d -> d.Code <> "unused-binding"))
             @ sessionFieldDiags path raw stmts
+        else
+            diags
+
+    // the marker is REQUIRED [D:init-marker]: the loader refuses the
+    // canonical file without it, so the editor says so first
+    let diags =
+        if canonical && not marked then
+            let d: Script.Diagnostic =
+                { File = path
+                  Line = 1
+                  Col = 1
+                  EndLine = Some 1
+                  EndCol = Some 1
+                  Severity = "error"
+                  Code = "init-marker"
+                  Message = "init.weir declares itself — put #init on the first line (the loader refuses without it)" }
+
+            d :: diags
         else
             diags
 

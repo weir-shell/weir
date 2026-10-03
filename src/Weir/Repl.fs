@@ -3548,7 +3548,9 @@ let private splitSessionBlock
         let l = lines.[i]
         let t = l.Trim()
 
-        if not inBlock && (t = "#alias" || t.StartsWith "#alias ") then
+        if not inBlock && t = "#init" then
+            rest <- (i + 1, "") :: rest
+        elif not inBlock && (t = "#alias" || t.StartsWith "#alias ") then
             // a top-level directive line; kept out of the declaration
             // stream and replaced by a blank so declaration diagnostics keep
             // their real positions (the #session discipline)
@@ -3704,6 +3706,17 @@ let private loadInit (baseState: State) : State =
         let notLoaded () =
             Console.Error.WriteLine $"init: not loaded ({path}) — the session starts without it"
             baseState
+
+        if not (Script.isInitMarked (List.ofArray lines)) then
+            initDiag
+                path
+                1
+                1
+                (srcLine 1)
+                "the init file declares itself — put #init on the first line"
+
+            notLoaded ()
+        else
 
         match splitSessionBlock path lines with
         | Error() -> notLoaded ()
