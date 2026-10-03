@@ -168,11 +168,15 @@ let inStringMask (s: string) : bool[] =
     mask
 
 // Canonical intra-line spacing [D:fmt-respace], bounded: collapse
-// space runs, pad record braces, tidy `;`. String interiors and
-// leading indent untouched. Fmt applies this under a parse-shape
-// safety check — any statement whose sexpr changes reverts — so a
-// rule misfiring on a command line (argv `{x}`, literal `;`) can
-// never change meaning, only be skipped.
+// space runs, pad record braces, tidy `;`, and pad the unambiguous
+// binary operators (`=`, `==`, `<>`, `<=`, `>=`, `&&`, `||`, `|>`,
+// `+` — never `-`, whose adjacency is meaning [D:operator-values],
+// and never bare `<`/`>`/`*`/`/`, which live in types, globs and
+// paths). String interiors and leading indent untouched. Fmt applies
+// this under a parse-shape safety check — any statement whose sexpr
+// changes reverts — so a rule misfiring on a command line (argv
+// `{x}`, literal `;`, an `a||b` word, `attempts=3`) can never change
+// meaning, only be skipped.
 let respaceLine (line: string) : string =
     let mask = inStringMask line
     let indent = line |> Seq.takeWhile ((=) ' ') |> Seq.length
@@ -183,34 +187,76 @@ let respaceLine (line: string) : string =
 
     let mutable i = 0
 
+    // the operator at i, length included — two-char first, then the
+    // single `=`/`+` with their neighbor guards (`=` next to another
+    // operator char is that operator's own business, not a binding)
+    let opAt (i: int) : int option =
+        let two =
+            i + 1 < line.Length
+            && not mask[i + 1]
+            && (match line[i], line[i + 1] with
+                | '=', '='
+                | '<', '>'
+                | '<', '='
+                | '>', '='
+                | '&', '&'
+                | '|', '|'
+                | '|', '>' -> true
+                | _ -> false)
+
+        if two then
+            Some 2
+        else
+            let prev = if i = 0 then ' ' else line[i - 1]
+            let next = if i + 1 < line.Length then line[i + 1] else ' '
+            let opChar (ch: char) = "=<>&|+-*/^!." |> Seq.contains ch
+
+            match line[i] with
+            | '=' when not (opChar prev) && not (opChar next) -> Some 1
+            | '+' when not (opChar prev) && not (opChar next) -> Some 1
+            | _ -> None
+
     while i < line.Length do
         let c = line[i]
 
         if i < indent || mask[i] then
             sb.Append c |> ignore
+            i <- i + 1
         else
-            match c with
-            | ' ' when lastEmitted () = ' ' -> () // collapse runs
-            | '{' when
-                i + 1 < line.Length
-                && line[i + 1] <> ' '
-                && line[i + 1] <> '{'
-                && lastEmitted () <> '{'
-                ->
-                sb.Append "{ " |> ignore
-            | '}' when lastEmitted () <> ' ' -> sb.Append " }" |> ignore
-            | ';' ->
-                // no space before, one after
-                while sb.Length > indent && lastEmitted () = ' ' do
-                    sb.Remove(sb.Length - 1, 1) |> ignore
-
-                sb.Append ';' |> ignore
-
-                if i + 1 < line.Length && line[i + 1] <> ' ' then
+            match opAt i with
+            | Some len ->
+                if lastEmitted () <> ' ' then
                     sb.Append ' ' |> ignore
-            | c -> sb.Append c |> ignore
 
-        i <- i + 1
+                sb.Append(line.Substring(i, len)) |> ignore
+
+                if i + len < line.Length && line[i + len] <> ' ' then
+                    sb.Append ' ' |> ignore
+
+                i <- i + len
+            | None ->
+                (match c with
+                 | ' ' when lastEmitted () = ' ' -> () // collapse runs
+                 | '{' when
+                     i + 1 < line.Length
+                     && line[i + 1] <> ' '
+                     && line[i + 1] <> '{'
+                     && lastEmitted () <> '{'
+                     ->
+                     sb.Append "{ " |> ignore
+                 | '}' when lastEmitted () <> ' ' -> sb.Append " }" |> ignore
+                 | ';' ->
+                     // no space before, one after
+                     while sb.Length > indent && lastEmitted () = ' ' do
+                         sb.Remove(sb.Length - 1, 1) |> ignore
+
+                     sb.Append ';' |> ignore
+
+                     if i + 1 < line.Length && line[i + 1] <> ' ' then
+                         sb.Append ' ' |> ignore
+                 | c -> sb.Append c |> ignore)
+
+                i <- i + 1
 
     sb.ToString()
 

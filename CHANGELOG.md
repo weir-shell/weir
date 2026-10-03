@@ -41,6 +41,15 @@
   breaking: a `seq<string>` payload is read as the pre-rendered
   document, so the explicit spelling means what it always did.
 
+- **`weir fmt` pads the unambiguous operators.** `let x =dirty ||
+  staged||stashed` formats to `let x = dirty || staged || stashed` —
+  one space around `=`, `==`, `<>`, `<=`, `>=`, `&&`, `||`, `|>` and
+  `+` where it was missing. Never `-` (adjacency is meaning: `f -1`
+  passes an argument) and never bare `<`/`>`/`*`/`/` (types, globs,
+  paths); command argv stays byte-inert under the existing parse-shape
+  guard, which gained an expression-only twin so a spaced ident chain
+  is not mistaken for argv.
+
 ### Fixed
 
 - **A session binding shadows a same-named alias.** The alias table
