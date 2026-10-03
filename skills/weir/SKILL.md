@@ -1617,7 +1617,12 @@ type Bad = C of int
   (`weir/init.weir`) also takes `#alias name = cmd [args...]` lines
   [D:command-head-alias] — a REPL-only command-head alias (`#alias k =
   kubectl` makes `k get po` run `kubectl get po`, argv bare and
-  injection-safe; `^k` forces PATH; single-hop), and `#save` desugars
+  injection-safe; `^k` forces PATH; single-hop). A session BINDING
+  shadows the table [D:alias-binding-shadow] — resolution is session
+  lets, then aliases, then builtins/PATH — and defining an alias over
+  a bound name refuses (live, and located all-or-nothing at init
+  load); an alias over a BUILTIN name (`#alias ls = ls --color`) is
+  the canonical case and keeps resolving. `#save` desugars
   alias heads back to the real invocation so the saved file is
   alias-free. Aliases never reach scripts or `-e`. At the prompt,
   `#help <Module>` glances one member per line (name + its doc's

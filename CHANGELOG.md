@@ -35,6 +35,16 @@
 
 ### Fixed
 
+- **A session binding shadows a same-named alias.** The alias table
+  hijacked a bound head: `#alias hi = echo` next to `let hi () = …`
+  made the function uncallable — `hi ()` was even a parse error — and
+  both definitions were accepted silently, live and from `init.weir`.
+  Resolution now follows the line-decider's law: a bound name heads an
+  expression; the alias table resolves unbound heads (still above
+  builtins and PATH, so `#alias ls = ls --color` keeps working).
+  Defining an alias over an existing binding refuses with a teaching —
+  at the prompt, and as a located all-or-nothing error at init load.
+
 - **The editor no longer flags an init declaration as unused.** The
   REPL's `init.weir` declares names *for the session* — the session is
   the importer of every top-level name — and the loader never judges

@@ -6248,7 +6248,24 @@ if [ "$IS_WINDOWS" != "1" ]; then
     grep -qF "kubectl get po -o json" "$acfg/saved.weir" || fail "#save must desugar the alias head: $(cat "$acfg/saved.weir")"
     grep -qF '"k is a letter"' "$acfg/saved.weir" || fail "#save desugar must leave a string spelling the alias untouched: $(cat "$acfg/saved.weir")"
     PATH="$astub:$PATH" $BIN check "$acfg/saved.weir" || fail "the desugared #save output must check clean: $(cat "$acfg/saved.weir")"
-    echo "e2e ok: #alias resolves head->exe (+prefix), injection-safe, ^-bypass, REPL-only, malformed=loud, single-hop, #save desugars alias-free"
+
+    # (i) a session binding shadows the alias table [D:alias-binding-shadow]:
+    # an init declaring both refuses located (all-or-nothing); a live let
+    # over an alias shadows it (the function is callable); a live #alias
+    # over a binding refuses with the teaching; an alias over a BUILTIN
+    # name keeps resolving (cell (a)'s ls case is the canonical alias)
+    printf 'let hi () = print "the-function"\n\n#alias hi = kubectl\n' > "$acfg/weir/init.weir"
+    out=$(printf '#quit\n' | PATH="$astub:$PATH" XDG_CONFIG_HOME="$acfg" $BIN 2>&1 || true)
+    echo "$out" | grep -qF "is also declared in this file" || fail "an init alias/let collision must refuse located: $out"
+    echo "$out" | grep -qF "not loaded" || fail "the alias/let collision is all-or-nothing: $out"
+    rm -f "$acfg/weir/init.weir"
+    out=$(printf '#alias hi = kubectl\nlet hi () = print "the-function"\nhi ()\n#quit\n' | PATH="$astub:$PATH" XDG_CONFIG_HOME="$acfg" $BIN 2>&1)
+    echo "$out" | grep -qF "the-function" || fail "a session binding must shadow the alias (hi () callable): $out"
+    out=$(printf 'let hi () = print "the-function"\n#alias hi = kubectl\nhi ()\n#quit\n' | PATH="$astub:$PATH" XDG_CONFIG_HOME="$acfg" $BIN 2>&1)
+    echo "$out" | grep -qF "would never resolve" || fail "a live #alias over a binding must refuse with the teaching: $out"
+    echo "$out" | grep -qF "the-function" || fail "the binding must stay callable after the refused #alias: $out"
+
+    echo "e2e ok: #alias resolves head->exe (+prefix), injection-safe, ^-bypass, REPL-only, malformed=loud, single-hop, #save desugars alias-free, bindings shadow the table"
     rm -rf "$acfg" "$astub"
 fi
 

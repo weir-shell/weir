@@ -1823,15 +1823,28 @@ let private functionEcho (env: TypeEnv) (te: Check.TypedExpr) (v: Eval.Value) : 
         | _ -> None
     | _ -> None
 
+// a name bound by the session (a let, an init declaration) — not a
+// builtin or prelude name [D:alias-binding-shadow]: the distinction the
+// alias order needs, since `#alias ls = ls --color` over the builtin is
+// the canonical shell alias and must keep resolving
+let private isSessionBinding (state: State) (n: string) : bool =
+    Map.containsKey n state.TypeEnv.Values
+    && not (Map.containsKey n initial.TypeEnv.Values)
+
 let private resolver (state: State) : Parser.Resolver =
     { Script.resolver state.TypeEnv with
         // the session alias table beats PATH in command-head position
         // [D:command-head-alias]; `^` skips it (parser-side). Single-hop:
         // the stored Exe is a real program, never another alias name.
+        // A session BINDING shadows the table [D:alias-binding-shadow]:
+        // the line-decider's law — a bound name heads an expression, so
+        // the alias resolves unbound heads only (builtins stay below it).
         AliasHead =
             fun n ->
-                Map.tryFind n state.Aliases
-                |> Option.map (fun a -> (a.Exe, a.Prefix)) }
+                if isSessionBinding state n then
+                    None
+                else
+                    Map.tryFind n state.Aliases |> Option.map (fun a -> (a.Exe, a.Prefix)) }
 
 let private printHint (state: State) (line: string) =
     Diagnose.hint
@@ -3266,6 +3279,14 @@ let rec private loop (state: State) =
                         $"#alias {name} = {alias.Exe} …: an alias resolves to a program, not to another alias ('{alias.Exe}' is itself an alias) — aliases are single-hop"
 
                     loop state
+                | Ok(name, _) when isSessionBinding state name ->
+                    // dead on arrival under the shadow law
+                    // [D:alias-binding-shadow] — refuse at define, never
+                    // silently hijack (or silently lose) a bound name
+                    Console.WriteLine
+                        $"#alias {name}: '{name}' is a session binding — a bound name heads an expression, so this alias would never resolve; pick another name"
+
+                    loop state
                 | Ok(name, alias) ->
                     let tgt = String.concat " " (alias.Exe :: alias.Prefix)
                     Console.WriteLine $"alias {name} = {tgt}"
@@ -3834,6 +3855,39 @@ let private loadInit (baseState: State) : State =
                                     // unreachable: no sig context here, the
                                     // form already refused [D:module-signatures]
                                     ()
+
+                        // an alias naming a declaration is dead on arrival
+                        // [D:alias-binding-shadow]: the binding shadows the
+                        // table (the line-decider's law), so the collision
+                        // refuses the load — all-or-nothing, located
+                        let aliasClash =
+                            let letNames =
+                                checked'
+                                |> List.collect (fun (_, chk) ->
+                                    match chk.Kind with
+                                    | Script.KLet(n, _, _) -> [ n ]
+                                    | Script.KLetPat(p, _, _) -> Weir.Check.patNameSpans p |> List.map fst
+                                    | _ -> [])
+                                |> Set.ofList
+
+                            aliasLines
+                            |> List.tryPick (fun (lineNo, body) ->
+                                match parseAliasLine body with
+                                | Ok(n, _) when Set.contains n letNames -> Some(lineNo, n)
+                                | _ -> None)
+
+                        if aliasClash.IsSome then
+                            let lineNo, n = aliasClash.Value
+
+                            initDiag
+                                path
+                                lineNo
+                                1
+                                (srcLine lineNo)
+                                $"#alias {n}: '{n}' is also declared in this file — the binding shadows the alias, so it would never resolve; pick another name"
+
+                            notLoaded ()
+                        else
 
                         match bad with
                         | Some(ll, msg) ->
