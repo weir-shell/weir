@@ -2299,7 +2299,7 @@ not the teaching.
 - `Dir`: `copy` `create` `delete` `deleteAll` `exists` `list` `move` `stat`
 - `Duration`: `average` `h` `m` `ms` `parse` `s` `sleep` `sum` `toMillis` `toSeconds` `tryParse`
 - `Env`: `fromFile` `get` `load` `ofPairs` `pair` `vars`
-- `File`: `append` `copy` `delete` `exists` `isExecutable` `move` `read` `readBytes` `readSecret` `sha256` `size` `write` `writeBytes`
+- `File`: `append` `copy` `delete` `exists` `isExecutable` `move` `read` `readBytes` `readSecret` `sha256` `size` `write` `writeAtomic` `writeBytes` — `append` is kernel-atomic for CONCURRENT appenders (O_APPEND on Unix, one write per call: calls land contiguous and intact, no lock ever blocks a reader) [D:append-oappend]; `write` is in-place (same inode, hardlinks/held handles/`tail -f`/bind mounts keep working) and leaves the file untouched when its payload raises; `writeAtomic` is the whole-file swap (same-dir temp + fsync + rename): a reader sees complete old or complete new, never a window — but the INODE CHANGES (hardlinks split, held handles and `tail -f` keep the old file, a Docker single-file bind mount breaks); it replaces a symlink's TARGET and preserves mode and an existing BOM [D:write-integrity]
 - `Float`: `abs` `average` `near` `ofInt` `parse` `round` `sum` `toInt` `tryParse`
 - `Instant`: `epochMs` `now` `ofEpochMs` `parse` `parseWith` `tryParse` `tryParseWith`
 - `Json`: `inferShape`

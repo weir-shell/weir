@@ -50,7 +50,28 @@
   guard, which gained an expression-only twin so a spaced ident chain
   is not mistaken for argv.
 
+- **`File.writeAtomic` — the whole-file swap.** Same signature as
+  `File.write`: the payload lands in a same-directory temp, is
+  fsynced, and renames over the target (the directory fsynced after) —
+  a concurrent reader sees the complete old contents or the complete
+  new, never a window, and a write that dies mid-way leaves the
+  original intact, no temp litter. A symlink's target is replaced
+  (the link survives); the target's mode and an existing BOM are
+  preserved. The trade against `File.write` is the inode change:
+  hardlinks split, held handles and `tail -f` keep the old file, and
+  a Docker single-file bind mount breaks. In a plan it captures the
+  same `WriteFile` op.
+
 ### Fixed
+
+- **`File.write` cannot destroy a file it failed to write.** The old
+  shape truncated first and streamed lines after, so a payload that
+  raised mid-enumeration — a lazy seq whose element fails, a command
+  that dies mid-stream — left the old contents destroyed and the file
+  partial, and a concurrent reader could watch the empty window. The
+  whole payload now encodes (LF, BOM decision included) before the
+  truncate, and lands in one write — a failing payload leaves the file
+  byte-identical. `Plan.apply`'s `WriteFile` performs the same way.
 
 - **`File.append` is safe under concurrent appenders.** .NET's
   `FileMode.Append` never opens with `O_APPEND` — it seeks in

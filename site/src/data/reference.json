@@ -454,6 +454,13 @@
           "pointer": null
         },
         {
+          "name": "writeAtomic",
+          "signature": "File.writeAtomic (path: string) (lines: seq\u003Cstring\u003E) : unit",
+          "summary": "Write a sequence of lines by whole-file swap: the payload lands in a same-directory temp, is fsynced, and renames over the target \u2014 a concurrent reader sees the complete old contents or the complete new, never a window, and a write that dies leaves the original intact. A symlink\u0027s target is replaced, not the link; the target\u0027s mode and an existing BOM are preserved. The inode changes: hardlinks split, held handles and tail -f keep the old file, and a Docker single-file bind mount breaks \u2014 in-place semantics stay File.write\u0027s job. Inside a plan it captures the same WriteFile op; apply performs the plan\u0027s own in-place write.",
+          "example": null,
+          "pointer": null
+        },
+        {
           "name": "writeBytes",
           "signature": "File.writeBytes (path: string) (bytes: Bytes) : unit",
           "summary": "Write raw bytes to a file \u2014 the byte-faithful sink (File.write encodes lines and appends LF).",

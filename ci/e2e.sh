@@ -6398,6 +6398,37 @@ WEOF
     echo "e2e ok: File.append — 4 concurrent appenders, every call contiguous and intact, reader unblocked"
 fi
 
+# ---- File.write integrity + File.writeAtomic [D:write-integrity] ----------
+# a File.write whose content raises mid-enumeration must leave the file
+# byte-identical (the payload encodes before the truncate); writeAtomic
+# swaps whole files — BOM and mode preserved, a symlink's target
+# replaced (the link intact), no temp litter on any path
+if [ "$IS_WINDOWS" != "1" ]; then
+    widir=$(mkweirtmp)
+    printf 'precious original\nsecond line\n' > "$widir/keep.txt"
+    before=$(sha256sum "$widir/keep.txt" | cut -d' ' -f1)
+    $BIN -e "File.write \"$widir/keep.txt\" ([1; 2; 3] |> Seq.map (fun i -> if i == 2 then fail \"boom\" else show i))" 2>/dev/null && fail "the raising write must raise"
+    after=$(sha256sum "$widir/keep.txt" | cut -d' ' -f1)
+    [ "$before" = "$after" ] || fail "a raising File.write must leave the file byte-identical"
+
+    printf '\xef\xbb\xbfbom line\n' > "$widir/bom.txt"
+    $BIN -e "File.writeAtomic \"$widir/bom.txt\" [\"swapped\"]" || fail "writeAtomic failed"
+    head -c 3 "$widir/bom.txt" | od -An -tx1 | grep -q 'ef bb bf' || fail "writeAtomic must preserve an existing BOM"
+
+    printf 'plain\n' > "$widir/mode.txt" && chmod 640 "$widir/mode.txt"
+    $BIN -e "File.writeAtomic \"$widir/mode.txt\" [\"replaced\"]" || fail "writeAtomic failed"
+    [ "$(stat -c '%a' "$widir/mode.txt")" = "640" ] || fail "writeAtomic must preserve the target's mode"
+    head -c 3 "$widir/mode.txt" | od -An -tx1 | grep -q 'ef bb bf' && fail "writeAtomic must not add a BOM" || true
+
+    printf 'target orig\n' > "$widir/t.txt" && ln -s t.txt "$widir/l.txt"
+    $BIN -e "File.writeAtomic \"$widir/l.txt\" [\"via link\"]" || fail "writeAtomic through a symlink failed"
+    grep -qF "via link" "$widir/t.txt" || fail "writeAtomic must replace the symlink's target"
+    [ -L "$widir/l.txt" ] || fail "the symlink itself must survive"
+
+    ls "$widir"/.*weir-tmp* >/dev/null 2>&1 && fail "writeAtomic left temp litter" || true
+    echo "e2e ok: File.write leaves a file untouched on a raising payload; writeAtomic swaps whole (BOM, mode, symlink target, no litter)"
+fi
+
 # ---- dynamic command heads [D:dynamic-head] ----------------------------
 # ^$name / ^$(…) force-external a value head: one program, resolved at
 # run, argv stays typed argv. Stubs echo their argv so injection safety

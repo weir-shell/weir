@@ -88,6 +88,7 @@ let private fsReads =
 let private fsWrites =
     Set
         [ "File.write"
+          "File.writeAtomic"
           "File.append"
           "File.copy"
           "Dir.create"

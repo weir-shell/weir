@@ -21694,6 +21694,7 @@ let helpUxTests =
                         "TCP"
                         "URL"
                         "EOF" // end of file
+                        "BOM" // byte-order mark, the File.write preservation
                         "FIFO" // Frontier.fold's queue discipline
                         "MIME" // MIME wrap (base64)
                         "POSIX"

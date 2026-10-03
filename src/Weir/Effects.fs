@@ -126,7 +126,7 @@ let rec effectfulName (n: string) =
 // and Purity.effectPhrase (the teaching vocabulary) read, so the two
 // cannot drift.
 let fsWriteMembers =
-    Set [ "write"; "append"; "copy"; "create"; "delete"; "deleteAll"; "move" ]
+    Set [ "write"; "writeAtomic"; "append"; "copy"; "create"; "delete"; "deleteAll"; "move" ]
 
 // the mutating HTTP methods — the per-method net split's source of truth,
 // shared by the check-time literal path and eval-time resolution. Method

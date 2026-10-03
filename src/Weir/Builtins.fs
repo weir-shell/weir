@@ -2090,6 +2090,102 @@ module private AppendNative =
             use sfh = openAppend path
             writeAll (int (sfh.DangerousGetHandle())) payload
 
+    [<System.Runtime.InteropServices.DllImport("libc", SetLastError = true)>]
+    extern int private fsync(int fd)
+
+    let fsyncDir (dir: string) : unit =
+        let flags =
+            if System.OperatingSystem.IsMacOS() then
+                O_CLOEXEC_MACOS
+            else
+                O_CLOEXEC_LINUX
+
+        let fd = ``open`` (dir, flags, 0)
+
+        if fd >= 0 then
+            use sfh = new Microsoft.Win32.SafeHandles.SafeFileHandle(nativeint fd, true)
+            fsync (int (sfh.DangerousGetHandle())) |> ignore
+
+let private writePayload (keepBom: bool) (lines: Value seq) : byte[] =
+    let sb = System.Text.StringBuilder()
+
+    for l in lines do
+        sb.Append(asString l).Append '\n' |> ignore
+
+    let body = utf8Strict.GetBytes(sb.ToString())
+
+    if keepBom then
+        Array.append (utf8Bom.GetPreamble()) body
+    else
+        body
+
+let private bomAt (fs: FileStream) : bool =
+    let head = Array.zeroCreate 3
+    let n = fs.Read(head, 0, 3)
+    n = 3 && head[0] = 0xEFuy && head[1] = 0xBBuy && head[2] = 0xBFuy
+
+// the whole-file swap behind File.writeAtomic: the payload lands in a
+// same-directory exclusive temp, is fsynced, and renames over the
+// resolved target — a reader sees the complete old file or the complete
+// new one, never a window. The rename replaces the symlink's TARGET,
+// not the link; the inode changes (hardlinks split, held handles and
+// tail -f keep the old file, a Docker single-file bind mount breaks).
+let private atomicReplace (r: string) (lines: Value seq) : unit =
+    let target =
+        let fi = FileInfo r
+
+        if fi.Exists then
+            match fi.ResolveLinkTarget true with
+            | null -> r
+            | t -> t.FullName
+        else
+            r
+
+    let keepBom =
+        File.Exists target
+        && (use fs = new FileStream(target, FileMode.Open, FileAccess.Read, FileShare.ReadWrite)
+            bomAt fs)
+
+    let payload = writePayload keepBom lines
+
+    let mode =
+        if not (System.OperatingSystem.IsWindows()) && File.Exists target then
+            Some(File.GetUnixFileMode target)
+        else
+            None
+
+    let dir =
+        match System.IO.Path.GetDirectoryName target with
+        | "" -> "."
+        | d -> d
+
+    let tmp =
+        System.IO.Path.Combine(
+            dir,
+            $".{System.IO.Path.GetFileName target}.weir-tmp-{System.Environment.ProcessId}-{System.IO.Path.GetRandomFileName()}"
+        )
+
+    try
+        (use fs = new FileStream(tmp, FileMode.CreateNew, FileAccess.Write, FileShare.None)
+         fs.Write(payload, 0, payload.Length)
+         fs.Flush true)
+
+        match mode with
+        | Some m -> File.SetUnixFileMode(tmp, m)
+        | None -> ()
+
+        File.Move(tmp, target, true)
+
+        if not (System.OperatingSystem.IsWindows()) then
+            AppendNative.fsyncDir dir
+    with e ->
+        (try
+            File.Delete tmp
+         with _ ->
+             ())
+
+        raise e
+
 // liberal-in: unpadded standard-alphabet base64 pads before decoding;
 // encoding emits padded (the one stated default). URL-safe (-_) is
 // parked with the JWT trigger [D:encoding-law].
@@ -2785,26 +2881,35 @@ let private fileMembers: (string * Ty * Value) list =
 
                       // preserve an existing UTF-8 BOM; a new or no-BOM file
                       // stays bare, so this never adds a BOM
-                      let head = Array.zeroCreate 3
-                      let n = fs.Read(head, 0, 3)
-                      let keepBom = n = 3 && head[0] = 0xEFuy && head[1] = 0xBBuy && head[2] = 0xBFuy
+                      let keepBom = bomAt fs
+
+                      // LF bytes on every platform [D:lf-output] — a
+                      // written file is data (hashes, sigs, diffs).
+                      let payload = writePayload keepBom lines
 
                       fs.SetLength 0L
                       fs.Seek(0L, SeekOrigin.Begin) |> ignore
-
-                      // LF bytes on every platform [D:lf-output] — a
-                      // written file is data (hashes, sigs, diffs). leaveOpen:
-                      // `use fs` owns the handle
-                      use w =
-                          new StreamWriter(fs, (if keepBom then utf8Bom else utf8Strict), 1024, true)
-
-                      w.NewLine <- "\n"
-
-                      for l in lines do
-                          w.WriteLine(asString l))
+                      fs.Write(payload, 0, payload.Length))
 
                   VUnit
               | _ -> unreachable "the checker rejects 'File.write' on these arguments"))
+      "writeAtomic",
+      TFun(TStr, TFun(TSeq TStr, TUnit)),
+      VBuiltin(fun pathV ->
+          VBuiltin(fun linesV ->
+              match pathV, linesV with
+              | VStr path, VSeq lines ->
+                  let r = Session.resolve path
+
+                  match capWrite r lines with
+                  | Some captured -> captured
+                  | None ->
+                  writeGuard "File.writeAtomic" r
+
+                  ioGuarded "File.writeAtomic" r (fun () -> atomicReplace r lines)
+
+                  VUnit
+              | _ -> unreachable "the checker rejects 'File.writeAtomic' on these arguments"))
       "append",
       TFun(TStr, TFun(TSeq TStr, TUnit)),
       VBuiltin(fun pathV ->
@@ -4002,19 +4107,11 @@ let private applyOp (op: Value) : unit =
             use fs =
                 new FileStream(r, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.Read)
 
-            let head = Array.zeroCreate 3
-            let n = fs.Read(head, 0, 3)
-            let keepBom = n = 3 && head[0] = 0xEFuy && head[1] = 0xBBuy && head[2] = 0xBFuy
+            let keepBom = bomAt fs
+            let payload = writePayload keepBom lines
             fs.SetLength 0L
             fs.Seek(0L, SeekOrigin.Begin) |> ignore
-
-            use w =
-                new StreamWriter(fs, (if keepBom then utf8Bom else utf8Strict), 1024, true)
-
-            w.NewLine <- "\n"
-
-            for l in lines do
-                w.WriteLine(asString l))
+            fs.Write(payload, 0, payload.Length))
     | VUnion("DeleteFile", Some(VStr r)) ->
         if not (System.IO.File.Exists r) then
             failwith $"Plan.apply (DeleteFile): no such file: {r}"
@@ -5686,6 +5783,12 @@ let builtinDocs: Map<string, BuiltinDoc> =
            |> named [ "path" ])
           "File.write",
           (bd "Write a sequence of lines to a file (overwrites)." None None
+           |> named [ "path"; "lines" ])
+          "File.writeAtomic",
+          (bd
+              "Write a sequence of lines by whole-file swap: the payload lands in a same-directory temp, is fsynced, and renames over the target — a concurrent reader sees the complete old contents or the complete new, never a window, and a write that dies leaves the original intact. A symlink's target is replaced, not the link; the target's mode and an existing BOM are preserved. The inode changes: hardlinks split, held handles and tail -f keep the old file, and a Docker single-file bind mount breaks — in-place semantics stay File.write's job. Inside a plan it captures the same WriteFile op; apply performs the plan's own in-place write."
+              None
+              None
            |> named [ "path"; "lines" ])
           "File.append",
           (bd "Append a sequence of lines to a file." None None
