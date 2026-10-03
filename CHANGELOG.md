@@ -130,13 +130,13 @@
   Defining an alias over an existing binding refuses with a teaching —
   at the prompt, and as a located all-or-nothing error at init load.
 
-- **The editor no longer flags an init declaration as unused.** The
-  REPL's `init.weir` declares names *for the session* — the session is
-  the importer of every top-level name — and the loader never judges
+- **The editor no longer flags an init declaration as unused.** An
+  init file declares names *for the session* — the session is the
+  importer of every top-level name — and the loader never judges
   unused-ness. The LSP ran the whole-script law there, so every prompt
-  helper wore an `[unused-binding]` error the loader would never
-  raise. That judgement now stays out of the canonical init path; an
-  ordinary script (a stray `init.weir` included) keeps it.
+  helper wore an `[unused-binding]` error the loader would never raise.
+  That judgement now stays out of any `#init` file; an ordinary script
+  keeps it.
 
 - **A heredoc's leading `//` line is content, not a comment.** A
   comment-only line as a block's *first* content line was swallowed by
