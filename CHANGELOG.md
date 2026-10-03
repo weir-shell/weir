@@ -52,6 +52,11 @@
 
 ### Fixed
 
+- **The one-line echo's type tail recedes.** `() : unit` after a unit
+  entry printed as normal text while every other footer dimmed; it is
+  metadata and now recedes, and a scalar echo's ` : int` tail dims the
+  same way (the value itself stays plain). Piped bytes unchanged.
+
 - **A session binding shadows a same-named alias.** The alias table
   hijacked a bound head: `#alias hi = echo` next to `let hi () = …`
   made the function uncallable — `hi ()` was even a parse error — and

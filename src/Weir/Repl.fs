@@ -2106,14 +2106,21 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
                         | None ->
                             let rendered, hint = Eval.echoValue cap ev
                             let tail = Eval.echoTail hint
-                            Console.WriteLine $"{Eval.sanitizeTtyData rendered} : {formatEchoTy te.Ty}{tail}"
+
+                            // the value stays plain; the type tail recedes
+                            // like every other metadata line [D:table-polish]
+                            Console.WriteLine(
+                                Eval.sanitizeTtyData rendered
+                                + Types.Color.dim Types.Color.onStdout.Value $" : {formatEchoTy te.Ty}{tail}"
+                            )
                 elif not Console.IsOutputRedirected then
                     // FSI parity [D:repl-it]: a unit expression/command
                     // rebinds `it := ()`, and the tty echo says so —
                     // `it` after a streamed command shows `() : unit`,
                     // never an error. The piped surface stays silent
                     // (its bytes are pinned: unit is invisible there).
-                    Console.WriteLine "() : unit"
+                    // The whole line is metadata — it recedes [D:table-polish]
+                    echoMeta "() : unit"
 
                 bindIt te.Ty ev state
              with
