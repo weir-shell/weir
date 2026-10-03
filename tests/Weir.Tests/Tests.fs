@@ -15100,16 +15100,53 @@ let ambiguousCtorTests =
               finally
                   System.IO.Directory.Delete(dir, true)
           }
-          test "an unresolved scrutinee stays refused for its own reason" {
-              match analyze [ "type Z = C"; "let f x = match x with | C -> 1"; "print \"n\"" ] with
+          test "a single-owner ctor types the scrutinee; an ambiguous one still refuses [D:match-scrutinee-infer]" {
+              // single owner Z: the scrutinee is Z, the match checks clean
+              match
+                  analyze [ "type Z = C"; "let f x = match x with | C -> 1"; "print (show (f C))" ]
+                  |> List.filter (fun d -> d.Severity = "error")
+              with
+              | [] -> ()
+              | ds -> failtest $"a single-owner ctor should type the scrutinee: {ds}"
+
+              // two owners for one case name: nothing picks the union, so the
+              // scrutinee stays unresolved and the teaching fires
+              match
+                  analyze
+                      [ "type A = Dup"
+                        "type B = Dup"
+                        "let f x = match x with | Dup -> 1"
+                        "print \"n\"" ]
+                  |> List.filter (fun d -> d.Message.Contains "params are not typed from patterns")
+              with
               | d :: _ ->
-                  Expect.stringContains d.Message "params are not typed from patterns" ""
-                  // the teaching names both repairs: the same lambda
-                  // inlined at a typed pipe position types fine, so the
-                  // error must say so rather than dump a type variable
                   Expect.stringContains d.Message "inline the lambda at its use site" ""
                   Expect.stringContains d.Message "match on already-typed data" ""
-              | [] -> failtest "expected the unresolved-scrutinee rejection"
+              | [] -> failtest "an ambiguous-owner scrutinee must still be refused"
+          }
+          test "scrutinee inference reaches nested payloads and keeps exhaustiveness [D:match-scrutinee-infer]" {
+              // a nested constructor resolves the payload's union (Option's
+              // param here) across arms — the shared scrutinee var carries it
+              match
+                  analyze
+                      [ "type R = Ok of int | Err"
+                        "let g x = match x with | Some Err -> 0 | Some (Ok n) -> n | None -> -1"
+                        "print (show (g (Some (Ok 9))))" ]
+                  |> List.filter (fun d -> d.Severity = "error")
+              with
+              | [] -> ()
+              | ds -> failtest $"nested payload inference should check: {ds}"
+
+              // inference types the scrutinee, then exhaustiveness still bites
+              match
+                  analyze
+                      [ "type Color = Red | Green | Blue"
+                        "let h x = match x with | Red -> 1 | Green -> 2"
+                        "print \"n\"" ]
+                  |> List.filter (fun d -> d.Code = "non-exhaustive")
+              with
+              | d :: _ -> Expect.stringContains d.Message "Blue" "the missing case is named after inference"
+              | [] -> failtest "exhaustiveness must still fire once the scrutinee is inferred"
           } ]
 
 let dupTypeTests =
@@ -16495,13 +16532,12 @@ let recordPatternRowTests =
               // (script-only), so its half is an e2e pin [D:row-provenance]
               Expect.stringContains missing.Message "Did you mean 'nm'" "with the field did-you-mean"
           }
-          test "constructor patterns KEEP the law — the change did not widen" {
-              // `Some` names a case from a closed set: without the nominal
-              // type there is nothing to validate the constructor against
-              Expect.stringContains
-                  (errR "fun p -> match p with | Some 1 -> \"y\" | _ -> \"n\"").Message
-                  "params are not typed from patterns"
-                  "the ctor law is untouched"
+          test "a single-owner constructor types the scrutinee [D:match-scrutinee-infer]" {
+              // `Some` names exactly one union (Option), so an unresolved
+              // scrutinee is typed from it — the match checks, no annotation
+              match typecheck renv (parse "fun p -> match p with | Some 1 -> \"y\" | _ -> \"n\"") with
+              | Ok _ -> ()
+              | Error terr -> failtest $"a single-owner ctor should type the scrutinee: {formatError terr}"
           } ]
 
 let matchPipeOffsideTests =
