@@ -6415,20 +6415,24 @@ fi
 # replaced (the link intact), no temp litter on any path
 if [ "$IS_WINDOWS" != "1" ]; then
     widir=$(mkweirtmp)
+    # weir's own digest/mode readers keep the cell off GNU-only coreutils
+    # (macOS has no sha256sum, and stat -c is GNU-only) — dogfooded and
+    # portable; the BOM bytes read through od -N3 | tr (the proven form)
+    bom3() { od -An -tx1 -N3 "$1" | tr -d ' '; }
     printf 'precious original\nsecond line\n' > "$widir/keep.txt"
-    before=$(sha256sum "$widir/keep.txt" | cut -d' ' -f1)
+    before=$($BIN -e "print (File.sha256 \"$widir/keep.txt\")")
     $BIN -e "File.write \"$widir/keep.txt\" ([1; 2; 3] |> Seq.map (fun i -> if i == 2 then fail \"boom\" else show i))" 2>/dev/null && fail "the raising write must raise"
-    after=$(sha256sum "$widir/keep.txt" | cut -d' ' -f1)
+    after=$($BIN -e "print (File.sha256 \"$widir/keep.txt\")")
     [ "$before" = "$after" ] || fail "a raising File.write must leave the file byte-identical"
 
     printf '\xef\xbb\xbfbom line\n' > "$widir/bom.txt"
     $BIN -e "File.writeAtomic \"$widir/bom.txt\" [\"swapped\"]" || fail "writeAtomic failed"
-    head -c 3 "$widir/bom.txt" | od -An -tx1 | grep -q 'ef bb bf' || fail "writeAtomic must preserve an existing BOM"
+    [ "$(bom3 "$widir/bom.txt")" = "efbbbf" ] || fail "writeAtomic must preserve an existing BOM"
 
     printf 'plain\n' > "$widir/mode.txt" && chmod 640 "$widir/mode.txt"
     $BIN -e "File.writeAtomic \"$widir/mode.txt\" [\"replaced\"]" || fail "writeAtomic failed"
-    [ "$(stat -c '%a' "$widir/mode.txt")" = "640" ] || fail "writeAtomic must preserve the target's mode"
-    head -c 3 "$widir/mode.txt" | od -An -tx1 | grep -q 'ef bb bf' && fail "writeAtomic must not add a BOM" || true
+    [ "$($BIN -e "print (File.mode \"$widir/mode.txt\" |> Option.defaultValue \"none\")")" = "rw-r-----" ] || fail "writeAtomic must preserve the target's mode"
+    [ "$(bom3 "$widir/mode.txt")" = "efbbbf" ] && fail "writeAtomic must not add a BOM" || true
 
     printf 'target orig\n' > "$widir/t.txt" && ln -s t.txt "$widir/l.txt"
     $BIN -e "File.writeAtomic \"$widir/l.txt\" [\"via link\"]" || fail "writeAtomic through a symlink failed"
