@@ -21590,6 +21590,30 @@ let aliasTests =
 // value head — one program, string exactly, resolved at run; argv stays
 // typed argv, so the injection law holds for computed programs too.
 
+let jsonEscapingTests =
+    testList
+        "json escaping [D:json-relaxed-escaping]"
+        [ test "a Private-Use glyph emits raw, not a \\u escape, and round-trips" {
+              // the LSP/CLI writer must send a Powerline/Nerd-Font prompt
+              // icon as UTF-8 — a naive client leaves a \u escape as literal
+              let glyph = System.Char.ConvertFromUtf32 0xE0A0
+              let out = Weir.Script.jsonBuild (fun w -> w.WriteStringValue glyph)
+              Expect.stringContains out glyph "the PUA glyph is raw in the JSON"
+              Expect.isFalse (out.ToLower().Contains "\\ue0a0") "no \\u escape"
+              Expect.equal (System.Text.Json.JsonSerializer.Deserialize<string> out) glyph "round-trips"
+          }
+          test "the JSON-mandatory escapes and astral pairs stay valid" {
+              let rt (s: string) =
+                  let out = Weir.Script.jsonBuild (fun w -> w.WriteStringValue s)
+                  System.Text.Json.JsonSerializer.Deserialize<string> out
+
+              // quote/backslash/control must escape; a BMP glyph stays raw;
+              // an astral char round-trips (escaped surrogate pair) — all
+              // valid JSON either way
+              for s in [ "a\"b"; "a\\b"; "a\nb"; "a\u0001b"; "⋱…❯"; System.Char.ConvertFromUtf32 0x1F525 ] do
+                  Expect.equal (rt s) s $"round-trips: {s}"
+          } ]
+
 let dynamicHeadTests =
     let checkOf lines =
         let diags, _, _, _ = Weir.Script.analyzeLines "dynhead.weir" lines
@@ -22467,6 +22491,7 @@ let allTests =
           cmdChainTests
           aliasTests
           dynamicHeadTests
+          jsonEscapingTests
           httpDxTests
           helpUxTests
           indexerTests
