@@ -8,7 +8,12 @@ release, never the tag, cut the next number) — a recovery already used
 twice before anything shipped: rc1 (changelog section missing from the
 tagged commit) and v0.0.1 (the workflow at the tag named a retired
 runner; a tag's run is pinned to the tag's own workflow file, so a
-main-side fix cannot save it).
+main-side fix cannot save it). Used again at v0.0.60: the preflight's
+gate scripts ran on the installed (previous-release) binary, which
+still carried a member HEAD had retired — the scripts passed locally
+and the tag's own gate refused them. The preflight now runs the
+freshness gate first, so a stale binary refuses before anything
+mutates.
 
 ## One-time infrastructure (maintainer)
 

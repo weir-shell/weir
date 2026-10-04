@@ -32,7 +32,7 @@ let probe program =
 // earlier `***`-present pin tested only the unparseable path; a DNS/refused
 // error on the CI runner takes the host:port path, where there is nothing
 // to mask — no leak, but no `***` either.)
-let out1, _ = probe [ @"let _r = Http.fetch ""http://alice:hunter2@nonexistent.invalid/x""" ]
+let out1, _ = probe [ @"let _r = Http.get ""http://alice:hunter2@nonexistent.invalid/x"" |> Http.expect" ]
 if Str.contains "hunter2" out1 then
     fail $"REDACTION: URL credentials leaked in the error — {out1}"
 // the error must reference the host — proof the URL was processed and it

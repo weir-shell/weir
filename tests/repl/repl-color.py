@@ -17,28 +17,47 @@ assert_fresh(WEIR, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
 
+# drain the master CONTINUOUSLY, never only after Ctrl+D: macOS/BSD
+# discards a pty's unread buffer when the child exits, so a read-at-end
+# loses a short session's whole output (an empty capture on macOS, fine
+# on Linux which returns the buffer before EOF). select-draining as the
+# session runs captures each write as it lands, on both platforms.
 def run(extra_env, lines):
     pid, fd = pty.fork()
     if pid == 0:
         for k, v in extra_env.items():
             os.environ[k] = v
         os.execv(WEIR, ["weir"])
-    time.sleep(0.8)
+
+    out = bytearray()
+
+    def drain(seconds):
+        deadline = time.time() + seconds
+        while True:
+            left = deadline - time.time()
+            if left <= 0:
+                return True
+            r, _, _ = select.select([fd], [], [], left)
+            if not r:
+                continue
+            try:
+                c = os.read(fd, 65536)
+            except OSError:
+                return False
+            if not c:
+                return False
+            out.extend(c)
+
+    drain(0.8)  # boot to the first prompt
     for l in lines:
         os.write(fd, l.encode())
-        time.sleep(0.4)
+        drain(0.4)
     os.write(fd, b"\x04")
-    time.sleep(0.4)
-    out = b""
+    drain(1.0)  # the quit plus its final flush
     try:
-        while True:
-            c = os.read(fd, 65536)
-            if not c:
-                break
-            out += c
+        os.waitpid(pid, 0)
     except OSError:
         pass
-    os.waitpid(pid, 0)
     return out.decode(errors="replace")
 
 

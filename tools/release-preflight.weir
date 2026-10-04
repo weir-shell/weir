@@ -12,6 +12,17 @@ type Cli = {
 
 let cli = Args.load Cli
 
+// -- the binary running this preflight is HEAD-fresh --------------------
+// the sub-gates below execute ci/*.weir with the installed weir; a
+// stale (previous-release) binary can accept a script HEAD refuses —
+// the v0.0.60 burn — so the one freshness gate [D:masking-mechanized]
+// runs first
+let fresh = sh -c "ci/check-fresh.sh" | complete
+
+if fresh.exitCode <> 0 then
+    fresh.stderr |> Seq.iter printerr
+    fail "the installed weir is stale against HEAD — ./publish.sh first; a stale binary validates gate scripts the release build then refuses"
+
 // -- the working tree and the commit about to be tagged ---------------------
 let dirty = git status --porcelain |> Seq.length
 let branch = git rev-parse --abbrev-ref HEAD |> Seq.exactlyOne

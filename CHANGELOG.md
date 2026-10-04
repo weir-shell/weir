@@ -1,6 +1,12 @@
 # Changelog
 
-## v0.0.60
+## v0.0.61
+
+<!-- v0.0.60 was tagged but never published (its pinned commit still
+     carried two ci scripts on the retired Http.fetch, so the release
+     gate was red at the tag); its changes ship here under v0.0.61.
+     Tags stay immutable — the v0.0.60 tag is burned, not re-pointed. -->
+
 
 ### Added
 
