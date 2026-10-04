@@ -1,19 +1,5 @@
 # Changelog
 
-## v0.0.61
-
-### Changed
-
-- **A `match` types its scrutinee from the constructor patterns.**
-  `let f x = match x with | Some n -> … | None -> …` now checks with
-  no annotation: a case naming a single union types the scrutinee as
-  that union, nested payloads included (`Some (Ok n)` resolves the
-  inner union too). An ambiguous case — one name two unions share —
-  still asks you to type the value, and exhaustiveness is unchanged
-  (a missing case is still named). This narrows a standing divergence
-  from F#, which infers the same.
-
-
 ## v0.0.60
 
 ### Added
@@ -82,6 +68,15 @@
   `writeAtomic` to the same target — age-keyed (ten minutes), never
   pid-keyed. On Windows the rename retries briefly while a reader
   without delete-sharing holds the target.
+
+- **A `match` types its scrutinee from the constructor patterns.**
+  `let f x = match x with | Some n -> … | None -> …` now checks with
+  no annotation: a case naming a single union types the scrutinee as
+  that union, nested payloads included (`Some (Ok n)` resolves the
+  inner union too). An ambiguous case — one name two unions share —
+  still asks you to type the value, and exhaustiveness is unchanged
+  (a missing case is still named). This narrows a standing divergence
+  from F#, which infers the same.
 
 ### Fixed
 
