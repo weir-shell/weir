@@ -391,6 +391,53 @@ let private expectedFieldTypes (key: string) : Ty list =
     | "prompt" -> [ TStr; TFun(TUnit, TStr); TFun(TNamed("PromptStatus", []), TStr) ]
     | _ -> []
 
+// hover on a #session field key [D:init-marker]: the directive rewrite
+// turns `env = v` into a synthesized `let _nv = v` (same-length,
+// distinct binder — [D:session-prompt]), so the ordinary binder hover
+// would show `_nv : <inferred>`. The key cannot be recovered from the
+// rewritten binder (the first char is replaced), so read it off the
+// RAW line and report the field's schema type instead — `env : seq<...>`,
+// `prompt : string | unit -> string | PromptStatus -> string`. 1-based
+// line/col (LSP posOf), rawLines 0-based.
+let private sessionFieldHover (path: string) (rawLines: string list) (line: int) (col: int) : string option =
+    let raw = List.toArray rawLines
+
+    if not (isReplInitPath path || Script.isInitMarked rawLines) || line < 1 || line > raw.Length then
+        None
+    else
+        // in a #session block at this line? scan the lines above
+        let mutable inBlock = false
+
+        for i in 0 .. line - 2 do
+            let t = raw[i].Trim()
+
+            if t.StartsWith "#session" then
+                inBlock <- t.EndsWith "{"
+            elif inBlock && t = "}" then
+                inBlock <- false
+
+        if not inBlock then
+            None
+        else
+            let m =
+                System.Text.RegularExpressions.Regex.Match(
+                    raw[line - 1],
+                    @"^(\s{0,4})([A-Za-z_][A-Za-z0-9_]*)(\s*=\s*)(.*)$"
+                )
+
+            if not m.Success then
+                None
+            else
+                let key = m.Groups[2].Value
+                let keyStart = m.Groups[1].Value.Length // 0-based
+                let colZ = col - 1
+
+                if colZ >= keyStart && colZ < keyStart + key.Length && Set.contains key knownSessionKeys then
+                    let tys = expectedFieldTypes key |> List.map formatTy |> String.concat " | "
+                    Some $"{key} : {tys}"
+                else
+                    None
+
 let private sessionFieldDiags
     (file: string)
     (raw: string list)
@@ -2374,7 +2421,13 @@ let run (debug: bool) : int =
                             | Some(uri, text), Some(line, col) ->
                                 let lines = text.Replace("\r\n", "\n").Split('\n') |> Array.toList
 
-                                match hoverAt (uriToPath uri) lines line col with
+                                // a #session field key reports the key + its
+                                // schema type, never the rewritten binder
+                                // [D:init-marker]
+                                match
+                                    sessionFieldHover (uriToPath uri) lines line col
+                                    |> Option.orElseWith (fun () -> hoverAt (uriToPath uri) lines line col)
+                                with
                                 | Some t ->
                                     w.WriteStartObject()
                                     w.WritePropertyName "contents"

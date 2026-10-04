@@ -21614,6 +21614,82 @@ let jsonEscapingTests =
                   Expect.equal (rt s) s $"round-trips: {s}"
           } ]
 
+let contPromptTests =
+    // the continuation marker is always present and exactly promptWidth
+    // wide [D:repl-multiline] [D:cont-marker] — the bug: a short custom
+    // prompt (`❯ `, width 2) fell to blank spaces, losing the hint
+    let vis = Weir.Repl.visibleWidthForTest
+    testList
+        "continuation prompt [D:cont-marker]"
+        [ test "a wide prompt keeps ... ; a narrow one still shows a hint; width preserved" {
+              let wide = Weir.Repl.deriveContPromptForTest 10
+              Expect.stringContains wide "…" "the ellipsis marker, right-aligned"
+              Expect.equal (vis wide) 10 "display width matches the prompt (uniform column math)"
+
+              let narrow = Weir.Repl.deriveContPromptForTest 2
+              Expect.stringContains narrow "…" "a 2-wide prompt gets the ellipsis hint, not blank"
+              Expect.equal (vis narrow) 2 "display width still matches"
+              Expect.notEqual (narrow.Trim()) "" "the marker is not blank (the bug)"
+          } ]
+
+let lsCommandTeachTests =
+    testList
+        "ls/pwd command teaching [D:ls-command-teach]"
+        [ test "a command-name value applied to args points at ^ls, not a bare type error" {
+              let m = (checkErr "ls -la").Message
+              Expect.stringContains m "not the shell command" "names the confusion"
+              Expect.stringContains m "^ls" "points at the force-external escape"
+              // a user value applied to a flag keeps the generic message
+              let g = (checkErr "let xs = [1; 2] in xs -5").Message
+              Expect.stringContains g "not a function taking" "a user value is unaffected"
+              Expect.isFalse (g.Contains "shell command") "no ^-advice for a non-command value"
+          } ]
+
+let unquotedPathTeachTests =
+    testList
+        "unquoted-path teaching [D:unquoted-path-teach]"
+        [ test "an unbound '/'-RHS with a leading space teaches quoting the path" {
+              // `cd /work` in an expression parses as `cd / work`; the hint
+              // must append to the unbound error, not replace it
+              let m = (checkErr "let x = cd /work in x").Message
+              Expect.stringContains m "unbound variable 'work'" "keeps the unbound diagnosis"
+              Expect.stringContains m "quote it (cd \"/work\")" "teaches the quoted path"
+          }
+          test "a glued arithmetic typo keeps its plain did-you-mean" {
+              let m = (checkErr "let total = 10 in let count = 2 in let n = total/coutn in n").Message
+              Expect.stringContains m "Did you mean 'count'?" "arithmetic typo keeps did-you-mean"
+              Expect.isFalse (m.Contains "filesystem path") "no path hint for glued division"
+          } ]
+
+let aliasCompleteTests =
+    // bufferComplete parses the buffer with the session resolver to decide
+    // Enter-submit; an alias head must resolve there or `co -` reads as the
+    // expression `co - …` and never submits [D:command-head-alias]
+    let noAlias: Weir.Parser.Resolver =
+        { cmdResolver with AliasHead = fun _ -> None }
+    let withAlias: Weir.Parser.Resolver =
+        { cmdResolver with AliasHead = fun n -> if n = "co" || n = "cb" then Some("git", [ "checkout" ]) else None }
+
+    // the completeness verdict bufferComplete computes: Ok, or an error
+    // that is NOT past the line end, means complete (submit)
+    let complete (r: Weir.Parser.Resolver) (line: string) =
+        match Weir.Parser.parseLineFull r line with
+        | Ok _ -> true
+        | Error f ->
+            match f.Col with
+            | Some c -> c <= line.TrimEnd().Length
+            | None -> true
+
+    testList
+        "alias head completeness [D:command-head-alias]"
+        [ test "an alias head submits on one Enter; without the table it hangs" {
+              // the bug: a trailing operator-like argv (`-`, `*`) after an
+              // unresolved head reads as an unfinished expression
+              for line in [ "co -"; "cb burnt*" ] do
+                  Expect.isTrue (complete withAlias line) $"'{line}' is complete when the alias resolves"
+                  Expect.isFalse (complete noAlias line) $"'{line}' looks unfinished without the alias (the bug)"
+          } ]
+
 let dynamicHeadTests =
     let checkOf lines =
         let diags, _, _, _ = Weir.Script.analyzeLines "dynhead.weir" lines
@@ -22491,6 +22567,10 @@ let allTests =
           cmdChainTests
           aliasTests
           dynamicHeadTests
+          lsCommandTeachTests
+          unquotedPathTeachTests
+          aliasCompleteTests
+          contPromptTests
           jsonEscapingTests
           httpDxTests
           helpUxTests

@@ -562,6 +562,24 @@ else:
             m = readI()
         res = m["result"]
         return [i["label"] for i in (res["items"] if isinstance(res, dict) else res)]
+    def hover_at(uri, l, c, rid):
+        sendI({"jsonrpc": "2.0", "id": rid, "method": "textDocument/hover",
+               "params": {"textDocument": {"uri": uri}, "position": {"line": l, "character": c}}})
+        m = readI()
+        while m.get("id") != rid:
+            m = readI()
+        r = m["result"]
+        return r["contents"]["value"] if r else None
+    # a #session field key hovers as the KEY + its schema type, never the
+    # rewritten binder (`_nv`/`_rompt`) [D:init-marker]
+    sendI({"jsonrpc": "2.0", "method": "textDocument/didChange",
+           "params": {"textDocument": {"uri": INIT_URI},
+                      "contentChanges": [{"text": '#init\nlet prompt st = "> "\n\n#session {\n    env = [("A", "B")]\n    prompt = prompt\n}\n'}]}})
+    init_diags()
+    envh = hover_at(INIT_URI, 4, 5, 30)  # on 'env'
+    expect(envh == "env : seq<string * string>", f"env key hovers its schema type, not _nv: {envh!r}")
+    ph = hover_at(INIT_URI, 5, 5, 31)  # on the 'prompt' key
+    expect(ph and ph.startswith("prompt : string"), f"prompt key hovers its schema forms, not _rompt: {ph!r}")
     sendI({"jsonrpc": "2.0", "method": "textDocument/didChange",
            "params": {"textDocument": {"uri": INIT_URI},
                       "contentChanges": [{"text": '#init\nlet greeter () = "> "\n\n#session {\n    prompt = gr\n}\n'}]}})
