@@ -28,7 +28,8 @@ const weirGrammar = JSON.parse(
 const heroWeir = `type Pkg = { name: string; version: string }
 
 let pkg = File.read "package.json" |> from json Pkg
-git tag $"v{pkg.version}"
+let tag = $"v{pkg.version}"
+git tag $tag
 print $"tagged {pkg.name} v{pkg.version}"`;
 
 // verbatim from running the script in a git repo — e2e-pinned

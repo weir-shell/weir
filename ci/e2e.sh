@@ -9430,7 +9430,8 @@ cat > "$herodir/tag.weir" <<'WEOF'
 type Pkg = { name: string; version: string }
 
 let pkg = File.read "package.json" |> from json Pkg
-git tag $"v{pkg.version}"
+let tag = $"v{pkg.version}"
+git tag $tag
 print $"tagged {pkg.name} v{pkg.version}"
 WEOF
 hout=$(cd "$herodir" && "$BIN" tag.weir 2>&1) || fail "the hero run failed: $hout"
