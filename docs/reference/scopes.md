@@ -120,7 +120,7 @@ let handler = fun req ->
 ```
 
 The response `body` is an `HttpBody`, shared with the `Http` client —
-`NoBody`, `Text`, `Json`, or `Stream of seq<string>`. A `Stream` body
+`NoBody`, `Text`, `Json`, `Form`, or `Stream of seq<string>`. A `Stream` body
 is written chunked and flushed per element (SSE-shaped `data:` lines),
 so a lazy producer streams incrementally: the client sees early
 elements before the sequence completes. If a `Stream` producer raises

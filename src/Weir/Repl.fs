@@ -13,7 +13,11 @@ let private defaultPrompt = "weir> "
 // in readInput — never per keystroke, never in a redirected session —
 // and its output is held stable across repaints. Set by loadInit after
 // the declarations bind, so it can call the init's own functions.
-let mutable private promptProvider: (unit -> string) option = None
+// The PromptStatus argument [D:red-prompt] [D:prompt-status-arg]:
+// ok is the tint (true when the last entry ran clean), exit a bare
+// command's nonzero code — a custom prompt owns its colors, so the
+// status arrives as data instead of a paint.
+let mutable private promptProvider: ((bool * int option) -> string) option = None
 
 // the prompt in effect for the entry being read; sanitized text (SGR
 // allowed), its visible width, and a same-width continuation prompt.
@@ -134,22 +138,6 @@ let sanitizePromptForTest (raw: string) =
 
     if flat.Contains '\x1b' then flat + "\x1b[0m" else flat
 
-let private computePrompt () =
-    match promptProvider with
-    | None -> defaultPrompt
-    | Some _ when Console.IsInputRedirected -> defaultPrompt
-    | Some f ->
-        try
-            f () |> sanitizePromptForTest
-        with ex ->
-            if not promptWarned then
-                promptWarned <- true
-
-                Console.Error.WriteLine
-                    $"prompt: {ex.Message} — using the default prompt (later prompt errors stay quiet)"
-
-            defaultPrompt
-
 // The prompt's status tint [D:red-prompt]: true after an entry ends in
 // a printed error (parse, check, or eval), false after one executes
 // clean. A reified nonzero exit (`cmd | exitCode`, `| complete`) is
@@ -158,6 +146,27 @@ let private computePrompt () =
 // untouched (bash's own $? behavior for empty input). The tint is
 // zero-width — column math everywhere counts prompt.Length.
 let mutable private lastErrored = false
+
+// the tint's exit twin [D:prompt-status-arg]: a bare command's nonzero
+// code, None for every other outcome — set and cleared wherever the
+// tint is
+let mutable private lastExit: int option = None
+
+let private computePrompt () =
+    match promptProvider with
+    | None -> defaultPrompt
+    | Some _ when Console.IsInputRedirected -> defaultPrompt
+    | Some f ->
+        try
+            f (not lastErrored, lastExit) |> sanitizePromptForTest
+        with ex ->
+            if not promptWarned then
+                promptWarned <- true
+
+                Console.Error.WriteLine
+                    $"prompt: {ex.Message} — using the default prompt (later prompt errors stay quiet)"
+
+            defaultPrompt
 
 // The kill-ring [D:repl-killring]: the last text a kill verb removed
 // (Ctrl+U/Ctrl+K/Ctrl+W), yanked back by Ctrl+Y. Session-scoped
@@ -1823,15 +1832,28 @@ let private functionEcho (env: TypeEnv) (te: Check.TypedExpr) (v: Eval.Value) : 
         | _ -> None
     | _ -> None
 
+// a name bound by the session (a let, an init declaration) — not a
+// builtin or prelude name [D:alias-binding-shadow]: the distinction the
+// alias order needs, since `#alias ls = ls --color` over the builtin is
+// the canonical shell alias and must keep resolving
+let private isSessionBinding (state: State) (n: string) : bool =
+    Map.containsKey n state.TypeEnv.Values
+    && not (Map.containsKey n initial.TypeEnv.Values)
+
 let private resolver (state: State) : Parser.Resolver =
     { Script.resolver state.TypeEnv with
         // the session alias table beats PATH in command-head position
         // [D:command-head-alias]; `^` skips it (parser-side). Single-hop:
         // the stored Exe is a real program, never another alias name.
+        // A session BINDING shadows the table [D:alias-binding-shadow]:
+        // the line-decider's law — a bound name heads an expression, so
+        // the alias resolves unbound heads only (builtins stay below it).
         AliasHead =
             fun n ->
-                Map.tryFind n state.Aliases
-                |> Option.map (fun a -> (a.Exe, a.Prefix)) }
+                if isSessionBinding state n then
+                    None
+                else
+                    Map.tryFind n state.Aliases |> Option.map (fun a -> (a.Exe, a.Prefix)) }
 
 let private printHint (state: State) (line: string) =
     Diagnose.hint
@@ -1868,6 +1890,7 @@ let private bindIt (ty: Ty) (v: Eval.Value) (env: State) : State =
 // submission paths [D:repl-multiline]
 let private evalCheckedBody (source: string) (state: State) (chk: Script.CheckedStatement) : State =
     lastErrored <- false
+    lastExit <- None
 
     match chk.Kind with
     | Script.KType decl ->
@@ -1907,6 +1930,7 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
          | Eval.ExitRequest _ -> reraise ()
          | ex ->
              lastErrored <- true
+             lastExit <- None
              Console.WriteLine(
                  Types.Color.red Types.Color.onStdout.Value "error"
                  + $": {Eval.sanitizeIfTty Console.IsOutputRedirected ex.Message}"
@@ -1986,6 +2010,7 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
          | Eval.ExitRequest _ -> reraise ()
          | ex ->
              lastErrored <- true
+             lastExit <- None
              Console.WriteLine(
                  Types.Color.red Types.Color.onStdout.Value "error"
                  + $": {Eval.sanitizeIfTty Console.IsOutputRedirected ex.Message}"
@@ -2031,10 +2056,12 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
              // `lastErrored`.
              | :? Proc.CommandFailure as cf ->
                  lastErrored <- true
+                 lastExit <- Some cf.Code
                  echoMeta $"↳ exit {cf.Code}{cf.SignalNote}"
                  bindIt TUnit Eval.VUnit state
              | ex ->
                  lastErrored <- true
+                 lastExit <- None
 
                  Console.WriteLine(
                      Types.Color.red Types.Color.onStdout.Value "error"
@@ -2090,20 +2117,28 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
                         | None ->
                             let rendered, hint = Eval.echoValue cap ev
                             let tail = Eval.echoTail hint
-                            Console.WriteLine $"{Eval.sanitizeTtyData rendered} : {formatEchoTy te.Ty}{tail}"
+
+                            // the value stays plain; the type tail recedes
+                            // like every other metadata line [D:table-polish]
+                            Console.WriteLine(
+                                Eval.sanitizeTtyData rendered
+                                + Types.Color.dim Types.Color.onStdout.Value $" : {formatEchoTy te.Ty}{tail}"
+                            )
                 elif not Console.IsOutputRedirected then
                     // FSI parity [D:repl-it]: a unit expression/command
                     // rebinds `it := ()`, and the tty echo says so —
                     // `it` after a streamed command shows `() : unit`,
                     // never an error. The piped surface stays silent
                     // (its bytes are pinned: unit is invisible there).
-                    Console.WriteLine "() : unit"
+                    // The whole line is metadata — it recedes [D:table-polish]
+                    echoMeta "() : unit"
 
                 bindIt te.Ty ev state
              with
              | Eval.ExitRequest _ -> reraise ()
              | ex ->
                  lastErrored <- true
+                 lastExit <- None
 
                  Console.WriteLine(
                      Types.Color.red Types.Color.onStdout.Value "error"
@@ -3202,6 +3237,7 @@ let rec private loop (state: State) =
         let t = line.Trim()
 
         lastErrored <- false
+        lastExit <- None
 
         if t = "#quit" then
             ()
@@ -3266,6 +3302,14 @@ let rec private loop (state: State) =
                         $"#alias {name} = {alias.Exe} …: an alias resolves to a program, not to another alias ('{alias.Exe}' is itself an alias) — aliases are single-hop"
 
                     loop state
+                | Ok(name, _) when isSessionBinding state name ->
+                    // dead on arrival under the shadow law
+                    // [D:alias-binding-shadow] — refuse at define, never
+                    // silently hijack (or silently lose) a bound name
+                    Console.WriteLine
+                        $"#alias {name}: '{name}' is a session binding — a bound name heads an expression, so this alias would never resolve; pick another name"
+
+                    loop state
                 | Ok(name, alias) ->
                     let tgt = String.concat " " (alias.Exe :: alias.Prefix)
                     Console.WriteLine $"alias {name} = {tgt}"
@@ -3322,6 +3366,7 @@ let rec private loop (state: State) =
                         with
                         | Error d ->
                             lastErrored <- true
+                            lastExit <- None
                             // script-style rendering: the offending source
                             // line + caret + message (the buffer's echo is
                             // rows above; reprinting is deterministic)
@@ -3394,6 +3439,7 @@ let rec private loop (state: State) =
             with
             | Error d when d.Parse ->
                 lastErrored <- true
+                lastExit <- None
                 // the input sits on the prompt line above — caret under it
                 Console.WriteLine(
                     Types.Color.red Types.Color.onStdout.Value (String(' ', promptWidth + d.PhysCol - 1) + "^")
@@ -3405,6 +3451,7 @@ let rec private loop (state: State) =
                 state
             | Error d ->
                 lastErrored <- true
+                lastExit <- None
 
                 d.Span
                 |> Option.iter (underline >> Types.Color.red Types.Color.onStdout.Value >> Console.WriteLine)
@@ -3501,7 +3548,9 @@ let private splitSessionBlock
         let l = lines.[i]
         let t = l.Trim()
 
-        if not inBlock && (t = "#alias" || t.StartsWith "#alias ") then
+        if not inBlock && t = "#init" then
+            rest <- (i + 1, "") :: rest
+        elif not inBlock && (t = "#alias" || t.StartsWith "#alias ") then
             // a top-level directive line; kept out of the declaration
             // stream and replaced by a blank so declaration diagnostics keep
             // their real positions (the #session discipline)
@@ -3657,6 +3706,17 @@ let private loadInit (baseState: State) : State =
         let notLoaded () =
             Console.Error.WriteLine $"init: not loaded ({path}) — the session starts without it"
             baseState
+
+        if not (Script.isInitMarked (List.ofArray lines)) then
+            initDiag
+                path
+                1
+                1
+                (srcLine 1)
+                "the init file declares itself — put #init on the first line"
+
+            notLoaded ()
+        else
 
         match splitSessionBlock path lines with
         | Error() -> notLoaded ()
@@ -3835,6 +3895,39 @@ let private loadInit (baseState: State) : State =
                                     // form already refused [D:module-signatures]
                                     ()
 
+                        // an alias naming a declaration is dead on arrival
+                        // [D:alias-binding-shadow]: the binding shadows the
+                        // table (the line-decider's law), so the collision
+                        // refuses the load — all-or-nothing, located
+                        let aliasClash =
+                            let letNames =
+                                checked'
+                                |> List.collect (fun (_, chk) ->
+                                    match chk.Kind with
+                                    | Script.KLet(n, _, _) -> [ n ]
+                                    | Script.KLetPat(p, _, _) -> Weir.Check.patNameSpans p |> List.map fst
+                                    | _ -> [])
+                                |> Set.ofList
+
+                            aliasLines
+                            |> List.tryPick (fun (lineNo, body) ->
+                                match parseAliasLine body with
+                                | Ok(n, _) when Set.contains n letNames -> Some(lineNo, n)
+                                | _ -> None)
+
+                        if aliasClash.IsSome then
+                            let lineNo, n = aliasClash.Value
+
+                            initDiag
+                                path
+                                lineNo
+                                1
+                                (srcLine lineNo)
+                                $"#alias {n}: '{n}' is also declared in this file — the binding shadows the alias, so it would never resolve; pick another name"
+
+                            notLoaded ()
+                        else
+
                         match bad with
                         | Some(ll, msg) ->
                             initDiag path ll.Head 1 (srcLine ll.Head) msg
@@ -3931,7 +4024,7 @@ let private loadInit (baseState: State) : State =
                                                           (try
                                                               match Eval.eval venv te with
                                                               | Eval.VStr s ->
-                                                                  promptProvider <- Some(fun () -> s)
+                                                                  promptProvider <- Some(fun _ -> s)
                                                                   true
                                                               | _ -> false
                                                            with ex ->
@@ -3942,8 +4035,38 @@ let private loadInit (baseState: State) : State =
                                                               let f = Eval.eval venv te
 
                                                               promptProvider <-
-                                                                  Some(fun () ->
+                                                                  Some(fun _ ->
                                                                       match Eval.apply f Eval.VUnit with
+                                                                      | Eval.VStr s -> s
+                                                                      | _ -> defaultPrompt)
+
+                                                              true
+                                                           with ex ->
+                                                               initDiag path ll.Head 5 (srcLine ll.Head) ex.Message
+                                                               false)
+                                                      // the status-carrying provider [D:prompt-status-arg]:
+                                                      // ok is the tint — true when the last entry ran
+                                                      // clean (a bare command's nonzero exit counts as
+                                                      // not-clean and rides in exit; a reified exit
+                                                      // stays data)
+                                                      | Types.TFun(dom, Types.TStr) when Script.promptStatusDomain dom ->
+                                                          (try
+                                                              let f = Eval.eval venv te
+
+                                                              promptProvider <-
+                                                                  Some(fun (ok, exit) ->
+                                                                      let ex =
+                                                                          match exit with
+                                                                          | Some n -> Eval.VUnion("Some", Some(Eval.VInt(int64 n)))
+                                                                          | None -> Eval.VUnion("None", None)
+
+                                                                      let st =
+                                                                          Eval.VRecord(
+                                                                              "PromptStatus",
+                                                                              [ "ok", Eval.VBool ok; "exit", ex ]
+                                                                          )
+
+                                                                      match Eval.apply f st with
                                                                       | Eval.VStr s -> s
                                                                       | _ -> defaultPrompt)
 
@@ -3957,7 +4080,7 @@ let private loadInit (baseState: State) : State =
                                                               ll.Head
                                                               5
                                                               (srcLine ll.Head)
-                                                              $"prompt expects a string or a unit -> string function, got {Types.formatTy ty}"
+                                                              $"prompt expects a string, a unit -> string, or a PromptStatus -> string function (ok + a bare command's exit code), got {Types.formatTy ty}"
 
                                                           false)
                                                  | _ ->

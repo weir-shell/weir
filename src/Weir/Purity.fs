@@ -370,25 +370,26 @@ let rec firstMutation (env: Map<string, bool>) (te: TypedExpr) : (Span * string)
         |> Option.orElseWith (fun () -> firstMutation (dropPat p env) b)
     | TELambda(p, _, b) -> firstMutation (Map.remove p env) b
     | TELambdaPat(p, b) -> firstMutation (dropPat p env) b
-    // `req |> Http.send` — the piped send: the request is the pipe's
-    // argument
-    | TEPipe(reqArg, { Kind = TEVar "Http.send" }) ->
+    // `req |> Http.send` — the piped send (and Http.expect, the same
+    // per-method request record): the request is the pipe's argument
+    | TEPipe(reqArg, { Kind = TEVar(("Http.send" | "Http.expect") as sendName) }) ->
         if httpSendIsMutation (Some reqArg) then
-            Some(te.Span, "'Http.send' talks to the network (external mutation — a mutating HTTP method)")
+            Some(te.Span, $"'{sendName}' talks to the network (external mutation — a mutating HTTP method)")
         else
             firstMutation env reqArg
     | TEApp(_, _) ->
-        // the per-method net split's check-time site: an Http.send
-        // application resolves its method from the request argument
+        // the per-method net split's check-time site: an Http.send (or
+        // Http.expect) application resolves its method from the request
+        // argument
         (match (headOf te).Kind with
-         | TEVar "Http.send" ->
+         | TEVar(("Http.send" | "Http.expect") as sendName) ->
              let reqArg =
                  match te.Kind with
                  | TEApp(_, a) -> Some a
                  | _ -> None
 
              if httpSendIsMutation reqArg then
-                 Some((headOf te).Span, "'Http.send' talks to the network (external mutation — a mutating HTTP method)")
+                 Some((headOf te).Span, $"'{sendName}' talks to the network (external mutation — a mutating HTTP method)")
              else
                  // ambient (query method): walk only the argument for
                  // a nested mutation — not the `Http.send` head var,

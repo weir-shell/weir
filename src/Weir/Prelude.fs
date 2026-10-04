@@ -31,13 +31,18 @@ let source =
       // never constructs Other — it is an inbound-only carrier.
       "type HttpMethod = Get | Post | Put | Delete | Patch | Head | Options | Query | Other of string"
       "type Auth = NoAuth | Bearer of Secret | Basic of string * Secret"
+      // the #session prompt provider's argument [D:prompt-status-arg]:
+      // ok is the red-prompt tint; exit carries a bare command's nonzero
+      // code (None after a non-command error, and when ok). Consumers
+      // read fields, so the record grows without breaking a prompt.
+      "type PromptStatus = { ok: bool; exit: Option<int> }"
       // the shared body union [D:http] [D:http-serve]: NoBody/Json/Text
       // are the client-and-server cases; Stream is the server response's
       // lazy line source — pulled and written chunked as produced
       // (SSE-shaped), the pattern print set for streaming, server-side. On
       // the client send path a Stream body materializes (request-body
       // streaming is out of scope v1).
-      "type HttpBody = NoBody | Json of seq<string> | Text of string | Stream of seq<string>"
+      "type HttpBody = NoBody | Json of seq<string> | Text of string | Stream of seq<string> | Form of seq<string * string>"
       "type HttpRequest = { method: HttpMethod; url: string; auth: Auth; headers: seq<string * string>; secretHeaders: seq<string * Secret>; body: HttpBody; timeout: Duration; insecure: bool }"
       "type HttpResponse = { status: int; headers: seq<string * string>; body: seq<string> }"
       // the server boundary [D:http-serve] — the ring protocol study's

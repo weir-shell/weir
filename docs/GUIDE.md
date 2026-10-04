@@ -1285,8 +1285,9 @@ it, `File.sha256 path` streams internally.
 A typed body reaching the wire through `curl` is one flag away from
 silent corruption — `-d @-` strips newlines, `--data-binary @-`
 preserves them, and nothing errors between. `Http` closes that: the
-request is a record, `Http.send` runs it, and a `Json` body carries
-the caller's `to json` output byte-exact.
+request is a record, `Http.send` runs it, and a `Json` body renders
+its value through `to json`'s own law at the boundary — byte-exact,
+no flag to get wrong.
 
 ```weir-demo
 type Item = { name: string; count: int }
@@ -1297,7 +1298,7 @@ let created =
 let resp =
     Http.send { Http.post $"{api}/items" with
                   auth = Bearer token
-                  body = Json ({ name = "widget"; count = 3 } |> to json) }
+                  body = Json { name = "widget"; count = 3 } }
 
 if resp.status >= 400 then fail $"api said {resp.status}"
 ```
@@ -1309,23 +1310,43 @@ be used. `Http.get url` equals `{ Http.defaults with method = Get; url
 record. All eight methods have one (`get`/`post`/`put`/`delete`/
 `patch`/`head`/`options`/`query`).
 
-For the simplest read — a GET whose body is all you want — `Http.fetch`
-is the raising shorthand (the `curl -sf` / JS `fetch(url)` analogue):
-it takes a **bare URL** — never a request; `Http.get url |> Http.fetch`
-reads like a pipeline and is a type error that names the repair (a
-built request runs through `Http.send`). It returns the body and raises
-on a non-2xx naming the status, where `Http.send` binds the same
-status as data.
+`Json` takes the value — any shape `to json` admits, checked by the
+same law — and a `seq<string>` payload is read as the pre-rendered
+document, so the explicit `Json (x |> to json)` spelling means the
+same thing it always did. `Form` is the urlencoded twin for token
+endpoints and legacy receivers: `body = Form [("grant_type",
+"client_credentials")]` percent-encodes each pair and sets the
+content type; the caller never hand-builds `k=v&…`.
+
+For the read where the body is all you want, `Http.expect` is the
+raising posture (the `curl -sf` analogue): request in, body out, and
+a non-2xx raises naming the method, the url, the status *and* a
+capped snippet of the error body. When the error body is data to
+inspect — a structured API error — `Http.send` binds status and body
+as values; `expect`'s snippet is for the human reading the raise.
 
 ```weir-demo
-let item = Http.fetch $"{api}/items/1" |> from json Item
+let item = Http.get $"{api}/items/1" |> Http.expect |> from json Item
+
+let mine = { Http.get $"{api}/items/1" with auth = Bearer token } |> Http.expect |> from json Item
+```
+
+And a transient 5xx needs no client config — the ordinary loop is
+the retry policy (`retry` around a query method is safe by the
+method's definition):
+
+```weir-demo
+let health = retry attempts=3 delay=2s
+    Http.send (Http.get $"{api}/items/1")
+until r
+    r.status < 500
 ```
 
 When the shape belongs to a foreign API and you read it once, write
 the type inline — an **anonymous record type**:
 
 ```weir-demo
-let ip = Http.fetch "https://api.ipify.org?format=json" |> from json {| ip: string |} |> _.ip
+let ip = Http.get "https://api.ipify.org?format=json" |> Http.expect |> from json {| ip: string |} |> _.ip
 ```
 
 `seq<{| ... |}>` covers the top-level-array case. The same spelling
@@ -2114,7 +2135,7 @@ deploy.weir can (capability, not behaviour — an untaken branch still counts):
   writes:
     File.write out.txt  deploy.weir:7:10
   network:
-    Http.fetch https://api.example.com/items  deploy.weir:8:12
+    Http.expect https://api.example.com/items  deploy.weir:8:12
   secrets:
     loads token (Env.load Cfg)  deploy.weir:2:11
     a Secret reaches the argv of curl (visible in ps — weir does not hide argv)  deploy.weir:9:9
@@ -2171,7 +2192,7 @@ every effect, a `readonly` block forbids only **external
 mutation** — writing files, running commands, the mutating HTTP verbs
 (POST/PUT/DELETE/PATCH), any `within` resource — while **ambient
 reads are allowed**: reading a file, `Env`/`Args`, the clock, a query
-HTTP method (`Http.fetch`/`Http.query`, or `Http.send` of a
+HTTP method (`Http.query`, or `Http.send`/`Http.expect` of a
 GET/HEAD/OPTIONS/QUERY request), and stdin. The guarantee is
 *no external mutation*: a computation that only reads the world
 changes nothing (it does not, however, guarantee determinism — the

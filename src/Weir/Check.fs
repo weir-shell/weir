@@ -257,12 +257,12 @@ let rec private firstTombstone (tpl: YamlTpl) : Span option =
                 |> List.tryPick (fun e -> firstTombstone (YtMap([ e ], Unchecked.defaultof<Span>))))
 
 let private mismatch (span: Span) (expected: Ty) (actual: Ty) =
-    // a built request where a URL string is expected is the fetch/send
-    // confusion (`Http.get u |> Http.fetch`) — name the pair's split
-    // instead of leaving a bare type mismatch [D:fetch-naming]
+    // a built request where a URL string is expected — name the two
+    // run spellings instead of leaving a bare type mismatch
+    // [D:fetch-naming] [D:fetch-retired]
     let hint =
         match expected, actual with
-        | TStr, TNamed("HttpRequest", _) -> " — a built request runs through Http.send; Http.fetch takes a bare URL"
+        | TStr, TNamed("HttpRequest", _) -> " — a request runs through Http.expect (raising) or Http.send (status as data)"
         | _ -> ""
 
     err span $"expected {formatTy expected}, got {formatTy actual}{hint}"
@@ -2636,6 +2636,64 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
             return!
                 lambdaCore env expr.Span (fun tb -> TELambda(param, pspan, tb)) paramTy [ param, paramTy ] (fun e ->
                     infer ctx e body)
+        }
+    | EApp({ Kind = EVar "Json"; Span = headSpan }, arg) when ctorOwners env "Json" = [ "HttpBody" ] ->
+        // Http's Json body takes the value [D:http-dx]: a jsonable
+        // argument routes through `to json`'s own law and wire maps at
+        // the call site, so `body = Json record` renders at the
+        // boundary. A seq<string> argument stays the pre-rendered
+        // document (`Json (x |> to json)` unchanged) — the payload
+        // representation never changes, only what the constructor
+        // admits.
+        result {
+            let! targ = infer ctx env arg
+            let httpBody = TNamed("HttpBody", [])
+
+            let ctorHead =
+                { Kind = TEVar "Json"
+                  Ty = TFun(TSeq TStr, httpBody)
+                  Span = headSpan }
+
+            let app (payload: TypedExpr) =
+                { Kind = TEApp(ctorHead, payload)
+                  Ty = httpBody
+                  Span = expr.Span }
+
+            match resolve ctx targ.Ty with
+            | TSeq inner when resolve ctx inner = TStr -> return app targ
+            | TSeq inner when
+                (match resolve ctx inner with
+                 | TVar _ -> true
+                 | _ -> false)
+                ->
+                // an unresolved element (Json []) keeps the pre-rendered law
+                do! bind ctx env arg.Span TStr (resolve ctx inner)
+                return app targ
+            | TVar _ ->
+                do! bind ctx env arg.Span (TSeq TStr) targ.Ty
+                return app targ
+            | ty ->
+                do!
+                    jsonableElem
+                        arg.Span
+                        env
+                        (match ty with
+                         | TSeq elem -> TSeq(resolve ctx elem)
+                         | t -> t)
+
+                let! unions = unionWriteTable arg.Span env targ.Ty
+
+                let tto =
+                    { Kind = TETo("json", wireRenamesOf env targ.Ty, unions, false)
+                      Ty = TFun(targ.Ty, TSeq TStr)
+                      Span = arg.Span }
+
+                let rendered =
+                    { Kind = TEPipe(targ, tto)
+                      Ty = TSeq TStr
+                      Span = arg.Span }
+
+                return app rendered
         }
     | EApp _ ->
         let head, args = spine expr
