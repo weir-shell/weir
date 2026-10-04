@@ -21614,6 +21614,24 @@ let jsonEscapingTests =
                   Expect.equal (rt s) s $"round-trips: {s}"
           } ]
 
+let contPromptTests =
+    // the continuation marker is always present and exactly promptWidth
+    // wide [D:repl-multiline] [D:cont-marker] — the bug: a short custom
+    // prompt (`❯ `, width 2) fell to blank spaces, losing the hint
+    let vis = Weir.Repl.visibleWidthForTest
+    testList
+        "continuation prompt [D:cont-marker]"
+        [ test "a wide prompt keeps ... ; a narrow one still shows a hint; width preserved" {
+              let wide = Weir.Repl.deriveContPromptForTest 10
+              Expect.stringContains wide "…" "the ellipsis marker, right-aligned"
+              Expect.equal (vis wide) 10 "display width matches the prompt (uniform column math)"
+
+              let narrow = Weir.Repl.deriveContPromptForTest 2
+              Expect.stringContains narrow "…" "a 2-wide prompt gets the ellipsis hint, not blank"
+              Expect.equal (vis narrow) 2 "display width still matches"
+              Expect.notEqual (narrow.Trim()) "" "the marker is not blank (the bug)"
+          } ]
+
 let aliasCompleteTests =
     // bufferComplete parses the buffer with the session resolver to decide
     // Enter-submit; an alias head must resolve there or `co -` reads as the
@@ -22521,6 +22539,7 @@ let allTests =
           aliasTests
           dynamicHeadTests
           aliasCompleteTests
+          contPromptTests
           jsonEscapingTests
           httpDxTests
           helpUxTests

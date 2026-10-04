@@ -1072,13 +1072,23 @@ let private bufferComplete (bufLines: string list) : bool =
                     | Some c -> c <= ll.Text.TrimEnd().Length
                     | None -> true)
 
-// the continuation prompt — the same width as the prompt in effect so
-// column math is uniform across rows [D:repl-multiline]; dots when the
-// width affords them, plain spaces when it does not
-let mutable private contPrompt = "  ... "
+// the continuation prompt — the same DISPLAY width as the prompt in
+// effect so column math is uniform across rows [D:repl-multiline]. One
+// dim ellipsis [D:cont-marker], right-aligned, always present: a short
+// custom prompt (`❯ `, two columns) still gets a continuation hint
+// instead of blank, and the marker reads the same at every width. SGR
+// is zero-width, so the display width stays `w`; dim fires at a colour
+// tty only.
+let mutable private contPrompt = "   … "
 
 let private deriveContPrompt (w: int) =
-    if w >= 4 then String(' ', w - 4) + "... " else String(' ', w)
+    let on = Types.Color.onStdout.Value
+
+    if w >= 2 then String(' ', w - 2) + Types.Color.dim on "… "
+    elif w = 1 then Types.Color.dim on "…"
+    else ""
+
+let deriveContPromptForTest = deriveContPrompt
 
 // the live editor's repaint hook for SIGWINCH (full repaint on resize;
 // best-effort — the climb to the region top uses pre-resize wrap math)
