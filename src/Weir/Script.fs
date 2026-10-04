@@ -4421,8 +4421,27 @@ let private codeOf (parse: bool) (msg: string) : string =
 // means HTML-embedding only — these payloads are LSP/CLI, never HTML;
 // the default encoder's \u0022-style quote escaping is valid but
 // trips naive clients [D:json-relaxed-escaping]
+// BMP non-ASCII passes through raw [D:json-relaxed-escaping]: a
+// Private-Use glyph (a Powerline/Nerd-Font prompt icon, U+E000–U+F8FF)
+// must reach the client as UTF-8, not a `\u`-escape a naive LSP client
+// leaves as literal text. Every System.Text.Json encoder — including
+// UnsafeRelaxedJsonEscaping and Create(UnicodeRanges.All) — escapes the
+// PUA by a hardcoded policy, so this thin subclass delegates to
+// UnsafeRelaxed but refuses to escape any BMP scalar >= 0x80 (surrogate
+// halves excepted — astral chars stay a valid escaped pair). The
+// JSON-mandatory escapes (`"`, `\`, controls) are untouched.
+type private RawBmpEncoder() =
+    inherit System.Text.Encodings.Web.JavaScriptEncoder()
+    let inner = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+    let allow (u: int) = u >= 0x80 && u <= 0xFFFF && not (u >= 0xD800 && u <= 0xDFFF)
+    override _.MaxOutputCharactersPerInputCharacter = inner.MaxOutputCharactersPerInputCharacter
+    override _.WillEncode(u) = if allow u then false else inner.WillEncode u
+    override _.FindFirstCharacterToEncode(text, textLength) = inner.FindFirstCharacterToEncode(text, textLength)
+    override _.TryEncodeUnicodeScalar(u, buffer, bufferLength, written) =
+        inner.TryEncodeUnicodeScalar(u, buffer, bufferLength, &written)
+
 let private jsonWriterOptions =
-    System.Text.Json.JsonWriterOptions(Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping)
+    System.Text.Json.JsonWriterOptions(Encoder = RawBmpEncoder())
 
 let jsonBuild (build: System.Text.Json.Utf8JsonWriter -> unit) : string =
     use ms = new IO.MemoryStream()

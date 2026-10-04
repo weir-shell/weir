@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.0.62
+
+### Fixed
+
+- **The LSP sends Private-Use glyphs raw, not `\u`-escaped.** A
+  Powerline/Nerd-Font icon (U+E000–U+F8FF) in a `textDocument/formatting`
+  edit arrived `\u`-escaped, and a client that mis-decodes the escape
+  (micro's lsp plugin) dropped it on format-on-save. System.Text.Json
+  escapes the Private-Use Area under a hardcoded policy no built-in
+  encoder overrides, so the LSP/CLI JSON writer now uses a thin encoder
+  that emits every BMP non-ASCII scalar raw; mandatory `"`/`\`/control
+  escapes are untouched, and astral chars stay a valid surrogate pair.
+  `weir fmt` on the CLI was never affected.
+
 ## v0.0.61
 
 <!-- v0.0.60 was tagged but never published (its pinned commit still
