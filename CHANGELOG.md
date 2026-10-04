@@ -14,6 +14,33 @@
   escapes are untouched, and astral chars stay a valid surrogate pair.
   `weir fmt` on the CLI was never affected.
 
+- **An alias head submits on one Enter.** `co -` (alias `co = git
+  checkout`) and `cb burnt*` no longer need a double Enter — the
+  line-completeness check parsed without the alias table, so an alias
+  head read as a bare name and a trailing `-`/`*` looked like an
+  unfinished expression. The completeness resolver now carries the
+  alias table, like the eval path.
+
+- **A short custom prompt keeps its continuation marker.** The REPL
+  continuation prompt is now one dim ellipsis (`…`), right-aligned to
+  the prompt width. A custom prompt narrower than four columns (a
+  `❯ ` whose status line is printed separately above) used to fall to
+  blank spaces; it shows the hint at any width now, and the marker is
+  dimmed at a colour tty.
+
+- **A `#session` field key hovers as the key, not the rewritten
+  binder.** `env` reported `_nv : seq<string * string>` and `prompt`
+  reported `_rompt : { ok: bool; .. } -> string` — the LSP's internal
+  field rewrite leaking. A field key now hovers as the key and its
+  `#session` schema type (`env : seq<string * string>`,
+  `prompt : string | unit -> string | PromptStatus -> string`).
+
+- **`ls -la` teaches the force-external escape.** Applying a
+  command-name builtin value (`ls`, `pwd`) to arguments reported a
+  bare "not a function" error; it now points at `^ls -la` (or an
+  alias). `ls` stays weir's typed listing — it is not silently rerouted
+  to the external.
+
 ## v0.0.61
 
 <!-- v0.0.60 was tagged but never published (its pinned commit still
