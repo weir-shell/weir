@@ -41,6 +41,12 @@
   alias). `ls` stays weir's typed listing — it is not silently rerouted
   to the external.
 
+- **An unquoted path in an expression teaches quoting.** `let x = cd
+  /work` parses as `cd / work` — a division whose RHS `work` is
+  unbound. The "unbound variable" error now appends a hint to quote the
+  path (`cd "/work"`); an unquoted path is an argv word only in a
+  command. A glued `total/coutn` typo keeps its plain did-you-mean.
+
 ## v0.0.61
 
 <!-- v0.0.60 was tagged but never published (its pinned commit still

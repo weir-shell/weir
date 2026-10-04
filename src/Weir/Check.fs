@@ -3570,7 +3570,27 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                     | _ -> err left.Span $"'<<' composes functions, and this expression has type {formatTy ty}"
                 | _ -> Ok()
 
-            let! tright = infer ctx env right
+            // `cd /work` in an expression parses as `cd / work`: the path
+            // '/work' is a division whose RHS 'work' is an unbound variable.
+            // Append a quote-the-path hint to that unbound error, but only
+            // when a space precedes the '/' (path shape, not glued `a/b`
+            // arithmetic), so a genuine `total/coutn` typo keeps its plain
+            // did-you-mean [D:unquoted-path-teach]
+            let! tright =
+                infer ctx env right
+                |> Result.mapError (fun e ->
+                    match right.Kind with
+                    | EVar nm when
+                        op = "/"
+                        && right.Span.Start.Col - left.Span.End.Col >= 2
+                        && e.Message.StartsWith "unbound variable"
+                        ->
+                        { e with
+                            Message =
+                                e.Message
+                                + $" — if '/{nm}' is a filesystem path, quote it (cd \"/{nm}\"); an unquoted path is an argv word only in a command, not an expression" }
+                    | _ -> e)
+
             let! ty = typeBinOp ctx env expr.Span op tleft tright
 
             return

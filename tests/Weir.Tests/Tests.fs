@@ -21645,6 +21645,22 @@ let lsCommandTeachTests =
               Expect.isFalse (g.Contains "shell command") "no ^-advice for a non-command value"
           } ]
 
+let unquotedPathTeachTests =
+    testList
+        "unquoted-path teaching [D:unquoted-path-teach]"
+        [ test "an unbound '/'-RHS with a leading space teaches quoting the path" {
+              // `cd /work` in an expression parses as `cd / work`; the hint
+              // must append to the unbound error, not replace it
+              let m = (checkErr "let x = cd /work in x").Message
+              Expect.stringContains m "unbound variable 'work'" "keeps the unbound diagnosis"
+              Expect.stringContains m "quote it (cd \"/work\")" "teaches the quoted path"
+          }
+          test "a glued arithmetic typo keeps its plain did-you-mean" {
+              let m = (checkErr "let total = 10 in let count = 2 in let n = total/coutn in n").Message
+              Expect.stringContains m "Did you mean 'count'?" "arithmetic typo keeps did-you-mean"
+              Expect.isFalse (m.Contains "filesystem path") "no path hint for glued division"
+          } ]
+
 let aliasCompleteTests =
     // bufferComplete parses the buffer with the session resolver to decide
     // Enter-submit; an alias head must resolve there or `co -` reads as the
@@ -22551,6 +22567,8 @@ let allTests =
           cmdChainTests
           aliasTests
           dynamicHeadTests
+          lsCommandTeachTests
+          unquotedPathTeachTests
           aliasCompleteTests
           contPromptTests
           jsonEscapingTests
