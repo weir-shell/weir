@@ -21632,6 +21632,19 @@ let contPromptTests =
               Expect.notEqual (narrow.Trim()) "" "the marker is not blank (the bug)"
           } ]
 
+let lsCommandTeachTests =
+    testList
+        "ls/pwd command teaching [D:ls-command-teach]"
+        [ test "a command-name value applied to args points at ^ls, not a bare type error" {
+              let m = (checkErr "ls -la").Message
+              Expect.stringContains m "not the shell command" "names the confusion"
+              Expect.stringContains m "^ls" "points at the force-external escape"
+              // a user value applied to a flag keeps the generic message
+              let g = (checkErr "let xs = [1; 2] in xs -5").Message
+              Expect.stringContains g "not a function taking" "a user value is unaffected"
+              Expect.isFalse (g.Contains "shell command") "no ^-advice for a non-command value"
+          } ]
+
 let aliasCompleteTests =
     // bufferComplete parses the buffer with the session resolver to decide
     // Enter-submit; an alias head must resolve there or `co -` reads as the

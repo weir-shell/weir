@@ -4352,6 +4352,15 @@ and private checkSpine
                     let span = extra |> Option.map (fun e -> e.Span) |> Option.defaultValue head.Span
 
                     return! err span $"'{name}' takes at most {available} argument(s), but got {args.Length}{hint}"
+                | TEVar name when (name = "ls" || name = "pwd") && not (List.isEmpty args) ->
+                    // a command-name builtin VALUE applied to args is almost
+                    // always a shell-command reflex (`ls -la`) [D:ls-command-teach]
+                    // — it is weir's typed listing, not the external command,
+                    // so point at the force-external escape
+                    return!
+                        err
+                            head.Span
+                            $"'{name}' is weir's typed {formatTy (finalTy ctx thead.Ty)} value, not the shell command — to run the external '{name}' with arguments, force it external: ^{name} … (or alias it: #alias x = {name} …)"
                 | _ ->
                     return!
                         err
