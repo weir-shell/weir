@@ -2,5 +2,6 @@
 # re-pointed [D:tag-immutability] — superseded by the next release.
 # Swept by ci/release-published.weir: a listed-but-published tag fails
 # as stale; an aged-out entry is named for removal without failing.
-# (none currently — v0.0.50 aged out, superseded by v0.0.56)
-burned: []
+burned:
+  - tag: v0.0.60
+    reason: two ci scripts still called the retired Http.fetch, so the tag's release gate was red; ships as v0.0.61
