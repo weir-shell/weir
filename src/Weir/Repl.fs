@@ -190,6 +190,15 @@ let mutable private lastStreamed: string option = None
 // below and the Tab pool — the alias table itself stays in State
 let private currentAliasNames: Set<string> ref = ref Set.empty
 
+// the alias head lookup for the parse/completeness resolver
+// [D:command-head-alias]: bufferComplete parses the buffer to decide
+// Enter-submit, and without the alias table an alias head reads as an
+// ordinary name — so `co -` parses as the expression `co - …`
+// (trailing operator → "more wanted") and never submits on one Enter.
+// The eval resolver already carries this; the completeness one must too.
+let private currentAliasHead: (string -> (string * string list) option) ref =
+    ref (fun _ -> None)
+
 // the session values ride the same way [D:value-key-complete]: the
 // map-key completion slot peeks at a bound value's keys — a table
 // read, never an evaluation
@@ -1050,7 +1059,9 @@ let private bufferComplete (bufLines: string list) : bool =
         match Script.assemble numbered with
         | Error _ -> false
         | Ok lls ->
-            let r = Script.resolver currentEnv.Value
+            let r =
+                { Script.resolver currentEnv.Value with
+                    AliasHead = currentAliasHead.Value }
 
             lls
             |> List.forall (fun ll ->
@@ -3221,6 +3232,11 @@ let rec private loop (state: State) =
     // the alias names ride along [D:command-head-alias]: the head tint
     // and the Tab pool read the ref, never a second table
     currentAliasNames.Value <- Set.ofSeq (Map.keys state.Aliases)
+
+    // and the head lookup for the parse/completeness resolver, the same
+    // shape the eval resolver builds [D:command-head-alias]
+    currentAliasHead.Value <-
+        fun n -> Map.tryFind n state.Aliases |> Option.map (fun a -> (a.Exe, a.Prefix))
     currentVals.Value <- state.Values
 
     match readInput () with

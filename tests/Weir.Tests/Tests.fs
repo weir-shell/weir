@@ -21614,6 +21614,35 @@ let jsonEscapingTests =
                   Expect.equal (rt s) s $"round-trips: {s}"
           } ]
 
+let aliasCompleteTests =
+    // bufferComplete parses the buffer with the session resolver to decide
+    // Enter-submit; an alias head must resolve there or `co -` reads as the
+    // expression `co - …` and never submits [D:command-head-alias]
+    let noAlias: Weir.Parser.Resolver =
+        { cmdResolver with AliasHead = fun _ -> None }
+    let withAlias: Weir.Parser.Resolver =
+        { cmdResolver with AliasHead = fun n -> if n = "co" || n = "cb" then Some("git", [ "checkout" ]) else None }
+
+    // the completeness verdict bufferComplete computes: Ok, or an error
+    // that is NOT past the line end, means complete (submit)
+    let complete (r: Weir.Parser.Resolver) (line: string) =
+        match Weir.Parser.parseLineFull r line with
+        | Ok _ -> true
+        | Error f ->
+            match f.Col with
+            | Some c -> c <= line.TrimEnd().Length
+            | None -> true
+
+    testList
+        "alias head completeness [D:command-head-alias]"
+        [ test "an alias head submits on one Enter; without the table it hangs" {
+              // the bug: a trailing operator-like argv (`-`, `*`) after an
+              // unresolved head reads as an unfinished expression
+              for line in [ "co -"; "cb burnt*" ] do
+                  Expect.isTrue (complete withAlias line) $"'{line}' is complete when the alias resolves"
+                  Expect.isFalse (complete noAlias line) $"'{line}' looks unfinished without the alias (the bug)"
+          } ]
+
 let dynamicHeadTests =
     let checkOf lines =
         let diags, _, _, _ = Weir.Script.analyzeLines "dynhead.weir" lines
@@ -22491,6 +22520,7 @@ let allTests =
           cmdChainTests
           aliasTests
           dynamicHeadTests
+          aliasCompleteTests
           jsonEscapingTests
           httpDxTests
           helpUxTests
