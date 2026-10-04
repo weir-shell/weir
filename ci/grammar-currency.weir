@@ -34,7 +34,8 @@ let grammarText =
     match cli.gfile with
     | Some p -> File.read p |> Str.join "\n"
     | None ->
-        Http.fetch "https://raw.githubusercontent.com/weir-shell/tree-sitter-weir/main/grammar.js"
+        Http.get "https://raw.githubusercontent.com/weir-shell/tree-sitter-weir/main/grammar.js"
+        |> Http.expect
         |> Str.join "\n"
 
 let manifest = File.read "editors/grammar-manifest.json" |> from json Manifest
