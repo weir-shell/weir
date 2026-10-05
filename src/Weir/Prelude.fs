@@ -23,6 +23,9 @@ let source =
       // Poll.defaults) the resting values
       "type Retry = { attempts: int; delay: Duration; timeout: Option<Duration> }"
       "type Poll = { timeout: Duration; interval: Duration }"
+      // the RFC 9562 namespace IDs [D:uuid] — Uuid.ns's type, so
+      // `Uuid.ns.dns` is plain field access on a module value
+      "type UuidNamespaces = { dns: Uuid; url: Uuid; oid: Uuid; x500: Uuid }"
       // the typed request boundary [D:http] — field names are public API
       // Other carries a well-formed but unlisted verb [D:serve-method]:
       // a proxy may forward TRACE/QUERY-shaped tokens the union does not

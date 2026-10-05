@@ -571,7 +571,7 @@ let private instantiate (ctx: Ctx) (span: Span) (sch: Scheme) : Ty =
                                     | _ -> $"show cannot render functions; this is {formatTy t}"
                             | Cls.Ord ->
                                 fun t ->
-                                    $"cannot sort by this key: {formatTy t} cannot be ordered — keys are int, float, string, bool, Duration, Size, or Instant" })
+                                    $"cannot sort by this key: {formatTy t} cannot be ordered — keys are int, float, string, bool, Duration, Size, Instant, or Uuid" })
 
                 ctx.Cons <- Map.add v' (ps @ (Map.tryFind v' ctx.Cons |> Option.defaultValue [])) ctx.Cons
             | None -> ()
@@ -623,7 +623,7 @@ let private demand (ctx: Ctx) (env: TypeEnv) (p: Pending) (ty0: Ty) : Result<uni
             // Secret admits Eq [D:secret] (did the token change?) but
             // not Ord — sorting secrets is meaningless; constant-time is
             // not claimed (weir is not a crypto library)
-            | Cls.Eq, (TInt | TStr | TBool | TUnit | TDur | TSize | TInstant | TBytes | TSecret) -> true
+            | Cls.Eq, (TInt | TStr | TBool | TUnit | TDur | TSize | TInstant | TUuid | TBytes | TSecret) -> true
             // floats are excluded from Eq [D:floats] — finite-only kept
             // equality reflexive; representation (0.1 + 0.2) is the trap
             // that remains, and weir does not vouch for it
@@ -640,7 +640,7 @@ let private demand (ctx: Ctx) (env: TypeEnv) (p: Pending) (ty0: Ty) : Result<uni
             | Cls.Eq, TNamed(("Op" | "Plan"), _) -> true
             | Cls.Eq, TNamed(n, targs) -> decompose n targs
             // Show: no function anywhere; seqs render fine
-            | Cls.Show, (TInt | TFloat | TStr | TBool | TUnit | TDur | TSize | TInstant | TBytes | TSecret) -> true
+            | Cls.Show, (TInt | TFloat | TStr | TBool | TUnit | TDur | TSize | TInstant | TUuid | TBytes | TSecret) -> true
             | Cls.Show, TFun _ -> false
             | Cls.Show, TSeq elem -> ok seen elem
             | Cls.Show, TTuple ts -> ts |> List.forall (ok seen)
@@ -661,8 +661,9 @@ let private demand (ctx: Ctx) (env: TypeEnv) (p: Pending) (ty0: Ty) : Result<uni
             // elapsed > timeout is the point; floats join Ord
             // [D:floats], total because finite-only; Instant joins Ord
             // [D:instant] — before/after is comparison (Duration's own
-            // admission argument, one type later)
-            | Cls.Ord, (TInt | TFloat | TStr | TBool | TDur | TSize | TInstant) -> true
+            // admission argument, one type later); Uuid joins Ord
+            // [D:uuid] — byte order, which is time order for v7
+            | Cls.Ord, (TInt | TFloat | TStr | TBool | TDur | TSize | TInstant | TUuid) -> true
             | Cls.Ord, _ -> false
             // vars and row vars are consumed by the outer match arms;
             // the compiler cannot see that through this nesting
@@ -709,6 +710,9 @@ let private spliceAdmit (ctx: Ctx) (env: TypeEnv) (site: SpliceSite) (span: Span
             // argv in the clear (visible in `ps` — the platform's property,
             // a stated non-claim), which is why this is deliberate, not silent
             | TSecret -> Ok()
+            // one spelling, so no program-dependent form [D:uuid]: the
+            // canonical lowercase text is the word
+            | TUuid -> Ok()
             | TDur ->
                 err
                     span
@@ -1040,9 +1044,9 @@ let rec private typeBinOp
             bind ctx env l.Span TBool l.Ty
             |> Result.bind (fun () -> bind ctx env r.Span TBool r.Ty)
         )
-    | _, TVar _, ((TInt | TFloat | TStr | TBool | TDur | TSize | TInstant) as t) ->
+    | _, TVar _, ((TInt | TFloat | TStr | TBool | TDur | TSize | TInstant | TUuid) as t) ->
         retryAfter (bind ctx env l.Span t l.Ty)
-    | _, ((TInt | TFloat | TStr | TBool | TDur | TSize | TInstant) as t), TVar _ ->
+    | _, ((TInt | TFloat | TStr | TBool | TDur | TSize | TInstant | TUuid) as t), TVar _ ->
         retryAfter (bind ctx env r.Span t r.Ty)
     | ("==" | "<>"), a, b ->
         // Eq via the class solver: concrete failures keep the
@@ -1153,7 +1157,7 @@ let rec private spine (e: Expr) : Expr * Expr list =
 // locates the offending field from the top — a recursive law's
 // failures are deep and a category list alone will not find them.
 let private jsonAdmittedSet =
-    "json fields are int, float, string, bool, Option of an admitted type, a record of admitted fields, seq of an admitted type, a seq<string * T> mapping, or Map<string, T> of one"
+    "json fields are int, float, string, bool, Uuid, Option of an admitted type, a record of admitted fields, seq of an admitted type, a seq<string * T> mapping, or Map<string, T> of one"
 
 let rec private jsonAdmitted
     (span: Span)
@@ -1169,6 +1173,9 @@ let rec private jsonAdmitted
     | TFloat
     | TStr
     | TBool -> Ok()
+    // one wire convention, unlike Instant's [D:uuid]: the canonical
+    // hex-and-dash string, read back by the strict text parser
+    | TUuid -> Ok()
     | TSize ->
         // parked [D:size]: JSON has no size convention (bytes-int and a
         // string both defensible; the choice waits for evidence)
@@ -5714,6 +5721,7 @@ let rec private validateTy
     | TUnit
     | TDur
     | TInstant
+    | TUuid
     | TSize
     | TBytes
     | TSecret -> Ok()

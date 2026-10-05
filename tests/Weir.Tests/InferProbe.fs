@@ -350,7 +350,7 @@ let inferRules =
               // whatever the session injects under that name — if the
               // parser ever lets a session decl win here, this fails and
               // takenTypeNames must be revisited
-              for prim in [ TDur; TInstant; TSize; TBytes; TSecret ] do
+              for prim in [ TDur; TInstant; TUuid; TSize; TBytes; TSecret ] do
                   let name = formatTy prim
 
                   Expect.isTrue

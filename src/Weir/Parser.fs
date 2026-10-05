@@ -4468,6 +4468,7 @@ tySynRef.Value <-
                   | "unit" -> ws >>% TUnit
                   | "Duration" -> ws >>% TDur
                   | "Instant" -> ws >>% TInstant
+                  | "Uuid" -> ws >>% TUuid
                   | "float" -> ws >>% TFloat
                   | "Size" -> ws >>% TSize
                   | "Bytes" -> ws >>% TBytes

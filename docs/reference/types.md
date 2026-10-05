@@ -41,6 +41,26 @@ works where it means something; cross-type arithmetic does not
 exist, and the errors name the explicit conversions
 (`Duration.toMillis`, `Size.parse`, `Instant.epochMs`).
 
+## `Uuid`
+
+A 128-bit identifier with its own type — not a string alias. `Uuid.v7`
+is time-ordered and strictly increasing within the process, so v7 ids
+sort by creation both as uuids and as their text; `Uuid.v4` is random;
+`Uuid.v5` is name-based and deterministic. `Uuid.parse` reads the
+hex-and-dash form, 32 bare hex digits, or a `urn:uuid:` prefix, in any
+case, and raises on anything else; `Uuid.tryParse` returns an `Option`.
+
+```weir
+let id = Uuid.v7 ()
+print $"{id} is version {Uuid.version id}"
+print $"{Uuid.v5 Uuid.ns.url "https://example.com"}"
+```
+
+Uuids compare for equality and sort (`Seq.sort`, `Seq.min`), by their
+big-endian bytes — the same order as their text. There is no `<`:
+identifiers are not quantities. They cross JSON as the canonical
+lowercase string and splice into a command's argv as that text.
+
 ## `seq`
 
 Lazy. Pipelines pull what they need; ranges are lazy generators;
