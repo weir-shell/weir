@@ -19604,6 +19604,69 @@ let uuidTests =
               Expect.stringContains (checkErr "Uuid.parse 5").Message "expected string" "parse takes text"
           } ]
 
+let wireTableTests =
+    // the wire table [D:wire-table]: one stance per type, read by both
+    // boundaries in both directions — the four cells of a refused scalar
+    // differ only in the format name, field prefix included
+    let firstErr (lines: string list) =
+        let ds, _, _, _ = Weir.Script.analyzeLines "wire.weir" lines
+        match ds |> List.filter (fun d -> d.Severity = "error") with
+        | d :: _ -> d.Message
+        | [] -> failtest $"expected a refusal: {lines}"
+
+    let cells (ty: string) (value: string) =
+        [ "json read", [ $"type R = {{ t: {ty} }}"; "let _x = [\"\"] |> from json R" ]
+          "json write", [ $"type R = {{ t: {ty} }}"; $"let r = {{ t = {value} }}"; "let _j = [r] |> to json |> Seq.freeze" ]
+          "yaml read", [ $"type R = {{ t: {ty} }}"; "let _x = [\"t: x\"] |> from yaml R" ]
+          "yaml write", [ $"type R = {{ t: {ty} }}"; $"let r = {{ t = {value} }}"; "let _y = r |> to yaml |> Seq.freeze" ] ]
+        |> List.map (fun (cell, lines) -> cell, (firstErr lines).Replace("JSON", "<fmt>").Replace("yaml", "<fmt>"))
+
+    testList
+        "the wire table [D:wire-table]"
+        [ test "a refused scalar teaches identically in all four cells" {
+              for ty, value in
+                  [ "Instant", "Instant.now ()"
+                    "Duration", "5s"
+                    "Size", "Size.parse \"1KiB\""
+                    "Bytes", "Str.toUtf8 \"x\""
+                    "Secret", "Secret.of \"x\"" ] do
+                  let msgs = cells ty value
+                  let distinct = msgs |> List.map snd |> List.distinct
+                  Expect.equal distinct.Length 1 $"{ty}: one text across the cells, got {msgs}"
+                  Expect.stringContains distinct.Head "field 't': " $"{ty}: every cell names the field"
+          }
+          test "Uuid crosses yaml both ways, as it crosses JSON" {
+              let lines =
+                  [ "type E = { id: Uuid; parent: Option<Uuid>; note: string }"
+                    "let e = { id = Uuid.parse \"017f22e2-79b0-7cc3-98c4-dc0c0c07398f\"; parent = Some Uuid.nil; note = \"x\" }"
+                    "let back = e |> to yaml |> from yaml E"
+                    "print (show back)" ]
+
+              let ds, _, _, _ = Weir.Script.analyzeLines "wire.weir" lines
+              Expect.isEmpty (ds |> List.filter (fun d -> d.Severity = "error")) "checks"
+
+              let te = env |> declare "type WUuidRow = { id: Uuid; parent: Option<Uuid> }"
+
+              let v =
+                  match Weir.Check.typecheck te (parse "[\"id: 017F22E2-79B0-7CC3-98C4-DC0C0C07398F\"] |> from yaml WUuidRow |> show") with
+                  | Ok t -> eval valueEnv t
+                  | Error terr -> failtest (formatError terr)
+
+              Expect.equal v (VStr "{ id = 017f22e2-79b0-7cc3-98c4-dc0c0c07398f; parent = None }") "reads through the strict parser"
+          }
+          test "a malformed uuid in yaml raises with its line" {
+              let te = env |> declare "type WUuidBad = { id: Uuid }"
+
+              match Weir.Check.typecheck te (parse "[\"id: nope\"] |> from yaml WUuidBad |> show") with
+              | Ok t ->
+                  try
+                      eval valueEnv t |> ignore
+                      failtest "a malformed uuid must raise"
+                  with ex ->
+                      Expect.stringContains ex.Message "line 1: not a uuid" "names the line and the parse teaching"
+              | Error terr -> failtest (formatError terr)
+          } ]
+
 let mapStringTests =
     // Map<string, T> [D:map-string]: the ID-keyed object — keys are
     // data, not schema; string keys only; the adapter slot's third form
@@ -22982,6 +23045,7 @@ let allTests =
           mapStringTests
           instantTests
           uuidTests
+          wireTableTests
           interpRawTests
           recordOrderTests
           scopedProcTests

@@ -1767,6 +1767,10 @@ let rec private yamlConvert (shape: Yaml.Shape) (node: Yaml.Node) : Value =
                 | Ok f -> VFloat f
                 | Error _ -> failwith $"from yaml: line {line}: expected float, got '{raw}'"
     | Yaml.SStr, Yaml.NScalar(raw, _, _) -> VStr raw
+    | Yaml.SUuid, Yaml.NScalar(raw, _, line) ->
+        match parseUuid raw with
+        | Ok g -> VUuid g
+        | Error e -> failwith $"from yaml: line {line}: {e}"
     // blockness is quotedness's sibling [D:block-scalars]: a block
     // scalar is unambiguously a string
     | Yaml.SStr, Yaml.NBlock(text, _) -> VStr text
@@ -1797,7 +1801,7 @@ let rec private yamlConvert (shape: Yaml.Shape) (node: Yaml.Node) : Value =
                 | None, _ ->
                     failwith
                         $"from yaml: line {line}: missing field '{fname}'{wireNote} in '{name}' — if the field is sometimes absent, declare it Option<…>; a type drafted from a sample only sees what the sample had"
-                | Some(_, Yaml.NNull l), (Yaml.SInt | Yaml.SFloat | Yaml.SStr | Yaml.SBool | Yaml.SRec _) ->
+                | Some(_, Yaml.NNull l), (Yaml.SInt | Yaml.SFloat | Yaml.SStr | Yaml.SBool | Yaml.SUuid | Yaml.SRec _) ->
                     failwith $"from yaml: line {l}: field '{fname}' is null; declare it Option<…> to allow it"
                 | Some(_, v), _ -> fname, yamlConvert fshape v)
 
@@ -1845,6 +1849,7 @@ let rec private yamlConvert (shape: Yaml.Shape) (node: Yaml.Node) : Value =
             | Yaml.SFloat -> "a float scalar"
             | Yaml.SStr -> "a string scalar"
             | Yaml.SBool -> "a bool scalar"
+            | Yaml.SUuid -> "a uuid scalar"
             | Yaml.SRec(n, _) -> $"a mapping ({n})"
             | Yaml.SUnion(n, _, _, _) -> $"a mapping ({n})"
             | Yaml.SSeq _ -> "a sequence"
@@ -2003,6 +2008,8 @@ let rec private yamlRender
     | VSize b -> Inline(formatSize b)
     | VBool b -> Inline(if b then "true" else "false")
     | VStr s -> renderString s
+    // the canonical text [D:wire-table], quoted when YAML would misread it
+    | VUuid g -> renderString (formatUuid g)
     | VUnion("YStr", Some(VStr s)) -> renderString s
     | VUnion("YInt", Some(VInt n)) -> Inline(string n)
     | VUnion("YFloat", Some(VFloat f)) -> Inline(formatFloat f)

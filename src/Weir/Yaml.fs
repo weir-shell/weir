@@ -16,6 +16,8 @@ type Shape =
     | SFloat
     | SStr
     | SBool
+    // read through the strict uuid parser [D:wire-table]
+    | SUuid
     | SOpt of Shape
     // (field, wire key, shape) [D:wire-keys] — matching reads the wire,
     // construction writes the field

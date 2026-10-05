@@ -225,19 +225,24 @@ There is no in-place file member: the round-trip is composition,
 `File.read f |> Yaml.parse |> Yaml.merge p |> to yaml |> File.write f`,
 so the one mutation stays visible in the pipeline.
 
-## Uuid fields
+## What crosses, and what does not
 
-A `Uuid` field crosses as its canonical lowercase string and reads
-back through `Uuid.parse`'s forms; a malformed string raises naming
-the field. An append-only JSON-lines log keyed by `Uuid.v7` stays
-sortable by id as text.
+Types with one canonical encoding cross by themselves; types whose
+encoding is ambiguous refuse, and the refusal names the explicit
+conversion. JSON and YAML follow the same rule in both directions, with
+the same messages.
 
-## What does not serialize
-
-`Instant` has no wire convention, so JSON refuses it naming
-`Instant.epochMs` and `show`. `Bytes` refuses naming
-`Bytes.toBase64`. `Secret` refuses outright — a credential does not
-serialize.
+- `int`, `float`, `string`, `bool` and `Uuid` cross. A `Uuid` field is
+  its canonical lowercase string and reads back through `Uuid.parse`'s
+  forms; a malformed string raises naming the field. An append-only
+  JSON-lines log keyed by `Uuid.v7` stays sortable by id as text.
+- `Instant`, `Duration` and `Size` refuse: an epoch number and a text
+  form are both defensible, and the consumer's convention is not
+  weir's to guess. The message names the conversion (`Instant.epochMs`,
+  `Duration.toMillis`, `Size.toBytes`, or `show` for a string).
+- `Bytes` refuses naming `Bytes.toBase64`.
+- `Secret` refuses outright — a credential does not serialize; the
+  type itself is the reason, not an encoding.
 
 ## Anonymous shapes at the boundary
 

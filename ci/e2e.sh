@@ -7842,12 +7842,15 @@ print (Uuid.v5 Uuid.ns.dns "www.example.com" |> Uuid.toString)
 print (Uuid.parse "017f22e2-79b0-7cc3-98c4-dc0c0c07398f" |> Uuid.toBytes |> Bytes.toBase64)
 let canon = Uuid.parse "urn:uuid:F81D4FAE-7DEC-11D0-A765-00A0C91E6BF6"
 echo $canon
+let back = { id = canon; text = "y" } |> to yaml |> from yaml Entry
+print $"yaml {back.id == canon}"
 WEOF
 out=$(cd "$uudir" && $BIN journal.weir 2>&1) || fail "the uuid journal acceptance failed: $out"
 [ "$out" = "500 true true
 2ed6657d-e927-568b-95e1-2665a8aea6a2
 AX8i4nmwfMOYxNwMDAc5jw==
-f81d4fae-7dec-11d0-a765-00a0c91e6bf6" ] || fail "the uuid journal: v7 order, v5 A.4, big-endian bytes, argv text: $out"
+f81d4fae-7dec-11d0-a765-00a0c91e6bf6
+yaml true" ] || fail "the uuid journal: v7 order, v5 A.4, big-endian bytes, argv text, yaml round trip [D:wire-table]: $out"
 rm -rf "$uudir"
 echo "e2e ok: Uuid (v7 journal order holds in file/uuid/text, v5 matches RFC 9562 A.4, big-endian bytes, argv splice)"
 

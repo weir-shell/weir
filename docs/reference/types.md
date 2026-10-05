@@ -58,7 +58,7 @@ print $"{Uuid.v5 Uuid.ns.url "https://example.com"}"
 
 Uuids compare for equality and sort (`Seq.sort`, `Seq.min`), by their
 big-endian bytes — the same order as their text. There is no `<`:
-identifiers are not quantities. They cross JSON as the canonical
+identifiers are not quantities. They cross JSON and YAML as the canonical
 lowercase string and splice into a command's argv as that text.
 
 ## `seq`

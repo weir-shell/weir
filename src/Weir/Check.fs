@@ -1158,6 +1158,57 @@ let rec private spine (e: Expr) : Expr * Expr list =
 // yaml guard's job, but here a cycle can name its path); `path`
 // locates the offending field from the top — a recursive law's
 // failures are deep and a category list alone will not find them.
+// the wire table [D:wire-table]: each type's stance at the JSON and
+// YAML boundaries, in one match with no wildcard — a new Ty case does
+// not compile until it says how it crosses, and both boundaries (both
+// directions) read the same answer. A Canonical type has one encoding
+// and crosses as itself; a Refused one teaches the explicit conversion
+// (its encoding is the consumer's convention [D:unit-types-wire]); a
+// Walk type is the admission walk's own (compounds, unit, variables).
+type private WireStance =
+    // the yaml read shape rides along, so a canonical type cannot exist
+    // without saying how a document reads it
+    | Canonical of yaml: Yaml.Shape
+    | Refused of teach: (string -> string)
+    | Walk
+
+let private wireStance (ty: Ty) : WireStance =
+    let unrepresentable (subject: string) (repair: string) =
+        Refused(fun fmt -> $"{subject} is not representable in {fmt} — {repair}")
+
+    match ty with
+    | TInt -> Canonical Yaml.SInt
+    | TFloat -> Canonical Yaml.SFloat
+    | TStr -> Canonical Yaml.SStr
+    | TBool -> Canonical Yaml.SBool
+    | TUuid -> Canonical Yaml.SUuid
+    | TInstant ->
+        unrepresentable
+            "an Instant"
+            "convert explicitly (Instant.epochMs into an int field, or show for an ISO 8601 string)"
+    | TDur -> unrepresentable "Duration" "convert explicitly (Duration.toMillis into an int field, or show for a string)"
+    | TSize -> unrepresentable "Size" "convert explicitly (Size.toBytes into an int field, or show for a string)"
+    | TBytes -> unrepresentable "Bytes" "Bytes.toBase64 into a string field"
+    // the type itself refuses, not an encoding [D:secret]
+    | TSecret ->
+        Refused(fun fmt ->
+            $"a Secret must not cross to {fmt} — Secret.reveal it into a string first if you truly mean to write it")
+    | TUnit
+    | TFun _
+    | TSeq _
+    | TTuple _
+    | TNamed _
+    | TVar _
+    | TRowVar _ -> Walk
+
+// the table as patterns, so each boundary's walk stays one match whose
+// first arms are the table's answer
+let private (|WireCanonical|WireRefused|WireWalk|) (ty: Ty) =
+    match wireStance ty with
+    | Canonical shape -> WireCanonical shape
+    | Refused teach -> WireRefused teach
+    | Walk -> WireWalk
+
 let private jsonAdmittedSet =
     "json fields are int, float, string, bool, Uuid, Option of an admitted type, a record of admitted fields, seq of an admitted type, a seq<string * T> mapping, or Map<string, T> of one"
 
@@ -1171,38 +1222,8 @@ let rec private jsonAdmitted
     let at = if path = "" then "" else $"field '{path}': "
 
     match ty with
-    | TInt
-    | TFloat
-    | TStr
-    | TBool -> Ok()
-    // one wire convention, unlike Instant's [D:uuid]: the canonical
-    // hex-and-dash string, read back by the strict text parser
-    | TUuid -> Ok()
-    | TSize ->
-        // parked [D:size]: JSON has no size convention (bytes-int and a
-        // string both defensible; the choice waits for evidence)
-        err
-            span
-            $"{at}Size is not representable in JSON — convert explicitly (Size.toBytes into an int field, or show for a string)"
-    | TBytes -> err span $"{at}Bytes is not representable in JSON — Bytes.toBase64 into a string field"
-    | TDur ->
-        // parked [D:duration]: no duration convention (ms-int vs
-        // ISO-8601 both defensible) — an honest rejection beats a guess
-        err
-            span
-            $"{at}Duration is not representable in JSON — convert explicitly (Duration.toMillis into an int field, or show for a string)"
-    | TInstant ->
-        // parked with its siblings [D:instant]: timestamps have no single
-        // wire convention (epoch int and ISO string both defensible)
-        err
-            span
-            $"{at}an Instant is not representable in JSON — convert explicitly (Instant.epochMs into an int field, or show for an ISO 8601 string)"
-    | TSecret ->
-        // a Secret crossing to a wire format is almost certainly a
-        // mistake [D:secret]; Secret.reveal is the deliberate spelling
-        err
-            span
-            $"{at}a Secret must not cross to JSON — Secret.reveal it into a string field if you truly mean to write it"
+    | WireCanonical _ -> Ok()
+    | WireRefused teach -> err span (at + teach "JSON")
     | TNamed("Option", [ TNamed("Option", _) ]) ->
         err span $"{at}Option<Option<…>> has no JSON reading; flatten the type"
     | TNamed("Option", [ inner ]) -> jsonAdmitted span env seen path inner
@@ -1252,10 +1273,7 @@ let private jsonableRecord (span: Span) (env: TypeEnv) (def: RecordDef) : Result
     allOk def.Fields (fun (name, ty) -> jsonAdmitted span env [ def.Name ] name ty)
 
 let private jsonableElem (span: Span) (env: TypeEnv) (elem: Ty) : Result<unit, TypeError> =
-    match elem with
-    | TSecret ->
-        err span "a Secret must not cross to JSON — Secret.reveal it into a string first if you truly mean to write it"
-    | elem -> jsonAdmitted span env [] "" elem
+    jsonAdmitted span env [] "" elem
 
 // the read-only XML boundary [D:from-xml]: XML carries text, so every
 // leaf is a string — an element's inner text or, with [<Attr>], one of
@@ -1478,33 +1496,31 @@ let private unionWriteTable
 // declaration cycles.
 
 // the from-side: build the shape eval will convert through
-let rec private yamlShape (span: Span) (env: TypeEnv) (seen: Set<string>) (ty: Ty) : Result<Yaml.Shape, TypeError> =
+let rec private yamlShape
+    (span: Span)
+    (env: TypeEnv)
+    (seen: Set<string>)
+    (path: string)
+    (ty: Ty)
+    : Result<Yaml.Shape, TypeError> =
+    // the field path, as yamlableOut threads it — both directions name
+    // the offending field [D:wire-table]
+    let at = if path = "" then "" else $"field '{path}': "
+    let sub (name: string) = if path = "" then name else $"{path}.{name}"
+
     match ty with
-    | TInt -> Ok Yaml.SInt
-    | TSize ->
-        err
-            span
-            "Size is not representable in yaml — convert explicitly (Size.toBytes into an int field, or show for a string)"
-    | TBytes -> err span "Bytes is not representable in yaml — Bytes.toBase64 into a string field"
-    | TDur ->
-        err
-            span
-            "Duration is not representable in yaml — convert explicitly (Duration.toMillis into an int field, or show for a string)"
-    | TSecret ->
-        err span "a Secret must not cross to yaml — Secret.reveal it into a string first if you truly mean to write it"
-    | TFloat -> Ok Yaml.SFloat
-    | TStr -> Ok Yaml.SStr
-    | TBool -> Ok Yaml.SBool
+    | WireCanonical shape -> Ok shape
+    | WireRefused teach -> err span (at + teach "yaml")
     // the opaque `Yaml` node reads structure whole [D:yaml-empty-flow] —
     // the read sibling of yamlableOut's `Yaml`-renders-directly case
     | TNamed("Yaml", []) -> Ok Yaml.SNode
-    | TNamed("Option", [ TNamed("Option", _) ]) -> err span "Option<Option<…>> has no yaml reading; flatten the type"
-    | TNamed("Option", [ inner ]) -> yamlShape span env seen inner |> Result.map Yaml.SOpt
-    | TSeq(TTuple [ TStr; v ]) -> yamlShape span env seen v |> Result.map Yaml.SPairs
-    | TSeq elem -> yamlShape span env seen elem |> Result.map Yaml.SSeq
+    | TNamed("Option", [ TNamed("Option", _) ]) -> err span $"{at}Option<Option<…>> has no yaml reading; flatten the type"
+    | TNamed("Option", [ inner ]) -> yamlShape span env seen path inner |> Result.map Yaml.SOpt
+    | TSeq(TTuple [ TStr; v ]) -> yamlShape span env seen path v |> Result.map Yaml.SPairs
+    | TSeq elem -> yamlShape span env seen path elem |> Result.map Yaml.SSeq
     | TNamed(n, []) ->
         if seen.Contains n then
-            err span $"'{n}' is recursive; the yaml boundary needs finite trees"
+            err span $"{at}'{n}' is recursive; the yaml boundary needs finite trees"
         else
             match typeDefFor env n with
             | Some(Record def) when def.Params.IsEmpty ->
@@ -1513,11 +1529,11 @@ let rec private yamlShape (span: Span) (env: TypeEnv) (seen: Set<string>) (ty: T
                     (fun acc (fname, fty) ->
                         acc
                         |> Result.bind (fun fs ->
-                            yamlShape span env (seen.Add n) fty
+                            yamlShape span env (seen.Add n) (sub fname) fty
                             |> Result.map (fun s -> (fname, wireName def fname, s) :: fs)))
                     (Ok [])
                 |> Result.map (fun fs -> Yaml.SRec(n, List.rev fs))
-            | Some(Record _) -> err span $"'{n}' is generic; the yaml boundary needs monomorphic records"
+            | Some(Record _) -> err span $"{at}'{n}' is generic; the yaml boundary needs monomorphic records"
             // a tagged union dispatches on its wire discriminator
             // [D:wire-unions]; case payloads shape recursively
             | Some(Union udef) when udef.Tag.IsSome ->
@@ -1531,7 +1547,7 @@ let rec private yamlShape (span: Span) (env: TypeEnv) (seen: Set<string>) (ty: T
                             else
                                 match payload with
                                 | Some pty ->
-                                    yamlShape span env (seen.Add n) pty
+                                    yamlShape span env (seen.Add n) (sub c) pty
                                     |> Result.map (fun s -> (c, caseWire udef c, Some s) :: cs)
                                 | None -> Ok((c, caseWire udef c, None) :: cs)))
                     (Ok [])
@@ -1547,14 +1563,14 @@ let rec private yamlShape (span: Span) (env: TypeEnv) (seen: Set<string>) (ty: T
             | Some(Union _) ->
                 err
                     span
-                    $"'{n}' is an untagged union — a union crosses the wire with [<Tag \"field\">] on its declaration"
-            | None -> err span $"unknown type '{n}'{didYouMean n (Map.keys env.Types)}"
+                    $"{at}'{n}' is an untagged union — a union crosses the wire with [<Tag \"field\">] on its declaration"
+            | None -> err span $"{at}unknown type '{n}'{didYouMean n (Map.keys env.Types)}"
     | TVar v when v.StartsWith "__hole" ->
         // cascade suppression [PLAN-diagnostics-arc B6]: the hole means
         // an earlier error was already reported — never print its name
         Ok Yaml.SStr
     | ty ->
-        err span $"type {formatTy ty} cannot cross the yaml boundary (scalars, records, seqs, seq<string * _>, Option)"
+        err span $"{at}type {formatTy ty} cannot cross the yaml boundary (scalars, records, seqs, seq<string * _>, Option)"
 
 // the to-side: the same law, plus `Yaml` nodes render directly
 let rec private yamlableOut (span: Span) (env: TypeEnv) (seen: Set<string>) (path: string) (ty: Ty) : Result<unit, TypeError> =
@@ -1565,21 +1581,8 @@ let rec private yamlableOut (span: Span) (env: TypeEnv) (seen: Set<string>) (pat
     let at = if path = "" then "" else $"field '{path}': "
 
     match ty with
-    | TSize ->
-        err
-            span
-            $"{at}Size is not representable in yaml — convert explicitly (Size.toBytes into an int field, or show for a string)"
-    | TBytes -> err span $"{at}Bytes is not representable in yaml — Bytes.toBase64 into a string field"
-    | TDur ->
-        err
-            span
-            $"{at}Duration is not representable in yaml — convert explicitly (Duration.toMillis into an int field, or show for a string)"
-    | TSecret ->
-        err span $"{at}a Secret must not cross to yaml — Secret.reveal it into a string first if you truly mean to write it"
-    | TInt
-    | TFloat
-    | TStr
-    | TBool
+    | WireCanonical _ -> Ok()
+    | WireRefused teach -> err span (at + teach "yaml")
     | TNamed("Yaml", []) -> Ok()
     | TNamed("Option", [ TNamed("Option", _) ]) -> err span $"{at}Option<Option<…>> has no yaml rendering; flatten the type"
     | TNamed("Option", [ inner ]) -> yamlableOut span env seen path inner
@@ -3947,7 +3950,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                     let perDoc = if seqOf then TSeq(TNamed(name, [])) else TNamed(name, [])
                     let declared = if streamOf then TSeq perDoc else perDoc
 
-                    let! shape = yamlShape expr.Span env Set.empty perDoc
+                    let! shape = yamlShape expr.Span env Set.empty "" perDoc
 
                     return
                         { Kind = TEFromYaml(name, shape, streamOf)
@@ -3959,7 +3962,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                     let perDoc = if seqOf then TSeq(TNamed(name, [])) else TNamed(name, [])
                     let declared = if streamOf then TSeq perDoc else perDoc
 
-                    let! shape = yamlShape expr.Span env Set.empty perDoc
+                    let! shape = yamlShape expr.Span env Set.empty "" perDoc
 
                     return
                         { Kind = TEFromYaml(name, shape, streamOf)

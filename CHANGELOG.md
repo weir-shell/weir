@@ -41,6 +41,13 @@
   now its own command, on one line or indented; quote `"else"` to pass
   the word to a command there.
 
+- **`Uuid` crosses YAML, and `Instant`'s YAML refusal names the fix.**
+  A `Uuid` field reads and writes through `to yaml`/`from yaml` as it
+  already did through JSON. An `Instant` field at the YAML boundary now
+  teaches the conversion (`Instant.epochMs`, or `show`) instead of the
+  generic "cannot cross" error, and every refusal reads the same in
+  JSON and YAML, in both directions, naming the field.
+
 ## v0.0.63
 
 ### Added
