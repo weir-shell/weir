@@ -177,7 +177,7 @@ let singularize (s: string) : string =
 /// (session Types keys and/or the registered builtin nominals)
 /// completed with the parser's primitive spellings
 let takenTypeNames (liveNames: string seq) : Set<string> =
-    [ Types.TDur; Types.TInstant; Types.TSize; Types.TBytes; Types.TSecret ]
+    [ Types.TDur; Types.TInstant; Types.TUuid; Types.TSize; Types.TBytes; Types.TSecret ]
     |> List.map Types.formatTy
     |> Set.ofList
     |> Set.union (Set.ofSeq liveNames)

@@ -821,6 +821,9 @@ let private scalarCompare (name: string) (a: Value) (b: Value) : int =
     | VFloat x, VFloat y -> compare x y
     | VDur x, VDur y -> compare x y
     | VInstant x, VInstant y -> compare x y
+    // Guid's CompareTo is field-wise unsigned, which is big-endian byte
+    // order [D:uuid] — the canonical text's order too
+    | VUuid x, VUuid y -> compare x y
     | VSize x, VSize y -> compare x y
     | v, _ -> unreachable $"the checker rejects '{name}' keys of {formatValue v}"
 
@@ -4474,6 +4477,193 @@ let private instantMembers: (string * Ty * Value) list =
           | VInt ms -> VInstant ms
           | v -> unreachable $"the checker rejects 'Instant.ofEpochMs' on {formatValue v}") ]
 
+// the uuid generators [D:uuid]. Bytes are big-endian (RFC 9562 network
+// order) everywhere; Guid's default byte array is mixed-endian, so it is
+// never used. Randomness is RandomNumberGenerator only.
+let private uuidOfBytes (b: byte[]) = System.Guid(System.ReadOnlySpan<byte>(b), bigEndian = true)
+let private uuidBytes (g: System.Guid) = g.ToByteArray(bigEndian = true)
+
+let private uuidRandom (n: int) =
+    let b = Array.zeroCreate<byte> n
+    System.Security.Cryptography.RandomNumberGenerator.Fill(System.Span<byte>(b))
+    b
+
+let private uuidStamp (b: byte[]) (ver: int) =
+    b[6] <- byte ((int b[6] &&& 0x0F) ||| (ver <<< 4))
+    b[8] <- byte ((int b[8] &&& 0x3F) ||| 0x80)
+
+let private uuidV4 () =
+    let b = uuidRandom 16
+    uuidStamp b 4
+    uuidOfBytes b
+
+let private uuidV5 (ns: System.Guid) (name: string) =
+    let h =
+        System.Security.Cryptography.SHA1.HashData(Array.append (uuidBytes ns) (System.Text.Encoding.UTF8.GetBytes name))
+
+    let b = h[0..15]
+    uuidStamp b 5
+    uuidOfBytes b
+
+// unix_ts_ms is 48 bits; v7 encodes nothing before the epoch
+let private uuidMaxMs = (1L <<< 48) - 1L
+
+// v7 = 48-bit ms + rand_a + rand_b; randA fills the 12 bits after the
+// version nibble
+let private uuidV7Build (ms: int64) (randA: int) =
+    let b = Array.zeroCreate<byte> 16
+    System.Security.Cryptography.RandomNumberGenerator.Fill(System.Span<byte>(b, 8, 8))
+
+    for i in 0..5 do
+        b[i] <- byte (ms >>> (40 - 8 * i))
+
+    b[6] <- byte (0x70 ||| ((randA >>> 8) &&& 0x0F))
+    b[7] <- byte (randA &&& 0xFF)
+    b[8] <- byte ((int b[8] &&& 0x3F) ||| 0x80)
+    uuidOfBytes b
+
+// per-process monotonic state, RFC 9562 §6.2 method 1: rand_a is a
+// counter, seeded each new ms with 11 random bits (the top bit stays 0
+// as the RFC's rollover guard — at least 2049 increments per ms)
+let private uuidGate = obj ()
+let mutable private uuidLastMs = System.Int64.MinValue
+let mutable private uuidCounter = 0
+
+let private uuidSeed () =
+    let b = uuidRandom 2
+    ((int b[0] <<< 8) ||| int b[1]) &&& 0x7FF
+
+let private uuidV7Fresh (ms: int64) =
+    let b = uuidRandom 2
+    uuidV7Build ms (((int b[0] <<< 8) ||| int b[1]) &&& 0xFFF)
+
+// a clock that steps back reuses the last ms and keeps counting (§6.2
+// monotonic error checking); overflow advances the ms by one
+let private uuidV7 () =
+    let now = System.DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+
+    lock uuidGate (fun () ->
+        if now > uuidLastMs then
+            uuidLastMs <- now
+            uuidCounter <- uuidSeed ()
+        elif uuidCounter < 0xFFF then
+            uuidCounter <- uuidCounter + 1
+        else
+            uuidLastMs <- uuidLastMs + 1L
+            uuidCounter <- uuidSeed ()
+
+        uuidV7Build uuidLastMs uuidCounter)
+
+// v7At keeps its timestamp exactly. It joins the monotonic state only
+// for last <= ms <= now: an earlier ms, a future ms (which would drag
+// every later v7 ahead of the clock) or a full counter gets fresh
+// randomness with no ordering guarantee
+let private uuidV7At (ms: int64) =
+    if ms < 0L || ms > uuidMaxMs then
+        let shown =
+            if ms >= System.DateTimeOffset.MinValue.ToUnixTimeMilliseconds()
+               && ms <= System.DateTimeOffset.MaxValue.ToUnixTimeMilliseconds() then
+                formatInstant ms
+            else
+                $"epoch ms {ms}"
+
+        failwith $"Uuid.v7At: {shown} is outside v7's range (the unix epoch onward, 48-bit milliseconds)"
+
+    let now = System.DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+
+    lock uuidGate (fun () ->
+        if ms < uuidLastMs || ms > now then
+            uuidV7Fresh ms
+        elif ms > uuidLastMs then
+            uuidLastMs <- ms
+            uuidCounter <- uuidSeed ()
+            uuidV7Build ms uuidCounter
+        elif uuidCounter < 0xFFF then
+            uuidCounter <- uuidCounter + 1
+            uuidV7Build ms uuidCounter
+        else
+            uuidV7Fresh ms)
+
+let private uuidVersion (g: System.Guid) = int (uuidBytes g).[6] >>> 4
+
+// Some only for an RFC-variant v7 whose timestamp an Instant can show
+// (a parsed v7 may carry any 48-bit value; past year 9999 has no ISO
+// spelling)
+let private uuidInstant (g: System.Guid) =
+    let b = uuidBytes g
+
+    if (int b[6] >>> 4) = 7 && (int b[8] >>> 6) = 2 then
+        let mutable ms = 0L
+
+        for i in 0..5 do
+            ms <- (ms <<< 8) ||| int64 b[i]
+
+        if ms <= System.DateTimeOffset.MaxValue.ToUnixTimeMilliseconds() then
+            Some ms
+        else
+            None
+    else
+        None
+
+// RFC 9562 Table 3 (6ba7b813 is unassigned)
+let private uuidNamespaces =
+    [ "dns", "6ba7b810-9dad-11d1-80b4-00c04fd430c8"
+      "url", "6ba7b811-9dad-11d1-80b4-00c04fd430c8"
+      "oid", "6ba7b812-9dad-11d1-80b4-00c04fd430c8"
+      "x500", "6ba7b814-9dad-11d1-80b4-00c04fd430c8" ]
+
+let private uuidMembers: (string * Ty * Value) list =
+    let parseP, tryParseP = parsePairImpl "Uuid" parseUuid VUuid
+    let optUuid = TNamed("Option", [ TUuid ])
+
+    let one (name: string) (f: System.Guid -> Value) =
+        VBuiltin(fun v ->
+            match v with
+            | VUuid g -> f g
+            | v -> unreachable $"the checker rejects 'Uuid.{name}' on {formatValue v}")
+
+    [ "v4", TFun(TUnit, TUuid), VBuiltin(fun _ -> VUuid(uuidV4 ()))
+      "v7", TFun(TUnit, TUuid), VBuiltin(fun _ -> VUuid(uuidV7 ()))
+      "v7At",
+      TFun(TInstant, TUuid),
+      VBuiltin(fun v ->
+          match v with
+          | VInstant ms -> VUuid(uuidV7At ms)
+          | v -> unreachable $"the checker rejects 'Uuid.v7At' on {formatValue v}")
+      "v5",
+      TFun(TUuid, TFun(TStr, TUuid)),
+      VBuiltin(fun nsV ->
+          VBuiltin(fun nameV ->
+              match nsV, nameV with
+              | VUuid ns, VStr name -> VUuid(uuidV5 ns name)
+              | _ -> unreachable "the checker rejects 'Uuid.v5' on these arguments"))
+      "ns",
+      TNamed("UuidNamespaces", []),
+      VRecord(
+          "UuidNamespaces",
+          uuidNamespaces |> List.map (fun (k, s) -> k, VUuid(System.Guid.ParseExact(s, "D")))
+      )
+      "parse", TFun(TStr, TUuid), parseP
+      "tryParse", TFun(TStr, optUuid), tryParseP
+      "toString", TFun(TUuid, TStr), one "toString" (fun g -> VStr(formatUuid g))
+      "version", TFun(TUuid, TInt), one "version" (fun g -> VInt(int64 (uuidVersion g)))
+      "instant",
+      TFun(TUuid, TNamed("Option", [ TInstant ])),
+      one "instant" (fun g ->
+          match uuidInstant g with
+          | Some ms -> VUnion("Some", Some(VInstant ms))
+          | None -> VUnion("None", None))
+      "nil", TUuid, VUuid System.Guid.Empty
+      "max", TUuid, VUuid System.Guid.AllBitsSet
+      "toBytes", TFun(TUuid, TBytes), one "toBytes" (fun g -> VBytes(uuidBytes g))
+      "fromBytes",
+      TFun(TBytes, TUuid),
+      VBuiltin(fun v ->
+          match v with
+          | VBytes b when b.Length = 16 -> VUuid(uuidOfBytes b)
+          | VBytes b -> failwith $"Uuid.fromBytes: a uuid is 16 bytes, got {b.Length}"
+          | v -> unreachable $"the checker rejects 'Uuid.fromBytes' on {formatValue v}") ]
+
 let private mapMembers: (string * Ty * Value) list =
     [ "ofPairs",
       TFun(TSeq(TTuple [ TStr; tA ]), mapTy tA),
@@ -4923,6 +5113,7 @@ let private moduleTable: (string * (string * Ty * Value) list) list =
       "Table", tableModuleMembers
       "Map", mapMembers
       "Instant", instantMembers
+      "Uuid", uuidMembers
       "Proc", procMembers
       "Server", serverMembers
       "Net", netMembers
@@ -5055,6 +5246,74 @@ let builtinDocs: Map<string, BuiltinDoc> =
           "Instant.ofEpochMs",
           bd "The instant at an epoch-milliseconds int." (Some "Instant.ofEpochMs 0 |> show") None
           |> named [ "ms" ]
+          // ---- Uuid: 128-bit identifiers [D:uuid] ----
+          "Uuid.v4",
+          bd "A random uuid (version 4), from the system's cryptographic generator." (Some "Uuid.v4 () |> Uuid.version") None
+          |> named [ "unit" ]
+          "Uuid.v7",
+          bd
+              "A time-ordered uuid (version 7): epoch milliseconds, then a counter and random bits. Strictly increasing within this process — sorts by creation as a uuid and as text."
+              (Some "Uuid.v7 () |> Uuid.instant")
+              None
+          |> named [ "unit" ]
+          "Uuid.v7At",
+          bd
+              "A version 7 uuid at the given instant, truncated to milliseconds — for records that carry their own time. It orders with v7 when the instant lies between the last one generated and now; an earlier or future instant gets random bits with no ordering guarantee. Raises before the unix epoch."
+              (Some "Uuid.v7At (Instant.parse \"2022-02-22T19:22:22Z\") |> Uuid.instant")
+              None
+          |> named [ "t" ]
+          "Uuid.v5",
+          bd
+              "The name-based uuid (version 5): SHA-1 over the namespace's bytes and the name's UTF-8 bytes. The same name in the same namespace always gives the same uuid."
+              (Some "Uuid.v5 Uuid.ns.dns \"www.example.com\"")
+              None
+          |> named [ "ns"; "name" ]
+          "Uuid.ns",
+          bd
+              "The RFC 9562 namespaces for v5: `dns`, `url`, `oid`, `x500`. Any uuid works as a namespace of your own."
+              (Some "Uuid.ns.url")
+              None
+          "Uuid.parse",
+          bd
+              "Read a uuid: 8-4-4-4-12 hex digits or 32 bare, any case, an optional urn:uuid: prefix. Every version and variant reads. Raises on anything else — tryParse asks."
+              (Some "Uuid.parse \"urn:uuid:F81D4FAE-7DEC-11D0-A765-00A0C91E6BF6\"")
+              None
+          |> named [ "text" ]
+          "Uuid.tryParse",
+          bd
+              "Some uuid, or None when the text is not one (braces and other platform spellings included)."
+              (Some "Uuid.tryParse \"{f81d4fae-7dec-11d0-a765-00a0c91e6bf6}\"")
+              None
+          |> named [ "text" ]
+          "Uuid.toString",
+          bd
+              "The canonical text: lowercase 8-4-4-4-12 — the spelling show, JSON and argv use."
+              (Some "Uuid.toString Uuid.nil")
+              None
+          |> named [ "id" ]
+          "Uuid.version",
+          bd
+              "The version field: 4, 5, 7 and so on (0 for nil, 15 for max). Meaningful for the RFC 9562 variant."
+              (Some "Uuid.parse \"017f22e2-79b0-7cc3-98c4-dc0c0c07398f\" |> Uuid.version")
+              None
+          |> named [ "id" ]
+          "Uuid.instant",
+          bd
+              "Some creation instant for a version 7 uuid (millisecond precision); None for every other version."
+              (Some "Uuid.parse \"017f22e2-79b0-7cc3-98c4-dc0c0c07398f\" |> Uuid.instant")
+              None
+          |> named [ "id" ]
+          "Uuid.nil", bd "The all-zero uuid — no such value." (Some "show Uuid.nil") None
+          "Uuid.max", bd "The all-ones uuid — sorts after every other." (Some "show Uuid.max") None
+          "Uuid.toBytes",
+          bd
+              "The 16 bytes, big-endian — network order, the order the text reads in."
+              (Some "Uuid.nil |> Uuid.toBytes |> Bytes.toBase64")
+              None
+          |> named [ "id" ]
+          "Uuid.fromBytes",
+          bd "The uuid of 16 big-endian bytes. Raises on any other length." (Some "Uuid.nil |> Uuid.toBytes |> Uuid.fromBytes") None
+          |> named [ "b" ]
           // ---- Map: the ID-keyed object [D:map-string] ----
           "Map.ofPairs",
           bd
@@ -6519,6 +6778,7 @@ let moduleBlurbs: Map<string, string> =
           "Str", "string ops: trim, split, match, encode, hash"
           "Table", "aligned-table helpers: inferShape drafts a row type from a sample"
           "Tree", "parent-first effect walks over discovered children"
+          "Uuid", "128-bit identifiers: v4, v5, time-ordered v7, parse, inspect"
           "Yaml", "YAML nodes: parse, merge (strategic patch), inferShape" ]
 
 // the allowlist [D:bare-allowlist]: only these modules contribute

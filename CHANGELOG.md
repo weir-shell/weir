@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.0.63
+
+### Added
+
+- **`Uuid`: a first-class identifier type and module.** `Uuid.v7 ()`
+  is time-ordered and strictly increasing within the process — ids
+  generated in the same millisecond still sort in creation order, as
+  uuids and as text — so it keys an append-only log. `Uuid.v4 ()` is
+  random, `Uuid.v5 ns name` is name-based (`Uuid.ns.dns`, `.url`,
+  `.oid`, `.x500`), and `Uuid.v7At t` stamps a given instant.
+  `Uuid.parse`/`tryParse` read the hex-and-dash form, 32 bare hex
+  digits, or `urn:uuid:`, in any case; `Uuid.version`, `Uuid.instant`
+  (v7's creation time), `Uuid.toString`, `Uuid.nil`/`max` and
+  `Uuid.toBytes`/`fromBytes` (big-endian) inspect and convert. Uuids
+  compare, sort, show, splice into argv, and cross JSON as their
+  canonical string, so records with `Uuid` fields round-trip.
+  `Uuid.v4`/`v7`/`v7At` are effects like `Instant.now`; `v5` is pure.
+
 ## v0.0.62
 
 ### Fixed

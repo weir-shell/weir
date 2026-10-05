@@ -225,6 +225,13 @@ There is no in-place file member: the round-trip is composition,
 `File.read f |> Yaml.parse |> Yaml.merge p |> to yaml |> File.write f`,
 so the one mutation stays visible in the pipeline.
 
+## Uuid fields
+
+A `Uuid` field crosses as its canonical lowercase string and reads
+back through `Uuid.parse`'s forms; a malformed string raises naming
+the field. An append-only JSON-lines log keyed by `Uuid.v7` stays
+sortable by id as text.
+
 ## What does not serialize
 
 `Instant` has no wire convention, so JSON refuses it naming

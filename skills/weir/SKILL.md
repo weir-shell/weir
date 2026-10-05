@@ -490,6 +490,26 @@ print $"{key} -> {value}"
   `Instant` fields (`--since 2026-08-01`). No JSON (convert via
   `Instant.epochMs` or `show`); command argv likewise deliberate.
   `show` renders ISO UTC.
+- Identifiers are `Uuid` [D:uuid] — its own type, not a string.
+  `Uuid.v7 ()` is time-ordered and STRICTLY INCREASING within the
+  process (a counter in `rand_a`), so v7 ids sort by creation as
+  uuids AND as text — the append-only log key. `Uuid.v4 ()` is
+  random; `Uuid.v5 Uuid.ns.dns "name"` is name-based and
+  deterministic (`Uuid.ns.dns`/`url`/`oid`/`x500`, or any uuid as your
+  own namespace). `Uuid.v7At t` stamps a given `Instant` (ms-truncated;
+  orders with v7 only when `t` lies between the last id and now;
+  raises before 1970). `Uuid.parse` reads 8-4-4-4-12 or 32 bare hex,
+  any case, optional `urn:uuid:` — never braces; it RAISES on anything
+  else, `Uuid.tryParse` returns `Option` (weir has no Result).
+  `Uuid.version id : int`, `Uuid.instant id : Option<Instant>` (`Some`
+  for v7 only), `Uuid.toString` (lowercase canonical — what `show`,
+  JSON and argv use), `Uuid.nil`/`Uuid.max`, `Uuid.toBytes`/
+  `fromBytes` (16 bytes, big-endian). Eq/Show/Ord admit (sort/min/max)
+  but there is no `<` — identifiers are not quantities, as strings.
+  JSON fields CROSS (the canonical string); `$id` splices into argv as
+  that text; `print` refuses (use `$"{id}"` or `show`). `v4`/`v7`/`v7At`
+  are ambient effects like `Instant.now` (`pure` refuses them,
+  `readonly` admits); `v5` is pure.
 - Secrets are `Secret` (a plain string inside — a RENDERING marker, not
   memory protection): `show` renders `***` (including a `Secret` field
   inside a shown record), interpolation REFUSES (`$"tok: {s}"` is a
@@ -726,8 +746,9 @@ let pure leak p = File.write p ["x"]
   Proc member), console writes, the mutating HTTP methods
   (POST/PUT/DELETE/PATCH), any `within` resource — but AMBIENT READS
   are fine: `fs.read`, `Env`/`Args`, the clock (`Instant.now`), the
-  query HTTP methods (`Http.query`, and `Http.send`/`Http.expect` of
-  a GET/HEAD/OPTIONS/QUERY request), and `Self.stdin`. So
+  `Uuid` generators, the query HTTP methods (`Http.query`, and
+  `Http.send`/`Http.expect` of a GET/HEAD/OPTIONS/QUERY request), and
+  `Self.stdin`. So
   `readonly == only ambient-input`, and a `pure` body (only ∅)
   is trivially read-only. A reachable mutation is a located check
   error naming the offender AND its class ("this 'readonly' block
@@ -2310,6 +2331,7 @@ not the teaching.
 - `File`: `append` `copy` `delete` `exists` `isExecutable` `move` `read` `readBytes` `readSecret` `sha256` `size` `write` `writeAtomic` `writeBytes` — `append` is kernel-atomic for CONCURRENT appenders (O_APPEND on Unix, one write per call: calls land contiguous and intact, no lock ever blocks a reader) [D:append-oappend]; `write` is in-place (same inode, hardlinks/held handles/`tail -f`/bind mounts keep working) and leaves the file untouched when its payload raises; `writeAtomic` is the whole-file swap (same-dir temp + fsync + rename): a reader sees complete old or complete new, never a window — but the INODE CHANGES (hardlinks split, held handles and `tail -f` keep the old file, a Docker single-file bind mount breaks); it replaces a symlink's TARGET and preserves mode and an existing BOM [D:write-integrity]
 - `Float`: `abs` `average` `near` `ofInt` `parse` `round` `sum` `toInt` `tryParse`
 - `Instant`: `epochMs` `now` `ofEpochMs` `parse` `parseWith` `tryParse` `tryParseWith`
+- `Uuid`: `fromBytes` `instant` `max` `nil` `ns` `parse` `toBytes` `toString` `tryParse` `v4` `v5` `v7` `v7At` `version`
 - `Json`: `inferShape`
 - `Table`: `inferShape` `render`
 - `Yaml`: `parse` `merge` `inferShape`

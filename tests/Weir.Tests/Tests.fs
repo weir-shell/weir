@@ -13667,7 +13667,7 @@ let typeClassBTests =
 
               Expect.stringContains
                   (formatError terr)
-                  "cannot be ordered — keys are int, float, string, bool, Duration, Size, or Instant"
+                  "cannot be ordered — keys are int, float, string, bool, Duration, Size, Instant, or Uuid"
                   ""
           }
           test "Ord: function key rejects" {
@@ -19274,6 +19274,316 @@ let instantTests =
               | Ok _ -> failtest "an Instant field must refuse the JSON boundary"
           } ]
 
+let uuidTests =
+    // Uuid [D:uuid]: every vector below is RFC 9562's own (Appendix A/B,
+    // Table 3), never recalled
+    let call (name: string) (arg: Value) =
+        match Map.tryFind name valueEnv with
+        | Some(VBuiltin f) -> f arg
+        | _ -> failtest $"no builtin '{name}'"
+
+    let guidOf (v: Value) =
+        match v with
+        | VUuid g -> g
+        | v -> failtest $"expected a uuid, got {formatValue v}"
+
+    let bytesOf (g: System.Guid) = g.ToByteArray(bigEndian = true)
+    let versionBits (g: System.Guid) = int (bytesOf g).[6] >>> 4
+    let variantBits (g: System.Guid) = int (bytesOf g).[8] >>> 6
+    let v7 () = call "Uuid.v7" VUnit |> guidOf
+
+    let strictlyIncreasing (xs: System.Guid[]) =
+        xs |> Array.pairwise |> Array.forall (fun (a, b) -> a.CompareTo b < 0)
+
+    let textIncreasing (xs: System.Guid[]) =
+        xs
+        |> Array.pairwise
+        |> Array.forall (fun (a, b) -> System.String.CompareOrdinal(formatUuid a, formatUuid b) < 0)
+
+    let runIn te input =
+        match Weir.Check.typecheck te (parse input) with
+        | Ok t -> eval valueEnv t
+        | Error terr -> failtest (formatError terr)
+
+    let a6 = "017f22e2-79b0-7cc3-98c4-dc0c0c07398f"
+
+    testList
+        "Uuid [D:uuid]"
+        [ test "every generator sets its version and the RFC 9562 variant (10xx)" {
+              let gens =
+                  [ "v4", 4, (fun () -> call "Uuid.v4" VUnit |> guidOf)
+                    "v5", 5, (fun () -> run "Uuid.v5 Uuid.ns.dns \"x\"" |> guidOf)
+                    "v7", 7, v7
+                    "v7At", 7, (fun () -> call "Uuid.v7At" (VInstant 1645557742000L) |> guidOf) ]
+
+              for name, ver, gen in gens do
+                  for _ in 1..200 do
+                      let g = gen ()
+                      Expect.equal (versionBits g) ver $"{name} version nibble"
+                      Expect.equal (variantBits g) 2 $"{name} variant bits are 0b10"
+          }
+          test "v5 reproduces RFC 9562 A.4; the namespaces are Table 3's" {
+              Expect.equal
+                  (run "Uuid.v5 Uuid.ns.dns \"www.example.com\" |> Uuid.toString")
+                  (VStr "2ed6657d-e927-568b-95e1-2665a8aea6a2")
+                  "A.4: DNS namespace + www.example.com"
+
+              Expect.equal
+                  (run "[Uuid.ns.dns; Uuid.ns.url; Uuid.ns.oid; Uuid.ns.x500] |> Seq.map Uuid.toString |> Seq.freeze")
+                  (VSeq
+                      [ VStr "6ba7b810-9dad-11d1-80b4-00c04fd430c8"
+                        VStr "6ba7b811-9dad-11d1-80b4-00c04fd430c8"
+                        VStr "6ba7b812-9dad-11d1-80b4-00c04fd430c8"
+                        VStr "6ba7b814-9dad-11d1-80b4-00c04fd430c8" ])
+                  "Table 3 (6ba7b813 is unassigned)"
+
+              Expect.equal
+                  (run "Uuid.v5 Uuid.ns.url \"a\" == Uuid.v5 Uuid.ns.url \"a\"")
+                  (VBool true)
+                  "deterministic: same name, same namespace"
+          }
+          test "parse reads every RFC 9562 version and form; version reports it" {
+              for text, ver in
+                  [ "C232AB00-9414-11EC-B3C8-9F6BDECED846", 1 // A.1
+                    "5df41881-3aed-3515-88a7-2f4a814cf09e", 3 // A.2
+                    "919108f7-52d1-4320-9bac-f847db4148a8", 4 // A.3
+                    "2ed6657d-e927-568b-95e1-2665a8aea6a2", 5 // A.4
+                    "1EC9414C-232A-6B00-B3C8-9F6BDECED846", 6 // A.5
+                    a6, 7 // A.6
+                    "2489E9AD-2EE2-8E00-8EC9-32D5F69181C0", 8 // B.1
+                    "00000000-0000-0000-0000-000000000000", 0 // nil
+                    "FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF", 15 ] do // max
+                  Expect.equal (run $"Uuid.parse \"{text}\" |> Uuid.version") (VInt(int64 ver)) $"{text}"
+
+                  Expect.equal
+                      (run $"Uuid.parse \"{text}\" |> Uuid.toString")
+                      (VStr(text.ToLowerInvariant()))
+                      "toString is the lowercase canonical form"
+
+              let canon = "f81d4fae-7dec-11d0-a765-00a0c91e6bf6" // RFC 9562 Figure 1
+
+              for form in
+                  [ canon
+                    canon.ToUpperInvariant()
+                    "F81d4FAE-7dec-11D0-a765-00A0C91E6bf6"
+                    canon.Replace("-", "")
+                    "urn:uuid:" + canon // Figure 4
+                    "URN:UUID:" + canon.ToUpperInvariant() ] do
+                  Expect.equal (run $"Uuid.parse \"{form}\" |> Uuid.toString") (VStr canon) $"'{form}' reads"
+          }
+          test "invalid text: tryParse returns None and parse raises a teaching — never an exception escaping tryParse" {
+              let bad =
+                  [ ""
+                    "x"
+                    "{f81d4fae-7dec-11d0-a765-00a0c91e6bf6}" // the platform's braces
+                    "(f81d4fae-7dec-11d0-a765-00a0c91e6bf6)"
+                    "{0x6ba7b810,0x9dad,0x11d1,{0x80,0xb4,0x00,0xc0,0x4f,0xd4,0x30,0xc8}}"
+                    "f81d4fae-7dec-11d0-a765-00a0c91e6bf" // 35
+                    "f81d4fae-7dec-11d0-a765-00a0c91e6bf6a" // 37
+                    "f81d4fae7dec-11d0-a765-00a0c91e6bf6-" // hyphens misplaced
+                    "g81d4fae-7dec-11d0-a765-00a0c91e6bf6" // non-hex
+                    "f81d4fae-7dec-11d0-a765-00a0c91e6bf６" // a non-ASCII digit
+                    "urn:uuid:"
+                    "urn:uuid:f81d4fae7dec11d0a76500a0c91e6bf" ]
+
+              for text in bad do
+                  Expect.equal (call "Uuid.tryParse" (VStr text)) (VUnion("None", None)) $"tryParse '{text}'"
+
+                  match parseUuid text with
+                  | Error e -> Expect.stringContains e "not a uuid" $"the teaching for '{text}'"
+                  | Ok g -> failtest $"'{text}' must not parse (got {g})"
+
+              Expect.throws (fun () -> call "Uuid.parse" (VStr "nope") |> ignore) "parse raises"
+          }
+          test "100k v7 in a tight loop strictly increase, as uuids and as text" {
+              let xs = Array.init 100_000 (fun _ -> v7 ())
+              Expect.isTrue (strictlyIncreasing xs) "uuid order"
+              Expect.isTrue (textIncreasing xs) "string sort"
+          }
+          test "v7 across threads: each thread's run increases, none collide" {
+              let per = 20_000
+              let results = Array.init 8 (fun _ -> Array.zeroCreate<System.Guid> per)
+
+              let threads =
+                  [| for t in 0..7 -> System.Threading.Thread(fun () -> for i in 0 .. per - 1 do results[t][i] <- v7 ()) |]
+
+              threads |> Array.iter (fun t -> t.Start())
+              threads |> Array.iter (fun t -> t.Join())
+
+              for r in results do
+                  Expect.isTrue (strictlyIncreasing r) "per-thread uuid order"
+                  Expect.isTrue (textIncreasing r) "per-thread text order"
+
+              let all = Array.concat results
+              Expect.equal (all |> Array.distinct |> Array.length) all.Length "no duplicates"
+          }
+          test "v7At: instant round-trips truncated to ms; the epoch is the floor" {
+              Expect.equal
+                  (run "Uuid.v7At (Instant.parse \"2026-08-14T12:00:00.2509Z\") |> Uuid.instant")
+                  (VUnion("Some", Some(run "Instant.parse \"2026-08-14T12:00:00.250Z\"")))
+                  "sub-ms truncates"
+
+              Expect.equal
+                  (run "Uuid.v7At (Instant.ofEpochMs 0) |> Uuid.instant")
+                  (VUnion("Some", Some(VInstant 0L)))
+                  "the epoch itself encodes"
+
+              Expect.equal
+                  (run $"Uuid.parse \"{a6}\" |> Uuid.instant")
+                  (VUnion("Some", Some(VInstant 1645557742000L)))
+                  "A.6's timestamp (0x017F22E279B0)"
+
+              Expect.equal (run "Uuid.v4 () |> Uuid.instant") (VUnion("None", None)) "v4 carries no time"
+              Expect.equal (run "Uuid.max |> Uuid.instant") (VUnion("None", None)) "max is not a v7"
+
+              Expect.throws
+                  (fun () -> run "Uuid.v7At (Instant.parse \"1969-12-31T23:59:59Z\")" |> ignore)
+                  "before the epoch raises"
+          }
+          test "v7At after a v7 in the same session still orders; an earlier instant gets randomness, not a bent clock" {
+              let a = v7 ()
+              let now = System.DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+              let b = call "Uuid.v7At" (VInstant now) |> guidOf
+              let c = v7 ()
+              Expect.isTrue (a.CompareTo b < 0 && b.CompareTo c < 0) "a shared-state v7At sits in the sequence"
+
+              let past = call "Uuid.v7At" (VInstant 1645557742000L) |> guidOf
+
+              Expect.equal
+                  (call "Uuid.instant" (VUuid past))
+                  (VUnion("Some", Some(VInstant 1645557742000L)))
+                  "the requested timestamp is kept exactly"
+
+              Expect.isTrue ((v7 ()).CompareTo c > 0) "a past v7At does not disturb v7's sequence"
+          }
+          test "ordering is the canonical text's order across mixed versions" {
+              let ids =
+                  [ for _ in 1..50 -> call "Uuid.v4" VUnit
+                    for _ in 1..50 -> v7 () |> VUuid
+                    for i in 1..50 -> run $"Uuid.v5 Uuid.ns.oid \"{i}\""
+                    for t in [ "C232AB00-9414-11EC-B3C8-9F6BDECED846"; a6; "1EC9414C-232A-6B00-B3C8-9F6BDECED846" ] ->
+                        run $"Uuid.parse \"{t}\""
+                    yield run "Uuid.nil"
+                    yield run "Uuid.max"
+                    // high bits set at every field boundary
+                    for t in
+                        [ "80000000-0000-0000-0000-000000000000"
+                          "00000000-8000-0000-0000-000000000000"
+                          "00000000-0000-8000-0000-000000000000"
+                          "00000000-0000-0000-8000-000000000000"
+                          "7fffffff-ffff-ffff-ffff-ffffffffffff" ] ->
+                        run $"Uuid.parse \"{t}\"" ]
+
+              let sorted =
+                  match call "Seq.sort" (VSeq ids) with
+                  | VSeq s -> s |> Seq.map (guidOf >> formatUuid) |> List.ofSeq
+                  | v -> failtest $"sort returned {formatValue v}"
+
+              let byText = ids |> List.map (guidOf >> formatUuid) |> List.sortWith (fun a b -> System.String.CompareOrdinal(a, b))
+              Expect.equal sorted byText "Seq.sort agrees with ordinal text order"
+              Expect.equal (run "[Uuid.max; Uuid.nil] |> Seq.min |> show") (VStr "00000000-0000-0000-0000-000000000000") "min"
+          }
+          test "toBytes/fromBytes: 16 big-endian bytes, round-tripping; a wrong length raises" {
+              Expect.equal
+                  (run $"Uuid.parse \"{a6}\" |> Uuid.toBytes")
+                  (VBytes(System.Convert.FromHexString "017F22E279B07CC398C4DC0C0C07398F"))
+                  "network order — the text's order"
+
+              Expect.equal (run $"(Uuid.parse \"{a6}\" |> Uuid.toBytes |> Uuid.fromBytes) == Uuid.parse \"{a6}\"") (VBool true) "round trip"
+
+              for _ in 1..100 do
+                  let g = call "Uuid.v4" VUnit
+                  Expect.equal (call "Uuid.fromBytes" (call "Uuid.toBytes" g)) g "random round trip"
+
+              Expect.throws (fun () -> call "Uuid.fromBytes" (VBytes [| 1uy; 2uy |]) |> ignore) "2 bytes raise"
+          }
+          test "JSON: a Uuid field crosses as its canonical string and round-trips inside records" {
+              let te =
+                  env
+                  |> declare "type JUuidRow = { id: Uuid; parent: Option<Uuid>; tags: seq<Uuid>; note: string }"
+
+              Expect.equal
+                  (runIn te $"[{{ id = Uuid.parse \"{a6}\"; parent = None; tags = [Uuid.nil]; note = \"n\" }}] |> to jsonl |> Seq.freeze")
+                  (VSeq [ VStr $"{{\"id\":\"{a6}\",\"tags\":[\"00000000-0000-0000-0000-000000000000\"],\"note\":\"n\"}}" ])
+                  "the wire shape"
+
+              Expect.equal
+                  (runIn
+                      te
+                      "let r = { id = Uuid.v7 (); parent = Some(Uuid.v4 ()); tags = [Uuid.max; Uuid.v5 Uuid.ns.url \"x\"]; note = \"x\" } in show ([r] |> to jsonl |> from jsonl JUuidRow |> Seq.freeze |> Seq.head) == show r")
+                  (VBool true)
+                  "a record round-trips (show: a seq field rules out Eq)"
+
+              Expect.equal
+                  (runIn te "[\"{\\\"id\\\":\\\"URN:UUID:F81D4FAE-7DEC-11D0-A765-00A0C91E6BF6\\\",\\\"parent\\\":null,\\\"tags\\\":[],\\\"note\\\":\\\"\\\"}\"] |> from jsonl JUuidRow |> Seq.map (fun r -> Uuid.toString r.id) |> Seq.freeze")
+                  (VSeq [ VStr "f81d4fae-7dec-11d0-a765-00a0c91e6bf6" ])
+                  "the reader accepts every parse form"
+
+              Expect.throws
+                  (fun () ->
+                      runIn te "[\"{\\\"id\\\":\\\"nope\\\",\\\"parent\\\":null,\\\"tags\\\":[],\\\"note\\\":\\\"\\\"}\"] |> from jsonl JUuidRow |> Seq.freeze"
+                      |> ignore)
+                  "a malformed uuid string raises"
+          }
+          test "effects: v4/v7/v7At are ambient like Instant.now; v5 is pure" {
+              for n in [ "Uuid.v4"; "Uuid.v7"; "Uuid.v7At" ] do
+                  Expect.equal (Weir.Effects.effectClass n) (Some Weir.Effects.Ambient) $"{n} is ambient input"
+
+              for n in [ "Uuid.v5"; "Uuid.parse"; "Uuid.version"; "Uuid.toBytes" ] do
+                  Expect.isFalse (Weir.Effects.effectfulName n) $"{n} is pure"
+
+              let errsOf (lines: string list) =
+                  let ds, _, _, _ = Weir.Script.analyzeLines "uuid.weir" lines
+                  ds |> List.filter (fun d -> d.Severity = "error")
+
+              for call, phrase in
+                  [ "Uuid.v4 ()", "'Uuid.v4' draws randomness"
+                    "Uuid.v7 ()", "'Uuid.v7' reads the clock and draws randomness"
+                    "Uuid.v7At (Instant.ofEpochMs 0)", "'Uuid.v7At' draws randomness" ] do
+                  match errsOf [ "let x ="; "    pure"; $"        {call}"; "print (Uuid.toString x)" ] with
+                  | e :: _ -> Expect.stringContains e.Message phrase $"pure refuses {call}"
+                  | [] -> failtest $"pure must refuse {call}"
+
+              Expect.isEmpty
+                  (errsOf [ "let x ="; "    pure"; "        Uuid.v5 Uuid.ns.dns \"a\""; "print (Uuid.toString x)" ])
+                  "pure admits v5"
+
+              Expect.isEmpty
+                  (errsOf [ "let x ="; "    readonly"; "        Uuid.v7 ()"; "print (Uuid.toString x)" ])
+                  "readonly admits the ambient generators"
+          }
+          test "plan mode: a generator runs inside a plan and is not captured as an op" {
+              let path = "/tmp/weir-uuid-plan-never"
+
+              match run ("plan" + Weir.Parser.sibSepStr + $"File.write \"{path}\" [Uuid.toString (Uuid.v7 ())]") with
+              | VRecord("Plan", [ "ops", VSeq ops ]) ->
+                  match List.ofSeq ops with
+                  | [ VUnion("WriteFile", Some(VTuple [ _; VSeq content ])) ] ->
+                      match List.ofSeq content with
+                      | [ VStr s ] ->
+                          Expect.equal (parseUuid s |> Result.map versionBits) (Ok 7) "the v7 ran and its value is in the op"
+                      | other -> failtest $"unexpected content {other}"
+                  | other -> failtest $"expected exactly the WriteFile op, got {other}"
+              | v -> failtest $"expected a Plan, got {formatValue v}"
+
+              Expect.isFalse (System.IO.File.Exists path) "the plan wrote nothing"
+          }
+          test "the type: declarable, Eq + Show + Ord, argv-spliceable, refused where Instant is" {
+              Expect.equal (run "Uuid.nil == Uuid.parse \"00000000000000000000000000000000\"") (VBool true) "Eq"
+              Expect.equal (run "show Uuid.max") (VStr "ffffffff-ffff-ffff-ffff-ffffffffffff") "Show is canonical"
+              Expect.equal (run "$\"id={Uuid.nil}\"") (VStr "id=00000000-0000-0000-0000-000000000000") "interpolation"
+
+              Expect.equal
+                  (run "[Uuid.max; Uuid.nil] |> Seq.sortBy (fun u -> u) |> Seq.map Uuid.toString |> Seq.freeze")
+                  (VSeq [ VStr "00000000-0000-0000-0000-000000000000"; VStr "ffffffff-ffff-ffff-ffff-ffffffffffff" ])
+                  "sortBy keys"
+
+              env |> declare "type UuidRec = { id: Uuid }" |> ignore
+              Expect.stringContains (checkErr "print Uuid.nil").Message "print takes" "print stays text-only"
+              Expect.stringContains (checkErr "Uuid.nil < Uuid.max").Message "not defined for Uuid" "no < on identifiers (as strings)"
+              Expect.stringContains (checkErr "Uuid.parse 5").Message "expected string" "parse takes text"
+          } ]
+
 let mapStringTests =
     // Map<string, T> [D:map-string]: the ID-keyed object — keys are
     // data, not schema; string keys only; the adapter slot's third form
@@ -21823,6 +22133,7 @@ let helpUxTests =
                         "UTC"
                         "RFC" // RFC 10008
                         "SHA-256" // hash algorithm
+                        "SHA-1" // Uuid.v5's hash, fixed by RFC 9562
                         "HMAC-SHA256" // keyed-hash mac, Bytes.hmacSha256's algorithm
                         "HTTP" // protocol + methods
                         "GET"
@@ -22454,6 +22765,7 @@ let allTests =
           anonLiteralTests
           mapStringTests
           instantTests
+          uuidTests
           interpRawTests
           recordOrderTests
           scopedProcTests

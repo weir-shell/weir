@@ -2025,6 +2025,109 @@
       ]
     },
     {
+      "name": "Uuid",
+      "members": [
+        {
+          "name": "fromBytes",
+          "signature": "Uuid.fromBytes (b: Bytes) : Uuid",
+          "summary": "The uuid of 16 big-endian bytes. Raises on any other length.",
+          "example": "Uuid.nil |\u003E Uuid.toBytes |\u003E Uuid.fromBytes",
+          "pointer": null
+        },
+        {
+          "name": "instant",
+          "signature": "Uuid.instant (id: Uuid) : Option\u003CInstant\u003E",
+          "summary": "Some creation instant for a version 7 uuid (millisecond precision); None for every other version.",
+          "example": "Uuid.parse \u0022017f22e2-79b0-7cc3-98c4-dc0c0c07398f\u0022 |\u003E Uuid.instant",
+          "pointer": null
+        },
+        {
+          "name": "max",
+          "signature": "Uuid.max : Uuid",
+          "summary": "The all-ones uuid \u2014 sorts after every other.",
+          "example": "show Uuid.max",
+          "pointer": null
+        },
+        {
+          "name": "nil",
+          "signature": "Uuid.nil : Uuid",
+          "summary": "The all-zero uuid \u2014 no such value.",
+          "example": "show Uuid.nil",
+          "pointer": null
+        },
+        {
+          "name": "ns",
+          "signature": "Uuid.ns : UuidNamespaces",
+          "summary": "The RFC 9562 namespaces for v5: \u0060dns\u0060, \u0060url\u0060, \u0060oid\u0060, \u0060x500\u0060. Any uuid works as a namespace of your own.",
+          "example": "Uuid.ns.url",
+          "pointer": null
+        },
+        {
+          "name": "parse",
+          "signature": "Uuid.parse (text: string) : Uuid",
+          "summary": "Read a uuid: 8-4-4-4-12 hex digits or 32 bare, any case, an optional urn:uuid: prefix. Every version and variant reads. Raises on anything else \u2014 tryParse asks.",
+          "example": "Uuid.parse \u0022urn:uuid:F81D4FAE-7DEC-11D0-A765-00A0C91E6BF6\u0022",
+          "pointer": null
+        },
+        {
+          "name": "toBytes",
+          "signature": "Uuid.toBytes (id: Uuid) : Bytes",
+          "summary": "The 16 bytes, big-endian \u2014 network order, the order the text reads in.",
+          "example": "Uuid.nil |\u003E Uuid.toBytes |\u003E Bytes.toBase64",
+          "pointer": null
+        },
+        {
+          "name": "toString",
+          "signature": "Uuid.toString (id: Uuid) : string",
+          "summary": "The canonical text: lowercase 8-4-4-4-12 \u2014 the spelling show, JSON and argv use.",
+          "example": "Uuid.toString Uuid.nil",
+          "pointer": null
+        },
+        {
+          "name": "tryParse",
+          "signature": "Uuid.tryParse (text: string) : Option\u003CUuid\u003E",
+          "summary": "Some uuid, or None when the text is not one (braces and other platform spellings included).",
+          "example": "Uuid.tryParse \u0022{f81d4fae-7dec-11d0-a765-00a0c91e6bf6}\u0022",
+          "pointer": null
+        },
+        {
+          "name": "v4",
+          "signature": "Uuid.v4 () : Uuid",
+          "summary": "A random uuid (version 4), from the system\u0027s cryptographic generator.",
+          "example": "Uuid.v4 () |\u003E Uuid.version",
+          "pointer": null
+        },
+        {
+          "name": "v5",
+          "signature": "Uuid.v5 (ns: Uuid) (name: string) : Uuid",
+          "summary": "The name-based uuid (version 5): SHA-1 over the namespace\u0027s bytes and the name\u0027s UTF-8 bytes. The same name in the same namespace always gives the same uuid.",
+          "example": "Uuid.v5 Uuid.ns.dns \u0022www.example.com\u0022",
+          "pointer": null
+        },
+        {
+          "name": "v7",
+          "signature": "Uuid.v7 () : Uuid",
+          "summary": "A time-ordered uuid (version 7): epoch milliseconds, then a counter and random bits. Strictly increasing within this process \u2014 sorts by creation as a uuid and as text.",
+          "example": "Uuid.v7 () |\u003E Uuid.instant",
+          "pointer": null
+        },
+        {
+          "name": "v7At",
+          "signature": "Uuid.v7At (t: Instant) : Uuid",
+          "summary": "A version 7 uuid at the given instant, truncated to milliseconds \u2014 for records that carry their own time. It orders with v7 when the instant lies between the last one generated and now; an earlier or future instant gets random bits with no ordering guarantee. Raises before the unix epoch.",
+          "example": "Uuid.v7At (Instant.parse \u00222022-02-22T19:22:22Z\u0022) |\u003E Uuid.instant",
+          "pointer": null
+        },
+        {
+          "name": "version",
+          "signature": "Uuid.version (id: Uuid) : int",
+          "summary": "The version field: 4, 5, 7 and so on (0 for nil, 15 for max). Meaningful for the RFC 9562 variant.",
+          "example": "Uuid.parse \u0022017f22e2-79b0-7cc3-98c4-dc0c0c07398f\u0022 |\u003E Uuid.version",
+          "pointer": null
+        }
+      ]
+    },
+    {
       "name": "Yaml",
       "members": [
         {

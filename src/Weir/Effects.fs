@@ -55,6 +55,11 @@ let effectfulQualified =
           "Path.tempRoot"
           "Path.newTempDir"
           "Instant.now"
+          // nondeterministic generators [D:uuid]: randomness is ambient
+          // input like the clock; Uuid.v5 is a pure function of its args
+          "Uuid.v4"
+          "Uuid.v7"
+          "Uuid.v7At"
           "Duration.sleep"
           // Self.stdin is a per-run value injected by Script (not a
           // Builtins member), so the effect walk sees a plain variable
@@ -171,6 +176,9 @@ let effectClass (n: string) : EffectClass option =
         | "Path.tempRoot" -> Some Ambient
         | "Path.newTempDir" -> Some Mutation
         | "Instant.now" -> Some Ambient // reads the clock (ambient input)
+        | "Uuid.v4"
+        | "Uuid.v7"
+        | "Uuid.v7At" -> Some Ambient // draws randomness (v7 also the clock)
         | "Duration.sleep" -> Some Ambient // waits on the clock — no world change
         | "Self.stdin" -> Some Ambient // reads the process's input stream
         // Http.send/expect: per-method, resolved at the request value (None here)

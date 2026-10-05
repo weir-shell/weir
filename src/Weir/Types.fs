@@ -48,6 +48,10 @@ type Ty =
     // Unix epoch — instants only (no local zones, no calendar
     // arithmetic; t + 1d is exactly 24h, never next-day-same-wall-time)
     | TInstant
+    // a 128-bit identifier [D:uuid]: its own type, not a string alias —
+    // ordered by its big-endian bytes, which is also the order of its
+    // canonical text
+    | TUuid
     // a marker the renderers respect [D:secret]: a plain string the
     // rendering machinery refuses to print — show is ***, interpolation
     // and the wire boundaries refuse; Secret.reveal is the one exit.
@@ -65,6 +69,7 @@ let rec formatTy (ty: Ty) : string =
     match ty with
     | TDur -> "Duration"
     | TInstant -> "Instant"
+    | TUuid -> "Uuid"
     | TSize -> "Size"
     | TBytes -> "Bytes"
     | TSecret -> "Secret"
@@ -258,6 +263,7 @@ let rec tyVars (ty: Ty) : Set<string> =
     | TUnit
     | TDur
     | TInstant
+    | TUuid
     | TSize
     | TBytes
     | TSecret -> Set.empty
@@ -759,6 +765,41 @@ let formatInstant (ms: int64) : string =
         dto.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", System.Globalization.CultureInfo.InvariantCulture)
     else
         dto.ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'", System.Globalization.CultureInfo.InvariantCulture)
+
+// the uuid text forms [D:uuid]: 8-4-4-4-12 hex or 32 bare hex, any case,
+// an optional urn:uuid: prefix. Only these — never the platform parser's
+// braces, parens or hex-struct forms. Any 128-bit value reads (nil, max,
+// every version and variant); inspection is Uuid.version's job.
+let parseUuid (text: string) : Result<System.Guid, string> =
+    let t = text.Trim()
+
+    let body =
+        if t.StartsWith("urn:uuid:", System.StringComparison.OrdinalIgnoreCase) then
+            t.Substring 9
+        else
+            t
+
+    let shaped =
+        match body.Length with
+        | 36 ->
+            body
+            |> Seq.indexed
+            |> Seq.forall (fun (i, c) ->
+                if i = 8 || i = 13 || i = 18 || i = 23 then
+                    c = '-'
+                else
+                    System.Char.IsAsciiHexDigit c)
+        | 32 -> body |> Seq.forall System.Char.IsAsciiHexDigit
+        | _ -> false
+
+    if shaped then
+        Ok(System.Guid.ParseExact(body, (if body.Length = 36 then "D" else "N")))
+    else
+        Error
+            $"not a uuid ('{excerpt t}'; 017f22e2-79b0-7cc3-98c4-dc0c0c07398f — 32 hex digits, hyphens and a urn:uuid: prefix optional)"
+
+/// lowercase 8-4-4-4-12 — the one spelling show, json and toString share
+let formatUuid (g: System.Guid) : string = g.ToString "D"
 
 // the named-format reader [D:instant] — a strptime subset for log
 // lines: %Y %m %d %H %M %S %f %z, %% for a literal percent, everything

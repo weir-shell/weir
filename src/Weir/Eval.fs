@@ -31,6 +31,7 @@ type Value =
     | VFloat of float
     | VDur of ms: int64
     | VInstant of ms: int64
+    | VUuid of System.Guid
     | VSize of bytes: int64
     // the non-text value [D:bytes]: every renderer shows a summary,
     // never the content (raw bytes wreck terminals); Bytes.toBase64 is
@@ -90,6 +91,7 @@ type Value =
                 | VFloat a, VFloat b -> eq <- a = b
                 | VDur a, VDur b -> eq <- a = b
                 | VInstant a, VInstant b -> eq <- a = b
+                | VUuid a, VUuid b -> eq <- a = b
                 | VSize a, VSize b -> eq <- a = b
                 // F# array equality is structural, so this is byte equality
                 | VBytes a, VBytes b -> eq <- a = b
@@ -168,6 +170,7 @@ type Value =
         | VFloat f -> hash f
         | VDur n -> hash ("dur", n)
         | VInstant n -> hash ("instant", n)
+        | VUuid g -> hash ("uuid", g)
         | VSize b -> hash ("size", b)
         | VBytes b -> hash ("bytes", b.Length)
         | VStr s -> hash s
@@ -240,6 +243,7 @@ let rec private formatWith (lim: RenderLimits) (depth: int) (v: Value) : string 
         | VFloat f -> formatFloat f
         | VDur n -> formatDuration n
         | VInstant n -> formatInstant n
+        | VUuid g -> formatUuid g
         | VSize b -> formatSize b
         // a summary, never content [D:bytes]: raw bytes must not reach
         // a terminal; Bytes.toBase64 is the deliberate conversion
@@ -696,6 +700,7 @@ let rec private tableCell (v: Value) : (string * bool) option =
     // renders at echo time
     | VInstant ms -> Some(relativeInstant (System.DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()) ms, false)
     | VBool b -> Some((if b then "true" else "false"), false)
+    | VUuid g -> Some(formatUuid g, false)
     | VSecret _ -> Some("***", false)
     | VUnion("None", None) -> Some("", false)
     | VUnion("Some", Some inner) -> tableCell inner
@@ -989,6 +994,8 @@ let private jsonLine
         // unrepresentable
         | VFloat f -> writer.WriteRawValue(formatFloat f)
         | VStr s -> writer.WriteStringValue s
+        // the canonical text [D:uuid]: JSON has no uuid type
+        | VUuid g -> writer.WriteStringValue(formatUuid g)
         | VBool b -> writer.WriteBooleanValue b
         // Option [D:json-option]: Some writes its scalar; a bare None
         // at the element level is a null line (a None field is
@@ -1152,6 +1159,10 @@ let private jsonDoc
             else
                 failwith $"{who}: field '{name}': number out of float range"
         | TStr, System.Text.Json.JsonValueKind.String -> VStr(prop.GetString())
+        | TUuid, System.Text.Json.JsonValueKind.String ->
+            match parseUuid (prop.GetString()) with
+            | Ok g -> VUuid g
+            | Error e -> failwith $"{who}: field '{name}': {e}"
         | TBool, System.Text.Json.JsonValueKind.True -> VBool true
         | TBool, System.Text.Json.JsonValueKind.False -> VBool false
         | ty, kind -> failwith $"{who}: field '{name}' expected {formatTy ty}, got {kind} in: {shown}"
@@ -2102,6 +2113,7 @@ let scalarString (what: string) (v: Value) : string =
     // $auth` needs the real value. print/printerr reject Secret at
     // the type (printArgTy), so this arm is reached only via argv
     | VSecret s -> s
+    | VUuid g -> formatUuid g
     | VInt n -> string n
     | VBool true -> "true"
     | VBool false -> "false"
