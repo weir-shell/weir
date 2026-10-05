@@ -17537,10 +17537,10 @@ let sizeTests =
 
               match Weir.Check.typecheck e (parse "[{ sz = 1MiB }] |> to json") with
               | Error terr ->
-                  Expect.stringContains
-                      terr.Message
-                      "Size is not representable in JSON — convert explicitly (Size.toBytes into an int field, or show for a string)"
-                      ""
+                  // a field's park names the codec first [D:wire-codecs]; the
+                  // explicit conversion stays in the message
+                  Expect.stringContains terr.Message "Size is not representable in JSON" ""
+                  Expect.stringContains terr.Message "Size.toBytes into an int field, or show for a string" ""
               | Ok _ -> failtest "expected the park"
 
               match Weir.Check.typecheck e (parse "[{ sz = 1MiB }] |> to yaml") with
@@ -17554,10 +17554,8 @@ let sizeTests =
 
               match Weir.Check.typecheck e2 (parse "[{ d = 5s }] |> to yaml") with
               | Error terr ->
-                  Expect.stringContains
-                      terr.Message
-                      "Duration is not representable in yaml — convert explicitly (Duration.toMillis into an int field, or show for a string)"
-                      ""
+                  Expect.stringContains terr.Message "Duration is not representable in yaml" ""
+                  Expect.stringContains terr.Message "Duration.toMillis into an int field, or show for a string" ""
               | Ok _ -> failtest "expected Duration's yaml park"
           }
           test "[<Default 10MiB>] end to end (attrArgLit's third reminder)" {
@@ -19665,6 +19663,103 @@ let wireTableTests =
                   with ex ->
                       Expect.stringContains ex.Message "line 1: not a uuid" "names the line and the parse teaching"
               | Error terr -> failtest (formatError terr)
+          } ]
+
+let wireCodecTests =
+    // declared codecs [D:wire-codecs]: option (a) — an unannotated
+    // Instant/Duration/Size still refuses; a codec attribute is the
+    // author naming the consumer's convention, read by both directions
+    let checkMsgs (lines: string list) =
+        let ds, _, _, _ = Weir.Script.analyzeLines "codec.weir" lines
+        ds |> List.filter (fun d -> d.Severity = "error") |> List.map (fun d -> d.Message)
+
+    let runIn te input =
+        match Weir.Check.typecheck te (parse input) with
+        | Ok t -> eval valueEnv t
+        | Error terr -> failtest (formatError terr)
+
+    let te =
+        env
+        |> declare
+            "type CodecEv = { [<Iso8601>] at: Instant; [<EpochMs>] ms: Instant; [<EpochSec>] sec: Instant; [<Millis>] took: Duration; [<Seconds>] every: Duration; [<ByteCount; Wire \"bytes\">] size: Size; [<Iso8601>] seen: Option<Instant>; [<EpochMs>] marks: seq<Instant> }"
+        |> declare
+            "type PlainEv = { at: Instant; ms: Instant; sec: Instant; took: Duration; every: Duration; size: Size; seen: Option<Instant>; marks: seq<Instant> }"
+
+    let value =
+        "CodecEv { at = Instant.parse \"2026-08-14T12:00:00.250Z\"; ms = Instant.parse \"2026-08-14T12:00:00.250Z\"; sec = Instant.parse \"2026-08-14T12:00:00Z\"; took = 1500ms; every = 2m; size = Size.parse \"1KiB\"; seen = None; marks = [Instant.ofEpochMs 5] }"
+
+    testList
+        "declared codecs [D:wire-codecs]"
+        [ test "every codec round-trips through JSON and YAML; the wire shape is the declared encoding" {
+              Expect.equal
+                  (runIn te $"[ {value} ] |> to jsonl |> Seq.freeze")
+                  (VSeq
+                      [ VStr
+                            "{\"at\":\"2026-08-14T12:00:00.250Z\",\"ms\":1786708800250,\"sec\":1786708800,\"took\":1500,\"every\":120,\"bytes\":1024,\"marks\":[5]}" ])
+                  "ISO text, epoch ms/s, ms, s, bytes (under its wire key), a seq element-wise; None omitted"
+
+              let viaJson = runIn te $"let e = {value} in show ([e] |> to jsonl |> from jsonl CodecEv |> Seq.freeze |> Seq.head) == show e"
+              let viaYaml = runIn te $"let e = {value} in show (e |> to yaml |> from yaml CodecEv) == show e"
+              Expect.equal viaJson (VBool true) "json round trip"
+              Expect.equal viaYaml (VBool true) "yaml round trip"
+          }
+          test "JSON and YAML carry the same value per codec" {
+              let y =
+                  match runIn te $"{value} |> to yaml |> Seq.freeze" with
+                  | VSeq lines -> lines |> Seq.map (function VStr l -> l | v -> failtest $"{v}") |> List.ofSeq
+                  | v -> failtest $"{v}"
+
+              for line in [ "at: \"2026-08-14T12:00:00.250Z\""; "ms: 1786708800250"; "sec: 1786708800"; "took: 1500"; "every: 120"; "bytes: 1024" ] do
+                  Expect.contains y line $"yaml carries {line}, matching the JSON value"
+          }
+          test "a lossy write raises instead of truncating" {
+              let tes = env |> declare "type SecEv = { [<EpochSec>] t: Instant; [<Seconds>] d: Duration }"
+
+              for expr, want in
+                  [ "[{ t = Instant.parse \"2026-01-01T00:00:00.5Z\"; d = 1s }] |> to jsonl |> Seq.freeze", "round it, or declare [<EpochMs>]"
+                    "{ t = Instant.parse \"2026-01-01T00:00:00Z\"; d = 1500ms } |> to yaml |> Seq.freeze", "round it, or declare [<Millis>]" ] do
+                  try
+                      runIn tes expr |> ignore
+                      failtest $"must raise: {expr}"
+                  with ex ->
+                      Expect.stringContains ex.Message want "names the exact codec"
+          }
+          test "fit is checked at the declaration, naming what fits" {
+              let one decl = checkMsgs [ decl ] |> List.head
+
+              Expect.stringContains (one "type R = { [<EpochMs>] name: string }") "string crosses as itself, with no codec" "a canonical type"
+              Expect.stringContains (one "type R = { [<Seconds>] t: Instant }") "its encodings: [<Iso8601>], [<EpochMs>] or [<EpochSec>]" "did-you-mean lists the fitting codecs"
+              Expect.stringContains (one "type R = { [<Iso8601; EpochMs>] t: Instant }") "one codec per field" "two encodings"
+              Expect.stringContains (one "type R = { [<Isoo8601>] t: Instant }") "Did you mean 'Iso8601'?" "a misspelling"
+          }
+          test "Secret refuses any codec, for the type's own reason" {
+              let m = checkMsgs [ "type R = { [<Iso8601>] s: Secret }" ] |> List.head
+              Expect.stringContains m "a Secret must not cross to JSON or YAML" "the type, not the codec"
+          }
+          test "option (a) holds: an unannotated field still refuses, naming the attributes first" {
+              let m = checkMsgs [ "type R = { t: Instant }"; "let _x = [\"\"] |> from json R" ] |> List.head
+              Expect.stringContains m "declare the field's encoding ([<Iso8601>], [<EpochMs>] or [<EpochSec>])" "attributes first"
+              Expect.stringContains m "Instant.epochMs" "the explicit conversion stays"
+
+              let top = checkMsgs [ "let _j = [Instant.now ()] |> to jsonl |> Seq.freeze" ] |> List.head
+              Expect.isFalse (top.Contains "[<") "an element cannot carry an attribute — no attribute advice there"
+          }
+          test "show and == do not see the codec" {
+              let plainValue = value.Replace("CodecEv {", "PlainEv {")
+
+              Expect.equal (runIn te $"show ({value})") (runIn te $"show ({plainValue})") "the annotated type shows exactly as its unannotated twin"
+              // == needs a seq-free record (a seq field rules out Eq)
+              let teq = env |> declare "type EqEv = { [<EpochMs>] t: Instant; [<Seconds>] d: Duration }"
+
+              Expect.equal
+                  (runIn teq "EqEv { t = Instant.ofEpochMs 1; d = 1500ms } == EqEv { t = Instant.ofEpochMs 1; d = 1500ms }")
+                  (VBool true)
+                  "== compares values, not encodings — 1500ms is not cut to 1s for equality"
+          }
+          test "the codec union and the wire table agree" {
+              for c in Weir.Types.allCodecs do
+                  let ty = Weir.Check.codecTy c
+                  Expect.contains (Weir.Check.codecsOfTy ty) c $"{Weir.Types.codecName c} is listed under {formatTy ty}"
           } ]
 
 let mapStringTests =
@@ -23046,6 +23141,7 @@ let allTests =
           instantTests
           uuidTests
           wireTableTests
+          wireCodecTests
           interpRawTests
           recordOrderTests
           scopedProcTests

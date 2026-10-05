@@ -459,7 +459,8 @@ print $"{key} -> {value}"
   by int; `Size / Size` errors naming both alternatives.
   `File.size p : Size` — compare directly (`File.size p > 10MiB`).
   Args/Env fields parse (`--max 1.5GiB`, `[<Default 10MiB>]`);
-  json/yaml REJECT (convert via `Size.toBytes`). No `print` (holes
+  json/yaml REJECT on their own — declare `[<ByteCount>] sz: Size`
+  [D:wire-codecs], or convert via `Size.toBytes`. No `print` (holes
   render: `$"{sz}"`).
 - Time is `Duration` (integer ms inside): literals `500ms`/`30s`/`2m`/`1h`
   (single-unit, expression position; in command position `30s` is an
@@ -471,8 +472,9 @@ print $"{key} -> {value}"
   `Duration.ms/s/m/h` construct; `Duration.sleep 500ms` blocks (bare
   `sleep` stays the coreutils command). `Args.load`/`Env.load` parse
   duration text into `Duration` fields and `[<Default 30s>]` works.
-  No JSON: a Duration field at `to json`/`from json` is a check error
-  (convert via `Duration.toMillis` into an int field). Interpolation holes
+  No JSON/YAML on its own: a bare Duration field is a check error —
+  declare its encoding (`[<Millis>]`, `[<Seconds>]`) [D:wire-codecs], or
+  convert via `Duration.toMillis` into an int field. Interpolation holes
   render Durations directly (`$"took {elapsed}"`); command arguments
   do NOT — pass `Duration.toMillis d` or `show d` deliberately.
 - Absolute time is `Instant` [D:instant] — a POINT on the UTC
@@ -487,8 +489,15 @@ print $"{key} -> {value}"
   (`expiry - Instant.now () > 24h * 300`); `instant ± duration`
   shifts; two points never add (teaching error). Ord/Eq admit —
   instants sort and compare. `Args.load`/`Env.load` parse ISO into
-  `Instant` fields (`--since 2026-08-01`). No JSON (convert via
-  `Instant.epochMs` or `show`); command argv likewise deliberate.
+  `Instant` fields (`--since 2026-08-01`). No JSON/YAML on its own —
+  declare the field's encoding [D:wire-codecs]: `[<Iso8601>] at:
+  Instant` (text), `[<EpochMs>]`/`[<EpochSec>]` (integers); one
+  declaration both directions read, so the round trip cannot drift.
+  A codec that would drop precision (`EpochSec`, `Seconds`) RAISES on
+  write rather than truncate. Codecs touch only the json/yaml
+  boundaries — never `show` or `==`; combine with a wire key as
+  `[<EpochMs; Wire "ts">]`; they apply to `T`, `Option<T>` or
+  `seq<T>` fields. Command argv stays deliberate.
   `show` renders ISO UTC.
 - Identifiers are `Uuid` [D:uuid] — its own type, not a string.
   `Uuid.v7 ()` is time-ordered and STRICTLY INCREASING within the

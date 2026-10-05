@@ -977,6 +977,85 @@ let private binOp (op: string) (l: Value) (r: Value) : Value =
     | "<>", a, b -> VBool(a <> b)
     | _ -> unreachable $"the checker rejects '{op}' on {formatValue l} and {formatValue r}"
 
+// ---- declared codecs [D:wire-codecs] — the json/yaml boundaries only;
+// show and == never see them
+
+// a coded field's value as the plain wire value the writers already
+// render; a codec that would drop precision raises instead
+let rec private encodeCoded (where: string) (c: Codec) (v: Value) : Value =
+    let whole (ms: int64) (noun: string) (exact: Codec) =
+        if ms % 1000L <> 0L then
+            failwith
+                $"{where}: [<{codecName c}>] writes whole seconds, and this {noun} carries {abs (ms % 1000L)} ms more — round it, or declare [<{codecName exact}>]"
+        else
+            ms / 1000L
+
+    match c, v with
+    | _, VUnion("None", None) -> v
+    | _, VUnion("Some", Some inner) -> VUnion("Some", Some(encodeCoded where c inner))
+    | _, VSeq items -> VSeq(items |> Seq.map (encodeCoded where c))
+    | Iso8601, VInstant ms -> VStr(formatInstant ms)
+    | EpochMs, VInstant ms -> VInt ms
+    | EpochSec, VInstant ms -> VInt(whole ms "instant" EpochMs)
+    | Millis, VDur ms -> VInt ms
+    | Seconds, VDur ms -> VInt(whole ms "duration" Millis)
+    | ByteCount, VSize b -> VInt b
+    | _ -> unreachable $"the declaration law fits [<{codecName c}>] to {formatValue v}"
+
+// every coded field in a value, encoded — both writers render the
+// result, so json and yaml cannot disagree on a codec
+let rec private encodeTree (fmt: string) (codecs: Map<string, Map<string, Codec>>) (v: Value) : Value =
+    if codecs.IsEmpty then
+        v
+    else
+        match v with
+        | VRecord(rname, fields) ->
+            let cods = Map.tryFind rname codecs |> Option.defaultValue Map.empty
+
+            VRecord(
+                rname,
+                fields
+                |> List.map (fun (f, fv) ->
+                    match Map.tryFind f cods with
+                    | Some c -> f, encodeCoded $"to {fmt}: field '{f}'" c fv
+                    | None -> f, encodeTree fmt codecs fv)
+            )
+        | VUnion(case, Some payload) -> VUnion(case, Some(encodeTree fmt codecs payload))
+        | VSeq items -> VSeq(items |> Seq.map (encodeTree fmt codecs))
+        | VTuple items -> VTuple(items |> List.map (encodeTree fmt codecs))
+        | VMap entries -> VMap(entries |> Map.map (fun _ ev -> encodeTree fmt codecs ev))
+        | v -> v
+
+// a coded field read back: text (a JSON string, any YAML scalar) and/or
+// an integer (a JSON number, an unquoted YAML int)
+let private decodeCoded (where: string) (c: Codec) (text: string option) (num: int64 option) : Value =
+    let needInt (what: string) =
+        match num with
+        | Some n -> n
+        | None ->
+            let got = text |> Option.map (fun t -> $"'{excerpt t}'") |> Option.defaultValue "a non-integer"
+            failwith $"{where}: [<{codecName c}>] reads {what} (an integer), got {got}"
+
+    let seconds (n: int64) =
+        try
+            Checked.(*) n 1000L
+        with :? System.OverflowException ->
+            failwith $"{where}: [<{codecName c}>] value {n} is out of range"
+
+    match c with
+    | Iso8601 ->
+        match text with
+        | Some t ->
+            match parseInstantMs t with
+            | Ok ms -> VInstant ms
+            | Error e -> failwith $"{where}: {e}"
+        | None -> failwith $"{where}: [<Iso8601>] reads an ISO 8601 string, got a number"
+    | EpochMs -> VInstant(needInt "epoch milliseconds")
+    | EpochSec -> VInstant(seconds (needInt "epoch seconds"))
+    | Millis -> VDur(needInt "milliseconds")
+    | Seconds -> VDur(seconds (needInt "seconds"))
+    | ByteCount -> VSize(needInt "a byte count")
+
 let private jsonLine
     (renames: Map<string, Map<string, string>>)
     (unions: Map<string, string * string * bool>)
@@ -1291,6 +1370,28 @@ let private jsonDoc
             let present = root.TryGetProperty(wire, &prop)
             let isNull = present && prop.ValueKind = System.Text.Json.JsonValueKind.Null
 
+            // a coded field reads through its codec [D:wire-codecs]; the
+            // Option/missing/null rules below are unchanged
+            let readV (ty: Ty) (p: System.Text.Json.JsonElement) =
+                match Types.fieldCodec rdef name with
+                | None -> readValue shownName ty p
+                | Some c ->
+                    let where = $"{who}: field '{shownName}'"
+
+                    let one (e: System.Text.Json.JsonElement) =
+                        match e.ValueKind with
+                        | System.Text.Json.JsonValueKind.String -> decodeCoded where c (Some(e.GetString())) None
+                        | System.Text.Json.JsonValueKind.Number ->
+                            match e.TryGetInt64() with
+                            | true, n -> decodeCoded where c None (Some n)
+                            | _ -> failwith $"{where}: [<{codecName c}>] reads an integer, got {e.GetRawText()}"
+                        | k -> failwith $"{where}: [<{codecName c}>] expects a string or a number, got {jsonKindName k}"
+
+                    match ty, p.ValueKind with
+                    | TSeq _, System.Text.Json.JsonValueKind.Array -> VSeq(p.EnumerateArray() |> Seq.map one |> List.ofSeq)
+                    | TSeq _, k -> failwith $"{where}: expected an array, got {jsonKindName k}"
+                    | _ -> one p
+
             let value =
                 match ty with
                 // an Option field: missing key or explicit null -> None;
@@ -1299,7 +1400,7 @@ let private jsonDoc
                     if not present || isNull then
                         VUnion("None", None)
                     else
-                        VUnion("Some", Some(readValue shownName inner prop))
+                        VUnion("Some", Some(readV inner prop))
                 // a required field: missing or null both fail, and the
                 // message names the fix (a missing array is an error
                 // too: absence is Option's job, [] is not guessed)
@@ -1314,7 +1415,7 @@ let private jsonDoc
                 | _ when isNull ->
                     failwith
                         $"{who}: field '{shownName}' is null; declare it Option<{formatTy ty}> to allow it, in: {shown}"
-                | _ -> readValue shownName ty prop
+                | _ -> readV ty prop
 
             name, value
 
@@ -1767,6 +1868,13 @@ let rec private yamlConvert (shape: Yaml.Shape) (node: Yaml.Node) : Value =
                 | Ok f -> VFloat f
                 | Error _ -> failwith $"from yaml: line {line}: expected float, got '{raw}'"
     | Yaml.SStr, Yaml.NScalar(raw, _, _) -> VStr raw
+    | Yaml.SCodec c, Yaml.NScalar(raw, quoted, line) ->
+        let num =
+            match (if quoted then (false, 0L) else System.Int64.TryParse raw) with
+            | true, n -> Some n
+            | _ -> None
+
+        decodeCoded $"from yaml: line {line}" c (Some raw) num
     | Yaml.SUuid, Yaml.NScalar(raw, _, line) ->
         match parseUuid raw with
         | Ok g -> VUuid g
@@ -1801,7 +1909,7 @@ let rec private yamlConvert (shape: Yaml.Shape) (node: Yaml.Node) : Value =
                 | None, _ ->
                     failwith
                         $"from yaml: line {line}: missing field '{fname}'{wireNote} in '{name}' — if the field is sometimes absent, declare it Option<…>; a type drafted from a sample only sees what the sample had"
-                | Some(_, Yaml.NNull l), (Yaml.SInt | Yaml.SFloat | Yaml.SStr | Yaml.SBool | Yaml.SUuid | Yaml.SRec _) ->
+                | Some(_, Yaml.NNull l), (Yaml.SInt | Yaml.SFloat | Yaml.SStr | Yaml.SBool | Yaml.SUuid | Yaml.SCodec _ | Yaml.SRec _) ->
                     failwith $"from yaml: line {l}: field '{fname}' is null; declare it Option<…> to allow it"
                 | Some(_, v), _ -> fname, yamlConvert fshape v)
 
@@ -1850,6 +1958,7 @@ let rec private yamlConvert (shape: Yaml.Shape) (node: Yaml.Node) : Value =
             | Yaml.SStr -> "a string scalar"
             | Yaml.SBool -> "a bool scalar"
             | Yaml.SUuid -> "a uuid scalar"
+            | Yaml.SCodec c -> $"a [<{codecName c}>] scalar"
             | Yaml.SRec(n, _) -> $"a mapping ({n})"
             | Yaml.SUnion(n, _, _, _) -> $"a mapping ({n})"
             | Yaml.SSeq _ -> "a sequence"
@@ -3209,17 +3318,20 @@ and eval (env: Env) (te: TypedExpr) : Value =
         match patchBy with
         | None -> tree
         | Some by -> VUnion("|ypatch", Some(VTuple [ VStr(defaultArg by ""); tree ]))
-    | TETo("yaml", renames, unions, stream) -> yamlToImpl renames unions stream
-    | TETo("jsonl", renames, unions, _) ->
+    | TETo("yaml", renames, codecs, unions, stream) ->
+        // coded fields become plain values first [D:wire-codecs]
+        let render = yamlToImpl renames unions stream
+        VBuiltin(fun v -> apply render (encodeTree "yaml" codecs v))
+    | TETo("jsonl", renames, codecs, unions, _) ->
         VBuiltin(fun v ->
             match v with
-            | VSeq items -> VSeq(items |> Seq.map (jsonLine renames unions >> VStr))
+            | VSeq items -> VSeq(items |> Seq.map (encodeTree "jsonl" codecs >> jsonLine renames unions >> VStr))
             | v -> unreachable $"the checker rejects 'to jsonl' on {formatValue v}")
-    | TETo(_, renames, unions, _) ->
+    | TETo(fmt, renames, codecs, unions, _) ->
         // one document [D:to-jsonl] — the whole value through the same
         // renderer, once; an array document forces its seq (one line
         // cannot stream)
-        VBuiltin(fun v -> VSeq [ VStr(jsonLine renames unions v) ])
+        VBuiltin(fun v -> VSeq [ VStr(jsonLine renames unions (encodeTree fmt codecs v)) ])
     | TEMatch(scrutinee, arms) ->
         let v0 = eval env scrutinee
 
