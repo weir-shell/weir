@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.0.64
+
+### Fixed
+
+- **Editors and pagers get the terminal wherever a command runs as a
+  statement.** Only a top-level bare command used to inherit the
+  terminal; `!(cmd)`, `!e(cmd)`, a command inside a `within`, `match`
+  or function block, and every pipeline handed the child a pipe — so
+  `!e(vi f)` warned "Output is not to a terminal" and `git log | less`
+  printed like `cat`. All of those now inherit at a terminal (a
+  pipeline's last stage does), in scripts and the REPL; redirected
+  output is unchanged. A command whose output becomes a value
+  (`let x = …`, `$( )`, `| complete`) still captures, so an editor
+  belongs in statement position.
+
 ## v0.0.63
 
 ### Added
