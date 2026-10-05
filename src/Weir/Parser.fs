@@ -135,6 +135,12 @@ let private withExprParen (v: bool) (p: Parser<'a, unit>) : Parser<'a, unit> =
 // condition there and nowhere else.
 let private ifCondOk = new System.Threading.ThreadLocal<bool>(fun () -> false)
 
+// set while a then/elif body parses [D:if-body-stop]: a command chain
+// there ends at a bareword `else`/`elif`, so the keyword reaches the if
+// instead of becoming argv. An else body inherits the enclosing value,
+// so a dangling else binds to the nearest if.
+let private ifBodyOk = new System.Threading.ThreadLocal<bool>(fun () -> false)
+
 // forwarded: the let-in value position sits above the command grammar
 let private letRhsCmd, private letRhsCmdRef =
     createParserForwardedToRef<Expr, unit> ()
@@ -233,6 +239,16 @@ let private withIfCond (v: bool) (p: Parser<'a, unit>) : Parser<'a, unit> =
             p stream
         finally
             ifCondOk.Value <- saved
+
+let private withIfBody (p: Parser<'a, unit>) : Parser<'a, unit> =
+    fun stream ->
+        let saved = ifBodyOk.Value
+        ifBodyOk.Value <- true
+
+        try
+            p stream
+        finally
+            ifBodyOk.Value <- saved
 
 // Nonzero while a match arm's body parses [D:match-arm-commands]: a
 // command chain there ends at the next arm's `| <pattern> ->`, so
@@ -2555,10 +2571,10 @@ let private ifExprBody =
         // bodies are statement territory even inside (assembler-wrapped)
         // parens [D:interior-arming] — the pattern lambda-body set; and
         // statement bodies grant command lets [D:statement-lets]
-        (keyword "then" >>. withStmtLetCmd (withExprParen false seqExpr))
+        (keyword "then" >>. withIfBody (withStmtLetCmd (withExprParen false seqExpr)))
         (many (
             (keyword "elif" >>. ifCond)
-            .>>. (keyword "then" >>. withStmtLetCmd (withExprParen false seqExpr))
+            .>>. (keyword "then" >>. withIfBody (withStmtLetCmd (withExprParen false seqExpr)))
         ))
         (opt (keyword "else" >>. withStmtLetCmd (withExprParen false seqExpr)))
         (fun p cond thn elifs els ->
@@ -3647,7 +3663,7 @@ let private spliceSplat: Parser<Expr, unit> =
         { Kind = ESplat inner; Span = span })
     .>> ws
 
-let private cmdArgStops (stopAtIn: bool) (stopAtThen: bool) =
+let private cmdArgStops (stopAtIn: bool) (stopAtThen: bool) (stopAtElse: bool) =
     let stopWord (w: string) =
         notFollowedBy (attempt (pstring w .>> notFollowedBy (satisfy cmdWordChar)))
 
@@ -3666,6 +3682,14 @@ let private cmdArgStops (stopAtIn: bool) (stopAtThen: bool) =
         // to the expression grammar / the keyword. Quote the word to
         // pass it to a command from those positions.
         let core = if stopAtThen then stopWord "then" >>. core else core
+        // and in a then/elif body, a bareword `else`/`elif` is the if's
+        // next clause [D:if-body-stop]
+        let core =
+            if stopAtElse then
+                stopWord "else" >>. stopWord "elif" >>. core
+            else
+                core
+
         if stopAtIn then stopWord "in" >>. core else core
 
     // each guard is gated on its piece's opener (notMidWord's shape) so
@@ -3683,7 +3707,7 @@ let private cmdArgStops (stopAtIn: bool) (stopAtThen: bool) =
           lookAhead (pchar '(') >>. notGluedPiece >>. parens
           lookAhead (satisfy cmdWordChar) >>. notGluedPiece >>. bareword ]
 
-let private cmdArgWith (stopAtIn: bool) = cmdArgStops stopAtIn false
+let private cmdArgWith (stopAtIn: bool) = cmdArgStops stopAtIn false false
 
 let private cmdArg = cmdArgWith false
 
@@ -3944,6 +3968,15 @@ let private reifierEnd =
             else
                 ifail "no then-stop here" stream
 
+    // and a then/elif body's chain at its else/elif [D:if-body-stop]
+    let elseStop: Parser<unit, unit> =
+        fun stream ->
+            if ifBodyOk.Value then
+                (attempt ((pstring "else" <|> pstring "elif") .>> notFollowedBy (satisfy cmdWordChar)) |>> ignore)
+                    stream
+            else
+                ifail "no else-stop here" stream
+
     // a reifier also ends at a statement boundary [D:interior-arming] —
     // without this, `| orFail "m"` as an interior statement demoted the
     // reifier to a bareword stage (the addendum's cmd-not-found case)
@@ -3954,6 +3987,7 @@ let private reifierEnd =
               eof
               inStop
               thenStop
+              elseStop
               attempt (pchar ';') |>> ignore
               attempt (pstring sibSepStr) |>> ignore ]
     )
@@ -4422,12 +4456,20 @@ let private cmdLineLetRhs (r: Resolver) : Parser<Expr, unit> =
 
 // deepen: a block let's command RHS re-enters the statement grammar
 // through its args (cmd (let y = cmd (…))) [D:depth-guard]
-letRhsCmdRef.Value <- deepen (fun stream -> (cmdLineLetRhs ambientResolver.Value) stream)
+letRhsCmdRef.Value <-
+    deepen (fun stream ->
+        // a then/elif body's statement chain also stops at else/elif
+        // [D:if-body-stop] — read at entry, so a sigil or paren interior
+        // (its own argument parser) is untouched
+        if ifBodyOk.Value then
+            (cmdLineWith false (cmdArgStops true false true) None ambientResolver.Value) stream
+        else
+            (cmdLineLetRhs ambientResolver.Value) stream)
 
 // the condition's command grammar [D:if-succeeds]: the let-RHS shape
 // (no builtin heads — `myfunc x` in a condition is already expression
 // application) with `then` stopping argv instead of `in`
-ifCondCmdRef.Value <- fun stream -> (cmdLineWith false (cmdArgStops false true) None ambientResolver.Value) stream
+ifCondCmdRef.Value <- fun stream -> (cmdLineWith false (cmdArgStops false true false) None ambientResolver.Value) stream
 
 let private tySyn, private tySynRef = createParserForwardedToRef<Ty, unit> ()
 

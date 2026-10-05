@@ -1801,7 +1801,10 @@ conf |> Seq.iter print
   [D:district-retirement]: commands are ordinary statements inside any
   block, so `if clean then` + indented `git checkout main` /
   `git pull` lines just works [D:interior-arming], and a match arm
-  body takes them too [D:match-arm-commands]. `!()` is left for the
+  body takes them too [D:match-arm-commands]. An `else`/`elif` ends a
+  then-body's command [D:if-body-stop] — `if ok then git pull else
+  git fetch` is two commands (one line or indented); quote it
+  (`"else"`) to pass the word as argv there. `!()` is left for the
   positions bare cannot reach: a command sequenced with an expression
   on ONE line (`!(setup); print "done"` — `;` is argv inside a bare
   command line).

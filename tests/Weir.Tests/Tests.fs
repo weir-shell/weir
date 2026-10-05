@@ -21955,6 +21955,55 @@ let lsCommandTeachTests =
               Expect.isFalse (g.Contains "shell command") "no ^-advice for a non-command value"
           } ]
 
+let ifBodyStopTests =
+    // a then/elif body's command ends at a bareword else/elif
+    // [D:if-body-stop] — before, `if c then echo hi else echo bye` was ONE
+    // command with argv "hi else echo bye", and `… else ()` fell back to
+    // expression mode (unbound 'echo')
+    let shape line =
+        match Weir.Parser.parseLineFull cmdResolver line with
+        | Ok s -> Weir.Ast.sexprStmt s
+        | Error f -> failtest $"parse failed: {f.Message}"
+
+    let errsOf (lines: string list) =
+        let ds, _, _, _ = Weir.Script.analyzeLines "ifelse.weir" lines
+        ds |> List.filter (fun d -> d.Severity = "error")
+
+    testList
+        "if-body else stop [D:if-body-stop]"
+        [ test "else and elif end a then-body command" {
+              Expect.equal
+                  (shape "if true then echo hi else echo bye")
+                  "(sexpr (if true (cmd echo \"hi\") (cmd echo \"bye\")))"
+                  "else is the if's clause, not argv"
+
+              Expect.equal
+                  (shape "if true then echo hi else ()")
+                  "(sexpr (if true (cmd echo \"hi\") ()))"
+                  "a unit else keeps the then-body a command"
+
+              Expect.equal
+                  (shape "if false then echo a elif true then echo b else echo c")
+                  "(sexpr (if false (cmd echo \"a\") (if true (cmd echo \"b\") (cmd echo \"c\"))))"
+                  "elif ends the body too"
+          }
+          test "a dangling else binds the nearest if" {
+              Expect.equal
+                  (shape "if true then if false then echo x else echo y else echo z")
+                  "(sexpr (if true (if false (cmd echo \"x\") (cmd echo \"y\")) (cmd echo \"z\")))"
+                  "inner else, then outer else"
+          }
+          test "a reifier ends before else; a quoted else is argv; outside an if body else is argv" {
+              Expect.stringContains (shape "if true then git pull | orFail \"m\" else ()") "|orFailed" "the reifier binds"
+              Expect.equal (shape "if true then echo \"else\" else ()") "(sexpr (if true (cmd echo \"else\") ()))" "quoting passes the word"
+              Expect.equal (shape "echo else elif") "(scmd (cmd echo \"else\" \"elif\"))" "the stop is gated to if bodies"
+          }
+          test "statement if/else with command branches checks; value position captures" {
+              Expect.isEmpty (errsOf [ "if 1 == 1 then"; "    echo a"; "else"; "    echo b" ]) "both branches arm"
+              Expect.isEmpty (errsOf [ "if 1 == 1 then echo a elif 2 == 2 then echo b else ()" ]) "an elif chain arms"
+              Expect.isEmpty (errsOf [ "let x = if true then echo a else echo b"; "print (Seq.head x)" ]) "value position stays seq<string>"
+          } ]
+
 let unquotedPathTeachTests =
     testList
         "unquoted-path teaching [D:unquoted-path-teach]"
@@ -22881,6 +22930,7 @@ let allTests =
           dynamicHeadTests
           lsCommandTeachTests
           unquotedPathTeachTests
+          ifBodyStopTests
           aliasCompleteTests
           contPromptTests
           jsonEscapingTests
