@@ -22271,6 +22271,54 @@ let fieldSpliceTests =
               | Error f -> Expect.stringContains f.Message "a name or (expr) after '$@'" "label"
           } ]
 
+let armBlockTests =
+    // a `| pat ->` arm and an `else` take a text block as `then` does;
+    // a block after an application teaches the pipe [D:arm-blocks]
+    let run (lines: string list) =
+        match Weir.Script.assemble (lines |> List.mapi (fun i l -> i + 1, l)) with
+        | Ok lls -> lls
+        | Error e -> failtest e
+
+    let errs (lines: string list) =
+        let ds, _, _, _ = Weir.Script.analyzeLines "ab.weir" lines
+        ds |> List.filter (fun d -> d.Severity = "error") |> List.map (fun d -> d.Message)
+
+    testList
+        "text blocks in arms and else [D:arm-blocks]"
+        [ test "an arm and an else arm their block" {
+              Expect.isEmpty
+                  (errs
+                      [ "let t ="
+                        "    match 1 with"
+                        "    | 1 -> <<<"
+                        "        one"
+                        "    | _ -> $<<<"
+                        "        other {1}"
+                        "t |> Seq.iter print" ])
+                  "arms"
+
+              Expect.isEmpty
+                  (errs [ "let t ="; "    if false then [\"x\"]"; "    else <<<"; "        small"; "t |> Seq.iter print" ])
+                  "else"
+
+              Expect.equal (run [ "let t ="; "    match 1 with"; "    | 1 -> <<<"; "        one"; "    | _ -> [\"o\"]" ]).Length 1 "one logical line"
+          }
+          test "a block as a trailing argument teaches the pipe at the marker" {
+              let ds, _, _, _ =
+                  Weir.Script.analyzeLines "ab.weir" [ "within tmp d"; "    File.write $\"{d}/f\" <<<"; "        hi" ]
+
+              match ds |> List.filter (fun d -> d.Severity = "error") with
+              | d :: _ ->
+                  Expect.stringContains d.Message "cannot be a trailing argument" "the teaching"
+                  Expect.equal (d.Line, d.Col) (2, 25) "caret on the marker"
+              | [] -> failtest "must refuse"
+          }
+          test "the taught spelling holds" {
+              Expect.isEmpty
+                  (errs [ "within tmp d"; "    <<<"; "        hi"; "    |> File.write $\"{d}/f\"" ])
+                  "block first, piped on the closing line"
+          } ]
+
 let lambdaLetTests =
     // a lambda body grants command lets wherever it sits [D:lambda-lets]
     let errs (lines: string list) =
@@ -23440,6 +23488,7 @@ let allTests =
           orPatternTests
           lambdaLetTests
           fieldSpliceTests
+          armBlockTests
           tildeLiteralTests
           tildeTests
           aliasCompleteTests

@@ -61,6 +61,14 @@
 
 ### Fixed
 
+- **A match arm and an `else` take a text block on their own line.**
+  `| 1 -> <<<` and `else <<<` failed with a parser dump although
+  `then <<<` worked — and `weir fmt` turned the working next-line form
+  into the failing one. Both arm their block now. A block written as a
+  trailing argument (`File.write p <<<`) is an error that names the
+  spelling that works: start with the block and pipe it on its closing
+  line, `|> File.write p`.
+
 - **Shell and C reflexes teach instead of dumping a parser error.**
   A trailing `\` (bash line continuation) used to pass a literal `\` to
   the program — a command line continues by indentation, and a `\`

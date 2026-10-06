@@ -1594,8 +1594,20 @@ rangeTermRef.Value <-
 
 postfixAtomFwdRef.Value <- postfixAtom
 
+// a text block after an application is a trailing argument
+// [D:arm-blocks]: its content would end mid-call, so teach the pipe
+let private blockArgGuard: Parser<unit, unit> =
+    (getPosition
+     .>> attempt ((pstring "$$<<<" <|> pstring "$<<<" <|> pstring "<<<") .>> followedBy (pstring sibSepStr))
+     >>= fun at ->
+         failFatallyAt
+             at
+             "a text block cannot be a trailing argument — start the value with the block (`let body = <<<`, or `<<<` on its own line) and pipe it on the line that closes it: `|> File.write path`")
+    <|> preturn ()
+
 let private appChain =
     many1 postfixAtom
+    .>> blockArgGuard
     |>> List.reduce (fun f a ->
         { Kind = EApp(f, a)
           Span = Span.union f.Span a.Span })

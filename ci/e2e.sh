@@ -2300,6 +2300,34 @@ echo "$out" | grep -qF '$"{f}.bak"' || fail "the field-glue teaching: $out"
 rm -rf "$fspdir"
 echo "e2e ok: field-splices — \$x.f, nested, \$@x.f and ^\$x.f are one word each; \$f.bak on a string teaches interpolation"
 
+# arm-blocks [D:arm-blocks]: an arm and an else arm a text block on their
+# head line; a block as a trailing argument teaches the pipe
+abdir=$(mkweirtmp)
+cat > "$abdir/ab.weir" <<'WEOF'
+let pick n =
+    match n with
+    | 1 -> <<<
+        one
+    | _ -> $<<<
+        other {n}
+let tail ok =
+    if ok then ["yes"]
+    else <<<
+        no
+pick 1 |> Seq.iter print
+pick 2 |> Seq.iter print
+tail false |> Seq.iter print
+WEOF
+out=$(cd "$abdir" && $BIN ab.weir 2>&1) || fail "arm-blocks must run: $out"
+[ "$out" = "one
+other 2
+no" ] || fail "arm-blocks: arm and else blocks: $out"
+printf 'File.write "f.txt" <<<\n    hi\n' > "$abdir/arg.weir"
+out=$(cd "$abdir" && $BIN check arg.weir 2>&1) && fail "a trailing block argument must refuse: $out" || true
+echo "$out" | grep -qF "cannot be a trailing argument" || fail "the trailing-block teaching: $out"
+rm -rf "$abdir"
+echo "e2e ok: arm-blocks — arm and else blocks run; a trailing block argument teaches the pipe"
+
 cat > "$widir/envval.weir" <<'WEOF'
 let vars = [Env.pair "WQ" "carried"]
 let got = within env vars
