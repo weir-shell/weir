@@ -22268,6 +22268,25 @@ let orPatternTests =
           test "a guard applies to every alternative" {
               expectValue "match 2 with | 1 | 2 when false -> 0 | 1 | 2 -> 1 | _ -> 9" (VInt 1L)
           }
+          test "an arm takes at most 64 alternatives; the 65th refuses at its own column" {
+              // each alternative re-checks the shared body — the cap bounds it
+              let line n =
+                  let alts = [ 0 .. n - 1 ] |> List.map string |> String.concat " | "
+                  $"let x = match 1 with | {alts} -> 0 | _ -> 1"
+
+              match Weir.Parser.parseLineFull cmdResolver (line 64) with
+              | Ok _ -> ()
+              | Error f -> failtest f.Message
+
+              let text = line 65
+
+              match Weir.Parser.parseLineFull cmdResolver text with
+              | Ok _ -> failtest "65 alternatives must refuse"
+              | Error f ->
+                  Expect.stringContains f.Message "at most 64 alternatives" "the cap"
+                  Expect.stringContains f.Message "Seq.contains" "the repair"
+                  Expect.equal f.Col (Some(text.IndexOf " 64 " + 2)) "caret on the 65th"
+          }
           test "a command arm ends before an or-pattern arm" {
               match Weir.Parser.parseLineFull cmdResolver "match 1 with | 0 -> git pull | 1 | 2 -> git fetch | _ -> ()" with
               | Ok s -> Expect.stringContains (Weir.Ast.sexprStmt s) "\"pull\"" "the first arm's command is its own"

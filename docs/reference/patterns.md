@@ -147,7 +147,8 @@ Alternatives share one arm: `| "a" | "b" -> …`, `| Debug | Info -> …`.
 Each alternative behaves as its own arm with the same guard and body,
 so a union's alternatives count toward exhaustiveness. An alternative
 cannot bind a name yet — `| (n, 0) | (0, n) -> n` is an error; write one
-arm per alternative.
+arm per alternative. An arm takes at most 64 alternatives; for a longer
+list, test membership in a guard: `| x when Seq.contains x values -> …`.
 
 ```weir
 type Level = Debug | Info | Warn | Error

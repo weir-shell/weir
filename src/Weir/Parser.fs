@@ -2228,11 +2228,22 @@ let private withPatNames (p: Pattern) (inner: Parser<'a, unit>) : Parser<'a, uni
 let private orAlternative =
     attempt (pchar '|' .>> notFollowedBy (anyOf "|>") .>> ws) >>. commaPats
 
+let private maxOrAlternatives = 64
+
 let private matchArm =
     // bare-comma tuple patterns [D:bare-comma]: the arm rides the same
     // one-or-tuple production as binder positions — `when`/`->` are not
     // commas, so the guard sits outside the tuple by construction
     commaPats .>>. many orAlternative
+    >>= fun (p, alts) ->
+        // each alternative re-checks the shared body (one arm apiece), so
+        // the count is capped [D:or-patterns] — work stays O(cap × body)
+        match List.tryItem (maxOrAlternatives - 1) alts with
+        | Some extra ->
+            failFatallyAtCol
+                extra.PSpan.Start.Col
+                $"an or-pattern takes at most {maxOrAlternatives} alternatives — test membership in a guard instead: `| x when Seq.contains x values ->`"
+        | None -> preturn (p, alts)
     >>= fun (p, alts) ->
         // or-patterns desugar to one arm per alternative sharing the
         // guard and body [D:or-patterns]; v1 alternatives bind no names

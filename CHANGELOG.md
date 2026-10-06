@@ -35,7 +35,9 @@
   `| Debug | Info -> …` share one arm — F#'s spelling. Each alternative
   counts toward exhaustiveness and shares the arm's guard. An
   alternative cannot bind a name yet (`| (n, 0) | (0, n) -> n` asks you
-  to split the arm).
+  to split the arm), and an arm takes at most 64 alternatives — for a
+  longer list, test membership in a guard (`| x when Seq.contains x
+  values ->`).
 
 ### Changed
 
