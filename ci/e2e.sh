@@ -2283,6 +2283,23 @@ echo "$out" | grep -qF 'inside parentheses, a command needs $(' || fail "the par
 rm -rf "$lldir"
 echo "e2e ok: lambda-lets — dangling, nested and one-line lambda bodies take command lets; a paren interior teaches \$()"
 
+# field-splices [D:field-splices]: $x.f, nested, $@x.f and ^$x.f splice the
+# field path as one word; bash's $f.bak on a string teaches interpolation
+fspdir=$(mkweirtmp)
+cat > "$fspdir/fs.weir" <<'WEOF'
+type Out = { dir: string }
+type Cli = { tag: string; bin: string; files: seq<string>; out: Out }
+let cli = { tag = "v 1"; bin = "printf"; files = ["a"; "b c"]; out = { dir = "o" } }
+^$cli.bin "[%s]" $cli.tag $cli.out.dir $@cli.files
+WEOF
+out=$(cd "$fspdir" && $BIN fs.weir 2>&1) || fail "field-splices must run: $out"
+[ "$out" = "[v 1][o][a][b c]" ] || fail "field-splices: one word per field, the head from a field: $out"
+printf 'let f = "a.txt"\ncp $f $f.bak\n' > "$fspdir/glue.weir"
+out=$(cd "$fspdir" && $BIN check glue.weir 2>&1) && fail "\$f.bak on a string must refuse: $out" || true
+echo "$out" | grep -qF '$"{f}.bak"' || fail "the field-glue teaching: $out"
+rm -rf "$fspdir"
+echo "e2e ok: field-splices — \$x.f, nested, \$@x.f and ^\$x.f are one word each; \$f.bak on a string teaches interpolation"
+
 cat > "$widir/envval.weir" <<'WEOF'
 let vars = [Env.pair "WQ" "carried"]
 let got = within env vars

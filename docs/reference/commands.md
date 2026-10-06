@@ -70,6 +70,18 @@ echo tagged $marker (40 + 2)
 echo files: $@(["a.txt"; "b.txt"])
 ```
 
+A splice reads a record field path too — `$cli.tag`, `$cli.out.dir`,
+`$@cli.files`, and a dynamic head `^$cli.bin` — still one word (one
+program for a head). Only an identifier extends the path: `$x.` and
+`$x/y` are refused as glued words. bash's `$f.bak` therefore reads a
+field: on a string it is an error naming `$"{f}.bak"`.
+
+```weir
+type Cli = { tag: string; bin: string }
+let cli = { tag = "v1"; bin = "echo" }
+^$cli.bin release $cli.tag
+```
+
 A typed value does not splice implicitly — a `Duration` argv slot
 is refused with the explicit forms named (`Duration.toMillis d`, or
 `show d`). A `Secret` splices in the clear (that is what the type
