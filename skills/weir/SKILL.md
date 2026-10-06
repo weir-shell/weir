@@ -516,7 +516,7 @@ print $"{key} -> {value}"
   `fromBytes` (16 bytes, big-endian). Eq/Show/Ord admit (sort/min/max)
   but there is no `<` — identifiers are not quantities, as strings.
   JSON and YAML fields CROSS (the canonical string); `$id` splices into argv as
-  that text; `print` refuses (use `$"{id}"` or `show`). `v4`/`v7`/`v7At`
+  that text; `print id` prints it [D:print-canonical]. `v4`/`v7`/`v7At`
   are ambient effects like `Instant.now` (`pure` refuses them,
   `readonly` admits); `v5` is pure.
 - Secrets are `Secret` (a plain string inside — a RENDERING marker, not

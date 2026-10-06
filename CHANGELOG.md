@@ -51,6 +51,11 @@
   now its own command, on one line or indented; quote `"else"` to pass
   the word to a command there.
 
+- **`print` takes a `Uuid`.** `Uuid.v7 () |> print` was refused; a
+  `Uuid` now prints its canonical text, like the other types with one
+  text form (`printerr` too). `Instant`, `Duration` and `Size` still
+  print through `show` or an interpolation.
+
 - **`Uuid` crosses YAML, and `Instant`'s YAML refusal names the fix.**
   A `Uuid` field reads and writes through `to yaml`/`from yaml` as it
   already did through JSON. An `Instant` field at the YAML boundary now
