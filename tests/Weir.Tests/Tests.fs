@@ -11585,9 +11585,12 @@ let interpTests =
           test "bool hole renders true/false" { expectValue "$\"flag: {1 == 1}\"" (VStr "flag: true") }
           test "string literal inside a hole" { expectValue "$\"a{\"b\"}c\"" (VStr "abc") }
           test "let-bound hole" { expectValue "let n = [1; 2] |> Seq.length in $\"n is {n}\"" (VStr "n is 2") }
-          test "unresolved hole defaults to string" {
+          test "an unresolved hole generalizes [D:hole-generic]" {
               let te = checkOk "fun x -> $\"v={x}\""
-              Expect.equal te.Ty (TFun(TStr, TStr)) "hole var binds to string"
+
+              match te.Ty with
+              | TFun(TVar _, TStr) -> ()
+              | t -> failtest $"expected 'a -> string, got {formatTy t}"
           }
           test "a function still rejects in a hole [D:interp-show]" {
               let terr = checkErr "$\"{Str.trim}\""
@@ -12064,8 +12067,10 @@ let agentFindingsTests =
               expectValue "[1; 2] |> Seq.map (fun k -> $\"n={k}\") |> Seq.head" (VStr "n=1")
               expectValue "1 |> ((fun k -> $\"{k}\") >> Str.trim)" (VStr "1")
           }
-          test "genuinely-unresolved holes still default to string" {
-              Expect.equal (formatTy (checkOk "fun k -> $\"{k}\"").Ty) "string -> string" ""
+          test "a hole on a generalized var stays generic; a non-generalizing statement still defaults" {
+              Expect.stringEnds (formatTy (checkOk "fun k -> $\"{k}\"").Ty) "-> string" "generic param"
+              Expect.isFalse ((formatTy (checkOk "fun k -> $\"{k}\"").Ty).StartsWith "string") "not defaulted"
+              checkOk "[] |> Seq.iter (fun k -> print $\"{k}\")" |> ignore
           }
           test "a function still rejects in a DEFERRED hole, at the hole [D:interp-show]" {
               let terr = checkErr "Str.trim |> (fun f -> $\"{f}\")"
@@ -20574,13 +20579,8 @@ let dxMessageTests =
                    |> List.exists (fun d -> d.Message.Contains "Post"))
                   "a union case is never suggested for a module"
           }
-          test "D6: a hole-defaulted parameter's mismatch names the defaulting decision" {
-              mustSay
-                  [ "let name n = $\"item-{n}\""; "print (name 5)" ]
-                  "a bare interpolation hole defaulted its parameter"
-                  "hole default"
-
-              mustSay [ "let name n = $\"item-{n}\""; "print (name 5)" ] "the hole at 1:22" "anchor"
+          test "D6's receipt runs: a hole parameter generalizes [D:hole-generic]" {
+              Expect.isEmpty (diagsOf [ "let name n = $\"item-{n}\""; "print (name 5)"; "print (name \"x\")" ]) "generic"
           }
           test "D7: Seq.iter print resolves at the use site; non-printables still refuse" {
               let clean, _, _, _ = Weir.Script.analyzeLines "pin.weir" [ "[1] |> Seq.iter print" ]
@@ -22271,6 +22271,57 @@ let fieldSpliceTests =
               | Error f -> Expect.stringContains f.Message "a name or (expr) after '$@'" "label"
           } ]
 
+let holeGenericTests =
+    // a hole on a generalized var carries Render — Show minus a top-level
+    // Secret — instead of the string default [D:hole-generic]
+    let run (lines: string list) =
+        let ds, _, _, _ = Weir.Script.analyzeLines "hg.weir" lines
+        ds |> List.filter (fun d -> d.Severity = "error") |> List.map (fun d -> d.Message)
+
+    testList
+        "generic interpolation holes [D:hole-generic]"
+        [ test "a row-typed field hole works at its caller" {
+              Expect.isEmpty
+                  (run
+                      [ "type Spec = { name: string; port: int }"
+                        "let addr s = $\"{s.name}:{s.port}\""
+                        "print (addr { name = \"a\"; port = 1 })" ])
+                  "the survey's receipt"
+          }
+          test "one function renders int, string, float, record and seq" {
+              expectValue "let f x = $\"<{x}>\" in f 1 + f \"s\" + f [1; 2]" (VStr "<1><s><[1; 2]>")
+          }
+          test "a top-level Secret refuses at the call; a nested one renders masked" {
+              let ms = run [ "let f x = $\"{x}\""; "print (f (Secret.of \"a\"))" ]
+              Expect.isTrue (ms |> List.exists (fun m -> m.Contains "a Secret does not interpolate")) $"{ms}"
+
+              Expect.isEmpty
+                  (run [ "type R = { s: Secret }"; "let f x = $\"{x}\""; "print (f { s = Secret.of \"a\" })" ])
+                  "nested"
+          }
+          test "a function argument refuses with the show law" {
+              let ms = run [ "let f x = $\"{x}\""; "print (f (fun y -> y))" ]
+              Expect.isTrue (ms |> List.exists (fun m -> m.Contains "cannot be shown")) $"{ms}"
+          }
+          test "an earlier generic let's var names never pin a later hole" {
+              // statement ctxs restart their fresh counter: a closed env
+              // scheme must not be resolved through this ctx's subst
+              Expect.isEmpty
+                  (run
+                      [ "let dash n = $\"-{n}\""
+                        "type Spec = { name: string; port: int }"
+                        "let addr s = $\"{s.name}:{s.port}\""
+                        "print (addr { name = \"a\"; port = 1 } + dash 1)" ])
+                  "ordering-independent"
+          }
+          test "an inner let generalizes too" {
+              expectValue "let lbl n = $\"({n})\" in lbl 1 + lbl \"a\"" (VStr "(1)(a)")
+          }
+          test "argv splices stay scalar-exact" {
+              let ms = run [ "let f x = echo $x"; "f [1]" ]
+              Expect.isNonEmpty ms "a seq is not one argv word"
+          } ]
+
 let armBlockTests =
     // a `| pat ->` arm and an `else` take a text block as `then` does;
     // a block after an application teaches the pipe [D:arm-blocks]
@@ -23489,6 +23540,7 @@ let allTests =
           lambdaLetTests
           fieldSpliceTests
           armBlockTests
+          holeGenericTests
           tildeLiteralTests
           tildeTests
           aliasCompleteTests

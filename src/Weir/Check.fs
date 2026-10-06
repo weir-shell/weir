@@ -493,6 +493,16 @@ let private occurs (ctx: Ctx) (v: string) (ty: Ty) : bool =
 
     go ty
 
+// the hole law's refusals [D:interp-show] [D:hole-generic] — one text
+// for the eager check and an instantiated Render constraint
+let private holeDescribe (t: Ty) : string =
+    match t with
+    // a Secret does not interpolate [D:secret]: `$"token: {s}"` is how a
+    // secret reaches a log line. show renders ***; using the value is
+    // the deliberate Secret.reveal
+    | TSecret -> "a Secret does not interpolate — Secret.reveal s to use its value, or show s to render ***"
+    | t -> $"interpolation holes render what show renders; {formatTy t} cannot be shown (functions never render)"
+
 let private instantiate (ctx: Ctx) (span: Span) (sch: Scheme) : Ty =
     if Set.isEmpty sch.Forall then
         sch.Ty
@@ -576,16 +586,26 @@ let private instantiate (ctx: Ctx) (span: Span) (sch: Scheme) : Ty =
                                     | _ -> $"show cannot render functions; this is {formatTy t}"
                             | Cls.Ord ->
                                 fun t ->
-                                    $"cannot sort by this key: {formatTy t} cannot be ordered — keys are int, float, string, bool, Duration, Size, Instant, or Uuid" })
+                                    $"cannot sort by this key: {formatTy t} cannot be ordered — keys are int, float, string, bool, Duration, Size, Instant, or Uuid"
+                            | Cls.Render -> holeDescribe })
 
                 ctx.Cons <- Map.add v' (ps @ (Map.tryFind v' ctx.Cons |> Option.defaultValue [])) ctx.Cons
             | None -> ()
 
         rename sch.Ty
 
+// a fully quantified scheme is closed — and usually from another
+// statement's ctx, whose var names this ctx's subst may reuse, so it
+// must not be resolved here [D:hole-generic]
 let private envFreeVars (ctx: Ctx) (env: TypeEnv) : Set<string> =
     env.Values
-    |> Map.fold (fun acc _ sch -> acc + (tyVars (finalTy ctx sch.Ty) - sch.Forall)) Set.empty
+    |> Map.fold
+        (fun acc _ sch ->
+            if Set.isEmpty (tyVars sch.Ty - sch.Forall) then
+                acc
+            else
+                acc + (tyVars (finalTy ctx sch.Ty) - sch.Forall))
+        Set.empty
 
 // The class solver. Concrete types run the shape predicate; applied
 // constructors decompose structurally; bare vars (and row vars) carry
@@ -593,20 +613,26 @@ let private envFreeVars (ctx: Ctx) (env: TypeEnv) : Set<string> =
 // resolve. Failure formats the original demanded type (matching the
 // pre-class message families). Fully erased: the classes have no
 // runtime presence.
-let private demand (ctx: Ctx) (env: TypeEnv) (p: Pending) (ty0: Ty) : Result<unit, TypeError> =
-    let pend (name: string) =
+let private demand (ctx: Ctx) (env: TypeEnv) (p0: Pending) (ty0: Ty) : Result<unit, TypeError> =
+    let pend (p: Pending) (name: string) =
         ctx.Cons <- Map.add name (p :: (Map.tryFind name ctx.Cons |> Option.defaultValue [])) ctx.Cons
 
-    let rec ok (seen: Set<string>) (ty: Ty) : bool =
+    let rec okAs (p: Pending) (seen: Set<string>) (ty: Ty) : bool =
+        let ok = okAs p
+
         match resolve ctx ty with
         | TVar v ->
-            pend v
+            pend p v
             true
         | TRowVar(r, _) ->
             // rides the row; discharges when the row does (all fields
             // then satisfy the class, recursively)
-            pend r
+            pend p r
             true
+        // Render is Show with the top-level Secret refused
+        // [D:hole-generic]; below the top a Secret renders masked
+        | TSecret when p.Cls = Cls.Render -> false
+        | t when p.Cls = Cls.Render -> okAs { p with Cls = Cls.Show } seen t
         | t ->
             let decompose (n: string) (targs: Ty list) =
                 let key = formatTy t
@@ -670,14 +696,16 @@ let private demand (ctx: Ctx) (env: TypeEnv) (p: Pending) (ty0: Ty) : Result<uni
             // [D:uuid] — byte order, which is time order for v7
             | Cls.Ord, (TInt | TFloat | TStr | TBool | TDur | TSize | TInstant | TUuid) -> true
             | Cls.Ord, _ -> false
-            // vars and row vars are consumed by the outer match arms;
-            // the compiler cannot see that through this nesting
+            // vars and row vars are consumed by the outer match arms, and
+            // Render by its delegation; the compiler cannot see that
+            // through this nesting
             | _, (TVar _ | TRowVar _) -> true
+            | Cls.Render, _ -> false
 
-    if ok Set.empty ty0 then
+    if okAs p0 Set.empty ty0 then
         Ok()
     else
-        err p.Span (p.Describe(finalTy ctx ty0))
+        err p0.Span (p0.Describe(finalTy ctx ty0))
 
 // the splice law, shared by the eager check and the deferred
 // discharge [D:interp-show]: holes consult the Show class (one arm
@@ -692,22 +720,13 @@ let private spliceAdmit (ctx: Ctx) (env: TypeEnv) (site: SpliceSite) (span: Span
     | ty ->
         match site with
         | Hole ->
-            match ty with
-            // a Secret does not interpolate [D:secret]: `$"token: {s}"` is
-            // how a secret reaches a log line. show renders ***; using the
-            // value is the deliberate Secret.reveal
-            | TSecret ->
-                err span "a Secret does not interpolate — Secret.reveal s to use its value, or show s to render ***"
-            | _ ->
-                demand
-                    ctx
-                    env
-                    { Cls = Cls.Show
-                      Span = span
-                      Describe =
-                        fun t ->
-                            $"interpolation holes render what show renders; {formatTy t} cannot be shown (functions never render)" }
-                    ty
+            demand
+                ctx
+                env
+                { Cls = Cls.Render
+                  Span = span
+                  Describe = holeDescribe }
+                ty
         | CmdArg ->
             match ty with
             // a Secret splices to argv [D:secret]: `curl -H $auth` must
@@ -4519,7 +4538,9 @@ and private checkSpine
             // when a defaulted-to-string parameter causes the mismatch,
             // say so and name the anchor (PLAN-dx-review D6): the string
             // came from a defaulting decision in the callee's body, not
-            // from anything visible at the call
+            // from anything visible at the call. A hole on a generalized
+            // var no longer defaults [D:hole-generic]; this serves the
+            // defaults a scheme still records
             let nameHoleDefault (paramTy: Ty) (e: TypeError) : TypeError =
                 let defaults =
                     match thead.Kind with
@@ -4960,7 +4981,10 @@ and private checkScalarSplice (ctx: Ctx) (env: TypeEnv) (site: SpliceSite) (arg:
         | TVar v ->
             // defer [D:splice-default-last]: the enclosing statement's
             // inference may still resolve v (pipe-into-lambda, say);
-            // default-or-reject happens at the boundary
+            // default-or-reject happens at the boundary. A hole demands
+            // Render now, so a let that generalizes v carries the class
+            // [D:hole-generic]
+            do! (if site = Hole then spliceAdmit ctx env site arg.Span targ.Ty else Ok())
             ctx.PendingSplices <- (v, arg.Span, site) :: ctx.PendingSplices
             return targ
         | ty ->
@@ -5098,7 +5122,10 @@ and private checkYamlItem (ctx: Ctx) (env: TypeEnv) (item: YamlTplItem) : Result
 // still-unresolved holes default to string, resolved-to-scalar holes
 // pass, anything else gets the original rejection at the hole's span
 // [D:splice-default-last]
-let private resolvePendingSplices (ctx: Ctx) (env: TypeEnv) : Result<unit, TypeError> =
+// `generic`: the vars the statement's binding will generalize — a hole
+// on one keeps its Render constraint for the scheme instead of the
+// string default [D:hole-generic]
+let private resolvePendingSplices (ctx: Ctx) (env: TypeEnv) (generic: Set<string>) : Result<unit, TypeError> =
     ctx.PendingSplices
     |> List.rev
     |> List.fold
@@ -5106,6 +5133,7 @@ let private resolvePendingSplices (ctx: Ctx) (env: TypeEnv) : Result<unit, TypeE
             acc
             |> Result.bind (fun () ->
                 match resolve ctx (TVar v) with
+                | TVar u when site = Hole && generic.Contains u -> Ok()
                 | TVar _ ->
                     // the string default fires — record the hole's
                     // physical anchor for the scheme (D6); only interp
@@ -5325,8 +5353,11 @@ let typecheckBinderCore
             match bind ctx env pat.PSpan shape te.Ty with
             | Error e -> Error e
             | Ok() ->
+                let generic =
+                    (binds |> List.map (fun (_, ty) -> tyVars (finalTy ctx ty)) |> Set.unionMany)
+                    - envFreeVars ctx env
 
-                match resolvePendingSplices ctx env with
+                match resolvePendingSplices ctx env generic with
                 | Error e -> Error e
                 | Ok() ->
                     let schemes = binds |> List.map (generalizeBinding ctx env)
@@ -5371,7 +5402,11 @@ let typecheckWithCore
     match infer ctx env expr with
     | Error e -> Error e
     | Ok te ->
-        match resolvePendingSplices ctx env with
+        // the result's free vars generalize (the SLet scheme takes the
+        // residue below) — a hole on one stays generic [D:hole-generic]
+        let generic = tyVars (finalTy ctx te.Ty) - envFreeVars ctx env
+
+        match resolvePendingSplices ctx env generic with
         | Error e -> Error e
         | Ok() ->
 
@@ -5735,7 +5770,7 @@ let private typecheckAgainstSigCore (env: TypeEnv) (sigTy: Ty) (expr: Expr) : Re
     match go env expected0 expr id with
     | Error f -> Error f
     | Ok te ->
-        match resolvePendingSplices ctx env with
+        match resolvePendingSplices ctx env Set.empty with
         | Error terr -> Error(SigBody terr)
         | Ok() ->
             let te = finalizeExpr ctx te

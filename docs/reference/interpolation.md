@@ -24,22 +24,26 @@ splice heredoc swaps the marker instead: `$name`/`${expr}`
 substitute and braces stay literal
 ([Lexical](lexical.md#strings)).
 
-## The bare-hole default
+## Generic holes
 
-A hole must give its expression a concrete type. When the
-expression is an unresolved parameter, a bare hole defaults it to
-`string` — so this function takes a string, and an int argument is
-a type error that names the repair:
+A hole on a parameter is generic, exactly where `show` would be: the
+function takes any value a hole can render, and a row-typed field
+keeps its polymorphism.
 
 ```weir
 let dash n = $"-{n}"
-print (dash "5")
+print (dash 5 + dash "x")
+
+type Spec = { name: string; port: int }
+let addr s = $"{s.name}:{s.port}"
+print (addr { name = "a"; port = 1 })
 ```
 
-The error at a mismatched call site says: a typed use in the hole
-fixes it (`{n + 0}` makes `n` an int), or pass a string. A
-row-typed field keeps its polymorphism through `show` where a bare
-hole would default it: `$"{show c.port}"`.
+A hole renders what `show` renders, minus a `Secret`: passing one
+to such a function is an error at the call, as it is in a hole
+written directly (a Secret nested in a record renders masked). A
+hole whose type nothing generalizes — inside a statement that binds
+no name — defaults to `string`.
 
 ## `show`
 
