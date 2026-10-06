@@ -39,6 +39,14 @@
   longer list, test membership in a guard (`| x when Seq.contains x
   values ->`).
 
+- **Record fields splice into commands: `$cli.tag`.** `git tag
+  $cli.tag`, `$cli.out.dir`, `$@cli.files` and a dynamic head
+  `^$cli.bin` each read the field path as one word — the `(cli.tag)`
+  detour retires, and a head held in a record no longer needs its own
+  `let`. Only a name continues the path (`$x.` and `$x/y` still refuse
+  as glued words), so bash's `$f.bak` is an error on a string that
+  names `$"{f}.bak"`.
+
 ### Changed
 
 - **`<<` is gone — weir composes left to right.** `f << g` was exactly

@@ -432,6 +432,20 @@ let private spanned (p: Parser<'a, unit>) : Parser<'a * Span, unit> =
 
 let private rawWord = many1Satisfy2L isIdentStart isIdentCont "identifier"
 
+// a splice's name and its `.field` path [D:field-splices]: `$cli.tag`
+// is one word, the field's value — only an identifier tail extends it,
+// so `$x.` and `$x/y` still meet the concatenation guard
+let private splicePath (sigil: Parser<unit, unit>) : Parser<Expr, unit> =
+    spanned (sigil >>. rawWord)
+    .>>. many (attempt (pchar '.' >>. spanned rawWord))
+    |>> fun ((n, sp), fields) ->
+        fields
+        |> List.fold
+            (fun target (f, fsp) ->
+                { Kind = EField(target, f, fsp)
+                  Span = { Start = sp.Start; End = fsp.End } })
+            { Kind = EVar n; Span = sp }
+
 // the two-pipe cliff [D:pipe-hint]: a bare `|` after a completed
 // expression is not an operator — name the spelling instead of
 // dumping the token set (`||` and `|>` belong to the expression
@@ -3719,8 +3733,7 @@ let private spliceVar =
                  else
                      "a splice cannot join a word under construction — spell it with a space (`--flag $x`) or an interpolated arg (`$\"--flag={x}\"`)"
              ))
-    >>. spanned (pchar '$' >>. rawWord |>> EVar)
-    |>> mkExpr
+    >>. splicePath (skipChar '$')
     .>> ws
 
 // $@name / $@(expr) — the argv splat [D:argv-splat]: N words, never
@@ -3732,19 +3745,12 @@ let private spliceSplat: Parser<Expr, unit> =
     >>. notMidWord
             "a splat cannot join a word under construction — map the prefix onto the elements, or pass it as a separate argument"
     >>. spanned (
-        pstring "$@"
-        >>. (choice
-                 [ rawWord |>> Choice1Of2
-                   (pchar '(' >>. ws >>. withExprParen true (clearStmtLetCmd seqExpr) .>> ws .>> pchar ')')
-                   |>> Choice2Of2 ]
-             <?> "a name or (expr) after '$@' — the argv splat")
+        attempt (splicePath (skipString "$@"))
+        <|> (pstring "$@"
+             >>. ((pchar '(' >>. ws >>. withExprParen true (clearStmtLetCmd seqExpr) .>> ws .>> pchar ')')
+                  <?> "a name or (expr) after '$@' — the argv splat"))
     )
-    |>> (fun (c, span) ->
-        let inner =
-            match c with
-            | Choice1Of2 n -> { Kind = EVar n; Span = span }
-            | Choice2Of2 e -> e
-
+    |>> (fun (inner, span) ->
         { Kind = ESplat inner; Span = span })
     .>> ws
 
@@ -3906,8 +3912,7 @@ let private commandSegment
         attempt (getPosition .>> pchar '^' .>> followedBy (pchar '$'))
         >>= fun startP ->
             (captureSigil |>> (fun e -> "$(…)", e)
-             <|> (spanned (pchar '$' >>. rawWord)
-                  |>> fun (n, sp) -> $"${n}", { Kind = EVar n; Span = sp }))
+             <|> (splicePath (skipChar '$') |>> fun e -> $"${Weir.Ast.sexpr e}", e))
             .>> ws
             |>> fun (disp, e) ->
                 let span = { Start = pos startP; End = e.Span.End }

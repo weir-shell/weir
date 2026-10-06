@@ -36,7 +36,7 @@ type Cli = {
     [<Default "weir">]
     bin: string
     /// fail if fewer than this many cases teach a repair
-    [<Default 28>]
+    [<Default 29>]
     baseline: int
 }
 
@@ -88,7 +88,9 @@ let corpus =
       ("fs-backward-compose", [ @"let f n = n + 1"; @"let g = f << f"; @"print (show (g 1))" ])
       ("bash-line-continuation", [ @"echo a \"; @"    b" ])
       ("bash-escaped-semicolon", [ @"find . -maxdepth 0 -exec echo {} \;" ])
-      ("bash-alias-bypass", [ @"\ls -la" ]) ]
+      ("bash-alias-bypass", [ @"\ls -la" ])
+      // [D:field-splices]
+      ("bash-field-glue", [ @"let f = ""a.txt"""; @"cp $f $f.bak" ]) ]
 
 // a message "teaches" if it names a repair; the phrases below are the
 // vocabulary the existing good messages already use
@@ -117,7 +119,8 @@ let teachPhrases =
       "weir composes"
       "inequality is"
       "quote the word"
-      "continues a command line" ]
+      "continues a command line"
+      "interpolate one word" ]
 
 let checkRun path =
     let r = sh -c $"'{cli.bin}' check '{path}' 2>&1" | complete

@@ -1329,7 +1329,10 @@ Dir.deleteAll d
 // 'File' alone is a module, not the row-maker — that is File.stat
 Path.glob "*" |> Seq.map (File)
 ```
-- Splice values into commands: `$x` is ONE word; `$@xs` (and
+- Splice values into commands: `$x` is ONE word — a record field
+  path too (`$cli.tag`, `$cli.out.dir`, `$@cli.files`, `^$cli.bin`)
+  [D:field-splices]; only an identifier extends the path, and bash's
+  `$f.bak` on a string is a check error naming `$"{f}.bak"`. `$@xs` (and
   `$@(expr)`) is N words — the argv splat, each `seq<string>` element
   one word, never re-split, never re-joined (no injection either
   way). `$@xs` is to `$x` what `yield!` is to `yield`. An empty seq
@@ -2181,6 +2184,7 @@ print c.flag
   through; comments need line start or a preceding space.
 - Every command head is a LITERAL program name resolved at check
   time, OR a `^$`-spliced VALUE head [D:dynamic-head]: `^$tool arg`
+  (or a field, `^$cli.bin arg`)
   runs the program the string `tool` names — `^`'s force-external law
   on a runtime string, resolved at RUN (check draws no cmd-not-found
   there; a missing program is a located run error naming the value).

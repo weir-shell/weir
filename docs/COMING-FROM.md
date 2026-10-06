@@ -31,6 +31,7 @@ representable.
 | `find … -exec cmd {} \;` | `find … -exec cmd {} ";"` — no backslash escapes in argv; quote the word |
 | `\ls` (skip the alias) | `^ls` — runs the PATH program |
 | `[ "$a" != "$b" ]` | `a <> b` — `!=` teaches `<>` |
+| `cp "$f" "$f.bak"` | `cp $f $"{f}.bak"` — `$f.bak` reads field `bak` (`$cli.tag` is a record field), so on a string it teaches the interpolation |
 
 ```weir
 let msg = "two words"

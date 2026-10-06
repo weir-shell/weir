@@ -4201,6 +4201,22 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                             return! err a.Span $"$@ splices a seq<string>; this is {formatTy t} — one value? use $x"
                         | t -> return! err a.Span $"$@ splices a seq<string>; this is {formatTy t}"
                     }
+                // bash's `$file.bak` reads a field here [D:field-splices]:
+                // on a non-record, name the glued spelling
+                | EField({ Kind = EVar n } as target, field, _) ->
+                    result {
+                        let! ttarget = infer ctx env target
+
+                        match resolve ctx ttarget.Ty with
+                        | TNamed _
+                        | TVar _
+                        | TRowVar _ -> return! checkScalarSplice ctx env CmdArg a
+                        | ty ->
+                            return!
+                                err
+                                    a.Span
+                                    $"`{n}.{field}` reads field '{field}', but {n} is {formatTy ty}, which has no fields — to glue text onto the value, interpolate one word: $\"{{{n}}}.{field}\""
+                    }
                 | _ -> checkScalarSplice ctx env CmdArg a
 
             let! targs =

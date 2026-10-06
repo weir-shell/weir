@@ -22225,6 +22225,52 @@ let tildeLiteralTests =
                   runCmd $"cd \"{before}\""
           } ]
 
+let fieldSpliceTests =
+    // a splice's `.field` path is one word [D:field-splices]
+    let errs (lines: string list) =
+        let ds, _, _, _ = Weir.Script.analyzeLines "fs.weir" lines
+        ds |> List.filter (fun d -> d.Severity = "error") |> List.map (fun d -> d.Message)
+
+    let decl =
+        [ "type In = { name: string }"
+          "type Cli = { tag: string; bin: string; files: seq<string>; inner: In }"
+          "let cli = { tag = \"v1\"; bin = \"echo\"; files = [\"a\"]; inner = { name = \"d\" } }" ]
+
+    let sx line =
+        match Weir.Parser.parseLineFull cmdResolver line with
+        | Ok s -> Weir.Ast.sexprStmt s
+        | Error f -> failtest f.Message
+
+    testList
+        "field splices [D:field-splices]"
+        [ test "$x.f, $x.f.g, $@x.f and ^$x.f parse as field paths" {
+              Expect.stringContains (sx "echo $cli.tag") "cli.tag" "scalar"
+              Expect.stringContains (sx "echo $cli.inner.name") "cli.inner.name" "nested"
+              Expect.stringContains (sx "echo $@cli.files") "cli.files" "splat"
+              Expect.stringContains (sx "^$cli.bin hi") "cli.bin" "dynamic head"
+          }
+          test "record fields check as one word each" {
+              Expect.isEmpty (errs (decl @ [ "echo $cli.tag $cli.inner.name $@cli.files"; "^$cli.bin hi" ])) "all legal"
+          }
+          test "a non-record value teaches the interpolated spelling" {
+              let ms = errs [ "let file = \"a.txt\""; "cp $file $file.bak" ]
+
+              Expect.isTrue
+                  (ms |> List.exists (fun m -> m.Contains "but file is string" && m.Contains "$\"{file}.bak\""))
+                  $"{ms}"
+          }
+          test "only an identifier tail extends the splice; other glue still refuses" {
+              for line in [ "echo $x."; "echo $x/y"; "echo $x.1" ] do
+                  match Weir.Parser.parseLineFull cmdResolver line with
+                  | Ok s -> failtest $"{line} must refuse, got {Weir.Ast.sexprStmt s}"
+                  | Error f -> Expect.stringContains f.Message "do not concatenate" line
+          }
+          test "the splat keeps its name-or-expr expectation" {
+              match Weir.Parser.parseLineFull cmdResolver "echo $@ x" with
+              | Ok s -> failtest $"must refuse, got {Weir.Ast.sexprStmt s}"
+              | Error f -> Expect.stringContains f.Message "a name or (expr) after '$@'" "label"
+          } ]
+
 let lambdaLetTests =
     // a lambda body grants command lets wherever it sits [D:lambda-lets]
     let errs (lines: string list) =
@@ -23393,6 +23439,7 @@ let allTests =
           reflexTeachingTests
           orPatternTests
           lambdaLetTests
+          fieldSpliceTests
           tildeLiteralTests
           tildeTests
           aliasCompleteTests
