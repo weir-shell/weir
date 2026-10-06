@@ -377,6 +377,39 @@ let wireName (def: RecordDef) (field: string) : string =
         |> Option.defaultValue field
     | None -> field
 
+/// The declared value encodings [D:wire-codecs]: a closed set, one field
+/// attribute each, read by the json/yaml boundaries only — never by show
+/// or ==. Which type a codec fits is the wire table's answer (Check).
+type Codec =
+    | Iso8601
+    | EpochMs
+    | EpochSec
+    | Millis
+    | Seconds
+    | ByteCount
+
+let codecName (c: Codec) : string =
+    match c with
+    | Iso8601 -> "Iso8601"
+    | EpochMs -> "EpochMs"
+    | EpochSec -> "EpochSec"
+    | Millis -> "Millis"
+    | Seconds -> "Seconds"
+    | ByteCount -> "ByteCount"
+
+/// every codec, for the attribute registry
+let allCodecs = [ Iso8601; EpochMs; EpochSec; Millis; Seconds; ByteCount ]
+
+let codecOfName (name: string) : Codec option =
+    allCodecs |> List.tryFind (fun c -> codecName c = name)
+
+/// The codec attribute's single reader [D:wire-codecs]: the field's
+/// declared encoding, if any (fit was validated at the declaration)
+let fieldCodec (def: RecordDef) (field: string) : Codec option =
+    match Map.tryFind field def.Attrs with
+    | Some specs -> specs |> List.tryPick (fun (n, _) -> codecOfName n)
+    | None -> None
+
 /// The XML attribute a field reads [D:from-xml]: Some name when the field
 /// carries [<Attr>] (name defaults to the field) — else None (an element)
 let xmlAttr (def: RecordDef) (field: string) : string option =

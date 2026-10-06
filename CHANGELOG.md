@@ -21,6 +21,16 @@
   The program is still resolved at check time, and after the program
   name `CC=gcc` is an ordinary argument. A lone `FOO=1` teaches `let`.
 
+- **Declared codecs: `Instant`, `Duration` and `Size` fields cross
+  JSON and YAML.** Name the encoding on the field —
+  `[<Iso8601>] at: Instant`, `[<EpochMs>]`, `[<EpochSec>]`,
+  `[<Millis>]`/`[<Seconds>]` for a `Duration`, `[<ByteCount>]` for a
+  `Size` — and `to`/`from json`, `jsonl` and `yaml` all read the one
+  declaration, so a record round-trips without a hand-written wire
+  twin. An unannotated field still refuses, now naming the attributes
+  first. A codec that would drop sub-second precision raises instead
+  of truncating; `show` and `==` are unaffected.
+
 ### Fixed
 
 - **Editors and pagers get the terminal wherever a command runs as a

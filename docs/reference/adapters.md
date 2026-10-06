@@ -236,10 +236,35 @@ the same messages.
   its canonical lowercase string and reads back through `Uuid.parse`'s
   forms; a malformed string raises naming the field. An append-only
   JSON-lines log keyed by `Uuid.v7` stays sortable by id as text.
-- `Instant`, `Duration` and `Size` refuse: an epoch number and a text
-  form are both defensible, and the consumer's convention is not
-  weir's to guess. The message names the conversion (`Instant.epochMs`,
-  `Duration.toMillis`, `Size.toBytes`, or `show` for a string).
+- `Instant`, `Duration` and `Size` refuse on their own: an epoch
+  number and a text form are both defensible, and the consumer's
+  convention is not weir's to guess. The author names it on the field
+  with a codec attribute, or converts explicitly — the message offers
+  both.
+
+| Type | Codecs | Wire value |
+|---|---|---|
+| `Instant` | `[<Iso8601>]`, `[<EpochMs>]`, `[<EpochSec>]` | ISO 8601 string; epoch ms; epoch seconds |
+| `Duration` | `[<Millis>]`, `[<Seconds>]` | integer ms; integer seconds |
+| `Size` | `[<ByteCount>]` | integer bytes |
+
+```weir
+type Event = {
+    [<Iso8601>] at: Instant
+    [<Millis; Wire "elapsed_ms">] took: Duration
+}
+let line = [{ at = Instant.parse "2026-08-14T12:00:00Z"; took = 1500ms }] |> to jsonl |> Seq.head
+print line
+let back = [line] |> from jsonl Event |> Seq.head
+print (show back.took)
+```
+
+One declaration serves both directions, so the writer and the reader
+cannot disagree. A codec applies to a `T`, `Option<T>` or `seq<T>`
+field; it must fit the field's type, checked where the record is
+declared. `[<EpochSec>]` and `[<Seconds>]` raise on a value with
+sub-second precision rather than drop it. Codecs touch only `to`/`from
+json`, `jsonl` and `yaml` — `show` and `==` never see them.
 - `Bytes` refuses naming `Bytes.toBase64`.
 - `Secret` refuses outright — a credential does not serialize; the
   type itself is the reason, not an encoding.

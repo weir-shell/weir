@@ -18,6 +18,8 @@ type Shape =
     | SBool
     // read through the strict uuid parser [D:wire-table]
     | SUuid
+    // a field's declared encoding [D:wire-codecs]
+    | SCodec of Weir.Types.Codec
     | SOpt of Shape
     // (field, wire key, shape) [D:wire-keys] — matching reads the wire,
     // construction writes the field

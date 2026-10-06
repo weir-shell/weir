@@ -6689,7 +6689,14 @@ let attrDocs: Map<string, string> =
           "Tag",
           "[<Tag \"field\">] — marks a union as wire-tagged: the named field discriminates the case at the json/yaml boundary"
           "Other",
-          "[<Other>] — the open-world fallback case: wire tags matching no declared case land here (carries the raw tag as a string, or nothing)" ]
+          "[<Other>] — the open-world fallback case: wire tags matching no declared case land here (carries the raw tag as a string, or nothing)"
+          "Iso8601", "[<Iso8601>] — an Instant field crosses json/yaml as an ISO 8601 string"
+          "EpochMs", "[<EpochMs>] — an Instant field crosses json/yaml as integer epoch milliseconds"
+          "EpochSec",
+          "[<EpochSec>] — an Instant field crosses json/yaml as integer epoch seconds (a sub-second value raises on write)"
+          "Millis", "[<Millis>] — a Duration field crosses json/yaml as integer milliseconds"
+          "Seconds", "[<Seconds>] — a Duration field crosses json/yaml as integer seconds (a sub-second value raises on write)"
+          "ByteCount", "[<ByteCount>] — a Size field crosses json/yaml as an integer byte count" ]
 
 let adapterNames (dir: string) : string list =
     builtinDocs

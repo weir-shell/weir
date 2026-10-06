@@ -164,6 +164,9 @@ and TypedKind =
     | TETo of
         format: string *
         renames: Map<string, Map<string, string>> *
+        // record -> field -> declared codec [D:wire-codecs], the rename
+        // table's sibling (attrs never reach values)
+        codecs: Map<string, Map<string, Codec>> *
         // caseName -> (tagField, tagValue, isOther) for every tagged
         // union reachable from the serialized type [D:wire-unions] —
         // a VUnion value carries no type name, so the writer keys cases
@@ -1169,6 +1172,8 @@ type private WireStance =
     // the yaml read shape rides along, so a canonical type cannot exist
     // without saying how a document reads it
     | Canonical of yaml: Yaml.Shape
+    // refused on its own, crossing under a declared codec [D:wire-codecs]
+    | Encoded of codecs: Codec list * subject: string * repair: string
     | Refused of teach: (string -> string)
     | Walk
 
@@ -1183,11 +1188,19 @@ let private wireStance (ty: Ty) : WireStance =
     | TBool -> Canonical Yaml.SBool
     | TUuid -> Canonical Yaml.SUuid
     | TInstant ->
-        unrepresentable
-            "an Instant"
+        Encoded(
+            [ Iso8601; EpochMs; EpochSec ],
+            "an Instant",
             "convert explicitly (Instant.epochMs into an int field, or show for an ISO 8601 string)"
-    | TDur -> unrepresentable "Duration" "convert explicitly (Duration.toMillis into an int field, or show for a string)"
-    | TSize -> unrepresentable "Size" "convert explicitly (Size.toBytes into an int field, or show for a string)"
+        )
+    | TDur ->
+        Encoded(
+            [ Millis; Seconds ],
+            "Duration",
+            "convert explicitly (Duration.toMillis into an int field, or show for a string)"
+        )
+    | TSize ->
+        Encoded([ ByteCount ], "Size", "convert explicitly (Size.toBytes into an int field, or show for a string)")
     | TBytes -> unrepresentable "Bytes" "Bytes.toBase64 into a string field"
     // the type itself refuses, not an encoding [D:secret]
     | TSecret ->
@@ -1206,8 +1219,35 @@ let private wireStance (ty: Ty) : WireStance =
 let private (|WireCanonical|WireRefused|WireWalk|) (ty: Ty) =
     match wireStance ty with
     | Canonical shape -> WireCanonical shape
+    | Encoded(_, subject, repair) -> WireRefused(fun fmt -> $"{subject} is not representable in {fmt} — {repair}")
     | Refused teach -> WireRefused teach
     | Walk -> WireWalk
+
+// the scalar a codec on a field encodes [D:wire-codecs]: the field type
+// itself, or the element inside one Option or seq wrapper
+let private codecTarget (ty: Ty) : Ty =
+    match ty with
+    | TNamed("Option", [ inner ])
+    | TSeq inner -> inner
+    | t -> t
+
+let private codecsOf (ty: Ty) : Codec list =
+    match wireStance (codecTarget ty) with
+    | Encoded(cs, _, _) -> cs
+    | _ -> []
+
+let private codecAttrs (cs: Codec list) : string =
+    match cs |> List.map (fun c -> $"[<{codecName c}>]") with
+    | [ one ] -> one
+    | many -> (many |> List.take (many.Length - 1) |> String.concat ", ") + " or " + List.last many
+
+// an uncoded field whose type needs one: the refusal names the
+// attributes first [D:wire-codecs] — at a field, where one can attach
+let private uncodedFieldTeach (fmt: string) (fty: Ty) : string option =
+    match wireStance (codecTarget fty) with
+    | Encoded(cs, subject, repair) ->
+        Some $"{subject} is not representable in {fmt} on its own — declare the field's encoding ({codecAttrs cs}), or {repair}"
+    | _ -> None
 
 let private jsonAdmittedSet =
     "json fields are int, float, string, bool, Uuid, Option of an admitted type, a record of admitted fields, seq of an admitted type, a seq<string * T> mapping, or Map<string, T> of one"
@@ -1251,7 +1291,7 @@ let rec private jsonAdmitted
         match typeDefFor env n with
         | Some(Record def) when def.Params.IsEmpty ->
             allOk def.Fields (fun (fn, fty) ->
-                jsonAdmitted span env (n :: seen) (if path = "" then fn else $"{path}.{fn}") fty)
+                jsonField span env (n :: seen) def (if path = "" then fn else $"{path}.{fn}") fn fty)
         | Some(Record _) -> err span $"{at}'{n}' is generic; the JSON boundary needs monomorphic records"
         // a tagged union crosses [D:wire-unions]: every case's payload
         // record must admit; the [<Other>] case is string-or-nothing by
@@ -1269,8 +1309,24 @@ let rec private jsonAdmitted
         | None -> err span $"{at}unknown type '{n}'{didYouMean n (Map.keys env.Types)}"
     | ty -> err span $"{at}type {formatTy ty} is not admitted; {jsonAdmittedSet}"
 
+// one field's admission, for the record walk and the top-level record
+// alike: a coded field crosses under its codec [D:wire-codecs]
+and private jsonField
+    (span: Span)
+    (env: TypeEnv)
+    (seen: string list)
+    (def: RecordDef)
+    (fpath: string)
+    (fn: string)
+    (fty: Ty)
+    : Result<unit, TypeError> =
+    match fieldCodec def fn, uncodedFieldTeach "JSON" fty with
+    | Some _, _ -> Ok()
+    | None, Some teach -> err span $"field '{fpath}': {teach}"
+    | None, None -> jsonAdmitted span env seen fpath fty
+
 let private jsonableRecord (span: Span) (env: TypeEnv) (def: RecordDef) : Result<unit, TypeError> =
-    allOk def.Fields (fun (name, ty) -> jsonAdmitted span env [ def.Name ] name ty)
+    allOk def.Fields (fun (name, ty) -> jsonField span env [ def.Name ] def name name ty)
 
 let private jsonableElem (span: Span) (env: TypeEnv) (elem: Ty) : Result<unit, TypeError> =
     jsonAdmitted span env [] "" elem
@@ -1406,6 +1462,17 @@ let rec wireRenamesOf (env: TypeEnv) (ty: Ty) : Map<string, Map<string, string>>
             Some(n, Map.ofList renamed))
     |> Map.ofList
 
+// the write-side codec table [D:wire-codecs], from the same closure
+and wireCodecsOf (env: TypeEnv) (ty: Ty) : Map<string, Map<string, Codec>> =
+    jsonDefsClosure env Map.empty ty
+    |> Map.toList
+    |> List.choose (fun (n, def) ->
+        let coded =
+            def.Fields |> List.choose (fun (f, _) -> fieldCodec def f |> Option.map (fun c -> f, c))
+
+        if coded.IsEmpty then None else Some(n, Map.ofList coded))
+    |> Map.ofList
+
 and private jsonDefsClosure (env: TypeEnv) (acc: Map<string, RecordDef>) (ty: Ty) : Map<string, RecordDef> =
     match ty with
     | TNamed("Option", [ inner ]) -> jsonDefsClosure env acc inner
@@ -1529,8 +1596,20 @@ let rec private yamlShape
                     (fun acc (fname, fty) ->
                         acc
                         |> Result.bind (fun fs ->
-                            yamlShape span env (seen.Add n) (sub fname) fty
-                            |> Result.map (fun s -> (fname, wireName def fname, s) :: fs)))
+                            // a coded field reads through its codec [D:wire-codecs]
+                            let fieldShape =
+                                match fieldCodec def fname, uncodedFieldTeach "yaml" fty with
+                                | Some c, _ ->
+                                    Ok(
+                                        match fty with
+                                        | TNamed("Option", [ _ ]) -> Yaml.SOpt(Yaml.SCodec c)
+                                        | TSeq _ -> Yaml.SSeq(Yaml.SCodec c)
+                                        | _ -> Yaml.SCodec c
+                                    )
+                                | None, Some teach -> err span $"field '{sub fname}': {teach}"
+                                | None, None -> yamlShape span env (seen.Add n) (sub fname) fty
+
+                            fieldShape |> Result.map (fun s -> (fname, wireName def fname, s) :: fs)))
                     (Ok [])
                 |> Result.map (fun fs -> Yaml.SRec(n, List.rev fs))
             | Some(Record _) -> err span $"{at}'{n}' is generic; the yaml boundary needs monomorphic records"
@@ -1599,7 +1678,12 @@ let rec private yamlableOut (span: Span) (env: TypeEnv) (seen: Set<string>) (pat
                     (fun acc (fn, fty) ->
                         acc
                         |> Result.bind (fun () ->
-                            yamlableOut span env (seen.Add n) (if path = "" then fn else $"{path}.{fn}") fty))
+                            let fpath = if path = "" then fn else $"{path}.{fn}"
+
+                            match fieldCodec def fn, uncodedFieldTeach "yaml" fty with
+                            | Some _, _ -> Ok()
+                            | None, Some teach -> err span $"field '{fpath}': {teach}"
+                            | None, None -> yamlableOut span env (seen.Add n) fpath fty))
                     (Ok())
             | Some(Record _) -> err span $"{at}'{n}' is generic; the yaml boundary needs monomorphic records"
             // a tagged union renders [D:wire-unions] — every payload must
@@ -2711,7 +2795,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                 let! unions = unionWriteTable arg.Span env targ.Ty
 
                 let tto =
-                    { Kind = TETo("json", wireRenamesOf env targ.Ty, unions, false)
+                    { Kind = TETo("json", wireRenamesOf env targ.Ty, wireCodecsOf env targ.Ty, unions, false)
                       Ty = TFun(targ.Ty, TSeq TStr)
                       Span = arg.Span }
 
@@ -3230,7 +3314,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                 let! unions = unionWriteTable toExpr.Span env targ.Ty
 
                 let tto =
-                    { Kind = TETo(fmt, wireRenamesOf env targ.Ty, unions, false)
+                    { Kind = TETo(fmt, wireRenamesOf env targ.Ty, wireCodecsOf env targ.Ty, unions, false)
                       Ty = TFun(targ.Ty, TSeq TStr)
                       Span = toExpr.Span }
 
@@ -3243,7 +3327,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                 let! unions = unionWriteTable toExpr.Span env targ.Ty
 
                 let tto =
-                    { Kind = TETo(fmt, wireRenamesOf env targ.Ty, unions, false)
+                    { Kind = TETo(fmt, wireRenamesOf env targ.Ty, wireCodecsOf env targ.Ty, unions, false)
                       Ty = TFun(targ.Ty, TSeq TStr)
                       Span = toExpr.Span }
 
@@ -3271,7 +3355,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                 let! unions = unionWriteTable toExpr.Span env targ.Ty
 
                 let tto =
-                    { Kind = TETo("yaml", wireRenamesOf env targ.Ty, unions, true)
+                    { Kind = TETo("yaml", wireRenamesOf env targ.Ty, wireCodecsOf env targ.Ty, unions, true)
                       Ty = TFun(targ.Ty, TSeq TStr)
                       Span = toExpr.Span }
 
@@ -3301,7 +3385,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                 let! unions = unionWriteTable toExpr.Span env targ.Ty
 
                 let tto =
-                    { Kind = TETo("yaml", wireRenamesOf env targ.Ty, unions, false)
+                    { Kind = TETo("yaml", wireRenamesOf env targ.Ty, wireCodecsOf env targ.Ty, unions, false)
                       Ty = TFun(targ.Ty, TSeq TStr)
                       Span = toExpr.Span }
 
@@ -5803,7 +5887,7 @@ let private attrPosName =
     | CasePos -> "a union case"
 
 let private attrRegistry: Map<string, (AttrArg option -> string option) * AttrPos list> =
-    Map.ofList
+    Map.ofList (
         [ "Short",
           ((function
            | Some(AStr "h") -> Some "argument 'h' is reserved for --help"
@@ -5870,6 +5954,16 @@ let private attrRegistry: Map<string, (AttrArg option -> string option) * AttrPo
            | None -> None
            | Some _ -> Some "takes no argument"),
            [ CasePos ]) ]
+        // the codec attributes [D:wire-codecs], one per Codec case — the
+        // registry is derived, so it cannot drift from the union
+        @ (allCodecs
+           |> List.map (fun c ->
+               codecName c,
+               ((function
+                | None -> None
+                | Some _ -> Some "takes no argument"),
+                [ FieldPos ])))
+    )
 
 // two fields resolving to one wire key is nonsense on every adapter —
 // refused at the declaration, not discovered at the boundary
@@ -5933,8 +6027,55 @@ let private validateAttrsAt (pos: AttrPos) (owner: string) (specs: AttrSpec list
 
     go Set.empty specs
 
-let private validateFieldAttrs (_: string) (field: string, _: Ty, specs: AttrSpec list) =
+// the type a codec encodes [D:wire-codecs] — exhaustive, so a new codec
+// states its type; the wire table lists the same codecs under it (a unit
+// test holds the two together)
+let codecTy (c: Codec) : Ty =
+    match c with
+    | Iso8601
+    | EpochMs
+    | EpochSec -> TInstant
+    | Millis
+    | Seconds -> TDur
+    | ByteCount -> TSize
+
+/// the wire table's codecs for a type, for that unit test
+let codecsOfTy (ty: Ty) : Codec list = codecsOf ty
+
+// a codec fits its field at the declaration [D:wire-codecs]: the
+// declaration alone decides, so a misfit is caught even on a record that
+// never crosses a boundary (XML's [<Attr>] checks only at consumption)
+let private validateFieldCodec (field: string) (fty: Ty) (specs: AttrSpec list) =
+    match specs |> List.filter (fun a -> (codecOfName a.AName).IsSome) with
+    | [] -> Ok()
+    | a :: b :: _ ->
+        err b.ASpan $"field '{field}' declares two encodings ([<{a.AName}>] and [<{b.AName}>]) — one codec per field"
+    | [ a ] ->
+        let c = (codecOfName a.AName).Value
+        let fits = codecsOf fty
+
+        if List.contains c fits then
+            Ok()
+        else
+            match wireStance (codecTarget fty) with
+            // the type itself refuses — no encoding changes that
+            | Refused teach ->
+                let why = teach "JSON or YAML"
+                err a.ASpan $"[<{a.AName}>] cannot apply to field '{field}': {why}"
+            | stance ->
+                let hint =
+                    match stance with
+                    | Encoded(cs, _, _) -> $" — its encodings: {codecAttrs cs}"
+                    | Canonical _ -> $" — {formatTy (codecTarget fty)} crosses as itself, with no codec"
+                    | _ -> ""
+
+                err
+                    a.ASpan
+                    $"[<{a.AName}>] encodes {formatTy (codecTy c)} (or Option/seq of it), but field '{field}' is {formatTy fty}{hint}"
+
+let private validateFieldAttrs (_: string) (field: string, fty: Ty, specs: AttrSpec list) =
     validateAttrsAt FieldPos $"field '{field}'" specs
+    |> Result.bind (fun () -> validateFieldCodec field fty specs)
 
 let private validateShortCollisions (fields: (string * Ty * AttrSpec list) list) =
     let explicitShorts =

@@ -7824,6 +7824,29 @@ echo "$out" | grep -qF "Instant.epochMs into an int field" || fail "the refusal 
 rm -rf "$indir"
 echo "e2e ok: Instant (cert-expiry via openssl enddate, log slicing by cutoff, JSON refusal teaches)"
 
+# ---- declared codecs [D:wire-codecs]: one declaration, both formats ----
+cddir=$(mkweirtmp)
+cat > "$cddir/codecs.weir" <<'WEOF'
+type Ev = {
+    [<Iso8601>] at: Instant
+    [<EpochSec; Wire "epoch">] sec: Instant
+    [<Millis>] took: Duration
+    [<ByteCount>] size: Size
+}
+let e = { at = Instant.parse "2026-08-14T12:00:00.250Z"; sec = Instant.parse "2026-08-14T12:00:00Z"; took = 1500ms; size = Size.parse "1KiB" }
+let j = [e] |> to jsonl |> Seq.head
+print j
+print $"{show ([j] |> from jsonl Ev |> Seq.head) == show e} {show (e |> to yaml |> from yaml Ev) == show e}"
+WEOF
+out=$(cd "$cddir" && $BIN codecs.weir 2>&1) || fail "the codec round trip must run: $out"
+[ "$out" = '{"at":"2026-08-14T12:00:00.250Z","epoch":1786708800,"took":1500,"size":1024}
+true true' ] || fail "codecs: wire shape + json/yaml round trips: $out"
+printf 'type L = { [<EpochSec>] t: Instant }\nlet _j = [{ t = Instant.parse "2026-01-01T00:00:00.5Z" }] |> to jsonl |> Seq.freeze\nprint (Seq.head _j)\n' > "$cddir/lossy.weir"
+out=$(cd "$cddir" && $BIN lossy.weir 2>&1) && fail "a lossy codec write must raise: $out" || true
+echo "$out" | grep -qF "round it, or declare [<EpochMs>]" || fail "the lossy raise names the exact codec: $out"
+rm -rf "$cddir"
+echo "e2e ok: declared codecs — wire shape, json and yaml round trips, a lossy write raises"
+
 # ---- Uuid [D:uuid]: the AOT binary's generators ----------------------------
 # the receipt: an append-only JSON-lines journal keyed by v7 — file order,
 # uuid order and text order agree, and the record round-trips. Also pins
