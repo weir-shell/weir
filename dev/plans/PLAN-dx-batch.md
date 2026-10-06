@@ -1,6 +1,6 @@
 # PLAN: the syntax DX batch — eight findings plus the reversed operators
 
-**Status: PROPOSAL — awaiting the user's rulings (marked ⚖).** Source: the
+**Status: APPROVED 2026-10-06 — all four ⚖ rulings accepted as recommended (line-end `\` is an error; or-patterns v1 binder-free; `<<` removed and `<|` refused; holes generalize under Show-minus-Secret).** Source: the
 2026-10-06 DX survey (`/output/wt/DX-REPORT.md`, probes in
 `/output/wt/probes/`), each finding backed by a probe or a file:line
 receipt. Lands after the boundary stack (wire-table → wire-codecs →
