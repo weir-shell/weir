@@ -1214,7 +1214,7 @@ let boundaryTests =
                   (runReal "for x in [\"a\"; \"b\"] do print x")
                   "byte-identical desugar"
           }
-          test "a bare command body is implicit !(…) — pipes into print [D:for-do]" {
+          test "a bare command body is an armed statement — pipes into print [D:for-do]" {
               match Weir.Parser.parseLine cmdResolver "for f in xs do git add $f" with
               | Ok(SExpr e | SCmd e) ->
                   Expect.stringContains (show e) "(cmd git \"add\" f) |> |print" "the command body wraps as effect"
@@ -12320,11 +12320,6 @@ let agentFindingsTests =
               | Error msg -> Expect.stringContains msg "use '| complete' inside $()" ""
               | Ok _ -> failtest "the capture conflict must reject"
 
-              // !() discards the int
-              match Weir.Parser.parseLine cmdResolver "!(git push | exitCode)" with
-              | Error msg -> Expect.stringContains msg "bind it (let rc = <command> | exitCode)" ""
-              | Ok _ -> failtest "the discard conflict must reject"
-
               // the single-external-segment family rule (statement level —
               // the let-RHS chain rejects mid-chain stages earlier, with
               // the bare-pipe hint, family-uniformly)
@@ -12498,7 +12493,7 @@ let agentFindingsTests =
                   | Ok te -> failtest $"expected a type error, got {formatTy te.Ty}"
               | other -> failtest $"parse failed: {other}"
           }
-          test "print of unit is silent (the decided !()-interior rule)" {
+          test "print of unit is silent (the armed-statement rule)" {
               Expect.equal (checkOk "print ()").Ty TUnit ""
               expectValue "print ()" VUnit
           }
@@ -13155,7 +13150,7 @@ let scannerTests =
               Expect.isTrue (Weir.Script.retiredDistrictMarker "if c then !") "bare spelling detected"
               Expect.isTrue (Weir.Script.retiredDistrictMarker "!targetEnv") "env spelling detected"
               Expect.isFalse (Weir.Script.retiredDistrictMarker "echo hello!") "a trailing ! word is not the marker"
-              Expect.isFalse (Weir.Script.retiredDistrictMarker "!e(git st)") "sigil forms stay"
+              Expect.isFalse (Weir.Script.retiredDistrictMarker "!e(git st)") "a glued paren is no district marker"
 
               // the teaches half, observed at the assembler (the maintenance
               // sweep's M5 found only the predicate asserted — if assemble
@@ -13165,11 +13160,6 @@ let scannerTests =
                   Expect.stringContains e "not a district marker" "the teaching fires"
                   Expect.stringContains e "within env vars" "and names the env-overlay repair"
               | Ok _ -> failtest "a retired marker must be an assembly error"
-          }
-          test "classifyPiece: env sigil heads count as bang sigils in districts" {
-              Expect.isTrue (Weir.Script.classifyPiece "!e(git st)").IsBangSigil ""
-              Expect.isTrue (Weir.Script.classifyPiece "!(git st)").IsBangSigil ""
-              Expect.isFalse (Weir.Script.classifyPiece "!e").IsBangSigil ""
           }
           test "classifyPiece: brace deltas ignore strings and interp holes" {
               Expect.equal (Weir.Script.classifyPiece "{ Name = $\"a{1}b\"").BraceDelta 1 ""
@@ -13189,8 +13179,8 @@ let childEnvTests =
     testList
         "Child-env injection"
         // cmdEnv/runEnv dropped [D:drop-command-builtins]: child env goes
-        // through the env sigil `$e(...)` / district `!e(...)` (tested in
-        // e2e). Env.fromFile / Env.vars remain.
+        // through `NAME=value cmd`, `within env` or the capture sigil
+        // `$e(...)` (tested in e2e). Env.fromFile / Env.vars remain.
         [ test "Env.fromFile types to seq<EnvVar>" {
               let te = checkOk "Env.fromFile \"x.env\""
               Expect.equal (formatTy te.Ty) "seq<EnvVar>" ""
@@ -13221,11 +13211,6 @@ let childEnvTests =
               // ECapture wraps: $() asserts capture in every position
               // [D:district-retirement]
               | Ok(SLet("x", { Kind = ECapture { Kind = ECmd(HeadLit "git", _, Some { Kind = EVar "e" }) } })) -> ()
-              | other -> failtest $"unexpected: {other}"
-          }
-          test "env sigil: !e(...) is chain-with-env |> print" {
-              match Weir.Parser.parseLine realResolver "!e(git status)" with
-              | Ok(SExpr { Kind = EPipe({ Kind = ECmd(HeadLit "git", _, Some _) }, { Kind = EVar "|print" }) }) -> ()
               | other -> failtest $"unexpected: {other}"
           }
           test "env sigil: every segment in the chain gets the env" {
@@ -13301,7 +13286,7 @@ let childEnvTests =
               // !e / !name at line end, standalone or headed — all five
               // former district-header pins collapse to the teaching;
               // `within env vars` is the block overlay now (e2e-pinned),
-              // and the $e()/!e() sigil pins below stay untouched
+              // and the $e() sigil pins below stay untouched
               for fixture in
                   [ [ 1, "if go then !e"; 2, "    git pull" ]
                     [ 1, "let f x ="; 2, "    !e"; 3, "        git pull"; 4, "    printerr \"OK\"" ]
@@ -14447,10 +14432,11 @@ let sigilTests =
               | Ok(SLet("b", { Kind = EPipe({ Kind = ECapture { Kind = ECmd(HeadLit "git", _, _) } }, _) })) -> ()
               | other -> failtest $"unexpected: {other}"
           }
-          test "effect sigil desugars to chain |> print" {
-              match Weir.Parser.parseLine realResolver "!(git status)" with
-              | Ok(SExpr { Kind = EPipe({ Kind = ECmd(HeadLit "git", _, _) }, { Kind = EVar "|print" }) }) -> ()
-              | other -> failtest $"unexpected: {other}"
+          test "there is no run sigil: !(…) and !e(…) do not parse [D:bang-retirement]" {
+              for line in [ "!(git status)"; "!e(git status)"; "let u = !(git status)" ] do
+                  match Weir.Parser.parseLine realResolver line with
+                  | Ok s -> failtest $"{line} must not parse, got {s}"
+                  | Error _ -> ()
           }
           test "sigils x interpolation: holes never open command mode" {
               // $"{...}" holes are expression holes; a bareword there is unbound
@@ -14460,11 +14446,6 @@ let sigilTests =
 
               let terr = checkErr "$\"x{git}y\""
               Expect.stringContains (formatError terr) "unbound" "git is not a command in a hole"
-          }
-          test "sigils x greedy-semicolon: single-line grouping is body-scoped" {
-              match Weir.Parser.parseLine realResolver "if 1 > 2 then !(git status) ; !(git branch)" with
-              | Ok(SExpr { Kind = EIf(_, { Kind = ESeq _ }, None) }) -> ()
-              | other -> failtest $"both effects must sit INSIDE the then-branch, got {other}"
           }
           test "sigils x complete outside: parse error, statement spelling exists" {
               match Weir.Parser.parseLine realResolver "$(git status) | complete" with
@@ -22565,11 +22546,10 @@ let reflexTeachingTests =
 
     testList
         "reflex teachings"
-        [ test "!x is not negation; the sigils and the retired district keep their meaning" {
+        [ test "!x is not negation; the retired district keeps its teaching" {
               Expect.stringContains (only [ "let ok = true"; "if !ok then print \"no\"" ]) "write `not x`" "condition"
               Expect.stringContains (only [ "let ok = true"; "let b = !ok" ]) "write `not x`" "let RHS, not the district message"
               Expect.isTrue (Weir.Script.retiredDistrictMarker "if c then !e") "a district header still teaches its retirement"
-              Expect.isEmpty (errs [ "let e = [Env.pair \"X\" \"1\"]"; "!e(sh -c \"echo $X\")" ]) "the env sigil"
           }
           test "type annotations teach inference" {
               Expect.stringContains (only [ "let f (x: int) = x + 1"; "print $\"{f 1}\"" ]) "weir infers parameter types" "a parameter"
@@ -22621,7 +22601,7 @@ let envPrefixTests =
                   "per stage, as in bash"
           }
           test "a sigil env and a prefix compose, the prefix last" {
-              Expect.stringContains (shape "!e(A=1 git)") "(|seqAppend e) [((|envPair \"A\") \"1\")]" "sigil first, prefix appended"
+              Expect.stringContains (shape "let x = $e(A=1 git)") "(|seqAppend e) [((|envPair \"A\") \"1\")]" "sigil first, prefix appended"
           }
           test "after the head, NAME=value is argv; x==1 is a comparison" {
               Expect.equal (shape "git CC=gcc") "(scmd (cmd git \"CC=gcc\"))" "argv"

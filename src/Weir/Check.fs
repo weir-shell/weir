@@ -1041,8 +1041,8 @@ let private printArgTy (ctx: Ctx) (env: TypeEnv) (span: Span) (ty: Ty) : Result<
     // the wire table's canonical types print as their one text
     // [D:print-canonical] — the next canonical scalar prints unasked
     | WireCanonical _ as t -> Ok t
-    // unit prints as nothing [D:exit-reifiers]: the !() sigil
-    // desugar wraps interiors in print, and `| orFail` interiors are
+    // unit prints as nothing [D:exit-reifiers]: the armed-statement
+    // desugar wraps commands in print, and `| orFail` interiors are
     // unit — one rule instead of a shadow drain builtin
     | TUnit -> Ok TUnit
     | TSeq inner ->

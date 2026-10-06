@@ -138,15 +138,14 @@ let semanticTokensFor (lines: string list) : (int * int * int * int) list =
         else
             None
 
-    // the head token: a span may open on sigil glyphs ($(, !(, $e()
+    // the head token: a span may open on sigil glyphs ($(, $e()
     // — scan past them to the program name; a ^ force prefix rides in
     // the span. Defensive: emit only when the text really is the prog.
     let emitHead (ll: Script.LogicalLine) (spanStart: int) (prog: string) =
         let mutable j = spanStart
 
         (match charAt ll j with
-         | Some '$'
-         | Some '!' ->
+         | Some '$' ->
              j <- j + 1
 
              while (match charAt ll j with

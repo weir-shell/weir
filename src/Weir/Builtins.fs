@@ -6939,8 +6939,8 @@ let private printImpl: Value =
             )
 
             VUnit
-        // unit prints nothing [D:exit-reifiers] — the !() sigil
-        // desugar's interior may be unit (| orFail)
+        // unit prints nothing [D:exit-reifiers] — the armed-statement
+        // desugar's command may be unit (| orFail)
         | VUnit -> VUnit
         | v -> unreachable $"the checker rejects 'print' on {formatValue v}")
 

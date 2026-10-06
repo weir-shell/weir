@@ -61,6 +61,11 @@
 
 ### Changed
 
+- **`!(cmd)` and `!e(cmd)` are gone.** Every statement position runs a
+  bare command, so write `git pull` instead of `!(git pull)`, and give a
+  command its own line instead of `!(a); b`. For an environment, use
+  `NAME=value cmd` or `within env e`. `$(…)` and `$e(…)` still capture.
+
 - **`<<` is gone — weir composes left to right.** `f << g` was exactly
   `g >> f`; it is now an error that says so, as is F#'s back-pipe `<|`
   (write `f (x)` or `x |> f`).

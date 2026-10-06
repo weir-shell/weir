@@ -598,7 +598,7 @@ meaning:
 | `$()` | bash: capture as one newline-stripped string | capture as `seq<string>`, one element per line |
 | `=` | F#: equality | binding only; equality is `==` |
 | `\|` | F#: nothing (`\|>` pipes) | text to/from an external program; `\|>` stays the function pipe — the right-hand side decides |
-| `!` | bash: history/negation | *do it* — `!(cmd)` runs-and-streams; negation is the word `not` |
+| `!` | bash: history/negation | nothing — negation is the word `not`; a command runs by being a statement |
 | `//` | C-family: always a comment | a comment only at line start or after whitespace — `http://a` in argv stays data; a bare `//` word needs quoting |
 
 ## What nobody arrives knowing

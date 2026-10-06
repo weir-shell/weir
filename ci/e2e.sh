@@ -725,13 +725,13 @@ let go = 1 > 0
 
 let _steps =
     if go then
-        !(sh -c "echo one")
-        !(sh -c "echo two")
+        sh -c "echo one"
+        sh -c "echo two"
         print "three"
 
 let _skipped =
     if 1 > 2 then
-        !(sh -c "echo never")
+        sh -c "echo never"
         print "never"
 
 print "after"
@@ -753,12 +753,12 @@ cat > "$sigdir/sig.weir" <<'WEOF'
 let go = 1 > 0
 
 if go then
-    !(sh -c "echo eff-one")
-    !(sh -c "echo eff-two")
+    sh -c "echo eff-one"
+    sh -c "echo eff-two"
 
 if 1 > 2 then
-    !(sh -c "echo never-a")
-    !(sh -c "echo never-b")
+    sh -c "echo never-a"
+    sh -c "echo never-b"
 
 let captured = $(sh -c "echo x && echo y") |> Seq.length
 print $"captured: {captured}"
@@ -773,10 +773,10 @@ done
 if echo "$out" | grep -qF "never"; then fail "false branch ran its sigil block"; fi
 echo "e2e ok: sigil composition (assembler x if x capture x complete)"
 
-if $BIN -e '!(weir-no-such-program-zz)' 2>/dev/null; then
-    fail "typo'd program inside a sigil must fail at check time"
+if $BIN -e 'weir-no-such-program-zz' 2>/dev/null; then
+    fail "a typo'd program must fail at check time"
 fi
-echo "e2e ok: sigil heads resolve at check time"
+echo "e2e ok: command heads resolve at check time"
 rm -rf "$sigdir"
 
 distdir=$(mkweirtmp)
@@ -873,7 +873,8 @@ WEIR_E2E_LVL=info
 WEOF
 cat > "$envdir/outer.weir" <<'WEOF'
 let e = Env.fromFile "lvl.env"
-!e(weir enum.weir)
+within env e
+    weir enum.weir
 WEOF
 out=$(cd "$envdir" && PATH="$BINDIR:$PATH" $BIN outer.weir)
 expect "enum resolves after the dotenv overlay (same as any field)" "lvl=Info opt=None" "$out"
@@ -2175,7 +2176,8 @@ let ed = "micro"
 EDITOR=nano A="two words" B=$ed C= sh -c 'echo "$EDITOR|$A|$B|[$C]"'
 X=1 sh -c 'echo "left $X"' | Y=2 sh -c 'cat; echo "right ${X-none} $Y"'
 let e = [Env.pair "S" "sigil"; Env.pair "W" "sigil"]
-!e(W=prefix sh -c 'echo "$S $W"')
+within env e
+    W=prefix sh -c 'echo "$S $W"'
 sh -c 'echo "$0"' CC=gcc
 print (Env.get "EDITOR" |> Option.defaultValue "parent clean")
 WEOF
@@ -2845,14 +2847,12 @@ WEOF
     echo "$sttyout" | grep -qF "IS-TTY" || fail "a script statement at a tty inherits too: $sttyout"
     rpipeout=$(printf 'sh %s/t.sh\n#quit\n' "$cidir" | "$BIN" 2>/dev/null || true)
     echo "$rpipeout" | grep -qF "IS-PIPE" || fail "a redirected REPL keeps the pipe: $rpipeout"
-    # armed statements inherit too [D:armed-inherit]: `!(cmd)`, `!e(cmd)`,
-    # a block body's command and a statement chain's tail get the terminal
+    # armed statements inherit too [D:armed-inherit]: a block body's
+    # command and a statement chain's tail get the terminal
     # (an editor or pager works there); redirected, every form keeps the
     # pipe — the same 2x2 discipline, one row per arming position
     cat > "$cidir/armed.weir" <<WEOF
 let e = [Env.pair "X" "1"]
-!(sh $cidir/t.sh)
-!e(sh $cidir/t.sh)
 within env e
     sh $cidir/t.sh
 within tmp d
@@ -2864,16 +2864,16 @@ echo x | sh $cidir/t.sh
 ["a"] | sh $cidir/t.sh
 WEOF
     aout=$(printf 'SLEEP 400\n' | python3 "$ptyrun" 12 "$BIN" "$cidir/armed.weir")
-    [ "$(echo "$aout" | grep -o IS-TTY | wc -l)" -eq 7 ] && ! echo "$aout" | grep -q IS-PIPE ||
-        fail "every armed form at a tty inherits (7 IS-TTY, no IS-PIPE): $aout"
-    [ "$("$BIN" "$cidir/armed.weir" | grep -c IS-PIPE)" -eq 7 ] || fail "redirected, every armed form keeps the pipe"
+    [ "$(echo "$aout" | grep -o IS-TTY | wc -l)" -eq 5 ] && ! echo "$aout" | grep -q IS-PIPE ||
+        fail "every armed form at a tty inherits (5 IS-TTY, no IS-PIPE): $aout"
+    [ "$("$BIN" "$cidir/armed.weir" | grep -c IS-PIPE)" -eq 5 ] || fail "redirected, every armed form keeps the pipe"
     # the REPL arms a block tail like the runner, and a top-level chain
     # takes the statement inherit path
     arout=$(printf 'SLEEP 700\nSEND within env [Env.pair "X" "1"]\\r\nSLEEP 300\nSEND     sh %s/t.sh\\r\nSLEEP 300\nSEND \\r\nSLEEP 600\nSEND echo x | sh %s/t.sh\\r\nSLEEP 600\nSEND #quit\\r\n' "$cidir" "$cidir" | python3 "$ptyrun" 12 "$BIN")
     [ "$(echo "$arout" | grep -o IS-TTY | wc -l)" -eq 2 ] && ! echo "$arout" | grep -q IS-PIPE ||
         fail "the REPL's block tail and top-level chain inherit: $arout"
 
-    echo "e2e ok: colour inherit — bare and armed statements (sigils, block bodies, chain tails) see the terminal, captures see the pipe, ordering holds, redirected unchanged, and the runner/REPL 2x2 agrees"
+    echo "e2e ok: colour inherit — bare and armed statements (block bodies, chain tails) see the terminal, captures see the pipe, ordering holds, redirected unchanged, and the runner/REPL 2x2 agrees"
 
     # ---- the Color module + print keeps SGR at a tty [D:tty-color] ----------
     # Color.green emits SGR that print passes through at a terminal; the
@@ -3622,7 +3622,8 @@ print $"{walked.Prev} after {walked.Ancestor}, kept {walked.Kept}"
 
 // the inline-env receipt shape (three vars, Env.ofPairs) — env sigil
 let author = Env.ofPairs [("GIT_AUTHOR_NAME", "n"); ("GIT_AUTHOR_EMAIL", "e"); ("GIT_AUTHOR_DATE", "d")]
-!author(sh -c "echo $GIT_AUTHOR_NAME/$GIT_AUTHOR_EMAIL")
+within env author
+    sh -c "echo $GIT_AUTHOR_NAME/$GIT_AUTHOR_EMAIL"
 WEOF
 out=$($BIN "$folddir/receipt.weir")
 expect "the encode-subdir escape fold" "a%20b%7ec%3ad" "$out"
@@ -4098,7 +4099,7 @@ echo "e2e ok: REPL entry point honors exit"
 
 rm -rf "$hdir"
 
-# --- env sugar layers 1+2 (2026-07-20): $e(...) / !e(...) and the !e district
+# --- env sugar: the $e(...) capture sigil and within env
 
 sdir=$(mkweirtmp)
 printf 'MARK=layered\n' > "$sdir/s.env"
@@ -4106,7 +4107,8 @@ printf 'MARK=layered\n' > "$sdir/s.env"
 cat > "$sdir/sigil.weir" <<'WEOF'
 let e = Env.fromFile "s.env"
 
-!e(sh -c "echo effect: $MARK")
+within env e
+    sh -c "echo effect: $MARK"
 
 let got = $e(sh -c "echo cap: $MARK") |> Seq.head
 print got
@@ -4115,7 +4117,8 @@ let r = $e(sh -c "exit 7" | complete)
 print $"complete-env exit {r.exitCode}"
 
 let tag = "spliced"
-!e(sh -c $"echo {tag}: $MARK")
+within env e
+    sh -c $"echo {tag}: $MARK"
 WEOF
 out=$(cd "$sdir" && $BIN sigil.weir 2>&1)
 expect "env sigil effect form" "effect: layered" "$out"
@@ -4159,7 +4162,8 @@ EOF
 cat > "$edir/deploy.weir" <<'WEOF'
 let targetEnv = Env.fromFile "target.env"
 
-!targetEnv(sh -c "echo \"AZ($AZURE_SUBSCRIPTION_ID|$AZURE_DEFAULTS_GROUP|$OVERRIDE|$INHERITED)\"")
+within env targetEnv
+    sh -c "echo \"AZ($AZURE_SUBSCRIPTION_ID|$AZURE_DEFAULTS_GROUP|$OVERRIDE|$INHERITED)\""
 WEOF
 out=$(cd "$edir" && OVERRIDE=from-parent INHERITED=passed-through $BIN deploy.weir)
 expect "bicep shape: overlay sets, overrides, and inherits" "AZ(sub-web|rg web|from-file|passed-through)" "$out"
@@ -4168,7 +4172,8 @@ expect "bicep shape: overlay sets, overrides, and inherits" "AZ(sub-web|rg web|f
 cat > "$edir/iso.weir" <<'WEOF'
 let vars = Env.fromFile "target.env"
 
-!vars(sh -c "true")
+within env vars
+    sh -c "true"
 
 print (Env.get "AZURE_SUBSCRIPTION_ID" |> Option.defaultValue "(clean)")
 WEOF
@@ -4181,7 +4186,8 @@ printf 'EMPTYFILE=x\n' > "$edir/one.env"
 cat > "$edir/empty.weir" <<'WEOF'
 let vars = Env.fromFile "blank.env"
 
-!vars(sh -c "echo [$BLANKED]")
+within env vars
+    sh -c "echo [$BLANKED]"
 WEOF
 printf 'BLANKED=\n' > "$edir/blank.env"
 out=$(cd "$edir" && BLANKED=parent-value $BIN empty.weir)
@@ -5554,7 +5560,7 @@ let repos = [("alpha", "r1"); ("beta", "r2")]
 repos
     |> Seq.iter (fun (name, path) ->
         let tag = $"repo-{path}"
-        !(echo fetching $tag)
+        echo fetching $tag
         print $"fetched {name}")
 WEOF
 out=$($BIN "$mldir/iter.weir")
@@ -5732,17 +5738,17 @@ echo "$out" | grep -qF "build-step-one" || fail "orFail must stream stdout: $out
 echo "$out" | grep -qF "build broke (exit 4)" || fail "orFail message+code: $out"
 echo "e2e ok: orFail streams and raises with the message"
 
-# bare !(cmd) ≡ cmd | orFail "<msg>": byte-identical stream, same raise
+# a bare command ≡ cmd | orFail "<msg>": byte-identical stream, same raise
 cat > "$rfdir/eq1.weir" <<'WEOF'
-!(sh -c "echo same-stream; exit 2")
+sh -c "echo same-stream; exit 2"
 WEOF
 cat > "$rfdir/eq2.weir" <<'WEOF'
 sh -c "echo same-stream; exit 2" | orFail "custom words"
 WEOF
 out1=$($BIN "$rfdir/eq1.weir" 2>/dev/null; echo "rc=$?")
 out2=$($BIN "$rfdir/eq2.weir" 2>/dev/null; echo "rc=$?")
-[ "$out1" = "$out2" ] || fail "!() and orFail must stream identically: [$out1] vs [$out2]"
-echo "e2e ok: bare !() and orFail stream byte-identically (messages differ on stderr)"
+[ "$out1" = "$out2" ] || fail "a bare command and orFail must stream identically: [$out1] vs [$out2]"
+echo "e2e ok: a bare command and orFail stream byte-identically (messages differ on stderr)"
 
 # exitCode: stream + the code as data; never raises
 cat > "$rfdir/ec.weir" <<'WEOF'
@@ -5782,9 +5788,6 @@ errout=$(printf 'let x = $(git push | exitCode)
 print "u"
 ' | checkPiped 2>&1) && fail "capture conflict must reject"
 echo "$errout" | grep -qF "use '| complete' inside" || fail "capture-conflict teaching: $errout"
-errout=$(printf '!(git push | exitCode)
-' | checkPiped 2>&1) && fail "discard conflict must reject"
-echo "$errout" | grep -qF "bind it (let rc = <command> | exitCode)" || fail "discard-conflict teaching: $errout"
 errout=$(printf 'git push | exitCode
 ' | checkPiped 2>&1) && fail "statement discard must reject"
 echo "$errout" | grep -qF "drop '| exitCode' if you don't need the code" || fail "statement hint: $errout"
@@ -5861,11 +5864,7 @@ expect "expression-position reification via \$(... | complete)" '["hi"]' "$out"
 # multi-external reifier still rejects (no new law)
 errout=$(printf 'echo hi | grep h | complete\n' | checkPiped 2>&1) && fail "multi-external reifier must reject"
 echo "$errout" | grep -qF "single external command segment" || fail "multi-external rule changed: $errout"
-# the sigil-interior teaching names the value-headed spelling
-# (retargeted from the retired district [D:district-retirement])
-errout=$(printf '!(["x"] | cat)\n' | checkPiped 2>&1) && fail "value-headed in a sigil interior must reject"
-echo "$errout" | grep -qF "value-headed pipeline bound outside" || fail "sigil-interior teaching: $errout"
-echo "e2e ok: reifier-with-stdin (complete/succeeds/exitCode), zero-diff spellings, sigil-interior teaching"
+echo "e2e ok: reifier-with-stdin (complete/succeeds/exitCode), zero-diff spellings"
 rm -rf "$fddir"
 
 # ---- [<Default>]: the resting point moves [D:default-attr] ----
@@ -5917,7 +5916,8 @@ WEOF
 cat > "$endir/parent.weir" <<'WEOF'
 // layer 3: the env-sigil overlay becomes the child's process env
 let layers = Env.fromFile "layers.env"
-!layers(weir child.weir)
+within env layers
+    weir child.weir
 WEOF
 out=$(cd "$endir" && $BIN child.weir)
 expect "neither layer sets it: the attribute fills (both types)" "port=8080 debug=false" "$out"
@@ -6152,7 +6152,8 @@ let vflags = ["-c"]
 let vh = ["a"; "b"; "a"] | grep $@vflags a | complete
 print (vh.stdout |> Seq.head)
 
-!author(sh -c "echo d=$MARK" self $@none | orFail "boom")
+within env author
+    sh -c "echo d=$MARK" self $@none | orFail "boom"
 WEOF
 out=$(cd "$spldir" && $BIN reify.weir)
 expect "splat through the reifier path: adversarial + empty + env sigil + value-headed + district" "argc=3
@@ -6200,7 +6201,8 @@ echo "$out" | grep -qxF "1" && fail "the child saw a truncated word — the refu
 cat > "$nuldir/nul-env.weir" <<WEOF
 let v = File.read "$nuldir/nul.bin" |> Seq.head
 let e = Env.ofPairs [("X", v)]
-!e(printenv X)
+within env e
+    printenv X
 WEOF
 out=$($BIN "$nuldir/nul-env.weir" 2>&1 || true)
 echo "$out" | grep -qF "contains a NUL byte" || fail "the env NUL refusal is missing: $out"
@@ -8292,7 +8294,7 @@ djdir=$(mkweirtmp)
 cat > "$djdir/dj.weir" <<'WEOF'
 let sub =
     within tmp d
-        !(weir -e "print 10")
+        weir -e "print 10"
     let post = "not-an-argv-word"
     post
 print (sub)

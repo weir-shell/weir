@@ -388,8 +388,7 @@ type MarkerKind =
     // `to yaml` / `from yaml`, which are the boundary adapters.
     // The `!` and `!ev` districts are retired [D:district-retirement]:
     // the arming rule made their mode gate unnecessary and `within env`
-    // covers the overlay; the $e()/!e() sigil forms stay (fragment and
-    // single-command uses have no block spelling).
+    // covers the overlay; the $e() capture sigil covers fragments.
     | Yaml
     // line-end `<<<` / `$<<<` opens a heredoc district [D:text-block] —
     // the yaml district's sibling; identical join semantics (verbatim
@@ -400,7 +399,6 @@ type PieceClass =
     { Kind: PieceKind
       Marker: MarkerKind
       OpensCompound: bool
-      IsBangSigil: bool
       ClosesBrace: bool
       ClosesParen: bool
       StartsField: bool
@@ -488,12 +486,6 @@ let classifyPiece (piece: string) : PieceClass =
         // 6th members, still no stack
         || piece.StartsWith "retry "
         || piece.StartsWith "poll "
-      IsBangSigil =
-        piece.StartsWith "!("
-        || (piece.StartsWith "!"
-            && (match piece.IndexOf '(' with
-                | i when i > 1 -> isIdentToken (piece.Substring(1, i - 1))
-                | _ -> false))
       ClosesBrace = piece.StartsWith "}"
       ClosesParen = piece.StartsWith ")"
       StartsField =
@@ -1387,9 +1379,7 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
             | None -> Ok acc
 
         let districtLineCheck lineNo (cls: PieceClass) =
-            if cls.IsBangSigil then
-                Error $"line {lineNo}: already inside a command block; drop the !(...)"
-            elif cls.Kind = PieceKind.LetHead then
+            if cls.Kind = PieceKind.LetHead then
                 Error $"line {lineNo}: district lines are commands; bind values outside the block"
             else
                 Ok()
@@ -2469,8 +2459,8 @@ let colorizeRepl (isKnown: string -> bool) (line: string) : string =
 
                 for j in start .. i - 1 do
                     codes[j] <- Some "36" // numbers: cyan
-            elif line[i] = '$' || line[i] = '^' || line[i] = '!' then
-                // sigils, splices, markers, force-prefix
+            elif line[i] = '$' || line[i] = '^' then
+                // sigils, splices, force-prefix
                 codes[i] <- Some "36"
                 i <- i + 1
 

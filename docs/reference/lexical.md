@@ -284,8 +284,7 @@ The complete set:
 | `$name` | command argv | splice a binding as exactly one argv word |
 | `$@xs` | command argv | splat a seq: N elements become N words |
 | `$(...)` | expression | capture a command chain's output |
-| `!(...)` | expression | run a command chain: stream, raise on nonzero |
-| `$e(...)` / `!e(...)` | expression | the same, under the env overlay bound to `e` |
+| `$e(...)` | expression | the same, under the env overlay bound to `e` |
 | `^cmd` / `^$name` | command head | force-external: a literal head, or a `$`-spliced value head |
 | `_.field` | expression | field-access shorthand (`fun x -> x.field`) |
 | `_[i]` | expression | index shorthand (`fun x -> x[i]`) |

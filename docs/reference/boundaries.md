@@ -82,7 +82,8 @@ type LogCfg = { REF_BOUND_LEVEL: Level }
 
 ["REF_BOUND_LEVEL=debug"] |> File.write "ref-bound.env"
 let e = Env.fromFile "ref-bound.env"
-!e(sh -c "echo level=$REF_BOUND_LEVEL")
+within env e
+    sh -c "echo level=$REF_BOUND_LEVEL"
 print "declared sets beat stringly config"
 ```
 
