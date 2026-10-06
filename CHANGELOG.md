@@ -12,6 +12,13 @@
   not expanded, and `$HOME` still never expands; in an expression,
   `Path.home ()` remains the spelling.
 
+- **`NAME=value cmd` sets an environment variable for one command.**
+  `EDITOR=nano git commit` works as in bash: one or more `NAME=value`
+  words before the program name (a word, a quoted string, `$x` or an
+  interpolation; `NAME=` is empty), each pipeline stage taking its own.
+  The program is still resolved at check time, and after the program
+  name `CC=gcc` is an ordinary argument. A lone `FOO=1` teaches `let`.
+
 ### Fixed
 
 - **Editors and pagers get the terminal wherever a command runs as a

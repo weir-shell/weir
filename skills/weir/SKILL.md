@@ -2206,6 +2206,12 @@ print $"exit={r.exitCode}"
   on the tail — `files | grep -c foo | complete` applies to the (single
   external) segment WITH the value as stdin (`| succeeds`/`| exitCode`/
   `| orFail` too); a MULTI-external chain still needs one segment.
+- One-command env, bash-style [D:env-prefix]: `EDITOR=nano git commit`
+  — `NAME=value` words BEFORE the head (value = one word, quoted,
+  `$x` or `$"…"`; `NAME=` is empty) join that stage's overlay; each
+  pipeline stage takes its own; after the head `CC=gcc` is argv. A
+  lone `FOO=1` is an error (no shell variables — `let` binds). No
+  unset spelling: `env -u NAME cmd`.
 - Env sigils `$e(...)`/`!e(...)` (ident GLUED to glyph and paren)
   inject child-env into every spawn in the chain (overlay: set those
   names, inherit the rest; parent untouched). `Env.fromFile "x.env"`

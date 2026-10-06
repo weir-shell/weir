@@ -2396,7 +2396,13 @@ let colorizeRepl (isKnown: string -> bool) (line: string) : string =
                         // never a keyword, a form, or an alias
                         Some(if Extern.exists word then "34" else "31")
                     | slot ->
-                        if Weir.Parser.keywords.Contains word then
+                        if slot <> Complete.HeadSlot.No
+                           && i < line.Length
+                           && line[i] = '='
+                           && not (i + 1 < line.Length && line[i + 1] = '=') then
+                            // an env-prefix name is not a head [D:env-prefix]
+                            None
+                        elif Weir.Parser.keywords.Contains word then
                             // keywords: blue — the red family (31/35 render
                             // near-identically in some themes) is reserved for
                             // exactly one signal: a head that would fail

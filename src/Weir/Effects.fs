@@ -94,7 +94,9 @@ let libraryDesugars: (string * string * string) list =
       "|retryDefaults", "Retry", "defaults"
       "|pollDefaults", "Poll", "defaults"
       // a typed `~` in a command word [D:tilde]
-      "|home", "Path", "home" ]
+      "|home", "Path", "home"
+      // `NAME=value cmd`'s overlay items [D:env-prefix]
+      "|envPair", "Env", "pair" ]
 
 // a `|`-desugar key → its qualified target member (Some "Seq.iter"),
 // or None when the name is not a library desugar (a command reifier, or

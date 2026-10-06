@@ -313,6 +313,17 @@ type HeadSlot =
     /// behind the `^` force-PATH sigil at a head slot: PATH only
     | Forced
 
+// leading `NAME=value ` words ride before a command head [D:env-prefix]:
+// the head slot looks through them (a quoted value may hold spaces)
+let private envPrefixRx =
+    System.Text.RegularExpressions.Regex(
+        "^(?:[A-Za-z_][A-Za-z0-9_]*=(?:\"(?:[^\"\\\\]|\\\\.)*\"|'[^']*'|\\S*)\\s+)+"
+    )
+
+let stripEnvPrefixes (s: string) : string =
+    let m = envPrefixRx.Match s
+    if m.Success then s.Substring m.Length else s
+
 /// the slot verdict for the word starting right after `before`
 /// [D:let-rhs-head]. Statement head = an empty statement prefix,
 /// deliberately untrimmed: the colorizer's continuation lines (a yaml
@@ -329,11 +340,12 @@ let headSlotAt (before: string) : HeadSlot =
         else
             stmt, false
 
-    if core = "" then
+    if core = "" || (stripEnvPrefixes core = "" && not (core.StartsWith " ")) then
         if forced then HeadSlot.Forced else HeadSlot.Stmt
     else
         match letRhsCut (core.TrimStart()) with
-        | Some rest when rest.Trim() = "" -> if forced then HeadSlot.Forced else HeadSlot.LetRhs
+        | Some rest when (stripEnvPrefixes (rest.TrimStart())).Trim() = "" ->
+            if forced then HeadSlot.Forced else HeadSlot.LetRhs
         | _ -> HeadSlot.No
 
 // a word in command argv completes as a path [D:complete-argv]: after
