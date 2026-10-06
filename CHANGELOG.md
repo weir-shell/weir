@@ -53,6 +53,14 @@
   `g >> f`; it is now an error that says so, as is F#'s back-pipe `<|`
   (write `f (x)` or `x |> f`).
 
+- **An interpolation hole is generic.** `let addr s =
+  $"{s.name}:{s.port}"` used to make `port` a string, so
+  `addr { name = "a"; port = 1 }` failed; `let dash n = $"-{n}"` took
+  only strings. A hole on a parameter or field now accepts anything a
+  hole can render, as `show` does — the `$"{show x}"` workaround is no
+  longer needed. A `Secret` passed to such a function is refused at
+  the call. A hole nothing generalizes still defaults to `string`.
+
 - **A lambda body takes command `let`s.** `xs |> Seq.iter (fun f ->`
   followed by `let r = git log $f | complete` used to ask for `$( )`
   unless the lambda sat on a top-level `let`'s right-hand side; a

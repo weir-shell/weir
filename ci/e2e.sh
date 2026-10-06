@@ -2328,6 +2328,25 @@ echo "$out" | grep -qF "cannot be a trailing argument" || fail "the trailing-blo
 rm -rf "$abdir"
 echo "e2e ok: arm-blocks — arm and else blocks run; a trailing block argument teaches the pipe"
 
+# hole-generic [D:hole-generic]: a hole on a parameter or a row field is
+# generic; a top-level Secret argument still refuses at the call
+hgdir=$(mkweirtmp)
+cat > "$hgdir/hg.weir" <<'WEOF'
+type Spec = { name: string; port: int }
+let addr s = $"{s.name}:{s.port}"
+let dash n = $"-{n}"
+print (addr { name = "a"; port = 1 })
+print (dash 5 + dash "x" + dash 1.5)
+WEOF
+out=$(cd "$hgdir" && $BIN hg.weir 2>&1) || fail "hole-generic must run: $out"
+[ "$out" = "a:1
+-5-x-1.5" ] || fail "hole-generic: row field and generic param: $out"
+printf 'let f x = $"{x}"\nprint (f (Secret.of "pw"))\n' > "$hgdir/sec.weir"
+out=$(cd "$hgdir" && $BIN check sec.weir 2>&1) && fail "a Secret through a generic hole must refuse: $out" || true
+echo "$out" | grep -qF "a Secret does not interpolate" || fail "the Secret teaching at the call: $out"
+rm -rf "$hgdir"
+echo "e2e ok: hole-generic — a hole on a parameter or row field is generic; a Secret argument refuses"
+
 cat > "$widir/envval.weir" <<'WEOF'
 let vars = [Env.pair "WQ" "carried"]
 let got = within env vars

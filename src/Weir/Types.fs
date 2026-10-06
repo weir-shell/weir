@@ -275,6 +275,10 @@ type Cls =
     | Eq
     | Show
     | Ord
+    // "renders in an interpolation hole" [D:hole-generic]: Show minus a
+    // Secret at the top (a nested one renders masked, as show does);
+    // compiler-owned, never written
+    | Render
 
 // Cs: constraints on quantified vars — `Eq a => a -> a -> bool` is
 // { Forall = {a}; Cs = [a, {Eq}]; Ty = a -> a -> bool }.

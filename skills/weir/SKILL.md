@@ -90,10 +90,12 @@ print (show 1)
   `print $"{row}"` (only functions reject; a bare string hole stays
   raw/unquoted). `show x` produces the same text as a plain string;
   its niche is the places a hole cannot go — point-free positions
-  (`Seq.map show`), Secrets (`show` masks where interpolation
-  refuses), and a ROW-TYPED field in a hole (`$"{show c.port}"` keeps
-  port polymorphic; a bare hole defaults an unresolved type to
-  string). Command-argument splices stay string/int/bool. Lossy debug format (strings come quoted, long
+  (`Seq.map show`) and Secrets (`show` masks where interpolation
+  refuses). A hole on a parameter or a row-typed field is GENERIC
+  [D:hole-generic]: `let addr s = $"{s.name}:{s.port}"` takes any
+  record with those fields and any renderable field types (a Secret
+  argument still refuses at the call); only a hole nothing generalizes
+  defaults to string. Command-argument splices stay string/int/bool. Lossy debug format (strings come quoted, long
   seqs truncate); `print` remains the raw data channel. The REPL's
   echo is tighter still (100 unforced elements — `#echo` moves it,
   forced seqs echo whole; clipped strings, a hint naming the way
