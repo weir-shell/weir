@@ -994,7 +994,7 @@
         {
           "name": "home",
           "signature": "Path.home () : string",
-          "summary": "The user\u0027s home directory (a pure query; no trailing separator, platform-native). The typed stand-in for \u0060~\u0060/\u0060$HOME\u0060, which never expand in argv \u2014 build a path with \u0060$\u0022{Path.home ()}/.bashrc\u0022\u0060.",
+          "summary": "The user\u0027s home directory (a pure query; no trailing separator, platform-native). In a command line a typed \u0060~\u0060 is this path; in an expression, build one with \u0060$\u0022{Path.home ()}/.bashrc\u0022\u0060.",
           "example": "Path.home ()",
           "pointer": null
         },
