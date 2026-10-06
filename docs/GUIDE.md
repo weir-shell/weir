@@ -809,11 +809,10 @@ lock is still yours, the process is still alive — and the release
 follows:
 
 ```weir
-let saved = Path.newTempDir ()
 within tmp d
     ["report"] |> File.write $"{d}/report.txt"
 always
-    cp $"{d}/report.txt" $"{saved}/report.txt"
+    cp $"{d}/report.txt" report.txt
 ```
 
 The whole family at a glance (`within proc`, the background-process

@@ -84,11 +84,10 @@ the `env` overlay, holds the `lock`, and finds a `proc` or `serve`
 alive (the tree-kill and socket close follow). The binder is in scope:
 
 ```weir
-let saved = Path.newTempDir ()
 within tmp d
     ["report"] |> File.write $"{d}/report.txt"
 always
-    cp $"{d}/report.txt" $"{saved}/report.txt"
+    cp $"{d}/report.txt" report.txt
 ```
 
 It is exactly a bare `within` … `always` nested as the scope's body,
