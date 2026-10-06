@@ -4563,7 +4563,7 @@ let cdTests =
     <| testList
         "Command-callable cd"
         [ test "cd with a path bareword parses to a builtin call" { expectCmd "cd /work" "(cd \"/work\")" }
-          test "bare cd desugars to home" { expectCmd "cd" "(cd \"~\")" }
+          test "bare cd desugars to home" { expectCmd "cd" "(cd (|home ()))" }
           test "cd dotdot and tilde-path parse" {
               expectCmd "cd .." "(cd \"..\")"
               // a typed `~` expands for every command now [D:tilde] — cd
@@ -22004,6 +22004,58 @@ let tildeTests =
               | Ok s -> failtest $"expected the teaching, got {Weir.Ast.sexprStmt s}"
           } ]
 
+let tildeLiteralTests =
+    // the line shows what runs [D:tilde-literal]: Tab completes a leading
+    // `~` to the literal home path, and cd's string argument is data
+    let te = preludeTypeEnv
+
+    let suggestAt (text: string) =
+        Weir.Complete.suggest te text (Weir.Complete.wordStartAt text text.Length)
+
+    let home = System.Environment.GetFolderPath System.Environment.SpecialFolder.UserProfile
+
+    testList
+        "literal home [D:tilde-literal]"
+        [ test "Tab expands a leading ~ to the home path — bare in argv, quoted in an expression" {
+              skipOnWindows ()
+
+              let dirs =
+                  System.IO.Directory.GetDirectories home
+                  |> Array.map System.IO.Path.GetFileName
+                  |> Array.filter (fun n -> not (n.StartsWith "."))
+                  |> Array.sort
+
+              if dirs.Length > 0 then
+                  let d = dirs[0]
+                  let want = $"{home}/{d}/"
+                  Expect.contains (suggestAt $"cat ~/{d}") want "argv: the literal path, bare"
+                  Expect.contains (suggestAt $"let x = File.read ~/{d}") $"\"{want}\"" "expression: quoted"
+                  Expect.isFalse (suggestAt $"cat ~/{d}" |> List.exists (fun c -> c.StartsWith "~")) "no ~ survives"
+          }
+          test "cd's argument is data; bare cd still goes home" {
+              skipOnWindows ()
+
+              Expect.throws
+                  (fun () -> run "cd \"~/weir-no-such-dir\"" |> ignore)
+                  "a quoted ~ is a literal name, not home"
+
+              let before = Weir.Session.Cwd()
+
+              let runCmd line =
+                  match Weir.Parser.parseLine realResolver line with
+                  | Ok(SExpr e | SCmd e) ->
+                      match typecheck env e with
+                      | Ok t -> eval valueEnv t |> ignore
+                      | Error terr -> failtest (formatError terr)
+                  | other -> failtest $"unexpected: {other}"
+
+              try
+                  runCmd "cd"
+                  Expect.equal (Weir.Session.Cwd()) home "bare cd goes home"
+              finally
+                  runCmd $"cd \"{before}\""
+          } ]
+
 let envPrefixTests =
     // bash's one-line child env [D:env-prefix]: NAME=value words before a
     // command head join that segment's overlay; argv `CC=gcc` and
@@ -23029,6 +23081,7 @@ let allTests =
           unquotedPathTeachTests
           ifBodyStopTests
           envPrefixTests
+          tildeLiteralTests
           tildeTests
           aliasCompleteTests
           contPromptTests

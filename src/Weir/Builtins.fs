@@ -234,18 +234,10 @@ let private cdImpl: Value =
     VBuiltin(fun v ->
         match v with
         | VStr path ->
-            let home =
-                System.Environment.GetFolderPath System.Environment.SpecialFolder.UserProfile
-
-            let expanded =
-                if path = "~" then
-                    home
-                elif path.StartsWith "~/" then
-                    Path.Combine(home, path.Substring 2)
-                else
-                    path
-
-            let resolved = Session.resolve expanded
+            // the argument is data: a `~` here is a literal name
+            // [D:tilde-literal] — a typed `~` already expanded at the
+            // command line, and bare `cd` passes the home path itself
+            let resolved = Session.resolve path
 
             if not (Directory.Exists resolved) then
                 failwith $"cd: no such directory: {resolved}"
@@ -5830,7 +5822,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
           "not", (bd "Boolean negation." (Some "not true") None |> named [ "b" ])
           "cd",
           (bd
-              "Change the session's directory, returning the old one (restore by binding: `let prev = cd \"/tmp\"`). A bare name applies a binding (`cd target`); `~` expands; `within cd` is the scoped spelling."
+              "Change the session's directory, returning the old one (restore by binding: `let prev = cd \"/tmp\"`). A bare name applies a binding (`cd target`); bare `cd`, or a typed `cd ~`, goes home — the argument string itself is taken literally; `within cd` is the scoped spelling."
               (Some "cd \".\"")
               None
            |> named [ "path" ])

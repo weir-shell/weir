@@ -10,7 +10,9 @@
   that is `~` or starts with `~/` expands when the line runs. Quoted
   strings, interpolations and spliced values stay literal, `~user` is
   not expanded, and `$HOME` still never expands; in an expression,
-  `Path.home ()` remains the spelling.
+  `Path.home ()` remains the spelling. Tab completes a leading `~` to
+  the literal home path, so the line shows what will run, and `cd`
+  takes a string argument literally (`cd "~/x"` no longer expands).
 
 - **`NAME=value cmd` sets an environment variable for one command.**
   `EDITOR=nano git commit` works as in bash: one or more `NAME=value`

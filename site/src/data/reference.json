@@ -2179,7 +2179,7 @@
     {
       "name": "cd",
       "signature": "cd (path: string) : string",
-      "summary": "Change the session\u0027s directory, returning the old one (restore by binding: \u0060let prev = cd \u0022/tmp\u0022\u0060). A bare name applies a binding (\u0060cd target\u0060); \u0060~\u0060 expands; \u0060within cd\u0060 is the scoped spelling.",
+      "summary": "Change the session\u0027s directory, returning the old one (restore by binding: \u0060let prev = cd \u0022/tmp\u0022\u0060). A bare name applies a binding (\u0060cd target\u0060); bare \u0060cd\u0060, or a typed \u0060cd ~\u0060, goes home \u2014 the argument string itself is taken literally; \u0060within cd\u0060 is the scoped spelling.",
       "example": "cd \u0022.\u0022",
       "pointer": null
     },
