@@ -19586,6 +19586,11 @@ let uuidTests =
 
               Expect.isFalse (System.IO.File.Exists path) "the plan wrote nothing"
           }
+          test "print takes a Uuid, as the wire table's canonical types [D:print-canonical]" {
+              let ds, _, _, _ = Weir.Script.analyzeLines "print.weir" [ "print (Uuid.v7 ())"; "printerr Uuid.nil" ]
+              Expect.isEmpty (ds |> List.filter (fun d -> d.Severity = "error")) "print and printerr check"
+              Expect.stringContains (checkErr "print (Instant.now ())").Message "print takes a string, int, float, bool, Uuid" "Instant still refuses"
+          }
           test "the type: declarable, Eq + Show + Ord, argv-spliceable, refused where Instant is" {
               Expect.equal (run "Uuid.nil == Uuid.parse \"00000000000000000000000000000000\"") (VBool true) "Eq"
               Expect.equal (run "show Uuid.max") (VStr "ffffffff-ffff-ffff-ffff-ffffffffffff") "Show is canonical"
@@ -19597,7 +19602,6 @@ let uuidTests =
                   "sortBy keys"
 
               env |> declare "type UuidRec = { id: Uuid }" |> ignore
-              Expect.stringContains (checkErr "print Uuid.nil").Message "print takes" "print stays text-only"
               Expect.stringContains (checkErr "Uuid.nil < Uuid.max").Message "not defined for Uuid" "no < on identifiers (as strings)"
               Expect.stringContains (checkErr "Uuid.parse 5").Message "expected string" "parse takes text"
           } ]
@@ -20601,7 +20605,7 @@ let dxMessageTests =
 
               mustSay
                   [ "type R = { a: int }"; "[{ a = 1 }] |> Seq.iter print" ]
-                  "print takes a string, int, float, bool, or seq<string>"
+                  "print takes a string, int, float, bool, Uuid, or seq<string>"
                   "record refused"
           }
           test "D8: a pasted multi-line string literal teaches the single-line law" {

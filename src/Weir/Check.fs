@@ -954,10 +954,74 @@ let rec divergesTo (x: Expr) : bool =
     | EMatch(_, arms) -> arms |> List.forall (fun (_, _, b) -> divergesTo b)
     | _ -> false
 
+// the wire table [D:wire-table]: each type's stance at the JSON and
+// YAML boundaries, in one match with no wildcard — a new Ty case does
+// not compile until it says how it crosses, and both boundaries (both
+// directions) read the same answer. A Canonical type has one encoding
+// and crosses as itself; a Refused one teaches the explicit conversion
+// (its encoding is the consumer's convention [D:unit-types-wire]); a
+// Walk type is the admission walk's own (compounds, unit, variables).
+type private WireStance =
+    // the yaml read shape rides along, so a canonical type cannot exist
+    // without saying how a document reads it
+    | Canonical of yaml: Yaml.Shape
+    // refused on its own, crossing under a declared codec [D:wire-codecs]
+    | Encoded of codecs: Codec list * subject: string * repair: string
+    | Refused of teach: (string -> string)
+    | Walk
+
+let private wireStance (ty: Ty) : WireStance =
+    let unrepresentable (subject: string) (repair: string) =
+        Refused(fun fmt -> $"{subject} is not representable in {fmt} — {repair}")
+
+    match ty with
+    | TInt -> Canonical Yaml.SInt
+    | TFloat -> Canonical Yaml.SFloat
+    | TStr -> Canonical Yaml.SStr
+    | TBool -> Canonical Yaml.SBool
+    | TUuid -> Canonical Yaml.SUuid
+    | TInstant ->
+        Encoded(
+            [ Iso8601; EpochMs; EpochSec ],
+            "an Instant",
+            "convert explicitly (Instant.epochMs into an int field, or show for an ISO 8601 string)"
+        )
+    | TDur ->
+        Encoded(
+            [ Millis; Seconds ],
+            "Duration",
+            "convert explicitly (Duration.toMillis into an int field, or show for a string)"
+        )
+    | TSize ->
+        Encoded([ ByteCount ], "Size", "convert explicitly (Size.toBytes into an int field, or show for a string)")
+    | TBytes -> unrepresentable "Bytes" "Bytes.toBase64 into a string field"
+    // the type itself refuses, not an encoding [D:secret]
+    | TSecret ->
+        Refused(fun fmt ->
+            $"a Secret must not cross to {fmt} — Secret.reveal it into a string first if you truly mean to write it")
+    | TUnit
+    | TFun _
+    | TSeq _
+    | TTuple _
+    | TNamed _
+    | TVar _
+    | TRowVar _ -> Walk
+
+// the table as patterns, so each boundary's walk stays one match whose
+// first arms are the table's answer
+let private (|WireCanonical|WireRefused|WireWalk|) (ty: Ty) =
+    match wireStance ty with
+    | Canonical shape -> WireCanonical shape
+    | Encoded(_, subject, repair) -> WireRefused(fun fmt -> $"{subject} is not representable in {fmt} — {repair}")
+    | Refused teach -> WireRefused teach
+    | Walk -> WireWalk
+
 let private printArgTy (ctx: Ctx) (env: TypeEnv) (span: Span) (ty: Ty) : Result<Ty, TypeError> =
     match resolve ctx ty with
     | TVar _ as v -> bind ctx env span TStr v |> Result.map (fun () -> TStr)
-    | (TStr | TInt | TFloat | TBool) as t -> Ok t
+    // the wire table's canonical types print as their one text
+    // [D:print-canonical] — the next canonical scalar prints unasked
+    | WireCanonical _ as t -> Ok t
     // unit prints as nothing [D:exit-reifiers]: the !() sigil
     // desugar wraps interiors in print, and `| orFail` interiors are
     // unit — one rule instead of a shadow drain builtin
@@ -967,7 +1031,7 @@ let private printArgTy (ctx: Ctx) (env: TypeEnv) (span: Span) (ty: Ty) : Result<
          | TVar _ as v -> bind ctx env span TStr v |> Result.map (fun () -> TSeq TStr)
          | TStr -> Ok(TSeq TStr)
          | TUnit -> err span "print cannot take seq<unit> — a lazy effect sequence never runs; use Seq.iter"
-         | t -> err span $"print takes a string, int, float, bool, or seq<string>; this is {formatTy (TSeq t)}")
+         | t -> err span $"print takes a string, int, float, bool, Uuid, or seq<string>; this is {formatTy (TSeq t)}")
     | TSecret ->
         // a Secret refuses print [D:secret] — show s prints ***; the value
         // is the deliberate Secret.reveal
@@ -976,7 +1040,7 @@ let private printArgTy (ctx: Ctx) (env: TypeEnv) (span: Span) (ty: Ty) : Result<
         // Bytes refuses print [D:bytes] — raw bytes wreck a terminal
         // (gzip output, say); the alternatives are deliberate
         err span "print will not render Bytes — Bytes.toBase64 b for text, or File.writeBytes path b for a file"
-    | t -> err span $"print takes a string, int, float, bool, or seq<string>; this is {formatTy t}"
+    | t -> err span $"print takes a string, int, float, bool, Uuid, or seq<string>; this is {formatTy t}"
 
 // the (op) desugar target [D:operator-values]: `fun a b -> a op b`
 // verbatim — params carry the un-typeable '|' prefix so nothing can
@@ -1161,67 +1225,6 @@ let rec private spine (e: Expr) : Expr * Expr list =
 // yaml guard's job, but here a cycle can name its path); `path`
 // locates the offending field from the top — a recursive law's
 // failures are deep and a category list alone will not find them.
-// the wire table [D:wire-table]: each type's stance at the JSON and
-// YAML boundaries, in one match with no wildcard — a new Ty case does
-// not compile until it says how it crosses, and both boundaries (both
-// directions) read the same answer. A Canonical type has one encoding
-// and crosses as itself; a Refused one teaches the explicit conversion
-// (its encoding is the consumer's convention [D:unit-types-wire]); a
-// Walk type is the admission walk's own (compounds, unit, variables).
-type private WireStance =
-    // the yaml read shape rides along, so a canonical type cannot exist
-    // without saying how a document reads it
-    | Canonical of yaml: Yaml.Shape
-    // refused on its own, crossing under a declared codec [D:wire-codecs]
-    | Encoded of codecs: Codec list * subject: string * repair: string
-    | Refused of teach: (string -> string)
-    | Walk
-
-let private wireStance (ty: Ty) : WireStance =
-    let unrepresentable (subject: string) (repair: string) =
-        Refused(fun fmt -> $"{subject} is not representable in {fmt} — {repair}")
-
-    match ty with
-    | TInt -> Canonical Yaml.SInt
-    | TFloat -> Canonical Yaml.SFloat
-    | TStr -> Canonical Yaml.SStr
-    | TBool -> Canonical Yaml.SBool
-    | TUuid -> Canonical Yaml.SUuid
-    | TInstant ->
-        Encoded(
-            [ Iso8601; EpochMs; EpochSec ],
-            "an Instant",
-            "convert explicitly (Instant.epochMs into an int field, or show for an ISO 8601 string)"
-        )
-    | TDur ->
-        Encoded(
-            [ Millis; Seconds ],
-            "Duration",
-            "convert explicitly (Duration.toMillis into an int field, or show for a string)"
-        )
-    | TSize ->
-        Encoded([ ByteCount ], "Size", "convert explicitly (Size.toBytes into an int field, or show for a string)")
-    | TBytes -> unrepresentable "Bytes" "Bytes.toBase64 into a string field"
-    // the type itself refuses, not an encoding [D:secret]
-    | TSecret ->
-        Refused(fun fmt ->
-            $"a Secret must not cross to {fmt} — Secret.reveal it into a string first if you truly mean to write it")
-    | TUnit
-    | TFun _
-    | TSeq _
-    | TTuple _
-    | TNamed _
-    | TVar _
-    | TRowVar _ -> Walk
-
-// the table as patterns, so each boundary's walk stays one match whose
-// first arms are the table's answer
-let private (|WireCanonical|WireRefused|WireWalk|) (ty: Ty) =
-    match wireStance ty with
-    | Canonical shape -> WireCanonical shape
-    | Encoded(_, subject, repair) -> WireRefused(fun fmt -> $"{subject} is not representable in {fmt} — {repair}")
-    | Refused teach -> WireRefused teach
-    | Walk -> WireWalk
 
 // the scalar a codec on a field encodes [D:wire-codecs]: the field type
 // itself, or the element inside one Option or seq wrapper

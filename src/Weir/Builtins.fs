@@ -6829,7 +6829,7 @@ let private printerrImpl: Value =
         | VSeq items ->
             writeLinesTo System.Console.Error items
             VUnit
-        | (VStr _ | VInt _ | VFloat _ | VBool _) as scalar ->
+        | (VStr _ | VInt _ | VFloat _ | VBool _ | VUuid _) as scalar ->
             System.Console.Error.WriteLine(scalarString "printerr argument" scalar)
             VUnit
         | v -> unreachable $"the checker rejects 'printerr' on {formatValue v}")
@@ -6931,7 +6931,7 @@ let private printImpl: Value =
         | VSeq items ->
             writeLines items
             VUnit
-        | (VStr _ | VInt _ | VFloat _ | VBool _) as scalar ->
+        | (VStr _ | VInt _ | VFloat _ | VBool _ | VUuid _) as scalar ->
             // data bound for a tty is sanitized [D:binary-echo]; a
             // redirected stdout stays byte-faithful
             System.Console.WriteLine(
