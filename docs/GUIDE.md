@@ -984,7 +984,21 @@ and CI, `weir check --json file.weir` is the no-editor route.
 
 A command can run with extra environment variables — an overlay on
 the inherited environment: those names set, the rest kept, the
-parent untouched. `Env.fromFile` reads the dotenv subset: `KEY=VALUE`,
+parent untouched. For one command, write the variables before it, as
+in bash:
+
+```weir
+GREETING=hello sh -c "echo child: $GREETING"
+```
+
+Each `NAME=value` sits before the program name; the value is one word,
+a quoted string, a spliced `$x` or an interpolation, and `NAME=` sets
+an empty value. In a pipeline each stage takes its own. After the
+program name `CC=gcc` is an ordinary argument, as in bash. There is no
+spelling to *unset* a variable for one command — run it through
+`env -u NAME cmd`.
+
+`Env.fromFile` reads the dotenv subset: `KEY=VALUE`,
 optional quotes, `#` comments. It does not read `export` lines or
 expand `$VAR` references — those need a shell to evaluate them. If a
 file genuinely needs sourcing, run it in one:

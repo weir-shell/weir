@@ -145,6 +145,11 @@ let private ifBodyOk = new System.Threading.ThreadLocal<bool>(fun () -> false)
 let private letRhsCmd, private letRhsCmdRef =
     createParserForwardedToRef<Expr, unit> ()
 
+// forwarded: a block statement's env-prefix teaching [D:env-prefix] sits
+// above the command grammar it reuses
+let private envPrefixStmtGuard, private envPrefixStmtGuardRef =
+    createParserForwardedToRef<Choice<Expr, Expr>, unit> ()
+
 // forwarded: the if/elif condition position sits above it too [D:if-succeeds]
 let private ifCondCmd, private ifCondCmdRef =
     createParserForwardedToRef<Expr, unit> ()
@@ -3494,6 +3499,7 @@ let private stmtElem: Parser<Choice<Expr, Expr>, unit> =
     choice
         [ foreignKeywordGuard ()
           attempt (cmdTry |>> Choice1Of2)
+          envPrefixStmtGuard
           exprElem ]
 
 let private armSeq (all: Choice<Expr, Expr> list) : Parser<Expr, unit> =
@@ -3754,6 +3760,58 @@ type private HeadKind =
     // the program string resolves at run time; argv stays typed argv
     | DynamicHead of display: string * head: Expr
 
+// `NAME=value` words before a command head [D:env-prefix] — bash's
+// one-line child env. The name is identifier-shaped and glued to `=` (and
+// never `==`, so a condition like `x==1` is untouched); the value is one
+// word (bare, quoted, spliced or interpolated) or nothing (`NAME= cmd`, an
+// empty value). Only before a head: a later `CC=gcc` stays argv, as in bash.
+// The value is glued to `=` by design, so it is read here, not by the argv
+// piece parser (whose guard refuses glued pieces).
+let private envValue: Parser<Expr, unit> =
+    choice
+        [ lookAhead (pstring "$\"\"\"") >>. interpRawLit
+          lookAhead (pstring "$\"") >>. interpLit
+          lookAhead (pstring "$(") >>. captureSigil
+          spanned (pchar '$' >>. rawWord) |>> fun (n, sp) -> { Kind = EVar n; Span = sp }
+          lookAhead (pchar '"') >>. strLit
+          lookAhead (pchar '\'') >>. singleQuoted
+          spanned cmdWord
+          |>> fun (w, sp) -> if isTildeWord w then tildeExpr w sp else { Kind = EStr w; Span = sp } ]
+
+let private envAssign: Parser<(string * Expr) * Span, unit> =
+    attempt (
+        spanned (
+            (many1Satisfy2 isIdentStart isIdentCont .>> pchar '=' .>> notFollowedBy (pchar '='))
+            .>>. ((followedBy (satisfy (fun c -> c = ' ' || c = '\t')) >>% None) <|> (envValue |>> Some))
+            .>> ws
+        )
+    )
+    |>> fun ((name, valueO), sp) ->
+        let value =
+            valueO |> Option.defaultValue { Kind = EStr ""; Span = sp }
+
+        (name, value), sp
+
+// a statement that is only env prefixes, or whose command did not resolve,
+// teaches instead of reading `FOO` as a variable [D:env-prefix] — reached
+// only after the command grammar refused the line
+let private envPrefixGuard () : Parser<'a, unit> =
+    attempt (lookAhead (getPosition .>>. many1 envAssign .>>. opt (spanned cmdWord)))
+    >>= fun ((at, assigns), next) ->
+        let (name, _), _ = List.head assigns
+
+        match next with
+        | Some(w, sp) when not (keywords.Contains w) ->
+            failFatallyAtCol
+                sp.Start.Col
+                $"command not found: {w} (after the environment prefix {name}=…) — `NAME=value cmd` sets a variable for that one command"
+        | _ ->
+            failFatallyAt
+                at
+                $"'{name}=…' is not an assignment — weir binds values with `let`; `{name}=value cmd` sets an environment variable for that one command"
+
+envPrefixStmtGuardRef.Value <- envPrefixGuard ()
+
 let private commandSegment
     (builtinHeads: bool)
     (argP: Parser<Expr, unit>)
@@ -3861,6 +3919,7 @@ let private commandSegment
 
     let head = dynHead <|> litHead
 
+
     // the fatal `^$` spellings [D:dynamic-head], guarded outside the
     // head attempt (the `$@`-head guard's mechanism) so the teachings
     // survive the backtrack: a splat head, an interpolated head, and a
@@ -3899,8 +3958,27 @@ let private commandSegment
                      at
                      "a splat cannot head a command (N words would be N heads); a command head is one program — a dynamic one is ^$name")
                      stream)
-    <|> (attempt head .>>. many argP)
-    |>> fun ((kind, prog, span), args) ->
+    <|> (attempt (many envAssign .>>. head) .>>. many argP)
+    |>> fun ((assigns, (kind, prog, span)), args) ->
+        // the prefix joins the segment's overlay, after a sigil's so the
+        // nearer spelling wins on a shared name [D:env-prefix]
+        let sigilEnv =
+            match assigns with
+            | [] -> sigilEnv
+            | (_, firstSpan) :: _ ->
+                let at k = { Kind = k; Span = firstSpan }
+
+                let pairs =
+                    assigns
+                    |> List.map (fun ((name, value), sp) ->
+                        let at k = { Kind = k; Span = sp }
+                        at (EApp(at (EApp(at (EVar "|envPair"), at (EStr name))), value)))
+                    |> fun items -> at (EList items)
+
+                match sigilEnv with
+                | None -> Some pairs
+                | Some e -> Some(at (EApp(at (EApp(at (EVar "|seqAppend"), e)), pairs)))
+
         let fullSpan =
             { Start = span.Start
               End =
@@ -4940,6 +5018,7 @@ let private stmtWith (r: Resolver) =
               letSig
               topLet r
               cmdLine r .>> eof |>> SCmd
+              envPrefixGuard ()
               (seqExpr >>= pipeOrHint) .>> eof |>> SExpr ]
 
 let private noExternals =

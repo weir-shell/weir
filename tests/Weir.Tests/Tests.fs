@@ -22004,6 +22004,54 @@ let tildeTests =
               | Ok s -> failtest $"expected the teaching, got {Weir.Ast.sexprStmt s}"
           } ]
 
+let envPrefixTests =
+    // bash's one-line child env [D:env-prefix]: NAME=value words before a
+    // command head join that segment's overlay; argv `CC=gcc` and
+    // conditions like `x==1` are untouched
+    let shape line =
+        match Weir.Parser.parseLineFull cmdResolver line with
+        | Ok s -> Weir.Ast.sexprStmt s
+        | Error f -> failtest $"parse failed: {f.Message}"
+
+    let parseErr line =
+        match Weir.Parser.parseLineFull cmdResolver line with
+        | Error f -> f.Message
+        | Ok s -> failtest $"expected a refusal, got {Weir.Ast.sexprStmt s}"
+
+    testList
+        "env prefix [D:env-prefix]"
+        [ test "prefixes become the segment's overlay" {
+              Expect.equal (shape "EDITOR=nano git commit") "(scmd (cmdenv [((|envPair \"EDITOR\") \"nano\")] git \"commit\"))" "one"
+              Expect.equal
+                  (shape "A=1 B= git")
+                  "(scmd (cmdenv [((|envPair \"A\") \"1\"); ((|envPair \"B\") \"\")] git ))"
+                  "several, and an empty value"
+              Expect.equal (shape "A=$x git") "(scmd (cmdenv [((|envPair \"A\") x)] git ))" "a spliced value"
+              Expect.equal (shape "A=\"two words\" git") "(scmd (cmdenv [((|envPair \"A\") \"two words\")] git ))" "a quoted value"
+          }
+          test "each chain stage takes its own prefix" {
+              Expect.equal
+                  (shape "A=1 git log | B=2 grep x")
+                  "(scmd ((cmdenv [((|envPair \"A\") \"1\")] git \"log\") |> (cmdenv [((|envPair \"B\") \"2\")] grep \"x\")))"
+                  "per stage, as in bash"
+          }
+          test "a sigil env and a prefix compose, the prefix last" {
+              Expect.stringContains (shape "!e(A=1 git)") "(|seqAppend e) [((|envPair \"A\") \"1\")]" "sigil first, prefix appended"
+          }
+          test "after the head, NAME=value is argv; x==1 is a comparison" {
+              Expect.equal (shape "git CC=gcc") "(scmd (cmd git \"CC=gcc\"))" "argv"
+              Expect.stringContains (shape "let x = 1 in x==1") "(== x 1)" "never an env prefix"
+          }
+          test "a prefix with no command teaches" {
+              Expect.stringContains (parseErr "FOO=1") "'FOO=…' is not an assignment" "top level"
+              Expect.stringContains (parseErr "if true then FOO=1 else ()") "'FOO=…' is not an assignment" "a block statement"
+          }
+          test "the head slot looks through prefixes (tint and Tab agree)" {
+              Expect.equal (Weir.Complete.headSlotAt "EDITOR=nano ") Weir.Complete.HeadSlot.Stmt "statement"
+              Expect.equal (Weir.Complete.headSlotAt "let v = A=\"x y\" ") Weir.Complete.HeadSlot.LetRhs "let-RHS, quoted value"
+              Expect.equal (Weir.Complete.headSlotAt "git ") Weir.Complete.HeadSlot.No "argv is not a head"
+          } ]
+
 let ifBodyStopTests =
     // a then/elif body's command ends at a bareword else/elif
     // [D:if-body-stop] — before, `if c then echo hi else echo bye` was ONE
@@ -22980,6 +23028,7 @@ let allTests =
           lsCommandTeachTests
           unquotedPathTeachTests
           ifBodyStopTests
+          envPrefixTests
           tildeTests
           aliasCompleteTests
           contPromptTests

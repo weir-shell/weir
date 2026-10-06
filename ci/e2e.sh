@@ -2151,6 +2151,32 @@ tool-ran"
 rm -rf "$tidir"
 echo "e2e ok: a typed ~ is home in a command line — argv and head; quoted, spliced, mid-word and ~user stay literal"
 
+# NAME=value cmd [D:env-prefix]: bash's one-line child env — values of
+# every form, per pipeline stage, composed with a sigil (the prefix wins),
+# argv CC=gcc untouched, the parent env clean; a lone FOO=1 teaches let
+epdir=$(mkweirtmp)
+cat > "$epdir/e.weir" <<'WEOF'
+let ed = "micro"
+EDITOR=nano A="two words" B=$ed C= sh -c 'echo "$EDITOR|$A|$B|[$C]"'
+X=1 sh -c 'echo "left $X"' | Y=2 sh -c 'cat; echo "right ${X-none} $Y"'
+let e = [Env.pair "S" "sigil"; Env.pair "W" "sigil"]
+!e(W=prefix sh -c 'echo "$S $W"')
+sh -c 'echo "$0"' CC=gcc
+print (Env.get "EDITOR" |> Option.defaultValue "parent clean")
+WEOF
+out=$(cd "$epdir" && env -u EDITOR $BIN e.weir 2>&1) || fail "the env-prefix cell must run: $out"
+[ "$out" = "nano|two words|micro|[]
+left 1
+right none 2
+sigil prefix
+CC=gcc
+parent clean" ] || fail "env prefix: forms, per stage, sigil composition, argv, parent: $out"
+printf 'FOO=1\n' > "$epdir/lone.weir"
+out=$(cd "$epdir" && $BIN lone.weir 2>&1) && fail "a lone prefix must refuse: $out" || true
+echo "$out" | grep -qF "is not an assignment" || fail "a lone prefix teaches let: $out"
+rm -rf "$epdir"
+echo "e2e ok: NAME=value cmd — value forms, per stage, sigil composition, argv untouched, parent clean; a lone prefix teaches"
+
 cat > "$widir/envval.weir" <<'WEOF'
 let vars = [Env.pair "WQ" "carried"]
 let got = within env vars

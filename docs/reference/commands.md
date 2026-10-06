@@ -108,7 +108,11 @@ command line, so the marker is what returns to expression land:
 !(git fetch --quiet); print "fetched"
 ```
 
-An env overlay bound to `e` attaches as `$e(...)` / `!e(...)`. There is
+Variables for one command go before it, bash-style: `EDITOR=nano git
+commit` (each stage of a pipeline takes its own; after the program
+name, `CC=gcc` is argv). An env overlay bound to `e` attaches as
+`$e(...)` / `!e(...)`, and composes with a prefix — the prefix wins on
+a shared name. There is
 no `!`-negation — negation is the word `not`; `!` means *do it*. To
 swap between two known tools, branch the whole command line; for a
 program that is genuinely a runtime value, force it external with a
