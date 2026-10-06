@@ -2222,21 +2222,40 @@ let private withPatNames (p: Pattern) (inner: Parser<'a, unit>) : Parser<'a, uni
         finally
             ambientResolver.Value <- saved
 
+// an or-pattern's alternative [D:or-patterns]: before the arm's `->`, a
+// `|` (not `||`/`|>`) can only separate alternatives — arms are separated
+// after a body
+let private orAlternative =
+    attempt (pchar '|' .>> notFollowedBy (anyOf "|>") .>> ws) >>. commaPats
+
 let private matchArm =
     // bare-comma tuple patterns [D:bare-comma]: the arm rides the same
     // one-or-tuple production as binder positions — `when`/`->` are not
     // commas, so the guard sits outside the tuple by construction
-    commaPats
-    >>= fun p ->
-        // the body is arm-body territory [D:match-arm-commands]: a command
-        // chain ends at the next `| <pattern> ->`, so `| _ -> git pull`
-        // streams without a sigil (the interior-arming positions, extended)
-        withPatNames
-            p
-            (opt (keyword "when" >>. expr) .>> str_ws "->"
-             // an arm body takes command lets [D:statement-lets]
-             .>>. withMatchArm true (withStmtLetCmd (withExprParen false seqExpr)))
-        |>> fun (guard, body) -> p, guard, body
+    commaPats .>>. many orAlternative
+    >>= fun (p, alts) ->
+        // or-patterns desugar to one arm per alternative sharing the
+        // guard and body [D:or-patterns]; v1 alternatives bind no names
+        // (F#'s same-names-same-types rule waits for a receipt)
+        match alts |> List.tryFind (fun a -> not (List.isEmpty (patLeafNames a))) with
+        | Some a ->
+            failFatallyAtCol
+                a.PSpan.Start.Col
+                "an or-pattern's alternatives cannot bind names yet — split it into one arm per alternative"
+        | None when not alts.IsEmpty && not (List.isEmpty (patLeafNames p)) ->
+            failFatallyAtCol
+                p.PSpan.Start.Col
+                "an or-pattern's alternatives cannot bind names yet — split it into one arm per alternative"
+        | None ->
+            // the body is arm-body territory [D:match-arm-commands]: a command
+            // chain ends at the next `| <pattern> ->`, so `| _ -> git pull`
+            // streams without a sigil (the interior-arming positions, extended)
+            withPatNames
+                p
+                (opt (keyword "when" >>. expr) .>> str_ws "->"
+                 // an arm body takes command lets [D:statement-lets]
+                 .>>. withMatchArm true (withStmtLetCmd (withExprParen false seqExpr)))
+            |>> fun (guard, body) -> (p :: alts) |> List.map (fun pat -> pat, guard, body)
 
 // within <kind> <binder> + block [D:within-scopes]: a scoped resource
 // as an ordinary expression — the body is a plain expression block
@@ -2551,7 +2570,7 @@ let private matchExprBody =
         // a completed expression to the bare-pipe fatal
         (opt (str_ws "|") >>. matchArm .>>. many (str_ws "|" >>. matchArm))
         (fun p scrut (arm0, rest) ->
-            let arms = arm0 :: rest
+            let arms = arm0 @ List.concat rest
             let lastBody = List.last arms |> fun (_, _, b) -> b
 
             { Kind = EMatch(scrut, arms)
@@ -2572,7 +2591,7 @@ let private functionExprBody =
     >>= fun p ->
         (opt (str_ws "|") >>. matchArm .>>. many (str_ws "|" >>. matchArm))
         |>> fun (arm0, rest) ->
-            let arms = arm0 :: rest
+            let arms = arm0 @ List.concat rest
             let lastBody = List.last arms |> fun (_, _, b) -> b
 
             let kwSpan =
@@ -4536,6 +4555,8 @@ let private armBoundaryAhead: Parser<unit, unit> =
                     pstring "|"
                     >>. ws
                     >>. commaPats
+                    // the next arm may be an or-pattern [D:or-patterns]
+                    >>. many orAlternative
                     >>. (followedBy (str_ws "->") <|> followedBy (keyword "when"))
                 )
             ))

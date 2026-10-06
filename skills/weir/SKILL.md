@@ -1010,7 +1010,10 @@ refs
   then-branch is unit (`if ok then print "yes"` is a valid statement).
   `elif` chains as in F# (`if / elif / elif / else`) — pure spelling
   for `else if`.
-- `match` supports `| true ->` / `| false ->`, `when` guards, and
+- `match` supports `| true ->` / `| false ->`, `when` guards,
+  or-patterns `| "a" | "b" ->` / `| Debug | Info ->` [D:or-patterns]
+  (one arm per alternative sharing the guard and body; v1 alternatives
+  bind no names — split a binding one into separate arms), and
   constructor patterns. **A non-exhaustive match is a hard error**, and
   guarded arms don't count as coverage — always include an unguarded
   catch-all or cover every case. The dual is also a hard error: an

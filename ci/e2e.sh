@@ -2229,6 +2229,36 @@ nerr=$(printf '%s\n' "$out" | grep -c 'error \[' || true)
 rm -rf "$rxdir"
 echo "e2e ok: reflexes teach (!=, !x, <<, <|, annotations, 1..3, \\ continuation and escapes, \\ls); forward spellings run; a mis-parsed let reports once"
 
+# or-patterns [D:or-patterns]: alternatives share the arm (literal, case,
+# function, guarded), count toward exhaustiveness, end a command arm, and
+# a binding alternative refuses with the split teaching
+opdir=$(mkweirtmp)
+cat > "$opdir/or.weir" <<'WEOF'
+type Level = Debug | Info | Warn | Error
+let loud l =
+    match l with
+    | Debug | Info -> false
+    | Warn | Error -> true
+let area p =
+    match p with
+    | "Parser.fs" | "Script.fs" -> "parser"
+    | _ -> "other"
+let small = function | 1 | 2 -> "small" | _ -> "big"
+print $"{loud Info} {loud Error} {area "Script.fs"} {small 2}"
+match "c" with
+| "a" -> sh -c "echo arm-a"
+| "b" | "c" -> sh -c "echo arm-bc"
+| _ -> ()
+WEOF
+out=$(cd "$opdir" && $BIN or.weir 2>&1) || fail "or-patterns must run: $out"
+[ "$out" = "false true parser small
+arm-bc" ] || fail "or-patterns: shared arms, function, command arm boundary: $out"
+printf 'let f p = match p with | (n, 0) | (0, n) -> n | _ -> 0\nprint $"{f (1, 0)}"\n' > "$opdir/bind.weir"
+out=$(cd "$opdir" && $BIN check bind.weir 2>&1) && fail "a binding alternative must refuse: $out" || true
+echo "$out" | grep -qF "cannot bind names yet" || fail "the v1 split teaching: $out"
+rm -rf "$opdir"
+echo "e2e ok: or-patterns — literal, case, function and command arms share bodies; a binding alternative teaches the split"
+
 cat > "$widir/envval.weir" <<'WEOF'
 let vars = [Env.pair "WQ" "carried"]
 let got = within env vars
