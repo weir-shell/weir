@@ -4500,6 +4500,12 @@ and armTail (e: Expr) : Expr =
         | EMatch(scrut, arms) ->
             { Kind = EMatch(scrut, arms |> List.map (fun (p, g, b) -> p, g, armTail b))
               Span = e.Span }
+        // a statement-position if/else arms both branches [D:if-body-stop]
+        // (an elif chain is the else branch's nested if); the else-less
+        // if arms its then-tail at its own check arm
+        | EIf(c, t, Some els) ->
+            { Kind = EIf(c, armTail t, Some(armTail els))
+              Span = e.Span }
         | _ -> e
 
 // an exit-code spine discarded where unit is demanded keeps its

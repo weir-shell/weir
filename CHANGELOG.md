@@ -15,6 +15,13 @@
   (`let x = …`, `$( )`, `| complete`) still captures, so an editor
   belongs in statement position.
 
+- **A command in an `if` branch ends at `else`/`elif`.** `if ok then
+  echo hi else echo bye` ran a single `echo` with argv `hi else echo
+  bye`, and `if ok then git pull else ()` failed with "unbound variable
+  'git'" — only an `if` without `else` took commands. Each branch is
+  now its own command, on one line or indented; quote `"else"` to pass
+  the word to a command there.
+
 ## v0.0.63
 
 ### Added

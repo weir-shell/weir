@@ -1860,6 +1860,28 @@ for want in reset-ran clean-ran item-a item-b fetched d1b2a59f; do
 done
 echo "e2e ok: interior commands arm in if/lambda/block bodies; reifiers work as interior statements"
 
+# else/elif end a then-body's command [D:if-body-stop]: each branch is its
+# own command (indented or one line), a dangling else binds the nearest
+# if, a quoted "else" is argv, and value position still captures
+cat > "$iadir/ie.weir" <<'WEOF'
+if 1 == 2 then
+    sh -c "echo branch-then"
+else
+    sh -c "echo branch-else"
+if 1 == 2 then echo a elif 2 == 2 then echo branch-elif else echo c
+if true then if false then echo x else echo branch-dangling else echo z
+if true then echo "else" else echo no
+let v = if false then echo a else echo branch-value
+print (Seq.head v)
+WEOF
+out=$(cd "$iadir" && $BIN ie.weir) || fail "the if/else command cell must run: $out"
+[ "$out" = "branch-else
+branch-elif
+branch-dangling
+else
+branch-value" ] || fail "if/else commands: each branch its own command: $out"
+echo "e2e ok: else/elif end a then-body command — indented, one-line, elif, dangling else, quoted argv, value capture"
+
 # match arms take bare commands [D:match-arm-commands]: the case-runner
 # idiom — dispatch to a real command per arm, no sigil; a multi-line arm
 # body sequences, the tail streams; capture position still binds
