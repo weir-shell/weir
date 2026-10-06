@@ -1960,15 +1960,14 @@ echo "e2e ok: pure admits the grammar; purity refuses at the command"
 
 # the hardened teaching [D:statement-lets]: a refused context names $()
 # and the actual context — --flag argv included (the dash-death class,
-# which used to die raw at the double dash before the pipe)
-cat > "$sldir/sllam.weir" <<'WEOF'
-[1] |> Seq.iter (fun _ ->
-    let r = npx --no-install vsce package | complete
-    print $"{r.exitCode}")
+# which used to die raw at the double dash before the pipe); a lambda
+# body grants now [D:lambda-lets], so the paren interior carries it
+cat > "$sldir/slparen.weir" <<'WEOF'
+print (show (let r = sh -c "x" --no-install | complete in r.exitCode))
 WEOF
-out=$($BIN check "$sldir/sllam.weir" 2>&1) && fail "a lambda-body reifier let must refuse" || true
-echo "$out" | grep -qF 'inside a lambda body, a command needs $(' || fail "the hardened teaching must fire: $out"
-echo "e2e ok: the refusal teaches \$() naming the lambda context, --flag argv included"
+out=$($BIN check "$sldir/slparen.weir" 2>&1) && fail "a paren-interior reifier let must refuse" || true
+echo "$out" | grep -qF 'inside parentheses, a command needs $(' || fail "the hardened teaching must fire: $out"
+echo "e2e ok: the refusal teaches \$() naming the paren context, --flag argv included"
 
 
 # raise timings [D:interior-arming]: armed raises immediately (the tail
@@ -2258,6 +2257,31 @@ out=$(cd "$opdir" && $BIN check bind.weir 2>&1) && fail "a binding alternative m
 echo "$out" | grep -qF "cannot bind names yet" || fail "the v1 split teaching: $out"
 rm -rf "$opdir"
 echo "e2e ok: or-patterns — literal, case, function and command arms share bodies; a binding alternative teaches the split"
+
+# lambda-lets [D:lambda-lets]: a lambda body takes command lets wherever
+# it sits — dangling at top level, in an if body, single-line; a paren
+# interior keeps the $() teaching
+lldir=$(mkweirtmp)
+cat > "$lldir/lam.weir" <<'WEOF'
+["a"; "b"] |> Seq.iter (fun f ->
+    let r = sh -c "echo got-$1" _ $f | complete
+    print (r.stdout |> Seq.head))
+if true then
+    [1] |> Seq.iter (fun n ->
+        let c = sh -c "echo in-if" | line
+        print c)
+[1] |> Seq.iter (fun _ -> let x = sh -c "echo one-line" | line in print x)
+WEOF
+out=$(cd "$lldir" && $BIN lam.weir 2>&1) || fail "lambda-lets must run: $out"
+[ "$out" = "got-a
+got-b
+in-if
+one-line" ] || fail "lambda-lets: top level, if body, single line: $out"
+printf 'print (show (let r = sh -c "x" | complete in r.exitCode))\n' > "$lldir/paren.weir"
+out=$(cd "$lldir" && $BIN check paren.weir 2>&1) && fail "a paren interior must refuse: $out" || true
+echo "$out" | grep -qF 'inside parentheses, a command needs $(' || fail "the paren teaching: $out"
+rm -rf "$lldir"
+echo "e2e ok: lambda-lets — dangling, nested and one-line lambda bodies take command lets; a paren interior teaches \$()"
 
 cat > "$widir/envval.weir" <<'WEOF'
 let vars = [Env.pair "WQ" "carried"]

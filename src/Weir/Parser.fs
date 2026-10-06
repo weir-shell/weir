@@ -101,16 +101,15 @@ let private ambientResolver =
 // assembles into (its let-in chain included; inheritance through
 // parens and lambda bodies untouched, [D:multiline-lambda]) and
 // wherever a statement body opens (if/elif/else, for, match arms,
-// every within kind + always blocks, pure); false in expression
-// territory — paren interiors, lambda bodies off the spine, and the
-// bare single-line let-in (REPL/-e), holding the original in-swallow
-// park's boundary.
+// every within kind + always blocks, pure, lambda bodies
+// [D:lambda-lets]); false in expression territory — paren interiors
+// and the bare single-line let-in (REPL/-e), holding the original
+// in-swallow park's boundary.
 let private letCmdOk = new System.Threading.ThreadLocal<bool>(fun () -> false)
 
 // [D:statement-lets] tags the grant's source: true when the current
-// letCmdOk came from a statement body, so paren interiors and lambda
-// bodies clear that grant while the spine's flag rides through them
-// exactly as before.
+// letCmdOk came from a statement body, so paren interiors clear that
+// grant while the spine's flag rides through them exactly as before.
 let private letCmdStmt = new System.Threading.ThreadLocal<bool>(fun () -> false)
 
 // plain parens are expression territory [D:interior-arming]: the
@@ -200,7 +199,7 @@ let private inGrantedRange (off: int64) : bool =
     grantedRhsRanges.Value |> Seq.exists (fun struct (s, e) -> off >= s && off < e)
 
 // [D:statement-lets] the hardened teaching names the actual refusing
-// context ("inside a lambda body, a command needs $(…)") — innermost
+// context ("inside parentheses, a command needs $(…)") — innermost
 // setter wins; the default covers the genuine single-line spelling
 // (REPL/-e/top level), the one place no setter has run.
 let private exprCtxName =
@@ -216,9 +215,9 @@ let private withExprCtxName (n: string) (p: Parser<'a, unit>) : Parser<'a, unit>
         finally
             exprCtxName.Value <- saved
 
-// [D:statement-lets] paren interiors and lambda bodies are expression
-// territory for the statement grant only — the spine's flag still
-// rides through both ([D:multiline-lambda], untouched).
+// [D:statement-lets] paren interiors are expression territory for the
+// statement grant only — the spine's flag still rides through them
+// ([D:multiline-lambda], untouched).
 let private clearStmtLetCmd (p: Parser<'a, unit>) : Parser<'a, unit> =
     fun stream ->
         if letCmdStmt.Value then
@@ -1674,9 +1673,9 @@ let private lambdaBody =
                     finally
                         ambientResolver.Value <- saved
 
-            // a lambda body clears a statement body's let-cmd grant
-            // [D:statement-lets] — lambda bodies stay spine-gated
-            withParams (withExprParen false (withExprCtxName "inside a lambda body" (clearStmtLetCmd seqExpr)))
+            // a lambda body is a statement body [D:lambda-lets]: it
+            // grants command lets wherever it sits, as the spine does
+            withParams (withExprParen false (withStmtLetCmd seqExpr))
             |>> fun body ->
                 let inner = curryParams ps body
 

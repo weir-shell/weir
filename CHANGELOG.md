@@ -45,6 +45,12 @@
   `g >> f`; it is now an error that says so, as is F#'s back-pipe `<|`
   (write `f (x)` or `x |> f`).
 
+- **A lambda body takes command `let`s.** `xs |> Seq.iter (fun f ->`
+  followed by `let r = git log $f | complete` used to ask for `$( )`
+  unless the lambda sat on a top-level `let`'s right-hand side; a
+  lambda body now works like a `for` body wherever it sits. Paren
+  interiors still need `$( )`.
+
 ### Fixed
 
 - **Shell and C reflexes teach instead of dumping a parser error.**

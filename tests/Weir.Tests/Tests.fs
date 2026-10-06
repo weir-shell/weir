@@ -7245,9 +7245,8 @@ let statementLetTests =
               | other -> failtest $"expected the let to parse, got {other}"
           }
           test "refused contexts teach $() with the ACTUAL context named — dash argv included" {
-              // the hardened teaching [D:statement-lets]: fires whether or
-              // not the expression parse would survive to the pipe (npx's
-              // `--no-install` must not die raw at the double dash)
+              // a lambda body grants [D:lambda-lets] — dash argv included
+              // (npx's `--no-install` must not die raw at the double dash)
               for rhs in [ "sh -c \"echo x\" | complete"; "npx --no-install vsce package | complete" ] do
                   let ds =
                       checkDiags
@@ -7255,10 +7254,9 @@ let statementLetTests =
                             $"    let r = {rhs}"
                             "    print $\"{r.exitCode}\")" ]
 
-                  Expect.exists
-                      ds
-                      (fun d -> d.Message.Contains "inside a lambda body, a command needs $(…)")
-                      $"the lambda teaching for: {rhs}"
+                  Expect.isFalse
+                      (ds |> List.exists (fun d -> d.Message.Contains "a command needs $(…)"))
+                      $"the lambda body takes: {rhs}"
 
               // the paren interior names its context
               let ds =
@@ -12303,30 +12301,15 @@ let agentFindingsTests =
                   // the two flipped positions accept
                   for posName, tpl in
                       [ "if-body", [ "if true then"; "    let _r = sh -c \"echo x\" | %s"; "    print \"z\"" ]
-                        "within-body", [ "within tmp d"; "    let _r = sh -c \"echo x\" | %s"; "    print \"z\"" ] ] do
+                        "within-body", [ "within tmp d"; "    let _r = sh -c \"echo x\" | %s"; "    print \"z\"" ]
+                        "lambda-body",
+                        [ "[1] |> Seq.iter (fun _ ->"; "    let _r = sh -c \"echo x\" | %s"; "    print \"z\")" ] ] do
                       let lines = tpl |> List.map (fun (l: string) -> l.Replace("%s", spelled))
                       let diags, _, _, _ = Weir.Script.analyzeLines "pin.weir" lines
 
                       Expect.isEmpty
                           (diags |> List.filter (fun d -> d.Severity = "error"))
                           $"{name} in {posName}: statement contexts take the reifier let now"
-
-                  // the lambda position stays refused, with the new teaching
-                  let diags, _, _, _ =
-                      Weir.Script.analyzeLines
-                          "pin.weir"
-                          [ "[1] |> Seq.iter (fun _ ->"
-                            $"    let r = sh -c \"echo x\" | {spelled}"
-                            "    print \"z\")" ]
-
-                  Expect.exists
-                      diags
-                      (fun d -> d.Message.Contains "inside a lambda body, a command needs $(…)")
-                      $"{name} in lambda-body: the hardened teaching"
-
-                  Expect.isFalse
-                      (diags |> List.exists (fun d -> d.Message.Contains "not found on PATH"))
-                      $"{name} in lambda-body: no PATH resolution for a reifier name"
 
               // the ^ escape stays: a real tool of that name is reachable
               let escaped, _, _, _ =
@@ -22242,6 +22225,51 @@ let tildeLiteralTests =
                   runCmd $"cd \"{before}\""
           } ]
 
+let lambdaLetTests =
+    // a lambda body grants command lets wherever it sits [D:lambda-lets]
+    let errs (lines: string list) =
+        let ds, _, _, _ = Weir.Script.analyzeLines "lam.weir" lines
+        ds |> List.filter (fun d -> d.Severity = "error") |> List.map (fun d -> d.Message)
+
+    let body =
+        [ "    let r = sh -c \"echo x\" | complete"; "    print r.stdout)" ]
+
+    testList
+        "lambda-body command lets [D:lambda-lets]"
+        [ test "a dangling body takes a command let at top level, in an if body and in a within" {
+              Expect.isEmpty (errs ("[1] |> Seq.iter (fun _ ->" :: body)) "top level"
+
+              Expect.isEmpty
+                  (errs ("if true then" :: "    [1] |> Seq.iter (fun _ ->" :: (body |> List.map ((+) "    "))))
+                  "if body"
+
+              Expect.isEmpty
+                  (errs ("within tmp d" :: "    [1] |> Seq.iter (fun _ ->" :: (body |> List.map ((+) "    "))))
+                  "within body"
+          }
+          test "a single-line body takes the let…in form, as on the spine" {
+              Expect.isEmpty
+                  (errs [ "[1] |> Seq.iter (fun _ -> let r = sh -c \"echo x\" | complete in print r.stdout)" ])
+                  "statement position"
+          }
+          test "the RHS is the command; the closer stays out of argv" {
+              match
+                  Weir.Script.assemble [ 1, "[1] |> Seq.iter (fun _ ->"; 2, "    let r = echo hi"; 3, "    print r)" ]
+              with
+              | Ok [ ll ] ->
+                  match Weir.Parser.parseLineFull cmdResolver ll.Text with
+                  | Ok s ->
+                      let sx = Weir.Ast.sexprStmt s
+                      Expect.stringContains sx "\"hi\"" "echo's argv"
+                      Expect.isFalse (sx.Contains "\")\"") "no ')' argv word"
+                  | Error f -> failtest f.Message
+              | other -> failtest $"unexpected assembly: {other}"
+          }
+          test "a paren interior stays expression territory" {
+              let ms = errs [ "print (show (let r = sh -c \"x\" | complete in r.exitCode))" ]
+              Expect.isTrue (ms |> List.exists (fun m -> m.Contains "inside parentheses, a command needs $(…)")) $"{ms}"
+          } ]
+
 let orPatternTests =
     // F#'s or-patterns as a desugar [D:or-patterns]: one arm per
     // alternative sharing the guard and body; v1 alternatives bind no names
@@ -23364,6 +23392,7 @@ let allTests =
           envPrefixTests
           reflexTeachingTests
           orPatternTests
+          lambdaLetTests
           tildeLiteralTests
           tildeTests
           aliasCompleteTests

@@ -1920,31 +1920,26 @@ if clean then sh -c "echo acting"
   statements sequence: if/elif/else, `for`, match arms, every `within`
   kind and its `always` block, `pure` blocks (the parser admits the
   grammar there; the purity checker refuses at CHECK, located at the
-  command). `let files = git ls-files` binds `seq<string>`;
+  command), and lambda bodies wherever the lambda sits
+  [D:lambda-lets]. `let files = git ls-files` binds `seq<string>`;
   `let r = git status | complete` binds the record. Externals only —
   builtins stay functions there (`let w = cd target` applies the
   BINDING target). The carve-outs are EXPRESSION positions: paren
-  interiors, the single-line `let ... in` spelling (the `in`-swallow
-  is structural), and lambda bodies off a top-level let's spine (a
-  lambda body closes by its own paren balance — its boundary is a
-  separate ruling; ON the spine it inherits command mode as before).
-  In a refused position a command-shaped RHS teaches `$()`, naming
-  the actual context. A bareword `in` on a let RHS ends the command
-  grammar; quote `"in"` to pass it.
+  interiors and the bare single-line `let ... in` spelling at the
+  REPL/`-e` (the `in`-swallow is structural). In a refused position a
+  command-shaped RHS teaches `$()`, naming the actual context. A
+  bareword `in` on a let RHS ends the command grammar; quote `"in"` to
+  pass it.
 
 ```weir
-let codes = [1] |> Seq.map (fun _ ->
+[1] |> Seq.iter (fun _ ->
     let r = sh -c "echo ok" | complete
-    r.exitCode)
-print (codes |> Seq.head)
+    print r.exitCode)
 ```
 
 ```weir-error
-// inside a lambda body, a command needs $(…) on a 'let' RHS — the
-// statement-context law stops at lambda bodies off the spine
-[1] |> Seq.iter (fun _ ->
-    let r = sh -c "echo x" | complete
-    print r.exitCode)
+// inside parentheses, a command needs $(…) on a 'let' RHS
+print (show (let r = sh -c "echo x" | complete in r.exitCode))
 ```
 - Tuples: `(a, b)` literals, `int * string` types, `| (x, y) ->`
   patterns (arity 2+). `Seq.pairwise : seq<'a * 'a>`, `Seq.zip`.
