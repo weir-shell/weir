@@ -1789,9 +1789,12 @@ print (show (pods |> Seq.head |> _.node))
   words — no identifier is reserved; any
   line ENDING in the glyph arms a block (no indented block below is
   an error), and nothing else may legally end in `<<<`. Canonical:
-  the marker on the binding line (`let x = <<<`), never alone on a
-  continuation line — both spellings parse, `weir fmt` rewrites the
-  next-line one. YAML
+  the marker on the head line — `let x = <<<`, `then <<<`, `else <<<`,
+  `| pat -> <<<` [D:arm-blocks] — never alone on a continuation line;
+  both spellings parse, `weir fmt` rewrites the next-line one. A block
+  is never a trailing ARGUMENT (`File.write p <<<` is an error naming
+  the repair): start with the block and pipe it on its closing line,
+  `|> File.write p`. YAML
   `key: |` scalars stay fully literal — a `$<<<` block is the
   interpolated spelling. The block is a `seq<string>` VALUE — pipe it
   or bind it like any other; a `|>` on the line that closes the block

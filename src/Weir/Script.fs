@@ -1074,6 +1074,19 @@ type private District =
       Marker: MarkerKind
       Active: int option }
 
+// a marker-ending line arms its district, whatever kind of line it is —
+// a plain head, a `| pat ->` arm, an `else` [D:arm-blocks]
+let private armDistrict (marker: MarkerKind) (indent: int) (lineNo: int) : District option =
+    markerOpener marker
+    |> Option.map (fun (opener, strip, isYaml) ->
+        { MarkerIndent = indent
+          MarkerLine = lineNo
+          Opener = opener
+          Strip = strip
+          Yaml = isYaml
+          Marker = marker
+          Active = None })
+
 type private Pend =
     { Buf: PendBuf
       Lets: (int * int) list
@@ -2017,6 +2030,7 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                                         PrevDangles = dangleOpensBlock piece
                                                                         ParenDepth = depth
                                                                         Lambdas = lambdas
+                                                                        District = armDistrict cls.Marker indent lineNo
                                                                         // a closing `|>` pops the arm
                                                                         // group and opens a fresh forward
                                                                         // group so a following `|>` aligns
@@ -2106,16 +2120,7 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                             else
                                                                 lets
 
-                                                        let district =
-                                                            markerOpener cls.Marker
-                                                            |> Option.map (fun (opener, strip, isYaml) ->
-                                                                { MarkerIndent = indent
-                                                                  MarkerLine = lineNo
-                                                                  Opener = opener
-                                                                  Strip = strip
-                                                                  Yaml = isYaml
-                                                                  Marker = cls.Marker
-                                                                  Active = None })
+                                                        let district = armDistrict cls.Marker indent lineNo
 
                                                         let joined = applyJoin join buf piece lineNo indent
 
@@ -2255,16 +2260,7 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                             | None -> bufNew raw lineNo 0
                                           Lets = []
                                           LastIndent = 0
-                                          District =
-                                            markerOpener cls.Marker
-                                            |> Option.map (fun (opener, strip, isYaml) ->
-                                                { MarkerIndent = 0
-                                                  MarkerLine = lineNo
-                                                  Opener = opener
-                                                  Strip = strip
-                                                  Yaml = isYaml
-                                                  Marker = cls.Marker
-                                                  Active = None })
+                                          District = armDistrict cls.Marker 0 lineNo
                                           // a fresh logical-line head that opens a
                                           // compound is tracked too [D:match-pipe-offside]
                                           // — so a later dedented `|>` can wrap it

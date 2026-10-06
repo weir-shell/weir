@@ -1594,11 +1594,47 @@ rangeTermRef.Value <-
 
 postfixAtomFwdRef.Value <- postfixAtom
 
-let private appChain =
-    many1 postfixAtom
-    |>> List.reduce (fun f a ->
-        { Kind = EApp(f, a)
-          Span = Span.union f.Span a.Span })
+// a text block after an application is a trailing argument
+// [D:arm-blocks]: its content would end mid-call, so teach the pipe
+let private blockArgGuard: Parser<unit, unit> =
+    (getPosition
+     .>> attempt ((pstring "$$<<<" <|> pstring "$<<<" <|> pstring "<<<") .>> followedBy (pstring sibSepStr))
+     >>= fun at ->
+         failFatallyAt
+             at
+             "a text block cannot be a trailing argument — start the value with the block (`let body = <<<`, or `<<<` on its own line) and pipe it on the line that closes it: `|> File.write path`")
+    <|> preturn ()
+
+// one small frame per nesting level, as before the guard
+// [D:depth-stack-probe]: the guard and the fold run in their own frame
+// after the atoms return, off the recursion path; the guard's no-op
+// error never merges into the chain's
+[<System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)>]
+let private finishAppChain (stream: CharStream<unit>) (reply: Reply<Expr list>) : Reply<Expr> =
+    let guard = blockArgGuard stream
+
+    if guard.Status <> ReplyStatus.Ok then
+        Reply(guard.Status, guard.Error)
+    else
+        Reply(
+            ReplyStatus.Ok,
+            reply.Result
+            |> List.reduce (fun f a ->
+                { Kind = EApp(f, a)
+                  Span = Span.union f.Span a.Span }),
+            reply.Error
+        )
+
+let private appChain: Parser<Expr, unit> =
+    let atoms = many1 postfixAtom
+
+    fun stream ->
+        let reply = atoms stream
+
+        if reply.Status = ReplyStatus.Ok then
+            finishAppChain stream reply
+        else
+            Reply(reply.Status, reply.Error)
 
 // Binder patterns [D:pattern-binders]: params are plain
 // idents, `()`, or parenthesized irrefutable patterns (F# also requires
