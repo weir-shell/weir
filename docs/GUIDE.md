@@ -609,11 +609,13 @@ What weir's command lines do not do:
 - no `&&` — write two statements, or chain with
   [`| and` / `| or`](#exit-codes-from-command-to-value)
 - no `$VAR` expansion — splice weir bindings instead
-- no `~` expansion — `~` and `$HOME` stay literal words; `Path.home ()`
-  (and the XDG trio `Path.configHome`/`Path.stateHome`/
+- no `$HOME` expansion — but a typed `~` is the home directory: an
+  unquoted word that is `~` or starts with `~/` expands when the line
+  runs (`cat ~/.bashrc`). Quoted strings and spliced values stay
+  literal, so data is never re-read as syntax. In an expression,
+  `Path.home ()` (and the XDG trio `Path.configHome`/`Path.stateHome`/
   `Path.cacheHome`, each a pure `unit -> string` with platform-native
-  resolution) builds the path in an interpolation:
-  `cat $"{Path.home ()}/.bashrc"`
+  resolution) builds the path: `File.read $"{Path.home ()}/.bashrc"`
 - no redirects — `>` and `>>` pass through as literal argv, with a
   warning naming what to use instead (`cmd |> File.write "out.txt"`,
   or `File.append`)

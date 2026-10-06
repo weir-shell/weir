@@ -2123,6 +2123,34 @@ echo "$eout" | grep -qF "pre=out-keep" || fail "outer overlay applies: $eout"
 echo "$eout" | grep -qF "nested=in-keep" || fail "collision: inner wins, outer key survives: $eout"
 echo "e2e ok: within env — overlay on spawns, nested collision pinned (inner wins, outer survives)"
 
+# a typed ~ is home in a command line [D:tilde]: the expected home is
+# weir's own Path.home — on POSIX a fake HOME moves it (pinned), on Windows
+# the profile comes from the OS API and no env var moves it; data stays
+# literal; a ~/ head runs (POSIX: a .sh is no executable on Windows)
+tidir=$(mkweirtmp)
+mkdir -p "$tidir/home/bin"
+printf '#!/bin/sh\necho tool-$1\n' > "$tidir/home/bin/tool.sh"
+chmod +x "$tidir/home/bin/tool.sh"
+cat > "$tidir/t.weir" <<'WEOF'
+echo ~ ~/x
+echo "~/q" a~b ~user HEAD~1
+let p = "~/s"
+echo $p
+WEOF
+[ "$IS_WINDOWS" = "1" ] || printf '~/bin/tool.sh ran\n' >> "$tidir/t.weir"
+printf 'print (Path.home ())\n' > "$tidir/h.weir"
+thome=$(cd "$tidir" && HOME="$tidir/home" USERPROFILE="$tidir/home" $BIN h.weir 2>&1) || fail "Path.home must run: $thome"
+[ "$IS_WINDOWS" = "1" ] || [ "$thome" = "$tidir/home" ] || fail "on POSIX the run-time home follows HOME: $thome"
+out=$(cd "$tidir" && HOME="$tidir/home" USERPROFILE="$tidir/home" $BIN t.weir 2>&1) || fail "the tilde cell must run: $out"
+want="$thome $thome/x
+~/q a~b ~user HEAD~1
+~/s"
+[ "$IS_WINDOWS" = "1" ] || want="$want
+tool-ran"
+[ "$out" = "$want" ] || fail "tilde: typed ~ expands, data stays literal, a ~/ head runs: $out"
+rm -rf "$tidir"
+echo "e2e ok: a typed ~ is home in a command line — argv and head; quoted, spliced, mid-word and ~user stay literal"
+
 cat > "$widir/envval.weir" <<'WEOF'
 let vars = [Env.pair "WQ" "carried"]
 let got = within env vars

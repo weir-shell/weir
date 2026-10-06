@@ -2837,7 +2837,11 @@ and private progOf (env: Env) (h: Check.TCmdHead) : string =
         if s = "" then
             failwith $"the dynamic head ^{display} is empty — nothing to run"
         elif not (Extern.exists s) then
-            failwith $"command not found: {s} — the dynamic head ^{display} resolves at run time"
+            // a typed home path names its own spelling [D:tilde]
+            if display.StartsWith "~/" then
+                failwith $"command not found: {s} (from {display})"
+            else
+                failwith $"command not found: {s} — the dynamic head ^{display} resolves at run time"
         else
             s
 

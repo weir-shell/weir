@@ -30,12 +30,16 @@ What command lines do not do:
 
 - no glob expansion — `Path.glob` is a function
 - no `$VAR` expansion — splice weir bindings
-- no `~` expansion — `Path.home ()` and the XDG trio
+- `~` is the one exception, and only as typed source: an unquoted
+  word that is `~` or starts with `~/` is your home directory, resolved
+  when the line runs (`cat ~/.bashrc`, `~/bin/tool`, `cd ~`). A quoted
+  `"~/x"`, an interpolation and a spliced value stay literal — data is
+  never re-read as syntax — and `~user` is not expanded. In an
+  expression, `Path.home ()` and the XDG trio
   `Path.configHome`/`Path.stateHome`/`Path.cacheHome` (each a pure
   `unit -> string`, resolving `%APPDATA%`/`%LOCALAPPDATA%` on
   Windows and the `$XDG_*` variables with their `~/.config`-style
-  fallbacks on POSIX) build the path in an interpolation:
-  `cat $"{Path.home ()}/.bashrc"`
+  fallbacks on POSIX) build the path: `File.read $"{Path.home ()}/.bashrc"`
 - no `&&` — write two statements, or chain with
   [`| and` / `| or`](#exit-codes)
 - no redirects — `>` passes through as a literal word, with a

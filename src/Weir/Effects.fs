@@ -92,7 +92,9 @@ let libraryDesugars: (string * string * string) list =
       "|seqRange", "Seq", "range"
       "|seqItem", "Seq", "item"
       "|retryDefaults", "Retry", "defaults"
-      "|pollDefaults", "Poll", "defaults" ]
+      "|pollDefaults", "Poll", "defaults"
+      // a typed `~` in a command word [D:tilde]
+      "|home", "Path", "home" ]
 
 // a `|`-desugar key → its qualified target member (Some "Seq.iter"),
 // or None when the name is not a library desugar (a command reifier, or

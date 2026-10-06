@@ -2,6 +2,16 @@
 
 ## v0.0.64
 
+### Added
+
+- **A typed `~` is your home directory in a command line.** `cat
+  ~/.config/weir/init.weir`, `~/bin/tool` and `cd ~` now work as in
+  bash — and as Tab completion already suggested: an unquoted word
+  that is `~` or starts with `~/` expands when the line runs. Quoted
+  strings, interpolations and spliced values stay literal, `~user` is
+  not expanded, and `$HOME` still never expands; in an expression,
+  `Path.home ()` remains the spelling.
+
 ### Fixed
 
 - **Editors and pagers get the terminal wherever a command runs as a

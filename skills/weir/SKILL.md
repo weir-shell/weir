@@ -1664,7 +1664,7 @@ type Bad = C of int
   [D:help-find] (fzf with a live doc preview at a tty; a substring
   fallback piped/without fzf). `#history [N]` shows history (bare =
   all, `N` = last N) with the file path in its header — the quick way
-  to find where history lives, since `~` never expands. All REPL
+  to find where history lives. All REPL
   scaffolding — see docs/repl.md.
 
 ```weir
@@ -2348,7 +2348,7 @@ not the teaching.
 - `Map`: `add` `count` `get` `has` `keys` `ofPairs` `pairs` `remove` `tryGet` `values`
 - `Net`: `portOpen`
 - `Option`: `defaultValue` `defaultWith` `iter` `map` `orElse` `orElseWith`
-- `Path`: `cacheHome` `combine` `configHome` `dir` `extension` `fileName` `glob` `home` `newTempDir` `stateHome` `stem` `tempRoot` `under` — `home`/`configHome`/`stateHome`/`cacheHome` (each `unit -> string`) are the typed stand-in for `~`/`$HOME`, which never expand in argv: `cat $"{Path.home ()}/.bashrc"`
+- `Path`: `cacheHome` `combine` `configHome` `dir` `extension` `fileName` `glob` `home` `newTempDir` `stateHome` `stem` `tempRoot` `under` — `home`/`configHome`/`stateHome`/`cacheHome` (each `unit -> string`) are home in an EXPRESSION (`File.read $"{Path.home ()}/.bashrc"`); in a COMMAND LINE an unquoted word-leading `~`/`~/…` expands to home at run time [D:tilde] (`cat ~/.bashrc`, `~/bin/tool`) — quoted `"~/x"`, `$"…"` and spliced values stay literal, `~user` too, and `$HOME` never expands
 - `Poll`: `defaults`
 - `Proc`: `pid` `running` `stop` `tail` `wait`
 - `Server`: `port` `running`
