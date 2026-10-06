@@ -19448,6 +19448,20 @@ let uuidTests =
           testSequenced
           <| test "v7At after a v7 in the same session still orders; an earlier instant gets randomness, not a bent clock" {
               let a = v7 ()
+
+              // a burst (the threaded test) can leave the counter's ms ahead
+              // of the wall clock; v7At joins only for last <= ms <= now
+              let aMs =
+                  match call "Uuid.instant" (VUuid a) with
+                  | VUnion("Some", Some(VInstant ms)) -> ms
+                  | v -> failtest $"a v7 carries its instant, got {v}"
+
+              let deadline = System.Diagnostics.Stopwatch.StartNew()
+
+              while System.DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() < aMs
+                    && deadline.ElapsedMilliseconds < 1000L do
+                  System.Threading.Thread.Sleep 1
+
               let now = System.DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
               let b = call "Uuid.v7At" (VInstant now) |> guidOf
               let c = v7 ()
