@@ -2156,10 +2156,12 @@ rm -rf "$tidir"
 if [ "$IS_WINDOWS" != "1" ]; then
     tldir=$(mkweirtmp)
     mkdir -p "$tldir/home"
-    printf 'cd "/tmp"\ncd\nsh -c "echo bare=$(pwd)"\ncd "/tmp"\ncd ~\nsh -c "echo typed=$(pwd)"\ncd "/tmp"\ncd "~/nope"\n' > "$tldir/cd.weir"
+    printf 'cd "/tmp"\ncd\nsh -c "echo bare=$(pwd -P)"\ncd "/tmp"\ncd ~\nsh -c "echo typed=$(pwd -P)"\ncd "/tmp"\ncd "~/nope"\n' > "$tldir/cd.weir"
+    # physical paths on both sides: macOS's /var is a symlink to /private/var
+    tlhome=$(cd "$tldir/home" && pwd -P)
     out=$(cd "$tldir" && HOME="$tldir/home" USERPROFILE="$tldir/home" $BIN cd.weir 2>&1) && fail "a quoted ~ must not be home: $out" || true
-    echo "$out" | grep -qxF "bare=$tldir/home" || fail "bare cd goes home: $out"
-    echo "$out" | grep -qxF "typed=$tldir/home" || fail "a typed cd ~ goes home: $out"
+    echo "$out" | grep -qxF "bare=$tlhome" || fail "bare cd goes home: $out"
+    echo "$out" | grep -qxF "typed=$tlhome" || fail "a typed cd ~ goes home: $out"
     echo "$out" | grep -qF "no such directory: /tmp/~/nope" || fail "cd \"~/nope\" is a literal name: $out"
     rm -rf "$tldir"
 fi
