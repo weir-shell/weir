@@ -147,7 +147,8 @@ let pins =
 
       // --- composition >>/<< ---
       pin "forward composition of let-functions" "let f n = n + 1\nlet g = f >> f\nlet _r = g 40\n" Same
-      pin "backward composition" "let f n = n + 1\nlet g = f << f\nlet _r = g 40\n" Same
+      // weir composes left to right only [D:left-to-right-ops]
+      pin "backward composition" "let f n = n + 1\nlet g = f << f\nlet _r = g 40\n" (Diverges "no-backward-composition")
       // verdict-visible precedence — the oracle REFUTED tighter-than-
       // pipe: F# parses `xs |> f >> g` as `(xs |> f) >> g` (shared
       // infix class), both compilers reject it unparenthesized

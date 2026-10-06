@@ -27,6 +27,10 @@ representable.
 | `a && b` / `a \|\| b` | `a \| and b` / `a \| or b` |
 | `cat <<EOF … EOF \| cmd` | `let lines = <<<` + an indented block, then `lines \| cmd` — the heredoc is a value (`$<<<` for `{holes}`; `$` stays literal in both) |
 | `# comment` | `// comment` — full-line or trailing (needs a preceding space) |
+| `cmd a \` + newline | indent the next line — a command line continues by indentation; a `\` word is a teaching error |
+| `find … -exec cmd {} \;` | `find … -exec cmd {} ";"` — no backslash escapes in argv; quote the word |
+| `\ls` (skip the alias) | `^ls` — runs the PATH program |
+| `[ "$a" != "$b" ]` | `a <> b` — `!=` teaches `<>` |
 
 ```weir
 let msg = "two words"

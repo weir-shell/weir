@@ -3251,10 +3251,6 @@ and eval (env: Env) (te: TypedExpr) : Value =
         let f = eval env l
         let g = eval env r
         VBuiltin(fun x -> apply g (apply f x))
-    | TEBinOp("<<", l, r) ->
-        let g = eval env l
-        let f = eval env r
-        VBuiltin(fun x -> apply g (apply f x))
     | TEBinOp(op, l, r) -> binOp op (eval env l) (eval env r)
     | TERecord(name, fields) -> VRecord(name, fields |> List.map (fun (n, fv) -> n, eval env fv))
     | TEUpdate(src, updates) ->

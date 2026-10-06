@@ -36,7 +36,7 @@ type Cli = {
     [<Default "weir">]
     bin: string
     /// fail if fewer than this many cases teach a repair
-    [<Default 17>]
+    [<Default 28>]
     baseline: int
 }
 
@@ -77,7 +77,18 @@ let corpus =
       // loose-bare-where removed with #loose itself (PLAN-dx-review D1):
       // once the directive is out of the docs nobody types it, so it
       // stopped being a realistic wrong-first-try; n is 27
-      ("bare-where-strict", [ @"let xs = [1] |> where (fun n -> n > 0)"; @"print (show (Seq.length xs))" ]) ]
+      ("bare-where-strict", [ @"let xs = [1] |> where (fun n -> n > 0)"; @"print (show (Seq.length xs))" ])
+      // the DX batch's reflexes [D:left-to-right-ops] [D:argv-backslash]
+      ("c-inequality", [ @"let b = 1 != 2"; @"print (show b)" ])
+      ("c-negation", [ @"let ok = true"; @"let b = !ok"; @"print (show b)" ])
+      ("fs-param-annotation", [ @"let f (x: int) = x + 1"; @"print (show (f 1))" ])
+      ("fs-let-annotation", [ @"let x: int = 1"; @"print (show x)" ])
+      ("fs-bare-range", [ @"for i in 1..3 do print (show i)" ])
+      ("fs-back-pipe", [ @"let f n = n + 1"; @"print (show (f <| 2))" ])
+      ("fs-backward-compose", [ @"let f n = n + 1"; @"let g = f << f"; @"print (show (g 1))" ])
+      ("bash-line-continuation", [ @"echo a \"; @"    b" ])
+      ("bash-escaped-semicolon", [ @"find . -maxdepth 0 -exec echo {} \;" ])
+      ("bash-alias-bypass", [ @"\ls -la" ]) ]
 
 // a message "teaches" if it names a repair; the phrases below are the
 // vocabulary the existing good messages already use
@@ -97,7 +108,16 @@ let teachPhrases =
       // the D4/D5 messages' vocabulary (they name weir's spelling
       // explicitly — repair-naming, not explanation)
       "is not a weir word"
-      "weir's sequences are" ]
+      "weir's sequences are"
+      // the DX batch's reflex teachings
+      "write `"
+      "weir infers"
+      "wrap it in"
+      "weir has no"
+      "weir composes"
+      "inequality is"
+      "quote the word"
+      "continues a command line" ]
 
 let checkRun path =
     let r = sh -c $"'{cli.bin}' check '{path}' 2>&1" | complete

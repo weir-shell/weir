@@ -165,7 +165,9 @@ print (show (f 2))
 
 ## Syntax that differs from your priors
 
-- Equality is `==` (never `=`). `=` is for `let` and record fields only.
+- Equality is `==` (never `=`); inequality is `<>` (never `!=`, which is
+  a teaching error). `=` is for `let` and record fields only. Negation is
+  the word `not` — `!x` is a teaching error (`!` means "do it").
 - Records need a declared type with the exact field set (no width
   subtyping, no anonymous records): `{ Host = h; Port = p }` needs
   `type Endpoint = { Host: string; Port: int }`. For a transient
@@ -976,7 +978,7 @@ print (Option.flatten (Some None) |> Option.defaultValue 0)
   message shows both lambda directions, as interchangeable only for
   a commutative op (`==`, `<>`, `*`); for the rest it says the
   directions differ); `(&&)`/`(||)` refuse (a value
-  cannot short-circuit); the pipes and `>>`/`<<` refuse (grammar /
+  cannot short-circuit); the pipes and `>>` refuse (grammar /
   already the composed function).
 - Match-or-skip over a stream is `Seq.choose` (lazy, qualified-only):
   the arm returns `Some out` or `None`, never a sentinel `""` to
@@ -1043,7 +1045,10 @@ refs
 print (Str.padLeft 5 "42")
 print (Str.replicate 3 "-=")
 ```
-- `>>`/`<<` compose functions (`Seq.map (Str.trim >> Str.toLower)`).
+- `>>` composes functions, left to right (`Seq.map (Str.trim >> Str.toLower)`).
+  There is no `<<` and no `<|` [D:left-to-right-ops]: both are teaching
+  errors naming the forward spelling (`f << g` is `g >> f`; `f <| x` is
+  `f (x)` or `x |> f`).
   `|>` and `>>` SHARE precedence (F#'s rule): `xs |> f >> g` is
   `(xs |> f) >> g` — parenthesize the composition, `xs |> (f >> g)`.
   A non-function left of `>>` is a type error with a File.append hint

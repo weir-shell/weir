@@ -31,7 +31,22 @@
   first. A codec that would drop sub-second precision raises instead
   of truncating; `show` and `==` are unaffected.
 
+### Changed
+
+- **`<<` is gone — weir composes left to right.** `f << g` was exactly
+  `g >> f`; it is now an error that says so, as is F#'s back-pipe `<|`
+  (write `f (x)` or `x |> f`).
+
 ### Fixed
+
+- **Shell and C reflexes teach instead of dumping a parser error.**
+  A trailing `\` (bash line continuation) used to pass a literal `\` to
+  the program — a command line continues by indentation, and a `\`
+  word is now an error saying so; `\;` names the quoted spelling and
+  `\ls` names `^ls`. `!=` teaches `<>`, `!x` teaches `not x`, a type
+  annotation (`(x: int)`, `let x: int =`) teaches inference, and
+  `for i in 1..3` teaches `[1..3]`. A `let` that fails to parse no
+  longer causes a second "unbound variable" error at its uses.
 
 - **Editors and pagers get the terminal wherever a command runs as a
   statement.** Only a top-level bare command used to inherit the

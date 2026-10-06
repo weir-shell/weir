@@ -188,6 +188,15 @@ closes at the next line of the same indent — F# light syntax. This
 is the whole language's rule, commands included; the full block
 rules are on [Statements](reference/statements.md).
 
+So a long command line continues by indentation, with no `\` —
+weir has no backslash continuation, and a `\` word is a teaching
+error:
+
+```weir
+printf "%s %s\n" first
+    second
+```
+
 ## Values and pipelines
 
 Sequences are lazy; pipelines pull only what they need. Ranges are
@@ -354,7 +363,7 @@ let sizes =
 sizes |> Seq.iter print
 ```
 
-`>>` / `<<` compose functions — `Seq.map (Str.trim >> Str.toLower)`
+`>>` composes functions, left to right — `Seq.map (Str.trim >> Str.toLower)`
 is the point-free form. One precedence rule to know (it is F#'s):
 `|>` and `>>` share a level, so `xs |> f >> g` is `(xs |> f) >> g` —
 parenthesize the composition: `xs |> (f >> g)`. The whole operator

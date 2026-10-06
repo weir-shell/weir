@@ -792,11 +792,28 @@ let retiredDistrictMarker (piece: string) : bool =
         | -1 -> piece
         | i -> piece.Substring(i + 1)
 
+    // the district marker ended a COMMAND line; a `!name` after an
+    // expression-position token (or alone) is C negation, which the
+    // parser teaches as `not` [D:left-to-right-ops]
+    let before =
+        let rest = piece.Substring(0, piece.Length - lastToken.Length).TrimEnd()
+
+        match rest.LastIndexOf ' ' with
+        | -1 -> rest
+        | i -> rest.Substring(i + 1)
+
+    // (a standalone `!e`, or one after then/else/->, was a district header
+    // and keeps its retirement teaching)
+    let negationSlot =
+        List.contains before [ "="; "("; "&&"; "||"; "<-"; ","; "["; "not"; "=="; "<>" ]
+        || before.EndsWith "("
+
     piece = "!"
     || piece.EndsWith " !"
     || (lastToken.StartsWith "!"
         && not (lastToken.Contains "(")
-        && isIdentToken (lastToken.Substring 1))
+        && isIdentToken (lastToken.Substring 1)
+        && not negationSlot)
 
 let private markerOpener (m: MarkerKind) : (string * int * bool) option =
     match m with
@@ -6107,7 +6124,26 @@ let analyzeLines
                          tenv <-
                              { tenv with
                                  Values = Map.add n holeScheme tenv.Values }
-                 | Error _ -> ())
+                 | Error _ ->
+                     // a statement that does not parse still names its
+                     // binder [D:parse-error-binds]: harvested lexically, a
+                     // `let NAME` at the statement's start only (never argv),
+                     // so its later uses don't echo as "unbound"
+                     let m =
+                         System.Text.RegularExpressions.Regex.Match(ll.Text, @"^\s*let\s+([A-Za-z_][A-Za-z0-9_']*)")
+
+                     if m.Success && not (Parser.keywords.Contains m.Groups[1].Value) then
+                         tenv <-
+                             { tenv with
+                                 Values =
+                                     Map.add
+                                         m.Groups[1].Value
+                                         { Forall = Set.singleton "__hole"
+                                           Cs = Map.empty
+                                           Ty = TVar "__hole"
+                                           RowOrigins = Map.empty
+                                           HoleDefaults = [] }
+                                         tenv.Values })
 
                 // multi-file [D:modules-v1]: a module error carries File +
                 // PhysLine/Col into that other file; its Note is the "imported
