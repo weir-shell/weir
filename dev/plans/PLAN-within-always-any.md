@@ -1,8 +1,7 @@
 # PLAN: `always` after any `within`
 
-**Status: PARKED** — resume once both 2026-10-06 stacks (parser:
-armed-inherit → if-else-commands → tilde → env-prefix → tilde-literal;
-boundary: wire-table → wire-codecs → print-canonical) land on main.
+**Status: DONE** — [D:within-always-any]; both open questions answered there
+(value carries through; serve handlers keep running inside `always`).
 
 ## The receipt
 

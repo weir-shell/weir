@@ -75,6 +75,25 @@ within tmp d
             print "released either way"
 ```
 
+## `always` after any kind
+
+Every kind takes a trailing `always`. It runs inside the scope, while
+the resource is still held, and the resource releases after: the
+cleanup still sees a `tmp` directory, runs in the `cd` directory and
+the `env` overlay, holds the `lock`, and finds a `proc` or `serve`
+alive (the tree-kill and socket close follow). The binder is in scope:
+
+```weir
+let saved = Path.newTempDir ()
+within tmp d
+    ["report"] |> File.write $"{d}/report.txt"
+always
+    cp $"{d}/report.txt" $"{saved}/report.txt"
+```
+
+It is exactly a bare `within` … `always` nested as the scope's body,
+so every rule above applies unchanged.
+
 ## `lock`
 
 An advisory file lock: blocking by default, `timeout=30s` raises on

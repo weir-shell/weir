@@ -803,6 +803,19 @@ within tmp d
             print "released either way"
 ```
 
+Any kind takes a trailing `always` too. It runs inside the scope,
+while the resource is still held — the directory still exists, the
+lock is still yours, the process is still alive — and the release
+follows:
+
+```weir
+let saved = Path.newTempDir ()
+within tmp d
+    ["report"] |> File.write $"{d}/report.txt"
+always
+    cp $"{d}/report.txt" $"{saved}/report.txt"
+```
+
 The whole family at a glance (`within proc`, the background-process
 form, is covered under Parallelism):
 

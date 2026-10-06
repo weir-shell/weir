@@ -691,8 +691,12 @@ within serve srv = { port = 8410; maxConcurrent = 4 } handler
   own failure goes to stderr with a marker; a failed inner cleanup
   never strands the outer scopes (teardown continues LIFO). `exit`
   inside `always` is a check error (teardown must finish); retry/poll
-  inside are fine. There is no kinded `within proc … always` yet —
-  nest a bare within inside the proc scope.
+  inside are fine. ANY kind takes a trailing `always` too
+  [D:within-always-any] (`within tmp d` + body + `always` + cleanup):
+  the cleanup runs INSIDE the scope while the resource is held (tmp
+  dir present, cd/env in force, lock held, proc/serve alive), the
+  release follows, the binder is in scope — exactly a bare within
+  nested as the body.
 - `within lock "path"` holds an ADVISORY file lock for the block
   [D:within-lock]: created if missing, nothing bound (there is
   nothing to ask a lock). Blocking by default; `timeout=30s` bounds

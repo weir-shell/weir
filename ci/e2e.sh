@@ -2439,6 +2439,72 @@ if [ "$IS_WINDOWS" != "1" ]; then
 fi
 echo "e2e ok: always runs on normal exit, fail, exit n, SIGINT, SIGTERM"
 
+# ---- always after any within [D:within-always-any] -------------------------
+# the cleanup runs INSIDE the scope, before the resource releases: the tmp
+# dir still exists in always on every exit path (once — the claim-by-
+# removal guard), and cd/env/lock/proc hold their resource
+aadir=$(mkweirtmp)
+cat > "$aadir/aa.weir" <<'WEOF'
+let mode = Self.args |> Seq.head
+let out = Self.args |> Seq.last
+within tmp d
+    ["x"] |> File.write $"{d}/f"
+    if mode == "fail" then fail "boom"
+    if mode == "exit" then exit 3
+    if mode == "sleep" then Duration.sleep 30s
+always
+    File.append out [$"cleanup dir={File.exists $"{d}/f"}"]
+WEOF
+M="$aadir/MARKER"
+( cd "$aadir" && rm -f "$M" && $BIN aa.weir normal "$M" >/dev/null 2>&1 ); [ "$(cat "$M" 2>/dev/null)" = "cleanup dir=true" ] || fail "kinded always on normal exit: $(cat "$M" 2>/dev/null)"
+rc=0; ( cd "$aadir" && rm -f "$M" && $BIN aa.weir fail "$M" >/dev/null 2>&1 ) || rc=$?; [ "$rc" != "0" ] || fail "fail must propagate through a kinded always"; [ "$(cat "$M" 2>/dev/null)" = "cleanup dir=true" ] || fail "kinded always on fail"
+rc=0; ( cd "$aadir" && rm -f "$M" && $BIN aa.weir exit "$M" >/dev/null 2>&1 ) || rc=$?; [ "$rc" = "3" ] || fail "exit code through a kinded always (got $rc)"; [ "$(cat "$M" 2>/dev/null)" = "cleanup dir=true" ] || fail "kinded always on exit n"
+if [ "$IS_WINDOWS" != "1" ]; then
+    for sig in TERM INT; do
+        ( cd "$aadir" && rm -f "$M" && exec $BIN aa.weir sleep "$M" >/dev/null 2>&1 ) & aapid=$!
+        sleep 2; kill -$sig $aapid 2>/dev/null || true; wait $aapid 2>/dev/null || true
+        [ "$(cat "$M" 2>/dev/null)" = "cleanup dir=true" ] || fail "kinded always on SIG$sig, once, dir held: $(cat "$M" 2>/dev/null)"
+    done
+fi
+cat > "$aadir/held.weir" <<'WEOF'
+let here = Path.newTempDir ()
+within cd here
+    print "in"
+always
+    let w = pwd |> Seq.head
+    print $"cd {w == here}"
+within env [Env.pair "AA_HELD" "yes"]
+    print "in"
+always
+    sh -c "echo env $AA_HELD"
+let lk = $"{here}/aa.lock"
+within lock lk
+    print "in"
+always
+    print $"lock {File.exists lk}"
+WEOF
+out=$(cd "$aadir" && $BIN held.weir 2>&1) || fail "held-resource probe must run: $out"
+[ "$out" = "in
+cd true
+in
+env yes
+in
+lock true" ] || fail "cd/env/lock held inside always: $out"
+if [ "$IS_WINDOWS" != "1" ]; then
+    cat > "$aadir/proc.weir" <<'WEOF'
+within proc p = sleep 30
+    print "in"
+always
+    let alive = kill -0 $"{Proc.pid p}" | succeeds
+    print $"proc {alive}"
+WEOF
+    out=$(cd "$aadir" && $BIN proc.weir 2>&1) || fail "proc probe must run: $out"
+    [ "$out" = "in
+proc true" ] || fail "the proc is alive inside always, the tree-kill follows: $out"
+fi
+rm -rf "$aadir"
+echo "e2e ok: always after any within — cleanup inside the scope on every exit path; cd/env/lock/proc held"
+
 # ---- detached SIGINT tears down [D:signal-teardown] -------------------------
 # the gap (ring port finding #1): a shell backgrounding weir in a
 # non-interactive session (setsid, no job control) sets SIGINT to

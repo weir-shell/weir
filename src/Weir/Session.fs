@@ -381,4 +381,7 @@ let registerAlways (cleanup: unit -> unit) : int =
     liveAlways[id] <- cleanup
     id
 
-let deregisterAlways (id: int) : unit = liveAlways.TryRemove id |> ignore
+// claim-by-removal: true when the caller took the cleanup back from the
+// exit hook — the hook claims the same way, so a signal racing a raise
+// cannot run one cleanup twice [D:within-always-any]
+let deregisterAlways (id: int) : bool = fst (liveAlways.TryRemove id)

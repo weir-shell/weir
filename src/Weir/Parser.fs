@@ -2468,7 +2468,37 @@ let private withinExprBody =
                                     { Kind = EWithin(wk.Id, None, Some argE, optsE, body)
                                       Span = { Start = pos p; End = body.Span.End } }
 
-        kinded <|> bareForm
+        // a trailing `always` after ANY kind [D:within-always-any]: the
+        // cleanup runs INSIDE the scope, while the resource is held —
+        // desugared to a bare within as the body, so no new runtime
+        // (`within K b` + BODY + always C ≡ `within K b` + (BODY always C))
+        let kindedAlways =
+            kinded
+            >>= fun w ->
+                match w.Kind with
+                | EWithin(k, binder, arg, opts, body) ->
+                    let names =
+                        match binder with
+                        | Some(n, sp) -> withPatNames { PKind = PVar n; PSpan = sp }
+                        | None -> id
+
+                    opt (
+                        attempt (opt (str_ws ";" <|> str_ws sibSepStr) >>. keyword "always")
+                        >>. opt (str_ws ";" <|> str_ws sibSepStr)
+                        >>. (names (withStmtLetCmd (withExprParen false seqExpr)) <?> "the always block")
+                    )
+                    |>> function
+                        | None -> w
+                        | Some cleanup ->
+                            let inner =
+                                { Kind = EAlways(body, cleanup)
+                                  Span = { Start = body.Span.Start; End = cleanup.Span.End } }
+
+                            { Kind = EWithin(k, binder, arg, opts, inner)
+                              Span = { Start = w.Span.Start; End = cleanup.Span.End } }
+                | _ -> preturn w
+
+        kindedAlways <|> bareForm
 
 // retry/poll [D:retry-poll]: `retry attempts=5 delay=30s` desugars at
 // parse to `retry { Retry.defaults with attempts = 5; delay = 30s }` —

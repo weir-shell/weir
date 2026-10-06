@@ -8655,6 +8655,49 @@ let wireKeyTests =
               mustSay [ "type F = { [<Wier \"x\">] kind: string }" ] "Wire" "did-you-mean reaches it"
           } ]
 
+let withinAlwaysAnyTests =
+    // `always` after any within kind [D:within-always-any]: a desugar to a
+    // bare within as the kinded scope's body — cleanup inside the scope
+    let diagsOf lines =
+        let diags, _, _, _ = Weir.Script.analyzeLines "waa.weir" lines
+        diags |> List.filter (fun d -> d.Severity = "error") |> List.map _.Message
+
+    let shape (lines: string list) =
+        match Weir.Script.assemble (lines |> List.mapi (fun i l -> i + 1, l)) with
+        | Ok [ ll ] ->
+            match Weir.Parser.parseLineFull cmdResolver ll.Text with
+            | Ok s -> Weir.Ast.sexprStmt s
+            | Error f -> failtest f.Message
+        | other -> failtest $"unexpected assembly: {other}"
+
+    testList
+        "always after any within [D:within-always-any]"
+        [ test "every kind takes a trailing always, checking clean" {
+              for head in
+                  [ "within tmp d"
+                    "within cd \".\""
+                    "within env [Env.pair \"A\" \"1\"]"
+                    "within lock \"/tmp/waa.lock\""
+                    "within proc p = sleep 1" ] do
+                  Expect.isEmpty (diagsOf [ head; "    print \"b\""; "always"; "    print \"c\"" ]) head
+          }
+          test "the desugar nests the bare form inside the kinded scope" {
+              let sx = shape [ "within tmp d"; "    print \"b\""; "always"; "    print \"c\"" ]
+              let w = sx.IndexOf "within"
+              let a = sx.IndexOf "always"
+              Expect.isTrue (w >= 0 && a > w) $"always inside the within: {sx}"
+          }
+          test "the binder is in scope inside always" {
+              Expect.isEmpty (diagsOf [ "within tmp d"; "    print d"; "always"; "    print d" ]) "d in always"
+          }
+          test "exit inside a kinded always is refused" {
+              let ms = diagsOf [ "within tmp d"; "    print d"; "always"; "    exit 1" ]
+              Expect.isTrue (ms |> List.exists (fun m -> m.Contains "exit inside always is refused")) $"{ms}"
+          }
+          test "the scope's value carries through" {
+              expectValue "within tmp d\n    41 + 1\nalways\n    ()" (VInt 42L)
+          } ]
+
 let withinAlwaysLockTests =
     // the bare scope and the lock kind [D:within-always][D:within-lock]
     let diagsOf lines =
@@ -23480,6 +23523,7 @@ let allTests =
           planApplyTests
           withinKindsTests
           withinAlwaysLockTests
+          withinAlwaysAnyTests
           wireKeyTests
           reserveBuiltinTests
           fileRowReshapeTests
