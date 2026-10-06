@@ -601,9 +601,15 @@ let pins =
           "multiline lambda: a match body prunes at the closer, the next stage stays outer"
           "let _v =\n    [1; 2]\n    |> Seq.map (fun n ->\n        match n with\n        | 1 -> 10\n        | _ -> n\n    )\n    |> Seq.sum\n"
           Same
+      // binder-free or-patterns converge [D:or-patterns]; binding
+      // alternatives stay the recorded divergence
       pin
-          "or-patterns are not a weir feature (F# accepts; located reject)"
-          "let v = match 1 with | 0 | 1 -> \"low\" | _ -> \"hi\"\n"
+          "binder-free or-patterns accept, as in F#"
+          "let _v = match 1 with | 0 | 1 -> \"low\" | _ -> \"hi\"\n"
+          Same
+      pin
+          "or-pattern alternatives that bind names: F# accepts, weir v1 refuses"
+          "let _v = match (1, 2) with | (n, 0) | (0, n) -> n | _ -> 0\n"
           (Diverges "or-patterns")
       pin
           "nested multiline lambdas pop innermost-first"

@@ -14054,11 +14054,15 @@ let offsideTests =
               | Ok _ -> ()
               | Error e -> failtest $"the sigil spelling is the arm chain: {e.Message}"
 
-              // (b) or-patterns stay rejected, located at the second '|'
-              // (divergence row or-patterns; F# accepts)
+              // (b) binder-free or-patterns parse under commit [D:or-patterns];
+              // an alternative that binds a name refuses at that alternative
               match Weir.Parser.parseLineFull rNone "let v = match 1 with | 0 | 1 -> \"low\" | _ -> \"hi\"" with
-              | Error f -> Expect.equal f.Col (Some 26) "at the or-pattern's second bar"
-              | Ok _ -> failtest "or-patterns are not a weir feature (yet)"
+              | Ok _ -> ()
+              | Error f -> failtest $"a binder-free or-pattern parses: {f.Message}"
+
+              match Weir.Parser.parseLineFull rNone "let v = match (1, 2) with | (n, 0) | (0, n) -> n | _ -> 0" with
+              | Error f -> Expect.stringContains f.Message "cannot bind names yet" "the v1 teaching"
+              | Ok _ -> failtest "a binding alternative refuses in v1"
 
               // (c) guards under commit
               match Weir.Parser.parseStmt "let v = match 3 with | n when n > 2 -> n | _ -> 0" with
@@ -22238,6 +22242,61 @@ let tildeLiteralTests =
                   runCmd $"cd \"{before}\""
           } ]
 
+let orPatternTests =
+    // F#'s or-patterns as a desugar [D:or-patterns]: one arm per
+    // alternative sharing the guard and body; v1 alternatives bind no names
+    let errs (lines: string list) =
+        let ds, _, _, _ = Weir.Script.analyzeLines "or.weir" lines
+        ds |> List.filter (fun d -> d.Severity = "error") |> List.map (fun d -> d.Message)
+
+    testList
+        "or-patterns [D:or-patterns]"
+        [ test "literal and case alternatives share the body; the desugar is one arm each" {
+              expectValue "match \"b\" with | \"a\" | \"b\" -> 1 | _ -> 0" (VInt 1L)
+              expectValue "(function | 1 | 2 -> \"small\" | _ -> \"big\") 2" (VStr "small")
+
+              match Weir.Parser.parseLineFull cmdResolver "let x = match 1 with | 1 | 2 -> 0 | _ -> 1" with
+              | Ok s -> Expect.stringContains (Weir.Ast.sexprStmt s) "[1 -> 0] [2 -> 0]" "two arms, one body"
+              | Error f -> failtest f.Message
+          }
+          test "alternatives count toward exhaustiveness; a missing case is still named" {
+              let decl = "type L = A | B | C"
+              Expect.isEmpty (errs [ decl; "let f l = match l with | A | B -> 1 | C -> 2"; "print $\"{f A}\"" ]) "covered"
+              let ms = errs [ decl; "let f l = match l with | A | B -> 1"; "print $\"{f A}\"" ]
+              Expect.isTrue (ms |> List.exists (fun m -> m.Contains "missing: C")) $"names C: {ms}"
+          }
+          test "a guard applies to every alternative" {
+              expectValue "match 2 with | 1 | 2 when false -> 0 | 1 | 2 -> 1 | _ -> 9" (VInt 1L)
+          }
+          test "an arm takes at most 64 alternatives; the 65th refuses at its own column" {
+              // each alternative re-checks the shared body — the cap bounds it
+              let line n =
+                  let alts = [ 0 .. n - 1 ] |> List.map string |> String.concat " | "
+                  $"let x = match 1 with | {alts} -> 0 | _ -> 1"
+
+              match Weir.Parser.parseLineFull cmdResolver (line 64) with
+              | Ok _ -> ()
+              | Error f -> failtest f.Message
+
+              let text = line 65
+
+              match Weir.Parser.parseLineFull cmdResolver text with
+              | Ok _ -> failtest "65 alternatives must refuse"
+              | Error f ->
+                  Expect.stringContains f.Message "at most 64 alternatives" "the cap"
+                  Expect.stringContains f.Message "Seq.contains" "the repair"
+                  Expect.equal f.Col (Some(text.IndexOf " 64 " + 2)) "caret on the 65th"
+          }
+          test "a command arm ends before an or-pattern arm" {
+              match Weir.Parser.parseLineFull cmdResolver "match 1 with | 0 -> git pull | 1 | 2 -> git fetch | _ -> ()" with
+              | Ok s -> Expect.stringContains (Weir.Ast.sexprStmt s) "\"pull\"" "the first arm's command is its own"
+              | Error f -> failtest f.Message
+          }
+          test "alternatives that bind names refuse with a teaching (v1)" {
+              let ms = errs [ "let f p = match p with | (n, 0) | (0, n) -> n | _ -> 0"; "print $\"{f (1, 0)}\"" ]
+              Expect.isTrue (ms |> List.exists (fun m -> m.Contains "cannot bind names yet")) $"{ms}"
+          } ]
+
 let reflexTeachingTests =
     // F#/bash/C reflexes teach at their site instead of an expecting-list
     // dump [D:left-to-right-ops] [D:argv-backslash] [D:parse-error-binds]
@@ -23304,6 +23363,7 @@ let allTests =
           ifBodyStopTests
           envPrefixTests
           reflexTeachingTests
+          orPatternTests
           tildeLiteralTests
           tildeTests
           aliasCompleteTests
