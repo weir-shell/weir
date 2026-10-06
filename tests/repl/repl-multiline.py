@@ -269,12 +269,16 @@ if "6 : int" not in t:
 
 # --- dup-type in the REPL: redeclaration replaces with the note; earlier
 # values keep the old shape [D:dup-type-decl]
+# marker-driven, no #quit: macOS discards an exited child's unread pty
+# output, so a slow note was lost behind the quit; one retry as below
 keys = [("type T = { a: int }\r", 0.4),
         ("let v = [\"{\\\"a\\\":1}\"] |> from json T\r", 0.6),
-        ("type T = { b: string }\r", 0.4),
-        ("#quit\r", 0.3)]
-t, _ = run(keys)
-if "type T redeclared; earlier values keep the old shape" not in t:
+        ("type T = { b: string }\r", 0.4)]
+note = "type T redeclared; earlier values keep the old shape"
+t, _ = run(keys, until=note)
+if note not in t:
+    t, _ = run(keys, until=note)
+if note not in t:
     failures.append(f"the REPL redeclare note must state the replace semantics: {t[-300:]!r}")
 
 # --- the table echo [D:repl-table]: a seq of same-shaped records
