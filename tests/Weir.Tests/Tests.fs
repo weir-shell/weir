@@ -4566,7 +4566,9 @@ let cdTests =
           test "bare cd desugars to home" { expectCmd "cd" "(cd \"~\")" }
           test "cd dotdot and tilde-path parse" {
               expectCmd "cd .." "(cd \"..\")"
-              expectCmd "cd ~/src" "(cd \"~/src\")"
+              // a typed `~` expands for every command now [D:tilde] — cd
+              // no longer needs its own tilde reading for this spelling
+              expectCmd "cd ~/src" "(cd (+ (|home ()) \"/src\"))"
           }
           test "cd splice parses to application of a binding" { expectCmd "cd $dir" "(cd dir)" }
           test "cd arity is a check-time error with the builtin named" {
@@ -21955,6 +21957,53 @@ let lsCommandTeachTests =
               Expect.isFalse (g.Contains "shell command") "no ^-advice for a non-command value"
           } ]
 
+let tildeTests =
+    // a typed `~` is the home directory in a command line [D:tilde] —
+    // source syntax only; data (quoted, interpolated, spliced) stays
+    // literal, `~user` too, and an expression `~` teaches Path.home
+    let shape line =
+        match Weir.Parser.parseLineFull cmdResolver line with
+        | Ok s -> Weir.Ast.sexprStmt s
+        | Error f -> failtest $"parse failed: {f.Message}"
+
+    let home = System.Environment.GetFolderPath System.Environment.SpecialFolder.UserProfile
+
+    testList
+        "tilde [D:tilde]"
+        [ test "a word-leading ~ or ~/ desugars to the run-time home" {
+              Expect.equal (shape "echo ~ ~/x") "(scmd (cmd echo (|home ()) (+ (|home ()) \"/x\")))" "both forms"
+          }
+          test "data and other spellings stay literal" {
+              Expect.equal
+                  (shape "echo \"~/q\" a~b ~user HEAD~1")
+                  "(scmd (cmd echo \"~/q\" \"a~b\" \"~user\" \"HEAD~1\"))"
+                  "quoted, mid-word, ~user, a git revision"
+          }
+          test "it evaluates to the home path" {
+              skipOnWindows ()
+
+              let runLive input =
+                  match Weir.Parser.parseLine realResolver input with
+                  | Ok(SExpr e | SCmd e) ->
+                      match typecheck env e with
+                      | Ok te -> eval valueEnv te |> forceSeq
+                      | Error terr -> failtest (formatError terr)
+                  | other -> failtest $"unexpected: {other}"
+
+              Expect.equal (runLive "$(echo ~/x)") [ VStr(home + "/x") ] "argv carries the expanded path"
+              Expect.equal (runLive "$(echo \"~/x\")") [ VStr "~/x" ] "a quoted word does not"
+          }
+          test "a ~/ path heads a command, without the dynamic-head caret" {
+              match Weir.Parser.parseLineFull cmdResolver "~/bin/tool arg" with
+              | Ok(SCmd { Kind = ECmd(HeadDyn(d, _), _, _) }) -> Expect.equal d "~/bin/tool" "the display is the typed spelling"
+              | other -> failtest $"expected a dynamic-head command, got {other}"
+          }
+          test "an expression ~ teaches Path.home" {
+              match Weir.Parser.parseLineFull cmdResolver "let x = (~)" with
+              | Error f -> Expect.stringContains f.Message "Path.home ()" "the expression spelling"
+              | Ok s -> failtest $"expected the teaching, got {Weir.Ast.sexprStmt s}"
+          } ]
+
 let ifBodyStopTests =
     // a then/elif body's command ends at a bareword else/elif
     // [D:if-body-stop] — before, `if c then echo hi else echo bye` was ONE
@@ -22931,6 +22980,7 @@ let allTests =
           lsCommandTeachTests
           unquotedPathTeachTests
           ifBodyStopTests
+          tildeTests
           aliasCompleteTests
           contPromptTests
           jsonEscapingTests

@@ -1338,6 +1338,21 @@ let private holeBackslashTeaching: Parser<Expr, unit> =
         else
             (ifail "not a hole backslash") stream
 
+// a `~` in an expression is not the home directory [D:tilde]: only a
+// command word expands it, so teach the expression spelling instead of
+// the generic expecting-list (the block-body `cd ~` reaches here, where
+// cd is the ordinary string -> string function)
+let private tildeTeaching: Parser<Expr, unit> =
+    attempt (
+        getPosition
+        .>> pchar '~'
+        .>> (followedBy eof <|> followedBy (satisfy (fun c -> not (System.Char.IsLetterOrDigit c || c = '_'))))
+    )
+    >>= fun at ->
+        failFatallyAt
+            at
+            "'~' is the home directory only in a command line — in an expression, Path.home () is the home path ($\"{Path.home ()}/…\" for one below it)"
+
 let private dotFloatTeaching =
     attempt (getPosition .>> pchar '.' .>> lookAhead (satisfy System.Char.IsDigit))
     >>= fun at -> failFatallyAt at "float literals need a digit before the point (write 0.5)"
@@ -1350,6 +1365,7 @@ let private atom =
               intLit
               dotFloatTeaching
               holeBackslashTeaching
+              tildeTeaching
               tripleLit
               verbatimLit
               strLit
@@ -3663,6 +3679,19 @@ let private spliceSplat: Parser<Expr, unit> =
         { Kind = ESplat inner; Span = span })
     .>> ws
 
+// a typed `~` is the home directory [D:tilde]: an unquoted word-leading
+// `~` or `~/…` in a command line desugars to the run-time home plus the
+// rest. Source syntax only — a quoted string, an interpolation or a
+// spliced value never reaches here, so data is never re-read as syntax;
+// `~user` stays literal
+let private isTildeWord (w: string) = w = "~" || w.StartsWith "~/"
+
+let private tildeExpr (w: string) (span: Span) : Expr =
+    let at k = { Kind = k; Span = span }
+    let home = at (EApp(at (EVar "|home"), at EUnit))
+
+    if w = "~" then home else at (EBinOp("+", home, at (EStr(w.Substring 1))))
+
 let private cmdArgStops (stopAtIn: bool) (stopAtThen: bool) (stopAtElse: bool) =
     let stopWord (w: string) =
         notFollowedBy (attempt (pstring w .>> notFollowedBy (satisfy cmdWordChar)))
@@ -3674,7 +3703,10 @@ let private cmdArgStops (stopAtIn: bool) (stopAtThen: bool) (stopAtElse: bool) =
         // Refusing here makes the command path fall through to the
         // district arm, exactly as the head guard does for bare `yaml`.
         let core =
-            spanned (cmdWord |>> EStr) |>> mkExpr .>> notFollowedBy (pchar sibSep) .>> ws
+            spanned cmdWord
+            |>> (fun (w, span) -> if isTildeWord w then tildeExpr w span else mkExpr (EStr w, span))
+            .>> notFollowedBy (pchar sibSep)
+            .>> ws
 
         // In a let RHS, a bareword `in` would silently become argv (the
         // let...in cliff); in an if/elif condition, a bareword `then`
@@ -3800,6 +3832,11 @@ let private commandSegment
                     // interior — where it should teach the value-headed spelling
                     fail
                         "'[' is command mode here (a district or sigil interior takes command lines); feed a value into a command with a value-headed pipeline bound outside the block — `let out = xs | prog`"
+            elif w.StartsWith "~/" then
+                // a typed home path heads a command too [D:tilde], expanded
+                // at run like an argv word; existence is check's warning,
+                // as for any head
+                preturn (DynamicHead(w, tildeExpr w span), w, span)
             elif forced.IsSome then
                 // ^ forces PATH: the alias table is skipped [D:command-head-alias]
                 if r.IsExternal w then

@@ -2123,6 +2123,27 @@ echo "$eout" | grep -qF "pre=out-keep" || fail "outer overlay applies: $eout"
 echo "$eout" | grep -qF "nested=in-keep" || fail "collision: inner wins, outer key survives: $eout"
 echo "e2e ok: within env — overlay on spawns, nested collision pinned (inner wins, outer survives)"
 
+# a typed ~ is home in a command line [D:tilde] — under a fake HOME so the
+# expansion is observable; data stays literal; a ~/ head runs
+tidir=$(mkweirtmp)
+mkdir -p "$tidir/home/bin"
+printf '#!/bin/sh\necho tool-$1\n' > "$tidir/home/bin/tool.sh"
+chmod +x "$tidir/home/bin/tool.sh"
+cat > "$tidir/t.weir" <<'WEOF'
+echo ~ ~/x
+echo "~/q" a~b ~user HEAD~1
+let p = "~/s"
+echo $p
+~/bin/tool.sh ran
+WEOF
+out=$(cd "$tidir" && HOME="$tidir/home" USERPROFILE="$tidir/home" $BIN t.weir 2>&1) || fail "the tilde cell must run: $out"
+[ "$out" = "$tidir/home $tidir/home/x
+~/q a~b ~user HEAD~1
+~/s
+tool-ran" ] || fail "tilde: typed ~ expands, data stays literal, a ~/ head runs: $out"
+rm -rf "$tidir"
+echo "e2e ok: a typed ~ is home in a command line — argv and head; quoted, spliced, mid-word and ~user stay literal"
+
 cat > "$widir/envval.weir" <<'WEOF'
 let vars = [Env.pair "WQ" "carried"]
 let got = within env vars

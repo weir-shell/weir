@@ -2542,9 +2542,9 @@ let private pathNormalize (p: string) : string =
 // home + XDG dirs [D:path-home], the one implementation the REPL's
 // config/state paths also use: Windows maps to SpecialFolder
 // (%APPDATA% / %LOCALAPPDATA%), POSIX to the XDG_* var else the ~
-// fallback. Re-read per call — the environment can change. These
-// replace the argv expansion weir does not do (no `~`, no `$HOME`): a
-// typed value to interpolate, injection-proof by construction.
+// fallback. Re-read per call — the environment can change. The typed
+// home for expressions (a command word's `~` desugars to Path.home,
+// [D:tilde]; `$HOME` never expands): injection-proof by construction.
 let xdgDir (var: string) (fallback: string) : string =
     match System.Environment.GetEnvironmentVariable var with
     | null
@@ -6049,7 +6049,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
           |> named [ "pattern" ]
           "Path.home",
           (bd
-              "The user's home directory (a pure query; no trailing separator, platform-native). The typed stand-in for `~`/`$HOME`, which never expand in argv — build a path with `$\"{Path.home ()}/.bashrc\"`."
+              "The user's home directory (a pure query; no trailing separator, platform-native). In a command line a typed `~` is this path; in an expression, build one with `$\"{Path.home ()}/.bashrc\"`."
               (Some "Path.home ()")
               None
            |> named [ "()" ])

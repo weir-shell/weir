@@ -217,6 +217,8 @@ and TypedYamlKey =
 let theadDisplay (h: TCmdHead) : string =
     match h with
     | THeadLit p -> p
+    // a typed home path carries no `^` [D:tilde]
+    | THeadDyn(d, _) when d.StartsWith "~/" -> d
     | THeadDyn(d, _) -> $"^{d}"
 
 type private ResultBuilder() =

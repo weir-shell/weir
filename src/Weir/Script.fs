@@ -5836,6 +5836,17 @@ let analyzeLines
         let rec cmdHeads (te: Check.TypedExpr) =
             (match te.Kind with
              | Check.TECmd(Check.THeadLit prog, _, _) when not (Extern.exists prog) -> [ prog, te.Span ]
+             // a typed home-path head [D:tilde]: this machine's home
+             | Check.TECmd(Check.THeadDyn(d, _), _, _) when
+                 d.StartsWith "~/"
+                 && not (
+                     System.IO.File.Exists(
+                         System.Environment.GetFolderPath System.Environment.SpecialFolder.UserProfile
+                         + d.Substring 1
+                     )
+                 )
+                 ->
+                 [ d, te.Span ]
              | _ -> [])
             @ (Check.childExprs te |> List.collect cmdHeads)
 
@@ -5907,6 +5918,8 @@ let analyzeLines
                         (match Map.tryFind prog Builtins.bareAliasHomes with
                          | Some home ->
                              $"'{prog}' is a bare module member, not a program — spell it '{home}.{prog}' (bare names live in the REPL session)"
+                         | None when prog.StartsWith "~/" ->
+                             $"no executable at {prog} — weir resolves commands at check time; the script runs once it exists"
                          | None ->
                              $"command not found on PATH: {prog}{hint} — weir resolves commands at check time; the script runs once it is installed") }
 
