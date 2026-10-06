@@ -61,6 +61,9 @@ behaviours worth naming:
   the path stays bare, the way argv wants it. If you already opened the
   quote (`File.read "./x<TAB>`), the completion lands inside it — no
   second quote; a directory keeps its trailing `/` within the quotes.
+- **A leading `~` completes to your home directory's literal path.**
+  `cat ~/.con<TAB>` becomes `cat /home/you/.config/`, and `cd ~<TAB>`
+  becomes `cd "/home/you/"` — the line shows exactly what runs.
 
 Completion never runs anything — a directory read or a cached PATH
 lookup at most.

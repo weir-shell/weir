@@ -168,8 +168,9 @@ let private pipelineElemTy (env: TypeEnv) (text: string) : Ty option =
 /// text ends at the cursor (both callers truncate — the LSP's `upto`,
 /// the REPL's Substring): the word runs from wordStart to the end
 // filesystem completion [D:repl-quality] for an explicit path word (has a
-// `/` or leads with `~`): list the directory, keep prefix matches, expand
-// `~`, trailing `/` on directories. Never runs anything — a directory
+// `/` or leads with `~`): list the directory, keep prefix matches,
+// trailing `/` on directories. A leading `~` completes to the literal home
+// path [D:tilde-literal] — the line shows what will actually run. Never runs anything — a directory
 // read only. Callers pass words that already look like paths.
 let private filesystemComplete (word: string) : string list =
     let expanded =
@@ -211,11 +212,13 @@ let private filesystemComplete (word: string) : string list =
             // replaces the word with it, so a shape the user never
             // typed (./x for a bare name) re-prepends on every tab
             // [D:complete-argv]
+            let typed = if word.StartsWith "~" then expanded else word
+
             let shaped =
                 if slash < 0 then
                     System.IO.Path.GetFileName e
                 else
-                    word.Substring(0, word.Length - prefix.Length) + System.IO.Path.GetFileName e
+                    typed.Substring(0, typed.Length - prefix.Length) + System.IO.Path.GetFileName e
 
             if System.IO.Directory.Exists e then
                 shaped + "/"

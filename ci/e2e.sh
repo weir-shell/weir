@@ -2149,7 +2149,17 @@ want="$thome $thome/x
 tool-ran"
 [ "$out" = "$want" ] || fail "tilde: typed ~ expands, data stays literal, a ~/ head runs: $out"
 rm -rf "$tidir"
-echo "e2e ok: a typed ~ is home in a command line — argv and head; quoted, spliced, mid-word and ~user stay literal"
+# cd's string is data [D:tilde-literal]: bare cd and a typed `cd ~` go
+# home; a quoted ~ is a literal name, resolved against the current dir
+tldir=$(mkweirtmp)
+mkdir -p "$tldir/home"
+printf 'cd "/tmp"\ncd\nsh -c "echo bare=$(pwd)"\ncd "/tmp"\ncd ~\nsh -c "echo typed=$(pwd)"\ncd "/tmp"\ncd "~/nope"\n' > "$tldir/cd.weir"
+out=$(cd "$tldir" && HOME="$tldir/home" USERPROFILE="$tldir/home" $BIN cd.weir 2>&1) && fail "a quoted ~ must not be home: $out" || true
+echo "$out" | grep -qxF "bare=$tldir/home" || fail "bare cd goes home: $out"
+echo "$out" | grep -qxF "typed=$tldir/home" || fail "a typed cd ~ goes home: $out"
+echo "$out" | grep -qF "no such directory: /tmp/~/nope" || fail "cd \"~/nope\" is a literal name: $out"
+rm -rf "$tldir"
+echo "e2e ok: a typed ~ is home in a command line — argv and head; quoted, spliced, mid-word and ~user stay literal; cd takes its string literally"
 
 # NAME=value cmd [D:env-prefix]: bash's one-line child env — values of
 # every form, per pipeline stage, composed with a sigil (the prefix wins),

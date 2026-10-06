@@ -3987,7 +3987,8 @@ let private commandSegment
                  | _ -> (List.last args).Span.End) }
 
         // cd (the one command-callable builtin) is APPLIED, not spawned —
-        // `EApp(EVar "cd", arg)`, defaulting to "~" (home) with no arg. Used
+        // `EApp(EVar "cd", arg)`, defaulting to the home path with no arg
+        // (a typed `~`, so it resolves at run time [D:tilde-literal]). Used
         // by a bare builtin head AND by an alias that resolves to it
         // (`#alias up = cd ..`) [D:command-head-alias]: the alias must not
         // fall through to HeadLit, which would spawn the external /usr/sbin/cd.
@@ -3996,7 +3997,7 @@ let private commandSegment
 
             let effectiveArgs =
                 match callArgs with
-                | [] -> [ { Kind = EStr "~"; Span = nameSpan } ]
+                | [] -> [ tildeExpr "~" nameSpan ]
                 | _ -> callArgs
 
             effectiveArgs
