@@ -1079,11 +1079,11 @@ let rec private typeBinOp
     // docs' most-emphasised difference deserves a real message
     | "=", _, _ -> err opSpan "use '==' for equality; '=' binds in let and record fields"
     // composition [D:composition-operators] — fully parametric, typed
-    // like a builtin scheme: (a -> b) >> (b -> c) : a -> c, `<<`
-    // mirrored. First in the match: the scalar-defaulting arms below
+    // like a builtin scheme: (a -> b) >> (b -> c) : a -> c (left to
+    // right only [D:left-to-right-ops]). First in the match: the scalar-defaulting arms below
     // must never touch function operands. A non-function LHS on `>>`
     // gets the redirect-aware message (bash muscle memory).
-    | (">>" | "<<"), lt, _ ->
+    | ">>", lt, _ ->
         let a = TVar(freshName ctx "a")
         let b = TVar(freshName ctx "b")
         let c = TVar(freshName ctx "c")
@@ -1092,10 +1092,6 @@ let rec private typeBinOp
         | ">>", (TFun _ | TVar _) ->
             bind ctx env l.Span (TFun(a, b)) l.Ty
             |> Result.bind (fun () -> bind ctx env r.Span (TFun(b, c)) r.Ty)
-            |> Result.map (fun () -> TFun(a, c))
-        | "<<", (TFun _ | TVar _) ->
-            bind ctx env l.Span (TFun(b, c)) l.Ty
-            |> Result.bind (fun () -> bind ctx env r.Span (TFun(a, b)) r.Ty)
             |> Result.map (fun () -> TFun(a, c))
         | ">>", ty ->
             err
@@ -2608,6 +2604,20 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
             { Kind = TEVar pname
               Ty = ty
               Span = expr.Span }
+    // a backslash argv word [D:argv-backslash]: weir has no line
+    // continuation by `\` (indentation continues a command line) and no
+    // escapes in argv
+    | EVar w when w.StartsWith "|backslash " ->
+        let word = w.Substring 11
+
+        if word = "\\" then
+            err
+                expr.Span
+                "weir continues a command line by indentation — drop the `\\` and indent the next line (a literal backslash argument is \"\\\\\")"
+        else
+            err
+                expr.Span
+                $"weir has no backslash escapes in argv — `{word}` would pass the backslash too; quote the word instead: \"{word.Substring 1}\""
     | EVar name ->
         match Map.tryFind name env.Values with
         | Some sch ->
@@ -3459,7 +3469,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
         }
     | EPipe(_,
             { Kind = EBinOp(op, _, _)
-              Span = opSpan }) when op <> ">>" && op <> "<<" ->
+              Span = opSpan }) when op <> ">>" && op <> "<<" && op <> "<|" && op <> "!=" ->
         // Scalar operators yield values, never functions, so piping into
         // one is always wrong — and usually a precedence surprise.
         // Composition is the exception [D:composition-operators]:
@@ -3640,6 +3650,11 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
         // the Eq/Ord class solving — inherits the infix answers
         // verbatim, and eval sees an ordinary lambda.
         infer ctx env (opValueLambda op expr.Span)
+    // operators weir refuses, taught before either side is inferred so an
+    // unbound name inside cannot speak first [D:left-to-right-ops]
+    | EBinOp("<<", _, _) -> err expr.Span "weir composes left to right — `f << g` is `g >> f`"
+    | EBinOp("<|", _, _) -> err expr.Span "weir has no `<|` — write `f (x)`, or pipe `x |> f`"
+    | EBinOp("!=", _, _) -> err expr.Span "weir's inequality is `<>` (equality is `==`)"
     | EBinOp(op, left, right) ->
         result {
             let! tleft = infer ctx env left
@@ -3653,20 +3668,19 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
             // hint instead [D:composition-operators]
             do!
                 match op, resolve ctx tleft.Ty with
-                | (">>" | "<<"), (TFun _ | TVar _) -> Ok()
-                | (">>" | "<<"), ty ->
+                | ">>", (TFun _ | TVar _) -> Ok()
+                | ">>", ty ->
                     match left.Kind with
                     | EPipe _ ->
                         err
                             left.Span
                             ($"'{op}' and '|>' share precedence, so this parses as (xs |> f) {op} g; "
                              + $"parenthesize the composition: xs |> (f {op} g)")
-                    | _ when op = ">>" ->
+                    | _ ->
                         err
                             left.Span
                             ($"'>>' composes functions, and this expression has type {formatTy ty}; "
                              + "to append command output to a file, pipe it: cmd |> File.append \"out.txt\"")
-                    | _ -> err left.Span $"'<<' composes functions, and this expression has type {formatTy ty}"
                 | _ -> Ok()
 
             // `cd /work` in an expression parses as `cd / work`: the path

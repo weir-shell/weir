@@ -403,9 +403,8 @@ let evalTests =
               | Ok _ -> failtest "expected a parse error for spaced prefix minus"
           }
           // composition (mini-plan; the oracle refuted tighter-than-pipe)
-          test "forward and backward composition" {
+          test "forward composition" {
               expectValue "let inc n = n + 1 in (inc >> inc) 40" (VInt 42L)
-              expectValue "let inc n = n + 1 in (inc << inc) 40" (VInt 42L)
               expectValue "(Str.trim >> Str.length) \"  ab  \"" (VInt 2L)
           }
           test "composition types through lambda params (operator-driven typing)" {
@@ -423,9 +422,12 @@ let evalTests =
               let terr = checkErr "ls >> Seq.length"
               Expect.stringContains terr.Message "File.append" ""
           }
-          test "<< with a non-function LHS names composition" {
-              let terr = checkErr "1 << 2"
-              Expect.stringContains terr.Message "'<<' composes functions" ""
+          test "the reversed operators teach the forward ones [D:left-to-right-ops]" {
+              let inc = "let inc n = n + 1 in "
+              Expect.stringContains (checkErr (inc + "(inc << inc) 40")).Message "`f << g` is `g >> f`" "<< is gone"
+              Expect.stringContains (checkErr "1 << 2").Message "`f << g` is `g >> f`" "taught before the operands"
+              Expect.stringContains (checkErr (inc + "inc <| 40")).Message "weir has no `<|`" "<| is refused"
+              Expect.stringContains (checkErr "1 != 2").Message "weir's inequality is `<>`" "!= teaches <>"
           }
           test "adjacent lexing: > comparison vs >> composition" {
               expectValue "1 > 2" (VBool false)
@@ -21175,7 +21177,7 @@ let moduleSignatureTests =
 
               // an '=' after the type gets the dedicated teaching
               match Weir.Parser.parseLine cmdResolver "let f : int -> int = 5" with
-              | Error msg -> Expect.stringContains msg "a signature declares only the type" ""
+              | Error msg -> Expect.stringContains msg "alone is the signature" ""
               | Ok _ -> failtest "a sig with an RHS must refuse"
           }
           test "a signature exports; an unsigned member is private and teaches the migration" {
@@ -22236,6 +22238,44 @@ let tildeLiteralTests =
                   runCmd $"cd \"{before}\""
           } ]
 
+let reflexTeachingTests =
+    // F#/bash/C reflexes teach at their site instead of an expecting-list
+    // dump [D:left-to-right-ops] [D:argv-backslash] [D:parse-error-binds]
+    let errs (lines: string list) =
+        let ds, _, _, _ = Weir.Script.analyzeLines "reflex.weir" lines
+        ds |> List.filter (fun d -> d.Severity = "error") |> List.map (fun d -> d.Message)
+
+    let only (lines: string list) =
+        match errs lines with
+        | [ m ] -> m
+        | ms -> failtest $"expected exactly one error, got {ms}"
+
+    testList
+        "reflex teachings"
+        [ test "!x is not negation; the sigils and the retired district keep their meaning" {
+              Expect.stringContains (only [ "let ok = true"; "if !ok then print \"no\"" ]) "write `not x`" "condition"
+              Expect.stringContains (only [ "let ok = true"; "let b = !ok" ]) "write `not x`" "let RHS, not the district message"
+              Expect.isTrue (Weir.Script.retiredDistrictMarker "if c then !e") "a district header still teaches its retirement"
+              Expect.isEmpty (errs [ "let e = [Env.pair \"X\" \"1\"]"; "!e(sh -c \"echo $X\")" ]) "the env sigil"
+          }
+          test "type annotations teach inference" {
+              Expect.stringContains (only [ "let f (x: int) = x + 1"; "print $\"{f 1}\"" ]) "weir infers parameter types" "a parameter"
+              Expect.stringContains (only [ "let x: int = 1"; "print $\"{x}\"" ]) "weir infers a binding's type" "a binding"
+          }
+          test "a bare range in for teaches the list" {
+              Expect.stringContains (only [ "for i in 1..3 do print $\"{i}\"" ]) "wrap it in brackets" ""
+          }
+          test "backslash argv words teach; a quoted backslash passes" {
+              Expect.stringContains (only [ "sh -c \"echo $1\" x a \\"; "    b" ]) "continues a command line by indentation" "line-end"
+              Expect.stringContains (only [ "find . -exec echo {} \\;" ]) "quote the word instead: \";\"" "an escape"
+              Expect.isEmpty (errs [ "sh -c \"echo $1\" x \"\\\\\"" ]) "a literal backslash argument"
+              Expect.stringContains (only [ "\\ls -la" ]) "`^name` runs the PATH program" "an escaped head"
+          }
+          test "a let that fails to parse still binds its name" {
+              let ms = errs [ "let x: int = 1"; "print $\"{x}\""; "let y = x" ]
+              Expect.equal ms.Length 1 $"only the real error, no unbound echoes: {ms}"
+          } ]
+
 let envPrefixTests =
     // bash's one-line child env [D:env-prefix]: NAME=value words before a
     // command head join that segment's overlay; argv `CC=gcc` and
@@ -23263,6 +23303,7 @@ let allTests =
           unquotedPathTeachTests
           ifBodyStopTests
           envPrefixTests
+          reflexTeachingTests
           tildeLiteralTests
           tildeTests
           aliasCompleteTests

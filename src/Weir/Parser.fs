@@ -840,11 +840,12 @@ let private opValue =
                     $"'({op})' cannot be a value: '{op}' short-circuits its right operand, and a function value cannot — spell the lambda if eager evaluation is truly meant"
             | "|>"
             | "|" -> failFatallyAt at $"'({op})' is grammar, not a function — a pipe cannot be a value"
-            | ">>"
-            | "<<" ->
+            | ">>" ->
                 failFatallyAt
                     at
-                    $"'({op})' as a value has no use — composition already yields the composed function; write f {op} g directly"
+                    "'(>>)' as a value has no use — composition already yields the composed function; write f >> g directly"
+            // the reversed composition is not a weir operator [D:left-to-right-ops]
+            | "<<" -> failFatallyAt at "weir composes left to right — `f << g` is `g >> f`"
             | op -> preturn (EOpValue op)
     )
     |>> mkExpr
@@ -1358,6 +1359,17 @@ let private tildeTeaching: Parser<Expr, unit> =
             at
             "'~' is the home directory only in a command line — in an expression, Path.home () is the home path ($\"{Path.home ()}/…\" for one below it)"
 
+// C negation `!x` in an expression teaches weir's word [D:left-to-right-ops]:
+// `!` means "do it" (the effect sigil `!(…)` / `!env(…)`, which this
+// lookahead leaves alone — a name glued to `(` is a sigil)
+let private bangNegationTeaching: Parser<Expr, unit> =
+    attempt (
+        getPosition
+        .>> pchar '!'
+        .>> followedBy (many1Satisfy2 isIdentStart isIdentCont .>> notFollowedBy (pchar '('))
+    )
+    >>= fun at -> failFatallyAt at "weir has no `!` negation — write `not x` (`!` means \"do it\": `!(cmd)` runs a command)"
+
 let private dotFloatTeaching =
     attempt (getPosition .>> pchar '.' .>> lookAhead (satisfy System.Char.IsDigit))
     >>= fun at -> failFatallyAt at "float literals need a digit before the point (write 0.5)"
@@ -1371,6 +1383,7 @@ let private atom =
               dotFloatTeaching
               holeBackslashTeaching
               tildeTeaching
+              bangNegationTeaching
               tripleLit
               verbatimLit
               strLit
@@ -1813,6 +1826,8 @@ let private mkOpp (withPipe: bool) =
     // under the expecting-list dump
     opp.AddOperator(InfixOperator("=", notFollowedBy (pchar '=') >>. ws, 4, Associativity.Left, binOp "="))
     opp.AddOperator(InfixOperator("<>", ws, 4, Associativity.Left, binOp "<>"))
+    // C's inequality parses only to teach weir's `<>` [D:left-to-right-ops]
+    opp.AddOperator(InfixOperator("!=", ws, 4, Associativity.Left, binOp "!="))
     opp.AddOperator(InfixOperator(">=", ws, 4, Associativity.Left, binOp ">="))
     opp.AddOperator(InfixOperator("<=", ws, 4, Associativity.Left, binOp "<="))
     // composition [D:composition-operators] at the pipe's level:
@@ -1820,7 +1835,10 @@ let private mkOpp (withPipe: bool) =
     // the idiom needs parens, `xs |> (f >> g)`. OPP's operator trie
     // keeps > / >= / >> apart.
     opp.AddOperator(InfixOperator(">>", ws, 1, Associativity.Left, binOp ">>"))
+    // the reversed spellings parse only to teach the forward ones
+    // [D:left-to-right-ops]: `<<` is `>>` reversed, `<|` is `|>` reversed
     opp.AddOperator(InfixOperator("<<", ws, 1, Associativity.Left, binOp "<<"))
+    opp.AddOperator(InfixOperator("<|", ws, 1, Associativity.Left, binOp "<|"))
     opp.AddOperator(InfixOperator(">", ws, 4, Associativity.Left, binOp ">"))
     opp.AddOperator(InfixOperator("<", ws, 4, Associativity.Left, binOp "<"))
     opp.AddOperator(InfixOperator("+", ws, 6, Associativity.Left, binOp "+"))
@@ -1884,7 +1902,17 @@ let private commaPats =
                 { Start = (List.head many).PSpan.Start
                   End = (List.last many).PSpan.End } }
 
-let private patParens = between (str_ws "(") (str_ws ")") commaPats
+// an annotated parameter `(x: int)` teaches inference [D:left-to-right-ops]
+// — F#'s spelling, refused in weir scripts (no-type-ascription)
+let private patAnnotationTeaching: Parser<unit, unit> =
+    attempt (getPosition .>> pchar ':' .>> notFollowedBy (pchar ':'))
+    >>= fun at ->
+        failFatallyAt
+            at
+            "weir infers parameter types — drop the annotation (`(x: int)` is `x`); a module states a function's type on a signature line, `let f : int -> int`"
+
+let private patParens =
+    between (str_ws "(") (str_ws ")") (commaPats .>> (patAnnotationTeaching <|> preturn ()))
 
 // seq patterns [D:seq-patterns]: [] and fixed-arity [p; q]
 let private patSeq =
@@ -2654,7 +2682,13 @@ let private forExprBody =
     >>= fun p ->
         binderPat .>> keyword "in"
         >>= fun binder ->
-            expr .>> keyword "do"
+            expr
+            // a bare range `1..3` is F#'s for-loop shape; weir's range is a
+            // list literal [D:left-to-right-ops]
+            .>> ((attempt (getPosition .>> pstring "..")
+                  >>= fun at -> failFatallyAt at "a range is a list — wrap it in brackets: `for i in [a..b] do`")
+                 <|> preturn ())
+            .>> keyword "do"
             >>= fun source ->
                 // the body knows its binder [D:interior-arming] — same
                 // bindings-beat-PATH extension as lambda params; for
@@ -3710,7 +3744,15 @@ let private cmdArgStops (stopAtIn: bool) (stopAtThen: bool) (stopAtElse: bool) =
         // district arm, exactly as the head guard does for bare `yaml`.
         let core =
             spanned cmdWord
-            |>> (fun (w, span) -> if isTildeWord w then tildeExpr w span else mkExpr (EStr w, span))
+            |>> (fun (w, span) ->
+                if isTildeWord w then
+                    tildeExpr w span
+                // a backslash word is bash's continuation or escape; it
+                // parses to a marker the checker teaches [D:argv-backslash]
+                elif w.StartsWith "\\" then
+                    mkExpr (EVar("|backslash " + w), span)
+                else
+                    mkExpr (EStr w, span))
             .>> notFollowedBy (pchar sibSep)
             .>> ws
 
@@ -3810,7 +3852,14 @@ let private envPrefixGuard () : Parser<'a, unit> =
                 at
                 $"'{name}=…' is not an assignment — weir binds values with `let`; `{name}=value cmd` sets an environment variable for that one command"
 
-envPrefixStmtGuardRef.Value <- envPrefixGuard ()
+// a `\`-escaped command head (`\ls`, bash's alias bypass) teaches weir's
+// `^` [D:argv-backslash] — reached only after the command grammar refused
+let private backslashHeadGuard () : Parser<'a, unit> =
+    attempt (getPosition .>> pchar '\\' .>> followedBy (satisfy isIdentStart))
+    >>= fun at ->
+        failFatallyAt at "weir has no `\\`-escape for commands — `^name` runs the PATH program, skipping aliases and builtins"
+
+envPrefixStmtGuardRef.Value <- envPrefixGuard () <|> backslashHeadGuard ()
 
 let private commandSegment
     (builtinHeads: bool)
@@ -4965,7 +5014,7 @@ let private letSig: Parser<Stmt, unit> =
                 [ eof >>% SSig(name, ty, nameSpan)
                   str_ws "="
                   >>. failFatally
-                          $"a signature declares only the type — no '='; write the implementation as its own 'let {name} … = …' below"
+                          $"weir infers a binding's type — write `let {name} = …` with no `: <type>`; in a module, `let {name} : <type>` alone is the signature, and the implementation follows as its own let"
                   failFatally "unexpected content after the signature's type" ]
 
 // module + import statements [D:modules-v1] — top-level, no `=`, no body.
@@ -5020,6 +5069,7 @@ let private stmtWith (r: Resolver) =
               topLet r
               cmdLine r .>> eof |>> SCmd
               envPrefixGuard ()
+              backslashHeadGuard ()
               (seqExpr >>= pipeOrHint) .>> eof |>> SExpr ]
 
 let private noExternals =

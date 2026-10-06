@@ -26,8 +26,18 @@ let root = "build"
 rm -rf $root/* // argv words do not concatenate — write $"{root}/*"
 ```
 
+A command line continues onto indented lines, as every statement does
+— there is no `\` continuation:
+
+```weir
+printf "%s %s\n" first
+    second
+```
+
 What command lines do not do:
 
+- no backslash escapes — a `\` word is a teaching error (`\;` is
+  `";"`; a literal backslash argument is `"\\"`), and `\ls` is `^ls`
 - no glob expansion — `Path.glob` is a function
 - no `$VAR` expansion — splice weir bindings
 - `~` is the one exception, and only as typed source: an unquoted

@@ -242,7 +242,7 @@ left-associative:
 
 | binds | operators | meaning |
 |---|---|---|
-| loosest | `\|>` `>>` `<<` | pipe-apply; function composition |
+| loosest | `\|>` `>>` | pipe-apply; function composition (left to right; no `<<`/`<\|`) |
 | | `\|\|` | boolean or |
 | | `&&` | boolean and |
 | | `==` `<>` `<` `<=` `>` `>=` | equality and comparison |

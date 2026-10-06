@@ -2193,6 +2193,42 @@ echo "$out" | grep -qF "is not an assignment" || fail "a lone prefix teaches let
 rm -rf "$epdir"
 echo "e2e ok: NAME=value cmd — value forms, per stage, sigil composition, argv untouched, parent clean; a lone prefix teaches"
 
+# reflexes teach at their site [D:left-to-right-ops] [D:argv-backslash]
+# [D:parse-error-binds]: each wrong first try names weir's spelling; the
+# forward operators and a quoted backslash still work; a mis-parsed let
+# leaves no "unbound" echo behind it
+rxdir=$(mkweirtmp)
+rxcase() {
+    printf '%s\n' "$2" > "$rxdir/c.weir"
+    rxout=$(cd "$rxdir" && $BIN check c.weir 2>&1) && fail "reflex '$1' must refuse"
+    echo "$rxout" | grep -qF "$3" || fail "reflex '$1' teaches '$3': $rxout"
+}
+rxcase neq 'let b = 1 != 2' 'inequality is `<>`'
+rxcase negation "$(printf 'let ok = true\nlet b = !ok')" 'write `not x`'
+rxcase back-compose "$(printf 'let f n = n + 1\nlet g = f << f')" '`f << g` is `g >> f`'
+rxcase back-pipe "$(printf 'let f n = n + 1\nlet r = f <| 2')" 'weir has no `<|`'
+rxcase annotation 'let f (x: int) = x + 1' 'weir infers parameter types'
+rxcase range 'for i in 1..3 do print $"{i}"' 'wrap it in brackets'
+rxcase continuation "$(printf 'echo a \\\n    b')" 'continues a command line by indentation'
+rxcase escape 'find . -maxdepth 0 -exec echo {} \;' 'quote the word instead'
+rxcase escaped-head '\ls -la' '`^name` runs the PATH program'
+cat > "$rxdir/ok.weir" <<'WEOF'
+let f n = n + 1
+let g = f >> f
+print $"{g 1} {1 <> 2} {not false}"
+printf "%s|" a "\\" b
+print ""
+WEOF
+out=$(cd "$rxdir" && $BIN ok.weir 2>&1) || fail "the forward spellings must run: $out"
+echo "$out" | grep -qxF '3 true true' || fail "forward composition, <>, not: $out"
+echo "$out" | grep -qxF 'a|\|b|' || fail "a quoted backslash is a literal argument: $out"
+printf 'let x: int = 1\nprint $"{x}"\nlet y = x\n' > "$rxdir/one.weir"
+out=$(cd "$rxdir" && $BIN check one.weir 2>&1) && fail "a mis-parsed let must refuse: $out" || true
+nerr=$(printf '%s\n' "$out" | grep -c 'error \[' || true)
+[ "$nerr" -eq 1 ] || fail "a mis-parsed let reports once, not again as unbound: $nerr errors"
+rm -rf "$rxdir"
+echo "e2e ok: reflexes teach (!=, !x, <<, <|, annotations, 1..3, \\ continuation and escapes, \\ls); forward spellings run; a mis-parsed let reports once"
+
 cat > "$widir/envval.weir" <<'WEOF'
 let vars = [Env.pair "WQ" "carried"]
 let got = within env vars
