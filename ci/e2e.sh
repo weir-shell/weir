@@ -2515,8 +2515,35 @@ WEOF
     echo "$sttyout" | grep -qF "IS-TTY" || fail "a script statement at a tty inherits too: $sttyout"
     rpipeout=$(printf 'sh %s/t.sh\n#quit\n' "$cidir" | "$BIN" 2>/dev/null || true)
     echo "$rpipeout" | grep -qF "IS-PIPE" || fail "a redirected REPL keeps the pipe: $rpipeout"
+    # armed statements inherit too [D:armed-inherit]: `!(cmd)`, `!e(cmd)`,
+    # a block body's command and a statement chain's tail get the terminal
+    # (an editor or pager works there); redirected, every form keeps the
+    # pipe — the same 2x2 discipline, one row per arming position
+    cat > "$cidir/armed.weir" <<WEOF
+let e = [Env.pair "X" "1"]
+!(sh $cidir/t.sh)
+!e(sh $cidir/t.sh)
+within env e
+    sh $cidir/t.sh
+within tmp d
+    sh $cidir/t.sh
+match 1 with
+| _ ->
+    sh $cidir/t.sh
+echo x | sh $cidir/t.sh
+["a"] | sh $cidir/t.sh
+WEOF
+    aout=$(printf 'SLEEP 400\n' | python3 "$ptyrun" 12 "$BIN" "$cidir/armed.weir")
+    [ "$(echo "$aout" | grep -o IS-TTY | wc -l)" -eq 7 ] && ! echo "$aout" | grep -q IS-PIPE ||
+        fail "every armed form at a tty inherits (7 IS-TTY, no IS-PIPE): $aout"
+    [ "$("$BIN" "$cidir/armed.weir" | grep -c IS-PIPE)" -eq 7 ] || fail "redirected, every armed form keeps the pipe"
+    # the REPL arms a block tail like the runner, and a top-level chain
+    # takes the statement inherit path
+    arout=$(printf 'SLEEP 700\nSEND within env [Env.pair "X" "1"]\\r\nSLEEP 300\nSEND     sh %s/t.sh\\r\nSLEEP 300\nSEND \\r\nSLEEP 600\nSEND echo x | sh %s/t.sh\\r\nSLEEP 600\nSEND #quit\\r\n' "$cidir" "$cidir" | python3 "$ptyrun" 12 "$BIN")
+    [ "$(echo "$arout" | grep -o IS-TTY | wc -l)" -eq 2 ] && ! echo "$arout" | grep -q IS-PIPE ||
+        fail "the REPL's block tail and top-level chain inherit: $arout"
 
-    echo "e2e ok: colour inherit — bare statements see the terminal, captures see the pipe, ordering holds, redirected unchanged, and the runner/REPL 2x2 agrees"
+    echo "e2e ok: colour inherit — bare and armed statements (sigils, block bodies, chain tails) see the terminal, captures see the pipe, ordering holds, redirected unchanged, and the runner/REPL 2x2 agrees"
 
     # ---- the Color module + print keeps SGR at a tty [D:tty-color] ----------
     # Color.green emits SGR that print passes through at a terminal; the

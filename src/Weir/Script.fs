@@ -3406,9 +3406,17 @@ let private checkStatementCore
                           Warnings = warningsOf te }
         | Ok(SExpr e) ->
             // statement position demands unit, so a commandish tail arms
-            // [D:within-scopes] — reaching through scopes and let-ins;
-            // the REPL (gateExprs=false) keeps its echo instead
-            let e = if gateExprs then Check.armTail e else e
+            // [D:within-scopes] — reaching through scopes and let-ins.
+            // The REPL (gateExprs=false) arms block tails too, so a block's
+            // final command inherits the terminal as a top-level one does
+            // [D:armed-inherit]; a bare top-level chain stays unarmed for
+            // the REPL's own inherit path and its streamed teaching
+            let e =
+                match e.Kind with
+                | _ when gateExprs -> Check.armTail e
+                | ECmd _
+                | EPipe(_, { Kind = ECmd _ }) -> e
+                | _ -> Check.armTail e
             let tenv = Check.withAnonDefs tenv e
 
             match Check.typecheck tenv e with

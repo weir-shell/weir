@@ -645,6 +645,49 @@ let chainLinesOf (specs: Spec list) : seq<string> =
                     reap p
         }
 
+// the statement chain at a tty [D:armed-inherit]: the byte chain with
+// the tail's stdout inherited, so the last stage sees the terminal
+// (`git log | less` pages) — runInherited's chain-shaped twin. Hops stay
+// raw pipes; the leftmost failing stage raises, as in chainLinesOf.
+let runChainInherited (specs: Spec list) : unit =
+    match specs with
+    | [] -> ()
+    | [ one ] -> runInherited one
+    | _ ->
+        let lastIdx = specs.Length - 1
+
+        let procs =
+            specs
+            |> List.mapi (fun i sp ->
+                if i = 0 then
+                    sp, start true false sp
+                else
+                    sp, spawn (i < lastIdx) false true sp.Cwd sp.Ambient sp.Prog sp.Args sp.Env)
+
+        try
+            procs
+            |> List.pairwise
+            |> List.iter (fun ((_, a), (_, b)) ->
+                pumpBytes
+                    a.StandardOutput.BaseStream
+                    b.StandardInput.BaseStream
+                    (fun () ->
+                        try
+                            b.StandardInput.Close()
+                        with _ ->
+                            ())
+                |> ignore)
+
+            for _, p in procs do
+                p.WaitForExit()
+
+            match procs |> List.tryFind (fun (_, p) -> p.ExitCode <> 0) with
+            | Some(sp, p) -> raiseNonzero sp p.ExitCode
+            | None -> ()
+        finally
+            for _, p in procs do
+                reap p
+
 // ---- the public wrappers (signatures unchanged) --------------------
 
 // Child-env overlay [D:child-env-overlay]: `lines` is the empty

@@ -1157,7 +1157,12 @@ print x
   LEFTMOST fault.
 - A bare STATEMENT command at a tty INHERITS stdout
   [D:colour-inherit]: the child sees the terminal (isatty true), so
-  tools that colour for a tty colour under weir — and weir never
+  tools that colour for a tty colour under weir. So does every ARMED
+  statement [D:armed-inherit] — `!(cmd)`, `!e(cmd)`, a command in a
+  `within`/`match`/function block body (REPL included), and a statement
+  chain's TAIL (`git log | less` pages, `xs | fzf` picks) — so editors
+  and pagers work there; `let x = vi f` still CAPTURES (a value), so an
+  editor goes in statement position. Weir never
   holds the bytes (no guard or cap on that path: the bytes are the
   child's own, bash's posture; a child ending mid-line leaves its
   wart, also bash's). Every VALUE form keeps the pipe — `cmd |>

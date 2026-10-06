@@ -3011,103 +3011,36 @@ and eval (env: Env) (te: TypedExpr) : Value =
         // command feeding a command is a raw byte hop (a hop makes no
         // value — [D:colour-inherit]'s rationale, completed); only the
         // chain's far-left value head (if any) is a text edge
-        // the ambient snapshot [D:ambient-capture]: taken here, where
-        // the pipe is written — a lazy seq escaping a `within` scope
-        // still spawns under the scope it was written in (closure rule)
-        let snapCwd = Some(Weir.Session.Cwd())
-
-        let snapAmb =
-            Some(Weir.Session.envOverlay () |> List.rev |> List.collect id)
-
-        let rec collect (e: TypedExpr) (acc: Proc.Spec list) : TypedExpr option * Proc.Spec list =
-            match e.Kind with
-            | TECmd(h2, a2, e2) ->
-                None,
-                { Proc.Prog = Proc.resolveProg (progOf env h2)
-                  Proc.Args = argvOf env a2
-                  Proc.Env = overlayOf env e2
-                  Proc.Input = None
-                  Proc.Cwd = snapCwd
-                  Proc.Ambient = snapAmb }
-                :: acc
-            | TEPipe(l, { Kind = TECmd(h2, a2, e2) }) ->
-                collect
-                    l
-                    ({ Proc.Prog = Proc.resolveProg (progOf env h2)
-                       Proc.Args = argvOf env a2
-                       Proc.Env = overlayOf env e2
-                       Proc.Input = None
-                       Proc.Cwd = snapCwd
-                       Proc.Ambient = snapAmb }
-                     :: acc)
-            | _ -> Some e, acc
-
-        let valueHead, leftSpecs = collect arg []
-
-        let stdin =
-            match valueHead with
-            | None -> None
-            | Some he ->
-                match eval env he with
-                | VSeq items ->
-                    Some(
-                        items
-                        |> Seq.map (fun v ->
-                            match v with
-                            | VStr s -> s
-                            | v -> unreachable $"the checker rejects non-string stdin: {formatValue v}")
-                    )
-                | v -> unreachable $"the checker rejects piping {formatValue v} into a command"
-
-        let specs =
-            (match leftSpecs with
-             | first :: rest -> { first with Proc.Input = stdin } :: rest
-             | [] -> [])
-            @ [ { Proc.Prog = Proc.resolveProg (progOf env chead)
-                  Proc.Args = argvOf env cargs
-                  Proc.Env = overlayOf env cenvO
-                  Proc.Input = (if leftSpecs.IsEmpty then stdin else None)
-                  Proc.Cwd = snapCwd
-                  Proc.Ambient = snapAmb } ]
-
+        let specs = chainSpecs env arg chead cargs cenvO
         VSeq(Seq.delay (fun () -> Proc.chainLinesOf specs) |> Seq.map VStr)
-    // the armed statement command streams at a tty [D:stream-echo]:
-    // |print(linesOf) would hold a partial line (an interactive
-    // prompt) until its newline, so the chunk relay flushes as bytes
-    // arrive. Content is byte-identical to the batched path (same
-    // segment split, trailing newline ensured); only timing differs,
-    // and only at a tty — redirected output keeps the linesOf path
-    // untouched. Reifiers and captures are unaffected (| complete is
-    // in-memory capture).
+    // the armed statement command inherits at a tty [D:armed-inherit]:
+    // `!(cmd)`, `!e(cmd)` and a command statement in a block body arm as
+    // `cmd |print`, and get the bare statement's terminal
+    // [D:colour-inherit] — isatty true, so editors, pagers and colour
+    // work. The pre-spawn flush orders weir's prints against the child's.
+    // Redirected output keeps the linesOf path untouched. Reifiers and
+    // captures are unaffected (| complete is in-memory capture).
     | TEPipe({ Kind = TECmd(head, args, cenvO) }, { Kind = TEVar "|print" }) when
         not (System.Console.IsOutputRedirected)
         ->
-        let argv = argvOf env args
+        System.Console.Out.Flush()
 
-        let spec: Proc.Spec =
+        Proc.runInherited
             { Prog = Proc.resolveProg (progOf env head)
-              Args = argv
+              Args = argvOf env args
               Env = overlayOf env cenvO
               Input = None
               Cwd = None
               Ambient = None }
 
-        let mutable atLineStart = true
-
-        Proc.streamSegmentsOf
-            spec
-            (fun txt ->
-                System.Console.Out.Write txt
-                System.Console.Out.Flush()
-                atLineStart <- false)
-            (fun () ->
-                System.Console.Out.Write '\n'
-                System.Console.Out.Flush()
-                atLineStart <- true)
-
-        if not atLineStart then
-            System.Console.Out.Write '\n'
-
+        VUnit
+    // the armed chain likewise: its tail writes the terminal
+    // [D:armed-inherit] — `git log | less` pages, `xs | fzf` picks
+    | TEPipe({ Kind = TEPipe(arg, { Kind = TECmd(chead, cargs, cenvO) }) }, { Kind = TEVar "|print" }) when
+        not (System.Console.IsOutputRedirected)
+        ->
+        System.Console.Out.Flush()
+        Proc.runChainInherited (chainSpecs env arg chead cargs cenvO)
         VUnit
     | TEPipe(arg, fn) -> apply (eval env fn) (eval env arg)
     | TEField(target, field) ->
@@ -4078,6 +4011,71 @@ and private evalYamlItems (env: Env) (items: Check.TypedYamlTplItem list) : Valu
                 |> List.ofSeq
             | v -> unreachable $"the checker rejects a non-seq for source: {formatValue v}")
 
+// the chain left of a command hop, as specs [D:byte-pipes]: one builder
+// for the captured chain and the inherited statement chain
+// [D:armed-inherit], so the two cannot drift
+and private chainSpecs env (arg: TypedExpr) chead cargs cenvO : Proc.Spec list =
+    // the ambient snapshot [D:ambient-capture]: taken here, where
+    // the pipe is written — a lazy seq escaping a `within` scope
+    // still spawns under the scope it was written in (closure rule)
+    let snapCwd = Some(Weir.Session.Cwd())
+
+    let snapAmb =
+        Some(Weir.Session.envOverlay () |> List.rev |> List.collect id)
+
+    let rec collect (e: TypedExpr) (acc: Proc.Spec list) : TypedExpr option * Proc.Spec list =
+        match e.Kind with
+        | TECmd(h2, a2, e2) ->
+            None,
+            { Proc.Prog = Proc.resolveProg (progOf env h2)
+              Proc.Args = argvOf env a2
+              Proc.Env = overlayOf env e2
+              Proc.Input = None
+              Proc.Cwd = snapCwd
+              Proc.Ambient = snapAmb }
+            :: acc
+        | TEPipe(l, { Kind = TECmd(h2, a2, e2) }) ->
+            collect
+                l
+                ({ Proc.Prog = Proc.resolveProg (progOf env h2)
+                   Proc.Args = argvOf env a2
+                   Proc.Env = overlayOf env e2
+                   Proc.Input = None
+                   Proc.Cwd = snapCwd
+                   Proc.Ambient = snapAmb }
+                 :: acc)
+        | _ -> Some e, acc
+
+    let valueHead, leftSpecs = collect arg []
+
+    let stdin =
+        match valueHead with
+        | None -> None
+        | Some he ->
+            match eval env he with
+            | VSeq items ->
+                Some(
+                    items
+                    |> Seq.map (fun v ->
+                        match v with
+                        | VStr s -> s
+                        | v -> unreachable $"the checker rejects non-string stdin: {formatValue v}")
+                )
+            | v -> unreachable $"the checker rejects piping {formatValue v} into a command"
+
+    let specs =
+        (match leftSpecs with
+         | first :: rest -> { first with Proc.Input = stdin } :: rest
+         | [] -> [])
+        @ [ { Proc.Prog = Proc.resolveProg (progOf env chead)
+              Proc.Args = argvOf env cargs
+              Proc.Env = overlayOf env cenvO
+              Proc.Input = (if leftSpecs.IsEmpty then stdin else None)
+              Proc.Cwd = snapCwd
+              Proc.Ambient = snapAmb } ]
+
+    specs
+
 and apply (fn: Value) (arg: Value) : Value =
     match fn with
     | VClosure(param, body, closureEnv) -> eval (Map.add param arg closureEnv) body
@@ -4118,11 +4116,16 @@ let streamCommandStatement (env: Env) (te: Check.TypedExpr) (onText: string -> u
 /// on, not an incidental fact about TECmd.
 let inheritsStdout (te: Check.TypedExpr) : bool =
     match te.Kind with
-    | Check.TECmd _ -> not System.Console.IsOutputRedirected && te.Ty = TSeq TStr
+    | Check.TECmd _
+    // a statement chain's tail inherits too [D:armed-inherit]
+    | Check.TEPipe(_, { Kind = Check.TECmd _ }) -> not System.Console.IsOutputRedirected && te.Ty = TSeq TStr
     | _ -> false
 
 let inheritCommandStatement (env: Env) (te: Check.TypedExpr) : unit =
-    Proc.runInherited (commandStatementSpec env te)
+    match te.Kind with
+    | Check.TEPipe(arg, { Kind = Check.TECmd(chead, cargs, cenvO) }) ->
+        Proc.runChainInherited (chainSpecs env arg chead cargs cenvO)
+    | _ -> Proc.runInherited (commandStatementSpec env te)
 
 let constructorValues (cases: (string * Ty option * AttrSpec list) list) : (string * Value) list =
     cases
