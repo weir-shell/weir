@@ -2160,19 +2160,23 @@ site for every line:
 
 ```text
 deploy.weir can (capability, not behaviour — an untaken branch still counts):
-  ⚠ this report is incomplete: 1 opaque site(s) — an interpreter's argument cannot be analyzed
-  runs:
-    git  deploy.weir:3:1
-    sh  deploy.weir:5:1
-  opaque:
-    sh takes a program as its argument — not analyzed  deploy.weir:5:1
-  writes:
-    File.write out.txt  deploy.weir:7:10
-  network:
-    Http.expect https://api.example.com/items  deploy.weir:8:12
-  secrets:
-    loads token (Env.load Cfg)  deploy.weir:2:11
-    a Secret reaches the argv of curl (visible in ps — weir does not hide argv)  deploy.weir:9:9
+  ⚠ this report is incomplete: 1 opaque site(s) — an interpreter's argument or a dynamic head cannot be analyzed statically
+  ambient reads (inform, change nothing):
+    environment:
+      reads token (Env.load Cfg)  deploy.weir:2:11
+    secrets:
+      loads token (Env.load Cfg)  deploy.weir:2:11
+  mutations:
+    runs:
+      git × 2  deploy.weir:3:1, 6:33
+      sh (opaque)  deploy.weir:5:1
+      curl  deploy.weir:9:1
+    writes:
+      File.write out.txt  deploy.weir:7:11
+    network:
+      Http.expect https://api.example.com/items  deploy.weir:8:13
+    secrets:
+      a Secret reaches the argv of curl (visible in ps — weir does not hide argv)  deploy.weir:9:9
 ```
 
 Three honesty rules:
