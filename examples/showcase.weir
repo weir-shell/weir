@@ -392,7 +392,7 @@ within env ev
 within cd helperDir
     // pwd is a weir builtin (like ls/cd) — no PATH head resolves here,
     // so the weir+git-only portability claim in the header holds
-    let here = pwd |> Seq.exactlyOne
+    let here = pwd
     print $"cd-scoped: running beside {Path.fileName here}"
 
 // commands are ordinary statements inside any block — parsed and

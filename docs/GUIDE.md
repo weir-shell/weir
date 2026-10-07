@@ -913,6 +913,7 @@ One rule: **output goes where the meaning goes.**
 | `cmd \| orFail "msg"` | streams | unit; raises `msg (exit N)` on nonzero |
 | `cmd \| exitCode` | streams | the code as `int`; never raises |
 | `cmd \| line` | captured | the one trimmed stdout line, a `string`; raises on nonzero or 0-or-2+ lines |
+| `cmd \| text` | captured | the whole stdout as one `string`, trailing blank lines dropped; raises on nonzero |
 | `cmd \| exec` | the child's | never returns — the command replaces the weir process |
 
 Predicates and inspectors are quiet/captured because their output is
@@ -950,6 +951,14 @@ on zero or two-plus lines, and composes with the env sigil
 ```weir
 let scope = printf "id-abc" | line
 print $"scope {scope}"
+```
+
+For the whole output as one string, `| text` joins the lines (trailing
+blank lines dropped, as bash's `$(…)` does):
+
+```weir
+let notes = printf "first\nsecond\n" | text
+print notes
 ```
 
 And `cmd | exec` replaces the running weir process with the command —
@@ -2117,7 +2126,7 @@ Dir.create "wa"
 Dir.create "wb"
 ["wa"; "wb"] |> Seq.pmap (fun d ->
     let _cd = cd d
-    pwd |> Seq.head) |> print
+    pwd) |> print
 ```
 
 ## Declaring a tool: command signatures

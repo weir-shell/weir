@@ -50,6 +50,9 @@ What command lines do not do:
   `unit -> string`, resolving `%APPDATA%`/`%LOCALAPPDATA%` on
   Windows and the `$XDG_*` variables with their `~/.config`-style
   fallbacks on POSIX) build the path: `File.read $"{Path.home ()}/.bashrc"`
+- `cd dir` moves the session (relative to the current directory; `cd`
+  alone goes home) and returns the absolute directory it moved to;
+  `pwd` is the current directory as a `string`, read where it is used
 - no `&&` — write two statements, or chain with
   [`| and` / `| or`](#exit-codes)
 - no redirects — `>` passes through as a literal word, with a
@@ -176,6 +179,7 @@ goes:
 | `cmd \| orFail "msg"` | streams | unit; raises `msg (exit N)` on nonzero |
 | `cmd \| exitCode` | streams | the code as `int`; never raises |
 | `cmd \| line` | captured | the one trimmed stdout line, a `string`; raises on nonzero or 0-or-2+ lines |
+| `cmd \| text` | captured | the whole stdout as one `string`, trailing blank lines dropped; raises on nonzero |
 | `cmd \| exec` | the child's | never returns — the command replaces the weir process |
 
 ```weir
@@ -197,6 +201,9 @@ trimmed stdout line as a `string` —
 `$(cmd) |> Seq.exactlyOne` capture; it raises on a nonzero exit and
 on zero or two-plus lines, and composes with the env sigil
 (`$e(cmd | line)`) and a value head (`xs | grep foo | line`).
+`cmd | text` is its multi-line sibling: the whole stdout as one
+`string` (lines joined with newlines, trailing blank lines dropped,
+as bash's `$(…)` does) — `let notes = git log -1 --format=%B | text`.
 `cmd | exec` replaces the weir process with the command
 (POSIX `execve`; Windows spawns, waits, and exits with the child's
 code) — weir keeps its pid, so a container entrypoint receives

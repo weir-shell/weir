@@ -494,6 +494,18 @@ print x' 2>&1) && fail "| line must raise on 2+ lines" || true
 echo "$lmulti" | grep -qF "expected exactly one line" || fail "| line lost the one-line assert: $lmulti"
 echo "e2e ok: | line — one stdout line to a string, nonzero raises, 2+ lines named [D:reify-line]"
 
+# ---- the whole-output capture reifier [D:reify-text] -----------------
+# `cmd | text`: stdout as one string, trailing blank lines dropped;
+# nonzero raises
+tout=$($BIN -e 'let t = sh -c "printf \"a\nb\n\n\"" | text
+print $"[{t}]"')
+[ "$tout" = "[a
+b]" ] || fail "| text joins lines and drops trailing blanks: $tout"
+terr=$($BIN -e 'let x = sh -c "echo o; exit 5" | text
+print x' 2>&1) && fail "| text must raise on nonzero" || true
+echo "$terr" | grep -qF "exit code 5" || fail "| text lost the nonzero raise: $terr"
+echo "e2e ok: | text — whole stdout to a string, trailing blanks dropped, nonzero raises [D:reify-text]"
+
 # a 2-param generic union checks + evals through the binary (was the
 # prelude-Result pin; Result removed [D:no-result], the fixture is now a
 # locally-declared Either)
@@ -699,12 +711,12 @@ let workers =
     ["FORKMARK/wa"; "FORKMARK/wb"]
     |> Seq.pmap (fun d ->
         let _cd = cd d
-        pwd |> Seq.head)
+        pwd)
 
 let ws = workers |> Seq.freeze
 print (if ws |> Seq.head |> Str.endsWith "wa" then "w1-ok" else "w1-wrong")
 print (if ws |> Seq.last |> Str.endsWith "wb" then "w2-ok" else "w2-wrong")
-print (if pwd |> Seq.head |> Str.endsWith "home" then "parent-held" else "parent-moved")
+print (if pwd |> Str.endsWith "home" then "parent-held" else "parent-moved")
 WEOF
 sed "s|FORKMARK|$forkdir|g" "$forkdir/fork.weir" > "$forkdir/fork.weir.tmp" && mv "$forkdir/fork.weir.tmp" "$forkdir/fork.weir"
 out=$($BIN "$forkdir/fork.weir")
@@ -2069,8 +2081,8 @@ mkdir -p "$widir/build/sub"
 cat > "$widir/cd.weir" <<'WEOF'
 within cd "build"
     within cd "sub"
-        print (pwd |> Seq.head)
-print (pwd |> Seq.head)
+        print (pwd)
+print (pwd)
 WEOF
 out=$( cd "$widir" && $BIN cd.weir )
 # separator-agnostic (pwd prints the platform's): the leaf pair, not the slash
@@ -2098,10 +2110,10 @@ WEOF
 cat > "$widir/cdworkers.weir" <<'WEOF'
 let outs = ["build"; "build/sub"] |> Seq.pmap (fun d ->
     let p = within cd d
-        pwd |> Seq.head
+        pwd
     p)
 outs |> Seq.iter print
-print (pwd |> Seq.head)
+print (pwd)
 WEOF
 wout=$( cd "$widir" && $BIN cdworkers.weir )
 echo "$wout" | sed -n '1p' | grep -q "build$" || fail "worker one scoped: $wout"
@@ -2473,7 +2485,7 @@ let here = Path.newTempDir ()
 within cd here
     print "in"
 always
-    let w = pwd |> Seq.head
+    let w = pwd
     print $"cd {w == here}"
 within env [Env.pair "AA_HELD" "yes"]
     print "in"
@@ -8320,7 +8332,7 @@ echo "e2e ok: dedent correct-join (post-scope statements join, the floor stays)"
 tudir=$(mkweirtmp)
 mkdir -p "$tudir/work"
 cat > "$tudir/tu.weir" <<'WEOF'
-let before = pwd |> Seq.head
+let before = pwd
 let outs =
     [1..100]
     |> Seq.pmap (fun i ->
@@ -8328,7 +8340,7 @@ let outs =
             $(weir -e $"print {show i}") |> Seq.head
     )
     |> Seq.freeze
-let after = pwd |> Seq.head
+let after = pwd
 print (if before == after then "cwd-held" else "CWD-LEAKED")
 print (outs |> Seq.head)
 print (outs |> Seq.last)

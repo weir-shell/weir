@@ -1396,7 +1396,11 @@ within tmp d
   line of stdout as a `string` [D:reify-line] — the
   `$(cmd) |> Seq.exactlyOne` idiom for `az … -o tsv`/`git rev-parse`;
   it raises on a nonzero exit or on 0-or-2+ lines, and composes with
-  the env sigil (`$e(cmd | line)`) and a value head. **`succeeds` is
+  the env sigil (`$e(cmd | line)`) and a value head. `cmd | text` is
+  the multi-line sibling [D:reify-text]: the whole stdout as one
+  `string` (joined with newlines, trailing blank lines dropped, raises
+  on nonzero) — for `Str.*` on command output, instead of
+  `r.stdout |> Str.join "\n"`. **`succeeds` is
   exitCode == 0, exactly** —
   for tools whose nonzero codes AND output are both data (grep,
   fzf), use `| complete` and read the record. An `if`/`elif`
@@ -2377,7 +2381,7 @@ not the teaching.
 - `Map`: `add` `count` `get` `has` `keys` `ofPairs` `pairs` `remove` `tryGet` `values`
 - `Net`: `portOpen`
 - `Option`: `defaultValue` `defaultWith` `iter` `map` `orElse` `orElseWith`
-- `Path`: `cacheHome` `combine` `configHome` `dir` `extension` `fileName` `glob` `home` `newTempDir` `stateHome` `stem` `tempRoot` `under` — `home`/`configHome`/`stateHome`/`cacheHome` (each `unit -> string`) are home in an EXPRESSION (`File.read $"{Path.home ()}/.bashrc"`); in a COMMAND LINE an unquoted word-leading `~`/`~/…` expands to home at run time [D:tilde] (`cat ~/.bashrc`, `~/bin/tool`) — quoted `"~/x"`, `$"…"` and spliced values stay literal, `~user` too, and `$HOME` never expands
+- `Path`: `cacheHome` `combine` `configHome` `dir` `extension` `fileName` `glob` `home` `newTempDir` `stateHome` `stem` `tempRoot` `under` — `home`/`configHome`/`stateHome`/`cacheHome` (each `unit -> string`) are home in an EXPRESSION (`File.read $"{Path.home ()}/.bashrc"`); in a COMMAND LINE an unquoted word-leading `~`/`~/…` expands to home at run time [D:tilde] (`cat ~/.bashrc`, `~/bin/tool`) — quoted `"~/x"`, `$"…"` and spliced values stay literal, `~user` too, and `$HOME` never expands. The working directory is `pwd`, a `string` read where it is used [D:pwd-string]; `cd dir` returns the absolute directory it moved to
 - `Poll`: `defaults`
 - `Proc`: `pid` `running` `stop` `tail` `wait`
 - `Server`: `port` `running`

@@ -456,7 +456,7 @@ checked after they bind:
 
 ```text
 let sigil () =
-    let dir = pwd |> Seq.head |> Path.fileName
+    let dir = pwd |> Path.fileName
     let g = git branch --show-current | complete
 
     let branch =
