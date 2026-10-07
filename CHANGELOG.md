@@ -1,5 +1,47 @@
 # Changelog
 
+## v0.0.67
+
+### Changed
+
+- **Clearer errors around `| and`, `| or` and misspelled reifiers.**
+  `git status | or ls` now says `ls` is weir's own name, not a program,
+  and to write `^ls` for the program, instead of a parser dump. A
+  misspelled reifier after `|` gets a suggestion (`| success` → did you
+  mean `succeeds`?). For a command missing from PATH, the error now
+  suggests a dynamic head (`let tool = "x"` then `^$tool`) for tools
+  that only exist when the script runs, instead of `sh -c`.
+
+### Added
+
+- **`| or` takes a pipeline on its left.** `a | b | or c` runs `c` when
+  the pipeline fails — its exit is the leftmost failing code, as for
+  `| exitCode`.
+
+### Fixed
+
+- **Tab completes the command after a `|`.** In the REPL,
+  `git status | s<Tab>` offered only files from the current directory.
+  It now offers programs from PATH, and right after `|` also the
+  reifiers and `and`/`or`; a stage's command is colored like any other
+  command, `and`/`or` are colored as keywords, and an unknown command
+  after `|` is red like one at the start of the line.
+- **A reifier can't end a `| and`/`| or` chain.** In
+  `let r = a | and b | complete`, `complete` applied only to `b`, and the
+  record was silently discarded, so `r` was `()`. It's now an error
+  that says so (`| exec` still works there). Errors in a pipeline's
+  structure are no longer replaced by a parser dump when the line is a
+  `let`.
+- **A missing program inside a captured pipeline is reported.** In
+  `let c = a | missing | exitCode`, `weir check` gave no warning and
+  running it printed a pipe hint; both now name `missing`.
+- **`| and`/`| or` can't follow a reifier.** In
+  `a | succeeds | and b`, the bool was dropped and `b` ran anyway. It's
+  now an error that points at `if a | succeeds then … else …`.
+- **No false "command not found" after `NAME=value`.** When a line
+  with an environment prefix failed for another reason, the error
+  claimed the command didn't exist; the real error is reported now.
+
 ## v0.0.66
 
 ### Changed

@@ -44,9 +44,10 @@ asg_re = re.compile(r"^(\w+)(?:\.Value|\.TermParser)?\s*<-")
 
 # recursive AST walkers whose depth is bounded by the deepen'd parse
 # that built the tree (patLeafNames, chainReifier [D:statement-lets]),
-# or tail recursion the compiler turns into a loop (exitCodeSpine) —
-# not input-driven stack growth
-AST_WALKERS = {"patLeafNames", "exitCodeSpine", "chainReifier"}
+# or tail recursion the compiler turns into a loop (exitCodeSpine), or
+# one fixed level (foldChain re-folds a `| or` left pipeline with a single
+# exitCode marker [D:cmd-chaining]) — not input-driven stack growth
+AST_WALKERS = {"patLeafNames", "exitCodeSpine", "chainReifier", "foldChain"}
 
 ref_to_node = {}  # exprRef -> expr
 defs = []  # (node, start_line, is_rec)

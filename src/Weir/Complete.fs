@@ -315,6 +315,8 @@ type HeadSlot =
     | LetRhs
     /// behind the `^` force-PATH sigil at a head slot: PATH only
     | Forced
+    /// a pipeline stage's head: after a bare `|`, or after `| and`/`| or`
+    | Stage
 
 // leading `NAME=value ` words ride before a command head [D:env-prefix]:
 // the head slot looks through them (a quoted value may hold spaces)
@@ -326,6 +328,49 @@ let private envPrefixRx =
 let stripEnvPrefixes (s: string) : string =
     let m = envPrefixRx.Match s
     if m.Success then s.Substring m.Length else s
+
+/// the text after the last bare `|` of a statement — not `|>`, not
+/// `||`, not inside quotes or parens — with a leading `and`/`or` chain
+/// word stripped. The flag is true when the stage follows the `|`
+/// directly, where a reifier or `and`/`or` may stand [D:cmd-chaining].
+let lastStage (stmt: string) : (string * bool) option =
+    let mutable last = -1
+    let mutable quote = ' '
+    let mutable depth = 0
+    let mutable i = 0
+
+    while i < stmt.Length do
+        let c = stmt[i]
+
+        if quote <> ' ' then
+            if c = '\\' && quote = '"' then i <- i + 1
+            elif c = quote then quote <- ' '
+        elif c = '"' || c = '\'' then
+            quote <- c
+        elif c = '(' then
+            depth <- depth + 1
+        elif c = ')' then
+            depth <- max 0 (depth - 1)
+        elif c = '|' && depth = 0 then
+            if i + 1 < stmt.Length && (stmt[i + 1] = '>' || stmt[i + 1] = '|') then i <- i + 1
+            elif i > 0 && stmt[i - 1] = '|' then ()
+            else last <- i
+
+        i <- i + 1
+
+    // a `|` with nothing before it, or in a match/function, is an arm
+    let isArm () =
+        stmt.Substring(0, last).Trim() = ""
+        || System.Text.RegularExpressions.Regex.IsMatch(stmt.Substring(0, last), "\\b(match|function)\\b")
+
+    if last < 0 || isArm () then
+        None
+    else
+        let rest = stmt.Substring(last + 1).TrimStart()
+        let m = System.Text.RegularExpressions.Regex.Match(rest, "^(and|or)(\\s+|$)")
+
+        if m.Success then Some(rest.Substring m.Length, false)
+        else Some(rest, true)
 
 /// the slot verdict for the word starting right after `before`
 /// [D:let-rhs-head]. Statement head = an empty statement prefix,
@@ -349,7 +394,11 @@ let headSlotAt (before: string) : HeadSlot =
         match letRhsCut (core.TrimStart()) with
         | Some rest when (stripEnvPrefixes (rest.TrimStart())).Trim() = "" ->
             if forced then HeadSlot.Forced else HeadSlot.LetRhs
-        | _ -> HeadSlot.No
+        | _ ->
+            match lastStage core with
+            | Some(rest, _) when (stripEnvPrefixes rest).Trim() = "" ->
+                if forced then HeadSlot.Forced else HeadSlot.Stage
+            | _ -> HeadSlot.No
 
 // a word in command argv completes as a path [D:complete-argv]: after
 // a literal command head everything is an argv word — fields, members,
@@ -396,6 +445,13 @@ let private commandArgvPosition (env: TypeEnv) (before: string) : bool =
                 elif c = ')' then d - 1
                 else d)
             0
+
+    // a pipeline's argv belongs to its last stage; an empty stage is a
+    // head slot, never argv
+    let stmt =
+        match lastStage stmt with
+        | Some(rest, _) when not (stmt.Contains "|>") -> rest
+        | _ -> stmt
 
     if stmt.Contains "|>" || stmt.Contains " = " || parenDepth > 0 then
         false
@@ -775,6 +831,28 @@ let rec suggestScopedWith
             // an explicit path word — filesystem entries [D:repl-quality],
             // quoted where the slot is an expression [D:repl-path-quote]
             filesystemComplete word |> quoteFor before
+        elif headSlotAt before = HeadSlot.Stage then
+            // a pipeline stage head [D:cmd-chaining]: programs only — the
+            // expression pool is noise here — and right after the `|` the
+            // reifiers and the and/or chain words; an empty word offers
+            // just those, never the whole PATH
+            let direct =
+                match lastStage before with
+                | Some(_, true) -> [ "complete"; "succeeds"; "exitCode"; "orFail"; "line"; "text"; "exec"; "and"; "or" ]
+                | _ -> []
+
+            let programs =
+                if word = "" then
+                    []
+                else
+                    (Extern.names () |> Set.toList)
+                    @ (Builtins.commandCallable |> Set.toList)
+                    @ (aliasHeads |> Set.toList)
+
+            direct @ programs
+            |> List.filter (fun n -> n.StartsWith word && n <> word)
+            |> List.distinct
+            |> List.sort
         elif headSlotAt before = HeadSlot.Forced && word <> "" then
             // the `^`-forced head [D:let-rhs-head]: the sigil skips
             // bindings and the alias table, so the pool is exactly the

@@ -412,6 +412,25 @@ let exprPats (e: Expr) : Pattern list =
 
 // the expression tree's child list — tooling walks share this (the
 // TypedExpr twin lives in Check.childExprs)
+/// the literal program names of a reified pipeline's stages: a reifier
+/// after a chain desugars to `|chain… [(prog, argv, env); …] stdin`, so
+/// the heads live in that list, not in command nodes [D:chain-reifiers]
+let chainStageHeads (e: Expr) : (string * Span) list =
+    let rec chainVar (f: Expr) =
+        match f.Kind with
+        | EVar v -> v.StartsWith "|chain"
+        | EApp(g, _) -> chainVar g
+        | _ -> false
+
+    match e.Kind with
+    | EApp(f, { Kind = EList stages }) when chainVar f ->
+        stages
+        |> List.choose (fun st ->
+            match st.Kind with
+            | ETuple({ Kind = EStr prog; Span = sp } :: _) -> Some(prog, sp)
+            | _ -> None)
+    | _ -> []
+
 let exprChildren (e: Expr) : Expr list =
     match e.Kind with
     | EInt _
