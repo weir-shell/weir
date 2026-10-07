@@ -4352,7 +4352,7 @@ let session2Tests =
                       Expect.equal (runReal $"cd \"{spelling}\"") (VStr "/tmp") $"cd {spelling} normalises"
 
                   // two builtins reporting one fact must not disagree on shape
-                  Expect.equal (runReal "let c = cd \"/tmp/\" in pwd" |> forceSeq) [ VStr "/tmp" ] "pwd agrees with cd"
+                  Expect.equal (runReal "let c = cd \"/tmp/\" in pwd") (VStr "/tmp") "pwd agrees with cd"
               finally
                   Weir.Session.setCwd (System.IO.Directory.GetCurrentDirectory())
           }
@@ -4362,21 +4362,20 @@ let session2Tests =
 
               try
                   // bound BEFORE the cd, pwd keeps the cwd at its evaluation —
-                  // a later cd does not retro-change an escaped seq (the
-                  // within-cd echo bug); the read is snapshotted at reference
+                  // the read is snapshotted at reference [D:pwd-string]
                   Weir.Session.setCwd "/"
 
                   Expect.equal
-                      (run "let p = pwd in let d = cd \"/tmp\" in p" |> forceSeq)
-                      [ VStr "/" ]
+                      (run "let p = pwd in let d = cd \"/tmp\" in p")
+                      (VStr "/")
                       "pwd is bound to the cwd at its evaluation, before the cd"
 
                   // bound AFTER the cd, it sees the new dir
                   Weir.Session.setCwd "/"
 
                   Expect.equal
-                      (run "let d = cd \"/tmp\" in pwd" |> forceSeq)
-                      [ VStr "/tmp" ]
+                      (run "let d = cd \"/tmp\" in pwd")
+                      (VStr "/tmp")
                       "pwd bound after the cd sees the new cwd"
               finally
                   Weir.Session.setCwd (System.IO.Directory.GetCurrentDirectory())
@@ -4683,7 +4682,7 @@ let session3Tests =
 
               try
                   expectValue
-                      "let p = pwd |> freeze in let d = cd \"/tmp\" in p |> take 1"
+                      "let p = [pwd] |> freeze in let d = cd \"/tmp\" in p |> take 1"
                       (VSeq [ VStr(System.IO.Directory.GetCurrentDirectory()) ])
               finally
                   Weir.Session.setCwd (System.IO.Directory.GetCurrentDirectory())
@@ -4718,7 +4717,7 @@ let session3Tests =
           test "head extracts the element" {
               expectValue "[1; 2] |> head" (VInt 1)
               expectValue "ls |> map _.name |> head" (VStr "a.txt")
-              Expect.equal (checkOk "pwd |> head").Ty TStr "singleton extraction types to the element"
+              Expect.equal (checkOk "[\"a\"] |> head").Ty TStr "singleton extraction types to the element"
           }
           test "head on an empty sequence raises" {
               Expect.throws (fun () -> run "ls |> where (fun f -> f.bytes > 999999999B) |> head" |> ignore) ""
@@ -13001,7 +13000,7 @@ let parallelTests =
               let before = Weir.Session.Cwd()
 
               expectValue
-                  "[\"/\"; \"/tmp\"] |> Seq.pmap (fun d -> let x = cd d in pwd |> Seq.head)"
+                  "[\"/\"; \"/tmp\"] |> Seq.pmap (fun d -> let x = cd d in pwd)"
                   (VSeq [ VStr "/"; VStr "/tmp" ])
 
               Expect.equal (Weir.Session.Cwd()) before "parent session untouched after the join"
@@ -18214,7 +18213,7 @@ let tasksUnderneathTests =
               // the load-bearing pin, re-run above ProcessorCount: every
               // arm forks its own cwd, the parent's survives untouched
               let before =
-                  match run "pwd |> Seq.head" with
+                  match run "pwd" with
                   | VStr s -> s
                   | v -> failtest $"unexpected {v}"
 
@@ -18223,11 +18222,11 @@ let tasksUnderneathTests =
                   | VStr s -> weirPath s
                   | v -> failtest $"unexpected {v}"
 
-              run $"[1..100] |> Seq.piter (fun i -> within cd \"{scope}\" Log.debug (pwd |> Seq.head) ; ())"
+              run $"[1..100] |> Seq.piter (fun i -> within cd \"{scope}\" Log.debug (pwd) ; ())"
               |> ignore
 
               let after =
-                  match run "pwd |> Seq.head" with
+                  match run "pwd" with
                   | VStr s -> s
                   | v -> failtest $"unexpected {v}"
 

@@ -2117,7 +2117,7 @@ Dir.create "wa"
 Dir.create "wb"
 ["wa"; "wb"] |> Seq.pmap (fun d ->
     let _cd = cd d
-    pwd |> Seq.head) |> print
+    pwd) |> print
 ```
 
 ## Declaring a tool: command signatures

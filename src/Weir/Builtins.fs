@@ -247,13 +247,13 @@ let private cdImpl: Value =
             VStr(Session.Cwd())
         | v -> unreachable $"the checker rejects 'cd' on {formatValue v}")
 
-// cwd bound at construction — the eval-time capture Eval's rebinder uses
-// [D:ambient-capture]
-let private pwdForCwd (cwd: string) : Value = VSeq(Seq.singleton (VStr cwd))
+// the cwd as a string, read where `pwd` is evaluated — Eval's rebinder
+// [D:ambient-capture] [D:pwd-string]
+let private pwdForCwd (cwd: string) : Value = VStr cwd
 
-// force-time fallback; a `pwd` reference rebinds to eval-time capture
-let private pwdImpl: Value =
-    VSeq(Seq.delay (fun () -> Seq.singleton (VStr(Session.Cwd()))))
+// the builtin's own object, the rebinder's identity key: every `pwd`
+// reference rebinds to the eval-time read, so this value is never seen
+let private pwdImpl: Value = VStr ""
 
 let private headImpl: Value =
     VBuiltin(fun v ->
@@ -6871,7 +6871,7 @@ let private entries: (string * Ty * Value) list =
       "nats", seqInt, natsImpl
       "into", TFun(TStr, TFun(seqStr, seqStr)), intoImpl
       "cd", TFun(TStr, TStr), cdImpl
-      "pwd", TSeq TStr, pwdImpl
+      "pwd", TStr, pwdImpl
       "not", TFun(TBool, TBool), notImpl
       "fst", TFun(TTuple [ tA; tB ], tA), fstImpl
       "snd", TFun(TTuple [ tA; tB ], tB), sndImpl

@@ -61,6 +61,12 @@
 
 ### Changed
 
+- **`pwd` is a `string`.** It was a one-line `seq<string>`, so every use
+  needed `pwd |> Seq.head`; now `let here = pwd` is the current
+  directory, read where it is used. Replace `pwd |> Seq.head` and
+  `pwd |> Seq.exactlyOne` with `pwd`. `cd dir` still returns the
+  absolute directory it moved to.
+
 - **`!(cmd)` and `!e(cmd)` are gone.** Every statement position runs a
   bare command, so write `git pull` instead of `!(git pull)`, and give a
   command its own line instead of `!(a); b`. For an environment, use

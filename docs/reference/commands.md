@@ -50,6 +50,9 @@ What command lines do not do:
   `unit -> string`, resolving `%APPDATA%`/`%LOCALAPPDATA%` on
   Windows and the `$XDG_*` variables with their `~/.config`-style
   fallbacks on POSIX) build the path: `File.read $"{Path.home ()}/.bashrc"`
+- `cd dir` moves the session (relative to the current directory; `cd`
+  alone goes home) and returns the absolute directory it moved to;
+  `pwd` is the current directory as a `string`, read where it is used
 - no `&&` — write two statements, or chain with
   [`| and` / `| or`](#exit-codes)
 - no redirects — `>` passes through as a literal word, with a
