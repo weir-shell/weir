@@ -65,6 +65,9 @@
   bare command, so write `git pull` instead of `!(git pull)`, and give a
   command its own line instead of `!(a); b`. For an environment, use
   `NAME=value cmd` or `within env e`. `$(…)` and `$e(…)` still capture.
+  A block that ends in a command now runs it when more lines follow,
+  even inside a `let` (`let x =` + a `within tmp d` block + the
+  value), which is where `!()` used to be needed.
 
 - **`<<` is gone — weir composes left to right.** `f << g` was exactly
   `g >> f`; it is now an error that says so, as is F#'s back-pipe `<|`

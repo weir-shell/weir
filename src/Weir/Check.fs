@@ -2590,6 +2590,10 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                   Span = expr.Span }
         }
     | ESeq(first, rest) ->
+        // a sequenced element is a statement — its block's command tail
+        // runs, as at top level [D:seq-arming]
+        let first = armTail first
+
         result {
             let! tfirst =
                 // a diverging head's 'a meets the unit demand
@@ -4866,6 +4870,9 @@ and private check (ctx: Ctx) (env: TypeEnv) (expr: Expr) (expected: Ty) : Result
     // expression [D:interior-arming] — F#'s rule, and what lets a
     // final command in a unit-demanded block arm
     | ESeq(first, rest), _ ->
+        // the infer twin's statement arming [D:seq-arming]
+        let first = armTail first
+
         result {
             let! tfirst =
                 // the infer twin's diverging-head carve [D:fail-bottom]

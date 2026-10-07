@@ -14432,6 +14432,23 @@ let sigilTests =
               | Ok(SLet("b", { Kind = EPipe({ Kind = ECapture { Kind = ECmd(HeadLit "git", _, _) } }, _) })) -> ()
               | other -> failtest $"unexpected: {other}"
           }
+          test "a block sequenced before more statements runs its command tail [D:seq-arming]" {
+              let errs (lines: string list) =
+                  let ds, _, _, _ = Weir.Script.analyzeLines "sa.weir" lines
+                  ds |> List.filter (fun d -> d.Severity = "error") |> List.map _.Message
+
+              Expect.isEmpty
+                  (errs [ "let sub ="; "    within tmp d"; "        sh -c \"echo a\""; "    \"after\""; "print sub" ])
+                  "a within tail on a let spine"
+
+              Expect.isEmpty
+                  (errs [ "let v ="; "    if true then"; "        sh -c \"echo t\""; "    else"; "        sh -c \"echo e\""; "    1"; "print $\"{v}\"" ])
+                  "an if/else tail"
+
+              Expect.isEmpty
+                  (errs [ "let cap ="; "    within tmp d"; "        sh -c \"echo c\""; "print (show (Seq.length cap))" ])
+                  "a final block still captures"
+          }
           test "there is no run sigil: !(…) and !e(…) do not parse [D:bang-retirement]" {
               for line in [ "!(git status)"; "!e(git status)"; "let u = !(git status)" ] do
                   match Weir.Parser.parseLine realResolver line with
