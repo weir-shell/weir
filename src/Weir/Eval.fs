@@ -3507,15 +3507,16 @@ and eval (env: Env) (te: TypedExpr) : Value =
                  Error e)
         with
         | Ok v ->
-            Session.deregisterAlways hooked
-            // case 1: a cleanup raise propagates as the scope's raise
-            runCleanup ()
+            // case 1: a cleanup raise propagates as the scope's raise —
+            // unless a signal's hook already claimed the cleanup
+            if Session.deregisterAlways hooked then
+                runCleanup ()
+
             v
         | Error original ->
-            Session.deregisterAlways hooked
-
             (try
-                runCleanup ()
+                if Session.deregisterAlways hooked then
+                    runCleanup ()
              with
              | :? ExitRequest ->
                  // the checker refuses exit inside always; a raise here
@@ -3972,7 +3973,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
                 // close the socket — unblocks the accept loop's GetContext,
                 // frees the port; idempotent with the signal sweep
                 Serve.stop handle
-                Session.deregisterAlways hooked
+                Session.deregisterAlways hooked |> ignore
                 // let the accept loop and any in-flight handlers settle
                 loopThread.Join 2000 |> ignore
 

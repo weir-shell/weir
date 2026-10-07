@@ -47,6 +47,18 @@
   as glued words), so bash's `$f.bak` is an error on a string that
   names `$"{f}.bak"`.
 
+- **`within env A=1 B=$x`.** The `NAME=value` words that set
+  variables for one command now scope a block too, without binding an
+  `Env.ofPairs` list first. A `within env e` with a bound list works as
+  before.
+
+- **`always` after any `within`.** `within tmp d`, `cd`, `env`,
+  `lock`, `proc` and `serve` all take a trailing `always` block. The
+  cleanup runs while the resource is still held — the temp directory
+  still exists, the lock is still held, the process is still alive —
+  and the release follows, so `cp $"{d}/report.html" .` works there.
+  It used to need a bare `within` nested inside the scope.
+
 ### Changed
 
 - **`<<` is gone — weir composes left to right.** `f << g` was exactly
@@ -68,6 +80,11 @@
   interiors still need `$( )`.
 
 ### Fixed
+
+- **A cleanup ran twice when Ctrl-C interrupted a failing command.**
+  When the signal reached weir just as the interrupted child made the
+  body fail, both the signal handler and the scope could run the
+  `always` block. Exactly one of them runs it now.
 
 - **A match arm and an `else` take a text block on their own line.**
   `| 1 -> <<<` and `else <<<` failed with a parser dump although

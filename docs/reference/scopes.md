@@ -59,6 +59,15 @@ within env vars
 print (Env.get "GREETING" |> Option.defaultValue "parent stays clean")
 ```
 
+The variables can be written in the head, as for one command
+(`NAME=value cmd`):
+
+```weir
+let stage = "prod"
+within env STAGE=$stage REGION=eu-1
+    sh -c "echo $STAGE in $REGION"
+```
+
 ## Bare `within` and `always`
 
 Holds nothing; the `always` block runs on every exit. When both the
@@ -74,6 +83,24 @@ within tmp d
         always
             print "released either way"
 ```
+
+## `always` after any kind
+
+Every kind takes a trailing `always`. It runs inside the scope, while
+the resource is still held, and the resource releases after: the
+cleanup still sees a `tmp` directory, runs in the `cd` directory and
+the `env` overlay, holds the `lock`, and finds a `proc` or `serve`
+alive (the tree-kill and socket close follow). The binder is in scope:
+
+```weir
+within tmp d
+    ["report"] |> File.write $"{d}/report.txt"
+always
+    cp $"{d}/report.txt" report.txt
+```
+
+It is exactly a bare `within` … `always` nested as the scope's body,
+so every rule above applies unchanged.
 
 ## `lock`
 

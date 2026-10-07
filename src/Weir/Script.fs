@@ -1245,6 +1245,13 @@ let private bufEndsInProcHead (b: PendBuf) : bool =
 let private bufEndsInServeHead (b: PendBuf) : bool =
     endsInBinderHeadSeg "within serve " (bufLastSeg b)
 
+// `within env A=1 …` [D:within-env-pairs]: its block joins sentineled too,
+// so a first body line that is itself `B=2 cmd` stays that command's own
+// prefix instead of widening the scope (the binder-head shape: an
+// identifier glued to `=`; a bound `within env e` keeps the space join)
+let private bufEndsInEnvHead (b: PendBuf) : bool =
+    endsInBinderHeadSeg "within env " (bufLastSeg b)
+
 // materialize a LogicalLine from a finished pending buffer (segments are
 // reversed at the boundary exactly as before)
 let private bufToLL (b: PendBuf) : LogicalLine =
@@ -1815,6 +1822,7 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                                             (if
                                                                                  bufEndsInProcHead p.Buf
                                                                                  || bufEndsInServeHead p.Buf
+                                                                                 || bufEndsInEnvHead p.Buf
                                                                              then
                                                                                  JStmtSibling
                                                                              else
@@ -2015,6 +2023,7 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                                                 (if
                                                                                      bufEndsInProcHead buf
                                                                                      || bufEndsInServeHead buf
+                                                                                     || bufEndsInEnvHead buf
                                                                                      || isUntil
                                                                                      || isAlways
                                                                                  then
@@ -2099,7 +2108,7 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                                 rest, JIn
                                                             // a proc head's block joins sentineled even in
                                                             // the dangle position [D:scoped-procs]
-                                                            | _ when bufEndsInProcHead buf || bufEndsInServeHead buf ->
+                                                            | _ when bufEndsInProcHead buf || bufEndsInServeHead buf || bufEndsInEnvHead buf ->
                                                                 p.Lets, JStmtSibling
                                                             // the first line after a dangling head opens its
                                                             // body — a stale statement level from an earlier

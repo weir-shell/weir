@@ -149,6 +149,10 @@ let private letRhsCmd, private letRhsCmdRef =
 let private envPrefixStmtGuard, private envPrefixStmtGuardRef =
     createParserForwardedToRef<Choice<Expr, Expr>, unit> ()
 
+// forwarded: `within env A=1 B=$x` reads the env-prefix words [D:within-env-pairs]
+let private envAssignsFwd, private envAssignsFwdRef =
+    createParserForwardedToRef<Expr, unit> ()
+
 // forwarded: the if/elif condition position sits above it too [D:if-succeeds]
 let private ifCondCmd, private ifCondCmdRef =
     createParserForwardedToRef<Expr, unit> ()
@@ -2456,7 +2460,9 @@ let private withinExprBody =
                         // which would swallow the space-joined first statement.
                         // lock alone takes an optional timeout= key (Duration),
                         // the retry key=value spelling [D:within-lock]
-                        (postfixAtom <?> $"the {kind} scope's argument (parenthesize a compound)")
+                        // env takes `NAME=value` words too [D:within-env-pairs]
+                        ((if wk.Id = Ast.WithinEnv then envAssignsFwd <|> postfixAtom else postfixAtom)
+                         <?> $"the {kind} scope's argument (parenthesize a compound)")
                         >>= fun argE ->
                             (if wk.Id = Ast.WithinLock then
                                  opt (attempt (pstring "timeout" >>. ws >>. pchar '=' >>. ws >>. postfixAtom))
@@ -2468,7 +2474,37 @@ let private withinExprBody =
                                     { Kind = EWithin(wk.Id, None, Some argE, optsE, body)
                                       Span = { Start = pos p; End = body.Span.End } }
 
-        kinded <|> bareForm
+        // a trailing `always` after ANY kind [D:within-always-any]: the
+        // cleanup runs INSIDE the scope, while the resource is held —
+        // desugared to a bare within as the body, so no new runtime
+        // (`within K b` + BODY + always C ≡ `within K b` + (BODY always C))
+        let kindedAlways =
+            kinded
+            >>= fun w ->
+                match w.Kind with
+                | EWithin(k, binder, arg, opts, body) ->
+                    let names =
+                        match binder with
+                        | Some(n, sp) -> withPatNames { PKind = PVar n; PSpan = sp }
+                        | None -> id
+
+                    opt (
+                        attempt (opt (str_ws ";" <|> str_ws sibSepStr) >>. keyword "always")
+                        >>. opt (str_ws ";" <|> str_ws sibSepStr)
+                        >>. (names (withStmtLetCmd (withExprParen false seqExpr)) <?> "the always block")
+                    )
+                    |>> function
+                        | None -> w
+                        | Some cleanup ->
+                            let inner =
+                                { Kind = EAlways(body, cleanup)
+                                  Span = { Start = body.Span.Start; End = cleanup.Span.End } }
+
+                            { Kind = EWithin(k, binder, arg, opts, inner)
+                              Span = { Start = w.Span.Start; End = cleanup.Span.End } }
+                | _ -> preturn w
+
+        kindedAlways <|> bareForm
 
 // retry/poll [D:retry-poll]: `retry attempts=5 delay=30s` desugars at
 // parse to `retry { Retry.defaults with attempts = 5; delay = 30s }` —
@@ -3931,6 +3967,22 @@ let private backslashHeadGuard () : Parser<'a, unit> =
         failFatallyAt at "weir has no `\\`-escape for commands — `^name` runs the PATH program, skipping aliases and builtins"
 
 envPrefixStmtGuardRef.Value <- envPrefixGuard () <|> backslashHeadGuard ()
+
+// the env-prefix words as one seq<EnvVar> literal [D:within-env-pairs]
+envAssignsFwdRef.Value <-
+    many1 envAssign
+    |>> fun assigns ->
+        let (_, first) = List.head assigns
+        let (_, last) = List.last assigns
+
+        let items =
+            assigns
+            |> List.map (fun ((name, value), sp) ->
+                let at k = { Kind = k; Span = sp }
+                at (EApp(at (EApp(at (EVar "|envPair"), at (EStr name))), value)))
+
+        { Kind = EList items
+          Span = { Start = first.Start; End = last.End } }
 
 let private commandSegment
     (builtinHeads: bool)

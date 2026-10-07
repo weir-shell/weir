@@ -691,8 +691,12 @@ within serve srv = { port = 8410; maxConcurrent = 4 } handler
   own failure goes to stderr with a marker; a failed inner cleanup
   never strands the outer scopes (teardown continues LIFO). `exit`
   inside `always` is a check error (teardown must finish); retry/poll
-  inside are fine. There is no kinded `within proc … always` yet —
-  nest a bare within inside the proc scope.
+  inside are fine. ANY kind takes a trailing `always` too
+  [D:within-always-any] (`within tmp d` + body + `always` + cleanup):
+  the cleanup runs INSIDE the scope while the resource is held (tmp
+  dir present, cd/env in force, lock held, proc/serve alive), the
+  release follows, the binder is in scope — exactly a bare within
+  nested as the body.
 - `within lock "path"` holds an ADVISORY file lock for the block
   [D:within-lock]: created if missing, nothing bound (there is
   nothing to ask a lock). Blocking by default; `timeout=30s` bounds
@@ -2233,7 +2237,10 @@ print $"exit={r.exitCode}"
   `$x` or `$"…"`; `NAME=` is empty) join that stage's overlay; each
   pipeline stage takes its own; after the head `CC=gcc` is argv. A
   lone `FOO=1` is an error (no shell variables — `let` binds). No
-  unset spelling: `env -u NAME cmd`.
+  unset spelling: `env -u NAME cmd`. The same words scope a BLOCK:
+  `within env A=1 B=$x` + an indented body [D:within-env-pairs] (or
+  `within env e` for a bound `seq<EnvVar>`); a body line's own
+  `NAME=value cmd` prefix stays that one command's.
 - Env sigils `$e(...)`/`!e(...)` (ident GLUED to glyph and paren)
   inject child-env into every spawn in the chain (overlay: set those
   names, inherit the rest; parent untouched). `Env.fromFile "x.env"`
