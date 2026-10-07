@@ -94,19 +94,19 @@ rm -rf "$STEAMROOT/"*`;
 // verbatim from \`weir check --can tools/fuzz.weir\` (v0.0.8) — e2e-pinned
 const canReport = `tools/fuzz.weir can (capability, not behaviour — an untaken branch still counts):
   runs:
-    git  tools/fuzz.weir:23:12
-    ci/deep-lock.sh × 2  tools/fuzz.weir:31:41 tools/fuzz.weir:72:5
-    date  tools/fuzz.weir:39:15
-    dotnet  tools/fuzz.weir:59:56
+    git  tools/fuzz.weir:23:44
+    ci/deep-lock.sh × 2  tools/fuzz.weir:31:41 tools/fuzz.weir:66:5
+    date  tools/fuzz.weir:39:28
+    dotnet  tools/fuzz.weir:53:56
   reads:
-    File.read (path not statically known)  tools/fuzz.weir:65:20
+    File.read (path not statically known)  tools/fuzz.weir:59:20
   writes:
     within tmp (a temporary directory)  tools/fuzz.weir:47:1
   environment:
     reads WEIR_FUZZ_STRICT_SPANS (Env.get)  tools/fuzz.weir:43:14
-    sets WEIR_FUZZ_SEED, WEIR_FUZZ_COUNT, WEIR_FUZZ_REPORT for children (within env)  tools/fuzz.weir:54:49
+    sets WEIR_FUZZ_SEED, WEIR_FUZZ_COUNT, WEIR_FUZZ_REPORT for children (within env)  tools/fuzz.weir:48:41
   terminates:
-    fail  tools/fuzz.weir:68:9`;
+    fail  tools/fuzz.weir:62:9`;
 ---
 
 <Base search={false}>

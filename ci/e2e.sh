@@ -8196,6 +8196,11 @@ cout=$($BIN check --can "$candir/chain.weir" 2>&1) || fail "chain --can errored:
 for p in git head cat; do echo "$cout" | grep -qE "^ +$p( ×|  )" || fail "a reified chain reports $p: $cout"; done
 echo "$cout" | grep -qF "sets Q for children" || fail "a chain stage's prefix names Q: $cout"
 echo "$cout" | grep -qF "not statically known" && fail "a literal chain is no dynamic head: $cout"
+# the NAME=value words name their variables [D:within-env-pairs]
+printf 'let x = "v"\nwithin env A=1 B=$x\n    git status\nEDITOR=nano git log\n' > "$candir/envp.weir"
+eout=$($BIN check --can "$candir/envp.weir" 2>&1) || fail "env pairs --can errored: $eout"
+echo "$eout" | grep -qF "sets A, B for children (within env)" || fail "within env pairs name A, B: $eout"
+echo "$eout" | grep -qF "sets EDITOR for children" || fail "a command's prefix names EDITOR: $eout"
 
 # the reifier desugar's slots [D:can-report]: orFail's msg rides ahead
 # of the program and the Env twins lead with the overlay — the report
@@ -9995,11 +10000,11 @@ echo "$herr" | grep -qF "filesystem path" || fail "concat refusal tail drifted: 
 hcan=$(cd "$ROOT" && "$BIN" check --can tools/fuzz.weir 2>&1) || fail "hero --can run failed: $hcan"
 for line in \
     "tools/fuzz.weir can (capability, not behaviour — an untaken branch still counts):" \
-    "ci/deep-lock.sh × 2  tools/fuzz.weir:31:41 tools/fuzz.weir:72:5" \
-    "File.read (path not statically known)  tools/fuzz.weir:65:20" \
+    "ci/deep-lock.sh × 2  tools/fuzz.weir:31:41 tools/fuzz.weir:66:5" \
+    "File.read (path not statically known)  tools/fuzz.weir:59:20" \
     "within tmp (a temporary directory)  tools/fuzz.weir:47:1" \
-    "sets WEIR_FUZZ_SEED, WEIR_FUZZ_COUNT, WEIR_FUZZ_REPORT for children (within env)  tools/fuzz.weir:54:49" \
-    "fail  tools/fuzz.weir:68:9"; do
+    "sets WEIR_FUZZ_SEED, WEIR_FUZZ_COUNT, WEIR_FUZZ_REPORT for children (within env)  tools/fuzz.weir:48:41" \
+    "fail  tools/fuzz.weir:62:9"; do
     echo "$hcan" | grep -qF "$line" || fail "the homepage's --can quote drifted — update index.astro; missing: $line"
 done
 echo "e2e ok: homepage hero currency (hero tag run + tag created, beat-1 three-distance check + wrote-nothing, beat-2 --help, the splice refusal, the --can quote — all match live runs)"
