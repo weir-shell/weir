@@ -3,8 +3,8 @@ module Fuzz.Main
 // The assembler fuzzer [D:fuzz-harness]: metamorphic properties over
 // generated line-shape programs.
 //   Invariant 1 (metamorphic equivalence): semantics-neutral transforms
-//     — blank/comment insertion, whole-block re-indent, district ↔
-//     `!(...)`, bare command RHS ↔ `$(...)`, block siblings ↔ `;`,
+//     — blank/comment insertion, whole-block re-indent, bare
+//     command RHS ↔ `$(...)`, block siblings ↔ `;`,
 //     Stroustrup ↔ inline brackets, and all composed — leave the AOT
 //     binary's (rc, stdout, stderr) byte-identical.
 //   Invariant 2 (total assembly): assembler/parser/checker return a
@@ -245,9 +245,6 @@ let tests =
               Some(Transform.appendTrailing rnd (renderPlain p)))
 
           metamorphic "whole-block re-indent is output-neutral" (fun rnd p -> Transform.reindent rnd p)
-
-          metamorphic "district marker form and explicit !(...) lines agree" (fun rnd p ->
-              Transform.districtSigil rnd p)
 
           metamorphic "bare command RHS and $(...) agree" (fun rnd p -> Transform.cmdSigil rnd p)
 

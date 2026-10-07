@@ -62,7 +62,8 @@ every level:
 
 ```weir
 let e = Env.ofPairs [("WEIR_LOG", "off")]
-!e(weir -e "Log.info \"hidden\" ; printerr \"loud\" ; print 1")
+within env e
+    weir -e "Log.info \"hidden\" ; printerr \"loud\" ; print 1"
 ```
 
 ## Warnings

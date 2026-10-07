@@ -83,7 +83,7 @@ cat > "$work/c5_orphan.weir" <<'WEOF'
 [1; 2]
 |> Seq.pfirst (fun n ->
     if n == 1 then
-        !(sh -c "sleep 31337 & sleep 31337")
+        sh -c "sleep 31337 & sleep 31337"
         0
     else
         Duration.sleep 60ms
@@ -95,7 +95,7 @@ WEOF
 cat > "$work/ctl_leak.weir" <<'WEOF'
 // POSITIVE CONTROL for the ledger: deliberately background a child inside sh
 // so it outlives weir. The ledger MUST see this, or its zeros mean nothing.
-!(sh -c "sleep 31339 >/dev/null 2>&1 &")
+sh -c "sleep 31339 >/dev/null 2>&1 &"
 print "leaked"
 WEOF
 
@@ -332,7 +332,7 @@ cat > "$work/c5nested.weir" <<'WEOF'
     [1; 2]
     |> Seq.pfirst (fun n ->
         if n == 1 then
-            !(sh -c "sleep 51337 & sleep 51337")
+            sh -c "sleep 51337 & sleep 51337"
             0
         else
             Duration.sleep 60ms

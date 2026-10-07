@@ -863,8 +863,8 @@ let p =
   `Seq.iter` — desugared to the piped shape, eager, body must be
   unit; the binder TYPES from the source [D:for-binder], so a
   `match x with | Case …` body dispatches). A bare command
-  body works and is implicit `!(…)`: `for f in files do git add $f`
-  streams and raises per iteration; `do !` opens a command block.
+  body is an ordinary statement: `for f in files do git add $f`
+  streams and raises per iteration.
   Comprehension: `[for x in xs -> e]` (eager). No guard clause —
   filter with `Seq.where` upstream.
   `[1..10] |> Seq.iter (fun i -> print $"{i}")` for counted repetition.
@@ -1182,7 +1182,7 @@ print x
 - A bare STATEMENT command at a tty INHERITS stdout
   [D:colour-inherit]: the child sees the terminal (isatty true), so
   tools that colour for a tty colour under weir. So does every ARMED
-  statement [D:armed-inherit] — `!(cmd)`, `!e(cmd)`, a command in a
+  statement [D:armed-inherit] — a command in a
   `within`/`match`/function block body (REPL included), and a statement
   chain's TAIL (`git log | less` pages, `xs | fzf` picks) — so editors
   and pagers work there; `let x = vi f` still CAPTURES (a value), so an
@@ -1383,10 +1383,10 @@ within tmp d
   output goes where the meaning goes): `cmd | succeeds` is a
   BOOL (silent — a predicate's output IS its result); `cmd | orFail
   "msg"` STREAMS and raises `msg (exit N)` on nonzero, unit on
-  success — THE assert idiom, legal as a statement, in `!()`, and in
+  success — THE assert idiom, legal as a statement and in
   interior lines; `cmd | exitCode` STREAMS and gives the code as INT,
   never raises — bind it or match it (`| 130 ->` for cancels); a
-  bare/`!()`/`$()` position is a teaching error ($() captures — use
+  bare/`$()` position is a teaching error ($() captures — use
   `| complete` there). `cmd | exec` REPLACES the weir process with the
   command [D:exec] (execve — keeps weir's pid, so as a container
   entrypoint the app gets signals directly with no forwarding layer);
@@ -1826,21 +1826,18 @@ let conf = $<<<
 conf |> Seq.iter print
 ```
 
-- `!(…)` runs one command inline in expression position (`!(git
-  pull)`). There is NO line-end `!` block — that district was retired
-  [D:district-retirement]: commands are ordinary statements inside any
-  block, so `if clean then` + indented `git checkout main` /
-  `git pull` lines just works [D:interior-arming], and a match arm
+- Commands are ordinary statements inside any block
+  [D:district-retirement]: `if clean then` + indented `git checkout
+  main` / `git pull` lines just works [D:interior-arming], and a match arm
   body takes them too [D:match-arm-commands]. An `else`/`elif` ends a
   then-body's command [D:if-body-stop] — `if ok then git pull else
   git fetch` is two commands (one line or indented); quote it
-  (`"else"`) to pass the word as argv there. `!()` is left for the
-  positions bare cannot reach: a command sequenced with an expression
-  on ONE line (`!(setup); print "done"` — `;` is argv inside a bare
-  command line).
+  (`"else"`) to pass the word as argv there. A command line runs to
+  its end — `;` is argv there — so a command shares its line with no
+  other statement: one command per line.
 - The glyph law: weir has no `!`-negation — negation is the word
-  `not`; `!` means DO IT. And no `\`-escape for commands — `^ls`
-  forces the PATH binary.
+  `not`. And no `\`-escape for commands — `^ls` forces the PATH
+  binary.
 - Modules & imports (share code between scripts): a file that starts
   with `module` (or `module Name`) is a MODULE — importable,
   declaration-only (`type`/`let` only, no commands or bare
@@ -1917,13 +1914,12 @@ if clean then sh -c "echo acting"
 \ls
 ```
 
-- Command sigils work ANYWHERE in expressions: `$(git branch)` captures
-  output (`seq<string>`, pipes onward); `!(git push)` runs-and-streams
-  (unit, raises on nonzero). On a top-level `let` RHS prefer the bare
-  chain (`let b = git branch |> Seq.head`); sigils are for positions
-  bare cannot reach — block bodies are NOT one of them:
-  `if clean then` + indented bare command lines just works, no
-  sigil. Interiors are ordinary command chains (splices, pipes,
+- The capture sigil works ANYWHERE in expressions: `$(git branch)`
+  captures output (`seq<string>`, pipes onward) where a bare command
+  would run (an arm, a lambda body, a `for` source). On a `let` RHS
+  prefer the bare chain (`let b = git branch |> Seq.head`); a command
+  meant to RUN is just written as a statement — `if clean then` +
+  indented bare command lines just works. Interiors are ordinary command chains (splices, pipes,
   `| complete`). `!` is NOT bash history/extglob and `;` still does
   not chain inside them.
 - A `let` RHS takes command lines in every STATEMENT context
@@ -2241,16 +2237,14 @@ print $"exit={r.exitCode}"
   `within env A=1 B=$x` + an indented body [D:within-env-pairs] (or
   `within env e` for a bound `seq<EnvVar>`); a body line's own
   `NAME=value cmd` prefix stays that one command's.
-- Env sigils `$e(...)`/`!e(...)` (ident GLUED to glyph and paren)
-  inject child-env into every spawn in the chain (overlay: set those
-  names, inherit the rest; parent untouched). `Env.fromFile "x.env"`
+- The env capture sigil `$e(...)` (ident GLUED to glyph and paren)
+  injects child-env into every spawn in the captured chain (overlay:
+  set those names, inherit the rest; parent untouched). `Env.fromFile "x.env"`
   loads the dotenv SUBSET (KEY=VALUE, optional quotes, # comments — NO
   export/$VAR; those lines error, naming the `sh -c "set -a; . file;
-  ..."` escape). Bind once, glue to the sigil: `let e = Env.fromFile p`
-  then `!e(az ...)`. Line-end `!name` = env district
-  (distributes over the block); a literal `!word` as a final command
-  arg must be quoted. Bare `!(...)`/`!` districts and command lines
-  stay env-less.
+  ..."` escape). Bind once: `let e = Env.fromFile p`, then
+  `within env e` around the commands that run, or `$e(az ...)` to
+  capture.
 - Multi-line record literals separate fields by newline, F#-style
   (trailing `;` also fine); blank lines inside brackets are
   transparent. Braces ignore indentation.

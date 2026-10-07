@@ -55,9 +55,7 @@ composition, not type complexity.
   generator with their forms (see CANNOT), pinned at unit/e2e.
 - bare command GROUPS (the retired districts' coverage, retargeted
   [D:district-retirement]): standalone runs at statement level, headed
-  `if … then` bodies of bare commands — with the per-line `!(...)`
-  spelling as the bare-vs-sigil EQUIVALENCE transform (the arming
-  rule's own metamorphic property [D:interior-arming])
+  `if … then` bodies of bare commands
 - yaml districts (top-level only): 1–3 literal keys, int/word/splice
   values (splices draw existing int/string binders), one optional
   nested map, each rendered with a trailing `d |> to yaml |> print`
@@ -158,8 +156,8 @@ walk found exactly that gap here.
    byte-identical under: blank insertion (any gap), comment insertion
    (any gap, any indent 0–12), whole-block re-indent (+1..6 on one
    block: let bodies, if bodies, command groups, match-arm groups,
-   Stroustrup bracket groups, pipeline stages); yaml marker form
-   ↔ explicit `!(...)` lines; bare command RHS ↔ `$(...)`; block
+   Stroustrup bracket groups, pipeline stages); bare command RHS ↔
+   `$(...)`; block
    siblings ↔ single-line `;` (print-only bodies — the probed
    boundary: inner lets spell `in`, commands take `;` as argv).
    [D:sibling-sentinel] block statement-siblings now assemble with the

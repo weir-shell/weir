@@ -526,7 +526,7 @@ Inside command mode everything is an inert argv word — nothing
 expands, nothing splits — and islands of expression open only at
 the splice markers (`$name`, `(expr)`) and close again. Expression
 mode is everywhere else: right of a `let`, inside interpolation
-holes, inside `$()`/`!()`. The two never blend mid-word (glued
+holes, inside `$()`. The two never blend mid-word (glued
 pieces are refused outright), and the [editor colors](#what-the-editor-colors-mean)
 paint exactly this boundary from the parse.
 
@@ -553,11 +553,10 @@ one line, the `| line` reifier is the direct spelling —
 ([Exit codes](#exit-codes-from-command-to-value)).
 
 One rule to know about `!`: weir has no `!`-negation. Negation is the
-word `not`; `!` means *do it*. Two markers bring full command chains
-into expressions — `$(...)` captures the output, `!(...)`
-runs-and-streams (unit, raises on nonzero). Statement positions need
-neither — a command is an ordinary statement at top level and inside
-any block body. Prefer the bare `let` form when the whole right-hand
+word `not`. One marker brings a full command chain into an expression
+— `$(...)` captures the output. Running a command needs no marker: a
+command is an ordinary statement at top level and inside any block
+body. Prefer the bare `let` form when the whole right-hand
 side is the chain; `$()` is for everywhere the command is a
 sub-expression — inside records, holes, and nested splices:
 
@@ -1026,34 +1025,22 @@ file genuinely needs sourcing, run it in one:
 
 `sh -c "set -a; . ./file.env; your-command"`
 
-Bind the env once, then attach its name to the command marker —
-`!e(...)` runs for effect, `$e(...)` captures the output:
+Bind the env once, then run commands under it with `within env e`, or
+attach its name to the capture marker — `$e(...)` captures the output:
 
 ```weir
 ["GREETING=hello"] |> File.write "demo.env"
 
 let e = Env.fromFile "demo.env"
 
-!e(sh -c "echo child: $GREETING")
-!e(sh -c "echo again: $GREETING")
+within env e
+    sh -c "echo child: $GREETING"
+    sh -c "echo again: $GREETING"
+
+let got = $e(sh -c "echo captured: $GREETING") |> Seq.head
+print got
 
 print (Env.get "GREETING" |> Option.defaultValue "parent stays clean")
-```
-
-A `!name` at the end of a line widens the overlay to a whole command
-block — every command in the indented block below it runs with that
-environment — and `within env e` scopes it the `within` way:
-
-```weir
-["STAGE=prod"] |> File.write "stage.env"
-
-let e = Env.fromFile "stage.env"
-
-!e(sh -c "echo inline: $STAGE")
-
-within env e
-    sh -c "echo block one: $STAGE"
-    sh -c "echo block two: $STAGE"
 ```
 
 ## Matching and scraping text
@@ -1877,7 +1864,8 @@ type LogCfg = { WEIR_GUIDE_LOG_LEVEL: Level }
 
 ["WEIR_GUIDE_LOG_LEVEL=debug"] |> File.write "guide-log.env"
 let e = Env.fromFile "guide-log.env"
-!e(sh -c "echo layered")
+within env e
+    sh -c "echo layered"
 
 print "declared sets beat stringly config"
 ```

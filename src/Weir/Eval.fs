@@ -3134,7 +3134,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
         let specs = chainSpecs env arg chead cargs cenvO
         VSeq(Seq.delay (fun () -> Proc.chainLinesOf specs) |> Seq.map VStr)
     // the armed statement command inherits at a tty [D:armed-inherit]:
-    // `!(cmd)`, `!e(cmd)` and a command statement in a block body arm as
+    // a command statement — top level or in a block body — arms as
     // `cmd |print`, and get the bare statement's terminal
     // [D:colour-inherit] — isatty true, so editors, pagers and colour
     // work. The pre-spawn flush orders weir's prints against the child's.

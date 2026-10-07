@@ -227,7 +227,7 @@ hand-pinned matrices keep the named ones. [D:fuzz-harness]
 **Metamorphic testing.** Testing without a known-correct output by
 asserting a *relation*: a semantics-neutral transform of a program must
 produce byte-identical `(rc, stdout, stderr)`. weir's transform library
-(district↔`!(...)`, bare-RHS↔`$(...)`, block-siblings↔`;`, Stroustrup↔
+(bare-RHS↔`$(...)`, block-siblings↔`;`, Stroustrup↔
 inline, and all composed) is the fuzzer's invariant 1. [D:fuzz-harness]
 
 **Property-based generation.** Generating valid-by-construction programs
@@ -449,8 +449,7 @@ consumed-separator law exist to make it impossible. [D:seq-commit]
 
 **District / sigil / reifier / splat.** weir's command-mode vocabulary
 (the rules live on the reference's Commands page): a **district** is a line-end `!` block
-of command lines; a **sigil** is `$(chain)` (capture) or `!(chain)`
-(effect); a **reifier** (`complete`/`succeeds`/`orFail`/`exitCode`) turns a
+of command lines; a **sigil** is `$(chain)` (capture); a **reifier** (`complete`/`succeeds`/`orFail`/`exitCode`) turns a
 command's run into a value where the meaning goes; a **splat** (`$@xs`)
 splices N argv words. [D:exit-reifiers] [D:argv-splat] (district & sigil:
 SEMANTICS — no DECISIONS row, see Findings.)

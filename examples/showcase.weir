@@ -7,7 +7,7 @@
 // `weir` itself and `git`, so the tour runs on Linux, macOS, and
 // Windows alike (coreutils are cmd builtins there — nothing for a
 // resolver to find). The POSIX escape hatch is still a feature:
-// !(sh -c "...") on POSIX, cmd /c on Windows — spelled here in prose
+// sh -c "..." on POSIX, cmd /c on Windows — spelled here in prose
 // because a named head must resolve on your platform.
 // The tour now hosts its own module (showcase-lib.weir), a vendored
 // schema and a hand-written git signature (examples/.weir/ — checked
@@ -376,8 +376,9 @@ let ev = Env.fromFile envFile
 let greetz = $ev(weir $probe --greet) |> Seq.exactlyOne
 print greetz
 
-// …then as an effect — streams to the terminal, raises on failure
-!ev(weir $probe --greet)
+// …then run under it — streams to the terminal, raises on failure
+within env ev
+    weir $probe --greet
 
 let ready = true
 

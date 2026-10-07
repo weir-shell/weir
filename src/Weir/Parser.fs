@@ -84,7 +84,7 @@ type Resolver =
       // Scripts/-e supply the always-None resolver, so aliases never leak.
       AliasHead: string -> (string * string list) option }
 
-// Sigil interiors ($(...) / !(...)) need the resolver inside the
+// Sigil interiors ($(...)) need the resolver inside the
 // expression grammar, which is otherwise resolver-free. parseLine sets
 // this per call; ThreadLocal keeps parallel test runs isolated.
 let private ambientResolver =
@@ -113,8 +113,8 @@ let private letCmdOk = new System.Threading.ThreadLocal<bool>(fun () -> false)
 let private letCmdStmt = new System.Threading.ThreadLocal<bool>(fun () -> false)
 
 // plain parens are expression territory [D:interior-arming]: the
-// interior-command element does not apply there ($()/!() are the
-// command parens) — but a lambda body re-enables it even inside parens
+// interior-command element does not apply there ($() is the
+// command paren) — but a lambda body re-enables it even inside parens
 // (`xs |> Seq.iter (fun f -> git add $f)` is the idiom)
 let private exprParen = new System.Threading.ThreadLocal<bool>(fun () -> false)
 
@@ -1135,10 +1135,9 @@ let private dollarAtTeach: Parser<Expr, unit> =
 // statement-level chain (cmdLine — same segments, splices, pipes,
 // | complete, bareword heads incl. command-callables; the sigil makes
 // the intent unambiguous, unlike the bare let-RHS which excludes
-// builtins). $(chain) captures the value; !(chain) desugars to
-// (chain) |> print — eager, streaming, raising, unit.
+// builtins). $(chain) captures the value.
 // [D:env-sugar-layers]: sigils take an optional env slot between glyph
-// and paren — $e(...) / !e(...), e : seq<EnvVar>, applied to every
+// and paren — $e(...), e : seq<EnvVar>, applied to every
 // spawn in the interior chain (segments and | complete alike, threaded
 // at construction). The ident must be glued to both glyph and paren;
 // with a space the parse falls back ($name splice, plain paren).
@@ -1224,28 +1223,6 @@ let private captureSigil =
         // the capture assertion survives to the statement gate
         // [D:district-retirement]: $() never arms, in any position
         { Kind = ECapture { chain with Span = span }
-          Span = span })
-    .>> ws
-
-let private effectSigil =
-    spanned (
-        sigilOpen '!'
-        >>= fun envO ->
-            ws >>. sigilChain envO
-            >>= fun chain ->
-                // anchored [D:anchor-before-read], like the sequence guard:
-                // the unanchored spelling leaves the competing "expected"
-                // errors at the drift position, which then lead and push the
-                // repair under "Other error messages"
-                (if exitCodeSpine chain then
-                     failFatallyAtCol chain.Span.Start.Col exitCodeDiscardMsg
-                 else
-                     preturn chain)
-                .>> (pchar ')'
-                     <?> "')' — close the sigil on this line, or use line-end '!' for a block of commands")
-    )
-    |>> (fun (chain, span) ->
-        { Kind = EPipe(chain, { Kind = EVar "|print"; Span = span })
           Span = span })
     .>> ws
 
@@ -1376,16 +1353,10 @@ let private tildeTeaching: Parser<Expr, unit> =
             at
             "'~' is the home directory only in a command line — in an expression, Path.home () is the home path ($\"{Path.home ()}/…\" for one below it)"
 
-// C negation `!x` in an expression teaches weir's word [D:left-to-right-ops]:
-// `!` means "do it" (the effect sigil `!(…)` / `!env(…)`, which this
-// lookahead leaves alone — a name glued to `(` is a sigil)
+// C negation `!x` in an expression teaches weir's word [D:left-to-right-ops]
 let private bangNegationTeaching: Parser<Expr, unit> =
-    attempt (
-        getPosition
-        .>> pchar '!'
-        .>> followedBy (many1Satisfy2 isIdentStart isIdentCont .>> notFollowedBy (pchar '('))
-    )
-    >>= fun at -> failFatallyAt at "weir has no `!` negation — write `not x` (`!` means \"do it\": `!(cmd)` runs a command)"
+    attempt (getPosition .>> pchar '!' .>> followedBy (many1Satisfy2 isIdentStart isIdentCont))
+    >>= fun at -> failFatallyAt at "weir has no `!` negation — write `not x`"
 
 let private dotFloatTeaching =
     attempt (getPosition .>> pchar '.' .>> lookAhead (satisfy System.Char.IsDigit))
@@ -1408,7 +1379,6 @@ let private atom =
               interpRawLit
               interpLit
               captureSigil
-              effectSigil
               unitLit
               opValue
               parens
@@ -2762,7 +2732,7 @@ let private ifExprBody =
 // desugared at parse to `xs |> Seq.iter (fun p -> body)` (as the
 // reifier does: the typed tree never sees `for`, so checking, warnings,
 // hover, and eval all ride the existing machinery). A bare command body
-// is implicit `!(...)` -- `for f in files do git add $f` streams and
+// is an armed statement -- `for f in files do git add $f` streams and
 // raises per iteration, the natural shell shape; known heads fall
 // through to the expression body exactly as the statement classifier
 // decides.
@@ -4382,7 +4352,7 @@ let private foldChain (h: Expr) (rest: ((string * Span) * Seg) list) : Result<Ex
                 | AndMarker(rhs, _) ->
                     // `cmd | and <rest>` = bash &&: stream the left (raising on
                     // failure — the right is then skipped), then the right
-                    // [D:cmd-chaining]. `!()`'s |print streams+raises; a nested
+                    // [D:cmd-chaining]. The armed |print streams+raises; a nested
                     // and/or is already a unit effect, so it passes through.
                     let streamOf (e: Expr) =
                         match e.Kind with

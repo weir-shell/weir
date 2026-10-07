@@ -61,6 +61,14 @@
 
 ### Changed
 
+- **`!(cmd)` and `!e(cmd)` are gone.** Every statement position runs a
+  bare command, so write `git pull` instead of `!(git pull)`, and give a
+  command its own line instead of `!(a); b`. For an environment, use
+  `NAME=value cmd` or `within env e`. `$(…)` and `$e(…)` still capture.
+  A block that ends in a command now runs it when more lines follow,
+  even inside a `let` (`let x =` + a `within tmp d` block + the
+  value), which is where `!()` used to be needed.
+
 - **`<<` is gone — weir composes left to right.** `f << g` was exactly
   `g >> f`; it is now an error that says so, as is F#'s back-pipe `<|`
   (write `f (x)` or `x |> f`).
@@ -100,7 +108,8 @@
   word is now an error saying so; `\;` names the quoted spelling and
   `\ls` names `^ls`. `!=` teaches `<>`, `!x` teaches `not x`, a type
   annotation (`(x: int)`, `let x: int =`) teaches inference, and
-  `for i in 1..3` teaches `[1..3]`. A `let` that fails to parse no
+  `for i in 1..3` teaches `[1..3]`; `String.trim` names `Str.trim`,
+  and a `list<string>` field type names `seq<string>`. A `let` that fails to parse no
   longer causes a second "unbound variable" error at its uses.
 
 - **Editors and pagers get the terminal wherever a command runs as a

@@ -186,7 +186,7 @@
       "name": "constant.numeric.weir"
     },
     "sigil-open": {
-      "match": "\\$\\(|!\\(|[$!][a-z_][A-Za-z0-9_]*\\(",
+      "match": "\\$\\(|\\$[a-z_][A-Za-z0-9_]*\\(",
       "name": "keyword.other.sigil.weir"
     },
     "force-prefix": {

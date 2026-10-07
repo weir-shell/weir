@@ -182,7 +182,6 @@ let private renderPat (a: LitArm) : string =
 // well-formed by construction.
 type RenderCfg =
     { Extra: int -> int // re-indent: added indent for that block id
-      ExplicitDistrict: int -> bool // district bid -> `!(...)`-per-line spelling
       SigilCmdLet: string -> bool // cmd-let binder -> `$(...)` RHS spelling
       InlineBracket: int -> bool // Stroustrup bid -> inline bracket spelling
       JoinBlock: int -> bool // block bid -> single-line `;` join
@@ -191,7 +190,6 @@ type RenderCfg =
 
 let defaultCfg =
     { Extra = (fun _ -> 0)
-      ExplicitDistrict = (fun _ -> false)
       SigilCmdLet = (fun _ -> false)
       InlineBracket = (fun _ -> false)
       JoinBlock = (fun _ -> false)
@@ -729,27 +727,11 @@ let renderTagged (cfg: RenderCfg) (p: Program) : (string * bool) list =
                 let lit = words |> List.map (fun w -> $"\"{w}\"") |> String.concat "; "
                 emitCmd ind $"echo $@([{lit}])"
             | _ -> emitCmd ind ("echo " + String.concat " " words)
-        | SDistrict(bid, headed, cmds) when cfg.ExplicitDistrict bid ->
-            // the arming equivalence [D:interior-arming]: a bare command
-            // statement = `!(...)` — the bare-vs-!() spelling, per line
-            let line cmd = "!(echo " + String.concat " " cmd + ")"
-
-            match headed with
-            | Some c ->
-                emit ind $"if {renderCond c} then"
-
-                for cmd in cmds do
-                    emitCmd (ind + 4 + extra bid) (line cmd)
-            | None ->
-                for cmd in cmds do
-                    emitCmd ind (line cmd)
         | SDistrict(bid, headed, cmds) ->
             // districts are retired [D:district-retirement]: this
             // coverage renders the arming rule's spelling — bare command
             // statements (headed: in an if body; standalone: at the
-            // statement level) — and the ExplicitDistrict transform is
-            // the bare-vs-!() sigil equivalence, the arming rule's own
-            // metamorphic property
+            // statement level)
             (match headed with
              | Some c -> emitCmd ind $"if {renderCond c} then"
              | None -> ())
@@ -1790,12 +1772,6 @@ module Transform =
         List.iter go p.Stmts
         List.ofSeq acc
 
-    let districtBids (p: Program) =
-        allStmts p
-        |> List.choose (function
-            | SDistrict(bid, _, _) -> Some bid
-            | _ -> None)
-
     let cmdLetBinders (p: Program) =
         allStmts p
         |> List.choose (function
@@ -1857,10 +1833,6 @@ module Transform =
                     p
             )
 
-    // district marker form <-> explicit `!(...)` lines (the desugar claim)
-    let districtSigil (rnd: Random) (p: Program) : string list option =
-        withSites rnd (districtBids p) (fun f -> { defaultCfg with ExplicitDistrict = f }) p
-
     // bare command RHS <-> `$(...)` (the pinned equivalence, at scale)
     let cmdSigil (rnd: Random) (p: Program) : string list option =
         withSites rnd (cmdLetBinders p) (fun f -> { defaultCfg with SigilCmdLet = f }) p
@@ -1898,7 +1870,6 @@ module Transform =
         let sub (xs: 'a list) =
             Set.ofList (xs |> List.filter (fun _ -> rnd.Next 2 = 0))
 
-        let districts = sub (districtBids p)
         let cmdlets = sub (cmdLetBinders p)
         let brackets = sub (bracketBids p)
         let joins = sub (joinBids p)
@@ -1915,7 +1886,6 @@ module Transform =
 
         let cfg =
             { Extra = (fun b -> if b = extraBid then k else 0)
-              ExplicitDistrict = districts.Contains
               SigilCmdLet = cmdlets.Contains
               InlineBracket = brackets.Contains
               JoinBlock = joins.Contains

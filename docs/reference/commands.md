@@ -119,23 +119,17 @@ if 2 > 1 then
     print (($(git rev-parse HEAD) |> Seq.head)[..6])
 ```
 
-Two markers bring command chains into positions bare cannot reach:
-`$(...)` captures (a sub-expression — inside a hole, a record, a
-splice), `!(...)` runs-and-streams (unit, raises on nonzero). `$()`
-appears above, in the hole. `!()`'s own niche is sequencing a command
-with an expression on one line — a bare `;` is an argv word inside a
-command line, so the marker is what returns to expression land:
-
-```weir
-!(git fetch --quiet); print "fetched"
-```
+`$(...)` brings a command chain into a position bare cannot reach and
+captures it (a sub-expression — inside a hole, a record, a splice);
+it appears above, in the hole. A command line runs to its end — `;` is
+an argv word there — so a command takes a line of its own.
 
 Variables for one command go before it, bash-style: `EDITOR=nano git
 commit` (each stage of a pipeline takes its own; after the program
-name, `CC=gcc` is argv). An env overlay bound to `e` attaches as
-`$e(...)` / `!e(...)`, and composes with a prefix — the prefix wins on
+name, `CC=gcc` is argv). An env overlay bound to `e` scopes commands as
+`within env e`, attaches to a capture as `$e(...)`, and composes with a prefix — the prefix wins on
 a shared name. There is
-no `!`-negation — negation is the word `not`; `!` means *do it*. To
+no `!`-negation — negation is the word `not`. To
 swap between two known tools, branch the whole command line; for a
 program that is genuinely a runtime value, force it external with a
 dynamic head.
