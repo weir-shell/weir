@@ -59,6 +59,15 @@ within env vars
 print (Env.get "GREETING" |> Option.defaultValue "parent stays clean")
 ```
 
+The variables can be written in the head, as for one command
+(`NAME=value cmd`):
+
+```weir
+let stage = "prod"
+within env STAGE=$stage REGION=eu-1
+    sh -c "echo $STAGE in $REGION"
+```
+
 ## Bare `within` and `always`
 
 Holds nothing; the `always` block runs on every exit. When both the

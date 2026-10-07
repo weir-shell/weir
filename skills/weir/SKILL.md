@@ -2237,7 +2237,10 @@ print $"exit={r.exitCode}"
   `$x` or `$"…"`; `NAME=` is empty) join that stage's overlay; each
   pipeline stage takes its own; after the head `CC=gcc` is argv. A
   lone `FOO=1` is an error (no shell variables — `let` binds). No
-  unset spelling: `env -u NAME cmd`.
+  unset spelling: `env -u NAME cmd`. The same words scope a BLOCK:
+  `within env A=1 B=$x` + an indented body [D:within-env-pairs] (or
+  `within env e` for a bound `seq<EnvVar>`); a body line's own
+  `NAME=value cmd` prefix stays that one command's.
 - Env sigils `$e(...)`/`!e(...)` (ident GLUED to glyph and paren)
   inject child-env into every spawn in the chain (overlay: set those
   names, inherit the rest; parent untouched). `Env.fromFile "x.env"`

@@ -149,6 +149,10 @@ let private letRhsCmd, private letRhsCmdRef =
 let private envPrefixStmtGuard, private envPrefixStmtGuardRef =
     createParserForwardedToRef<Choice<Expr, Expr>, unit> ()
 
+// forwarded: `within env A=1 B=$x` reads the env-prefix words [D:within-env-pairs]
+let private envAssignsFwd, private envAssignsFwdRef =
+    createParserForwardedToRef<Expr, unit> ()
+
 // forwarded: the if/elif condition position sits above it too [D:if-succeeds]
 let private ifCondCmd, private ifCondCmdRef =
     createParserForwardedToRef<Expr, unit> ()
@@ -2456,7 +2460,9 @@ let private withinExprBody =
                         // which would swallow the space-joined first statement.
                         // lock alone takes an optional timeout= key (Duration),
                         // the retry key=value spelling [D:within-lock]
-                        (postfixAtom <?> $"the {kind} scope's argument (parenthesize a compound)")
+                        // env takes `NAME=value` words too [D:within-env-pairs]
+                        ((if wk.Id = Ast.WithinEnv then envAssignsFwd <|> postfixAtom else postfixAtom)
+                         <?> $"the {kind} scope's argument (parenthesize a compound)")
                         >>= fun argE ->
                             (if wk.Id = Ast.WithinLock then
                                  opt (attempt (pstring "timeout" >>. ws >>. pchar '=' >>. ws >>. postfixAtom))
@@ -3961,6 +3967,22 @@ let private backslashHeadGuard () : Parser<'a, unit> =
         failFatallyAt at "weir has no `\\`-escape for commands — `^name` runs the PATH program, skipping aliases and builtins"
 
 envPrefixStmtGuardRef.Value <- envPrefixGuard () <|> backslashHeadGuard ()
+
+// the env-prefix words as one seq<EnvVar> literal [D:within-env-pairs]
+envAssignsFwdRef.Value <-
+    many1 envAssign
+    |>> fun assigns ->
+        let (_, first) = List.head assigns
+        let (_, last) = List.last assigns
+
+        let items =
+            assigns
+            |> List.map (fun ((name, value), sp) ->
+                let at k = { Kind = k; Span = sp }
+                at (EApp(at (EApp(at (EVar "|envPair"), at (EStr name))), value)))
+
+        { Kind = EList items
+          Span = { Start = first.Start; End = last.End } }
 
 let private commandSegment
     (builtinHeads: bool)

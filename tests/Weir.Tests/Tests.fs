@@ -8655,6 +8655,44 @@ let wireKeyTests =
               mustSay [ "type F = { [<Wier \"x\">] kind: string }" ] "Wire" "did-you-mean reaches it"
           } ]
 
+let withinEnvPairsTests =
+    // `within env A=1 B=$x` — the env-prefix words scope a block
+    // [D:within-env-pairs]
+    let diagsOf lines =
+        let diags, _, _, _ = Weir.Script.analyzeLines "wep.weir" lines
+        diags |> List.filter (fun d -> d.Severity = "error") |> List.map _.Message
+
+    testList
+        "within env NAME=value [D:within-env-pairs]"
+        [ test "pairs in the head check clean, every value spelling" {
+              Expect.isEmpty
+                  (diagsOf [ "let x = \"v\""; "within env A=1 B=$x C=\"q r\" D= E=$\"{x}!\""; "    sh -c \"echo $A\"" ])
+                  "values"
+          }
+          test "the head builds the envPair list; a bound seq still works" {
+              match Weir.Script.assemble [ 1, "within env A=1"; 2, "    git status" ] with
+              | Ok [ ll ] ->
+                  match Weir.Parser.parseLineFull cmdResolver ll.Text with
+                  | Ok s -> Expect.stringContains (Weir.Ast.sexprStmt s) "|envPair" "pairs"
+                  | Error f -> failtest f.Message
+              | other -> failtest $"unexpected assembly: {other}"
+
+              Expect.isEmpty (diagsOf [ "let e = [Env.pair \"A\" \"1\"]"; "within env e"; "    sh -c \"echo $A\"" ]) "bound"
+          }
+          test "a first body line's own prefix stays its command's" {
+              match Weir.Script.assemble [ 1, "within env A=1"; 2, "    B=2 git status"; 3, "    git log" ] with
+              | Ok [ ll ] ->
+                  Expect.stringContains ll.Text (string Weir.Parser.sibSep) "the head joins sentineled"
+
+                  match Weir.Parser.parseLineFull cmdResolver ll.Text with
+                  | Ok s ->
+                      let sx = Weir.Ast.sexprStmt s
+                      let pairs = sx.Split("|envPair").Length - 1
+                      Expect.equal pairs 2 $"A in the head, B on its command: {sx}"
+                  | Error f -> failtest f.Message
+              | other -> failtest $"unexpected assembly: {other}"
+          } ]
+
 let withinAlwaysAnyTests =
     // `always` after any within kind [D:within-always-any]: a desugar to a
     // bare within as the kinded scope's body — cleanup inside the scope
@@ -23524,6 +23562,7 @@ let allTests =
           withinKindsTests
           withinAlwaysLockTests
           withinAlwaysAnyTests
+          withinEnvPairsTests
           wireKeyTests
           reserveBuiltinTests
           fileRowReshapeTests

@@ -2505,6 +2505,24 @@ fi
 rm -rf "$aadir"
 echo "e2e ok: always after any within — cleanup inside the scope on every exit path; cd/env/lock/proc held"
 
+# ---- within env NAME=value [D:within-env-pairs] ----------------------------
+# the env-prefix words scope a block; a body line's own prefix stays its
+# command's (the head joins sentineled); the parent stays clean
+wepdir=$(mkweirtmp)
+cat > "$wepdir/ep.weir" <<'WEOF'
+let x = "two"
+within env A=1 B=$x C="three four"
+    D=4 sh -c "echo [$A][$B][$C][$D]"
+    sh -c "echo after [$A][$D]"
+print (Env.get "A" |> Option.defaultValue "parent clean")
+WEOF
+out=$(cd "$wepdir" && $BIN ep.weir 2>&1) || fail "within env pairs must run: $out"
+[ "$out" = "[1][two][three four][4]
+after [1][]
+parent clean" ] || fail "within env pairs: head scope, per-command prefix, clean parent: $out"
+rm -rf "$wepdir"
+echo "e2e ok: within env NAME=value — block scope, a body prefix stays per-command, parent clean"
+
 # ---- detached SIGINT tears down [D:signal-teardown] -------------------------
 # the gap (ring port finding #1): a shell backgrounding weir in a
 # non-interactive session (setsid, no job control) sets SIGINT to

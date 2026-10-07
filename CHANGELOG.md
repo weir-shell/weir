@@ -47,6 +47,11 @@
   as glued words), so bash's `$f.bak` is an error on a string that
   names `$"{f}.bak"`.
 
+- **`within env A=1 B=$x`.** The `NAME=value` words that set
+  variables for one command now scope a block too, without binding an
+  `Env.ofPairs` list first. A `within env e` with a bound list works as
+  before.
+
 - **`always` after any `within`.** `within tmp d`, `cd`, `env`,
   `lock`, `proc` and `serve` all take a trailing `always` block. The
   cleanup runs while the resource is still held — the temp directory
