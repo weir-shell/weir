@@ -570,7 +570,19 @@ let renderHuman (script: string) (caps: Cap list) : string =
                     sb.AppendLine $"    {section}:" |> ignore
 
                     for _, _, msg, sites in lines do
-                        let siteList = sites |> List.map siteStr |> String.concat " "
+                        // the path once per file, then line:col — the first
+                        // site stays a full path:line:col (clickable)
+                        // [D:can-report]
+                        let siteList =
+                            sites
+                            |> List.groupBy (fun s -> s.File)
+                            |> List.map (fun (file, ss) ->
+                                match ss with
+                                | first :: rest ->
+                                    (siteStr first :: (rest |> List.map (fun s -> $"{s.Line}:{s.Col}")))
+                                    |> String.concat ", "
+                                | [] -> file)
+                            |> String.concat " · "
 
                         let line =
                             if List.length sites > 1 then
@@ -581,7 +593,7 @@ let renderHuman (script: string) (caps: Cap list) : string =
                         sb.AppendLine $"      {line}" |> ignore
 
     renderBucket Weir.Effects.Ambient "ambient reads (inform, change nothing)"
-    renderBucket Weir.Effects.Mutation "mutations (change the world)"
+    renderBucket Weir.Effects.Mutation "mutations"
 
     if caps.IsEmpty then
         sb.AppendLine "  nothing — no commands, no filesystem, no network, no environment"

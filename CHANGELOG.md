@@ -11,6 +11,20 @@
   began), or 0; `complete` carries the last stage's output and every
   stage's error output in order. `exec` still takes a single command.
 
+### Changed
+
+- **`weir check --can` lists each file once.** A program run from many
+  places used to repeat the full path for every site; now it reads
+  `git × 10  init.weir:11:72, 15:5, 17:14, …`. The second heading is
+  just `mutations`.
+- **`weir check` takes its flags in any order.** `--json --can` works as
+  well as `--can --json`. A missing script, an unknown flag, or
+  `--strict` without `--can` is now a usage error instead of "no such
+  script: check".
+- **`check --can` names the variables `NAME=value` sets** — for one
+  command and for `within env A=1 B=$x` — instead of reporting them as
+  not statically known.
+
 ### Fixed
 
 - **A pipeline whose last command stops reading early no longer hangs.**

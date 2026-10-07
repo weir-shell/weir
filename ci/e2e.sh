@@ -8160,6 +8160,20 @@ yaml true" ] || fail "the uuid journal: v7 order, v5 A.4, big-endian bytes, argv
 rm -rf "$uudir"
 echo "e2e ok: Uuid (v7 journal order holds in file/uuid/text, v5 matches RFC 9562 A.4, big-endian bytes, argv splice)"
 
+# ---- weir check's argv [D:check-cli] ---------------------------------------
+# a missing script is a usage error (exit 2), never a run of a script
+# named `check`; flags in any order; --strict needs --can
+rc=0; uout=$($BIN check 2>&1) || rc=$?
+[ "$rc" = "2" ] || fail "weir check with no script must exit 2 (got $rc): $uout"
+echo "$uout" | grep -qF "which script?" || fail "the missing-script usage: $uout"
+echo "$uout" | grep -qF "no such script" && fail "check must not run a script named check: $uout"
+rc=0; uout=$($BIN check --strict tools/fuzz.weir 2>&1) || rc=$?
+[ "$rc" = "2" ] && echo "$uout" | grep -qF "add --can" || fail "--strict without --can teaches: $rc $uout"
+a=$(cd "$(dirname "$0")/.." && $BIN check --json --can tools/fuzz.weir 2>&1)
+b=$(cd "$(dirname "$0")/.." && $BIN check --can --json tools/fuzz.weir 2>&1)
+[ "$a" = "$b" ] && echo "$a" | grep -qF '"model":"capability, not behaviour"' || fail "--json --can in any order: $a"
+echo "e2e ok: weir check argv — usage errors exit 2, flags in any order"
+
 # ---- weir check --can [D:can-report] ---------------------------------------
 candir=$(mkweirtmp)
 cat > "$candir/lib.weir" <<'WEOF'
@@ -10000,7 +10014,7 @@ echo "$herr" | grep -qF "filesystem path" || fail "concat refusal tail drifted: 
 hcan=$(cd "$ROOT" && "$BIN" check --can tools/fuzz.weir 2>&1) || fail "hero --can run failed: $hcan"
 for line in \
     "tools/fuzz.weir can (capability, not behaviour — an untaken branch still counts):" \
-    "ci/deep-lock.sh × 2  tools/fuzz.weir:31:41 tools/fuzz.weir:66:5" \
+    "ci/deep-lock.sh × 2  tools/fuzz.weir:31:41, 66:5" \
     "File.read (path not statically known)  tools/fuzz.weir:59:20" \
     "within tmp (a temporary directory)  tools/fuzz.weir:47:1" \
     "sets WEIR_FUZZ_SEED, WEIR_FUZZ_COUNT, WEIR_FUZZ_REPORT for children (within env)  tools/fuzz.weir:48:41" \

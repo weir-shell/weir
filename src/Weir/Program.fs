@@ -264,15 +264,32 @@ let main argv =
                 "usage: weir lsp — the language server, JSON-RPC over stdio (conventional client argv like --stdio is tolerated).\nWire your editor to run this command: see docs/editors.md"
 
             2
-        | [ "check"; path ] -> Script.checkOnly false path
-        | [ "check"; "--json"; path ] -> Script.checkOnly true path
-        // the capability report [D:can-report]: --can implies the check;
-        // --strict exits 2 on any opaque site (CI's choice, not a default)
-        | [ "check"; "--can"; path ] -> Can.run false false path
-        | [ "check"; "--can"; "--json"; path ] -> Can.run true false path
-        | [ "check"; "--can"; "--strict"; path ] -> Can.run false true path
-        | [ "check"; "--can"; "--strict"; "--json"; path ] -> Can.run true true path
-        | [ "check"; "--can"; "--json"; "--strict"; path ] -> Can.run true true path
+        // check's flags in any order, one script [D:can-report]: --can
+        // implies the check; --strict (with --can) exits 2 on any opaque
+        // site (CI's choice, not a default); --json for either report
+        | "check" :: rest ->
+            let flags, paths = rest |> List.partition (fun a -> a.StartsWith "--")
+            let known = set [ "--json"; "--can"; "--strict" ]
+
+            let usage (why: string) =
+                Console.Error.WriteLine
+                    $"weir check: {why}\nusage: weir check [--json] [--can [--strict]] <script>"
+
+                2
+
+            match flags |> List.tryFind (fun f -> not (known.Contains f)), paths with
+            | Some f, _ -> usage $"unknown flag {f}"
+            | None, [] -> usage "which script? — give its path"
+            | None, _ :: _ :: _ -> usage $"""one script at a time — got {paths |> String.concat " "}"""
+            | None, [ path ] ->
+                let has f = List.contains f flags
+
+                if has "--strict" && not (has "--can") then
+                    usage "--strict applies to the capability report — add --can"
+                elif has "--can" then
+                    Can.run (has "--json") (has "--strict") path
+                else
+                    Script.checkOnly (has "--json") path
 
         | [ "fmt"; "--check"; path ] -> Fmt.formatFile true path
         | [ "fmt"; path ] -> Fmt.formatFile false path
