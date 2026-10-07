@@ -100,6 +100,7 @@ let private spawn
         nulRefusal $"the env key '{k}'" k
         nulRefusal $"the env value for '{k}'" v
 
+    Session.sigpipeForChildren.Force()
     let psi = ProcessStartInfo(prog)
 
     for a in args do
@@ -575,22 +576,83 @@ let completedOf (s: Spec) : int * seq<string> * seq<string> =
 // appended newline. Only the chain's ends are edges: the head may take
 // a text stdin feed (Input on the first spec), the tail's stdout is
 // read under the same line law as any single command.
-let private pumpBytes (src: System.IO.Stream) (dst: System.IO.Stream) (closeDst: unit -> unit) =
+// the result is true when the DOWNSTREAM stopped reading first: the
+// failed write closes the upstream's stdout too, so the producer gets
+// EPIPE/SIGPIPE as in a shell pipe instead of blocking on a full pipe
+// [D:pipe-early-exit]
+let private pumpBytes
+    (src: System.IO.Stream)
+    (dst: System.IO.Stream)
+    (closeDst: unit -> unit)
+    : System.Threading.Tasks.Task<bool> =
     System.Threading.Tasks.Task.Run(fun () ->
+        let mutable broken = false
+
         try
             try
                 let buf = Array.zeroCreate<byte> 65536
                 let mutable n = src.Read(buf, 0, buf.Length)
 
                 while n > 0 do
-                    dst.Write(buf, 0, n)
-                    n <- src.Read(buf, 0, buf.Length)
+                    try
+                        dst.Write(buf, 0, n)
+                        n <- src.Read(buf, 0, buf.Length)
+                    with _ ->
+                        broken <- true
+                        n <- 0
 
-                dst.Flush()
+                if not broken then
+                    dst.Flush()
             with _ ->
                 ()
         finally
-            closeDst ())
+            closeDst ()
+
+            if broken then
+                try
+                    src.Close()
+                with _ ->
+                    ()
+
+        broken)
+
+// start every stage and wire the hops: the head owns the (optional) text
+// stdin feed, every downstream stage's stdin is the raw pipe from its left
+let private startChain (tailOut: bool) (allErr: bool) (specs: Spec list) =
+    let lastIdx = specs.Length - 1
+
+    let procs =
+        specs
+        |> List.mapi (fun i sp ->
+            if i = 0 then
+                sp, start true allErr sp
+            else
+                sp, spawn (i < lastIdx || tailOut) allErr true sp.Cwd sp.Ambient sp.Prog sp.Args sp.Env)
+
+    let pumps =
+        procs
+        |> List.pairwise
+        |> List.map (fun ((_, a), (_, b)) ->
+            pumpBytes
+                a.StandardOutput.BaseStream
+                b.StandardInput.BaseStream
+                (fun () ->
+                    try
+                        b.StandardInput.Close()
+                    with _ ->
+                        ()))
+
+    procs, pumps
+
+// the chain's failure, after every stage exited: the LEFTMOST failing
+// stage — where the fault began — except a stage told to stop: its
+// downstream quit reading first, so its exit is the pipe closing, not a
+// fault [D:pipe-early-exit]
+let private chainFailure (procs: (Spec * Process) list) (pumps: System.Threading.Tasks.Task<bool> list) =
+    procs
+    |> List.mapi (fun i (sp, p) -> i, sp, p.ExitCode)
+    |> List.tryFind (fun (i, _, code) -> code <> 0 && not (i < pumps.Length && pumps[i].Result))
+    |> Option.map (fun (_, sp, code) -> sp, code)
 
 let chainLinesOf (specs: Spec list) : seq<string> =
     match specs with
@@ -598,31 +660,9 @@ let chainLinesOf (specs: Spec list) : seq<string> =
     | [ one ] -> linesOf one
     | _ ->
         seq {
-            let procs =
-                // the head owns the (optional) text stdin feed; every
-                // downstream stage's stdin is the raw pipe from its left
-                specs
-                |> List.mapi (fun i sp ->
-                    if i = 0 then
-                        sp, start true false sp
-                    else
-                        sp, spawn true false true sp.Cwd sp.Ambient sp.Prog sp.Args sp.Env)
+            let procs, pumps = startChain true false specs
 
             try
-                // wire stage i's stdout into stage i+1's stdin, bytes 1:1
-                procs
-                |> List.pairwise
-                |> List.iter (fun ((_, a), (_, b)) ->
-                    pumpBytes
-                        a.StandardOutput.BaseStream
-                        b.StandardInput.BaseStream
-                        (fun () ->
-                            try
-                                b.StandardInput.Close()
-                            with _ ->
-                                ())
-                    |> ignore)
-
                 // the tail is the command→expression edge: same line law
                 // as a single command
                 let _, last = List.last procs
@@ -636,14 +676,73 @@ let chainLinesOf (specs: Spec list) : seq<string> =
                 for _, p in procs do
                     p.WaitForExit()
 
-                // leftmost failing stage raises — where the fault began
-                match procs |> List.tryFind (fun (_, p) -> p.ExitCode <> 0) with
-                | Some(sp, p) -> raiseNonzero sp p.ExitCode
+                match chainFailure procs pumps with
+                | Some(sp, code) -> raiseNonzero sp code
                 | None -> ()
             finally
                 for _, p in procs do
                     reap p
         }
+
+// a reified chain's code [D:chain-reifiers]: the leftmost failing
+// stage's, or 0
+let private chainCode procs pumps =
+    match chainFailure procs pumps with
+    | Some(_, code) -> code
+    | None -> 0
+
+// `chain | complete`: the tail's stdout, every stage's stderr in stage
+// order, the chain's code [D:chain-reifiers]
+let chainCompletedOf (specs: Spec list) : int * seq<string> * seq<string> =
+    match specs with
+    | [ one ] -> completedOf one
+    | _ ->
+        let procs, pumps = startChain true true specs
+
+        try
+            let errTasks =
+                procs
+                |> List.map (fun (_, p) -> System.Threading.Tasks.Task.Run(fun () -> readAllBytes p.StandardError.BaseStream))
+
+            let _, last = List.last procs
+            let outBytes = readAllBytes last.StandardOutput.BaseStream
+
+            for _, p in procs do
+                p.WaitForExit()
+
+            let errLines =
+                errTasks |> List.map (fun t -> linesView t.Result false |> List.ofSeq) |> List.concat
+
+            chainCode procs pumps, linesView outBytes true, (errLines :> seq<string>)
+        finally
+            for _, p in procs do
+                reap p
+
+// `chain | exitCode` / `| orFail` / `| succeeds`: the tail's stdout
+// relayed as it arrives, the chain's code as the result
+// [D:chain-reifiers]
+let chainStreamCodeOf (specs: Spec list) : int =
+    match specs with
+    | [ one ] -> streamCodeOf one
+    | _ ->
+        let procs, pumps = startChain true false specs
+
+        try
+            let _, last = List.last procs
+            let out = last.StandardOutput
+            let mutable line = out.ReadLine()
+
+            while line <> null do
+                System.Console.Out.WriteLine line
+                line <- out.ReadLine()
+
+            for _, p in procs do
+                p.WaitForExit()
+
+            chainCode procs pumps
+        finally
+            for _, p in procs do
+                reap p
 
 // the statement chain at a tty [D:armed-inherit]: the byte chain with
 // the tail's stdout inherited, so the last stage sees the terminal
@@ -654,35 +753,14 @@ let runChainInherited (specs: Spec list) : unit =
     | [] -> ()
     | [ one ] -> runInherited one
     | _ ->
-        let lastIdx = specs.Length - 1
-
-        let procs =
-            specs
-            |> List.mapi (fun i sp ->
-                if i = 0 then
-                    sp, start true false sp
-                else
-                    sp, spawn (i < lastIdx) false true sp.Cwd sp.Ambient sp.Prog sp.Args sp.Env)
+        let procs, pumps = startChain false false specs
 
         try
-            procs
-            |> List.pairwise
-            |> List.iter (fun ((_, a), (_, b)) ->
-                pumpBytes
-                    a.StandardOutput.BaseStream
-                    b.StandardInput.BaseStream
-                    (fun () ->
-                        try
-                            b.StandardInput.Close()
-                        with _ ->
-                            ())
-                |> ignore)
-
             for _, p in procs do
                 p.WaitForExit()
 
-            match procs |> List.tryFind (fun (_, p) -> p.ExitCode <> 0) with
-            | Some(sp, p) -> raiseNonzero sp p.ExitCode
+            match chainFailure procs pumps with
+            | Some(sp, code) -> raiseNonzero sp code
             | None -> ()
         finally
             for _, p in procs do

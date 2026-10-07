@@ -506,6 +506,36 @@ print x' 2>&1) && fail "| text must raise on nonzero" || true
 echo "$terr" | grep -qF "exit code 5" || fail "| text lost the nonzero raise: $terr"
 echo "e2e ok: | text — whole stdout to a string, trailing blanks dropped, nonzero raises [D:reify-text]"
 
+# ---- pipe chains [D:pipe-early-exit] [D:chain-reifiers] --------------------
+# a consumer that exits early ends the chain (statement, capture, let) with
+# no "write error" noise; reifiers follow a chain; the leftmost failing
+# stage owns the code; complete's stderr is every stage's, in order
+if [ "$IS_WINDOWS" != "1" ]; then
+    pcdir=$(mkweirtmp)
+    cat > "$pcdir/early.weir" <<'WEOF'
+seq 1 1000000 | head -1
+let c = $(seq 1 1000000 | head -1) |> Seq.exactlyOne
+let l = seq 1 1000000 | head -1 | line
+print $"{c} {l}"
+WEOF
+    out=$(cd "$pcdir" && timeout 60 $BIN early.weir 2>&1) || fail "an early-exit chain must end promptly: $out"
+    [ "$out" = "1
+1 1" ] || fail "early-exit chain output, no write-error noise: $out"
+    cat > "$pcdir/reify.weir" <<'WEOF'
+let ok = sh -c "echo x" | grep x | succeeds
+let bad = sh -c "echo x; exit 2" | cat | succeeds
+let code = sh -c "exit 3" | cat | sh -c "cat; exit 5" | exitCode
+let r = sh -c "echo e1 >&2; echo o" | sh -c "cat; echo e2 >&2; exit 4" | complete
+let t = sh -c "printf 'b\na\n'" | sort | text
+print $"{ok} {bad} {code} {r.exitCode} {r.stdout |> Str.join ","} {r.stderr |> Str.join ","} [{t}]"
+WEOF
+    out=$(cd "$pcdir" && timeout 60 $BIN reify.weir 2>&1) || fail "chain reifiers must run: $out"
+    [ "$out" = "true false 3 4 o e1,e2 [a
+b]" ] || fail "chain reifiers: succeeds, leftmost code, stderr order, text: $out"
+    rm -rf "$pcdir"
+    echo "e2e ok: pipe chains — early exit ends the chain quietly; reifiers follow a chain, leftmost code, stderr in order"
+fi
+
 # a 2-param generic union checks + evals through the binary (was the
 # prelude-Result pin; Result removed [D:no-result], the fixture is now a
 # locally-declared Either)

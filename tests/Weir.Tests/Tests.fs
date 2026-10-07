@@ -4879,14 +4879,14 @@ let session3Tests =
                   (VInt 5000000L)
                   "boundary-crossing line intact"
           }
-          test "complete after an external-to-external pipeline is a parse error, not silent" {
-              match Weir.Parser.parseLine cmdResolver "yes hi | grep hi | complete" with
-              | Error msg -> Expect.stringContains msg "must directly follow a single external command segment" ""
-              | Ok _ -> failtest "expected parse failure"
+          test "complete after an external-to-external pipeline reifies the chain [D:chain-reifiers]" {
+              match Weir.Parser.parseLine cmdResolver "let r = yes hi | grep hi | complete" with
+              | Ok s -> Expect.stringContains (sprintf "%A" s) "|chainCompleted" ""
+              | Error msg -> failtest msg
           }
           test "complete after a non-external stage is a parse error" {
               match Weir.Parser.parseLine realResolver "git status |> take 1 | complete" with
-              | Error msg -> Expect.stringContains msg "must directly follow a single external command segment" ""
+              | Error msg -> Expect.stringContains msg "must directly follow a command or a command chain" ""
               | Ok _ -> failtest "expected parse failure"
           }
           test "complete type is the Completed record" {
@@ -10604,8 +10604,7 @@ let optionSweepTests =
               clean "'let' is a keyword" "let r = { let = 1 }" 11
               clean "'in' is a keyword" "let r = { in = 1 }" 11
               // A: foldChain reifier anchors on the marker, not the chain end
-              clean "must directly follow a single external command" "git | grep x | complete" 16
-              clean "must directly follow a single external command" "git | grep x | exitCode" 16
+              clean "a pipeline cannot" "git | grep x | exec" 16
 
               // gated: every keyword must still fall through to its parser —
               // the risk matrix (heads of their own constructs)
@@ -12319,11 +12318,10 @@ let agentFindingsTests =
               | Error msg -> Expect.stringContains msg "use '| complete' inside $()" ""
               | Ok _ -> failtest "the capture conflict must reject"
 
-              // the single-external-segment family rule (statement level —
-              // the let-RHS chain rejects mid-chain stages earlier, with
-              // the bare-pipe hint, family-uniformly)
+              // a reifier follows a command or a command chain
+              // [D:chain-reifiers] — never a function stage
               match Weir.Parser.parseLine cmdResolver "git log |> Seq.take 1 | exitCode" with
-              | Error msg -> Expect.stringContains msg "single external command segment" ""
+              | Error msg -> Expect.stringContains msg "must directly follow a command or a command chain" ""
               | Ok _ -> failtest "exitCode must keep the family's segment rule"
           }
           test "exec desugars to the execed application [D:exec]" {
@@ -12454,11 +12452,17 @@ let agentFindingsTests =
               | Ok(SCmd { Kind = EApp(_, _) }) -> ()
               | other -> failtest $"expected the orFailed desugar, got {other}"
           }
-          test "multi-segment reifiers share complete's rule and message shape" {
-              match Weir.Parser.parseLine cmdResolver "git log | grep x | succeeds" with
-              | Error msg ->
-                  Expect.stringContains msg "'succeeds' must directly follow a single external command segment" ""
-              | Ok s -> failtest $"expected the family error, got {s}"
+          test "a reifier after a command chain desugars to its chain twin [D:chain-reifiers]" {
+              for r, twin in
+                  [ "succeeds", "|chainSucceeded"
+                    "complete", "|chainCompleted"
+                    "exitCode", "|chainExitCoded"
+                    "line", "|chainLined"
+                    "text", "|chainTexted"
+                    "orFail \"m\"", "|chainOrFailed" ] do
+                  match Weir.Parser.parseLine cmdResolver $"let v = git log | grep x | {r}" with
+                  | Ok s -> Expect.stringContains (sprintf "%A" s) twin r
+                  | Error m -> failtest $"{r}: {m}"
           }
           test "a splat rides a reifier chain — argv desugars to a seq value [D:splat-reifier-chains]" {
               // mixed literal+splat argv folds with Seq.append
@@ -22317,6 +22321,49 @@ let tildeLiteralTests =
                   runCmd $"cd \"{before}\""
           } ]
 
+let pipeChainTests =
+    // the early-exit pump [D:pipe-early-exit] and reifiers after a chain
+    // [D:chain-reifiers] — real processes, POSIX
+    let field (v: Value) (name: string) =
+        match v with
+        | VRecord(_, fields) -> fields |> List.find (fun (n, _) -> n = name) |> snd
+        | other -> failtest $"expected a record, got {other}"
+
+    testList
+        "pipe chains [D:pipe-early-exit] [D:chain-reifiers]"
+        [ test "a consumer that exits early ends the chain; the told-to-stop producer is no failure" {
+              skipOnWindows ()
+              let sw = System.Diagnostics.Stopwatch.StartNew()
+              Expect.equal (runReal "sh -c \"seq 1 1000000\" | sh -c \"head -1\" | line") (VStr "1") "the first line"
+              Expect.equal (runReal "sh -c \"seq 1 1000000\" | sh -c \"head -1\" | succeeds") (VBool true) "told to stop is success"
+              Expect.isLessThan sw.ElapsedMilliseconds 20000L "no hang"
+          }
+          test "a stage that fails while its downstream still reads raises" {
+              skipOnWindows ()
+              Expect.throws (fun () -> runReal "sh -c \"echo a; exit 3\" | cat | line" |> ignore) "a real failure"
+              Expect.equal (runReal "sh -c \"echo a; exit 3\" | cat | succeeds") (VBool false) "succeeds is false"
+          }
+          test "exitCode and complete take the LEFTMOST failing code; stderr in stage order" {
+              skipOnWindows ()
+              Expect.equal (runReal "sh -c \"exit 3\" | cat | sh -c \"cat; exit 5\" | exitCode") (VInt 3L) "leftmost"
+
+              let r = runReal "sh -c \"echo e1 >&2; echo o\" | sh -c \"cat; echo e2 >&2; exit 4\" | complete"
+              Expect.equal (field r "exitCode") (VInt 4L) "the only failure"
+              Expect.equal (field r "stdout" |> forceSeq) [ VStr "o" ] "the tail's stdout"
+              Expect.equal (field r "stderr" |> forceSeq) [ VStr "e1"; VStr "e2" ] "every stage's stderr, in order"
+          }
+          test "text, value heads and per-stage env ride the chain" {
+              skipOnWindows ()
+              Expect.equal (runReal "sh -c \"printf 'b\\na\\n'\" | sh -c \"sort\" | text") (VStr "a\nb") "text"
+              Expect.equal (runReal "[\"c\"; \"a\"] | sh -c \"sort\" | sh -c \"head -1\" | line") (VStr "a") "value head"
+              Expect.equal (runReal "Q=q sh -c \"echo $Q\" | cat | line") (VStr "q") "a stage's env prefix"
+          }
+          test "exec after a chain teaches the shell spelling" {
+              match Weir.Parser.parseLine cmdResolver "git log | grep x | exec" with
+              | Error msg -> Expect.stringContains msg "a pipeline cannot" ""
+              | Ok s -> failtest $"must refuse, got {s}"
+          } ]
+
 let fieldSpliceTests =
     // a splice's `.field` path is one word [D:field-splices]
     let errs (lines: string list) =
@@ -23648,6 +23695,7 @@ let allTests =
           orPatternTests
           lambdaLetTests
           fieldSpliceTests
+          pipeChainTests
           armBlockTests
           holeGenericTests
           tildeLiteralTests

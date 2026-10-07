@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.0.65
+
+### Added
+
+- **A reifier follows a whole pipeline.** `git log | head -1 | line`,
+  `a | b | complete`, `| text`, `| succeeds`, `| exitCode` and
+  `| orFail` now work after a chain of commands, not just one. The code
+  is the first failing stage's (counting from the left, where the fault
+  began), or 0; `complete` carries the last stage's output and every
+  stage's error output in order. `exec` still takes a single command.
+
+### Fixed
+
+- **A pipeline whose last command stops reading early no longer hangs.**
+  `seq 1 1000000 | head -1`, `git log | head -1` and similar waited
+  forever once the producer filled the pipe; they now end as in a shell,
+  and the producer's exit is not reported as a failure. Commands run by
+  weir also stop quietly when their reader goes away, instead of
+  printing "write error: Broken pipe".
+
 ## v0.0.64
 
 ### Added
