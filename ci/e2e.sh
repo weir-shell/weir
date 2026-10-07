@@ -8190,6 +8190,12 @@ echo "$out" | grep -qF "Http.expect https://api.example.com/items" || fail "the 
 echo "$out" | grep -qF "a Secret reaches the argv of curl" || fail "the ps-visible line: $out"
 echo "$out" | grep -qF "git" || fail "an imported module's externals appear transitively: $out"
 echo "$out" | grep -qF "lib.weir" || fail "the module site carries the module's own file: $out"
+# a reified chain reports every stage [D:chain-reifiers]
+printf 'let x = git log | head -1 | line\nlet r = Q=1 git status | cat | complete\nprint $"{x} {r.exitCode}"\n' > "$candir/chain.weir"
+cout=$($BIN check --can "$candir/chain.weir" 2>&1) || fail "chain --can errored: $cout"
+for p in git head cat; do echo "$cout" | grep -qE "^ +$p( ×|  )" || fail "a reified chain reports $p: $cout"; done
+echo "$cout" | grep -qF "sets Q for children" || fail "a chain stage's prefix names Q: $cout"
+echo "$cout" | grep -qF "not statically known" && fail "a literal chain is no dynamic head: $cout"
 
 # the reifier desugar's slots [D:can-report]: orFail's msg rides ahead
 # of the program and the Env twins lead with the overlay — the report
