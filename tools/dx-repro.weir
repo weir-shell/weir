@@ -15,10 +15,6 @@
 //
 // Probes avoid string literals entirely (they use `show`) so that this file
 // never needs a quote nested three deep to ask a one-line question.
-//
-// Shape note: every command-running helper is top-level, because a block
-// `let` with a command RHS loses its reifier off the topLet spine
-// (PLAN-adversarial-review F3).
 
 type Cli = {
     /// the weir binary under test
@@ -60,7 +56,7 @@ let d7IterPrint = [ @"[1] |> Seq.iter print" ]
 let controlClean = [ @"print (show 1)" ]
 let controlError = [ @"print (show thisNameIsNotBound)" ]
 
-// ---- runners (top-level: see the shape note) --------------------------------
+// ---- runners ----------------------------------------------------------------
 
 let checkRun path =
     let r = sh -c $"'{cli.bin}' check '{path}' 2>&1" | complete

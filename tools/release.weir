@@ -25,7 +25,7 @@ let confirm msg =
 
 // ---- 1. preflight: refuse before anything mutates -------------------------
 print $"== preflight for {cli.tag} =="
-let pf = weir tools/release-preflight.weir --tag (cli.tag) | complete
+let pf = weir tools/release-preflight.weir --tag $cli.tag | complete
 pf.stdout |> Seq.iter print
 
 if pf.exitCode <> 0 then
@@ -37,8 +37,8 @@ if pf.exitCode <> 0 then
 if not (confirm $"cut AND push tag {cli.tag}?") then
     fail "aborted — nothing was tagged"
 
-git tag (cli.tag)
-git push origin (cli.tag)
+git tag $cli.tag
+git push origin $cli.tag
 print $"tagged and pushed {cli.tag} — the gated release flow is running"
 
 // ---- 3. wait for the publish (drafts do not count) -------------------------
@@ -73,13 +73,13 @@ if not (confirm $"bump {gdir}/TARGET_WEIR_RELEASE to {cli.tag}, commit and push?
     fail "aborted — remember: the grammar bump is still owed"
 
 File.write $"{gdir}/TARGET_WEIR_RELEASE" [cli.tag]
-git -C (gdir) add TARGET_WEIR_RELEASE
-git -C (gdir) commit -m $"target {cli.tag}"
-git -C (gdir) push
+git -C $gdir add TARGET_WEIR_RELEASE
+git -C $gdir commit -m $"target {cli.tag}"
+git -C $gdir push
 print "grammar target pushed"
 
 // ---- 5. the zed rev ritual (the grammar main just moved) -------------------
-let newRev = git -C (gdir) rev-parse HEAD |> Seq.exactlyOne
+let newRev = git -C $gdir rev-parse HEAD | line
 
 let bumped =
     File.read "editors/zed/extension.toml"

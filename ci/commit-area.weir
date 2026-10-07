@@ -32,41 +32,24 @@ let cli = Args.load Cli
 // entry lands in the same commit
 let areaOfSrc p =
     match p with
-    | "src/Weir/Parser.fs" -> Some "parser"
-    | "src/Weir/Script.fs" -> Some "parser"
-    | "src/Weir/Ast.fs" -> Some "parser"
-    | "src/Weir/Check.fs" -> Some "checker"
-    | "src/Weir/Purity.fs" -> Some "checker"
-    // the ambient/mutation partition [D:pure-stage2] — Purity's sibling,
-    // the classification the checker enforces (and eval consults)
-    | "src/Weir/Effects.fs" -> Some "checker"
+    | "src/Weir/Parser.fs" | "src/Weir/Script.fs" | "src/Weir/Ast.fs" -> Some "parser"
+    // Effects is the ambient/mutation partition [D:pure-stage2] — Purity's
+    // sibling, the classification the checker enforces (and eval consults)
+    | "src/Weir/Check.fs" | "src/Weir/Purity.fs" | "src/Weir/Effects.fs"
     | "src/Weir/Types.fs" -> Some "checker"
-    | "src/Weir/Eval.fs" -> Some "eval"
-    | "src/Weir/Session.fs" -> Some "eval"
-    | "src/Weir/Proc.fs" -> Some "eval"
-    | "src/Weir/Builtins.fs" -> Some "builtins"
-    | "src/Weir/Prelude.fs" -> Some "builtins"
-    | "src/Weir/Repl.fs" -> Some "repl"
-    | "src/Weir/Complete.fs" -> Some "repl"
+    | "src/Weir/Eval.fs" | "src/Weir/Session.fs" | "src/Weir/Proc.fs" -> Some "eval"
+    | "src/Weir/Builtins.fs" | "src/Weir/Prelude.fs" -> Some "builtins"
+    | "src/Weir/Repl.fs" | "src/Weir/Complete.fs" -> Some "repl"
     | "src/Weir/Lsp.fs" -> Some "lsp"
     | "src/Weir/Fmt.fs" -> Some "fmt"
-    | "src/Weir/Yaml.fs" -> Some "adapters"
-    | "src/Weir/Http.fs" -> Some "adapters"
-    // the server leg [D:http-serve] — Http.fs's twin (the listener side
-    // of the one boundary)
-    | "src/Weir/Serve.fs" -> Some "adapters"
-    | "src/Weir/Infer.fs" -> Some "adapters"
-    // the schema→types generator core [D:schema-types] — Infer's
-    // sibling: the other frontend of the one decl emitter
-    | "src/Weir/SchemaTypes.fs" -> Some "adapters"
-    | "src/Weir/Table.fs" -> Some "adapters"
-    | "src/Weir/Version.fs" -> Some "cli"
-    | "src/Weir/Program.fs" -> Some "cli"
-    | "src/Weir/Can.fs" -> Some "cli"
-    | "src/Weir/Argv.fs" -> Some "cli"
-    | "src/Weir/Extern.fs" -> Some "cli"
-    | "src/Weir/Contracts.fs" -> Some "cli"
-    | "src/Weir/Diagnose.fs" -> Some "cli"
+    // Serve is the server leg [D:http-serve] (Http's listener side of the
+    // one boundary); SchemaTypes the schema→types generator core
+    // [D:schema-types] (Infer's sibling, the other frontend of the one
+    // decl emitter)
+    | "src/Weir/Yaml.fs" | "src/Weir/Http.fs" | "src/Weir/Serve.fs" | "src/Weir/Infer.fs"
+    | "src/Weir/SchemaTypes.fs" | "src/Weir/Table.fs" -> Some "adapters"
+    | "src/Weir/Version.fs" | "src/Weir/Program.fs" | "src/Weir/Can.fs" | "src/Weir/Argv.fs"
+    | "src/Weir/Extern.fs" | "src/Weir/Contracts.fs" | "src/Weir/Diagnose.fs" -> Some "cli"
     | p when Str.endsWith ".fsproj" p -> None
     | p when Str.startsWith "src/Weir/" p -> Some "UNMAPPED"
     | _ -> None
@@ -98,12 +81,12 @@ let areaOfOther p =
         "docs"
 
 let checkCommit c =
-    let subject = git log -1 --format=%s $c |> Seq.exactlyOne
+    let subject = git log -1 --format=%s $c | line
     // merge commits are skipped [D:commit-areas]: their subjects are
     // GitHub-generated and their diffs are resolutions, not work — the
     // area lives on the commits being merged (rev-list --no-merges
     // covers ranges; this covers --commit)
-    let parents = git rev-list --parents -n 1 $c |> Seq.exactlyOne |> Str.split " " |> Seq.length
+    let parents = git rev-list --parents -n 1 $c | line |> Str.split " " |> Seq.length
 
     if parents > 2 then
         print $"commit-area SKIP: {c} is a merge ({subject})"
