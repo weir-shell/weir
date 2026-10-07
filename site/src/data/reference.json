@@ -2338,6 +2338,13 @@
       "pointer": "the reifier law: the meaning is the verdict."
     },
     {
+      "name": "text",
+      "signature": null,
+      "summary": "Reify a command to its whole stdout as one string \u2014 lines joined with newlines, trailing blank lines dropped (bash\u0027s \u0060$(\u2026)\u0060). Raises on a nonzero exit; \u0060| complete\u0060 keeps the code.",
+      "example": null,
+      "pointer": "the reifier law: the meaning is the value."
+    },
+    {
       "name": "to json",
       "signature": null,
       "summary": "Render one value as one JSON document (minified, one line): a record is an object, a seq an array (forced \u2014 one line cannot stream). A None field omits its key (so from json reads it back as None).",
