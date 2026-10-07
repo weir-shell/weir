@@ -3397,10 +3397,10 @@ echo "e2e ok: teaching fatals dominate; the reserved-word gate stays fall-throug
 
 # anchor residue A+B: foldChain reifier anchors on the marker; keyword in
 # param/field slots dominates [PLAN-open-findings]
-printf 'git | grep x | complete\n' > "$ckdir/fc.weir"
+printf 'git | grep x | exec\n' > "$ckdir/fc.weir"
 out=$($BIN check --json "$ckdir/fc.weir" || true)
 echo "$out" | grep -qF '"line":1,"col":16' || fail "foldChain anchors on the marker: $out"
-echo "$out" | grep -qF "must directly follow a single external command" || fail "reifier teaching present: $out"
+echo "$out" | grep -qF "a pipeline cannot" || fail "reifier teaching present: $out"
 echo "$out" | grep -qvF "Other error messages" || fail "reifier teaching not buried: $out"
 printf 'let f rec = 1\n' > "$ckdir/pk.weir"
 out=$($BIN check --json "$ckdir/pk.weir" || true)
@@ -5903,10 +5903,11 @@ expect "value-headed | exitCode" "1" "$out"
 # expression-position reification is the captured chain [D:drop-reify-builtins]
 out=$($BIN -e 'let r = $(echo hi | complete) in r.stdout')
 expect "expression-position reification via \$(... | complete)" '["hi"]' "$out"
-# multi-external reifier still rejects (no new law)
-errout=$(printf 'echo hi | grep h | complete\n' | checkPiped 2>&1) && fail "multi-external reifier must reject"
-echo "$errout" | grep -qF "single external command segment" || fail "multi-external rule changed: $errout"
-echo "e2e ok: reifier-with-stdin (complete/succeeds/exitCode), zero-diff spellings"
+# a multi-external chain reifies as one unit [D:chain-reifiers]
+printf 'let r = echo hi | grep h | complete\nprint $"{r.exitCode} {r.stdout |> Seq.head}"\n' > "$fddir/chainr.weir"
+out=$($BIN "$fddir/chainr.weir" 2>&1) || fail "a reified chain must run: $out"
+expect "multi-external chain | complete" "0 hi" "$out"
+echo "e2e ok: reifier-with-stdin (complete/succeeds/exitCode), zero-diff spellings, chains reify"
 rm -rf "$fddir"
 
 # ---- [<Default>]: the resting point moves [D:default-attr] ----
