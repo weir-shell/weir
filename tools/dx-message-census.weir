@@ -36,7 +36,7 @@ type Cli = {
     [<Default "weir">]
     bin: string
     /// fail if fewer than this many cases teach a repair
-    [<Default 30>]
+    [<Default 32>]
     baseline: int
 }
 
@@ -92,7 +92,10 @@ let corpus =
       // [D:field-splices]
       ("bash-field-glue", [ @"let f = ""a.txt"""; @"cp $f $f.bak" ])
       // [D:arm-blocks]
-      ("block-trailing-arg", [ @"File.write ""f.txt"" <<<"; @"    hi" ]) ]
+      ("block-trailing-arg", [ @"File.write ""f.txt"" <<<"; @"    hi" ])
+      // [D:fs-reflexes]
+      ("fs-string-module", [ @"let s = String.trim ""  a """; @"print s" ])
+      ("fs-list-type", [ @"type C = { xs: list<string> }"; @"print ""x""" ]) ]
 
 // a message "teaches" if it names a repair; the phrases below are the
 // vocabulary the existing good messages already use
@@ -123,7 +126,9 @@ let teachPhrases =
       "quote the word"
       "continues a command line"
       "interpolate one word"
-      "start the value with" ]
+      "start the value with"
+      "string functions are"
+      "one sequence type is" ]
 
 let checkRun path =
     let r = sh -c $"'{cli.bin}' check '{path}' 2>&1" | complete

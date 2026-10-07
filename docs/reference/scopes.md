@@ -68,6 +68,9 @@ within env STAGE=$stage REGION=eu-1
     sh -c "echo $STAGE in $REGION"
 ```
 
+A short body can share the head's line: `within env A=1 make`,
+`within cd "src" make` — the same scope, one command long.
+
 ## Bare `within` and `always`
 
 Holds nothing; the `always` block runs on every exit. When both the

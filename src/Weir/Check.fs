@@ -2709,6 +2709,11 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                         err
                             expr.Span
                             $"'{name}' is not a weir module — weir's sequences are 'Seq' (Seq.length, Seq.map, ...; one sequence type)"
+                    // F#'s String module, the same prior [D:fs-reflexes]
+                    | None when name = "String" ->
+                        err
+                            expr.Span
+                            "'String' is not a weir module — weir's string functions are 'Str' (Str.trim, Str.split, Str.contains, ...)"
                     | None ->
                         // same-kind candidates only (PLAN-dx-review D5): a
                         // lowercase name never suggests a constructor and
@@ -5929,6 +5934,9 @@ let rec private validateTy
                 | None -> None
 
         match arity with
+        // F#/.NET collection names [D:fs-reflexes]: one sequence type
+        | None when List.contains n [ "list"; "List"; "array"; "Array"; "ResizeArray" ] ->
+            err span $"unknown type '{n}' — weir's one sequence type is seq<T> (seq<string>, seq<int>, ...)"
         | None -> err span $"unknown type '{n}'{didYouMean n (Map.keys env.Types)}"
         | Some a when a <> targs.Length -> err span $"'{n}' expects {a} type argument(s), got {targs.Length}"
         | Some _ -> allOk targs (validateTy env selfName selfArity allowed span)

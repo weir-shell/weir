@@ -108,7 +108,8 @@
   word is now an error saying so; `\;` names the quoted spelling and
   `\ls` names `^ls`. `!=` teaches `<>`, `!x` teaches `not x`, a type
   annotation (`(x: int)`, `let x: int =`) teaches inference, and
-  `for i in 1..3` teaches `[1..3]`. A `let` that fails to parse no
+  `for i in 1..3` teaches `[1..3]`; `String.trim` names `Str.trim`,
+  and a `list<string>` field type names `seq<string>`. A `let` that fails to parse no
   longer causes a second "unbound variable" error at its uses.
 
 - **Editors and pagers get the terminal wherever a command runs as a

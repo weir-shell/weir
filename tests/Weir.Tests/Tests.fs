@@ -22581,6 +22581,12 @@ let reflexTeachingTests =
               Expect.isEmpty (errs [ "sh -c \"echo $1\" x \"\\\\\"" ]) "a literal backslash argument"
               Expect.stringContains (only [ "\\ls -la" ]) "`^name` runs the PATH program" "an escaped head"
           }
+          test "F#'s String module and collection type names teach Str and seq<T> [D:fs-reflexes]" {
+              Expect.stringContains (only [ "let s = String.trim \" a \""; "print s" ]) "string functions are 'Str'" "String.x"
+
+              for ty in [ "list<string>"; "List<int>"; "array<int>"; "ResizeArray<string>" ] do
+                  Expect.stringContains (only [ $"type C = {{ xs: {ty} }}"; "print \"x\"" ]) "one sequence type is seq<T>" ty
+          }
           test "a let that fails to parse still binds its name" {
               let ms = errs [ "let x: int = 1"; "print $\"{x}\""; "let y = x" ]
               Expect.equal ms.Length 1 $"only the real error, no unbound echoes: {ms}"
