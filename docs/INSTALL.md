@@ -1,7 +1,8 @@
 # Installing weir
 
-One static binary, no runtime. Every release carries one binary per
-platform plus a `SHA256SUMS` file.
+weir is a single static binary with nothing else to install. Each
+release has one binary per platform, plus a `SHA256SUMS` file with
+their checksums.
 
 ## The quick way
 
@@ -17,43 +18,48 @@ Windows (PowerShell):
 irm https://weir.sh/install.ps1 | iex
 ```
 
-Both detect your platform, download the **pinned** release, **verify
-the checksum**, and install — `~/.local/bin/weir` on POSIX,
-`%LOCALAPPDATA%\Programs\weir\weir.exe` on Windows (override with
-`WEIR_INSTALL_DIR`).
+Both scripts detect your platform, download the release the script
+was made for, **check its checksum**, and install it:
 
-These scripts are **generated per release and served from `weir.sh`** —
-a different origin than the GitHub release binaries. Each one pins one
-version and carries that release's checksums baked in, so verification
-never fetches anything from the binary's own origin. Compromising the
-release assets alone therefore can't feed the installer a matching
-checksum: the check is **tamper-evident here**, not merely an integrity
-check. (Where `gh` is present the installer also verifies GitHub's
-signed build provenance, best-effort — a second, independent origin.)
+- `~/.local/bin/weir` on Linux and macOS
+- `%LOCALAPPDATA%\Programs\weir\weir.exe` on Windows
 
-A pinned script installs the version it was cut for. To move to a newer
-release, re-fetch the script from `weir.sh` (it always serves the
-latest) or grab the binary manually below. To pin or downgrade, fetch
-the installer from a **specific release** instead of `weir.sh` — every
-release attaches its own generated `install.sh`/`install.ps1`, baked
-with that version's checksums:
+Set `WEIR_INSTALL_DIR` to install somewhere else.
+
+A new copy of each script is made for every release and served from
+`weir.sh`, while the binaries are downloaded from GitHub. The script
+already contains that release's version and checksums, so it doesn't
+fetch checksums from GitHub along with the binary. Someone who
+replaced a binary on GitHub couldn't also make the checksum match:
+the installer would notice the change and stop. If `gh` is installed and logged in,
+the installer also checks GitHub's signed build provenance, as a
+second check from a separate source. If that check can't run, the
+checksum still applies.
+
+Each script installs the one version it was made for. `weir.sh`
+always serves the script for the latest release, so to upgrade, fetch
+the script from `weir.sh` again (or download the binary by hand, as
+below). To install a specific or older version, fetch the installer
+from that release instead of from `weir.sh`. Every release has its
+own `install.sh` and `install.ps1` with that version's checksums:
 
 ```
 curl -fsSL https://github.com/weir-shell/weir/releases/download/<tag>/install.sh | sh
 ```
 
-There are no package-manager builds yet (`brew`, `winget`, `apt`) — the
-script above or a manual download below.
+There are no packages for `brew`, `winget` or `apt` yet. Use the
+script above or download the binary by hand.
 
-> The files named `install.sh` / `install.ps1` in the repo are
-> **templates** (`@WEIR_TAG@` / `@WEIR_SHA256SUMS@` placeholders);
-> `ci/gen-install.weir` fills them in at release time. Users fetch the
-> generated artifact from `weir.sh`, never the repo template.
+> Don't run the `install.sh` / `install.ps1` files in the repo. They
+> are templates with `@WEIR_TAG@` / `@WEIR_SHA256SUMS@` placeholders
+> that are filled in for each release. Fetch the installer from
+> `weir.sh` or from a release.
 
 ## Manual download
 
-Grab the binary for your platform — and that release's `SHA256SUMS` —
-from [releases](https://github.com/weir-shell/weir/releases):
+Download the binary for your platform, and that release's
+`SHA256SUMS`, from
+[releases](https://github.com/weir-shell/weir/releases):
 
 | platform | artifact |
 |---|---|
@@ -64,8 +70,9 @@ from [releases](https://github.com/weir-shell/weir/releases):
 | Windows x64 | `weir-<tag>-win-x64.exe` |
 | Windows arm64 | `weir-<tag>-win-arm64.exe` |
 
-Verify, then install — this is the installer's own portable check
-(one line out of `SHA256SUMS`, no GNU-only flags):
+Check the checksum, then install. This is the same check the
+installer does: it picks the binary's line out of `SHA256SUMS` and
+uses no GNU-only flags, so it works on macOS too:
 
 ```
 grep " weir-<tag>-<rid>$" SHA256SUMS | sha256sum -c -   # macOS: shasum -a 256 -c -
@@ -73,22 +80,24 @@ chmod +x weir-<tag>-<rid>
 mv weir-<tag>-<rid> ~/.local/bin/weir
 ```
 
-`~/.local/bin` must be on your `PATH` — the `curl | sh` installer warns
-when it isn't, but a manual install won't. On Windows the target is
-`%LOCALAPPDATA%\Programs\weir`, also not on `PATH` by default.
+`~/.local/bin` must be on your `PATH`. The `curl | sh` installer
+warns you when it isn't; a manual install doesn't. On Windows the
+install directory is `%LOCALAPPDATA%\Programs\weir`, which isn't on
+`PATH` by default either.
 
-Windows: `Get-FileHash -Algorithm SHA256 weir-<tag>-win-<arch>.exe`
-and compare against the `SHA256SUMS` line.
+On Windows, run `Get-FileHash -Algorithm SHA256 weir-<tag>-win-<arch>.exe`
+and compare the result with the binary's line in `SHA256SUMS`.
 
-A binary you download through a browser hits the first-run dialogs
-below — the manual path is the one that gets quarantined; the
-`curl | sh` installer sidesteps it.
+A binary downloaded through a browser triggers the first-run dialogs
+described [below](#unsigned-binaries--the-first-run-dialogs). The
+`curl | sh` installer doesn't.
 
 `weir --version` reports the release tag (`v<tag>+<sha>`).
 
 ## Container image
 
-The same released binary, on distroless. Three forms:
+The image holds the same released binary on a distroless base. You
+can use it three ways:
 
 ```
 # the REPL — needs a tty
@@ -101,51 +110,54 @@ docker run --rm -v "$PWD:/w" -w /w ghcr.io/weir-shell/weir:latest script.weir
 docker run --rm ghcr.io/weir-shell/weir:latest -e 'print "hello"'
 ```
 
-Without `-it`, the bare form prints a prompt, reads end-of-file, and
-exits immediately — correct behaviour that looks broken. The REPL
-needs a terminal; give it one.
+The REPL needs a terminal, so pass `-it`. Without it, the REPL prints
+a prompt, reads end-of-file and exits at once. That is the correct
+behaviour, but it looks broken.
 
 Worth knowing:
 
-- `:latest` follows the latest published release, and never points at
-  a prerelease — the release flow enforces this; it is not a
-  convention.
-- One manifest covers amd64 and arm64 — nothing to choose. The whole
-  pull is ~17 MB compressed: the ~13 MB binary plus the distroless base.
-- The image runs as a non-root user (uid 65532). A script that writes
-  into a mounted volume inherits ordinary volume permissions.
-- There is no shell inside — no `docker run … sh`, and `docker exec`
-  has nothing to run. The image is the binary; that is the point.
-- The image digest carries signed build provenance:
+- `:latest` is the latest published release. It never points at a
+  prerelease; the release flow enforces this.
+- The same image works on amd64 and arm64, so there's nothing to
+  choose. The whole download is about 17 MB compressed: the ~13 MB
+  binary plus the distroless base.
+- The image runs as a non-root user (uid 65532). Writing to a
+  mounted volume follows the volume's normal permissions for that
+  user.
+- There is no shell inside, so `docker run … sh` doesn't work and
+  `docker exec` has nothing to run. The image is just weir on the
+  distroless base.
+- The image comes with signed build provenance, which you can check:
   `gh attestation verify oci://ghcr.io/weir-shell/weir:latest --repo weir-shell/weir`
-- It is not a build environment: no SDK, no source. The development
-  container is `ci/run.Dockerfile` in the repo — a different artifact.
+- It is not a build environment: there is no SDK and no source. The
+  development container is a separate image, built from
+  `ci/run.Dockerfile` in the repo.
 
 ## Unsigned binaries — the first-run dialogs
 
-The binaries are **not code-signed** (a deliberate v1 posture; signing
-is a stated later item). Two platforms will warn:
+The binaries are **not code-signed** yet; signing is planned for a
+later release. Until then, two platforms warn on first run:
 
-- **macOS** quarantines downloaded binaries. Either clear the
-  attribute — `xattr -d com.apple.quarantine ~/.local/bin/weir` — or
-  allow it under System Settings → Privacy & Security after the first
-  refusal. (The `curl | sh` installer avoids the browser quarantine
-  path entirely.)
-- **Windows SmartScreen** shows "Windows protected your PC": choose
-  *More info* → *Run anyway*. Verify the checksum first — that is
-  what it is for.
+- **macOS** quarantines binaries downloaded through a browser. Either
+  remove the quarantine flag with
+  `xattr -d com.apple.quarantine ~/.local/bin/weir`, or allow weir
+  under System Settings → Privacy & Security after macOS first blocks
+  it. (Binaries installed with `curl | sh` aren't quarantined.)
+- **Windows SmartScreen** shows "Windows protected your PC". Choose
+  *More info* → *Run anyway*. Check the checksum first, so you know
+  the binary is the one that was released.
 
-A scary dialog with no explanation reads as malware; this section is
-that explanation.
+These warnings are expected and don't mean the download is malware.
 
 ## Versioning
 
-weir is `0.x`, and that means what semver says it means: **anything
-can break between releases.** Release notes state what changed and
-what broke. `1.0` happens when the language stops moving under its
-users — not on a date.
+weir is `0.x`, which in semver means **anything can break between
+releases.** The release notes say what changed and what broke. `1.0`
+will come when the language stops changing under its users, not on a
+set date.
 
 ## Building from source
 
-The README's Developing section covers it: `./publish.sh` with the
-.NET 10 SDK and clang (`./publish.ps1` + VS Build Tools on Windows).
+See the Developing section of the README. In short: run
+`./publish.sh` with the .NET 10 SDK and clang installed
+(`./publish.ps1` with the VS Build Tools on Windows).

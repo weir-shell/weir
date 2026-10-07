@@ -2,27 +2,28 @@
 
 ## Scalars
 
-- `int` — 64-bit; arithmetic overflow raises rather than wrapping,
-  while a range terminates at the type boundary — every yielded
-  value is correct
-- `float` — always finite: a would-be `NaN` or `Infinity` raises,
-  and `==` on floats is a check error naming `Float.near`
+- `int` — 64-bit. Arithmetic overflow raises an error rather than
+  wrapping around, while a range simply stops at the type's limit, so
+  every value it yields is correct
+- `float` — always finite: an operation that would produce `NaN` or
+  `Infinity` raises an error, and `==` on floats is a check error that
+  suggests `Float.near`
 - `string`
 - `bool`
-- `unit` — the value of an effect, written `()`
+- `unit` — the value an effect returns, written `()`
 
-Nothing widens implicitly: `3 / 2` is integer division, and mixing
-sides is a type error naming `Float.ofInt`:
+Nothing converts implicitly: `3 / 2` is integer division, and mixing
+int and float is a type error that suggests `Float.ofInt`:
 
 ```weir-error
 print $"{3 / 2.0}" // no implicit widening; use Float.ofInt 3
 ```
 
-`%` is integer remainder, truncated — the sign follows the dividend
-(`-7 % 3` is `-1`, F#'s and .NET's convention; Python's floored `%`
-gives `2`). A zero divisor raises, `/`'s own discipline. Floats are
-refused — weir floats are finite-only and IEEE remainder can
-produce NaN:
+`%` is integer remainder, truncated, so the sign follows the dividend
+(`-7 % 3` is `-1`, as in F# and .NET; Python's floored `%` gives `2`).
+Dividing by zero raises an error, as with `/`. Floats are refused,
+because weir floats are always finite and IEEE remainder can produce
+NaN:
 
 ```weir
 print $"{7 % 3} {-7 % 3}"
@@ -34,16 +35,16 @@ print $"{7.5 % 2.0}" // '%' is integer-only — Float.toInt one side
 
 ## The unit-bearing scalars
 
-`Duration`, `Size`, and `Instant` put the unit in the value.
+`Duration`, `Size`, and `Instant` carry their unit in the value.
 Durations and sizes have literals ([Lexical](lexical.md#duration-literals));
-instants enter through `Instant.parse` only. Same-type arithmetic
-works where it means something; cross-type arithmetic does not
-exist, and the errors name the explicit conversions
+instants come from `Instant.now ()`, `Instant.parse` or `Instant.parseWith`. Arithmetic between values of
+the same type works where it makes sense. Arithmetic across types
+doesn't exist, and the errors name the explicit conversions
 (`Duration.toMillis`, `Size.parse`, `Instant.epochMs`).
 
 ## `Uuid`
 
-A 128-bit identifier with its own type — not a string alias. `Uuid.v7`
+A 128-bit identifier with its own type, not just a string. `Uuid.v7`
 is time-ordered and strictly increasing within the process, so v7 ids
 sort by creation both as uuids and as their text; `Uuid.v4` is random;
 `Uuid.v5` is name-based and deterministic. `Uuid.parse` reads the
@@ -57,43 +58,49 @@ print $"{Uuid.v5 Uuid.ns.url "https://example.com"}"
 ```
 
 Uuids compare for equality and sort (`Seq.sort`, `Seq.min`), by their
-big-endian bytes — the same order as their text. There is no `<`:
-identifiers are not quantities. They cross JSON and YAML as the canonical
-lowercase string and splice into a command's argv as that text.
+big-endian bytes, which is the same order as their text. There is no
+`<`, since identifiers are not quantities. In JSON and YAML they are
+written as the lowercase string, and they splice into a command's argv
+as that same text.
 
 ## `seq`
 
-Lazy. Pipelines pull what they need; ranges are lazy generators;
-`[a; b; c]` literals are eager values. Re-enumerating a bound
-pipeline re-runs its effects — external commands included;
-`Seq.freeze` materializes once and is the standard escape. The
-checker warns when a command-backed binding with no visible force is
-enumerated at a second site (`possible re-enumeration`, advisory —
-`weir check` still exits 0). Command capture is `seq<string>`, one
-element per line.
+A `seq` is lazy. Pipelines compute only what they need, and ranges
+are generated lazily, while `[a; b; c]` literals are ordinary eager
+values. Iterating a bound pipeline a second time runs its effects
+again, including external commands. `Seq.freeze` computes the values
+once and keeps them, and is the usual fix. The checker warns when a
+binding backed by a command is iterated in a second place without
+being frozen (`possible re-enumeration`; this is only a warning, and
+`weir check` still exits 0). Capturing a command gives a
+`seq<string>`, one element per line.
 
-`xs[i]` is `Seq.item i xs` (raises out of range); the bracket must be
-adjacent — `f [0]` is application. `xs[a..b]` slices, **inclusive and
-clamping** (out-of-range or reversed → empty, never a raise), with
-open ends `xs[..b]` / `xs[a..]`. A bounded slice truncates a lazy
-source, so `nats[0..4]` terminates. Slicing is type-directed: a `seq`
-slices to a `seq`, a `string` to a `string` (`"weir"[1..2]` is `"ei"`,
-by UTF-16 char), and `Bytes` to `Bytes`. From-the-end is `^n`
-(`^n` = length − n): `xs[^1]` is the last element, `xs[..^2]`
-all-but-last, `xs[^2..]` the last two, `xs[^3..^1]` from the end at
-both bounds. A `^`-bound resolves against the length, so a from-end
-seq slice forces the sequence; forward open-ended slices stay lazy.
-No dotted `xs.[i]`.
+`xs[i]` is `Seq.item i xs` and raises an error when out of range. The
+bracket must directly follow the name, because `f [0]` is a function
+call. `xs[a..b]` slices, **inclusive and clamped** to the available
+range (an out-of-range or reversed range gives an empty result rather
+than an error), and either end can be left open: `xs[..b]` / `xs[a..]`.
+A bounded slice stops reading a lazy source, so `nats[0..4]`
+terminates. A slice has the type of what you slice: a `seq` gives a
+`seq`, a `string` a `string` (`"weir"[1..2]` is `"ei"`, counted in
+UTF-16 chars), and `Bytes` gives `Bytes`. `^n` counts from the end
+(`^n` = length − n): `xs[^1]` is the last element, `xs[..^2]` all but
+the last, `xs[^2..]` the last two, `xs[^3..^1]` uses the end for both
+bounds. A `^` bound needs the length, so slicing a seq from the end
+reads the whole sequence; slices that count from the start stay lazy.
+There is no dotted `xs.[i]`.
 
 ## Tuples
 
-`(a, b)` — arity two and up, structural. The moment a shape needs
-names, declare a record. `fst`/`snd` project pairs only.
+`(a, b)` — two or more elements. A tuple type is just its element types; it needs no declaration. As soon as
+the parts need names, declare a record instead. `fst`/`snd` work on
+pairs only.
 
 ## Records
 
-Nominal, with exact field sets — a literal names every field, and
-update syntax derives without adding:
+Records are nominal and have a fixed set of fields: a record literal
+must name every field, and `with` copies a record with some fields
+changed but cannot add new ones:
 
 ```weir
 type Score = { Name: string; Points: int }
@@ -111,19 +118,21 @@ print $"{q}"
 ```
 
 Two declared records with the same fields are different types.
-Anonymous record types — `{| ip: string |}` — are the exception:
-structural, field-order canonicalized, for reading a foreign shape
-once at a boundary (`from json {| ip: string |}`); your own data
-declares a record. Fields take check-time attributes
-([Lexical](lexical.md#attributes)), fully erased at runtime; a
-field whose wire key is not a legal identifier names it with
+Anonymous record types like `{| ip: string |}` are the exception: two
+with the same fields are the same type, whatever the field order.
+They are meant for reading an external shape once
+(`from json {| ip: string |}`); for your own data, declare a record.
+Fields can take attributes ([Lexical](lexical.md#attributes)), which
+are read at check time and have no effect at runtime. A field whose
+JSON/YAML key is not a legal identifier gives the key with
 `[<Wire "key">]`.
 
 ## Unions
 
-Cases carry optional payloads; multi-value payloads are tuples.
-Construction is the case name; an imported union's cases stay
-qualified:
+Each case can carry a payload; a payload of several values is a
+tuple. You construct a value by writing the case name. For an
+imported union, constructing a value needs the module name (`X.Red`),
+but a pattern names the case bare (`| Red ->`):
 
 ```weir
 type Verdict =
@@ -139,17 +148,18 @@ match v with
 
 ## `Option`
 
-`Some x` / `None` — absence as a value. Produced by the `try`
-variants (`Seq.tryFind`, `Str.tryToInt`, `Bytes.tryFromBase64`),
-consumed by `match` or the `Option` module
-(`defaultValue`, `map`, `orFail`).
+`Some x` / `None` represent a value that may be missing. The `try`
+functions return them (`Seq.tryFind`, `Str.tryToInt`,
+`Bytes.tryFromBase64`), and you handle them with `match` or the
+`Option` module (`defaultValue`, `map`, `orFail`).
 
 ## `Map`
 
-`Map<string, T>` — keys are data, and JSON object keys are
-strings, so string keys only. `ofPairs` (last key wins), `get`
-(raises, naming the key), `tryGet`, `has`, `pairs`/`keys`/`values`
-(key-sorted). No `m[k]` indexing, and `==` is not defined:
+`Map<string, T>` only allows string keys, matching JSON object keys.
+The functions are `ofPairs` (the last duplicate key wins), `get`
+(raises an error naming a missing key), `tryGet`, `has`, and
+`pairs`/`keys`/`values` (sorted by key). There is no `m[k]` indexing,
+and `==` is not defined:
 
 ```weir-error
 let a = Map.ofPairs [("k", 1)]
@@ -158,49 +168,57 @@ print (show (a == a)) // '==' is not defined for Map<string, int>
 
 ## `Bytes` and `Secret`
 
-`Bytes` is the non-text value — opt-in at both ends, refused at
-every rendering boundary with the exit named
+`Bytes` holds binary data. It is never converted to or from text
+implicitly — you read and write it with functions like
+`File.readBytes` and `File.writeBytes` — and anywhere it would be rendered as text the error
+names the function to use instead
 ([the guide](../GUIDE.md#binary-data-bytes)). It slices like a
-sequence — `b[1..3]`, `b[..2]`, `b[3..]`, inclusive and clamping, to
-`Bytes` — but has no single `b[i]`; `Bytes.sub start len` takes one
-byte's window. `Secret` is the rendering marker for credentials:
-`show` masks, interpolation and the wire refuse, `Secret.reveal` is
-the one exit, argv splices pass it whole.
+sequence — `b[1..3]`, `b[..2]`, `b[3..]`, inclusive and clamped,
+giving `Bytes` — but has no single-element `b[i]`; use
+`Bytes.sub start len` to take a range, including a single byte
+(`Bytes.sub i 1`). `Secret` marks a
+credential so it is never shown by accident: `show` masks it,
+interpolation and serialization refuse it, `Secret.reveal` is the
+only way to get the text out, and splicing it into argv passes it
+as-is.
 
 ## Functions
 
-`let f x y = …` is curried; partial application is first-class.
-Bindings generalize — a polymorphic `let id x = x` stays
-polymorphic, and a higher-order parameter infers — `let apply f x = f x`
-types as `('a -> 'b) -> 'a -> 'b` and applies like any function:
+`let f x y = …` is curried, and you can partially apply any function.
+Bindings are generic where possible: `let id x = x` works on any type,
+and a function-typed parameter is inferred too, so
+`let apply f x = f x` has type `('a -> 'b) -> 'a -> 'b` and can be
+called like any function:
 
 ```weir
 let apply f x = f x
 print (apply (fun n -> n + 1) 1)
 ```
 
-The one inference limit: `+` on two unknowns cannot infer (int or
-string?) — anchor one side with `x + 0`.
+The one place inference falls short: `+` on two values of unknown
+type can't be inferred (int or string?), so pin one side down, for
+example with `x + 0`.
 
-A function type is also **writable** — in a union payload, a record
+You can also **write** a function type — in a union payload, a record
 field, or a generic argument: `Custom of (string -> bool)`,
 `{ matches: string -> bool }`. `->` is right-associative and binds
-looser than `*` and generics (`int * string -> bool` is
-`(int * string) -> bool`), and a function domain parenthesises
-(`(unit -> int) -> string`). Such a value constructs and its function
-calls, but the data boundaries refuse it, naming the field: `==`,
-`to json`, `to yaml`, and `show` all reject a type transitively
-containing a function. So *serialisable* is a property of a record's
-fields, not a blanket guarantee — a scalar-only record still crosses
-every boundary.
+more loosely than `*` and generics (`int * string -> bool` is
+`(int * string) -> bool`); a function-typed argument needs
+parentheses (`(unit -> int) -> string`). You can construct such a
+value and call the function inside it, but `==`, `to json`, `to yaml`
+and `show` reject any type that contains a function anywhere, and the
+error names the field. So whether a record can be serialized depends
+on its fields: a record of plain scalars works everywhere.
 
 ## Constraints
 
-Equality, rendering, and ordering flow through three built-in
-constraint families — inferred, never annotated, and closed: no
-user type classes. A helper like `let same x y = x == y` works on
-any type in the family and rejects at the use site otherwise
-(functions and seqs do not compare; floats teach `Float.near`).
+Equality, rendering and ordering each work through a built-in
+constraint. Constraints are inferred, never written out, and you
+cannot define your own (there are no user type classes). A helper
+like `let same x y = x == y` works on any type that supports
+equality, and using it with any other type is an error where it is
+called. Functions and seqs can't be compared, and for floats the
+error suggests `Float.near`.
 
 ```weir
 let same x y = x == y

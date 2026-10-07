@@ -5198,44 +5198,44 @@ let builtinDocs: Map<string, BuiltinDoc> =
           // answer like any member — the docs live here, one source
           "retry",
           bd
-              "Re-run a body until its predicate passes: `retry attempts=5 delay=30s` + an indented body. A bool body is the predicate; a value body takes `until r` + a predicate block and yields the value. Exhaustion raises; raises inside the body propagate (make failure data with | succeeds / | complete)."
+              "Re-run an indented body until it succeeds: `retry attempts=5 delay=30s` followed by the body. If the body returns a bool, true means success. If it returns another value, add `until r` and a predicate block; retry then returns the value that passed. Running out of attempts raises. An error raised inside the body is not retried, it propagates; to retry a failing command, turn its result into data with `| succeeds` or `| complete`."
               (Some "retry attempts=2 delay=1ms true")
-              (Some "options are a record underneath: retry { Retry.defaults with attempts = 3 }")
+              (Some "The options are a record, so you can also write `retry { Retry.defaults with attempts = 3 }`.")
           "poll",
           bd
-              "retry's time-bounded twin: `poll timeout=5m interval=10s` + a readiness body. `watch=<proc>` fails fast when the scoped process dies (its last output rides the error) and stamps the watched state on a timeout."
+              "Like retry, but bounded by time instead of attempts: `poll timeout=5m interval=10s` followed by a body that checks readiness. With `watch=<proc>`, poll fails immediately if that scoped process dies (the error includes its last output), and a timeout error reports the process's state."
               (Some "poll timeout=1s interval=1ms true")
               (Some
-                  "the wait-for-ready shape: within proc srv = … then poll timeout=10s watch=srv + Net.portOpen <port>")
+                  "To wait for a server to come up, start it with `within proc srv = …`, then `poll timeout=10s watch=srv` with `Net.portOpen <port>` as the body.")
           "within",
           bd
-              ("A scoped resource for an indented block, released on every exit (normal and raise): "
+              ("Open a resource for an indented block. It is released however the block exits, normally or by an error. The kinds: "
                + (Ast.withinKinds
                   |> List.filter (fun k -> not k.Standalone)
                   |> List.map (fun k -> $"`{k.Name}` — {k.Doc}")
                   |> String.concat "; ")
                + ".")
               (Some "within tmp d\n    print d")
-              (Some "within proc srv = <command> binds a Proc handle; the tree is killed and reaped at scope exit")
+              (Some "`within proc srv = <command>` binds a Proc handle; the process and its children are killed and reaped when the block exits.")
           // the purity assertion's two spellings [D:pure-stage1] — its
           // own head, never `within pure`
           "pure",
           bd
-              "A purity assertion for an indented block: the body must reach no effect (filesystem, command, network, environment, console, clock) — a reachable effect is a check error naming the offender. Opt-in only: weir stays effect-normal, and code outside a pure region is never gated."
+              "Assert that an indented block has no side effects: no filesystem, commands, network, environment, console or clock. If the block can reach one, `weir check` reports an error naming it. This is opt-in; code outside a pure block is not restricted."
               (Some "pure 1 + 1")
-              (Some "the binding spelling is the `let pure` modifier; unknown callables (a function param, an import's member) forfeit purity — the judgement may refuse, it never lies")
+              (Some "To mark a whole function, use `let pure`. Calls the checker cannot see into (a function parameter, a member of an import) count as impure, so the check may reject code that is actually pure, but it never accepts code that is not.")
           "let pure",
           bd
-              "The purity modifier — weir's first post-let modifier: `let pure f x = …` asserts the binding's whole body reaches no effect, and an impure body is a check error. Desugars to a body-spanning pure block; the binding hovers with the (pure) badge."
+              "Mark a binding as pure: `let pure f x = …` asserts that its whole body has no side effects, and `weir check` reports an error if it does. It works the same as wrapping the body in a `pure` block; hover shows the binding with a (pure) badge."
               (Some "let pure double n = n * 2")
-              (Some "#help pure has the block form and the effect families")
+              (Some "See `#help pure` for the block form and the list of effects.")
           // ---- Instant: the UTC point [D:instant] ----
           "Instant.now",
           bd "The current instant (UTC)." (Some "Instant.now () > Instant.parse \"2020-01-01\"") None
           |> named [ "unit" ]
           "Instant.parse",
           bd
-              "An ISO 8601 timestamp (Z or a numeric offset, normalized to UTC; a bare date reads as midnight UTC). Raises on anything else — tryParse asks."
+              "Parse an ISO 8601 timestamp with Z or a numeric offset, converted to UTC. A bare date means midnight UTC. Raises on anything else; use tryParse to get an Option instead."
               (Some "Instant.parse \"2026-08-14T12:00:00Z\"")
               None
           |> named [ "text" ]
@@ -5244,24 +5244,24 @@ let builtinDocs: Map<string, BuiltinDoc> =
           |> named [ "text" ]
           "Instant.parseWith",
           bd
-              "Read a timestamp by a named format — %Y %m %d %e (1-2 digit day) %b (Jan..Dec) %H %M %S %f %z (%% literal), other text literal. Prefix semantics: a log line's tail rides free. No %z means UTC. Raises on mismatch, naming the position."
+              "Parse a timestamp using a format string: %Y %m %d %e (1-2 digit day) %b (Jan..Dec) %H %M %S %f %z, with %% for a literal %; any other text must match exactly. Only the start of the text has to match, so trailing text such as the rest of a log line is ignored. Without %z the time is UTC. Raises on a mismatch, naming the position."
               (Some "Instant.parseWith \"%Y/%m/%d %H:%M:%S\" \"2026/08/14 09:15:00 GET /health\"")
               None
           |> named [ "format"; "text" ]
           "Instant.tryParseWith",
           bd
-              "Some instant, or None when the line does not match (an unknown directive still raises — that is a format bug, not a data miss)."
+              "Some instant, or None when the text does not match. An unknown directive in the format still raises, because that is a bug in the format, not in the data."
               (Some "Instant.tryParseWith \"%Y-%m-%d\" \"no timestamp here\"")
               None
           |> named [ "format"; "text" ]
           "Instant.epochMs",
           bd
-              "Milliseconds since the Unix epoch, as an int — the interop escape (JSON fields, date +%s%3N)."
+              "Milliseconds since the Unix epoch, as an int. Useful for JSON fields and other tools (like `date +%s%3N`)."
               (Some "Instant.parse \"1970-01-01T00:00:01Z\" |> Instant.epochMs")
               None
           |> named [ "t" ]
           "Instant.ofEpochMs",
-          bd "The instant at an epoch-milliseconds int." (Some "Instant.ofEpochMs 0 |> show") None
+          bd "The instant for a number of milliseconds since the Unix epoch." (Some "Instant.ofEpochMs 0 |> show") None
           |> named [ "ms" ]
           // ---- Uuid: 128-bit identifiers [D:uuid] ----
           "Uuid.v4",
@@ -5269,13 +5269,13 @@ let builtinDocs: Map<string, BuiltinDoc> =
           |> named [ "unit" ]
           "Uuid.v7",
           bd
-              "A time-ordered uuid (version 7): epoch milliseconds, then a counter and random bits. Strictly increasing within this process — sorts by creation as a uuid and as text."
+              "A time-ordered uuid (version 7): epoch milliseconds, then a counter and random bits. Values are strictly increasing within this process, so they sort by creation time both as uuids and as text."
               (Some "Uuid.v7 () |> Uuid.instant")
               None
           |> named [ "unit" ]
           "Uuid.v7At",
           bd
-              "A version 7 uuid at the given instant, truncated to milliseconds — for records that carry their own time. It orders with v7 when the instant lies between the last one generated and now; an earlier or future instant gets random bits with no ordering guarantee. Raises before the unix epoch."
+              "A version 7 uuid for the given instant, truncated to milliseconds. Use it for records that carry their own timestamp. If the instant is between the last generated uuid and now, it sorts correctly with v7 uuids; an earlier or future instant gets random bits and no ordering guarantee. Raises for instants before the Unix epoch."
               (Some "Uuid.v7At (Instant.parse \"2022-02-22T19:22:22Z\") |> Uuid.instant")
               None
           |> named [ "t" ]
@@ -5292,19 +5292,19 @@ let builtinDocs: Map<string, BuiltinDoc> =
               None
           "Uuid.parse",
           bd
-              "Read a uuid: 8-4-4-4-12 hex digits or 32 bare, any case, an optional urn:uuid: prefix. Every version and variant reads. Raises on anything else — tryParse asks."
+              "Parse a uuid: 8-4-4-4-12 hex digits or 32 digits without dashes, in any case, with an optional urn:uuid: prefix. Every version and variant is accepted. Raises on anything else; use tryParse to get an Option instead."
               (Some "Uuid.parse \"urn:uuid:F81D4FAE-7DEC-11D0-A765-00A0C91E6BF6\"")
               None
           |> named [ "text" ]
           "Uuid.tryParse",
           bd
-              "Some uuid, or None when the text is not one (braces and other platform spellings included)."
+              "Some uuid, or None when the text is not one (including braces and other platform-specific forms)."
               (Some "Uuid.tryParse \"{f81d4fae-7dec-11d0-a765-00a0c91e6bf6}\"")
               None
           |> named [ "text" ]
           "Uuid.toString",
           bd
-              "The canonical text: lowercase 8-4-4-4-12 — the spelling show, JSON and argv use."
+              "The standard text form: lowercase 8-4-4-4-12. This is what show, JSON and command arguments use."
               (Some "Uuid.toString Uuid.nil")
               None
           |> named [ "id" ]
@@ -5320,11 +5320,11 @@ let builtinDocs: Map<string, BuiltinDoc> =
               (Some "Uuid.parse \"017f22e2-79b0-7cc3-98c4-dc0c0c07398f\" |> Uuid.instant")
               None
           |> named [ "id" ]
-          "Uuid.nil", bd "The all-zero uuid — no such value." (Some "show Uuid.nil") None
-          "Uuid.max", bd "The all-ones uuid — sorts after every other." (Some "show Uuid.max") None
+          "Uuid.nil", bd "The all-zero uuid, used to mean \"no uuid\"." (Some "show Uuid.nil") None
+          "Uuid.max", bd "The all-ones uuid. It sorts after every other uuid." (Some "show Uuid.max") None
           "Uuid.toBytes",
           bd
-              "The 16 bytes, big-endian — network order, the order the text reads in."
+              "The 16 bytes in big-endian (network) order, the same order as the text form."
               (Some "Uuid.nil |> Uuid.toBytes |> Bytes.toBase64")
               None
           |> named [ "id" ]
@@ -5334,7 +5334,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
           // ---- Map: the ID-keyed object [D:map-string] ----
           "Map.ofPairs",
           bd
-              "Build a map from (key, value) pairs; duplicate keys last-win (the JSON boundary's law)."
+              "Build a map from (key, value) pairs. If a key repeats, the last value wins, as when reading JSON."
               (Some "Map.ofPairs [(\"a\", 1); (\"b\", 2)]")
               None
           |> named [ "pairs" ]
@@ -5355,7 +5355,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
           |> named [ "m" ]
           "Map.get",
           bd
-              "The value under a key (raises naming the key when absent — tryGet asks)."
+              "The value for a key. Raises, naming the key, when it is missing; use tryGet to get an Option instead."
               (Some "Map.ofPairs [(\"aaa\", 1)] |> Map.get \"aaa\"")
               None
           |> named [ "key"; "m" ]
@@ -5373,13 +5373,13 @@ let builtinDocs: Map<string, BuiltinDoc> =
           |> named [ "m" ]
           "Map.add",
           bd
-              "A new map with the entry set (replacing an existing key); the original is untouched."
+              "A new map with the entry added, replacing any existing value for the key; the original is unchanged."
               (Some "Map.ofPairs [(\"a\", 1)] |> Map.add \"k\" 5")
               None
           |> named [ "key"; "value"; "m" ]
           "Map.remove",
           bd
-              "A new map without the key (absent is fine); the original is untouched."
+              "A new map without the key (a missing key is not an error); the original is unchanged."
               (Some "Map.ofPairs [(\"a\", 1); (\"k\", 2)] |> Map.remove \"k\"")
               None
           |> named [ "key"; "m" ]
@@ -5388,22 +5388,22 @@ let builtinDocs: Map<string, BuiltinDoc> =
           bd "The child's OS process id." None (Some "within proc p = <command> binds the handle; see #help within")
           |> named [ "p" ]
           "Proc.running",
-          bd "True while the child has not exited." None (Some "poll watch=p checks this for you, with better errors")
+          bd "True while the child has not exited." None (Some "`poll watch=p` checks this for you and gives better errors.")
           |> named [ "p" ]
           "Proc.wait",
           bd
-              "Block until the child exits naturally; its exit code as data. The way to let a scoped process finish — the scope's own exit kills."
+              "Wait until the child exits on its own and return its exit code. Use this to let a scoped process finish; otherwise it is killed when the block exits."
               None
               None
           |> named [ "p" ]
           "Proc.stop",
-          bd "Tree-kill and reap now, idempotent; the scope's exit is then a no-op." None None
+          bd "Kill the process and its children now and wait for them. Safe to call more than once; the block's exit then has nothing left to do." None None
           |> named [ "p" ]
           "Proc.tail",
           bd
-              "The child's last ~100 output lines (stderr first) from the spill — readable while it runs."
+              "The child's last ~100 lines of output (stderr first). You can read it while the process is still running."
               None
-              (Some "poll-watch failures carry this automatically")
+              (Some "Errors from `poll watch=…` include this automatically.")
           |> named [ "p" ]
           // ---- Server: the scoped-listener handle [D:http-serve] ----
           "Server.port",
@@ -5414,14 +5414,14 @@ let builtinDocs: Map<string, BuiltinDoc> =
           |> named [ "srv" ]
           "Server.streamErrors",
           bd
-              "The messages of any Stream-body producers that raised mid-flight — the truncated responses the client saw a broken body for. Empty until one fails; the designated channel for a streaming failure, so a raise never leaves the handler."
+              "Error messages from Stream response bodies that raised partway through; the client received a truncated body for each. Empty until one fails. Streaming errors are reported here instead of being raised out of the handler."
               None
-              (Some "a Stream producer raise aborts the client's body and lands here")
+              (Some "When a Stream body raises, the client's response is cut off and the error is recorded here.")
           |> named [ "srv" ]
           // ---- Net: readiness probes [D:scoped-procs] ----
           "Net.portOpen",
           bd
-              "True when 127.0.0.1:<port> accepts a TCP connection (250ms attempt) — poll's readiness check. Local ports only for now."
+              "True when 127.0.0.1:<port> accepts a TCP connection within 250ms. Meant as a readiness check inside poll. Only local ports are supported for now."
               (Some "Net.portOpen 1")
               None
           |> named [ "port" ]
@@ -5440,18 +5440,18 @@ let builtinDocs: Map<string, BuiltinDoc> =
           |> named [ "pred"; "xs" ]
           "Seq.choose",
           bd
-              "Map and drop the None results in one lazy pass."
+              "Apply a function that returns an Option and keep only the Some values, lazily."
               (Some "[1; 2; 3] |> Seq.choose (fun x -> if x > 1 then Some x else None) |> Seq.freeze")
               None
           |> named [ "f"; "xs" ]
           "Seq.fold",
-          bd "Left-fold: thread an accumulator through the elements." (Some "[1; 2; 3] |> Seq.fold (+) 0") None
+          bd "Combine the elements from left to right, starting from an initial accumulator." (Some "[1; 2; 3] |> Seq.fold (+) 0") None
           |> named [ "f"; "init"; "xs" ]
           "Seq.freeze",
           bd
-              "Materialize a lazy sequence, caching it."
+              "Evaluate a lazy sequence now and keep the results."
               (Some "[1; 2; 3] |> Seq.map (fun x -> x + 1) |> Seq.freeze")
-              (Some "freeze once, then reuse freely — it memoizes (the two customers: reuse and timing).")
+              (Some "Freeze a sequence you will read more than once, or to capture its contents now (such as a command's output or a directory listing) before something changes them.")
           |> named [ "xs" ]
           "Seq.head",
           (bd "The first element (raises on empty)." (Some "Seq.head [1; 2; 3]") None
@@ -5461,13 +5461,13 @@ let builtinDocs: Map<string, BuiltinDoc> =
            |> named [ "xs" ])
           "Seq.exactlyOne",
           (bd
-              "The one element — a cardinality assertion: raises on none and on more (head silently accepts a second element, hiding a wrong-arity source). Use it for command output expected to be exactly one line."
+              "The only element. Raises if there are none or more than one (unlike head, which quietly ignores extra elements). Use it for command output that should be exactly one line."
               (Some "[\"one line\"] |> Seq.exactlyOne |> print")
               None
            |> named [ "xs" ])
           "Seq.tryExactlyOne",
           (bd
-              "exactlyOne's Option twin: Some when the sequence has exactly one element, None on none or more."
+              "Like exactlyOne, but returns an Option: Some when there is exactly one element, None otherwise."
               (Some "[42] |> Seq.tryExactlyOne")
               None
            |> named [ "xs" ])
@@ -5503,7 +5503,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
            |> named [ "x"; "xs" ])
           "Seq.equal",
           (bd
-              "Element-wise equality, length-sensitive (equatable elements — Seq.contains's constraint). Lockstep and short-circuiting: stops at the first mismatch, never pulls beyond need. The honest spelling of output-vs-expected — a join-then-compare is lossy when elements contain the separator."
+              "True when both sequences have the same length and equal elements in order. Elements must support equality, as for Seq.contains. It stops at the first mismatch without reading further. Prefer it to joining and comparing strings, which can give a wrong answer when elements contain the separator."
               (Some "[\"a\"; \"b\"] |> Seq.equal [\"a\"; \"b\"]")
               None
            |> named [ "xs"; "ys" ])
@@ -5533,19 +5533,19 @@ let builtinDocs: Map<string, BuiltinDoc> =
            |> named [ "f"; "xs" ])
           "Seq.windowed",
           (bd
-              "Sliding windows of size n, lazy (produced as the source is pulled; a short source yields the empty seq — no partial window; windows view the same memoized elements). Raises when n <= 0."
+              "Sliding windows of n consecutive elements, produced lazily. A source shorter than n gives an empty sequence (there are no partial windows). The windows share the same cached elements. Raises when n <= 0."
               (Some "[1; 2; 3] |> Seq.windowed 2 |> Seq.map Seq.freeze |> Seq.freeze")
               None
            |> named [ "n"; "xs" ])
           "Seq.last",
           (bd
-              "The last element — asserts the source is non-empty (raises 'last: empty sequence'; Seq.tryLast answers None instead), and forces the whole source by necessity: an infinite source does not return."
+              "The last element. Raises 'last: empty sequence' when empty; Seq.tryLast returns None instead. It reads the whole sequence, so it never returns on an infinite one."
               (Some "[1; 2; 3] |> Seq.last")
               None
            |> named [ "xs" ])
           "Seq.tryLast",
           (bd
-              "The last element as an Option (None when empty) — the asking twin; forces the whole source."
+              "The last element as an Option, None when empty. Reads the whole sequence."
               (Some "[] |> Seq.tryLast")
               None
            |> named [ "xs" ])
@@ -5563,168 +5563,168 @@ let builtinDocs: Map<string, BuiltinDoc> =
            |> named [ "start"; "step"; "stop" ])
           "Seq.groupBy",
           bd
-              "Group elements by a key into (key, items) pairs — F#'s own shape; countBy/zip/pairwise speak the same tuples."
+              "Group elements by a key into (key, items) pairs, as in F#."
               (Some "[1; 2; 3] |> Seq.groupBy (fun x -> x) |> Seq.freeze")
               None
           |> named [ "key"; "xs" ]
           // ---- the Seq-gaps cohort [D:seq-gaps] ----------------------
           "Seq.collect",
           bd
-              "Map each element to a sequence and flatten, lazily (F#'s collect; flatMap elsewhere)."
+              "Map each element to a sequence and flatten the results into one, lazily (flatMap in other languages)."
               (Some "[\"a<b\"; \"c\"] |> Seq.collect (Str.split \"<\") |> Seq.freeze")
               None
           |> named [ "f"; "xs" ]
           "Seq.concat",
           bd
-              "Flatten a sequence of sequences, lazily (collect with the identity)."
+              "Flatten a sequence of sequences into one, lazily."
               (Some "[[1; 2]; [3]] |> Seq.concat |> Seq.freeze")
               None
           |> named [ "xss" ]
           "Seq.find",
           bd
-              "The first element a predicate accepts (raises when none match — tryFind asks)."
+              "The first element a predicate accepts. Raises when none match; use tryFind to get an Option instead."
               (Some "[1; 5; 3] |> Seq.find (fun x -> x > 2)")
               None
           |> named [ "pred"; "xs" ]
           "Seq.indexed",
           bd
-              "Pair every element with its zero-based position, lazily — mapi/iteri are `indexed |> map`/`iter` over the tuple."
+              "Pair every element with its zero-based index, lazily. For F#'s mapi/iteri, use `indexed |> map`/`iter` on the pairs."
               (Some "[\"a\"; \"b\"] |> Seq.indexed |> Seq.freeze")
               None
           |> named [ "xs" ]
           "Seq.rev",
           bd
-              "Reverse. Forces the whole input on the first pull (never an infinite seq)."
+              "Reverse the sequence. The whole input is read when the first element is requested, so it cannot be used on an infinite sequence."
               (Some "[1; 2; 3] |> Seq.rev |> Seq.freeze")
               None
           |> named [ "xs" ]
           "Seq.chunkBySize",
           bd
-              "Split into consecutive chunks of at most n, lazily — the batching member (the last chunk may be short)."
+              "Split into consecutive batches of at most n elements, lazily. The last batch may be shorter."
               (Some "[1; 2; 3; 4; 5] |> Seq.chunkBySize 2 |> Seq.map Seq.freeze |> Seq.freeze")
               None
           |> named [ "n"; "xs" ]
           "Seq.takeWhile",
           bd
-              "Elements while the predicate holds, lazily; stops at the first refusal."
+              "The leading elements for which the predicate holds, lazily; stops at the first one that fails."
               (Some "[1; 2; 9; 1] |> Seq.takeWhile (fun x -> x < 5) |> Seq.freeze")
               None
           |> named [ "pred"; "xs" ]
           "Seq.skipWhile",
           bd
-              "Drop the leading run the predicate accepts, lazily; the rest streams whole."
+              "Drop leading elements while the predicate holds, then return all the rest, lazily."
               (Some "[1; 2; 9; 1] |> Seq.skipWhile (fun x -> x < 5) |> Seq.freeze")
               None
           |> named [ "pred"; "xs" ]
           "Seq.countBy",
           bd
-              "Count elements per projected key as (key, count) pairs, first-seen key order; forces on the first pull."
+              "Count the elements per key as (key, count) pairs, in the order each key is first seen. The whole input is read when the first pair is requested."
               (Some "[\"a\"; \"bb\"; \"c\"] |> Seq.countBy Str.length |> Seq.freeze")
               None
           |> named [ "key"; "xs" ]
           "Seq.distinctBy",
           bd
-              "Keep the first element per projected key, lazily — distinct's projection twin."
+              "Keep only the first element for each key, lazily. Like distinct, but compares by a key function."
               (Some "[\"a\"; \"bb\"; \"cc\"] |> Seq.distinctBy Str.length |> Seq.freeze")
               None
           |> named [ "key"; "xs" ]
           "Seq.reduce",
           bd
-              "Fold without a seed: the first element starts the accumulator (raises on empty — fold takes the seed)."
+              "Like fold without an initial value: the first element is the starting accumulator. Raises on an empty sequence; use fold when you have a starting value."
               (Some "[1; 2; 3] |> Seq.reduce (+)")
               None
           |> named [ "f"; "xs" ]
           "Seq.tryReduce",
           bd
-              "reduce's Option twin: Some result, or None on an empty sequence (where reduce raises — there is no seed to return)."
+              "Like reduce, but returns an Option: Some result, or None for an empty sequence (where reduce raises)."
               (Some "[1; 2] |> Seq.where (fun n -> n > 9) |> Seq.tryReduce (+)")
               None
           |> named [ "f"; "xs" ]
           "Seq.scan",
           bd
-              "Fold emitting every intermediate state, the seed first, lazily."
+              "Like fold, but returns every intermediate accumulator, starting with the initial value, lazily."
               (Some "[1; 2; 3] |> Seq.scan (+) 0 |> Seq.freeze")
               None
           |> named [ "f"; "init"; "xs" ]
           "Seq.tryPick",
           bd
-              "The first Some a chooser yields, as an Option — choose-then-head in one pass."
+              "Apply a function to each element and return the first Some result, or None."
               (Some "[\"a\"; \"12\"] |> Seq.tryPick Str.tryToInt")
               None
           |> named [ "f"; "xs" ]
           "Seq.pick",
           bd
-              "The first Some a chooser yields (raises when none — tryPick asks)."
+              "Apply a function to each element and return the value of the first Some result. Raises when there is none; use tryPick to get an Option instead."
               (Some "[\"a\"; \"12\"] |> Seq.pick Str.tryToInt")
               None
           |> named [ "f"; "xs" ]
           "Seq.except",
           bd
-              "Set difference: the source without the excluded values (exclusions first, source last; the exclusion set materializes on the first pull, the source streams)."
+              "The elements of the sequence that are not in the excluded values. The excluded values come first and are read in full on the first request; the sequence itself is read lazily."
               (Some "[1; 2; 3; 4] |> Seq.except [2; 4] |> Seq.freeze")
               None
           |> named [ "excluded"; "xs" ]
           "Seq.replicate",
           bd
-              "n copies of one value, lazily (raises on a negative count)."
+              "A sequence of n copies of a value, lazily. Raises on a negative count."
               (Some "Seq.replicate 3 \"x\" |> Seq.freeze")
               None
           |> named [ "n"; "x" ]
           "Seq.max",
-          bd "The largest element (Ord; raises on empty). One pass — no sort." (Some "Seq.max [3; 1; 2]") None
+          bd "The largest element, found in one pass without sorting. Elements must be comparable; raises on an empty sequence." (Some "Seq.max [3; 1; 2]") None
           |> named [ "xs" ]
           "Seq.min",
-          bd "The smallest element (Ord; raises on empty). One pass — no sort." (Some "Seq.min [3; 1; 2]") None
+          bd "The smallest element, found in one pass without sorting. Elements must be comparable; raises on an empty sequence." (Some "Seq.min [3; 1; 2]") None
           |> named [ "xs" ]
           "Seq.maxBy",
           bd
-              "The element whose projected key is largest (Ord on the key; raises on empty)."
+              "The element with the largest key. Keys must be comparable; raises on an empty sequence."
               (Some "[\"a\"; \"ccc\"] |> Seq.maxBy Str.length")
               None
           |> named [ "key"; "xs" ]
           "Seq.minBy",
           bd
-              "The element whose projected key is smallest (Ord on the key; raises on empty)."
+              "The element with the smallest key. Keys must be comparable; raises on an empty sequence."
               (Some "[\"a\"; \"ccc\"] |> Seq.minBy Str.length")
               None
           |> named [ "key"; "xs" ]
           "Seq.sort",
           bd
-              "Sort ascending by the elements themselves (Ord); forces on the first pull."
+              "Sort the elements in ascending order (they must be comparable). The whole input is read when the first element is requested."
               (Some "[\"pear\"; \"apple\"] |> Seq.sort |> Seq.freeze")
               None
           |> named [ "xs" ]
           "Seq.sortDescending",
           bd
-              "Sort descending by the elements themselves (Ord); forces on the first pull."
+              "Sort the elements in descending order (they must be comparable). The whole input is read when the first element is requested."
               (Some "[1; 3; 2] |> Seq.sortDescending |> Seq.freeze")
               None
           |> named [ "xs" ]
           "Seq.average",
           bd
-              "The mean of ints as a float (raises on empty — absence is Option's job). Float/Size/Duration own their means (Float.average …)."
+              "The mean of an int sequence, as a float. Raises on an empty sequence. For floats, sizes and durations use Float.average, Size.average or Duration.average."
               (Some "[1; 2] |> Seq.average")
               None
           |> named [ "xs" ]
           "Float.sum",
           bd
-              "Sum floats (the sum must stay finite — the floats law). Seq.sum stays seq<int>; each numeric type owns its sum."
+              "Add up a sequence of floats; raises if the sum is not finite. Seq.sum is for ints only; each numeric type has its own sum."
               (Some "[1.5; 2.5] |> Float.sum")
               None
           |> named [ "xs" ]
           "Float.average",
-          bd "The mean of floats (raises on empty; finite-only)." (Some "[1.0; 2.0] |> Float.average") None
+          bd "The mean of a float sequence. Raises on an empty sequence or a non-finite result." (Some "[1.0; 2.0] |> Float.average") None
           |> named [ "xs" ]
           "Size.sum",
-          bd "Sum sizes — total bytes as a Size." (Some "[1KiB; 512B] |> Size.sum") None
+          bd "Add up sizes; the total is a Size." (Some "[1KiB; 512B] |> Size.sum") None
           |> named [ "xs" ]
           "Size.average",
-          bd "The mean size, truncated to whole bytes (raises on empty)." (Some "[1KiB; 3KiB] |> Size.average") None
+          bd "The mean size, truncated to whole bytes. Raises on an empty sequence." (Some "[1KiB; 3KiB] |> Size.average") None
           |> named [ "xs" ]
           "Duration.sum", bd "Sum durations." (Some "[90s; 30s] |> Duration.sum") None |> named [ "xs" ]
           "Duration.average",
           bd
-              "The mean duration, truncated to whole milliseconds (raises on empty)."
+              "The mean duration, truncated to whole milliseconds. Raises on an empty sequence."
               (Some "[90s; 30s] |> Duration.average")
               None
           |> named [ "xs" ]
@@ -5732,61 +5732,61 @@ let builtinDocs: Map<string, BuiltinDoc> =
           bd
               "Map in parallel across worker threads."
               (Some "[1; 2; 3] |> Seq.pmap (fun x -> x + 1) |> Seq.freeze")
-              (Some "ordered, eager, at most 64 workers; the first error by input order wins.")
+              (Some "Results keep the input order. It runs eagerly with up to 64 workers; if several items fail, the error from the earliest item is the one reported.")
           |> named [ "f"; "xs" ]
           "Seq.piter",
           bd
               "Run an effect over each element in parallel."
               (Some "[1; 2; 3] |> Seq.piter (fun x -> ())")
-              (Some "workers fork the session (worker-local cd, dies at join).")
+              (Some "Each worker gets its own copy of the session: a `cd` inside a worker affects only that worker and is gone when the workers finish.")
           |> named [ "f"; "xs" ]
           "Seq.pmapWith",
           bd
-              "Seq.pmap with an explicit worker count — the sizing knob for rate-limited or memory-heavy arms."
+              "Seq.pmap with an explicit number of workers. Use it when the work is rate-limited or uses a lot of memory."
               (Some "[1; 2; 3] |> Seq.pmapWith 2 (fun x -> x + 1) |> Seq.freeze")
-              (Some "an explicit n is never reduced by nesting; pmap's default ladder is.")
+              (Some "Plain `pmap` uses fewer workers when parallel calls are nested; the n you give here is always used as is.")
           |> named [ "n"; "f"; "xs" ]
           "Seq.piterWith",
           bd
               "Seq.piter with an explicit worker count."
               (Some "[1; 2; 3] |> Seq.piterWith 2 (fun x -> ())")
-              (Some "an explicit n is never reduced by nesting; piter's default ladder is.")
+              (Some "Plain `piter` uses fewer workers when parallel calls are nested; the n you give here is always used as is.")
           |> named [ "n"; "f"; "xs" ]
           "Seq.pfirst",
           bd
-              "Race an arm over every element; the first success wins. Losers' spawned processes are tree-killed and their failures never surface. All arms failed rethrows the first error by input order; an empty sequence raises. A losing arm's failure is discarded — if only one arm can succeed, the others' errors are hidden, so a misconfigured fan-out still looks healthy."
+              "Run the function on every element in parallel and return the first successful result. Processes started by the others are killed, along with their children. If every call fails, the error of the earliest element is raised; an empty sequence raises. Errors from the calls that did not win are discarded, so if only one element can ever succeed, the others' errors stay hidden and a misconfiguration can go unnoticed."
               (Some "[3; 1; 2] |> Seq.pfirst (fun n -> n * 10)")
-              (Some "a race, not a retry: same fetch against N mirrors, first answer wins.")
+              (Some "A race, not a retry: for example the same download from several mirrors, where the first answer wins and the losers' processes are killed.")
           |> named [ "f"; "xs" ]
           "Seq.pfirstWith",
-          bd "Seq.pfirst at an explicit concurrency ceiling." (Some "[1; 2] |> Seq.pfirstWith 2 (fun n -> n)") None
+          bd "Seq.pfirst with a maximum number of parallel calls." (Some "[1; 2] |> Seq.pfirstWith 2 (fun n -> n)") None
           |> named [ "degree"; "f"; "xs" ]
 
           // ---- Option ----
           "Option.iter",
           (bd
-              "Run a unit effect on the Some value; None runs nothing (a Some-only side effect with no match ceremony)."
+              "Run a side effect on the value inside Some; do nothing for None. Saves writing a match."
               (Some "Some \"x\" |> Option.iter print")
               None
            |> named [ "f"; "opt" ])
           "Option.orElse",
           (bd
-              "The option itself when Some, else the fallback (fallback first, so it pipes data-last). Stays in Option — Option.defaultValue is the one that unwraps. The fallback is an ordinary argument, evaluated even when the option is Some."
+              "The option itself when it is Some, otherwise the fallback option. The fallback comes first so it works in a pipe. The result is still an Option; use Option.defaultValue to unwrap. The fallback is evaluated even when the option is Some."
               (Some "None |> Option.orElse (Some 1)")
               None
            |> named [ "fallback"; "opt" ])
           "Option.orElseWith",
           (bd
-              "orElse with a lazy fallback: a unit -> Option thunk, run only when the option is None — for an expensive second lookup you do not want to pay on a hit."
+              "Like orElse, but the fallback is a function (unit -> Option) called only when the option is None. Use it when the fallback is expensive to compute."
               (Some "None |> Option.orElseWith (fun () -> Some 1)")
               None
            |> named [ "f"; "opt" ])
           "Option.map",
-          (bd "Apply a function inside a Some, pass None through." (Some "Option.map (fun x -> x + 1) (Some 5)") None
+          (bd "Apply a function to the value inside Some; None stays None." (Some "Option.map (fun x -> x + 1) (Some 5)") None
            |> named [ "f"; "opt" ])
           "Option.bind",
           (bd
-              "Apply a function that itself returns an Option, flattening the result — the chain reaches through nested optionals."
+              "Apply a function that itself returns an Option to the value inside Some, without nesting the result. Use it to chain lookups that may each fail."
               (Some "Some 5 |> Option.bind (fun x -> Some (x + 1))")
               None
            |> named [ "f"; "opt" ])
@@ -5798,20 +5798,20 @@ let builtinDocs: Map<string, BuiltinDoc> =
            |> named [ "opt" ])
           "Frontier.fold",
           (bd
-              "Fold over a graph discovered as it goes: take a node off the FIFO frontier, skip it if its key was seen, apply the step (new accumulator + the node's children, which join the frontier), repeat until empty. Cycle-safe by the visited set; a 100000-step budget turns a non-finite walk into an error, never a hang. A \"\" key opts a node out of dedup."
+              "Fold over a graph that is discovered as you go. Nodes are taken from a first-in, first-out queue; a node whose key was already seen is skipped. The step returns the new accumulator and the node's children, which are added to the queue. It ends when the queue is empty. Cycles are safe, and after 100000 steps it raises instead of running forever. A node with key \"\" is never skipped as a duplicate."
               (Some
                   "[1] |> Frontier.fold (fun n -> show n) 0 (fun acc n -> (acc + n, if n < 3 then [n + 1] else []))")
               None
            |> named [ "keyOf"; "seed"; "step"; "frontier" ])
           "Graph.reach",
           (bd
-              "Every node reachable from a start node, breadth-first, each once (cycles and diamonds are safe — the key dedups). The neighbor function is the graph; nothing is materialized up front."
+              "Every node reachable from a start node, breadth-first, each listed once; nodes with the same key count as one, so cycles are safe. The neighbors function defines the graph, so nothing has to be built up front."
               (Some "Graph.reach (fun n -> show n) (fun n -> if n < 3 then [n + 1] else []) 1")
               None
            |> named [ "keyOf"; "neighbors"; "start" ])
           "Tree.walk",
           (bd
-              "Walk a tree for effects, parent before children: the step runs each node's effect and returns its children (so a child's existence may depend on the parent's effect). No dedup — a cyclic structure wants Graph.reach or Frontier.fold; the step budget still bounds it."
+              "Walk a tree for its side effects, parents before children. The step function does the work for a node and returns its children, so which children exist can depend on what the parent did. Nodes are not de-duplicated; for structures with cycles use Graph.reach or Frontier.fold. The 100000-step limit still applies."
               (Some "1 |> Tree.walk (fun n -> if n < 3 then [n + 1] else [])")
               None
            |> named [ "step"; "root" ])
@@ -5834,25 +5834,25 @@ let builtinDocs: Map<string, BuiltinDoc> =
            |> named [ "value" ])
           "printerr",
           (bd
-              "Write a value and a newline to stderr — diagnostics there, data on stdout. Same accepted set as print: string, int, float, bool, or seq<string>."
+              "Write a value and a newline to stderr. Use it for diagnostics and keep stdout for data. Accepts the same types as print: string, int, float, bool, or seq<string>."
               (Some "printerr \"oops\"")
               None
            |> named [ "value" ])
           "show",
           (bd
-              "Render a value to its string form — the same text an interpolation hole gives. Reach for it where a hole cannot go: point-free positions (Seq.map show) and Secrets (masked). Total; functions show opaquely."
+              "Turn any value into its text form, the same text string interpolation produces. Use it where interpolation does not fit, such as `Seq.map show`. A Secret cannot be interpolated, but `show` renders it masked. It works on every value; functions show as an opaque placeholder."
               (Some "[1; 2; 3] |> Seq.map show |> Seq.freeze")
               None
            |> named [ "value" ])
           "not", (bd "Boolean negation." (Some "not true") None |> named [ "b" ])
           "cd",
           (bd
-              "Change the session's directory, returning the old one (restore by binding: `let prev = cd \"/tmp\"`). A bare name applies a binding (`cd target`); bare `cd`, or a typed `cd ~`, goes home — the argument string itself is taken literally; `within cd` is the scoped spelling."
+              "Change the session's directory and return the previous one, so you can go back later (`let prev = cd \"/tmp\"`). A bare name uses the value of that binding (`cd target`). `cd` with no argument, or a typed `cd ~`, goes to the home directory; a string argument is used literally. To change directory for a block only, use `within cd`."
               (Some "cd \".\"")
               None
            |> named [ "path" ])
           "freeze",
-          (bd "Materialize a lazy sequence, caching it (the bare Seq.freeze)." (Some "[1; 2; 3] |> freeze") None
+          (bd "Evaluate a lazy sequence now and keep the results. Same as Seq.freeze." (Some "[1; 2; 3] |> freeze") None
            |> named [ "xs" ])
           "fail",
           (bd
@@ -5860,7 +5860,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
               None
               // the divergence claim is [D:fail-bottom]'s
               (Some
-                  "message-carrying; `exit n` is the bare-code spelling. Diverges (`string -> 'a`): a failing arm sits opposite a value arm.")
+                  "Use `exit n` to exit with a code and no message. fail never returns (its type is `string -> 'a`), so it can stand in any branch, for example opposite a branch that returns a value.")
            |> named [ "message" ])
           "exit", (bd "Exit the process with a status code." None None |> named [ "code" ])
           // ---- Str ----
@@ -5890,37 +5890,37 @@ let builtinDocs: Map<string, BuiltinDoc> =
            |> named [ "s" ])
           "Str.split",
           (bd
-              "Split on a separator into a sequence; empty pieces kept (adjacent separators and edges yield \"\" — rsplit follows the same law)."
+              "Split on a separator into a sequence. Empty pieces are kept: adjacent separators, or a separator at either end, produce \"\"."
               (Some "Str.split \",\" \"a,b,c\" |> Seq.freeze")
               None
            |> named [ "sep"; "s" ])
           "Str.fields",
           (bd
-              "Split on whitespace runs into fields — never an empty piece (a blank or empty string is the empty seq; trim's whitespace class)."
+              "Split on runs of whitespace (the same whitespace trim removes) into fields. Never produces empty pieces; a blank or empty string gives an empty sequence."
               (Some "\"NAME   READY  1/1\" |> Str.fields |> Seq.freeze")
               None
            |> named [ "s" ])
           "Str.splitOnce",
           (bd
-              "Split at the first occurrence into (before, after) — the tail stays intact, separators and all; raises when the separator is absent (trySplitOnce is the Option twin)."
+              "Split at the first occurrence of the separator into (before, after); the after part is kept whole, including any later separators. Raises when the separator is missing; trySplitOnce returns an Option instead."
               (Some "Str.splitOnce \"=\" \"key=a=b\" |> snd |> print")
               None
            |> named [ "sep"; "s" ])
           "Str.trySplitOnce",
           (bd
-              "splitOnce's Option twin: Some (before, after) at the first occurrence, None when the separator is absent — the `KEY=VALUE` parser's shape."
+              "Like splitOnce, but returns an Option: Some (before, after) at the first occurrence, None when the separator is missing. Handy for parsing `KEY=VALUE`."
               (Some "match Str.trySplitOnce \"=\" \"key=val\" with | Some (k, v) -> print k | None -> print \"no\"")
               None
            |> named [ "sep"; "s" ])
           "Str.rsplitOnce",
           (bd
-              "splitOnce from the right: split at the last occurrence into (before, after); raises when the separator is absent (tryRsplitOnce is the Option twin). For host:port where the host may itself hold colons."
+              "Split at the last occurrence of the separator into (before, after). Raises when the separator is missing; tryRsplitOnce returns an Option instead. Useful for host:port when the host may contain colons."
               (Some "Str.rsplitOnce \":\" \"[::1]:8080\" |> snd |> print")
               None
            |> named [ "sep"; "s" ])
           "Str.tryRsplitOnce",
           (bd
-              "rsplitOnce's Option twin: Some (before, after) at the last occurrence, None when the separator is absent."
+              "Like rsplitOnce, but returns an Option: Some (before, after) at the last occurrence, None when the separator is missing."
               (Some "match Str.tryRsplitOnce \"@\" \"a@b@host\" with | Some (u, h) -> print h | None -> print \"no\"")
               None
            |> named [ "sep"; "s" ])
@@ -5935,19 +5935,19 @@ let builtinDocs: Map<string, BuiltinDoc> =
           (bd "A substring by start index and length." (Some "Str.sub 0 2 \"abc\"") None
            |> named [ "start"; "len"; "s" ])
           "Str.replicate",
-          (bd "n copies of the string, concatenated (0 is the empty string; a negative count raises — Seq.replicate's rule)."
+          (bd "The string repeated n times. 0 gives the empty string; a negative count raises, as in Seq.replicate."
               (Some "Str.replicate 3 \"ab\"")
               None
            |> named [ "n"; "s" ])
           "Str.padLeft",
           (bd
-              "Pad with spaces on the left to a total width; a string already at or past the width is unchanged (a negative width raises). The right-aligned column member."
+              "Pad with spaces on the left to a total width, for right-aligned columns. A string already that long is unchanged; a negative width raises."
               (Some "Str.padLeft 5 \"42\"")
               None
            |> named [ "width"; "s" ])
           "Str.padRight",
           (bd
-              "Pad with spaces on the right to a total width; a string already at or past the width is unchanged (a negative width raises). The columnar-output member — printf \"%-15s\" made a function."
+              "Pad with spaces on the right to a total width, for left-aligned columns (like printf \"%-15s\"). A string already that long is unchanged; a negative width raises."
               (Some "Str.padRight 6 \"name\"")
               None
            |> named [ "width"; "s" ])
@@ -5959,25 +5959,25 @@ let builtinDocs: Map<string, BuiltinDoc> =
            |> named [ "s" ])
           "Str.sha256",
           (bd
-              "The SHA-256 digest of the string's UTF-8 bytes, lowercase hex (sha256sum parity). sha256 only for now."
+              "The SHA-256 digest of the string's UTF-8 bytes, as lowercase hex (same output as sha256sum). Only SHA-256 is available for now."
               (Some "Str.sha256 \"hello\"")
               None
            |> named [ "s" ])
           "Str.toBase64",
           (bd
-              "Base64 of the string's UTF-8 bytes — one unwrapped line (no 76-column MIME wrap, no -w0 tax)."
+              "Base64 of the string's UTF-8 bytes, on one line. It is never wrapped at 76 columns, so there is no need for base64 -w0."
               (Some "Str.toBase64 \"caf\u00e9\"")
               None
            |> named [ "s" ])
           "Str.fromBase64",
           (bd
-              "Decode standard base64 (padded or unpadded) to text; raises on invalid input or when the bytes are not valid UTF-8 (never U+FFFD corruption)."
+              "Decode standard base64 (padded or unpadded) to text. Raises on invalid base64 or when the decoded bytes are not valid UTF-8, instead of silently inserting replacement characters."
               (Some "Str.fromBase64 \"Y2Fmw6k=\"")
               None
            |> named [ "s" ])
           "Str.tryFromBase64",
           (bd
-              "fromBase64 as an Option: None for malformed base64 and for valid-base64-of-non-text alike."
+              "Like fromBase64, but returns an Option: None both for malformed base64 and for valid base64 that does not decode to text."
               (Some "Str.tryFromBase64 \"!!!\"")
               None
            |> named [ "s" ])
@@ -5986,12 +5986,12 @@ let builtinDocs: Map<string, BuiltinDoc> =
            |> named [ "s" ])
           "Str.fromUtf8",
           (bd
-              "Decode Bytes as text; raises when the bytes are not valid UTF-8 or contain NUL — corrupt data never decodes silently."
+              "Decode Bytes as UTF-8 text. Raises when the bytes are not valid UTF-8 or contain a NUL byte, so corrupt data is never decoded silently."
               None
               None
            |> named [ "b" ])
           "Str.tryFromUtf8",
-          (bd "fromUtf8 as an Option: None for non-text bytes, NUL included." None None
+          (bd "Like fromUtf8, but returns an Option: None when the bytes are not text (including bytes with NUL)." None None
            |> named [ "b" ])
           "Str.tryIndexOf",
           (bd "The index of a substring as an Option." (Some "Str.tryIndexOf \"b\" \"abc\"") None
@@ -6001,7 +6001,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
           |> named [ "pattern"; "subject" ]
           "Str.rmatch",
           bd
-              "The first regex match's groups as an Option of a sequence (positional groups; named `(?<x>...)` rejects — weir names captures at the binder)."
+              "The groups of the first regex match as Some sequence, or None when there is no match. Groups are positional: named groups `(?<x>...)` are rejected, because in weir you name captures when you bind them."
               (Some "Str.rmatch \"([0-9]+)\" \"x42\"")
               None
           |> named [ "pattern"; "s" ]
@@ -6013,7 +6013,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
           |> named [ "pattern"; "s" ]
           "Str.rsplit",
           bd
-              "Split on every regex match; split's empties law (adjacent matches and edges yield \"\"), and capture groups never add pieces."
+              "Split on every regex match. As with split, empty pieces are kept (adjacent matches, or a match at either end, produce \"\"). Capture groups do not add extra pieces."
               (Some "Str.rsplit @\"\\s*,\\s*\" \"a , b,c\" |> Seq.freeze")
               None
           |> named [ "pattern"; "s" ]
@@ -6036,37 +6036,37 @@ let builtinDocs: Map<string, BuiltinDoc> =
            |> named [ "a"; "b" ])
           "Path.under",
           (bd
-              "The confining join: combine, normalise, then raise if the result escapes base — segment-wise, so uploads-evil is not under uploads. combine is for paths you control; under is for paths you do not. Purely textual (never follows symlinks or touches the disk); absolute and Windows-shaped second arguments refuse on every platform."
+              "Join a name onto base, normalize, and raise if the result ends up outside base. The check is by whole path segments, so uploads-evil is not inside uploads. Use combine for paths you control and under for paths you do not (such as user input). It works on the text only and never touches the disk or follows symlinks. An absolute or Windows-style name is rejected on every platform."
               (Some "Path.under (Path.tempRoot ()) \"a/b\"")
               None
            |> named [ "base"; "name" ])
           "Path.normalize",
           (bd
-              "Collapse '.' and '..' segments lexically — no filesystem touch, no cwd, symlinks never followed. combine keeps '..' (paths you control), under refuses an escape (paths you do not); normalize is the third spelling, for the legitimate escape both siblings decline. A relative path keeps its leading '..'s; at an absolute root '..' swallows."
+              "Resolve '.' and '..' segments in the text of a path, without touching the filesystem, using the current directory, or following symlinks. combine leaves '..' in place and under rejects paths that leave the base; use normalize when going up out of a directory is intended. A relative path keeps its leading '..' segments; at the root of an absolute path, '..' is dropped."
               (Some "Path.normalize \"src/App/../Core/Core.csproj\"")
               None
            |> named [ "path" ])
           "Path.tempRoot",
           (bd
-              "The system temp directory (a pure query; no trailing separator, platform-native)."
+              "The system temp directory, in the platform's native form and without a trailing separator. Has no side effects."
               (Some "Path.tempRoot ()")
               None
            |> named [ "()" ])
           "Path.newTempDir",
           (bd
-              "Create a fresh unique directory under the temp root and return its path (the same naming `within tmp` uses). Cleanup is the caller's or the OS's — use `within tmp dir` for removal on scope exit (which the exit hook also sweeps on Ctrl+C/kill); a newTempDir directory outlives every scope and is never removed automatically."
+              "Create a new, uniquely named directory under the temp root and return its path (named the same way as `within tmp`). It is never removed automatically; deleting it is up to you or the OS. For a directory that is removed when a block exits (also on Ctrl+C or kill), use `within tmp dir`."
               (Some "Path.newTempDir () |> Str.startsWith (Path.tempRoot ())")
               None
            |> named [ "()" ])
           "Path.glob",
           bd
-              "Match a glob against the filesystem (lazy; globstar skips symlinks)."
+              "The paths matching a glob pattern, lazily. `**` does not follow symlinks."
               (Some "Path.glob \"*.nope123\" |> Seq.freeze")
               None
           |> named [ "pattern" ]
           "Path.home",
           (bd
-              "The user's home directory (a pure query; no trailing separator, platform-native). In a command line a typed `~` is this path; in an expression, build one with `$\"{Path.home ()}/.bashrc\"`."
+              "The user's home directory, in the platform's native form and without a trailing separator. Has no side effects. In a command line, a typed `~` means this path; in an expression, build paths with `$\"{Path.home ()}/.bashrc\"`."
               (Some "Path.home ()")
               None
            |> named [ "()" ])
@@ -6095,42 +6095,42 @@ let builtinDocs: Map<string, BuiltinDoc> =
            |> named [ "path" ])
           "File.delete",
           (bd
-              "Delete a file (raises naming the path when absent). The explicit pre-step for an overwriting copy/move."
+              "Delete a file. Raises, naming the path, when it does not exist. Copy and move never overwrite, so delete the destination first when you want to replace it."
               (Some
                   "let d = Path.newTempDir ()\n[\"x\"] |> File.write $\"{d}/f.txt\"\nFile.delete $\"{d}/f.txt\"\nDir.delete d")
               None
            |> named [ "path" ])
           "File.copy",
           (bd
-              "Copy src to dst — (src, dst), the universal convention (neither arg is 'the data', so data-last does not apply). refuses an existing destination (raises naming it); delete first to overwrite."
+              "Copy a file from src to dst. The arguments are in the usual (src, dst) order rather than data-last, since neither one is the data. Raises, naming the path, if the destination exists; delete it first to overwrite."
               (Some
                   "let d = Path.newTempDir ()\n[\"x\"] |> File.write $\"{d}/a.txt\"\nFile.copy $\"{d}/a.txt\" $\"{d}/b.txt\"\nDir.deleteAll d")
               None
            |> named [ "src"; "dst" ])
           "File.move",
           (bd
-              "Move (rename) src to dst — (src, dst); refuses an existing destination."
+              "Move (rename) a file from src to dst. Raises if the destination exists."
               (Some
                   "let d = Path.newTempDir ()\n[\"x\"] |> File.write $\"{d}/a.txt\"\nFile.move $\"{d}/a.txt\" $\"{d}/b.txt\"\nDir.deleteAll d")
               None
            |> named [ "src"; "dst" ])
           "File.size",
           (bd
-              "The file's size as a Size — compare directly (File.size p > 10MiB); Size.toBytes for the int. Raises when absent (the plain name asserts; a trySize is a park)."
+              "The file's size as a Size, which you can compare directly (`File.size p > 10MiB`); use Size.toBytes to get an int. Raises when the file does not exist (there is no trySize yet)."
               (Some
                   "let d = Path.newTempDir ()\nlet f = $\"{d}/a.txt\"\n[\"x\"] |> File.write f\nprint $\"{File.size f}\"\nDir.deleteAll d")
               None
            |> named [ "path" ])
           "File.stat",
           (bd
-              "The path's FileRow — ls's own row for one path, so `Path.glob ... |> Seq.map File.stat` turns strings into rows. Describes the symlink itself (kind Symlink, target Some), not what it points at. Raises when absent — and a file found by glob can vanish before stat reaches it."
+              "The FileRow for one path, the same row ls shows, so `Path.glob ... |> Seq.map File.stat` turns paths into rows. For a symlink it describes the link itself (kind Symlink, target Some), not what it points to. Raises when the path does not exist; note that a file found by glob may be deleted before stat reads it."
               (Some
                   "let d = Path.newTempDir ()\nlet f = $\"{d}/a.txt\"\n[\"x\"] |> File.write f\nprint (File.stat f).name\nDir.deleteAll d")
               None
            |> named [ "path" ])
           "Dir.create",
           (bd
-              "Create a directory and its parents; succeeds silently when it already exists (idempotent — unlike the copy/move members, which refuse existing destinations)."
+              "Create a directory and any missing parents (like mkdir -p). Does nothing if it already exists, unlike copy and move, which raise on an existing destination."
               (Some "Dir.create (Path.tempRoot ())")
               None
            |> named [ "path" ])
@@ -6139,88 +6139,88 @@ let builtinDocs: Map<string, BuiltinDoc> =
            |> named [ "path" ])
           "Dir.delete",
           (bd
-              "Delete an empty directory (refuses a non-empty one, naming Dir.deleteAll; raises when absent)."
+              "Delete an empty directory. Raises when it does not exist, or when it is not empty (the error points you to Dir.deleteAll)."
               (Some "Dir.delete (Path.newTempDir ())")
               None
            |> named [ "path" ])
           "Dir.deleteAll",
           (bd
-              "Delete the directory and everything under it, recursively. The destructive one — there is no undo."
+              "Delete the directory and everything in it, recursively. There is no undo."
               (Some "let d = Path.newTempDir ()\nDir.create $\"{d}/tree-a/tree-b\"\nDir.deleteAll d")
               None
            |> named [ "path" ])
           "Dir.list",
           (bd
-              "The directory's entries as full paths — files and directories both, sorted by name, eager. Filter with Seq.where + File.exists/Dir.exists; use `Path.glob \"**\"` for a recursive listing."
+              "The full paths of the directory's entries, both files and directories, sorted by name and read immediately. Filter with Seq.where and File.exists/Dir.exists; for a recursive listing use `Path.glob \"**\"`."
               (Some "let d = Path.newTempDir ()\nprint $\"{Dir.list d |> Seq.length}\"\nDir.delete d")
               None
            |> named [ "path" ])
           "Dir.stat",
           (bd
-              "The directory's entries as rows — Dir.list's seq<FileRow> form, ls's own rows over the named directory (ls reads the cwd; Dir.stat reads elsewhere). Sorted by name, eager."
+              "The directory's entries as FileRow values, the same rows ls shows, but for any directory (ls only lists the current one). Sorted by name and read immediately."
               (Some "let d = Path.newTempDir ()\nprint $\"{Dir.stat d |> Seq.length}\"\nDir.delete d")
               None
            |> named [ "path" ])
           "Dir.move",
           (bd
-              "Move (rename) a directory — (src, dst); refuses an existing destination."
+              "Move (rename) a directory from src to dst. Raises if the destination exists."
               (Some "let d = Path.newTempDir ()\nDir.move d $\"{d}-m\"\nDir.delete $\"{d}-m\"")
               None
            |> named [ "src"; "dst" ])
           "Dir.copy",
           (bd
-              "Copy a directory and its contents — (src, dst); refuses an existing destination (Dir.deleteAll first to replace). Copying a directory means its contents: there is no non-recursive form."
+              "Copy a directory and everything in it from src to dst. Raises if the destination exists; use Dir.deleteAll first to replace it. The copy is always recursive."
               (Some "let d = Path.newTempDir ()\nDir.copy d $\"{d}-c\"\nDir.deleteAll d\nDir.deleteAll $\"{d}-c\"")
               None
            |> named [ "src"; "dst" ])
           "File.read",
-          (bd "Read a file's lines (eager — the whole file reads at the call)." None None
+          (bd "Read a file's lines. The whole file is read immediately." None None
            |> named [ "path" ])
           "File.readBytes",
           (bd
-              "Read a file's raw bytes — no decode, no line split (File.read substitutes U+FFFD and splits; this is the byte-faithful read). Bounded and in-memory: stream big data to a sink instead."
+              "Read a file's raw bytes, exactly as stored, without decoding or splitting into lines (File.read does both and replaces invalid characters). The whole file is loaded into memory, so it is not meant for very large files."
               None
               None
            |> named [ "path" ])
           "File.writeBytes",
-          (bd "Write raw bytes to a file — the byte-faithful sink (File.write encodes lines and appends LF)." None None
+          (bd "Write raw bytes to a file exactly as given (File.write instead encodes lines and ends each with LF)." None None
            |> named [ "path"; "bytes" ])
           "File.sha256",
           (bd
-              "The SHA-256 digest of a file's bytes, lowercase hex (sha256sum parity). Streams internally — never loads the file as a value."
+              "The SHA-256 digest of a file's bytes, as lowercase hex (same output as sha256sum). The file is streamed, never loaded into memory whole."
               None
               None
            |> named [ "path" ])
           "File.readSecret",
           (bd
-              "Read a file's whole content as a Secret (a mounted container secret is a file); trailing newlines are trimmed."
+              "Read a file's whole content as a Secret, for example a secret mounted into a container. Trailing newlines are removed."
               None
               None
            |> named [ "path" ])
           "File.write",
-          (bd "Write a sequence of lines to a file (overwrites)." None None
+          (bd "Write a sequence of lines to a file, replacing its contents." None None
            |> named [ "path"; "lines" ])
           "File.writeAtomic",
           (bd
-              "Write a sequence of lines by whole-file swap: the payload lands in a same-directory temp, is fsynced, and renames over the target — a concurrent reader sees the complete old contents or the complete new, never a window, and a write that dies leaves the original intact. A symlink's target is replaced, not the link; the target's mode and an existing BOM are preserved. The inode changes: hardlinks split, held handles and tail -f keep the old file, and a single-file bind mount into a container breaks — in-place semantics stay File.write's job. Inside a plan it captures the same WriteFile op; apply performs the plan's own in-place write."
+              "Write a sequence of lines by replacing the whole file at once: the content goes to a temp file in the same directory, is flushed to disk, and is then renamed over the target. Readers see either the complete old file or the complete new one, and a failed write leaves the original intact. For a symlink, the file it points to is replaced, not the link; the file's permissions and any existing BOM are kept. Because the file is a new inode, hard links are separated, open handles and tail -f keep seeing the old file, and a single-file bind mount into a container stops updating; use File.write when you need an in-place write. Inside a plan it records the same WriteFile op as File.write, and apply then does an in-place write."
               None
               None
            |> named [ "path"; "lines" ])
           "File.append",
           (bd
-              "Append a sequence of lines, safe under concurrent appenders: the whole call goes out as one kernel append (O_APPEND on Unix; append-only access on Windows), so calls land contiguous and intact and no lock blocks a concurrent reader. The atom is a single completed append — a short write (disk full, a size cap) retries and another writer may land between the parts — and the guarantee is a local-filesystem one: same-host bind mounts hold, a network filesystem (nfs, smb) does not."
+              "Append a sequence of lines, safely even when other processes append to the same file. Each call is written as a single append (O_APPEND on Unix, append-only access on Windows), so its lines stay together and intact, and no lock blocks readers. If the system writes only part of the data (disk full, a size limit), the rest is retried and another writer's data may land in between. This holds on local filesystems, including bind mounts on the same host, but not on network filesystems (nfs, smb)."
               None
               None
            |> named [ "path"; "lines" ])
           "File.mode",
           (bd
-              "The path's permissions as rwxr-xr-x-shaped text, an Option — None on Windows (there is no POSIX mode to report). The read follows a symlink, like the other File.* queries; existence does not — a dangling link raises naming the dangle. The typical use — checking for 0600 before File.readSecret: File.mode p == Some \"rw-------\"."
+              "The path's permissions as text like rwxr-xr-x, wrapped in Some; None on Windows, which has no POSIX permissions. Like the other File.* queries it follows symlinks, so a broken link raises, naming the link. A typical use is checking for 0600 before File.readSecret: File.mode p == Some \"rw-------\"."
               (Some "File.mode \".\" |> Option.defaultValue \"none\"")
               None
            |> named [ "path" ])
           "File.isExecutable",
           (bd
-              "True when the owner execute bit is set (the bit an installer sets) — File.mode's 'x' as a bool, replacing the stringly Str.contains \"x\". Follows a symlink like the other File.* queries; a missing path raises. On Windows there is no execute bit: the answer is by extension (.exe/.bat/.cmd/.com), a stated posture."
+              "True when the owner execute bit is set (the bit an installer sets). Simpler than checking File.mode with Str.contains \"x\". Follows symlinks like the other File.* queries; a missing path raises. Windows has no execute bit, so there the answer is based on the extension (.exe/.bat/.cmd/.com)."
               (Some "File.isExecutable \".\"")
               None
            |> named [ "path" ])
@@ -6228,49 +6228,49 @@ let builtinDocs: Map<string, BuiltinDoc> =
           // ---- Log [D:log-module]: STDERR always — stdout is DATA ----
           "Log.trace",
           (bd
-              "Write a TRACE line to stderr — the innermost-detail level, hidden unless WEIR_LOG=trace."
+              "Write a TRACE line to stderr. This is the most detailed level, hidden unless WEIR_LOG=trace."
               (Some "Log.trace \"entering the retry loop\"")
               None
            |> named [ "message" ])
           "Log.debug",
           (bd
-              "Write a DEBUG line to stderr; hidden unless WEIR_LOG=debug (or trace). Stdout is data — every Log member writes to stderr; there is no option to log to stdout."
+              "Write a DEBUG line to stderr; hidden unless WEIR_LOG=debug (or trace). All Log functions write to stderr so stdout stays free for data; there is no option to log to stdout."
               (Some "Log.debug \"cache miss\"")
               None
            |> named [ "message" ])
           "Log.info",
           (bd
-              "Write an INFO line to stderr — shown by default (WEIR_LOG=level moves the threshold, case-insensitive; off silences)."
+              "Write an INFO line to stderr. Shown by default; set WEIR_LOG to a level (case-insensitive) to change what is shown, or to off to silence logging."
               (Some "Log.info \"deploy starting\"")
               None
            |> named [ "message" ])
           "Log.warn",
           (bd
-              "Write a WARN line to stderr — the highest level, shown unless WEIR_LOG=off."
+              "Write a WARN line to stderr. This is the highest level, shown unless WEIR_LOG=off."
               (Some "Log.warn \"lockfile missing, regenerating\"")
               None
            |> named [ "message" ])
           "Log.traceWith",
           (bd
-              "Log.trace's thunk twin: the message computes only when the level passes (a plain Log.trace evaluates its message either way — use the thunk form when building the message is expensive)."
+              "Like Log.trace, but takes a function that builds the message, called only when trace logging is on. Plain Log.trace always builds its message, so use this when that is expensive."
               (Some "Log.traceWith (fun () -> \"expensive detail\")")
               None
            |> named [ "thunk" ])
           "Log.debugWith",
           (bd
-              "Log.debug's thunk twin: the message computes only when the level passes."
+              "Like Log.debug, but takes a function that builds the message, called only when debug logging is on."
               (Some "Log.debugWith (fun () -> \"expensive detail\")")
               None
            |> named [ "thunk" ])
           "Log.infoWith",
           (bd
-              "Log.info's thunk twin: the message computes only when the level passes."
+              "Like Log.info, but takes a function that builds the message, called only when info logging is on."
               (Some "Log.infoWith (fun () -> \"expensive detail\")")
               None
            |> named [ "thunk" ])
           "Log.warnWith",
           (bd
-              "Log.warn's thunk twin: the message computes only when the level passes."
+              "Like Log.warn, but takes a function that builds the message, called only when warnings are shown."
               (Some "Log.warnWith (fun () -> \"expensive detail\")")
               None
            |> named [ "thunk" ])
@@ -6291,9 +6291,9 @@ let builtinDocs: Map<string, BuiltinDoc> =
            |> named [ "path" ])
           "Env.load",
           bd
-              "Load the environment into a typed record (scalars, Option, bool)."
+              "Load environment variables into a typed record. Fields can be scalars, bool, or Option."
               None
-              (Some "the field law: field names are verbatim; check-time validates the field types.")
+              (Some "Each field reads the variable with exactly that name (case included), and the field types are checked before the script runs.")
 
           // ---- Args ----
           "Args.flag",
@@ -6306,114 +6306,114 @@ let builtinDocs: Map<string, BuiltinDoc> =
           bd
               "Parse argv into a typed record or union."
               None
-              (Some "three shapes: a record, a union of subcommands, or a record containing a union.")
+              (Some "The type can be a record (flags), a union (subcommands), or a record that contains a union (shared flags plus subcommands).")
 
           // ---- Self (per-run introspection) ----
           "Self.pid", bd "This process's id." None None
-          "Self.args", bd "The invoked script's argument vector (a process fact — the same in every module)." None None
-          "Self.stdin", bd "This process's standard input, as lazy lines (a process fact)." None None
+          "Self.args", bd "The command-line arguments of the script that was run. The same in every module." None None
+          "Self.stdin", bd "This process's standard input, as lazy lines. The same in every module." None None
           "Self.prompt",
           (bd
-              "Write a message to stderr and read one line from stdin (interactive input; a piped stdout stays data). EOF refuses — no phantom input. Self.stdin stays the stream reading (one enumeration; the two compose per-line vs whole-stream)."
+              "Write a message to stderr and read one line from stdin, for interactive input. The prompt goes to stderr, so piped stdout still carries only data. Raises at end of input instead of returning an empty answer. To read the rest of stdin as a stream, use Self.stdin — both read the same input, so a line a prompt took is not seen again."
               None
-              (Some "let name = Self.prompt \"your name?\" — interactive; in tests, pipe the answer in.")
+              (Some "`let name = Self.prompt \"your name?\"`. In tests, pipe the answer in.")
            |> named [ "message" ])
-          "Self.scriptPath", bd "The path of the file reading it — a module sees its own path." None None
+          "Self.scriptPath", bd "The path of the file that contains this code; in a module, the module's own path." None None
           "Self.entryPath",
-          bd "The path of the invoked script (a process fact — the same in every module, unlike scriptPath)." None None
+          bd "The path of the script that was run. Unlike scriptPath, it is the same in every module." None None
 
           // ---- Float: finite-only [D:floats] ---------------------------
           "Float.ofInt",
           (bd
-              "An int as a float — the explicit widening (weir never widens implicitly)."
+              "Convert an int to a float. weir never converts between them automatically."
               (Some "Float.ofInt 3 / 2.0")
               None
            |> named [ "n" ])
           "Float.toInt",
           (bd
-              "The integer part, truncating toward zero (raises outside the 64-bit range)."
+              "The integer part, rounding toward zero. Raises when the value is outside the 64-bit int range."
               (Some "Float.toInt 2.9")
               None
            |> named [ "f" ])
           "Float.round",
-          (bd "Round to the nearest whole, halves away from zero (2.5 rounds to 3.0)." (Some "Float.round 2.5") None
+          (bd "Round to the nearest whole number, with halves rounded away from zero (2.5 becomes 3.0)." (Some "Float.round 2.5") None
            |> named [ "f" ])
           "Float.abs", (bd "The absolute value." (Some "Float.abs (0.0 - 1.5)") None |> named [ "f" ])
           "Float.near",
           (bd
-              "True when a and b differ by at most eps — the equality idiom (floats do not join '==')."
+              "True when a and b differ by at most eps. This is how to compare floats, since `==` does not accept them."
               (Some "Float.near (0.1 + 0.2) 0.3 1e-9")
               None
            |> named [ "a"; "b"; "eps" ])
           "Float.parse",
           (bd
-              "Parse float text — the shape show renders (raises on anything else, including NaN/Infinity: weir floats are finite)."
+              "Parse a float in the form show prints. Raises on anything else, including NaN and Infinity, because weir floats are always finite."
               (Some "Float.parse \"1.5e-3\"")
               None
            |> named [ "text" ])
           "Float.tryParse",
-          (bd "Float.parse as an Option — None instead of the raise." (Some "Float.tryParse \"nope\"") None
+          (bd "Like Float.parse, but returns None instead of raising." (Some "Float.tryParse \"nope\"") None
            |> named [ "text" ])
 
           // ---- retry/poll option templates [D:retry-poll] --------------
           "Retry.defaults",
           bd
-              "The retry template: attempts = 5, delay = 1s, timeout = None. `retry attempts=5` is `retry { Retry.defaults with attempts = 5 }`."
+              "The default retry options: attempts = 5, delay = 1s, timeout = None. `retry attempts=5` is short for `retry { Retry.defaults with attempts = 5 }`."
               None
               None
-          "Poll.defaults", bd "The poll template: timeout = 1m, interval = 1s." None None
+          "Poll.defaults", bd "The default poll options: timeout = 1m, interval = 1s." None None
           "Http.defaults",
           bd
-              "The request template record: method = Get, empty url, NoAuth, no body, 30s timeout. `Http.send { Http.defaults with url = u }`. `Http.get url` and the other method constructors return one of these."
+              "The default request: method = Get, empty url, NoAuth, no body, 30s timeout. Start from it with `Http.send { Http.defaults with url = u }`. `Http.get url` and the other method helpers return a request built from it."
               None
               None
           "Http.send",
           (bd
-              "Run a request. Status is data (a 404 binds; only transport failure raises). A Json body carries `to json` lines byte-exact; auth is a Secret-carrying union; show masks secrets."
+              "Send a request and return the response. A non-2xx status such as 404 is returned, not raised; only network failures raise. A Json body sends `to json` output exactly as given. Auth values hold Secrets, and show masks them."
               None
               None
            |> named [ "request" ])
           "Http.get",
           (bd
-              "A request constructor — returns an HttpRequest, makes no request: `Http.get u` = `{ Http.defaults with method = Get; url = u }`; run it with Http.send (status as data) or Http.expect (raising, body out). Add optionals with `with`: `Http.send { Http.get u with auth = Bearer t }`."
+              "Build a GET request for the url; nothing is sent yet. `Http.get u` is the same as `{ Http.defaults with method = Get; url = u }`. Send it with Http.send (returns the response, whatever the status) or Http.expect (returns the body, raises on failure). Set other fields with `with`: `Http.send { Http.get u with auth = Bearer t }`."
               (Some "Http.get \"http://x/y\"")
               None
            |> named [ "url" ])
           "Http.post",
-          (bd "Constructor: a Post request to the url (add body/auth with `with`)." None None
+          (bd "Build a Post request for the url; add a body or auth with `with`." None None
            |> named [ "url" ])
-          "Http.put", (bd "Constructor: a Put request to the url." None None |> named [ "url" ])
-          "Http.delete", (bd "Constructor: a Delete request to the url." None None |> named [ "url" ])
-          "Http.patch", (bd "Constructor: a Patch request to the url." None None |> named [ "url" ])
-          "Http.head", (bd "Constructor: a Head request to the url." None None |> named [ "url" ])
-          "Http.options", (bd "Constructor: an Options request to the url." None None |> named [ "url" ])
+          "Http.put", (bd "Build a Put request for the url." None None |> named [ "url" ])
+          "Http.delete", (bd "Build a Delete request for the url." None None |> named [ "url" ])
+          "Http.patch", (bd "Build a Patch request for the url." None None |> named [ "url" ])
+          "Http.head", (bd "Build a Head request for the url." None None |> named [ "url" ])
+          "Http.options", (bd "Build an Options request for the url." None None |> named [ "url" ])
           "Http.query",
           (bd
-              "Constructor: a QUERY request (RFC 10008) — idempotent, so `retry` around it is safe by the method's definition. Almost nothing serves it yet; expect 405."
+              "Build a QUERY request (RFC 10008) for the url. QUERY is idempotent by definition, so wrapping it in `retry` is safe. Few servers support it yet, so expect 405."
               None
               None
            |> named [ "url" ])
           "Http.expect",
           (bd
-              "The raising read: request in, body lines out, raises on non-2xx naming method, url, status and a capped body snippet — `Http.get url |> Http.expect` for the bare read, any `with`-built request the same way. When the error body is data to inspect, Http.send binds the status instead."
+              "Send a request and return the response body as lines. Raises on a non-2xx status; the error names the method, url and status and includes the start of the body. Use `Http.get url |> Http.expect` for a simple read; requests built with `with` work the same way. If you need to inspect an error response, use Http.send instead."
               None
               None
            |> named [ "request" ])
           "Http.header",
           (bd
-              "The first value of a response header, case-insensitively — header names are case-insensitive by HTTP's own law, so this cannot miss ETag vs etag the way a hand-rolled pairs filter does. None when absent; for a legally repeating header (Set-Cookie), Http.headerAll."
+              "The first value of a response header, or None when it is missing. Header names match case-insensitively, as HTTP requires, so ETag and etag are the same header. For headers that can repeat (Set-Cookie), use Http.headerAll."
               (Some "(HttpResponse { status = 200; headers = [(\"ETag\", \"abc\")]; body = [\"\"] }) |> Http.header \"etag\"")
               None
            |> named [ "name"; "resp" ])
           "Http.headerAll",
           (bd
-              "Every value of a response header, case-insensitively, wire order kept — the multiplicity read for headers that legally repeat (Set-Cookie). Empty when absent."
+              "Every value of a response header, in the order received, matching the name case-insensitively. Use it for headers that can repeat (Set-Cookie). Empty when the header is missing."
               None
               None
            |> named [ "name"; "resp" ])
           "Http.withQuery",
           (bd
-              "Append a percent-encoded query string to a url — params first, the url last (data-last: `url |> Http.withQuery [(k, v)]`); keys and values are escaped, so a space or `&` cannot break the url. (not `Http.query` the method constructor.)"
+              "Add a query string to a url. The parameters come first and the url last, so it fits a pipe: `url |> Http.withQuery [(k, v)]`. Keys and values are percent-encoded, so a space or `&` cannot break the url. (Not to be confused with `Http.query`, which builds a QUERY request.)"
               (Some "\"http://x/s\" |> Http.withQuery [(\"q\", \"a b\")]")
               None
            |> named [ "params"; "base" ])
@@ -6421,159 +6421,159 @@ let builtinDocs: Map<string, BuiltinDoc> =
           // ---- plan/apply [D:plan-apply]: the Plan value's members ------
           "Plan.ops",
           (bd
-              "The captured Ops of a plan, in capture order — the raw seq<Op> for test and inspection (`plan <block> == [WriteFile(p, c)]`; the union is equatable/showable, Secrets masked)."
+              "The operations recorded in a plan, in the order they were recorded, as a seq<Op>. Useful for tests and inspection (`plan <block> == [WriteFile(p, c)]`); Op values can be compared and shown, with Secrets masked."
               None
               None
            |> named [ "plan" ])
           "Plan.preview",
           (bd
-              "A human render of a plan's ops, one line each — 'wrote nothing' yet (a plan performs no mutation; Plan.apply does). Secrets are masked."
+              "A readable description of a plan's operations, one line each. Nothing has been changed yet; only Plan.apply makes the changes. Secrets are masked."
               None
               None
            |> named [ "plan" ])
           "Plan.apply",
           (bd
-              "Perform a plan's ops through the normal builtins, in capture order. Stops at the first failing op (prior ops stay done); not transactional — no rollback (that is the IaC line weir does not cross). Refused inside a `plan` block."
+              "Carry out a plan's operations in the order they were recorded, using the normal functions. Stops at the first operation that fails; earlier ones stay done, since there is no rollback. Not allowed inside a `plan` block."
               None
               None
            |> named [ "plan" ])
           "Plan.isEmpty",
-          (bd "True when the plan captured no ops (a script that only read the world builds an empty plan)." None None
+          (bd "True when the plan recorded no operations, for example because the script only read things." None None
            |> named [ "plan" ])
 
           // ---- Size: bytes as a type [D:size] --------------------------
           "Bytes.fromBase64",
           (bd
-              "Decode standard base64 (padded or unpadded) to Bytes; raises on malformed input. Use it for binary payloads; Str.fromBase64 is the text-only twin."
+              "Decode standard base64 (padded or unpadded) to Bytes. Raises on malformed input. Use it for binary data; Str.fromBase64 decodes to text."
               (Some "Bytes.fromBase64 \"iVBORw0KGgo=\"")
               None
            |> named [ "s" ])
           "Bytes.tryFromBase64",
-          (bd "fromBase64 as an Option: None for malformed base64." (Some "Bytes.tryFromBase64 \"!!!\"") None
+          (bd "Like fromBase64, but returns an Option: None for malformed base64." (Some "Bytes.tryFromBase64 \"!!!\"") None
            |> named [ "s" ])
           "Bytes.toBase64",
           (bd
-              "Base64 of the bytes — one unwrapped line; the way to carry bytes as text (print and the JSON/YAML boundaries refuse raw bytes)."
+              "Base64 of the bytes, on one line. Use it to turn bytes into text, since print, JSON and YAML do not accept raw bytes."
               None
               None
            |> named [ "b" ])
           "Bytes.sha256",
-          (bd "The SHA-256 digest of the bytes, lowercase hex (sha256sum parity)." None None
+          (bd "The SHA-256 digest of the bytes, as lowercase hex (same output as sha256sum)." None None
            |> named [ "b" ])
           "Bytes.length", (bd "The byte count as a Size." None None |> named [ "b" ])
           "Bytes.fromHex",
           (bd
-              "Decode hex (either case) to Bytes; odd-length and non-hex input raise. The crypto sibling of Bytes.fromBase64 — fingerprints, moduli and EC points all travel as hex."
+              "Decode hex (upper or lower case) to Bytes. Raises on odd-length or non-hex input. Handy for crypto values such as fingerprints, moduli and EC points, which are usually written in hex."
               (Some "Bytes.fromHex \"0a1B\" |> Bytes.toHex")
               None
            |> named [ "s" ])
           "Bytes.toHex",
-          (bd "Lowercase hex of the bytes (sha256's own rendering) — one unwrapped line."
+          (bd "The bytes as lowercase hex on one line (the same format sha256 uses)."
               (Some "Str.toUtf8 \"hi\" |> Bytes.toHex")
               None
            |> named [ "b" ])
           "Bytes.sub",
           (bd
-              "A byte slice by start index and length — Str.sub's exact shape on Bytes; out of range raises with the same detail."
+              "A slice of the bytes by start index and length. Works like Str.sub, including the error when the range is out of bounds."
               (Some "Str.toUtf8 \"abcd\" |> Bytes.sub 1 2 |> Bytes.toHex")
               None
            |> named [ "start"; "len"; "b" ])
           "Bytes.hmacSha256",
           (bd
-              "HMAC-SHA256: key first, then message, the mac as Bytes. A Secret key exits via Secret.reveal |> Str.toUtf8 — deliberate, like every Secret exit."
+              "Compute an HMAC-SHA256 of a message with a key (key first), returned as Bytes. To use a Secret as the key, pass `Secret.reveal s |> Str.toUtf8`; revealing a Secret is always explicit."
               (Some "Bytes.hmacSha256 (Str.toUtf8 \"key\") (Str.toUtf8 \"msg\") |> Bytes.toHex")
               None
            |> named [ "key"; "msg" ])
           "Size.bytes",
-          (bd "A size of n bytes — the literal 512B, as a function." (Some "Size.bytes 512") None
+          (bd "A size of n bytes. The function form of a literal like 512B." (Some "Size.bytes 512") None
            |> named [ "n" ])
           "Size.toBytes",
           (bd
-              "The total bytes as an int — the exact exit (show's rendering truncates to one decimal)."
+              "The exact number of bytes as an int. (show truncates sizes to one decimal place.)"
               (Some "Size.toBytes 2KiB")
               None
            |> named [ "s" ])
           "Secret.of",
           (bd
-              "Mark a computed string (a generated token, a derived key) as secret. show renders ***; Secret.reveal is the only way back to the plain value."
+              "Mark a computed string (a generated token, a derived key) as secret. show prints it as ***; only Secret.reveal gives back the plain value."
               (Some "Secret.of \"hunter2\"")
               None
            |> named [ "s" ])
           "Secret.reveal",
           (bd
-              "The secret's plain value — the only way out of the Secret type. Every use (a header, a hash) is a deliberate reveal; audit the call sites."
+              "The secret's plain value. This is the only way to get it out of a Secret, so each use (a header, a hash) is explicit and easy to find when auditing."
               (Some "Secret.reveal (Secret.of \"x\")")
               None
            |> named [ "s" ])
           "Secret.map",
           (bd
-              "Transform a secret's value, keeping it secret. `Secret.map (fun t -> \"Bearer \" + t)` stays secret where reveal-then-concat would not."
+              "Transform a secret's value while keeping it secret. `Secret.map (fun t -> \"Bearer \" + t)` gives a Secret, whereas revealing and then concatenating would give a plain string."
               (Some "Secret.map (fun t -> \"Bearer \" + t) (Secret.of \"x\")")
               None
            |> named [ "f"; "s" ])
           // Color [D:tty-color]: wrap a string in an SGR colour/attribute,
           // auto-off when piped or NO_COLOR — `print (Color.green x)` colours
           // at a terminal, plain elsewhere. Nest to combine.
-          "Color.red", (bd "Wrap in red — off when piped/NO_COLOR." (Some "print (Color.red \"error\")") None |> named [ "s" ])
-          "Color.green", (bd "Wrap in green — off when piped/NO_COLOR." (Some "print (Color.green \"ok\")") None |> named [ "s" ])
-          "Color.yellow", (bd "Wrap in yellow — off when piped/NO_COLOR." (Some "print (Color.yellow \"warn\")") None |> named [ "s" ])
-          "Color.blue", (bd "Wrap in blue — off when piped/NO_COLOR." (Some "print (Color.blue \"info\")") None |> named [ "s" ])
-          "Color.magenta", (bd "Wrap in magenta — off when piped/NO_COLOR." (Some "print (Color.magenta \"x\")") None |> named [ "s" ])
-          "Color.cyan", (bd "Wrap in cyan — off when piped/NO_COLOR." (Some "print (Color.cyan \"x\")") None |> named [ "s" ])
-          "Color.gray", (bd "Wrap in gray (bright black) — off when piped/NO_COLOR." (Some "print (Color.gray \"muted\")") None |> named [ "s" ])
-          "Color.bold", (bd "Wrap in bold — off when piped/NO_COLOR; nest with a colour." (Some "print (Color.bold (Color.red \"!\"))") None |> named [ "s" ])
-          "Color.dim", (bd "Wrap in dim — off when piped/NO_COLOR." (Some "print (Color.dim \"note\")") None |> named [ "s" ])
-          "Color.underline", (bd "Wrap in underline — off when piped/NO_COLOR." (Some "print (Color.underline \"link\")") None |> named [ "s" ])
+          "Color.red", (bd "Color the text red. No color when output is piped or NO_COLOR is set." (Some "print (Color.red \"error\")") None |> named [ "s" ])
+          "Color.green", (bd "Color the text green. No color when output is piped or NO_COLOR is set." (Some "print (Color.green \"ok\")") None |> named [ "s" ])
+          "Color.yellow", (bd "Color the text yellow. No color when output is piped or NO_COLOR is set." (Some "print (Color.yellow \"warn\")") None |> named [ "s" ])
+          "Color.blue", (bd "Color the text blue. No color when output is piped or NO_COLOR is set." (Some "print (Color.blue \"info\")") None |> named [ "s" ])
+          "Color.magenta", (bd "Color the text magenta. No color when output is piped or NO_COLOR is set." (Some "print (Color.magenta \"x\")") None |> named [ "s" ])
+          "Color.cyan", (bd "Color the text cyan. No color when output is piped or NO_COLOR is set." (Some "print (Color.cyan \"x\")") None |> named [ "s" ])
+          "Color.gray", (bd "Color the text gray (bright black). No color when output is piped or NO_COLOR is set." (Some "print (Color.gray \"muted\")") None |> named [ "s" ])
+          "Color.bold", (bd "Make the text bold; combine with a color by nesting. No styling when output is piped or NO_COLOR is set." (Some "print (Color.bold (Color.red \"!\"))") None |> named [ "s" ])
+          "Color.dim", (bd "Make the text dim. No styling when output is piped or NO_COLOR is set." (Some "print (Color.dim \"note\")") None |> named [ "s" ])
+          "Color.underline", (bd "Underline the text. No styling when output is piped or NO_COLOR is set." (Some "print (Color.underline \"link\")") None |> named [ "s" ])
           "Color.sgr",
           (bd
-              "Wrap in a raw colour code — the escape hatch for 256-colour (`38;5;208`) and truecolor (`38;2;r;g;b`); off when piped/NO_COLOR."
+              "Style the text with a raw terminal escape code, for 256-color (`38;5;208`) or truecolor (`38;2;r;g;b`). No styling when output is piped or NO_COLOR is set."
               (Some "print (Color.sgr \"38;5;208\" \"orange\")")
               None
            |> named [ "code"; "s" ])
           "Term.width",
           (bd
-              "The terminal width in columns, queried live (a resize is reflected). Falls back to 80 when there is no terminal (piped or redirected) rather than raising — the columns primitive for sizing output (`tput cols`)."
+              "The terminal width in columns, read each time it is called, so resizes are picked up. Returns 80 instead of raising when there is no terminal (output piped or redirected). Use it to size output, like `tput cols`."
               (Some "print (show (Term.width ()))")
               None
            |> named [ "()" ])
           "Size.parse",
           (bd
-              "Parse size text: binary units at 1024 (1.5MiB), the SI spellings at powers of ten (1MB is 10^6 — the writer chose the unit), B for bytes; sub-byte precision raises."
+              "Parse a size. Binary units are powers of 1024 (1.5MiB); SI units are powers of 10 (1MB is 10^6 bytes); B means bytes. Raises if the value is not a whole number of bytes."
               (Some "Size.parse \"1.5MiB\"")
               None
            |> named [ "text" ])
           "Size.tryParse",
-          (bd "Size.parse as an Option — None instead of the raise." (Some "Size.tryParse \"nope\"") None
+          (bd "Like Size.parse, but returns None instead of raising." (Some "Size.tryParse \"nope\"") None
            |> named [ "text" ])
 
           // ---- Duration: time as a type [D:duration] -------------------
           "Duration.ms",
-          (bd "A duration of n milliseconds — the literal 500ms, as a function." (Some "Duration.ms 500") None
+          (bd "A duration of n milliseconds. The function form of a literal like 500ms." (Some "Duration.ms 500") None
            |> named [ "n" ])
           "Duration.s", (bd "A duration of n seconds." (Some "Duration.s 30") None |> named [ "n" ])
           "Duration.m", (bd "A duration of n minutes." (Some "Duration.m 5") None |> named [ "n" ])
           "Duration.h", (bd "A duration of n hours." (Some "Duration.h 2") None |> named [ "n" ])
           "Duration.toMillis",
-          (bd "The total milliseconds as an int (ratios, JSON fields)." (Some "Duration.toMillis 2m") None
+          (bd "The total milliseconds as an int, for example for ratios or JSON fields." (Some "Duration.toMillis 2m") None
            |> named [ "d" ])
           "Duration.toSeconds",
-          (bd "The total seconds as a float, lossless (2500ms is 2.5)." (Some "Duration.toSeconds 2500ms") None
+          (bd "The total seconds as a float, without losing precision (2500ms is 2.5)." (Some "Duration.toSeconds 2500ms") None
            |> named [ "d" ])
           "Duration.parse",
           (bd
-              "Parse duration text — the shape show renders: 1h30m, 2.5s, 500ms (raises on anything else, including sub-millisecond precision)."
+              "Parse a duration in the form show prints, such as 1h30m, 2.5s or 500ms. Raises on anything else, including values finer than a millisecond."
               (Some "Duration.parse \"1h30m\"")
               None
            |> named [ "text" ])
           "Duration.tryParse",
           (bd
-              "Duration.parse as an Option — None instead of the raise."
+              "Like Duration.parse, but returns None instead of raising."
               (Some "Duration.tryParse \"not-a-duration\"")
               None
            |> named [ "text" ])
           "Duration.sleep",
           (bd
-              "Block for the duration (zero returns immediately; a negative duration raises; OS timer granularity applies — ~15ms Windows, ~1ms Linux — so a small sleep is a floor, not a promise). Module-qualified on purpose: bare sleep stays the coreutils command."
+              "Pause for the duration. Zero returns immediately; a negative duration raises. The OS timer resolution (about 15ms on Windows, 1ms on Linux) means a short sleep may last longer than asked, never shorter. It is called Duration.sleep so that plain `sleep` still runs the system command."
               (Some "Duration.sleep 10ms")
               None
            |> named [ "d" ])
@@ -6581,121 +6581,128 @@ let builtinDocs: Map<string, BuiltinDoc> =
           // ---- boundary forms: adapters between text and typed data ----
           "from json",
           bd
-              "Parse one JSON document (any number of lines — a pretty-printed HTTP body pipes straight in) into a declared record. Fields are int/string/bool/float or Option of one; an Option field reads a missing key or null as None."
+              "Parse one JSON document, which may span several lines (so a pretty-printed HTTP body can be piped straight in), into a declared record. Fields can be int, string, bool, float, or an Option of one of those; a missing key or null becomes None."
               None
-              (Some "a pipe stage: resp.body |> from json Config.")
+              (Some "Use it as a pipe stage: `resp.body |> from json Config`.")
           "from jsonl",
           bd
-              "Parse a JSON line stream — one document per element (NDJSON, the shape `to jsonl` writes) — into declared records."
+              "Parse JSON lines (NDJSON, one document per line, as `to jsonl` writes) into declared records."
               None
-              (Some "a pipe stage: xs |> from jsonl Config.")
+              (Some "Use it as a pipe stage: `xs |> from jsonl Config`.")
           "to json",
           bd
-              "Render one value as one JSON document (minified, one line): a record is an object, a seq an array (forced — one line cannot stream). A None field omits its key (so from json reads it back as None)."
+              "Write one value as a single-line JSON document. A record becomes an object and a seq becomes an array (the whole seq is read first). A None field is left out, so from json reads it back as None."
               None
-              (Some "a pipe stage: payload |> to json.")
+              (Some "Use it as a pipe stage: `payload |> to json`.")
           "to jsonl",
           bd
-              "Render a sequence to JSON lines — one document per element (NDJSON, the shape `from jsonl` reads), lazily."
+              "Write a sequence as JSON lines (NDJSON, one document per element, as `from jsonl` reads), lazily."
               None
-              (Some "a pipe stage: xs |> to jsonl.")
+              (Some "Use it as a pipe stage: `xs |> to jsonl`.")
           "from yaml",
           bd
-              "Parse YAML lines (the strict subset: block maps/sequences, scalars, # comments; --- multi-doc) into a declared record tree — nested records, seqs, seq<string * _> mappings, Option (missing/null reads None). Anchors, tags, and flow style are rejected."
+              "Parse YAML into declared records. Supports a strict subset: block mappings and sequences, scalars, # comments, and multiple documents separated by ---. Fields can be nested records, seqs, seq<string * _> for mappings, and Option (a missing key or null becomes None). Anchors, tags and flow style are rejected."
               None
-              (Some "a pipe stage: lines |> from yaml Deployment — yields seq<Deployment>, one per document.")
+              (Some "Use it as a pipe stage: `lines |> from yaml Deployment` gives a seq<Deployment>, one per YAML document.")
           "to yaml",
           bd
-              "Render one value as one YAML document: a record is a mapping, a seq a sequence document, a pair-seq one mapping. `to yaml stream` writes one document per element (the `---` bundle). A None field omits its key; strings that could be mis-typed (no, 007, 1e5) are quoted."
+              "Write one value as a YAML document. A record becomes a mapping, a seq a sequence, and a seq of pairs a mapping. `to yaml stream` writes one document per element, separated by `---`. A None field is left out; strings that YAML could misread as another type (no, 007, 1e5) are quoted."
               None
-              (Some "a pipe stage: deployment |> to yaml.")
+              (Some "Use it as a pipe stage: `deployment |> to yaml`.")
           "from xml",
           bd
-              "Parse one XML document (a .csproj/.slnx or any XML) into a declared record — read-only. The root element is the record; a field name matches a child element by local name (a default xmlns is stripped); [<Attr>] reads an attribute, [<Elem \"X\">] a repeated child, a nested record a child element. Every leaf is text: fields are string, Option<string>, a record, or a seq of one (declare a number as string, convert with Str.toInt). There is no `to xml`."
+              "Parse one XML document (a .csproj, .slnx or any XML) into a declared record. The root element is the record, and each field matches a child element by local name (a default xmlns is ignored). Use [<Attr>] to read an attribute, [<Elem \"X\">] for a repeated child, and a nested record for a child element. All values are text: fields are string, Option<string>, a record, or a seq of these, so declare a number as string and convert it with Str.toInt. Reading only; there is no `to xml`."
               None
-              (Some "a pipe stage: File.read \"App.csproj\" |> from xml Proj.")
+              (Some "Use it as a pipe stage: `File.read \"App.csproj\" |> from xml Proj`.")
           "from table",
           bd
-              "Read aligned column output (one header row, aligned data rows) into declared row records — yields seq<T>. Columns slice at header offsets, never whitespace runs, so a spaced value (`Up 2 hours`) survives; a header boundary is a run of 2+ spaces (`CONTAINER ID` is one column). A field matches its header by normalized name, case-insensitively (`podTemplateHash` reads `POD-TEMPLATE-HASH`); `[<Wire \"HEADER\">]` matches a raw header verbatim. Cells trim and type by the field (string/int/float/bool); an Option field reads an empty or `<none>` cell as None. Extra columns are ignored; blank lines skip; errors carry line and column. There is no `to table`."
+              "Parse column-aligned tool output (a header row followed by aligned rows) into declared records, giving a seq<T>. Columns are cut at the header positions, not at every space, so a value with spaces (`Up 2 hours`) stays whole; headers are separated by 2 or more spaces (`CONTAINER ID` is one column). Fields match headers by their letters and digits, ignoring case (`podTemplateHash` matches `POD-TEMPLATE-HASH`); `[<Wire \"HEADER\">]` matches a header exactly. Cells are trimmed and converted to the field type (string, int, float, bool); for an Option field, an empty or `<none>` cell becomes None. Extra columns and blank lines are ignored, and errors report the line and column. Reading only; there is no `to table`."
               None
-              (Some "a pipe stage: a tool's `-o table` output |> from table Pod.")
+              (Some "Use it as a pipe stage on a tool's table output: `… |> from table Pod`.")
           "Yaml.parse",
           (bd
-              "Parse one YAML document (the strict subset) into Yaml nodes — the typeless read: structure is held whole, undeclared keys included, where `from yaml T` would drop them. Scalars self-type exactly as district scalars do (unquoted true/3/1.5 -> YBool/YInt/YFloat; quoted or block -> YStr; empty -> YNull)."
+              "Parse one YAML document (the same strict subset) into Yaml nodes without a declared type. Every key is kept, including ones `from yaml T` would drop. Scalar types follow the same rules as in a `yaml` block: unquoted true/3/1.5 become YBool/YInt/YFloat, quoted or block scalars become YStr, and empty values become YNull."
               (Some "[\"replicas: 3\"] |> Yaml.parse")
               None
            |> named [ "lines" ])
           "Yaml.merge",
           (bd
-              "Apply a `yaml patch` district to a document: the patch's structure is the address (maps upsert recursively; seqs append-if-absent, or upsert/remove by the marker line's by=<key>; scalars replace; a `$-` tombstone removes the key or matching item). Orderless and idempotent; the merged document renders with `to yaml`."
+              "Apply a `yaml patch` block to a document. The patch's structure says where each change goes: mappings are merged recursively; sequence items are appended if missing, or updated/removed by the key given with `by=<key>`; scalars are replaced; `$-` removes a key or a matching item. The order of entries does not matter and applying a patch twice changes nothing more. Write the result with `to yaml`."
               None
               (Some
-                  "let p = yaml patch by=name (indented patch lines) — then File.read f |> Yaml.parse |> Yaml.merge p |> to yaml |> File.write f.")
+                  "Define the patch with `let p = yaml patch by=name` and indented patch lines, then run `File.read f |> Yaml.parse |> Yaml.merge p |> to yaml |> File.write f`.")
            |> named [ "patch"; "doc" ])
           "Yaml.inferShape",
           (bd
-              "Draft named `type` declarations from a YAML sample — the composable core of `#infer`: returns the declaration text (top record named Root; nested records auto-named; array elements merge, a key absent in some elements drafts Option; a data-keyed object — one value shape with mostly non-identifier keys, differing sibling key sets, or an empty {} — drafts the open mapping seq<string * _>; notes ride as `//` lines). It drafts what the sample has; you edit the emitted types. Not check-time inference (the value is a runtime sample)."
+              "Generate draft `type` declarations from a YAML sample and return them as text; this is what `#infer` uses. The top record is named Root and nested records are named automatically. Array elements are merged, and a key missing from some elements becomes an Option. An object used as a dictionary (values of one shape with mostly non-identifier keys, different keys in sibling objects, or an empty {}) becomes seq<string * _>. Notes are added as `//` lines. The draft only covers what the sample contains, so review and edit it. This runs on a sample at runtime; it does not affect type checking."
               (Some "let sample = <<<\n    name: web\n    port: 8080\nprint (Yaml.inferShape sample)")
-              (Some "the `weir add schema` category: external structure -> a declaration you own; check and `from yaml` stay untouched.")
+              (Some "Like `weir add schema`, this turns outside data into a type declaration you paste into your script and own; it does not change how `check` or `from yaml` behave.")
            |> named [ "lines" ])
           "Json.inferShape",
           (bd
-              "Draft named `type` declarations from a JSON sample — the composable core of `#infer`: returns the declaration text (top record named Root; nested records auto-named by field, seq elements singularised; array elements merge, a key absent in some elements drafts Option; a data-keyed object — one value shape with mostly non-identifier keys, differing sibling key sets, or an empty {} — drafts the open mapping seq<string * _>; notes ride as `//` lines). It drafts what the sample has; you edit the emitted types. Not check-time inference (the value is a runtime sample)."
+              "Generate draft `type` declarations from a JSON sample and return them as text; this is what `#infer` uses. The top record is named Root; nested records are named after their field, with array element types in the singular. Array elements are merged, and a key missing from some elements becomes an Option. An object used as a dictionary (values of one shape with mostly non-identifier keys, different keys in sibling objects, or an empty {}) becomes seq<string * _>. Notes are added as `//` lines. The draft only covers what the sample contains, so review and edit it. This runs on a sample at runtime; it does not affect type checking."
               (Some "print (Json.inferShape [\"{\\\"id\\\": 1, \\\"name\\\": \\\"x\\\"}\"])")
-              (Some "the `weir add schema` category: external structure -> a declaration you own; check and `from json` stay untouched.")
+              (Some "Like `weir add schema`, this turns outside data into a type declaration you paste into your script and own; it does not change how `check` or `from json` behave.")
            |> named [ "lines" ])
           "Table.inferShape",
           (bd
-              "Draft the row `type` declaration from an aligned-table sample — the composable core of `#infer … from table`: per-column token scan over the data rows (all-int -> int, else float/bool by token, else string; a column with empty/`<none>` cells -> Option with a note); headers sanitize to field names, `[<Wire>]` carries a header the name cannot recover; a note says the value reads as seq<Root>. You edit the emitted type. Not check-time inference (the value is a runtime sample)."
+              "Generate a draft row `type` declaration from a sample of column-aligned output and return it as text; this is what `#infer … from table` uses. Each column's type comes from its values: int if all are ints, otherwise float or bool if they all fit, otherwise string; a column with empty or `<none>` cells becomes an Option, with a note. Headers become field names, with `[<Wire>]` added when the original header cannot be recovered from the name. A note says the result is read as seq<Root>. Review and edit the draft. This runs on a sample at runtime; it does not affect type checking."
               (Some "print (Table.inferShape [\"NAME   RESTARTS\"; \"web-1  0\"])")
-              (Some "the `weir add schema` category: external structure -> a declaration you own; check and `from table` stay untouched.")
+              (Some "Like `weir add schema`, this turns outside data into a type declaration you paste into your script and own; it does not change how `check` or `from table` behave.")
            |> named [ "lines" ])
           "Table.render",
           (bd
-              "Render a seq of same-shaped records as aligned column lines (a bold-header, width-clamped table — the same layout the REPL echoes) for `print`. Display, not a wire format: there is no `to table` back out (a table does not round-trip; use `to json`/`to yaml` for that). Width tracks the terminal, unclamped when piped; a non-record seq is a located error."
+              "Format a seq of records of the same type as aligned table lines for `print`, with a bold header and the same layout the REPL uses. It is for display only: there is no `to table`, and a table cannot be read back reliably, so use `to json` or `to yaml` to exchange data. The table is fitted to the terminal width, and not limited when piped. A seq of non-records is an error that points at the location."
               (Some "ls |> Table.render |> Seq.iter print")
               None
            |> named [ "rows" ])
 
-          // ---- reifiers: turn a command chain into a value [D:exit-reifiers].
+          // ---- reifiers: a `|` stage that turns a command's run into a value
+          // [D:exit-reifiers] [D:reifier-term].
           // Surface names; the typed tree carries the un-typeable |completed
           // key (+ Env/In twins), mapped back by reifierSurface below. ----
           "complete",
           bd
-              "Reify a command chain to a Completed record (exitCode, stdout, stderr)."
+              "Run the command (or pipeline) and capture everything as a `Completed` record: its exit code, stdout and stderr. A nonzero exit does not raise."
               None
-              (Some "the reifier law: output goes where the meaning goes.")
+              (Some "Use it when you need the exit code and the output together: `let r = git push | complete`, then read `r.exitCode`, `r.stdout`, `r.stderr`.")
           "succeeds",
-          bd "Reify a command to a bool: did it exit zero?" None (Some "the reifier law: the meaning is the verdict.")
+          bd
+              "Run the command and return true if it exited 0. Its output is discarded."
+              None
+              (Some "Use it in a condition: `if git diff --quiet | succeeds then …`.")
           "orFail",
           bd
-              "Stream a command's output, raising with a message on a nonzero exit."
+              "Run the command with its output streaming to the terminal; if it exits nonzero, raise with your message and the exit code."
               None
-              (Some "the reifier law: output streams, the exit is the meaning.")
+              (Some "Use it to stop the script when a command fails: `make test | orFail \"tests failed\"`.")
           "exitCode",
-          bd "Reify a command to its integer exit code." None (Some "the reifier law: the meaning is the code.")
+          bd
+              "Run the command with its output streaming to the terminal and return its exit code as an int. It never raises."
+              None
+              (Some "Bind or match the result, as in `let rc = make test | exitCode`. Using it as a bare statement is an error, because the code would be thrown away.")
           "exec",
           bd
-              "Replace the current process with the command (execve) — never returns; the app keeps weir's pid, so as a container entrypoint it gets signals directly. Diverging, like fail/exit; cannot take piped stdin."
+              "Replace weir's process with the command (execve), so it never returns. The program keeps weir's process id, which means a container entrypoint receives signals directly. It cannot take piped stdin."
               None
-              (Some "the reifier law: the command becomes the process.")
+              (Some "Like `fail` and `exit`, it ends the script, so it fits in any branch, whatever type the other branches have.")
           "line",
           bd
-              "Reify a one-value command to its single line of stdout, trimmed — the `az … -o tsv` / `git rev-parse` idiom (replaces `$(cmd) |> Seq.exactlyOne`). Raises on a nonzero exit, or on 0 or 2+ lines."
+              "Run a one-value command and return its single line of output as a trimmed string — for tools like `git rev-parse HEAD` or `az … -o tsv`. Raises on a nonzero exit, or when the output is not exactly one line."
               None
-              (Some "the reifier law: the meaning is the value.")
+              (Some "For several lines use `| text` (one string), or bind the command itself (a seq<string>, one element per line).")
           "text",
           bd
-              "Reify a command to its whole stdout as one string — lines joined with newlines, trailing blank lines dropped (bash's `$(…)`). Raises on a nonzero exit; `| complete` keeps the code."
+              "Run the command and return its whole output as one string: lines joined with newlines, trailing blank lines dropped (like bash's `$(…)`). Raises on a nonzero exit."
               None
-              (Some "the reifier law: the meaning is the value.")
+              (Some "To keep the exit code instead of raising, use `| complete`.")
 
           // ---- types: a hover renders the structure; the value here is
           // when you get one ----
           "Completed", bd "A finished command: exitCode, stdout, stderr. You get one from `| complete`." None None
           "FileRow",
           bd
-              "A directory entry: name, kind (Regular | Directory | Symlink — a fact, not an answer), target (Some for a symlink, None otherwise — the one fact no File.* query answers), bytes (0 B for a directory), modified (the last-write Instant — the file's own fact, stable under binding; the table renders it relatively, show keeps ISO), hidden, path. From `ls` — files and subdirectories, sorted by name (ordinal: case-sensitive, uppercase first; never the locale). name is for matching and display; path is for handing to File.* - name derives from path, never the reverse. Narrow facts are queries, not columns: File.mode for permissions."
+              "A directory entry, as returned by `ls`. Fields: name; kind (Regular, Directory or Symlink); target (Some link target for a symlink, None otherwise; no File.* function gives you this); bytes (0 B for a directory); modified (the last-write time as an Instant, which does not change after you read it; tables show it as relative time, show prints ISO); hidden; and path. `ls` lists files and subdirectories sorted by name, case-sensitively with uppercase first, regardless of locale. Use name for matching and display and path when calling File.* functions. Less common details are separate functions rather than fields, such as File.mode for permissions."
               None
               None
           "EnvVar", bd "A name/value environment pair. From `Env.vars` / `pair` / `ofPairs` / `fromFile`." None None ]

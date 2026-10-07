@@ -448,11 +448,52 @@ junk became a phantom command's argv). The totality floor and
 consumed-separator law exist to make it impossible. [D:seq-commit]
 
 **District / sigil / reifier / splat.** weir's command-mode vocabulary
-(the rules live on the reference's Commands page): a **district** is a line-end `!` block
-of command lines; a **sigil** is `$(chain)` (capture); a **reifier** (`complete`/`succeeds`/`orFail`/`exitCode`) turns a
-command's run into a value where the meaning goes; a **splat** (`$@xs`)
-splices N argv words. [D:exit-reifiers] [D:argv-splat] (district & sigil:
-SEMANTICS — no DECISIONS row, see Findings.)
+(the rules live on the reference's Commands page). A **district** is a
+block opened by a line-end marker — `yaml` or `<<<` (`$<<<`, `$$<<<`) —
+whose indented lines are content, not code [D:yaml-district]
+[D:text-block]; the old line-end `!` command district is retired
+[D:district-retirement]. A **sigil** is `$(chain)` / `$e(chain)`: a
+command captured as a value where a bare command would run; the run
+sigils `!(…)`/`!e(…)` are gone [D:bang-retirement]. A **reifier** is the
+one USER-FACING term of the four [D:reifier-term]: a `|` stage after a
+command — or a whole chain [D:chain-reifiers] — that turns the run into
+a value (`complete`, `succeeds`, `exitCode`, `orFail`, `line`, `text`,
+`exec`); the value it returns decides where the output goes (captured
+into it, streamed to the terminal, or discarded by `succeeds`)
+[D:exit-reifiers]. A **splat** (`$@xs`) splices N argv words
+[D:argv-splat].
+
+**Armed statement.** A command in statement position — top level, a
+block body, a match arm, a lambda body, a block sequenced before more
+statements — runs (its output streams, it inherits the terminal) rather
+than capturing a value. [D:interior-arming] [D:armed-inherit]
+[D:lambda-lets] [D:seq-arming]
+
+**Parse-to-teach.** The parser accepts a known wrong spelling (`!=`,
+`<<`, a line-end `\`, `String.trim`) so the checker can refuse it with
+the repair named, instead of a token dump. [D:dx-message-families]
+
+**Told to stop.** A pipeline stage whose downstream stopped reading
+first: its nonzero exit (SIGPIPE) is the pipe closing, not a failure —
+the one exemption to the leftmost-failing-stage rule.
+[D:pipe-early-exit]
+
+**Generic hole / `Render`.** An interpolation hole on a parameter or a
+row-typed field generalizes under `Render` — Show minus a top-level
+`Secret` (a compiler-owned closed class, erased) — instead of defaulting
+to `string`. [D:hole-generic]
+
+**Or-pattern.** `| A | B -> body` desugars to one arm per alternative
+sharing the guard and body; binder-free in v1, capped at 64
+alternatives. [D:or-patterns]
+
+**Always-inside-the-scope.** A trailing `always` on any `within` kind
+runs while the resource is still held (the tmp dir exists, the lock is
+held, the proc is alive); the release follows. [D:within-always-any]
+
+**Wire table / codec.** The one table of which types cross JSON/YAML
+and how (canonical, encoded by a declared codec attribute, refused).
+[D:wire-table] [D:wire-codecs]
 
 ---
 
@@ -477,13 +518,9 @@ picked):**
 **Previously-undefined / under-indexed (written here from code + NOTES,
 flagged for their home):**
 
-- **district** and **sigil** have no `[D:key]` in DECISIONS — they are
-  described in NOTES (and SEMANTICS before its retirement) but never got an index row (unlike
-  their sibling `exit-reifiers`). Not a correctness gap; a
-  completeness one. Proposed: a `[D:command-district]` and
-  `[D:command-sigils]` row each, pointing at the ledger record, so
-  the index is whole. Reported, not added (this session is docs-only
-  and DECISIONS rows are decisions, not definitions).
+- **district** and **sigil** — RESOLVED: [D:district-retirement],
+  [D:bang-retirement], [D:yaml-district] and [D:text-block] now index
+  them (the entry above points there).
 
 ---
 

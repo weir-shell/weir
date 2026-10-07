@@ -7912,7 +7912,7 @@ test ! -e "$gtdir/proj/.weir/types/scalar.weir" || fail "a refused gen must writ
 out=$( cd "$gtdir/proj" && $BIN gen types --schema nope 2>&1 ) && fail "an unlocked schema must refuse" || true
 echo "$out" | grep -qF "no locked schema 'nope' — add it: weir add schema <url> --as nope" || fail "the unlocked teach: $out"
 out=$( cd "$gtdir/proj" && $BIN gen types --schema pod --as lowercase 2>&1 ) && fail "a lowercase --as must refuse" || true
-echo "$out" | grep -qF "the casing law" || fail "--as teaches the casing law: $out"
+echo "$out" | grep -qF "must be a type name: an uppercase letter first" || fail "--as teaches the type-name rule: $out"
 echo "e2e ok: gen types refusals — scalar top, unlocked name, lowercase --as"
 
 # --out -: stdout, nothing written; --as renames the top type

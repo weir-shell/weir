@@ -446,7 +446,7 @@ let rec firstPlanRefusal (te: TypedExpr) : (Span * string) option =
         | _ when Weir.Effects.isCommandReifier n ->
             Some(
                 te.Span,
-                "a command reifier runs a command, and 'proc' is refused inside 'plan' — its effects cannot be captured; plan covers weir-native mutation only (File/Dir/Http)"
+                "a reifier runs a command, and commands are refused inside 'plan' — what a program changes cannot be recorded; plan covers weir's own File/Dir/Http changes only"
             )
         | _ -> None
     | _ -> Check.childExprs te |> List.tryPick firstPlanRefusal
