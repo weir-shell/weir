@@ -1,15 +1,17 @@
 # Boundaries: argv and env
 
-Both load the same way: declare a record, load once, typed
-thereafter. Loading is strict and collected — every problem arrives
-together in one boundary error, before any effect runs.
+Command-line arguments and environment variables load the same way:
+declare a record, load it once, and use the typed values from then
+on. Loading is strict and reports every problem at once, in a single
+error, before the script does anything.
 
 ## `Args.load`
 
-Field names derive kebab-case flags (`dryRun` → `--dry-run`) and
-unambiguous first-letter shorts. `bool` fields are presence flags;
-`string`/`int` and the other scalars are required; `Option` makes a
-field optional; the field's `///` first line is its `--help` text:
+Field names become kebab-case flags (`dryRun` → `--dry-run`), plus a
+first-letter short flag where that is unambiguous. A `bool` field is
+true when the flag is present. `string`, `int` and the other scalars
+are required, and `Option` makes a field optional. The first line of
+the field's `///` comment is its `--help` text:
 
 ```weir
 type Cli = {
@@ -24,26 +26,29 @@ let cli = Args.load Cli
 print $"{cli.clean} {cli.port}"
 ```
 
-`[<Short "c">]` pins a short (`"h"` is reserved for `--help`);
-`[<NoShort>]` suppresses one. The collected refusals:
+`[<Short "c">]` sets a short flag (`"h"` is reserved for `--help`),
+and `[<NoShort>]` removes one. These problems are all reported
+together:
 
 - unknown flags (with a did-you-mean)
 - unexpected arguments
-- missing requireds
+- missing required flags
 - unparseable values
 
-`--help` prints the derived usage even on otherwise-invalid
-invocations.
+`--help` prints the usage even when the rest of the command line is
+invalid.
 
-There are no positionals — spell operands as flags. For hand-rolled
-shapes, `Args.flag` and `Args.value` scan the raw `Self.args`.
+There are no positional arguments; pass operands as flags. To parse
+arguments by hand, `Args.flag` and `Args.value` scan the raw
+`Self.args`.
 
 ## Subcommands
 
-A union of record-payload cases: the first token picks the case,
-the rest parse as its flags, and the dispatch `match` is
-exhaustiveness-checked. Shared flags live once on a containing
-record; they float around the case token:
+Declare subcommands as a union whose cases carry records. The first
+argument picks the case, the rest are parsed as that case's flags,
+and the checker makes sure your `match` covers every case. Flags
+shared by all subcommands go once on a containing record, and may
+appear before or after the subcommand name:
 
 ```weir-error
 type CloneArgs = { remote: string; force: bool }
@@ -55,23 +60,27 @@ match Args.load Cmd with // no argv here: "missing subcommand; one of: clone, st
 
 ## `Defaults`
 
-`[<Default v>]` fills an absent flag; the field stays non-`Option`
-and `--help` shows the default. On a bool, `[<Default true>]` mints
-the `--no-x` opposite; `[<Default false>]` is rejected there
-(presence already rests at false). The attribute takes literals
-only — a computed default keeps the field `Option` plus one line.
+`[<Default v>]` supplies a value when the flag is absent; the field
+stays non-`Option`, and `--help` shows the default. On a bool,
+`[<Default true>]` adds a `--no-x` flag to turn it off.
+`[<Default false>]` is rejected on a bool, since a missing flag is
+already false. The attribute takes literals only; for a computed
+default, keep the field an `Option` and fill it in with one line of
+code.
 
 ## `Env.load`
 
-The same declaration law over environment variables: field names
-match var names verbatim (no case-mapping; `[<Wire "NAME">]` for a
-name that is not a legal identifier), `[<Default>]` fills absences,
-and a `Secret` field is the standard way a token enters. Env bools
-are text (`FLAG=false`), not presence.
+The same approach works for environment variables. Field names match
+variable names exactly, with no case conversion (use
+`[<Wire "NAME">]` for a name that is not a legal identifier).
+`[<Default>]` fills in missing variables, and a `Secret` field is the
+standard way to take in a token. Env bools are read from text
+(`FLAG=false`), not from whether the variable is set.
 
-An env value with a fixed legal set declares it as a union of bare
-cases — matching is case-insensitive (env convention is uppercase),
-and a miss lists the candidates with a did-you-mean:
+When a variable has a fixed set of allowed values, declare it as a
+union of cases without payloads. Matching is case-insensitive (env
+values are usually uppercase), and an unknown value is an error that
+lists the allowed ones with a did-you-mean:
 
 ```weir
 type Level =
@@ -87,12 +96,12 @@ within env e
 print "declared sets beat stringly config"
 ```
 
-`Env.get "NAME"` reads one var as `Option<string>`;
-`Env.fromFile` reads the dotenv subset (`KEY=VALUE`, quotes, `#`
-comments — no `export`, no `$VAR` expansion).
+`Env.get "NAME"` reads one variable as `Option<string>`.
+`Env.fromFile` reads a subset of dotenv (`KEY=VALUE`, quotes, `#`
+comments; no `export` and no `$VAR` expansion).
 
 ## What both refuse
 
-`Bytes` (each refusal names the conversion to use), and for
-`Instant` fields both parse ISO 8601. A `Secret` passed as a flag
-is visible in `ps` output — weir does not hide argv.
+Both refuse `Bytes` fields, and the error names the conversion to
+use. Both parse `Instant` fields as ISO 8601. A `Secret` passed as a
+flag is visible in `ps` output; weir does not hide argv.

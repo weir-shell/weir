@@ -99,14 +99,14 @@ let withinKinds: WithinKind list =
         Name = "env"
         Binds = false
         Standalone = false
-        Doc = "an environment overlay for the block's children" }
+        Doc = "environment variables set for the commands the block runs" }
       // the no-orphan law [D:scoped-procs]: the process lives exactly
       // as long as the block
       { Id = WithinProc
         Name = "proc"
         Binds = true
         Standalone = false
-        Doc = "a background process, tree-killed and reaped when the block exits" }
+        Doc = "a background process, stopped together with anything it started when the block exits" }
       // the scoped HTTP listener [D:http-serve]: the socket lives
       // exactly as long as the block, freed on every exit path (the
       // no-orphan law applied to ports). Binds a Server handle; takes
@@ -115,14 +115,14 @@ let withinKinds: WithinKind list =
         Name = "serve"
         Binds = true
         Standalone = false
-        Doc = "an HTTP listener, served until the block exits and closed on every path (the port frees)" }
+        Doc = "an HTTP server that runs until the block exits; its port is freed however the block ends" }
       // advisory file lock [D:within-lock] — the one kind whose
       // guarantee survives kill -9 (the kernel releases it)
       { Id = WithinLock
         Name = "lock"
         Binds = false
         Standalone = false
-        Doc = "an advisory file lock, held for the block, released on every exit (kill -9 included)" }
+        Doc = "an advisory file lock, held for the block and released however it ends, even on kill -9" }
       // [D:pure-stage1]: in the family (the union's exhaustiveness,
       // the grammar inventory) but its own head — the one kind that
       // scopes a law instead of a resource
@@ -130,7 +130,7 @@ let withinKinds: WithinKind list =
         Name = "pure"
         Binds = false
         Standalone = true
-        Doc = "a purity assertion: the block's body must reach no effect" }
+        Doc = "a block that must have no effects at all" }
       // [D:pure-stage2]: one tier up from pure — the body must reach no
       // external mutation; ambient reads (fs.read, env, clock, query-net)
       // are allowed. Its own head, never `within readonly`.
@@ -138,7 +138,7 @@ let withinKinds: WithinKind list =
         Name = "readonly"
         Binds = false
         Standalone = true
-        Doc = "a read-only assertion: the block's body must reach no external mutation (ambient reads are allowed)" }
+        Doc = "a block that may read (files, the environment, the clock, HTTP GETs) but change nothing" }
       // [D:plan-apply]: the third standalone head — like readonly it
       // partitions ambient/mutation, but instead of refusing mutation it
       // captures it as an Op; the region yields a Plan. Its own head,
@@ -147,7 +147,7 @@ let withinKinds: WithinKind list =
         Name = "plan"
         Binds = false
         Standalone = true
-        Doc = "a plan block: the body's external mutations are captured as Ops (reads run); the block yields a Plan to inspect and apply" } ]
+        Doc = "a block whose file, directory and HTTP changes are recorded instead of made (reads still run); it returns a Plan you can inspect and apply" } ]
 
 /// a kind's table row — total by construction: an Id only enters the
 /// tree through this table (the parser's name lookup), so the find
