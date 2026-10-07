@@ -187,6 +187,19 @@ let r = sh -c "echo out; exit 3" | complete
 print $"exit {r.exitCode}, said {r.stdout |> Seq.head}"
 ```
 
+A reifier also follows a whole chain, `a | b | c | line`. The chain's
+code is its leftmost failing stage's, where the fault began, or 0; a
+`complete` record carries the last stage's stdout and every stage's
+stderr in stage order. A stage whose downstream stopped reading first
+(`git log | head -1`) was told to stop — its exit is not a failure.
+Only `exec` stays single: a pipeline cannot replace the process
+(`sh -c "a | b" | exec`).
+
+```weir
+let newest = sh -c "printf 'b\na\n'" | sort | head -1 | line
+print newest
+```
+
 `exitCode` refuses capturing and discarding positions with a
 teaching error:
 

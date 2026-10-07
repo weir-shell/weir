@@ -6754,6 +6754,12 @@ let reifierSurface (name: string) : string option =
     elif name.StartsWith "|execed" then Some "exec"
     elif name.StartsWith "|lined" then Some "line"
     elif name.StartsWith "|texted" then Some "text"
+    elif name = "|chainCompleted" then Some "complete"
+    elif name = "|chainSucceeded" then Some "succeeds"
+    elif name = "|chainExitCoded" then Some "exitCode"
+    elif name = "|chainOrFailed" then Some "orFail"
+    elif name = "|chainLined" then Some "line"
+    elif name = "|chainTexted" then Some "text"
     else None
 
 /// the hover/completion text: summary, then example, then pointer — each
@@ -6883,6 +6889,68 @@ let private envVarPairs (v: Value) : (string * string) list =
         |> List.ofSeq
     | v -> unreachable $"the checker rejects 'cmdEnv' on {formatValue v}"
 
+// reifiers after a command chain [D:chain-reifiers]: the parser hands the
+// chain as (prog, argv, env) stage tuples — each built exactly as a single
+// reified segment's — plus the value head's stdin, if any
+let private chainSpecs (stagesV: Value) (stdinV: Value) : Proc.Spec list =
+    let input =
+        match stdinV with
+        | VUnion("Some", Some(VSeq xs)) -> Some(xs |> Seq.map asString)
+        | _ -> None
+
+    match stagesV with
+    | VSeq stages ->
+        stages
+        |> List.ofSeq
+        |> List.mapi (fun i st ->
+            match st with
+            | VTuple [ VStr prog; VSeq args; envV ] ->
+                { Proc.Spec.Prog = Proc.resolveProg prog
+                  Proc.Spec.Args = argStrings args
+                  Proc.Spec.Env = envVarPairs envV
+                  Proc.Spec.Input = (if i = 0 then input else None)
+                  Proc.Spec.Cwd = None
+                  Proc.Spec.Ambient = None }
+            | v -> unreachable $"the parser builds chain stages as tuples, got {formatValue v}")
+    | v -> unreachable $"the parser builds a chain as a stage list, got {formatValue v}"
+
+let private chainShown (specs: Proc.Spec list) =
+    specs |> List.map (fun sp -> String.concat " " (sp.Prog :: sp.Args)) |> String.concat " | "
+
+let private chainBuiltin (k: Proc.Spec list -> Value) : Value =
+    VBuiltin(fun stagesV -> VBuiltin(fun stdinV -> k (chainSpecs stagesV stdinV)))
+
+let private chainCompletedImpl =
+    chainBuiltin (fun specs ->
+        let code, stdout, stderr = Proc.chainCompletedOf specs
+        recordOf completedDef [ VInt(int64 code); VSeq(stdout |> Seq.map VStr); VSeq(stderr |> Seq.map VStr) ])
+
+let private chainSucceededImpl =
+    chainBuiltin (fun specs ->
+        let code, _, _ = Proc.chainCompletedOf specs
+        VBool(code = 0))
+
+let private chainExitCodedImpl =
+    chainBuiltin (fun specs -> VInt(int64 (Proc.chainStreamCodeOf specs)))
+
+let private chainOrFailedImpl =
+    VBuiltin(fun msgV ->
+        chainBuiltin (fun specs ->
+            let code = Proc.chainStreamCodeOf specs
+
+            match msgV with
+            | VStr msg when code <> 0 -> failwith $"{msg} (exit {code})"
+            | _ -> VUnit))
+
+let private chainLinedImpl =
+    chainBuiltin (fun specs ->
+        match List.ofSeq (Proc.chainLinesOf specs) with
+        | [ one ] -> VStr(one.Trim())
+        | ls -> failwith $"'{chainShown specs} | line' expected exactly one line of output, got {List.length ls}")
+
+let private chainTextedImpl =
+    chainBuiltin (fun specs -> wholeText (Proc.chainLinesOf specs))
+
 // fst/snd — F#'s pair projections; the pair-only typing (TTuple [a; b])
 // makes wider tuples a unification error, same as F#
 let private fstImpl: Value =
@@ -6896,6 +6964,11 @@ let private sndImpl: Value =
         match v with
         | VTuple(_ :: b :: _) -> b
         | v -> unreachable $"the checker rejects 'snd' on {formatValue v}")
+
+// stage list -> optional stdin -> result [D:chain-reifiers]
+let private chainTy (result: Ty) : Ty =
+    let stage = TTuple [ TStr; TSeq TStr; TSeq(TNamed("EnvVar", [])) ]
+    TFun(TSeq stage, TFun(TNamed("Option", [ TSeq TStr ]), result))
 
 let private entries: (string * Ty * Value) list =
     [ "ls", seqFileRow, realLs
@@ -6958,7 +7031,15 @@ let private entries: (string * Ty * Value) list =
       VBuiltin(fun envV -> linedWith (envVarPairs envV))
       "|textedEnv",
       TFun(TSeq(TNamed("EnvVar", [])), TFun(TStr, TFun(TSeq TStr, TStr))),
-      VBuiltin(fun envV -> textedWith (envVarPairs envV)) ]
+      VBuiltin(fun envV -> textedWith (envVarPairs envV))
+      // reifiers after a command chain [D:chain-reifiers]: a stage list of
+      // (prog, argv, env) and the value head's stdin
+      "|chainCompleted", chainTy (TNamed(completedDef.Name, [])), chainCompletedImpl
+      "|chainSucceeded", chainTy TBool, chainSucceededImpl
+      "|chainExitCoded", chainTy TInt, chainExitCodedImpl
+      "|chainOrFailed", TFun(TStr, chainTy TUnit), chainOrFailedImpl
+      "|chainLined", chainTy TStr, chainLinedImpl
+      "|chainTexted", chainTy TStr, chainTextedImpl ]
     @ bareEntries
 
 let private showImpl: Value = VBuiltin(formatValue >> VStr)

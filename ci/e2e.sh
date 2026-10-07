@@ -506,6 +506,36 @@ print x' 2>&1) && fail "| text must raise on nonzero" || true
 echo "$terr" | grep -qF "exit code 5" || fail "| text lost the nonzero raise: $terr"
 echo "e2e ok: | text — whole stdout to a string, trailing blanks dropped, nonzero raises [D:reify-text]"
 
+# ---- pipe chains [D:pipe-early-exit] [D:chain-reifiers] --------------------
+# a consumer that exits early ends the chain (statement, capture, let) with
+# no "write error" noise; reifiers follow a chain; the leftmost failing
+# stage owns the code; complete's stderr is every stage's, in order
+if [ "$IS_WINDOWS" != "1" ]; then
+    pcdir=$(mkweirtmp)
+    cat > "$pcdir/early.weir" <<'WEOF'
+seq 1 1000000 | head -1
+let c = $(seq 1 1000000 | head -1) |> Seq.exactlyOne
+let l = seq 1 1000000 | head -1 | line
+print $"{c} {l}"
+WEOF
+    out=$(cd "$pcdir" && timeout 60 $BIN early.weir 2>&1) || fail "an early-exit chain must end promptly: $out"
+    [ "$out" = "1
+1 1" ] || fail "early-exit chain output, no write-error noise: $out"
+    cat > "$pcdir/reify.weir" <<'WEOF'
+let ok = sh -c "echo x" | grep x | succeeds
+let bad = sh -c "echo x; exit 2" | cat | succeeds
+let code = sh -c "exit 3" | cat | sh -c "cat; exit 5" | exitCode
+let r = sh -c "echo e1 >&2; echo o" | sh -c "cat; echo e2 >&2; exit 4" | complete
+let t = sh -c "printf 'b\na\n'" | sort | text
+print $"{ok} {bad} {code} {r.exitCode} {r.stdout |> Str.join ","} {r.stderr |> Str.join ","} [{t}]"
+WEOF
+    out=$(cd "$pcdir" && timeout 60 $BIN reify.weir 2>&1) || fail "chain reifiers must run: $out"
+    [ "$out" = "true false 3 4 o e1,e2 [a
+b]" ] || fail "chain reifiers: succeeds, leftmost code, stderr order, text: $out"
+    rm -rf "$pcdir"
+    echo "e2e ok: pipe chains — early exit ends the chain quietly; reifiers follow a chain, leftmost code, stderr in order"
+fi
+
 # a 2-param generic union checks + evals through the binary (was the
 # prelude-Result pin; Result removed [D:no-result], the fixture is now a
 # locally-declared Either)
@@ -3367,10 +3397,10 @@ echo "e2e ok: teaching fatals dominate; the reserved-word gate stays fall-throug
 
 # anchor residue A+B: foldChain reifier anchors on the marker; keyword in
 # param/field slots dominates [PLAN-open-findings]
-printf 'git | grep x | complete\n' > "$ckdir/fc.weir"
+printf 'git | grep x | exec\n' > "$ckdir/fc.weir"
 out=$($BIN check --json "$ckdir/fc.weir" || true)
 echo "$out" | grep -qF '"line":1,"col":16' || fail "foldChain anchors on the marker: $out"
-echo "$out" | grep -qF "must directly follow a single external command" || fail "reifier teaching present: $out"
+echo "$out" | grep -qF "a pipeline cannot" || fail "reifier teaching present: $out"
 echo "$out" | grep -qvF "Other error messages" || fail "reifier teaching not buried: $out"
 printf 'let f rec = 1\n' > "$ckdir/pk.weir"
 out=$($BIN check --json "$ckdir/pk.weir" || true)
@@ -5873,10 +5903,11 @@ expect "value-headed | exitCode" "1" "$out"
 # expression-position reification is the captured chain [D:drop-reify-builtins]
 out=$($BIN -e 'let r = $(echo hi | complete) in r.stdout')
 expect "expression-position reification via \$(... | complete)" '["hi"]' "$out"
-# multi-external reifier still rejects (no new law)
-errout=$(printf 'echo hi | grep h | complete\n' | checkPiped 2>&1) && fail "multi-external reifier must reject"
-echo "$errout" | grep -qF "single external command segment" || fail "multi-external rule changed: $errout"
-echo "e2e ok: reifier-with-stdin (complete/succeeds/exitCode), zero-diff spellings"
+# a multi-external chain reifies as one unit [D:chain-reifiers]
+printf 'let r = echo hi | grep h | complete\nprint $"{r.exitCode} {r.stdout |> Seq.head}"\n' > "$fddir/chainr.weir"
+out=$($BIN "$fddir/chainr.weir" 2>&1) || fail "a reified chain must run: $out"
+expect "multi-external chain | complete" "0 hi" "$out"
+echo "e2e ok: reifier-with-stdin (complete/succeeds/exitCode), zero-diff spellings, chains reify"
 rm -rf "$fddir"
 
 # ---- [<Default>]: the resting point moves [D:default-attr] ----
@@ -8159,6 +8190,12 @@ echo "$out" | grep -qF "Http.expect https://api.example.com/items" || fail "the 
 echo "$out" | grep -qF "a Secret reaches the argv of curl" || fail "the ps-visible line: $out"
 echo "$out" | grep -qF "git" || fail "an imported module's externals appear transitively: $out"
 echo "$out" | grep -qF "lib.weir" || fail "the module site carries the module's own file: $out"
+# a reified chain reports every stage [D:chain-reifiers]
+printf 'let x = git log | head -1 | line\nlet r = Q=1 git status | cat | complete\nprint $"{x} {r.exitCode}"\n' > "$candir/chain.weir"
+cout=$($BIN check --can "$candir/chain.weir" 2>&1) || fail "chain --can errored: $cout"
+for p in git head cat; do echo "$cout" | grep -qE "^ +$p( ×|  )" || fail "a reified chain reports $p: $cout"; done
+echo "$cout" | grep -qF "sets Q for children" || fail "a chain stage's prefix names Q: $cout"
+echo "$cout" | grep -qF "not statically known" && fail "a literal chain is no dynamic head: $cout"
 
 # the reifier desugar's slots [D:can-report]: orFail's msg rides ahead
 # of the program and the Env twins lead with the overlay — the report

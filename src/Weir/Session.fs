@@ -289,6 +289,33 @@ module private Libc =
             signal (SIGINT, prev) |> ignore
             false
 
+// SIGPIPE handled, not ignored, so children start at the default
+// [D:pipe-early-exit]: the runtime ignores SIGPIPE, an ignored signal
+// stays ignored across exec, and a child told to stop by a closed pipe
+// then printed "write error: Broken pipe" instead of exiting quietly as
+// under a shell. A HANDLED signal resets to the default at exec. The
+// handler is libc's getpid — async-signal-safe, side-effect free, and
+// its ignored int argument is ABI-harmless — because a managed delegate
+// is not safe to run in signal context; weir's own writes still fail
+// with EPIPE (the handler returns, the write reports the error).
+// Installed once before the first spawn; POSIX only.
+let sigpipeForChildren: Lazy<unit> =
+    lazy
+        (if not (System.OperatingSystem.IsWindows()) then
+             let lib =
+                 [ "libc.so.6"; "libc"; "/usr/lib/libSystem.B.dylib" ]
+                 |> List.tryPick (fun name ->
+                     match System.Runtime.InteropServices.NativeLibrary.TryLoad name with
+                     | true, h -> Some h
+                     | _ -> None)
+
+             match lib with
+             | Some h ->
+                 match System.Runtime.InteropServices.NativeLibrary.TryGetExport(h, "getpid") with
+                 | true, fp -> Libc.signal (13, fp) |> ignore
+                 | _ -> ()
+             | None -> ())
+
 // a second signal during teardown hard-exits [D:signal-teardown] — the
 // shell's double-Ctrl+C escape, so a slow or stuck cleanup can never
 // wedge a supervisor. The first signal sets this and runs the sweep;

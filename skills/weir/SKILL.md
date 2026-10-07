@@ -1379,7 +1379,7 @@ within tmp d
             print "teardown, every path"
 ```
 - Nonzero exit RAISES when the stream is forced. The exit-code
-  reifiers (complete's family, single external segment, one law:
+  reifiers (complete's family, on a command or a whole chain, one law:
   output goes where the meaning goes): `cmd | succeeds` is a
   BOOL (silent — a predicate's output IS its result); `cmd | orFail
   "msg"` STREAMS and raises `msg (exit N)` on nonzero, unit on
@@ -2231,7 +2231,11 @@ print $"exit={r.exitCode}"
   teaching (spell `|>`). LHS must be `seq<string>`. Reifiers compose
   on the tail — `files | grep -c foo | complete` applies to the (single
   external) segment WITH the value as stdin (`| succeeds`/`| exitCode`/
-  `| orFail` too); a MULTI-external chain still needs one segment.
+  `| orFail` too). A reifier follows a whole chain too [D:chain-reifiers]
+  (`git log | head -1 | line`): the code is the LEFTMOST failing
+  stage's, `complete.stderr` is every stage's in order; a stage whose
+  downstream stopped reading first is not a failure
+  [D:pipe-early-exit]; `exec` alone stays single-command.
 - One-command env, bash-style [D:env-prefix]: `EDITOR=nano git commit`
   — `NAME=value` words BEFORE the head (value = one word, quoted,
   `$x` or `$"…"`; `NAME=` is empty) join that stage's overlay; each

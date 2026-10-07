@@ -215,7 +215,13 @@ let semanticTokensFor (lines: string list) : (int * int * int * int) list =
               "|linedIn"
               "|texted"
               "|textedEnv"
-              "|textedIn" ]
+              "|textedIn"
+              "|chainCompleted"
+              "|chainSucceeded"
+              "|chainExitCoded"
+              "|chainOrFailed"
+              "|chainLined"
+              "|chainTexted" ]
 
     let rec spineIsReifier (te: Check.TypedExpr) =
         match te.Kind with

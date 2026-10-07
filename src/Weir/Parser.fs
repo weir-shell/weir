@@ -1202,6 +1202,12 @@ let rec private chainReifier (e: Expr) : string option =
     | EVar v when v.StartsWith "|execed" -> Some "exec"
     | EVar v when v.StartsWith "|lined" -> Some "line"
     | EVar v when v.StartsWith "|texted" -> Some "text"
+    | EVar "|chainCompleted" -> Some "complete"
+    | EVar "|chainSucceeded" -> Some "succeeds"
+    | EVar "|chainExitCoded" -> Some "exitCode"
+    | EVar "|chainOrFailed" -> Some "orFail"
+    | EVar "|chainLined" -> Some "line"
+    | EVar "|chainTexted" -> Some "text"
     | EApp(f, _) -> chainReifier f
     | EPipe(l, r) -> chainReifier r |> Option.orElseWith (fun () -> chainReifier l)
     | _ -> None
@@ -4583,9 +4589,51 @@ let private foldChain (h: Expr) (rest: ((string * Span) * Seg) list) : Result<Ex
                             $"'{stageName}' must directly follow a single external command segment — the capture sigil closes its chain at the ')'; the reifier composes inside the parens: {sigil}(cmd | {stageName})",
                             mspan
                         )
-                    // a reifier needs a single external segment [D:exit-reifiers]:
-                    // a multi-external chain is rejected as always (no new law)
-                    | _ -> Result.Error($"'{stageName}' must directly follow a single external command segment", mspan))
+                    // a reifier after a command chain [D:chain-reifiers]: the
+                    // stages ride a list of (prog, argv, env) — each built as a
+                    // single reified segment's — with the value head's stdin
+                    | EPipe _ ->
+                        // flatten left to right; a value may head the chain
+                        let rec stagesOf (e: Expr) : (Expr option * Expr list) option =
+                            match e.Kind with
+                            | ECmd _ -> Some(None, [ e ])
+                            | EPipe(l, ({ Kind = ECmd _ } as r)) ->
+                                match stagesOf l with
+                                | Some(head, segs) -> Some(head, segs @ [ r ])
+                                | None when not (isCommandish l) -> Some(Some l, [ r ])
+                                | None -> None
+                            | _ -> None
+
+                        match stagesOf acc with
+                        | Some(_, segs) when stageName = "exec" && segs.Length > 1 ->
+                            Result.Error(
+                                "'exec' replaces the current process with ONE program — a pipeline cannot; exec a shell that runs it: sh -c \"a | b\" | exec",
+                                mspan
+                            )
+                        | Some(stdinO, segs) when segs.Length > 1 ->
+                            let span = Span.union acc.Span mspan
+                            let at k = { Kind = k; Span = span }
+
+                            let stage (seg: Expr) =
+                                match seg.Kind with
+                                | ECmd(h, args, cenv) ->
+                                    let envE = cenv |> Option.defaultValue (at (EList []))
+                                    at (ETuple [ progArgOf h seg.Span; argvExpr args; envE ])
+                                | _ -> seg
+
+                            let stdinE =
+                                match stdinO with
+                                | Some v -> at (EApp(at (EVar "Some"), v))
+                                | None -> at (EVar "None")
+
+                            let chainVar = "|chain" + plainVar.Substring(1, 1).ToUpper() + plainVar.Substring 2
+
+                            Result.Ok(
+                                (extraArgs @ [ at (EList(segs |> List.map stage)); stdinE ])
+                                |> List.fold (fun f a -> at (EApp(f, a))) (at (EVar chainVar))
+                            )
+                        | _ -> Result.Error($"'{stageName}' must directly follow a command or a command chain", mspan)
+                    | _ -> Result.Error($"'{stageName}' must directly follow a command or a command chain", mspan))
         (Result.Ok h)
 
 // the pipe glyph, captured with its span [D:pipe-rhs-decides] — foldChain

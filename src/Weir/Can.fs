@@ -131,6 +131,9 @@ let rec private envNamesOf
     let pairKey (item: TypedExpr) =
         match item.Kind with
         | TEApp({ Kind = TEApp({ Kind = TEVar "Env.pair" }, { Kind = TEStr k }) }, _) -> Some k
+        // the NAME=value words — `within env A=1` and a command's prefix
+        // [D:within-env-pairs] [D:env-prefix]
+        | TEApp({ Kind = TEApp({ Kind = TEVar "|envPair" }, { Kind = TEStr k }) }, _) -> Some k
         | TETuple [ { Kind = TEStr k }; _ ] -> Some k
         | _ -> None
 
@@ -307,6 +310,46 @@ let rec private walkExpr
          // a library desugar (|seqIter from `for`, |seqRange from a
          // range) targets a plain member and adds no capability (a
          // `for` loop must not report a phantom dynamic head)
+         // a reified chain [D:chain-reifiers]: every stage tuple
+         // (prog, argv, env) is its own spawn — the same facts a single
+         // command reports (orFail's msg rides ahead of the stage list)
+         | TEVar h when h.StartsWith "|chain" ->
+             let rec argsOf (e: TypedExpr) =
+                 match e.Kind with
+                 | TEApp(g, a) -> argsOf g @ [ a ]
+                 | _ -> []
+
+             match argsOf te |> List.tryItem (if h = "|chainOrFailed" then 1 else 0) with
+             | Some { Kind = TEList stages } ->
+                 for st in stages do
+                     match st.Kind with
+                     | TETuple [ prog; argv; envE ] ->
+                         (match literalStr prog with
+                          | Some p ->
+                              add (Runs p) st.Span
+
+                              if interpreters.Contains p then
+                                  add (OpaqueArg p) st.Span
+                          | None ->
+                              let display =
+                                  match prog.Kind with
+                                  | TEVar n -> $"^${n}"
+                                  | _ -> "^$(…)"
+
+                              add (RunsDyn display) st.Span)
+
+                         match argv.Kind with
+                         | TEList items ->
+                             for a in items do
+                                 if a.Ty = TSecret then
+                                     add (SecretArgv(defaultArg (literalStr prog) "a dynamic head")) a.Span
+                         | _ -> ()
+
+                         match envE.Kind with
+                         | TEList [] -> ()
+                         | _ -> add (EnvWrite("env prefix", envNamesOf binds envE)) st.Span
+                     | _ -> ()
+             | _ -> ()
          | TEVar h when Weir.Effects.isCommandReifier h ->
              // find the program's position in the desugar, then check
              // literalness: base twins take (prog, args); orFail's msg
