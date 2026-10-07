@@ -177,6 +177,15 @@ let judge score =
         | Reject -> "reject")
     |> Seq.iter print
 
+// or-patterns share one arm [D:or-patterns]: each alternative counts
+// toward exhaustiveness, so dropping a case is still a check error
+let inPlay v =
+    match v with
+    | Pass _ | Again _ -> true
+    | Reject -> false
+
+print $"in play: {[95; 60; 10] |> Seq.map judge |> Seq.map inPlay |> Seq.freeze}"
+
 // ---- inferred constraints: == is generic, zero runtime checks ---------
 
 let same x y = x == y
@@ -308,6 +317,11 @@ weir $probe --out assert-me | orFail "the probe broke"
 let solo = weir -e "print \"solo\"" | line
 print $"line-reified: {solo}"
 
+// | text is its multi-line sibling [D:reify-text]: the whole stdout as
+// one string, trailing blank lines dropped (bash's $(…))
+let both = weir -e "print \"top\"; print \"bottom\"" | text
+print $"text-reified: {both |> Str.replace "\n" " / "}"
+
 // a weir seq pipes into an external's stdin
 let loud = ["alpha"; "beta"] | weir $probe --upper |> Seq.head
 print $"stdin-piped upcase: {loud}"
@@ -335,6 +349,9 @@ let peer = <<<
 
 print $"peer {peer.host}:{peer.port} (note {peer.note})"
 
+// a record field splices as one argv word [D:field-splices]
+weir $echoArgs peer $peer.host
+
 // ---- files, paths, glob — inside `within tmp` -------------------------
 // the scope creates the directory and deletes it at block end: the
 // cleanup is the scope, not a trailing chore (redirects are functions)
@@ -352,11 +369,16 @@ within tmp scratch
     // File.size is a `Size`, not an int: binary units, comparable directly
     // (`> 10MiB` needs no arithmetic), which is why the row carries the type
     print $"size {File.size store}; over a KiB? {File.size store > 1KiB}"
+always
+    // any scope takes a trailing always [D:within-always-any]: it runs on
+    // every exit, inside the scope — the directory is still there
+    print $"always sees scratch: {Dir.exists scratch}"
 
 // ---- Path.home and the XDG trio: the typed stand-in for ~ -------------
-// ~ and $HOME never expand in argv, so a home-relative path is built,
-// never expanded: Path.home and configHome/stateHome/cacheHome are
-// pure unit -> string queries with platform-native resolution (the
+// a typed ~ in a command line is home, expanded when the line runs
+// (`cat ~/.bashrc`) [D:tilde]; in an expression the path is built:
+// Path.home and configHome/stateHome/cacheHome are pure
+// unit -> string queries with platform-native resolution (the
 // XDG vars with ~/.config-style fallbacks on POSIX, the APPDATA pair
 // on Windows). Read-only here: resolve where a config would live and
 // probe for it — nothing under home is written
@@ -366,14 +388,14 @@ let weirCfg = Path.combine cfgHome "weir"
 print $"config root leaf: {Path.fileName cfgHome}; a weir config dir there: {Dir.exists weirCfg}"
 print $"home resolves: {(Path.home () |> Str.length) > 0}; state/cache leaves: {Path.stateHome () |> Path.fileName} + {Path.cacheHome () |> Path.fileName}"
 
-// ---- env overlays: sigils and the env district ------------------------
+// ---- env overlays: one command, a block, a capture --------------------
 
 let envFile = Path.combine tmpBase $"weir-showcase-{Self.pid}.env"
 ["GREETING=bonjour"; "SECRET=hunter2"] |> File.write envFile
 let ev = Env.fromFile envFile
 
 // the same command twice: first captured under the overlay…
-let greetz = $ev(weir $probe --greet) |> Seq.exactlyOne
+let greetz = $ev(weir $probe --greet | line)
 print greetz
 
 // …then run under it — streams to the terminal, raises on failure
@@ -386,6 +408,13 @@ let ready = true
 within env ev
     weir $probe --greet --out "scoped one"
     weir $probe --greet --out "scoped two"
+
+// literal variables need no file: NAME=value sets them for one command
+// [D:env-prefix], and the same words on within env scope a block
+// [D:within-env-pairs]
+GREETING=hola weir $probe --greet
+within env GREETING=salut
+    weir $probe --greet --out "pairs scope"
 
 // within cd is the third scope kind (tmp ran the files section above):
 // the working directory changes for the block and restores at its end
@@ -412,9 +441,14 @@ for s in ["first"; "second"] do
 
 let shouts =
     ["fan"; "out"]
-    |> Seq.pmap (fun w -> $(weir $probe --out $w) |> Seq.exactlyOne)
+    |> Seq.pmap (fun w -> weir $probe --out $w | line)
 
 shouts |> print
+
+// a lambda body takes command lets, like a for body [D:lambda-lets]
+words |> Seq.take 1 |> Seq.iter (fun w ->
+    let r = weir $probe --out $w | complete
+    print $"lambda let: {w} exit {r.exitCode}")
 
 // ---- YAML: nodes, adapters, and the checked template district ---------
 
@@ -492,7 +526,7 @@ File.delete envFile
 let weir = "a local binding now shadows the command name"
 print $"shadow: {weir}"
 
-let v = ^weir --version |> Seq.exactlyOne
+let v = ^weir --version | line
 print $"^weir still reaches the binary: {v}"
 
 // ---- exit is explicit; unit prints nothing ----------------------------

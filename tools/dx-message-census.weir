@@ -28,8 +28,6 @@
 //
 // Fails if `teaches` drops below --baseline, so a message refactor cannot
 // quietly regress the set.
-//
-// Shape note: command-running helpers are top-level (PLAN-adversarial-review F3).
 
 type Cli = {
     /// the weir binary under test

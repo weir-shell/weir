@@ -14,7 +14,7 @@ type Cli =
         clean: bool }
 let cli = Args.load Cli
 
-let branch = git rev-parse --abbrev-ref HEAD |> Seq.exactlyOne
+let branch = git rev-parse --abbrev-ref HEAD | line
 
 if cli.clean then
     git checkout main
@@ -34,7 +34,7 @@ let issue =
     { Key = fields[0]
       Title = fields[1] }
 
-git switch -c (issue.Key)
+git switch -c $issue.Key
 git commit --allow-empty -m $"{issue.Key} {issue.Title}"
 
 let json = issue |> to json

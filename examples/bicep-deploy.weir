@@ -63,30 +63,38 @@ let quality t =
     header $"bicep quality: {t.Name}"
     let e = targetEnv t
     within env e
-        bicep lint (t.BicepPath)
-        bicep snapshot --mode validate (t.BicepPath) --subscription-id (envVal t "AZURE_SUBSCRIPTION_ID") --resource-group (envVal t "AZURE_DEFAULTS_GROUP")
+        bicep lint $t.BicepPath
+        bicep snapshot --mode validate $t.BicepPath
+            --subscription-id (envVal t "AZURE_SUBSCRIPTION_ID")
+            --resource-group (envVal t "AZURE_DEFAULTS_GROUP")
         printerr "OK"
 
 let snapshot t =
     header $"bicep snapshot: {t.Name}"
     within env (targetEnv t)
-        bicep snapshot (t.BicepPath) --subscription-id (envVal t "AZURE_SUBSCRIPTION_ID") --resource-group (envVal t "AZURE_DEFAULTS_GROUP")
+        bicep snapshot $t.BicepPath
+            --subscription-id (envVal t "AZURE_SUBSCRIPTION_ID")
+            --resource-group (envVal t "AZURE_DEFAULTS_GROUP")
         printerr "OK"
 
 let deployStack t =
     header $"bicep deploy: {t.Name}"
     within env (targetEnv t)
-        az stack group create --yes "--output=table" --name (t.Name) --parameters (t.BicepPath) --action-on-unmanage (onUnmanage) --deny-settings-mode none | orFail "stack deploy failed"
+        az stack group create --yes "--output=table" --name $t.Name --parameters $t.BicepPath
+            --action-on-unmanage $onUnmanage --deny-settings-mode none | orFail "stack deploy failed"
 
 let azureLogin t =
     header "azure login"
     let tok = Env.load TokenEnv
     let oidc =
-        curl -sS -f -H $"Authorization: Bearer {Secret.reveal tok.ACTIONS_ID_TOKEN_REQUEST_TOKEN}" $"{tok.ACTIONS_ID_TOKEN_REQUEST_URL}&audience=api://AzureADTokenExchange"
+        curl -sS -f
+            -H $"Authorization: Bearer {Secret.reveal tok.ACTIONS_ID_TOKEN_REQUEST_TOKEN}"
+            $"{tok.ACTIONS_ID_TOKEN_REQUEST_URL}&audience=api://AzureADTokenExchange"
         |> from json Oidc
     let e = targetEnv t
     within env e
-        az login --output table --federated-token (oidc.value) --service-principal --username (envVal t "AZURE_CLIENT_ID") --tenant (envVal t "AZURE_TENANT_ID")
+        az login --output table --federated-token $oidc.value --service-principal
+            --username (envVal t "AZURE_CLIENT_ID") --tenant (envVal t "AZURE_TENANT_ID")
         az account set --subscription (envVal t "AZURE_SUBSCRIPTION_ID") | orFail "az account set failed"
 
 let deploy t =

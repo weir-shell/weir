@@ -28,10 +28,6 @@
 //   - control-oracle-rejects: the external YAML oracle fails on a structural
 //     mismatch (emit "abc", tell the oracle to expect "xyz") — it never reuses
 //     a finding's payload, so it stays valid after every fix lands.
-//
-// Note the shape of this file: every command-running helper is a top-level
-// function, because F3 is that a block `let` with a command RHS silently loses
-// its reifier off the topLet spine.
 
 type Cli = {
     /// the weir binary under test
@@ -55,11 +51,9 @@ let probeF2b = <<<
     let back = { k = orig } |> to yaml |> from yaml Doc
     print (if back.k == orig then "OK" else "BROKEN")
 
-// F3, re-pointed at the teaching: the shipped fix makes the off-spine
-// boundary teach (the fifth refusal cell) rather than degrade to a
-// PATH lookup — supporting the reifier there is a separate bless
-// question. The probe asserts the located teaching, and silent
-// success (the old degradation running a PATH tool) stays BROKEN.
+// F3: a reifier on a block `let` RHS is the reifier [D:statement-lets] —
+// the probe asserts it runs as one (exit 7 read back as data); a PATH
+// lookup or a refusal stays BROKEN.
 let probeF3 = <<<
     if 1 > 0 then
         let r = sh -c "exit 7" | complete
@@ -124,10 +118,10 @@ let emitProbe b64 = $<<<
 let oracleReady = sh -c "python3 -c 'import yaml' 2>/dev/null" | succeeds
 let timeoutReady = sh -c "command -v timeout >/dev/null 2>&1" | succeeds
 
-// ---- runners (top-level: see the F3 note) ----------------------------------
+// ---- runners ---------------------------------------------------------------
 
 let runProbe path =
-    let r = sh -c $"'{cli.bin}' '{path}' 2>/dev/null" | complete
+    let r = ^$cli.bin $path | complete
     r
 
 // stderr merged in: the re-pointed F3/F4 verdicts read the teaching
@@ -137,12 +131,12 @@ let runProbeMerged path =
     r
 
 let checkExit path =
-    let r = sh -c $"'{cli.bin}' check '{path}' >/dev/null 2>&1" | complete
+    let r = ^$cli.bin check $path | complete
     r.exitCode
 
 // a hang is not a crash: rc >= 128 cannot see it, so this seam needs a clock
 let timedCheckExit path =
-    let r = sh -c $"timeout 20 '{cli.bin}' check '{path}' >/dev/null 2>&1" | complete
+    let r = timeout 20 $cli.bin check $path | complete
     r.exitCode
 
 let interopExit binPath probePath checkPath b64 =
@@ -239,13 +233,11 @@ within tmp d
     File.write $"{d}/F3-reifier-in-block-let.weir" probeF3
     let f3r = runProbeMerged $"{d}/F3-reifier-in-block-let.weir"
 
-    let f3taught = f3r.stdout |> Seq.exists (fun l -> Str.contains "is a reifier, not a PATH program" l)
-    let f3 = f3r.exitCode <> 0 && f3taught
+    let f3 = f3r.exitCode == 0 && (f3r.stdout |> Seq.contains "OK")
 
     let f3Word =
-        if f3 then "fixed (off-spine reifier teaches, fifth cell)"
-        elif f3r.exitCode == 0 then "REPRODUCES (the reifier degraded or PATH-resolved silently)"
-        else $"REPRODUCES (refused WITHOUT the reifier teaching, exit {f3r.exitCode})"
+        if f3 then "fixed (a block let takes the reifier)"
+        else $"REPRODUCES (the block-let reifier did not read exit 7 as data, exit {f3r.exitCode})"
 
     print $"  F3-reifier-in-block-let: {f3Word}"
 

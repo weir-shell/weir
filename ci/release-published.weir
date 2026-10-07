@@ -99,7 +99,7 @@ if rel.status == 200 then
         // the stale sweep: an acknowledged release must actually be
         // incomplete, or the entry is rot and fails loudly
         for e in knownIncomplete do
-            let sweep = weir ci/release-assets.weir --tag (e.tag) | complete
+            let sweep = weir ci/release-assets.weir --tag $e.tag | complete
             if sweep.exitCode == 0 then
                 fail $"ci/release-known-incomplete.yaml lists {e.tag} but it IS complete — remove the stale entry"
 

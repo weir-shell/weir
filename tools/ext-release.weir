@@ -27,14 +27,14 @@ let dirty = git status --porcelain |> Seq.length
 if dirty <> 0 then
     fail $"{dirty} uncommitted change(s) — commit or stash first"
 
-let branch = git rev-parse --abbrev-ref HEAD |> Seq.exactlyOne
+let branch = git rev-parse --abbrev-ref HEAD | line
 
 if branch <> "main" then
     fail $"on '{branch}' — the extension releases from main"
 
 git fetch origin main
-let localSha = git rev-parse HEAD |> Seq.exactlyOne
-let originSha = git rev-parse origin/main |> Seq.exactlyOne
+let localSha = git rev-parse HEAD | line
+let originSha = git rev-parse origin/main | line
 
 if localSha <> originSha then
     fail $"local {localSha} vs origin {originSha} — push or pull first"

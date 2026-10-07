@@ -29,10 +29,6 @@
 // deliberately not in this gate: one is measured with a clock against a
 // no-liar control, the other with a pty. Both are recorded in the plan under
 // instrument honesty rather than half-automated here.
-//
-// Every command-running helper is a top-level function: a block `let` with a
-// command RHS loses its reifier off the topLet spine. Verdicts go to a file
-// because a `within` scope yields unit, so a probe cannot return its own bool.
 
 type Cli = {
     /// the weir binary under test
@@ -292,7 +288,7 @@ let runChild path =
     r
 
 let checkExit path =
-    let r = sh -c $"'{cli.bin}' check '{path}' >/dev/null 2>&1" | complete
+    let r = ^$cli.bin check $path | complete
     r.exitCode
 
 let checkMerged path =
@@ -304,12 +300,13 @@ let canOut path =
     r
 
 let canStrictExit path =
-    let r = sh -c $"'{cli.bin}' check --can --strict '{path}' >/dev/null 2>&1" | complete
+    let r = ^$cli.bin check --can --strict $path | complete
     r.exitCode
 
 let restoreExit dir =
-    let r = sh -c $"cd '{dir}' && '{cli.bin}' restore >/dev/null 2>&1" | complete
-    r.exitCode
+    within cd dir
+        let r = ^$cli.bin restore | complete
+        r.exitCode
 
 let chmodTo mode path =
     let r = sh -c $"chmod {mode} '{path}'" | complete

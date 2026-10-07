@@ -66,13 +66,11 @@ let svcOf s = $"{s.name}.{ns}.svc.cluster.local"
 // gateway. This mirrors what docker-generateconfig/setListenIp.py does.
 let addressesOf s =
     let svc = svcOf s
-    // show keeps port/quicPort polymorphic: s is row-typed here, and a
-    // bare hole would default the field to string (then clash at the call)
     [
-        $"{svc}:{show s.port}"
-        $"quic://{svc}:{show s.quicPort}"
-        $"{host}:{show s.port}"
-        $"quic://{host}:{show s.quicPort}"
+        $"{svc}:{s.port}"
+        $"quic://{svc}:{s.quicPort}"
+        $"{host}:{s.port}"
+        $"quic://{host}:{s.quicPort}"
     ]
 
 let commonBlock = <<<
@@ -83,21 +81,21 @@ let commonBlock = <<<
         production: false
     networkStorePath: "/networkStore"
 
-// An interpolated $<<< block: the ports splice straight in. show keeps
-// them polymorphic (s is row-typed), and $<<< dedents byte-identically
-// to plain <<<, so the deeper YAML indentation survives.
+// An interpolated $<<< block: the ports splice straight in, and $<<<
+// dedents byte-identically to plain <<<, so the deeper YAML indentation
+// survives.
 let listenBlock s = $<<<
     drpc:
         stream:
             maxMsgSizeMb: 256
     yamux:
         listenAddrs:
-            - "0.0.0.0:{show s.port}"
+            - "0.0.0.0:{s.port}"
         writeTimeoutSec: 10
         dialTimeoutSec: 10
     quic:
         listenAddrs:
-            - "0.0.0.0:{show s.quicPort}"
+            - "0.0.0.0:{s.quicPort}"
         writeTimeoutSec: 10
         dialTimeoutSec: 10
 
@@ -166,10 +164,13 @@ let seal nodeName lines =
     within tmp d
         let src = Path.combine d "config.yml"
         lines |> File.write src
-        kubectl create secret generic $name -n $ns --from-file $"config.yml={src}" --dry-run=client -o yaml | kubeseal --cert $cert --scope namespace-wide --format yaml |> File.write $"{configsDir}/{name}.yaml"
+        kubectl create secret generic $name -n $ns --from-file $"config.yml={src}"
+            --dry-run=client -o yaml
+        | kubeseal --cert $cert --scope namespace-wide --format yaml
+        |> File.write $"{configsDir}/{name}.yaml"
 
-let accessKey = openssl rand -hex 16 |> Seq.exactlyOne
-let secretKey = openssl rand -hex 32 |> Seq.exactlyOne
+let accessKey = openssl rand -hex 16 | line
+let secretKey = openssl rand -hex 32 | line
 
 Dir.create configsDir
 
@@ -190,7 +191,7 @@ within tmp work
         // Phase 2: one account per node. The --addresses here are placeholders;
         // the real address list is written below.
         let typeFlags = specs |> Seq.collect (fun s -> ["--t"; s.kind])
-        let addrFlags = specs |> Seq.collect (fun s -> ["--addresses"; $"{svcOf s}:{show s.port}"])
+        let addrFlags = specs |> Seq.collect (fun s -> ["--addresses"; $"{svcOf s}:{s.port}"])
         anyconf generate-nodes $@typeFlags $@addrFlags
 
         let generated = File.read "nodes.yml" |> from yaml NetConf
@@ -236,7 +237,12 @@ within tmp work
         seal fileSpec.name (assemble 2 None fileSpec (filenodeBlock accessKey secretKey))
         seal consSpec.name (assemble 3 (Some netSigningKey) consSpec consensusBlock)
 
-        kubectl create secret generic minio-credentials -n $ns --from-literal $"MINIO_ROOT_USER={accessKey}" --from-literal $"MINIO_ROOT_PASSWORD={secretKey}" --dry-run=client -o yaml | kubeseal --cert $cert --scope namespace-wide --format yaml |> File.write $"{configsDir}/minio-credentials.yaml"
+        kubectl create secret generic minio-credentials -n $ns
+            --from-literal $"MINIO_ROOT_USER={accessKey}"
+            --from-literal $"MINIO_ROOT_PASSWORD={secretKey}"
+            --dry-run=client -o yaml
+        | kubeseal --cert $cert --scope namespace-wide --format yaml
+        |> File.write $"{configsDir}/minio-credentials.yaml"
 
         print $"networkId: {netId}"
 
