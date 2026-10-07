@@ -494,6 +494,18 @@ print x' 2>&1) && fail "| line must raise on 2+ lines" || true
 echo "$lmulti" | grep -qF "expected exactly one line" || fail "| line lost the one-line assert: $lmulti"
 echo "e2e ok: | line — one stdout line to a string, nonzero raises, 2+ lines named [D:reify-line]"
 
+# ---- the whole-output capture reifier [D:reify-text] -----------------
+# `cmd | text`: stdout as one string, trailing blank lines dropped;
+# nonzero raises
+tout=$($BIN -e 'let t = sh -c "printf \"a\nb\n\n\"" | text
+print $"[{t}]"')
+[ "$tout" = "[a
+b]" ] || fail "| text joins lines and drops trailing blanks: $tout"
+terr=$($BIN -e 'let x = sh -c "echo o; exit 5" | text
+print x' 2>&1) && fail "| text must raise on nonzero" || true
+echo "$terr" | grep -qF "exit code 5" || fail "| text lost the nonzero raise: $terr"
+echo "e2e ok: | text — whole stdout to a string, trailing blanks dropped, nonzero raises [D:reify-text]"
+
 # a 2-param generic union checks + evals through the binary (was the
 # prelude-Result pin; Result removed [D:no-result], the fixture is now a
 # locally-declared Either)

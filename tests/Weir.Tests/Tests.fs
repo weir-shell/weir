@@ -12366,6 +12366,20 @@ let agentFindingsTests =
               clean [ "let e = [Env.pair \"X\" \"1\"]"; "let v = $e(printenv X | line)"; "print v" ] "env twin binds a string"
               clean [ "let m = [\"a\"; \"b\"] | grep a | line"; "print m" ] "value-headed | line binds a string"
           }
+          test "text desugars to the texted application and types as string [D:reify-text]" {
+              match Weir.Parser.parseLine cmdResolver "echo hi | text" with
+              | Ok(SCmd e)
+              | Ok(SExpr e) -> Expect.stringContains (Weir.Ast.sexpr e) "|texted" ""
+              | other -> failtest $"expected the texted desugar, got {other}"
+
+              let clean (lines: string list) (label: string) =
+                  let diags, _, _, _ = Weir.Script.analyzeLines "text.weir" lines
+                  Expect.isEmpty (diags |> List.filter (fun d -> d.Severity = "error")) $"{label}: {diags |> List.map _.Message}"
+
+              clean [ "let t = printf \"a\" | text"; "print (Str.trim t)" ] "binds a string"
+              clean [ "let e = [Env.pair \"X\" \"1\"]"; "let v = $e(printenv X | text)"; "print v" ] "env twin"
+              clean [ "let m = [\"a\"; \"b\"] | grep a | text"; "print m" ] "value-headed"
+          }
           test "the fifth refusal cell: refused-context reifiers TEACH, never PATH-resolve [D:reifier-family-complete]" {
               // [D:statement-lets] moved the boundary: if-body and
               // within-body block lets now take the reifier (statement
@@ -22537,6 +22551,16 @@ let orPatternTests =
                   Expect.stringContains f.Message "at most 64 alternatives" "the cap"
                   Expect.stringContains f.Message "Seq.contains" "the repair"
                   Expect.equal f.Col (Some(text.IndexOf " 64 " + 2)) "caret on the 65th"
+          }
+          test "a reifier ending an arm is a stage, not a binding or-pattern" {
+              for r in [ "line"; "complete"; "succeeds"; "text" ] do
+                  match
+                      Weir.Parser.parseLineFull
+                          cmdResolver
+                          $"let v = match 1 with | 1 -> git status | {r} | _ -> git log | {r}"
+                  with
+                  | Ok _ -> ()
+                  | Error f -> failtest $"{r}: {f.Message}"
           }
           test "a command arm ends before an or-pattern arm" {
               match Weir.Parser.parseLineFull cmdResolver "match 1 with | 0 -> git pull | 1 | 2 -> git fetch | _ -> ()" with

@@ -1396,7 +1396,11 @@ within tmp d
   line of stdout as a `string` [D:reify-line] — the
   `$(cmd) |> Seq.exactlyOne` idiom for `az … -o tsv`/`git rev-parse`;
   it raises on a nonzero exit or on 0-or-2+ lines, and composes with
-  the env sigil (`$e(cmd | line)`) and a value head. **`succeeds` is
+  the env sigil (`$e(cmd | line)`) and a value head. `cmd | text` is
+  the multi-line sibling [D:reify-text]: the whole stdout as one
+  `string` (joined with newlines, trailing blank lines dropped, raises
+  on nonzero) — for `Str.*` on command output, instead of
+  `r.stdout |> Str.join "\n"`. **`succeeds` is
   exitCode == 0, exactly** —
   for tools whose nonzero codes AND output are both data (grep,
   fzf), use `| complete` and read the record. An `if`/`elif`

@@ -1201,6 +1201,7 @@ let rec private chainReifier (e: Expr) : string option =
     | EVar v when v.StartsWith "|orFailed" -> Some "orFail"
     | EVar v when v.StartsWith "|execed" -> Some "exec"
     | EVar v when v.StartsWith "|lined" -> Some "line"
+    | EVar v when v.StartsWith "|texted" -> Some "text"
     | EApp(f, _) -> chainReifier f
     | EPipe(l, r) -> chainReifier r |> Option.orElseWith (fun () -> chainReifier l)
     | _ -> None
@@ -4199,6 +4200,9 @@ type private Seg =
     // the single-line capture [D:reify-line] — `cmd | line` reifies to
     // the one trimmed stdout line as a string
     | LineMarker of Span
+    // the whole-output capture [D:reify-text] — `cmd | text` reifies to
+    // stdout as one string
+    | TextMarker of Span
     // command chaining [D:cmd-chaining] — bash &&/||: the RHS is a full
     // command line (right-associative), captured whole
     | AndMarker of Expr * Span
@@ -4296,6 +4300,14 @@ let private lineMarker =
         .>> reifierEnd
     )
     |>> fun (_, span) -> LineMarker span
+
+let private textMarker =
+    attempt (
+        spanned (pstring "text" .>> notFollowedBy (satisfy cmdWordChar))
+        .>> ws
+        .>> reifierEnd
+    )
+    |>> fun (_, span) -> TextMarker span
 
 // `cmd | and <rest>` / `cmd | or <rest>` [D:cmd-chaining]: bash &&/||.
 // The RHS is a full command line, parsed right-associatively (so `a | or
@@ -4429,7 +4441,7 @@ let private foldChain (h: Expr) (rest: ((string * Span) * Seg) list) : Result<Ex
                         Result.Ok
                             { Kind = EIf(cond, { Kind = EUnit; Span = sp }, Some(streamOf rhs))
                               Span = Span.union acc.Span rhs.Span }
-                | (CompleteMarker _ | SucceedsMarker _ | ExitCodeMarker _ | OrFailMarker _ | ExecMarker _ | LineMarker _ as marker) ->
+                | (CompleteMarker _ | SucceedsMarker _ | ExitCodeMarker _ | OrFailMarker _ | ExecMarker _ | LineMarker _ | TextMarker _ as marker) ->
                     let stageName, mspan, plainVar, envVar, stdinVar, extraArgs =
                         match marker with
                         | CompleteMarker sp -> "complete", sp, "|completed", "|completedEnv", "|completedIn", []
@@ -4438,7 +4450,8 @@ let private foldChain (h: Expr) (rest: ((string * Span) * Seg) list) : Result<Ex
                         | OrFailMarker(msg, sp) -> "orFail", sp, "|orFailed", "|orFailedEnv", "|orFailedIn", [ msg ]
                         | ExecMarker sp -> "exec", sp, "|execed", "|execedEnv", "|execedIn", []
                         | LineMarker sp -> "line", sp, "|lined", "|linedEnv", "|linedIn", []
-                        // unreachable — the outer arm matched only the six above
+                        | TextMarker sp -> "text", sp, "|texted", "|textedEnv", "|textedIn", []
+                        // unreachable — the outer arm matched only the seven above
                         | Stage _
                         | AndMarker _
                         | OrMarker _ -> "", acc.Span, "", "", "", []
@@ -4628,8 +4641,15 @@ let private armBoundaryAhead: Parser<unit, unit> =
                     pstring "|"
                     >>. ws
                     >>. commaPats
-                    // the next arm may be an or-pattern [D:or-patterns]
-                    >>. many orAlternative
+                    // the next arm may be an or-pattern [D:or-patterns] —
+                    // binder-free only, the arm's own law: `| line | _ ->`
+                    // is a reifier stage and then an arm, never `line | _`
+                    .>>. many orAlternative
+                    >>= (fun (p, alts) ->
+                        if not alts.IsEmpty && (p :: alts |> List.exists (fun a -> not (List.isEmpty (patLeafNames a)))) then
+                            fail "a binding or-pattern is no arm boundary"
+                        else
+                            preturn ())
                     >>. (followedBy (str_ws "->") <|> followedBy (keyword "when"))
                 )
             ))
@@ -4647,6 +4667,7 @@ let private pipedStages (builtinHeads: bool) (argP: Parser<Expr, unit>) (sigilEn
               <|> orFailMarker
               <|> execMarker
               <|> lineMarker
+              <|> textMarker
               <|> andMarker builtinHeads argP sigilEnv r
               <|> orMarker builtinHeads argP sigilEnv r
               <|> reifierStageGuard

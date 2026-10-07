@@ -47,6 +47,11 @@
   as glued words), so bash's `$f.bak` is an error on a string that
   names `$"{f}.bak"`.
 
+- **`cmd | text` captures the whole output as one string.** The
+  multi-line sibling of `| line`: lines joined with newlines, trailing
+  blank lines dropped, and a nonzero exit raises (`| complete` keeps the
+  code) — `let notes = git log -1 --format=%B | text`.
+
 - **`within env A=1 B=$x`.** The `NAME=value` words that set
   variables for one command now scope a block too, without binding an
   `Env.ofPairs` list first. A `within env e` with a bound list works as
