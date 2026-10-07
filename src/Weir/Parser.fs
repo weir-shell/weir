@@ -476,7 +476,7 @@ let private failFatallyAtCol (col: int) (msg: string) : Parser<'a, unit> =
 // the fifth refusal cell's teaching [D:reifier-family-complete] — one
 // text, two firing sites (the piped-stage guard and the bare-pipe hint)
 let private reifierHereMsg (name: string) =
-    $"'{name}' is a reifier, not a PATH program — reify on a statement-level let RHS (let r = <command> | {name}); a real tool named '{name}' runs with ^{name}"
+    $"'{name}' is a reifier, not a PATH program — it goes right after a command, as in `let r = <command> | {name}`; to run a program called '{name}', write ^{name}"
 
 let private reifierWordEnd: Parser<unit, unit> =
     notFollowedBy (
@@ -3579,7 +3579,7 @@ let private foreignKeywordTeachings =
     [ "while", "'while' is not a weir word — a bounded loop is 'retry'/'poll'; iterate a seq with 'for x in xs do'"
       "return", "'return' is not a weir word — a function's last expression is its value"
       "try",
-      "'try' is not a weir word — a failing command reifies: bind 'let r = <command> | complete' and read r.exitCode; scoped cleanup is 'within'"
+      "'try' is not a weir word — to inspect a failing command instead of stopping, write 'let r = <command> | complete' and read r.exitCode; for cleanup that always runs, use 'within … always'"
       "def", "'def' is not a weir word — define with 'let f x = ...'" ]
 
 let private foreignKeywordGuard () : Parser<'a, unit> =

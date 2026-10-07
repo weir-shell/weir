@@ -2,13 +2,14 @@
 
 ## The statement rule
 
-Two kinds of statement produce output or effects on their own:
+There are two kinds of statement:
 
-- a command line streams its output as the child produces it;
-- every other statement must be unit — bind a value (`let x = …`)
-  or print it (`expr |> print`).
+- a command line streams its output as the program produces it;
+- every other statement must have type unit — bind its value
+  (`let x = …`) or print it (`expr |> print`).
 
-A value dropped on the floor is a check error, not silent output:
+A value that is computed and then ignored is a check error, not
+silent output:
 
 ```weir-error
 ls |> Seq.length // computes an int and discards it — bind it, or pipe it to print
@@ -16,13 +17,13 @@ ls |> Seq.length // computes an int and discards it — bind it, or pipe it to p
 
 ## Layout
 
-A statement starts at column 0. Indented lines continue it. The
-next column-0 line ends it. Blank lines and comment lines are
-transparent, so blocks group freely with gaps.
+A statement starts at column 0. Indented lines continue it, and the
+next line at column 0 ends it. Blank lines and comment lines are
+ignored for layout, so you can put gaps inside a block.
 
-An indented `let` closes at the next line of the same indent. A
-bracket left open holds the statement — but the closer must not
-fall to column 0 mid-statement:
+An indented `let` ends at the next line with the same indentation.
+An open bracket keeps the statement going, but the closing bracket
+must not be at column 0 while the statement is unfinished:
 
 ```weir
 let xs = [
@@ -33,14 +34,14 @@ let xs = [
 print $"{xs |> Seq.length}"
 ```
 
-One layout form is armed by the line's end: a statement line ending
-in the `yaml` marker or a heredoc glyph (`<<<`/`$<<<`/`$$<<<`) opens a
-district — the indented block below is that literal's content, not
-weir statements, and the first shallower line closes it. The
-heredoc forms are in [Lexical](lexical.md#strings); the `yaml`
+One layout form is triggered by how a line ends. A line ending in the
+`yaml` marker or a heredoc marker (`<<<`/`$<<<`/`$$<<<`) opens a
+block: the indented lines below are that literal's content, not weir
+statements, and the first less-indented line ends it. The heredoc
+forms are covered in [Lexical](lexical.md#strings), the `yaml`
 template in [the guide](../GUIDE.md#commands-and-processes) and
-[Adapters](adapters.md). A marker with no indented block below it
-is an error naming the marker.
+[Adapters](adapters.md). A marker with no indented block below it is
+an error that names the marker.
 
 ```weir
 let motd = $<<<
@@ -51,10 +52,10 @@ motd |> Seq.iter print
 
 ## Blocks
 
-Same-indent lines under a block head are siblings and run in
-order; each but the last must be unit; the last expression is the
-block's value. A guard line before the result works the way it
-reads:
+Lines at the same indentation inside a block run in order. Each one
+except the last must be unit, and the last expression is the block's
+value. A check before the result, such as `if … then fail …`, works
+as you would expect:
 
 ```weir
 type Target = { Name: string }
@@ -69,24 +70,25 @@ print target.Name
 
 ## Sequencing with `;`
 
-`;` sequences statements on one line — and it binds into an `if` or
-`match` body, block-shaped. Both statements below belong to the
-then-branch; nothing prints:
+`;` puts several statements on one line. After an `if` or `match`,
+everything following the `;` still belongs to the body, as if it were
+an indented block. Both statements below are in the then-branch, so
+nothing prints:
 
 ```weir
 if 1 > 2 then print "a" ; print "b"
 print "after"
 ```
 
-To sequence after an `if`, put the next statement on its own line
-(or parenthesize the `if`). In a command line, `;` is a literal
-argv word — it does not chain commands; one command per line.
+To run something after an `if`, put it on its own line (or wrap the
+`if` in parentheses). In a command line, `;` is a literal argument; it
+does not chain commands, so put one command per line.
 
 ## `match` arms and a trailing `|>`
 
-A trailing `|>` reads by its column against the arm. At the arm's
-`|` it **closes the match and pipes the whole of it** — no
-parentheses needed:
+What a `|>` on its own line after a match arm does depends on its
+column. Lined up with the arm's `|`, it **ends the match and pipes the
+whole match** — no parentheses needed:
 
 ```weir
 match 5 with
@@ -95,9 +97,9 @@ match 5 with
 |> print
 ```
 
-That prints `50` — the whole match, piped to `print` — not `0 |>
-print` buried in the last arm. Line the `|>` up **at or under the
-arm body** and it continues *that arm* instead — inline or on its
+That prints `50`: the whole match is piped to `print`, not just the
+last arm's `0`. Put the `|>` **at or under the start of the arm's
+body** and it continues *that arm* instead, whether inline or on its
 own line:
 
 ```weir
@@ -106,17 +108,17 @@ match 5 with
        |> print
 ```
 
-Anything in between — left of the body but right of the `|` — is
-rejected: weir names the body column and points you either back to
-the `|` (to pipe the whole match) or under the body (to continue the
-arm). Line it up; there is no guessing.
+Any column in between — left of the body but right of the `|` — is
+an error. The error tells you the body's column and suggests either
+moving back to the `|` (to pipe the whole match) or under the body (to
+continue the arm). weir does not guess which one you meant.
 
 ## `if` / `elif` / `else`
 
 `if` is an expression. `else` is optional only when the then-branch
-is unit; `elif` is short for `else if`. The condition takes a
-command chain directly — its argv stops at `then`, and the checker
-still demands `bool`:
+is unit, and `elif` is short for `else if`. The condition can be a
+command chain written directly: its arguments stop at `then`, and the
+condition must still be a `bool`:
 
 ```weir
 if git rev-parse HEAD | succeeds then print "in a repo"
@@ -124,10 +126,10 @@ if git rev-parse HEAD | succeeds then print "in a repo"
 
 ## `let`
 
-Binds a value, defines a function (`let f x y = …`, curried),
-destructures (`let host, port = target`,
-`let { names = n } = row`), and takes a bare command chain on its
-right-hand side anywhere a `let` goes:
+`let` binds a value, defines a function (`let f x y = …`, curried),
+or destructures (`let host, port = target`,
+`let { names = n } = row`). The right-hand side can be a command
+chain written directly, wherever a `let` appears:
 
 ```weir
 let tree = git rev-parse HEAD | line
@@ -136,10 +138,11 @@ print tree[..6]
 
 ## `for … in … do`
 
-The effect loop: a typed seq on the right, a pattern binder on the
-left, a block body that streams and raises per iteration. It
-desugars to `Seq.iter`; pipelines remain the way to transform
-values. The comprehension form builds a seq:
+`for` runs a block for each element of a seq, for its effects. The
+seq goes on the right of `in`, a pattern on the left. The body
+streams output and raises errors as each iteration runs. It is the
+same as `Seq.iter`; to transform values, use pipelines. The
+comprehension form `[for … -> …]` builds a seq:
 
 ```weir
 for greeting in ["hello"; "again"] do
@@ -152,6 +155,7 @@ squares |> Seq.map show |> print
 ## Declarations
 
 `type` and `module` are statements too; `import` must come first in
-the file. A file that starts with `module` is a module —
-declaration-only, importable, not runnable. Directives (`#sig`,
-`#schema`) sit at the file head and are read at check time.
+the file. A file that starts with `module` is a module: it contains
+only declarations, can be imported, and cannot be run. Directives
+(`#sig`, `#schema`) go at the top of the file and are read at check
+time.

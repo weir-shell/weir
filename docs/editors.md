@@ -1,37 +1,36 @@
 # Editor setup
 
-One binary, one command: every editor runs **`weir lsp`** — the
-language server over stdio, a subcommand of the same binary that runs
-your scripts, so it can never go out of sync with the language. All
-blocks below assume `weir` is on PATH.
+Every editor talks to the same language server: **`weir lsp`**,
+which speaks LSP over stdio. It is a subcommand of the binary that
+runs your scripts, so the editor always understands exactly the
+version of weir you run. The setups below assume `weir` is on PATH.
 
-What you get, in any LSP editor:
+In any editor with LSP support you get:
 
-- **Diagnostics as you type** — the same checks the runner makes,
-  whole file, every keystroke
-- **Hover** — types and `///` docs for bindings, builtins, record
-  fields and union cases, across files and imports; a `#sig`-signed
-  command's head hovers its identity and recorded version (no spawn
-  — works with the tool off PATH); a `schema=` name hovers its
-  vendored file's facts
-- **Go to definition** — locals, module members, import paths,
-  signature files, vendored schemas
-- **Completion** — module members (`Lib.` lists them), and the
-  `within` kinds after `within `
-- **The form keywords answer** — `within`, `retry`/`poll` (with
-  their keys), `until`, the adapters — and never inside a string or
-  comment
-- **Formatting** — `weir fmt`'s canonical pipeline; editor tab
-  settings are ignored by design, so a 2-space editor still writes
-  canonical 4-space weir
+- **Diagnostics as you type.** The same checks weir makes before
+  running a script, over the whole file, on every keystroke.
+- **Hover.** Types and `///` docs for bindings, builtins, record
+  fields and union cases, including ones from other files and
+  imports. On a command declared with `#sig`, hover shows its
+  signature file and the tool version recorded there. It reads only
+  the signature file, so it works even when the tool isn't installed.
+  On a `schema=` name, hover shows the vendored schema file, where it
+  came from, and whether it catches unknown fields.
+- **Go to definition** for locals, module members, import paths,
+  signature files and vendored schemas.
+- **Completion** of module members (type `Lib.` to list them), and of
+  the `within` kinds after `within `.
+- **Hover on keywords.** `within`, `retry`/`poll`
+  (with their keys), `until`, and `from`/`to` (with the list of
+  adapters) explain themselves. The same word inside a string or
+  comment shows nothing.
+- **Formatting**, with the same output as `weir fmt`. Your editor's
+  tab settings are ignored on purpose, so an editor set to 2 spaces
+  still produces standard 4-space weir.
 
-weir scripts are often extensionless (`#!/usr/bin/env weir`), so
-each setup below registers both the `.weir` extension and shebang
-detection.
-
-Debugging: `weir lsp --debug` logs every dispatched method and
-diagnostics publish to stderr — add `--debug` to the client's server
-argv (VS Code shows it in the Output panel).
+weir scripts often have no extension (they start with
+`#!/usr/bin/env weir`), so each setup below recognizes weir files both
+by the `.weir` extension and by the shebang line.
 
 ## Neovim (0.11+)
 
@@ -75,17 +74,18 @@ vim.api.nvim_set_hl(0, '@lsp.type.weirArgv', { link = 'String' })
 vim.api.nvim_set_hl(0, '@lsp.type.weirSplice', { link = 'Special' })
 ```
 
-On Neovim 0.10 or with nvim-lspconfig, the equivalent is a custom
-server entry with the same `cmd`/`filetypes`; the filetype block is
-identical.
+On Neovim 0.10, or if you use nvim-lspconfig, add a custom server
+entry with the same `cmd` and `filetypes`; the filetype block stays
+the same.
 
-Verified (Neovim 0.11.3, headless, in-container): attach ✓,
-diagnostic ✓, hover ✓, semantic tokens ✓ (the highlight links above
-are required for the colors to be visible — the token types are
-weir's own, not standard names), formatting ✓ (the applied edit is
-byte-identical to `weir fmt`'s output; the editor's tabSize was
-ignored as designed), go-to-definition ✓ (a use jumps to its
-top-level `let`), `.weir` and shebang detection ✓.
+The `nvim_set_hl` links at the end are what make the colors visible.
+weir's semantic tokens use their own type names rather than the
+standard ones, so Neovim has no colors for them until you link them.
+
+Tested with Neovim 0.11.3: the server attaches, and diagnostics,
+hover, colors, formatting (identical to `weir fmt`, whatever your tab
+size) and go to definition all work, as does recognizing `.weir` files
+and weir shebangs.
 
 ## Helix
 
@@ -106,9 +106,10 @@ indent = { tab-width = 4, unit = "    " }
 language-servers = ["weir"]
 ```
 
-Colors come from the tree-sitter grammar
-([weir-shell/tree-sitter-weir](https://github.com/weir-shell/tree-sitter-weir)) — add its
-source and build it:
+Helix colors code with tree-sitter, so for highlighting add the weir
+grammar
+([weir-shell/tree-sitter-weir](https://github.com/weir-shell/tree-sitter-weir))
+and build it:
 
 ```toml
 # languages.toml, alongside the blocks above
@@ -117,27 +118,30 @@ name = "weir"
 source = { git = "https://github.com/weir-shell/tree-sitter-weir" }
 ```
 
-then `hx --grammar fetch && hx --grammar build`, and copy
-the grammar repo's `queries/highlights.scm` to
+Then run `hx --grammar fetch && hx --grammar build`, and copy the
+grammar repo's `queries/highlights.scm` to
 `~/.config/helix/runtime/queries/weir/highlights.scm`.
-`hx --health weir` should then show server, parser, and highlights
-all ✓.
+`hx --health weir` should now show the language server, the parser
+and the highlights all ✓.
 
-Verified (Helix 25.01.1, in-container): attach ✓, diagnostic ✓
-(gutter marker + statusline count), hover ✓ (`space k`), formatting ✓
-(`:format` rewrites the buffer to `weir fmt`'s output), definition ✓
-(`gd` on a use lands on its top-level `let`), `.weir` and shebang
-detection ✓, tree-sitter highlighting ✓ (keywords, strings, types,
-binder names, and the `$`/`$@`/`!` sigil family each render
-distinctly on the flagship). LSP semantic tokens remain unsupported
-by Helix — the grammar is the coloring path.
+Helix doesn't support LSP semantic tokens, so the grammar is the only
+source of colors.
+
+Tested with Helix 25.01.1. Diagnostics show as a gutter marker and a
+count in the status line, hover is `space k`, `:format` rewrites the
+buffer to `weir fmt`'s output, and `gd` goes to the definition.
+`.weir` files and weir shebangs are recognized. Keywords, strings,
+types, the names being bound, and the `$`/`$@`/`!` sigils each get
+their own color.
 
 ## Emacs (eglot)
 
-Emacs needs a major mode to hang the server association on. The repo
-ships a minimal one — [`editors/emacs/weir-mode.el`](../editors/emacs/weir-mode.el):
-comment syntax, `.weir` + shebang association
-(`interpreter-mode-alist`), and the eglot entry for `weir lsp`.
+eglot attaches a server to a major mode, so Emacs needs a weir mode
+first. The repo ships a minimal one,
+[`editors/emacs/weir-mode.el`](../editors/emacs/weir-mode.el). It sets
+the comment syntax, uses `weir-mode` for `.weir` files and weir
+shebangs (through `interpreter-mode-alist`), and tells eglot to run
+`weir lsp`.
 
 ```elisp
 (load "/path/to/weir/editors/emacs/weir-mode.el")
@@ -145,60 +149,71 @@ comment syntax, `.weir` + shebang association
 ;;   M-x eglot
 ```
 
-Validated on Emacs 30.2: `weir-mode` byte-compiles clean, `.weir`
-files and `#!/usr/bin/env weir` scripts select it, and `M-x eglot`
-connects to `weir lsp` — diagnostics, hover, completion,
-go-to-definition and formatting all arrive. eglot does not consume
-semantic tokens, so there is no command-head/argv/splice colouring
-(tree-sitter highlighting is the fast-follow); expect the LSP
-features, not colour.
+Tested with Emacs 30.2: `.weir` files and `#!/usr/bin/env weir`
+scripts open in `weir-mode`, and `M-x eglot` connects to `weir lsp`
+with diagnostics, hover, completion, go to definition and formatting.
+
+eglot doesn't use semantic tokens, so commands, their arguments and
+`$` splices aren't colored. Tree-sitter highlighting for Emacs is
+planned. For now, expect the LSP features but not the colors.
 
 ## VS Code
 
 Install **weir** from the
-[VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=weir-shell.weir)
-— or from [Open VSX](https://open-vsx.org/extension/weir-shell/weir)
-for VSCodium, Cursor and friends. The client wraps the same
-`weir lsp` server and adds highlighting; no manual wiring. If the
-binary lives off PATH, set `weir.serverPath` to it (the binary path
-only — the client runs `<path> lsp` itself).
+[VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=weir-shell.weir),
+or from [Open VSX](https://open-vsx.org/extension/weir-shell/weir)
+for VSCodium, Cursor and similar editors. The extension runs the same
+`weir lsp` server and adds syntax highlighting, so there is nothing
+to set up. If `weir` isn't on PATH, set `weir.serverPath` to the
+binary. Give it only the binary's path: the extension runs
+`<path> lsp` itself.
 
 ## Zed
 
-Extension, not config — [`editors/zed/`](../editors/zed/): the same
-`weir lsp` server plus tree-sitter highlighting. Until it lands in
-the Zed extension registry, install as a dev extension (Extensions →
-Install Dev Extension → the `editors/zed/` directory; needs a local
-Rust toolchain). A failed install attempt leaves a stale `grammars/`
-clone in the extension's work dir — delete it before retrying.
+Zed is set up with an extension rather than config:
+[`editors/zed/`](../editors/zed/). It runs the same `weir lsp` server
+and adds tree-sitter highlighting. It isn't in the Zed extension
+registry yet, so install it as a dev extension: Extensions → Install
+Dev Extension → pick the `editors/zed/` directory. This needs a local
+Rust toolchain.
+
+If an install attempt fails, it leaves a stale `grammars/` clone in
+the extension's work directory. Delete it before you try again.
 
 ## Troubleshooting
 
-- **Server not found**: `weir lsp` assumes `weir` is on PATH — run
-  `weir --version` from the same environment your editor starts in
-  (GUI editors often see a shorter PATH than your shell; the VS Code
-  client also probes `~/.local/bin` and reports an actionable error).
-  Where a server-path setting exists, it takes the binary path only —
-  the client adds `lsp` itself; `weir lsp` in the setting is the
-  spawn-ENOENT trap.
-- **No attach**: the filetype/language didn't match — confirm the
-  buffer's filetype is `weir` (`:set ft?` in vim; `hx --health weir`;
-  `M-x describe-mode`). Extensionless scripts need the shebang rules
-  above.
-- **No colors**: semantic tokens need client support and visible
-  highlight groups — Neovim needs the `nvim_set_hl` links above;
-  Helix and eglot don't consume semantic tokens at all.
-- **Seeing the server's own errors**: the server logs nothing by
-  default; watch the client's LSP log (`:LspLog`/`:lua
-  vim.cmd.e(vim.lsp.get_log_path())` in Neovim, `hx -v` + the helix
-  log, `*EGLOT ... events*` buffer in Emacs). `weir check <file>`
-  reproduces any diagnostic from the CLI.
+- **Server not found.** The editor needs `weir` on its PATH. Run
+  `weir --version` from the same environment your editor starts in:
+  GUI editors often get a shorter PATH than your shell. (The VS Code
+  extension also looks in `~/.local/bin`, and tells you what to fix
+  if it still can't find weir.) If your editor has a server-path
+  setting, give it only the binary's path, because the editor adds
+  `lsp` itself. With `weir lsp` in the setting, the editor looks for
+  a program literally named `weir lsp` and fails with ENOENT.
+- **The server doesn't start for a file.** The editor didn't
+  recognize the file as weir. Check that the buffer's filetype is
+  `weir` (`:set ft?` in Vim, `hx --health weir` in Helix,
+  `M-x describe-mode` in Emacs). Scripts without an extension need
+  the shebang rules above.
+- **No colors.** Semantic tokens need an editor that supports them
+  and highlight groups that are actually visible. In Neovim, add the
+  `nvim_set_hl` links above. Helix and eglot don't use semantic tokens
+  at all.
+- **Seeing the server's own errors.** The server logs nothing by
+  default; watch your editor's LSP log (`:LspLog` or
+  `:lua vim.cmd.e(vim.lsp.get_log_path())` in Neovim, `hx -v` and the
+  Helix log, the `*EGLOT ... events*` buffer in Emacs). For more
+  detail, add `--debug` to the server's arguments (`weir lsp --debug`):
+  the server then logs every LSP message it handles and every
+  diagnostics update to stderr. VS Code shows this in the Output
+  panel. `weir check <file>` reproduces any diagnostic on the command
+  line.
 
 ## Scope
 
-The server analyzes the text the client sends, plus the files those
-documents reach by `import` or `#sig` (an open dependency from its
-buffer, an unopened one from disk) — never anything else. A
-cross-file definition jump opens a file only by the client's own
-action. See [SECURITY.md](../SECURITY.md)'s non-claims for the
-boundary as stated.
+The server reads the text your editor sends, plus the files those
+documents reach through `import` or `#sig`. A file that is open in the
+editor is read from its buffer, any other from disk. The server reads
+nothing else, and it never runs anything. When you jump to a
+definition in another file, it's your editor that opens the file, not
+the server. [SECURITY.md](../SECURITY.md) has the full statement.

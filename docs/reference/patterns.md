@@ -1,11 +1,12 @@
 # Patterns
 
-Where patterns bind: `match` arms, `let`, `for` binders, and
-function parameters — a param is a plain identifier, `()`, a
-parenthesized tuple pattern (`let dist (x, y) = …`), or a record
-pattern (bare, no parens: `let label { names = n } = n`). Binder
-positions demand *irrefutable* patterns; a pattern that can fail
-(`Some x`, a literal) is rejected there — use `match`.
+Patterns appear in `match` arms (the `| pattern -> …` lines), `let`,
+`for`, and function parameters. A parameter is a plain identifier,
+`()`, a parenthesized tuple pattern (`let dist (x, y) = …`), or a
+record pattern (without parentheses: `let label { names = n } = n`).
+In these binding positions the pattern must always succeed; a pattern
+that can fail (`Some x`, a literal) is rejected there — use `match`
+or `function` instead.
 
 ```weir
 type Crew = { names: string }
@@ -15,12 +16,12 @@ print (label { names = "kestrel" })
 print $"{swap (1, 2)}"
 ```
 
-## Variables, and the casing law
+## Variables and constructors: lowercase vs uppercase
 
-A lowercase name in pattern position binds. An uppercase name is a
-constructor. A typo'd constructor would therefore bind — and
-silently match everything — so an arm made unreachable by it is a
-hard error with a did-you-mean:
+A lowercase name in a pattern binds a variable. An uppercase name is
+a constructor. A mistyped constructor name would therefore bind a
+variable and silently match everything, so an arm that becomes
+unreachable because of it is an error with a did-you-mean:
 
 ```weir-error
 type V =
@@ -45,7 +46,7 @@ let word =
 print word
 ```
 
-Literal arms never complete a match alone — close with `_` or a
+Literal arms alone never make a match complete; end with `_` or a
 variable:
 
 ```weir-error
@@ -64,15 +65,15 @@ patterns.
 
 ## Tuple patterns
 
-`(a, b)` destructures a pair; arity must agree with the value's.
-The binder form works in `let` too:
+`(a, b)` destructures a pair; the pattern must have as many elements
+as the tuple. It works in `let` too:
 
 ```weir
 let host, port = ("db", 5432)
 print $"{host}:{port}"
 ```
 
-`fst` and `snd` project pairs only — a wider tuple is a type error:
+`fst` and `snd` work on pairs only; a longer tuple is a type error:
 
 ```weir-error
 print (show (fst (1, 2, 3))) // expected 'a2 * 'a3, got int * int * int
@@ -80,8 +81,9 @@ print (show (fst (1, 2, 3))) // expected 'a2 * 'a3, got int * int * int
 
 ## Constructors
 
-A case name matches its case; a payload binds through a nested
-pattern, tuple payloads included. Patterns nest freely:
+A case name matches that case, and a nested pattern destructures its
+payload, including tuple payloads. Patterns can be nested to any
+depth:
 
 ```weir
 type C = { names: string }
@@ -100,8 +102,9 @@ print n
 
 ## Record patterns
 
-A record pattern names any subset of fields — unnamed fields are
-ignored. Fields keep their declared case; binders are lowercase:
+A record pattern can name any subset of fields; the rest are
+ignored. Field names keep their declared capitalization, while the
+names you bind are lowercase:
 
 ```weir
 type Container = { State: string; Names: string }
@@ -114,9 +117,9 @@ let r =
 print r
 ```
 
-A field may hold a literal, which makes the pattern refutable —
-filter and destructure in one arm. A refutable record pattern never
-completes a match alone:
+A field may hold a literal, so one arm can both filter and
+destructure. Such a pattern can fail to match, so it never makes a
+match complete on its own:
 
 ```weir-error
 type St = { state: string }
@@ -132,9 +135,8 @@ let { names } = { names = "x" } // no punning: bind explicitly, { names = n }
 print "unreachable"
 ```
 
-And there is no `{| |}` pattern form — a pattern matches a value,
-and the brace spelling is the same whether the value's type was
-declared or anonymous:
+There is also no `{| |}` pattern. Plain braces destructure a record
+whether its type was declared or anonymous:
 
 ```weir-error
 let f {| id = i |} = i // no {| |} patterns — the plain brace spelling destructures anonymous shapes too
@@ -159,8 +161,8 @@ let loud l =
 print $"{loud Info} {loud Error}"
 ```
 
-`when` refines any arm; a guarded arm never counts toward
-exhaustiveness:
+`when` adds a condition to any arm. An arm with a `when` guard never
+counts toward exhaustiveness:
 
 ```weir
 let tier =
@@ -174,10 +176,11 @@ print tier
 
 ## The `Regex` pattern
 
-Matches and captures in one arm. The literal must be raw (`@"..."`
-or `"""..."""`), it is compiled at check time — an invalid regex is
-a check error — and the binder must carry exactly as many names as
-the pattern has capture groups. Groups bind as strings:
+Matches a regex and binds its captures in one arm. The regex must be
+a raw string (`@"..."` or `"""..."""`). It is compiled at check time,
+so an invalid regex is a check error, and the tuple after it must
+have exactly as many names as the regex has capture groups. Groups
+are bound as strings:
 
 ```weir
 match "cache=42" with
@@ -187,7 +190,8 @@ match "cache=42" with
 
 ## `function`
 
-The implicit-match lambda — `fun x -> match x with` in one word:
+`function` is a lambda that matches on its argument — short for
+`fun x -> match x with`:
 
 ```weir
 ["cache=42"; "noise"]
@@ -199,7 +203,8 @@ The implicit-match lambda — `fun x -> match x with` in one word:
 
 ## Exhaustiveness
 
-A non-exhaustive match is a hard error, not a warning. Its dual
-holds too: an arm made unreachable by a catch-all above it is a
-hard error. For union scrutinees, naming every case completes the
-match; literal and refutable-record arms never do.
+A match that doesn't cover every case is an error, not a warning.
+Likewise, an arm that can never be reached because a catch-all comes
+before it is an error. When matching on a union, listing every case
+makes the match complete; literal arms and record arms that can fail
+never do.

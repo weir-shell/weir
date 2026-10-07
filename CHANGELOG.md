@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.0.66
+
+### Changed
+
+- **Plainer help text.** The hover help, the website reference and the
+  reference pages now explain things in ordinary sentences instead of
+  terse slogans like "the reifier law: the meaning is the code".
+  "Reifier" is now a defined term — a `|` stage after a command that
+  turns its run into a value (`complete`, `succeeds`, `exitCode`,
+  `orFail`, `line`, `text`, `exec`) — and the docs say plainly where
+  each one sends the command's output.
+
 ## v0.0.65
 
 ### Added

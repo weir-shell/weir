@@ -553,7 +553,7 @@ let main argv =
                                                      Ok()
                                              | Some n ->
                                                  Error
-                                                     $"'--as {n}' must be a type name — uppercase first, then letters/digits/_ (the casing law)"
+                                                     $"'--as {n}' must be a type name: an uppercase letter first, then letters, digits or _"
 
                                          match asNameOk with
                                          | Error e -> fail1 e

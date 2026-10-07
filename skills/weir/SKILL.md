@@ -169,10 +169,11 @@ print (show (f 2))
 
 - Equality is `==` (never `=`); inequality is `<>` (never `!=`, which is
   a teaching error). `=` is for `let` and record fields only. Negation is
-  the word `not` — `!x` is a teaching error (`!` means "do it").
-- Records need a declared type with the exact field set (no width
-  subtyping, no anonymous records): `{ Host = h; Port = p }` needs
-  `type Endpoint = { Host: string; Port: int }`. For a transient
+  the word `not` — `!x` is a teaching error.
+- A bare record literal needs a declared type with the exact field set
+  (no width subtyping): `{ Host = h; Port = p }` needs
+  `type Endpoint = { Host: string; Port: int }`; an anonymous record
+  `{| … |}` needs no declaration. For a transient
   pair with no names, use a tuple instead. Copy-and-update derives:
   `{ r with F = v }` (multi-field `;`-separated; nested `I.X` sugar;
   the source may be an expression — bare match/if need parens).
@@ -1378,9 +1379,10 @@ within tmp d
         always
             print "teardown, every path"
 ```
-- Nonzero exit RAISES when the stream is forced. The exit-code
-  reifiers (complete's family, on a command or a whole chain, one law:
-  output goes where the meaning goes): `cmd | succeeds` is a
+- Nonzero exit RAISES when the stream is forced. A REIFIER is a `|`
+  stage that turns a command's run (or a whole chain's) into a value;
+  the output is captured when the value contains it, streams when you
+  only get the exit status, and is discarded by succeeds: `cmd | succeeds` is a
   BOOL (silent — a predicate's output IS its result); `cmd | orFail
   "msg"` STREAMS and raises `msg (exit N)` on nonzero, unit on
   success — THE assert idiom, legal as a statement and in

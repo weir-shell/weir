@@ -9886,17 +9886,17 @@ let semanticTokenTests =
 
               let onLoad = Weir.Lsp.hoverType lines 2 14 |> Option.defaultValue "" // on `load`
               Expect.stringContains onLoad "typed record" "the Env.load summary reaches hover on `load`"
-              Expect.stringContains onLoad "field law" "and its law pointer"
+              Expect.stringContains onLoad "exactly that name" "and its law pointer"
 
               // the reported bug: hovering the module `Env` must not surface load's doc
               let onEnv = Weir.Lsp.hoverType lines 2 10 |> Option.defaultValue "" // on `Env`
-              Expect.isFalse (onEnv.Contains "field law") "hovering the module Env does not surface load's doc"
+              Expect.isFalse (onEnv.Contains "exactly that name") "hovering the module Env does not surface load's doc"
           }
           test "builtin docs: reifier hover maps the |completed key back to complete [D:builtin-docs]" {
               let lines = [ "let c = echo hi | complete" ]
               let h = Weir.Lsp.hoverType lines 1 22 |> Option.defaultValue "" // on `complete`
-              Expect.stringContains h "Completed record" "the reifier's doc reaches hover through TEVar |completed"
-              Expect.stringContains h "output goes where the meaning goes" "the reifier law pointer"
+              Expect.stringContains h "`Completed` record" "the reifier's doc reaches hover through TEVar |completed"
+              Expect.stringContains h "exit code and the output together" "the reifier law pointer"
           }
           test "builtin docs: a builtin type name hovers its doc (word-at-cursor fallback) [D:builtin-docs]" {
               let lines = [ "type W = { c: Completed }" ]

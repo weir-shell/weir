@@ -1,10 +1,11 @@
 # Adapters
 
-`from` reads a wire format into a declared shape; `to` writes one.
-Three formats go both ways (`json`, `jsonl`, `yaml`); two more read
-only (`xml`, `table`). Neither direction guesses: `from json T` reads
-one document however many lines it spans; `from jsonl T` reads one
-document per line and yields `seq<T>`.
+`from` reads a data format into a type you declare; `to` writes one.
+Three formats work in both directions (`json`, `jsonl`, `yaml`), and
+two more are read-only (`xml`, `table`). You always say which format
+you mean: `from json T` reads one document however many lines it
+spans, while `from jsonl T` reads one document per line and yields
+`seq<T>`.
 
 ```weir
 type Peer = { host: string; port: int }
@@ -16,11 +17,12 @@ let peers = ["{\"host\": \"a\", \"port\": 1}"; "{\"host\": \"b\", \"port\": 2}"]
 print $"{peers |> Seq.length} peers"
 ```
 
-The write side mirrors the read: `to json` writes one minified
-document — a record is an object, a seq an array (built whole; one
-line cannot stream) — and `to jsonl` writes NDJSON, one document per
-element, lazily. Every adapter pairs with its own name across the
-arrow: `to json |> from json T`, `to jsonl |> from jsonl T`.
+Writing mirrors reading. `to json` writes one minified document: a
+record becomes an object and a seq becomes an array (built in memory
+all at once, since a single line cannot be streamed). `to jsonl`
+writes NDJSON, one document per element, lazily. Each format reads
+back what it writes: `to json |> from json T`,
+`to jsonl |> from jsonl T`.
 
 ```weir
 type P = { a: int }
@@ -32,87 +34,90 @@ type P = { a: int }
 (prints `{"a":1}`, then `[{"a":1},{"a":2}]` — one array document —
 then the two NDJSON lines.)
 
-## The admitted shapes
+## Which field types are allowed
 
 A field is one of:
 
 - a scalar (`int`, `float`, `string`, `bool`)
-- an `Option` of an admitted type
-- a record whose fields are all admitted
-- a `seq` of an admitted type
+- an `Option` of one of these types
+- a record whose fields are all of these types
+- a `seq` of one of these types
 - a `Map<string, T>`
 
-The rule is recursive; a self-referential record refuses at check,
-naming its cycle. A top-level JSON array declares itself:
-`from json seq<Peer>`. Integer-shaped JSON numbers widen into
-`float` fields (JSON has one number type).
+The rule applies recursively. A self-referential record is a check
+error that names the cycle. For a top-level JSON array, say so in the
+type: `from json seq<Peer>`. Integer-looking JSON numbers are accepted
+by `float` fields (JSON has only one number type).
 
-A missing array is an error, not a silent `[]` — absence is
-`Option`'s job. Unknown wire keys are ignored on read. A wire key
-that is not a legal identifier maps with `[<Wire "key">]`; two
-fields resolving to one wire key refuse at the declaration.
+A missing array is an error, not a silent `[]`; use `Option` for
+fields that may be absent. Unknown keys are ignored on read. A key
+that is not a legal weir identifier is mapped with `[<Wire "key">]`,
+and two fields that map to the same key are an error at the
+declaration.
 
 ## Documents in several shapes
 
-A **tagged union** reads documents discriminated by a field:
-`[<Tag "kind">]` on the union names the discriminator, each case
-carries a declared record (or nothing — a tag-only document), and
-the tag value defaults to the case name (`[<Wire "v1">]` on a case
-overrides). Admitted at both formats, top level or nested — so
-`from jsonl KDoc` dispatches mixed NDJSON and `from json seq<KDoc>`
-a mixed array. One `[<Other>]` case (`of string`, or nullary) makes
-the union open-world: unmatched tags land there instead of
-erroring. A missing tag field always errors — malformed is not
-unknown. Writers reinsert the tag first; an `[<Other>]` value
-refuses to write. Untagged unions stay refused, the error naming
-`[<Tag>]`.
+A **tagged union** reads documents whose shape depends on one
+field. `[<Tag "kind">]` on the union names that field. Each case
+carries a declared record, or nothing for a document that has only
+the tag. The tag value defaults to the case name; `[<Wire "v1">]` on
+a case overrides it. Tagged unions work in JSON and YAML, at the top
+level or nested, so `from jsonl KDoc` reads mixed NDJSON and
+`from json seq<KDoc>` reads a mixed array. Adding one `[<Other>]`
+case (`of string`, or with no payload) makes the union accept unknown
+tags: they land in that case instead of raising an error. A document
+with no tag field is always an error, since that is malformed rather
+than unknown. When writing, the tag is written first, and an
+`[<Other>]` value cannot be written. Unions without a tag are not
+supported; the error suggests `[<Tag>]`.
 
 ## Keys that are data
 
-`Map<string, T>` reads an ID-keyed object — as a field or as the
-whole document. Keys are strings only; pairs walk key-sorted;
-duplicate keys last-win; `to json` writes the object back.
+`Map<string, T>` reads an object keyed by IDs, either as a field or
+as the whole document. Keys must be strings, entries are iterated in
+key order, and for duplicate keys the last one wins. `to json` writes
+the object back.
 
 ## YAML
 
-`from yaml T` reads with the same admission rules; quoting
-disambiguates scalars (`rate: 1.5` is a number, `"1.5"` a string —
-both directions). A quoted scalar may continue on deeper-indented
-lines (kubectl's long `message:` values):
+`from yaml T` accepts the same shapes as JSON. Quoting decides a
+scalar's type in both directions: `rate: 1.5` is a number, `"1.5"` is
+a string. A quoted scalar may continue on more deeply indented lines,
+as in kubectl's long `message:` values:
 
 - the closing quote ends it
 - each line break folds to a single space
 - an empty continuation line becomes a newline
 - the folded value stays a string
 
-`from yaml stream T` reads a `---`-separated stream — N documents,
-each as `T`, so the heterogeneous bundle (a kubernetes apply file)
-is `from yaml stream KDoc` over a tagged union: the stream word is
-the cardinality, the union the per-document dispatch. An empty
-stream is zero documents.
+`from yaml stream T` reads a `---`-separated stream of documents,
+each as `T`. To read a mixed bundle such as a Kubernetes apply file,
+use `from yaml stream KDoc` with a tagged union: `stream` means "many
+documents", and the union picks the shape of each one. An empty
+stream gives zero documents.
 
-The write side mirrors the read exactly: `to yaml` writes one
-document — a record is a mapping, a seq a sequence document, a
-pair-seq one mapping — and `to yaml stream` writes one document per
-element, so every form reads back through its own name
+Writing mirrors reading exactly. `to yaml` writes one document: a
+record becomes a mapping, a seq a sequence document, and a seq of
+pairs one mapping. `to yaml stream` writes one document per element.
+Each form reads back with the matching reader
 (`to yaml |> from yaml seq<T>`,
-`to yaml stream |> from yaml stream T`). A multiline
-string renders as a block scalar. The `yaml` template
-literal itself — checked structure, splices as nodes, `schema=` —
-is a language form, taught in the
-[guide](../GUIDE.md#commands-and-processes) with vendoring on the
-[tooling page](../tooling.md#yaml-schemas).
+`to yaml stream |> from yaml stream T`). A multiline string is
+written as a block scalar. The `yaml` template literal (with checked
+structure, splices as nodes, and `schema=`) is part of the language
+and is covered in the [guide](../GUIDE.md#commands-and-processes);
+vendoring schemas is on the [tooling page](../tooling.md#yaml-schemas).
 
 ## XML
 
-`from xml T` reads one XML document into `T` — read-only, over a
-subset. The document's root element is the top record; a field name
-matches a child element by local name (a default `xmlns`, like
-MSBuild's, is stripped so field names stay plain); `[<Attr>]` (or
-`[<Attr "Include">]`) reads an attribute; `[<Elem "ProjectReference">]`
-names the repeated child a `seq< >` field reads (defaulting to the
-element type's name for `seq<record>`, the field name for
-`seq<string>`); a nested record reads a child element recursively.
+`from xml T` reads one XML document into `T`. It is read-only and
+supports a subset of XML. The document's root element maps to the
+top-level record. A field matches a child element by local name (a
+default `xmlns`, like MSBuild's, is stripped so field names stay
+plain). `[<Attr>]` (or `[<Attr "Include">]`) reads an attribute.
+`[<Elem "ProjectReference">]` names the repeated child element that a
+`seq< >` field reads; by default that is the element type's name for
+`seq<record>` and the field name for `seq<string>`. A nested record
+reads a child element recursively.
 
 ```weir
 type Ref  = { [<Attr>] Include: string }
@@ -131,23 +136,23 @@ print $"{Seq.length proj.refs} refs, {Seq.length proj.groups} property groups"
 Every XML leaf is text, so a field is `string`, `Option<string>` (a
 present-or-absent element or attribute), a record, or a `seq` of a
 string or record — nothing else. A numeric or boolean field is
-declared `string` and converted (`Str.toInt`); the checker teaches
-this rather than guessing a convention XML does not carry. `[<Attr>]`
-fits only `string`/`Option<string>`, `[<Elem>]` only a `seq`, and the
-top level is one root element — there is no `from xml seq<T>` (a
-repeated child is a `seq< >` field). XML is read-only: there is no
-`to xml`.
+declared `string` and converted (`Str.toInt`); the checker tells you
+this rather than guessing at a convention XML does not define.
+`[<Attr>]` fits only `string`/`Option<string>`, `[<Elem>]` only a
+`seq`, and the top level is a single root element, so there is no
+`from xml seq<T>` (repeated children are read with a `seq< >` field).
+There is no `to xml`.
 
 ## Aligned tables
 
-`from table T` reads aligned column output — the shape `kubectl` and
-`docker` print: one header row, aligned data rows — into declared row
-records, yielding `seq<T>`. The first non-blank line is the header;
-columns slice at *header offsets*, never whitespace runs, so a value
-with spaces (`Up 2 hours`, a free-text last column) survives intact. A
-header boundary is a run of two or more spaces — a single interior
-space stays inside one header, so `CONTAINER ID` is one column (both
-tools pad columns with three spaces).
+`from table T` reads aligned column output, the kind `kubectl` and
+`docker` print (one header row followed by aligned data rows), into
+declared row records, yielding `seq<T>`. The first non-blank line is
+the header. Columns are cut at the *header positions*, not at
+whitespace, so a value containing spaces (`Up 2 hours`, a free-text
+last column) stays intact. Headers are separated by two or more
+spaces; a single space stays inside a header, so `CONTAINER ID` is one
+column (both tools pad columns with three spaces).
 
 ```weir
 type Pod = { name: string; status: string; restarts: int; node: Option<string> }
@@ -159,20 +164,20 @@ let pods =
 pods |> Seq.iter (fun p -> print $"{p.name}: {p.status} ({show p.restarts} restarts)")
 ```
 
-A field matches its header by normalized name, case-insensitively on
-the alphanumerics — `name` reads `NAME`, `podTemplateHash` reads
-`POD-TEMPLATE-HASH`; `[<Wire "HEADER">]` matches a raw header
-verbatim. Cells trim and type by the declared field (`string`, `int`,
-`float`, `bool`); an `Option` field reads an empty cell or a cell
-that is exactly `<none>` (the kubectl idiom) as `None`, and a
-required field refuses an absent cell naming the `Option` repair.
-Extra columns are ignored (the extra-keys precedent), blank lines
-skip, and a header-only table is the empty seq (`docker ps` with
-nothing running). Errors are located: a missing declared column names
-itself and lists the headers seen; a cell that fails its type carries
-the row line and column. Rows are already plural — no
-`seq`/`stream`/`Map` wrap — and the boundary is read-only: there is
-no `to table`.
+A field matches its header by name, ignoring case and anything that
+is not a letter or digit: `name` reads `NAME`, `podTemplateHash` reads
+`POD-TEMPLATE-HASH`. `[<Wire "HEADER">]` matches a header exactly as
+written. Cells are trimmed and converted to the field's type
+(`string`, `int`, `float`, `bool`). An `Option` field reads an empty
+cell, or a cell that is exactly `<none>` (as kubectl prints), as
+`None`; an empty cell in a required field is an error that suggests
+making it an `Option`. Extra columns are ignored (as with unknown JSON
+keys), blank lines are skipped, and a table with only a header is an
+empty seq (`docker ps` with nothing running). Errors say where: a
+missing column is named along with the headers that were found, and a
+cell of the wrong type is reported with its row and column. The
+result is already a seq of rows, so you don't write
+`seq`/`stream`/`Map` around the type. There is no `to table`.
 
 `az … -o table` (and other `tabulate`-style tools) draw a dashes rule
 line under the header (`------  ----------`). `from table` skips that
@@ -182,24 +187,27 @@ separator (kubectl, docker) are unchanged; only a row that is entirely
 dashes and spaces is dropped, and only in first position.
 
 `#infer <src> from table as Pod` (or `sample |> Table.inferShape`)
-drafts the row record from a live sample — per-column type scanning,
-`Option` where a column has empty/`<none>` cells, and a note that
-the value reads as `seq<Pod>`.
+drafts the row record from a real sample. It infers each column's
+type, uses `Option` where a column has empty or `<none>` cells, and
+notes that the value reads as `seq<Pod>`.
 
 ## Editing YAML: `Yaml.parse` and `yaml patch`
 
-`from yaml T` reads into a declared record — and drops every field you
-did not declare, which makes it wrong for read-modify-write. The
-typeless pair holds the document whole: `Yaml.parse` reads one
-document into `Yaml` nodes (scalars self-type exactly as district
-scalars do), and `Yaml.merge` applies a `yaml patch` district whose
-*structure* is the address — kustomize's strategic-merge model, with
-no path language. Maps upsert recursively; a sequence
-appends-if-absent, or upserts by the marker line's `by=<key>`; scalars
-replace; the `$-` tombstone removes (in value position, the key it
-sits under; as `- $- <content>`, the matching item). Merge is
-orderless and idempotent — update-or-insert is the semantics of
-`by=`, not a branch you write.
+`from yaml T` reads into a declared record and drops every field you
+did not declare, so it is the wrong tool for read-modify-write. For
+that, use the untyped pair, which keeps the whole document.
+`Yaml.parse` reads one document into `Yaml` nodes (scalars get their
+type from their text, exactly as in a `yaml` block), and `Yaml.merge`
+applies a `yaml patch` block. The patch's *structure* says where each
+change goes — kustomize's strategic-merge model, with no path
+language. Maps are merged recursively, adding or updating keys. A
+sequence item is appended if absent, or, with `by=<key>` on the
+marker line, updated by that key (and inserted if no item matches). Scalars are replaced. The `$-` marker
+removes things: in value position it removes the key it sits under,
+and as `- $- <content>` it removes the matching item. The order of
+changes does not matter and applying a patch twice gives the same
+result, so with `by=` you never write an "update or insert" branch
+yourself.
 
 ```weir
 let doc = <<<
@@ -215,34 +223,36 @@ let p = yaml patch by=name
 doc |> Yaml.merge p |> to yaml |> Seq.iter print
 ```
 
-A patch types as `YamlPatch`, not `Yaml`, and the type carries the
-laws: `to yaml` on a patch refuses at check (a patch is instructions,
-not a document — no tombstone can ever reach a file), `$-` outside a
-`yaml patch` district refuses, and `patch` does not combine with
-`schema=` (a patch is partial; schemas validate whole documents).
-`Yaml.parse` can never produce a tombstone — parsed text is data.
-There is no in-place file member: the round-trip is composition,
+A patch has type `YamlPatch`, not `Yaml`, and the type enforces the
+rules. `to yaml` on a patch is a check error, because a patch is a set
+of instructions rather than a document, so a `$-` removal marker can
+never end up in a file. `$-` outside a `yaml patch` block is an error,
+and `patch` cannot be combined with `schema=` (a patch is partial,
+while schemas validate whole documents). `Yaml.parse` never produces a
+removal marker; parsed text is always plain data. There is no function
+that edits a file in place. You write the round-trip as a pipeline,
 `File.read f |> Yaml.parse |> Yaml.merge p |> to yaml |> File.write f`,
-so the one mutation stays visible in the pipeline.
+so the change stays visible.
 
-## What crosses, and what does not
+## Which types serialize automatically
 
-Types with one canonical encoding cross by themselves; types whose
-encoding is ambiguous refuse, and the refusal names the explicit
-conversion. JSON and YAML follow the same rule in both directions, with
-the same messages.
+Types with one obvious encoding are serialized automatically. Types
+that could be encoded in more than one way are refused, and the error
+names the explicit conversion. JSON and YAML follow the same rule in
+both directions, with the same messages.
 
-- `int`, `float`, `string`, `bool` and `Uuid` cross. A `Uuid` field is
-  its canonical lowercase string and reads back through `Uuid.parse`'s
-  forms; a malformed string raises naming the field. An append-only
-  JSON-lines log keyed by `Uuid.v7` stays sortable by id as text.
-- `Instant`, `Duration` and `Size` refuse on their own: an epoch
-  number and a text form are both defensible, and the consumer's
-  convention is not weir's to guess. The author names it on the field
-  with a codec attribute, or converts explicitly — the message offers
-  both.
+- `int`, `float`, `string`, `bool` and `Uuid` work directly. A `Uuid`
+  is written as its lowercase string and read back with any form
+  `Uuid.parse` accepts; a malformed string raises an error naming the
+  field. A JSON-lines log keyed by `Uuid.v7` stays sortable by id as
+  text.
+- `Instant`, `Duration` and `Size` are refused unless you say how to
+  encode them: an epoch number and a text form are both reasonable,
+  and weir won't guess which one the other side expects. Put a codec
+  attribute on the field, or convert explicitly; the error message
+  offers both.
 
-| Type | Codecs | Wire value |
+| Type | Codecs | Written as |
 |---|---|---|
 | `Instant` | `[<Iso8601>]`, `[<EpochMs>]`, `[<EpochSec>]` | ISO 8601 string; epoch ms; epoch seconds |
 | `Duration` | `[<Millis>]`, `[<Seconds>]` | integer ms; integer seconds |
@@ -259,24 +269,26 @@ let back = [line] |> from jsonl Event |> Seq.head
 print (show back.took)
 ```
 
-One declaration serves both directions, so the writer and the reader
+One declaration covers both directions, so the writer and the reader
 cannot disagree. A codec applies to a `T`, `Option<T>` or `seq<T>`
-field; it must fit the field's type, checked where the record is
-declared. `[<EpochSec>]` and `[<Seconds>]` raise on a value with
-sub-second precision rather than drop it. Codecs touch only `to`/`from
-json`, `jsonl` and `yaml` — `show` and `==` never see them.
-- `Bytes` refuses naming `Bytes.toBase64`.
-- `Secret` refuses outright — a credential does not serialize; the
-  type itself is the reason, not an encoding.
+field, and it must fit the field's type; this is checked where the
+record is declared. `[<EpochSec>]` and `[<Seconds>]` raise an error on
+a value with sub-second precision rather than silently dropping it.
+Codecs affect only `to`/`from` `json`, `jsonl` and `yaml`; `show` and
+`==` ignore them.
+- `Bytes` is refused; the error suggests `Bytes.toBase64`.
+- `Secret` is always refused. Credentials are never serialized, in any
+  encoding.
 
 ## Anonymous shapes at the boundary
 
-For a foreign shape read once, the type goes inline:
+For a shape you read only once, you can write the type inline:
 
 ```weir
 let n = ["{\"count\": 3, \"noise\": true}"] |> from json {| count: int |} |> _.count
 print $"{n}"
 ```
 
-Declared records stay nominal; two anonymous shapes with the same
-fields are the same type (field order canonicalizes).
+Declared records are distinct types even when their fields match.
+Two anonymous shapes with the same fields are the same type, whatever
+the field order.
