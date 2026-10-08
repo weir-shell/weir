@@ -4412,6 +4412,25 @@ let private chainEndReifier (seg: Seg) : (Expr * string * string) option =
     |> Option.bind (fun (rhs, kw) ->
         chainReifier rhs |> Option.filter ((<>) "exec") |> Option.map (fun n -> rhs, kw, n))
 
+// which chain word a folded and/or right-hand side starts with: `| and`
+// folds to a sequence of streamed commands, `| or` to an if on the left's
+// exit code [D:and-or-no-mix]
+let private chainWord (e: Expr) : string option =
+    match e.Kind with
+    | EIf({ Kind = EBinOp("==", code, { Kind = EInt 0L }) }, { Kind = EUnit }, Some _) when
+        chainReifier code = Some "exitCode"
+        ->
+        Some "or"
+    | ESeq({ Kind = EPipe(_, { Kind = EVar "|print" }) }, _)
+    | ESeq({ Kind = ELet("_chain", _, _, _) }, _) -> Some "and"
+    | _ -> None
+
+let private mixedChain (seg: Seg) : (string * string * Span) option =
+    match seg with
+    | AndMarker(rhs, sp) when chainWord rhs = Some "or" -> Some("and", "or", sp)
+    | OrMarker(rhs, sp) when chainWord rhs = Some "and" -> Some("or", "and", sp)
+    | _ -> None
+
 let rec private foldChain (h: Expr) (rest: ((string * Span) * Seg) list) : Result<Expr, string * Span> =
     rest
     |> List.fold
@@ -4438,6 +4457,17 @@ let rec private foldChain (h: Expr) (rest: ((string * Span) * Seg) list) : Resul
 
                 Result.Error(
                     $"'| {kw}' can't follow '| {name}' — '| {name}' turned the command into a value, and '| {kw}' needs a command's exit; to branch on it, write `if <command> | succeeds then … else …`",
+                    sp
+                )
+            | Result.Ok _ when (mixedChain seg).IsSome ->
+                // a mixed chain groups from the right, unlike bash and every
+                // precedence convention — refused, not reinterpreted
+                // [D:and-or-no-mix]
+                let first, second, sp = (mixedChain seg).Value
+
+                Result.Error(
+                    $"'| {first}' and '| {second}' can't be mixed in one chain — for a branch, write an if: "
+                    + "`if a | succeeds then b else c`",
                     sp
                 )
             | Result.Ok _ when (chainEndReifier seg).IsSome ->
@@ -4768,7 +4798,7 @@ let private doublePipeGuard: Parser<Seg, unit> =
     >>= fun at ->
         failFatallyAt
             at
-            "'||' does not chain commands in weir — branch on the exit instead: if cmd | succeeds then ... else ... (a literal '||' argument needs quotes)"
+            "'||' does not chain commands in weir — write `cmd | or fallback`, or branch on the exit: if cmd | succeeds then ... else ... (a literal '||' argument needs quotes)"
 
 // the match-arm boundary [D:match-arm-commands]: inside an arm body a
 // `|` that opens the next arm (`| <pattern> ->` or `| <pattern> when`)

@@ -246,18 +246,48 @@ Chaining on the exit is `| and` / `| or` — bash's `&&`/`||`.
 runs it only if `cmd` failed (there the nonzero exit is the branch,
 not a raise). Both stream and yield unit, and the right-hand side is
 a full command line, so they chain (`mkdir d | and cd d | and build`)
-and a builtin like `cd` works on the right. They are right-associative:
-`a | or b | or c` is `a | or (b | or c)`. That differs from bash, which
-is left-associative, for chains that *mix* `and` and `or`; split mixed
-logic across lines when precedence matters. The left side of `| or`
-is an external command or a pipeline of them (a pipeline fails with its
-leftmost failing code, as for `| exitCode`); a builtin can't be there,
-because it raises an error rather than returning an exit code. A reifier can't end the chain:
-`a | and b | complete` would capture only `b`, and the chain's value
-is unit, so it's an error. Run the commands on separate lines and
-capture the one you need (`| exec` is the exception: it hands over).
-Nor can `| and`/`| or` follow a reifier — `a | succeeds | and b` has
-no exit to branch on; write `if a | succeeds then … else …`.
+and a builtin like `cd` works on the right.
+
+The left side of `| or` is an external command or a pipeline of them
+(a pipeline fails with its leftmost failing code, as for `| exitCode`).
+A builtin can't be there, because it raises an error rather than
+returning an exit code.
+
+A reifier can't end the chain: `a | and b | complete` would capture
+only `b`, and the chain's value is unit, so it's an error. Run the
+commands on separate lines and capture the one you need (`| exec` is
+the exception: it hands over). Nor can `| and`/`| or` follow a
+reifier — `a | succeeds | and b` has no exit to branch on; write
+`if a | succeeds then … else …`.
+
+A chain can repeat one word — `a | and b | and c`, or the fallbacks
+`a | or b | or c` — but can't mix them: `a | and b | or c` is an error.
+Mixing would not mean what it means in bash, for two reasons:
+
+- **Grouping.** Everything after `| and` or `| or` is its right-hand
+  side, so a chain groups from the right: `a | and b | or c | and d`
+  would be `a | and (b | or (c | and d))`. bash groups from the left:
+  `a && b || c && d` is `((a && b) || c) && d`.
+- **Failure.** The left side of `| and` failing stops the script, like
+  any failed command. In bash, a failure inside a `&&`/`||` list never
+  stops the script, even under `set -e`.
+
+How bash's `a && b || c && d` would compare with the right-grouped
+reading, followed by more code:
+
+| a | b | c | right-grouped (refused) | bash |
+|---|---|---|---|---|
+| ok | ok | any | runs a, b; continues | runs a, b, **d**; continues |
+| ok | fails | ok | runs a, b, c, d; continues | same |
+| ok | fails | fails | runs a, b, c; **stops** | runs a, b, c; continues |
+| fails | any | any | runs a; **stops** | runs a, c, and d if c succeeded; continues |
+
+The bash idiom `a && b || c` ("if a, then b, else c") is a trap in bash
+too — `c` also runs when `b` fails. In weir, write it as an `if`:
+
+```weir
+if sh -c "exit 1" | succeeds then echo "took the then" else echo "took the else"
+```
 
 ```weir
 sh -c "exit 1" | or echo "fell back"

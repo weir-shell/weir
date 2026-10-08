@@ -1425,8 +1425,9 @@ within tmp d
   no raise). Both STREAM and yield unit; the RHS is a full command line,
   so they chain (`a | and b | and c`) and a builtin like `cd` is a legal
   operand (`mkdir d | and cd d`). Right-associative — `a | or b | or c` is
-  `a | or (b | or c)`, which DIFFERS from bash's left-assoc for MIXED
-  chains, so split mixed logic across lines when precedence matters.
+  `a | or (b | or c)`. MIXING `and` and `or` in one chain is an ERROR
+  [D:and-or-no-mix] (right-grouping would differ from bash) — write the
+  branch as `if a | succeeds then b else c`.
   `| or`'s left is an external command or a pipeline (leftmost failing
   code, as for `| exitCode`); a builtin can't be (it raises rather
   than exit-codes). A reifier can't end the chain (`a | and b |

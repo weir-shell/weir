@@ -75,6 +75,11 @@ being frozen (`possible re-enumeration`; this is only a warning, and
 `weir check` still exits 0). Capturing a command gives a
 `seq<string>`, one element per line.
 
+List items are separated by `;` (or by line breaks). A comma builds a
+tuple, so `[1, 2]` is a one-item list holding `(1, 2)`; the checker
+warns about that shape and suggests `[1; 2]`, or `[(1, 2)]` if the
+tuple was meant. A list of several pairs, `["a", 1; "b", 2]`, is fine.
+
 `xs[i]` is `Seq.item i xs` and raises an error when out of range. The
 bracket must directly follow the name, because `f [0]` is a function
 call. `xs[a..b]` slices, **inclusive and clamped** to the available

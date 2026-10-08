@@ -6484,17 +6484,27 @@ let warnings (te: TypedExpr) : Warning list =
                      acc.Add
                          { Span = a.Span
                            Message =
-                             "'&&' does not chain commands in weir — put commands on separate lines "
-                             + "(a later line runs only if the earlier one succeeds: '| orFail' raises on failure; "
+                             "'&&' does not chain commands in weir — write `cmd | and next`, or put the commands on "
+                             + "separate lines (a failure stops the script; "
                              + "if you meant a literal '&&' argument, ignore this)" }
                  | TEStr "||" ->
                      acc.Add
                          { Span = a.Span
                            Message =
-                             "'||' does not chain commands in weir — branch on the exit instead: "
+                             "'||' does not chain commands in weir — write `cmd | or fallback`, or branch on the exit: "
                              + "if cmd | succeeds then ... else ... "
                              + "(if you meant a literal '||' argument, ignore this)" }
                  | _ -> ()
+         // `[1, 2]` is a one-item list holding a tuple — the comma habit
+         // from Python/JS. Only a lone, unparenthesized tuple: a list of
+         // several pairs (`["a", 1; "b", 2]`) is the F# idiom, and
+         // `[(1, 2)]` says it on purpose (parens widen the span)
+         | TEList [ { Kind = TETuple(first :: _) } as t ] when t.Span.Start = first.Span.Start ->
+             acc.Add
+                 { Span = t.Span
+                   Message =
+                     "this list has one item, a tuple — list items are separated by ';' ([1; 2]); "
+                     + "if you meant a list holding one tuple, write it in parentheses: [(1, 2)]" }
          | _ -> ())
 
         childExprs te |> List.iter walk
