@@ -32,7 +32,7 @@ replace the message, but never moves the position. `check`,
 
 A failing command raises an error when its output is read; a reifier
 turns the failure into a value instead
-([commands](commands.md#exit-codes)). Builtins raise errors with a
+([commands](commands.md#reifiers-and-chaining)). Builtins raise errors with a
 location and a readable message (`File.read: no such file: …`). There
 is no try/catch and there are no exception values. A resource that
 needs cleanup goes in a [`within` scope](scopes.md), which releases it

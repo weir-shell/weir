@@ -59,7 +59,7 @@ What command lines do not do:
   to. `pwd` is the current directory as a `string`, read at the moment
   it is used
 - no `&&` — write two statements, or chain them with
-  [`| and` / `| or`](#exit-codes)
+  [`| and` / `| or`](#chaining)
 - no redirects — `>` is passed as a literal argument, with a warning
   that suggests `File.write`
 
@@ -178,7 +178,10 @@ other sites it cannot see through). Reifiers, pipes, captures and env
 overlays work exactly as with a literal head:
 `^$tool build | complete` gives you the computed program's exit.
 
-## Exit codes
+<!-- the section's earlier name; kept so published #exit-codes links land here -->
+<a id="exit-codes"></a>
+
+## Reifiers and chaining
 
 A failing command raises an error when its output is read. A **reifier** —
 a `|` stage after the command — turns the run into a value instead.
@@ -222,76 +225,53 @@ away, and the error explains what to do:
 sh -c "exit 3" | exitCode // a bare statement discards the code — bind or match it
 ```
 
-The last three rows use the same pipe-stage spelling but are not
-about the exit code. `cmd | line` captures a command's single trimmed
-stdout line as a `string` —
-`let sha = git rev-parse HEAD | line` replaces the
-`$(cmd) |> Seq.exactlyOne` capture; it raises on a nonzero exit and
-on zero or two-plus lines, and works with an env overlay
-(`$e(cmd | line)`) and with a value piped in (`xs | grep foo | line`).
-`cmd | text` is its multi-line sibling: the whole stdout as one
-`string` (lines joined with newlines, trailing blank lines dropped,
-as bash's `$(…)` does) — `let notes = git log -1 --format=%B | text`.
-`cmd | exec` replaces the weir process with the command
-(POSIX `execve`; Windows spawns, waits, and exits with the child's
-code). The command keeps weir's pid, so a container entrypoint
-receives signals directly. Like `fail` and `exit` it never returns, so
-it is allowed as a bare statement. It accepts a literal or dynamic
-(`^$cmd`) head and an env overlay (`$e(cmd | exec)`). It refuses piped
-stdin, since no parent would remain to feed the new process, and it is
-not allowed inside a `plan` block.
+### `line`, `text` and `exec`
 
-Chaining on the exit is `| and` / `| or` — bash's `&&`/`||`.
-`cmd | and next` runs `next` only if `cmd` succeeded; `cmd | or next`
-runs it only if `cmd` failed (there the nonzero exit is the branch,
-not a raise). Both stream and yield unit, and the right-hand side is
-a full command line, so they chain (`mkdir d | and cd d | and build`)
-and a builtin like `cd` works on the right.
+The last three rows use the same `|` spelling but aren't about the exit
+code:
 
-The left side of `| or` is an external command or a pipeline of them
-(a pipeline fails with its leftmost failing code, as for `| exitCode`).
-A builtin can't be there, because it raises an error rather than
-returning an exit code.
+- `cmd | line` — the single stdout line, trimmed, as a `string`. It
+  raises on a nonzero exit, or if there are no lines or more than one:
+  `let sha = git rev-parse HEAD | line`.
+- `cmd | text` — all of stdout as one `string`, with trailing blank
+  lines dropped, like bash's `$(…)`. It raises on a nonzero exit:
+  `let notes = git log -1 --format=%B | text`.
+- `cmd | exec` — replaces the weir process with the command (`execve`;
+  on Windows weir runs it, waits, and exits with its code). The command
+  keeps weir's pid, so a container entrypoint gets signals directly. It
+  never returns, so it can stand alone as a statement. It can't take
+  piped input and isn't allowed inside `plan`.
 
-A reifier can't end the chain: `a | and b | complete` would capture
-only `b`, and the chain's value is unit, so it's an error. Run the
-commands on separate lines and capture the one you need (`| exec` is
-the exception: it hands over). Nor can `| and`/`| or` follow a
-reifier — `a | succeeds | and b` has no exit to branch on; write
-`if a | succeeds then … else …`.
+All three accept an env overlay (`$e(cmd | line)`), and `line` and
+`text` accept piped input (`xs | grep foo | line`).
 
-A chain can repeat one word — `a | and b | and c`, or the fallbacks
-`a | or b | or c` — but can't mix them: `a | and b | or c` is an error.
-Mixing would not mean what it means in bash, for two reasons:
+### Chaining
 
-- **Grouping.** Everything after `| and` or `| or` is its right-hand
-  side, so a chain groups from the right: `a | and b | or c | and d`
-  would be `a | and (b | or (c | and d))`. bash groups from the left:
-  `a && b || c && d` is `((a && b) || c) && d`.
-- **Failure.** The left side of `| and` failing stops the script, like
-  any failed command. In bash, a failure inside a `&&`/`||` list never
-  stops the script, even under `set -e`.
-
-How bash's `a && b || c && d` would compare with the right-grouped
-reading, followed by more code:
-
-| a | b | c | right-grouped (refused) | bash |
-|---|---|---|---|---|
-| ok | ok | any | runs a, b; continues | runs a, b, **d**; continues |
-| ok | fails | ok | runs a, b, c, d; continues | same |
-| ok | fails | fails | runs a, b, c; **stops** | runs a, b, c; continues |
-| fails | any | any | runs a; **stops** | runs a, c, and d if c succeeded; continues |
-
-The bash idiom `a && b || c` ("if a, then b, else c") is a trap in bash
-too — `c` also runs when `b` fails. In weir, write it as an `if`:
-
-```weir
-if sh -c "exit 1" | succeeds then echo "took the then" else echo "took the else"
-```
+`cmd | and next` runs `next` only if `cmd` succeeded, like bash's `&&`.
+`cmd | or next` runs it only if `cmd` failed, like `||`; there the
+failure picks the branch instead of raising. Both stream output and
+return unit, and the right side is a whole command line, so a builtin
+such as `cd` works there:
 
 ```weir
 sh -c "exit 1" | or echo "fell back"
 echo built | and echo linked
+```
+
+- **One word per chain.** `a | and b | and c` and `a | or b | or c` are
+  fine; `a | and b | or c` is an error. For "if a, then b, else c",
+  write `if a | succeeds then b else c` (why mixing is refused:
+  [coming from bash](../COMING-FROM.md#coming-from-bash--posix-sh)).
+- **The left of `| or`** is an external command or a pipeline, which
+  fails with its leftmost failing code. A builtin can't be there: it
+  raises instead of returning an exit code.
+- **No reifier at either end.** `a | and b | complete` would capture
+  only `b`, and `a | succeeds | and b` has no exit left to branch on;
+  capture on a separate line instead. `| exec` may end a chain, since
+  it hands over.
+
+```weir
+if sh -c "exit 1" | succeeds then echo "took the then" else echo "took the else"
 ```
 
 ## Signatures
