@@ -831,11 +831,12 @@ let private unitLit =
     spanned (attempt (pchar '(' >>. ws >>. pchar ')') >>% EUnit) |>> mkExpr .>> ws
 
 // (op): an operator as a value, unapplied only [D:operator-values].
-// Admitted (+ - * / > < >= <= == <>): the checker desugars to the
+// Admitted (+ - * / % > < >= <= == <>): the checker desugars to the
 // lambda, so overload-by-context, int defaulting, and the Eq/Ord
 // classes all inherit the infix answers. Refused here with reasons:
 // && || (a value cannot short-circuit), |> | (grammar, not functions),
-// >> << (composition already yields the composed function). Longest
+// >> << (composition already yields the composed function), = != <|
+// (not weir operators — the infix teachings). Longest
 // tokens first — the choice's order does the trie's job.
 let private opValue =
     spanned (
@@ -846,6 +847,8 @@ let private opValue =
                   pstring "<="
                   pstring "=="
                   pstring "<>"
+                  pstring "!="
+                  pstring "<|"
                   pstring "|>"
                   pstring "||"
                   pstring "&&"
@@ -855,6 +858,8 @@ let private opValue =
                   attempt (pstring "-" .>> notFollowedBy (pchar '>'))
                   pstring "*"
                   pstring "/"
+                  pstring "%"
+                  pstring "="
                   pstring ">"
                   pstring "<"
                   pstring "|" ]
@@ -876,6 +881,10 @@ let private opValue =
                     "'(>>)' as a value has no use — composition already yields the composed function; write f >> g directly"
             // the reversed composition is not a weir operator [D:left-to-right-ops]
             | "<<" -> failFatallyAt at "weir composes left to right — `f << g` is `g >> f`"
+            // the infix teachings, for the operator-value spelling [D:left-to-right-ops]
+            | "=" -> failFatallyAt at "weir's equality is `==` — write `(==)`"
+            | "!=" -> failFatallyAt at "weir's inequality is `<>` — write `(<>)`"
+            | "<|" -> failFatallyAt at "weir has no `<|` — write `f (x)`, or pipe `x |> f`"
             | op -> preturn (EOpValue op)
     )
     |>> mkExpr

@@ -980,7 +980,7 @@ print (Option.flatten (Some None) |> Option.defaultValue 0)
   An OPERATOR can be a value, UNAPPLIED only [D:operator-values]:
   `Seq.reduce (+)`, `Seq.fold (+) 0` — exactly `fun a b -> a + b`, so
   context resolves the overload (`(+)` sums floats/strings/Durations/
-  Sizes where the elements say so). Admitted: `+ - * / > < >= <= ==
+  Sizes where the elements say so). Admitted: `+ - * / % > < >= <= ==
   <>`. Partial application REFUSES (`(>) 10` reads backwards — the
   message shows both lambda directions, as interchangeable only for
   a commutative op (`==`, `<>`, `*`); for the rest it says the
