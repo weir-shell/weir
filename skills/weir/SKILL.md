@@ -1606,7 +1606,9 @@ type Bad = C of int
   `YMap` keeps YOUR key order; record fields render in DECLARATION
   order [D:record-order] (wire order for an anonymous shape).
   Literal block scalars `|`/`|-` are in the subset (folded `>` and
-  `|+` reject): `|` MEANS ends-with-one-newline, `|-` ends-with-none —
+  `|+` reject; an indentation indicator `|2`/`|2-`/`|-2` READS from
+  files, relative to the key or dash column [D:yaml-indent-indicator],
+  but a `yaml` block literal takes none): `|` MEANS ends-with-one-newline, `|-` ends-with-none —
   the form follows the value both directions, and a multiline string
   renders as a block scalar automatically. A QUOTED scalar may
   continue on deeper-indented lines (kubectl's long `message:`

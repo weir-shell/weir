@@ -1740,6 +1740,55 @@ let private lambdaBody =
 // checker (the name "()" is unforgeable through declarations); other
 // pattern params stay rejected.
 
+// every name a pattern binds [D:interior-arming]: arm bodies and for
+// bodies must know their binders at parse time, or the assume resolver
+// claims a binder head as a phantom command (`| t :: _ -> t` read `t`
+// as an external) — the same bindings-beat-PATH extension lambda
+// params and let-in names already get.
+// Iterative (explicit work-stack), not recursive [D:pattern-width]: a
+// recursive name walk recurses once per leaf, and the parse depth
+// guard counts nesting, not leaf count — so a flat-reading but wide
+// pattern (an `a :: a :: … :: _` cons chain, a long tuple) slips past
+// the guard and a recursive walk would overflow the call stack. That
+// is a Property-3 crash on the width axis, and the depth-graph gate
+// [D:depth-coverage] is blind to it (unbounded recursion over a
+// bounded-depth structure). The post-parse iterative gate does the
+// same for the AST walk. Caller uses the names as a Set, so
+// pop-order is immaterial.
+let private patLeafNames (p: Pattern) : string list =
+    let names = System.Collections.Generic.List<string>()
+    let stack = System.Collections.Generic.Stack<Pattern>()
+    stack.Push p
+
+    while stack.Count > 0 do
+        match (stack.Pop()).PKind with
+        | PVar n -> names.Add n
+        | PTuple ps
+        | PSeqList ps -> ps |> List.iter stack.Push
+        | PRecord fields -> fields |> List.iter (snd >> stack.Push)
+        | PCase(_, Some arg) -> stack.Push arg
+        | PCons(h, t) ->
+            stack.Push h
+            stack.Push t
+        | PRegex(_, _, _, binder) -> stack.Push binder
+        | _ -> ()
+
+    List.ofSeq names
+
+let private withPatNames (p: Pattern) (inner: Parser<'a, unit>) : Parser<'a, unit> =
+    fun stream ->
+        let names = patLeafNames p |> Set.ofList
+        let saved = ambientResolver.Value
+
+        ambientResolver.Value <-
+            { saved with
+                IsKnown = fun n -> Set.contains n names || saved.IsKnown n }
+
+        try
+            inner stream
+        finally
+            ambientResolver.Value <- saved
+
 // deepen on every block form [D:depth-guard]: their bodies nest
 // through seqExpr without re-entering atom, so a chain of them
 // (fun … -> fun … ->, let … in let … in) is its own depth axis
@@ -1757,13 +1806,15 @@ let private letInBody =
         )
 
     choice
-        [ pipe3
-              getPosition
-              (patForm .>>. (seqExpr >>= pipeOrHint) .>> keyword "in")
-              seqExpr
-              (fun p (binder, value) body ->
+        [ getPosition .>>. (patForm .>>. (seqExpr >>= pipeOrHint) .>> keyword "in")
+          >>= fun (p, (binder, value)) ->
+              // the pattern's names are bindings in the body, as a plain
+              // let's name is — a bound name heads no command
+              // [D:paramful-rhs]
+              withPatNames binder seqExpr
+              |>> fun body ->
                   { Kind = ELetPat(binder, value, body)
-                    Span = { Start = pos p; End = body.Span.End } })
+                    Span = { Start = pos p; End = body.Span.End } }
           getPosition
           >>= fun p ->
               (keyword "let" >>. spanned ident .>>. many binderParam
@@ -2224,55 +2275,6 @@ let private toExpr =
     |>> fun ((fmt, streamW), span) ->
         { Kind = ETo(fmt, streamW.IsSome)
           Span = span }
-
-// every name a pattern binds [D:interior-arming]: arm bodies and for
-// bodies must know their binders at parse time, or the assume resolver
-// claims a binder head as a phantom command (`| t :: _ -> t` read `t`
-// as an external) — the same bindings-beat-PATH extension lambda
-// params and let-in names already get.
-// Iterative (explicit work-stack), not recursive [D:pattern-width]: a
-// recursive name walk recurses once per leaf, and the parse depth
-// guard counts nesting, not leaf count — so a flat-reading but wide
-// pattern (an `a :: a :: … :: _` cons chain, a long tuple) slips past
-// the guard and a recursive walk would overflow the call stack. That
-// is a Property-3 crash on the width axis, and the depth-graph gate
-// [D:depth-coverage] is blind to it (unbounded recursion over a
-// bounded-depth structure). The post-parse iterative gate does the
-// same for the AST walk. Caller uses the names as a Set, so
-// pop-order is immaterial.
-let private patLeafNames (p: Pattern) : string list =
-    let names = System.Collections.Generic.List<string>()
-    let stack = System.Collections.Generic.Stack<Pattern>()
-    stack.Push p
-
-    while stack.Count > 0 do
-        match (stack.Pop()).PKind with
-        | PVar n -> names.Add n
-        | PTuple ps
-        | PSeqList ps -> ps |> List.iter stack.Push
-        | PRecord fields -> fields |> List.iter (snd >> stack.Push)
-        | PCase(_, Some arg) -> stack.Push arg
-        | PCons(h, t) ->
-            stack.Push h
-            stack.Push t
-        | PRegex(_, _, _, binder) -> stack.Push binder
-        | _ -> ()
-
-    List.ofSeq names
-
-let private withPatNames (p: Pattern) (inner: Parser<'a, unit>) : Parser<'a, unit> =
-    fun stream ->
-        let names = patLeafNames p |> Set.ofList
-        let saved = ambientResolver.Value
-
-        ambientResolver.Value <-
-            { saved with
-                IsKnown = fun n -> Set.contains n names || saved.IsKnown n }
-
-        try
-            inner stream
-        finally
-            ambientResolver.Value <- saved
 
 // an or-pattern's alternative [D:or-patterns]: before the arm's `->`, a
 // `|` (not `||`/`|>`) can only separate alternatives — arms are separated
