@@ -136,6 +136,111 @@ let private forceSeq v =
     | VSeq items -> List.ofSeq items
     | v -> failtest $"expected a seq, got {formatValue v}"
 
+let private runUnder tenv input =
+    match typecheck tenv (parse input) with
+    | Ok te -> eval valueEnv te
+    | Error terr -> failtest (formatError terr)
+
+let private checkErrUnder tenv input =
+    match typecheck tenv (parse input) with
+    | Ok te -> failtest $"expected a type error, got {formatTy te.Ty}"
+    | Error terr -> terr
+
+let private msgOf (src: string) =
+    (Expect.throwsC (fun () -> run src |> ignore) id).Message
+
+let private asm lines' =
+    match Weir.Script.assemble (lines' |> List.mapi (fun i l -> i + 1, l)) with
+    | Ok [ ll ] -> ll.Text
+    | other -> failtest $"assembly: {other}"
+
+let private yamlDoc lines' =
+    match Weir.Yaml.parseDocs (lines' |> List.mapi (fun i l -> i + 1, l)) with
+    | Ok [ d ] -> d
+    | other -> failtest $"parse: {other}"
+
+let private yamlErr lines' =
+    match Weir.Yaml.parseDocs (lines' |> List.mapi (fun i l -> i + 1, l)) with
+    | Error e -> e
+    | Ok d -> failtest $"expected an error, got {d}"
+
+let private diagsIn file (lines: string list) =
+    let ds, _, _, _ = Weir.Script.analyzeLines file lines
+    ds
+
+let private errorsIn file lines =
+    diagsIn file lines |> List.filter (fun d -> d.Severity = "error")
+
+let private errorMsgsIn file lines =
+    errorsIn file lines |> List.map (fun d -> d.Message)
+
+let private firstErrorIn file lines =
+    match errorsIn file lines with
+    | e :: _ -> e
+    | [] -> failtest "must refuse"
+
+let private mustSayIn file lines (needle: string) (label: string) =
+    Expect.exists
+        (diagsIn file lines)
+        (fun d -> d.Message.Contains needle)
+        $"{label}: expected '{needle}', got {diagsIn file lines |> List.map _.Message}"
+
+let private mustSayDiagIn file lines (needle: string) (label: string) =
+    Expect.exists
+        (diagsIn file lines)
+        (fun d -> d.Message.Contains needle)
+        $"{label}: expected a diagnostic containing '{needle}', got {diagsIn file lines |> List.map _.Message}"
+
+let private cleanIn file lines (label: string) =
+    Expect.isEmpty (diagsIn file lines) $"{label}: expected clean, got {diagsIn file lines |> List.map _.Message}"
+
+let private errorsCleanIn file lines (label: string) =
+    let diags = diagsIn file lines
+    Expect.isEmpty (diags |> List.filter (fun d -> d.Severity = "error")) $"{label}: {diags |> List.map _.Message}"
+
+let private checkEqRun lines =
+    let diags = diagsIn "pin.weir" lines
+    Expect.isEmpty diags $"check == run: {lines}"
+
+let private tempPath (prefix: string) =
+    Path.Combine(Path.GetTempPath(), $"{prefix}-{System.Guid.NewGuid():N}")
+
+let private tempDir prefix =
+    let dir = tempPath prefix
+    Directory.CreateDirectory dir |> ignore
+    dir
+
+let private withTempDir prefix (f: string -> 'a) : 'a =
+    let dir = tempDir prefix
+
+    try
+        f dir
+    finally
+        Directory.Delete(dir, true)
+
+// the invariant process cwd, not Session.Cwd(): under the
+// parallel test runner, Session.Cwd() may momentarily hold a
+// concurrent test's temp dir, and restoring to it after that
+// dir is deleted leaves the global cwd pointing at a deleted
+// path — every concurrent spawn then fails "command not found"
+// (Process.Start cannot chdir there). GetCurrentDirectory is
+// never mutated (weir tracks cwd in Session, not the process).
+let private inCwd (dir: string) (f: unit -> 'a) : 'a =
+    let saved = Directory.GetCurrentDirectory()
+    Weir.Session.setCwd dir
+
+    try
+        f ()
+    finally
+        Weir.Session.setCwd saved
+
+// the shared valueEnv shadows ls with fakeFiles — these
+// pins need the real prelude ls
+let private runLive input =
+    match typecheck env (parse input) with
+    | Ok te -> eval Weir.Builtins.valueEnv te
+    | Error terr -> failtest (formatError terr)
+
 let private fakeExternals =
     Set [ "git"; "grep"; "echo"; "yes"; "true"; "ls"; "cat"; "rm" ]
 
@@ -155,9 +260,7 @@ let private cmdResolver: Weir.Parser.Resolver =
 // these tools stay skipOnWindows (an empty exe cannot run). POSIX: no-op.
 let private _windowsParseShims =
     if System.OperatingSystem.IsWindows() then
-        let dir = Path.Combine(Path.GetTempPath(), $"weir-shims-{System.Guid.NewGuid():N}")
-
-        Directory.CreateDirectory dir |> ignore
+        let dir = tempDir "weir-shims"
 
         // sort deliberately absent: System32 ships a real sort.exe
         // that tests run — an empty shadow would break it
@@ -1603,11 +1706,6 @@ let boundaryTests =
               Expect.isNonEmpty ok "a 50-deep value renders"
           }
           test "yaml patch: types as YamlPatch; tombstones scoped; schema= refuses [D:yaml-nodes]" {
-              let asm lines' =
-                  match Weir.Script.assemble (lines' |> List.mapi (fun i l -> i + 1, l)) with
-                  | Ok [ ll ] -> ll.Text
-                  | other -> failtest $"assembly: {other}"
-
               let checkOf src =
                   match Weir.Parser.parseLine realResolver src with
                   | Ok(SLet(_, e)) -> typecheck env e
@@ -1668,9 +1766,7 @@ let boundaryTests =
               // as external, `yaml` included — commandSegment must
               // refuse the ` patch [by=] [schema=]` face glued to the
               // sentinel so the district arm parses, as run does
-              let clean lines =
-                  let diags, _, _, _ = Weir.Script.analyzeLines "pin.weir" lines
-                  Expect.isEmpty diags $"check == run: {lines}"
+              let clean = checkEqRun
 
               // a $name splice in scalar value position
               clean
@@ -1691,8 +1787,8 @@ let boundaryTests =
 
               // the patch x schema= refusal still fires — the guard routes
               // to the district arm, never past its own checks
-              let diags, _, _, _ =
-                  Weir.Script.analyzeLines
+              let diags =
+                  diagsIn
                       "pin.weir"
                       [ "let p = yaml patch by=name schema=k8s"; "    a: 1"; "print \"ok\"" ]
 
@@ -1703,8 +1799,7 @@ let boundaryTests =
 
               // the other direction: an unarmed line ending in the modifier
               // words stays a command (no sentinel glue, no district)
-              let cmdDiags, _, _, _ =
-                  Weir.Script.analyzeLines "pin.weir" [ "let x = echo patch by=name"; "x |> Seq.iter print" ]
+              let cmdDiags = diagsIn "pin.weir" [ "let x = echo patch by=name"; "x |> Seq.iter print" ]
 
               Expect.isEmpty cmdDiags "a command with 'patch by=name' argv stays a command"
           }
@@ -1728,7 +1823,7 @@ let boundaryTests =
                         yield! burnBlock b ]
                   @ [ "print \"done\"" ]
 
-              let diags, _, _, _ = Weir.Script.analyzeLines "burn.weir" lines
+              let diags = diagsIn "burn.weir" lines
 
               let budgetDiags =
                   diags |> List.filter (fun d -> Weir.Check.isBudgetMessage d.Message)
@@ -1746,8 +1841,8 @@ let boundaryTests =
           test "budget stop does NOT swallow ordinary type errors [D:budget-stop-first]" {
               // three independent plain type errors must all report — the
               // stop applies only to budget exhaustion, never ordinary errors
-              let diags, _, _, _ =
-                  Weir.Script.analyzeLines
+              let diags =
+                  diagsIn
                       "three.weir"
                       [ "let a = 1 + \"x\""; "let b = 2 + \"y\""; "let c = 3 + \"z\""; "print \"done\"" ]
 
@@ -1765,11 +1860,6 @@ let boundaryTests =
           }
           test "district templates check: splice law, key-splice string, for binder [D:yaml-district]" {
               // a record splice violates the liftable law
-              let asm lines' =
-                  match Weir.Script.assemble (lines' |> List.mapi (fun i l -> i + 1, l)) with
-                  | Ok [ ll ] -> ll.Text
-                  | other -> failtest $"assembly: {other}"
-
               let bad = asm [ "let d = yaml"; "    x: $(nats)" ] // seq<int> IS liftable
 
               match Weir.Parser.parseLine realResolver bad with
@@ -1788,11 +1878,6 @@ let boundaryTests =
               | other -> failtest $"expected the do-teaching error, got {other}"
           }
           test "district eval: splices lift, for instantiates, Option omits [D:yaml-district]" {
-              let asm lines' =
-                  match Weir.Script.assemble (lines' |> List.mapi (fun i l -> i + 1, l)) with
-                  | Ok [ ll ] -> ll.Text
-                  | other -> failtest $"assembly: {other}"
-
               let src =
                   asm
                       [ "let d = yaml"
@@ -1846,11 +1931,6 @@ let boundaryTests =
               // comment transparency once swallowed a `//`-leading FIRST
               // content line (the district was not yet active), so a
               // heredoc's `// header` line vanished from the value
-              let asm lines' =
-                  match Weir.Script.assemble (lines' |> List.mapi (fun i l -> i + 1, l)) with
-                  | Ok [ ll ] -> ll.Text
-                  | other -> failtest $"assembly: {other}"
-
               let evalStrs src =
                   match Weir.Parser.parseLine realResolver src with
                   | Ok(SLet(_, e)) ->
@@ -1879,11 +1959,6 @@ let boundaryTests =
                   "mid comment-only and trailing-comment bytes both survive"
           }
           test "a heredoc block is a seq<string>: verbatim lines, blanks survive [D:text-block]" {
-              let asm lines' =
-                  match Weir.Script.assemble (lines' |> List.mapi (fun i l -> i + 1, l)) with
-                  | Ok [ ll ] -> ll.Text
-                  | other -> failtest $"assembly: {other}"
-
               let src = asm [ "let t = <<<"; "    a $HOME {x}"; ""; "        deep" ]
 
               match Weir.Parser.parseLine realResolver src with
@@ -1924,11 +1999,6 @@ let boundaryTests =
               | other -> failtest $"unexpected: {other}"
           }
           test "$<<< lines carry holes: {expr} evaluates, {{}} escape, $ stays a byte [D:text-block]" {
-              let asm lines' =
-                  match Weir.Script.assemble (lines' |> List.mapi (fun i l -> i + 1, l)) with
-                  | Ok [ ll ] -> ll.Text
-                  | other -> failtest $"assembly: {other}"
-
               let src = asm [ "let t = $<<<"; "    n={1 + 2} {{b}} $HOME" ]
 
               match Weir.Parser.parseLine realResolver src with
@@ -1946,11 +2016,6 @@ let boundaryTests =
               | other -> failtest $"unexpected: {other}"
           }
           test "$$<<< eval: braces literal, ${expr} substitutes, $$ -> $, $1 literal [D:heredoc-splice]" {
-              let asm lines' =
-                  match Weir.Script.assemble (lines' |> List.mapi (fun i l -> i + 1, l)) with
-                  | Ok [ ll ] -> ll.Text
-                  | other -> failtest $"assembly: {other}"
-
               // one statement: the block is the `let` RHS. `${expr}` exercises
               // the same IExpr path a bare `$name` splice does (both parse to
               // IExpr); a bare `$name` needs a binding, covered by the e2e.
@@ -1976,11 +2041,6 @@ let boundaryTests =
               // to column 0 while <<< kept the relative indent. The twins must
               // differ only in whether {holes} interpolate — indentation,
               // interior blanks, deeper indent and trailing-clip byte-identical.
-              let asm lines' =
-                  match Weir.Script.assemble (lines' |> List.mapi (fun i l -> i + 1, l)) with
-                  | Ok [ ll ] -> ll.Text
-                  | other -> failtest $"assembly: {other}"
-
               let evalBlock src =
                   match Weir.Parser.parseLine realResolver src with
                   | Ok(SLet(_, e)) ->
@@ -2104,11 +2164,6 @@ let boundaryTests =
               Expect.isFalse (Weir.Script.pipedAttaches [ "let x = 1" ] "// c") "a comment line breaks a completed statement"
           }
           test "block scalars read: | and |- chomp semantically; content is bytes [D:block-scalars]" {
-              let docOf lines' =
-                  match Weir.Yaml.parseDocs (lines' |> List.mapi (fun i l -> i + 1, l)) with
-                  | Ok [ d ] -> d
-                  | other -> failtest $"parse: {other}"
-
               let blockText d =
                   match d with
                   | Weir.Yaml.NMap([ (_, Weir.Yaml.NBlock(t, _)) ], _) -> t
@@ -2117,75 +2172,65 @@ let boundaryTests =
               // the form follows the value: | ends with exactly one newline,
               // |- with none — chomping is YAML's spelling for a distinction
               // weir strings already have
-              Expect.equal (blockText (docOf [ "k: |"; "    a"; "    b" ])) "a\nb\n" "| keeps one trailing newline"
-              Expect.equal (blockText (docOf [ "k: |-"; "    a"; "    b" ])) "a\nb" "|- strips it"
+              Expect.equal (blockText (yamlDoc [ "k: |"; "    a"; "    b" ])) "a\nb\n" "| keeps one trailing newline"
+              Expect.equal (blockText (yamlDoc [ "k: |-"; "    a"; "    b" ])) "a\nb" "|- strips it"
 
               // content is bytes: blank lines are newlines, ` #` is not a
               // comment, more-indented lines keep their extra indentation,
               // trailing blanks clip (|+ is the rejected keep-them form)
               Expect.equal
-                  (blockText (docOf [ "k: |"; "    a # kept"; ""; "        deep"; "    z"; "" ]))
+                  (blockText (yamlDoc [ "k: |"; "    a # kept"; ""; "        deep"; "    z"; "" ]))
                   "a # kept\n\n    deep\nz\n"
                   "blanks, comments, extra indent all survive; trailing blank clips"
 
               // a `- |` item and a whole-document block scalar
               let itemText =
-                  match docOf [ "- |-"; "    item text" ] with
+                  match yamlDoc [ "- |-"; "    item text" ] with
                   | Weir.Yaml.NSeq([ Weir.Yaml.NBlock(t, _) ], _) -> t
                   | other -> failtest $"expected seq of block, got {other}"
 
               Expect.equal itemText "item text" "item-position block"
 
               let docText =
-                  match docOf [ "|"; "  whole doc" ] with
+                  match yamlDoc [ "|"; "  whole doc" ] with
                   | Weir.Yaml.NBlock(t, _) -> t
                   | other -> failtest $"expected doc block, got {other}"
 
               Expect.equal docText "whole doc\n" "document-position block"
 
               // the named errors, each with its line
-              let errOf lines' =
-                  match Weir.Yaml.parseDocs (lines' |> List.mapi (fun i l -> i + 1, l)) with
-                  | Error e -> e
-                  | Ok d -> failtest $"expected an error, got {d}"
-
-              Expect.stringContains (errOf [ "k: |" ]) "needs an indented block" "header without a block"
-              Expect.stringContains (errOf [ "k: >"; "    a" ]) "folded block scalars (>)" "folded rejected"
-              Expect.stringContains (errOf [ "k: |+"; "    a" ]) "'|+'" "|+ rejected"
-              Expect.stringContains (errOf [ "k: |0"; "    a" ]) "1-9" "a 0 indicator rejected"
-              Expect.stringContains (errOf [ "k: |2+"; "    a" ]) "'|+'" "|+ with an indicator still rejected"
-              Expect.stringContains (errOf [ "k: |3"; "  a" ]) "left of the block scalar's content indentation" "content left of the stated indent"
+              Expect.stringContains (yamlErr [ "k: |" ]) "needs an indented block" "header without a block"
+              Expect.stringContains (yamlErr [ "k: >"; "    a" ]) "folded block scalars (>)" "folded rejected"
+              Expect.stringContains (yamlErr [ "k: |+"; "    a" ]) "'|+'" "|+ rejected"
+              Expect.stringContains (yamlErr [ "k: |0"; "    a" ]) "1-9" "a 0 indicator rejected"
+              Expect.stringContains (yamlErr [ "k: |2+"; "    a" ]) "'|+'" "|+ with an indicator still rejected"
+              Expect.stringContains (yamlErr [ "k: |3"; "  a" ]) "left of the block scalar's content indentation" "content left of the stated indent"
 
               // an indentation indicator states the content indent relative to
               // the parent (key or dash column), so the first line may carry
               // leading spaces — PyYAML's reading [D:yaml-indent-indicator]
-              Expect.equal (blockText (docOf [ "k: |2"; "    lead"; "  base" ])) "  lead\nbase\n" "|2"
-              Expect.equal (blockText (docOf [ "k: |2-"; "    lead"; "  base" ])) "  lead\nbase" "|2- strips"
-              Expect.equal (blockText (docOf [ "k: |-2"; "    lead"; "  base" ])) "  lead\nbase" "|-2, either order"
+              Expect.equal (blockText (yamlDoc [ "k: |2"; "    lead"; "  base" ])) "  lead\nbase\n" "|2"
+              Expect.equal (blockText (yamlDoc [ "k: |2-"; "    lead"; "  base" ])) "  lead\nbase" "|2- strips"
+              Expect.equal (blockText (yamlDoc [ "k: |-2"; "    lead"; "  base" ])) "  lead\nbase" "|-2, either order"
 
               let seqItem =
-                  match docOf [ "- |2"; "    lead"; "  base" ] with
+                  match yamlDoc [ "- |2"; "    lead"; "  base" ] with
                   | Weir.Yaml.NSeq([ Weir.Yaml.NBlock(t, _) ], _) -> t
                   | other -> failtest $"expected seq of block, got {other}"
 
               Expect.equal seqItem "  lead\nbase\n" "relative to the dash"
-              Expect.stringContains (errOf [ "k: | x" ]) "no inline content" "inline content rejected"
+              Expect.stringContains (yamlErr [ "k: | x" ]) "no inline content" "inline content rejected"
 
               Expect.stringContains
-                  (errOf [ "k: |"; "        a"; "    b" ])
+                  (yamlErr [ "k: |"; "        a"; "    b" ])
                   "left of the block scalar's content indentation"
                   "left-of-content line named"
           }
           test "zero-indent block sequences read: kubectl's same-column form, nested; malformed still errors [D:yaml-seq]" {
-              let docOf lines' =
-                  match Weir.Yaml.parseDocs (lines' |> List.mapi (fun i l -> i + 1, l)) with
-                  | Ok [ d ] -> d
-                  | other -> failtest $"parse: {other}"
-
               // a valueless mapping key whose block sequence sits at the
               // same column (kubectl's zero-indent form): the sequence is
               // the value, with the compact `- key: v` first entry
-              match docOf [ "items:"; "- apiVersion: v1"; "  kind: Pod" ] with
+              match yamlDoc [ "items:"; "- apiVersion: v1"; "  kind: Pod" ] with
               | Weir.Yaml.NMap([ ("items", Weir.Yaml.NSeq([ Weir.Yaml.NMap(fields, _) ], _)) ], _) ->
                   Expect.equal
                       (fields |> List.map fst)
@@ -2196,12 +2241,12 @@ let boundaryTests =
               // both indent styles read to the same node — the read side
               // accepts kubectl's flush form and the classic indented form
               Expect.equal
-                  (docOf [ "items:"; "- a: 1"; "- a: 2" ])
-                  (docOf [ "items:"; "  - a: 1"; "  - a: 2" ])
+                  (yamlDoc [ "items:"; "- a: 1"; "- a: 2" ])
+                  (yamlDoc [ "items:"; "  - a: 1"; "  - a: 2" ])
                   "flush and indented block sequences read equal"
 
               // nested: a seq item's map contains its own same-column seq
-              match docOf [ "items:"; "- metadata:"; "    ownerReferences:"; "    - apiVersion: apps/v1"; "      kind: ReplicaSet" ] with
+              match yamlDoc [ "items:"; "- metadata:"; "    ownerReferences:"; "    - apiVersion: apps/v1"; "      kind: ReplicaSet" ] with
               | Weir.Yaml.NMap([ ("items",
                                   Weir.Yaml.NSeq([ Weir.Yaml.NMap([ ("metadata",
                                                                      Weir.Yaml.NMap([ ("ownerReferences", Weir.Yaml.NSeq([ Weir.Yaml.NMap(inner, _) ], _)) ], _)) ], _) ], _)) ], _) ->
@@ -2213,7 +2258,7 @@ let boundaryTests =
 
               // a zero-indent seq followed by a sibling mapping key: the
               // sequence's extent stops at the sibling
-              match docOf [ "items:"; "- a: 1"; "kind: List" ] with
+              match yamlDoc [ "items:"; "- a: 1"; "kind: List" ] with
               | Weir.Yaml.NMap([ ("items", Weir.Yaml.NSeq(_, _)); ("kind", Weir.Yaml.NScalar("List", _, _)) ], _) -> ()
               | other -> failtest $"sibling key after a zero-indent seq: {other}"
 
@@ -2225,42 +2270,27 @@ let boundaryTests =
               | Ok d -> failtest $"malformed input must error, got {d}"
           }
           test "empty flow collections read: {} and [] as values (map + seq position); populated flow still rejects [D:yaml-empty-flow]" {
-              let docOf lines' =
-                  match Weir.Yaml.parseDocs (lines' |> List.mapi (fun i l -> i + 1, l)) with
-                  | Ok [ d ] -> d
-                  | other -> failtest $"parse: {other}"
-
               // `{}` → the empty mapping, `[]` → the empty sequence, as a
               // map value (inner whitespace tolerated)
-              match docOf [ "resources: {}"; "args: []"; "sc: { }" ] with
+              match yamlDoc [ "resources: {}"; "args: []"; "sc: { }" ] with
               | Weir.Yaml.NMap([ ("resources", Weir.Yaml.NMap([], _))
                                  ("args", Weir.Yaml.NSeq([], _))
                                  ("sc", Weir.Yaml.NMap([], _)) ], _) -> ()
               | other -> failtest $"empty flow as map values: {other}"
 
               // and as a sequence item
-              match docOf [ "- {}"; "- []" ] with
+              match yamlDoc [ "- {}"; "- []" ] with
               | Weir.Yaml.NSeq([ Weir.Yaml.NMap([], _); Weir.Yaml.NSeq([], _) ], _) -> ()
               | other -> failtest $"empty flow as seq items: {other}"
 
               // the narrow exception: populated flow still rejects with the
               // block-only teaching — the ambiguity that justifies it fires
               // at one-or-more elements, in both map and seq position
-              let errOf lines' =
-                  match Weir.Yaml.parseDocs (lines' |> List.mapi (fun i l -> i + 1, l)) with
-                  | Error e -> e
-                  | Ok d -> failtest $"expected an error, got {d}"
-
-              Expect.stringContains (errOf [ "m: {a: 1}" ]) "flow style is outside the yaml subset" "populated flow map rejects"
-              Expect.stringContains (errOf [ "s: [1, 2]" ]) "flow style is outside the yaml subset" "populated flow seq rejects"
-              Expect.stringContains (errOf [ "- {a: 1}" ]) "flow style is outside the yaml subset" "populated flow in seq item rejects"
+              Expect.stringContains (yamlErr [ "m: {a: 1}" ]) "flow style is outside the yaml subset" "populated flow map rejects"
+              Expect.stringContains (yamlErr [ "s: [1, 2]" ]) "flow style is outside the yaml subset" "populated flow seq rejects"
+              Expect.stringContains (yamlErr [ "- {a: 1}" ]) "flow style is outside the yaml subset" "populated flow in seq item rejects"
           }
           test "multi-line quoted scalars read: flow folding, both quote styles, both positions [D:quoted-fold]" {
-              let docOf lines' =
-                  match Weir.Yaml.parseDocs (lines' |> List.mapi (fun i l -> i + 1, l)) with
-                  | Ok [ d ] -> d
-                  | other -> failtest $"parse: {other}"
-
               let scalarOf d =
                   match d with
                   | Weir.Yaml.NMap([ (_, Weir.Yaml.NScalar(t, q, _)) ], _) -> t, q
@@ -2270,19 +2300,19 @@ let boundaryTests =
               // one space; each empty continuation line contributes a
               // newline; continuation indentation strips; trailing space
               // before the closing quote is content
-              Expect.equal (scalarOf (docOf [ "k: 'a"; "  b'" ])) ("a b", true) "one break folds to a space"
-              Expect.equal (scalarOf (docOf [ "k: 'a"; ""; "  b'" ])) ("a\nb", true) "an empty line folds to a newline"
-              Expect.equal (scalarOf (docOf [ "k: 'a"; ""; ""; "  b'" ])) ("a\n\nb", true) "two empty lines, two newlines"
-              Expect.equal (scalarOf (docOf [ "k: 'trail"; "  end. '" ])) ("trail end. ", true) "trailing space inside the quote survives"
-              Expect.equal (scalarOf (docOf [ "k: 'it''s"; "  ok, it''s'" ])) ("it's ok, it's", true) "'' escapes mid-continuation"
+              Expect.equal (scalarOf (yamlDoc [ "k: 'a"; "  b'" ])) ("a b", true) "one break folds to a space"
+              Expect.equal (scalarOf (yamlDoc [ "k: 'a"; ""; "  b'" ])) ("a\nb", true) "an empty line folds to a newline"
+              Expect.equal (scalarOf (yamlDoc [ "k: 'a"; ""; ""; "  b'" ])) ("a\n\nb", true) "two empty lines, two newlines"
+              Expect.equal (scalarOf (yamlDoc [ "k: 'trail"; "  end. '" ])) ("trail end. ", true) "trailing space inside the quote survives"
+              Expect.equal (scalarOf (yamlDoc [ "k: 'it''s"; "  ok, it''s'" ])) ("it's ok, it's", true) "'' escapes mid-continuation"
               // double-quoted: the single-line escape set extends across
               // the fold (a \-escaped line break is not in the subset)
-              Expect.equal (scalarOf (docOf [ "k: \"a\\n x"; "  b\"" ])) ("a\n x b", true) "double-quoted folds, escapes resolve"
+              Expect.equal (scalarOf (yamlDoc [ "k: \"a\\n x"; "  b\"" ])) ("a\n x b", true) "double-quoted folds, escapes resolve"
 
               // the kubectl message form: colons inside, deeper continuations
               Expect.equal
                   (scalarOf (
-                      docOf
+                      yamlDoc
                           [ "k: 'The node was low on resource: ephemeral-storage. Threshold quantity:"
                             "    25462616238, available: 24515828Ki. '" ]
                   ))
@@ -2290,13 +2320,13 @@ let boundaryTests =
                   "the kubectl eviction message reads"
 
               // sequence-item position; the plain sibling stays plain
-              match docOf [ "- 'a: x"; "  b'"; "- two" ] with
+              match yamlDoc [ "- 'a: x"; "  b'"; "- two" ] with
               | Weir.Yaml.NSeq([ Weir.Yaml.NScalar("a: x b", true, 1); Weir.Yaml.NScalar("two", false, _) ], _) -> ()
               | other -> failtest $"seq-item multiline: {other}"
 
               // zero-indent-nested position: kubectl's List shape, the
               // continuation consumed by the scalar, the sibling key intact
-              match docOf [ "items:"; "- status:"; "    message: 'a:"; "      b'"; "    reason: Evicted"; "kind: List" ] with
+              match yamlDoc [ "items:"; "- status:"; "    message: 'a:"; "      b'"; "    reason: Evicted"; "kind: List" ] with
               | Weir.Yaml.NMap([ ("items",
                                   Weir.Yaml.NSeq([ Weir.Yaml.NMap([ ("status",
                                                                      Weir.Yaml.NMap([ ("message", Weir.Yaml.NScalar("a: b", true, _))
@@ -2312,25 +2342,20 @@ let boundaryTests =
               // names the opening line in the unclosed family; content
               // after the closing quote names its line; a deeper line
               // past the close has no owner
-              let errOf lines' =
-                  match Weir.Yaml.parseDocs (lines' |> List.mapi (fun i l -> i + 1, l)) with
-                  | Error e -> e
-                  | Ok d -> failtest $"expected an error, got {d}"
-
               Expect.stringContains
-                  (errOf [ "a: 1"; "k: 'x"; "  y"; "z: 1" ])
+                  (yamlErr [ "a: 1"; "k: 'x"; "  y"; "z: 1" ])
                   "line 2: unclosed single-quoted scalar"
                   "a dedent before the close errors at the opening line"
 
-              Expect.stringContains (errOf [ "k: \"x" ]) "line 1: unclosed double-quoted scalar" "EOF before the close, same family"
+              Expect.stringContains (yamlErr [ "k: \"x" ]) "line 1: unclosed double-quoted scalar" "EOF before the close, same family"
 
               Expect.stringContains
-                  (errOf [ "k: 'x"; "  y' junk" ])
+                  (yamlErr [ "k: 'x"; "  y' junk" ])
                   "line 2: content after the closing '"
                   "content after the close errors with its line"
 
               Expect.stringContains
-                  (errOf [ "k: 'x"; "  y'"; "  z: 1" ])
+                  (yamlErr [ "k: 'x"; "  y'"; "  z: 1" ])
                   "line 3: this line sits inside the quoted scalar's indentation but after its closing quote"
                   "a deeper line past the close is named"
           }
@@ -2454,11 +2479,6 @@ let boundaryTests =
               // the yaml fuzz production's first catch: `// noise` at an
               // indent between the key's and its content's made
               // firstContentRel derive the nested indent from the comment
-              let asm lines' =
-                  match Weir.Script.assemble (lines' |> List.mapi (fun i l -> i + 1, l)) with
-                  | Ok [ ll ] -> ll.Text
-                  | other -> failtest $"assembly: {other}"
-
               let src =
                   asm
                       [ "let d = yaml"
@@ -2499,7 +2519,7 @@ let boundaryTests =
           }
           test "contracts: .weir discovery walks up, stops at the first, bounded by .git [D:contracts-spine]" {
               let root =
-                  weirPath (System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weirdisc-{System.Guid.NewGuid():N}"))
+                  weirPath (tempPath "weirdisc")
 
               let deep = System.IO.Path.Combine(root, "repo", "a", "b")
               System.IO.Directory.CreateDirectory deep |> ignore
@@ -2814,11 +2834,6 @@ let boundaryTests =
           }
           test
               "district mid-line #: the five cases — comment cut, quoted/hole/glued data, block bytes [D:district-hash]" {
-              let asm lines' =
-                  match Weir.Script.assemble (lines' |> List.mapi (fun i l -> i + 1, l)) with
-                  | Ok [ ll ] -> ll.Text
-                  | other -> failtest $"assembly: {other}"
-
               let src =
                   asm
                       [ "let d = yaml"
@@ -2855,11 +2870,6 @@ let boundaryTests =
           }
           test "district block scalars: content is LITERAL — consumed before the splice/for scanners [D:block-scalars]" {
               skipOnWindows ()
-
-              let asm lines' =
-                  match Weir.Script.assemble (lines' |> List.mapi (fun i l -> i + 1, l)) with
-                  | Ok [ ll ] -> ll.Text
-                  | other -> failtest $"assembly: {other}"
 
               let src =
                   asm
@@ -3337,13 +3347,7 @@ let completionTests =
               Expect.equal (Weir.Complete.wordStartAt "micro C:/Users/x/e" 18) 6 "a drive letter leads its path"
               Expect.equal (Weir.Complete.wordStartAt "key:value" 9) 4 "a colon after a word is a separator"
 
-              let d =
-                  System.IO.Path.Combine(
-                      System.IO.Path.GetTempPath(),
-                      "weir-comp-" + System.Guid.NewGuid().ToString "N"
-                  )
-
-              System.IO.Directory.CreateDirectory d |> ignore
+              let d = tempDir "weir-comp"
               System.IO.File.WriteAllText(System.IO.Path.Combine(d, "e2e.sh"), "")
               System.IO.File.WriteAllText(System.IO.Path.Combine(d, "check-fresh.sh"), "")
               System.IO.File.WriteAllText(System.IO.Path.Combine(d, ".hidden"), "")
@@ -3730,8 +3734,7 @@ let completionTests =
               // a bare filesystem path is not a valid weir expression, so a
               // path completed as a function argument must come back quoted —
               // otherwise the line the editor builds fails to parse on Enter.
-              let d =
-                  System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-pq-{System.Guid.NewGuid():N}")
+              let d = tempPath "weir-pq"
 
               System.IO.Directory.CreateDirectory(System.IO.Path.Combine(d, "sub"))
               |> ignore
@@ -4308,7 +4311,7 @@ let session2Tests =
               skipOnWindows ()
 
               let dir =
-                  weirPath (Path.Combine(Path.GetTempPath(), $"weir-s2-{System.Guid.NewGuid():N}"))
+                  weirPath (tempPath "weir-s2")
 
               Directory.CreateDirectory dir |> ignore
               File.WriteAllText(Path.Combine(dir, "g1.txt"), "")
@@ -4343,8 +4346,7 @@ let session2Tests =
               // which weir never chdir's — so it froze at the startup
               // directory and vouched for paths File.read immediately
               // rejected.
-              let root =
-                  Path.Combine(Path.GetTempPath(), "weir-cwd-" + System.Guid.NewGuid().ToString "N")
+              let root = tempPath "weir-cwd"
 
               let a = Path.Combine(root, "a")
               let bdir = Path.Combine(root, "b")
@@ -4733,7 +4735,7 @@ let session3Tests =
               skipOnWindows ()
 
               let marker =
-                  weirPath (Path.Combine(Path.GetTempPath(), $"weir-force-{System.Guid.NewGuid():N}"))
+                  weirPath (tempPath "weir-force")
 
               try
                   runReal
@@ -5022,9 +5024,6 @@ let stringTests =
               expectValue "Str.splitOnce \"=\" \"=v\"" (VTuple [ VStr ""; VStr "v" ])
               expectValue "Str.splitOnce \"=\" \"k=\"" (VTuple [ VStr "k"; VStr "" ])
 
-              let msgOf src =
-                  Expect.throwsC (fun () -> run src |> ignore) id |> _.Message
-
               Expect.equal
                   (msgOf "Str.splitOnce \":\" \"abc\"")
                   "splitOnce: no \":\" in the input"
@@ -5051,9 +5050,6 @@ let stringTests =
               // multi-char, and empty edges (never absences)
               expectValue "Str.rsplitOnce \"::\" \"a::b::c\"" (VTuple [ VStr "a::b"; VStr "c" ])
               expectValue "Str.rsplitOnce \"/\" \"x/\"" (VTuple [ VStr "x"; VStr "" ])
-
-              let msgOf src =
-                  Expect.throwsC (fun () -> run src |> ignore) id |> _.Message
 
               Expect.equal (msgOf "Str.rsplitOnce \":\" \"abc\"") "rsplitOnce: no \":\" in the input" "raises, naming the separator"
               Expect.equal (msgOf "Str.rsplitOnce \"\" \"abc\"") "rsplitOnce: the separator cannot be empty" "empty separator refused"
@@ -5128,9 +5124,6 @@ let stringTests =
               expectValue "tryToInt \"nope\"" (VUnion("None", None))
           }
           test "exactlyOne asserts cardinality with DISTINCT messages [D:exactly-one]" {
-              let msgOf src =
-                  Expect.throwsC (fun () -> run src |> ignore) id |> _.Message
-
               expectValue "[42] |> Seq.exactlyOne" (VInt 42L)
 
               // ruling 2: none and more are different causes — the two
@@ -5457,8 +5450,8 @@ let attributeTests =
               Expect.stringContains terr.Message "Did you mean 'Other'?" ""
           }
           test "an attribute line binds to the declaration BELOW it (the assembler join)" {
-              let ds, _, _, _ =
-                  Weir.Script.analyzeLines
+              let ds =
+                  diagsIn
                       "attrjoin.weir"
                       [ "[<Tag \"kind\">]"
                         "type KJ ="
@@ -5470,8 +5463,7 @@ let attributeTests =
               Expect.isEmpty (ds |> List.filter (fun d -> d.Severity = "error")) "the own-line form parses"
           }
           test "an attribute line above a NON-declaration gets the position teaching, located" {
-              let ds, _, _, _ =
-                  Weir.Script.analyzeLines "attrbad.weir" [ "[<Tag \"kind\">]"; "let x = 1"; "print $\"{x}\"" ]
+              let ds = diagsIn "attrbad.weir" [ "[<Tag \"kind\">]"; "let x = 1"; "print $\"{x}\"" ]
 
               let errs = ds |> List.filter (fun d -> d.Severity = "error")
               Expect.isNonEmpty errs "must refuse"
@@ -5944,20 +5936,18 @@ let typedArgvTests =
                   ""
 
               // in scripts it types as string, now via Self [D:self-module]
-              let diags, _, _, _ =
-                  Weir.Script.analyzeLines "pin.weir" [ "print (Self.scriptPath |> Path.dir)" ]
+              let diags = diagsIn "pin.weir" [ "print (Self.scriptPath |> Path.dir)" ]
 
               Expect.isEmpty diags "scripts know their own path"
 
               // the bare name teaches the move (the clean-break migration)
-              let moved, _, _, _ =
-                  Weir.Script.analyzeLines "pin.weir" [ "print (scriptPath |> Path.dir)" ]
+              let moved = diagsIn "pin.weir" [ "print (scriptPath |> Path.dir)" ]
 
               Expect.exists moved (fun d -> d.Message.Contains "use 'Self.scriptPath'") "bare name teaches Self"
           }
           test "scriptPath coexists with Args.load (no interaction)" {
-              let diags, _, _, _ =
-                  Weir.Script.analyzeLines
+              let diags =
+                  diagsIn
                       "pin.weir"
                       [ "type Cli = { quiet: bool }"
                         "let cli = Args.load Cli"
@@ -5968,7 +5958,7 @@ let typedArgvTests =
           }
           test "the Self module: members type in scripts; bare names teach the move [D:self-module]" {
               let clean lines =
-                  let diags, _, _, _ = Weir.Script.analyzeLines "pin.weir" lines
+                  let diags = diagsIn "pin.weir" lines
                   Expect.isEmpty (diags |> List.filter (fun d -> d.Severity = "error")) $"types: {lines}"
 
               clean [ "let n = Self.pid + 1"; "print n" ] // pid is int (arithmetic)
@@ -5978,7 +5968,7 @@ let typedArgvTests =
 
               // clean break: every bare name teaches its Self home
               let teaches name (lines: string list) =
-                  let diags, _, _, _ = Weir.Script.analyzeLines "pin.weir" lines
+                  let diags = diagsIn "pin.weir" lines
 
                   Expect.exists
                       diags
@@ -6171,8 +6161,8 @@ let bracketContinuationTests =
               | other -> failtest $"multi-stmt then + else must be ONE statement, got {other}"
 
               // and it checks clean end to end (not just assembles)
-              let diags, _, _, _ =
-                  Weir.Script.analyzeLines
+              let diags =
+                  diagsIn
                       "ifelse.weir"
                       [ "let x = true"; "if x then"; "    print \"a\""; "else"; "    print \"b\"" ]
 
@@ -7131,9 +7121,7 @@ let statementLetTests =
     // (the patch-district lesson: the two parse paths drift exactly
     // here, so each fixture runs both — analyzeLines against a real
     // parse+check+eval fold).
-    let checkDiags lines =
-        let ds, _, _, _ = Weir.Script.analyzeLines "sl.weir" lines
-        ds |> List.filter (fun d -> d.Severity = "error")
+    let checkDiags = errorsIn "sl.weir"
 
     // the run path: assemble + parse under the real resolver + check +
     // eval, statement by statement (the dedent-join fold, real heads)
@@ -7171,17 +7159,12 @@ let statementLetTests =
     let parity (name: string) (fixture: string -> string list) =
         test $"parity: {name} body takes a command let, check == run [D:statement-lets]" {
             skipOnWindows ()
-            let td = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-sl-{System.Guid.NewGuid():N}")
-            System.IO.Directory.CreateDirectory td |> ignore
-
-            try
+            withTempDir "weir-sl" (fun td ->
                 let out = System.IO.Path.Combine(td, "out.txt")
                 let lines = fixture out
                 Expect.isEmpty (checkDiags lines) $"check accepts the {name} fixture"
                 runStmts lines
-                Expect.equal (System.IO.File.ReadAllLines out |> Array.head) "marker" $"the {name} body ran its let"
-            finally
-                System.IO.Directory.Delete(td, true)
+                Expect.equal (System.IO.File.ReadAllLines out |> Array.head) "marker" $"the {name} body ran its let")
         }
 
     testList
@@ -7322,8 +7305,7 @@ let lspCrossFileTests =
     // real files on disk: cross-file targets re-analyze the target file
     // through the import channel [D:lsp-cross-file]
     let withTree (f: string -> string list -> string -> string -> unit) =
-        let td =
-            System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-lspx-{System.Guid.NewGuid():N}")
+        let td = tempPath "weir-lspx"
 
         System.IO.Directory.CreateDirectory(System.IO.Path.Combine(td, ".weir", "sigs"))
         |> ignore
@@ -7536,14 +7518,9 @@ let pureRegionTests =
     // opt-in only (nothing outside a region is gated), judged by the
     // Stage 0 classifier, refused with a located teaching naming the
     // offender's effect family.
-    let errsOf (lines: string list) =
-        let ds, _, _, _ = Weir.Script.analyzeLines "pure.weir" lines
-        ds |> List.filter (fun d -> d.Severity = "error")
+    let errsOf = errorsIn "pure.weir"
 
-    let firstErr (lines: string list) =
-        match errsOf lines with
-        | e :: _ -> e
-        | [] -> failtest "must refuse"
+    let firstErr = firstErrorIn "pure.weir"
 
     testList
         "the pure region — enforcement [D:pure-stage1]"
@@ -7699,7 +7676,7 @@ let pureRegionTests =
               let e = firstErr [ "let pure = 1" ]
               Expect.stringContains e.Message "'pure' is a keyword" "the binder slot refuses"
 
-              let ds, _, _, _ = Weir.Script.analyzeLines "bare.weir" [ "pure" ]
+              let ds = diagsIn "bare.weir" [ "pure" ]
 
               Expect.isTrue
                   (ds
@@ -7707,10 +7684,7 @@ let pureRegionTests =
                   "the bare head teaches the block form"
           }
           test "modules: let pure crosses the import; an impure module member refuses at ITS site" {
-              let dir =
-                  System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-pure-{System.Guid.NewGuid():N}")
-
-              System.IO.Directory.CreateDirectory dir |> ignore
+              let dir = tempDir "weir-pure"
 
               try
                   let lib = System.IO.Path.Combine(dir, "lib.weir")
@@ -7718,8 +7692,7 @@ let pureRegionTests =
                   let main = System.IO.Path.Combine(dir, "main.weir")
                   System.IO.File.WriteAllLines(main, [ "import \"./lib.weir\""; "print $\"{Lib.triple 5}\"" ])
 
-                  let ds, _, _, _ =
-                      Weir.Script.analyzeLines main (List.ofArray (System.IO.File.ReadAllLines main))
+                  let ds = diagsIn main (List.ofArray (System.IO.File.ReadAllLines main))
 
                   Expect.isEmpty (ds |> List.filter (fun d -> d.Severity = "error")) "a module's pure binding imports"
 
@@ -7728,8 +7701,7 @@ let pureRegionTests =
                   let entry = System.IO.Path.Combine(dir, "entry.weir")
                   System.IO.File.WriteAllLines(entry, [ "import \"./bad.weir\""; "print \"ok\"" ])
 
-                  let ds2, _, _, _ =
-                      Weir.Script.analyzeLines entry (List.ofArray (System.IO.File.ReadAllLines entry))
+                  let ds2 = diagsIn entry (List.ofArray (System.IO.File.ReadAllLines entry))
 
                   let errs = ds2 |> List.filter (fun d -> d.Severity = "error")
                   Expect.isNonEmpty errs "the module's pure law holds"
@@ -7848,14 +7820,9 @@ let readonlyBlockTests =
     // surface. `readonly == only ambient-input`, one tier up from
     // `pure == only ∅`; a reachable external mutation refuses (located,
     // naming the offender and its class), an ambient read is fine.
-    let errsOf (lines: string list) =
-        let ds, _, _, _ = Weir.Script.analyzeLines "ro.weir" lines
-        ds |> List.filter (fun d -> d.Severity = "error")
+    let errsOf = errorsIn "ro.weir"
 
-    let firstErr (lines: string list) =
-        match errsOf lines with
-        | e :: _ -> e
-        | [] -> failtest "must refuse"
+    let firstErr = firstErrorIn "ro.weir"
 
     testList
         "the readonly block [D:pure-stage2]"
@@ -8007,7 +7974,7 @@ let readonlyBlockTests =
               let e = firstErr [ "let readonly = 1" ]
               Expect.stringContains e.Message "'readonly' is a keyword" "the binder slot refuses"
 
-              let ds, _, _, _ = Weir.Script.analyzeLines "bare.weir" [ "readonly" ]
+              let ds = diagsIn "bare.weir" [ "readonly" ]
 
               Expect.isTrue
                   (ds |> List.exists (fun d -> d.Message.Contains "readonly takes a block"))
@@ -8021,7 +7988,7 @@ let readonlyBlockTests =
               Expect.isEmpty (errsOf [ "let deterministic = 1"; "print $\"{deterministic}\"" ]) "the old keyword is a free identifier again"
           }
           test "within readonly refuses — it is its own head, never behind within" {
-              let ds, _, _, _ = Weir.Script.analyzeLines "wr.weir" [ "within readonly"; "    1" ]
+              let ds = diagsIn "wr.weir" [ "within readonly"; "    1" ]
 
               Expect.isNonEmpty
                   (ds |> List.filter (fun d -> d.Severity = "error"))
@@ -8043,20 +8010,14 @@ let planApplyTests =
     // (reads run), yielding an inspectable/equatable/showable Plan;
     // Plan.apply replays them. The refusals: proc-in-plan (check),
     // apply-in-plan (check), known-after-apply (located runtime).
-    let errsOf (lines: string list) =
-        let ds, _, _, _ = Weir.Script.analyzeLines "plan.weir" lines
-        ds |> List.filter (fun d -> d.Severity = "error")
+    let errsOf = errorsIn "plan.weir"
 
-    let firstErr (lines: string list) =
-        match errsOf lines with
-        | e :: _ -> e
-        | [] -> failtest "must refuse"
+    let firstErr = firstErrorIn "plan.weir"
 
     // run a full multi-line program from a temp file; returns its exit
     // code (0 = clean) — the e2e path for capture+apply fs fidelity
     let runFile (lines: string list) : int =
-        let path =
-            System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-plan-{System.Guid.NewGuid():N}.weir")
+        let path = tempPath "weir-plan" + ".weir"
 
         System.IO.File.WriteAllLines(path, lines)
 
@@ -8065,11 +8026,7 @@ let planApplyTests =
         finally
             System.IO.File.Delete path
 
-    let td () =
-        let d =
-            System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-plan-{System.Guid.NewGuid():N}")
-
-        d
+    let td () = tempPath "weir-plan"
 
     // testSequenced: the DA-03 cases drive programs through runFile
     // (Weir.Script.run — in-process), whose `within cd` mutates the global
@@ -8380,7 +8337,7 @@ let planApplyTests =
               let e = firstErr [ "let plan = 1" ]
               Expect.stringContains e.Message "'plan' is a keyword" "the binder slot refuses"
 
-              let ds, _, _, _ = Weir.Script.analyzeLines "bare.weir" [ "plan" ]
+              let ds = diagsIn "bare.weir" [ "plan" ]
 
               Expect.isTrue
                   (ds |> List.exists (fun d -> d.Message.Contains "plan takes a block"))
@@ -8665,18 +8622,9 @@ let reserveBuiltinTests =
 let wireKeyTests =
     // [<Wire "…">] — reserved words and illegal identifiers as adapter
     // keys [D:wire-keys]
-    let diagsOf lines =
-        let diags, _, _, _ = Weir.Script.analyzeLines "wk.weir" lines
-        diags
+    let mustSay = mustSayIn "wk.weir"
 
-    let mustSay lines (needle: string) label =
-        Expect.exists
-            (diagsOf lines)
-            (fun d -> d.Message.Contains needle)
-            $"{label}: expected '{needle}', got {diagsOf lines |> List.map _.Message}"
-
-    let clean lines label =
-        Expect.isEmpty (diagsOf lines) $"{label}: expected clean, got {diagsOf lines |> List.map _.Message}"
+    let clean = cleanIn "wk.weir"
 
     testList
         "wire keys"
@@ -8706,9 +8654,7 @@ let wireKeyTests =
 let withinEnvPairsTests =
     // `within env A=1 B=$x` — the env-prefix words scope a block
     // [D:within-env-pairs]
-    let diagsOf lines =
-        let diags, _, _, _ = Weir.Script.analyzeLines "wep.weir" lines
-        diags |> List.filter (fun d -> d.Severity = "error") |> List.map _.Message
+    let diagsOf = errorMsgsIn "wep.weir"
 
     testList
         "within env NAME=value [D:within-env-pairs]"
@@ -8744,9 +8690,7 @@ let withinEnvPairsTests =
 let withinAlwaysAnyTests =
     // `always` after any within kind [D:within-always-any]: a desugar to a
     // bare within as the kinded scope's body — cleanup inside the scope
-    let diagsOf lines =
-        let diags, _, _, _ = Weir.Script.analyzeLines "waa.weir" lines
-        diags |> List.filter (fun d -> d.Severity = "error") |> List.map _.Message
+    let diagsOf = errorMsgsIn "waa.weir"
 
     let shape (lines: string list) =
         match Weir.Script.assemble (lines |> List.mapi (fun i l -> i + 1, l)) with
@@ -8786,18 +8730,9 @@ let withinAlwaysAnyTests =
 
 let withinAlwaysLockTests =
     // the bare scope and the lock kind [D:within-always][D:within-lock]
-    let diagsOf lines =
-        let diags, _, _, _ = Weir.Script.analyzeLines "wal.weir" lines
-        diags
+    let mustSay = mustSayDiagIn "wal.weir"
 
-    let mustSay lines (needle: string) label =
-        Expect.exists
-            (diagsOf lines)
-            (fun d -> d.Message.Contains needle)
-            $"{label}: expected a diagnostic containing '{needle}', got {diagsOf lines |> List.map _.Message}"
-
-    let clean lines label =
-        Expect.isEmpty (diagsOf lines) $"{label}: expected clean, got {diagsOf lines |> List.map _.Message}"
+    let clean = cleanIn "wal.weir"
 
     testList
         "bare within + always, within lock"
@@ -8938,8 +8873,7 @@ let pathParamCompletionTests =
     <| testList
         "path-parameter completion [D:path-param-completion]"
         [ test "the registry positions offer paths, bindings, and nothing else" {
-              let d =
-                  System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-ppc-{System.Guid.NewGuid():N}")
+              let d = tempPath "weir-ppc"
 
               System.IO.Directory.CreateDirectory(System.IO.Path.Combine(d, "weir-sub"))
               |> ignore
@@ -8947,20 +8881,10 @@ let pathParamCompletionTests =
               System.IO.File.WriteAllText(System.IO.Path.Combine(d, "tool.txt"), "x")
 
               try
-                  // the invariant process cwd, not Session.Cwd(): under the
-                  // parallel test runner, Session.Cwd() may momentarily hold a
-                  // concurrent test's temp dir, and restoring to it after that
-                  // dir is deleted leaves the global cwd pointing at a deleted
-                  // path — every concurrent spawn then fails "command not found"
-                  // (Process.Start cannot chdir there). GetCurrentDirectory is
-                  // never mutated (weir tracks cwd in Session, not the process).
-                  let saved = System.IO.Directory.GetCurrentDirectory()
-                  Weir.Session.setCwd d
-
                   let sug env (line: string) =
                       Weir.Complete.suggest env line (Weir.Complete.wordStartAt line line.Length)
 
-                  try
+                  inCwd d (fun () ->
                       // the repro: cd offers the one real candidate, and
                       // none of `when where windowed with within`
                       let got = sug Weir.Builtins.typeEnvStrict "cd w"
@@ -9017,9 +8941,7 @@ let pathParamCompletionTests =
                       Expect.contains
                           (sug Weir.Builtins.typeEnvStrict "File.read \"./")
                           "./tool.txt"
-                          "quoted paths unchanged"
-                  finally
-                      Weir.Session.setCwd saved
+                          "quoted paths unchanged")
               finally
                   System.IO.Directory.Delete(d, true)
           } ]
@@ -9140,11 +9062,7 @@ let schemaHoverTests =
     // vendored file, not an env.Types entry, so the type-argument arm
     // cannot render it; guards against the district's type leaking
     let withSchemas (f: string -> string list -> string -> unit) =
-        let td =
-            System.IO.Path.Combine(
-                System.IO.Path.GetTempPath(),
-                "weir-schema-hover-" + System.Guid.NewGuid().ToString "N"
-            )
+        let td = tempPath "weir-schema-hover"
 
         System.IO.Directory.CreateDirectory(System.IO.Path.Combine(td, ".weir", "schemas"))
         |> ignore
@@ -9532,7 +9450,7 @@ let semanticTokenTests =
           }
           test "doc comments: a misaligned /// errors — both field and case; aligned is clean [D:doc-comments]" {
               let hasAlign (ls: string list) =
-                  let d, _, _, _ = Weir.Script.analyzeLines "d.weir" ls
+                  let d = diagsIn "d.weir" ls
                   d |> List.exists (fun x -> x.Code = "doc-align")
 
               // aligned field doc: clean
@@ -10034,7 +9952,7 @@ let semanticTokenTests =
                     "    makeRef \"x\" branch"
                     "        deleteBranch branch" ]
 
-              let diags, _, _, _ = Weir.Script.analyzeLines "c.weir" lines
+              let diags = diagsIn "c.weir" lines
               let d = diags |> List.find (fun x -> x.Message.Contains "takes at most")
               Expect.equal d.Line 6 "points at the CONTINUATION line (line 6), not the head (line 5)"
               Expect.stringContains d.Message "indented continuation" "the hint names the real cause (the indent)"
@@ -10050,7 +9968,7 @@ let semanticTokenTests =
                     "match Deploy 1 with"
                     "| Deploy a -> print (show (deploy a))" ]
 
-              let diags, _, _, _ = Weir.Script.analyzeLines "b.weir" lines
+              let diags = diagsIn "b.weir" lines
               let errors = diags |> List.filter (fun d -> d.Severity = "error")
               Expect.hasLength errors 1 "ONE real error, zero echoes"
               Expect.stringContains errors[0].Message "expected int, got string" "the real error"
@@ -10060,7 +9978,7 @@ let semanticTokenTests =
               let lines2 =
                   [ "let go t ="; "    let e = targ etEnv t"; "    echo hi"; "    print \"ok\"" ]
 
-              let diags2, _, _, _ = Weir.Script.analyzeLines "b2.weir" lines2
+              let diags2 = diagsIn "b2.weir" lines2
 
               Expect.exists
                   diags2
@@ -10077,7 +9995,7 @@ let semanticTokenTests =
                     "let mk = { BicepPath = \"b\"; Name = \"n\" }"
                     "quality mk" ]
 
-              let diags, _, _, _ = Weir.Script.analyzeLines "pin.weir" lines
+              let diags = diagsIn "pin.weir" lines
 
               match diags |> List.filter (fun d -> d.Severity = "error") with
               | [ d ] ->
@@ -10094,7 +10012,7 @@ let semanticTokenTests =
                     "let mk = { BicepPath = \"b\" }"
                     "print (mk.BicepPath2)" ]
 
-              let diags2, _, _, _ = Weir.Script.analyzeLines "pin2.weir" direct
+              let diags2 = diagsIn "pin2.weir" direct
 
               match diags2 |> List.filter (fun d -> d.Severity = "error") with
               | [ d ] ->
@@ -10114,7 +10032,7 @@ let semanticTokenTests =
                     "let mk = { count = 1 }"
                     "f mk" ]
 
-              let diags, _, _, _ = Weir.Script.analyzeLines "pin.weir" lines
+              let diags = diagsIn "pin.weir" lines
 
               match diags |> List.filter (fun d -> d.Severity = "error") with
               | [ d ] ->
@@ -10130,7 +10048,7 @@ let semanticTokenTests =
                     "let mk = { count = 1 }"
                     "print (Str.length mk.count)" ]
 
-              let d2, _, _, _ = Weir.Script.analyzeLines "pin2.weir" within
+              let d2 = diagsIn "pin2.weir" within
 
               match d2 |> List.filter (fun d -> d.Severity = "error") with
               | [ d ] ->
@@ -10425,15 +10343,13 @@ let multilineLambdaTests =
                     ""
                     "counts |> Seq.iter print" ]
 
-              let diags, _, _, _ = Weir.Script.analyzeLines "pin.weir" lines
+              let diags = diagsIn "pin.weir" lines
               Expect.isEmpty diags "no diagnostics — the param is known, not a command head"
           }
           test "a pattern let's names shadow PATH in the body's if-condition [D:paramful-rhs]" {
               // `let a, b = …` then `if a == "" then` once read `a` as a
               // command head: the pattern path scoped no names into its body
-              let clean lines =
-                  let diags, _, _, _ = Weir.Script.analyzeLines "pin.weir" lines
-                  Expect.isEmpty diags $"check == run: {lines}"
+              let clean = checkEqRun
 
               clean
                   [ "let f () ="
@@ -10453,9 +10369,7 @@ let multilineLambdaTests =
               // bindings-beat-PATH reaches condition position at block-let
               // depth (check's assume-resolver once claimed it as a
               // phantom command: cmd-not-found + bogus type errors)
-              let clean lines =
-                  let diags, _, _, _ = Weir.Script.analyzeLines "pin.weir" lines
-                  Expect.isEmpty diags $"check == run: {lines}"
+              let clean = checkEqRun
 
               clean
                   [ "let outer xs ="
@@ -10472,8 +10386,8 @@ let multilineLambdaTests =
 
               // the other direction: a genuine external head in that same
               // condition position keeps the command chain [D:if-succeeds]
-              let diags, _, _, _ =
-                  Weir.Script.analyzeLines
+              let diags =
+                  diagsIn
                       "pin.weir"
                       [ "let outer p ="
                         "    let probe f = if test -f $f | succeeds then \"yes\" else \"no\""
@@ -10519,7 +10433,7 @@ let pipeAlignTests =
                     "    | _ -> print \"zero\""
                     "classify 9" ]
 
-              let diags, _, _, _ = Weir.Script.analyzeLines "pin.weir" lines
+              let diags = diagsIn "pin.weir" lines
               Expect.isEmpty (diags |> List.map (fun d -> d.Message)) "the healthy arm assembles and checks"
 
               // the other direction: an arm genuinely left of its match
@@ -10591,7 +10505,7 @@ let optionSweepTests =
               // is irrelevant — all three shapes were off by exactly the
               // consumed '|'+ws. Exact line:col, not a contains-check.
               let caret lines =
-                  let ds, _, _, _ = Weir.Script.analyzeLines "pin.weir" lines
+                  let ds = diagsIn "pin.weir" lines
 
                   ds
                   |> List.filter (fun d -> d.Message.Contains "'|' chains commands")
@@ -10617,7 +10531,7 @@ let optionSweepTests =
               // the offending token, not where the stream drifted after it.
               // exact line:col, filtered to the clean teaching message.
               let at (msg: string) lines =
-                  let ds, _, _, _ = Weir.Script.analyzeLines "pin.weir" lines
+                  let ds = diagsIn "pin.weir" lines
 
                   ds
                   |> List.filter (fun d -> d.Message.Contains msg)
@@ -10645,7 +10559,7 @@ let optionSweepTests =
               // teaching wins its spot — pin the caret and the absence of
               // the raw expecting-list (the burial is the bug).
               let sole (line: string) =
-                  let ds, _, _, _ = Weir.Script.analyzeLines "pin.weir" [ line ]
+                  let ds = diagsIn "pin.weir" [ line ]
 
                   match ds |> List.filter (fun d -> d.Severity = "error") with
                   | [ d ] -> d.Line, d.Col, d.Message
@@ -10678,7 +10592,7 @@ let optionSweepTests =
               // gated: every keyword must still fall through to its parser —
               // the risk matrix (heads of their own constructs)
               let okParses (line: string) =
-                  let ds, _, _, _ = Weir.Script.analyzeLines "pin.weir" [ line ]
+                  let ds = diagsIn "pin.weir" [ line ]
 
                   Expect.isEmpty
                       (ds |> List.filter (fun d -> d.Severity = "error" && d.Code = "parse"))
@@ -10700,7 +10614,7 @@ let optionSweepTests =
               // `|`), a lambda (past `fun`), and a param all surface the
               // teaching. let-destructure stays a finding (SLetPat's attempt).
               let sole (line: string) =
-                  let ds, _, _, _ = Weir.Script.analyzeLines "pin.weir" [ line ]
+                  let ds = diagsIn "pin.weir" [ line ]
 
                   match ds |> List.filter (fun d -> d.Severity = "error") with
                   | [ d ] -> d.Line, d.Col, d.Message
@@ -10721,7 +10635,7 @@ let optionSweepTests =
 
               // fall-through: every legitimate pattern form is unaffected
               let okParses (line: string) =
-                  let ds, _, _, _ = Weir.Script.analyzeLines "pin.weir" [ line ]
+                  let ds = diagsIn "pin.weir" [ line ]
                   Expect.isEmpty (ds |> List.filter (fun d -> d.Severity = "error")) $"parses: {line}"
 
               okParses "let _z = match Some 1 with | Some n -> n | _ -> 0"
@@ -10736,7 +10650,7 @@ let optionSweepTests =
               okParses "let _go = (let (a, _b) = (1, 2) in a)"
 
               let noParseError (line: string) =
-                  let ds, _, _, _ = Weir.Script.analyzeLines "pin.weir" [ line ]
+                  let ds = diagsIn "pin.weir" [ line ]
 
                   Expect.isEmpty
                       (ds |> List.filter (fun d -> d.Severity = "error" && d.Code = "parse"))
@@ -10750,8 +10664,7 @@ let optionSweepTests =
               // swallowed and merged (a fatal inside an attempt is not a
               // fatal). Corrected diagnosis: not parsed-twice (negIntLit is
               // range-only) — negAtom's own attempt was the swallower.
-              let ds, _, _, _ =
-                  Weir.Script.analyzeLines "pin.weir" [ "let x = -99999999999999999999" ]
+              let ds = diagsIn "pin.weir" [ "let x = -99999999999999999999" ]
 
               match ds |> List.filter (fun d -> d.Severity = "error") with
               | [ d ] ->
@@ -11101,10 +11014,7 @@ let lockfileConfinementTests =
               if System.OperatingSystem.IsWindows() then
                   ()
               else
-                  let dir =
-                      System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-f2-{System.Guid.NewGuid():N}")
-
-                  System.IO.Directory.CreateDirectory dir |> ignore
+                  let dir = tempDir "weir-f2"
 
                   try
                       let modP = System.IO.Path.Combine(dir, "mod.weir")
@@ -11113,8 +11023,7 @@ let lockfileConfinementTests =
                       System.IO.File.WriteAllLines(mainP, [ "import \"./mod.weir\" as M"; "print (show (M.f 1))" ])
                       System.IO.File.SetUnixFileMode(modP, System.IO.UnixFileMode.None)
 
-                      let ds, _, _, _ =
-                          Weir.Script.analyzeLines mainP (List.ofArray (System.IO.File.ReadAllLines mainP))
+                      let ds = diagsIn mainP (List.ofArray (System.IO.File.ReadAllLines mainP))
 
                       let errs = ds |> List.filter (fun d -> d.Severity = "error")
 
@@ -11156,8 +11065,7 @@ let lockfileSymlinkConfinementTests =
               if System.OperatingSystem.IsWindows() then
                   ()
               else
-                  let baseDir =
-                      System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-da04-{System.Guid.NewGuid():N}")
+                  let baseDir = tempPath "weir-da04"
 
                   let weirDir = System.IO.Path.Combine(baseDir, ".weir")
                   let outside = System.IO.Path.Combine(baseDir, "OUTSIDE")
@@ -11185,8 +11093,7 @@ let lockfileSymlinkConfinementTests =
               if System.OperatingSystem.IsWindows() then
                   ()
               else
-                  let baseDir =
-                      System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-da04b-{System.Guid.NewGuid():N}")
+                  let baseDir = tempPath "weir-da04b"
 
                   let weirDir = System.IO.Path.Combine(baseDir, ".weir")
                   let schemas = System.IO.Path.Combine(weirDir, "schemas")
@@ -11211,8 +11118,7 @@ let lockfileSymlinkConfinementTests =
                           ()
           }
           test "a REAL .weir/schemas dir + a clean path still confines (not over-refused)" {
-              let baseDir =
-                  System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-da04c-{System.Guid.NewGuid():N}")
+              let baseDir = tempPath "weir-da04c"
 
               let weirDir = System.IO.Path.Combine(baseDir, ".weir")
               System.IO.Directory.CreateDirectory(System.IO.Path.Combine(weirDir, "schemas")) |> ignore
@@ -11228,8 +11134,7 @@ let lockfileSymlinkConfinementTests =
                       ()
           }
           test "F1 absolute/`..` traversal is still refused (A+B behavior unchanged)" {
-              let baseDir =
-                  System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-da04d-{System.Guid.NewGuid():N}")
+              let baseDir = tempPath "weir-da04d"
 
               let weirDir = System.IO.Path.Combine(baseDir, ".weir")
               System.IO.Directory.CreateDirectory weirDir |> ignore
@@ -11251,8 +11156,7 @@ let lockfileSymlinkConfinementTests =
               // variadic arg), so the leaf could land unreadable and a later
               // read (verify) failed with Permission denied. fchmod on the
               // open fd makes 0o644 reliable — the file must read back.
-              let baseDir =
-                  System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-da04e-{System.Guid.NewGuid():N}")
+              let baseDir = tempPath "weir-da04e"
 
               let weirDir = System.IO.Path.Combine(baseDir, ".weir")
               System.IO.Directory.CreateDirectory(System.IO.Path.Combine(weirDir, "schemas")) |> ignore
@@ -11292,8 +11196,7 @@ let lockfileSymlinkConfinementTests =
               // over an existing longer file (restore repairing a tampered vendored
               // file) left stale trailing bytes → hash mismatch. The result must be
               // exactly the new bytes. Passes on Linux either way; guards the flags.
-              let baseDir =
-                  System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-da04t-{System.Guid.NewGuid():N}")
+              let baseDir = tempPath "weir-da04t"
 
               let weirDir = System.IO.Path.Combine(baseDir, ".weir")
               System.IO.Directory.CreateDirectory(System.IO.Path.Combine(weirDir, "schemas")) |> ignore
@@ -11436,8 +11339,7 @@ let scriptTests =
               // whatever the generic stray-directive path does (a parse
               // error under check, the directive error on run); the pin
               // is that it errors with no bespoke farewell
-              let diags, _, _, _ =
-                  Weir.Script.analyzeLines "pin.weir" [ "#loose"; "print (show 1)" ]
+              let diags = diagsIn "pin.weir" [ "#loose"; "print (show 1)" ]
 
               Expect.isNonEmpty
                   (diags |> List.filter (fun d -> d.Severity = "error"))
@@ -11448,8 +11350,8 @@ let scriptTests =
                   "no migration message for a mode that never executed"
           }
           test "a bare module member in a strict pipe teaches the qualified spelling [D:bare-partition]" {
-              let diags, _, _, _ =
-                  Weir.Script.analyzeLines
+              let diags =
+                  diagsIn
                       "pin.weir"
                       [ "let xs = [1] |> where (fun n -> n > 0)"; "print (show (Seq.length xs))" ]
 
@@ -11464,8 +11366,7 @@ let scriptTests =
               // runnable — resolution integrity), and Windows ships
               // where.exe, so `where` resolves there and never reaches
               // the cmd-not-found path
-              let diags, _, _, _ =
-                  Weir.Script.analyzeLines "pin.weir" [ "let xs = sortBy (fun n -> n) [1]"; "print (show 1)" ]
+              let diags = diagsIn "pin.weir" [ "let xs = sortBy (fun n -> n) [1]"; "print (show 1)" ]
 
               Expect.exists
                   diags
@@ -11701,7 +11602,7 @@ let readProbes =
               skipOnWindows ()
 
               let marker =
-                  weirPath (Path.Combine(Path.GetTempPath(), $"weir-sc-{System.Guid.NewGuid():N}"))
+                  weirPath (tempPath "weir-sc")
 
               try
                   Expect.equal
@@ -11959,7 +11860,7 @@ let depthGuardTests =
               let line =
                   "let v = match [1] with | " + String.replicate 20000 "a :: " + "_ -> 1 | _ -> 0"
 
-              let diags, _, _, _ = Weir.Script.analyzeLines "pin.weir" [ line ]
+              let diags = diagsIn "pin.weir" [ line ]
               Expect.isNonEmpty diags "the depth guard diagnoses; the iterative name walk never crashes"
           } ]
 
@@ -12290,7 +12191,7 @@ let agentFindingsTests =
           }
           test "splat type demands seq<string>, both teachings [D:argv-splat]" {
               let msgOf lines =
-                  let diags, _, _, _ = Weir.Script.analyzeLines "pin.weir" lines
+                  let diags = diagsIn "pin.weir" lines
 
                   diags
                   |> List.tryPick (fun d -> if d.Severity = "error" then Some d.Message else None)
@@ -12402,9 +12303,7 @@ let agentFindingsTests =
               // exec never returns (execve/exit), so a bare statement is
               // legitimate: the discard gate must exempt it like fail/exit,
               // in the command route and the env-sigil capture route
-              let clean (lines: string list) (label: string) =
-                  let diags, _, _, _ = Weir.Script.analyzeLines "exec.weir" lines
-                  Expect.isEmpty (diags |> List.filter (fun d -> d.Severity = "error")) $"{label}: {diags |> List.map _.Message}"
+              let clean = errorsCleanIn "exec.weir"
 
               clean [ "echo replaced | exec" ] "plain command route"
               clean [ "let e = [Env.pair \"X\" \"1\"]"; "$e(printenv X | exec)" ] "env-sigil capture route"
@@ -12425,9 +12324,7 @@ let agentFindingsTests =
 
               // a value-position `| line` is a string — a binding checks as
               // string end-to-end (base, env twin, value-headed)
-              let clean (lines: string list) (label: string) =
-                  let diags, _, _, _ = Weir.Script.analyzeLines "line.weir" lines
-                  Expect.isEmpty (diags |> List.filter (fun d -> d.Severity = "error")) $"{label}: {diags |> List.map _.Message}"
+              let clean = errorsCleanIn "line.weir"
 
               clean [ "let scope = printf \"x\" | line"; "print (Str.length scope |> show)" ] "binds a string"
               clean [ "let e = [Env.pair \"X\" \"1\"]"; "let v = $e(printenv X | line)"; "print v" ] "env twin binds a string"
@@ -12439,9 +12336,7 @@ let agentFindingsTests =
               | Ok(SExpr e) -> Expect.stringContains (Weir.Ast.sexpr e) "|texted" ""
               | other -> failtest $"expected the texted desugar, got {other}"
 
-              let clean (lines: string list) (label: string) =
-                  let diags, _, _, _ = Weir.Script.analyzeLines "text.weir" lines
-                  Expect.isEmpty (diags |> List.filter (fun d -> d.Severity = "error")) $"{label}: {diags |> List.map _.Message}"
+              let clean = errorsCleanIn "text.weir"
 
               clean [ "let t = printf \"a\" | text"; "print (Str.trim t)" ] "binds a string"
               clean [ "let e = [Env.pair \"X\" \"1\"]"; "let v = $e(printenv X | text)"; "print v" ] "env twin"
@@ -12466,15 +12361,15 @@ let agentFindingsTests =
                         "lambda-body",
                         [ "[1] |> Seq.iter (fun _ ->"; "    let _r = sh -c \"echo x\" | %s"; "    print \"z\")" ] ] do
                       let lines = tpl |> List.map (fun (l: string) -> l.Replace("%s", spelled))
-                      let diags, _, _, _ = Weir.Script.analyzeLines "pin.weir" lines
+                      let diags = diagsIn "pin.weir" lines
 
                       Expect.isEmpty
                           (diags |> List.filter (fun d -> d.Severity = "error"))
                           $"{name} in {posName}: statement contexts take the reifier let now"
 
               // the ^ escape stays: a real tool of that name is reachable
-              let escaped, _, _, _ =
-                  Weir.Script.analyzeLines
+              let escaped =
+                  diagsIn
                       "pin.weir"
                       [ "[1] |> Seq.iter (fun _ ->"
                         "    let _r = sh -c \"echo x\" | ^complete"
@@ -12486,7 +12381,7 @@ let agentFindingsTests =
           }
           test "a discarded exit code errors with the bind-or-match hint" {
               let lines = [ "git push | exitCode" ]
-              let diags, _, _, _ = Weir.Script.analyzeLines "pin.weir" lines
+              let diags = diagsIn "pin.weir" lines
 
               Expect.exists
                   diags
@@ -12498,7 +12393,7 @@ let agentFindingsTests =
               // while its bool/int siblings were rejected. Now it errors in
               // the family's voice at the reifier stage (exact col, not
               // inherited — the anchor-before-read lesson).
-              let diags, _, _, _ = Weir.Script.analyzeLines "pin.weir" [ "git status | complete" ]
+              let diags = diagsIn "pin.weir" [ "git status | complete" ]
 
               match diags |> List.filter (fun d -> d.Severity = "error") with
               | [ d ] ->
@@ -12510,7 +12405,7 @@ let agentFindingsTests =
               // the accepting path is unchanged: binding still works, and
               // orFail (unit) is exempt by design, not by oversight
               let ok (line: string) =
-                  let ds, _, _, _ = Weir.Script.analyzeLines "pin.weir" [ line ]
+                  let ds = diagsIn "pin.weir" [ line ]
                   Expect.isEmpty (ds |> List.filter (fun d -> d.Severity = "error")) $"accepted: {line}"
 
               ok "let _r = git status | complete"
@@ -12651,13 +12546,7 @@ let agentFindingsTests =
               // stays — units referee the lib, the row referees the shipped binary.
               // The logic is pure string work; both sides build from the same BCL
               // call, so the drive/UNC shapes assert everywhere.
-              let root =
-                  System.IO.Path.Combine(
-                      System.IO.Path.GetTempPath(),
-                      "weir-under-" + System.Guid.NewGuid().ToString "N"
-                  )
-
-              System.IO.Directory.CreateDirectory root |> ignore
+              let root = tempDir "weir-under"
               let bse = root.Replace("\\", "/")
 
               let full (rel: string) =
@@ -12767,8 +12656,7 @@ let agentFindingsTests =
               // a mid-script fail statement passes the discard gate (its
               // fresh var is no value to discard); a non-diverging var
               // statement stays refused
-              let diags, _, _, _ =
-                  Weir.Script.analyzeLines "t.weir" [ "print \"a\""; "fail \"stop\""; "print \"b\"" ]
+              let diags = diagsIn "t.weir" [ "print \"a\""; "fail \"stop\""; "print \"b\"" ]
 
               Expect.isEmpty (diags |> List.map (fun d -> d.Message)) "the statement gate admits the diverging tail"
           }
@@ -12812,7 +12700,7 @@ let agentFindingsTests =
               // …and in a nested arm body: the ported-port shape — a
               // constructor application inside an if arm at depth
               let clean lines =
-                  let diags, _, _, _ = Weir.Script.analyzeLines "pin.weir" lines
+                  let diags = diagsIn "pin.weir" lines
                   Expect.isEmpty (diags |> List.map (fun d -> d.Message)) $"checks: {lines}"
 
               clean
@@ -12855,18 +12743,14 @@ let agentFindingsTests =
 
               // the other direction: with no paren open a `)`-headed
               // sibling is still refused, never silently joined
-              let diags, _, _, _ =
-                  Weir.Script.analyzeLines "pin.weir" [ "if 1 > 0 then"; "    print \"x\""; "    )" ]
+              let diags = diagsIn "pin.weir" [ "if 1 > 0 then"; "    print \"x\""; "    )" ]
 
               Expect.isNonEmpty
                   (diags |> List.filter (fun d -> d.Severity = "error"))
                   "a stray `)` sibling stays an error"
           }
           test "multi-line application assembles inside a module body too [D:continuation-siblings]" {
-              let td =
-                  System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-mlapp-{System.Guid.NewGuid():N}")
-
-              System.IO.Directory.CreateDirectory td |> ignore
+              let td = tempDir "weir-mlapp"
 
               System.IO.File.WriteAllLines(
                   System.IO.Path.Combine(td, "m.weir"),
@@ -12887,8 +12771,7 @@ let agentFindingsTests =
                   let entry =
                       [ "import \"./m.weir\" as M"; "print (show (M.total [\"a\"; \"b\"]))" ]
 
-                  let diags, _, _, _ =
-                      Weir.Script.analyzeLines (System.IO.Path.Combine(td, "main.weir")) entry
+                  let diags = diagsIn (System.IO.Path.Combine(td, "main.weir")) entry
 
                   Expect.isEmpty (diags |> List.map (fun d -> d.Message)) "the module body assembles the application"
               finally
@@ -14096,7 +13979,7 @@ let offsideTests =
                     "        print \"x\""
                     "    9" ]
 
-              let diags, _, _, _ = Weir.Script.analyzeLines "pin.weir" lines
+              let diags = diagsIn "pin.weir" lines
 
               // [D:seq-commit]: no backtrack can anchor past the
               // district — the primary lands on the junk
@@ -14115,7 +13998,7 @@ let offsideTests =
                     "    let v4 = v3 ?!?"
                     "    3" ]
 
-              let diags, _, _, _ = Weir.Script.analyzeLines "pin.weir" lines
+              let diags = diagsIn "pin.weir" lines
 
               Expect.exists
                   diags
@@ -14138,7 +14021,7 @@ let offsideTests =
                     "        | _ -> \"w484\""
                     "    | _ -> \"d\"" ]
 
-              let diags, _, _, _ = Weir.Script.analyzeLines "pin.weir" lines
+              let diags = diagsIn "pin.weir" lines
 
               match diags |> List.filter (fun d -> d.Severity = "error") with
               | d :: _ ->
@@ -14156,7 +14039,7 @@ let offsideTests =
                     "          B = \"x\" ?!?"
                     "          }" ]
 
-              let diags, _, _, _ = Weir.Script.analyzeLines "pin.weir" lines
+              let diags = diagsIn "pin.weir" lines
 
               match diags |> List.filter (fun d -> d.Severity = "error") with
               | d :: _ ->
@@ -14371,9 +14254,7 @@ let siblingSentinelTests =
     // [D:sibling-sentinel] — the diagnostics-arc Session E successor:
     // command mode stops at the machine sibling boundary, so a
     // command-first body sequences instead of over-running to EOF.
-    let diags lines =
-        let ds, _, _, _ = Weir.Script.analyzeLines "pin.weir" lines
-        ds
+    let diags = diagsIn "pin.weir"
 
     testList
         "Sibling sentinel"
@@ -14519,9 +14400,7 @@ let sigilTests =
               | other -> failtest $"unexpected: {other}"
           }
           test "a block sequenced before more statements runs its command tail [D:seq-arming]" {
-              let errs (lines: string list) =
-                  let ds, _, _, _ = Weir.Script.analyzeLines "sa.weir" lines
-                  ds |> List.filter (fun d -> d.Severity = "error") |> List.map _.Message
+              let errs = errorMsgsIn "sa.weir"
 
               Expect.isEmpty
                   (errs [ "let sub ="; "    within tmp d"; "        sh -c \"echo a\""; "    \"after\""; "print sub" ])
@@ -14583,8 +14462,7 @@ let districtTests =
               | other -> failtest $"unexpected: {other}"
           }
           test "the arming spelling replaces it: bare commands under if assemble and check" {
-              let diags, _, _, _ =
-                  Weir.Script.analyzeLines "r.weir" [ "let go = 1 > 0"; "if go then"; "    git status" ]
+              let diags = diagsIn "r.weir" [ "let go = 1 > 0"; "if go then"; "    git status" ]
 
               Expect.isEmpty (diags |> List.filter (fun d -> d.Severity = "error")) "the replacement is legal"
           }
@@ -14808,7 +14686,7 @@ let fileTests =
         "File module"
         [ test "write, read, append roundtrip" {
               let path =
-                  weirPath (Path.Combine(Path.GetTempPath(), $"weir-file-{System.Guid.NewGuid():N}.txt"))
+                  weirPath (tempPath "weir-file" + ".txt")
 
               try
                   expectValue $"File.write \"{path}\" [\"a\"; \"b\"]" VUnit
@@ -14823,7 +14701,7 @@ let fileTests =
           test "exists is false for missing" { expectValue "File.exists \"/weir-definitely-not\"" (VBool false) }
           test "relative paths resolve against Session.Cwd" {
               let dir =
-                  weirPath (Path.Combine(Path.GetTempPath(), $"weir-fdir-{System.Guid.NewGuid():N}"))
+                  weirPath (tempPath "weir-fdir")
 
               Directory.CreateDirectory dir |> ignore
 
@@ -15166,14 +15044,12 @@ let durationTests =
 
 let ambiguousCtorTests =
     let analyze (lines: string list) =
-        let p =
-            System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-amb-{System.Guid.NewGuid():N}.weir")
+        let p = tempPath "weir-amb" + ".weir"
 
         System.IO.File.WriteAllLines(p, lines)
 
         try
-            let ds, _, _, _ =
-                Weir.Script.analyzeLines p (List.ofArray (System.IO.File.ReadAllLines p))
+            let ds = diagsIn p (List.ofArray (System.IO.File.ReadAllLines p))
 
             ds |> List.filter (fun d -> d.Severity = "error")
         finally
@@ -15234,12 +15110,7 @@ let ambiguousCtorTests =
           // declaration look ambiguous. The first cut of this check scanned
           // every declared type and broke exactly this.
           test "an imported union does not make a local case ambiguous" {
-              let dir =
-                  System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-ambx-{System.Guid.NewGuid():N}")
-
-              System.IO.Directory.CreateDirectory dir |> ignore
-
-              try
+              withTempDir "weir-ambx" (fun dir ->
                   let lib = System.IO.Path.Combine(dir, "lib.weir")
                   System.IO.File.WriteAllLines(lib, [ "module Lib"; "type Status = Ok | Failed" ])
                   let main = System.IO.Path.Combine(dir, "main.weir")
@@ -15252,14 +15123,11 @@ let ambiguousCtorTests =
                         "print \"n\"" ]
                   )
 
-                  let ds, _, _, _ =
-                      Weir.Script.analyzeLines main (List.ofArray (System.IO.File.ReadAllLines main))
+                  let ds = diagsIn main (List.ofArray (System.IO.File.ReadAllLines main))
 
                   Expect.isEmpty
                       (ds |> List.filter (fun d -> d.Severity = "error"))
-                      "the local declaration wins; the imported case was never a bare candidate"
-              finally
-                  System.IO.Directory.Delete(dir, true)
+                      "the local declaration wins; the imported case was never a bare candidate")
           }
           test "a single-owner ctor types the scrutinee; an ambiguous one still refuses [D:match-scrutinee-infer]" {
               // single owner Z: the scrutinee is Z, the match checks clean
@@ -15312,14 +15180,12 @@ let ambiguousCtorTests =
 
 let dupTypeTests =
     let analyze (lines: string list) =
-        let p =
-            System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-dup-{System.Guid.NewGuid():N}.weir")
+        let p = tempPath "weir-dup" + ".weir"
 
         System.IO.File.WriteAllLines(p, lines)
 
         try
-            let ds, _, _, _ =
-                Weir.Script.analyzeLines p (List.ofArray (System.IO.File.ReadAllLines p))
+            let ds = diagsIn p (List.ofArray (System.IO.File.ReadAllLines p))
 
             ds |> List.filter (fun d -> d.Severity = "error")
         finally
@@ -15598,9 +15464,6 @@ let httpTests =
           }
           test "the wider raw-leak sweep's finds stay closed [D:transport-words]" {
               // each of these leaked a naked .NET message before the sweep
-              let msgOf (src: string) =
-                  (Expect.throwsC (fun () -> run src |> ignore) id).Message
-
               let durOver = msgOf "Duration.parse \"99999999999999999999999s\""
               Expect.stringContains durOver "beyond the 64-bit millisecond range" "overflow in weir's words"
               Expect.isFalse (durOver.Contains "Int64") "never Int64.Parse's text"
@@ -15628,9 +15491,6 @@ let httpTests =
           test "a multi-MB invalid parse/decode input yields a BOUNDED error [D:excerpt]" {
               // the flood: a 2MB invalid input embedded whole was ~2MB of
               // stderr — now bounded to a head + the length
-              let msgOf (src: string) =
-                  (Expect.throwsC (fun () -> run src |> ignore) id).Message
-
               let big = String.replicate 2_000_000 "!"
 
               for src in
@@ -16486,8 +16346,7 @@ let lsTruthTests =
     <| testList
         "ls tells the whole truth [D:ls-truth]"
         [ test "directories join the rows: isDirectory filters, bytes is 0 B there" {
-              let d =
-                  System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-ls-{System.Guid.NewGuid():N}")
+              let d = tempPath "weir-ls"
 
               System.IO.Directory.CreateDirectory(System.IO.Path.Combine(d, "sub")) |> ignore
               System.IO.File.WriteAllText(System.IO.Path.Combine(d, "f.txt"), "x")
@@ -16497,24 +16356,7 @@ let lsTruthTests =
               System.IO.File.WriteAllText(System.IO.Path.Combine(d, "a.txt"), "x")
 
               try
-                  // the invariant process cwd, not Session.Cwd(): under the
-                  // parallel test runner, Session.Cwd() may momentarily hold a
-                  // concurrent test's temp dir, and restoring to it after that
-                  // dir is deleted leaves the global cwd pointing at a deleted
-                  // path — every concurrent spawn then fails "command not found"
-                  // (Process.Start cannot chdir there). GetCurrentDirectory is
-                  // never mutated (weir tracks cwd in Session, not the process).
-                  let saved = System.IO.Directory.GetCurrentDirectory()
-                  Weir.Session.setCwd d
-
-                  // the shared valueEnv shadows ls with fakeFiles — this
-                  // pin needs the real prelude ls
-                  let runLive input =
-                      match typecheck env (parse input) with
-                      | Ok te -> eval Weir.Builtins.valueEnv te
-                      | Error terr -> failtest (formatError terr)
-
-                  try
+                  inCwd d (fun () ->
                       match
                           runLive "ls |> Seq.where (fun f -> f.kind == Directory) |> Seq.map _.name"
                           |> forceSeq
@@ -16542,9 +16384,7 @@ let lsTruthTests =
 
                       match runLive "(ls |> Seq.head).path" with
                       | VStr p when p.StartsWith d -> ()
-                      | other -> failtest $"path is absolute: {other}"
-                  finally
-                      Weir.Session.setCwd saved
+                      | other -> failtest $"path is absolute: {other}")
               finally
                   System.IO.Directory.Delete(d, true)
           } ]
@@ -16561,15 +16401,9 @@ let refutableRecordPatternTests =
         |> declare "type RfS = { state: string; items: seq<int> }"
         |> declare "type RfO = { t: Option<string> }"
 
-    let runR input =
-        match typecheck renv (parse input) with
-        | Ok te -> eval valueEnv te
-        | Error terr -> failtest (formatError terr)
+    let runR = runUnder renv
 
-    let errR input =
-        match typecheck renv (parse input) with
-        | Ok te -> failtest $"expected a type error, got {formatTy te.Ty}"
-        | Error terr -> terr
+    let errR = checkErrUnder renv
 
     testList
         "refutable record patterns [D:refutable-record-patterns]"
@@ -16637,15 +16471,9 @@ let recordPatternRowTests =
         |> declare "type RwA = { nm: string; ag: int }"
         |> declare "type RwB = { nm: string; fl: bool }"
 
-    let runR input =
-        match typecheck renv (parse input) with
-        | Ok te -> eval valueEnv te
-        | Error terr -> failtest (formatError terr)
+    let runR = runUnder renv
 
-    let errR input =
-        match typecheck renv (parse input) with
-        | Ok te -> failtest $"expected a type error, got {formatTy te.Ty}"
-        | Error terr -> terr
+    let errR = checkErrUnder renv
 
     testList
         "record patterns in match position [D:record-pattern-rows]"
@@ -16885,9 +16713,6 @@ let accessorTeachingTests =
               // FSharp.Core's own text reached users here: Seq.item's
               // "seq was short by {1} {2}" and Seq.skip's composite
               // "tried to skip {0} {1} past the end of the seq"
-              let msgOf src =
-                  Expect.throwsC (fun () -> run src |> ignore) id |> _.Message
-
               let item = msgOf "[1] |> Seq.item 5"
               Expect.stringContains item "item: no element at index 5" "weir's text"
               Expect.isFalse (item.Contains "insufficient") "not FSharp.Core's"
@@ -16904,9 +16729,6 @@ let accessorTeachingTests =
               expectValue "nats |> Seq.skip 2 |> Seq.head" (VInt 2L)
           }
           test "modulo [D:modulo]: truncated, int-only, /'s zero discipline" {
-              let msgOf src =
-                  Expect.throwsC (fun () -> run src |> ignore) id |> _.Message
-
               // truncated (F#/.NET): the sign follows the dividend —
               // only the negative cases assert the ruling
               expectValue "7 % 3" (VInt 1L)
@@ -16937,15 +16759,9 @@ let recordPatternTests =
         |> declare "type RIn = { deep: int }"
         |> declare "type ROut = { inner: RIn; pair: int * string }"
 
-    let runR input =
-        match typecheck renv (parse input) with
-        | Ok te -> eval valueEnv te
-        | Error terr -> failtest (formatError terr)
+    let runR = runUnder renv
 
-    let errR input =
-        match typecheck renv (parse input) with
-        | Ok te -> failtest $"expected a type error, got {formatTy te.Ty}"
-        | Error terr -> terr
+    let errR = checkErrUnder renv
 
     testList
         "record patterns [D:record-patterns]"
@@ -17051,31 +16867,13 @@ let fileStatTests =
     <| testList
         "File.stat [D:file-stat]"
         [ test "the agreement pin: ls and File.stat produce identical rows" {
-              let d =
-                  System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-stat-{System.Guid.NewGuid():N}")
+              let d = tempPath "weir-stat"
 
               System.IO.Directory.CreateDirectory(System.IO.Path.Combine(d, "sub")) |> ignore
               System.IO.File.WriteAllText(System.IO.Path.Combine(d, "f.txt"), "x")
 
               try
-                  // the invariant process cwd, not Session.Cwd(): under the
-                  // parallel test runner, Session.Cwd() may momentarily hold a
-                  // concurrent test's temp dir, and restoring to it after that
-                  // dir is deleted leaves the global cwd pointing at a deleted
-                  // path — every concurrent spawn then fails "command not found"
-                  // (Process.Start cannot chdir there). GetCurrentDirectory is
-                  // never mutated (weir tracks cwd in Session, not the process).
-                  let saved = System.IO.Directory.GetCurrentDirectory()
-                  Weir.Session.setCwd d
-
-                  // the shared valueEnv shadows ls with fakeFiles — the
-                  // agreement needs the real prelude ls
-                  let runLive input =
-                      match typecheck env (parse input) with
-                      | Ok te -> eval Weir.Builtins.valueEnv te
-                      | Error terr -> failtest (formatError terr)
-
-                  try
+                  inCwd d (fun () ->
                       match
                           runLive "show (ls |> Seq.find (fun f -> f.name == \"f.txt\")) == show (File.stat \"f.txt\")"
                       with
@@ -17092,9 +16890,7 @@ let fileStatTests =
                       // cwd and yields the documented absolute path
                       match runLive "(File.stat \"f.txt\").path" with
                       | VStr p when p.StartsWith d && p.EndsWith "f.txt" -> ()
-                      | other -> failtest $"a relative argument must yield an absolute path: {other}"
-                  finally
-                      Weir.Session.setCwd saved
+                      | other -> failtest $"a relative argument must yield an absolute path: {other}")
               finally
                   System.IO.Directory.Delete(d, true)
           }
@@ -17115,8 +16911,7 @@ let dirStatTests =
     <| testList
         "Dir.stat [D:dir-stat]"
         [ test "the agreement pin: ls and Dir.stat \".\" produce identical rows in identical order" {
-              let d =
-                  System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-dstat-{System.Guid.NewGuid():N}")
+              let d = tempPath "weir-dstat"
 
               System.IO.Directory.CreateDirectory(System.IO.Path.Combine(d, "sub")) |> ignore
               System.IO.File.WriteAllText(System.IO.Path.Combine(d, "B.txt"), "x")
@@ -17124,22 +16919,7 @@ let dirStatTests =
               System.IO.File.WriteAllText(System.IO.Path.Combine(d, ".dot"), "x")
 
               try
-                  // the invariant process cwd, not Session.Cwd(): under the
-                  // parallel test runner, Session.Cwd() may momentarily hold a
-                  // concurrent test's temp dir, and restoring to it after that
-                  // dir is deleted leaves the global cwd pointing at a deleted
-                  // path — every concurrent spawn then fails "command not found"
-                  // (Process.Start cannot chdir there). GetCurrentDirectory is
-                  // never mutated (weir tracks cwd in Session, not the process).
-                  let saved = System.IO.Directory.GetCurrentDirectory()
-                  Weir.Session.setCwd d
-
-                  let runLive input =
-                      match typecheck env (parse input) with
-                      | Ok te -> eval Weir.Builtins.valueEnv te
-                      | Error terr -> failtest (formatError terr)
-
-                  try
+                  inCwd d (fun () ->
                       match
                           runLive
                               "(ls |> Seq.map show |> Str.join \"|\") == (Dir.stat \".\" |> Seq.map show |> Str.join \"|\")"
@@ -17151,24 +16931,15 @@ let dirStatTests =
                       // (File.stat's pin, the seq form)
                       match runLive "(Dir.stat \".\" |> Seq.head).path" with
                       | VStr p when p.StartsWith d -> ()
-                      | other -> failtest $"a relative argument must yield absolute paths: {other}"
-                  finally
-                      Weir.Session.setCwd saved
+                      | other -> failtest $"a relative argument must yield absolute paths: {other}")
               finally
                   System.IO.Directory.Delete(d, true)
           }
           test "empty gives []; absent raises naming Dir.stat and the path" {
-              let d =
-                  System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-dstat-{System.Guid.NewGuid():N}")
-
-              System.IO.Directory.CreateDirectory d |> ignore
-
-              try
+              withTempDir "weir-dstat" (fun d ->
                   match run $"Dir.stat \"{d.Replace('\\', '/')}\" |> Seq.length" with
                   | VInt 0L -> ()
-                  | other -> failtest $"empty must be zero rows: {other}"
-              finally
-                  System.IO.Directory.Delete(d, true)
+                  | other -> failtest $"empty must be zero rows: {other}")
 
               let ex =
                   Expect.throwsC (fun () -> run "Dir.stat \"weir-dstat-no-such-dir-xyz\"" |> ignore) id
@@ -17420,10 +17191,7 @@ let walkCohortTests =
               | Ok _ -> failtest "a defaulted Secret field must refuse"
           }
           test "declaring a type an import already provides is an error naming the import [D:dup-type-decl]" {
-              let td =
-                  System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-dupim-{System.Guid.NewGuid():N}")
-
-              System.IO.Directory.CreateDirectory td |> ignore
+              let td = tempDir "weir-dupim"
 
               System.IO.File.WriteAllLines(
                   System.IO.Path.Combine(td, "m.weir"),
@@ -17433,8 +17201,7 @@ let walkCohortTests =
               try
                   let entry = [ "import \"./m.weir\" as M"; "type T = { b: int }"; "print \"x\"" ]
 
-                  let diags, _, _, _ =
-                      Weir.Script.analyzeLines (System.IO.Path.Combine(td, "main.weir")) entry
+                  let diags = diagsIn (System.IO.Path.Combine(td, "main.weir")) entry
 
                   let hit =
                       diags
@@ -17453,7 +17220,7 @@ let walkCohortTests =
                   [ for i in 1..12 do
                         yield! [ $"let a{i} ="; "    1"; "  bad" ] ]
 
-              let diags, _, _, _ = Weir.Script.analyzeLines "cap.weir" lines
+              let diags = diagsIn "cap.weir" lines
 
               let assemblyCount =
                   diags |> List.filter (fun d -> d.Code = "assembly") |> List.length
@@ -17667,8 +17434,7 @@ let sizeTests =
           }
           test "a unit-type district splice teaches its exits; the cascade never leaks a hole name" {
               let terrs =
-                  let p =
-                      System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-leak-{System.Guid.NewGuid():N}.weir")
+                  let p = tempPath "weir-leak" + ".weir"
 
                   System.IO.File.WriteAllLines(
                       p,
@@ -17676,8 +17442,7 @@ let sizeTests =
                   )
 
                   try
-                      let ds, _, _, _ =
-                          Weir.Script.analyzeLines p (List.ofArray (System.IO.File.ReadAllLines p))
+                      let ds = diagsIn p (List.ofArray (System.IO.File.ReadAllLines p))
 
                       ds |> List.filter (fun d -> d.Severity = "error")
                   finally
@@ -17732,21 +17497,16 @@ let sizeTests =
 let sigTests =
     // disk fixtures: a .weir/sigs tree in a temp dir (the fs-members style)
     let withSigTree (sigSource: string list) (f: string -> 'a) : 'a =
-        let root =
-            System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-sig-{System.Guid.NewGuid():N}")
+        withTempDir "weir-sig" (fun root ->
+            System.IO.Directory.CreateDirectory(System.IO.Path.Combine(root, ".weir", "sigs"))
+            |> ignore
 
-        System.IO.Directory.CreateDirectory(System.IO.Path.Combine(root, ".weir", "sigs"))
-        |> ignore
+            System.IO.Directory.CreateDirectory(System.IO.Path.Combine(root, ".git"))
+            |> ignore
 
-        System.IO.Directory.CreateDirectory(System.IO.Path.Combine(root, ".git"))
-        |> ignore
+            System.IO.File.WriteAllLines(System.IO.Path.Combine(root, ".weir", "sigs", "fixtool.weir"), sigSource)
 
-        System.IO.File.WriteAllLines(System.IO.Path.Combine(root, ".weir", "sigs", "fixtool.weir"), sigSource)
-
-        try
-            f root
-        finally
-            System.IO.Directory.Delete(root, true)
+            f root)
 
     let fixSig =
         [ "module Fixtool"
@@ -17763,8 +17523,7 @@ let sigTests =
         let p = System.IO.Path.Combine(root, "use.weir")
         System.IO.File.WriteAllLines(p, script)
 
-        let ds, _, _, _ =
-            Weir.Script.analyzeLines p (List.ofArray (System.IO.File.ReadAllLines p))
+        let ds = diagsIn p (List.ofArray (System.IO.File.ReadAllLines p))
 
         ds |> List.filter (fun d -> d.Code = "sig")
 
@@ -17842,8 +17601,7 @@ let sigTests =
               let sig1 =
                   [ "module Ftool"; "let version = \"ftool 1.0\""; "type Cmd = { alpha: bool }" ]
 
-              let root =
-                  System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-sigshape-{System.Guid.NewGuid():N}")
+              let root = tempPath "weir-sigshape"
 
               System.IO.Directory.CreateDirectory(System.IO.Path.Combine(root, ".weir", "sigs"))
               |> ignore
@@ -17871,8 +17629,7 @@ let sigTests =
                       let p = System.IO.Path.Combine(root, "use.weir")
                       System.IO.File.WriteAllLines(p, script)
 
-                      let ds, _, _, _ =
-                          Weir.Script.analyzeLines p (List.ofArray (System.IO.File.ReadAllLines p))
+                      let ds = diagsIn p (List.ofArray (System.IO.File.ReadAllLines p))
 
                       match ds |> List.filter (fun d -> d.Code = "sig") with
                       | [ d ] -> Expect.stringContains d.Message "unknown flag '--alhpa'" name
@@ -18045,9 +17802,7 @@ let matchArmCommandTests =
         | Ok other -> failtest $"expected a match, got {other}"
         | Error m -> failtest $"parse failed: {m}"
 
-    let diags lines =
-        let ds, _, _, _ = Weir.Script.analyzeLines "m.weir" lines
-        ds |> List.filter (fun d -> d.Severity = "error")
+    let diags = errorsIn "m.weir"
 
     testList
         "match arm commands [D:match-arm-commands]"
@@ -18078,8 +17833,8 @@ let matchArmCommandTests =
                   "the block-let body's command tail arms"
           }
           test "capture position is UNCHANGED — a value-typed match still binds seq<string>" {
-              let ds, _, _, _ =
-                  Weir.Script.analyzeLines
+              let ds =
+                  diagsIn
                       "cap.weir"
                       [ "let out = match 1 with"; "          | _ -> echo captured"; "print out" ]
 
@@ -18889,8 +18644,8 @@ let anonRecordTests =
               Expect.equal (Weir.Eval.formatValue v) "{ ip = \"x\" }" "nameless, exactly as a declared record renders"
           }
           test "the shape persists across statements (script + REPL share checkStatement)" {
-              let ds, _, _, _ =
-                  Weir.Script.analyzeLines
+              let ds =
+                  diagsIn
                       "anon.weir"
                       [ "let x = [\"{}\"]  |> from json {| ip: string |}"; "let _y = x.ip" ]
 
@@ -18921,13 +18676,13 @@ let anonLiteralTests =
                     "    |}"
                     "print r.name" ]
 
-              let diags, _, _, _ = Weir.Script.analyzeLines "r.weir" lines
+              let diags = diagsIn "r.weir" lines
               let errs = diags |> List.filter (fun d -> d.Severity = "error")
               Expect.isEmpty errs $"the lambda field must not swallow 'name': {errs}"
           }
           test "a bare lambda element does not swallow the next list element [D:field-sep-sentinel]" {
               let lines = [ "let xs = ["; "    fun () -> 1"; "    fun () -> 2"; "    ]"; "print (show (Seq.length xs))" ]
-              let diags, _, _, _ = Weir.Script.analyzeLines "l.weir" lines
+              let diags = diagsIn "l.weir" lines
               let errs = diags |> List.filter (fun d -> d.Severity = "error")
               Expect.isEmpty errs $"the lambda element must not swallow the next: {errs}"
           }
@@ -18963,16 +18718,15 @@ let anonLiteralTests =
                   "the admitted walk and the writer both resolve the name"
           }
           test "the def persists across statements (script + REPL share checkStatement)" {
-              let ds, _, _, _ =
-                  Weir.Script.analyzeLines "anonlit.weir" [ "let x = {| ip = \"z\" |}"; "let _y = x.ip" ]
+              let ds = diagsIn "anonlit.weir" [ "let x = {| ip = \"z\" |}"; "let _y = x.ip" ]
 
               Expect.isEmpty (ds |> List.filter (fun d -> d.Severity = "error")) "the later statement resolves"
           }
           test "a same-shape hidden def never makes a bare literal ambiguous" {
               // without the isUserName guard on the candidate scan, the
               // drained anon def would collide with AG at statement 3
-              let ds, _, _, _ =
-                  Weir.Script.analyzeLines
+              let ds =
+                  diagsIn
                       "anonlit2.weir"
                       [ "type AG = { ip: string }"
                         "let _a = {| ip = \"x\" |}"
@@ -19068,9 +18822,6 @@ let seqGapsTests =
                   "empty inner seqs skipped"
           }
           test "asserting members follow the head message shape; try twins ask" {
-              let msgOf src =
-                  (Expect.throwsC (fun () -> run src |> ignore) id).Message
-
               Expect.equal
                   (msgOf "[1] |> Seq.where (fun _ -> false) |> Seq.find (fun _ -> true)")
                   "find: no matching element"
@@ -19709,9 +19460,7 @@ let uuidTests =
               for n in [ "Uuid.v5"; "Uuid.parse"; "Uuid.version"; "Uuid.toBytes" ] do
                   Expect.isFalse (Weir.Effects.effectfulName n) $"{n} is pure"
 
-              let errsOf (lines: string list) =
-                  let ds, _, _, _ = Weir.Script.analyzeLines "uuid.weir" lines
-                  ds |> List.filter (fun d -> d.Severity = "error")
+              let errsOf = errorsIn "uuid.weir"
 
               for call, phrase in
                   [ "Uuid.v4 ()", "'Uuid.v4' draws randomness"
@@ -19746,7 +19495,7 @@ let uuidTests =
               Expect.isFalse (System.IO.File.Exists path) "the plan wrote nothing"
           }
           test "print takes a Uuid, as the wire table's canonical types [D:print-canonical]" {
-              let ds, _, _, _ = Weir.Script.analyzeLines "print.weir" [ "print (Uuid.v7 ())"; "printerr Uuid.nil" ]
+              let ds = diagsIn "print.weir" [ "print (Uuid.v7 ())"; "printerr Uuid.nil" ]
               Expect.isEmpty (ds |> List.filter (fun d -> d.Severity = "error")) "print and printerr check"
               Expect.stringContains (checkErr "print (Instant.now ())").Message "print takes a string, int, float, bool, Uuid" "Instant still refuses"
           }
@@ -19770,8 +19519,7 @@ let wireTableTests =
     // boundaries in both directions — the four cells of a refused scalar
     // differ only in the format name, field prefix included
     let firstErr (lines: string list) =
-        let ds, _, _, _ = Weir.Script.analyzeLines "wire.weir" lines
-        match ds |> List.filter (fun d -> d.Severity = "error") with
+        match errorsIn "wire.weir" lines with
         | d :: _ -> d.Message
         | [] -> failtest $"expected a refusal: {lines}"
 
@@ -19803,7 +19551,7 @@ let wireTableTests =
                     "let back = e |> to yaml |> from yaml E"
                     "print (show back)" ]
 
-              let ds, _, _, _ = Weir.Script.analyzeLines "wire.weir" lines
+              let ds = diagsIn "wire.weir" lines
               Expect.isEmpty (ds |> List.filter (fun d -> d.Severity = "error")) "checks"
 
               let te = env |> declare "type WUuidRow = { id: Uuid; parent: Option<Uuid> }"
@@ -19832,9 +19580,7 @@ let wireCodecTests =
     // declared codecs [D:wire-codecs]: option (a) — an unannotated
     // Instant/Duration/Size still refuses; a codec attribute is the
     // author naming the consumer's convention, read by both directions
-    let checkMsgs (lines: string list) =
-        let ds, _, _, _ = Weir.Script.analyzeLines "codec.weir" lines
-        ds |> List.filter (fun d -> d.Severity = "error") |> List.map (fun d -> d.Message)
+    let checkMsgs = errorMsgsIn "codec.weir"
 
     let runIn te input =
         match Weir.Check.typecheck te (parse input) with
@@ -20436,7 +20182,7 @@ let windowsV1Tests =
         "Windows v1 platform arms"
         [ test "PATHEXT: a bare name resolves through its extension on Windows ONLY" {
               let dir =
-                  weirPath (Path.Combine(Path.GetTempPath(), $"weir-px-{System.Guid.NewGuid():N}"))
+                  weirPath (tempPath "weir-px")
 
               Directory.CreateDirectory dir |> ignore
               File.WriteAllText(Path.Combine(dir, "weirpxprobe.exe"), "")
@@ -20482,7 +20228,7 @@ let windowsV1Tests =
           }
           test "PATH separator is the platform's own (Extern splits on Path.PathSeparator)" {
               let dir =
-                  weirPath (Path.Combine(Path.GetTempPath(), $"weir-ps-{System.Guid.NewGuid():N}"))
+                  weirPath (tempPath "weir-ps")
 
               Directory.CreateDirectory dir |> ignore
               File.WriteAllText(Path.Combine(dir, "weirpsprobe"), "")
@@ -20704,15 +20450,9 @@ let logLevelTests =
           } ]
 
 let dxMessageTests =
-    let diagsOf lines =
-        let diags, _, _, _ = Weir.Script.analyzeLines "pin.weir" lines
-        diags
+    let diagsOf = diagsIn "pin.weir"
 
-    let mustSay lines (needle: string) label =
-        Expect.exists
-            (diagsOf lines)
-            (fun d -> d.Message.Contains needle)
-            $"{label}: expected a diagnostic containing '{needle}', got {diagsOf lines |> List.map _.Message}"
+    let mustSay = mustSayDiagIn "pin.weir"
 
     testList
         "DX message pins"
@@ -20728,8 +20468,7 @@ let dxMessageTests =
               mustSay [ "print $\"{ \\\"abc\\\" }\"" ] "not an escape here" "hole backslash"
 
               // the control: an unescaped string inside a hole is fine
-              let clean, _, _, _ =
-                  Weir.Script.analyzeLines "pin.weir" [ "print $\"{Str.length \"abc\"}\"" ]
+              let clean = diagsIn "pin.weir" [ "print $\"{Str.length \"abc\"}\"" ]
 
               Expect.isEmpty clean "strings in holes need no escaping"
           }
@@ -20752,12 +20491,11 @@ let dxMessageTests =
               Expect.isEmpty (diagsOf [ "let name n = $\"item-{n}\""; "print (name 5)"; "print (name \"x\")" ]) "generic"
           }
           test "D7: Seq.iter print resolves at the use site; non-printables still refuse" {
-              let clean, _, _, _ = Weir.Script.analyzeLines "pin.weir" [ "[1] |> Seq.iter print" ]
+              let clean = diagsIn "pin.weir" [ "[1] |> Seq.iter print" ]
 
               Expect.isEmpty clean "the obvious spelling works on the obvious type"
 
-              let cleanStr, _, _, _ =
-                  Weir.Script.analyzeLines "pin.weir" [ "[\"a\"] |> Seq.iter print" ]
+              let cleanStr = diagsIn "pin.weir" [ "[\"a\"] |> Seq.iter print" ]
 
               Expect.isEmpty cleanStr "strings unchanged"
 
@@ -20838,18 +20576,9 @@ let bytesTests =
 // cited from the asdf/acme findings, each edge pinned; plus the two
 // ports' diagnostic teachings
 let portMembersTests =
-    let diagsOf lines =
-        let diags, _, _, _ = Weir.Script.analyzeLines "pm.weir" lines
-        diags
+    let mustSay = mustSayIn "pm.weir"
 
-    let mustSay lines (needle: string) label =
-        Expect.exists
-            (diagsOf lines)
-            (fun d -> d.Message.Contains needle)
-            $"{label}: expected '{needle}', got {diagsOf lines |> List.map _.Message}"
-
-    let clean lines label =
-        Expect.isEmpty (diagsOf lines) $"{label}: expected clean, got {diagsOf lines |> List.map _.Message}"
+    let clean = cleanIn "pm.weir"
 
     testList
         "port members (v0.0.46)"
@@ -21036,18 +20765,9 @@ let portMembersTests =
 // signal teardown) are the e2e battery's server cells — a listener needs
 // a real socket and a client process, out of a unit's reach.
 let serveTests =
-    let diagsOf lines =
-        let diags, _, _, _ = Weir.Script.analyzeLines "serve.weir" lines
-        diags
+    let clean = cleanIn "serve.weir"
 
-    let clean lines label =
-        Expect.isEmpty (diagsOf lines) $"{label}: expected clean, got {diagsOf lines |> List.map _.Message}"
-
-    let mustSay lines (needle: string) label =
-        Expect.exists
-            (diagsOf lines)
-            (fun d -> d.Message.Contains needle)
-            $"{label}: expected '{needle}', got {diagsOf lines |> List.map _.Message}"
+    let mustSay = mustSayIn "serve.weir"
 
     let okHandler =
         "let h = fun req -> HttpServerResponse { status = 200; headers = []; body = Text \"ok\" }"
@@ -21288,24 +21008,16 @@ let versionStampTests =
 // enforcement point) plus the parse/script-refusal edges
 let moduleSignatureTests =
     let withDir (files: (string * string list) list) (f: string -> unit) =
-        let td =
-            System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-msig-{System.Guid.NewGuid():N}")
-
-        System.IO.Directory.CreateDirectory td |> ignore
-
-        try
+        withTempDir "weir-msig" (fun td ->
             for name, lines in files do
                 System.IO.File.WriteAllLines(System.IO.Path.Combine(td, name), lines)
 
-            f td
-        finally
-            System.IO.Directory.Delete(td, true)
+            f td)
 
     let diagsOf (td: string) (entry: string) =
         let path = System.IO.Path.Combine(td, entry)
 
-        let ds, _, _, _ =
-            Weir.Script.analyzeLines path (List.ofArray (System.IO.File.ReadAllLines path))
+        let ds = diagsIn path (List.ofArray (System.IO.File.ReadAllLines path))
 
         ds |> List.filter (fun d -> d.Severity = "error")
 
@@ -21614,9 +21326,7 @@ let unusedBindingTests =
     // the unused-binding law [D:unused-bindings]: an unread let binder is
     // a hard check error — the strictness family (statement rule,
     // exhaustiveness, unreachable arms); `_name` is the escape
-    let errsOf (lines: string list) =
-        let ds, _, _, _ = Weir.Script.analyzeLines "ub.weir" lines
-        ds |> List.filter (fun d -> d.Severity = "error")
+    let errsOf = errorsIn "ub.weir"
 
     let clean (lines: string list) (label: string) =
         Expect.isEmpty (errsOf lines) $"{label}: expected clean, got {errsOf lines |> List.map _.Message}"
@@ -21740,9 +21450,7 @@ let reenumWarningTests =
     // unforced seq binding enumerated at two or more sites warns at the
     // second and later sites — advisory (warning severity, check still
     // exits 0), conservative, and stated
-    let allOf (lines: string list) =
-        let ds, _, _, _ = Weir.Script.analyzeLines "re.weir" lines
-        ds
+    let allOf = diagsIn "re.weir"
 
     let diagsOf (lines: string list) =
         allOf lines |> List.filter (fun d -> d.Code = "re-enumeration")
@@ -21893,7 +21601,7 @@ let tempDirLintTests =
     // a `within tmp` block; an unmatched bind is the legitimate escaping use
     // and stays silent. Warning severity — check still exits 0.
     let diagsOf (lines: string list) =
-        let ds, _, _, _ = Weir.Script.analyzeLines "tmp.weir" lines
+        let ds = diagsIn "tmp.weir" lines
         ds |> List.filter (fun d -> d.Code = "temp-dir-cleanup")
 
     let silent (lines: string list) (label: string) =
@@ -21918,7 +21626,7 @@ let tempDirLintTests =
               | other -> failtest $"expected one warning, got {other |> List.map (fun d -> d.Message)}"
           }
           test "warning severity is exit-0's substance: no error rides along" {
-              let ds, _, _, _ = Weir.Script.analyzeLines "tmp.weir" [ "let d = Path.newTempDir ()"; "Dir.deleteAll d" ]
+              let ds = diagsIn "tmp.weir" [ "let d = Path.newTempDir ()"; "Dir.deleteAll d" ]
               Expect.isFalse (ds |> List.exists (fun d -> d.Severity = "error")) "check exits 0 on a warning-only file"
           }
           test "an UNMATCHED bind is the escaping use — silent" {
@@ -21974,7 +21682,7 @@ let private distilledChecks (lines: string list) : bool =
     if List.isEmpty lines then
         true
     else
-        let diags, _, _, _ = Weir.Script.analyzeLines "#save-test" lines
+        let diags = diagsIn "#save-test" lines
         not (diags |> List.exists (fun d -> d.Severity = "error"))
 
 let replSaveDistillTests =
@@ -22144,8 +21852,7 @@ let cmdChainTests =
                   | Error e -> failtest $"{line}: {e}"
           }
           test "| or after a splatted command checks and runs (one exitCode desugar)" {
-              let diags, _, _, _ =
-                  Weir.Script.analyzeLines "or-splat.weir" [ "let xs = [\"a\"; \"b\"]"; "echo $@xs | or echo no" ]
+              let diags = diagsIn "or-splat.weir" [ "let xs = [\"a\"; \"b\"]"; "echo $@xs | or echo no" ]
 
               Expect.isEmpty diags "the splat reaches argv, no internal error"
           }
@@ -22503,9 +22210,7 @@ let pipeChainTests =
 
 let fieldSpliceTests =
     // a splice's `.field` path is one word [D:field-splices]
-    let errs (lines: string list) =
-        let ds, _, _, _ = Weir.Script.analyzeLines "fs.weir" lines
-        ds |> List.filter (fun d -> d.Severity = "error") |> List.map (fun d -> d.Message)
+    let errs = errorMsgsIn "fs.weir"
 
     let decl =
         [ "type In = { name: string }"
@@ -22550,9 +22255,7 @@ let fieldSpliceTests =
 let holeGenericTests =
     // a hole on a generalized var carries Render — Show minus a top-level
     // Secret — instead of the string default [D:hole-generic]
-    let run (lines: string list) =
-        let ds, _, _, _ = Weir.Script.analyzeLines "hg.weir" lines
-        ds |> List.filter (fun d -> d.Severity = "error") |> List.map (fun d -> d.Message)
+    let run = errorMsgsIn "hg.weir"
 
     testList
         "generic interpolation holes [D:hole-generic]"
@@ -22606,9 +22309,7 @@ let armBlockTests =
         | Ok lls -> lls
         | Error e -> failtest e
 
-    let errs (lines: string list) =
-        let ds, _, _, _ = Weir.Script.analyzeLines "ab.weir" lines
-        ds |> List.filter (fun d -> d.Severity = "error") |> List.map (fun d -> d.Message)
+    let errs = errorMsgsIn "ab.weir"
 
     testList
         "text blocks in arms and else [D:arm-blocks]"
@@ -22631,8 +22332,7 @@ let armBlockTests =
               Expect.equal (run [ "let t ="; "    match 1 with"; "    | 1 -> <<<"; "        one"; "    | _ -> [\"o\"]" ]).Length 1 "one logical line"
           }
           test "a block as a trailing argument teaches the pipe at the marker" {
-              let ds, _, _, _ =
-                  Weir.Script.analyzeLines "ab.weir" [ "within tmp d"; "    File.write $\"{d}/f\" <<<"; "        hi" ]
+              let ds = diagsIn "ab.weir" [ "within tmp d"; "    File.write $\"{d}/f\" <<<"; "        hi" ]
 
               match ds |> List.filter (fun d -> d.Severity = "error") with
               | d :: _ ->
@@ -22648,9 +22348,7 @@ let armBlockTests =
 
 let lambdaLetTests =
     // a lambda body grants command lets wherever it sits [D:lambda-lets]
-    let errs (lines: string list) =
-        let ds, _, _, _ = Weir.Script.analyzeLines "lam.weir" lines
-        ds |> List.filter (fun d -> d.Severity = "error") |> List.map (fun d -> d.Message)
+    let errs = errorMsgsIn "lam.weir"
 
     let body =
         [ "    let r = sh -c \"echo x\" | complete"; "    print r.stdout)" ]
@@ -22694,9 +22392,7 @@ let lambdaLetTests =
 let orPatternTests =
     // F#'s or-patterns as a desugar [D:or-patterns]: one arm per
     // alternative sharing the guard and body; v1 alternatives bind no names
-    let errs (lines: string list) =
-        let ds, _, _, _ = Weir.Script.analyzeLines "or.weir" lines
-        ds |> List.filter (fun d -> d.Severity = "error") |> List.map (fun d -> d.Message)
+    let errs = errorMsgsIn "or.weir"
 
     testList
         "or-patterns [D:or-patterns]"
@@ -22759,9 +22455,7 @@ let orPatternTests =
 let reflexTeachingTests =
     // F#/bash/C reflexes teach at their site instead of an expecting-list
     // dump [D:left-to-right-ops] [D:argv-backslash] [D:parse-error-binds]
-    let errs (lines: string list) =
-        let ds, _, _, _ = Weir.Script.analyzeLines "reflex.weir" lines
-        ds |> List.filter (fun d -> d.Severity = "error") |> List.map (fun d -> d.Message)
+    let errs = errorMsgsIn "reflex.weir"
 
     let only (lines: string list) =
         match errs lines with
@@ -22857,9 +22551,7 @@ let ifBodyStopTests =
         | Ok s -> Weir.Ast.sexprStmt s
         | Error f -> failtest $"parse failed: {f.Message}"
 
-    let errsOf (lines: string list) =
-        let ds, _, _, _ = Weir.Script.analyzeLines "ifelse.weir" lines
-        ds |> List.filter (fun d -> d.Severity = "error")
+    let errsOf = errorsIn "ifelse.weir"
 
     testList
         "if-body else stop [D:if-body-stop]"
@@ -22942,9 +22634,7 @@ let aliasCompleteTests =
           } ]
 
 let dynamicHeadTests =
-    let checkOf lines =
-        let diags, _, _, _ = Weir.Script.analyzeLines "dynhead.weir" lines
-        diags
+    let checkOf = diagsIn "dynhead.weir"
 
     testList
         "dynamic command heads [D:dynamic-head]"
@@ -23588,9 +23278,7 @@ let hardeningTests =
 
 // ---- Http DX [D:http-dx]: Json-takes-the-value, Http.expect, Form ------
 let httpDxTests =
-    let checkOf lines =
-        let diags, _, _, _ = Weir.Script.analyzeLines "httpdx.weir" lines
-        diags
+    let checkOf = diagsIn "httpdx.weir"
 
     testList
         "Http DX [D:http-dx]"
