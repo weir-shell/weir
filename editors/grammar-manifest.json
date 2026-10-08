@@ -5,6 +5,7 @@
       "json",
       "jsonl",
       "table",
+      "toml",
       "xml",
       "yaml"
     ],

@@ -1726,6 +1726,14 @@ let p = yaml patch
         tier: $-
 doc |> Yaml.merge p |> to yaml |> Seq.iter print
 ```
+- TOML is a READ-ONLY typed boundary [D:from-toml]: `from toml T` reads
+  ONE document (TOML 1.1, so 1.0 too) into a record or tagged union —
+  the YAML field law (records, seqs, `Option`, `[<Wire "key">]`,
+  codecs); `seq`/`stream`/`Map` tops refuse (the document is a table).
+  Arrays of tables (`[[bin]]`) are `seq<record>`. A date/time reads as
+  its TEXT (`[<Iso8601>]` takes an offset date-time into `Instant`);
+  `inf`/`nan` parse but refuse into a `float` field. Duplicate keys and
+  re-defined tables are located errors. No `to toml`.
 - XML is a READ-ONLY typed boundary [D:from-xml]: `from xml T` reads
   one document into `T` (point it at a `.csproj`/`.slnx`). The root
   element is the top record; a field name matches a CHILD ELEMENT by

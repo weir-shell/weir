@@ -47,7 +47,7 @@ let areaOfSrc p =
     // [D:schema-types] (Infer's sibling, the other frontend of the one
     // decl emitter)
     | "src/Weir/Yaml.fs" | "src/Weir/Http.fs" | "src/Weir/Serve.fs" | "src/Weir/Infer.fs"
-    | "src/Weir/SchemaTypes.fs" | "src/Weir/Table.fs" -> Some "adapters"
+    | "src/Weir/SchemaTypes.fs" | "src/Weir/Table.fs" | "src/Weir/Toml.fs" -> Some "adapters"
     | "src/Weir/Version.fs" | "src/Weir/Program.fs" | "src/Weir/Can.fs" | "src/Weir/Argv.fs"
     | "src/Weir/Extern.fs" | "src/Weir/Contracts.fs" | "src/Weir/Diagnose.fs" -> Some "cli"
     | p when Str.endsWith ".fsproj" p -> None

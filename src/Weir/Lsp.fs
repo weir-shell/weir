@@ -1295,7 +1295,8 @@ let definitionTarget
 
                         wordAt useLl.Text jcol
                         |> Option.bind (fun w -> if w = topName then typeSite topName None else None)
-                    | Check.TEFromYaml(tyName, _, _) ->
+                    | Check.TEFromYaml(tyName, _, _)
+                    | Check.TEFromToml(tyName, _) ->
                         wordAt useLl.Text jcol
                         |> Option.bind (fun w -> if w = tyName then typeSite tyName None else None)
                     // `Env.load T` / `Args.load T`: the target type name jumps to
@@ -1831,7 +1832,8 @@ let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string 
                     match nd.Kind with
                     | Check.TEFrom(_, Check.TopRec d, _, _, _, _) -> named d.Name
                     | Check.TEFrom(_, Check.TopUnion u, _, _, _, _) -> named u.Name
-                    | Check.TEFromYaml(tyName, _, _) -> named tyName
+                    | Check.TEFromYaml(tyName, _, _)
+                    | Check.TEFromToml(tyName, _) -> named tyName
                     | Check.TEEnvLoad(def, _) -> named def.Name
                     | Check.TEArgsLoad target ->
                         (match target with
@@ -1892,6 +1894,7 @@ let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string 
                 | Check.TEArgsLoad _ when word = Some "load" -> Some "Args.load"
                 | Check.TEFrom(fmt, _, _, _, _, _) when word = Some "from" || word = Some fmt -> Some $"from {fmt}"
                 | Check.TEFromYaml _ when word = Some "from" || word = Some "yaml" -> Some "from yaml"
+                | Check.TEFromToml _ when word = Some "from" || word = Some "toml" -> Some "from toml"
                 | Check.TETo(fmt, _, _, _, _) when word = Some "to" || word = Some fmt -> Some $"to {fmt}"
                 | _ -> None)
             |> Option.bind (fun key -> Map.tryFind key Builtins.builtinDocs)

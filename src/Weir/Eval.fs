@@ -1860,7 +1860,12 @@ let rec private yamlConvert (shape: Yaml.Shape) (node: Yaml.Node) : Value =
             | ".inf"
             | "-.inf"
             | "+.inf"
-            | ".nan" ->
+            | ".nan"
+            // TOML's spellings [D:from-toml]
+            | "inf"
+            | "-inf"
+            | "nan"
+            | "-nan" ->
                 failwith
                     $"from yaml: line {line}: '{raw}' is not representable — weir floats are finite (non-finite results raise; there is no value to read into)"
             | _ ->
@@ -2014,6 +2019,32 @@ let private yamlFromImpl (shape: Yaml.Shape) (stream: bool) : Value =
                 failwith
                     $"from yaml: reads one document; this input has {List.length docs} documents — read a stream with 'from yaml stream T'"
         | v -> unreachable $"the checker rejects 'from yaml' on {formatValue v}")
+
+// from toml T [D:from-toml]: the toml parser builds the yaml node tree and
+// the yaml binder converts it — the binder's messages are relabelled
+let private tomlFromImpl (shape: Yaml.Shape) : Value =
+    VBuiltin(fun v ->
+        match v with
+        | VSeq lines ->
+            let text =
+                lines
+                |> Seq.map (fun l ->
+                    match l with
+                    | VStr s -> s
+                    | v -> unreachable $"the checker rejects 'from toml' on non-string elements: {formatValue v}")
+                |> String.concat "\n"
+
+            match Toml.parse text with
+            | Error msg -> failwith $"from toml: {msg}"
+            | Ok doc ->
+                try
+                    yamlConvert shape doc
+                with Failure msg when msg.StartsWith "from yaml: " ->
+                    failwith (
+                        "from toml: "
+                        + msg.Substring("from yaml: ".Length).Replace("a quoted scalar is a string", "the value is a string")
+                    )
+        | v -> unreachable $"the checker rejects 'from toml' on {formatValue v}")
 
 // the renderer: value-driven (records/seqs/scalars/Option/Yaml nodes).
 // Record fields render alphabetically (the VRecord representation's
@@ -3305,6 +3336,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
         VStr(sb.ToString())
     | TEFrom(fmt, top, defs, udefs, seqOf, mapOf) -> fromAdapter fmt seqOf mapOf top defs udefs
     | TEFromYaml(_, shape, stream) -> yamlFromImpl shape stream
+    | TEFromToml(_, shape) -> tomlFromImpl shape
     | TEYaml(tpl, _, patchBy) ->
         // a patch district wraps its tree with the merge key — the
         // wrapper ctor cannot be produced from user code or from parsed

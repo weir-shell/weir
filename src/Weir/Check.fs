@@ -161,6 +161,8 @@ and TypedKind =
     // from yaml T [D:yaml-v1]: eval has no env.Types, so the checker packs
     // the resolved target tree (the pattern [D:env-enums] set)
     | TEFromYaml of tyName: string * shape: Yaml.Shape * stream: bool
+    // from toml T [D:from-toml]: the yaml shape, read through the toml parser
+    | TEFromToml of tyName: string * shape: Yaml.Shape
     | TETo of
         format: string *
         renames: Map<string, Map<string, string>> *
@@ -3967,7 +3969,11 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
             do!
                 // the stream cardinality word is YAML's [D:wire-unions] —
                 // json's stream form is the thing literally named jsonl
-                if streamOf && fmt = "table" then
+                if fmt = "toml" && (seqOf || mapOf || streamOf) then
+                    // a TOML document is one table [D:from-toml]
+                    let n = defaultArg tyName "T"
+                    err expr.Span $"'from toml' reads one document, and its top level is a table — write from toml {n}"
+                elif streamOf && fmt = "table" then
                     let n = defaultArg tyName "Row"
                     err expr.Span $"'from table stream' does not exist — a table is already rows; write from table {n}"
                 elif streamOf && fmt <> "yaml" then
@@ -4109,6 +4115,38 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                     err
                         expr.Span
                         "'from yaml' needs a record name, e.g. from yaml Deployment — or seq<Deployment> for a top-level sequence, or stream Deployment for '---' documents"
+            // from toml T reads one document -> T [D:from-toml]: the yaml
+            // shape and binder, over the toml parser's node tree
+            | "toml", Some name ->
+                // the yaml shape law, its messages naming the toml boundary
+                let tomlShape ty =
+                    yamlShape expr.Span env Set.empty "" ty
+                    |> Result.mapError (fun e -> { e with Message = e.Message.Replace("yaml", "toml") })
+
+                match typeDefFor env name with
+                | Some(Record def) when def.Params.IsEmpty ->
+                    let! shape = tomlShape (TNamed(name, []))
+
+                    return
+                        { Kind = TEFromToml(name, shape)
+                          Ty = TFun(TSeq TStr, TNamed(name, []))
+                          Span = expr.Span }
+                | Some(Union udef) when udef.Tag.IsSome ->
+                    let! shape = tomlShape (TNamed(name, []))
+
+                    return
+                        { Kind = TEFromToml(name, shape)
+                          Ty = TFun(TSeq TStr, TNamed(name, []))
+                          Span = expr.Span }
+                | Some(Record _) -> return! err expr.Span $"'from toml' needs a monomorphic record; '{name}' is generic"
+                | Some(Union _) ->
+                    return!
+                        err
+                            expr.Span
+                            $"'{name}' is an untagged union — a union crosses the wire with [<Tag \"field\">] on its declaration"
+                | None -> return! err expr.Span $"unknown type '{name}'{didYouMean name (Map.keys env.Types)}"
+            | "toml", None ->
+                return! err expr.Span "'from toml' needs a record name, e.g. from toml Cargo — or an inline shape {| package: {| version: string |} |}"
             // from xml T reads one document's root element -> T
             // [D:from-xml]: field names match child elements, [<Attr>]
             // reads an attribute, [<Elem "X">] names a repeated child, a
@@ -4156,7 +4194,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                 | None -> return! err expr.Span $"unknown type '{name}'{didYouMean name (Map.keys env.Types)}"
             | "table", None ->
                 return! err expr.Span "'from table' needs a row record name, e.g. from table Pod — it yields seq<Pod>"
-            | fmt, _ -> return! err expr.Span $"unknown format '{fmt}'; available: json, jsonl, yaml, xml, table"
+            | fmt, _ -> return! err expr.Span $"unknown format '{fmt}'; available: json, jsonl, yaml, toml, xml, table"
         }
     | ETo _ -> err expr.Span "'to json' / 'to yaml' can only be used as a pipe stage, e.g. xs |> to json"
     | EYaml(tpl, schema, patchBy) ->
@@ -5490,6 +5528,7 @@ let childExprs (te: TypedExpr) : TypedExpr list =
     | TEArgsLoad _
     | TEFrom _
     | TEFromYaml _
+    | TEFromToml _
     | TETo _ -> []
     | TELet(_, _, v, b) -> [ v; b ]
     | TELetPat(_, v, b) -> [ v; b ]

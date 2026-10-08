@@ -5,3 +5,7 @@
 # fails on CR bytes weir never emitted. eol=lf overrides autocrlf; auto
 # leaves binaries untouched.
 * text=auto eol=lf
+
+# the vendored toml-test suite [D:from-toml] is byte-exact data: its CRLF
+# and bare-CR documents test line-ending handling, so no conversion
+tests/toml-test/** -text

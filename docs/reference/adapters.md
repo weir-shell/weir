@@ -2,7 +2,7 @@
 
 `from` reads a data format into a type you declare; `to` writes one.
 Three formats work in both directions (`json`, `jsonl`, `yaml`), and
-two more are read-only (`xml`, `table`). You always say which format
+three more are read-only (`toml`, `xml`, `table`). You always say which format
 you mean: `from json T` reads one document however many lines it
 spans, while `from jsonl T` reads one document per line and yields
 `seq<T>`.
@@ -112,6 +112,42 @@ written as a block scalar. The `yaml` template literal (with checked
 structure, splices as nodes, and `schema=`) is part of the language
 and is covered in the [guide](../GUIDE.md#commands-and-processes);
 vendoring schemas is on the [tooling page](../tooling.md#yaml-schemas).
+
+## TOML
+
+`from toml T` reads one TOML document into `T` — a `Cargo.toml`, a
+`pyproject.toml`, a tool's config. It reads TOML 1.1, so every TOML 1.0
+file too, and it is read-only: there is no `to toml`. The document is
+a table, so `T` is a record (or a tagged union); `seq`, `stream` and
+`Map` tops are refused. Inside, the field types follow YAML's rules:
+tables are records, arrays and arrays of tables (`[[bin]]`) are
+seqs, a key that may be missing is an `Option`, and `[<Wire "key">]`
+names a key that isn't a weir name, such as `requires-python`.
+
+- Integers in any TOML spelling (`1_000`, `0xff`, `0o7`, `0b1`) read as
+  `int`; `inf` and `nan` parse, but reading one into a `float` field
+  is an error, since weir floats are finite.
+- A date or time is read as its text. An offset date-time such as
+  `2024-03-01T10:00:00Z` reads into an `Instant` field marked
+  `[<Iso8601>]`.
+- Duplicate keys and tables defined twice are errors, reported with
+  the line, as the TOML spec requires.
+
+```weir
+type Package = { name: string; version: string }
+type Cargo = { package: Package; bin: seq<{| name: string |}> }
+
+let cargo = <<<
+    [package]
+    name = "demo"
+    version = "0.3.1"
+
+    [[bin]]
+    name = "cli"
+
+let c = cargo |> from toml Cargo
+print $"{c.package.name} {c.package.version}: {c.bin |> Seq.map _.name |> Str.join ","}"
+```
 
 ## XML
 
