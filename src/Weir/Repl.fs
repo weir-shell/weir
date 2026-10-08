@@ -3747,12 +3747,17 @@ let private loadInit (baseState: State) : State =
         match splitSessionBlock path lines with
         | Error() -> notLoaded ()
         | Ok(fieldLines, promptFieldLines, declLines, aliasLines) ->
+            // imports resolve against the init file's real location
+            // [D:init-import]: a dotfiles symlink imports its neighbours,
+            // exactly as `weir check` on the linked-to file does
+            let importer = Script.fileImportLoader (Script.importAnchor path)
+
             let checkAll (lls: Script.LogicalLine list) (tenv: TypeEnv) =
                 let rec go env acc rest =
                     match rest with
                     | [] -> Ok(List.rev acc)
                     | (ll: Script.LogicalLine) :: tail ->
-                        match Script.checkStatement false None Script.resolver Script.scriptOnlyImport env ll with
+                        match Script.checkStatement false None Script.resolver importer env ll with
                         | Error d -> Error(ll, d)
                         | Ok chk -> go chk.Env ((ll, chk) :: acc) tail
 
@@ -3904,12 +3909,8 @@ let private loadInit (baseState: State) : State =
                                             ll,
                                             "the init file is declaration-only — 'type' and 'let'; it configures the prompt, it cannot run"
                                         )
-                                | Script.KImport _ ->
-                                    bad <-
-                                        Some(
-                                            ll,
-                                            "the init file does not import — declare here, or put shared code in a module scripts import"
-                                        )
+                                // a module's names join the session [D:init-import]
+                                | Script.KImport _ -> ()
                                 | Script.KModule _ ->
                                     bad <-
                                         Some(
@@ -3995,6 +3996,25 @@ let private loadInit (baseState: State) : State =
                                             let bindings = Eval.bindPattern pat (Eval.eval venv te)
                                             names <- names + bindings.Length
                                             venv <- bindings |> List.fold (fun m (n, v) -> Map.add n v m) venv
+                                        | Script.KImport lm ->
+                                            // replay the module and expose `Alias.member`,
+                                            // as the script runner does [D:init-import]
+                                            let procFacts =
+                                                [ "Self.pid"; "Self.args"; "Self.stdin"; "Self.entryPath" ]
+                                                |> List.choose (fun k -> Map.tryFind k venv |> Option.map (fun v -> k, v))
+
+                                            let moduleVenv = Script.replayModule procFacts lm
+
+                                            venv <-
+                                                lm.Members
+                                                |> List.fold
+                                                    (fun acc (n, _) ->
+                                                        match Map.tryFind n moduleVenv with
+                                                        | Some v -> Map.add $"{lm.Alias}.{n}" v acc
+                                                        | None -> acc)
+                                                    venv
+
+                                            names <- names + List.length lm.Members
                                         | _ -> ()
                                     with ex ->
                                         // a raising let fails the load with a

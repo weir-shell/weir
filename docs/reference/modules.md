@@ -19,7 +19,9 @@ exist:
 
 - `import "./lib/x.weir" as X` — a file path, relative to the
   importing file's directory (`lib.weir` and names without an
-  extension work too), or an absolute path
+  extension work too), or an absolute path. If the importing file is
+  a symlink, its real location counts: a script linked into `~/bin`
+  imports the files beside the original
 - `import "weir:name" as N` — a vendored module: weir looks upward
   for a `.weir/` directory and loads `.weir/modules/name.weir`
   ([tooling](../tooling.md#remote-modules))
@@ -84,7 +86,8 @@ path.
 ## Script-only
 
 `import` needs a file to resolve paths against, so it is not allowed
-in `-e` or the REPL; the error explains why.
+in `-e` or at the REPL prompt; the error explains why. The REPL's
+[init file](../repl.md#the-init-file) is a file, so it can import.
 
 ## Capabilities travel
 

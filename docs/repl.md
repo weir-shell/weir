@@ -421,9 +421,11 @@ are always plain text.
 `init.weir` beside the [config file](tooling.md#configuration)
 (`$XDG_CONFIG_HOME/weir/`, else `~/.config/weir/`; `%APPDATA%\weir\`
 on Windows) is loaded before the first prompt. Like a module, it may
-contain only declarations (`type` and `let`), plus
+contain only declarations (`type` and `let`) and
+[imports](reference/modules.md), plus
 [`#alias`](#alias-command-head-aliases) lines and one `#session`
-block for settings that a declaration can't express.
+block for settings that a declaration can't express. An imported
+module's members are available in the session as `Alias.member`.
 
 The file must start with `#init` on its first line; the REPL refuses
 to load it otherwise. Any file starting with `#init` is checked as an
@@ -434,6 +436,9 @@ the declarations are checked), and symlink it into place:
 ```text
 ln -s ~/dotfiles/weir/init.weir ~/.config/weir/init.weir
 ```
+
+Imports resolve from the file's real location, so with that link,
+`import "./prompt.weir"` loads `~/dotfiles/weir/prompt.weir`.
 
 The REPL loads only `<configHome>/weir/init.weir`. Which init file
 loads never depends on the current directory, so a stray `init.weir`

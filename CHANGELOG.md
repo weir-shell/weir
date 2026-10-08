@@ -1,5 +1,31 @@
 # Changelog
 
+## v0.0.69
+
+### Added
+
+- **The REPL init file can import modules.** `import "./prompt.weir"`
+  in `init.weir` loads the module before the first prompt, and its
+  members are available in the session as `Prompt.member`. This keeps
+  a large prompt in its own file.
+- **`from yaml` reads indentation indicators.** A block scalar header
+  like `token: |2` (written by some kubeconfig tools) made the whole
+  read fail; `|2`, `|2-` and `|-2` now read as YAML defines them, with
+  the content indented relative to the key.
+
+### Changed
+
+- **Imports resolve from a symlinked file's real location.** A script
+  or init file linked from a dotfiles repo or into `~/bin` imports the
+  files beside the original. `Self.scriptPath` still reports the link.
+
+### Fixed
+
+- **A name from a pattern `let` is a binding in an `if` condition.**
+  After `let a, b = …` in a function body, `if a == "" then` treated
+  `a` as a command. Names bound by tuple and record patterns now work
+  like a plain `let`'s.
+
 ## v0.0.68
 
 ### Changed

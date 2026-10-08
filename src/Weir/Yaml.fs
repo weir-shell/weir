@@ -4,7 +4,8 @@ module Weir.Yaml
 // sequences, `#` comments; multi-doc `---`; literal block scalars `|`
 // and `|-` [D:block-scalars]. Not parsed, each with a teaching error:
 // anchors/aliases, tags, flow style, directives, complex keys, folded
-// scalars (`>`), `|+`, explicit indentation indicators. The subset is
+// scalars (`>`), `|+`. Explicit indentation indicators (`|2`, `|-2`)
+// are read from files [D:yaml-indent-indicator]. The subset is
 // small enough to own outright — weir's own error positions, zero
 // dependency bytes.
 
@@ -439,31 +440,53 @@ let private multilineQuoted
 
 // ---- block scalars [D:block-scalars] --------------------------------------
 
-/// Classify a value slot as a block scalar header: Ok keep? for `|`/`|-`,
-/// a teaching error for the rejected forms, None for a non-header
-let blockHeader (rest: string) : Result<bool, string> option =
+/// Classify a value slot as a block scalar header: Ok (keep?, indicator)
+/// for `|`/`|-` with an optional indentation indicator `N` (`|2`, `|2-`,
+/// `|-2`) [D:yaml-indent-indicator], a teaching error for the rejected
+/// forms, None for a non-header
+let blockHeaderIndicated (rest: string) : Result<bool * int option, string> option =
     let t = rest.Trim()
+    let keepPlus = "'|+' (keep all trailing newlines) is outside the yaml subset — use | (one trailing newline) or |- (none)"
 
-    if t = "|" then
-        Some(Ok true) // clip: exactly one trailing newline
-    elif t = "|-" then
-        Some(Ok false) // strip: none
-    elif t = "|+" then
-        Some(
-            Error
-                "'|+' (keep all trailing newlines) is outside the yaml subset — use | (one trailing newline) or |- (none)"
-        )
-    elif t.StartsWith ">" then
+    if t.StartsWith ">" then
         Some(Error "folded block scalars (>) are outside the yaml subset — use | (literal)")
-    elif t.Length > 1 && t[0] = '|' && System.Char.IsDigit t[1] then
-        Some(
-            Error
-                "explicit indentation indicators are outside the yaml subset — content indentation is detected from the first line"
-        )
     elif t.StartsWith "|" then
-        Some(Error "a block scalar header takes no inline content — the content is the indented lines below")
+        // the header's indicators, in either order: chomping (- or +) and
+        // a 1-9 indentation digit, each at most once
+        let ind = t.Substring 1
+
+        let digit, chomp =
+            match ind.ToCharArray() |> List.ofArray with
+            | [] -> None, None
+            | [ c ] when System.Char.IsDigit c -> Some c, None
+            | [ c ] -> None, Some c
+            | [ a; b ] when System.Char.IsDigit a && not (System.Char.IsDigit b) -> Some a, Some b
+            | [ a; b ] when System.Char.IsDigit b && not (System.Char.IsDigit a) -> Some b, Some a
+            | _ -> Some 'x', Some 'x' // malformed: falls to the inline-content teaching
+
+        match digit, chomp with
+        | _, Some '+' -> Some(Error keepPlus)
+        | Some '0', _ -> Some(Error "a block scalar's indentation indicator is 1-9 — 0 is not allowed")
+        | Some d, (None | Some '-') when System.Char.IsDigit d ->
+            Some(Ok(chomp.IsNone, Some(int d - int '0')))
+        | None, None -> Some(Ok(true, None)) // clip: exactly one trailing newline
+        | None, Some '-' -> Some(Ok(false, None)) // strip: none
+        | _ -> Some(Error "a block scalar header takes no inline content — the content is the indented lines below")
     else
         None
+
+/// `blockHeaderIndicated` for weir's own `yaml` blocks, which detect
+/// content indentation from the first line and take no indicator
+let blockHeader (rest: string) : Result<bool, string> option =
+    match blockHeaderIndicated rest with
+    | Some(Ok(_, Some _)) ->
+        Some(
+            Error
+                "explicit indentation indicators are not needed in a yaml block — content indentation is detected from the first line"
+        )
+    | Some(Ok(keep, None)) -> Some(Ok keep)
+    | Some(Error e) -> Some(Error e)
+    | None -> None
 
 /// Content comes from the raw lines (blank lines and `#`-shaped lines
 /// are bytes inside a block scalar — the filtered view already dropped
@@ -476,6 +499,7 @@ let private blockScalar
     (headerNo: int)
     (parentIndent: int)
     (keep: bool)
+    (indicator: int option)
     : Result<Node, string> =
     let content = ResizeArray<int * string>()
     let mutable i = 0
@@ -502,12 +526,16 @@ let private blockScalar
 
     let isWsOnly (l: string) = l.Trim() = ""
 
-    match
+    // an indentation indicator states the content indentation relative to
+    // the parent (PyYAML's reading), so the first line may carry leading
+    // spaces; without one it is the first content line's
+    let firstIndent =
         content
         |> Seq.filter (fun (_, l) -> not (isWsOnly l))
         |> Seq.tryHead
         |> Option.map (snd >> indentOf)
-    with
+
+    match firstIndent |> Option.map (fun detected -> defaultArg (indicator |> Option.map ((+) parentIndent)) detected) with
     | None -> Error $"line {headerNo}: a block scalar header needs an indented block below it"
     | Some cIndent ->
         match content |> Seq.tryFind (fun (_, l) -> not (isWsOnly l) && indentOf l < cIndent) with
@@ -587,14 +615,14 @@ let rec private parseBlock
     // a block value, with the extent guard: a dedented `#` line inside
     // the extent would strand the deeper lines after it outside the
     // content — refuse rather than silently drop them
-    let blockValue (no: int) (parentIndent: int) (keep: bool) (i: int) (j: int) : Result<Node, string> =
+    let blockValue (no: int) (parentIndent: int) (keep: bool, indicator: int option) (i: int) (j: int) : Result<Node, string> =
         let lastNo = blockLastNo rawSrc no parentIndent
 
         match lines[i + 1 .. j - 1] |> Array.tryFind (fun (n2, _) -> n2 > lastNo) with
         | Some(n2, _) ->
             Error
                 $"line {n2}: this line is inside the block scalar's extent but outside its content (a dedented line above it ended the block)"
-        | None -> blockScalar rawSrc no parentIndent keep
+        | None -> blockScalar rawSrc no parentIndent keep indicator
 
     // a quoted value whose closing quote sits on a later line
     // [D:quoted-fold]: the continuation lines belong to the scalar and
@@ -684,9 +712,9 @@ let rec private parseBlock
                             raw.Substring(indent + (if raw.Substring(indent).TrimEnd() = "-" then 1 else 2))
 
                         let itemR =
-                            match blockHeader inline' with
+                            match blockHeaderIndicated inline' with
                             | Some(Error msg) -> Error $"line {no}: {msg}"
-                            | Some(Ok keep) -> blockValue no indent keep i j
+                            | Some(Ok header) -> blockValue no indent header i j
                             | None ->
 
                                 if inline'.Trim() = "" then
@@ -767,9 +795,9 @@ let rec private parseBlock
                                     let jSeq = if seqValue then seqExtent indent (i + 1) else j
 
                                     let valueR =
-                                        match blockHeader rest with
+                                        match blockHeaderIndicated rest with
                                         | Some(Error msg) -> Error $"line {no}: {msg}"
-                                        | Some(Ok keep) -> blockValue no indent keep i j
+                                        | Some(Ok header) -> blockValue no indent header i j
                                         | None ->
 
                                             if seqValue then
@@ -797,11 +825,11 @@ let rec private parseBlock
 
                 entries start [] Set.empty |> Result.map (fun es -> NMap(es, firstNo))
             | None ->
-                match blockHeader firstBody with
+                match blockHeaderIndicated firstBody with
                 | Some(Error msg) -> Error $"line {firstNo}: {msg}"
-                | Some(Ok keep) ->
+                | Some(Ok header) ->
                     // a whole-document block scalar: `|` at the doc root
-                    blockValue firstNo indent keep start fin
+                    blockValue firstNo indent header start fin
                 | None ->
                     if fin > start + 1 then
                         Error $"line {firstNo}: expected 'key:' or '- ' at this indentation"

@@ -1606,7 +1606,9 @@ type Bad = C of int
   `YMap` keeps YOUR key order; record fields render in DECLARATION
   order [D:record-order] (wire order for an anonymous shape).
   Literal block scalars `|`/`|-` are in the subset (folded `>` and
-  `|+` reject): `|` MEANS ends-with-one-newline, `|-` ends-with-none —
+  `|+` reject; an indentation indicator `|2`/`|2-`/`|-2` READS from
+  files, relative to the key or dash column [D:yaml-indent-indicator],
+  but a `yaml` block literal takes none): `|` MEANS ends-with-one-newline, `|-` ends-with-none —
   the form follows the value both directions, and a multiline string
   renders as a block scalar automatically. A QUOTED scalar may
   continue on deeper-indented lines (kubectl's long `message:`
@@ -1882,8 +1884,11 @@ conf |> Seq.iter print
   running a module, importing a non-module, a self-import, a module
   `let` that runs a command (wrap it in a function), or a missing
   file (the message shows the resolved absolute path). Resolution is
-  check-time — nothing loads at runtime. `import` is script-only
-  (not `-e`/REPL). Imports are transitive (a module may import); a
+  check-time — nothing loads at runtime. `import` needs a file: not
+  `-e` or the REPL prompt, but the REPL init file may import
+  [D:init-import]. A relative path resolves from the importing file's
+  REAL location (a symlinked script or init imports beside the
+  original; `Self.scriptPath` keeps the link). Imports are transitive (a module may import); a
   shared module is checked once (diamonds collapse) and an import
   cycle is a named check error.
 
@@ -2381,27 +2386,31 @@ not the teaching.
 - `Dir`: `copy` `create` `delete` `deleteAll` `exists` `list` `move` `stat`
 - `Duration`: `average` `h` `m` `ms` `parse` `s` `sleep` `sum` `toMillis` `toSeconds` `tryParse`
 - `Env`: `fromFile` `get` `load` `ofPairs` `pair` `vars`
-- `File`: `append` `copy` `delete` `exists` `isExecutable` `move` `read` `readBytes` `readSecret` `sha256` `size` `write` `writeAtomic` `writeBytes` — `append` is kernel-atomic for CONCURRENT appenders (O_APPEND on Unix, one write per call: calls land contiguous and intact, no lock ever blocks a reader) [D:append-oappend]; `write` is in-place (same inode, hardlinks/held handles/`tail -f`/bind mounts keep working) and leaves the file untouched when its payload raises; `writeAtomic` is the whole-file swap (same-dir temp + fsync + rename): a reader sees complete old or complete new, never a window — but the INODE CHANGES (hardlinks split, held handles and `tail -f` keep the old file, a Docker single-file bind mount breaks); it replaces a symlink's TARGET and preserves mode and an existing BOM [D:write-integrity]
+- `File`: `append` `copy` `delete` `exists` `isExecutable` `mode` `move` `read` `readBytes` `readSecret` `sha256` `size` `stat` `write` `writeAtomic` `writeBytes` — `mode` is the permissions as `Some "rwxr-xr-x"` (`None` on Windows); `stat` is one path's `FileRow` (a symlink describes the link itself); `append` is kernel-atomic for CONCURRENT appenders (O_APPEND on Unix, one write per call: calls land contiguous and intact, no lock ever blocks a reader) [D:append-oappend]; `write` is in-place (same inode, hardlinks/held handles/`tail -f`/bind mounts keep working) and leaves the file untouched when its payload raises; `writeAtomic` is the whole-file swap (same-dir temp + fsync + rename): a reader sees complete old or complete new, never a window — but the INODE CHANGES (hardlinks split, held handles and `tail -f` keep the old file, a Docker single-file bind mount breaks); it replaces a symlink's TARGET and preserves mode and an existing BOM [D:write-integrity]
 - `Float`: `abs` `average` `near` `ofInt` `parse` `round` `sum` `toInt` `tryParse`
 - `Instant`: `epochMs` `now` `ofEpochMs` `parse` `parseWith` `tryParse` `tryParseWith`
 - `Uuid`: `fromBytes` `instant` `max` `nil` `ns` `parse` `toBytes` `toString` `tryParse` `v4` `v5` `v7` `v7At` `version`
 - `Json`: `inferShape`
 - `Table`: `inferShape` `render`
 - `Yaml`: `parse` `merge` `inferShape`
+- `Graph`: `reach` — `Graph.reach keyOf neighbors start`, every reachable node once, breadth-first
+- `Frontier`: `fold` — the worklist fold `Graph.reach` and `Tree.walk` derive from
+- `Tree`: `walk` — `Tree.walk step root`, parents before children, for effects
 - `Http`: `defaults` `delete` `expect` `get` `head` `header` `headerAll` `options` `patch` `post` `put` `query` `send` `withQuery`
 - `Log`: `debug` `debugWith` `info` `infoWith` `trace` `traceWith` `warn` `warnWith`
 - `Map`: `add` `count` `get` `has` `keys` `ofPairs` `pairs` `remove` `tryGet` `values`
 - `Net`: `portOpen`
-- `Option`: `defaultValue` `defaultWith` `iter` `map` `orElse` `orElseWith`
-- `Path`: `cacheHome` `combine` `configHome` `dir` `extension` `fileName` `glob` `home` `newTempDir` `stateHome` `stem` `tempRoot` `under` — `home`/`configHome`/`stateHome`/`cacheHome` (each `unit -> string`) are home in an EXPRESSION (`File.read $"{Path.home ()}/.bashrc"`); in a COMMAND LINE an unquoted word-leading `~`/`~/…` expands to home at run time [D:tilde] (`cat ~/.bashrc`, `~/bin/tool`) — quoted `"~/x"`, `$"…"` and spliced values stay literal, `~user` too, and `$HOME` never expands. The working directory is `pwd`, a `string` read where it is used [D:pwd-string]; `cd dir` returns the absolute directory it moved to
+- `Option`: `bind` `defaultValue` `defaultWith` `flatten` `iter` `map` `orElse` `orElseWith` — `bind` chains lookups that may each fail (`f` returns an Option; no nesting); `flatten` collapses `Option<Option<T>>`
+- `Path`: `cacheHome` `combine` `configHome` `dir` `extension` `fileName` `glob` `home` `newTempDir` `normalize` `stateHome` `stem` `tempRoot` `under` — `normalize` resolves `.`/`..` in the path TEXT (no filesystem, no symlinks; use it where `under` refuses a path that leaves its base); `home`/`configHome`/`stateHome`/`cacheHome` (each `unit -> string`) are home in an EXPRESSION (`File.read $"{Path.home ()}/.bashrc"`); in a COMMAND LINE an unquoted word-leading `~`/`~/…` expands to home at run time [D:tilde] (`cat ~/.bashrc`, `~/bin/tool`) — quoted `"~/x"`, `$"…"` and spliced values stay literal, `~user` too, and `$HOME` never expands. The working directory is `pwd`, a `string` read where it is used [D:pwd-string]; `cd dir` returns the absolute directory it moved to
 - `Poll`: `defaults`
+- `Plan`: `apply` `isEmpty` `ops` `preview` — the value a `plan` block yields: `ops` the recorded `Op`s, `preview` one line each, `apply` performs them in order
 - `Proc`: `pid` `running` `stop` `tail` `wait`
-- `Server`: `port` `running`
+- `Server`: `port` `running` `streamErrors` — `streamErrors` lists the errors of `Stream` bodies that raised partway (the client got a truncated body; never raised out of the handler)
 - `Retry`: `defaults`
 - `Secret`: `map` `of` `reveal`
 - `Color`: `red` `green` `yellow` `blue` `magenta` `cyan` `gray` `bold` `dim` `underline` `sgr` — each `string -> string`, wrapping in a colour/attribute. Context-aware: emits the escape only at a terminal with colour on (no `NO_COLOR`) and returns the plain string when piped, so `print (Color.green x)` colours interactively and stays plain in a pipe. Nest to combine (`Color.bold (Color.red "!")`); `Color.sgr "38;5;208" s` is the raw-code escape hatch for 256-colour/truecolor. `print` keeps colour (SGR) at a tty but still neutralizes every terminal-driving escape a value carries (title, clipboard, cursor, CR).
 - `Term`: `width` — `Term.width () : int`, the terminal columns queried live; falls back to 80 when there is no terminal (piped/redirected), so it never raises. The `tput cols` primitive.
-- `Self`: `args` `entryPath` `pid` `scriptPath` `stdin` (script-only — absent in the REPL, so `#help` does not list it)
+- `Self`: `prompt`, everywhere — writes its message to stderr and reads one stdin line (raises at end of input); and `args` `entryPath` `pid` `scriptPath` `stdin` (script-only — absent in the REPL, so `#help` does not list it)
 - `Seq`: `append` `average` `choose` `chunkBySize` `collect` `concat` `contains` `countBy` `distinct` `distinctBy` `equal` `except` `exactlyOne` `exists` `find` `fold` `forall` `freeze` `groupBy` `head` `indexed` `isEmpty` `item` `iter` `last` `length` `map` `max` `maxBy` `min` `minBy` `pairwise` `pfirst` `pfirstWith` `pick` `piter` `piterWith` `pmap` `pmapWith` `range` `reduce` `replicate` `rev` `scan` `skip` `skipWhile` `sort` `sortBy` `sortByDescending` `sortDescending` `sum` `take` `takeWhile` `tryExactlyOne` `tryFind` `tryHead` `tryItem` `tryLast` `tryPick` `tryReduce` `where` `windowed` `zip`
 - `Bytes`: `fromBase64` `fromHex` `hmacSha256` `length` `sha256` `sub` `toBase64` `toHex` `tryFromBase64`
 - `Size`: `average` `bytes` `parse` `sum` `toBytes` `tryParse`

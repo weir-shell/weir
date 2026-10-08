@@ -2152,7 +2152,23 @@ let boundaryTests =
               Expect.stringContains (errOf [ "k: |" ]) "needs an indented block" "header without a block"
               Expect.stringContains (errOf [ "k: >"; "    a" ]) "folded block scalars (>)" "folded rejected"
               Expect.stringContains (errOf [ "k: |+"; "    a" ]) "'|+'" "|+ rejected"
-              Expect.stringContains (errOf [ "k: |2"; "    a" ]) "explicit indentation" "indicator rejected"
+              Expect.stringContains (errOf [ "k: |0"; "    a" ]) "1-9" "a 0 indicator rejected"
+              Expect.stringContains (errOf [ "k: |2+"; "    a" ]) "'|+'" "|+ with an indicator still rejected"
+              Expect.stringContains (errOf [ "k: |3"; "  a" ]) "left of the block scalar's content indentation" "content left of the stated indent"
+
+              // an indentation indicator states the content indent relative to
+              // the parent (key or dash column), so the first line may carry
+              // leading spaces — PyYAML's reading [D:yaml-indent-indicator]
+              Expect.equal (blockText (docOf [ "k: |2"; "    lead"; "  base" ])) "  lead\nbase\n" "|2"
+              Expect.equal (blockText (docOf [ "k: |2-"; "    lead"; "  base" ])) "  lead\nbase" "|2- strips"
+              Expect.equal (blockText (docOf [ "k: |-2"; "    lead"; "  base" ])) "  lead\nbase" "|-2, either order"
+
+              let seqItem =
+                  match docOf [ "- |2"; "    lead"; "  base" ] with
+                  | Weir.Yaml.NSeq([ Weir.Yaml.NBlock(t, _) ], _) -> t
+                  | other -> failtest $"expected seq of block, got {other}"
+
+              Expect.equal seqItem "  lead\nbase\n" "relative to the dash"
               Expect.stringContains (errOf [ "k: | x" ]) "no inline content" "inline content rejected"
 
               Expect.stringContains
@@ -10411,6 +10427,26 @@ let multilineLambdaTests =
 
               let diags, _, _, _ = Weir.Script.analyzeLines "pin.weir" lines
               Expect.isEmpty diags "no diagnostics — the param is known, not a command head"
+          }
+          test "a pattern let's names shadow PATH in the body's if-condition [D:paramful-rhs]" {
+              // `let a, b = …` then `if a == "" then` once read `a` as a
+              // command head: the pattern path scoped no names into its body
+              let clean lines =
+                  let diags, _, _, _ = Weir.Script.analyzeLines "pin.weir" lines
+                  Expect.isEmpty diags $"check == run: {lines}"
+
+              clean
+                  [ "let f () ="
+                    "    let a, b = (\"x\", \"y\")"
+                    "    if a == \"\" then b else a"
+                    "print (f ())" ]
+
+              clean
+                  [ "type R = { name: string }"
+                    "let g r ="
+                    "    let { name = test } = r"
+                    "    if test == \"\" then \"none\" else test"
+                    "print (g { name = \"x\" })" ]
           }
           test "block-let params shadow PATH in an if-condition head [D:paramful-rhs]" {
               // a param heading a block-let's if-condition is a binding —

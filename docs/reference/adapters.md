@@ -90,6 +90,12 @@ as in kubectl's long `message:` values:
 - an empty continuation line becomes a newline
 - the folded value stays a string
 
+Literal block scalars (`key: |` and `key: |-`) read as strings. An
+indentation indicator such as `|2` or `|2-`, which kubeconfigs
+sometimes carry, sets the content's indentation relative to the key,
+so the first line may keep leading spaces. Folded scalars (`>`) and
+`|+` are not supported.
+
 `from yaml stream T` reads a `---`-separated stream of documents,
 each as `T`. To read a mixed bundle such as a Kubernetes apply file,
 use `from yaml stream KDoc` with a tagged union: `stream` means "many

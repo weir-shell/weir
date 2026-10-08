@@ -4412,6 +4412,26 @@ let checkVendoredModule (absPath: string) : Result<int, string> =
 
                 Error $"{where}{e.Message}"
 
+// where a file's imports resolve from: its real location, through a
+// symlink [D:init-import] — a linked dotfile or ~/bin script finds its
+// neighbours. Self.scriptPath keeps the link [D:script-path]
+let importAnchor (path: string) : string =
+    let full = IO.Path.GetFullPath path
+
+    try
+        match IO.FileInfo(full).ResolveLinkTarget true with
+        | null -> full
+        | target -> target.FullName
+    with _ ->
+        full
+
+// a file's import loader [D:modules-v1]: imports resolve against the
+// importing file; one cache per loader dedups a diamond, the chain catches
+// a cycle. The REPL init file uses it too [D:init-import]
+let fileImportLoader (importingAbsPath: string) : ImportLoader =
+    let cache = System.Collections.Generic.Dictionary<string, LoadedModule>()
+    fun p _ alias -> loadModuleCachedWith false cache [ importingAbsPath ] importingAbsPath p alias
+
 let scriptOnlyImport: ImportLoader =
     fun _ _ _ ->
         Error
@@ -5796,10 +5816,7 @@ let analyzeLines
 
     // imports resolve relative to the file being checked [D:modules-v1];
     // one cache per check dedups a diamond, one chain catches a cycle
-    let analyzeImport: ImportLoader =
-        let absPath = IO.Path.GetFullPath path
-        let cache = System.Collections.Generic.Dictionary<string, LoadedModule>()
-        fun p _ alias -> loadModuleCachedWith false cache [ absPath ] absPath p alias
+    let analyzeImport: ImportLoader = fileImportLoader (importAnchor path)
 
     Extern.refresh ()
 
@@ -6476,9 +6493,7 @@ let run (path: string) (scriptArgs: string list) : int =
 
                 // the entry's import loader, bound to its directory; one cache
                 // per run dedups a diamond, one chain catches a cycle
-                let entryImport: ImportLoader =
-                    let cache = System.Collections.Generic.Dictionary<string, LoadedModule>()
-                    fun p _ alias -> loadModuleCachedWith false cache [ absScriptPath ] absScriptPath p alias
+                let entryImport: ImportLoader = fileImportLoader (importAnchor absScriptPath)
 
                 // signatures load once, before the check fold; a load
                 // failure (missing/malformed sig) is a check error —
