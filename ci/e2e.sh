@@ -4504,6 +4504,64 @@ echo "$xto" | grep -qF "XML is read-only" || fail "to xml refusal teaches: $xto"
 echo "e2e ok: from xml — real .csproj groups/refs, stripped xmlns, no to xml"
 rm -rf "$xdir"
 
+# from toml [D:from-toml]: real Cargo.toml / pyproject.toml files on disk —
+# arrays of tables, inline tables, a dotted key, a hyphenated key through
+# [<Wire>], an offset date-time into Instant through [<Iso8601>], and a
+# located duplicate-key error
+tdir=$(mkweirtmp)
+cat > "$tdir/Cargo.toml" <<'TEOF'
+[package]
+name = "demo"
+version = "0.3.1"
+edition = '2021'
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+tokio.version = "1.38"
+
+[[bin]]
+name = "cli"
+
+[[bin]]
+name = "srv"
+TEOF
+cat > "$tdir/pyproject.toml" <<'TEOF'
+[project]
+name = "tool"
+requires-python = ">=3.11"
+released = 2024-03-01T10:00:00Z
+TEOF
+printf 'a = 1\nb = 2\na = 3\n' > "$tdir/dup.toml"
+cat > "$tdir/toml.weir" <<'WEOF'
+type Dep = { version: string; features: Option<seq<string>> }
+type Cargo = { package: {| name: string; version: string |}; dependencies: {| serde: Dep; tokio: Dep |}; bin: seq<{| name: string |}> }
+let c = File.read "Cargo.toml" |> from toml Cargo
+print $"{c.package.name} {c.package.version}"
+print $"serde {c.dependencies.serde.version}; tokio {c.dependencies.tokio.version}"
+print (c.bin |> Seq.map _.name |> Str.join ",")
+type Project = {
+    name: string
+    [<Wire "requires-python">]
+    requiresPython: string
+    [<Iso8601>]
+    released: Instant
+}
+let p = File.read "pyproject.toml" |> from toml {| project: Project |}
+print $"{p.project.requiresPython} {p.project.released}"
+WEOF
+out=$(cd "$tdir" && $BIN toml.weir 2>&1) || fail "from toml script: $out"
+expect "from toml: a Cargo.toml package table" "demo 0.3.1" "$out"
+expect "from toml: inline and dotted-key dependencies" "serde 1" "$out"
+expect "from toml: a dotted-key dependency" "tokio 1.38" "$out"
+merr=$(cd "$tdir" && $BIN -e 'File.read "Cargo.toml" |> from toml {| dependencies: Map<string, {| version: string |}> |} |> ignore' 2>&1) && fail "a Map field must refuse: $merr" || true
+echo "$merr" | grep -qF "cross the toml boundary" || fail "the shape refusal names the toml boundary: $merr"
+expect "from toml: arrays of tables" "cli,srv" "$out"
+expect "from toml: [<Wire>] and [<Iso8601>]" ">=3.11 2024-03-01T10:00:00Z" "$out"
+terr=$(cd "$tdir" && $BIN -e 'File.read "dup.toml" |> from toml {| a: int |} |> _.a |> show |> print' 2>&1) && fail "a duplicate key must fail: $terr" || true
+echo "$terr" | grep -qF "from toml: line 3: the key 'a' is defined twice" || fail "the duplicate key is located: $terr"
+echo "e2e ok: from toml — Cargo/pyproject on disk, Wire, Iso8601, located duplicate key"
+rm -rf "$tdir"
+
 # from table [D:from-table]: the aligned-table boundary on a real file —
 # a kubectl-shaped fixture (tabwriter reality: 3-space padding, spaced
 # values, <none>) read into typed rows; the header-offset law is the

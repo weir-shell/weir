@@ -2247,6 +2247,13 @@
       "pointer": "Use it as a pipe stage on a tool\u0027s table output: \u0060\u2026 |\u003E from table Pod\u0060."
     },
     {
+      "name": "from toml",
+      "signature": null,
+      "summary": "Parse one TOML document (TOML 1.1, so every 1.0 file too) into a declared record, the same way \u0060from yaml\u0060 does: nested records for tables, seqs for arrays and arrays of tables, Option for a key that may be missing, [\u003CWire \u0022key\u0022\u003E] for a key that is not a weir name (\u0060current-context\u0060, \u0060requires-python\u0060). Duplicate keys and redefined tables are errors, with the line. A date or time is read as its text; an offset date-time can be read into an Instant field with [\u003CIso8601\u003E]. Reading only; there is no \u0060to toml\u0060.",
+      "example": null,
+      "pointer": "Use it as a pipe stage: \u0060File.read \u0022Cargo.toml\u0022 |\u003E from toml Cargo\u0060."
+    },
+    {
       "name": "from xml",
       "signature": null,
       "summary": "Parse one XML document (a .csproj, .slnx or any XML) into a declared record. The root element is the record, and each field matches a child element by local name (a default xmlns is ignored). Use [\u003CAttr\u003E] to read an attribute, [\u003CElem \u0022X\u0022\u003E] for a repeated child, and a nested record for a child element. All values are text: fields are string, Option\u003Cstring\u003E, a record, or a seq of these, so declare a number as string and convert it with Str.toInt. Reading only; there is no \u0060to xml\u0060.",

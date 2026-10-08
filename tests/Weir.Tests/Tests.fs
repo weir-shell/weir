@@ -3252,7 +3252,7 @@ let boundaryCheckTests =
               Expect.stringContains (checkErr "[\"x\"] |> from json Job").Message "is an untagged union" ""
           }
           test "unknown format is rejected" {
-              Expect.stringContains (checkErr "[\"x\"] |> from toml").Message "unknown format 'toml'" ""
+              Expect.stringContains (checkErr "[\"x\"] |> from ini").Message "unknown format 'ini'" ""
           }
           test "from yaml needs a record name [D:yaml-v1]" {
               Expect.stringContains (checkErr "[\"x\"] |> from yaml").Message "'from yaml' needs a record name" ""
@@ -8893,7 +8893,7 @@ let adapterFormTests =
               match Weir.Lsp.hoverType lines 2 22 with
               | Some h ->
                   Expect.stringContains h "from <adapter>" "the form"
-                  Expect.stringContains h "json, jsonl, table, xml, yaml" "every from-adapter, derived (xml and table read, never write)"
+                  Expect.stringContains h "json, jsonl, table, toml, xml, yaml" "every from-adapter, derived (xml and table read, never write)"
               | None -> failtest "from must answer"
 
               let t = [ "let back = rows |> to yaml" ]
@@ -8915,13 +8915,13 @@ let adapterFormTests =
               | None -> failtest "the adapter word must still hover"
           }
           test "completion after `from `/`to ` is direction-aware and offers NOTHING else" {
-              Expect.equal (sug "xs |> from ") [ "json"; "jsonl"; "table"; "xml"; "yaml" ] "every from-adapter (xml and table read)"
+              Expect.equal (sug "xs |> from ") [ "json"; "jsonl"; "table"; "toml"; "xml"; "yaml" ] "every from-adapter (xml and table read)"
               Expect.equal (sug "xs |> from j") [ "json"; "jsonl" ] "prefix-filtered"
               Expect.equal (sug "xs |> to ") [ "json"; "jsonl"; "yaml" ] "every to-adapter (no to xml)"
-              Expect.isFalse (sug "xs |> into " = [ "json"; "jsonl"; "table"; "xml"; "yaml" ]) "boundary: into is not from"
+              Expect.isFalse (sug "xs |> into " = [ "json"; "jsonl"; "table"; "toml"; "xml"; "yaml" ]) "boundary: into is not from"
           }
           test "the adapter lists derive from the one source (builtinDocs keys), never a parallel table" {
-              Expect.equal (Weir.Builtins.adapterNames "from") [ "json"; "jsonl"; "table"; "xml"; "yaml" ] "from (xml and table read)"
+              Expect.equal (Weir.Builtins.adapterNames "from") [ "json"; "jsonl"; "table"; "toml"; "xml"; "yaml" ] "from (xml and table read)"
               Expect.equal (Weir.Builtins.adapterNames "to") [ "json"; "jsonl"; "yaml" ] "to (no to xml)"
           }
           test "`from`/`to` inside a string or comment are data — no discovery hover [D:form-word-hover]" {
@@ -23046,6 +23046,7 @@ let helpUxTests =
                   Set
                       [ "JSON" // wire formats
                         "YAML"
+                        "TOML"
                         "XML"
                         "NDJSON" // newline-delimited JSON, `jsonl`'s long name
                         "UTF-8" // encodings and character notation
@@ -23633,11 +23634,180 @@ let httpDxTests =
                   "a raw string is not a Form payload"
           } ]
 
+// from toml [D:from-toml] — the vendored toml-test suite (TOML 1.1.0 file
+// list), truncation robustness, and the yaml-binder path
+let tomlTests =
+    let suiteRoot =
+        let rec up (d: System.IO.DirectoryInfo) =
+            if isNull d then
+                failwith "tests/toml-test not found above the test binary"
+            else
+                let candidate = System.IO.Path.Combine(d.FullName, "tests", "toml-test")
+
+                if System.IO.Directory.Exists candidate then candidate else up d.Parent
+
+        lazy (up (System.IO.DirectoryInfo System.AppContext.BaseDirectory))
+
+    let suiteFiles () =
+        System.IO.File.ReadAllLines(System.IO.Path.Combine(suiteRoot.Value, "files-toml-1.1.0"))
+        |> Array.filter (fun l -> l.EndsWith ".toml")
+
+    // an undecodable file never reaches the parser (File.read's job)
+    let strictUtf8 = System.Text.UTF8Encoding(false, true)
+
+    let readSuite (rel: string) =
+        try
+            Some(strictUtf8.GetString(System.IO.File.ReadAllBytes(System.IO.Path.Combine(suiteRoot.Value, rel))))
+        with _ ->
+            None
+
+    let isTagged (e: System.Text.Json.JsonElement) =
+        let mutable t = Unchecked.defaultof<System.Text.Json.JsonElement>
+        let mutable v = Unchecked.defaultof<System.Text.Json.JsonElement>
+
+        e.TryGetProperty("type", &t)
+        && e.TryGetProperty("value", &v)
+        && t.ValueKind = System.Text.Json.JsonValueKind.String
+        && Seq.length (e.EnumerateObject()) = 2
+
+    // the node tree against toml-test's tagged JSON; datetimes compare as
+    // "read as text" only — weir keeps their source spelling
+    let rec mismatch (n: Weir.Yaml.Node) (e: System.Text.Json.JsonElement) : string option =
+        let inv = System.Globalization.CultureInfo.InvariantCulture
+
+        match n, e.ValueKind with
+        | Weir.Yaml.NMap(entries, _), System.Text.Json.JsonValueKind.Object when not (isTagged e) ->
+            let props = e.EnumerateObject() |> Seq.map (fun p -> p.Name, p.Value) |> Map.ofSeq
+
+            if Set.ofList (List.map fst entries) <> Set.ofSeq props.Keys then
+                Some $"keys {List.map fst entries} vs {List.ofSeq props.Keys}"
+            else
+                entries |> List.tryPick (fun (k, v) -> mismatch v props[k] |> Option.map (fun m -> $"{k}: {m}"))
+        | Weir.Yaml.NSeq(items, _), System.Text.Json.JsonValueKind.Array ->
+            let es = List.ofSeq (e.EnumerateArray())
+
+            if items.Length <> es.Length then
+                Some "array length"
+            else
+                List.zip items es |> List.tryPick (fun (a, b) -> mismatch a b)
+        | Weir.Yaml.NScalar(raw, quoted, _), System.Text.Json.JsonValueKind.Object ->
+            let ty = e.GetProperty("type").GetString()
+            let v = e.GetProperty("value").GetString()
+
+            let ok =
+                match ty with
+                | "string" -> quoted && raw = v
+                | "integer" -> not quoted && System.Int64.Parse raw = System.Int64.Parse v
+                | "float" when v = "inf" || v = "-inf" || v = "nan" ->
+                    not quoted && (raw = v || (v = "nan" && raw.EndsWith "nan"))
+                | "float" ->
+                    not quoted
+                    && System.Double.Parse(raw, inv) = System.Double.Parse(v, inv)
+                | "bool" -> not quoted && raw = v
+                | _ -> quoted
+
+            if ok then None else Some $"{ty} {v} vs {raw}"
+        | n, k -> Some $"{n} vs {k}"
+
+    testList
+        "from toml [D:from-toml]"
+        [ test "toml-test 1.1.0: every valid document matches, every invalid one is refused" {
+              let failures =
+                  suiteFiles ()
+                  |> Array.choose (fun rel ->
+                      let valid = rel.StartsWith "valid/"
+
+                      match readSuite rel with
+                      | None -> if valid then Some $"{rel}: not UTF-8" else None
+                      | Some text ->
+                          match Weir.Toml.parse text, valid with
+                          | Ok node, true ->
+                              let expected =
+                                  System.IO.File.ReadAllText(System.IO.Path.Combine(suiteRoot.Value, System.IO.Path.ChangeExtension(rel, ".json")))
+                                  |> System.Text.Json.JsonDocument.Parse
+
+                              mismatch node expected.RootElement |> Option.map (fun m -> $"{rel}: {m}")
+                          | Error e, true -> Some $"{rel}: refused: {e}"
+                          | Ok _, false -> Some $"{rel}: accepted"
+                          | Error _, false -> None)
+
+              Expect.isGreaterThan (suiteFiles().Length) 600 "the suite is present"
+              Expect.isEmpty failures "conformance"
+          }
+          test "deep dotted keys, header paths and inline nesting are refused, never a stack overflow" {
+              let seg n = String.replicate n "a." + "a"
+
+              for doc in
+                  [ seg 50000 + " = 1"
+                    "[" + seg 50000 + "]"
+                    "[[" + seg 50000 + "]]"
+                    "x = " + String.replicate 300 ("{ " + seg 300 + " = ") + "1" + String.replicate 300 " }" ] do
+                  match Weir.Toml.parse doc with
+                  | Error e -> Expect.stringContains e "nesting is too deep" "refused with the limit"
+                  | Ok _ -> failtest "a 50k-deep document must be refused"
+
+              // the deepest legal tree still parses
+              match Weir.Toml.parse ("[" + seg 499 + "]\n" + seg 499 + " = 1") with
+              | Ok _ -> ()
+              | Error e -> failtest $"within the limit: {e}"
+          }
+          test "a truncated document is a result or an error, never a crash" {
+              for rel in suiteFiles () |> Array.filter (fun r -> r.StartsWith "valid/") do
+                  match readSuite rel with
+                  | Some text ->
+                      for cut in 0 .. text.Length - 1 do
+                          try
+                              Weir.Toml.parse (text.Substring(0, cut)) |> ignore
+                          with ex ->
+                              failtest $"{rel} cut at {cut}: {ex.GetType().Name}: {ex.Message}"
+                  | None -> ()
+          }
+          test "the yaml binder reads toml: records, Option, seq, arrays of tables" {
+              let src =
+                  VSeq(
+                      [ "title = \"x\""
+                        "[owner]"
+                        "name = 'Ada'"
+                        "[[item]]"
+                        "n = 1_000"
+                        "[[item]]"
+                        "n = 0x10"
+                        "tags = [\"a\", \"b\",]" ]
+                      |> List.map VStr
+                      |> List.toSeq
+                  )
+
+              let shape =
+                  "{| title: string; owner: {| name: string; nick: Option<string> |}; item: seq<{| n: int; tags: Option<seq<string>> |}> |}"
+
+              Expect.equal (runWith [ "src", src ] $"src |> from toml {shape} |> _.owner.name") (VStr "Ada") "a table"
+              Expect.equal (runWith [ "src", src ] $"src |> from toml {shape} |> _.item |> Seq.map _.n |> Seq.sum") (VInt 1016L) "arrays of tables, normalised ints"
+          }
+          test "errors carry the line and say from toml" {
+              let raises (lines: string list) (shape: string) (needle: string) =
+                  let src = VSeq(lines |> List.map VStr |> List.toSeq)
+
+                  try
+                      runWith [ "src", src ] $"src |> from toml {shape}" |> ignore
+                      failtest "expected a raise"
+                  with ex ->
+                      Expect.stringContains ex.Message needle needle
+
+              raises [ "a = 1"; "a = 2" ] "{| a: int |}" "from toml: line 2: the key 'a' is defined twice"
+              raises [ "a = \"x\"" ] "{| a: int |}" "the value is a string"
+              raises [ "r = inf" ] "{| r: float |}" "weir floats are finite"
+              raises [ "[t]"; "[t]" ] "{| t: {| x: Option<int> |} |}" "defined twice"
+          }
+          test "from toml refuses a seq, stream or Map top level" {
+              Expect.stringContains (checkErr "[\"a = 1\"] |> from toml seq<{| a: int |}>").Message "its top level is a table" ""
+          } ]
+
 [<Tests>]
 let allTests =
     testList
         "Weir"
         [ hardeningTests
+          tomlTests
           versionStampTests
           portMembersTests
           serveTests

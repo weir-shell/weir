@@ -6609,6 +6609,11 @@ let builtinDocs: Map<string, BuiltinDoc> =
               "Write one value as a YAML document. A record becomes a mapping, a seq a sequence, and a seq of pairs a mapping. `to yaml stream` writes one document per element, separated by `---`. A None field is left out; strings that YAML could misread as another type (no, 007, 1e5) are quoted."
               None
               (Some "Use it as a pipe stage: `deployment |> to yaml`.")
+          "from toml",
+          bd
+              "Parse one TOML document (TOML 1.1, so every 1.0 file too) into a declared record, the same way `from yaml` does: nested records for tables, seqs for arrays and arrays of tables, Option for a key that may be missing, [<Wire \"key\">] for a key that is not a weir name (`current-context`, `requires-python`). Duplicate keys and redefined tables are errors, with the line. A date or time is read as its text; an offset date-time can be read into an Instant field with [<Iso8601>]. Reading only; there is no `to toml`."
+              None
+              (Some "Use it as a pipe stage: `File.read \"Cargo.toml\" |> from toml Cargo`.")
           "from xml",
           bd
               "Parse one XML document (a .csproj, .slnx or any XML) into a declared record. The root element is the record, and each field matches a child element by local name (a default xmlns is ignored). Use [<Attr>] to read an attribute, [<Elem \"X\">] for a repeated child, and a nested record for a child element. All values are text: fields are string, Option<string>, a record, or a seq of these, so declare a number as string and convert it with Str.toInt. Reading only; there is no `to xml`."

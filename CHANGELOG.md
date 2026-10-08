@@ -4,6 +4,14 @@
 
 ### Added
 
+- **`from toml T` reads TOML.** `File.read "Cargo.toml" |> from toml Cargo`
+  reads a TOML 1.1 document (so any 1.0 file too) into your types, with
+  the same field rules as `from yaml`: tables are records, arrays and
+  `[[arrays of tables]]` are seqs, `[<Wire "requires-python">]` names an
+  awkward key. Dates and times read as text, or into an `Instant` with
+  `[<Iso8601>]`. Duplicate keys and tables defined twice are errors with
+  the line. The parser is weir's own (no new dependency) and passes the
+  official toml-test suite for TOML 1.1.
 - **The REPL init file can import modules.** `import "./prompt.weir"`
   in `init.weir` loads the module before the first prompt, and its
   members are available in the session as `Prompt.member`. This keeps
