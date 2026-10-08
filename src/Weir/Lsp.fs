@@ -194,38 +194,9 @@ let semanticTokensFor (lines: string list) : (int * int * int * int) list =
     // reified chains (| succeeds/complete/orFail) desugar the ECmd into
     // an application spine — recognize it so the command still tokens
     // (the reifier name stays lexical: grammar, not argv)
-    let reifierHeads =
-        set
-            [ "|succeeded"
-              "|completed"
-              "|orFailed"
-              "|exitCoded"
-              "|succeededEnv"
-              "|completedEnv"
-              "|exitCodedEnv"
-              "|orFailedEnv"
-              "|succeededIn"
-              "|completedIn"
-              "|exitCodedIn"
-              "|orFailedIn"
-              "|execed"
-              "|execedEnv"
-              "|lined"
-              "|linedEnv"
-              "|linedIn"
-              "|texted"
-              "|textedEnv"
-              "|textedIn"
-              "|chainCompleted"
-              "|chainSucceeded"
-              "|chainExitCoded"
-              "|chainOrFailed"
-              "|chainLined"
-              "|chainTexted" ]
-
     let rec spineIsReifier (te: Check.TypedExpr) =
         match te.Kind with
-        | Check.TEVar v -> Set.contains v reifierHeads
+        | Check.TEVar v -> (Builtins.reifierSurface v).IsSome
         | Check.TEApp(f, _) -> spineIsReifier f
         | _ -> false
 

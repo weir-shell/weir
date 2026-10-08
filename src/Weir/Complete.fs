@@ -838,7 +838,7 @@ let rec suggestScopedWith
             // just those, never the whole PATH
             let direct =
                 match lastStage before with
-                | Some(_, true) -> [ "complete"; "succeeds"; "exitCode"; "orFail"; "line"; "text"; "exec"; "and"; "or" ]
+                | Some(_, true) -> Ast.reifierNames @ [ "and"; "or" ]
                 | _ -> []
 
             let programs =

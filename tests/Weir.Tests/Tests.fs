@@ -22143,6 +22143,25 @@ let cmdChainTests =
                   | Ok _ -> ()
                   | Error e -> failtest $"{line}: {e}"
           }
+          test "| or after a splatted command checks and runs (one exitCode desugar)" {
+              let diags, _, _, _ =
+                  Weir.Script.analyzeLines "or-splat.weir" [ "let xs = [\"a\"; \"b\"]"; "echo $@xs | or echo no" ]
+
+              Expect.isEmpty diags "the splat reaches argv, no internal error"
+          }
+          test "every reifier name after a command teaches, never resolves on PATH [D:reifier-term]" {
+              // orFail takes its message as the next word, so `extra` is legal there
+              for name in Weir.Ast.reifierNames |> List.filter ((<>) "orFail") do
+                  match Weir.Parser.parseLine realResolver $"git status | {name} extra" with
+                  | Error e -> Expect.stringContains e $"'{name}' is a reifier" name
+                  | Ok other -> failtest $"{name}: expected the teaching, got {other}"
+          }
+          test "the reifier table names desugar variables that exist [D:reifier-term]" {
+              for surface, stem in Weir.Ast.reifiers do
+                  for v in [ "|" + stem; $"|{stem}Env" ] do
+                      Expect.isTrue (Map.containsKey v valueEnv) $"{surface}: {v} is a builtin"
+                      Expect.equal (Weir.Ast.reifierOfVar v) (Some surface) $"{v} maps back"
+          }
           test "| exec may end an and chain (it hands over)" {
               match Weir.Parser.parseLine realResolver "git status | and git log | exec" with
               | Ok _ -> ()
