@@ -49,12 +49,21 @@ for line in open(sys.argv[3]):
     name, _, reason = line.partition(' ')
     omitted[name] = reason
 
-# covered = the qualified spelling anywhere, or the bare name backticked
-backticked = set(re.findall(r'`([A-Za-z][A-Za-z0-9]*)`', skill))
+# covered = listed on ITS module's inventory line ("- `Mod`: `a` `b` — …",
+# the names before the first " — "). A bare name backticked anywhere in
+# the file used to count, so a member could be missing from the list
+# agents read while another module's prose carried the word.
+inventory = {}
+section = skill[skill.index('## Surface inventory'):]
+for line in section.splitlines():
+    m = re.match(r'^- `([A-Za-z]+)`: (.*)$', line)
+    if m:
+        head = m.group(2).split(' — ')[0]
+        inventory[m.group(1)] = set(re.findall(r'`([A-Za-z][A-Za-z0-9]*)`', head))
 missing, covered_omits = [], []
 for qual in surface:
     mod, _, mem = qual.partition('.')
-    hit = qual in skill or mem in backticked
+    hit = mem in inventory.get(mod, set())
     if qual in omitted:
         if hit:
             covered_omits.append(qual)
@@ -63,16 +72,21 @@ for qual in surface:
         missing.append(qual)
 
 stale_omits = [q for q in omitted if q not in surface]
+shipped = set(surface)
+phantom = sorted(f"{mod}.{mem}" for mod, mems in inventory.items() for mem in mems if f"{mod}.{mem}" not in shipped)
 
 bad = False
 if missing:
     bad = True
-    print(f"skill-surface FAIL: {len(missing)} shipped member(s) absent from SKILL.md and not omitted-on-purpose:", file=sys.stderr)
+    print(f"skill-surface FAIL: {len(missing)} shipped member(s) missing from their module's Surface inventory line and not omitted-on-purpose:", file=sys.stderr)
     for q in missing:
         print(f"  {q}", file=sys.stderr)
 if covered_omits:
     bad = True
     print(f"skill-surface FAIL: omitted-on-purpose but actually documented (stale omit): {covered_omits}", file=sys.stderr)
+if phantom:
+    bad = True
+    print(f"skill-surface FAIL: listed in the inventory but not shipped: {phantom}", file=sys.stderr)
 if stale_omits:
     bad = True
     print(f"skill-surface FAIL: omitted-on-purpose but no longer shipped: {stale_omits}", file=sys.stderr)

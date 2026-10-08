@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.0.69
+
+### Added
+
+- **The REPL init file can import modules.** `import "./prompt.weir"`
+  in `init.weir` loads the module before the first prompt, and its
+  members are available in the session as `Prompt.member`. This keeps
+  a large prompt in its own file.
+
+### Changed
+
+- **Imports resolve from a symlinked file's real location.** A script
+  or init file linked from a dotfiles repo or into `~/bin` imports the
+  files beside the original. `Self.scriptPath` still reports the link.
+
 ## v0.0.68
 
 ### Changed
