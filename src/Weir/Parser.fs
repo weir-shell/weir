@@ -199,6 +199,13 @@ let private withStmtLetCmd (p: Parser<'a, unit>) : Parser<'a, unit> =
 let private grantedRhsRanges =
     new System.Threading.ThreadLocal<ResizeArray<struct (int64 * int64)>>(fun () -> ResizeArray())
 
+// a chain-structure refusal (foldChain) is a fatal, but an enclosing
+// attempt (topLet's among them) turns it into a backtrack and a later
+// route's error wins. Remembered per line; reported only when the line
+// fails to parse [D:cmd-chaining]
+let private chainTeach =
+    new System.Threading.ThreadLocal<(string * Span) option>(fun () -> None)
+
 let private inGrantedRange (off: int64) : bool =
     grantedRhsRanges.Value |> Seq.exists (fun struct (s, e) -> off >= s && off < e)
 
@@ -472,6 +479,12 @@ let private failFatallyAtCol (col: int) (msg: string) : Parser<'a, unit> =
     fun stream ->
         stream.Seek(int64 (col - 1))
         Reply(ReplyStatus.FatalError, messageError msg)
+
+let private failChain (m: string) (sp: Span) : Parser<'a, unit> =
+    if chainTeach.Value.IsNone then
+        chainTeach.Value <- Some(m, sp)
+
+    failFatallyAtCol sp.Start.Col m
 
 // the fifth refusal cell's teaching [D:reifier-family-complete] — one
 // text, two firing sites (the piped-stage guard and the bare-pipe hint)
@@ -3926,7 +3939,13 @@ let private envPrefixGuard () : Parser<'a, unit> =
     >>= fun ((at, assigns), next) ->
         let (name, _), _ = List.head assigns
 
+        let r = ambientResolver.Value
+
         match next with
+        // a head that resolves was refused for another reason — that
+        // route's error is the true one
+        | Some(w, _) when isIdentLike w && (r.IsExternal w || (r.AliasHead w).IsSome || r.IsCommandCallable w) ->
+            ifail "the head resolves; not an env-prefix failure"
         | Some(w, sp) when not (keywords.Contains w) ->
             failFatallyAtCol
                 sp.Start.Col
@@ -4320,14 +4339,31 @@ let private textMarker =
 // b | or c` reads `a | or (b | or c)` and the left of each `or` is a lone
 // command). `notFollowedBy cmdWordChar` keeps a command whose name begins
 // with `and`/`or` (`android-tool`) an ordinary stage, not a marker.
+// reached only when no command line parses after `| and`/`| or`: name
+// what is there instead of FParsec's merged expected-list
+let private chainRhsTeach (kw: string) (r: Resolver) : Parser<Expr, unit> =
+    getPosition .>>. opt (lookAhead (many1Satisfy cmdWordChar))
+    >>= fun (at, w) ->
+        match w with
+        | Some w when isIdentLike w && (keywords.Contains w || r.IsKnown w) ->
+            let fix =
+                if r.IsExternal w then
+                    $"to run the {w} program, write ^{w}"
+                else
+                    $"to run weir code when the command fails, use `if not (<command> | succeeds) then …`"
+
+            let what = if keywords.Contains w then "keyword" else "name"
+            failFatallyAt at $"'{w}' is a weir {what}, not a program — '| {kw}' must be followed by a command; {fix}"
+        | _ -> failFatallyAt at $"'| {kw}' must be followed by a command, as in `<command> | {kw} <other command>`"
+
 let private andMarker bh ap se r : Parser<Seg, unit> =
     attempt (spanned (pstring "and" .>> notFollowedBy (satisfy cmdWordChar)) .>> ws)
-    .>>. cmdChainRhs bh ap se r
+    .>>. (cmdChainRhs bh ap se r <|> chainRhsTeach "and" r)
     |>> fun ((_, span), rhs) -> AndMarker(rhs, span)
 
 let private orMarker bh ap se r : Parser<Seg, unit> =
     attempt (spanned (pstring "or" .>> notFollowedBy (satisfy cmdWordChar)) .>> ws)
-    .>>. cmdChainRhs bh ap se r
+    .>>. (cmdChainRhs bh ap se r <|> chainRhsTeach "or" r)
     |>> fun ((_, span), rhs) -> OrMarker(rhs, span)
 
 // fold a parsed pipeline — an initial head expression plus piped stages
@@ -4354,13 +4390,57 @@ let private pipeOpError (got: string) : string =
     else
         "'|>' applies functions; feed a program with '|'"
 
-let private foldChain (h: Expr) (rest: ((string * Span) * Seg) list) : Result<Expr, string * Span> =
+let private orLeftMsg =
+    "'| or' must follow an external command or a pipeline of them — a builtin like cd raises an error instead of returning an exit code"
+
+// a reifier (bar exec, which hands over and never returns) at the end of
+// an and/or right-hand side, with the chain word
+let private chainEndReifier (seg: Seg) : (Expr * string * string) option =
+    match seg with
+    | AndMarker(rhs, _) -> Some(rhs, "and")
+    | OrMarker(rhs, _) -> Some(rhs, "or")
+    | _ -> None
+    |> Option.bind (fun (rhs, kw) ->
+        chainReifier rhs |> Option.filter ((<>) "exec") |> Option.map (fun n -> rhs, kw, n))
+
+let rec private foldChain (h: Expr) (rest: ((string * Span) * Seg) list) : Result<Expr, string * Span> =
     rest
     |> List.fold
         (fun acc ((op, opSpan), seg) ->
             match acc with
             | Result.Error m -> Result.Error m
             | Result.Ok _ when op <> requiredPipeOp seg -> Result.Error(pipeOpError op, opSpan)
+            | Result.Ok acc when
+                (match seg with
+                 | AndMarker _
+                 | OrMarker _ -> (chainReifier acc).IsSome
+                 | _ -> false)
+                ->
+                // `a | succeeds | and b`: the reifier made a value, and
+                // and/or branch on a command's exit — the value would be
+                // dropped and the branch never taken [D:cmd-chaining]
+                let kw, sp =
+                    match seg with
+                    | AndMarker(_, sp) -> "and", sp
+                    | OrMarker(_, sp) -> "or", sp
+                    | _ -> "", acc.Span
+
+                let name = (chainReifier acc).Value
+
+                Result.Error(
+                    $"'| {kw}' can't follow '| {name}' — '| {name}' turned the command into a value, and '| {kw}' needs a command's exit; to branch on it, write `if <command> | succeeds then … else …`",
+                    sp
+                )
+            | Result.Ok _ when (chainEndReifier seg).IsSome ->
+                // `a | and b | complete` reads `a | and (b | complete)`: the
+                // reifier would see only b and the chain's value is unit, so
+                // the record is lost [D:cmd-chaining]
+                let rhs, kw, name = (chainEndReifier seg).Value
+
+                Result.Error(
+                    $"'| {name}' can't end a '| {kw}' chain — it would apply to the last command only, and the chain's value is discarded; run the commands on separate lines and capture the one you need: `let r = <command> | {name}`",
+                    rhs.Span
+                )
             | Result.Ok acc ->
                 match seg with
                 | Stage seg ->
@@ -4391,8 +4471,8 @@ let private foldChain (h: Expr) (rest: ((string * Span) * Seg) list) : Result<Ex
                 | OrMarker(rhs, sp) ->
                     // `cmd | or <rest>` = bash ||: stream the left capturing its
                     // exit code (no raise); on nonzero, stream the right
-                    // [D:cmd-chaining]. Right-associative, so the left is a single
-                    // command segment, reified through the exitCode family's vars.
+                    // [D:cmd-chaining]. Right-associative, so the left is one
+                    // command or a pipeline, reified through the exitCode family's vars.
                     let streamOf (e: Expr) =
                         match e.Kind with
                         | ECmd _
@@ -4435,7 +4515,14 @@ let private foldChain (h: Expr) (rest: ((string * Span) * Seg) list) : Result<Ex
                         | EPipe(stdinE, { Kind = ECmd(h, args, None) }) when not (isCommandish stdinE) ->
                             let headVar = { Kind = EVar "|exitCodedIn"; Span = sp }
                             Result.Ok(apply headVar [ progArgOf h acc.Span; { Kind = EList args; Span = acc.Span }; stdinE ])
-                        | _ -> Result.Error("'or' must directly follow a single external command segment", sp)
+                        // a pipeline's exit is its leftmost failing code
+                        // [D:chain-reifiers]: the exitCode reifier folded
+                        // onto the chain, so `a | b | or c` streams a | b
+                        // and runs c when either failed
+                        | EPipe _ ->
+                            foldChain acc [ ("|", sp), ExitCodeMarker sp ]
+                            |> Result.mapError (fun _ -> orLeftMsg, sp)
+                        | _ -> Result.Error(orLeftMsg, sp)
 
                     match codeResult with
                     | Result.Error e -> Result.Error e
@@ -4733,7 +4820,7 @@ let private cmdLineWith
     >>= fun (h, rest) ->
         match foldChain h rest with
         | Result.Ok e -> preturn e
-        | Result.Error(m, sp) -> failFatallyAtCol sp.Start.Col m
+        | Result.Error(m, sp) -> failChain m sp
 
 let private cmdLine (r: Resolver) : Parser<Expr, unit> = cmdLineWith true cmdArg None r
 
@@ -4771,7 +4858,7 @@ valueHeadedTailImpl <-
                 >>= fun stages ->
                     match foldChain lhs stages with
                     | Result.Ok e -> preturn e
-                    | Result.Error(m, sp) -> failFatallyAtCol sp.Start.Col m
+                    | Result.Error(m, sp) -> failChain m sp
 
             p stream)
 
@@ -5380,6 +5467,7 @@ let parseLineFull (r: Resolver) (input: string) : Result<Stmt, ParseFailure> =
     parseDepth.Value <- 0
     // per-line memo [D:statement-lets] — offsets are line-relative
     grantedRhsRanges.Value.Clear()
+    chainTeach.Value <- None
 
     try
         try
@@ -5401,6 +5489,12 @@ let parseLineFull (r: Resolver) (input: string) : Result<Stmt, ParseFailure> =
                             { Message = teach |> Option.defaultValue "'|>' applies functions; feed a program with '|'"
                               Col = col }
                     | None -> Result.Ok s
+            | Failure(_, _, _) when chainTeach.Value.IsSome ->
+                let m, sp = chainTeach.Value.Value
+
+                Result.Error
+                    { Message = m
+                      Col = if sp.Start.Line = 1 then Some sp.Start.Col else None }
             | Failure(msg, err, _) ->
                 let col =
                     if err.Position.Line = 1L then

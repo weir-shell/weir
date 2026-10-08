@@ -2402,7 +2402,14 @@ let colorizeRepl (isKnown: string -> bool) (line: string) : string =
                     // [D:let-rhs-head]: the statement head and the
                     // let-RHS take the same verdict — tint and Tab
                     // cannot disagree about where a head stands
-                    match Complete.headSlotAt (line.Substring(0, start)) with
+                    // an uppercase word after `|` is a module or constructor,
+                    // never a program — a case-insensitive filesystem would
+                    // otherwise find `Seq` as seq on PATH [D:constructors-not-heads]
+                    match
+                        (match Complete.headSlotAt (line.Substring(0, start)) with
+                         | Complete.HeadSlot.Stage when Char.IsUpper word[0] -> Complete.HeadSlot.No
+                         | s -> s)
+                    with
                     | Complete.HeadSlot.Forced ->
                         // ^head: PATH only — `^x` names a program,
                         // never a keyword, a form, or an alias
@@ -2414,6 +2421,12 @@ let colorizeRepl (isKnown: string -> bool) (line: string) : string =
                            && not (i + 1 < line.Length && line[i + 1] = '=') then
                             // an env-prefix name is not a head [D:env-prefix]
                             None
+                        elif slot = Complete.HeadSlot.Stage
+                             && (word = "and" || word = "or")
+                             && (match Complete.lastStage (line.Substring(0, start)) with
+                                 | Some(_, true) -> true
+                                 | _ -> false) then
+                            Some "34" // the chain words read as keywords [D:cmd-chaining]
                         elif Weir.Parser.keywords.Contains word then
                             // keywords: blue — the red family (31/35 render
                             // near-identically in some themes) is reserved for
@@ -2429,8 +2442,8 @@ let colorizeRepl (isKnown: string -> bool) (line: string) : string =
                         elif slot <> Complete.HeadSlot.No && Extern.exists word then
                             cmdMode <- true
                             Some "1;34" // PATH: bold blue
-                        elif slot = Complete.HeadSlot.Stmt then
-                            Some "31" // unresolved statement head: red
+                        elif slot = Complete.HeadSlot.Stmt || slot = Complete.HeadSlot.Stage then
+                            Some "31" // unresolved statement or stage head: red
                         elif Char.IsUpper word[0] then
                             // the casing rule: types/ctors/modules — at the
                             // let-RHS an unknown uppercase head is a legal
@@ -3122,6 +3135,7 @@ let private checkStatementCore
                         (match e.Kind with
                          | ECmd(HeadLit prog, _, _) when not (Extern.exists prog) -> [ prog, e.Span ]
                          | _ -> [])
+                        @ (chainStageHeads e |> List.filter (fst >> Extern.exists >> not))
                         @ (exprChildren e |> List.collect heads)
 
                     e |> Option.map heads |> Option.defaultValue []
@@ -3150,7 +3164,23 @@ let private checkStatementCore
                          | Some home ->
                              $"'{prog}' is a bare module member, not a program — spell it '{home}.{prog}' (bare names live in the REPL session)"
                          | None ->
-                             $"unknown command '{prog}' — not found on PATH{others}. weir resolves command names before running: install the tool, or run it through sh -c")
+                             // a misspelled reifier after `|` reads as a program [D:reifier-term]
+                             let afterPipe =
+                                 let at = min ll.Text.Length (max 0 (span.Start.Col - 1))
+                                 ll.Text.Substring(0, at).TrimEnd().EndsWith "|"
+
+                             let reifier =
+                                 [ "complete"; "succeeds"; "exitCode"; "orFail"; "line"; "text"; "exec" ]
+                                 |> List.map (fun c -> c, editDistance prog c)
+                                 |> List.filter (fun (_, d) -> d <= 2)
+                                 |> List.sortBy snd
+                                 |> List.tryHead
+
+                             match reifier with
+                             | Some(c, _) when afterPipe ->
+                                 $"unknown command '{prog}' — not found on PATH. Did you mean the reifier '{c}'? (`<command> | {c}`)"
+                             | _ ->
+                                 $"unknown command '{prog}' — not found on PATH{others}. weir resolves command names before running: install the tool, or, if it only exists when the script runs, name it at run time — `let tool = \"{prog}\"` then `^$tool`")
                       File = None
                       Note = None
                       Warnings = [] }
@@ -5865,6 +5895,22 @@ let analyzeLines
                  )
                  ->
                  [ d, te.Span ]
+             // a reified pipeline's stages [D:chain-reifiers]
+             | Check.TEApp(f, { Kind = Check.TEList stages }) when
+                 (let rec chainVar (g: Check.TypedExpr) =
+                     match g.Kind with
+                     | Check.TEVar v -> v.StartsWith "|chain"
+                     | Check.TEApp(h, _) -> chainVar h
+                     | _ -> false
+
+                  chainVar f)
+                 ->
+                 stages
+                 |> List.choose (fun st ->
+                     match st.Kind with
+                     | Check.TETuple({ Kind = Check.TEStr prog; Span = sp } :: _) when not (Extern.exists prog) ->
+                         Some(prog, sp)
+                     | _ -> None)
              | _ -> [])
             @ (Check.childExprs te |> List.collect cmdHeads)
 
@@ -6066,6 +6112,7 @@ let analyzeLines
                          (match e.Kind with
                           | ECmd(HeadLit prog, _, _) when not (Extern.exists prog) -> [ prog, e.Span ]
                           | _ -> [])
+                         @ (chainStageHeads e |> List.filter (fst >> Extern.exists >> not))
                          @ (exprChildren e |> List.collect eheads)
 
                      let exprs =

@@ -1427,8 +1427,13 @@ within tmp d
   operand (`mkdir d | and cd d`). Right-associative — `a | or b | or c` is
   `a | or (b | or c)`, which DIFFERS from bash's left-assoc for MIXED
   chains, so split mixed logic across lines when precedence matters.
-  `| or`'s left must be a single external command (a builtin raises
-  rather than exit-codes). This is not for aliases — `#alias` is a
+  `| or`'s left is an external command or a pipeline (leftmost failing
+  code, as for `| exitCode`); a builtin can't be (it raises rather
+  than exit-codes). A reifier can't end the chain (`a | and b |
+  complete` would capture only `b` and drop it) — it's an error; `| exec`
+  is the exception. Nor can `| and`/`| or` follow a reifier
+  (`a | succeeds | and b` is an error — use `if a | succeeds then`).
+  This is not for aliases — `#alias` is a
   resolution table, not a macro.
 
 ```weir

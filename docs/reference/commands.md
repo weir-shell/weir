@@ -250,8 +250,14 @@ and a builtin like `cd` works on the right. They are right-associative:
 `a | or b | or c` is `a | or (b | or c)`. That differs from bash, which
 is left-associative, for chains that *mix* `and` and `or`; split mixed
 logic across lines when precedence matters. The left side of `| or`
-must be a single external command, because a builtin raises an error
-rather than returning an exit code.
+is an external command or a pipeline of them (a pipeline fails with its
+leftmost failing code, as for `| exitCode`); a builtin can't be there,
+because it raises an error rather than returning an exit code. A reifier can't end the chain:
+`a | and b | complete` would capture only `b`, and the chain's value
+is unit, so it's an error. Run the commands on separate lines and
+capture the one you need (`| exec` is the exception: it hands over).
+Nor can `| and`/`| or` follow a reifier — `a | succeeds | and b` has
+no exit to branch on; write `if a | succeeds then … else …`.
 
 ```weir
 sh -c "exit 1" | or echo "fell back"

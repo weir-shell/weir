@@ -3567,6 +3567,25 @@ let completionTests =
               Expect.equal (slot "let (a, b) = ") Weir.Complete.HeadSlot.No "a pattern binder's RHS is expression-only"
               Expect.equal (slot "let for = ") Weir.Complete.HeadSlot.No "a keyword binder is the guard's error, not a slot"
               Expect.equal (slot "let x == ") Weir.Complete.HeadSlot.No "== is not a binder's ="
+              Expect.equal (slot "git status |") Weir.Complete.HeadSlot.Stage "after a bare |"
+              Expect.equal (slot "git status | and echo \"a|b\" | and ") Weir.Complete.HeadSlot.Stage "after | and, past a quoted |"
+              Expect.equal (slot "let r = git log | ^") Weir.Complete.HeadSlot.Forced "^ at a stage head"
+              Expect.equal (slot "git status | grep ") Weir.Complete.HeadSlot.No "a stage's argv"
+              Expect.equal (slot "xs |>") Weir.Complete.HeadSlot.No "|> is an expression pipe"
+              Expect.equal (slot "a ||") Weir.Complete.HeadSlot.No "|| is not a stage"
+              Expect.equal (slot "| ") Weir.Complete.HeadSlot.No "a match arm on its own line"
+              Expect.equal (slot "match x with | A -> 1 |") Weir.Complete.HeadSlot.No "an inline match arm"
+          }
+          test "a pipeline stage head completes programs and reifiers [D:cmd-chaining]" {
+              let at (t: string) = suggest t (Weir.Complete.wordStartAt t t.Length)
+              let chained = at "git status | and echo \"XXX\" | s"
+              Expect.contains chained "succeeds" "a reifier right after |"
+              Expect.contains chained "sh" "a PATH program"
+              Expect.isFalse (chained |> List.contains "Seq") "no expression pool"
+              let afterOr = at "git status | or s"
+              Expect.contains afterOr "sh" "a program after | or"
+              Expect.isFalse (afterOr |> List.contains "succeeds") "no reifier as an or's command"
+              Expect.equal (at "git status | ") [ "and"; "complete"; "exec"; "exitCode"; "line"; "or"; "orFail"; "succeeds"; "text" ] "an empty stage word offers just the chain words"
           }
           test "session alias heads: known at both head slots, completable, ^-bypassed [D:command-head-alias]" {
               // the one membership [D:repl-color] gains the alias table's
@@ -6829,6 +6848,13 @@ let replColorTests =
               Expect.stringContains c "\u001b[2madd\u001b[0m" "argv words render dim"
               Expect.stringContains c "\u001b[36m$x\u001b[0m" "the splice island"
               Expect.isFalse (c.Contains "\u001b[2mhead") "after | the stage is expression land"
+          }
+          test "an uppercase stage word is never a program, whatever PATH holds" {
+              // a case-insensitive filesystem finds `Seq` as seq — the casing
+              // rule decides first
+              let c = Weir.Script.colorizeRepl (fun _ -> false) "git log | Seq.head"
+              Expect.isFalse (c.Contains "\u001b[1;34mSeq") "not painted as a PATH head"
+              Expect.isFalse (c.Contains "\u001b[31mSeq") "not painted as an unknown head"
           }
           test
               "form-words paint as the form: a within kind and a from/to adapter colour keyword, not identifier [D:form-word-hover]" {
@@ -22029,10 +22055,44 @@ let cmdChainTests =
               | Ok other -> failtest $"expected an EIf, got {other}"
               | Error e -> failtest $"parse failed: {e}"
           }
-          test "| or requires a single external command on its left" {
+          test "| or refuses a builtin on its left" {
               // cd is a builtin (it raises, it has no exit-code) — not an | or left
               match Weir.Parser.parseLine realResolver "cd / | or git log" with
-              | Error e -> Expect.stringContains e "must directly follow a single external command" "teaches"
+              | Error e -> Expect.stringContains e "'| or' must follow an external command or a pipeline" "teaches"
+              | Ok other -> failtest $"expected an error, got {other}"
+          }
+          test "| or followed by a weir name teaches ^ for the program" {
+              match Weir.Parser.parseLine realResolver "git status | or ls" with
+              | Error e ->
+                  Expect.stringContains e "'ls' is a weir name, not a program" "names the word"
+                  Expect.stringContains e "write ^ls" "points at the PATH program"
+              | Ok other -> failtest $"expected an error, got {other}"
+          }
+          test "a reifier can't end an and/or chain, at a let RHS too" {
+              for line in [ "git status | and git log | complete"; "let r = git status | or git log | exitCode" ] do
+                  match Weir.Parser.parseLine realResolver line with
+                  | Error e -> Expect.stringContains e "can't end a '| " "teaches, not a parser dump"
+                  | Ok other -> failtest $"expected an error for {line}, got {other}"
+          }
+          test "| and / | or can't follow a reifier" {
+              for line in [ "git status | succeeds | and git log"; "let r = git status | and git log | succeeds | or git log" ] do
+                  match Weir.Parser.parseLine realResolver line with
+                  | Error e -> Expect.stringContains e "can't follow '| succeeds'" "teaches, not a parser dump"
+                  | Ok other -> failtest $"expected an error for {line}, got {other}"
+          }
+          test "| or takes a pipeline on its left (leftmost failing code)" {
+              match Weir.Parser.parseLine realResolver "git log | grep x | or echo none" with
+              | Ok _ -> ()
+              | Error e -> failtest $"parse failed: {e}"
+          }
+          test "| exec may end an and chain (it hands over)" {
+              match Weir.Parser.parseLine realResolver "git status | and git log | exec" with
+              | Ok _ -> ()
+              | Error e -> failtest $"parse failed: {e}"
+          }
+          test "| and with nothing after it asks for a command" {
+              match Weir.Parser.parseLine realResolver "git status | and" with
+              | Error e -> Expect.stringContains e "'| and' must be followed by a command" "teaches"
               | Ok other -> failtest $"expected an error, got {other}"
           } ]
 

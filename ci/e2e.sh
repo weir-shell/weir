@@ -3445,7 +3445,20 @@ rc=0; errout=$($BIN "$mdir/m.weir" 2>&1) || rc=$?
 [ $rc -eq 1 ] || fail "missing command must fail the runner (rc=$rc)"
 echo "$errout" | grep -qF "unknown command 'not-a-real-tool-xyz'" || fail "diagnosis must name the command: $errout"
 echo "$errout" | grep -qF "Expecting:" && fail "FParsec dump must not appear for missing commands: $errout"
+echo "$errout" | grep -qF '^$tool' || fail "diagnosis must teach the dynamic head: $errout"
 echo "e2e ok: runner names the missing command, no parser dump"
+
+printf 'git status | and echo x | success\n' > "$mdir/r.weir"
+rc=0; errout=$($BIN "$mdir/r.weir" 2>&1) || rc=$?
+echo "$errout" | grep -qF "Did you mean the reifier 'succeeds'?" || fail "a misspelled reifier must be suggested (rc=$rc): $errout"
+echo "e2e ok: a misspelled reifier after | is suggested"
+
+printf 'let c = echo a | not-a-real-tool-xyz | exitCode\nprint $"{c}"\n' > "$mdir/cr.weir"
+ckout=$($BIN check "$mdir/cr.weir" 2>&1) || true
+echo "$ckout" | grep -qF "command not found on PATH: not-a-real-tool-xyz" || fail "check must warn on a reified pipeline's missing stage: $ckout"
+rc=0; errout=$($BIN "$mdir/cr.weir" 2>&1) || rc=$?
+echo "$errout" | grep -qF "unknown command 'not-a-real-tool-xyz'" || fail "the runner must name a reified pipeline's missing stage (rc=$rc): $errout"
+echo "e2e ok: a reified pipeline's missing stage is named by check and the runner"
 
 cat > "$mdir/syn.weir" <<'WEOF'
 let x =
