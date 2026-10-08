@@ -2402,7 +2402,14 @@ let colorizeRepl (isKnown: string -> bool) (line: string) : string =
                     // [D:let-rhs-head]: the statement head and the
                     // let-RHS take the same verdict — tint and Tab
                     // cannot disagree about where a head stands
-                    match Complete.headSlotAt (line.Substring(0, start)) with
+                    // an uppercase word after `|` is a module or constructor,
+                    // never a program — a case-insensitive filesystem would
+                    // otherwise find `Seq` as seq on PATH [D:constructors-not-heads]
+                    match
+                        (match Complete.headSlotAt (line.Substring(0, start)) with
+                         | Complete.HeadSlot.Stage when Char.IsUpper word[0] -> Complete.HeadSlot.No
+                         | s -> s)
+                    with
                     | Complete.HeadSlot.Forced ->
                         // ^head: PATH only — `^x` names a program,
                         // never a keyword, a form, or an alias

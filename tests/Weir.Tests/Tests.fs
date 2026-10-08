@@ -6849,6 +6849,13 @@ let replColorTests =
               Expect.stringContains c "\u001b[36m$x\u001b[0m" "the splice island"
               Expect.isFalse (c.Contains "\u001b[2mhead") "after | the stage is expression land"
           }
+          test "an uppercase stage word is never a program, whatever PATH holds" {
+              // a case-insensitive filesystem finds `Seq` as seq — the casing
+              // rule decides first
+              let c = Weir.Script.colorizeRepl (fun _ -> false) "git log | Seq.head"
+              Expect.isFalse (c.Contains "\u001b[1;34mSeq") "not painted as a PATH head"
+              Expect.isFalse (c.Contains "\u001b[31mSeq") "not painted as an unknown head"
+          }
           test
               "form-words paint as the form: a within kind and a from/to adapter colour keyword, not identifier [D:form-word-hover]" {
               let kw = "\x1b[34m"
