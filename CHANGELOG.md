@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.0.68
+
+### Changed
+
+- **`| and` and `| or` can't be mixed in one chain.** `a | and b | or c`
+  grouped from the right — `a | and (b | or c)` — unlike bash's
+  `a && b || c`, and quietly did something else. It's now an error that
+  points at `if a | succeeds then b else c`. Chains of one word
+  (`a | and b | and c`, `a | or b | or c`) work as before.
+- **The `&&` and `||` warnings suggest `| and` and `| or`.**
+
+### Added
+
+- **A warning for `[1, 2]`.** That's a one-item list holding the tuple
+  `(1, 2)`, which is almost never what's meant; `weir check` now says
+  to separate list items with `;`. A list of several pairs
+  (`["a", 1; "b", 2]`) and `[(1, 2)]` don't warn.
+
 ## v0.0.67
 
 ### Changed
@@ -20,6 +38,9 @@
 
 ### Fixed
 
+- **`(%)` works as a function value,** like `(+)` and `(*)`:
+  `xs |> Seq.reduce (%)`. `(=)`, `(!=)` and `(<|)` now say what to write
+  instead (`(==)`, `(<>)`, `|>`) rather than showing a parser dump.
 - **Tab completes the command after a `|`.** In the REPL,
   `git status | s<Tab>` offered only files from the current directory.
   It now offers programs from PATH, and right after `|` also the

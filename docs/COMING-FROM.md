@@ -87,6 +87,12 @@ print "unreached"
   passed as a plain argument (with a warning). Since a failure already
   stops the script, consecutive lines behave like an `&&` chain. For a
   one-liner, `&&` and `||` are `cmd | and next` and `cmd | or next`.
+  A chain repeats one word (`a | and b | and c`, `a | or b | or c`);
+  mixing them is an error, because `a | and b | or c` would group from
+  the right and stop the script when `a` fails — not bash's "if a then
+  b else c". Write that as `if a | succeeds then b else c`. The
+  [commands reference](reference/commands.md#exit-codes) has the full
+  comparison.
 - `$VAR` expansion. Use `Env.get "VAR"` (an `Option<string>`) and
   splice the result. To set a variable for one command,
   `NAME=value cmd` works as in bash.

@@ -598,6 +598,13 @@ let warningTests =
               Expect.isEmpty (warningsOf "match Running 5 with | Running n -> n | Stopped -> 0") ""
           }
           test "wildcard covers everything" { Expect.isEmpty (warningsOf "match Running 5 with | _ -> 0") "" }
+          test "a lone bare tuple in a list warns; parens and pair lists do not [D:list-comma-warning]" {
+              let msgs src = warningsOf src |> List.map _.Message
+              Expect.exists (msgs "[1, 2]") (fun m -> m.Contains "separated by ';'") "the comma habit"
+              Expect.isEmpty (msgs "[(1, 2)]") "a parenthesized tuple is deliberate"
+              Expect.isEmpty (msgs "[\"a\", 1; \"b\", 2]") "a list of pairs is the F# idiom"
+              Expect.isEmpty (msgs "[1; 2]") ""
+          }
           test "arm after a catch-all is a hard error" {
               let terr = checkErr "match Running 5 with | _ -> 0 | Stopped -> 1"
               Expect.stringContains terr.Message "unreachable" ""
@@ -20065,6 +20072,7 @@ let operatorValueTests =
               Expect.equal (run "[\"a\"; \"b\"] |> Seq.reduce (+)") (VStr "ab") "concat by context"
               Expect.equal (run "[1s; 2s] |> Seq.reduce (+)") (VDur 3000L) "Durations by context"
               Expect.equal (run "[1; 2; 3] |> Seq.fold (+) 100") (VInt 106L) ""
+              Expect.equal (run "[100; 7; 4] |> Seq.reduce (%)") (VInt 2L) "(%) is a value too"
 
               Expect.equal (run "[1; 2; 3] |> Seq.scan (+) 0" |> forceSeq) [ VInt 0L; VInt 1L; VInt 3L; VInt 6L ] ""
 
@@ -20114,6 +20122,9 @@ let operatorValueTests =
               Expect.stringContains (perr "Seq.reduce (||)") "short-circuits" ""
               Expect.stringContains (perr "Seq.reduce (|>)") "grammar, not a function" ""
               Expect.stringContains (perr "Seq.reduce (>>)") "composition already yields" ""
+              Expect.stringContains (perr "Seq.reduce (=)") "write `(==)`" "not a weir operator"
+              Expect.stringContains (perr "Seq.reduce (!=)") "write `(<>)`" ""
+              Expect.stringContains (perr "Seq.reduce (<|)") "no `<|`" ""
               // ^ and $ are not operators in this sense — the form cannot catch them
               perr "let f = (^) in 1" |> ignore
           }
@@ -22084,6 +22095,17 @@ let cmdChainTests =
               match Weir.Parser.parseLine realResolver "git log | grep x | or echo none" with
               | Ok _ -> ()
               | Error e -> failtest $"parse failed: {e}"
+          }
+          test "| and and | or can't mix; one-word chains stay [D:and-or-no-mix]" {
+              for line in [ "git status | and git log | or git log"; "git status | or git log | and git log"; "let r = git status | and git log | and git log | or git log" ] do
+                  match Weir.Parser.parseLine realResolver line with
+                  | Error e -> Expect.stringContains e "can't be mixed in one chain" $"refused: {line}"
+                  | Ok other -> failtest $"expected an error for {line}, got {other}"
+
+              for line in [ "git status | and git log | and git log"; "git status | or git log | or git log" ] do
+                  match Weir.Parser.parseLine realResolver line with
+                  | Ok _ -> ()
+                  | Error e -> failtest $"{line}: {e}"
           }
           test "| exec may end an and chain (it hands over)" {
               match Weir.Parser.parseLine realResolver "git status | and git log | exec" with

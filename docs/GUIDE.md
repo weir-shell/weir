@@ -1039,12 +1039,12 @@ echo built | and echo linked
 
 Two differences from bash:
 
-- Chains group from the right: `a | or b | and c` means
-  `a | or (b | and c)`. That differs from bash when you mix `and`
-  and `or`, so split mixed logic across lines when the order
-  matters.
-- The left side of `| or` must be a single external command. A
-  builtin raises an error instead of returning an exit code.
+- A chain can repeat one word (`a | and b | and c`, or fallbacks
+  `a | or b | or c`) but can't mix them. bash's `a && b || c` ("if a,
+  then b, else c") is an `if` in weir:
+  `if a | succeeds then b else c`.
+- The left side of `| or` is an external command or a pipeline of
+  them. A builtin raises an error instead of returning an exit code.
 
 An `if` or `elif` condition can be a command directly:
 `if test -f $path | succeeds then …`. The command's arguments end at
