@@ -3170,7 +3170,7 @@ let private checkStatementCore
                                  ll.Text.Substring(0, at).TrimEnd().EndsWith "|"
 
                              let reifier =
-                                 [ "complete"; "succeeds"; "exitCode"; "orFail"; "line"; "text"; "exec" ]
+                                 Ast.reifierNames
                                  |> List.map (fun c -> c, editDistance prog c)
                                  |> List.filter (fun (_, d) -> d <= 2)
                                  |> List.sortBy snd

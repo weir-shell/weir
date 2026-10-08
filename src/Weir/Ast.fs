@@ -412,6 +412,34 @@ let exprPats (e: Expr) : Pattern list =
 
 // the expression tree's child list — tooling walks share this (the
 // TypedExpr twin lives in Check.childExprs)
+/// the reifiers [D:reifier-term]: each surface word with the stem of its
+/// desugar variables (`|<stem>`, `|<stem>Env`, `|<stem>In`, and a chain's
+/// `|chain<Stem>`) — the one list every reifier-name check reads
+let reifiers =
+    [ "complete", "completed"
+      "succeeds", "succeeded"
+      "exitCode", "exitCoded"
+      "orFail", "orFailed"
+      "exec", "execed"
+      "line", "lined"
+      "text", "texted" ]
+
+let reifierNames = reifiers |> List.map fst
+
+let reifierStem (surface: string) =
+    reifiers |> List.find (fun (s, _) -> s = surface) |> snd
+
+/// the surface reifier a desugar variable stands for, if any
+let reifierOfVar (v: string) : string option =
+    reifiers
+    |> List.tryPick (fun (surface, stem) ->
+        let chain = "|chain" + string (System.Char.ToUpperInvariant stem[0]) + stem.Substring 1
+
+        if v = "|" + stem || v = $"|{stem}Env" || v = $"|{stem}In" || v = chain then
+            Some surface
+        else
+            None)
+
 /// the literal program names of a reified pipeline's stages: a reifier
 /// after a chain desugars to `|chain… [(prog, argv, env); …] stdin`, so
 /// the heads live in that list, not in command nodes [D:chain-reifiers]

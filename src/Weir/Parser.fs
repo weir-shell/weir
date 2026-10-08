@@ -523,8 +523,7 @@ let private barePipeHint: Parser<unit, unit> =
          // boundary, not the pipe glyph [D:reifier-family-complete]
          (attempt (
              ws >>. getPosition
-             .>>. (choice [ pstring "complete"; pstring "succeeds"; pstring "exitCode"; pstring "orFail" ]
-                   .>> reifierWordEnd)
+             .>>. (choice (reifierNames |> List.map pstring) .>> reifierWordEnd)
           )
           >>= fun (at, name) -> failFatallyAt at (reifierHereMsg name))
          <|> failFatallyAt pipePos "'|' chains commands; pipe expressions with '|>'")
@@ -1217,19 +1216,7 @@ let rec private exitCodeSpine (e: Expr) : bool =
 // reifier `|>` stage rides an EPipe.
 let rec private chainReifier (e: Expr) : string option =
     match e.Kind with
-    | EVar v when v.StartsWith "|completed" -> Some "complete"
-    | EVar v when v.StartsWith "|succeeded" -> Some "succeeds"
-    | EVar v when v.StartsWith "|exitCoded" -> Some "exitCode"
-    | EVar v when v.StartsWith "|orFailed" -> Some "orFail"
-    | EVar v when v.StartsWith "|execed" -> Some "exec"
-    | EVar v when v.StartsWith "|lined" -> Some "line"
-    | EVar v when v.StartsWith "|texted" -> Some "text"
-    | EVar "|chainCompleted" -> Some "complete"
-    | EVar "|chainSucceeded" -> Some "succeeds"
-    | EVar "|chainExitCoded" -> Some "exitCode"
-    | EVar "|chainOrFailed" -> Some "orFail"
-    | EVar "|chainLined" -> Some "line"
-    | EVar "|chainTexted" -> Some "text"
+    | EVar v -> reifierOfVar v
     | EApp(f, _) -> chainReifier f
     | EPipe(l, r) -> chainReifier r |> Option.orElseWith (fun () -> chainReifier l)
     | _ -> None
@@ -4401,6 +4388,34 @@ let private pipeOpError (got: string) : string =
     else
         "'|>' applies functions; feed a program with '|'"
 
+// shared by foldChain's arms [D:cmd-chaining]: a command streams through
+// the armed |print (stream + raise); a builtin command (cd) or a nested
+// and/or returns a value or unit, so it runs for effect and is discarded
+let private streamOf (e: Expr) =
+    match e.Kind with
+    | ECmd _
+    | EPipe(_, { Kind = ECmd _ }) ->
+        { Kind = EPipe(e, { Kind = EVar "|print"; Span = e.Span })
+          Span = e.Span }
+    | _ ->
+        { Kind = ELet("_chain", e.Span, e, { Kind = EUnit; Span = e.Span })
+          Span = e.Span }
+
+// a chain head is command-ish (an external segment or a command→command
+// pipe); a value head is anything else
+let private isCommandish (e: Expr) =
+    match e.Kind with
+    | ECmd _
+    | EPipe(_, { Kind = ECmd _ }) -> true
+    | _ -> false
+
+// a dynamic head rides the desugar as EDynProg — typed string-exactly at
+// check, erased [D:dynamic-head]
+let private progArgOf (h: CmdHead) (span: Span) =
+    match h with
+    | HeadLit prog -> { Kind = EStr prog; Span = span }
+    | HeadDyn(disp, he) -> { Kind = EDynProg(disp, he); Span = he.Span }
+
 let private orLeftMsg =
     "'| or' must follow an external command or a pipeline of them — a builtin like cd raises an error instead of returning an exit code"
 
@@ -4493,19 +4508,6 @@ let rec private foldChain (h: Expr) (rest: ((string * Span) * Seg) list) : Resul
                     // failure — the right is then skipped), then the right
                     // [D:cmd-chaining]. The armed |print streams+raises; a nested
                     // and/or is already a unit effect, so it passes through.
-                    let streamOf (e: Expr) =
-                        match e.Kind with
-                        | ECmd _
-                        | EPipe(_, { Kind = ECmd _ }) ->
-                            { Kind = EPipe(e, { Kind = EVar "|print"; Span = e.Span })
-                              Span = e.Span }
-                        // a builtin command (cd) or a nested and/or returns a
-                        // value/unit, not a stream — run it for effect and
-                        // discard, so the chain stays unit [D:cmd-chaining]
-                        | _ ->
-                            { Kind = ELet("_chain", e.Span, e, { Kind = EUnit; Span = e.Span })
-                              Span = e.Span }
-
                     Result.Ok
                         { Kind = ESeq(streamOf acc, streamOf rhs)
                           Span = Span.union acc.Span rhs.Span }
@@ -4514,52 +4516,13 @@ let rec private foldChain (h: Expr) (rest: ((string * Span) * Seg) list) : Resul
                     // exit code (no raise); on nonzero, stream the right
                     // [D:cmd-chaining]. Right-associative, so the left is one
                     // command or a pipeline, reified through the exitCode family's vars.
-                    let streamOf (e: Expr) =
-                        match e.Kind with
-                        | ECmd _
-                        | EPipe(_, { Kind = ECmd _ }) ->
-                            { Kind = EPipe(e, { Kind = EVar "|print"; Span = e.Span })
-                              Span = e.Span }
-                        // a builtin command (cd) or a nested and/or returns a
-                        // value/unit, not a stream — run it for effect and
-                        // discard, so the chain stays unit [D:cmd-chaining]
-                        | _ ->
-                            { Kind = ELet("_chain", e.Span, e, { Kind = EUnit; Span = e.Span })
-                              Span = e.Span }
-
-                    let isCommandish (e: Expr) =
-                        match e.Kind with
-                        | ECmd _
-                        | EPipe(_, { Kind = ECmd _ }) -> true
-                        | _ -> false
-
-                    let progArgOf (h: CmdHead) (span: Span) =
-                        match h with
-                        | HeadLit prog -> { Kind = EStr prog; Span = span }
-                        | HeadDyn(disp, he) -> { Kind = EDynProg(disp, he); Span = he.Span }
-
-                    let apply headVar parts =
-                        parts
-                        |> List.fold (fun f a -> { Kind = EApp(f, a); Span = Span.union acc.Span sp }) headVar
-
+                    // the left's exit code is the exitCode reifier folded onto it
+                    // — one desugar for a command, an env overlay, piped input,
+                    // splats and a pipeline (leftmost failing code)
+                    // [D:chain-reifiers]
                     let codeResult =
                         match acc.Kind with
-                        | ECmd(h, args, cenv) ->
-                            let headVar =
-                                match cenv with
-                                | Some e ->
-                                    { Kind = EApp({ Kind = EVar "|exitCodedEnv"; Span = sp }, e)
-                                      Span = sp }
-                                | None -> { Kind = EVar "|exitCoded"; Span = sp }
-
-                            Result.Ok(apply headVar [ progArgOf h acc.Span; { Kind = EList args; Span = acc.Span } ])
-                        | EPipe(stdinE, { Kind = ECmd(h, args, None) }) when not (isCommandish stdinE) ->
-                            let headVar = { Kind = EVar "|exitCodedIn"; Span = sp }
-                            Result.Ok(apply headVar [ progArgOf h acc.Span; { Kind = EList args; Span = acc.Span }; stdinE ])
-                        // a pipeline's exit is its leftmost failing code
-                        // [D:chain-reifiers]: the exitCode reifier folded
-                        // onto the chain, so `a | b | or c` streams a | b
-                        // and runs c when either failed
+                        | ECmd _
                         | EPipe _ ->
                             foldChain acc [ ("|", sp), ExitCodeMarker sp ]
                             |> Result.mapError (fun _ -> orLeftMsg, sp)
@@ -4576,27 +4539,24 @@ let rec private foldChain (h: Expr) (rest: ((string * Span) * Seg) list) : Resul
                             { Kind = EIf(cond, { Kind = EUnit; Span = sp }, Some(streamOf rhs))
                               Span = Span.union acc.Span rhs.Span }
                 | (CompleteMarker _ | SucceedsMarker _ | ExitCodeMarker _ | OrFailMarker _ | ExecMarker _ | LineMarker _ | TextMarker _ as marker) ->
-                    let stageName, mspan, plainVar, envVar, stdinVar, extraArgs =
+                    let stageName, mspan, extraArgs =
                         match marker with
-                        | CompleteMarker sp -> "complete", sp, "|completed", "|completedEnv", "|completedIn", []
-                        | SucceedsMarker sp -> "succeeds", sp, "|succeeded", "|succeededEnv", "|succeededIn", []
-                        | ExitCodeMarker sp -> "exitCode", sp, "|exitCoded", "|exitCodedEnv", "|exitCodedIn", []
-                        | OrFailMarker(msg, sp) -> "orFail", sp, "|orFailed", "|orFailedEnv", "|orFailedIn", [ msg ]
-                        | ExecMarker sp -> "exec", sp, "|execed", "|execedEnv", "|execedIn", []
-                        | LineMarker sp -> "line", sp, "|lined", "|linedEnv", "|linedIn", []
-                        | TextMarker sp -> "text", sp, "|texted", "|textedEnv", "|textedIn", []
+                        | CompleteMarker sp -> "complete", sp, []
+                        | SucceedsMarker sp -> "succeeds", sp, []
+                        | ExitCodeMarker sp -> "exitCode", sp, []
+                        | OrFailMarker(msg, sp) -> "orFail", sp, [ msg ]
+                        | ExecMarker sp -> "exec", sp, []
+                        | LineMarker sp -> "line", sp, []
+                        | TextMarker sp -> "text", sp, []
                         // unreachable — the outer arm matched only the seven above
                         | Stage _
                         | AndMarker _
-                        | OrMarker _ -> "", acc.Span, "", "", "", []
+                        | OrMarker _ -> "complete", acc.Span, []
 
-                    // a chain head is command-ish (an external segment or a
-                    // command→command pipe); a value head is anything else
-                    let isCommandish (e: Expr) =
-                        match e.Kind with
-                        | ECmd _
-                        | EPipe(_, { Kind = ECmd _ }) -> true
-                        | _ -> false
+                    // the desugar variables, from the one reifier table
+                    // [D:reifier-term]
+                    let stem = reifierStem stageName
+                    let plainVar, envVar, stdinVar = "|" + stem, $"|{stem}Env", $"|{stem}In"
 
                     // a reified segment's mixed literal+splat argv denotes a
                     // seq value [D:splat-reifier-chains]: contiguous non-splat
@@ -4649,13 +4609,6 @@ let rec private foldChain (h: Expr) (rest: ((string * Span) * Seg) list) : Resul
                             match List.rev (flush chunk parts) with
                             | [] -> { Kind = EList []; Span = acc.Span }
                             | first :: rest -> rest |> List.fold seqAppend first
-
-                    // a dynamic head rides the desugar as EDynProg — typed
-                    // string-exactly at check, erased [D:dynamic-head]
-                    let progArgOf (h: CmdHead) (span: Span) =
-                        match h with
-                        | HeadLit prog -> { Kind = EStr prog; Span = span }
-                        | HeadDyn(disp, he) -> { Kind = EDynProg(disp, he); Span = he.Span }
 
                     match acc.Kind with
                     | ECmd(h, args, cenv) ->
@@ -4779,8 +4732,7 @@ let private pipeSepSpanned: Parser<string * Span, unit> =
 let private reifierStageGuard: Parser<Seg, unit> =
     attempt (
         getPosition
-        .>>. (choice [ pstring "complete"; pstring "succeeds"; pstring "exitCode"; pstring "orFail" ]
-              .>> notFollowedBy (satisfy cmdWordChar))
+        .>>. (choice (reifierNames |> List.map pstring) .>> notFollowedBy (satisfy cmdWordChar))
         // inside a granted command-let span the guard stands down
         // [D:statement-lets] — the refused re-parse is backtrack
         // artifact; its fatal must not steal the true error's site

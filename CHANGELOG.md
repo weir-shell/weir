@@ -29,6 +29,13 @@
 
 ### Fixed
 
+- **`| or` after a command with a `$@` splat crashed.** `echo $@xs | or
+  echo no` raised an internal error at check and at run; it now works
+  like `| and` and the other reifiers.
+- **`| line`, `| text` and `| exec` followed by a word teach.** `cmd |
+  line foo` reported "command not found: line"; it now says `line` is a
+  reifier and how to run a program of that name (`^line`), as `| complete
+  foo` already did.
 - **A name from a pattern `let` is a binding in an `if` condition.**
   After `let a, b = …` in a function body, `if a == "" then` treated
   `a` as a command. Names bound by tuple and record patterns now work

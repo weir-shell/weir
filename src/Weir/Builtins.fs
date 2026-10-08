@@ -6758,21 +6758,7 @@ let allAdapterNames: Set<string> =
 /// map a reifier's internal key (|completed, |completedEnv, |completedIn,
 /// and the succeeded/orFailed/exitCoded families) back to the surface
 /// name a user wrote, so hover keys the doc [D:builtin-docs].
-let reifierSurface (name: string) : string option =
-    if name.StartsWith "|completed" then Some "complete"
-    elif name.StartsWith "|succeeded" then Some "succeeds"
-    elif name.StartsWith "|orFailed" then Some "orFail"
-    elif name.StartsWith "|exitCoded" then Some "exitCode"
-    elif name.StartsWith "|execed" then Some "exec"
-    elif name.StartsWith "|lined" then Some "line"
-    elif name.StartsWith "|texted" then Some "text"
-    elif name = "|chainCompleted" then Some "complete"
-    elif name = "|chainSucceeded" then Some "succeeds"
-    elif name = "|chainExitCoded" then Some "exitCode"
-    elif name = "|chainOrFailed" then Some "orFail"
-    elif name = "|chainLined" then Some "line"
-    elif name = "|chainTexted" then Some "text"
-    else None
+let reifierSurface (name: string) : string option = Ast.reifierOfVar name
 
 /// the hover/completion text: summary, then example, then pointer — each
 /// on its own line, in the order half 1 renders after the type.
