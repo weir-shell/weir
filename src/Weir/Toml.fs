@@ -463,6 +463,12 @@ and private array (s: State) (depth: int) =
 and private keyval (s: State) (t: Tab) (depth: int) =
     let line = s.Line
     let keys = dottedKey s
+
+    // each segment is a table level, on top of the inline nesting around it:
+    // bounding the sum bounds the tree the conversion walks recursively
+    if depth + keys.Length > maxDepth then
+        fail s $"nesting is too deep (limit {maxDepth})"
+
     skipWs s
 
     if peek s <> '=' then
@@ -539,6 +545,10 @@ let private header (s: State) (root: Tab) : Tab =
     s.Pos <- s.Pos + (if aot then 2 else 1)
     skipWs s
     let keys = dottedKey s
+
+    if keys.Length > maxDepth then
+        fail s $"nesting is too deep (limit {maxDepth})"
+
     let close = if aot then "]]" else "]"
 
     if not (startsWith s close) then

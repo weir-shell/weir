@@ -23734,6 +23734,23 @@ let tomlTests =
               Expect.isGreaterThan (suiteFiles().Length) 600 "the suite is present"
               Expect.isEmpty failures "conformance"
           }
+          test "deep dotted keys, header paths and inline nesting are refused, never a stack overflow" {
+              let seg n = String.replicate n "a." + "a"
+
+              for doc in
+                  [ seg 50000 + " = 1"
+                    "[" + seg 50000 + "]"
+                    "[[" + seg 50000 + "]]"
+                    "x = " + String.replicate 300 ("{ " + seg 300 + " = ") + "1" + String.replicate 300 " }" ] do
+                  match Weir.Toml.parse doc with
+                  | Error e -> Expect.stringContains e "nesting is too deep" "refused with the limit"
+                  | Ok _ -> failtest "a 50k-deep document must be refused"
+
+              // the deepest legal tree still parses
+              match Weir.Toml.parse ("[" + seg 499 + "]\n" + seg 499 + " = 1") with
+              | Ok _ -> ()
+              | Error e -> failtest $"within the limit: {e}"
+          }
           test "a truncated document is a result or an error, never a crash" {
               for rel in suiteFiles () |> Array.filter (fun r -> r.StartsWith "valid/") do
                   match readSuite rel with
