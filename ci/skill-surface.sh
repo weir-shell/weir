@@ -39,10 +39,10 @@ count=$(wc -l < "$surface")
 
 python3 - "$surface" "$SKILL" "$OMIT" <<'PYSURF'
 import re, sys
-surface = [l.strip() for l in open(sys.argv[1]) if l.strip()]
-skill = open(sys.argv[2]).read()
+surface = [l.strip() for l in open(sys.argv[1], encoding='utf-8') if l.strip()]
+skill = open(sys.argv[2], encoding='utf-8').read()
 omitted = {}
-for line in open(sys.argv[3]):
+for line in open(sys.argv[3], encoding='utf-8'):
     line = line.strip()
     if not line or line.startswith('#'):
         continue
