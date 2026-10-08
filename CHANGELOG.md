@@ -20,6 +20,9 @@
 
 ### Fixed
 
+- **`(%)` works as a function value,** like `(+)` and `(*)`:
+  `xs |> Seq.reduce (%)`. `(=)`, `(!=)` and `(<|)` now say what to write
+  instead (`(==)`, `(<>)`, `|>`) rather than showing a parser dump.
 - **Tab completes the command after a `|`.** In the REPL,
   `git status | s<Tab>` offered only files from the current directory.
   It now offers programs from PATH, and right after `|` also the

@@ -20065,6 +20065,7 @@ let operatorValueTests =
               Expect.equal (run "[\"a\"; \"b\"] |> Seq.reduce (+)") (VStr "ab") "concat by context"
               Expect.equal (run "[1s; 2s] |> Seq.reduce (+)") (VDur 3000L) "Durations by context"
               Expect.equal (run "[1; 2; 3] |> Seq.fold (+) 100") (VInt 106L) ""
+              Expect.equal (run "[100; 7; 4] |> Seq.reduce (%)") (VInt 2L) "(%) is a value too"
 
               Expect.equal (run "[1; 2; 3] |> Seq.scan (+) 0" |> forceSeq) [ VInt 0L; VInt 1L; VInt 3L; VInt 6L ] ""
 
@@ -20114,6 +20115,9 @@ let operatorValueTests =
               Expect.stringContains (perr "Seq.reduce (||)") "short-circuits" ""
               Expect.stringContains (perr "Seq.reduce (|>)") "grammar, not a function" ""
               Expect.stringContains (perr "Seq.reduce (>>)") "composition already yields" ""
+              Expect.stringContains (perr "Seq.reduce (=)") "write `(==)`" "not a weir operator"
+              Expect.stringContains (perr "Seq.reduce (!=)") "write `(<>)`" ""
+              Expect.stringContains (perr "Seq.reduce (<|)") "no `<|`" ""
               // ^ and $ are not operators in this sense — the form cannot catch them
               perr "let f = (^) in 1" |> ignore
           }
