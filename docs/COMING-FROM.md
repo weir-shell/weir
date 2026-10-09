@@ -465,7 +465,7 @@ differences are easy to see. There are two. weir checks the whole file
 before running a line: types, fields, match coverage, and whether the
 commands exist. zx finds a misspelled binary only when it reaches that
 `await`, halfway through the deploy. And there's no runtime to
-install: one static binary, millisecond startup, no `node_modules`,
+install: one native binary, millisecond startup, no `node_modules`,
 no `package.json`.
 
 | zx / Node | weir |

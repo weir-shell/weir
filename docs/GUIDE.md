@@ -47,7 +47,7 @@ Five reasons, most important first:
    warning. And `pure` marks a block that the checker guarantees has
    no side effects.
 5. **It starts in about 6ms** for a one-line expression. It's a single
-   static binary, so it's fine in a shebang.
+   native binary, so it's fine in a shebang.
 
 ## Running weir
 

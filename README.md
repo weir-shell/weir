@@ -61,7 +61,7 @@ HTTP and YAML — is in [docs/GUIDE.md](docs/GUIDE.md).
   on any type that supports them — no annotations to write, and a
   type that doesn't support them is a check error, not a runtime
   surprise.
-- **Fast.** One static binary, millisecond start.
+- **Fast.** One native binary, millisecond start.
 - **Cross-platform.** Linux, macOS, and Windows.
 - **Editor and CLI tooling.** `weir check [--json]`, `weir fmt`, an
   LSP (diagnostics, hover, completion, semantic tokens), and a REPL

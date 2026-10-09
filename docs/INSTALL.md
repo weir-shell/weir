@@ -1,8 +1,10 @@
 # Installing weir
 
-weir is a single static binary with nothing else to install. Each
+weir is a single native binary with nothing else to install. Each
 release has one binary per platform, plus a `SHA256SUMS` file with
 their checksums.
+
+Linux builds need glibc; musl/Alpine isn't supported yet.
 
 ## The quick way
 
