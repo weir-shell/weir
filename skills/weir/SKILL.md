@@ -1247,7 +1247,9 @@ print x
   binder names [D:reserve-builtins] — a binding would shadow them for
   the whole file with no way back, so the checker refuses; bare
   aliases (`max`, `find`, `item`…) stay bindable because the
-  qualified member survives. `ls` LEFT the reserved set with
+  qualified member survives. `id` (the identity, F#'s) is NOT reserved
+  [D:id-builtin]: `let id = …` binds, its way back being `fun x -> x`.
+  `ls` LEFT the reserved set with
   `Dir.stat` [D:dir-stat]: `Dir.stat "."` is the escape a shadow
   leaves open, so `let ls = …` is now a user preference, not an
   error.
@@ -2432,4 +2434,4 @@ not the teaching.
 - `Seq`: `append` `average` `choose` `chunkBySize` `collect` `concat` `contains` `countBy` `distinct` `distinctBy` `equal` `except` `exactlyOne` `exists` `find` `fold` `forall` `freeze` `groupBy` `head` `indexed` `isEmpty` `item` `iter` `last` `length` `map` `max` `maxBy` `min` `minBy` `pairwise` `pfirst` `pfirstWith` `pick` `piter` `piterWith` `pmap` `pmapWith` `range` `reduce` `replicate` `rev` `scan` `skip` `skipWhile` `sort` `sortBy` `sortByDescending` `sortDescending` `sum` `take` `takeWhile` `tryExactlyOne` `tryFind` `tryHead` `tryItem` `tryLast` `tryPick` `tryReduce` `where` `windowed` `zip`
 - `Bytes`: `fromBase64` `fromHex` `hmacSha256` `length` `sha256` `sub` `toBase64` `toHex` `tryFromBase64`
 - `Size`: `average` `bytes` `parse` `sum` `toBytes` `tryParse`
-- `Str`: `contains` `endsWith` `fields` `fromBase64` `isMatch` `join` `length` `padLeft` `padRight` `replace` `replicate` `rmatch` `rmatchAll` `rsplit` `rsplitOnce` `sha256` `split` `splitOnce` `startsWith` `sub` `toBase64` `toInt` `toLower` `toUpper` `toUtf8` `trim` `trimEnd` `trimStart` `tryFromBase64` `tryFromUtf8` `tryIndexOf` `tryRsplitOnce` `trySplitOnce` `tryToInt` `fromUtf8`
+- `Str`: `contains` `endsWith` `fields` `fromBase64` `isEmpty` `isMatch` `join` `length` `nonEmpty` `padLeft` `padRight` `replace` `replicate` `rmatch` `rmatchAll` `rsplit` `rsplitOnce` `sha256` `split` `splitOnce` `startsWith` `sub` `toBase64` `toInt` `toLower` `toUpper` `toUtf8` `trim` `trimEnd` `trimStart` `tryFromBase64` `tryFromUtf8` `tryIndexOf` `tryRsplitOnce` `trySplitOnce` `tryToInt` `fromUtf8`

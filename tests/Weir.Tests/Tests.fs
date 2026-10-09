@@ -19944,10 +19944,12 @@ let bareRuleTests =
           test "THE GATE: the collision set is PINNED — a new collision demotes a bare name, which is a decision" {
               // `replicate` joined 2026-09 (Str.replicate beside
               // Seq.replicate, the width-members batch): qualified-only
-              // everywhere now — the derived partition's own rule
+              // everywhere now — the derived partition's own rule.
+              // `isEmpty` joined with Str.isEmpty beside Seq.isEmpty
+              // [D:id-builtin]: Seq.isEmpty / Str.isEmpty, never bare
               Expect.equal
                   Weir.Builtins.bareTwoHome
-                  (Set [ "contains"; "length"; "replicate" ])
+                  (Set [ "contains"; "isEmpty"; "length"; "replicate" ])
                   "the two-home scan moved: decide the new name (qualified-only), then update this pin"
           }
           test "no formerly-bare name lost its slot in the widening (the monotonicity check the plan demanded)" {
@@ -23550,11 +23552,32 @@ let tryTests =
               Expect.equal (run "3 |> try result |> Result.isOk") (VBool true) "isOk"
           } ]
 
+// hover text for doc comments [D:hover-reflow]
+let hoverReflowTests =
+    testList
+        "hover reflow [D:hover-reflow]"
+        [ test "wrapped doc lines join into one paragraph" {
+              Expect.equal
+                  (Weir.Lsp.reflowDoc [ "the badge for the nearest project at or above `dir`, followed by a"; "space; \"\" outside any project" ])
+                  "the badge for the nearest project at or above `dir`, followed by a space; \"\" outside any project"
+                  "one paragraph"
+          }
+          test "blank lines, list items and fenced code keep their breaks" {
+              let doc =
+                  [ "first paragraph"; "continues"; ""; "- one"; "- two"; "```"; "let x ="; "    1"; "```" ]
+
+              Expect.equal
+                  (Weir.Lsp.reflowDoc doc)
+                  "first paragraph continues\n\n- one\n- two\n```\nlet x =\n    1\n```"
+                  "structure kept"
+          } ]
+
 [<Tests>]
 let allTests =
     testList
         "Weir"
         [ hardeningTests
+          hoverReflowTests
           tomlTests
           tryTests
           versionStampTests

@@ -1803,6 +1803,13 @@
           "pointer": null
         },
         {
+          "name": "isEmpty",
+          "signature": "Str.isEmpty (s: string) : bool",
+          "summary": "True for the empty string \u0022\u0022 (whitespace is not empty; Str.trim first for that).",
+          "example": "Str.isEmpty \u0022\u0022",
+          "pointer": null
+        },
+        {
           "name": "isMatch",
           "signature": "Str.isMatch (pattern: string) (subject: string) : bool",
           "summary": "True when a regex matches anywhere in the string.",
@@ -1821,6 +1828,13 @@
           "signature": "Str.length (s: string) : int",
           "summary": "The number of characters.",
           "example": "Str.length \u0022abc\u0022",
+          "pointer": null
+        },
+        {
+          "name": "nonEmpty",
+          "signature": "Str.nonEmpty (s: string) : bool",
+          "summary": "True for any string but \u0022\u0022 \u2014 the point-free filter: \u0060lines |\u003E Seq.where Str.nonEmpty\u0060.",
+          "example": "[\u0022a\u0022; \u0022\u0022] |\u003E Seq.where Str.nonEmpty",
           "pointer": null
         },
         {
@@ -2299,6 +2313,13 @@
       "summary": "Parse YAML into declared records. Supports a strict subset: block mappings and sequences, scalars, # comments, and multiple documents separated by ---. Fields can be nested records, seqs, seq\u003Cstring * _\u003E for mappings, and Option (a missing key or null becomes None). Anchors, tags and flow style are rejected.",
       "example": null,
       "pointer": "Use it as a pipe stage: \u0060lines |\u003E from yaml Deployment\u0060 gives a seq\u003CDeployment\u003E, one per YAML document."
+    },
+    {
+      "name": "id",
+      "signature": "id (x: \u0027a) : \u0027a",
+      "summary": "The identity function: returns its argument unchanged. Useful where a function is expected, as in \u0060Seq.choose id\u0060 over a seq of Options. Unlike \u0060not\u0060 or \u0060fst\u0060, \u0060id\u0060 can still be used as a variable name; a binding named \u0060id\u0060 simply shadows it.",
+      "example": "[Some 1; None; Some 3] |\u003E Seq.choose id",
+      "pointer": null
     },
     {
       "name": "let pure",
