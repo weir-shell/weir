@@ -1378,6 +1378,15 @@ let private dotFloatTeaching =
     attempt (getPosition .>> pchar '.' .>> lookAhead (satisfy System.Char.IsDigit))
     >>= fun at -> failFatallyAt at "float literals need a digit before the point (write 0.5)"
 
+// `try` is a form after `|>` (a term, tried before atoms); as an argument
+// it is misplaced — teach the form [D:try-form]
+let private tryAtomTeaching: Parser<Expr, unit> =
+    attempt (getPosition .>> pstring "try" .>> notFollowedBy (satisfy isIdentCont))
+    >>= fun at ->
+        failFatallyAt
+            at
+            "'try' goes after a pipeline: `<expr> |> try` gives an Option (None if it failed), `<expr> |> try result` a Result with the error message"
+
 let private atom =
     deepen (
         choice
@@ -1402,6 +1411,7 @@ let private atom =
               recordLit
               attempt comprehensionLit
               listLit
+              tryAtomTeaching
               wordAtom ]
     )
 
@@ -1898,9 +1908,16 @@ let private binOp op l r =
     { Kind = EBinOp(op, l, r)
       Span = Span.union l.Span r.Span }
 
+// `x |> try` folds into one node [D:try-form]: the form captures its left
+// side, so it is not an application of the left's value
 let private pipeOp l r =
-    { Kind = EPipe(l, r)
-      Span = Span.union l.Span r.Span }
+    match r.Kind with
+    | ETryForm asResult ->
+        { Kind = ETry(l, asResult)
+          Span = Span.union l.Span r.Span }
+    | _ ->
+        { Kind = EPipe(l, r)
+          Span = Span.union l.Span r.Span }
 
 let private mkOpp (withPipe: bool) =
     let opp = OperatorPrecedenceParser<Expr, unit, unit>()
@@ -2249,6 +2266,15 @@ let private fromExpr =
 
         { Kind = EFrom(fmt, shape, seqOf, streamW.IsSome)
           Span = span }
+
+// the `try` form [D:try-form]: `try` or `try result`, only meaningful after
+// `|>` (pipeOp folds it); `result` is a modifier word here, no keyword
+let private tryForm =
+    spanned (
+        keyword "try"
+        >>. opt (attempt (pstring "result" .>> notFollowedBy (satisfy isIdentCont) .>> ws))
+    )
+    |>> fun (r, span) -> { Kind = ETryForm r.IsSome; Span = span }
 
 let private toExpr =
     spanned (
@@ -3508,6 +3534,7 @@ opp.TermParser <-
           heredocDistrict
           fromExpr
           toExpr
+          tryForm
           appChain ]
 
 updateSourceRef.Value <-
@@ -3590,7 +3617,7 @@ let private foreignKeywordTeachings =
     [ "while", "'while' is not a weir word — a bounded loop is 'retry'/'poll'; iterate a seq with 'for x in xs do'"
       "return", "'return' is not a weir word — a function's last expression is its value"
       "try",
-      "'try' is not a weir word — to inspect a failing command instead of stopping, write 'let r = <command> | complete' and read r.exitCode; for cleanup that always runs, use 'within … always'"
+      "'try' goes after a pipeline, not before a block — `<expr> |> try` gives an Option (None if it failed), `<expr> |> try result` a Result; for a failing command, `<command> | complete`; for cleanup that always runs, `within … always`"
       "def", "'def' is not a weir word — define with 'let f x = ...'" ]
 
 let private foreignKeywordGuard () : Parser<'a, unit> =

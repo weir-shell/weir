@@ -2994,6 +2994,31 @@ and private progOf (env: Env) (h: Check.TCmdHead) : string =
 
 and eval (env: Env) (te: TypedExpr) : Value =
     match te.Kind with
+    // a failure as a value [D:try-form]: the body runs inside the capture
+    // and its value is forced there — a lazy seq would otherwise raise
+    // after `try` returned. exit and weir's own internal errors pass through
+    | TETry(body, asResult) ->
+        let rec force (v: Value) =
+            match v with
+            | VSeq items -> VSeq(items |> Seq.map force |> Seq.toArray :> seq<Value>)
+            | VRecord(n, fields) -> VRecord(n, fields |> List.map (fun (k, x) -> k, force x))
+            | VUnion(c, Some p) -> VUnion(c, Some(force p))
+            | VTuple xs -> VTuple(List.map force xs)
+            | VMap m -> VMap(Map.map (fun _ x -> force x) m)
+            | v -> v
+
+        try
+            let v = force (eval env body)
+            if asResult then VUnion("Ok", Some v) else VUnion("Some", Some v)
+        with
+        | ExitRequest _ -> reraise ()
+        | :? System.OperationCanceledException -> reraise ()
+        | Failure m when m.StartsWith "unreachable:" -> reraise ()
+        | ex ->
+            if asResult then
+                VUnion("Error", Some(VStr ex.Message))
+            else
+                VUnion("None", None)
     | TEInt n -> VInt(int64 n)
     | TEDur n -> VDur n
     | TESize b -> VSize b

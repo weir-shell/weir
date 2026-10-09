@@ -1,5 +1,27 @@
 # Changelog
 
+## v0.0.70
+
+### Added
+
+- **`|> try` turns a failure into a value.** End any expression with
+  `|> try` to get `Some value`, or `None` if it failed — a missing file,
+  a malformed document, a `fail`:
+  `File.read "Cargo.toml" |> from toml Cargo |> try`. `|> try result`
+  gives `Ok value` or `Error message` instead, with `Result.map`,
+  `defaultValue`, `toOption` and `isOk`. It's the expression twin of
+  `| complete`: everything to the left is captured and fully evaluated
+  inside, `exit` still exits, and nothing that already happened is
+  undone.
+
+### Changed
+
+- **A script's own union cases shadow the prelude's.** With `Result`
+  in the prelude, a script declaring its own `Ok` or `Error` case keeps
+  constructing it; the same now holds for `Move` and `Copy` (from `Op`).
+- **`try` is a keyword with a meaning.** It was reserved only to say
+  weir had no `try`; the teaching now points at `|> try`.
+
 ## v0.0.69
 
 ### Added

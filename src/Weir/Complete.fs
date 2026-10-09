@@ -11,7 +11,7 @@ open Weir.Types
 // (PLAN-dx-review D4) exist only to teach weir's spelling — none of
 // them can ever parse.
 let unsuggestedKeywords =
-    Set [ "rec"; "mutable"; "function"; "while"; "return"; "try"; "def" ]
+    Set [ "rec"; "mutable"; "function"; "while"; "return"; "def" ]
 
 let private keywords = Weir.Parser.keywords - unsuggestedKeywords |> Set.toList
 

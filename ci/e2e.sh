@@ -4562,6 +4562,28 @@ echo "$terr" | grep -qF "from toml: line 3: the key 'a' is defined twice" || fai
 echo "e2e ok: from toml — Cargo/pyproject on disk, Wire, Iso8601, located duplicate key"
 rm -rf "$tdir"
 
+# |> try [D:try-form]: a failure as a value — a real missing file and a
+# malformed document become None / Error; exit passes through the capture
+ydir=$(mkweirtmp)
+printf 'a = 1\na = 2\n' > "$ydir/bad.toml"
+cat > "$ydir/try.weir" <<'WEOF'
+let missing = File.read "nope.toml" |> try
+let bad = File.read "bad.toml" |> from toml {| a: int |} |> try result
+print $"{missing}"
+match bad with
+| Ok _ -> print "unexpected"
+| Error msg -> print $"error: {msg}"
+let _never = (if 1 == 1 then exit 7 else 1) |> try
+print "not reached"
+WEOF
+rc=0; out=$(cd "$ydir" && $BIN try.weir 2>&1) || rc=$?
+expect "|> try: a missing file is None" "None" "$out"
+expect "|> try result: the error message" "error: from toml: line 2: the key 'a' is defined twice" "$out"
+[ $rc -eq 7 ] || fail "exit inside |> try must exit with its code (rc=$rc): $out"
+echo "$out" | grep -qF "not reached" && fail "exit must not be captured: $out"
+echo "e2e ok: |> try — None / Error from real failures, exit passes through"
+rm -rf "$ydir"
+
 # from table [D:from-table]: the aligned-table boundary on a real file —
 # a kubectl-shaped fixture (tabwriter reality: 3-space padding, spaced
 # values, <none>) read into typed rows; the header-offset law is the

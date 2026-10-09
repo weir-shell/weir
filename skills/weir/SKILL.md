@@ -2293,6 +2293,15 @@ print $"exit={r.exitCode}"
   `--strict` exits 2 on any, so CI chooses whether unanalysable means
   failure. `--json` for machines. The boundary, stated: the report
   covers what WEIR does; any external can itself do anything.
+- A failure as a VALUE, for expressions [D:try-form]: `e |> try` is
+  `Option<'T>` (None if evaluating `e` raised), `e |> try result` is
+  `Result<'T, string>` (`Ok v` / `Error msg`). A FORM after `|>`, not a
+  function: it captures EVERYTHING to its left (`|>` groups left to
+  right) and forces the value inside (lazy seqs included, so an infinite
+  one never finishes). `exit` passes through; earlier effects are not
+  undone. `try` anywhere else is an error. A script's own `Ok`/`Error`
+  cases shadow Result's for construction; patterns resolve by type.
+  Commands keep their own spelling: `cmd | complete`.
 - `exit n` exits with code n silently (propagation:
   `if r.exitCode <> 0 then exit (r.exitCode)`); `fail "msg"` is
   the message-carrying exit-1. No GENERAL try/finally — cleanup-always
@@ -2408,6 +2417,7 @@ not the teaching.
 - `Log`: `debug` `debugWith` `info` `infoWith` `trace` `traceWith` `warn` `warnWith`
 - `Map`: `add` `count` `get` `has` `keys` `ofPairs` `pairs` `remove` `tryGet` `values`
 - `Net`: `portOpen`
+- `Result`: `defaultValue` `isOk` `map` `toOption` — what `e |> try result` gives (`Ok v` / `Error msg`)
 - `Option`: `bind` `defaultValue` `defaultWith` `flatten` `iter` `map` `orElse` `orElseWith` — `bind` chains lookups that may each fail (`f` returns an Option; no nesting); `flatten` collapses `Option<Option<T>>`
 - `Path`: `cacheHome` `combine` `configHome` `dir` `extension` `fileName` `glob` `home` `newTempDir` `normalize` `stateHome` `stem` `tempRoot` `under` — `normalize` resolves `.`/`..` in the path TEXT (no filesystem, no symlinks; use it where `under` refuses a path that leaves its base); `home`/`configHome`/`stateHome`/`cacheHome` (each `unit -> string`) are home in an EXPRESSION (`File.read $"{Path.home ()}/.bashrc"`); in a COMMAND LINE an unquoted word-leading `~`/`~/…` expands to home at run time [D:tilde] (`cat ~/.bashrc`, `~/bin/tool`) — quoted `"~/x"`, `$"…"` and spliced values stay literal, `~user` too, and `$HOME` never expands. The working directory is `pwd`, a `string` read where it is used [D:pwd-string]; `cd dir` returns the absolute directory it moved to
 - `Poll`: `defaults`

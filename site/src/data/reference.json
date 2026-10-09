@@ -1128,6 +1128,39 @@
       ]
     },
     {
+      "name": "Result",
+      "members": [
+        {
+          "name": "defaultValue",
+          "signature": "Result.defaultValue (fallback: \u0027a) (r: Result\u003C\u0027a, \u0027e\u003E) : \u0027a",
+          "summary": "The value inside Ok, or the fallback for an Error.",
+          "example": "File.read \u0022n.txt\u0022 |\u003E Seq.length |\u003E try result |\u003E Result.defaultValue 0",
+          "pointer": null
+        },
+        {
+          "name": "isOk",
+          "signature": "Result.isOk (r: Result\u003C\u0027a, \u0027e\u003E) : bool",
+          "summary": "True for Ok, false for an Error.",
+          "example": "File.read \u0022n.txt\u0022 |\u003E try result |\u003E Result.isOk",
+          "pointer": null
+        },
+        {
+          "name": "map",
+          "signature": "Result.map (f: \u0027a -\u003E \u0027b) (r: Result\u003C\u0027a, \u0027e\u003E) : Result\u003C\u0027b, \u0027e\u003E",
+          "summary": "Apply a function to the value inside Ok; an Error stays as it is.",
+          "example": "File.read \u0022n.txt\u0022 |\u003E Seq.length |\u003E try result |\u003E Result.map (fun n -\u003E n * 2)",
+          "pointer": null
+        },
+        {
+          "name": "toOption",
+          "signature": "Result.toOption (r: Result\u003C\u0027a, \u0027e\u003E) : Option\u003C\u0027a\u003E",
+          "summary": "Some value for Ok, None for an Error (the message is dropped).",
+          "example": "File.read \u0022n.txt\u0022 |\u003E try result |\u003E Result.toOption",
+          "pointer": null
+        }
+      ]
+    },
+    {
       "name": "Retry",
       "members": [
         {
@@ -2371,6 +2404,13 @@
       "summary": "Write one value as a YAML document. A record becomes a mapping, a seq a sequence, and a seq of pairs a mapping. \u0060to yaml stream\u0060 writes one document per element, separated by \u0060---\u0060. A None field is left out; strings that YAML could misread as another type (no, 007, 1e5) are quoted.",
       "example": null,
       "pointer": "Use it as a pipe stage: \u0060deployment |\u003E to yaml\u0060."
+    },
+    {
+      "name": "try",
+      "signature": null,
+      "summary": "Turn a failure into a value: \u0060\u003Cexpr\u003E |\u003E try\u0060 gives Some value, or None if evaluating the expression raised (a failed command, a parse error, a fail, a missing file). \u0060\u003Cexpr\u003E |\u003E try result\u0060 gives Ok value or Error message instead. Everything to the left of \u0060|\u003E try\u0060 is captured, and its value is fully evaluated inside, so a lazy sequence cannot fail later. \u0060exit\u0060 still exits, and effects that happened before the failure are not undone.",
+      "example": "File.read \u0022Cargo.toml\u0022 |\u003E from toml {| package: {| version: string |} |} |\u003E try",
+      "pointer": "Commands have their own form: \u0060\u003Ccommand\u003E | complete\u0060 gives the exit code and output as a record."
     },
     {
       "name": "within",

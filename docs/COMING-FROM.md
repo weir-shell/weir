@@ -196,7 +196,7 @@ widening.
 |---|---|
 | `if x = y then` | `if x == y then`; `=` is only for `let` and record fields |
 | `printfn "%d files" n` | `print $"{n} files"`; there's no printf family, so use interpolation |
-| `try … with` | no catching: `fail "msg"` raises, and `cmd \| complete` turns a failure into data |
+| `try … with` | `e \|> try` (an `Option`) or `e \|> try result` (a `Result<'T, string>`); for a command, `cmd \| complete` |
 | `try … finally` | a bare `within` + `always` block |
 | `while` / `let rec` | neither exists; `let rec` is a parse error (`'rec' is a keyword`) |
 | `open Seq` | no `open`; names are always qualified. Share code with `import "./lib/x.weir" as X` |
@@ -447,8 +447,9 @@ within tmp d
   transformations are pipelines.
 - Classes. Use records and functions, and `{ r with F = v }` instead of
   changing attributes.
-- Exceptions and `try/except`. `fail` stops the script. Turn a step
-  that may fail into data with `| complete` and branch on it.
+- Exceptions and `try/except`. `fail` stops the script. Turn an
+  expression that may fail into data with `|> try` (an Option) or
+  `|> try result` (`Ok`/`Error`), and a command with `| complete`.
 - Dicts. `Map<string, T>` is for keys that are data (JSON objects keyed
   by ID, counters): `Map.ofPairs`/`get`/`tryGet`/`pairs`, string keys
   only, and `from json Map<string, T>` to read one. When you know the
@@ -507,8 +508,9 @@ echo --file=$f
 - `async`/`await`. None, and none needed: I/O is synchronous from the
   script's point of view, and parallelism is `Seq.pmap`/`piter`. A task
   that truly needs async has outgrown a shell script.
-- `try/catch`. Use the exit-code forms; `| orFail "msg"` is the
-  one-line assert.
+- `try/catch`. End an expression with `|> try` (an Option) or
+  `|> try result` (`Ok`/`Error`); for commands use the exit-code forms,
+  and `| orFail "msg"` is the one-line assert.
 - npm dependencies. `import "./lib/x.weir"` shares code between
   scripts; external tools stay external tools.
 

@@ -2571,6 +2571,31 @@ sh -c "true" | orFail "sanity failed"
 print (if onBranch then "on a branch" else "detached")
 ```
 
+Expressions fail by raising too: a missing file, a malformed
+document, a `fail`. To handle the failure instead of stopping, end the
+pipeline with `|> try`. You get `Some value`, or `None` if anything to
+the left failed; `|> try result` gives `Ok value` or `Error message`:
+
+```weir
+let version =
+    File.read "Cargo.toml"
+    |> from toml {| package: {| version: string |} |}
+    |> try
+    |> Option.map _.package.version
+    |> Option.defaultValue "unknown"
+
+match ["a = 1"; "a = 2"] |> from toml {| a: int |} |> try result with
+| Ok doc -> print $"a is {doc.a}"
+| Error msg -> print $"could not read it: {msg}"
+
+print version
+```
+
+Everything to the left of `|> try` is evaluated inside it, including
+the rest of a lazy sequence, so a failure can't escape later. `exit`
+still exits, and anything that already happened (a file written, a
+command run) isn't undone.
+
 `Log.info $"starting {n}"` (and `trace`, `debug`, `warn`) writes log
 messages with a level to stderr. `WEIR_LOG=debug weir script.weir`
 shows more detail for one run without editing anything, and
