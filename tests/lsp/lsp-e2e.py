@@ -692,9 +692,10 @@ send4({"jsonrpc": "2.0", "method": "textDocument/didOpen",
        "params": {"textDocument": {"uri": ent_uri, "text": ENTRY}}})
 
 # a module member hovers its annotated signature + the /// doc read from
-# the MODULE file, in the local format (type, blank line, doc)
+# the MODULE file, in the local format (type, blank line, doc); each line
+# ends in a space for clients that drop newlines [D:hover-reflow]
 v = req4(2, "textDocument/hover", ent_uri, 3, 13)["result"]["contents"]["value"]
-expect(v == "Lib.double (n: int) : int\n\ndoubles a number",
+expect(v == "Lib.double (n: int) : int \n \ndoubles a number",
        f"module member hover must read the module's doc: {v!r}")
 
 # definition crosses to the UNOPENED module file — pathToUri spelling
@@ -719,7 +720,7 @@ expect(d and d["uri"].endswith("/.weir/sigs/mytool.weir"), f"head definition: {d
 # a flag hovers its field's type + /// doc from the sig file, and jumps
 # to the field declaration
 v = req4(7, "textDocument/hover", ent_uri, 4, 19)["result"]["contents"]["value"]
-expect(v == "bool\n\nrun without side effects", f"flag hover: {v!r}")
+expect(v == "bool \n \nrun without side effects", f"flag hover: {v!r}")
 d = req4(8, "textDocument/definition", ent_uri, 4, 19)["result"]
 expect(d and d["uri"].endswith("/mytool.weir") and d["range"]["start"] == {"line": 4, "character": 4},
        f"flag definition: {d}")

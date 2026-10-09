@@ -14,11 +14,21 @@
   inside, `exit` still exits, and nothing that already happened is
   undone.
 
+- **`id`, the identity function** (F#'s): `xs |> Seq.choose id`. It is
+  not reserved, so `let id = …` and `for id in ids` still bind.
+- **`Str.isEmpty` and `Str.nonEmpty`**, so a filter reads point-free:
+  `lines |> Seq.where Str.nonEmpty`. (`isEmpty` now has two homes, so
+  in the REPL write `Seq.isEmpty` or `Str.isEmpty`.)
+
 ### Changed
 
 - **A script's own union cases shadow the prelude's.** With `Result`
   in the prelude, a script declaring its own `Ok` or `Error` case keeps
   constructing it; the same now holds for `Move` and `Copy` (from `Op`).
+- **Hover text reads as paragraphs.** A `///` comment wrapped over
+  several lines shows as one paragraph, and each hover line ends with a
+  space, so editors that show hovers on one line (micro's info bar)
+  no longer glue words together.
 - **`try` is a keyword with a meaning.** It was reserved only to say
   weir had no `try`; the teaching now points at `|> try`.
 

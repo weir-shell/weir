@@ -19,6 +19,41 @@ open Weir.Check
 
 open System.Text.Json
 
+/// a `///` comment's lines as paragraphs [D:hover-reflow]: lines the author
+/// wrapped join with a space (a client showing one line, or wrapping on its
+/// own, must not get the source's line breaks); blank lines, list items and
+/// fenced code keep their breaks
+let reflowDoc (lines: string list) : string =
+    let out = ResizeArray<string>()
+    let para = ResizeArray<string>()
+    let mutable inFence = false
+
+    let flush () =
+        if para.Count > 0 then
+            out.Add(String.Join(" ", para))
+            para.Clear()
+
+    for raw in lines do
+        let l = raw.Trim()
+
+        if l.StartsWith "```" then
+            flush ()
+            out.Add l
+            inFence <- not inFence
+        elif inFence then
+            out.Add(raw.TrimEnd())
+        elif l = "" then
+            flush ()
+            out.Add ""
+        elif l.StartsWith "- " || l.StartsWith "* " then
+            flush ()
+            para.Add l
+        else
+            para.Add l
+
+    flush ()
+    String.Join("\n", out)
+
 let private tryProp (name: string) (e: JsonElement) : JsonElement option =
     if e.ValueKind = JsonValueKind.Object then
         match e.TryGetProperty name with
@@ -1766,7 +1801,7 @@ let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string 
                             Script.docAttachments sigLines
                             |> List.tryPick (fun d ->
                                 if d.Line = dl && d.Col = dc then
-                                    Some(String.concat "\n" d.Doc)
+                                    Some(reflowDoc d.Doc)
                                 else
                                     None))
 
@@ -1882,7 +1917,7 @@ let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string 
             Script.docAttachments lines
             |> List.tryPick (fun d ->
                 if d.Line = line && d.Col <= col && col < d.Col + d.Len then
-                    Some(String.concat "\n" d.Doc)
+                    Some(reflowDoc d.Doc)
                 else
                     None)
 
@@ -1902,7 +1937,7 @@ let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string 
                         Script.docAttachments docSrc
                         |> List.tryPick (fun d ->
                             if d.Line = dl && d.Col = dc then
-                                Some(String.concat "\n" d.Doc)
+                                Some(reflowDoc d.Doc)
                             else
                                 None)))
 
@@ -2416,7 +2451,11 @@ let run (debug: bool) : int =
                                     w.WritePropertyName "contents"
                                     w.WriteStartObject()
                                     w.WriteString("kind", "plaintext")
-                                    w.WriteString("value", t)
+                                    // each line ends in a space [D:hover-reflow]: a
+                                    // client that drops newlines (micro's
+                                    // one-line info bar) still separates
+                                    // the words; elsewhere it is invisible
+                                    w.WriteString("value", t.Replace("\n", " \n"))
                                     w.WriteEndObject()
                                     w.WriteEndObject()
                                 | None -> w.WriteNullValue()
@@ -2832,7 +2871,7 @@ let run (debug: bool) : int =
                                         then
                                             Some(
                                                 lines[d.Line - 1].Substring(d.Col - 1, d.Len),
-                                                String.concat "\n" d.Doc
+                                                reflowDoc d.Doc
                                             )
                                         else
                                             None)

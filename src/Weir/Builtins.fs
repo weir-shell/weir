@@ -2366,6 +2366,10 @@ let private strMembers: (string * Ty * Value) list =
       "startsWith", TFun(TStr, TFun(TStr, TBool)), str2Bool "startsWith" (fun p s -> s.StartsWith p)
       "endsWith", TFun(TStr, TFun(TStr, TBool)), str2Bool "endsWith" (fun p s -> s.EndsWith p)
       "trim", TFun(TStr, TStr), str1 "trim" (fun s -> s.Trim())
+      // both spellings read well point-free [D:id-builtin]:
+      // `Seq.where Str.nonEmpty` beside `Str.isEmpty >> not`
+      "isEmpty", TFun(TStr, TBool), VBuiltin(function VStr s -> VBool(s = "") | v -> unreachable $"the checker rejects 'Str.isEmpty' on {formatValue v}")
+      "nonEmpty", TFun(TStr, TBool), VBuiltin(function VStr s -> VBool(s <> "") | v -> unreachable $"the checker rejects 'Str.nonEmpty' on {formatValue v}")
       "trimStart", TFun(TStr, TStr), str1 "trimStart" (fun s -> s.TrimStart())
       "trimEnd", TFun(TStr, TStr), str1 "trimEnd" (fun s -> s.TrimEnd())
       "toLower", TFun(TStr, TStr), str1 "toLower" (fun s -> s.ToLowerInvariant())
@@ -5904,6 +5908,12 @@ let builtinDocs: Map<string, BuiltinDoc> =
               None
            |> named [ "value" ])
           "not", (bd "Boolean negation." (Some "not true") None |> named [ "b" ])
+          "id",
+          (bd
+              "The identity function: returns its argument unchanged. Useful where a function is expected, as in `Seq.choose id` over a seq of Options. Unlike `not` or `fst`, `id` can still be used as a variable name; a binding named `id` simply shadows it."
+              (Some "[Some 1; None; Some 3] |> Seq.choose id")
+              None
+           |> named [ "x" ])
           "cd",
           (bd
               "Change the session's directory and return the previous one, so you can go back later (`let prev = cd \"/tmp\"`). A bare name uses the value of that binding (`cd target`). `cd` with no argument, or a typed `cd ~`, goes to the home directory; a string argument is used literally. To change directory for a block only, use `within cd`."
@@ -5923,6 +5933,12 @@ let builtinDocs: Map<string, BuiltinDoc> =
            |> named [ "message" ])
           "exit", (bd "Exit the process with a status code." None None |> named [ "code" ])
           // ---- Str ----
+          "Str.isEmpty",
+          (bd "True for the empty string \"\" (whitespace is not empty; Str.trim first for that)." (Some "Str.isEmpty \"\"") None
+           |> named [ "s" ])
+          "Str.nonEmpty",
+          (bd "True for any string but \"\" — the point-free filter: `lines |> Seq.where Str.nonEmpty`." (Some "[\"a\"; \"\"] |> Seq.where Str.nonEmpty") None
+           |> named [ "s" ])
           "Str.contains",
           (bd "True when a substring is present." (Some "\"abc\" |> Str.contains \"b\"") None
            |> named [ "needle"; "s" ])
@@ -7011,6 +7027,9 @@ let private chainTextedImpl =
 
 // fst/snd — F#'s pair projections; the pair-only typing (TTuple [a; b])
 // makes wider tuples a unification error, same as F#
+// the identity, F#'s `id` [D:id-builtin]
+let private idImpl: Value = VBuiltin(fun v -> v)
+
 let private fstImpl: Value =
     VBuiltin(fun v ->
         match v with
@@ -7035,6 +7054,7 @@ let private entries: (string * Ty * Value) list =
       "cd", TFun(TStr, TStr), cdImpl
       "pwd", TStr, pwdImpl
       "not", TFun(TBool, TBool), notImpl
+      "id", TFun(tA, tA), idImpl
       "fst", TFun(TTuple [ tA; tB ], tA), fstImpl
       "snd", TFun(TTuple [ tA; tB ], tB), sndImpl
       // reifier desugar targets [D:drop-reify-builtins]: '|'-prefixed so
@@ -7323,7 +7343,9 @@ let valueEnv: Env =
 // its names; hover claims the home). But [D:strict-only]'s criterion
 // is an escape's existence, and `Dir.stat "."` is ls's way back:
 // shadowing ls no longer strands the rows.
-let private escapeBearers: Set<string> = Set [ "ls" ]
+// `id` too [D:id-builtin]: its way back is `fun x -> x`, and `id` is an
+// everyday binder name (`let id = Uuid.v7 ()`, `for id in ids`)
+let private escapeBearers: Set<string> = Set [ "ls"; "id" ]
 
 Check.reservedBinderNames.Value <-
     (entries |> List.map (fun (n, _, _) -> n)) @ [ "print"; "printerr"; "show" ]
