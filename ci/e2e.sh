@@ -3436,6 +3436,119 @@ echo "e2e ok: check exits 1 on errors"
 
 rm -rf "$ckdir"
 
+# --- runtime errors name the failing line [D:runtime-position]: a raise
+# inside any block form reports the failing statement's file:line:col, not
+# the enclosing top-level statement's line. A command reports its own
+# column; other raises report the start of the failing line. A lazily read
+# command's failure blames the command, wherever it is read.
+rpdir=$(mkweirtmp)
+rp_case() { # name, expected "file:line:col: error", script body
+    printf '%s' "$3" > "$rpdir/$1.weir"
+    local out rc=0
+    out=$(cd "$rpdir" && $BIN "$1.weir" 2>&1) || rc=$?
+    [ $rc -ne 0 ] || fail "runtime position $1: expected a failure (rc=$rc): $out"
+    echo "$out" | grep -qF "$2" || fail "runtime position $1: expected '$2' in: $out"
+    echo "e2e ok: runtime position — $1 ($2)"
+}
+rp_case top "top.weir:2:1: error:" 'print "a"
+sh -c "exit 3"
+'
+rp_case if "if.weir:3:5: error: command failed with exit code 3" 'if true then
+    print "x"
+    sh -c "exit 3"
+'
+rp_case else "else.weir:5:5: error:" 'if false then
+    print "x"
+else
+    print "y"
+    sh -c "exit 3"
+'
+rp_case match "match.weir:4:5: error:" 'match 1 with
+| 1 ->
+    print "one"
+    sh -c "exit 3"
+| _ -> ()
+'
+rp_case within "within.weir:3:5: error:" 'within env A=1
+    print "in"
+    sh -c "exit 3"
+'
+rp_case for "for.weir:3:5: error:" 'for i in [1] do
+    print $"{i}"
+    sh -c "exit 3"
+'
+rp_case retry "retry.weir:3:5: error:" 'retry attempts=1 delay=1ms
+    print "r"
+    sh -c "exit 3"
+    true
+'
+rp_case pipeline "pipeline.weir:3:5: error:" 'if true then
+    print "p"
+    sh -c "echo a" | sh -c "cat >/dev/null; exit 4"
+'
+rp_case fail "fail.weir:3:5: error: boom" 'if true then
+    print "f"
+    fail "boom"
+'
+rp_case lazy "lazy.weir:2:15: error: command failed with exit code 5" 'if true then
+    let out = $(sh -c "echo a; exit 5")
+    print "between"
+    out |> Seq.iter print
+'
+rp_case lambda "lambda.weir:2:5: error: command failed with exit code 6" '[1] |> Seq.iter (fun i ->
+    sh -c "exit 6"
+    print $"{i}")
+'
+# a failure inside a function defined in ANOTHER statement reports the
+# body line, then one `called from` line per call, innermost first
+rp_case fncall "fncall.weir:2:5: error: command failed with exit code 7" 'let f () =
+    sh -c "exit 7"
+    print "after"
+
+if true then
+    f ()
+'
+rp_frames() { # name, expected frame lines (in order, newline-separated)
+    local out
+    out=$(cd "$rpdir" && $BIN "$1.weir" 2>&1) || true
+    local got
+    got=$(echo "$out" | grep -F "called from" || true)
+    [ "$got" = "$2" ] || fail "runtime trace $1: expected frames:
+$2
+got:
+$got
+in: $out"
+    echo "e2e ok: runtime trace — $1"
+}
+rp_frames fncall "  called from fncall.weir:6:5"
+rp_case nested "nested.weir:3:5: error: deep" 'let inner () =
+    print "i"
+    fail "deep"
+    print "x"
+
+let outer () =
+    print "o"
+    inner ()
+
+if true then
+    outer ()
+'
+rp_frames nested "  called from nested.weir:8:5
+  called from nested.weir:11:5"
+printf 'module Lib\n\nlet run : unit -> unit\n\nlet run () =\n    print "in lib"\n    sh -c "exit 9"\n    print "unreached"\n' > "$rpdir/lib.weir"
+rp_case module "lib.weir:7:5: error: command failed with exit code 9" 'import "./lib.weir"
+
+print "start"
+Lib.run ()
+'
+rp_frames module "  called from module.weir:4:1"
+rp_case item "item.weir:3:5: error:" 'if true then
+    print "s"
+    let x = [1] |> Seq.item 5
+    print $"{x}"
+'
+rm -rf "$rpdir"
+
 # --- runner missing-command diagnosis (2026-07-21: FParsec's primary
 # error buried the real cause and showed assembler-joined text) ---
 

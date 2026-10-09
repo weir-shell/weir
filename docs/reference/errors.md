@@ -28,6 +28,23 @@ error. The position is always a real spot in your file; a hint may
 replace the message, but never moves the position. `check`,
 `check --json` and the LSP all report the same error.
 
+An error while the script runs is reported as `file:line:col` too, at
+the statement that failed — inside an `if`, `match`, `for`, `within`
+or `retry` body, a pipeline, or a lambda, not at the block's first
+line. A failed command points at the command itself, even when its
+output is only read a few lines later. Other errors (`fail`, a builtin)
+point at the start of the failing line. A failure inside a function
+reports the line in the function, then where it was called from, one
+line per call, innermost first:
+
+```text
+lib.weir:7:5: error: command failed with exit code 9: sh -c exit 9
+  called from deploy.weir:4:1
+```
+
+Inline lambdas and `for` bodies add no `called from` line; they are
+part of the statement they're written in.
+
 ## Raising
 
 A failing command raises an error when its output is read; a reifier
