@@ -3,13 +3,13 @@ module Weir.Prelude
 open Weir.Ast
 open Weir.Types
 
-// Option is the only prelude type: weir's error model is exceptions
-// (`fail`/partial builtins), exit codes, and `Completed` from command
-// interaction — never a Result value. `Option` earns its place (the
-// `try*` family returns one); a Result type nothing would produce or
-// consume has no place [D:no-result].
+// weir's error model is exceptions (`fail`/partial builtins), exit codes,
+// and `Completed` from command interaction; `e |> try result` turns a
+// failure into a Result value [D:try-form], so Result joins Option here
+// (superseding [D:no-result]) with F#'s names and shape.
 let source =
     [ "type Option<'a> = Some of 'a | None"
+      "type Result<'a, 'e> = Ok of 'a | Error of 'e"
       // the YAML node union [D:yaml-v1] — declared in weir's own source
       // (as Option is), so constructors, Show, and the class laws
       // all fall out of existing machinery. Value-domain behavior:

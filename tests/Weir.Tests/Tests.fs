@@ -3867,7 +3867,10 @@ let completionTests =
                         "readonly"
                         // the plan/apply capture starts statements too
                         // [D:plan-apply]
-                        "plan" ]
+                        "plan"
+                        // the failure-as-value form, after `|>` like from/to
+                        // [D:try-form]
+                        "try" ]
 
               Expect.equal
                   (Weir.Parser.keywords - Weir.Complete.unsuggestedKeywords)
@@ -3876,7 +3879,7 @@ let completionTests =
 
               Expect.equal
                   Weir.Complete.unsuggestedKeywords
-                  (Set [ "rec"; "mutable"; "function"; "while"; "return"; "try"; "def" ])
+                  (Set [ "rec"; "mutable"; "function"; "while"; "return"; "def" ])
                   "the exclusion set moved — its reasons live beside its definition"
 
               // behavioral, through suggest itself: the once-missing
@@ -11331,7 +11334,7 @@ let scriptTests =
                   Weir.Prelude.extend Weir.Builtins.typeEnvStrict Weir.Builtins.valueEnv
 
               match Weir.Check.typecheck strictEnv (parse "ls |> map (fun x -> x)") with
-              | Error terr -> Expect.stringContains terr.Message "use Option.map or Secret.map or Seq.map" ""
+              | Error terr -> Expect.stringContains terr.Message "use Option.map or Result.map or Secret.map or Seq.map" ""
               | Ok _ -> failtest "expected strict rejection"
           }
           test "#loose is GONE: the directive is unknown, files are always strict [D:bare-partition]" {
@@ -17141,8 +17144,8 @@ let pinsWalkTests =
               Expect.stringContains m "module Duration has no member 'toS'" "no alias survives"
               Expect.isFalse (m.Contains "Did you mean") "and no hint resurrects it"
 
-              let m2 = (checkErr "Ok 1").Message
-              Expect.stringContains m2 "unbound variable 'Ok'" "the Result migration is an unbound constructor"
+              // Result is back as the type `|> try result` produces [D:try-form]
+              Expect.equal (run "Ok 1") (VUnion("Ok", Some(VInt 1L))) "Ok constructs a Result"
           }
           test "PascalCase field access teaches the lowercase rename (the free teaching [D:builtin-fields-lowercase])" {
               // a builtin row's field, PascalCase typo (distance 1 — the
@@ -20476,7 +20479,7 @@ let dxMessageTests =
               mustSay [ "while true do"; "    print (show 1)" ] "'while' is not a weir word" "while"
               mustSay [ "let f n ="; "    return n"; "print (show (f 1))" ] "'return' is not a weir word" "return"
               mustSay [ "def f():"; "    print (show 1)" ] "'def' is not a weir word" "def"
-              mustSay [ "let r = try (echo x)"; "print (show 1)" ] "'try' is not a weir word" "try"
+              mustSay [ "let r = try (echo x)"; "print (show 1)" ] "'try' goes after a pipeline" "try"
           }
           test "D5: List/Array teach Seq; no cross-kind did-you-mean" {
               mustSay [ "let n = List.length [1]"; "print (show n)" ] "weir's sequences are 'Seq'" "List"
@@ -23509,12 +23512,51 @@ let tomlTests =
               Expect.stringContains (checkErr "[\"a = 1\"] |> from toml seq<{| a: int |}>").Message "its top level is a table" ""
           } ]
 
+// `e |> try` / `e |> try result` [D:try-form] — a failure as a value
+let tryTests =
+    testList
+        "|> try [D:try-form]"
+        [ test "the form types as Option, or Result with a string error" {
+              Expect.equal (formatTy (checkOk "3 |> try").Ty) "Option<int>" "Option"
+              Expect.equal (formatTy (checkOk "3 |> try result").Ty) "Result<int, string>" "Result"
+          }
+          test "a raise becomes None / Error with the message" {
+              Expect.equal (run "(if 1 == 1 then fail \"boom\" else 3) |> try") (VUnion("None", None)) "None"
+              Expect.equal (run "(if 1 == 1 then fail \"boom\" else 3) |> try result") (VUnion("Error", Some(VStr "boom"))) "Error"
+              Expect.equal (run "3 |> try result") (VUnion("Ok", Some(VInt 3L))) "Ok"
+          }
+          test "the whole pipeline to the left is captured" {
+              Expect.equal (run "[\"a = 1\"; \"a = 2\"] |> from toml {| a: int |} |> try") (VUnion("None", None)) "a parse error"
+          }
+          test "a lazy result is forced inside the capture" {
+              // the command's output is only read when the seq is forced;
+              // its failure must land in the capture, not after it
+              match runReal "$(sh -c \"echo a; exit 3\") |> try" with
+              | VUnion("None", None) -> ()
+              | other -> failtest $"expected None, got {other}"
+          }
+          test "try anywhere but after |> teaches the form" {
+              for src in [ "let x = try"; "let y = [ 1 ] |> Seq.map try" ] do
+                  let msgs = diagsIn "stray.weir" [ src ] |> List.map (fun d -> d.Message)
+                  Expect.exists msgs (fun m -> m.Contains "'try' goes after a pipeline") src
+          }
+          test "a script's own Ok/Error cases shadow the prelude's" {
+              let diags = diagsIn "shadow.weir" [ "type Status ="; "    | Ok"; "    | Error"; "let s = Ok"; "print (show s)" ]
+              Expect.isEmpty diags "no ambiguity with Result's cases"
+          }
+          test "Result members" {
+              Expect.equal (run "(if 1 == 1 then fail \"x\" else 3) |> try result |> Result.defaultValue 7") (VInt 7L) "defaultValue"
+              Expect.equal (run "3 |> try result |> Result.map (fun n -> n + 1) |> Result.toOption") (VUnion("Some", Some(VInt 4L))) "map + toOption"
+              Expect.equal (run "3 |> try result |> Result.isOk") (VBool true) "isOk"
+          } ]
+
 [<Tests>]
 let allTests =
     testList
         "Weir"
         [ hardeningTests
           tomlTests
+          tryTests
           versionStampTests
           portMembersTests
           serveTests

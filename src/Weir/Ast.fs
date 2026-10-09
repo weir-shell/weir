@@ -232,6 +232,11 @@ and ExprKind =
     | ESeq of first: Expr * rest: Expr
     | EFrom of format: string * shape: FromShape option * seqOf: bool * streamOf: bool
     | ETo of format: string * streamOf: bool
+    // `e |> try` / `e |> try result` [D:try-form]: e evaluated inside a
+    // capture; the parser folds the form and its left side into this node
+    | ETry of body: Expr * asResult: bool
+    // the bare form before `|>` folds it; anywhere else it is a check error
+    | ETryForm of asResult: bool
     | EList of items: Expr list
     | ETuple of items: Expr list
     | ELetPat of binder: Pattern * value: Expr * body: Expr
@@ -470,7 +475,9 @@ let exprChildren (e: Expr) : Expr list =
     | EUnit
     | EVar _
     | EFrom _
-    | ETo _ -> []
+    | ETo _
+    | ETryForm _ -> []
+    | ETry(b, _) -> [ b ]
     | ELet(_, _, v, b) -> [ v; b ]
     | ELetPat(_, v, b) -> [ v; b ]
     | ELambda(_, _, b) -> [ b ]
@@ -635,6 +642,8 @@ let rec sexpr (e: Expr) : string =
     | EIf(c, t, None) -> $"(if {sexpr c} {sexpr t})"
     | EIf(c, t, Some e) -> $"(if {sexpr c} {sexpr t} {sexpr e})"
     | ESeq(a, b) -> $"(seq {sexpr a} {sexpr b})"
+    | ETry(b, r) -> (if r then "(try result " else "(try ") + sexpr b + ")"
+    | ETryForm r -> if r then "(try result)" else "(try)"
     | EFrom(fmt, None, _, _) -> $"(from {fmt})"
     | EFrom(fmt, Some(FromName ty), false, true) -> $"(from {fmt} stream {ty})"
     | EFrom(fmt, Some(FromName ty), false, _) -> $"(from {fmt} {ty})"

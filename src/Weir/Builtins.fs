@@ -2679,6 +2679,47 @@ let private optionMembers: (string * Ty * Value) list =
       "defaultValue", TFun(tA, TFun(TNamed("Option", [ tA ]), tA)), defaultToImpl
       "defaultWith", TFun(TFun(TUnit, tA), TFun(TNamed("Option", [ tA ]), tA)), defaultWithImpl ]
 
+// Result [D:try-form]: what `e |> try result` produces — F#'s shape, the
+// few members a caller of `try result` reaches for
+let private tE = TVar "e"
+let private resultTy a = TNamed("Result", [ a; tE ])
+
+let private resultMapImpl: Value =
+    VBuiltin(fun f ->
+        VBuiltin(fun r ->
+            match r with
+            | VUnion("Ok", Some v) -> VUnion("Ok", Some(apply f v))
+            | VUnion("Error", Some _) -> r
+            | v -> unreachable $"the checker rejects 'Result.map' on {formatValue v}"))
+
+let private resultDefaultValueImpl: Value =
+    VBuiltin(fun fallback ->
+        VBuiltin(fun r ->
+            match r with
+            | VUnion("Ok", Some v) -> v
+            | VUnion("Error", Some _) -> fallback
+            | v -> unreachable $"the checker rejects 'Result.defaultValue' on {formatValue v}"))
+
+let private resultToOptionImpl: Value =
+    VBuiltin(fun r ->
+        match r with
+        | VUnion("Ok", Some v) -> VUnion("Some", Some v)
+        | VUnion("Error", Some _) -> VUnion("None", None)
+        | v -> unreachable $"the checker rejects 'Result.toOption' on {formatValue v}")
+
+let private resultIsOkImpl: Value =
+    VBuiltin(fun r ->
+        match r with
+        | VUnion("Ok", Some _) -> VBool true
+        | VUnion("Error", Some _) -> VBool false
+        | v -> unreachable $"the checker rejects 'Result.isOk' on {formatValue v}")
+
+let private resultMembers: (string * Ty * Value) list =
+    [ "map", TFun(TFun(tA, tB), TFun(resultTy tA, resultTy tB)), resultMapImpl
+      "defaultValue", TFun(tA, TFun(resultTy tA, tA)), resultDefaultValueImpl
+      "toOption", TFun(resultTy tA, TNamed("Option", [ tA ])), resultToOptionImpl
+      "isOk", TFun(resultTy tA, TBool), resultIsOkImpl ]
+
 // Args — script-only scanners over the invocation argv (Session.ScriptArgs;
 // empty in the REPL by design). Long-only flags: empty short form.
 let private argsFlagImpl: Value =
@@ -5136,6 +5177,7 @@ let private moduleTable: (string * (string * Ty * Value) list) list =
       "Net", netMembers
       "Path", pathMembers
       "Option", optionMembers
+      "Result", resultMembers
       "File", fileMembers @ fsMoreFileMembers
       "Dir", dirMembers
       "Args", argsMembers
@@ -5196,6 +5238,11 @@ let builtinDocs: Map<string, BuiltinDoc> =
         [
           // ---- the form heads [D:scoped-procs]: #help retry/poll/within
           // answer like any member — the docs live here, one source
+          "try",
+          bd
+              "Turn a failure into a value: `<expr> |> try` gives Some value, or None if evaluating the expression raised (a failed command, a parse error, a fail, a missing file). `<expr> |> try result` gives Ok value or Error message instead. Everything to the left of `|> try` is captured, and its value is fully evaluated inside, so a lazy sequence cannot fail later. `exit` still exits, and effects that happened before the failure are not undone."
+              (Some "File.read \"Cargo.toml\" |> from toml {| package: {| version: string |} |} |> try")
+              (Some "Commands have their own form: `<command> | complete` gives the exit code and output as a record.")
           "retry",
           bd
               "Re-run an indented body until it succeeds: `retry attempts=5 delay=30s` followed by the body. If the body returns a bool, true means success. If it returns another value, add `until r` and a predicate block; retry then returns the value that passed. Running out of attempts raises. An error raised inside the body is not retried, it propagates; to retry a failing command, turn its result into data with `| succeeds` or `| complete`."
@@ -5781,6 +5828,18 @@ let builtinDocs: Map<string, BuiltinDoc> =
               (Some "None |> Option.orElseWith (fun () -> Some 1)")
               None
            |> named [ "f"; "opt" ])
+          "Result.map",
+          (bd "Apply a function to the value inside Ok; an Error stays as it is." (Some "File.read \"n.txt\" |> Seq.length |> try result |> Result.map (fun n -> n * 2)") None
+           |> named [ "f"; "r" ])
+          "Result.defaultValue",
+          (bd "The value inside Ok, or the fallback for an Error." (Some "File.read \"n.txt\" |> Seq.length |> try result |> Result.defaultValue 0") None
+           |> named [ "fallback"; "r" ])
+          "Result.toOption",
+          (bd "Some value for Ok, None for an Error (the message is dropped)." (Some "File.read \"n.txt\" |> try result |> Result.toOption") None
+           |> named [ "r" ])
+          "Result.isOk",
+          (bd "True for Ok, false for an Error." (Some "File.read \"n.txt\" |> try result |> Result.isOk") None
+           |> named [ "r" ])
           "Option.map",
           (bd "Apply a function to the value inside Some; None stays None." (Some "Option.map (fun x -> x + 1) (Some 5)") None
            |> named [ "f"; "opt" ])
@@ -6797,6 +6856,7 @@ let moduleBlurbs: Map<string, string> =
           "Map", "immutable string-keyed maps: get, add, pairs"
           "Net", "network probes: portOpen"
           "Option", "presence and absence: map, bind, defaults"
+          "Result", "the value or the error message `|> try result` gives: map, defaults, toOption"
           "Path", "path text and discovery: join, confine, glob, temp dirs"
           "Plan", "plan/apply: preview a plan's ops before applying"
           "Poll", "poll's options record: defaults"

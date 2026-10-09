@@ -34,10 +34,29 @@ A failing command raises an error when its output is read; a reifier
 turns the failure into a value instead
 ([commands](commands.md#reifiers-and-chaining)). Builtins raise errors with a
 location and a readable message (`File.read: no such file: …`). There
-is no try/catch and there are no exception values. A resource that
-needs cleanup goes in a [`within` scope](scopes.md), which releases it
-however the block exits; a step that may fail becomes a value with
-`| complete`.
+is no try/catch block. A resource that needs cleanup goes in a
+[`within` scope](scopes.md), which releases it however the block exits.
+
+To turn a failure into a value, end an expression with `|> try` — the
+expression twin of `| complete`:
+
+- `e |> try` is `Option<'T>`: `Some value`, or `None` if evaluating `e`
+  raised.
+- `e |> try result` is `Result<'T, string>`: `Ok value`, or `Error`
+  with the message. `Result` has `map`, `defaultValue`, `toOption` and
+  `isOk`.
+- Everything to the left of `|> try` is captured (`|>` groups left to
+  right), and the value is fully evaluated inside, sequences included,
+  so a failure can't surface after `try` returns. An infinite sequence
+  on the left never finishes.
+- `exit` still exits, and weir's own internal errors are not caught.
+  Effects that happened before the failure are not undone.
+- `try` is only valid after `|>`.
+
+A script's own union cases take precedence over the prelude's: a
+`type Status = Ok | Error` declared in the script keeps constructing
+its own `Ok`, while a match on a `try result` value still sees
+`Result`'s cases.
 
 ## `fail` and `exit`
 

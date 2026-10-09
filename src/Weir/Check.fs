@@ -163,6 +163,8 @@ and TypedKind =
     | TEFromYaml of tyName: string * shape: Yaml.Shape * stream: bool
     // from toml T [D:from-toml]: the yaml shape, read through the toml parser
     | TEFromToml of tyName: string * shape: Yaml.Shape
+    // `e |> try [result]` [D:try-form]: e evaluated inside a capture
+    | TETry of body: TypedExpr * asResult: bool
     | TETo of
         format: string *
         renames: Map<string, Map<string, string>> *
@@ -1837,6 +1839,15 @@ let checkBinderName (span: Span) (name: string) : Result<unit, TypeError> =
     else
         Ok()
 
+// the built-in type names, registered once by Prelude.extend
+// [D:desugar-capture]: a user redeclaring one would silently retype
+// every builtin referencing it (type Retry = { x: int } would break
+// the retry sugar through the type even with the value un-shadowable).
+// Concurrent because tests build envs in parallel — a plain HashSet
+// corrupts under simultaneous extends.
+let builtinTypeNames: System.Collections.Concurrent.ConcurrentDictionary<string, byte> =
+    System.Collections.Concurrent.ConcurrentDictionary<string, byte>()
+
 /// constructor is already overwritten; ownership must be asked of the
 /// type table, not the value table.
 let ctorOwners (env: TypeEnv) (name: string) : string list =
@@ -1852,13 +1863,21 @@ let ctorOwners (env: TypeEnv) (name: string) : string list =
         let imported =
             env.ModuleTypes |> Map.toList |> List.map snd |> List.fold Set.union Set.empty
 
-        env.Types
-        |> Map.toList
-        |> List.choose (fun (tn, d) ->
-            match d with
-            | Union u when not (imported.Contains tn) && u.Cases |> List.exists (fun (c, _) -> c = name) -> Some tn
-            | _ -> None)
-        |> List.sort
+        let owners =
+            env.Types
+            |> Map.toList
+            |> List.choose (fun (tn, d) ->
+                match d with
+                | Union u when not (imported.Contains tn) && u.Cases |> List.exists (fun (c, _) -> c = name) -> Some tn
+                | _ -> None)
+            |> List.sort
+
+        // a script's own case shadows a prelude case of the same name
+        // [D:try-form] — the import rule: a local declaration takes
+        // precedence (`type Status = Ok | Error` predates Result)
+        match owners |> List.filter (fun o -> not (builtinTypeNames.ContainsKey o)) with
+        | [] -> owners
+        | local -> local
 
 let rec private checkPattern (ctx: Ctx) (env: TypeEnv) (ty: Ty) (p: Pattern) : Result<(string * Ty) list, TypeError> =
     // a pattern whose shape determines a type binds an unresolved
@@ -2434,6 +2453,26 @@ let private lambdaCore
 /// per name, so by the time a bare use is resolved the earlier
 let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr, TypeError> =
     match expr.Kind with
+    // a failure as a value [D:try-form]: Option, or Result carrying the message
+    | ETry(body, asResult) ->
+        result {
+            let! tb = infer ctx env body
+
+            let ty =
+                if asResult then
+                    TNamed("Result", [ tb.Ty; TStr ])
+                else
+                    TNamed("Option", [ tb.Ty ])
+
+            return
+                { Kind = TETry(tb, asResult)
+                  Ty = ty
+                  Span = expr.Span }
+        }
+    | ETryForm _ ->
+        err
+            expr.Span
+            "'try' goes after a pipeline: `<expr> |> try` gives an Option (None if it failed), `<expr> |> try result` a Result with the error message"
     | EInt n ->
         Ok
             { Kind = TEInt n
@@ -5530,6 +5569,7 @@ let childExprs (te: TypedExpr) : TypedExpr list =
     | TEFromYaml _
     | TEFromToml _
     | TETo _ -> []
+    | TETry(b, _) -> [ b ]
     | TELet(_, _, v, b) -> [ v; b ]
     | TELetPat(_, v, b) -> [ v; b ]
     | TELambda(_, _, b) -> [ b ]
@@ -6218,15 +6258,6 @@ let private validateShortCollisions (fields: (string * Ty * AttrSpec list) list)
             | None -> go (Map.add s f seen) rest
 
     go Map.empty explicitShorts
-
-// the built-in type names, registered once by Prelude.extend
-// [D:desugar-capture]: a user redeclaring one would silently retype
-// every builtin referencing it (type Retry = { x: int } would break
-// the retry sugar through the type even with the value un-shadowable).
-// Concurrent because tests build envs in parallel — a plain HashSet
-// corrupts under simultaneous extends.
-let builtinTypeNames: System.Collections.Concurrent.ConcurrentDictionary<string, byte> =
-    System.Collections.Concurrent.ConcurrentDictionary<string, byte>()
 
 // the prelude replays its own declarations on every extend (tests build
 // envs repeatedly) — exempt it; the ThreadLocal keeps parallel test
