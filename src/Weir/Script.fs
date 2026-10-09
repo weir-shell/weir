@@ -2745,6 +2745,34 @@ let private runtimeErrorLine (path: string) (lineNo: int) (message: string) : st
     let safe = Eval.sanitizeIfTty Console.IsErrorRedirected message
     located path lineNo (Color.red Color.onStderr.Value "error" + $": {safe}")
 
+// every node of a statement's typed tree -> its physical (line, col), via
+// that statement's OWN line map [D:runtime-position] (a logical span means
+// nothing through another statement's map — [D:row-provenance]). Keyed by
+// node identity; iterative, so a wide tree cannot overflow the stack.
+let private recordPositions
+    (stmt: int)
+    (ll: LogicalLine)
+    (root: Check.TypedExpr)
+    (into: System.Collections.Generic.Dictionary<obj, int * int * int>)
+    =
+    let stack = System.Collections.Generic.Stack<Check.TypedExpr>()
+    stack.Push root
+
+    while stack.Count > 0 do
+        let n = stack.Pop()
+        let key = box n
+
+        if not (into.ContainsKey key) then
+            if n.Span.Start.Col >= 1 then
+                try
+                    let l, c = translate ll n.Span.Start.Col
+                    into[key] <- (stmt, l, c)
+                with _ ->
+                    ()
+
+            for c in Check.childExprs n do
+                stack.Push c
+
 // Streaming output for command-mode statements — the single exempt form.
 // The seq case goes through Eval.writeLines, the same renderer print uses.
 let printResult (v: Eval.Value) =
@@ -6506,6 +6534,10 @@ let run (path: string) (scriptArgs: string list) : int =
                 // check error = zero side effects, this check included
                 let runUnused = UnusedTracker()
 
+                // node -> physical position, for runtime errors [D:runtime-position]
+                let runPositions =
+                    System.Collections.Generic.Dictionary<obj, int * int * int>(HashIdentity.Reference)
+
                 let checkedProgram =
                     logicalLines
                     |> List.fold
@@ -6686,6 +6718,13 @@ let run (path: string) (scriptArgs: string list) : int =
                                                                         | u -> u)) }
                                                 | _ -> chk.Env
 
+                                            match stmt with
+                                            | CLet(_, te)
+                                            | CLetPat(_, te)
+                                            | CExpr te
+                                            | CCmd te -> recordPositions ll.Head ll te runPositions
+                                            | _ -> ()
+
                                             Ok(env', (ll.Head, stmt) :: acc))
                         (Ok(typeEnv0, []))
 
@@ -6730,10 +6769,59 @@ let run (path: string) (scriptArgs: string list) : int =
                 | Ok(_, revStmts) ->
                     let stmts = List.rev revStmts
 
+                    // a runtime error's position [D:runtime-position]: the
+                    // blamed command's own line:col, else the line of the
+                    // node being evaluated, at its first non-blank column;
+                    // the statement's line when neither is known
+                    let runtimeErrorAt (lineNo: int) (ex: exn) : string =
+                        let firstCol (l: int) =
+                            match Map.tryFind l rawByLine with
+                            | Some (text: string) -> text.Length - text.TrimStart().Length + 1
+                            | None -> 1
+
+                        let posOf (n: obj) =
+                            match runPositions.TryGetValue n with
+                            | true, (_, l, c) -> Some(l, c)
+                            | _ -> None
+
+                        let pos =
+                            match Eval.blameOf ex with
+                            | Some(n, true) -> posOf n
+                            | Some(n, false) -> posOf n |> Option.map (fun (l, _) -> l, firstCol l)
+                            | None ->
+                                match Eval.RunPos.Current with
+                                | null -> None
+                                | n -> posOf n |> Option.map (fun (l, _) -> l, firstCol l)
+
+                        match pos with
+                        | Some(l, c) ->
+                            let safe = Eval.sanitizeIfTty Console.IsErrorRedirected ex.Message
+                            $"{path}:{l}:{c}: " + Color.red Color.onStderr.Value "error" + $": {safe}"
+                        | None -> runtimeErrorLine path lineNo ex.Message
+
                     let rec exec (venv: Eval.Env) (rest: (int * CheckedStmt) list) : int =
                         match rest with
                         | [] -> 0
                         | (lineNo, stmt) :: tail ->
+                            // each top-level statement starts at its own root;
+                            // closures from this statement keep tracking
+                            Eval.RunPos.Depth <- 0
+
+                            Eval.RunPos.SameStatement <-
+                                System.Func<obj, bool>(fun body ->
+                                    match runPositions.TryGetValue body with
+                                    | true, (s, _, _) -> s = lineNo
+                                    | _ -> false)
+
+                            match stmt with
+                            | CLet(_, te)
+                            | CLetPat(_, te)
+                            | CExpr te
+                            | CCmd te -> Eval.RunPos.Current <- box te
+                            // an import's module code has no positions here:
+                            // the statement's own line, never a stale node
+                            | _ -> Eval.RunPos.Current <- null
+
                             match stmt with
                             | CNoop -> exec venv tail
                             | CImport lm ->
@@ -6763,7 +6851,7 @@ let run (path: string) (scriptArgs: string list) : int =
                                 | Eval.ExitRequest code -> code
                                 | ex ->
                                     Console.Error.WriteLine(
-                                        runtimeErrorLine path lineNo ex.Message
+                                        runtimeErrorAt lineNo ex
                                     )
 
                                     1
@@ -6783,7 +6871,7 @@ let run (path: string) (scriptArgs: string list) : int =
                                 | Eval.ExitRequest code -> code
                                 | ex ->
                                     Console.Error.WriteLine(
-                                        runtimeErrorLine path lineNo ex.Message
+                                        runtimeErrorAt lineNo ex
                                     )
 
                                     1
@@ -6794,7 +6882,7 @@ let run (path: string) (scriptArgs: string list) : int =
                                 | Eval.ExitRequest code -> code
                                 | ex ->
                                     Console.Error.WriteLine(
-                                        runtimeErrorLine path lineNo ex.Message
+                                        runtimeErrorAt lineNo ex
                                     )
 
                                     1
@@ -6822,7 +6910,7 @@ let run (path: string) (scriptArgs: string list) : int =
                                 | Eval.ExitRequest code -> code
                                 | ex ->
                                     Console.Error.WriteLine(
-                                        runtimeErrorLine path lineNo ex.Message
+                                        runtimeErrorAt lineNo ex
                                     )
 
                                     1
@@ -6834,7 +6922,7 @@ let run (path: string) (scriptArgs: string list) : int =
                                 | Eval.ExitRequest code -> code
                                 | ex ->
                                     Console.Error.WriteLine(
-                                        runtimeErrorLine path lineNo ex.Message
+                                        runtimeErrorAt lineNo ex
                                     )
 
                                     1

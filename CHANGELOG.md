@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.0.71
+
+### Fixed
+
+- **Runtime errors name the line that failed.** A command failing
+  inside an `if`, `match`, `for`, `within`, `retry` body, a pipeline or
+  a lambda was reported at the block's first line (a deploy script's
+  `az` failure on line 15 blamed the `if` on line 11). The error now
+  points at the failing statement as `file:line:col`, and a command
+  whose output is only read later is still blamed on the command
+  itself. A failure inside a function defined elsewhere is reported at
+  its call.
+
 ## v0.0.70
 
 ### Added

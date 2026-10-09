@@ -28,6 +28,14 @@ error. The position is always a real spot in your file; a hint may
 replace the message, but never moves the position. `check`,
 `check --json` and the LSP all report the same error.
 
+An error while the script runs is reported as `file:line:col` too, at
+the statement that failed — inside an `if`, `match`, `for`, `within`
+or `retry` body, a pipeline, or a lambda, not at the block's first
+line. A failed command points at the command itself, even when its
+output is only read a few lines later. Other errors (`fail`, a builtin)
+point at the start of the failing line. A failure inside a function
+defined elsewhere is reported at the line that called it.
+
 ## Raising
 
 A failing command raises an error when its output is read; a reifier

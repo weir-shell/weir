@@ -12,6 +12,78 @@ let unreachable (why: string) : 'a = failwith $"unreachable: {why}"
 // returns the code silently instead of printing a located message.
 exception ExitRequest of code: int
 
+// where a runtime raise happened [D:runtime-position]: the node being
+// evaluated, per thread, and how deep into calls of functions defined in
+// OTHER statements evaluation is — there the position stays at the call
+// site. A closure from the same statement (an inline lambda, a `for` body)
+// keeps tracking. The runner maps the node to file:line:col and installs
+// the same-statement test; without it (REPL, tests) every closure tracks.
+type RunPos() =
+    [<System.ThreadStatic; DefaultValue>]
+    static val mutable private current: obj
+
+    [<System.ThreadStatic; DefaultValue>]
+    static val mutable private depth: int
+
+    static member val SameStatement: System.Func<obj, bool> = null with get, set
+
+    static member Inline(body: obj) =
+        let f = RunPos.SameStatement
+        isNull f || f.Invoke body
+
+    static member Current
+        with get () = RunPos.current
+        and set (v: obj) = RunPos.current <- v
+
+    static member Depth
+        with get () = RunPos.depth
+        and set (v: int) = RunPos.depth <- v
+
+// a command's failure surfaces where its output is READ, maybe statements
+// later; the exception is tagged with the command that produced it
+// (first tag wins — the innermost command), and travels unchanged, so
+// type-matching catchers (the REPL's CommandFailure) still see it
+let private blameTable = System.Runtime.CompilerServices.ConditionalWeakTable<exn, obj>()
+
+/// the blamed node, and whether its own column is exact (a command at its
+/// own position) or only its line counts (a call site standing in)
+let blameOf (ex: exn) : (obj * bool) option =
+    match blameTable.TryGetValue ex with
+    | true, (:? (obj * bool) as b) -> Some b
+    | _ -> None
+
+let private blameOn (node: obj) (exact: bool) (inner: seq<'a>) : seq<'a> =
+    if isNull node then
+        inner
+    else
+        { new System.Collections.Generic.IEnumerable<'a> with
+            member _.GetEnumerator() : System.Collections.Generic.IEnumerator<'a> =
+                let e = inner.GetEnumerator()
+
+                { new System.Collections.Generic.IEnumerator<'a> with
+                    member _.Current = e.Current
+                  interface System.Collections.IEnumerator with
+                      member _.Current = box e.Current
+
+                      member _.MoveNext() =
+                          try
+                              e.MoveNext()
+                          with
+                          | ExitRequest _ -> reraise ()
+                          | ex ->
+                              match blameTable.TryGetValue ex with
+                              | true, _ -> ()
+                              | _ -> blameTable.Add(ex, box (node, exact))
+
+                              reraise ()
+
+                      member _.Reset() = e.Reset()
+                  interface System.IDisposable with
+                      member _.Dispose() = e.Dispose() }
+          interface System.Collections.IEnumerable with
+              member this.GetEnumerator() =
+                  ((this :?> System.Collections.Generic.IEnumerable<'a>).GetEnumerator()) :> System.Collections.IEnumerator }
+
 // a scoped process handle [D:scoped-procs]: the live child plus its
 // spill paths; identity is the process itself (reference equality,
 // pid hash), and the scope that bound it owns the lifetime
@@ -2993,6 +3065,9 @@ and private progOf (env: Env) (h: Check.TCmdHead) : string =
             s
 
 and eval (env: Env) (te: TypedExpr) : Value =
+    if RunPos.Depth = 0 then
+        RunPos.Current <- box te
+
     match te.Kind with
     // a failure as a value [D:try-form]: the body runs inside the capture
     // and its value is forced there — a lazy seq would otherwise raise
@@ -3341,7 +3416,11 @@ and eval (env: Env) (te: TypedExpr) : Value =
               Cwd = Some(Weir.Session.Cwd())
               Ambient = Some(Weir.Session.envOverlay () |> List.rev |> List.collect id) }
 
-        VSeq(Seq.delay (fun () -> Proc.linesOf spec) |> Seq.map VStr)
+        // inside a called function the call site takes the blame
+        // [D:runtime-position]
+        let exact = RunPos.Depth = 0
+        let node = if exact then box te else RunPos.Current
+        VSeq(Seq.delay (fun () -> Proc.linesOf spec) |> Seq.map VStr |> blameOn node exact)
     | TEInterp parts ->
         let sb = System.Text.StringBuilder()
 
@@ -4255,12 +4334,30 @@ and private chainSpecs env (arg: TypedExpr) chead cargs cenvO : Proc.Spec list =
 
 and apply (fn: Value) (arg: Value) : Value =
     match fn with
-    | VClosure(param, body, closureEnv) -> eval (Map.add param arg closureEnv) body
+    | VClosure(param, body, closureEnv) ->
+        if RunPos.Inline body then
+            eval (Map.add param arg closureEnv) body
+        else
+            inFunction (fun () -> eval (Map.add param arg closureEnv) body)
     | VClosurePat(pat, body, closureEnv) ->
         let bindings = bindPattern pat arg
-        eval (bindings |> List.fold (fun m (n, v) -> Map.add n v m) closureEnv) body
+        let env' = bindings |> List.fold (fun m (n, v) -> Map.add n v m) closureEnv
+
+        if RunPos.Inline body then
+            eval env' body
+        else
+            inFunction (fun () -> eval env' body)
     | VBuiltin f -> f arg
     | v -> unreachable $"the checker rejects application of {formatValue v}"
+
+// a function body's positions stay at its call site [D:runtime-position]
+and private inFunction (f: unit -> Value) : Value =
+    RunPos.Depth <- RunPos.Depth + 1
+
+    try
+        f ()
+    finally
+        RunPos.Depth <- RunPos.Depth - 1
 
 /// the bare-statement spec (argv, overlay) — one builder for the relay
 /// and the inheriting spawn, so the two forms cannot drift
