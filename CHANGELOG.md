@@ -10,8 +10,9 @@
   `az` failure on line 15 blamed the `if` on line 11). The error now
   points at the failing statement as `file:line:col`, and a command
   whose output is only read later is still blamed on the command
-  itself. A failure inside a function defined elsewhere is reported at
-  its call.
+  itself. A failure inside a function reports the function's line,
+  then one `called from file:line:col` line per call, innermost first —
+  across files, so a module's function names the module's own line.
 
 ## v0.0.70
 

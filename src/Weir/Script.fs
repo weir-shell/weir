@@ -2750,10 +2750,11 @@ let private runtimeErrorLine (path: string) (lineNo: int) (message: string) : st
 // nothing through another statement's map — [D:row-provenance]). Keyed by
 // node identity; iterative, so a wide tree cannot overflow the stack.
 let private recordPositions
+    (file: string)
     (stmt: int)
     (ll: LogicalLine)
     (root: Check.TypedExpr)
-    (into: System.Collections.Generic.Dictionary<obj, int * int * int>)
+    (into: System.Collections.Generic.Dictionary<obj, string * int * int * int>)
     =
     let stack = System.Collections.Generic.Stack<Check.TypedExpr>()
     stack.Push root
@@ -2766,7 +2767,7 @@ let private recordPositions
             if n.Span.Start.Col >= 1 then
                 try
                     let l, c = translate ll n.Span.Start.Col
-                    into[key] <- (stmt, l, c)
+                    into[key] <- (file, stmt, l, c)
                 with _ ->
                     ()
 
@@ -6536,7 +6537,19 @@ let run (path: string) (scriptArgs: string list) : int =
 
                 // node -> physical position, for runtime errors [D:runtime-position]
                 let runPositions =
-                    System.Collections.Generic.Dictionary<obj, int * int * int>(HashIdentity.Reference)
+                    System.Collections.Generic.Dictionary<obj, string * int * int * int>(HashIdentity.Reference)
+
+                // a module's statements, with ITS file, so a function defined
+                // there reports its own lines [D:runtime-position]
+                let rec recordModule (lm: LoadedModule) =
+                    for ll, stmt in lm.Body do
+                        match stmt with
+                        | CLet(_, te)
+                        | CLetPat(_, te)
+                        | CExpr te
+                        | CCmd te -> recordPositions lm.AbsPath ll.Head ll te runPositions
+                        | CImport nested -> recordModule nested
+                        | _ -> ()
 
                 let checkedProgram =
                     logicalLines
@@ -6722,7 +6735,8 @@ let run (path: string) (scriptArgs: string list) : int =
                                             | CLet(_, te)
                                             | CLetPat(_, te)
                                             | CExpr te
-                                            | CCmd te -> recordPositions ll.Head ll te runPositions
+                                            | CCmd te -> recordPositions path ll.Head ll te runPositions
+                                            | CImport lm -> recordModule lm
                                             | _ -> ()
 
                                             Ok(env', (ll.Head, stmt) :: acc))
@@ -6770,47 +6784,90 @@ let run (path: string) (scriptArgs: string list) : int =
                     let stmts = List.rev revStmts
 
                     // a runtime error's position [D:runtime-position]: the
-                    // blamed command's own line:col, else the line of the
-                    // node being evaluated, at its first non-blank column;
-                    // the statement's line when neither is known
-                    let runtimeErrorAt (lineNo: int) (ex: exn) : string =
-                        let firstCol (l: int) =
-                            match Map.tryFind l rawByLine with
-                            | Some (text: string) -> text.Length - text.TrimStart().Length + 1
-                            | None -> 1
+                    // blamed node (a command at its own column, any other
+                    // node at its line's first non-blank column), then one
+                    // `called from` line per call of a function defined
+                    // elsewhere, innermost first; the statement's line when
+                    // nothing is known
+                    let sourceLines = System.Collections.Generic.Dictionary<string, string[]>()
 
-                        let posOf (n: obj) =
+                    let firstCol (file: string) (l: int) =
+                        let text =
+                            if file = path then
+                                Map.tryFind l rawByLine
+                            else
+                                let lines =
+                                    match sourceLines.TryGetValue file with
+                                    | true, ls -> ls
+                                    | _ ->
+                                        let ls = (try IO.File.ReadAllLines file with _ -> [||])
+                                        sourceLines[file] <- ls
+                                        ls
+
+                                if l >= 1 && l <= lines.Length then Some lines[l - 1] else None
+
+                        match text with
+                        | Some t -> t.Length - t.TrimStart().Length + 1
+                        | None -> 1
+
+                    // the entry as the user wrote it; a module relative to the
+                    // working directory when it is below it
+                    let shownFile (file: string) =
+                        if file = path then
+                            file
+                        else
+                            let rel = IO.Path.GetRelativePath(Environment.CurrentDirectory, file)
+                            if rel.StartsWith ".." || IO.Path.IsPathRooted rel then file else rel
+
+                    let posOf (exact: bool) (n: obj) =
+                        if isNull n then
+                            None
+                        else
                             match runPositions.TryGetValue n with
-                            | true, (_, l, c) -> Some(l, c)
+                            | true, (file, _, l, c) -> Some(shownFile file, l, (if exact then c else firstCol file l))
                             | _ -> None
 
-                        let pos =
+                    let runtimeErrorAt (lineNo: int) (ex: exn) : string =
+                        let origin, frames =
                             match Eval.blameOf ex with
-                            | Some(n, true) -> posOf n
-                            | Some(n, false) -> posOf n |> Option.map (fun (l, _) -> l, firstCol l)
-                            | None ->
-                                match Eval.RunPos.Current with
-                                | null -> None
-                                | n -> posOf n |> Option.map (fun (l, _) -> l, firstCol l)
+                            | Some b -> posOf b.Exact b.Node, b.Frames |> Seq.choose (posOf false) |> List.ofSeq
+                            | None -> posOf false Eval.RunPos.Current, []
 
-                        match pos with
-                        | Some(l, c) ->
+                        // an unmapped origin falls back to the innermost frame
+                        let origin, frames =
+                            match origin, frames with
+                            | Some o, fs -> Some o, fs
+                            | None, f :: fs -> Some f, fs
+                            | None, [] -> None, []
+
+                        match origin with
+                        | Some(file, l, c) ->
                             let safe = Eval.sanitizeIfTty Console.IsErrorRedirected ex.Message
-                            $"{path}:{l}:{c}: " + Color.red Color.onStderr.Value "error" + $": {safe}"
+                            let head = $"{file}:{l}:{c}: " + Color.red Color.onStderr.Value "error" + $": {safe}"
+                            let shown = frames |> List.truncate 10
+
+                            let more =
+                                if frames.Length > shown.Length then
+                                    [ $"  … {frames.Length - shown.Length} more" ]
+                                else
+                                    []
+
+                            head
+                            :: (shown |> List.map (fun (f, fl, fc) -> $"  called from {f}:{fl}:{fc}"))
+                            @ more
+                            |> String.concat Environment.NewLine
                         | None -> runtimeErrorLine path lineNo ex.Message
 
                     let rec exec (venv: Eval.Env) (rest: (int * CheckedStmt) list) : int =
                         match rest with
                         | [] -> 0
                         | (lineNo, stmt) :: tail ->
-                            // each top-level statement starts at its own root;
-                            // closures from this statement keep tracking
-                            Eval.RunPos.Depth <- 0
-
+                            // each top-level statement starts at its own root; a
+                            // closure from this statement is not a call
                             Eval.RunPos.SameStatement <-
                                 System.Func<obj, bool>(fun body ->
                                     match runPositions.TryGetValue body with
-                                    | true, (s, _, _) -> s = lineNo
+                                    | true, (f, s, _, _) -> f = path && s = lineNo
                                     | _ -> false)
 
                             match stmt with

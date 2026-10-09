@@ -13,46 +13,54 @@ let unreachable (why: string) : 'a = failwith $"unreachable: {why}"
 exception ExitRequest of code: int
 
 // where a runtime raise happened [D:runtime-position]: the node being
-// evaluated, per thread, and how deep into calls of functions defined in
-// OTHER statements evaluation is — there the position stays at the call
-// site. A closure from the same statement (an inline lambda, a `for` body)
-// keeps tracking. The runner maps the node to file:line:col and installs
-// the same-statement test; without it (REPL, tests) every closure tracks.
+// evaluated, per thread. The runner maps a node to file:line:col and
+// installs the same-statement test: a closure whose body is in ANOTHER
+// statement (a function defined elsewhere, or in a module) is a CALL, and
+// a raise unwinding through it records the call site as a trace frame; an
+// inline lambda or a `for` body is not. Without the runner's test (REPL,
+// tests) nothing is a call.
 type RunPos() =
     [<System.ThreadStatic; DefaultValue>]
     static val mutable private current: obj
-
-    [<System.ThreadStatic; DefaultValue>]
-    static val mutable private depth: int
-
-    static member val SameStatement: System.Func<obj, bool> = null with get, set
-
-    static member Inline(body: obj) =
-        let f = RunPos.SameStatement
-        isNull f || f.Invoke body
 
     static member Current
         with get () = RunPos.current
         and set (v: obj) = RunPos.current <- v
 
-    static member Depth
-        with get () = RunPos.depth
-        and set (v: int) = RunPos.depth <- v
+    static member val SameStatement: System.Func<obj, bool> = null with get, set
 
-// a command's failure surfaces where its output is READ, maybe statements
-// later; the exception is tagged with the command that produced it
-// (first tag wins — the innermost command), and travels unchanged, so
-// type-matching catchers (the REPL's CommandFailure) still see it
-let private blameTable = System.Runtime.CompilerServices.ConditionalWeakTable<exn, obj>()
+    static member IsCall(body: obj) =
+        let f = RunPos.SameStatement
+        not (isNull f) && not (f.Invoke body)
 
-/// the blamed node, and whether its own column is exact (a command at its
-/// own position) or only its line counts (a call site standing in)
-let blameOf (ex: exn) : (obj * bool) option =
+/// a raise's provenance: the node it is blamed on (a command at its own
+/// column, or the innermost node evaluated, line only) and the call sites
+/// it unwound through, innermost first
+type Blame() =
+    member val Node: obj = null with get, set
+    member val Exact = false with get, set
+    member val Frames = System.Collections.Generic.List<obj>()
+
+// kept beside the exception, which travels unchanged, so type-matching
+// catchers (the REPL's CommandFailure) still see it; first blame wins
+let private blameTable = System.Runtime.CompilerServices.ConditionalWeakTable<exn, Blame>()
+
+let blameOf (ex: exn) : Blame option =
     match blameTable.TryGetValue ex with
-    | true, (:? (obj * bool) as b) -> Some b
+    | true, b -> Some b
     | _ -> None
 
-let private blameOn (node: obj) (exact: bool) (inner: seq<'a>) : seq<'a> =
+let private blameFor (ex: exn) : Blame =
+    match blameTable.TryGetValue ex with
+    | true, b -> b
+    | _ ->
+        let b = Blame()
+        blameTable.Add(ex, b)
+        b
+
+// a command's failure surfaces where its output is READ, maybe statements
+// later: the seq blames the command that produced it
+let private blameOn (node: obj) (inner: seq<'a>) : seq<'a> =
     if isNull node then
         inner
     else
@@ -71,9 +79,11 @@ let private blameOn (node: obj) (exact: bool) (inner: seq<'a>) : seq<'a> =
                           with
                           | ExitRequest _ -> reraise ()
                           | ex ->
-                              match blameTable.TryGetValue ex with
-                              | true, _ -> ()
-                              | _ -> blameTable.Add(ex, box (node, exact))
+                              let b = blameFor ex
+
+                              if isNull b.Node then
+                                  b.Node <- node
+                                  b.Exact <- true
 
                               reraise ()
 
@@ -3065,8 +3075,7 @@ and private progOf (env: Env) (h: Check.TCmdHead) : string =
             s
 
 and eval (env: Env) (te: TypedExpr) : Value =
-    if RunPos.Depth = 0 then
-        RunPos.Current <- box te
+    RunPos.Current <- box te
 
     match te.Kind with
     // a failure as a value [D:try-form]: the body runs inside the capture
@@ -3416,11 +3425,8 @@ and eval (env: Env) (te: TypedExpr) : Value =
               Cwd = Some(Weir.Session.Cwd())
               Ambient = Some(Weir.Session.envOverlay () |> List.rev |> List.collect id) }
 
-        // inside a called function the call site takes the blame
-        // [D:runtime-position]
-        let exact = RunPos.Depth = 0
-        let node = if exact then box te else RunPos.Current
-        VSeq(Seq.delay (fun () -> Proc.linesOf spec) |> Seq.map VStr |> blameOn node exact)
+        // the command takes the blame wherever it is read [D:runtime-position]
+        VSeq(Seq.delay (fun () -> Proc.linesOf spec) |> Seq.map VStr |> blameOn (box te))
     | TEInterp parts ->
         let sb = System.Text.StringBuilder()
 
@@ -4335,29 +4341,41 @@ and private chainSpecs env (arg: TypedExpr) chead cargs cenvO : Proc.Spec list =
 and apply (fn: Value) (arg: Value) : Value =
     match fn with
     | VClosure(param, body, closureEnv) ->
-        if RunPos.Inline body then
-            eval (Map.add param arg closureEnv) body
-        else
+        if RunPos.IsCall body then
             inFunction (fun () -> eval (Map.add param arg closureEnv) body)
+        else
+            eval (Map.add param arg closureEnv) body
     | VClosurePat(pat, body, closureEnv) ->
         let bindings = bindPattern pat arg
         let env' = bindings |> List.fold (fun m (n, v) -> Map.add n v m) closureEnv
 
-        if RunPos.Inline body then
-            eval env' body
-        else
+        if RunPos.IsCall body then
             inFunction (fun () -> eval env' body)
+        else
+            eval env' body
     | VBuiltin f -> f arg
     | v -> unreachable $"the checker rejects application of {formatValue v}"
 
-// a function body's positions stay at its call site [D:runtime-position]
+// a call of a function defined elsewhere [D:runtime-position]: a raise
+// unwinding through it is blamed on the innermost node first (if nothing
+// blamed it yet), then gains this call site as a trace frame
 and private inFunction (f: unit -> Value) : Value =
-    RunPos.Depth <- RunPos.Depth + 1
+    let callSite = RunPos.Current
 
     try
         f ()
-    finally
-        RunPos.Depth <- RunPos.Depth - 1
+    with
+    | ExitRequest _ -> reraise ()
+    | ex ->
+        let b = blameFor ex
+
+        if isNull b.Node then
+            b.Node <- RunPos.Current
+
+        if not (isNull callSite) then
+            b.Frames.Add callSite
+
+        reraise ()
 
 /// the bare-statement spec (argv, overlay) — one builder for the relay
 /// and the inheriting spawn, so the two forms cannot drift

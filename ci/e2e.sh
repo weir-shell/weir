@@ -3499,15 +3499,49 @@ rp_case lambda "lambda.weir:2:5: error: command failed with exit code 6" '[1] |>
     sh -c "exit 6"
     print $"{i}")
 '
-# a function defined in ANOTHER statement reports its call site (the
-# interim rule, pending the body-line/trace ruling)
-rp_case fncall "fncall.weir:6:5: error: command failed with exit code 7" 'let f () =
+# a failure inside a function defined in ANOTHER statement reports the
+# body line, then one `called from` line per call, innermost first
+rp_case fncall "fncall.weir:2:5: error: command failed with exit code 7" 'let f () =
     sh -c "exit 7"
     print "after"
 
 if true then
     f ()
 '
+rp_frames() { # name, expected frame lines (in order, newline-separated)
+    local out
+    out=$(cd "$rpdir" && $BIN "$1.weir" 2>&1) || true
+    local got
+    got=$(echo "$out" | grep -F "called from" || true)
+    [ "$got" = "$2" ] || fail "runtime trace $1: expected frames:
+$2
+got:
+$got
+in: $out"
+    echo "e2e ok: runtime trace — $1"
+}
+rp_frames fncall "  called from fncall.weir:6:5"
+rp_case nested "nested.weir:3:5: error: deep" 'let inner () =
+    print "i"
+    fail "deep"
+    print "x"
+
+let outer () =
+    print "o"
+    inner ()
+
+if true then
+    outer ()
+'
+rp_frames nested "  called from nested.weir:8:5
+  called from nested.weir:11:5"
+printf 'module Lib\n\nlet run : unit -> unit\n\nlet run () =\n    print "in lib"\n    sh -c "exit 9"\n    print "unreached"\n' > "$rpdir/lib.weir"
+rp_case module "lib.weir:7:5: error: command failed with exit code 9" 'import "./lib.weir"
+
+print "start"
+Lib.run ()
+'
+rp_frames module "  called from module.weir:4:1"
 rp_case item "item.weir:3:5: error:" 'if true then
     print "s"
     let x = [1] |> Seq.item 5
