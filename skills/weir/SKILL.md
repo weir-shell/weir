@@ -802,8 +802,10 @@ let x =
   inspect, diff, confirm, then apply. Two plans compare directly (both
   capture, neither performs), so `plan <actual> == plan <expected>` is
   the mock-free test; `Plan.ops` gives the raw ops for a per-op assert
-  (`Plan.ops |> Seq.exactlyOne == WriteFile(p, c)`; a bare `seq<Op>`
-  itself is not equatable, so compare plans or ops, not the seq).
+  (`(pl |> Plan.ops |> Seq.exactlyOne) == WriteFile(p, c)` — the
+  parens are needed, `==` binds tighter than `|>`, and a recorded op
+  holds the ABSOLUTE path; a bare `seq<Op>` itself is not equatable,
+  so compare plans or ops, not the seq).
   `Plan.preview` renders human lines (wrote nothing), `Plan.isEmpty`,
   and `Plan.apply` performs in capture order. The Op arms are the mutation surface: `WriteFile of
   string * seq<string>`, `DeleteFile`, `Copy`/`Move of string *
