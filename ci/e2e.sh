@@ -3542,6 +3542,19 @@ print "start"
 Lib.run ()
 '
 rp_frames module "  called from module.weir:4:1"
+# a cleanup runs weir code while the body's error unwinds; the error stays
+# at the body's line, whether the cleanup succeeds or fails too
+rp_case always "always.weir:3:5: error: body" 'within
+    print "in"
+    fail "body"
+always
+    print "cleaning"
+'
+rp_case alwaysfail "alwaysfail.weir:2:5: error: body" 'within
+    fail "body"
+always
+    fail "cleanup"
+'
 rp_case item "item.weir:3:5: error:" 'if true then
     print "s"
     let x = [1] |> Seq.item 5
