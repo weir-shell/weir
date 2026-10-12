@@ -321,22 +321,24 @@ let rec private walkExpr
 
              match argsOf te |> List.tryItem (if h = "|chainOrFailed" then 1 else 0) with
              | Some { Kind = TEList stages } ->
+                 // each stage at its program's own span — the tuple spans
+                 // the whole chain
                  for st in stages do
                      match st.Kind with
                      | TETuple [ prog; argv; envE ] ->
                          (match literalStr prog with
                           | Some p ->
-                              add (Runs p) st.Span
+                              add (Runs p) prog.Span
 
                               if interpreters.Contains p then
-                                  add (OpaqueArg p) st.Span
+                                  add (OpaqueArg p) prog.Span
                           | None ->
                               let display =
                                   match prog.Kind with
                                   | TEVar n -> $"^${n}"
                                   | _ -> "^$(…)"
 
-                              add (RunsDyn display) st.Span)
+                              add (RunsDyn display) prog.Span)
 
                          match argv.Kind with
                          | TEList items ->
@@ -347,7 +349,7 @@ let rec private walkExpr
 
                          match envE.Kind with
                          | TEList [] -> ()
-                         | _ -> add (EnvWrite("env prefix", envNamesOf binds envE)) st.Span
+                         | _ -> add (EnvWrite("env prefix", envNamesOf binds envE)) prog.Span
                      | _ -> ()
              | _ -> ()
          | TEVar h when Weir.Effects.isCommandReifier h ->
@@ -372,10 +374,12 @@ let rec private walkExpr
              | Some slot ->
                  (match literalStr slot with
                   | Some prog ->
-                      add (Runs prog) te.Span
+                      // the program slot carries the command's own span;
+                      // the application's starts at the reifier marker
+                      add (Runs prog) slot.Span
 
                       if interpreters.Contains prog then
-                          add (OpaqueArg prog) te.Span
+                          add (OpaqueArg prog) slot.Span
                   | None ->
                       // a reified dynamic head [D:dynamic-head]: the
                       // prog slot carries the head value, not a literal
@@ -384,7 +388,7 @@ let rec private walkExpr
                           | TEVar n -> $"^${n}"
                           | _ -> "^$(…)"
 
-                      add (RunsDyn display) te.Span)
+                      add (RunsDyn display) slot.Span)
              | None -> ()
          | _ -> ()
 

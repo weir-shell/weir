@@ -65,7 +65,7 @@ let private spawn
     // process starts funnel through.
     if Session.planGuardActive () then
         failwith
-            $"'{prog}' runs a command, and 'proc' is refused inside 'plan' — a spawned binary reads and writes opaquely, so its effects cannot be captured; plan covers weir-native mutation only (File/Dir/Http)"
+            $"'{prog}' runs a command, and commands are refused inside 'plan' — a spawned binary reads and writes opaquely, so its effects cannot be captured; plan covers weir-native mutation only (File/Dir/Http)"
 
     // ambient `within env` layers apply outer-first under the explicit
     // spec env, so inner and explicit keys win [D:within-scopes] —
@@ -320,7 +320,7 @@ let exec (s: Spec) : unit =
     // directly, with the same message spawn raises.
     if Session.planGuardActive () then
         failwith
-            $"'{s.Prog}' runs a command, and 'proc' is refused inside 'plan' — a spawned binary reads and writes opaquely, so its effects cannot be captured; plan covers weir-native mutation only (File/Dir/Http)"
+            $"'{s.Prog}' runs a command, and commands are refused inside 'plan' — a spawned binary reads and writes opaquely, so its effects cannot be captured; plan covers weir-native mutation only (File/Dir/Http)"
 
     // the same boundary spawn enforces [D:spawn-nul-funnel]
     nulRefusal "the command program name" s.Prog

@@ -230,7 +230,21 @@ let private wireAtArgs (label: string) (def: RecordDef) : string option =
                 $"{label}'{name}' carries [<Wire>], which Args.load does not take — a flag is DERIVED from the field name; name it with [<Short \"c\">] or suppress it with [<NoShort>]"
         | _ -> None)
 
+// [<Positional>] describes a FOREIGN CLI's operands in a signature
+// [D:command-signatures]; on Args.load it would read as a positional
+// argument and silently do nothing — refused where a reader would expect it
+let private positionalAtArgs (label: string) (def: RecordDef) : string option =
+    def.Fields
+    |> List.tryPick (fun (f, _) ->
+        attrOf def f "Positional"
+        |> Option.map (fun _ ->
+            $"{label}'{f}' has [<Positional>], which only describes a tool's operands in a command signature — a weir script's own arguments are flags (--{f}); for free arguments read Self.args"))
+
 let fieldProblems (label: string) (def: RecordDef) : string option =
+    match positionalAtArgs label def with
+    | Some m -> Some m
+    | None ->
+
     match wireAtArgs label def with
     | Some m -> Some m
     | None ->

@@ -3000,8 +3000,9 @@ let private cleanParseDump (ll: LogicalLine) (msg: string) : string =
     // parser expects is backwards. Strip them, consulting Parser's one list.
     // FParsec wraps a long list across lines, so rejoin first — otherwise a
     // token straddling the break is missed, and the list reads better whole.
+    // `!` likewise: a guard that only teaches `not` (prefix `!` is not weir)
     let bannedTokens =
-        Parser.foreignKeywordWords |> List.map (fun w -> "'" + w + "'") |> Set.ofList
+        Parser.foreignKeywordWords |> List.map (fun w -> "'" + w + "'") |> Set.ofList |> Set.add "'!'"
 
     let rebuildExpecting (ls: string list) : string list =
         // FParsec wraps the list at whatever width it likes — sometimes
@@ -3138,6 +3139,80 @@ let private checkStatementCore
     // (Complete, tests) never see a stale statement
     Check.toPhys.Value <- Some(translate ll)
 
+    // a command head not on PATH, named precisely: the parse path's dump
+    // and the runner's "unbound variable" for an unknown statement head both
+    // come down to a missing program [D:missing-command-diagnosis]
+    let missingCommandDiag (onlyName: string option) : StmtDiag option =
+        let missingHeads =
+            match Parser.parseLineFull (assumeResolver tenv) ll.Text with
+            | Error _ -> []
+            | Ok stmt ->
+                let e =
+                    match stmt with
+                    | SLet(_, e)
+                    | SLetPat(_, e)
+                    | SExpr e
+                    | SCmd e -> Some e
+                    | SType _
+                    | SSig _
+                    | SModule _
+                    | SImport _ -> None
+
+                let rec heads (e: Expr) =
+                    (match e.Kind with
+                     | ECmd(HeadLit prog, _, _) when not (Extern.exists prog) -> [ prog, e.Span ]
+                     | _ -> [])
+                    @ (chainStageHeads e |> List.filter (fst >> Extern.exists >> not))
+                    @ (exprChildren e |> List.collect heads)
+
+                e |> Option.map heads |> Option.defaultValue []
+
+        match missingHeads with
+        | (prog, span) :: rest when (match onlyName with Some n -> n = prog | None -> true) ->
+            let physLine, physCol = translate ll span.Start.Col
+
+            let others =
+                match rest |> List.map fst |> List.distinct |> List.filter ((<>) prog) with
+                | [] -> ""
+                | more ->
+                    let joined = String.concat ", " more
+                    $" (also missing: {joined})"
+
+            Some
+                { PhysLine = physLine
+                  PhysCol = physCol
+                  PhysEnd = Some(translate ll span.End.Col)
+                  Tag = None
+                  HasCol = true
+                  Span = Some span
+                  Parse = true
+                  Message =
+                    (match Map.tryFind prog Builtins.bareAliasHomes with
+                     | Some home ->
+                         $"'{prog}' is a bare module member, not a program — spell it '{home}.{prog}' (bare names live in the REPL session)"
+                     | None ->
+                         // a misspelled reifier after `|` reads as a program [D:reifier-term]
+                         let afterPipe =
+                             let at = min ll.Text.Length (max 0 (span.Start.Col - 1))
+                             ll.Text.Substring(0, at).TrimEnd().EndsWith "|"
+
+                         let reifier =
+                             Ast.reifierNames
+                             |> List.map (fun c -> c, editDistance prog c)
+                             |> List.filter (fun (_, d) -> d <= 2)
+                             |> List.sortBy snd
+                             |> List.tryHead
+
+                         match reifier with
+                         | Some(c, _) when afterPipe ->
+                             $"unknown command '{prog}' — not found on PATH. Did you mean the reifier '{c}'? (`<command> | {c}`)"
+                         | _ ->
+                             $"unknown command '{prog}' — not found on PATH{others}. weir resolves command names before running: install the tool, or, if it only exists when the script runs, name it at run time — `let tool = \"{prog}\"` then `^$tool`")
+                  File = None
+                  Note = None
+                  Warnings = [] }
+        | _ -> None
+
     try
         match Parser.parseLineFull r ll.Text with
         | Error f ->
@@ -3145,75 +3220,9 @@ let private checkStatementCore
             // is an unresolvable command head (the backtrack note buries it).
             // Retry under the assume-resolver: if that parses, the failure is
             // missing commands — name them precisely instead of the dump.
-            let missingHeads =
-                match Parser.parseLineFull (assumeResolver tenv) ll.Text with
-                | Error _ -> []
-                | Ok stmt ->
-                    let e =
-                        match stmt with
-                        | SLet(_, e)
-                        | SLetPat(_, e)
-                        | SExpr e
-                        | SCmd e -> Some e
-                        | SType _
-                        | SSig _
-                        | SModule _
-                        | SImport _ -> None
-
-                    let rec heads (e: Expr) =
-                        (match e.Kind with
-                         | ECmd(HeadLit prog, _, _) when not (Extern.exists prog) -> [ prog, e.Span ]
-                         | _ -> [])
-                        @ (chainStageHeads e |> List.filter (fst >> Extern.exists >> not))
-                        @ (exprChildren e |> List.collect heads)
-
-                    e |> Option.map heads |> Option.defaultValue []
-
-            match missingHeads with
-            | (prog, span) :: rest ->
-                let physLine, physCol = translate ll span.Start.Col
-
-                let others =
-                    match rest |> List.map fst |> List.distinct |> List.filter ((<>) prog) with
-                    | [] -> ""
-                    | more ->
-                        let joined = String.concat ", " more
-                        $" (also missing: {joined})"
-
-                Error
-                    { PhysLine = physLine
-                      PhysCol = physCol
-                      PhysEnd = Some(translate ll span.End.Col)
-                      Tag = None
-                      HasCol = true
-                      Span = Some span
-                      Parse = true
-                      Message =
-                        (match Map.tryFind prog Builtins.bareAliasHomes with
-                         | Some home ->
-                             $"'{prog}' is a bare module member, not a program — spell it '{home}.{prog}' (bare names live in the REPL session)"
-                         | None ->
-                             // a misspelled reifier after `|` reads as a program [D:reifier-term]
-                             let afterPipe =
-                                 let at = min ll.Text.Length (max 0 (span.Start.Col - 1))
-                                 ll.Text.Substring(0, at).TrimEnd().EndsWith "|"
-
-                             let reifier =
-                                 Ast.reifierNames
-                                 |> List.map (fun c -> c, editDistance prog c)
-                                 |> List.filter (fun (_, d) -> d <= 2)
-                                 |> List.sortBy snd
-                                 |> List.tryHead
-
-                             match reifier with
-                             | Some(c, _) when afterPipe ->
-                                 $"unknown command '{prog}' — not found on PATH. Did you mean the reifier '{c}'? (`<command> | {c}`)"
-                             | _ ->
-                                 $"unknown command '{prog}' — not found on PATH{others}. weir resolves command names before running: install the tool, or, if it only exists when the script runs, name it at run time — `let tool = \"{prog}\"` then `^$tool`")
-                      File = None
-                      Note = None
-                      Warnings = [] }
-            | [] ->
+            match missingCommandDiag None with
+            | Some d -> Error d
+            | None ->
                 let physLine, physCol, hasCol =
                     match f.Col with
                     | Some col ->
@@ -3430,7 +3439,18 @@ let private checkStatementCore
             let tenv = Check.withAnonDefs tenv e
 
             match Check.typecheck tenv e with
-            | Error terr -> Error(typed StmtTag.Cmd terr)
+            | Error terr ->
+                // a near-miss binding suggestion means a likely typo of a
+                // weir name: keep it; otherwise the head is a missing program
+                let unboundName =
+                    if terr.Message.StartsWith "unbound variable '" && not (terr.Message.Contains "Did you mean") then
+                        Some(terr.Message.Substring(18).Split('\'').[0])
+                    else
+                        None
+
+                match unboundName |> Option.bind (fun n -> missingCommandDiag (Some n)) with
+                | Some d -> Error d
+                | None -> Error(typed StmtTag.Cmd terr)
             | Ok te ->
                 // a bool-valued chain (| succeeds) as a bare statement is a
                 // discarded value, not a stream — the discard family
@@ -3497,7 +3517,18 @@ let private checkStatementCore
             let tenv = Check.withAnonDefs tenv e
 
             match Check.typecheck tenv e with
-            | Error terr -> Error(typed StmtTag.Expr terr)
+            | Error terr ->
+                // a near-miss binding suggestion means a likely typo of a
+                // weir name: keep it; otherwise the head is a missing program
+                let unboundName =
+                    if terr.Message.StartsWith "unbound variable '" && not (terr.Message.Contains "Did you mean") then
+                        Some(terr.Message.Substring(18).Split('\'').[0])
+                    else
+                        None
+
+                match unboundName |> Option.bind (fun n -> missingCommandDiag (Some n)) with
+                | Some d -> Error d
+                | None -> Error(typed StmtTag.Expr terr)
             | Ok te ->
                 // the likeliest intent behind a discarded $(cmd) is "run
                 // it" — the wrapper is what is in the way, so the error

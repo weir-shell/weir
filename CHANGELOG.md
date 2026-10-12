@@ -11,6 +11,19 @@
   `let v = cmd | line` (or `| text`, `| succeeds`, `| complete`) in a
   module passed `weir check` and ran the command at import; it now gets
   the same error as `$(cmd)`: wrap it in a function.
+- **An unknown program at the start of a line gets the right message.**
+  `nosuchtool arg` failed at run time with "unbound variable … wrap it:
+  $(…)"; it now says the program isn't on PATH and how to name one that
+  only exists at run time (`^$tool`), as `let x = nosuchtool` did.
+- **`M.f` with no module `M` suggests modules,** not a constructor
+  ("Did you mean 'Ok'?"), and says how to import one.
+- **`[<Positional>]` on an `Args.load` field is an error.** It only
+  describes a tool's operands in a command signature; on a script's own
+  arguments it silently did nothing.
+- **Smaller fixes:** a command inside `plan` is reported as "commands
+  are refused" (it said "'proc' is refused"); `weir check --can` reports
+  each command of a pipeline at its own column; parse errors no longer
+  list the removed `!` as an expected token.
 
 ## v0.0.71
 

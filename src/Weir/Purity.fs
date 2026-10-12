@@ -423,7 +423,7 @@ let rec firstPlanRefusal (te: TypedExpr) : (Span * string) option =
     | TECmd(h, _, _) ->
         Some(
             te.Span,
-            $"'{theadDisplay h}' runs a command, and 'proc' is refused inside 'plan' — a spawned binary reads and writes opaquely, so its effects cannot be captured; plan covers weir-native mutation only (File/Dir/Http)"
+            $"'{theadDisplay h}' runs a command, and commands are refused inside 'plan' — a spawned binary reads and writes opaquely, so its effects cannot be captured; plan covers weir-native mutation only (File/Dir/Http)"
         )
     // a nested plan composes: it handles its own refusals
     | TEWithin(WithinPlan, _, _, _, _) -> None

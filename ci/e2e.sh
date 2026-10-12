@@ -3555,6 +3555,20 @@ rp_case alwaysfail "alwaysfail.weir:2:5: error: body" 'within
 always
     fail "cleanup"
 '
+# an unknown statement-head program at run time names it as a missing
+# program with the ^$tool advice, not "unbound variable … wrap it in $(…)"
+# [D:sweep-findings]
+rp_case unknownhead "unknownhead.weir:1:1" 'nosuchcmdxyz arg
+'
+out=$(cd "$rpdir" && $BIN unknownhead.weir 2>&1 || true)
+echo "$out" | grep -qF "unknown command 'nosuchcmdxyz' — not found on PATH" || fail "an unknown head is a missing program: $out"
+echo "$out" | grep -qF '^$tool' || fail "the missing-program message teaches ^\$tool: $out"
+# --can reports a reified command, and each pipeline stage, at its own column
+printf 'let s = git log | head -1 | line\nprint s\n' > "$rpdir/can.weir"
+out=$(cd "$rpdir" && $BIN check --can can.weir 2>&1)
+echo "$out" | grep -qE 'git +can\.weir:1:9' || fail "--can: git at its own column: $out"
+echo "$out" | grep -qE 'head +can\.weir:1:19' || fail "--can: the head stage at its own column: $out"
+echo "e2e ok: unknown head names a missing program; --can columns per command"
 rp_case item "item.weir:3:5: error:" 'if true then
     print "s"
     let x = [1] |> Seq.item 5
@@ -10264,7 +10278,7 @@ echo "$herr" | grep -qF "filesystem path" || fail "concat refusal tail drifted: 
 hcan=$(cd "$ROOT" && "$BIN" check --can tools/fuzz.weir 2>&1) || fail "hero --can run failed: $hcan"
 for line in \
     "tools/fuzz.weir can (capability, not behaviour — an untaken branch still counts):" \
-    "ci/deep-lock.sh × 2  tools/fuzz.weir:31:41, 66:5" \
+    "ci/deep-lock.sh × 2  tools/fuzz.weir:31:1, 66:5" \
     "File.read (path not statically known)  tools/fuzz.weir:59:20" \
     "within tmp (a temporary directory)  tools/fuzz.weir:47:1" \
     "sets WEIR_FUZZ_SEED, WEIR_FUZZ_COUNT, WEIR_FUZZ_REPORT for children (within env)  tools/fuzz.weir:48:41" \
