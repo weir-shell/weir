@@ -6692,6 +6692,15 @@ expect "a module is declaration-only (direct check enforces it)" "a module decla
 printf 'module W\nlet head = git rev-parse HEAD\n' > "$mdir/weak.weir"
 out=$($BIN check "$mdir/weak.weir" 2>&1 || true)
 expect "weak purity: a module let cannot run a command at import" "cannot run a command at import" "$out"
+# ...including through a reifier [D:module-let-reifier]: `cmd | line`
+# desugars to no command node, and once ran at import unnoticed
+for rf in 'git rev-parse HEAD | line' 'git log -1 | text' 'git status | succeeds'; do
+    printf 'module W
+let head = %s
+' "$rf" > "$mdir/weakr.weir"
+    out=$($BIN check "$mdir/weakr.weir" 2>&1 || true)
+    expect "weak purity through a reifier: $rf" "cannot run a command at import" "$out"
+done
 
 # the graph [D:modules-v1]: transitive imports resolve and evaluate; a
 # module can import and use another module's members

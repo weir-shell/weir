@@ -7,6 +7,10 @@
 - **An error inside `within … always` is reported at the body's line.**
   The cleanup runs while the error unwinds, and v0.0.71 reported the
   error at the cleanup's line — even when the cleanup itself succeeded.
+- **A module `let` that runs a command through a reifier is refused.**
+  `let v = cmd | line` (or `| text`, `| succeeds`, `| complete`) in a
+  module passed `weir check` and ran the command at import; it now gets
+  the same error as `$(cmd)`: wrap it in a function.
 
 ## v0.0.71
 
