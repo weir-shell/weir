@@ -23585,11 +23585,39 @@ let runsCommandReifierTests =
               Expect.isEmpty ok "a function defers the command"
           } ]
 
+// the GUIDE sweep's findings, pinned [D:sweep-findings]
+let sweepFindingTests =
+    let msgs file lines = diagsIn file lines |> List.map (fun d -> d.Message)
+
+    testList
+        "sweep findings [D:sweep-findings]"
+        [ test "[<Positional>] on an Args.load field is refused, not silently inert" {
+              let m = msgs "p.weir" [ "type Cli = {"; "    [<Positional>]"; "    target: string"; "}"; "let cli = Args.load Cli"; "print cli.target" ]
+              Expect.exists m (fun s -> s.Contains "has [<Positional>], which only describes a tool's operands") "refused"
+          }
+          test "a command inside plan says commands are refused, not proc" {
+              let m = msgs "p.weir" [ "let p = plan"; "    echo hi"; "print (Plan.preview p |> Str.join \"\")" ]
+              Expect.exists m (fun s -> s.Contains "commands are refused inside 'plan'") "the message"
+              Expect.isFalse (m |> List.exists (fun s -> s.Contains "'proc' is refused")) "no proc wording"
+          }
+          test "an unknown qualifier suggests modules, never a constructor" {
+              let m = msgs "q.weir" [ "M.f ()" ]
+              Expect.exists m (fun s -> s.Contains "no module named 'M'") "names the module"
+              Expect.isFalse (m |> List.exists (fun s -> s.Contains "'Ok'")) "no constructor suggestion"
+              Expect.exists (msgs "q.weir" [ "print (List.length [1])" ]) (fun s -> s.Contains "'Seq'") "the List teaching still leads"
+          }
+          test "the removed `!` is never offered as an expected token" {
+              let m = msgs "w.weir" [ "within readonly"; "    print \"x\"" ]
+              Expect.isNonEmpty m "a parse error"
+              Expect.isFalse (m |> List.exists (fun s -> s.Contains "'!'")) "no '!' in the expectation list"
+          } ]
+
 [<Tests>]
 let allTests =
     testList
         "Weir"
         [ hardeningTests
+          sweepFindingTests
           runsCommandReifierTests
           hoverReflowTests
           tomlTests

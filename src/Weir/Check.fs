@@ -3612,6 +3612,38 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                         let hint = didYouMean field (Map.keys members)
                         return! err fieldSpan $"module {m} has no member '{field}'{hint}"
         }
+    // `M.f` where M is neither a value nor a module: a qualifier names a
+    // module, so suggest module names — not the prelude's constructors
+    // (`M` -> `Ok`) — and say how to bring one in [D:module-qualifier]
+    | EField({ Kind = EVar m } as target, _, _) when
+        m.Length > 0
+        && System.Char.IsUpper m[0]
+        && not (Map.containsKey m env.Values)
+        && not (Map.containsKey m env.Modules)
+        ->
+        // the existing teachings come first (List/String -> Seq/Str, the
+        // Exit -> exit rename); this answers only where the generic message
+        // has no suggestion, or would suggest a mere constructor
+        match infer ctx env target with
+        | Error e when not (e.Message.StartsWith $"unbound variable '{m}'") -> Error e
+        | Error e when
+            (let marker = "Did you mean '"
+             let i = e.Message.IndexOf marker
+
+             i >= 0
+             && (let rest = e.Message.Substring(i + marker.Length)
+                 let suggested = rest.Substring(0, max 0 (rest.IndexOf '\''))
+                 List.isEmpty (ctorOwners env suggested)))
+            ->
+            Error e
+        | _ when Map.containsKey m env.Types ->
+            err target.Span $"'{m}' is a type, not a value — read a field from a value of it, like `x.field`"
+        | _ ->
+            let hint = didYouMean m (Map.keys env.Modules)
+
+            err
+                target.Span
+                $"no module named '{m}'{hint} — a module comes from `import \"./file.weir\" as {m}` (or `weir:name` for a vendored one)"
     | EField(target, field, fieldSpan) ->
         result {
             let! ttarget = infer ctx env target
