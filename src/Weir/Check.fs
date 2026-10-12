@@ -6594,6 +6594,9 @@ let warnings (te: TypedExpr) : Warning list =
 let rec runsCommandT (te: TypedExpr) : bool =
     match te.Kind with
     | TECmd _ -> true
+    // a reifier desugars to an application of its |-variable, not a TECmd:
+    // `cmd | line` runs cmd just the same [D:module-let-reifier]
+    | TEVar v when (reifierOfVar v).IsSome -> true
     | TELambda _
     | TELambdaPat _ -> false
     | _ -> childExprs te |> List.exists runsCommandT

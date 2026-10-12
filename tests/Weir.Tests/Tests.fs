@@ -23572,11 +23572,25 @@ let hoverReflowTests =
                   "structure kept"
           } ]
 
+// the command walk sees through reifiers [D:module-let-reifier]
+let runsCommandReifierTests =
+    testList
+        "runsCommandT through reifiers [D:module-let-reifier]"
+        [ test "a module let through a reifier is refused; a function using one is not" {
+              for rhs in [ "git rev-parse HEAD | line"; "git log -1 | text"; "git status | succeeds"; "git status | complete" ] do
+                  let msgs = diagsIn "w.weir" [ "module W"; $"let head = {rhs}" ] |> List.map (fun d -> d.Message)
+                  Expect.exists msgs (fun m -> m.Contains "cannot run a command at import") rhs
+
+              let ok = diagsIn "w.weir" [ "module W"; "let head : unit -> string"; "let head () = git rev-parse HEAD | line" ]
+              Expect.isEmpty ok "a function defers the command"
+          } ]
+
 [<Tests>]
 let allTests =
     testList
         "Weir"
         [ hardeningTests
+          runsCommandReifierTests
           hoverReflowTests
           tomlTests
           tryTests
