@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.0.72
+
+### Fixed
+
+- **An error inside `within … always` is reported at the body's line.**
+  The cleanup runs while the error unwinds, and v0.0.71 reported the
+  error at the cleanup's line — even when the cleanup itself succeeded.
+
 ## v0.0.71
 
 ### Fixed

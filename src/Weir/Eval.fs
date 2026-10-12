@@ -3656,6 +3656,16 @@ and eval (env: Env) (te: TypedExpr) : Value =
 
             v
         | Error original ->
+            // the cleanup runs weir code while the body's raise unwinds: pin
+            // the raise to where it happened first [D:runtime-position]
+            (match original with
+             | :? ExitRequest -> ()
+             | _ ->
+                 let b = blameFor original
+
+                 if isNull b.Node then
+                     b.Node <- RunPos.Current)
+
             (try
                 if Session.deregisterAlways hooked then
                     runCleanup ()
