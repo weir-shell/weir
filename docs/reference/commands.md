@@ -247,8 +247,9 @@ All three accept an env overlay (`$e(cmd | line)`), and `line` and
 
 ### Chaining
 
-`cmd | and next` runs `next` only if `cmd` succeeded, like bash's `&&`.
-`cmd | or next` runs it only if `cmd` failed, like `||`; there the
+`cmd | and next` runs `next` only if `cmd` succeeded, like bash's `&&`;
+if `cmd` fails, that failure is an error, so the script stops there.
+`cmd | or next` runs `next` only if `cmd` failed, like `||`; there the
 failure picks the branch instead of raising. Both stream output and
 return unit, and the right side is a whole command line, so a builtin
 such as `cd` works there:
