@@ -21412,6 +21412,28 @@ let moduleSignatureTests =
                               "the migration teaching, inferred type included"
                       | [] -> failtest "the private member must refuse")
           }
+          test "a type a module imports crosses with the signatures that mention it (B23)" {
+              withDir
+                  [ "a.weir",
+                    [ "module A"
+                      "type Verdict = Good of int | Bad"
+                      "type Pt = { x: int; v: Verdict }"
+                      "let origin : unit -> Pt"
+                      "let origin () = { x = 0; v = Bad }" ]
+                    "b.weir", [ "module B"; "import \"./a.weir\""; "let make : int -> seq<Pt>"; "let make n = [ A.origin () ]" ]
+                    "s.weir",
+                    [ "import \"./b.weir\""
+                      "for p in B.make 3 do"
+                      "    print $\"{p.x} {show p} {p == p}\""
+                      "    match p.v with"
+                      "    | Good n -> print $\"{n}\""
+                      "    | Bad -> print \"bad\"" ]
+                    // reachable is not owned: no qualified literal under B
+                    "q.weir", [ "import \"./b.weir\""; "let p = B.Pt { x = 1; v = Bad }"; "print p.x" ] ]
+                  (fun td ->
+                      Expect.isEmpty (diagsOf td "s.weir") "field access, show, ==, and the union's cases resolve"
+                      Expect.isNonEmpty (diagsOf td "q.weir") "B does not re-export Pt as its own")
+          }
           test "did-you-mean at the private refusal ranges over SIGNED members only" {
               withDir
                   [ "lib.weir",

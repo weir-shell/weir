@@ -1889,7 +1889,10 @@ conf |> Seq.iter print
   INTO its checking, so a param can pattern-match its declared union
   and a generic sig (`'a -> 'a`) is honoured — an impl that pins `'a`
   refuses as less-general. A signature names types bare — an imported
-  type resolves by its plain name, never `X.Ty`.
+  type resolves by its plain name, never `X.Ty`. A type a module
+  imports crosses to ITS importers with the signatures that mention
+  it (fields, show, `==`, match all work), but stays the defining
+  module's — no `B.Pt { … }` literal through the re-exporter.
   The sig precedes its impl; a sig without
   an impl is a check error at the sig. `///` docs live ON the
   signature line (hover reads sig + doc there; a doc on the impl of
