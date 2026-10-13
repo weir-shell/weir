@@ -1,5 +1,41 @@
 # Changelog
 
+## v0.0.73
+
+### Fixed
+
+- **`Plan.apply` runs the same checks as the direct call.** In a plan,
+  `Dir.delete` of a non-empty directory deleted the whole tree, and
+  `File.copy`/`Dir.move` accepted the wrong kind of path. The plan
+  `Op` union gains `DeleteTree`, `CopyDir` and `MoveDir`; an exhaustive
+  match on `Op` needs the three new cases.
+- **`weir fmt` never re-spaces a command's arguments.** `chmod u+x f`
+  became `chmod u + x f` and `echo a+b` became `echo a + b`.
+- **A raise in a producer piped into a command fails the script.**
+  `xs |> Seq.map (… fail …) | sha256sum` hashed the truncated input and
+  exited 0; `exit` inside the producer was lost too.
+- **A closed stdout ends the script.** `weir s.weir | head -1` ran the
+  whole script (or spun forever on an endless child); it now tears down
+  like `SIGPIPE` — children killed, `always` runs — and exits 141.
+- **No statement runs after SIGINT/SIGTERM.** Code after `Proc.wait`
+  could keep running while the scope tore down. The main thread now
+  unwinds; if it is blocked where it cannot notice (a stdin read, a
+  network call), the old teardown takes over after one second.
+- **Int arguments past 32 bits raise instead of wrapping.**
+  `Seq.item 4294967296 [10;20]` returned `10`; `Seq.take`, `Str.sub`,
+  `Str.replicate`, `Str.padLeft` and indexing wrapped the same way.
+- **A match on a not-yet-resolved payload is checked for totality.**
+  `match o with | Some 0 -> … | None -> …` passed `weir check` and
+  failed at run time with "no arm matched".
+- **`pure` refuses `cd`, `pwd`, `Path.home*`, `Term.*` and `Color.*`;
+  `readonly` refuses `cd`.**
+- **YAML reads `null`, `Null`, `NULL` and `~` as null** (quoted forms stay
+  strings), so `to yaml |> from yaml` round-trips an `Option`.
+- **A mis-indented YAML line is an error,** not silently dropped.
+- **`~` and `Path.home` use `$HOME` as set,** even when the directory is
+  missing; `HOME=/nonexistent` made `~/x` expand to `/x`. An empty
+  `HOME` raises.
+
 ## v0.0.72
 
 ### Fixed

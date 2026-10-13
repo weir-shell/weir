@@ -6,6 +6,11 @@ weekly: self-correction rate (stranded = failures), fallback ranking
 skill lines and targeted hints).
 
 ## fallbacks
+- 2026-10-13 | sweep repro gate (tools/sweep-repro.weir) -> `sh -c` for
+  two probes | B4 needs the exit code of weir's left side behind
+  `| head -1` (a weir chain counts an early-closing downstream as
+  success [D:pipe-early-exit], so the code is unobservable), and B13
+  needs a regular-file stdin (`<`), which weir has no spelling for.
 - 2026-09-20 | multi-area review referees (tools/multi-repro.weir writes
   them and drives them through `sh -c`) -> python | three of the
   review's properties are about BYTES ON A SOCKET, which weir cannot

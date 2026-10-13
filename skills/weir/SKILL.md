@@ -713,7 +713,9 @@ within serve srv = { port = 8410; maxConcurrent = 4 } handler
   backgrounding; compose inside `sh -c`); the block starts on the
   NEXT line (the command owns the rest of its own). THE NON-CLAIM,
   stated: normal exit, raise, SIGINT and SIGTERM all close every
-  scope — at a tty AND detached (a `kill -INT`/`kill -TERM` on a
+  scope (on the script's own thread — no statement runs after the
+  signal; a reader closing weir's stdout ends the script the same way,
+  exit 141, no message) — at a tty AND detached (a `kill -INT`/`kill -TERM` on a
   `setsid`/backgrounded weir unwinds the same way, exit 130/143; a
   second signal mid-teardown hard-exits, the double-Ctrl+C escape).
   Two carve-outs, both by design: `kill -9` of weir itself cannot, by
@@ -761,12 +763,14 @@ let pure leak p = File.write p ["x"]
 - `readonly` + an indented block is the READ-ONLY ASSERTION
   [D:pure-stage2], ONE TIER UP from `pure`: the body must reach no
   EXTERNAL MUTATION — `fs.write`/`fs.delete`, `proc` (a command or a
-  Proc member), console writes, the mutating HTTP methods
+  Proc member), `cd`, console writes, the mutating HTTP methods
   (POST/PUT/DELETE/PATCH), any `within` resource — but AMBIENT READS
-  are fine: `fs.read`, `Env`/`Args`, the clock (`Instant.now`), the
+  are fine: `fs.read`, `Env`/`Args`, `pwd`, `Path.home`/`configHome`/
+  `stateHome`/`cacheHome`, `Term`/`Color` (they read the terminal),
+  the clock (`Instant.now`), the
   `Uuid` generators, the query HTTP methods (`Http.query`, and
   `Http.send`/`Http.expect` of a GET/HEAD/OPTIONS/QUERY request), and
-  `Self.stdin`. So
+  `Self.stdin` — all refused by `pure`. So
   `readonly == only ambient-input`, and a `pure` body (only ∅)
   is trivially read-only. A reachable mutation is a located check
   error naming the offender AND its class ("this 'readonly' block
@@ -808,8 +812,9 @@ let x =
   so compare plans or ops, not the seq).
   `Plan.preview` renders human lines (wrote nothing), `Plan.isEmpty`,
   and `Plan.apply` performs in capture order. The Op arms are the mutation surface: `WriteFile of
-  string * seq<string>`, `DeleteFile`, `Copy`/`Move of string *
-  string`, `MakeDir`, `DeleteDir`, `HttpSend of HttpRequest` (a
+  string * seq<string>`, `DeleteFile`, `Copy`/`Move`/`CopyDir`/`MoveDir of
+  string * string`, `MakeDir`, `DeleteDir` (empty only), `DeleteTree`
+  (`Dir.deleteAll`), `HttpSend of HttpRequest` (a
   mutating method only; `show` masks the auth Secret). Content is
   snapshotted at plan time, so `preview == apply`. The refusals:
   `proc` inside a plan (a spawned binary is uncapturable — plan covers
@@ -1587,7 +1592,8 @@ type Bad = C of int
   ONE document (a mapping) -> `T`; `from yaml seq<T>` reads one
   top-level SEQUENCE document -> `seq<T>` (nested records, seqs,
   `seq<string * string>` for labels, `Option`; bool is EXACTLY
-  true/false; anchors rejected). A block sequence reads in BOTH indent
+  true/false; plain `null`/`Null`/`NULL`/`~` and an empty value are
+  null -> `None`, quoted `"null"` is a string; anchors rejected). A block sequence reads in BOTH indent
   styles — indented under its key OR at the SAME column as its key
   (kubectl's `items:` / `- apiVersion: v1` flush-left form). Only the
   EMPTY flow collections `{}` and `[]` are read (into an empty
@@ -2423,7 +2429,7 @@ not the teaching.
 - `Net`: `portOpen`
 - `Result`: `defaultValue` `isOk` `map` `toOption` — what `e |> try result` gives (`Ok v` / `Error msg`)
 - `Option`: `bind` `defaultValue` `defaultWith` `flatten` `iter` `map` `orElse` `orElseWith` — `bind` chains lookups that may each fail (`f` returns an Option; no nesting); `flatten` collapses `Option<Option<T>>`
-- `Path`: `cacheHome` `combine` `configHome` `dir` `extension` `fileName` `glob` `home` `newTempDir` `normalize` `stateHome` `stem` `tempRoot` `under` — `normalize` resolves `.`/`..` in the path TEXT (no filesystem, no symlinks; use it where `under` refuses a path that leaves its base); `home`/`configHome`/`stateHome`/`cacheHome` (each `unit -> string`) are home in an EXPRESSION (`File.read $"{Path.home ()}/.bashrc"`); in a COMMAND LINE an unquoted word-leading `~`/`~/…` expands to home at run time [D:tilde] (`cat ~/.bashrc`, `~/bin/tool`) — quoted `"~/x"`, `$"…"` and spliced values stay literal, `~user` too, and `$HOME` never expands. The working directory is `pwd`, a `string` read where it is used [D:pwd-string]; `cd dir` returns the absolute directory it moved to
+- `Path`: `cacheHome` `combine` `configHome` `dir` `extension` `fileName` `glob` `home` `newTempDir` `normalize` `stateHome` `stem` `tempRoot` `under` — `normalize` resolves `.`/`..` in the path TEXT (no filesystem, no symlinks; use it where `under` refuses a path that leaves its base); `home`/`configHome`/`stateHome`/`cacheHome` (each `unit -> string`) are home in an EXPRESSION (`File.read $"{Path.home ()}/.bashrc"`) — home is `$HOME` verbatim when set, the OS lookup when unset, and an empty HOME raises [D:home-verbatim]; in a COMMAND LINE an unquoted word-leading `~`/`~/…` expands to home at run time [D:tilde] (`cat ~/.bashrc`, `~/bin/tool`) — quoted `"~/x"`, `$"…"` and spliced values stay literal, `~user` too, and `$HOME` never expands. The working directory is `pwd`, a `string` read where it is used [D:pwd-string]; `cd dir` returns the absolute directory it moved to
 - `Poll`: `defaults`
 - `Plan`: `apply` `isEmpty` `ops` `preview` — the value a `plan` block yields: `ops` the recorded `Op`s, `preview` one line each, `apply` performs them in order
 - `Proc`: `pid` `running` `stop` `tail` `wait`

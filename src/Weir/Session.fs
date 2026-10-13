@@ -6,6 +6,12 @@ module Weir.Session
 // inside a worker is worker-local and dies at the join. Spawns and
 // File ops read the ambient session at force time, unchanged.
 
+// `exit n`'s carrier: an intentional exit, not an error — the runner
+// returns the code silently instead of printing a located message.
+// Declared here so the teardown below (signals, a closed stdout) can
+// raise it; Eval re-exports it.
+exception ExitRequest of code: int
+
 let mutable private rootCwd: string =
     System.IO.Path.TrimEndingDirectorySeparator(System.IO.Directory.GetCurrentDirectory())
 
@@ -297,7 +303,8 @@ module private Libc =
 // handler is libc's getpid — async-signal-safe, side-effect free, and
 // its ignored int argument is ABI-harmless — because a managed delegate
 // is not safe to run in signal context; weir's own writes still fail
-// with EPIPE (the handler returns, the write reports the error).
+// with EPIPE (the handler returns, the write reports the error, which
+// the stdout writer turns into the 141 teardown [D:stdout-epipe]).
 // Installed once before the first spawn; POSIX only.
 let sigpipeForChildren: Lazy<unit> =
     lazy
@@ -315,6 +322,160 @@ let sigpipeForChildren: Lazy<unit> =
                  | true, fp -> Libc.signal (13, fp) |> ignore
                  | _ -> ()
              | None -> ())
+
+// ---- the main-thread teardown [D:signal-main-unwind] [D:stdout-epipe] --
+// A signal or a closed stdout ends the script, but the teardown — every
+// `always`, every scope's release — runs on the MAIN thread, never in the
+// signal handler: the handler records the exit code, kills the scoped
+// children (what the main thread waits on) and wakes interruptible waits;
+// the main thread raises ExitRequest at its next evaluation or wait
+// boundary and unwinds through its scopes, so no statement runs after the
+// request. Registered by the script runner and -e; without a registered
+// main thread (the REPL) the handler keeps the in-handler sweep.
+
+let mutable private mainThreadId = 0
+let mutable private teardownCode = 0
+let mutable private teardownRaised = 0
+
+/// interruptible waits block on this; set when a teardown is requested
+let teardownWake = new System.Threading.ManualResetEventSlim(false)
+
+let registerMainThread () : unit =
+    mainThreadId <- System.Threading.Thread.CurrentThread.ManagedThreadId
+
+let private onMainThread () =
+    mainThreadId <> 0
+    && System.Threading.Thread.CurrentThread.ManagedThreadId = mainThreadId
+
+/// record a teardown's exit code — the first request wins
+let requestTeardown (code: int) : unit =
+    System.Threading.Interlocked.CompareExchange(&teardownCode, code, 0) |> ignore
+    teardownWake.Set()
+
+/// the requested exit code, or `code` when none was requested — the
+/// runner's result, so a request racing a statement's normal end still
+/// exits with the request's code
+let exitCodeOr (code: int) : int =
+    match System.Threading.Volatile.Read &teardownCode with
+    | 0 -> code
+    | c -> c
+
+/// raise the requested teardown on the main thread, once: the unwind
+/// then runs the cleanups as ordinary code (which must not be cut short
+/// by the same request again)
+let checkTeardown () : unit =
+    let c = System.Threading.Volatile.Read &teardownCode
+
+    if
+        c <> 0
+        && onMainThread ()
+        && System.Threading.Interlocked.Exchange(&teardownRaised, 1) = 0
+    then
+        raise (ExitRequest c)
+
+// a main thread not yet unwinding waits interruptibly; elsewhere (a
+// worker, or a cleanup already running for the request) waits run as
+// written
+let private interruptible () =
+    onMainThread () && System.Threading.Volatile.Read &teardownRaised = 0
+
+/// sleep, cut short on the main thread by a teardown request (which then
+/// raises)
+let sleepInterruptible (span: System.TimeSpan) : unit =
+    if interruptible () then
+        teardownWake.Wait span |> ignore
+        checkTeardown ()
+    else
+        System.Threading.Thread.Sleep span
+
+/// wait `span` or until `token` cancels — true when the token cancelled
+/// first; a teardown request raises on the main thread
+let waitOrCancel (span: System.TimeSpan) (token: System.Threading.CancellationToken) : bool =
+    if interruptible () then
+        let i =
+            System.Threading.WaitHandle.WaitAny([| token.WaitHandle; teardownWake.WaitHandle |], span)
+
+        checkTeardown ()
+        i = 0
+    else
+        try
+            System.Threading.Tasks.Task.Delay(span, token).Wait()
+            false
+        with _ ->
+            true
+
+/// join a task; a teardown request raises on the main thread without
+/// waiting for it (the abandoned task dies with the process)
+let waitTask (t: System.Threading.Tasks.Task) : unit =
+    if interruptible () then
+        System.Threading.WaitHandle.WaitAny(
+            [| (t :> System.IAsyncResult).AsyncWaitHandle; teardownWake.WaitHandle |]
+        )
+        |> ignore
+
+        checkTeardown ()
+
+    t.Wait()
+
+// weir's own stdout, when it is a pipe or file [D:stdout-epipe]: .NET's
+// Unix console stream drops EPIPE, so a closed reader went unnoticed and
+// `weir s.weir | head -1` ran to completion (or forever). Writes go to
+// fd 1 directly; EPIPE requests the 141 teardown (bash's SIGPIPE status)
+// and every later write is discarded — a cleanup that prints must not
+// fail the unwind, and there is no reader left.
+type private EpipeWriter(inner: System.IO.StreamWriter) =
+    inherit System.IO.TextWriter()
+    let mutable dead = false
+
+    member private _.Guard(write: unit -> unit) =
+        if not dead then
+            try
+                write ()
+                inner.Flush()
+            // EPIPE is errno 32 on Linux and macOS alike; .NET carries the
+            // errno as the HResult
+            with :? System.IO.IOException as e when e.HResult = 32 ->
+                dead <- true
+                requestTeardown 141
+                checkTeardown ()
+
+                // a worker unwinds its own arm; the main thread raises at
+                // its next boundary
+                if not (onMainThread ()) then
+                    raise (ExitRequest 141)
+
+    override _.Encoding = inner.Encoding
+
+    override _.NewLine
+        with get () = inner.NewLine
+        and set (v: string) = inner.NewLine <- v
+
+    override this.Write(c: char) = this.Guard(fun () -> inner.Write c)
+    override this.Write(s: string) = this.Guard(fun () -> inner.Write s)
+
+    override this.Write(buffer: char[], index: int, count: int) =
+        this.Guard(fun () -> inner.Write(buffer, index, count))
+
+    override this.WriteLine() = this.Guard(fun () -> inner.WriteLine())
+    override this.WriteLine(s: string) = this.Guard(fun () -> inner.WriteLine s)
+    override this.Flush() = this.Guard ignore
+
+/// route Console.Out through EpipeWriter when stdout is redirected
+/// (POSIX: a terminal never EPIPEs, and Windows keeps its console stream)
+let armStdout () : unit =
+    if System.Console.IsOutputRedirected && not (System.OperatingSystem.IsWindows()) then
+        let fd1 =
+            new System.IO.FileStream(
+                new Microsoft.Win32.SafeHandles.SafeFileHandle(nativeint 1, false),
+                System.IO.FileAccess.Write,
+                1
+            )
+
+        let inner =
+            new System.IO.StreamWriter(fd1, System.Text.UTF8Encoding(false), 4096)
+
+        inner.NewLine <- System.Console.Out.NewLine
+        System.Console.SetOut(System.IO.TextWriter.Synchronized(new EpipeWriter(inner)))
 
 // a second signal during teardown hard-exits [D:signal-teardown] — the
 // shell's double-Ctrl+C escape, so a slow or stuck cleanup can never
@@ -372,11 +533,47 @@ let private installExitHook () =
                                     130
 
                             System.Environment.Exit code
+                        elif mainThreadId <> 0 then
+                            // first signal, a script running: the main
+                            // thread tears down [D:signal-main-unwind] —
+                            // kill what it waits on, wake its sleeps, and
+                            // keep the process alive for the unwind
+                            ctx.Cancel <- true
+
+                            let code =
+                                if ctx.Signal = System.Runtime.InteropServices.PosixSignal.SIGTERM then
+                                    143
+                                else
+                                    130
+
+                            requestTeardown code
+
+                            for kv in liveProcs do
+                                try
+                                    kv.Value.Kill true
+                                with _ ->
+                                    ()
+
+                            // the backstop: a main thread blocked where
+                            // no boundary comes (a stdin read, a network
+                            // call) cannot unwind — after a grace period
+                            // the old in-handler teardown runs and the
+                            // process exits; it runs no statement either
+                            let watchdog =
+                                System.Threading.Thread(fun () ->
+                                    System.Threading.Thread.Sleep 1000
+
+                                    if System.Threading.Volatile.Read &teardownRaised = 0 then
+                                        sweepLiveTmpDirs ()
+                                        System.Environment.Exit code)
+
+                            watchdog.IsBackground <- true
+                            watchdog.Start()
                         else
-                            // first signal: run the one teardown, then let
+                            // first signal, no script main thread (the
+                            // REPL): run the one teardown, then let
                             // default termination carry 130/143 (Cancel
-                            // stays false) — the same path a tty Ctrl+C and
-                            // a SIGTERM already take
+                            // stays false)
                             sweepLiveTmpDirs ()
                 )
 

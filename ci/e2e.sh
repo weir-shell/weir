@@ -536,6 +536,39 @@ b]" ] || fail "chain reifiers: succeeds, leftmost code, stderr order, text: $out
     echo "e2e ok: pipe chains — early exit ends the chain quietly; reifiers follow a chain, leftmost code, stderr in order"
 fi
 
+# a closed stdout ends the script like SIGPIPE [D:stdout-epipe]: an endless
+# relayed child and a long print loop under `| head -1` stop at once with
+# exit 141, no diagnostic, and `always` runs (POSIX: EPIPE is the signal)
+if [ "$IS_WINDOWS" != "1" ]; then
+    epdir=$(mkweirtmp)
+    cat > "$epdir/yes.weir" <<'WEOF'
+within
+    yes epipe98763
+always
+    File.write "cleaned-yes" ["ok"]
+WEOF
+    cat > "$epdir/loop.weir" <<'WEOF'
+within
+    for i in [1..2000000] do
+        print $"{i}"
+always
+    File.write "cleaned-loop" ["ok"]
+WEOF
+    for probe in yes loop; do
+        rm -f "$epdir/cleaned-$probe"
+        res=$(cd "$epdir" && { timeout 5 $BIN $probe.weir 2>"$epdir/err-$probe" | head -1 >/dev/null; } ; echo "${PIPESTATUS[0]}")
+        [ "$res" = "141" ] || fail "a closed stdout ends $probe.weir promptly with 141 (got $res; 124 = still running)"
+        [ "$(cat "$epdir/cleaned-$probe" 2>/dev/null)" = "ok" ] || fail "a closed stdout runs always ($probe)"
+        [ ! -s "$epdir/err-$probe" ] || fail "a closed stdout prints no diagnostic ($probe): $(cat "$epdir/err-$probe")"
+    done
+    if pgrep -f "yes epipe98763" >/dev/null 2>&1; then
+        pkill -f "yes epipe98763" 2>/dev/null || true
+        fail "a closed stdout must reap the relayed child (yes left running)"
+    fi
+    rm -rf "$epdir"
+    echo "e2e ok: a closed stdout ends the script with 141, always runs, the child is reaped"
+fi
+
 # a 2-param generic union checks + evals through the binary (was the
 # prelude-Result pin; Result removed [D:no-result], the fixture is now a
 # locally-declared Either)
@@ -2208,6 +2241,28 @@ if [ "$IS_WINDOWS" != "1" ]; then
     rm -rf "$tldir"
 fi
 echo "e2e ok: a typed ~ is home in a command line — argv and head; quoted, spliced, mid-word and ~user stay literal; cd takes its string literally"
+# HOME verbatim [D:home-verbatim]: a set HOME is home even when the dir is
+# missing (bash), unset falls back to the OS lookup, empty raises rather
+# than expanding `~/x` to `/x`. POSIX only: Windows reads the profile API
+if [ "$IS_WINDOWS" != "1" ]; then
+    hvdir=$(mkweirtmp)
+    printf 'echo ~/x
+print (Path.home ())
+print (Path.configHome ())
+' > "$hvdir/h.weir"
+    out=$(cd "$hvdir" && env -u XDG_CONFIG_HOME HOME=/nonexistent-home $BIN h.weir 2>&1) || fail "a missing HOME dir is still home: $out"
+    [ "$out" = "/nonexistent-home/x
+/nonexistent-home
+/nonexistent-home/.config" ] || fail "HOME is used verbatim: $out"
+    out=$(cd "$hvdir" && env -u HOME -u XDG_CONFIG_HOME $BIN h.weir 2>&1) || fail "an unset HOME falls back to the OS: $out"
+    case "$out" in /*/x*) ;; *) fail "unset HOME: an absolute OS home: $out" ;; esac
+    rc=0
+    out=$(cd "$hvdir" && HOME= $BIN h.weir 2>&1) || rc=$?
+    [ "$rc" = "1" ] || fail "an empty HOME must raise (rc $rc): $out"
+    echo "$out" | grep -qF "no home directory" || fail "the empty-HOME message: $out"
+    rm -rf "$hvdir"
+    echo "e2e ok: HOME is read verbatim — missing dir kept, unset falls back, empty raises"
+fi
 
 # NAME=value cmd [D:env-prefix]: bash's one-line child env — values of
 # every form, per pipeline stage, composed with a sigil (the prefix wins),
@@ -2657,6 +2712,54 @@ WEOF
     [ "$(cat "$DM" 2>/dev/null)" != "done" ] || fail "the hard-exit must not let the slow cleanup finish"
     pkill -f "sleep 98761" 2>/dev/null || true
     echo "e2e ok: a second signal mid-teardown hard-exits (the double-Ctrl+C escape)"
+
+    # the main thread unwinds [D:signal-main-unwind]: no statement runs
+    # after a signal — `Proc.wait` on the killed scoped child returns no
+    # code and the lines after it never run, yet `always` does; a main
+    # thread asleep in `Duration.sleep` wakes at once
+    cat > "$dtdir/after.weir" <<'WEOF'
+let marker = Self.args |> Seq.head
+within
+    within proc srv = sh -c "sleep 98762"
+        let code = Proc.wait srv
+        print $"wait returned {code}"
+        File.append marker ["after"]
+always
+    File.append marker ["cleaned-up"]
+WEOF
+    cat > "$dtdir/asleep.weir" <<'WEOF'
+let marker = Self.args |> Seq.head
+within
+    Duration.sleep 60s
+    File.append marker ["after"]
+always
+    File.append marker ["cleaned-up"]
+WEOF
+    for probe in after asleep; do
+        for pair in "INT:130" "TERM:143"; do
+            sig="${pair%%:*}"; want="${pair##*:}"
+            M="$dtdir/m-$probe-$sig"
+            rm -f "$M"
+            setsid "$BIN" "$dtdir/$probe.weir" "$M" </dev/null >"$dtdir/out-$probe" 2>&1 &
+            wpid=$!
+            if [ "$probe" = after ]; then
+                for _ in $(seq 1 40); do pgrep -f "sleep 98762" >/dev/null 2>&1 && break; sleep 0.2; done
+            else
+                sleep 1
+            fi
+            kill -"$sig" "$wpid" 2>/dev/null || true
+            code=timeout
+            for _ in $(seq 1 15); do # 3s: the unwind is prompt, not the 60s sleep
+                if ! kill -0 "$wpid" 2>/dev/null; then code=0; wait "$wpid" 2>/dev/null || code=$?; break; fi
+                sleep 0.2
+            done
+            [ "$code" = "$want" ] || fail "$probe: SIG$sig must exit $want promptly (got $code)"
+            [ "$(cat "$M" 2>/dev/null)" = "cleaned-up" ] || fail "$probe: SIG$sig runs always and no statement after it (marker: $(cat "$M" 2>/dev/null))"
+            ! grep -qF "wait returned" "$dtdir/out-$probe" || fail "$probe: SIG$sig — Proc.wait must not return to the script"
+            pkill -f "sleep 98762" 2>/dev/null || true
+        done
+    done
+    echo "e2e ok: a signal unwinds on the main thread — no statement after it, always runs, sleeps wake"
 else
     echo "e2e skip: detached-signal pins (POSIX + setsid + pgrep)"
 fi
@@ -6098,6 +6201,33 @@ cat > "$fddir/lazy.weir" <<'WEOF'
 WEOF
 out=$(timeout 10 $BIN "$fddir/lazy.weir") || fail "value-headed input must be lazy (head -1 over a huge range must terminate)"
 expect "value-headed input laziness on the AOT binary" "1" "$out"
+
+# a producer's raise piped into a command is the script's failure, at the
+# producer's line — only the child closing its stdin early (head -1) is
+# the pipe's business. Every consumer shape: captured, chained, | complete,
+# | exitCode; `exit 5` in the producer keeps its code.
+cat > "$fddir/gen.weir" <<'WEOF'
+let gen i =
+    if i == 3 then fail "boom" else $"{i}"
+
+WEOF
+for shape in 'let _r = [1..10] |> Seq.map gen | HASHTOOL | line' \
+             'let _r = [1..10] |> Seq.map gen | cat |> Seq.length' \
+             'let _r = [1..10] |> Seq.map gen | cat | complete' \
+             'let _r = [1..10] |> Seq.map gen | cat | exitCode'; do
+    { cat "$fddir/gen.weir"; printf '%s\nprint "unreached"\n' "$shape"; } | sed "s|HASHTOOL|$HASHTOOL|" > "$fddir/prodfail.weir"
+    rc=0; out=$(cd "$fddir" && timeout 10 $BIN prodfail.weir 2>&1) || rc=$?
+    [ $rc -eq 1 ] || fail "producer raise into a command must fail ($shape) rc=$rc: $out"
+    echo "$out" | grep -qF "prodfail.weir:2:5: error: boom" || fail "producer raise at the producer's line ($shape): $out"
+    case "$out" in *unreached*) fail "no statement runs after the producer's raise ($shape): $out" ;; esac
+done
+printf 'let _r = [1..10] |> Seq.map (fun i -> if i == 3 then exit 5 else $"{i}") | cat |> Seq.length\nprint "unreached"\n' > "$fddir/prodexit.weir"
+rc=0; out=$(timeout 10 $BIN "$fddir/prodexit.weir" 2>&1) || rc=$?
+[ $rc -eq 5 ] && [ -z "$out" ] || fail "exit 5 in a producer exits 5 (rc=$rc): $out"
+printf 'let r = [1..1000000] |> Seq.map (fun i -> if i == 300000 then fail "late" else $"{i}") | head -1 | line\nprint r\n' > "$fddir/prodhead.weir"
+out=$(timeout 10 $BIN "$fddir/prodhead.weir" 2>&1) || fail "a child closing stdin early is not the producer's failure: $out"
+expect "producer into head -1 still succeeds" "1" "$out"
+echo "e2e ok: a producer's raise into a command fails at its line; exit keeps its code; head -1 stays clean"
 
 # ---- value-headed pipelines, more shapes [D:value-headed-pipe] ----
 # an expression piped into an external command feeds its stdin

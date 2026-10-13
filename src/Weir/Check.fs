@@ -2364,7 +2364,10 @@ let rec private missingCases (env: TypeEnv) (ty: Ty) (pats: Pattern list) : stri
                   "[]"
               if not consCovered then
                   "_ :: _" ]
-        | _ -> []
+        // every arm here is refutable (the guard above returned
+        // otherwise); a payload the checker could not resolve (a type
+        // variable) or any other unanalysed type owes the catch-all
+        | _ -> [ "_" ]
 
 let private exhaustive
     (env: TypeEnv)
@@ -4500,7 +4503,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                 let tarms = (pat0, tguard0, tbody0) :: List.rev trest
                 // re-resolve: a constructor pattern may have typed the
                 // scrutinee var during arm checking [D:match-scrutinee-infer]
-                do! exhaustive env expr.Span (resolve ctx tscrutinee.Ty) (tarms |> List.map (fun (p, g, _) -> p, g))
+                do! exhaustive env expr.Span (finalTy ctx tscrutinee.Ty) (tarms |> List.map (fun (p, g, _) -> p, g))
 
                 return
                     { Kind = TEMatch(tscrutinee, tarms)

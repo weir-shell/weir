@@ -132,9 +132,16 @@ let private spawn
     p
 
 // the one starter: the shared spawn plus the stdin writer, which pulls
-// the input seq lazily as the pipe accepts (laziness reaches inputs too)
-let private start (redirectOut: bool) (redirectErr: bool) (s: Spec) : Process =
+// the input seq lazily as the pipe accepts (laziness reaches inputs too).
+// The second result rethrows the PRODUCER's raise (or exit) on the
+// calling thread: only a failed write — the child closed its stdin, as
+// `head -1` does — is the pipe's business and stays silent. Call it
+// once the child has exited: the fault is recorded before stdin closes,
+// so the child's EOF orders after it, and nothing waits on a producer
+// that is still blocked.
+let private start (redirectOut: bool) (redirectErr: bool) (s: Spec) : Process * (unit -> unit) =
     let p = spawn redirectOut redirectErr s.Input.IsSome s.Cwd s.Ambient s.Prog s.Args s.Env
+    let fault = ref (null: exn)
 
     match s.Input with
     | Some lines ->
@@ -145,17 +152,40 @@ let private start (redirectOut: bool) (redirectErr: bool) (s: Spec) : Process =
                     // [D:lf-output] — WriteLine's Environment.NewLine
                     // fed \r\n into child hashes on Windows
                     p.StandardInput.NewLine <- "\n"
+                    use e = lines.GetEnumerator()
+                    let mutable go = true
 
-                    for l in lines do
-                        p.StandardInput.WriteLine l
+                    while go do
+                        let more =
+                            try
+                                e.MoveNext()
+                            with ex ->
+                                System.Threading.Volatile.Write(&fault.contents, ex)
+                                false
+
+                        if more then
+                            try
+                                p.StandardInput.WriteLine e.Current
+                            with _ ->
+                                go <- false
+                        else
+                            go <- false
                 with _ ->
                     ()
             finally
-                p.StandardInput.Close())
+                try
+                    p.StandardInput.Close()
+                with _ ->
+                    ())
         |> ignore
     | None -> ()
 
-    p
+    let rethrowFault () =
+        match System.Threading.Volatile.Read &fault.contents with
+        | null -> ()
+        | ex -> System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(ex).Throw()
+
+    p, rethrowFault
 
 // tree-kill then reap — the lifecycle tail shared by the streaming
 // consumers (complete disposes without killing: it has already read
@@ -185,6 +215,9 @@ type CommandFailure(code: int, signalNote: string, shown: string) =
     member _.Shown = shown
 
 let private raiseNonzero (s: Spec) (code: int) =
+    // a child killed by a teardown is the teardown's, not a failure
+    // [D:signal-main-unwind]
+    Session.checkTeardown ()
     let shown = String.concat " " (s.Prog :: s.Args)
 
     let signalNote =
@@ -204,7 +237,8 @@ let private raiseNonzero (s: Spec) (code: int) =
 // stdout as a lazy line seq; raise-at-force on nonzero; stderr inherits
 let linesOf (s: Spec) : seq<string> =
     seq {
-        use p = start true false s
+        let p, producerFault = start true false s
+        use _ = p
 
         try
             let out = p.StandardOutput
@@ -215,6 +249,7 @@ let linesOf (s: Spec) : seq<string> =
                 line <- out.ReadLine()
 
             p.WaitForExit()
+            producerFault ()
 
             if p.ExitCode <> 0 then
                 raiseNonzero s p.ExitCode
@@ -228,7 +263,8 @@ let linesOf (s: Spec) : seq<string> =
 // \r\n: exactly ReadLine's split, so the segment stream is linesOf's
 // lines with immediacy). Raises nonzero like every forced spawn.
 let streamSegmentsOf (s: Spec) (onText: string -> unit) (onBreak: unit -> unit) : unit =
-    use p = start true false s
+    let p, producerFault = start true false s
+    use _ = p
 
     try
         let out = p.StandardOutput
@@ -265,6 +301,7 @@ let streamSegmentsOf (s: Spec) (onText: string -> unit) (onBreak: unit -> unit) 
             n <- out.Read(buf, 0, buf.Length)
 
         p.WaitForExit()
+        producerFault ()
 
         if p.ExitCode <> 0 then
             raiseNonzero s p.ExitCode
@@ -278,10 +315,12 @@ let streamSegmentsOf (s: Spec) (onText: string -> unit) (onBreak: unit -> unit) 
 // chose its bytes for a terminal it can see). Stderr was always
 // inherited on this path; the raise contract is every forced spawn's.
 let runInherited (s: Spec) : unit =
-    use p = start false false s
+    let p, producerFault = start false false s
+    use _ = p
 
     try
         p.WaitForExit()
+        producerFault ()
 
         if p.ExitCode <> 0 then
             raiseNonzero s p.ExitCode
@@ -357,7 +396,7 @@ let exec (s: Spec) : unit =
         // no execve: run foreground, then hard-exit with the child's
         // code (no scope unwind — exec discards the image, matching
         // POSIX)
-        let p = start false false s
+        let p, _ = start false false s
         p.WaitForExit()
         let code = p.ExitCode
         reap p
@@ -373,7 +412,8 @@ let exec (s: Spec) : unit =
 // stdout relayed to the console as it arrives; the code as the result
 // [D:exit-reifiers]: output goes to the human, the code is the meaning
 let streamCodeOf (s: Spec) : int =
-    use p = start true false s
+    let p, producerFault = start true false s
+    use _ = p
 
     try
         let out = p.StandardOutput
@@ -384,6 +424,7 @@ let streamCodeOf (s: Spec) : int =
             line <- out.ReadLine()
 
         p.WaitForExit()
+        producerFault ()
         p.ExitCode
     finally
         reap p
@@ -559,7 +600,8 @@ let private linesView (b: Segments) (isStdout: bool) : seq<string> =
 
 // both pipes captured to completion; the record's raw material
 let completedOf (s: Spec) : int * seq<string> * seq<string> =
-    use p = start true true s
+    let p, producerFault = start true true s
+    use _ = p
 
     let stderrTask =
         System.Threading.Tasks.Task.Run(fun () -> readAllBytes (p.StandardError.BaseStream))
@@ -567,6 +609,7 @@ let completedOf (s: Spec) : int * seq<string> * seq<string> =
     let outBytes = readAllBytes (p.StandardOutput.BaseStream)
     let errBytes = stderrTask.Result
     p.WaitForExit()
+    producerFault ()
     p.ExitCode, linesView outBytes true, linesView errBytes false
 
 // ---- the byte chain [D:byte-pipes]: raw command→command hops -------
@@ -621,11 +664,15 @@ let private pumpBytes
 let private startChain (tailOut: bool) (allErr: bool) (specs: Spec list) =
     let lastIdx = specs.Length - 1
 
+    let headFault = ref ignore
+
     let procs =
         specs
         |> List.mapi (fun i sp ->
             if i = 0 then
-                sp, start true allErr sp
+                let p, fault = start true allErr sp
+                headFault.Value <- fault
+                sp, p
             else
                 sp, spawn (i < lastIdx || tailOut) allErr true sp.Cwd sp.Ambient sp.Prog sp.Args sp.Env)
 
@@ -642,7 +689,7 @@ let private startChain (tailOut: bool) (allErr: bool) (specs: Spec list) =
                     with _ ->
                         ()))
 
-    procs, pumps
+    procs, pumps, headFault.Value
 
 // the chain's failure, after every stage exited: the LEFTMOST failing
 // stage — where the fault began — except a stage told to stop: its
@@ -660,7 +707,7 @@ let chainLinesOf (specs: Spec list) : seq<string> =
     | [ one ] -> linesOf one
     | _ ->
         seq {
-            let procs, pumps = startChain true false specs
+            let procs, pumps, producerFault = startChain true false specs
 
             try
                 // the tail is the command→expression edge: same line law
@@ -675,6 +722,8 @@ let chainLinesOf (specs: Spec list) : seq<string> =
 
                 for _, p in procs do
                     p.WaitForExit()
+
+                producerFault ()
 
                 match chainFailure procs pumps with
                 | Some(sp, code) -> raiseNonzero sp code
@@ -697,7 +746,7 @@ let chainCompletedOf (specs: Spec list) : int * seq<string> * seq<string> =
     match specs with
     | [ one ] -> completedOf one
     | _ ->
-        let procs, pumps = startChain true true specs
+        let procs, pumps, producerFault = startChain true true specs
 
         try
             let errTasks =
@@ -709,6 +758,8 @@ let chainCompletedOf (specs: Spec list) : int * seq<string> * seq<string> =
 
             for _, p in procs do
                 p.WaitForExit()
+
+            producerFault ()
 
             let errLines =
                 errTasks |> List.map (fun t -> linesView t.Result false |> List.ofSeq) |> List.concat
@@ -725,7 +776,7 @@ let chainStreamCodeOf (specs: Spec list) : int =
     match specs with
     | [ one ] -> streamCodeOf one
     | _ ->
-        let procs, pumps = startChain true false specs
+        let procs, pumps, producerFault = startChain true false specs
 
         try
             let _, last = List.last procs
@@ -738,6 +789,8 @@ let chainStreamCodeOf (specs: Spec list) : int =
 
             for _, p in procs do
                 p.WaitForExit()
+
+            producerFault ()
 
             chainCode procs pumps
         finally
@@ -753,11 +806,13 @@ let runChainInherited (specs: Spec list) : unit =
     | [] -> ()
     | [ one ] -> runInherited one
     | _ ->
-        let procs, pumps = startChain false false specs
+        let procs, pumps, producerFault = startChain false false specs
 
         try
             for _, p in procs do
                 p.WaitForExit()
+
+            producerFault ()
 
             match chainFailure procs pumps with
             | Some(sp, code) -> raiseNonzero sp code

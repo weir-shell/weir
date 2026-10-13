@@ -1490,6 +1490,45 @@ let boundaryTests =
                   | Error terr -> failtest (formatError terr)
               | other -> failtest $"unexpected: {other}"
           }
+          test "from yaml: plain null/Null/NULL/~ are null, quoted forms are strings (B8) [D:yaml-core-null]" {
+              let env2 =
+                  env
+                  |> declare "type YN = { a: Option<string>; b: Option<int>; c: Option<string>; d: string; e: Option<string> }"
+                  |> declare "type YO = { ys: seq<Option<int>>; zs: Option<seq<string>>; s: seq<string> }"
+                  |> declare "type YR = { name: string }"
+
+              let evalStr prog =
+                  match Weir.Parser.parseStmt prog with
+                  | Ok(SExpr e) ->
+                      match Weir.Check.typecheck env2 e with
+                      | Ok te -> Weir.Eval.eval valueEnv te
+                      | Error terr -> failtest (formatError terr)
+                  | other -> failtest $"unexpected: {other}"
+
+              Expect.equal
+                  (evalStr "show ([\"a: null\"; \"b: ~\"; \"c: \\\"null\\\"\"; \"d: 'NULL'\"; \"e: Null\"] |> from yaml YN)")
+                  (VStr "{ a = None; b = None; c = Some \"null\"; d = \"NULL\"; e = None }")
+                  "core-schema nulls read None; quoted stay strings"
+
+              for v in [ "Some 1; None"; "None"; "" ] do
+                  for s in [ "\"null\"; \"~\"; \"Null\"; \"NULL\""; "" ] do
+                      let o = $"{{ ys = [{v}]; zs = None; s = [{s}] }}"
+
+                      Expect.equal
+                          (evalStr $"let o = YO {o} in show (o |> to yaml |> from yaml YO) == show o")
+                          (VBool true)
+                          $"roundtrip {o}"
+
+              Expect.equal
+                  (evalStr "show ([\"x: NULL\"; \"y: Nullx\"; \"z: ~/a\"] |> Yaml.parse)")
+                  (VStr "YMap ([(\"x\", YNull); (\"y\", YStr \"Nullx\"); (\"z\", YStr \"~/a\")])")
+                  "only the exact words are null"
+
+              let ex =
+                  Expect.throwsC (fun () -> evalStr "[\"name: null\"] |> from yaml YR" |> ignore) id
+
+              Expect.stringContains ex.Message "field 'name' is null" "a required field receiving null errors"
+          }
           test "from yaml: a --- stream TEACHES — one document only [D:yaml-seq]" {
               let env2 = env |> declare "type YD = { kind: string }"
               let src = "[\"kind: A\"; \"---\"; \"kind: B\"] |> from yaml YD"
@@ -2268,6 +2307,19 @@ let boundaryTests =
               match Weir.Yaml.parseDocs ([ "k: value"; "  nested: x" ] |> List.mapi (fun i l -> i + 1, l)) with
               | Error e -> Expect.stringContains e "has both an inline value and a nested block" "malformed inline+block still fires"
               | Ok d -> failtest $"malformed input must error, got {d}"
+          }
+          test "a line indented between a block and its parent errors with its line, never drops (B9)" {
+              let left = "indented less than the block it belongs to"
+              Expect.stringContains (yamlErr [ "b:"; "  c: 2"; " d: 3"; "e: 5" ]) $"line 3: this line is {left}" "map entry between levels"
+              Expect.stringContains (yamlErr [ "- a: 1"; "  b: 2"; " c: 3" ]) "line 3:" "compact item entry between levels"
+              Expect.stringContains (yamlErr [ "a:"; "    - x"; "  - y" ]) $"line 3: this line is {left}" "seq item between levels"
+              Expect.stringContains (yamlErr [ "a:"; "  - x"; "  b: 1" ]) "line 3: expected a '- ' sequence item" "key after a seq at the seq's column"
+              Expect.stringContains (yamlErr [ "- x"; "y: 1" ]) "line 2: expected a '- ' sequence item" "root seq then a key"
+
+              // control: the zero-indent seq form keeps its sibling key
+              match yamlDoc [ "a:"; "- x"; "b: 1" ] with
+              | Weir.Yaml.NMap([ ("a", Weir.Yaml.NSeq(_, _)); ("b", _) ], _) -> ()
+              | other -> failtest $"zero-indent seq + sibling: {other}"
           }
           test "empty flow collections read: {} and [] as values (map + seq position); populated flow still rejects [D:yaml-empty-flow]" {
               // `{}` → the empty mapping, `[]` → the empty sequence, as a
@@ -7560,6 +7612,17 @@ let pureRegionTests =
                   Expect.stringContains e.Message "this 'pure' block forbids effects, but" $"the law: {phrase}"
                   Expect.stringContains e.Message phrase $"the offender: {phrase}"
           }
+          test "cd, pwd, the home dirs, Term and Color are effects pure refuses [D:purity-ambient]" {
+              for body, phrase in
+                  [ "cd \"/tmp\"", "'cd' changes the working directory"
+                    "pwd", "'pwd' reads the working directory"
+                    "Path.home ()", "'Path.home' reads the environment"
+                    "Path.configHome ()", "'Path.configHome' reads the environment"
+                    "Term.width ()", "'Term.width' reads the terminal"
+                    "Color.red \"x\"", "'Color.red' reads the terminal" ] do
+                  let e = firstErr [ "let x ="; "    pure"; "        " + body; "print $\"{x}\"" ]
+                  Expect.stringContains e.Message phrase body
+          }
           test "the refusal is LOCATED at the offending node" {
               let e = firstErr [ "let x ="; "    pure"; "        print \"no\"" ]
               Expect.equal e.Line 3 "the print's physical line"
@@ -7861,6 +7924,13 @@ let readonlyBlockTests =
           test "a command (proc) REFUSES — a spawn is external mutation" {
               let e = firstErr [ "readonly"; "    echo hi" ]
               Expect.stringContains e.Message "'echo' runs a command" "proc mutates"
+          }
+          test "cd is a mutation readonly refuses; pwd, home dirs, Term, Color are reads [D:purity-ambient]" {
+              let e = firstErr [ "let x ="; "    readonly"; "        cd \"/tmp\""; "print x" ]
+              Expect.stringContains e.Message "'cd' changes the working directory" "cd writes process state"
+
+              for body in [ "pwd"; "Path.home ()"; "Path.cacheHome ()"; "$\"{Term.width ()}\""; "Color.red \"x\"" ] do
+                  Expect.isEmpty (errsOf [ "let x ="; "    readonly"; "        " + body; "print x" ]) body
           }
           test "Http.send{post} refuses, Http.send{get} admits — the per-method net split" {
               Expect.isEmpty
@@ -8204,6 +8274,57 @@ let planApplyTests =
                       |> Array.map (fun p -> p.Substring(d.Length), System.IO.File.ReadAllText p)
 
                   Expect.equal (read applied) (read direct) "the applied tree is byte-identical to the direct one"
+              finally
+                  System.IO.Directory.Delete(root, true)
+          }
+          // [D:plan-apply] B1: every mutation builtin's Op replays through
+          // the direct call's own checks — plan + apply on a fixture leaves
+          // the same tree and the same success/failure as the direct call
+          test "B1: every plan op is equivalent to its direct call on every fixture kind" {
+              let ops1 = [ "File.delete"; "Dir.delete"; "Dir.deleteAll"; "Dir.create" ]
+              let ops2 = [ "File.copy"; "File.move"; "Dir.copy"; "Dir.move" ]
+
+              let fixtures =
+                  [ "empty dir", (fun (t: string) -> System.IO.Directory.CreateDirectory t |> ignore)
+                    "non-empty dir",
+                    (fun t ->
+                        System.IO.Directory.CreateDirectory(System.IO.Path.Combine(t, "sub", "d")) |> ignore
+                        System.IO.File.WriteAllText(System.IO.Path.Combine(t, "sub", "f.txt"), "x"))
+                    "file", (fun t -> System.IO.File.WriteAllText(t, "data"))
+                    "missing", (fun _ -> ()) ]
+
+              let snapshot (root: string) =
+                  System.IO.Directory.GetFileSystemEntries(root, "*", System.IO.SearchOption.AllDirectories)
+                  |> Array.map (fun p ->
+                      let rel = p.Substring(root.Length).Replace('\\', '/')
+
+                      if System.IO.Directory.Exists p then rel + "/"
+                      else rel + "=" + System.IO.File.ReadAllText p)
+                  |> Array.sort
+
+              let root = td ()
+
+              try
+                  for op in ops1 @ ops2 do
+                      for (kind, make) in fixtures do
+                          let outcome (mode: string) =
+                              let dir = System.IO.Path.Combine(root, System.Guid.NewGuid().ToString "N")
+                              System.IO.Directory.CreateDirectory dir |> ignore
+                              let t = System.IO.Path.Combine(dir, "t")
+                              make t
+                              let tw, dw = weirPath t, weirPath (System.IO.Path.Combine(dir, "dst"))
+                              let call = if List.contains op ops2 then $"{op} \"{tw}\" \"{dw}\"" else $"{op} \"{tw}\""
+
+                              let prog =
+                                  if mode = "direct" then
+                                      [ call ]
+                                  else
+                                      [ "let p ="; "    plan"; "        " + call; "p |> Plan.apply" ]
+
+                              let code = runFile prog
+                              code = 0, snapshot dir
+
+                          Expect.equal (outcome "plan") (outcome "direct") $"{op} on {kind}: plan+apply == direct"
               finally
                   System.IO.Directory.Delete(root, true)
           }
@@ -12496,6 +12617,26 @@ let agentFindingsTests =
               Expect.equal (Weir.Script.respaceLine "let x = {A = {B = 1}}") "let x = { A = { B = 1 } }" ""
               Expect.equal (Weir.Script.respaceLine "let a = 1 ;  print \"x\"") "let a = 1; print \"x\"" ""
           }
+          test "fmt never re-spaces command argv words [D:fmt-argv-verbatim]" {
+              for line in
+                  [ "chmod u+x f"
+                    "echo a+b"
+                    "echo a-b c*d e/f"
+                    "c&&d"
+                    "git status&&pwd"
+                    "echo a&&b"
+                    "echo x=1 a:b"
+                    "echo a||b"
+                    "if a&&b then print \"x\"" ] do
+                  match Weir.Fmt.formatLines [ line ] with
+                  | Ok out -> Expect.equal out [ line ] $"argv kept verbatim: {line}"
+                  | Error e -> failtestf "fmt failed on %s: %s" line e
+
+              // control: an expression that can never be a command still respaces
+              match Weir.Fmt.formatLines [ "let x = 1+2" ] with
+              | Ok out -> Expect.equal out [ "let x = 1 + 2" ] "expression operators still pad"
+              | Error e -> failtestf "fmt failed: %s" e
+          }
           test "respaceLine: string interiors and leading indent untouched" {
               Expect.equal (Weir.Script.respaceLine "    print \"a  {  b\"") "    print \"a  {  b\"" "plain"
               Expect.equal (Weir.Script.respaceLine "let s = @\"a  {  b\"") "let s = @\"a  {  b\"" "verbatim"
@@ -15179,6 +15320,23 @@ let ambiguousCtorTests =
               with
               | d :: _ -> Expect.stringContains d.Message "Blue" "the missing case is named after inference"
               | [] -> failtest "exhaustiveness must still fire once the scrutinee is inferred"
+          }
+          test "a refutable payload under an inferred scrutinee owes its catch-all (B6)" {
+              // the payload resolves only after the arms are checked; a
+              // payload still unresolved is never covered by refutable arms
+              for src in
+                  [ "let f o = match o with | Some 0 -> \"zero\" | None -> \"none\" in f (Some 5)"
+                    "let f o = match o with | Some (Some n) -> n | None -> 0 in f (Some None)"
+                    "let f o = match o with | Ok (Some n) -> n | Error e -> 0 in f (Ok None)"
+                    "let f o = match o with | Some [] -> 0 | None -> 1 in f (Some [1])"
+                    "let f o = match o with | Some 0 -> 1 | None -> 0 in 2" ] do
+                  Expect.stringContains (checkErr src).Message "not exhaustive" src
+
+              for src in
+                  [ "let f o = match o with | Some 0 -> 1 | Some _ -> 2 | None -> 0 in f (Some 5)"
+                    "let f o = match o with | Some (Some n) -> n | Some None -> 0 | None -> 0 in f None"
+                    "let f o = match o with | Ok (Some n) -> n | Ok None -> 0 | Error _ -> 1 in f (Ok None)" ] do
+                  checkOk src |> ignore
           } ]
 
 let dupTypeTests =
@@ -16730,6 +16888,58 @@ let accessorTeachingTests =
               // lazy (an infinite source must not be probed for length)
               expectValue "[1; 2; 3] |> Seq.item 1" (VInt 2L)
               expectValue "nats |> Seq.skip 2 |> Seq.head" (VInt 2L)
+          }
+          // B5 [D:int-narrowing]: a 64-bit int past int32 never wraps —
+          // a position is out of range, an amount too large; slices clamp
+          test "int arguments past int32 raise instead of wrapping" {
+              for n in [ 2147483648L; 4294967296L; 4294967297L ] do
+                  for (src, want) in
+                      [ $"[10; 20] |> Seq.item {n}", "out of range"
+                        $"let xs = [10; 20] in xs[{n}]", "out of range"
+                        $"[1; 2] |> Seq.take {n} |> Seq.length", "too large"
+                        $"Str.replicate {n} \"a\"", "too large"
+                        $"Str.padLeft {n} \"a\"", "too large"
+                        $"Str.padRight {n} \"a\"", "too large"
+                        $"[1] |> Seq.replicate {n} |> Seq.length", "too large"
+                        $"[1] |> Seq.windowed {n} |> Seq.length", "too large"
+                        $"[1] |> Seq.chunkBySize {n} |> Seq.length", "too large"
+                        $"Str.sub {n} 1 \"abc\"", "out of bounds"
+                        $"Str.sub 1 {n} \"abc\"", "out of bounds"
+                        $"Str.toUtf8 \"abc\" |> Bytes.sub 1 {n}", "out of bounds" ] do
+                      Expect.stringContains (msgOf src) want src
+
+                  expectValue $"[1; 2; 3][0..{n}] |> Seq.length" (VInt 3L)
+                  expectValue $"\"abc\"[1..{n}]" (VStr "bc")
+                  expectValue $"[1; 2; 3][{n}..] |> Seq.length" (VInt 0L)
+
+              // -1 keeps each member's own negative rule
+              Expect.stringContains (msgOf "[10; 20] |> Seq.item -1") "negative index" "item"
+              Expect.stringContains (msgOf "Str.replicate -1 \"a\"") "non-negative" "Str.replicate"
+              Expect.stringContains (msgOf "Str.sub -1 1 \"abc\"") "out of bounds" "Str.sub"
+              Expect.stringContains (msgOf "Str.replicate 1000000000 \"ab\"") "too large" "the string ceiling"
+              expectValue "[1] |> Seq.chunkBySize 2147483647 |> Seq.length" (VInt 1L)
+          }
+          // the gate: no builtin narrows a user int with a bare `int` cast —
+          // toIntArg is the one narrowing (the exit code is the triaged
+          // exception: a process exit status is the OS's own wrap)
+          test "no bare int cast on a VInt argument in the runtime [D:int-narrowing]" {
+              let src = System.IO.Path.Combine(__SOURCE_DIRECTORY__, "..", "..", "src", "Weir")
+
+              let offenders =
+                  [ for file in [ "Builtins.fs"; "Eval.fs"; "Repl.fs" ] do
+                        let lines = System.IO.File.ReadAllLines(System.IO.Path.Combine(src, file))
+
+                        for i in 0 .. lines.Length - 1 do
+                            for m in System.Text.RegularExpressions.Regex.Matches(lines[i], @"VInt (\w+)") do
+                                let v = m.Groups[1].Value
+                                let cast = System.Text.RegularExpressions.Regex($@"\bint\s*\(?\s*{v}\b")
+
+                                for j in i .. min (i + 25) (lines.Length - 1) do
+                                    if cast.IsMatch lines[j] && not (lines[j].Contains "ExitRequest") then
+                                        yield $"{file}:{j + 1}: {lines[j].Trim()}" ]
+                  |> List.distinct
+
+              Expect.equal offenders [] "narrow through toIntArg"
           }
           test "modulo [D:modulo]: truncated, int-only, /'s zero discipline" {
               // truncated (F#/.NET): the sign follows the dividend —

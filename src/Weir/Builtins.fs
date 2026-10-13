@@ -148,7 +148,7 @@ let private truncateImpl: Value =
     VBuiltin(fun n ->
         VBuiltin(fun s ->
             match n, s with
-            | VInt n, VSeq items -> VSeq(Seq.truncate (int n) items)
+            | VInt n, VSeq items -> VSeq(Seq.truncate (toIntArg "Seq.take" Amount n) items)
             | _ -> unreachable "the checker rejects truncation on these arguments"))
 
 let private mapImpl: Value =
@@ -221,7 +221,7 @@ let private intoImpl: Value =
         VBuiltin(fun sv ->
             match c, sv with
             | VStr cmdline, VSeq items ->
-                let lines = items |> Seq.map asString
+                let lines = items |> Seq.map asString |> Eval.pinnedFeed
                 // sh resolves on PATH like every other spawn — the /bin/sh
                 // hardcode had no Windows answer (Git Bash puts sh on PATH)
                 VSeq(
@@ -276,7 +276,7 @@ let private windowedImpl: Value =
                     // source is pulled; a short source yields the empty
                     // seq (F#'s rule — no partial final window). Windows
                     // are views over the same (memoized-once) elements.
-                    VSeq(items |> Seq.windowed (int n) |> Seq.map (fun w -> VSeq(Seq.ofArray w)))
+                    VSeq(items |> Seq.windowed (toIntArg "windowed" Amount n) |> Seq.map (fun w -> VSeq(Seq.ofArray w)))
             | _ -> unreachable "the checker rejects 'windowed' on these arguments"))
 
 let private lastImpl: Value =
@@ -449,7 +449,7 @@ let private textedWithIn (overlay: (string * string) list) : Value =
             VBuiltin(fun stdinV ->
                 match progV, argsV, stdinV with
                 | VStr prog, VSeq args, VSeq stdin ->
-                    let input = stdin |> Seq.map asString
+                    let input = stdin |> Seq.map asString |> Eval.pinnedFeed
                     wholeText (Proc.linesWith overlay (Proc.resolveProg prog) (argStrings args) (Some input))
                 | _ -> unreachable "the checker rejects 'textIn' on these arguments")))
 
@@ -460,7 +460,7 @@ let private linedWithIn (overlay: (string * string) list) : Value =
                 match progV, argsV, stdinV with
                 | VStr prog, VSeq args, VSeq stdin ->
                     let argv = argStrings args
-                    let input = stdin |> Seq.map asString
+                    let input = stdin |> Seq.map asString |> Eval.pinnedFeed
                     oneLine prog argv (Proc.linesWith overlay (Proc.resolveProg prog) argv (Some input))
                 | _ -> unreachable "the checker rejects 'lineIn' on these arguments")))
 
@@ -478,7 +478,7 @@ let private completedWithIn (overlay: (string * string) list) : Value =
                 match progV, argsV, stdinV with
                 | VStr prog, VSeq args, VSeq stdin ->
                     let argv = argStrings args
-                    let input = stdin |> Seq.map asString
+                    let input = stdin |> Seq.map asString |> Eval.pinnedFeed
 
                     let code, out, err =
                         Proc.completeWith overlay (Proc.resolveProg prog) argv (Some input)
@@ -493,7 +493,7 @@ let private succeededWithIn (overlay: (string * string) list) : Value =
                 match progV, argsV, stdinV with
                 | VStr prog, VSeq args, VSeq stdin ->
                     let argv = argStrings args
-                    let input = stdin |> Seq.map asString
+                    let input = stdin |> Seq.map asString |> Eval.pinnedFeed
                     let code, _, _ = Proc.completeWith overlay (Proc.resolveProg prog) argv (Some input)
                     VBool(code = 0)
                 | _ -> unreachable "the checker rejects 'succeededIn' on these arguments")))
@@ -505,7 +505,7 @@ let private exitCodedWithIn (overlay: (string * string) list) : Value =
                 match progV, argsV, stdinV with
                 | VStr prog, VSeq args, VSeq stdin ->
                     let argv = argStrings args
-                    let input = stdin |> Seq.map asString
+                    let input = stdin |> Seq.map asString |> Eval.pinnedFeed
 
                     let code =
                         Proc.streamCodeOf
@@ -527,7 +527,7 @@ let private orFailedWithIn (overlay: (string * string) list) : Value =
                     match msgV, progV, argsV, stdinV with
                     | VStr msg, VStr prog, VSeq args, VSeq stdin ->
                         let argv = argStrings args
-                        let input = stdin |> Seq.map asString
+                        let input = stdin |> Seq.map asString |> Eval.pinnedFeed
 
                         let code =
                             Proc.streamCodeOf
@@ -1035,17 +1035,30 @@ let private substringImpl: Value =
             VBuiltin(fun subject ->
                 match start, len, subject with
                 | VInt st64, VInt ln64, VStr s ->
-                    let st, ln = int st64, int ln64
-
-                    if st < 0 || ln < 0 || st + ln > s.Length then
-                        failwith $"substring: out of bounds (start {st}, length {ln}, string length {s.Length})"
+                    // bounds in int64, so no start + length can wrap past
+                    // the check [D:int-narrowing]
+                    if st64 < 0L || ln64 < 0L || st64 > int64 s.Length || ln64 > int64 s.Length - st64 then
+                        failwith $"substring: out of bounds (start {st64}, length {ln64}, string length {s.Length})"
                     else
-                        VStr(s.Substring(st, ln))
+                        VStr(s.Substring(toIntArg "Str.sub" Position st64, toIntArg "Str.sub" Amount ln64))
                 | _ -> unreachable "the checker rejects 'substring' on these arguments")))
 
 // Str.replicate / padLeft / padRight [D:port-members]: the width
 // primitives every columnar CLI hand-rolled (the asdf port's receipt).
 // Negative counts/widths refuse like Seq.replicate — the one convention.
+// A result past .NET's string ceiling is refused in weir's words
+// [D:int-narrowing], as is a failed allocation below it.
+let private maxStrLen = 0x3FFFFFDFL
+
+let private buildStr (who: string) (chars: int64) (f: unit -> string) : string =
+    if chars > maxStrLen then
+        failwith $"{who}: a {chars}-char result is too large (at most {maxStrLen})"
+
+    try
+        f ()
+    with :? System.OutOfMemoryException ->
+        failwith $"{who}: out of memory building a {chars}-char string"
+
 let private strReplicateImpl: Value =
     VBuiltin(fun nV ->
         VBuiltin(fun sV ->
@@ -1054,7 +1067,8 @@ let private strReplicateImpl: Value =
                 if n < 0L then
                     failwith $"Str.replicate: the count must be non-negative; got {n}"
                 else
-                    VStr(String.replicate (int n) s)
+                    let n32 = toIntArg "Str.replicate" Amount n
+                    VStr(buildStr "Str.replicate" (n * int64 s.Length) (fun () -> String.replicate n32 s))
             | _ -> unreachable "the checker rejects 'Str.replicate' on these arguments"))
 
 // .NET PadLeft/PadRight semantics, deliberately: width is the total
@@ -1067,7 +1081,8 @@ let private padImpl (name: string) (f: int -> string -> string) : Value =
                 if w < 0L then
                     failwith $"Str.{name}: the width must be non-negative; got {w}"
                 else
-                    VStr(f (int w) s)
+                    let w32 = toIntArg $"Str.{name}" Amount w
+                    VStr(buildStr $"Str.{name}" (max w (int64 s.Length)) (fun () -> f w32 s))
             | _ -> unreachable $"the checker rejects 'Str.{name}' on these arguments"))
 
 let private defaultToImpl: Value =
@@ -1331,7 +1346,7 @@ let private runParallelWith (degree: int) (f: Value) (items: seq<Value>) : Value
         let tasks =
             Array.init workers (fun _ -> Task.Factory.StartNew(worker, TaskCreationOptions.LongRunning))
 
-        Task.WaitAll(tasks: Task[])
+        Session.waitTask (Task.WhenAll(tasks: Task[]))
     finally
         Session.setParallelDepth depth
 
@@ -1408,6 +1423,7 @@ let private runRaceWith (degree: int) (f: Value) (items: seq<Value>) : Value =
         Session.setParallelDepth depth
 
     try
+        Session.waitTask outcome.Task
         outcome.Task.Result
     with :? System.AggregateException as ae when ae.InnerExceptions.Count = 1 ->
         raise ae.InnerExceptions[0]
@@ -1428,7 +1444,7 @@ let private pfirstWithImpl: Value =
                 match nv, s with
                 | VInt n, VSeq items ->
                     refuseParallelInPlan "pfirstWith"
-                    runRaceWith (int n) f items
+                    runRaceWith (toIntArg "pfirstWith" Amount n) f items
                 | v, _ -> unreachable $"the checker rejects 'pfirstWith' on {formatValue v}")))
 
 let private pmapImpl: Value =
@@ -1447,7 +1463,7 @@ let private pmapWithImpl: Value =
                 match nv, s with
                 | VInt n, VSeq items ->
                     refuseParallelInPlan "pmapWith"
-                    VSeq(runParallelWith (int n) f items :> seq<Value>)
+                    VSeq(runParallelWith (toIntArg "pmapWith" Amount n) f items :> seq<Value>)
                 | v, _ -> unreachable $"the checker rejects 'pmapWith' on {formatValue v}")))
 
 let private piterWithImpl: Value =
@@ -1457,7 +1473,7 @@ let private piterWithImpl: Value =
                 match nv, s with
                 | VInt n, VSeq items ->
                     refuseParallelInPlan "piterWith"
-                    runParallelWith (int n) f items |> ignore
+                    runParallelWith (toIntArg "piterWith" Amount n) f items |> ignore
                     VUnit
                 | v, _ -> unreachable $"the checker rejects 'piterWith' on {formatValue v}")))
 
@@ -1561,7 +1577,7 @@ let private itemImpl: Value =
                 if i < 0L then
                     failwith $"item: negative index {i}"
                 else
-                    match items |> Seq.tryItem (int i) with
+                    match items |> Seq.tryItem (toIntArg "item" Position i) with
                     | Some v -> v
                     | None -> failwith $"item: no element at index {i}"
             | _ -> unreachable "the checker rejects 'item' on these arguments"))
@@ -1662,7 +1678,25 @@ let private chunkImpl: Value =
                 if n <= 0L then
                     failwith $"chunkBySize: the chunk size must be positive; got {n}"
                 else
-                    VSeq(items |> Seq.chunkBySize (int n) |> Seq.map (fun arr -> VSeq(arr :> seq<Value>)))
+                    // a growing buffer, not Seq.chunkBySize: that one
+                    // preallocates n slots, so a large n failed in .NET's words
+                    let size = toIntArg "chunkBySize" Amount n
+
+                    VSeq(
+                        seq {
+                            let buf = ResizeArray<Value>()
+
+                            for x in items do
+                                buf.Add x
+
+                                if buf.Count = size then
+                                    yield VSeq(buf.ToArray() :> seq<Value>)
+                                    buf.Clear()
+
+                            if buf.Count > 0 then
+                                yield VSeq(buf.ToArray() :> seq<Value>)
+                        }
+                    )
             | v, _ -> unreachable $"the checker rejects 'chunkBySize' on {formatValue v}"))
 
 let private takeWhileImpl: Value =
@@ -1800,7 +1834,7 @@ let private replicateImpl: Value =
                 if n < 0L then
                     failwith $"replicate: the count must be non-negative; got {n}"
                 else
-                    VSeq(Seq.replicate (int n) x)
+                    VSeq(Seq.replicate (toIntArg "replicate" Amount n) x)
             | v -> unreachable $"the checker rejects 'replicate' on {formatValue v}"))
 
 // max/min and the By twins: Ord-constrained, raise on empty (the head
@@ -2566,14 +2600,25 @@ let private pathNormalize (p: string) : string =
 // fallback. Re-read per call — the environment can change. The typed
 // home for expressions (a command word's `~` desugars to Path.home,
 // [D:tilde]; `$HOME` never expands): injection-proof by construction.
+// `$HOME` verbatim when set, as bash reads it — even a missing dir;
+// the OS lookup only when unset; no home at all raises, never "" (an
+// empty home would turn `~/x` into `/x`) [D:home-verbatim]
+let homeDir () : string =
+    let home =
+        match System.Environment.GetEnvironmentVariable "HOME" with
+        | null -> System.Environment.GetFolderPath System.Environment.SpecialFolder.UserProfile
+        | h -> h
+
+    if home = "" then
+        failwith "Path.home: no home directory — HOME is empty (or unset with no OS home); `~` and Path.home need one"
+
+    home
+
 let xdgDir (var: string) (fallback: string) : string =
     match System.Environment.GetEnvironmentVariable var with
     | null
-    | "" -> System.IO.Path.Combine(System.Environment.GetFolderPath System.Environment.SpecialFolder.UserProfile, fallback)
+    | "" -> System.IO.Path.Combine(homeDir (), fallback)
     | v -> v
-
-let homeDir () : string =
-    System.Environment.GetFolderPath System.Environment.SpecialFolder.UserProfile
 
 let configDir () : string =
     if System.OperatingSystem.IsWindows() then
@@ -3012,6 +3057,92 @@ let private refuseInPlan (op: string) (why: string) : Value option =
     else
         None
 
+// the performers [D:plan-apply]: one body per mutation, shared by the
+// direct builtin and Plan.apply's replay of its Op, so an applied plan
+// runs exactly the direct call's checks. `op` names the caller in messages.
+let private doFileDelete (op: string) (r: string) : unit =
+    if System.IO.Directory.Exists r then
+        failwith $"{op}: {r} is a directory — Dir.delete removes a directory"
+
+    if not (System.IO.File.Exists r) then
+        failwith $"{op}: no such file: {r}"
+
+    ioGuarded op r (fun () -> System.IO.File.Delete r)
+
+let private refuseExistingDst (op: string) (dst: string) : unit =
+    if System.IO.File.Exists dst || System.IO.Directory.Exists dst || FileInfo(dst).Exists then
+        failwith $"{op}: destination exists: {dst}"
+
+let private doFileCopy (op: string) (src: string) (dst: string) : unit =
+    if System.IO.Directory.Exists src then
+        failwith $"{op}: {src} is a directory — Dir.copy copies a directory"
+
+    if not (System.IO.File.Exists src) then
+        failwith $"{op}: no such file: {src}"
+
+    refuseExistingDst op dst
+    ioGuarded op src (fun () -> System.IO.File.Copy(src, dst))
+
+let private doFileMove (op: string) (src: string) (dst: string) : unit =
+    if System.IO.Directory.Exists src then
+        failwith $"{op}: {src} is a directory — Dir.move moves a directory"
+
+    if not (System.IO.File.Exists src) then
+        failwith $"{op}: no such file: {src}"
+
+    refuseExistingDst op dst
+    ioGuarded op src (fun () -> System.IO.File.Move(src, dst))
+
+let private doDirCreate (op: string) (r: string) : unit =
+    // mkdir -p: parents created, existing = the post-condition
+    ioGuarded op r (fun () -> System.IO.Directory.CreateDirectory r |> ignore)
+
+let private requireDir (op: string) (r: string) : unit =
+    if not (System.IO.Directory.Exists r) then
+        if System.IO.File.Exists r then
+            failwith $"{op}: {r} is not a directory"
+        else
+            failwith $"{op}: no such directory: {r}"
+
+let private doDirDelete (op: string) (r: string) : unit =
+    requireDir op r
+
+    ioGuarded op r (fun () ->
+        if System.IO.Directory.EnumerateFileSystemEntries r |> Seq.isEmpty |> not then
+            failwith $"{op}: not empty: {r} — Dir.deleteAll removes a tree"
+
+        System.IO.Directory.Delete r)
+
+let private doDirDeleteAll (op: string) (r: string) : unit =
+    requireDir op r
+    ioGuarded op r (fun () -> System.IO.Directory.Delete(r, true))
+
+let private doDirMove (op: string) (src: string) (dst: string) : unit =
+    requireDir op src
+    refuseExistingDst op dst
+    ioGuarded op src (fun () -> System.IO.Directory.Move(src, dst))
+
+// copying a directory means copying its contents — there is no
+// non-recursive reading, so the delete/deleteAll naming split does
+// not repeat here (no Dir.copyAll) [D:sized-findings]. The family's
+// overwrite rule: refuse an existing destination; Dir.deleteAll is the
+// deliberate replace spelling.
+let private doDirCopy (op: string) (src: string) (dst: string) : unit =
+    requireDir op src
+    refuseExistingDst op dst
+
+    ioGuarded op src (fun () ->
+        let rec go (s: string) (d: string) =
+            System.IO.Directory.CreateDirectory d |> ignore
+
+            for f in System.IO.Directory.EnumerateFiles s do
+                System.IO.File.Copy(f, System.IO.Path.Combine(d, System.IO.Path.GetFileName f))
+
+            for sub in System.IO.Directory.EnumerateDirectories s do
+                go sub (System.IO.Path.Combine(d, System.IO.Path.GetFileName sub))
+
+        go src dst)
+
 let private fileMembers: (string * Ty * Value) list =
     [ "read",
       TFun(TStr, TSeq TStr),
@@ -3186,7 +3317,7 @@ let private fsStr2 (name: string) (opCase: string) (f: string -> string -> unit)
                 match capPath2 opCase s d with
                 | Some captured -> captured
                 | None ->
-                    ioGuarded name s (fun () -> f s d)
+                    f s d
                     VUnit
             | _ -> unreachable $"the checker rejects '{name}' on these arguments"))
 
@@ -3327,32 +3458,15 @@ let private fsMoreFileMembers: (string * Ty * Value) list =
               | Some captured -> captured
               | None ->
 
-              if not (System.IO.File.Exists r) then
-                  failwith $"File.delete: no such file: {r}"
-
-              ioGuarded "File.delete" r (fun () -> System.IO.File.Delete r)
+              doFileDelete "File.delete" r
               VUnit
           | v -> unreachable $"the checker rejects 'File.delete' on {formatValue v}")
       "copy",
       TFun(TStr, TFun(TStr, TUnit)),
-      fsStr2 "File.copy" "Copy" (fun src dst ->
-          if not (System.IO.File.Exists src) then
-              failwith $"File.copy: no such file: {src}"
-
-          if System.IO.File.Exists dst || System.IO.Directory.Exists dst then
-              failwith $"File.copy: destination exists: {dst}"
-
-          System.IO.File.Copy(src, dst))
+      fsStr2 "File.copy" "Copy" (doFileCopy "File.copy")
       "move",
       TFun(TStr, TFun(TStr, TUnit)),
-      fsStr2 "File.move" "Move" (fun src dst ->
-          if not (System.IO.File.Exists src) then
-              failwith $"File.move: no such file: {src}"
-
-          if System.IO.File.Exists dst || System.IO.Directory.Exists dst then
-              failwith $"File.move: destination exists: {dst}"
-
-          System.IO.File.Move(src, dst))
+      fsStr2 "File.move" "Move" (doFileMove "File.move")
       "size",
       // Size, not int [D:size] — the type is the point: show can
       // render what the type names (a deliberate break)
@@ -3408,8 +3522,7 @@ let private dirMembers: (string * Ty * Value) list =
               | Some captured -> captured
               | None ->
 
-              // mkdir -p: parents created, existing = the post-condition
-              ioGuarded "Dir.create" r (fun () -> System.IO.Directory.CreateDirectory r |> ignore)
+              doDirCreate "Dir.create" r
               VUnit
           | v -> unreachable $"the checker rejects 'Dir.create' on {formatValue v}")
       "exists",
@@ -3432,15 +3545,7 @@ let private dirMembers: (string * Ty * Value) list =
               | Some captured -> captured
               | None ->
 
-              if not (System.IO.Directory.Exists r) then
-                  failwith $"Dir.delete: no such directory: {r}"
-
-              ioGuarded "Dir.delete" r (fun () ->
-                  if System.IO.Directory.EnumerateFileSystemEntries r |> Seq.isEmpty |> not then
-                      failwith $"Dir.delete: not empty: {r} — Dir.deleteAll removes a tree"
-
-                  System.IO.Directory.Delete r)
-
+              doDirDelete "Dir.delete" r
               VUnit
           | v -> unreachable $"the checker rejects 'Dir.delete' on {formatValue v}")
       "deleteAll",
@@ -3450,14 +3555,11 @@ let private dirMembers: (string * Ty * Value) list =
           | VStr p ->
               let r = Session.resolve p
 
-              match capPath1 "DeleteDir" r with
+              match capPath1 "DeleteTree" r with
               | Some captured -> captured
               | None ->
 
-              if not (System.IO.Directory.Exists r) then
-                  failwith $"Dir.deleteAll: no such directory: {r}"
-
-              ioGuarded "Dir.deleteAll" r (fun () -> System.IO.Directory.Delete(r, true))
+              doDirDeleteAll "Dir.deleteAll" r
               VUnit
           | v -> unreachable $"the checker rejects 'Dir.deleteAll' on {formatValue v}")
       "list",
@@ -3504,38 +3606,11 @@ let private dirMembers: (string * Ty * Value) list =
           | v -> unreachable $"the checker rejects 'Dir.stat' on {formatValue v}")
       "move",
       TFun(TStr, TFun(TStr, TUnit)),
-      fsStr2 "Dir.move" "Move" (fun src dst ->
-          if not (System.IO.Directory.Exists src) then
-              failwith $"Dir.move: no such directory: {src}"
-
-          if System.IO.File.Exists dst || System.IO.Directory.Exists dst then
-              failwith $"Dir.move: destination exists: {dst}"
-
-          System.IO.Directory.Move(src, dst))
-      // copying a directory means copying its contents — there is no
-      // non-recursive reading, so the delete/deleteAll naming split does
-      // not repeat here (no Dir.copyAll) [D:sized-findings]. The family's
-      // overwrite rule unchanged: refuse an existing destination;
-      // Dir.deleteAll is the deliberate replace spelling.
+      fsStr2 "Dir.move" "MoveDir" (doDirMove "Dir.move")
+      // the tree copy [D:sized-findings] — see doDirCopy
       "copy",
       TFun(TStr, TFun(TStr, TUnit)),
-      fsStr2 "Dir.copy" "Copy" (fun src dst ->
-          if not (System.IO.Directory.Exists src) then
-              failwith $"Dir.copy: no such directory: {src}"
-
-          if System.IO.File.Exists dst || System.IO.Directory.Exists dst then
-              failwith $"Dir.copy: destination exists: {dst}"
-
-          let rec go (s: string) (d: string) =
-              System.IO.Directory.CreateDirectory d |> ignore
-
-              for f in System.IO.Directory.EnumerateFiles s do
-                  System.IO.File.Copy(f, System.IO.Path.Combine(d, System.IO.Path.GetFileName f))
-
-              for sub in System.IO.Directory.EnumerateDirectories s do
-                  go sub (System.IO.Path.Combine(d, System.IO.Path.GetFileName sub))
-
-          go src dst) ]
+      fsStr2 "Dir.copy" "CopyDir" (doDirCopy "Dir.copy") ]
 
 // ---- Float [D:floats]: finite-only; no implicit widening -----------
 let private floatFn (name: string) (f: float -> Value) : Value =
@@ -3728,11 +3803,11 @@ let private bytesMembers: (string * Ty * Value) list =
               VBuiltin(fun subject ->
                   match start, len, subject with
                   | VInt st64, VInt ln64, VBytes b ->
-                      let st, ln = int st64, int ln64
-
-                      if st < 0 || ln < 0 || st + ln > b.Length then
-                          failwith $"Bytes.sub: out of bounds (start {st}, length {ln}, byte length {b.Length})"
+                      // int64 bounds, exact narrowing [D:int-narrowing]
+                      if st64 < 0L || ln64 < 0L || st64 > int64 b.Length || ln64 > int64 b.Length - st64 then
+                          failwith $"Bytes.sub: out of bounds (start {st64}, length {ln64}, byte length {b.Length})"
                       else
+                          let st, ln = toIntArg "Bytes.sub" Position st64, toIntArg "Bytes.sub" Amount ln64
                           VBytes(b[st .. st + ln - 1])
                   | _ -> unreachable "the checker rejects 'Bytes.sub' on these arguments")))
       // key -> message -> mac; .NET's own HMACSHA256, no reflection.
@@ -3842,7 +3917,7 @@ let private durationMembers: (string * Ty * Value) list =
               elif n > 0L then
                   // integer ticks — no float anywhere [D:duration]
                   Waiting.during $"sleeping {formatDuration n}" (fun () ->
-                      System.Threading.Thread.Sleep(
+                      Session.sleepInterruptible (
                           System.TimeSpan.FromTicks(n * System.TimeSpan.TicksPerMillisecond)
                       ))
 
@@ -4068,7 +4143,7 @@ let private runRequest (reqV: Value) : Http.Resp =
               Body = httpBodyOf (get "body")
               TimeoutMs =
                 (match get "timeout" with
-                 | VDur ms -> int ms
+                 | VDur ms -> toIntArg "Http timeout (ms)" Amount ms
                  | v -> unreachable $"timeout {formatValue v}")
               Insecure =
                 (match get "insecure" with
@@ -4290,19 +4365,21 @@ let private previewOp (op: Value) : string =
     | VUnion("DeleteFile", Some(VStr p)) -> $"delete file {p}"
     | VUnion("MakeDir", Some(VStr p)) -> $"make dir {p}"
     | VUnion("DeleteDir", Some(VStr p)) -> $"delete dir {p}"
+    | VUnion("DeleteTree", Some(VStr p)) -> $"delete tree {p}"
     | VUnion("Copy", Some(VTuple [ VStr s; VStr d ])) -> $"copy {s} -> {d}"
+    | VUnion("CopyDir", Some(VTuple [ VStr s; VStr d ])) -> $"copy dir {s} -> {d}"
     | VUnion("Move", Some(VTuple [ VStr s; VStr d ])) -> $"move {s} -> {d}"
+    | VUnion("MoveDir", Some(VTuple [ VStr s; VStr d ])) -> $"move dir {s} -> {d}"
     | VUnion("HttpSend", Some req) -> $"http send {formatValue req}"
     | v -> formatValue v
 
-// perform one Op through the real IO [D:plan-apply] — the same effect
-// the captured builtin would have had (apply runs with no active plan
-// frame, so the mutation builtins would perform too; applyOp performs
-// directly to keep the replay self-contained). Overwrite/existence rules
-// match the builtins (copy/move refuse an existing destination).
-// paths were resolved to absolute at capture [D:plan-path-bound], so
-// apply replays the exact captured target — no re-resolve against the
-// apply-time cwd (DA-03: a relative capture rebound to apply's cwd).
+// perform one Op through the real IO [D:plan-apply] — each Op names
+// exactly one mutation builtin, and replays through that builtin's own
+// performer, so apply runs the direct call's checks (Dir.delete's
+// not-empty refusal, File.copy's file-only source). Apply runs with no
+// active plan frame. Paths were resolved to absolute at capture
+// [D:plan-path-bound], so apply replays the exact captured target — no
+// re-resolve against the apply-time cwd.
 let private applyOp (op: Value) : unit =
     match op with
     | VUnion("WriteFile", Some(VTuple [ VStr r; VSeq lines ])) ->
@@ -4317,49 +4394,14 @@ let private applyOp (op: Value) : unit =
             fs.SetLength 0L
             fs.Seek(0L, SeekOrigin.Begin) |> ignore
             fs.Write(payload, 0, payload.Length))
-    | VUnion("DeleteFile", Some(VStr r)) ->
-        if not (System.IO.File.Exists r) then
-            failwith $"Plan.apply (DeleteFile): no such file: {r}"
-
-        ioGuarded "Plan.apply (DeleteFile)" r (fun () -> System.IO.File.Delete r)
-    | VUnion("MakeDir", Some(VStr r)) ->
-        ioGuarded "Plan.apply (MakeDir)" r (fun () -> System.IO.Directory.CreateDirectory r |> ignore)
-    | VUnion("DeleteDir", Some(VStr r)) ->
-        if not (System.IO.Directory.Exists r) then
-            failwith $"Plan.apply (DeleteDir): no such directory: {r}"
-
-        ioGuarded "Plan.apply (DeleteDir)" r (fun () -> System.IO.Directory.Delete(r, true))
-    | VUnion("Copy", Some(VTuple [ VStr s; VStr d ])) ->
-        if System.IO.File.Exists d || System.IO.Directory.Exists d then
-            failwith $"Plan.apply (Copy): destination exists: {d}"
-
-        ioGuarded "Plan.apply (Copy)" s (fun () ->
-            if System.IO.Directory.Exists s then
-                let rec go (a: string) (b: string) =
-                    System.IO.Directory.CreateDirectory b |> ignore
-
-                    for f in System.IO.Directory.EnumerateFiles a do
-                        System.IO.File.Copy(f, System.IO.Path.Combine(b, System.IO.Path.GetFileName f))
-
-                    for sub in System.IO.Directory.EnumerateDirectories a do
-                        go sub (System.IO.Path.Combine(b, System.IO.Path.GetFileName sub))
-
-                go s d
-            elif System.IO.File.Exists s then
-                System.IO.File.Copy(s, d)
-            else
-                failwith $"Plan.apply (Copy): no such source: {s}")
-    | VUnion("Move", Some(VTuple [ VStr s; VStr d ])) ->
-        if System.IO.File.Exists d || System.IO.Directory.Exists d then
-            failwith $"Plan.apply (Move): destination exists: {d}"
-
-        ioGuarded "Plan.apply (Move)" s (fun () ->
-            if System.IO.Directory.Exists s then
-                System.IO.Directory.Move(s, d)
-            elif System.IO.File.Exists s then
-                System.IO.File.Move(s, d)
-            else
-                failwith $"Plan.apply (Move): no such source: {s}")
+    | VUnion("DeleteFile", Some(VStr r)) -> doFileDelete "Plan.apply (DeleteFile)" r
+    | VUnion("MakeDir", Some(VStr r)) -> doDirCreate "Plan.apply (MakeDir)" r
+    | VUnion("DeleteDir", Some(VStr r)) -> doDirDelete "Plan.apply (DeleteDir)" r
+    | VUnion("DeleteTree", Some(VStr r)) -> doDirDeleteAll "Plan.apply (DeleteTree)" r
+    | VUnion("Copy", Some(VTuple [ VStr s; VStr d ])) -> doFileCopy "Plan.apply (Copy)" s d
+    | VUnion("CopyDir", Some(VTuple [ VStr s; VStr d ])) -> doDirCopy "Plan.apply (CopyDir)" s d
+    | VUnion("Move", Some(VTuple [ VStr s; VStr d ])) -> doFileMove "Plan.apply (Move)" s d
+    | VUnion("MoveDir", Some(VTuple [ VStr s; VStr d ])) -> doDirMove "Plan.apply (MoveDir)" s d
     | VUnion("HttpSend", Some req) -> runRequest req |> ignore
     | v -> unreachable $"an unknown Op reached Plan.apply: {formatValue v}"
 
@@ -4430,6 +4472,9 @@ let private procMembers: (string * Ty * Value) list =
 
           Waiting.during $"waiting for pid {h.Proc.Id}" (fun () ->
               h.Proc.WaitForExit()
+              // a child killed by a teardown returns no code
+              // [D:signal-main-unwind]
+              Session.checkTeardown ()
               VInt(int64 h.Proc.ExitCode)))
       "stop",
       TFun(procTy, TUnit),
@@ -4489,7 +4534,7 @@ let private netMembers: (string * Ty * Value) list =
 
               VBool(
                   try
-                      sock.ConnectAsync(System.Net.IPAddress.Loopback, int port).Wait 250
+                      sock.ConnectAsync(System.Net.IPAddress.Loopback, toIntArg "Net.portOpen" Amount port).Wait 250
                       && sock.Connected
                   with _ ->
                       false
@@ -6141,7 +6186,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
           |> named [ "pattern" ]
           "Path.home",
           (bd
-              "The user's home directory, in the platform's native form and without a trailing separator. Has no side effects. In a command line, a typed `~` means this path; in an expression, build paths with `$\"{Path.home ()}/.bashrc\"`."
+              "The user's home directory: `$HOME` as set (even if that directory is missing), the OS lookup when it is unset; raises when there is none (an empty `$HOME`). Has no side effects. In a command line, a typed `~` means this path; in an expression, build paths with `$\"{Path.home ()}/.bashrc\"`."
               (Some "Path.home ()")
               None
            |> named [ "()" ])

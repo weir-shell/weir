@@ -150,11 +150,13 @@ let stripDistrictComment (s: string) =
 // the subset's teaching. The core is position-free so the yaml
 // district's template parser reuses it (one machine); parseScalar
 // wraps it with the line prefix.
-// Ok None = null (empty); Ok (Some (text, quoted)) = a scalar.
+// Ok None = null (empty or a core-schema null); Ok (Some (text, quoted)) = a scalar.
 let scalarCore (raw: string) : Result<(string * bool) option, string> =
     let t = raw.Trim()
 
-    if t = "" then
+    // the 1.2 core schema's plain nulls [D:yaml-core-null]; quoted
+    // forms stay strings
+    if t = "" || t = "null" || t = "Null" || t = "NULL" || t = "~" then
         Ok None
     elif t.StartsWith "\"" then
         if t.Length < 2 || not (t.EndsWith "\"") then
@@ -672,6 +674,12 @@ let rec private parseBlock
 
         e
 
+    // every line in [start, fin) belongs to this block (the caller's
+    // extent), so one left of `indent` sits between the parent's level
+    // and this block's — no owner; dropping it would lose data
+    let misIndented (no: int) (col: int) =
+        $"line {no}: this line is indented less than the block it belongs to (its siblings start at column {col + 1}) — align it with them or with its parent"
+
     if start >= fin then
         Ok(
             NNull(
@@ -695,11 +703,11 @@ let rec private parseBlock
                     let ind = indentOf raw
 
                     if ind < indent then
-                        Ok(List.rev acc)
+                        Error(misIndented no indent)
                     elif ind > indent then
                         Error $"line {no}: unexpected indentation (a sequence item line must start with '- ')"
                     elif not (raw.Substring(indent).StartsWith "- " || raw.Substring(indent).TrimEnd() = "-") then
-                        Ok(List.rev acc)
+                        Error $"line {no}: expected a '- ' sequence item at this indentation"
                     else
                         // the item's content: rest of this line at virtual
                         // indent+2, plus deeper lines until the next sibling
@@ -771,7 +779,7 @@ let rec private parseBlock
                         let ind = indentOf raw
 
                         if ind < indent then
-                            Ok(List.rev acc)
+                            Error(misIndented no indent)
                         elif ind > indent then
                             Error $"line {no}: unexpected indentation"
                         else

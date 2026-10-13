@@ -194,6 +194,13 @@ let private evalOnce (input: string) : int =
 
                 execAll valueEnv 0 checked'
 
+// a script (or -e) tears down on its main thread: signals and a closed
+// stdout end it with their own code [D:signal-main-unwind] [D:stdout-epipe]
+let private runOnMain (run: unit -> int) : int =
+    Session.registerMainThread ()
+    Session.armStdout ()
+    run () |> Session.exitCodeOr
+
 [<EntryPoint>]
 let main argv =
 
@@ -226,7 +233,7 @@ let main argv =
     // run/-e), and it is re-raised in case.
     let dispatch () =
         match Array.toList argv with
-        | [ "-e"; input ] -> evalOnce input
+        | [ "-e"; input ] -> runOnMain (fun () -> evalOnce input)
         | [] -> Weir.Repl.run ()
         // the reference dump [D:reference] — machine surface for the site's
         // generated pages; the e2e currency gate diffs it against the
@@ -652,8 +659,8 @@ let main argv =
                 "usage: weir gen types --schema <name> [--as <TypeName>] [--out <path>|-]   generate weir types from a locked schema"
 
             2
-        | "run" :: path :: rest -> Script.run path rest
-        | path :: rest when not (path.StartsWith "-") -> Script.run path rest
+        | "run" :: path :: rest -> runOnMain (fun () -> Script.run path rest)
+        | path :: rest when not (path.StartsWith "-") -> runOnMain (fun () -> Script.run path rest)
         // teaching arms, not dumps [D:windows-v1]: a mistyped option gets a
         // did-you-mean; a mis-quoted -e gets its arity named (on Windows a
         // one-expression intent often arrives shell-split into many argv)

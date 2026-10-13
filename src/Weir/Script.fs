@@ -5965,10 +5965,7 @@ let analyzeLines
              | Check.TECmd(Check.THeadDyn(d, _), _, _) when
                  d.StartsWith "~/"
                  && not (
-                     System.IO.File.Exists(
-                         System.Environment.GetFolderPath System.Environment.SpecialFolder.UserProfile
-                         + d.Substring 1
-                     )
+                     System.IO.File.Exists((try Builtins.homeDir () with _ -> "") + d.Substring 1)
                  )
                  ->
                  [ d, te.Span ]

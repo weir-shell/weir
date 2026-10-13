@@ -994,7 +994,7 @@
         {
           "name": "home",
           "signature": "Path.home () : string",
-          "summary": "The user\u0027s home directory, in the platform\u0027s native form and without a trailing separator. Has no side effects. In a command line, a typed \u0060~\u0060 means this path; in an expression, build paths with \u0060$\u0022{Path.home ()}/.bashrc\u0022\u0060.",
+          "summary": "The user\u0027s home directory: \u0060$HOME\u0060 as set (even if that directory is missing), the OS lookup when it is unset; raises when there is none (an empty \u0060$HOME\u0060). Has no side effects. In a command line, a typed \u0060~\u0060 means this path; in an expression, build paths with \u0060$\u0022{Path.home ()}/.bashrc\u0022\u0060.",
           "example": "Path.home ()",
           "pointer": null
         },

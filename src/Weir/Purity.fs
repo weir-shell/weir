@@ -148,6 +148,12 @@ let rec private effectPhrase (n: string) : string =
         | "print"
         | "printerr" -> $"'{n}' writes to the console"
         | "exit" -> "'exit' takes the process down"
+        | "cd" -> "'cd' changes the working directory"
+        | "pwd" -> "'pwd' reads the working directory"
+        | "Path.home"
+        | "Path.configHome"
+        | "Path.stateHome"
+        | "Path.cacheHome" -> $"'{n}' reads the environment"
         | "ls"
         | "glob"
         | "Path.glob" -> $"'{n}' reads the filesystem"
@@ -168,6 +174,7 @@ let rec private effectPhrase (n: string) : string =
             | [| "Proc"; _ |] -> $"'{n}' touches a process"
             | [| ("Net" | "Http"); _ |] -> $"'{n}' talks to the network"
             | [| "Log"; _ |] -> $"'{n}' writes logs"
+            | [| ("Term" | "Color"); _ |] -> $"'{n}' reads the terminal"
             | _ -> $"'{n}' is effectful"
 
 /// the first effectful node under a pure region, with its span — the

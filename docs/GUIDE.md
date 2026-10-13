@@ -2484,9 +2484,10 @@ checks it (the parentheses are needed, and a recorded operation holds
 the absolute path). Preview and diff come for free.
 
 These are the operations a plan can hold (the `Op` union):
-`WriteFile`, `DeleteFile`, `Copy`, `Move`, `MakeDir`, `DeleteDir`,
-and `HttpSend` (only for HTTP methods that change things; `show`
-masks the auth Secret). Reads still **happen** inside a plan, since a
+`WriteFile`, `DeleteFile`, `Copy`, `Move` (files), `CopyDir`,
+`MoveDir`, `MakeDir`, `DeleteDir` (`Dir.delete`, empty only),
+`DeleteTree` (`Dir.deleteAll`), and `HttpSend` (only for HTTP
+methods that change things; `show` masks the auth Secret). Reads still **happen** inside a plan, since a
 script often reads things to decide what to write. File contents are
 captured when the plan is made, so **what you preview is what
 `apply` does**, even if a file changes in between.
