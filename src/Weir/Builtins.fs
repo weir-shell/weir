@@ -1149,23 +1149,12 @@ let private groupByImpl: Value =
             match s with
             | VSeq items ->
                 VSeq(
+                    // any Eq key, by Value's structural equality — countBy's
+                    // key [D:groupby-eq-keys]
                     Seq.delay (fun () ->
                         items
-                        |> Seq.groupBy (fun item ->
-                            match apply keyf item with
-                            | VInt n -> box n
-                            | VStr str -> box str
-                            | VBool b -> box b
-                            | v -> failwith $"groupBy: keys must be ints, strings or bools, got {formatValue v}")
-                        |> Seq.map (fun (key, group) ->
-                            let keyValue =
-                                match key with
-                                | :? int64 as n -> VInt n
-                                | :? string as str -> VStr str
-                                | :? bool as b -> VBool b
-                                | _ -> unreachable "groupBy key box"
-
-                            VTuple [ keyValue; VSeq(List.ofSeq group :> seq<Value>) ]))
+                        |> Seq.groupBy (apply keyf)
+                        |> Seq.map (fun (key, group) -> VTuple [ key; VSeq(List.ofSeq group :> seq<Value>) ]))
                 )
             | v -> unreachable $"the checker rejects 'groupBy' on {formatValue v}"))
 
@@ -7317,6 +7306,13 @@ let private eqKeyCountBy: Scheme =
       RowOrigins = Map.empty
       HoleDefaults = [] }
 
+let private eqKeyGroupBy: Scheme =
+    { Forall = Set [ "a"; "b" ]
+      Cs = Map [ "b", Set [ Cls.Eq ] ]
+      Ty = TFun(TFun(TVar "a", TVar "b"), TFun(TSeq(TVar "a"), TSeq(TTuple [ TVar "b"; TSeq(TVar "a") ])))
+      RowOrigins = Map.empty
+      HoleDefaults = [] }
+
 let private eqKeyDistinctBy: Scheme =
     { Forall = Set [ "a"; "b" ]
       Cs = Map [ "b", Set [ Cls.Eq ] ]
@@ -7357,6 +7353,7 @@ let private seqSchemeOverrides: (string * Scheme) list =
       "maxBy", ordByToElem
       "minBy", ordByToElem
       "countBy", eqKeyCountBy
+      "groupBy", eqKeyGroupBy
       "distinctBy", eqKeyDistinctBy
       "except", eqExcept ]
 

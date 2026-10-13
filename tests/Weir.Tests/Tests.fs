@@ -5379,6 +5379,19 @@ let genericsTests =
                   (formatTy (checkOk "[1; 2] |> Seq.groupBy (fun x -> x)").Ty)
                   "seq<int * seq<int>>"
                   "type display"
+          }
+          test "Seq.groupBy groups by any Eq key — tuples, options, records [D:groupby-eq-keys]" {
+              expectValue
+                  "[1; 2; 3; 4] |> Seq.groupBy (fun n -> (n % 2, n > 2)) |> Seq.length"
+                  (VInt 4L)
+
+              expectValue
+                  "[1; 2; 3] |> Seq.groupBy (fun n -> if n > 1 then Some 0 else None) |> Seq.map (fun (k, g) -> Seq.length g) |> sum"
+                  (VInt 3L)
+
+              expectValue
+                  "[(\"a\", Ok 1); (\"a\", Ok 1); (\"b\", Error \"e\")] |> Seq.groupBy (fun p -> p) |> Seq.map (fun (k, g) -> Seq.length g) |> Seq.max"
+                  (VInt 2L)
           } ]
 
 
@@ -17296,15 +17309,9 @@ let pinsWalkTests =
     // source (the grep pass's list) — fragments, not joined sentences
     testList
         "pins walk: source-only teaching messages [D:pins-walk]"
-        [ test "groupBy rejects non-scalar keys naming the set" {
-              let m =
-                  try
-                      run "[(fun x -> x)] |> Seq.groupBy (fun f -> f) |> Seq.freeze" |> ignore
-                      ""
-                  with e ->
-                      e.Message
-
-              Expect.stringContains m "groupBy: keys must be ints, strings or bools" ""
+        [ test "groupBy refuses a non-Eq key at check [D:groupby-eq-keys]" {
+              let e = checkErr "[(fun x -> x)] |> Seq.groupBy (fun f -> f) |> Seq.freeze"
+              Expect.stringContains e.Message "requires equatable values" ""
           }
           test "Float.toInt out of range names the value" {
               let m =
