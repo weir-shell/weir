@@ -12809,7 +12809,7 @@ let agentFindingsTests =
               | Ok s -> failtest $"expected a command, got {s}"
               | Error msg -> failtest $"the triple form must be one word: {msg}"
 
-              match Weir.Parser.parseLine cmdResolver "curl -d @\"my file\"" with
+              match Weir.Parser.parseLine cmdResolver "echo -d @\"my file\"" with
               | Error msg ->
                   Expect.stringContains msg "is not an argv word" "own teaching"
                   Expect.isFalse (msg.Contains "do not concatenate") "not the concatenation teaching"
@@ -20460,12 +20460,25 @@ let wireTableTests =
                   [ "Instant", "Instant.now ()"
                     "Duration", "5s"
                     "Size", "Size.parse \"1KiB\""
-                    "Bytes", "Str.toUtf8 \"x\""
-                    "Secret", "Secret.of \"x\"" ] do
+                    "Bytes", "Str.toUtf8 \"x\"" ] do
                   let msgs = cells ty value
                   let distinct = msgs |> List.map snd |> List.distinct
                   Expect.equal distinct.Length 1 $"{ty}: one text across the cells, got {msgs}"
                   Expect.stringContains distinct.Head "field 't': " $"{ty}: every cell names the field"
+          }
+          test "Secret refuses both write cells identically and reads in both [D:secret-read]" {
+              let write fmt =
+                  [ "type R = { t: Secret }"
+                    "let r = { t = Secret.of \"x\" }"
+                    $"let _j = [r] |> to {fmt} |> Seq.freeze" ]
+
+              let j = (firstErr (write "json")).Replace("JSON", "<fmt>")
+              let y = (firstErr (write "yaml")).Replace("yaml", "<fmt>")
+              Expect.equal j y "one text across the write cells"
+              Expect.stringContains j "field 't': a Secret must not cross" "the write refusal"
+
+              for read in [ "let _x = [\"\"] |> from json R"; "let _x = [\"t: x\"] |> from yaml R" ] do
+                  Expect.isEmpty (errorsIn "wire.weir" [ "type R = { t: Secret }"; read ]) read
           }
           test "Uuid crosses yaml both ways, as it crosses JSON" {
               let lines =

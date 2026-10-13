@@ -367,14 +367,15 @@ let inferRules =
 
               // the shadow is real end-to-end: the decl injects, then a
               // record carrying the field refuses the Secret wire crossing
+              // (the write side — reading into a Secret is admitted [D:secret-read])
               match injectBlock preludeTypeEnv "type Secret = {\n    secretName: string\n}" with
               | Error m -> failtestf "the shadowed decl still injects (probe assumption): %s" m
               | Ok env1 ->
                   match injectBlock env1 "type V = {\n    secret: Secret\n}" with
                   | Error m -> failtestf "the carrying decl checks: %s" m
                   | Ok env2 ->
-                      match injectBlock env2 "let v = [\"{}\"] |> from json V" with
-                      | Ok _ -> failtest "reading a shadowed 'secret: Secret' field must refuse — the builtin won the reference"
+                      match injectBlock env2 "let v = [{ secret = Secret.of \"x\" }] |> to json" with
+                      | Ok _ -> failtest "writing a shadowed 'secret: Secret' field must refuse — the builtin won the reference"
                       | Error m -> Expect.stringContains m "Secret must not cross" "the primitive wins the field use"
           }
 
