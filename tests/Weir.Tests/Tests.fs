@@ -932,6 +932,15 @@ let streamingTests =
               // lazy over matches: first 2 of many yields exactly 2
               expectValue "Str.rmatchAll @\"(\\d)\" \"12345\" |> take 2 |> Seq.length" (VInt 2L)
           }
+          test "catastrophic backtracking raises the named regex timeout [D:regex-timeout]" {
+              let ex =
+                  Expect.throwsC
+                      (fun () -> run "Str.isMatch @\"^(a+)+$\" (Str.replicate 40 \"a\" + \"!\")" |> ignore)
+                      id
+
+              Expect.stringContains ex.Message "regex timeout" ""
+              Expect.equal Weir.Check.regexTimeout (System.TimeSpan.FromSeconds 5.0) "the documented bound"
+          }
           test "feed pulls its INPUT lazily: an early-exiting child bounds the pulls [D:spawn-spec]" {
               // the standing laziness rule reaches inputs — the writer
               // task pulls as the pipe accepts, so `head -1` over a

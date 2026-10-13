@@ -1825,12 +1825,30 @@ let private exitLiteral (e: Expr) : int64 option =
 let private regexCache =
     System.Collections.Concurrent.ConcurrentDictionary<string, System.Text.RegularExpressions.Regex>()
 
+// every match carries a timeout [D:regex-timeout]: catastrophic
+// backtracking (`^(a+)+$` on a long near-miss) hung the script, and a
+// `within serve` handler matching request input made it a DoS.
+// NonBacktracking would forbid lookbehind, which weir admits. 5s per
+// match call is far beyond any sane match on real input (a linear scan
+// covers hundreds of MB in that time) and short enough to fail loudly.
+let regexTimeout = System.TimeSpan.FromSeconds 5.0
+
+/// run a match against `pat`, turning the engine's timeout into weir's
+/// named error [D:regex-timeout]
+let regexGuarded (pat: string) (f: unit -> 'a) : 'a =
+    try
+        f ()
+    with :? System.Text.RegularExpressions.RegexMatchTimeoutException ->
+        failwith
+            $"regex timeout: matching @\"{Types.excerpt pat}\" ran past {int regexTimeout.TotalSeconds}s — the pattern backtracks catastrophically on this input (nested repetition like (a+)+ or (a|a)*); rewrite it so each character can match only one way"
+
 let compileRegex (pat: string) : Result<System.Text.RegularExpressions.Regex, string> =
     match regexCache.TryGetValue pat with
     | true, rx -> Ok rx
     | _ ->
         try
-            let rx = System.Text.RegularExpressions.Regex pat
+            let rx =
+                System.Text.RegularExpressions.Regex(pat, System.Text.RegularExpressions.RegexOptions.None, regexTimeout)
 
             // named groups are rejected [D:no-named-groups]: .NET
             // numbers positional groups first and named ones after —

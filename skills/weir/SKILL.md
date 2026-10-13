@@ -389,7 +389,10 @@ print (Str.toUtf8 "x") // print refuses Bytes; Bytes.toBase64 is the exit
 ```
   patterns live on the expression side: `Str.isMatch pat s` (bool),
   `Str.rmatch pat s` (Option<seq<string>>) — any string, and raw
-  literals read best: `Seq.where (Str.isMatch @"\.md$")`.
+  literals read best: `Seq.where (Str.isMatch @"\.md$")`. Every
+  match (these and `Regex` patterns) has a 5s timeout that raises
+  `regex timeout: …` [D:regex-timeout] — catastrophic backtracking
+  (`^(a+)+$` on a long near-miss) fails loudly instead of hanging.
   `Str.rmatchAll pat s : seq<seq<string>>` is the plural — EVERY
   match's GROUPS, lazily; no Option (absence is the empty seq). Groups
   ONLY: a pattern with no capturing group yields an EMPTY inner seq per

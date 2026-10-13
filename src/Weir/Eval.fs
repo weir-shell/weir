@@ -2506,7 +2506,7 @@ let rec private tryBind (p: Pattern) (v: Value) : (string * Value) list option =
         (match compileRegex pat with
          | Error msg -> unreachable $"the checker rejects invalid regex literals: {msg}"
          | Ok rx ->
-             let m = rx.Match s
+             let m = regexGuarded pat (fun () -> rx.Match s)
 
              if not m.Success then
                  None

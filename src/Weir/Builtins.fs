@@ -742,7 +742,7 @@ let private isMatchImpl: Value =
     VBuiltin(fun patV ->
         VBuiltin(fun subjectV ->
             match patV, subjectV with
-            | VStr pat, VStr s -> VBool((compiledOrRaise pat).IsMatch s)
+            | VStr pat, VStr s -> VBool(Check.regexGuarded pat (fun () -> (compiledOrRaise pat).IsMatch s))
             | _ -> unreachable "the checker rejects 'isMatch' on these arguments"))
 
 let private rmatchImpl: Value =
@@ -750,7 +750,7 @@ let private rmatchImpl: Value =
         VBuiltin(fun subjectV ->
             match patV, subjectV with
             | VStr pat, VStr s ->
-                let m = (compiledOrRaise pat).Match s
+                let m = Check.regexGuarded pat (fun () -> (compiledOrRaise pat).Match s)
 
                 if m.Success then
                     VUnion("Some", Some(VSeq [ for i in 1 .. m.Groups.Count - 1 -> VStr m.Groups[i].Value ]))
@@ -773,11 +773,11 @@ let private rmatchAllImpl: Value =
 
                 VSeq(
                     seq {
-                        let mutable m = re.Match s
+                        let mutable m = Check.regexGuarded pat (fun () -> re.Match s)
 
                         while m.Success do
                             yield VSeq [ for i in 1 .. m.Groups.Count - 1 -> VStr m.Groups[i].Value ]
-                            m <- m.NextMatch()
+                            m <- Check.regexGuarded pat m.NextMatch
                     }
                 )
             | _ -> unreachable "the checker rejects 'rmatchAll' on these arguments"))
@@ -797,12 +797,12 @@ let private rsplitImpl: Value =
                 VSeq(
                     seq {
                         let mutable pos = 0
-                        let mutable m = re.Match s
+                        let mutable m = Check.regexGuarded pat (fun () -> re.Match s)
 
                         while m.Success do
                             yield VStr(s.Substring(pos, m.Index - pos))
                             pos <- m.Index + m.Length
-                            m <- m.NextMatch()
+                            m <- Check.regexGuarded pat m.NextMatch
 
                         yield VStr(s.Substring pos)
                     }
