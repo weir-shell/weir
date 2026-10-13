@@ -17762,6 +17762,12 @@ let sizeTests =
               Expect.stringContains (perr "1.5MiB") "decimal size literals do not exist" ""
               Expect.stringContains (perr "1GiB512MiB") "sizes take a single unit" "nobody writes compound sizes"
           }
+          test "a unit-suffixed literal past int64 (bytes / ms) is a parse error, never a wrap" {
+              Expect.stringContains (perr "9999999999TiB") "size literal out of range" "TiB overflow"
+              Expect.stringContains (perr "9999999999999999h") "duration literal out of range" "h overflow"
+              Expect.stringContains (perr "99999999999999999999ms") "duration literal out of range" "digits past int64"
+              Expect.equal (run "8388607TiB") (VSize(8388607L * 1024L * 1024L * 1024L * 1024L)) "the largest TiB fits"
+          }
           test "File.size returns Size — the one intended break, and it compares" {
               let d =
                   match run "Path.newTempDir ()" with
