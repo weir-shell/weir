@@ -21185,6 +21185,26 @@ let ttySanitizeTests =
               Expect.equal (Weir.Eval.sanitizeIfTty true hostile) hostile "redirected: raw (a pipe/file is byte-faithful)"
               Expect.stringContains (Weir.Eval.sanitizeIfTty false hostile) "\\x1b" "tty: sanitized"
           }
+          test "bidi controls render as visible \\uXXXX at a tty; redirected stays raw [D:tty-bidi-sanitize]" {
+              // Trojan Source: an RLO makes the displayed name differ from the bytes
+              let rlo = "a\u202Etxt.exe"
+              Expect.equal (Weir.Eval.sanitizeTtyData rlo) "a\\u202Etxt.exe" "RLO renders visible, uppercase hex"
+
+              let all =
+                  [ 0x202A; 0x202B; 0x202C; 0x202D; 0x202E; 0x2066; 0x2067; 0x2068; 0x2069; 0x200E; 0x200F; 0x061C ]
+
+              for n in all do
+                  let c = string (char n)
+                  let shown = Weir.Eval.sanitizeTtyData c
+                  Expect.equal shown ("\\u" + n.ToString("X4")) $"U+{n:X4} renders visible"
+
+              // neighbours of the ranges are ordinary text
+              for n in [ 0x2029; 0x202F; 0x2065; 0x206A; 0x200D; 0x2010; 0x061B ] do
+                  let c = string (char n)
+                  Expect.equal (Weir.Eval.sanitizeTtyData c) c $"U+{n:X4} untouched"
+
+              Expect.equal (Weir.Eval.sanitizeIfTty true rlo) rlo "redirected: bidi bytes pass through"
+          }
           test "Color helpers auto-off when colour is off (piped/NO_COLOR) [D:tty-color]" {
               // the test process's stdout is captured, so onStdout is false —
               // the helpers return the plain string, no escapes (the colour

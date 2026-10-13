@@ -646,18 +646,27 @@ let private sgrLenAt (s: string) (i: int) : int =
 // a coloured prompt) survives while every terminal-driving family stays
 // neutralized. Applied only at a tty and only to data — redirected
 // output is byte-faithful.
+// Bidi controls render as a visible \uXXXX too [D:tty-bidi-sanitize]:
+// the text the user reads must match the bytes (Trojan Source).
 let sanitizeTtyData (s: string) : string =
+    // bidi = the embeddings/overrides U+202A..202E, the isolates
+    // U+2066..2069, LRM/RLM (U+200E/200F) and ALM (U+061C)
+    let bidi (c: char) =
+        let n = int c
+        (n >= 0x202A && n <= 0x202E) || (n >= 0x2066 && n <= 0x2069) || n = 0x200E || n = 0x200F || n = 0x061C
+
     // hostile = ESC (0x1B) the introducer, DEL (0x7F), any C0 control
     // (< 0x20) except TAB and LF, and the C1 range (0x80..0x9F)
     let hostile (c: char) =
         let n = int c
         n = 0x1B || n = 0x7F || (n < 0x20 && c <> '\t' && c <> '\n') || (n >= 0x80 && n <= 0x9F)
 
-    if not (s |> Seq.exists hostile) then
+    if not (s |> Seq.exists (fun c -> hostile c || bidi c)) then
         s
     else
         let sb = System.Text.StringBuilder(s.Length)
         let hex = "0123456789abcdef"
+        let hexU = "0123456789ABCDEF"
         let mutable i = 0
 
         while i < s.Length do
@@ -676,6 +685,18 @@ let sanitizeTtyData (s: string) : string =
             elif hostile c then
                 let n = int c
                 sb.Append("\\x").Append(hex[(n >>> 4) &&& 0xF]).Append(hex[n &&& 0xF]) |> ignore
+                i <- i + 1
+            elif bidi c then
+                let n = int c
+
+                sb
+                    .Append("\\u")
+                    .Append(hexU[(n >>> 12) &&& 0xF])
+                    .Append(hexU[(n >>> 8) &&& 0xF])
+                    .Append(hexU[(n >>> 4) &&& 0xF])
+                    .Append(hexU[n &&& 0xF])
+                |> ignore
+
                 i <- i + 1
             else
                 sb.Append c |> ignore
