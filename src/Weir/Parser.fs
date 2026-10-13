@@ -676,18 +676,33 @@ let private intLit =
                 // no 'd' [D:duration]: a day is not a uniform length
                 failFatallyAt at "durations have no 'd' suffix — a day is not a fixed length; write hours (24h)"
             | _, Some(unit, None) ->
-                match dec, expo, System.Int64.TryParse digits with
-                | None, None, (true, n) ->
-                    match unit with
-                    | "ms" -> preturn (EDur n)
-                    | "s" -> preturn (EDur(n * 1000L))
-                    | "m" -> preturn (EDur(n * 60000L))
-                    | "h" -> preturn (EDur(n * 3600000L))
-                    | "B" -> preturn (ESize n)
-                    | "KiB" -> preturn (ESize(n * 1024L))
-                    | "MiB" -> preturn (ESize(n * 1024L * 1024L))
-                    | "GiB" -> preturn (ESize(n * 1024L * 1024L * 1024L))
-                    | _ -> preturn (ESize(n * 1024L * 1024L * 1024L * 1024L))
+                match dec, expo with
+                | None, None ->
+                    let factor =
+                        match unit with
+                        | "ms"
+                        | "B" -> 1L
+                        | "s" -> 1000L
+                        | "m" -> 60000L
+                        | "h" -> 3600000L
+                        | "KiB" -> 1024L
+                        | "MiB" -> 1024L * 1024L
+                        | "GiB" -> 1024L * 1024L * 1024L
+                        | _ -> 1024L * 1024L * 1024L * 1024L
+
+                    // checked: the value is stored in ms / bytes, and a
+                    // literal past int64 there is an error, never a wrap
+                    match System.Int64.TryParse digits with
+                    | true, n when n <= System.Int64.MaxValue / factor ->
+                        preturn (if isSizeUnit unit then ESize(n * factor) else EDur(n * factor))
+                    | _ ->
+                        let what =
+                            if isSizeUnit unit then
+                                "size literal out of range (64-bit bytes)"
+                            else
+                                "duration literal out of range (64-bit milliseconds)"
+
+                        failFatallyAt at $"{what}: {digits}{unit}"
                 | _ -> failFatallyAt at (compoundTeaching unit)
             | None, None ->
                 match dec, expo with
