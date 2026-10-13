@@ -1601,7 +1601,7 @@ type Bad = C of int
   top-level SEQUENCE document -> `seq<T>` (nested records, seqs,
   `seq<string * string>` for labels, `Option`; bool is EXACTLY
   true/false; plain `null`/`Null`/`NULL`/`~` and an empty value are
-  null -> `None`, quoted `"null"` is a string; anchors rejected). A block sequence reads in BOTH indent
+  null -> `None`, quoted `"null"` is a string; anchors rejected). A plain value holding `: ` (`f: a: b`) refuses, as every YAML reader does — quote it. A block sequence reads in BOTH indent
   styles — indented under its key OR at the SAME column as its key
   (kubectl's `items:` / `- apiVersion: v1` flush-left form). Only the
   EMPTY flow collections `{}` and `[]` are read (into an empty

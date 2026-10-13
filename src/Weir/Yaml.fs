@@ -251,6 +251,11 @@ let scalarCore (raw: string) : Result<(string * bool) option, string> =
         Error "flow style is outside the yaml subset (use block maps and sequences)"
     elif t.StartsWith "!" then
         Error "tags are outside the yaml subset"
+    // a plain scalar never holds `: ` or a trailing `:` — every other
+    // YAML reader refuses `f: a: b`, so reading it as "a: b" would
+    // diverge from them
+    elif t.Contains ": " || t.EndsWith ":" then
+        Error "mapping values are not allowed here — quote the value (\"a: b\")"
     elif t.StartsWith "|" || t.StartsWith ">" then
         // block scalars live in value positions (mapping value, sequence
         // item, whole document) and are intercepted there; a header

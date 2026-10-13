@@ -2423,6 +2423,15 @@ let boundaryTests =
               | Weir.Yaml.NMap([ ("a", Weir.Yaml.NSeq(_, _)); ("b", _) ], _) -> ()
               | other -> failtest $"zero-indent seq + sibling: {other}"
           }
+          test "a plain value holding ': ' refuses like every other yaml reader (triage 15a)" {
+              Expect.stringContains (yamlErr [ "f: a: b" ]) "line 1: mapping values are not allowed here — quote the value" "inner ': '"
+              Expect.stringContains (yamlErr [ "f: a:" ]) "quote the value" "trailing ':'"
+              Expect.stringContains (yamlErr [ "- x"; "- a: b: c" ]) "line 2:" "inside a compact item"
+
+              match yamlDoc [ "f: \"a: b\""; "u: http://x:80/p" ] with
+              | Weir.Yaml.NMap([ ("f", Weir.Yaml.NScalar("a: b", true, _)); ("u", Weir.Yaml.NScalar("http://x:80/p", false, _)) ], _) -> ()
+              | other -> failtest $"quoted ': ' and a bare ':' stay values: {other}"
+          }
           test "quoted yaml keys unescape like values; every key to yaml writes reads back (B25)" {
               let keysOf d =
                   match d with
