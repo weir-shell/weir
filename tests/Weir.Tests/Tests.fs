@@ -14978,6 +14978,21 @@ let adversarialTests =
         [ test "wrong arity application" {
               Expect.stringContains (checkErr "double 1 2").Message "'double' takes at most 1 argument(s), but got 2" ""
           }
+          test "over-application through a returned function applies the result (B20)" {
+              expectValue "id (fun x -> x + 1) 2" (VInt 3L)
+              expectValue "let t = (1, fun x -> x * 10) in (snd t) 5" (VInt 50L)
+              expectValue "let t = (1, fun x -> x * 10) in 5 |> snd t" (VInt 50L)
+
+              expectValue
+                  "let handlers = Map.ofPairs [ (\"k\", fun x -> x + 1) ] in Map.get \"k\" handlers 4"
+                  (VInt 5L)
+
+              // a result that is not a function keeps the arity teaching
+              Expect.stringContains
+                  (checkErr "let f x = x in f 1 2").Message
+                  "'f' takes at most 1 argument(s), but got 2"
+                  ""
+          }
           test "shadowing with a different type is respected" {
               Expect.stringContains
                   (checkErr "let x = 1 in let x = \"s\" in x + 1").Message
