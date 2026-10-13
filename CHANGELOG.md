@@ -99,6 +99,40 @@
   bytes. `weir check --json` and the `--can` report (both forms) get the
   same treatment.
   Pipes and files stay byte-for-byte.
+- **Deep lazy `Seq` chains don't overflow the stack:** `where`, `choose`,
+  `take`, `skip`, `collect`, `distinct`, `scan` and the other lazy
+  combinators now walk iteratively, like `map`/`append` already did.
+- **Long waits are honoured.** Retry/poll delays and Http timeouts past
+  ~24.8 days wait instead of silently timing out or failing.
+- **`exit n` outside 0..255 raises** (a literal is a check error);
+  `exit 256` exited 0.
+- **`SIGTERM` to weir's pid also stops the foreground child,** which
+  used to keep running after weir exited.
+- **Regex matches time out after 5 seconds** with a named error;
+  catastrophic backtracking (`^(a+)+$`) hung the script.
+- **`from table` aligns columns with emoji and other non-BMP text.**
+- **A module `let` that calls the module's own command-running helper
+  is refused,** like a direct command; it ran at import.
+- **Match arms resolve by the union that owns all their cases,** so a
+  script-declared `Ok` no longer breaks an `Error` arm.
+- **`"""…"""` is one command argument;** `@"…"` in arguments is refused
+  with its own explanation (`@` is meaningful argv text).
+- **An outdented `//` inside a heredoc is an error,** not silently
+  dropped.
+- **`weir run` refuses a file `weir check` refuses,** including a
+  misaligned `///`.
+- **Smaller fixes:** `-9223372036854775808` is a valid literal; the
+  literal `-0.0` reads as `0.0`; `Instant.parse` refuses `12:34:56.Z`;
+  a quoted yaml-block key `"$x":` is literal; `Seq.take`/`Seq.skip`
+  with a negative count raise; `Path.glob` with a trailing `/` matches
+  directories only; a generic `to json`/`to yaml` and an over-long flat
+  chain get errors that say what to do.
+- **YAML:** a plain value containing `: ` is refused ("quote the
+  value"); `-   x:` with a wide gap after the dash reads; `...` ends a
+  document.
+- **XML:** DTDs are refused (an external entity silently became `""`);
+  a repeated element read into a single-value field is refused
+  ("declare `seq<string>`").
 
 ### Changed
 
@@ -114,6 +148,13 @@
   tab in a content line's leading whitespace is an error on every line
   (it was refused only on the first). A tab after the first
   non-whitespace character is still content.
+- **Strings count Unicode code points.** `Str.length`, `Str.sub`,
+  slicing and padding no longer count UTF-16 units, so they can't split
+  an emoji; `Str.length "🎉"` is now 1 (was 2).
+- **`Env.get`, `Env.vars` and `Env.load` see the `within env` overlay,**
+  as `pwd` sees `within cd`; they read the outer value before.
+- **Reading data into a `Secret` field is allowed** (`from json`/`yaml`/
+  `toml`); writing a Secret out stays refused.
 
 ## v0.0.72
 
