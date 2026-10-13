@@ -2330,8 +2330,9 @@ print $"exit={r.exitCode}"
   right) and forces the value inside (lazy seqs included, so an infinite
   one never finishes). `exit` passes through; earlier effects are not
   undone. `try` anywhere else is an error. A script's own `Ok`/`Error`
-  cases shadow Result's for construction; patterns resolve by type.
-  Commands keep their own spelling: `cmd | complete`.
+  cases shadow Result's for construction; patterns resolve by type (an
+  untyped scrutinee by the union owning ALL the arms' cases). Commands
+  keep their own spelling: `cmd | complete`.
 - `exit n` exits with code n silently (propagation:
   `if r.exitCode <> 0 then exit (r.exitCode)`); `fail "msg"` is
   the message-carrying exit-1. No GENERAL try/finally — cleanup-always

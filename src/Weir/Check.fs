@@ -1927,7 +1927,19 @@ let builtinTypeNames: System.Collections.Concurrent.ConcurrentDictionary<string,
 
 /// constructor is already overwritten; ownership must be asked of the
 /// type table, not the value table.
-let ctorOwners (env: TypeEnv) (name: string) : string list =
+let rec ctorOwners (env: TypeEnv) (name: string) : string list =
+    preferLocal (ctorOwnersAll env name)
+
+// a script's own case shadows a prelude case of the same name
+// [D:try-form] — the import rule: a local declaration takes
+// precedence (`type Status = Ok | Error` predates Result)
+and private preferLocal (owners: string list) : string list =
+    match owners |> List.filter (fun o -> not (builtinTypeNames.ContainsKey o)) with
+    | [] -> owners
+    | local -> local
+
+// every in-scope union declaring the case, local and prelude alike
+and ctorOwnersAll (env: TypeEnv) (name: string) : string list =
     // uppercase only: the casing law makes every constructor uppercase, so
     // this skips the scan for ordinary bindings
     if name.Length = 0 || not (System.Char.IsUpper name[0]) then
@@ -1949,12 +1961,7 @@ let ctorOwners (env: TypeEnv) (name: string) : string list =
                 | _ -> None)
             |> List.sort
 
-        // a script's own case shadows a prelude case of the same name
-        // [D:try-form] — the import rule: a local declaration takes
-        // precedence (`type Status = Ok | Error` predates Result)
-        match owners |> List.filter (fun o -> not (builtinTypeNames.ContainsKey o)) with
-        | [] -> owners
-        | local -> local
+        owners
 
 let rec private checkPattern (ctx: Ctx) (env: TypeEnv) (ty: Ty) (p: Pattern) : Result<(string * Ty) list, TypeError> =
     // a pattern whose shape determines a type binds an unresolved
@@ -4554,11 +4561,51 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                     bind ctx env scrutinee.Span TStr tscrutinee.Ty
                 | TVar _ when arms |> List.exists (fun (p, _, _) -> p.PKind.IsPUnit) ->
                     bind ctx env scrutinee.Span TUnit tscrutinee.Ty
-                // a constructor pattern types the scrutinee from its union
-                // [D:match-scrutinee-infer] — the per-pattern bind in
-                // checkPattern (a single-owner constructor resolves an
-                // unresolved scrutinee, nested payloads included); the
-                // shared scrutinee var carries the binding across arms
+                // the arms' constructors together pick the union: the one
+                // owning ALL of them (local first), so `Ok`/`Error` arms
+                // read as Result even when the script declares its own `Ok`
+                // — the first arm alone would pick the shadowing union
+                | TVar _ as tv ->
+                    let ctors =
+                        arms
+                        |> List.choose (fun (p, _, _) ->
+                            match p.PKind with
+                            | PCase(c, _) -> Some(c, p.PSpan)
+                            | _ -> None)
+
+                    let names = ctors |> List.map fst |> List.distinct
+
+                    if names.Length < 2 || names |> List.exists (fun c -> (ctorOwnersAll env c).IsEmpty) then
+                        // one constructor (or an unknown one): checkPattern's
+                        // per-pattern bind and its messages decide
+                        Ok()
+                    else
+                        let common =
+                            names
+                            |> List.map (ctorOwnersAll env >> Set.ofList)
+                            |> Set.intersectMany
+                            |> Set.toList
+                            |> preferLocal
+
+                        match common with
+                        | [ owner ] ->
+                            match typeDefFor env owner with
+                            | Some(Union def) ->
+                                let targs = def.Params |> List.map (fun _ -> TVar(freshName ctx "a"))
+                                bind ctx env scrutinee.Span (TNamed(owner, targs)) tv
+                            | _ -> Ok()
+                        | [] ->
+                            let owned =
+                                names
+                                |> List.map (fun c ->
+                                    let os = ctorOwners env c |> String.concat "/"
+                                    $"'{c}' ({os})")
+                                |> String.concat ", "
+
+                            err
+                                (snd ctors.Head)
+                                $"these arms name cases of different unions — {owned}; no one union declares them all, so the match has no single type"
+                        | _ -> Ok()
                 | _ -> Ok()
 
             let scrutTy = resolve ctx tscrutinee.Ty

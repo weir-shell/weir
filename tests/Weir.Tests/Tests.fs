@@ -24544,6 +24544,37 @@ let tryTests =
               let diags = diagsIn "shadow.weir" [ "type Status ="; "    | Ok"; "    | Error"; "let s = Ok"; "print (show s)" ]
               Expect.isEmpty diags "no ambiguity with Result's cases"
           }
+          test "match arms resolve by the union owning ALL their cases, not the first arm's" {
+              // Ok alone prefers the script's Outcome; Ok + Error together
+              // only fit Result — in either arm order
+              for arms in [ "| Ok n -> show (n + 1) | Error e -> e"; "| Error e -> e | Ok n -> show (n + 1)" ] do
+                  let diags =
+                      diagsIn
+                          "arms.weir"
+                          [ "type Outcome = Ok of int | Bad"
+                            $"let g r = match r with {arms}"
+                            "print (g (Error \"x\"))" ]
+
+                  Expect.isEmpty diags arms
+
+              // Ok + Bad: only Outcome owns both
+              Expect.isEmpty
+                  (diagsIn
+                      "arms2.weir"
+                      [ "type Outcome = Ok of int | Bad"
+                        "let h o = match o with | Ok n -> show n | Bad -> \"bad\""
+                        "print (h Bad)" ])
+                  "the local union owning both"
+
+              // no one union owns them all: say so, naming each case's owner
+              let msgs =
+                  diagsIn
+                      "arms3.weir"
+                      [ "type A = X | Y"; "type B = Z | W"; "let g r = match r with | X -> 1 | Z -> 2 | _ -> 3"; "print (show (g X))" ]
+                  |> List.map (fun d -> d.Message)
+
+              Expect.exists msgs (fun m -> m.Contains "no one union declares them all" && m.Contains "'Z' (B)") "the mixed arms"
+          }
           test "Result members" {
               Expect.equal (run "(if 1 == 1 then fail \"x\" else 3) |> try result |> Result.defaultValue 7") (VInt 7L) "defaultValue"
               Expect.equal (run "3 |> try result |> Result.map (fun n -> n + 1) |> Result.toOption") (VUnion("Some", Some(VInt 4L))) "map + toOption"
