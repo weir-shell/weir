@@ -19849,6 +19849,9 @@ let seqGapsTests =
                   (msgOf "Seq.replicate (0 - 1) \"x\" |> Seq.freeze")
                   "replicate: the count must be non-negative; got -1"
                   ""
+
+              Expect.equal (msgOf "[1; 2] |> Seq.take -1 |> Seq.freeze") "take: the count must be non-negative; got -1" ""
+              Expect.equal (msgOf "[1; 2] |> Seq.skip -1 |> Seq.freeze") "skip: the count must be non-negative; got -1" ""
           }
           test "the sum ruling: Seq.sum stays seq<int>; each numeric type owns its own [D:seq-gaps]" {
               Expect.equal (checkOk "[1; 2] |> Seq.average").Ty TFloat "the mean of ints IS a float"

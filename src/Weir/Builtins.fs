@@ -323,6 +323,8 @@ let private truncateImpl: Value =
     VBuiltin(fun n ->
         VBuiltin(fun s ->
             match n, s with
+            // a negative count raises, Seq.replicate's convention [D:seq-gaps]
+            | VInt n, VSeq _ when n < 0L -> failwith $"take: the count must be non-negative; got {n}"
             | VInt n, VSeq items ->
                 let n = toIntArg "Seq.take" Amount n
 
@@ -1810,6 +1812,7 @@ let private skipImpl: Value =
     VBuiltin(fun n ->
         VBuiltin(fun s ->
             match n, s with
+            | VInt i, VSeq _ when i < 0L -> failwith $"skip: the count must be non-negative; got {i}"
             | VInt i, VSeq items ->
                 // still lazy [D:message-ownership]: the count is checked as
                 // the seq is walked, not by probing its length up front

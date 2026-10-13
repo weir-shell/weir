@@ -436,7 +436,8 @@ print $"{key} -> {value}"
   (`git rev-parse HEAD |> Seq.exactlyOne`) — `Seq.head` takes the
   first and silently accepts more; save it for "the first of many".
   `Seq.first` is RETIRED [D:first-retired]: one name per operation —
-  `Seq.take` (pairs with `skip`).
+  `Seq.take` (pairs with `skip`). A negative count raises in both,
+  Seq.replicate's rule [D:seq-gaps].
 
 ```weir-error
 // retired: one name per operation (take pairs with skip)
