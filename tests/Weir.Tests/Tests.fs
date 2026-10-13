@@ -8207,6 +8207,57 @@ let planApplyTests =
               finally
                   System.IO.Directory.Delete(root, true)
           }
+          // [D:plan-apply] B1: every mutation builtin's Op replays through
+          // the direct call's own checks — plan + apply on a fixture leaves
+          // the same tree and the same success/failure as the direct call
+          test "B1: every plan op is equivalent to its direct call on every fixture kind" {
+              let ops1 = [ "File.delete"; "Dir.delete"; "Dir.deleteAll"; "Dir.create" ]
+              let ops2 = [ "File.copy"; "File.move"; "Dir.copy"; "Dir.move" ]
+
+              let fixtures =
+                  [ "empty dir", (fun (t: string) -> System.IO.Directory.CreateDirectory t |> ignore)
+                    "non-empty dir",
+                    (fun t ->
+                        System.IO.Directory.CreateDirectory(System.IO.Path.Combine(t, "sub", "d")) |> ignore
+                        System.IO.File.WriteAllText(System.IO.Path.Combine(t, "sub", "f.txt"), "x"))
+                    "file", (fun t -> System.IO.File.WriteAllText(t, "data"))
+                    "missing", (fun _ -> ()) ]
+
+              let snapshot (root: string) =
+                  System.IO.Directory.GetFileSystemEntries(root, "*", System.IO.SearchOption.AllDirectories)
+                  |> Array.map (fun p ->
+                      let rel = p.Substring(root.Length).Replace('\\', '/')
+
+                      if System.IO.Directory.Exists p then rel + "/"
+                      else rel + "=" + System.IO.File.ReadAllText p)
+                  |> Array.sort
+
+              let root = td ()
+
+              try
+                  for op in ops1 @ ops2 do
+                      for (kind, make) in fixtures do
+                          let outcome (mode: string) =
+                              let dir = System.IO.Path.Combine(root, System.Guid.NewGuid().ToString "N")
+                              System.IO.Directory.CreateDirectory dir |> ignore
+                              let t = System.IO.Path.Combine(dir, "t")
+                              make t
+                              let tw, dw = weirPath t, weirPath (System.IO.Path.Combine(dir, "dst"))
+                              let call = if List.contains op ops2 then $"{op} \"{tw}\" \"{dw}\"" else $"{op} \"{tw}\""
+
+                              let prog =
+                                  if mode = "direct" then
+                                      [ call ]
+                                  else
+                                      [ "let p ="; "    plan"; "        " + call; "p |> Plan.apply" ]
+
+                              let code = runFile prog
+                              code = 0, snapshot dir
+
+                          Expect.equal (outcome "plan") (outcome "direct") $"{op} on {kind}: plan+apply == direct"
+              finally
+                  System.IO.Directory.Delete(root, true)
+          }
           // [D:plan-path-bound] DA-03: a plan captures paths resolved to
           // absolute at capture, so apply writes the previewed location
           // regardless of the apply-time cwd. Capture under cd A, apply

@@ -810,8 +810,9 @@ let x =
   so compare plans or ops, not the seq).
   `Plan.preview` renders human lines (wrote nothing), `Plan.isEmpty`,
   and `Plan.apply` performs in capture order. The Op arms are the mutation surface: `WriteFile of
-  string * seq<string>`, `DeleteFile`, `Copy`/`Move of string *
-  string`, `MakeDir`, `DeleteDir`, `HttpSend of HttpRequest` (a
+  string * seq<string>`, `DeleteFile`, `Copy`/`Move`/`CopyDir`/`MoveDir of
+  string * string`, `MakeDir`, `DeleteDir` (empty only), `DeleteTree`
+  (`Dir.deleteAll`), `HttpSend of HttpRequest` (a
   mutating method only; `show` masks the auth Secret). Content is
   snapshotted at plan time, so `preview == apply`. The refusals:
   `proc` inside a plan (a spawned binary is uncapturable — plan covers

@@ -66,14 +66,15 @@ let source =
       // the plan/apply Op union [D:plan-apply] — the user-visible,
       // equatable+showable reification of an external mutation captured
       // inside a `plan` block. Each arm mirrors a mutation builtin's
-      // effect: File.write -> WriteFile, File/Dir.delete* -> DeleteFile/
-      // DeleteDir, File/Dir.copy -> Copy, File/Dir.move -> Move,
-      // Dir.create -> MakeDir, Http.send{POST..} -> HttpSend. WriteFile
+      // effect, one arm per builtin: File.write -> WriteFile, File.delete
+      // -> DeleteFile, Dir.delete -> DeleteDir, Dir.deleteAll ->
+      // DeleteTree, File.copy/move -> Copy/Move, Dir.copy/move ->
+      // CopyDir/MoveDir, Dir.create -> MakeDir, Http.send{POST..} -> HttpSend. WriteFile
       // and HttpSend carry data that includes seqs / a Secret (auth);
       // Op/Plan are Eq-admitted by an explicit carve-out in Check (the
       // testing story), and Show masks the Secret via the recursive
       // renderer [D:secret].
-      "type Op = WriteFile of string * seq<string> | DeleteFile of string | Copy of string * string | Move of string * string | MakeDir of string | DeleteDir of string | HttpSend of HttpRequest" ]
+      "type Op = WriteFile of string * seq<string> | DeleteFile of string | Copy of string * string | Move of string * string | CopyDir of string * string | MoveDir of string * string | MakeDir of string | DeleteDir of string | DeleteTree of string | HttpSend of HttpRequest" ]
 
 let extend (typeEnv: TypeEnv) (valueEnv: Eval.Env) : TypeEnv * Eval.Env =
     Check.preludeLoading.Value <- true

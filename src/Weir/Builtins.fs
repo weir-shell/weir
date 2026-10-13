@@ -3013,6 +3013,92 @@ let private refuseInPlan (op: string) (why: string) : Value option =
     else
         None
 
+// the performers [D:plan-apply]: one body per mutation, shared by the
+// direct builtin and Plan.apply's replay of its Op, so an applied plan
+// runs exactly the direct call's checks. `op` names the caller in messages.
+let private doFileDelete (op: string) (r: string) : unit =
+    if System.IO.Directory.Exists r then
+        failwith $"{op}: {r} is a directory — Dir.delete removes a directory"
+
+    if not (System.IO.File.Exists r) then
+        failwith $"{op}: no such file: {r}"
+
+    ioGuarded op r (fun () -> System.IO.File.Delete r)
+
+let private refuseExistingDst (op: string) (dst: string) : unit =
+    if System.IO.File.Exists dst || System.IO.Directory.Exists dst || FileInfo(dst).Exists then
+        failwith $"{op}: destination exists: {dst}"
+
+let private doFileCopy (op: string) (src: string) (dst: string) : unit =
+    if System.IO.Directory.Exists src then
+        failwith $"{op}: {src} is a directory — Dir.copy copies a directory"
+
+    if not (System.IO.File.Exists src) then
+        failwith $"{op}: no such file: {src}"
+
+    refuseExistingDst op dst
+    ioGuarded op src (fun () -> System.IO.File.Copy(src, dst))
+
+let private doFileMove (op: string) (src: string) (dst: string) : unit =
+    if System.IO.Directory.Exists src then
+        failwith $"{op}: {src} is a directory — Dir.move moves a directory"
+
+    if not (System.IO.File.Exists src) then
+        failwith $"{op}: no such file: {src}"
+
+    refuseExistingDst op dst
+    ioGuarded op src (fun () -> System.IO.File.Move(src, dst))
+
+let private doDirCreate (op: string) (r: string) : unit =
+    // mkdir -p: parents created, existing = the post-condition
+    ioGuarded op r (fun () -> System.IO.Directory.CreateDirectory r |> ignore)
+
+let private requireDir (op: string) (r: string) : unit =
+    if not (System.IO.Directory.Exists r) then
+        if System.IO.File.Exists r then
+            failwith $"{op}: {r} is not a directory"
+        else
+            failwith $"{op}: no such directory: {r}"
+
+let private doDirDelete (op: string) (r: string) : unit =
+    requireDir op r
+
+    ioGuarded op r (fun () ->
+        if System.IO.Directory.EnumerateFileSystemEntries r |> Seq.isEmpty |> not then
+            failwith $"{op}: not empty: {r} — Dir.deleteAll removes a tree"
+
+        System.IO.Directory.Delete r)
+
+let private doDirDeleteAll (op: string) (r: string) : unit =
+    requireDir op r
+    ioGuarded op r (fun () -> System.IO.Directory.Delete(r, true))
+
+let private doDirMove (op: string) (src: string) (dst: string) : unit =
+    requireDir op src
+    refuseExistingDst op dst
+    ioGuarded op src (fun () -> System.IO.Directory.Move(src, dst))
+
+// copying a directory means copying its contents — there is no
+// non-recursive reading, so the delete/deleteAll naming split does
+// not repeat here (no Dir.copyAll) [D:sized-findings]. The family's
+// overwrite rule: refuse an existing destination; Dir.deleteAll is the
+// deliberate replace spelling.
+let private doDirCopy (op: string) (src: string) (dst: string) : unit =
+    requireDir op src
+    refuseExistingDst op dst
+
+    ioGuarded op src (fun () ->
+        let rec go (s: string) (d: string) =
+            System.IO.Directory.CreateDirectory d |> ignore
+
+            for f in System.IO.Directory.EnumerateFiles s do
+                System.IO.File.Copy(f, System.IO.Path.Combine(d, System.IO.Path.GetFileName f))
+
+            for sub in System.IO.Directory.EnumerateDirectories s do
+                go sub (System.IO.Path.Combine(d, System.IO.Path.GetFileName sub))
+
+        go src dst)
+
 let private fileMembers: (string * Ty * Value) list =
     [ "read",
       TFun(TStr, TSeq TStr),
@@ -3187,7 +3273,7 @@ let private fsStr2 (name: string) (opCase: string) (f: string -> string -> unit)
                 match capPath2 opCase s d with
                 | Some captured -> captured
                 | None ->
-                    ioGuarded name s (fun () -> f s d)
+                    f s d
                     VUnit
             | _ -> unreachable $"the checker rejects '{name}' on these arguments"))
 
@@ -3328,32 +3414,15 @@ let private fsMoreFileMembers: (string * Ty * Value) list =
               | Some captured -> captured
               | None ->
 
-              if not (System.IO.File.Exists r) then
-                  failwith $"File.delete: no such file: {r}"
-
-              ioGuarded "File.delete" r (fun () -> System.IO.File.Delete r)
+              doFileDelete "File.delete" r
               VUnit
           | v -> unreachable $"the checker rejects 'File.delete' on {formatValue v}")
       "copy",
       TFun(TStr, TFun(TStr, TUnit)),
-      fsStr2 "File.copy" "Copy" (fun src dst ->
-          if not (System.IO.File.Exists src) then
-              failwith $"File.copy: no such file: {src}"
-
-          if System.IO.File.Exists dst || System.IO.Directory.Exists dst then
-              failwith $"File.copy: destination exists: {dst}"
-
-          System.IO.File.Copy(src, dst))
+      fsStr2 "File.copy" "Copy" (doFileCopy "File.copy")
       "move",
       TFun(TStr, TFun(TStr, TUnit)),
-      fsStr2 "File.move" "Move" (fun src dst ->
-          if not (System.IO.File.Exists src) then
-              failwith $"File.move: no such file: {src}"
-
-          if System.IO.File.Exists dst || System.IO.Directory.Exists dst then
-              failwith $"File.move: destination exists: {dst}"
-
-          System.IO.File.Move(src, dst))
+      fsStr2 "File.move" "Move" (doFileMove "File.move")
       "size",
       // Size, not int [D:size] — the type is the point: show can
       // render what the type names (a deliberate break)
@@ -3409,8 +3478,7 @@ let private dirMembers: (string * Ty * Value) list =
               | Some captured -> captured
               | None ->
 
-              // mkdir -p: parents created, existing = the post-condition
-              ioGuarded "Dir.create" r (fun () -> System.IO.Directory.CreateDirectory r |> ignore)
+              doDirCreate "Dir.create" r
               VUnit
           | v -> unreachable $"the checker rejects 'Dir.create' on {formatValue v}")
       "exists",
@@ -3433,15 +3501,7 @@ let private dirMembers: (string * Ty * Value) list =
               | Some captured -> captured
               | None ->
 
-              if not (System.IO.Directory.Exists r) then
-                  failwith $"Dir.delete: no such directory: {r}"
-
-              ioGuarded "Dir.delete" r (fun () ->
-                  if System.IO.Directory.EnumerateFileSystemEntries r |> Seq.isEmpty |> not then
-                      failwith $"Dir.delete: not empty: {r} — Dir.deleteAll removes a tree"
-
-                  System.IO.Directory.Delete r)
-
+              doDirDelete "Dir.delete" r
               VUnit
           | v -> unreachable $"the checker rejects 'Dir.delete' on {formatValue v}")
       "deleteAll",
@@ -3451,14 +3511,11 @@ let private dirMembers: (string * Ty * Value) list =
           | VStr p ->
               let r = Session.resolve p
 
-              match capPath1 "DeleteDir" r with
+              match capPath1 "DeleteTree" r with
               | Some captured -> captured
               | None ->
 
-              if not (System.IO.Directory.Exists r) then
-                  failwith $"Dir.deleteAll: no such directory: {r}"
-
-              ioGuarded "Dir.deleteAll" r (fun () -> System.IO.Directory.Delete(r, true))
+              doDirDeleteAll "Dir.deleteAll" r
               VUnit
           | v -> unreachable $"the checker rejects 'Dir.deleteAll' on {formatValue v}")
       "list",
@@ -3505,38 +3562,11 @@ let private dirMembers: (string * Ty * Value) list =
           | v -> unreachable $"the checker rejects 'Dir.stat' on {formatValue v}")
       "move",
       TFun(TStr, TFun(TStr, TUnit)),
-      fsStr2 "Dir.move" "Move" (fun src dst ->
-          if not (System.IO.Directory.Exists src) then
-              failwith $"Dir.move: no such directory: {src}"
-
-          if System.IO.File.Exists dst || System.IO.Directory.Exists dst then
-              failwith $"Dir.move: destination exists: {dst}"
-
-          System.IO.Directory.Move(src, dst))
-      // copying a directory means copying its contents — there is no
-      // non-recursive reading, so the delete/deleteAll naming split does
-      // not repeat here (no Dir.copyAll) [D:sized-findings]. The family's
-      // overwrite rule unchanged: refuse an existing destination;
-      // Dir.deleteAll is the deliberate replace spelling.
+      fsStr2 "Dir.move" "MoveDir" (doDirMove "Dir.move")
+      // the tree copy [D:sized-findings] — see doDirCopy
       "copy",
       TFun(TStr, TFun(TStr, TUnit)),
-      fsStr2 "Dir.copy" "Copy" (fun src dst ->
-          if not (System.IO.Directory.Exists src) then
-              failwith $"Dir.copy: no such directory: {src}"
-
-          if System.IO.File.Exists dst || System.IO.Directory.Exists dst then
-              failwith $"Dir.copy: destination exists: {dst}"
-
-          let rec go (s: string) (d: string) =
-              System.IO.Directory.CreateDirectory d |> ignore
-
-              for f in System.IO.Directory.EnumerateFiles s do
-                  System.IO.File.Copy(f, System.IO.Path.Combine(d, System.IO.Path.GetFileName f))
-
-              for sub in System.IO.Directory.EnumerateDirectories s do
-                  go sub (System.IO.Path.Combine(d, System.IO.Path.GetFileName sub))
-
-          go src dst) ]
+      fsStr2 "Dir.copy" "CopyDir" (doDirCopy "Dir.copy") ]
 
 // ---- Float [D:floats]: finite-only; no implicit widening -----------
 let private floatFn (name: string) (f: float -> Value) : Value =
@@ -4291,19 +4321,21 @@ let private previewOp (op: Value) : string =
     | VUnion("DeleteFile", Some(VStr p)) -> $"delete file {p}"
     | VUnion("MakeDir", Some(VStr p)) -> $"make dir {p}"
     | VUnion("DeleteDir", Some(VStr p)) -> $"delete dir {p}"
+    | VUnion("DeleteTree", Some(VStr p)) -> $"delete tree {p}"
     | VUnion("Copy", Some(VTuple [ VStr s; VStr d ])) -> $"copy {s} -> {d}"
+    | VUnion("CopyDir", Some(VTuple [ VStr s; VStr d ])) -> $"copy dir {s} -> {d}"
     | VUnion("Move", Some(VTuple [ VStr s; VStr d ])) -> $"move {s} -> {d}"
+    | VUnion("MoveDir", Some(VTuple [ VStr s; VStr d ])) -> $"move dir {s} -> {d}"
     | VUnion("HttpSend", Some req) -> $"http send {formatValue req}"
     | v -> formatValue v
 
-// perform one Op through the real IO [D:plan-apply] — the same effect
-// the captured builtin would have had (apply runs with no active plan
-// frame, so the mutation builtins would perform too; applyOp performs
-// directly to keep the replay self-contained). Overwrite/existence rules
-// match the builtins (copy/move refuse an existing destination).
-// paths were resolved to absolute at capture [D:plan-path-bound], so
-// apply replays the exact captured target — no re-resolve against the
-// apply-time cwd (DA-03: a relative capture rebound to apply's cwd).
+// perform one Op through the real IO [D:plan-apply] — each Op names
+// exactly one mutation builtin, and replays through that builtin's own
+// performer, so apply runs the direct call's checks (Dir.delete's
+// not-empty refusal, File.copy's file-only source). Apply runs with no
+// active plan frame. Paths were resolved to absolute at capture
+// [D:plan-path-bound], so apply replays the exact captured target — no
+// re-resolve against the apply-time cwd.
 let private applyOp (op: Value) : unit =
     match op with
     | VUnion("WriteFile", Some(VTuple [ VStr r; VSeq lines ])) ->
@@ -4318,49 +4350,14 @@ let private applyOp (op: Value) : unit =
             fs.SetLength 0L
             fs.Seek(0L, SeekOrigin.Begin) |> ignore
             fs.Write(payload, 0, payload.Length))
-    | VUnion("DeleteFile", Some(VStr r)) ->
-        if not (System.IO.File.Exists r) then
-            failwith $"Plan.apply (DeleteFile): no such file: {r}"
-
-        ioGuarded "Plan.apply (DeleteFile)" r (fun () -> System.IO.File.Delete r)
-    | VUnion("MakeDir", Some(VStr r)) ->
-        ioGuarded "Plan.apply (MakeDir)" r (fun () -> System.IO.Directory.CreateDirectory r |> ignore)
-    | VUnion("DeleteDir", Some(VStr r)) ->
-        if not (System.IO.Directory.Exists r) then
-            failwith $"Plan.apply (DeleteDir): no such directory: {r}"
-
-        ioGuarded "Plan.apply (DeleteDir)" r (fun () -> System.IO.Directory.Delete(r, true))
-    | VUnion("Copy", Some(VTuple [ VStr s; VStr d ])) ->
-        if System.IO.File.Exists d || System.IO.Directory.Exists d then
-            failwith $"Plan.apply (Copy): destination exists: {d}"
-
-        ioGuarded "Plan.apply (Copy)" s (fun () ->
-            if System.IO.Directory.Exists s then
-                let rec go (a: string) (b: string) =
-                    System.IO.Directory.CreateDirectory b |> ignore
-
-                    for f in System.IO.Directory.EnumerateFiles a do
-                        System.IO.File.Copy(f, System.IO.Path.Combine(b, System.IO.Path.GetFileName f))
-
-                    for sub in System.IO.Directory.EnumerateDirectories a do
-                        go sub (System.IO.Path.Combine(b, System.IO.Path.GetFileName sub))
-
-                go s d
-            elif System.IO.File.Exists s then
-                System.IO.File.Copy(s, d)
-            else
-                failwith $"Plan.apply (Copy): no such source: {s}")
-    | VUnion("Move", Some(VTuple [ VStr s; VStr d ])) ->
-        if System.IO.File.Exists d || System.IO.Directory.Exists d then
-            failwith $"Plan.apply (Move): destination exists: {d}"
-
-        ioGuarded "Plan.apply (Move)" s (fun () ->
-            if System.IO.Directory.Exists s then
-                System.IO.Directory.Move(s, d)
-            elif System.IO.File.Exists s then
-                System.IO.File.Move(s, d)
-            else
-                failwith $"Plan.apply (Move): no such source: {s}")
+    | VUnion("DeleteFile", Some(VStr r)) -> doFileDelete "Plan.apply (DeleteFile)" r
+    | VUnion("MakeDir", Some(VStr r)) -> doDirCreate "Plan.apply (MakeDir)" r
+    | VUnion("DeleteDir", Some(VStr r)) -> doDirDelete "Plan.apply (DeleteDir)" r
+    | VUnion("DeleteTree", Some(VStr r)) -> doDirDeleteAll "Plan.apply (DeleteTree)" r
+    | VUnion("Copy", Some(VTuple [ VStr s; VStr d ])) -> doFileCopy "Plan.apply (Copy)" s d
+    | VUnion("CopyDir", Some(VTuple [ VStr s; VStr d ])) -> doDirCopy "Plan.apply (CopyDir)" s d
+    | VUnion("Move", Some(VTuple [ VStr s; VStr d ])) -> doFileMove "Plan.apply (Move)" s d
+    | VUnion("MoveDir", Some(VTuple [ VStr s; VStr d ])) -> doDirMove "Plan.apply (MoveDir)" s d
     | VUnion("HttpSend", Some req) -> runRequest req |> ignore
     | v -> unreachable $"an unknown Op reached Plan.apply: {formatValue v}"
 
