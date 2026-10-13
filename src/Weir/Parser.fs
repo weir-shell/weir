@@ -5585,8 +5585,11 @@ let parseLineFull (r: Resolver) (input: string) : Result<Stmt, ParseFailure> =
                 | Some span ->
                     let col = if span.Start.Line = 1 then Some span.Start.Col else None
 
+                    // the recursive parse already passed, so the depth is a flat
+                    // chain's left spine [D:depth-guard]: name that repair
                     Result.Error
-                        { Message = $"expression nested too deeply (limit {maxDepth})"
+                        { Message =
+                            $"expression nested too deeply (limit {maxDepth}) — a long chain (a + b + …, x |> f |> …) nests one level per operator; bind intermediates with let, or fold a list (Seq.sum, Seq.fold)"
                           Col = col }
                 | None ->
                     match s |> stmtExprs |> List.tryPick (pipeToCommand r) with

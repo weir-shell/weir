@@ -12374,7 +12374,9 @@ let depthGuardTests =
               let spine = List.replicate 3000 "1" |> String.concat " + "
 
               match Weir.Parser.parseExpr spine with
-              | Error m -> Expect.stringContains m "nested too deeply" "spine caught by the post-parse gate"
+              | Error m ->
+                  Expect.stringContains m "nested too deeply" "spine caught by the post-parse gate"
+                  Expect.stringContains m "bind intermediates with let" "the flat chain's repair is named"
               | Ok _ -> failtest "a 3000-term spine must be rejected"
           }
           test "over-ceiling nested brackets diagnose, not hang (was O(2^n))" {
