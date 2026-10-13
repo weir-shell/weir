@@ -3473,7 +3473,13 @@ let boundaryCheckTests =
               let e = "let xs = nats |> map (fun n -> Running n) in xs |> to json"
               Expect.stringContains (checkErr e).Message "is an untagged union" ""
           }
-          test "to json standalone is rejected" { Expect.stringContains (checkErr "to json").Message "pipe stage" "" } ]
+          test "to json standalone is rejected" { Expect.stringContains (checkErr "to json").Message "pipe stage" "" }
+          test "to json/yaml on a generic value teaches where to call it, not the type variable" {
+              for fmt in [ "json"; "yaml" ] do
+                  let m = (checkErr $"let dump x = x |> to {fmt} in dump 1").Message
+                  Expect.stringContains m $"'to {fmt}' needs a concrete type" fmt
+                  Expect.stringContains m "where the type is known" fmt
+          } ]
 
 let shorthandTests =
     testList

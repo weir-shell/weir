@@ -1324,6 +1324,12 @@ let private uncodedFieldTeach (fmt: string) (fty: Ty) : string option =
         Some $"{subject} is not representable in {fmt} on its own — declare the field's encoding ({codecAttrs cs}), or {repair}"
     | _ -> None
 
+// a generic value at a write boundary: serialization is resolved at
+// check time from the type, so a helper's unconstrained parameter has
+// nothing to resolve — teach the repair, not the type variable
+let private genericWireTeach (fmt: string) (ty: Ty) : string =
+    $"'to {fmt}' needs a concrete type, but this value is generic ({formatTy ty}) — the encoding is chosen from the type at check time; call 'to {fmt}' where the type is known (at the call site, passing the rendered text on)"
+
 let private jsonAdmittedSet =
     "json fields are int, float, string, bool, Uuid, Option of an admitted type, a record of admitted fields, seq of an admitted type, a seq<string * T> mapping, or Map<string, T> of one"
 
@@ -1388,6 +1394,7 @@ let rec private jsonAdmitted
         | None when List.contains n deflessBuiltinNominals ->
             err span $"{at}{n} is an opaque value with no JSON form — encode the fields you need into a record"
         | None -> err span $"{at}unknown type '{n}'{didYouMean n (Map.keys env.Types)}"
+    | TVar v when not reading && not (v.StartsWith "__hole") -> err span (at + genericWireTeach "json" ty)
     | ty -> err span $"{at}type {formatTy ty} is not admitted; {jsonAdmittedSet}"
 
 // one field's admission, for the record walk and the top-level record
@@ -1797,6 +1804,7 @@ let rec private yamlableOut (span: Span) (env: TypeEnv) (seen: Set<string>) (pat
     | TVar v when v.StartsWith "__hole" ->
         // cascade suppression [PLAN-diagnostics-arc B6]
         Ok()
+    | TVar _ -> err span (at + genericWireTeach "yaml" ty)
     | ty ->
         err
             span
