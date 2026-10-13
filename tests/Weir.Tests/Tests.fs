@@ -17710,6 +17710,39 @@ let sizedFindingsTests =
               Expect.stringContains m2 "File.read:" "the member named"
               Expect.stringContains m2 "is a directory" "is-a-directory"
           }
+          // B33: a dangling link and a directory get their own words
+          test "dangling symlinks and directories are named as such by the File readers" {
+              withTempDir "weir-b33" (fun root ->
+                  let w = weirPath root
+                  Directory.CreateDirectory(Path.Combine(root, "d")) |> ignore
+
+                  let msg (src: string) =
+                      try
+                          run src |> ignore
+                          ""
+                      with e ->
+                          e.Message
+
+                  for call in [ "File.size"; "File.delete" ] do
+                      Expect.stringContains (msg $"{call} \"{w}/d\"") "is a directory" $"{call} on a directory"
+
+                  if not (System.OperatingSystem.IsWindows()) then
+                      File.CreateSymbolicLink(Path.Combine(root, "dang"), "nowhere") |> ignore
+                      File.WriteAllText(Path.Combine(root, "f"), "abc")
+                      File.CreateSymbolicLink(Path.Combine(root, "fl"), "f") |> ignore
+                      Expect.equal (run $"File.exists \"{w}/dang\"") (VBool true) "the link itself exists"
+
+                      for src in
+                          [ $"File.read \"{w}/dang\" |> Seq.length"
+                            $"File.readBytes \"{w}/dang\""
+                            $"File.size \"{w}/dang\""
+                            $"File.copy \"{w}/dang\" \"{w}/x\"" ] do
+                          let m = msg src
+                          Expect.stringContains m "dangling symlink" src
+                          Expect.isFalse (m.Contains "Could not find") "no raw .NET words"
+
+                      Expect.equal (run $"File.size \"{w}/fl\"") (VSize 3L) "a link's size is its target's")
+          }
           test "File.write to a missing parent names the directory (the delete side's shape)" {
               let m =
                   try

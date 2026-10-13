@@ -2975,11 +2975,26 @@ let private envMembers: (string * Ty * Value) list =
 // throws here — ReadAllLines substitutes replacement chars, so
 // is-a-directory / not-found / permission are the whole enumerable
 // surface.
+// a symlink whose final target is missing (or a link loop): the path
+// exists as a row, but there is nothing to read through it
+let private isDangling (r: string) : bool =
+    let fi = FileInfo r
+
+    not (isNull fi.LinkTarget)
+    && (try
+            match fi.ResolveLinkTarget true with
+            | null -> true
+            | t -> not t.Exists
+        with :? System.IO.IOException ->
+            true)
+
 let private readGuard (op: string) (r: string) : unit =
     if System.IO.Directory.Exists r then
         failwith $"{op}: {r} is a directory"
     elif not (File.Exists r) then
         failwith $"{op}: no such file: {r}"
+    elif isDangling r then
+        failwith $"{op}: dangling symlink: {r} — its target does not exist"
 
 
 let private writeGuard (op: string) (r: string) : unit =
@@ -3077,6 +3092,9 @@ let private doFileCopy (op: string) (src: string) (dst: string) : unit =
 
     if not (System.IO.File.Exists src) then
         failwith $"{op}: no such file: {src}"
+
+    if isDangling src then
+        failwith $"{op}: dangling symlink: {src} — its target does not exist"
 
     refuseExistingDst op dst
     ioGuarded op src (fun () -> System.IO.File.Copy(src, dst))
@@ -3512,11 +3530,14 @@ let private fsMoreFileMembers: (string * Ty * Value) list =
           | VStr p ->
               let r = Session.resolve p
               PlanMode.checkRead "File.size" r
+              readGuard "File.size" r
 
-              if not (System.IO.File.Exists r) then
-                  failwith $"File.size: no such file: {r}"
+              // the size of what a read sees — a link's target, not the link
+              let fi = System.IO.FileInfo r
 
-              VSize (System.IO.FileInfo r).Length
+              match fi.LinkTarget with
+              | null -> VSize fi.Length
+              | _ -> VSize (fi.ResolveLinkTarget(true) :?> System.IO.FileInfo).Length
           | v -> unreachable $"the checker rejects 'File.size' on {formatValue v}")
       "stat",
       // the bridge from paths to rows [D:file-stat]: ls's own
