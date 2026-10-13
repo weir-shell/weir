@@ -15290,6 +15290,9 @@ let adversarialTests =
               let p = errs [ "let p ="; "    yaml patch"; "        a: 1"; "print $\"{p}\"" ]
               Expect.exists p (fun s -> s.Contains "a patch does not render") $"no functions wording: {p}"
 
+              let j = errs [ "within proc srv = sh -c \"sleep 1\""; "    [srv] |> to json |> Seq.iter print" ]
+              Expect.exists j (fun s -> s.Contains "Proc is an opaque value with no JSON form") $"opaque at the boundary, not unknown: {j}"
+
               match errs [ "import \"./weir-b38-nope.weir\" as N"; "print (N.f 1)" ] with
               | [ only ] -> Expect.stringContains only "cannot resolve import" "the import's own error"
               | other -> failtest $"a failed import must not echo 'no module named': {other}"
