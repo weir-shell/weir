@@ -7091,6 +7091,18 @@ let seqPatternTests =
               Expect.stringContains m "tuple patterns need a tuple value" "the plain message"
               Expect.isFalse (m.Contains "groups looser than") "no precedence hint on a non-cons tuple pattern"
           }
+          test "a tuple pattern types an unresolved value as a tuple of its arity (B21)" {
+              expectValue "let f = function | (a, b) -> $\"{a}{b}\" in f (1, \"x\")" (VStr "1x")
+              expectValue "let f = fun (a, b) -> a in f (1, 2)" (VInt 1L)
+
+              expectValue
+                  "let g p = match p with | (0, s) -> s | (n, s) -> $\"{n}{s}\" in g (1, \"x\")"
+                  (VStr "1x")
+
+              expectValue "let m o = match o with | Some (a, b) -> b | None -> 0 in m (Some (1, 2))" (VInt 2L)
+              // the arity is fixed by the pattern
+              checkErr "let h p = match p with | (a, b) -> a in h (1, 2, 3)" |> ignore
+          }
           test "no user-facing pattern message says 'scrutinee' (the vocabulary sweep)" {
               // a representative spread across the moved messages (bool, int
               // literal, seq, unit) — none may carry the jargon
