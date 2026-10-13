@@ -15127,6 +15127,28 @@ let adversarialTests =
                   "'f' takes at most 1 argument(s), but got 2"
                   ""
           }
+          test "checker messages name what is actually wrong (B38)" {
+              Expect.stringContains (checkErr "Some 1 < None").Message "operator '<' is not defined for Option<int>" "not a mismatch"
+              Expect.stringContains (checkErr "show []").Message "a rendering requirement" "Show is not equality"
+              Expect.stringContains (checkErr "[] |> Seq.sort |> Seq.length").Message "an ordering requirement" "Ord is not equality"
+              Expect.stringContains (checkErr "[] |> Seq.distinct |> Seq.length").Message "an equality requirement" "Eq keeps its word"
+              Expect.isFalse (Weir.Check.budgetMsgSized.Contains "annotate") "weir has no annotations to offer"
+
+              let errs lines =
+                  diagsIn (tempPath "weir-b38" + ".weir") lines
+                  |> List.filter (fun d -> d.Severity = "error")
+                  |> List.map (fun d -> d.Message)
+
+              let m = errs [ "let pl ="; "    plan"; "        File.write \"x\" [\"a\"]"; "print $\"{pl.ops}\"" ]
+              Expect.exists m (fun s -> s.Contains "Plan has no fields — it is an opaque value") $"opaque, not unknown: {m}"
+
+              let p = errs [ "let p ="; "    yaml patch"; "        a: 1"; "print $\"{p}\"" ]
+              Expect.exists p (fun s -> s.Contains "a patch does not render") $"no functions wording: {p}"
+
+              match errs [ "import \"./weir-b38-nope.weir\" as N"; "print (N.f 1)" ] with
+              | [ only ] -> Expect.stringContains only "cannot resolve import" "the import's own error"
+              | other -> failtest $"a failed import must not echo 'no module named': {other}"
+          }
           test "shadowing with a different type is respected" {
               Expect.stringContains
                   (checkErr "let x = 1 in let x = \"s\" in x + 1").Message

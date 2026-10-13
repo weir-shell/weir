@@ -6212,6 +6212,9 @@ let analyzeLines
         // explanation. The whole-file rules (orphan, doc-on-impl) are
         // judged after the fold, mirroring the module loader.
         let mutable sigState = if isModule then Some SigContext.empty else None
+        // aliases of imports that failed: a later "no module named" for
+        // one echoes the import's own error, so it is not reported
+        let mutable failedImports: Set<string> = Set.empty
         let sigImplLines = ResizeArray<string * int>()
 
         // unused bindings [D:unused-bindings]: fed per statement, judged
@@ -6443,6 +6446,13 @@ let analyzeLines
                          | SLetPat(pat, _) -> patVars pat
                          | _ -> []
 
+                     (match stmt with
+                      | SImport(_, _, Some(alias, _)) -> failedImports <- Set.add alias failedImports
+                      | SImport(ipath, _, None) ->
+                          deriveModuleName ipath
+                          |> Option.iter (fun alias -> failedImports <- Set.add alias failedImports)
+                      | _ -> ())
+
                      // an errored implementation still discharges its
                      // pending signature — one real error beats a trailing
                      // orphan echo [D:module-signatures]
@@ -6480,18 +6490,23 @@ let analyzeLines
                                            HoleDefaults = [] }
                                          tenv.Values })
 
+                let echoesFailedImport =
+                    failedImports
+                    |> Set.exists (fun a -> d.Message.StartsWith $"no module named '{a}'")
+
                 // multi-file [D:modules-v1]: a module error carries File +
                 // PhysLine/Col into that other file; its Note is the "imported
                 // here" pointer at the import line in this file
-                diags.Add
-                    { File = d.File |> Option.defaultValue path
-                      Line = d.PhysLine
-                      Col = d.PhysCol
-                      EndLine = d.PhysEnd |> Option.map fst
-                      EndCol = d.PhysEnd |> Option.map snd
-                      Severity = "error"
-                      Code = codeOf d.Parse d.Message
-                      Message = d.Message }
+                if not echoesFailedImport then
+                    diags.Add
+                        { File = d.File |> Option.defaultValue path
+                          Line = d.PhysLine
+                          Col = d.PhysCol
+                          EndLine = d.PhysEnd |> Option.map fst
+                          EndCol = d.PhysEnd |> Option.map snd
+                          Severity = "error"
+                          Code = codeOf d.Parse d.Message
+                          Message = d.Message }
 
                 (match d.Note with
                  | Some(nl, nc, nmsg) ->
