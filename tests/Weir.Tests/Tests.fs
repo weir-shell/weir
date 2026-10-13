@@ -1664,6 +1664,37 @@ let boundaryTests =
                   (VRecord("XProj", [ "groups", VSeq []; "refs", VSeq [] ]))
                   "the predefined entities and character references still read"
           }
+          test "from xml: a repeated element into a scalar or record field refuses, teaching the seq (triage 16b)" {
+              let env2 =
+                  env
+                  |> declare "type XOne = { AssemblyName: string }"
+                  |> declare "type XOpt = { AssemblyName: Option<string> }"
+                  |> declare "type XRec = { PropertyGroup: XOne }"
+
+              let refuse ty (doc: string) =
+                  match Weir.Parser.parseStmt $"src |> from xml {ty}" with
+                  | Ok(SExpr e) ->
+                      match Weir.Check.typecheck env2 e with
+                      | Ok te ->
+                          (Expect.throwsC (fun () -> Weir.Eval.eval (Map.add "src" (VSeq [ VStr doc ]) valueEnv) te |> ignore) id)
+                              .Message
+                      | Error terr -> failtest (formatError terr)
+                  | other -> failtest $"unexpected: {other}"
+
+              let twice = "<P><AssemblyName>a</AssemblyName><AssemblyName>b</AssemblyName></P>"
+
+              Expect.stringContains
+                  (refuse "XOne" twice)
+                  "element <AssemblyName> repeats in <P> for field 'AssemblyName' — declare seq<string>"
+                  "never silently the first"
+
+              Expect.stringContains (refuse "XOpt" twice) "declare seq<string>" "Option<string> too"
+
+              Expect.stringContains
+                  (refuse "XRec" "<P><PropertyGroup/><PropertyGroup/></P>")
+                  "declare [<Elem \"PropertyGroup\">] seq<XOne>"
+                  "a record field names the [<Elem>] the seq needs"
+          }
           test "from xml: check-time laws — text-only leaves, [<Attr>]/[<Elem>] fit, no wrap, read-only [D:from-xml]" {
               Expect.stringContains (checkErr "src |> from xml XInt").Message "XML values are text" "numbers must be declared string"
 

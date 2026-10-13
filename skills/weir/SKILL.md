@@ -1769,6 +1769,8 @@ doc |> Yaml.merge p |> to yaml |> Seq.iter print
   one root (`from xml seq<T>` refuses — a repeat is a `seq< >` field),
   and there is NO `to xml`. A DTD (`<!DOCTYPE …>`) refuses
   [D:xml-no-dtd] — no declared entity expands or resolves.
+  An element that repeats under a `string`/`Option<string>`/record
+  field refuses (never silently the first) — declare a `seq< >`.
 
 ```weir
 type Ref  = { [<Attr>] Include: string }

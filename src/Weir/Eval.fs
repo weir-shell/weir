@@ -1731,7 +1731,15 @@ let private xmlDoc
     let childElems (el: XElement) (name: string) =
         el.Elements() |> Seq.filter (fun e -> e.Name.LocalName = name)
 
-    let childElem (el: XElement) (name: string) = childElems el name |> Seq.tryHead
+    // a scalar or record field takes ONE element — a repeat is a seq
+    // field's shape, never silently its first (yaml refuses a duplicate key)
+    let childElem (el: XElement) (name: string) (shownName: string) (want: string) =
+        match childElems el name |> Seq.truncate 2 |> List.ofSeq with
+        | [] -> None
+        | [ c ] -> Some c
+        | _ ->
+            failwith
+                $"{who}: element <{name}> repeats in <{el.Name.LocalName}> for field '{shownName}' — declare {want} to read every one: {shown}"
 
     let attr (el: XElement) (name: string) =
         el.Attributes()
@@ -1760,13 +1768,13 @@ let private xmlDoc
                     match ty with
                     // a child element's inner text (required / optional)
                     | TStr ->
-                        match childElem el name with
+                        match childElem el name shownName "seq<string>" with
                         | Some c -> VStr c.Value
                         | None ->
                             failwith
                                 $"{who}: missing element <{name}> in <{el.Name.LocalName}> for field '{shownName}' in: {shown}"
                     | TNamed("Option", [ TStr ]) ->
-                        match childElem el name with
+                        match childElem el name shownName "seq<string>" with
                         | Some c -> VUnion("Some", Some(VStr c.Value))
                         | None -> VUnion("None", None)
                     // repeated children: [<Elem "X">] names them, else the
@@ -1789,7 +1797,7 @@ let private xmlDoc
                         |> VSeq
                     // a nested element read as a record
                     | TNamed(n, []) when defs.ContainsKey n ->
-                        match childElem el name with
+                        match childElem el name shownName (if n = name then $"seq<{n}>" else $"[<Elem \"{name}\">] seq<{n}>") with
                         | Some c -> objRowXml (shownName + ".") defs[n] c
                         | None ->
                             failwith
