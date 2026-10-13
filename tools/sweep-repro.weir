@@ -17,8 +17,8 @@
 //   - a "not a raw .NET message" judgement is loose: no telltale .NET phrase,
 //     exit 1, and the fixture's own file named in the diagnostic.
 //
-// B28 waits on ruling R9: it is probed and printed as `B28 (pending R9)` but
-// does not count toward the exit code.
+// B28 follows ruling R9 [D:json-raw-user]: BMP non-ASCII raw, astral as an
+// escaped pair, `<>&` and quotes in their plain JSON form.
 //
 // Positive controls (`control-*`) pin the neighbouring behaviour each probe
 // leans on, so no probe can pass by the binary being broken in a new way; a
@@ -421,7 +421,7 @@ let b10 d =
         ("missing HOME: ~/x", line rMissing 0 == $"{h}/x")
         ("missing HOME: Path.home", line rMissing 1 == h)
         ("missing HOME: Path.configHome", line rMissing 2 == $"{h}/.config")
-        ("empty HOME expands ~ to ''", codeOf rEmpty < 128 && line rEmpty 0 <> "/x")
+        ("empty HOME raises [D:home-verbatim]", codeOf rEmpty == 1 && line rEmpty 0 <> "/x")
         ("unset HOME", codeOf rUnset == 0 && (line rUnset 0 |> Str.startsWith "/") && line rUnset 0 <> "/x")
     ]
 
@@ -802,10 +802,10 @@ let b27 d =
     let rF = runAt d "30" (put d "b27-file.weir" b27File)
     failing [ ("blank elements", prints "2" rI); ("trailing blank line in a file", prints "2" rF) ]
 
-// ---- B28: to json escapes non-ASCII and HTML characters (pending R9) --------
+// ---- B28: to json escapes non-ASCII and HTML characters ---------------------
 
 let b28Fixture = <<<
-    {| s = "héllo <a>&b ✓" |} |> to json |> Seq.iter print
+    {| s = "héllo <a>&b ✓ \"q\" 🎉" |} |> to json |> Seq.iter print
 
 let b28 d =
     let r = runAt d "30" (put d "b28.weir" b28Fixture)
@@ -813,6 +813,8 @@ let b28 d =
     failing [
         ("BMP non-ASCII emitted raw", codeOf r == 0 && (o |> Str.contains "héllo") && (o |> Str.contains "✓"))
         ("<>& not escaped", codeOf r == 0 && (o |> Str.contains "<a>&b"))
+        ("quotes as \\\"", codeOf r == 0 && (o |> Str.contains "\\\"q\\\""))
+        ("astral as an escaped pair", codeOf r == 0 && (o |> Str.contains "\\uD83C\\uDF89"))
     ]
 
 // ---- B29: inferShape drafts int beyond int64 --------------------------------
@@ -1179,7 +1181,7 @@ let probes =
     [ ("B1", b1); ("B2", b2); ("B3", b3); ("B4", b4); ("B5", b5); ("B6", b6); ("B7", b7); ("B8", b8)
       ("B9", b9); ("B10", b10); ("B11", b11); ("B12", b12); ("B13", b13); ("B14", b14); ("B15", b15)
       ("B16", b16); ("B17", b17); ("B18", b18); ("B19", b19); ("B20", b20); ("B21", b21); ("B22", b22)
-      ("B23", b23); ("B24", b24); ("B25", b25); ("B26", b26); ("B27", b27); ("B28 (pending R9)", b28)
+      ("B23", b23); ("B24", b24); ("B25", b25); ("B26", b26); ("B27", b27); ("B28", b28)
       ("B29", b29); ("B30", b30); ("B31", b31); ("B32", b32); ("B33", b33); ("B34", b34); ("B35", b35)
       ("B36", b36); ("B37", b37); ("B38", b38); ("B39", b39); ("B40", b40) ]
 
@@ -1231,14 +1233,13 @@ within tmp d
     let verdicts = File.read vpath |> Seq.freeze
     let open =
         verdicts
-        |> Seq.where (fun l -> not (l |> Str.startsWith "B28 "))
         |> Seq.where (fun l ->
             (l |> Str.contains "REPRODUCES") || (l |> Str.contains "CONTROL FAILED") || (l |> Str.contains "SKIP"))
         |> Seq.freeze
 
     let repro = verdicts |> Seq.where (fun l -> l |> Str.contains "REPRODUCES") |> Seq.length
     let ok = verdicts |> Seq.where (fun l -> (l |> Str.startsWith "B") && (l |> Str.contains " OK")) |> Seq.length
-    print $"summary: {ok} probe(s) OK, {repro} REPRODUCE (B28 pending R9, not counted)"
+    print $"summary: {ok} probe(s) OK, {repro} REPRODUCE"
 
     if open |> Seq.isEmpty then
         print "ALL ITEMS FIXED"
