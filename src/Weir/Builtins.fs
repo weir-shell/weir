@@ -4470,7 +4470,9 @@ let private runRequest (reqV: Value) : Http.Resp =
               Body = httpBodyOf (get "body")
               TimeoutMs =
                 (match get "timeout" with
-                 | VDur ms -> toIntArg "Http timeout (ms)" Amount ms
+                 // any positive Duration is honoured [D:long-waits]
+                 | VDur ms when ms <= 0L -> failwith $"Http: the timeout must be positive; got {formatDuration ms}"
+                 | VDur ms -> ms
                  | v -> unreachable $"timeout {formatValue v}")
               Insecure =
                 (match get "insecure" with

@@ -569,7 +569,8 @@ print $"{key} -> {value}"
   `retry` around it is safe by definition). TLS verification is ON;
   `{ req with insecure = true }` disables it for ONE request (a loud
   per-call field for self-signed clusters). `Http.defaults` is the
-  template (Get, 30s timeout, secure). Every request sends
+  template (Get, 30s timeout, secure); any positive Duration is an
+  enforced `timeout`, however long [D:long-waits]. Every request sends
   `User-Agent: weir/<stamp>` (the `--version` string) unless the
   caller sets one — an explicit `User-Agent` WINS (via `headers` or
   `secretHeaders`, any casing) and exactly one is ever sent. The

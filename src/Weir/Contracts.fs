@@ -500,7 +500,7 @@ let fetchBytesWith (headers: (string * string) list) (url: string) : Result<byte
 
         // the shared transport classifier [D:transport-words] — 60s is
         // this fetch's own client timeout above
-        Error(Http.transportMessage host (Http.classifyTransport 60000 port ex))
+        Error(Http.transportMessage host (Http.classifyTransport 60000L port ex))
 
 let fetchBytes (url: string) : Result<byte[] * string option, string> = fetchBytesWith [] url
 

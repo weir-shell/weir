@@ -27,7 +27,7 @@ type Req =
       // (contentType, body) — the body is the exact bytes to send, no
       // re-encoding, no newline stripping (the whole point over curl -d)
       Body: (string * string) option
-      TimeoutMs: int
+      TimeoutMs: int64
       // TLS verification off for this request [D:http-s2]: a loud
       // per-request opt-out for self-signed clusters — never global
       Insecure: bool }
@@ -41,7 +41,7 @@ type Resp =
 // probed shapes each carry what the caller needs to word a repair;
 // Other keeps the root message under the cannot-reach umbrella
 type TransportError =
-    | Timeout of ms: int
+    | Timeout of ms: int64
     | NoSuchHost
     | Refused of port: int
     | TlsUntrusted
@@ -59,7 +59,7 @@ let private rootMessage (ex: exn) : string =
 /// timeout is the TaskCanceledException HttpClient.Timeout throws (weir
 /// passes no cancellation tokens, so cancellation means timeout), TLS
 /// is AuthenticationException, DNS/refused are SocketErrorCode
-let classifyTransport (timeoutMs: int) (port: int) (ex: exn) : TransportError =
+let classifyTransport (timeoutMs: int64) (port: int) (ex: exn) : TransportError =
     let rec walk (e: exn) =
         match e with
         | null -> OtherTransport(rootMessage ex)
@@ -76,8 +76,8 @@ let classifyTransport (timeoutMs: int) (port: int) (ex: exn) : TransportError =
 
     walk ex
 
-let private fmtMs (ms: int) : string =
-    if ms % 1000 = 0 then $"{ms / 1000}s" else $"{ms}ms"
+let private fmtMs (ms: int64) : string =
+    if ms % 1000L = 0L then $"{ms / 1000L}s" else $"{ms}ms"
 
 /// redact a URL's userinfo for a diagnostic [D:url-redact]: a credential
 /// in `scheme://user:pass@host/...` would otherwise print verbatim
@@ -138,6 +138,25 @@ let isRedirect (code: int) : bool =
 [<Literal>]
 let private maxRedirects = 50
 
+// every valid Duration is honoured as a timeout [D:long-waits]: .NET
+// timers (HttpClient.Timeout, CancelAfter) take at most Int32.MaxValue
+// ms (~24.8 days), so a longer deadline re-arms in slices of `sliceMs`
+// until the remainder fits. Stops when `cts` cancels (the deadline, or
+// the request finishing first).
+let cancelAfterSliced (sliceMs: int64) (cts: Threading.CancellationTokenSource) (ms: int64) : unit =
+    let rec arm (left: int64) =
+        if left <= sliceMs then
+            cts.CancelAfter(TimeSpan.FromMilliseconds(float left))
+        else
+            Threading.Tasks.Task
+                .Delay(TimeSpan.FromMilliseconds(float sliceMs), cts.Token)
+                .ContinueWith(fun (t: Threading.Tasks.Task) -> if not t.IsCanceled then arm (left - sliceMs))
+            |> ignore
+
+    arm ms
+
+let private maxTimerMs = int64 Int32.MaxValue - 1L
+
 /// send the request. Status is data — a 4xx/5xx is Ok with that status,
 /// never an Error [D:http]. Error is transport failure only, classified
 /// [D:transport-words] — the worded message plus the case, so the caller
@@ -161,7 +180,12 @@ let send (req: Req) : Result<Resp, string * TransportError> =
             handler.ServerCertificateCustomValidationCallback <- (fun _ _ _ _ -> true)
 
         use client = new HttpClient(handler)
-        client.Timeout <- TimeSpan.FromMilliseconds(float req.TimeoutMs)
+        // the deadline rides a token, never client.Timeout's 24.8-day
+        // ceiling [D:long-waits]; cancelled when the send returns
+        client.Timeout <- Threading.Timeout.InfiniteTimeSpan
+        use deadline = new Threading.CancellationTokenSource()
+        use _stop = { new IDisposable with member _.Dispose() = deadline.Cancel() }
+        cancelAfterSliced maxTimerMs deadline req.TimeoutMs
 
         // build one request message for a hop: `method`/`url`, the current
         // header set (already credential-filtered by the caller loop), the
@@ -223,7 +247,7 @@ let send (req: Req) : Result<Resp, string * TransportError> =
 
         while go do
             let msg = buildMessage curMethod curUrl curHeaders curBody
-            let resp = client.SendAsync(msg).Result
+            let resp = client.SendAsync(msg, deadline.Token).Result
             let code = int resp.StatusCode
 
             let location =
@@ -272,7 +296,7 @@ let send (req: Req) : Result<Resp, string * TransportError> =
         let body =
             match resp.Content with
             | null -> ""
-            | c -> c.ReadAsStringAsync().Result
+            | c -> c.ReadAsStringAsync(deadline.Token).Result
 
         Ok
             { Status = int resp.StatusCode

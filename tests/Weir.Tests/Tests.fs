@@ -16198,6 +16198,32 @@ let httpTests =
               finally
                   System.IO.File.Delete p
           }
+          test "a timeout past Int32.MaxValue ms is honoured, not refused [D:long-waits]" {
+              // 30 days > the 24.8-day timer ceiling: the send runs and fails
+              // on the transport (nothing listens on port 9), not the timeout
+              let ex =
+                  Expect.throwsC
+                      (fun () ->
+                          run "Http.send { Http.defaults with url = \"http://127.0.0.1:9/\"; timeout = 720h } |> _.status"
+                          |> ignore)
+                      id
+
+              Expect.stringContains ex.Message "refused" ex.Message
+
+              let zero =
+                  Expect.throwsC
+                      (fun () -> run "Http.send { Http.defaults with url = \"http://127.0.0.1:9/\"; timeout = 0s }" |> ignore)
+                      id
+
+              Expect.stringContains zero.Message "the timeout must be positive" ""
+
+              // the sliced deadline re-arms past each slice and fires at the total
+              use cts = new System.Threading.CancellationTokenSource()
+              let sw = System.Diagnostics.Stopwatch.StartNew()
+              Weir.Http.cancelAfterSliced 40L cts 150L
+              Expect.isTrue (cts.Token.WaitHandle.WaitOne 5000) "the deadline fires"
+              Expect.isGreaterThanOrEqual sw.ElapsedMilliseconds 140L "not at the first slice"
+          }
           test "Basic auth is base64(user:pass) — an ENCODING the runner does, not a caller" {
               Expect.equal (Weir.Http.basicToken "alice" "s3cr3t") "YWxpY2U6czNjcjN0" ""
           }
@@ -16211,7 +16237,7 @@ let httpTests =
 
               Expect.equal
                   (classify 30000 (nested (System.Threading.Tasks.TaskCanceledException())))
-                  (Weir.Http.Timeout 30000)
+                  (Weir.Http.Timeout 30000L)
                   "cancellation IS timeout — weir passes no tokens"
 
               Expect.equal
@@ -16239,10 +16265,10 @@ let httpTests =
           }
           test "transport messages: each case its own words, the repair nameable" {
               let msg = Weir.Http.transportMessage "weir.sh"
-              Expect.equal (msg (Weir.Http.Timeout 30000)) "timed out after 30s reaching weir.sh" "whole seconds"
+              Expect.equal (msg (Weir.Http.Timeout 30000L)) "timed out after 30s reaching weir.sh" "whole seconds"
 
               Expect.equal
-                  (msg (Weir.Http.Timeout 1500))
+                  (msg (Weir.Http.Timeout 1500L))
                   "timed out after 1500ms reaching weir.sh"
                   "sub-second stays ms"
 
