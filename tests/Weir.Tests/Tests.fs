@@ -17080,6 +17080,19 @@ let accessorTeachingTests =
               expectValue "\"abcde\"[^2..]" (VStr "de")
               expectValue "\"abcde\"[..^2]" (VStr "abcd")
           }
+          // B34: an out-of-range ^n names itself and the length, not index 0
+          test "an out-of-range xs[^n] names the ^n and the length" {
+              for n in [ 0L; 4L; 4294967296L ] do
+                  Expect.stringContains
+                      (msgOf $"let xs = [1; 2; 3] in xs[^{n}]")
+                      $"index ^{n} is out of range for length 3"
+                      $"^{n}"
+
+              Expect.stringContains
+                  (checkErr "let m = Map.ofPairs [(\"a\", 1)] in m[^1]").Message
+                  "no m[k] indexing"
+                  "the Map teaching covers the from-end form"
+          }
           test "the F# dotted indexer teaches the dotless spelling" {
               match Weir.Parser.parseExpr "let xs = [1; 2; 3] in xs.[0]" with
               | Ok _ -> failtest "xs.[0] must be refused"

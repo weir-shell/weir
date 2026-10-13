@@ -100,6 +100,9 @@ let libraryDesugars: (string * string * string) list =
       "|seqAppend", "Seq", "append"
       "|seqRange", "Seq", "range"
       "|seqItem", "Seq", "item"
+      // `xs[^n]` [D:range-slicing]: classified as Seq.item; its value is
+      // the from-end twin (Builtins.internalAliases)
+      "|seqItemFromEnd", "Seq", "item"
       "|retryDefaults", "Retry", "defaults"
       "|pollDefaults", "Poll", "defaults"
       // a typed `~` in a command word [D:tilde]

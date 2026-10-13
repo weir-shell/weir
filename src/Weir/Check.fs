@@ -2937,7 +2937,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
             // target is inferred first, before the index can mis-report.
             let mapIndexHint =
                 match head.Kind, args with
-                | EVar "|seqItem", [ _; target ] ->
+                | EVar("|seqItem" | "|seqItemFromEnd"), [ _; target ] ->
                     match infer ctx env target with
                     | Ok t ->
                         match resolve ctx t.Ty with

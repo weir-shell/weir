@@ -1452,23 +1452,16 @@ let private indexDesugar (target: Expr) (idx: Expr) (endPos: Pos) : Expr =
       Span = span }
 
 // xs[^n] — F#'s from-the-end single index [D:range-slicing]: the element
-// n from the end (`^1` is the last). Reuses the slice machinery —
-// `|seqItem 0 (xs[^n..^n])` — so length resolution and the out-of-range
-// raise are the slice's; the index expr is evaluated for both bounds, so
-// keep it a literal or a binding.
+// n from the end (`^1` is the last), `|seqItemFromEnd n xs` — its own
+// desugar, so an out-of-range raise names the `^n` and the length.
 let private fromEndIndexDesugar (target: Expr) (idx: Expr) (endPos: Pos) : Expr =
     let span =
         { Start = target.Span.Start
           End = endPos }
 
-    let slice =
-        { Kind = ESlice(target, Some idx, Some idx, true, true)
-          Span = span }
+    let fromEnd = { Kind = EVar "|seqItemFromEnd"; Span = span }
 
-    let seqItem = { Kind = EVar "|seqItem"; Span = span }
-    let zero = { Kind = EInt 0L; Span = span }
-
-    { Kind = EApp({ Kind = EApp(seqItem, zero); Span = span }, slice)
+    { Kind = EApp({ Kind = EApp(fromEnd, idx); Span = span }, target)
       Span = span }
 
 // the block forms sit among the opp's term alternatives, tried and

@@ -1580,6 +1580,22 @@ let private itemImpl: Value =
                     | None -> failwith $"item: no element at index {i}"
             | _ -> unreachable "the checker rejects 'item' on these arguments"))
 
+// `xs[^n]` [D:range-slicing]: the element n from the end (`^1` is the
+// last), F#'s rule — `^0` is past the end. Needs the length, so it forces
+// the seq (as Seq.last does); out of range names the `^n` and the length.
+let private itemFromEndImpl: Value =
+    VBuiltin(fun n ->
+        VBuiltin(fun s ->
+            match n, s with
+            | VInt i, VSeq items ->
+                let arr = Seq.toArray items
+
+                if i < 1L || i > int64 arr.Length then
+                    failwith $"item: index ^{i} is out of range for length {arr.Length}"
+                else
+                    arr[arr.Length - toIntArg "item" Position i]
+            | _ -> unreachable "the checker rejects a from-end index on these arguments"))
+
 let private tryItemImpl: Value =
     VBuiltin(fun n ->
         VBuiltin(fun s ->
@@ -7297,6 +7313,8 @@ let internalAliases: (string * Ty * Value) list =
     // its target member
     [ for key, modName, field in Weir.Effects.libraryDesugars do
           let ty, v = m modName field
+          // the one desugar whose value is not its classification target
+          let v = if key = "|seqItemFromEnd" then itemFromEndImpl else v
           key, ty, v ]
 
 let bareAliasHomesOf (table: (string * (string * Ty * Value) list) list) : Map<string, string> =
