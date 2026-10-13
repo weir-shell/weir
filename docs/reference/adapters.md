@@ -82,7 +82,10 @@ the object back.
 
 `from yaml T` accepts the same shapes as JSON. Quoting decides a
 scalar's type in both directions: `rate: 1.5` is a number, `"1.5"` is
-a string. A quoted scalar may continue on more deeply indented lines,
+a string. An empty value and the plain words `null`, `Null`, `NULL`
+and `~` are null (YAML 1.2's core schema): `None` in an `Option`
+field, an error in a required one; `"null"` is a string. A quoted
+scalar may continue on more deeply indented lines,
 as in kubectl's long `message:` values:
 
 - the closing quote ends it

@@ -150,11 +150,13 @@ let stripDistrictComment (s: string) =
 // the subset's teaching. The core is position-free so the yaml
 // district's template parser reuses it (one machine); parseScalar
 // wraps it with the line prefix.
-// Ok None = null (empty); Ok (Some (text, quoted)) = a scalar.
+// Ok None = null (empty or a core-schema null); Ok (Some (text, quoted)) = a scalar.
 let scalarCore (raw: string) : Result<(string * bool) option, string> =
     let t = raw.Trim()
 
-    if t = "" then
+    // the 1.2 core schema's plain nulls [D:yaml-core-null]; quoted
+    // forms stay strings
+    if t = "" || t = "null" || t = "Null" || t = "NULL" || t = "~" then
         Ok None
     elif t.StartsWith "\"" then
         if t.Length < 2 || not (t.EndsWith "\"") then

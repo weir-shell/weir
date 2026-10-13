@@ -1490,6 +1490,45 @@ let boundaryTests =
                   | Error terr -> failtest (formatError terr)
               | other -> failtest $"unexpected: {other}"
           }
+          test "from yaml: plain null/Null/NULL/~ are null, quoted forms are strings (B8) [D:yaml-core-null]" {
+              let env2 =
+                  env
+                  |> declare "type YN = { a: Option<string>; b: Option<int>; c: Option<string>; d: string; e: Option<string> }"
+                  |> declare "type YO = { ys: seq<Option<int>>; zs: Option<seq<string>>; s: seq<string> }"
+                  |> declare "type YR = { name: string }"
+
+              let evalStr prog =
+                  match Weir.Parser.parseStmt prog with
+                  | Ok(SExpr e) ->
+                      match Weir.Check.typecheck env2 e with
+                      | Ok te -> Weir.Eval.eval valueEnv te
+                      | Error terr -> failtest (formatError terr)
+                  | other -> failtest $"unexpected: {other}"
+
+              Expect.equal
+                  (evalStr "show ([\"a: null\"; \"b: ~\"; \"c: \\\"null\\\"\"; \"d: 'NULL'\"; \"e: Null\"] |> from yaml YN)")
+                  (VStr "{ a = None; b = None; c = Some \"null\"; d = \"NULL\"; e = None }")
+                  "core-schema nulls read None; quoted stay strings"
+
+              for v in [ "Some 1; None"; "None"; "" ] do
+                  for s in [ "\"null\"; \"~\"; \"Null\"; \"NULL\""; "" ] do
+                      let o = $"{{ ys = [{v}]; zs = None; s = [{s}] }}"
+
+                      Expect.equal
+                          (evalStr $"let o = YO {o} in show (o |> to yaml |> from yaml YO) == show o")
+                          (VBool true)
+                          $"roundtrip {o}"
+
+              Expect.equal
+                  (evalStr "show ([\"x: NULL\"; \"y: Nullx\"; \"z: ~/a\"] |> Yaml.parse)")
+                  (VStr "YMap ([(\"x\", YNull); (\"y\", YStr \"Nullx\"); (\"z\", YStr \"~/a\")])")
+                  "only the exact words are null"
+
+              let ex =
+                  Expect.throwsC (fun () -> evalStr "[\"name: null\"] |> from yaml YR" |> ignore) id
+
+              Expect.stringContains ex.Message "field 'name' is null" "a required field receiving null errors"
+          }
           test "from yaml: a --- stream TEACHES — one document only [D:yaml-seq]" {
               let env2 = env |> declare "type YD = { kind: string }"
               let src = "[\"kind: A\"; \"---\"; \"kind: B\"] |> from yaml YD"
