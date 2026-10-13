@@ -43,21 +43,22 @@ module CodePoints =
 
             n
 
-    /// the UTF-16 offset of code point `cp`, clamped to [0, s.Length]
+    /// `offset`, resuming a walk already at UTF-16 offset `fromUtf16` =
+    /// code point `fromCp`: a run of increasing targets costs one pass
+    let offsetFrom (s: string) (fromUtf16: int) (fromCp: int) (cp: int) : int =
+        let mutable n = fromCp
+        let mutable i = fromUtf16
+
+        while n < cp && i < s.Length do
+            i <- i + (if pairAt s i then 2 else 1)
+            n <- n + 1
+
+        i
+
+    /// the UTF-16 offset of code point `cp`, clamped to [0, s.Length] —
+    /// O(cp), never a whole-string scan
     let offset (s: string) (cp: int) : int =
-        if cp <= 0 then
-            0
-        elif not (hasSurrogate s) then
-            min cp s.Length
-        else
-            let mutable n = 0
-            let mutable i = 0
-
-            while n < cp && i < s.Length do
-                i <- i + (if pairAt s i then 2 else 1)
-                n <- n + 1
-
-            i
+        if cp <= 0 then 0 else offsetFrom s 0 0 cp
 
     /// the code-point index of a UTF-16 offset
     let ofOffset (s: string) (utf16: int) : int = length (s.Substring(0, utf16))

@@ -24189,6 +24189,47 @@ let fromTableTests =
                   | other -> failtest $"unexpected rows {other}"
               | v -> failtest $"unexpected {v}"
           }
+          test "cells slice like per-column offsets: astral header, astral cells, a short line" {
+              let header = "N😀ME  READY  😀STATUS  AGE"
+              let cols = Weir.Table.columns header
+
+              for line in
+                  [ "😀😀😀😀😀😀  1/1    Run😀ning  5m"
+                    "plain   1/1    Running  5m"
+                    "😀😀"
+                    "" ] do
+                  let naive =
+                      cols
+                      |> List.mapi (fun i c ->
+                          let s = CodePoints.offset line c.Start
+
+                          let e =
+                              match List.tryItem (i + 1) cols with
+                              | Some n -> CodePoints.offset line n.Start
+                              | None -> line.Length
+
+                          line.Substring(s, max 0 (e - s)).Trim())
+
+                  Expect.equal (Weir.Table.cells cols line) naive $"one walk = per-column offsets: {line}"
+          }
+          // sequenced: a wall-clock ceiling under the parallel suite's load
+          // times the machine, not the walk
+          testSequenced
+          <| test "a wide table slices in linear time per line (2000 columns x 200 rows) [D:str-code-points]" {
+              let n = 2000
+              let header = [ for i in 0 .. n - 1 -> $"C{i:D4}" ] |> String.concat "   "
+              let row = [ for i in 0 .. n - 1 -> $"v{i:D4}" ] |> String.concat "   "
+              let cols = Weir.Table.columns header
+              let sw = System.Diagnostics.Stopwatch.StartNew()
+
+              for _ in 1..200 do
+                  Weir.Table.cells cols row |> ignore
+
+              sw.Stop()
+              Expect.equal (List.last (Weir.Table.cells cols row)) "v1999" "last cell"
+              // a per-column whole-line scan took ~60s here; one walk takes milliseconds
+              Expect.isTrue (sw.ElapsedMilliseconds < 5000L) $"200 rows took {sw.ElapsedMilliseconds}ms"
+          }
           test "az `-o table` dashes separator under the header is skipped, never a garbage row [D:from-table-az]" {
               // az (and tabulate-style tools) draw `----  ----` between the
               // header and the data; it must not parse as a data row. The
