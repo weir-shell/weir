@@ -356,12 +356,21 @@ def pty_history(lines, settle=0.6):
                 except OSError:
                     return
 
+    def clean(b):
+        return re.sub(r"\x1b\[[0-9;]*[A-Za-z]|\x1b=", "", b.decode(errors="replace"))
+
     segs = []
     for l in lines:
         start = len(out)
         os.write(fd, (l + "\r").encode())
         drain(settle)
-        segs.append(re.sub(r"\x1b\[[0-9;]*[A-Za-z]|\x1b=", "", out[start:].decode(errors="replace")))
+        # a slow runner answers after the settle: keep reading until the
+        # prompt is back after the submitted line (bounded), so a late
+        # reply is waited for instead of read as missing
+        deadline = time.time() + 10
+        while time.time() < deadline and not re.search(r"\n\r?weir> ", clean(out[start:])):
+            drain(0.2)
+        segs.append(clean(out[start:]))
     os.write(fd, b"\x04")
     time.sleep(0.3)
     try:
