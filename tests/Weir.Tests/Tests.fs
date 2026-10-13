@@ -16795,6 +16795,18 @@ let matchPipeOffsideTests =
               | Ok [ ll ] -> Expect.isFalse (ll.Text.Contains "(xs") "a pipeline head stays unwrapped"
               | other -> failtest $"expected one logical line, got {other}"
           }
+          test "a match closed inside parens leaves no arm group: a following |> pipes the paren [D:compound-paren-prune]" {
+              for lines in
+                  [ [ "let r ="; "    (match 1 with"; "     | 1 -> \"a\""; "     | _ -> \"b\")"; "    |> Str.toUpper" ]
+                    [ "let r = (match 1 with"; "         | 1 -> \"a\""; "         | _ -> \"b\")"; "        |> Str.toUpper" ] ] do
+                  match assemble lines with
+                  | Ok [ ll ] -> Expect.stringContains ll.Text "\"b\") |> Str.toUpper" "the pipe follows the paren"
+                  | other -> failtest $"expected one logical line, got {other}"
+
+              match typecheck env (parse "(match 1 with\n | 1 -> \"a\"\n | _ -> \"b\")\n|> Str.toUpper") with
+              | Ok te -> Expect.equal te.Ty TStr "the parenthesized match, piped"
+              | Error terr -> failtest (formatError terr)
+          }
           test "a misaligned pipeline stage is still caught" {
               match assemble [ "xs"; "|> Seq.sum"; "  |> print" ] with
               | Error _ -> ()
