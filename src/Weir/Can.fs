@@ -606,7 +606,8 @@ let renderHuman (script: string) (caps: Cap list) : string =
     sb.ToString().TrimEnd()
 
 let renderJson (script: string) (caps: Cap list) : string =
-    let opts = System.Text.Json.JsonWriterOptions(Indented = false)
+    // the CLI's encoder [D:json-raw-user]
+    let opts = rawJsonWriterOptions
     use ms = new System.IO.MemoryStream()
     use w = new System.Text.Json.Utf8JsonWriter(ms, opts)
 

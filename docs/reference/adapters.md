@@ -20,9 +20,11 @@ print $"{peers |> Seq.length} peers"
 Writing mirrors reading. `to json` writes one minified document: a
 record becomes an object and a seq becomes an array (built in memory
 all at once, since a single line cannot be streamed). `to jsonl`
-writes NDJSON, one document per element, lazily. Each format reads
-back what it writes: `to json |> from json T`,
-`to jsonl |> from jsonl T`.
+writes NDJSON, one document per element, lazily. Strings escape only
+what JSON requires (`"`, `\`, control characters); `<`, `&`, `'` and
+non-ASCII text are written as-is, characters beyond the BMP as a
+`\uXXXX` surrogate pair. Each format reads back what it writes:
+`to json |> from json T`, `to jsonl |> from jsonl T`.
 
 ```weir
 type P = { a: int }

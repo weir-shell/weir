@@ -1092,3 +1092,30 @@ let parseDurationMs (text: string) : Result<int64, string> =
         go 0 0L |> Result.map (fun v -> if neg then -v else v)
     with :? System.OverflowException ->
         Error $"not a duration: '{excerpt text}' — beyond the 64-bit millisecond range"
+
+// The one JSON string encoder: CLI/LSP payloads and user `to json` /
+// `to jsonl` / `--can --json` [D:json-raw-user].
+// UnsafeRelaxedJsonEscaping: "unsafe" means HTML-embedding only — these
+// payloads are never HTML; the default encoder's \u0022-style quote
+// escaping is valid but trips naive clients [D:json-relaxed-escaping]
+// BMP non-ASCII passes through raw [D:json-relaxed-escaping]: a
+// Private-Use glyph (a Powerline/Nerd-Font prompt icon, U+E000–U+F8FF)
+// must reach the client as UTF-8, not a `\u`-escape a naive LSP client
+// leaves as literal text. Every System.Text.Json encoder — including
+// UnsafeRelaxedJsonEscaping and Create(UnicodeRanges.All) — escapes the
+// PUA by a hardcoded policy, so this thin subclass delegates to
+// UnsafeRelaxed but refuses to escape any BMP scalar >= 0x80 (surrogate
+// halves excepted — astral chars stay a valid escaped pair). The
+// JSON-mandatory escapes (`"`, `\`, controls) are untouched.
+type RawBmpEncoder() =
+    inherit System.Text.Encodings.Web.JavaScriptEncoder()
+    let inner = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+    let allow (u: int) = u >= 0x80 && u <= 0xFFFF && not (u >= 0xD800 && u <= 0xDFFF)
+    override _.MaxOutputCharactersPerInputCharacter = inner.MaxOutputCharactersPerInputCharacter
+    override _.WillEncode(u) = if allow u then false else inner.WillEncode u
+    override _.FindFirstCharacterToEncode(text, textLength) = inner.FindFirstCharacterToEncode(text, textLength)
+    override _.TryEncodeUnicodeScalar(u, buffer, bufferLength, written) =
+        inner.TryEncodeUnicodeScalar(u, buffer, bufferLength, &written)
+
+let rawJsonWriterOptions =
+    System.Text.Json.JsonWriterOptions(Encoder = RawBmpEncoder())

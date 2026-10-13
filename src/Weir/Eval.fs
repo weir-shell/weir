@@ -1184,7 +1184,8 @@ let private jsonLine
     (v: Value)
     : string =
     let buffer = new System.Buffers.ArrayBufferWriter<byte>()
-    use writer = new System.Text.Json.Utf8JsonWriter(buffer)
+    // the CLI's encoder, not the HTML-safe default [D:json-raw-user]
+    use writer = new System.Text.Json.Utf8JsonWriter(buffer, rawJsonWriterOptions)
 
     let rec write (v: Value) =
         match v with

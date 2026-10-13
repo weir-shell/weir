@@ -1518,7 +1518,8 @@ type Bad = { type: string }
   `value |> to json` writes ONE minified document (a record is an
   object, a seq an ARRAY — building the one line forces the seq);
   `xs |> to jsonl` writes one document per element, lazily — the
-  streaming form. Every adapter pairs with its own name across the
+  streaming form. Strings escape only what JSON requires — `<`, `&`,
+  `'` and non-ASCII stay raw (astral chars as a `\u` pair). Every adapter pairs with its own name across the
   arrow: `to json |> from json T`, `xs |> to json |> from json
   seq<T>`, `xs |> to jsonl |> from jsonl T`.
   A TAGGED UNION crosses the wire [D:wire-unions]: `[<Tag "kind">]`

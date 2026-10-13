@@ -15997,6 +15997,18 @@ let recursiveFieldTests =
                   | Error terr -> failtest (formatError terr)
               | other -> failtest $"unexpected: {other}"
           }
+          test "to json writes the CLI's encoding: no HTML escapes, BMP raw, astral as a pair (B28) [D:json-raw-user]" {
+              let src = "{| a = \"say \\\"hi\\\" it's \u00e9 <b> & \u65e5\u672c \U0001F389\" |}"
+              let expected = "{\"a\":\"say \\\"hi\\\" it's \u00e9 <b> & \u65e5\u672c \\uD83C\\uDF89\"}"
+
+              Expect.equal (run (src + " |> to json") |> forceSeq) [ VStr expected ] "to json"
+              Expect.equal (run ("[" + src + "] |> to jsonl") |> forceSeq) [ VStr expected ] "to jsonl"
+
+              Expect.equal
+                  (run ("let a = " + src + " in [a] |> to jsonl |> from jsonl {| a: string |} |> Seq.map _.a"))
+                  (run ("[(" + src + ").a]"))
+                  "the text round-trips through from json"
+          }
           test "to json round-trips nested records and seq fields" {
               let e =
                   env
