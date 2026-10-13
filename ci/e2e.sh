@@ -1102,6 +1102,20 @@ done
 rm -rf "$fmtdir"
 echo "e2e ok: fmt canonicalizes, --check gates, output runs; flags never read as scripts"
 
+# every tracked script is already formatted — a repo-wide fmt regression
+# fails here [D:fmt-bracket-shift]; outside a git checkout (an unpacked
+# tarball) the repo's script dirs stand in
+fmtroot="$(dirname "$0")/.."
+fmtfiles=$(git -C "$fmtroot" ls-files '*.weir' 2>/dev/null) \
+    || fmtfiles=$(cd "$fmtroot" && find ci examples tools -name '*.weir')
+[ -n "$fmtfiles" ] || fail "fmt repo gate found no .weir files under $fmtroot"
+for f in $fmtfiles; do
+    rc=0
+    out=$($BIN fmt --check "$fmtroot/$f" 2>&1) || rc=$?
+    [ $rc -eq 0 ] || fail "tracked script is not fmt-clean: $f — $out"
+done
+echo "e2e ok: every tracked .weir file passes fmt --check"
+
 cat > "$scriptdir/blockmatch.weir" <<'WEOF'
 type Size = Big | Small
 
