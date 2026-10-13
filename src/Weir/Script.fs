@@ -4448,11 +4448,52 @@ let rec loadModuleCachedWith
                                 |> List.filter (fun (n, _) ->
                                     not (Set.contains n sc.Signed) && not (Set.contains n ctorNames))
 
+                            // an imported type reachable from what this module
+                            // exports (a signature, an own type's field or case)
+                            // crosses with it, so an importer can read, show and
+                            // compare the values it receives; it is not this
+                            // module's type (TypeNames: no qualified literal, no
+                            // re-export under this alias)
+                            let reachableDefs =
+                                let own = typeDefs |> List.map fst |> Set.ofList
+
+                                let rec walk (seen: Set<string>) (ty: Ty) =
+                                    match ty with
+                                    | TFun(a, b) -> walk (walk seen a) b
+                                    | TSeq t -> walk seen t
+                                    | TTuple ts -> ts |> List.fold walk seen
+                                    | TRowVar(_, fields) -> fields |> List.map snd |> List.fold walk seen
+                                    | TNamed(n, args) ->
+                                        let seen = args |> List.fold walk seen
+
+                                        if seen.Contains n || Map.containsKey n baseTenv.Types then
+                                            seen
+                                        else
+                                            match Map.tryFind n finalTenv.Types with
+                                            | Some def -> defTys def |> List.fold walk (Set.add n seen)
+                                            | None -> seen
+                                    | _ -> seen
+
+                                and defTys (def: TypeDef) =
+                                    match def with
+                                    | Record rd -> rd.Fields |> List.map snd
+                                    | Union u -> u.Cases |> List.choose snd
+
+                                let roots =
+                                    (members |> List.map (fun (_, sch) -> sch.Ty))
+                                    @ (typeDefs |> List.collect (snd >> defTys))
+
+                                roots
+                                |> List.fold walk own
+                                |> Set.filter (fun n -> not (own.Contains n))
+                                |> Set.toList
+                                |> List.choose (fun n -> Map.tryFind n finalTenv.Types |> Option.map (fun d -> n, d))
+
                             let loaded =
                                 { Alias = alias
                                   NaturalName = natural |> Option.defaultValue alias
                                   AbsPath = absPath
-                                  TypeDefs = typeDefs
+                                  TypeDefs = typeDefs @ reachableDefs
                                   Members = members
                                   PrivateMembers = privateMembers
                                   TypeNames = typeDefs |> List.map fst
