@@ -24094,6 +24094,21 @@ let fromTableTests =
                         ) ])
                   "columns slice at header offsets; int cells convert; blank interior lines skip"
           }
+          test "header offsets count code points — an astral cell does not shift the cut [D:str-code-points]" {
+              // tabwriter pads by rune count: 6 emoji + 2 spaces fill an 8-wide column
+              let sample =
+                  VSeq
+                      [ VStr "NAME    READY   STATUS             RESTARTS   AGE"
+                        VStr "😀😀😀😀😀😀  1/1     Running            0          5m" ]
+
+              match runT [ "src", sample ] "src |> from table TPod" with
+              | VSeq rows ->
+                  match List.ofSeq rows with
+                  | [ VRecord(_, fs) ] ->
+                      Expect.equal (fs |> List.map snd) [ VStr "😀😀😀😀😀😀"; VStr "1/1"; VStr "Running"; VInt 0L; VStr "5m" ] ""
+                  | other -> failtest $"unexpected rows {other}"
+              | v -> failtest $"unexpected {v}"
+          }
           test "az `-o table` dashes separator under the header is skipped, never a garbage row [D:from-table-az]" {
               // az (and tabulate-style tools) draw `----  ----` between the
               // header and the data; it must not parse as a data row. The

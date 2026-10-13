@@ -12,8 +12,10 @@ module Weir.Table
 // the drafting arm in Infer — the json/yaml layering.
 
 open System
+open Weir.Types
 
-/// one column: the header's raw text and its start offset (0-based)
+/// one column: the header's raw text and its start offset (0-based, in
+/// code points [D:str-code-points] — Go's tabwriter pads by rune count)
 type Column = { Header: string; Start: int }
 
 /// split a header line into columns [D:from-table]: a column boundary is
@@ -42,7 +44,7 @@ let columns (header: string) : Column list =
 
             cols.Add
                 { Header = header.Substring(start, i - start)
-                  Start = start }
+                  Start = CodePoints.ofOffset header start }
 
     List.ofSeq cols
 
@@ -54,11 +56,11 @@ let cells (cols: Column list) (line: string) : string list =
 
     arr
     |> Array.mapi (fun i c ->
-        let s = min c.Start line.Length
+        let s = CodePoints.offset line c.Start
 
         let e =
             if i + 1 < arr.Length then
-                min arr[i + 1].Start line.Length
+                CodePoints.offset line arr[i + 1].Start
             else
                 line.Length
 

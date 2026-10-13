@@ -1786,7 +1786,8 @@ refs |> Seq.iter (fun r -> print r.Include)
   aligned data rows — into row records, yielding `seq<T>`
   (`kubectl get po |> from table Pod`). The first non-blank line is
   the HEADER; columns slice at HEADER OFFSETS, never whitespace runs,
-  so a spaced value (`Up 2 hours`) survives; a header boundary is a
+  so a spaced value (`Up 2 hours`) survives; offsets count code points
+  as the tools pad [D:str-code-points], so an emoji cell stays put; a header boundary is a
   run of 2+ SPACES — a single interior space stays inside one header
   (`CONTAINER ID` is ONE column; both tools pad with 3 spaces). A
   field matches its header by normalized name, case-insensitively on
