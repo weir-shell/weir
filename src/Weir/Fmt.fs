@@ -453,6 +453,20 @@ let private formatLinesCore (body: string list) : Result<string list, string> =
                 let shape = shapeWith shapeResolver
                 let shapeExpr = shapeWith exprResolver
 
+                // a statement that reads as a command under the assume
+                // resolver may BE one — its argv words are data
+                // [D:fmt-argv-verbatim], so only the command-side shape
+                // may vouch for its respace
+                let mayRunCommand (text: string) =
+                    let rec hasCmd (e: Expr) =
+                        match e.Kind with
+                        | ECmd _ -> true
+                        | _ -> exprChildren e |> List.exists hasCmd
+
+                    match Parser.parseLine shapeResolver text with
+                    | Ok stmt -> Parser.stmtExprs stmt |> List.exists hasCmd
+                    | Error _ -> false
+
                 let respaced =
                     formatted
                     |> List.map (fun raw ->
@@ -474,17 +488,22 @@ let private formatLinesCore (body: string list) : Result<string list, string> =
                     let revertLines =
                         List.zip formattedLogical respacedLogical
                         |> List.collect (fun (o, n) ->
-                            // shape agreement under EITHER resolver keeps
-                            // the respace [D:fmt-respace]: the assume side
-                            // proves command lines unchanged, the
-                            // expression side proves ident-headed
-                            // expressions unchanged
+                            // the assume side proves command lines
+                            // unchanged; the expression side vouches only
+                            // when neither spelling can be a command
+                            // (`c&&d` is an expression, `c && d` may be
+                            // argv) [D:fmt-respace] [D:fmt-argv-verbatim]
                             let agreesUnder shapeOf =
                                 match shapeOf o.Text, shapeOf n.Text with
                                 | Some a, Some b -> a = b
                                 | _ -> false
 
-                            if agreesUnder shape || agreesUnder shapeExpr then
+                            if
+                                agreesUnder shape
+                                || (not (mayRunCommand o.Text)
+                                    && not (mayRunCommand n.Text)
+                                    && agreesUnder shapeExpr)
+                            then
                                 []
                             else
                                 if System.Environment.GetEnvironmentVariable "WEIR_FMT_DEBUG" <> null then

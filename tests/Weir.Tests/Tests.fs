@@ -12496,6 +12496,25 @@ let agentFindingsTests =
               Expect.equal (Weir.Script.respaceLine "let x = {A = {B = 1}}") "let x = { A = { B = 1 } }" ""
               Expect.equal (Weir.Script.respaceLine "let a = 1 ;  print \"x\"") "let a = 1; print \"x\"" ""
           }
+          test "fmt never re-spaces command argv words [D:fmt-argv-verbatim]" {
+              for line in
+                  [ "chmod u+x f"
+                    "echo a+b"
+                    "echo a-b c*d e/f"
+                    "c&&d"
+                    "git status&&pwd"
+                    "echo a&&b"
+                    "echo x=1 a:b"
+                    "if a&&b then print \"x\"" ] do
+                  match Weir.Fmt.formatLines [ line ] with
+                  | Ok out -> Expect.equal out [ line ] $"argv kept verbatim: {line}"
+                  | Error e -> failtestf "fmt failed on %s: %s" line e
+
+              // control: an expression that can never be a command still respaces
+              match Weir.Fmt.formatLines [ "let x = 1+2" ] with
+              | Ok out -> Expect.equal out [ "let x = 1 + 2" ] "expression operators still pad"
+              | Error e -> failtestf "fmt failed: %s" e
+          }
           test "respaceLine: string interiors and leading indent untouched" {
               Expect.equal (Weir.Script.respaceLine "    print \"a  {  b\"") "    print \"a  {  b\"" "plain"
               Expect.equal (Weir.Script.respaceLine "let s = @\"a  {  b\"") "let s = @\"a  {  b\"" "verbatim"
