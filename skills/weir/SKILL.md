@@ -1767,7 +1767,8 @@ doc |> Yaml.merge p |> to yaml |> Seq.iter print
   converted (`Str.toInt`), the checker teaches it. `[<Attr>]` fits only
   `string`/`Option<string>`, `[<Elem>]` only a `seq`, the top level is
   one root (`from xml seq<T>` refuses — a repeat is a `seq< >` field),
-  and there is NO `to xml`.
+  and there is NO `to xml`. A DTD (`<!DOCTYPE …>`) refuses
+  [D:xml-no-dtd] — no declared entity expands or resolves.
 
 ```weir
 type Ref  = { [<Attr>] Include: string }

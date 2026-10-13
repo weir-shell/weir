@@ -1699,10 +1699,29 @@ let private xmlDoc
     (shown: string)
     (text: string)
     : Value =
+    // DTDs are prohibited [D:xml-no-dtd]: no declared entity expands and
+    // no external one resolves; XDocument.Parse's defaults would process
+    // an internal subset
+    let settings =
+        System.Xml.XmlReaderSettings(
+            DtdProcessing = System.Xml.DtdProcessing.Prohibit,
+            XmlResolver = null,
+            // XDocument.Parse's LoadOptions.None reading
+            IgnoreWhitespace = true
+        )
+
     let root =
         try
-            (XDocument.Parse text).Root
-        with _ ->
+            use sr = new System.IO.StringReader(text)
+            use reader = System.Xml.XmlReader.Create(sr, settings)
+            (XDocument.Load reader).Root
+        with
+        // Prohibit's own error carries no position; the declaration's
+        // spelling is what names it
+        | :? System.Xml.XmlException when text.Contains "<!DOCTYPE" ->
+            failwith
+                $"{who}: a DTD (<!DOCTYPE ...>) is outside the XML subset — remove it; only the five predefined entities (&amp; &lt; &gt; &quot; &apos;) and character references read: {shown}"
+        | _ ->
             // never System.Xml's words, mirroring the JSON boundary
             failwith $"{who}: not valid XML: {shown}"
 

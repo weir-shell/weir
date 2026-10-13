@@ -1646,6 +1646,24 @@ let boundaryTests =
               let empty = Expect.throwsC (fun () -> runWith [ "src", VSeq [ VStr "" ] ] "src |> from xml XProj" |> ignore) id
               Expect.stringContains empty.Message "empty input — expected one XML document" ""
           }
+          test "from xml: a DTD refuses — no entity expands or resolves [D:xml-no-dtd]" {
+              let refuse (doc: string list) =
+                  (Expect.throwsC (fun () -> runWith [ "src", VSeq(doc |> List.map VStr) ] "src |> from xml XProj" |> ignore) id)
+                      .Message
+
+              let ext = refuse [ "<!DOCTYPE Project [<!ENTITY e SYSTEM \"file:///etc/hostname\">]>"; "<Project>&e;</Project>" ]
+              Expect.stringContains ext "a DTD (<!DOCTYPE ...>) is outside the XML subset" "an external entity is never silently dropped"
+
+              let inner = refuse [ "<!DOCTYPE Project [<!ENTITY e \"X\">]>"; "<Project>&e;</Project>" ]
+              Expect.stringContains inner "outside the XML subset" "an internal entity never expands"
+
+              Expect.stringContains (refuse [ "<!DOCTYPE Project>"; "<Project/>" ]) "remove it" "a bare DOCTYPE too"
+
+              Expect.equal
+                  (runWith [ "src", VSeq [ VStr "<?xml version=\"1.0\"?>"; VStr "<Project>&amp;&#65;</Project>" ] ] "src |> from xml XProj")
+                  (VRecord("XProj", [ "groups", VSeq []; "refs", VSeq [] ]))
+                  "the predefined entities and character references still read"
+          }
           test "from xml: check-time laws — text-only leaves, [<Attr>]/[<Elem>] fit, no wrap, read-only [D:from-xml]" {
               Expect.stringContains (checkErr "src |> from xml XInt").Message "XML values are text" "numbers must be declared string"
 
