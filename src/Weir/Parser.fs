@@ -1089,8 +1089,8 @@ let private negIntLit =
     spanned (
         pchar '-' >>. many1Satisfy isDigit
         >>= fun digits ->
-            match System.Int64.TryParse digits with
-            | true, n -> preturn (EInt(-n))
+            match System.Int64.TryParse("-" + digits) with
+            | true, n -> preturn (EInt n)
             // not anchored [D:anchor-before-read]: seeking to the '-' would
             // drop the fatal into the unary-minus operator's contested spot
             // and merge its expecting-list — a message-domination finding,
@@ -1343,7 +1343,18 @@ let private negAtom =
     // instead of being swallowed by the attempt (a fatal inside an attempt
     // is not a fatal) and merged into a dump
     >>= fun p ->
-        postfixAtomFwd
+        // Int64.MinValue's magnitude has no positive literal, so the 0 - e
+        // desugar cannot spell it; F# reads `-9223372036854775808` as one
+        // literal and so does weir
+        (attempt (
+            pstring "9223372036854775808"
+            >>. notFollowedBy (satisfy (fun c -> Char.IsLetterOrDigit c || c = '_'))
+            >>. notFollowedBy (pchar '.' >>. satisfy isDigit)
+         )
+         >>. getPosition
+         .>> ws
+         |>> fun e -> { Kind = EInt Int64.MinValue; Span = { Start = pos p; End = pos e } })
+        <|> (postfixAtomFwd
         |>> fun e ->
             let span = { Start = pos p; End = e.Span.End }
 
@@ -1355,7 +1366,7 @@ let private negAtom =
             | ESize b -> { Kind = ESize(-b); Span = span }
             | _ ->
                 { Kind = EBinOp("-", { Kind = EInt 0L; Span = e.Span }, e)
-                  Span = span }
+                  Span = span })
 
 // Depth guard [D:depth-guard]: unbounded expression depth blows the
 // native stack — the recursive-descent parser on deep nesting (parens/

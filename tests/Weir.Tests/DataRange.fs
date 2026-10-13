@@ -37,6 +37,10 @@ let dataRangeTests =
         [ test "int64 boundaries are literal-reachable" {
               Expect.equal (run "9223372036854775807") (VInt System.Int64.MaxValue) "max"
               Expect.equal (run "0 - 9223372036854775807") (VInt(-System.Int64.MaxValue)) "near min"
+              Expect.equal (run "-9223372036854775808") (VInt System.Int64.MinValue) "min"
+              Expect.equal (run "[-9223372036854775808 .. -9223372036854775807] |> Seq.length") (VInt 2L) "min range"
+              Expect.equal (run "[0 .. -9223372036854775808 .. -9223372036854775808] |> Seq.length") (VInt 2L) "min step"
+              Expect.stringContains (runErr "-9223372036854775809") "out of range (64-bit)" "below min"
           }
           test "arithmetic overflow raises, never wraps" {
               Expect.stringContains (runErr "9223372036854775807 + 1") "integer overflow" "+"
