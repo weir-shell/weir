@@ -3437,7 +3437,11 @@ let private heredocInterpLine: Parser<InterpPart<Expr> list, unit> =
 let private heredocSplicePart: Parser<InterpPart<Expr>, unit> =
     choice
         [ pstring "$$" >>% IStr "$"
-          attempt (pchar '$' >>. pchar '{' >>. ws >>. holeExpr .>> pchar '}') |>> IExpr
+          // committed after `${`: a malformed splice is an error, never
+          // literal text
+          pstring "${" >>. ws >>. holeExpr
+          .>> (pchar '}' <?> "'}' closing the ${ splice")
+          |>> IExpr
           attempt (spanned (pchar '$' >>. many1Satisfy2 isIdentStart isIdentCont))
           |>> (fun (n, sp) -> IExpr { Kind = EVar n; Span = sp })
           pchar '$' >>% IStr "$"

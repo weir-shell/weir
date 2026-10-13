@@ -1820,7 +1820,8 @@ print (show (pods |> Seq.head |> _.node))
   through untouched). `$$<<<` is the SPLICE twin for templating
   brace-heavy text (JSON/config) [D:heredoc-splice]: `$name` /
   `${expr}` substitute, `$$` is a literal `$` (a `$` not starting a
-  name/`${` stays literal), and `{`/`}`/`"` are ALL literal — a pasted
+  name/`${` stays literal; a malformed `${…}` is a parse error), and
+  `{`/`}`/`"` are ALL literal — a pasted
   JSON blob templates with no `{{`/`}}` doubling. It substitutes raw
   like any template (a `"`/newline in a value can break the output —
   reach for `to json` from a record/`{| … |}`/Map when a value is
