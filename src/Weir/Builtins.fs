@@ -148,7 +148,7 @@ let private truncateImpl: Value =
     VBuiltin(fun n ->
         VBuiltin(fun s ->
             match n, s with
-            | VInt n, VSeq items -> VSeq(Seq.truncate (int n) items)
+            | VInt n, VSeq items -> VSeq(Seq.truncate (toIntArg "Seq.take" Amount n) items)
             | _ -> unreachable "the checker rejects truncation on these arguments"))
 
 let private mapImpl: Value =
@@ -276,7 +276,7 @@ let private windowedImpl: Value =
                     // source is pulled; a short source yields the empty
                     // seq (F#'s rule — no partial final window). Windows
                     // are views over the same (memoized-once) elements.
-                    VSeq(items |> Seq.windowed (int n) |> Seq.map (fun w -> VSeq(Seq.ofArray w)))
+                    VSeq(items |> Seq.windowed (toIntArg "windowed" Amount n) |> Seq.map (fun w -> VSeq(Seq.ofArray w)))
             | _ -> unreachable "the checker rejects 'windowed' on these arguments"))
 
 let private lastImpl: Value =
@@ -1035,17 +1035,30 @@ let private substringImpl: Value =
             VBuiltin(fun subject ->
                 match start, len, subject with
                 | VInt st64, VInt ln64, VStr s ->
-                    let st, ln = int st64, int ln64
-
-                    if st < 0 || ln < 0 || st + ln > s.Length then
-                        failwith $"substring: out of bounds (start {st}, length {ln}, string length {s.Length})"
+                    // bounds in int64, so no start + length can wrap past
+                    // the check [D:int-narrowing]
+                    if st64 < 0L || ln64 < 0L || st64 > int64 s.Length || ln64 > int64 s.Length - st64 then
+                        failwith $"substring: out of bounds (start {st64}, length {ln64}, string length {s.Length})"
                     else
-                        VStr(s.Substring(st, ln))
+                        VStr(s.Substring(toIntArg "Str.sub" Position st64, toIntArg "Str.sub" Amount ln64))
                 | _ -> unreachable "the checker rejects 'substring' on these arguments")))
 
 // Str.replicate / padLeft / padRight [D:port-members]: the width
 // primitives every columnar CLI hand-rolled (the asdf port's receipt).
 // Negative counts/widths refuse like Seq.replicate — the one convention.
+// A result past .NET's string ceiling is refused in weir's words
+// [D:int-narrowing], as is a failed allocation below it.
+let private maxStrLen = 0x3FFFFFDFL
+
+let private buildStr (who: string) (chars: int64) (f: unit -> string) : string =
+    if chars > maxStrLen then
+        failwith $"{who}: a {chars}-char result is too large (at most {maxStrLen})"
+
+    try
+        f ()
+    with :? System.OutOfMemoryException ->
+        failwith $"{who}: out of memory building a {chars}-char string"
+
 let private strReplicateImpl: Value =
     VBuiltin(fun nV ->
         VBuiltin(fun sV ->
@@ -1054,7 +1067,8 @@ let private strReplicateImpl: Value =
                 if n < 0L then
                     failwith $"Str.replicate: the count must be non-negative; got {n}"
                 else
-                    VStr(String.replicate (int n) s)
+                    let n32 = toIntArg "Str.replicate" Amount n
+                    VStr(buildStr "Str.replicate" (n * int64 s.Length) (fun () -> String.replicate n32 s))
             | _ -> unreachable "the checker rejects 'Str.replicate' on these arguments"))
 
 // .NET PadLeft/PadRight semantics, deliberately: width is the total
@@ -1067,7 +1081,8 @@ let private padImpl (name: string) (f: int -> string -> string) : Value =
                 if w < 0L then
                     failwith $"Str.{name}: the width must be non-negative; got {w}"
                 else
-                    VStr(f (int w) s)
+                    let w32 = toIntArg $"Str.{name}" Amount w
+                    VStr(buildStr $"Str.{name}" (max w (int64 s.Length)) (fun () -> f w32 s))
             | _ -> unreachable $"the checker rejects 'Str.{name}' on these arguments"))
 
 let private defaultToImpl: Value =
@@ -1429,7 +1444,7 @@ let private pfirstWithImpl: Value =
                 match nv, s with
                 | VInt n, VSeq items ->
                     refuseParallelInPlan "pfirstWith"
-                    runRaceWith (int n) f items
+                    runRaceWith (toIntArg "pfirstWith" Amount n) f items
                 | v, _ -> unreachable $"the checker rejects 'pfirstWith' on {formatValue v}")))
 
 let private pmapImpl: Value =
@@ -1448,7 +1463,7 @@ let private pmapWithImpl: Value =
                 match nv, s with
                 | VInt n, VSeq items ->
                     refuseParallelInPlan "pmapWith"
-                    VSeq(runParallelWith (int n) f items :> seq<Value>)
+                    VSeq(runParallelWith (toIntArg "pmapWith" Amount n) f items :> seq<Value>)
                 | v, _ -> unreachable $"the checker rejects 'pmapWith' on {formatValue v}")))
 
 let private piterWithImpl: Value =
@@ -1458,7 +1473,7 @@ let private piterWithImpl: Value =
                 match nv, s with
                 | VInt n, VSeq items ->
                     refuseParallelInPlan "piterWith"
-                    runParallelWith (int n) f items |> ignore
+                    runParallelWith (toIntArg "piterWith" Amount n) f items |> ignore
                     VUnit
                 | v, _ -> unreachable $"the checker rejects 'piterWith' on {formatValue v}")))
 
@@ -1562,7 +1577,7 @@ let private itemImpl: Value =
                 if i < 0L then
                     failwith $"item: negative index {i}"
                 else
-                    match items |> Seq.tryItem (int i) with
+                    match items |> Seq.tryItem (toIntArg "item" Position i) with
                     | Some v -> v
                     | None -> failwith $"item: no element at index {i}"
             | _ -> unreachable "the checker rejects 'item' on these arguments"))
@@ -1663,7 +1678,25 @@ let private chunkImpl: Value =
                 if n <= 0L then
                     failwith $"chunkBySize: the chunk size must be positive; got {n}"
                 else
-                    VSeq(items |> Seq.chunkBySize (int n) |> Seq.map (fun arr -> VSeq(arr :> seq<Value>)))
+                    // a growing buffer, not Seq.chunkBySize: that one
+                    // preallocates n slots, so a large n failed in .NET's words
+                    let size = toIntArg "chunkBySize" Amount n
+
+                    VSeq(
+                        seq {
+                            let buf = ResizeArray<Value>()
+
+                            for x in items do
+                                buf.Add x
+
+                                if buf.Count = size then
+                                    yield VSeq(buf.ToArray() :> seq<Value>)
+                                    buf.Clear()
+
+                            if buf.Count > 0 then
+                                yield VSeq(buf.ToArray() :> seq<Value>)
+                        }
+                    )
             | v, _ -> unreachable $"the checker rejects 'chunkBySize' on {formatValue v}"))
 
 let private takeWhileImpl: Value =
@@ -1801,7 +1834,7 @@ let private replicateImpl: Value =
                 if n < 0L then
                     failwith $"replicate: the count must be non-negative; got {n}"
                 else
-                    VSeq(Seq.replicate (int n) x)
+                    VSeq(Seq.replicate (toIntArg "replicate" Amount n) x)
             | v -> unreachable $"the checker rejects 'replicate' on {formatValue v}"))
 
 // max/min and the By twins: Ord-constrained, raise on empty (the head
@@ -3770,11 +3803,11 @@ let private bytesMembers: (string * Ty * Value) list =
               VBuiltin(fun subject ->
                   match start, len, subject with
                   | VInt st64, VInt ln64, VBytes b ->
-                      let st, ln = int st64, int ln64
-
-                      if st < 0 || ln < 0 || st + ln > b.Length then
-                          failwith $"Bytes.sub: out of bounds (start {st}, length {ln}, byte length {b.Length})"
+                      // int64 bounds, exact narrowing [D:int-narrowing]
+                      if st64 < 0L || ln64 < 0L || st64 > int64 b.Length || ln64 > int64 b.Length - st64 then
+                          failwith $"Bytes.sub: out of bounds (start {st64}, length {ln64}, byte length {b.Length})"
                       else
+                          let st, ln = toIntArg "Bytes.sub" Position st64, toIntArg "Bytes.sub" Amount ln64
                           VBytes(b[st .. st + ln - 1])
                   | _ -> unreachable "the checker rejects 'Bytes.sub' on these arguments")))
       // key -> message -> mac; .NET's own HMACSHA256, no reflection.
@@ -4110,7 +4143,7 @@ let private runRequest (reqV: Value) : Http.Resp =
               Body = httpBodyOf (get "body")
               TimeoutMs =
                 (match get "timeout" with
-                 | VDur ms -> int ms
+                 | VDur ms -> toIntArg "Http timeout (ms)" Amount ms
                  | v -> unreachable $"timeout {formatValue v}")
               Insecure =
                 (match get "insecure" with
@@ -4501,7 +4534,7 @@ let private netMembers: (string * Ty * Value) list =
 
               VBool(
                   try
-                      sock.ConnectAsync(System.Net.IPAddress.Loopback, int port).Wait 250
+                      sock.ConnectAsync(System.Net.IPAddress.Loopback, toIntArg "Net.portOpen" Amount port).Wait 250
                       && sock.Connected
                   with _ ->
                       false

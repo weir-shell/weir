@@ -3687,9 +3687,10 @@ let private applySessionField
     | "logLevel", ty -> err $"logLevel expects a string, got {Types.formatTy ty}"
     | "echoCap", Types.TInt ->
         (match Eval.eval venv te with
-         | Eval.VInt n when n > 0 ->
-             echoCap <- Some(int n)
+         | Eval.VInt n when n > 0 && n <= int64 System.Int32.MaxValue ->
+             echoCap <- Some(Eval.toIntArg "echoCap" Eval.Amount n)
              true
+         | Eval.VInt n when n > 0 -> err $"echoCap {n} is too large (at most {System.Int32.MaxValue})"
          | Eval.VInt n -> err $"echoCap must be positive; got {n}"
          | _ -> err "echoCap expects an int")
     | "echoCap", ty -> err $"echoCap expects an int, got {Types.formatTy ty}"

@@ -16801,6 +16801,58 @@ let accessorTeachingTests =
               expectValue "[1; 2; 3] |> Seq.item 1" (VInt 2L)
               expectValue "nats |> Seq.skip 2 |> Seq.head" (VInt 2L)
           }
+          // B5 [D:int-narrowing]: a 64-bit int past int32 never wraps —
+          // a position is out of range, an amount too large; slices clamp
+          test "int arguments past int32 raise instead of wrapping" {
+              for n in [ 2147483648L; 4294967296L; 4294967297L ] do
+                  for (src, want) in
+                      [ $"[10; 20] |> Seq.item {n}", "out of range"
+                        $"let xs = [10; 20] in xs[{n}]", "out of range"
+                        $"[1; 2] |> Seq.take {n} |> Seq.length", "too large"
+                        $"Str.replicate {n} \"a\"", "too large"
+                        $"Str.padLeft {n} \"a\"", "too large"
+                        $"Str.padRight {n} \"a\"", "too large"
+                        $"[1] |> Seq.replicate {n} |> Seq.length", "too large"
+                        $"[1] |> Seq.windowed {n} |> Seq.length", "too large"
+                        $"[1] |> Seq.chunkBySize {n} |> Seq.length", "too large"
+                        $"Str.sub {n} 1 \"abc\"", "out of bounds"
+                        $"Str.sub 1 {n} \"abc\"", "out of bounds"
+                        $"Str.toUtf8 \"abc\" |> Bytes.sub 1 {n}", "out of bounds" ] do
+                      Expect.stringContains (msgOf src) want src
+
+                  expectValue $"[1; 2; 3][0..{n}] |> Seq.length" (VInt 3L)
+                  expectValue $"\"abc\"[1..{n}]" (VStr "bc")
+                  expectValue $"[1; 2; 3][{n}..] |> Seq.length" (VInt 0L)
+
+              // -1 keeps each member's own negative rule
+              Expect.stringContains (msgOf "[10; 20] |> Seq.item -1") "negative index" "item"
+              Expect.stringContains (msgOf "Str.replicate -1 \"a\"") "non-negative" "Str.replicate"
+              Expect.stringContains (msgOf "Str.sub -1 1 \"abc\"") "out of bounds" "Str.sub"
+              Expect.stringContains (msgOf "Str.replicate 1000000000 \"ab\"") "too large" "the string ceiling"
+              expectValue "[1] |> Seq.chunkBySize 2147483647 |> Seq.length" (VInt 1L)
+          }
+          // the gate: no builtin narrows a user int with a bare `int` cast —
+          // toIntArg is the one narrowing (the exit code is the triaged
+          // exception: a process exit status is the OS's own wrap)
+          test "no bare int cast on a VInt argument in the runtime [D:int-narrowing]" {
+              let src = System.IO.Path.Combine(__SOURCE_DIRECTORY__, "..", "..", "src", "Weir")
+
+              let offenders =
+                  [ for file in [ "Builtins.fs"; "Eval.fs"; "Repl.fs" ] do
+                        let lines = System.IO.File.ReadAllLines(System.IO.Path.Combine(src, file))
+
+                        for i in 0 .. lines.Length - 1 do
+                            for m in System.Text.RegularExpressions.Regex.Matches(lines[i], @"VInt (\w+)") do
+                                let v = m.Groups[1].Value
+                                let cast = System.Text.RegularExpressions.Regex($@"\bint\s*\(?\s*{v}\b")
+
+                                for j in i .. min (i + 25) (lines.Length - 1) do
+                                    if cast.IsMatch lines[j] && not (lines[j].Contains "ExitRequest") then
+                                        yield $"{file}:{j + 1}: {lines[j].Trim()}" ]
+                  |> List.distinct
+
+              Expect.equal offenders [] "narrow through toIntArg"
+          }
           test "modulo [D:modulo]: truncated, int-only, /'s zero discipline" {
               // truncated (F#/.NET): the sign follows the dividend —
               // only the negative cases assert the ruling

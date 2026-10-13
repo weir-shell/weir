@@ -8,6 +8,24 @@ open System.Xml.Linq
 
 let unreachable (why: string) : 'a = failwith $"unreachable: {why}"
 
+/// what an int argument means to the builtin narrowing it: a position
+/// (an index, a start) or an amount (a count, a size, a width)
+type IntArg =
+    | Position
+    | Amount
+
+/// the one int64 -> int32 narrowing for user ints [D:int-narrowing]:
+/// `int` is 64-bit, .NET's indexes and counts are 32-bit; past that range
+/// a position is out of range and an amount too large — never wrapped
+let toIntArg (who: string) (role: IntArg) (n: int64) : int =
+    if n >= int64 System.Int32.MinValue && n <= int64 System.Int32.MaxValue then
+        int n
+    else
+        match role with
+        | Position -> failwith $"{who}: index {n} is out of range"
+        | Amount when n > 0L -> failwith $"{who}: {n} is too large (at most {System.Int32.MaxValue})"
+        | Amount -> failwith $"{who}: {n} is out of range"
+
 // Exit.code's carrier, declared in Session (the teardown raises it too)
 exception ExitRequest = Session.ExitRequest
 
@@ -3180,7 +3198,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
                 System.Int32.MaxValue, dur "interval", Some(dur "timeout")
             else
                 (match recGet "attempts" fields with
-                 | VInt n -> int n
+                 | VInt n -> toIntArg head Amount n
                  | v -> unreachable $"the checker rejects attempts of {formatValue v}"),
                 dur "delay",
                 (match recGet "timeout" fields with
@@ -3334,44 +3352,46 @@ and eval (env: Env) (te: TypedExpr) : Value =
         // infinite source does not hang); an open end skips lazily. A
         // `^`-bound counts from the end (F#'s `^n` = length - n), which
         // needs the length, so a from-end SEQ slice forces (as Seq.last does).
+        // bounds stay int64 [D:int-narrowing]; clamping them to ±2^40 is
+        // exact (no target is that long) and keeps `len - v` from wrapping
         let boundVal o =
             match o with
             | None -> None
             | Some e ->
                 match eval env e with
-                | VInt n -> Some(int n)
+                | VInt n -> Some(max -(1L <<< 40) (min (1L <<< 40) n))
                 | v -> unreachable $"the checker guarantees an int slice bound; got {formatValue v}"
 
         let loV = boundVal lo
         let hiV = boundVal hi
 
         // resolve a bound to an absolute index given the target's length
-        let absLo len =
+        let absLo (len: int) =
             match loV with
-            | None -> 0
-            | Some v -> if loFromEnd then len - v else v
+            | None -> 0L
+            | Some v -> if loFromEnd then int64 len - v else v
 
         // the closed (inclusive) upper index, clamped to len - 1; an absent
         // hi is the last element
-        let absHi len =
+        let absHi (len: int) =
             match hiV with
-            | None -> len - 1
-            | Some v -> min (if hiFromEnd then len - v else v) (len - 1)
+            | None -> int64 len - 1L
+            | Some v -> min (if hiFromEnd then int64 len - v else v) (int64 len - 1L)
 
         match on with
         | Check.SliceStr ->
             match eval env target with
             | VStr s ->
-                let a = max 0 (absLo s.Length)
+                let a = max 0L (absLo s.Length)
                 let b = absHi s.Length
-                if a > b then VStr "" else VStr(s.Substring(a, b - a + 1))
+                if a > b then VStr "" else VStr(s.Substring(int a, int (b - a + 1L)))
             | v -> unreachable $"the checker guarantees a string slice target; got {formatValue v}"
         | Check.SliceBytes ->
             match eval env target with
             | VBytes arr ->
-                let a = max 0 (absLo arr.Length)
+                let a = max 0L (absLo arr.Length)
                 let b = absHi arr.Length
-                if a > b then VBytes [||] else VBytes(Array.sub arr a (b - a + 1))
+                if a > b then VBytes [||] else VBytes(Array.sub arr (int a) (int (b - a + 1L)))
             | v -> unreachable $"the checker guarantees a Bytes slice target; got {formatValue v}"
         | Check.SliceSeq ->
             match eval env target with
@@ -3379,18 +3399,32 @@ and eval (env: Env) (te: TypedExpr) : Value =
                 if loFromEnd || hiFromEnd then
                     // a from-end bound needs the length — force the seq
                     let arr = Seq.toArray items
-                    let a = max 0 (absLo arr.Length)
+                    let a = max 0L (absLo arr.Length)
                     let b = absHi arr.Length
-                    if a > b then VSeq Seq.empty else VSeq(Array.sub arr a (b - a + 1))
+                    if a > b then VSeq Seq.empty else VSeq(Array.sub arr (int a) (int (b - a + 1L)))
                 else
                     // the lazy path (infinite-safe): open end skips lazily,
-                    // a bounded hi truncates
-                    let a = max 0 (Option.defaultValue 0 loV)
-                    let dropped = items |> Seq.indexed |> Seq.skipWhile (fun (i, _) -> i < a) |> Seq.map snd
+                    // a bounded hi stops pulling past it; int64 positions
+                    let a = max 0L (Option.defaultValue 0L loV)
 
                     match hiV with
-                    | None -> VSeq dropped
-                    | Some b -> if a > b then VSeq Seq.empty else VSeq(dropped |> Seq.truncate (b - a + 1))
+                    | Some b when a > b -> VSeq Seq.empty
+                    | _ ->
+                        VSeq(
+                            seq {
+                                use e = items.GetEnumerator()
+                                let mutable i = 0L
+
+                                while (match hiV with
+                                       | Some b -> i <= b
+                                       | None -> true)
+                                      && e.MoveNext() do
+                                    if i >= a then
+                                        yield e.Current
+
+                                    i <- i + 1L
+                            }
+                        )
             | v -> unreachable $"the checker guarantees a sequence slice target; got {formatValue v}"
     | TEBinOp("&&", l, r) ->
         (match eval env l with
@@ -3890,12 +3924,12 @@ and eval (env: Env) (te: TypedExpr) : Value =
 
             let port =
                 match recGet "port" cfg with
-                | VInt n -> int n
+                | VInt n -> toIntArg "serve port" Amount n
                 | v -> unreachable $"serve port {formatValue v}"
 
             let maxConcurrent =
                 match recGet "maxConcurrent" cfg with
-                | VInt n -> int n
+                | VInt n -> toIntArg "serve maxConcurrent" Amount n
                 | v -> unreachable $"serve maxConcurrent {formatValue v}"
 
             if maxConcurrent < 1 then
@@ -3907,7 +3941,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
             // slot forever
             let bodyTimeoutMs =
                 match List.tryFind (fun (n, _) -> n = "bodyTimeout") cfg with
-                | Some(_, VDur ms) -> int ms
+                | Some(_, VDur ms) -> toIntArg "serve bodyTimeout (ms)" Amount ms
                 | Some(_, v) -> unreachable $"serve bodyTimeout {formatValue v}"
                 | None -> 30_000
 
@@ -3960,7 +3994,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
                 | VRecord("HttpServerResponse", f) ->
                     let status =
                         match recGet "status" f with
-                        | VInt n -> int n
+                        | VInt n -> toIntArg "serve status" Amount n
                         | bad -> unreachable $"serve status {formatValue bad}"
 
                     let headers =
