@@ -1636,7 +1636,8 @@ type Bad = C of int
   `yaml` or a `= yaml` RHS arms; `yaml` as a command ARGUMENT stays
   argv (`kubectl get po -o yaml`, `--format yaml` are commands, not
   districts). `$name`/`$(expr)` splice VALUES (never text — no
-  injection is possible), a `None` splice omits its entry, and
+  injection is possible); a QUOTED key or value is literal text
+  (`"$x": …`, `v: '$x'` keep the `$`); a `None` splice omits its entry, and
   `for (k, v) in pairs` under a mapping yields dynamic keys (under a
   sequence, items). `yaml schema=<name>` on the marker line validates
   the district against `.weir/schemas/<name>.json` at CHECK time

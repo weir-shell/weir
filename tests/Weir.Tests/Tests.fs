@@ -1985,6 +1985,44 @@ let boundaryTests =
                   | Error terr -> failtest (formatError terr)
               | other -> failtest $"unexpected: {other}"
           }
+          test "a quoted district key is literal, like a quoted value; a bare $name key splices [D:yaml-district]" {
+              let src =
+                  asm
+                      [ "let d = yaml"
+                        "    \"$(z)\": 1"
+                        "    m:"
+                        "        for (k, v) in [(\"a\", \"x\")]"
+                        "            $k: $v"
+                        "            \"$k\": $v"
+                        "            '$v': \"$k\""
+                        "    l:"
+                        "        - \"$q\": 2" ]
+
+              let rec keys (v: Weir.Eval.Value) : string list =
+                  match v with
+                  | Weir.Eval.VUnion("YMap", Some(Weir.Eval.VSeq pairs)) ->
+                      pairs
+                      |> Seq.collect (fun p ->
+                          match p with
+                          | Weir.Eval.VTuple [ Weir.Eval.VStr k; inner ] -> k :: keys inner
+                          | _ -> failtest "bad pair")
+                      |> List.ofSeq
+                  | Weir.Eval.VUnion("YSeq", Some(Weir.Eval.VSeq items)) -> items |> Seq.collect keys |> List.ofSeq
+                  | Weir.Eval.VUnion("YStr", Some(Weir.Eval.VStr s)) -> [ $"={s}" ]
+                  | Weir.Eval.VUnion("YInt", Some(Weir.Eval.VInt n)) -> [ $"={n}" ]
+                  | _ -> []
+
+              match Weir.Parser.parseLine realResolver src with
+              | Ok(SLet(_, e)) ->
+                  match typecheck env e with
+                  | Ok te ->
+                      Expect.equal
+                          (keys (Weir.Eval.eval valueEnv te))
+                          [ "$(z)"; "=1"; "m"; "a"; "=x"; "$k"; "=x"; "$v"; "=$k"; "l"; "$q"; "=2" ]
+                          "quoted keys stay text, as quoted values do"
+                  | Error terr -> failtest (formatError terr)
+              | other -> failtest $"unexpected: {other}"
+          }
           test "the heredoc district assembles exactly as yaml's does [D:text-block]" {
               match Weir.Script.assemble [ 1, "let t = <<<"; 2, "    echo $HOME {x}"; 3, ""; 4, "        deep" ] with
               | Ok [ ll ] ->

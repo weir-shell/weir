@@ -3289,8 +3289,12 @@ and private parseTplBlockBody
                         match Yaml.splitKey text with
                         | None -> Result.Error("expected 'key:', '- ', or 'for … in …' in this yaml block", col)
                         | Some(rawKey, rest) ->
+                            // a quoted key is literal, as a quoted value is:
+                            // only a bare `$name` key splices
+                            let quotedKey = text.StartsWith "\"" || text.StartsWith "'"
+
                             let keyR =
-                                if rawKey.StartsWith "$" then
+                                if rawKey.StartsWith "$" && not quotedKey then
                                     let kIdent = rawKey.Substring 1
 
                                     if isIdentWord kIdent then
