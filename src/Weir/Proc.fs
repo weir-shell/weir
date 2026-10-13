@@ -135,7 +135,7 @@ let private spawn
     // foreground child outlived it, reparented to init. Deregistered at
     // its exit; the check after subscribing covers an exit that raced it.
     let pid = p.Id
-    Session.registerProc p
+    Session.registerForeground p
     p.Exited.Add(fun _ -> Session.deregisterProcAt pid p)
     p.EnableRaisingEvents <- true
 

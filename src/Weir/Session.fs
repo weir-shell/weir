@@ -630,6 +630,38 @@ let registerProc (p: System.Diagnostics.Process) : unit =
 
     liveProcs[p.Id] <- p
 
+// a foreground child alone installs only a SIGTERM reaper
+// [D:signal-main-unwind]: a pid-targeted TERM tree-kills the live children,
+// then default termination proceeds (weir still dies BY the signal, as
+// before any scope exists; a ^C reaches the child through the group
+// anyway). Once a scope installs the full hook, that hook does the kill
+// as part of its teardown and this one stands down. POSIX only.
+let private fgHookInstalled = ref 0
+
+let registerForeground (p: System.Diagnostics.Process) : unit =
+    if
+        not (System.OperatingSystem.IsWindows())
+        && System.Threading.Interlocked.Exchange(fgHookInstalled, 1) = 0
+    then
+        let reg =
+            System.Runtime.InteropServices.PosixSignalRegistration.Create(
+                System.Runtime.InteropServices.PosixSignal.SIGTERM,
+                fun _ ->
+                    // the full hook owns the signal once installed: it must
+                    // request the teardown BEFORE any child dies, or the
+                    // main thread's wait returns and runs the next statement
+                    if System.Threading.Volatile.Read &hookInstalled.contents = 0 then
+                        for kv in liveProcs do
+                            try
+                                kv.Value.Kill true
+                            with _ ->
+                                ()
+            )
+
+        hookRoots <- (reg :> obj) :: hookRoots
+
+    liveProcs[p.Id] <- p
+
 /// remove `p` under `pid` — only that very process, so a late exit
 /// event never drops a newer child that reused the pid
 let deregisterProcAt (pid: int) (p: System.Diagnostics.Process) : unit =

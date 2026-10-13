@@ -2718,17 +2718,17 @@ WEOF
     # a pid-targeted SIGTERM tree-kills the FOREGROUND child too
     # [D:signal-main-unwind]: `timeout`/`docker stop` signal weir alone; an
     # unregistered foreground child outlived it, reparented to init
-    printf 'sleep 98762\n' > "$dtdir/fg.weir"
-    pkill -f "sleep 98762" 2>/dev/null || true
+    printf 'sleep 98763\n' > "$dtdir/fg.weir"
+    pkill -f "sleep 98763" 2>/dev/null || true
     setsid "$BIN" "$dtdir/fg.weir" </dev/null >/dev/null 2>&1 &
     wpid=$!
-    for _ in $(seq 1 40); do pgrep -f "sleep 98762" >/dev/null 2>&1 && break; sleep 0.2; done
+    for _ in $(seq 1 40); do pgrep -f "sleep 98763" >/dev/null 2>&1 && break; sleep 0.2; done
     kill -TERM "$wpid" 2>/dev/null || true
     code=0; wait "$wpid" 2>/dev/null || code=$?
     [ "$code" = "143" ] || fail "SIGTERM to weir with a foreground child must exit 143 (got $code)"
     sleep 0.3
-    left=$(pgrep -cf "sleep 98762" 2>/dev/null || true); left=${left:-0}
-    pkill -f "sleep 98762" 2>/dev/null || true
+    left=$(pgrep -cf "sleep 98763" 2>/dev/null || true); left=${left:-0}
+    pkill -f "sleep 98763" 2>/dev/null || true
     [ "$left" = "0" ] || fail "SIGTERM to weir must tree-kill its foreground child (orphans left: $left)"
     echo "e2e ok: SIGTERM to weir's pid reaps the foreground child"
 
