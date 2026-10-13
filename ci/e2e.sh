@@ -2241,6 +2241,28 @@ if [ "$IS_WINDOWS" != "1" ]; then
     rm -rf "$tldir"
 fi
 echo "e2e ok: a typed ~ is home in a command line — argv and head; quoted, spliced, mid-word and ~user stay literal; cd takes its string literally"
+# HOME verbatim [D:home-verbatim]: a set HOME is home even when the dir is
+# missing (bash), unset falls back to the OS lookup, empty raises rather
+# than expanding `~/x` to `/x`. POSIX only: Windows reads the profile API
+if [ "$IS_WINDOWS" != "1" ]; then
+    hvdir=$(mkweirtmp)
+    printf 'echo ~/x
+print (Path.home ())
+print (Path.configHome ())
+' > "$hvdir/h.weir"
+    out=$(cd "$hvdir" && env -u XDG_CONFIG_HOME HOME=/nonexistent-home $BIN h.weir 2>&1) || fail "a missing HOME dir is still home: $out"
+    [ "$out" = "/nonexistent-home/x
+/nonexistent-home
+/nonexistent-home/.config" ] || fail "HOME is used verbatim: $out"
+    out=$(cd "$hvdir" && env -u HOME -u XDG_CONFIG_HOME $BIN h.weir 2>&1) || fail "an unset HOME falls back to the OS: $out"
+    case "$out" in /*/x*) ;; *) fail "unset HOME: an absolute OS home: $out" ;; esac
+    rc=0
+    out=$(cd "$hvdir" && HOME= $BIN h.weir 2>&1) || rc=$?
+    [ "$rc" = "1" ] || fail "an empty HOME must raise (rc $rc): $out"
+    echo "$out" | grep -qF "no home directory" || fail "the empty-HOME message: $out"
+    rm -rf "$hvdir"
+    echo "e2e ok: HOME is read verbatim — missing dir kept, unset falls back, empty raises"
+fi
 
 # NAME=value cmd [D:env-prefix]: bash's one-line child env — values of
 # every form, per pipeline stage, composed with a sigil (the prefix wins),

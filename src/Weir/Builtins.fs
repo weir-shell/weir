@@ -2567,14 +2567,25 @@ let private pathNormalize (p: string) : string =
 // fallback. Re-read per call — the environment can change. The typed
 // home for expressions (a command word's `~` desugars to Path.home,
 // [D:tilde]; `$HOME` never expands): injection-proof by construction.
+// `$HOME` verbatim when set, as bash reads it — even a missing dir;
+// the OS lookup only when unset; no home at all raises, never "" (an
+// empty home would turn `~/x` into `/x`) [D:home-verbatim]
+let homeDir () : string =
+    let home =
+        match System.Environment.GetEnvironmentVariable "HOME" with
+        | null -> System.Environment.GetFolderPath System.Environment.SpecialFolder.UserProfile
+        | h -> h
+
+    if home = "" then
+        failwith "Path.home: no home directory — HOME is empty (or unset with no OS home); `~` and Path.home need one"
+
+    home
+
 let xdgDir (var: string) (fallback: string) : string =
     match System.Environment.GetEnvironmentVariable var with
     | null
-    | "" -> System.IO.Path.Combine(System.Environment.GetFolderPath System.Environment.SpecialFolder.UserProfile, fallback)
+    | "" -> System.IO.Path.Combine(homeDir (), fallback)
     | v -> v
-
-let homeDir () : string =
-    System.Environment.GetFolderPath System.Environment.SpecialFolder.UserProfile
 
 let configDir () : string =
     if System.OperatingSystem.IsWindows() then
@@ -6142,7 +6153,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
           |> named [ "pattern" ]
           "Path.home",
           (bd
-              "The user's home directory, in the platform's native form and without a trailing separator. Has no side effects. In a command line, a typed `~` means this path; in an expression, build paths with `$\"{Path.home ()}/.bashrc\"`."
+              "The user's home directory: `$HOME` as set (even if that directory is missing), the OS lookup when it is unset; raises when there is none (an empty `$HOME`). Has no side effects. In a command line, a typed `~` means this path; in an expression, build paths with `$\"{Path.home ()}/.bashrc\"`."
               (Some "Path.home ()")
               None
            |> named [ "()" ])

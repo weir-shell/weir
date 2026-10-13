@@ -175,8 +175,7 @@ let private pipelineElemTy (env: TypeEnv) (text: string) : Ty option =
 let private filesystemComplete (word: string) : string list =
     let expanded =
         if word.StartsWith "~" then
-            System.Environment.GetFolderPath System.Environment.SpecialFolder.UserProfile
-            + word.Substring 1
+            (try Builtins.homeDir () with _ -> "~") + word.Substring 1
         else
             word
 

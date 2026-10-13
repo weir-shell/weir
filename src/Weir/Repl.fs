@@ -3656,13 +3656,13 @@ let private applySessionField
     | "cwd", Types.TStr ->
         (match Eval.eval venv te with
          | Eval.VStr p ->
-             let home = Environment.GetFolderPath Environment.SpecialFolder.UserProfile
+             let home () = Builtins.homeDir ()
 
              let expanded =
                  if p = "~" then
-                     home
+                     home ()
                  elif p.StartsWith "~/" then
-                     Path.Combine(home, p.Substring 2)
+                     Path.Combine(home (), p.Substring 2)
                  else
                      p
 
