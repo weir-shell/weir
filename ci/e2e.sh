@@ -8945,6 +8945,14 @@ out=$($BIN -e 'poll timeout=80ms interval=10s (1 == 2)' 2>&1) && fail "poll time
 took=$(( $(now_ms) - start_ms ))
 echo "$out" | grep -qF "poll: timed out after" || fail "poll exhaustion: $out"
 [ "$took" -lt 5000 ] || fail "the pending 10s interval was not cancelled (took ${took}ms)"
+# past the timers' Int32.MaxValue ms the main-thread wait slices [D:duration]:
+# the timeout ends it, never a .NET range error or an instant fake timeout
+start_ms=$(now_ms)
+out=$($BIN -e 'poll timeout=300ms interval=2000h (1 == 2)' 2>&1) && fail "long-interval poll must time out" || true
+took=$(( $(now_ms) - start_ms ))
+echo "$out" | grep -qF "poll: timed out after" || fail "long-interval poll: $out"
+[ "$took" -ge 250 ] && [ "$took" -lt 5000 ] || fail "long-interval poll waited ${took}ms, not the 300ms timeout"
+out=$($BIN -e 'poll timeout=2000h interval=1ms (1 == 1)' 2>&1) || fail "a 2000h poll timeout is a valid ceiling: $out"
 rm -rf "$rpdir"
 echo "e2e ok: retry/poll (yields value, computed options, exhaustion messages, cancellable wait)"
 

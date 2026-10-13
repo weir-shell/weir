@@ -18792,6 +18792,23 @@ let retryPollTests =
               Expect.isTrue
                   (sw.ElapsedMilliseconds < 2000L)
                   $"waited {sw.ElapsedMilliseconds}ms — the 10s interval was not cancelled"
+          }
+          // every valid Duration waits [D:duration]: past the timers'
+          // Int32.MaxValue ms the wait runs in slices, never a fake timeout
+          test "a delay/interval past Int32.MaxValue ms really waits until the timeout" {
+              for src, msg in
+                  [ "retry attempts=2 delay=2000h timeout=(Some 300ms) (1 == 2)", "retry: exhausted 2 attempt(s)"
+                    "poll timeout=300ms interval=2000h (1 == 2)", "poll: timed out" ] do
+                  let sw = System.Diagnostics.Stopwatch.StartNew()
+                  let ex = Expect.throwsC (fun () -> run src |> ignore) id
+                  sw.Stop()
+                  Expect.stringContains ex.Message msg src
+                  Expect.isTrue (sw.ElapsedMilliseconds >= 250L) $"{src}: gave up after {sw.ElapsedMilliseconds}ms"
+                  Expect.isTrue (sw.ElapsedMilliseconds < 5000L) $"{src}: the timeout did not cut the wait"
+          }
+          test "a timeout past Int32.MaxValue ms is a valid ceiling" {
+              expectValue "poll timeout=1440h interval=1ms (1 == 1)" VUnit
+              expectValue "retry attempts=2 delay=1ms timeout=(Some 1440h) (1 == 1)" VUnit
           } ]
 
 let tasksUnderneathTests =

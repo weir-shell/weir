@@ -401,7 +401,7 @@ let waitOrCancel (span: System.TimeSpan) (token: System.Threading.CancellationTo
         try
             System.Threading.Tasks.Task.Delay(span, token).Wait()
             false
-        with _ ->
+        with :? System.AggregateException as e when (e.InnerException :? System.OperationCanceledException) ->
             true
 
 /// join a task; a teardown request raises on the main thread without

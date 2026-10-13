@@ -3286,9 +3286,46 @@ and eval (env: Env) (te: TypedExpr) : Value =
         // it out; an external token can join the source later
         use cts = new System.Threading.CancellationTokenSource()
 
+        // .NET timers take at most Int32.MaxValue ms; a longer ceiling is
+        // the stopwatch's, enforced by the wait's slices — every valid
+        // Duration is honoured, as Duration.sleep honours it [D:duration]
+        let maxSliceMs = int64 System.Int32.MaxValue - 1L
+
         match timeoutMs with
-        | Some t -> cts.CancelAfter(System.TimeSpan.FromTicks(t * System.TimeSpan.TicksPerMillisecond))
-        | None -> ()
+        | Some t when t <= maxSliceMs ->
+            cts.CancelAfter(System.TimeSpan.FromTicks(t * System.TimeSpan.TicksPerMillisecond))
+        | _ -> ()
+
+        let pastDeadline () =
+            match timeoutMs with
+            | Some t -> sw.ElapsedMilliseconds >= t
+            | None -> false
+
+        // the delay in timer-sized slices, each bounded by what is left of
+        // the timeout — true when the timeout ended the wait
+        let waitDelay () =
+            let mutable left = delayMs
+            let mutable cancelled = false
+
+            while left > 0L && not cancelled do
+                let budget =
+                    match timeoutMs with
+                    | Some t -> t - sw.ElapsedMilliseconds
+                    | None -> System.Int64.MaxValue
+
+                if budget <= 0L then
+                    cancelled <- true
+                else
+                    let slice = min left (min budget maxSliceMs)
+
+                    cancelled <-
+                        Session.waitOrCancel
+                            (System.TimeSpan.FromTicks(slice * System.TimeSpan.TicksPerMillisecond))
+                            cts.Token
+
+                    left <- left - slice
+
+            cancelled
 
         let predicate (v: Value) =
             match until with
@@ -3327,7 +3364,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
                 match until with
                 | Some _ -> v
                 | None -> VUnit
-            elif n >= attempts || cts.IsCancellationRequested then
+            elif n >= attempts || cts.IsCancellationRequested || pastDeadline () then
                 exhausted n
             else
                 let timedOut =
@@ -3335,12 +3372,9 @@ and eval (env: Env) (te: TypedExpr) : Value =
                         // the indicator wraps only the wait between
                         // attempts — the body may own the terminal
                         // [D:waiting-indicator]
-                        Waiting.during $"{head}: waiting {formatDuration delayMs}" (fun () ->
-                            Session.waitOrCancel
-                                (System.TimeSpan.FromTicks(delayMs * System.TimeSpan.TicksPerMillisecond))
-                                cts.Token)
+                        Waiting.during $"{head}: waiting {formatDuration delayMs}" waitDelay
                     else
-                        cts.IsCancellationRequested
+                        cts.IsCancellationRequested || pastDeadline ()
 
                 if timedOut then exhausted n else loop (n + 1)
 
