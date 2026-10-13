@@ -4704,6 +4704,18 @@ WEOF
 out=$($BIN "$adir/attrs-json.weir")
 expect "from json loads a documented record identically (/// inert)" "5" "$out"
 
+# a check error means nothing runs [D:check-error-no-run]: a misaligned
+# /// is a check error, so run refuses before the first statement
+cat > "$adir/doc-misaligned.weir" <<'WEOF'
+print "SIDE-EFFECT"
+    /// misaligned doc
+let x = 1
+print (show x)
+WEOF
+out=$($BIN "$adir/doc-misaligned.weir" 2>&1) && fail "a doc-align check error must refuse the run: $out"
+case "$out" in *SIDE-EFFECT*) fail "a doc-align check error ran a statement: $out" ;; esac
+echo "$out" | grep -qF "a doc aligns with what it describes" || fail "run names the doc-align error: $out"
+
 # the recursive field law [D:recursive-fields]: nested records and seq
 # fields read from real response shapes — the World Bank receipt (its
 # Map-keyed `documents` stays untypable pending Map and is ignored as

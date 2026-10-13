@@ -7091,6 +7091,23 @@ let run (path: string) (scriptArgs: string list) : int =
                         )
 
                     1
+                | Ok _ when not (docMisalignments path rawLines).IsEmpty ->
+                    // a check error means nothing runs [D:check-error-no-run],
+                    // the doc-alignment lint included
+                    let c = Color.onStderr.Value
+
+                    for d in docMisalignments path rawLines do
+                        let src = rawByLine |> Map.tryFind d.Line |> Option.defaultValue ""
+                        let caret = Color.red c (String(' ', max 0 (d.Col - 1)) + "^")
+
+                        Console.Error.WriteLine(
+                            Color.bold c $"{path}:{d.Line}:{d.Col}"
+                            + ": "
+                            + Color.red c "check error"
+                            + $":\n{src}\n{caret}\n{d.Message}"
+                        )
+
+                    1
                 | Ok(_, revStmts) ->
                     let stmts = List.rev revStmts
 
