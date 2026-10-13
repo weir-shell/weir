@@ -15249,6 +15249,23 @@ let ambiguousCtorTests =
               with
               | d :: _ -> Expect.stringContains d.Message "Blue" "the missing case is named after inference"
               | [] -> failtest "exhaustiveness must still fire once the scrutinee is inferred"
+          }
+          test "a refutable payload under an inferred scrutinee owes its catch-all (B6)" {
+              // the payload resolves only after the arms are checked; a
+              // payload still unresolved is never covered by refutable arms
+              for src in
+                  [ "let f o = match o with | Some 0 -> \"zero\" | None -> \"none\" in f (Some 5)"
+                    "let f o = match o with | Some (Some n) -> n | None -> 0 in f (Some None)"
+                    "let f o = match o with | Ok (Some n) -> n | Error e -> 0 in f (Ok None)"
+                    "let f o = match o with | Some [] -> 0 | None -> 1 in f (Some [1])"
+                    "let f o = match o with | Some 0 -> 1 | None -> 0 in 2" ] do
+                  Expect.stringContains (checkErr src).Message "not exhaustive" src
+
+              for src in
+                  [ "let f o = match o with | Some 0 -> 1 | Some _ -> 2 | None -> 0 in f (Some 5)"
+                    "let f o = match o with | Some (Some n) -> n | Some None -> 0 | None -> 0 in f None"
+                    "let f o = match o with | Ok (Some n) -> n | Ok None -> 0 | Error _ -> 1 in f (Ok None)" ] do
+                  checkOk src |> ignore
           } ]
 
 let dupTypeTests =
