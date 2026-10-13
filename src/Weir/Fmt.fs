@@ -46,7 +46,9 @@ let private canonicalizeDocs (out: string list) : string list =
             while j < arr.Length && isDoc arr[j] do
                 j <- j + 1
 
-            if j < arr.Length && isCode arr[j] then
+            // a run followed by content sits inside the block (an
+            // outdented comment never ends a district) — no anchor
+            if j < arr.Length && isCode arr[j] && not masked[j] then
                 let anchor = arr[j].Length - arr[j].TrimStart().Length
                 arr[i] <- String.replicate anchor " " + arr[i].TrimStart()
 

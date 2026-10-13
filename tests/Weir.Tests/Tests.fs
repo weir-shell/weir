@@ -9614,6 +9614,14 @@ let semanticTokenTests =
                   | Ok out2 -> Expect.equal out2 out "fmt is idempotent with docs present"
                   | Error e -> failtestf "second fmt failed: %s" e
           }
+          test "doc comments: fmt never anchors a /// inside a heredoc/yaml block into its content [D:content-bytes]" {
+              for src in
+                  [ [ "let t = <<<"; "    abc"; "/// doc"; "    def"; "print t" ]
+                    [ "let t = yaml"; "    a: 1"; "/// doc"; "    b: 2"; "print t" ] ] do
+                  match Weir.Fmt.formatLines src with
+                  | Ok out -> Expect.equal out src "the /// line stays where it is"
+                  | Error e -> failtestf "fmt failed: %s" e
+          }
           test "fmt: a yaml district keeps relative indentation, re-anchors the base [D:yaml-district]" {
               // the block's relative indentation is semantic (JYamlLine rel),
               // so fmt re-anchors the base to marker+1 depth and preserves
