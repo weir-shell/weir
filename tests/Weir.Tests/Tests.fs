@@ -1629,6 +1629,15 @@ let boundaryTests =
                   Expect.throwsC (fun () -> runWith [ "src", doc ] "src |> from xml XProj" |> ignore) id
 
               Expect.stringContains ex.Message "missing attribute 'Include'" "the runtime names the absent attribute"
+              Expect.stringContains ex.Message "field 'refs[0].Include'" "the first element is refs[0]"
+
+              let second =
+                  VSeq [ VStr "<Project><ProjectReference Include=\"a\" /><ProjectReference /></Project>" ]
+
+              let ex2 =
+                  Expect.throwsC (fun () -> runWith [ "src", second ] "src |> from xml XProj" |> ignore) id
+
+              Expect.stringContains ex2.Message "field 'refs[1].Include'" "paths index from zero, as JSON's do (B30) [D:paths-zero-based]"
           }
           test "from xml: invalid input and empty input each TEACH [D:from-xml]" {
               let bad = Expect.throwsC (fun () -> runWith [ "src", VSeq [ VStr "not xml <" ] ] "src |> from xml XProj" |> ignore) id

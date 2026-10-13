@@ -1408,7 +1408,8 @@ let private jsonDoc
                 failwith
                     $"{who}: field '{name}' expected an array ({formatTy ty}), got {jsonKindName prop.ValueKind} in: {shown}"
 
-            // forced before the document disposes
+            // forced before the document disposes; paths index from zero
+            // [D:paths-zero-based]
             prop.EnumerateArray()
             |> Seq.mapi (fun i el -> readValue $"{name}[{i}]" elem el)
             |> List.ofSeq
@@ -1719,11 +1720,12 @@ let private xmlDoc
                             | TNamed(n, []) when defs.ContainsKey n -> Types.xmlElem rdef name n
                             | _ -> Types.xmlElem rdef name name
 
+                        // zero-based, as weir's xs[i] [D:paths-zero-based]
                         childElems el elemName
                         |> Seq.mapi (fun i c ->
                             match elem with
                             | TStr -> VStr c.Value
-                            | TNamed(n, []) when defs.ContainsKey n -> objRowXml $"{shownName}[{i + 1}]." defs[n] c
+                            | TNamed(n, []) when defs.ContainsKey n -> objRowXml $"{shownName}[{i}]." defs[n] c
                             | _ -> unreachable "the checker restricts an XML seq to strings or records")
                         |> List.ofSeq
                         |> List.toSeq
