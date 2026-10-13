@@ -50,14 +50,13 @@ recursion path ([D:parser depth budget]: measure under `ulimit -s 1024`).
 **Checker.** Route the anonymous type through the same validation as a
 named record (`namedRecord`/the Env field-set check), so messages match.
 
-**Defaults — open question for execution time.** Anonymous types don't take
-field attributes today (`{| [<Default 3>] a: int |}` is a parse error).
-Options: (1) no defaults inline — `Option<int>` + `Option.defaultValue`, and a
-named type when you want `[<Default>]`; (2) allow `[<Default v>]` (and
-`[<Wire "NAME">]`) on anonymous-type fields everywhere they appear, which
-also benefits `from json {| … |}`. RECOMMEND (2) if the attribute parser can
-be reused cheaply; otherwise ship (1) and teach the named-type route in the
-error.
+**Defaults — RULED (user, 2026-10-13): no attributes on anonymous types.**
+F# rejects attributes on anonymous-record fields, for the same reason weir
+should: an anonymous type is for ad-hoc, quick shapes. Inline, an optional
+var is `Option<T>` (+ `Option.defaultValue` at the use site); `[<Default>]`,
+`[<Wire "NAME">]` and every other field attribute need a named record. The
+existing `{| [<Default 3>] a: int |}` parse error becomes a teaching one:
+"field attributes need a named type — declare `type T = { … }`".
 
 ## B — two one-var helpers
 
@@ -87,7 +86,7 @@ let port  = Env.getOr "PORT" "8080"   // string, with a default
 
 ## Work (when scheduled)
 
-1. Ruling on defaults (A, open question) and on empty-is-set (B).
+1. Ruling on empty-is-set (B). (Defaults in A: ruled — none inline.)
 2. B first (small, independent): two builtins, `--can` coverage, unit tests,
    SKILL.md env bullet, reference.json regen.
 3. A: parser acceptance + checker routing for `Env.load` and `Args.load`,
