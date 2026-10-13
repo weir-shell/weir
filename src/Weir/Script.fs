@@ -1129,14 +1129,17 @@ type private Pend =
       // sibling pipe columns, innermost first [D:pipe-alignment]: a
       // consecutive `|` line must sit exactly on a group column; the
       // first pipe after a non-pipe line opens a group. Per group:
-      // (groupCol, bodyCol, isForward) [D:match-pipe-offside]. isForward =
+      // (groupCol, bodyCol, isForward, parenDepth) [D:match-pipe-offside]. isForward =
       // a `|>` group vs a bare `|` (match/union arm) group; bodyCol = the
       // arm body's column (after the arm `->`; for a dangling arm resolved
       // to the body line's indent when it arrives; MaxValue until then).
       // A forward `|>` landing on a bare arm group: at the `|` it closes
       // the match, at or under the body it extends the arm, left of the
       // body it is rejected.
-      PipeGroups: (int * int * bool) list
+      // The 4th element is the paren depth at open: a line whose closers
+      // drop below it ends the group — `(match … | _ -> x)` leaves no arm
+      // group behind [D:compound-paren-prune]
+      PipeGroups: (int * int * bool * int) list
       LastWasPipe: bool
       District: District option
       // (headIndent, textStart, parenDepthAtOpen) [D:compound-paren-prune]
@@ -1874,7 +1877,8 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                                         |> List.filter (fun (_, _, d) -> d <= depth)
                                                                     PipeGroups =
                                                                         p.PipeGroups
-                                                                        |> List.skipWhile (fun (g, _, _) -> g > backTo)
+                                                                        |> List.skipWhile (fun (g, _, _, _) -> g > backTo)
+                                                                        |> List.filter (fun (_, _, _, d) -> d <= depth)
                                                                     LastWasPipe = false
                                                                     Brackets = brackets },
                                                             acc,
@@ -1895,7 +1899,7 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                     | _ ->
                                                         // deeper groups close at this line's column
                                                         let groups =
-                                                            p.PipeGroups |> List.skipWhile (fun (g, _, _) -> g > indent)
+                                                            p.PipeGroups |> List.skipWhile (fun (g, _, _, _) -> g > indent)
 
                                                         // the arm body's column [D:match-pipe-offside]: the
                                                         // token after the arm `->` for an inline body;
@@ -1927,15 +1931,15 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                                 // whether the arm body was inline or dangled
                                                                 isFwd
                                                                 && (match groups with
-                                                                    | (_, _, false) :: _ -> true
+                                                                    | (_, _, false, _) :: _ -> true
                                                                     | _ -> false)
                                                             then
                                                                 match groups with
-                                                                | (g, _, _) :: _ when indent = g ->
+                                                                | (g, _, _, _) :: _ when indent = g ->
                                                                     // at the `|` column: close the match,
                                                                     // pipe the whole
                                                                     Ok(true, groups)
-                                                                | (g, bc, _) :: _ when indent < bc ->
+                                                                | (g, bc, _, _) :: _ when indent < bc ->
                                                                     // left of the arm body: neither closes
                                                                     // nor continues
                                                                     let bodyDesc =
@@ -1949,7 +1953,7 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                                 | _ ->
                                                                     // at or under the body: extend the arm
                                                                     // body, opening a forward group
-                                                                    Ok(false, (indent, indent, true) :: groups)
+                                                                    Ok(false, (indent, indent, true, p.ParenDepth) :: groups)
                                                             elif not p.LastWasPipe || p.PrevDangles then
                                                                 // first pipe after a non-pipe line
                                                                 // opens a group — anchored at or
@@ -1960,7 +1964,7 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                                 // its arms sit deeper by design
                                                                 // [D:function-keyword]
                                                                 match groups with
-                                                                | (g, _, false) :: rest when g = indent && not isFwd ->
+                                                                | (g, _, false, d) :: rest when g = indent && not isFwd ->
                                                                     // a returning arm after a non-pipe
                                                                     // body [D:match-pipe-offside]: the
                                                                     // group at this exact column is the
@@ -1968,7 +1972,7 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                                     // compound (the previous arm's
                                                                     // if/let tail) offside-closes below,
                                                                     // it is not "its match"
-                                                                    Ok(false, (g, bodyCol, false) :: rest)
+                                                                    Ok(false, (g, bodyCol, false, d) :: rest)
                                                                 | _ ->
                                                                     match p.Compounds with
                                                                     | (h, _, _) :: _ when indent < h ->
@@ -1977,26 +1981,26 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                                     | _ ->
                                                                         Ok(
                                                                             false,
-                                                                            (indent, (if isFwd then indent else bodyCol), isFwd)
+                                                                            (indent, (if isFwd then indent else bodyCol), isFwd, p.ParenDepth)
                                                                             :: groups
                                                                         )
                                                             else
                                                                 match groups with
-                                                                | (g, _, false) :: rest when g = indent && not isFwd ->
+                                                                | (g, _, false, d) :: rest when g = indent && not isFwd ->
                                                                     // a new arm aligns with its siblings:
                                                                     // reset the group's body column to this
                                                                     // arm's — each arm has its own body
                                                                     // offside [D:match-pipe-offside]
-                                                                    Ok(false, (g, bodyCol, false) :: rest)
-                                                                | (g, _, _) :: _ when g = indent ->
+                                                                    Ok(false, (g, bodyCol, false, d) :: rest)
+                                                                | (g, _, _, _) :: _ when g = indent ->
                                                                     // aligned sibling (pipeline stage)
                                                                     Ok(false, groups)
-                                                                | (g, _, _) :: _ ->
+                                                                | (g, _, _, _) :: _ ->
                                                                     Error
                                                                         $"line {lineNo}: this line is indented off its siblings (they sit at column {g}) — align the group exactly"
                                                                 | [] ->
                                                                     Error
-                                                                        $"line {lineNo}: this line is indented off its siblings — align the group exactly"
+                                                                        $"line {lineNo}: this line (column {indent}) is indented off its siblings — align the group exactly"
 
                                                         match aligned with
                                                         | Error e -> Error e
@@ -2036,6 +2040,17 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                                     (lineNo, indent, depth - 1, p.StmtLevel) :: keptL
                                                                 else
                                                                     keptL
+
+                                                            let unpruned =
+                                                                if closes then
+                                                                    (indent, indent, true, p.ParenDepth)
+                                                                    :: (groups
+                                                                        |> List.filter (fun (g, _, _, _) -> g < indent))
+                                                                else
+                                                                    groups
+
+                                                            let pipeGroups =
+                                                                unpruned |> List.filter (fun (_, _, _, d) -> d <= depth)
 
                                                             let lastIndent, stmtLevel =
                                                                 match poppedL with
@@ -2077,14 +2092,12 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                                         // group and opens a fresh forward
                                                                         // group so a following `|>` aligns
                                                                         // as a pipeline [D:match-pipe-offside]
-                                                                        PipeGroups =
-                                                                            if closes then
-                                                                                (indent, indent, true)
-                                                                                :: (groups
-                                                                                    |> List.filter (fun (g, _, _) -> g < indent))
-                                                                            else
-                                                                                groups
-                                                                        LastWasPipe = not (isUntil || isAlways)
+                                                                        PipeGroups = pipeGroups
+                                                                        // a group this line's `)` closed ends the
+                                                                        // pipe run: the next pipe opens afresh
+                                                                        LastWasPipe =
+                                                                            not (isUntil || isAlways)
+                                                                            && pipeGroups.Length = unpruned.Length
                                                                         Compounds =
                                                                             compounds
                                                                             |> List.filter (fun (_, _, d) ->
@@ -2250,15 +2263,16 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                                             // dangling arm resolves its body
                                                                             // column [D:match-pipe-offside]
                                                                             (match p.PipeGroups with
-                                                                             | (g, bc, false) :: rest when
+                                                                             | (g, bc, false, d) :: rest when
                                                                                  bc = System.Int32.MaxValue
                                                                                  && p.PrevDangles
                                                                                  && indent > g
                                                                                  ->
-                                                                                 (g, indent, false) :: rest
+                                                                                 (g, indent, false, d) :: rest
                                                                              | pg -> pg)
-                                                                            |> List.skipWhile (fun (g, _, _) ->
+                                                                            |> List.skipWhile (fun (g, _, _, _) ->
                                                                                 g > lastIndent)
+                                                                            |> List.filter (fun (_, _, _, d) -> d <= depth)
                                                                         LastWasPipe = false },
                                                                 acc,
                                                                 blankSinceHead)
