@@ -271,12 +271,15 @@ else
 fi
 
 # macOS ships no GNU timeout — a background-watchdog polyfill (same
-# contract: run the command, kill it after N seconds, nonzero on kill)
+# contract: run the command, kill it after N seconds, nonzero on kill).
+# `<&0` keeps the caller's stdin: without job control an `&` command's
+# stdin is /dev/null unless redirected explicitly, so a piped or `<` input
+# would never reach the command.
 if ! command -v timeout >/dev/null 2>&1; then
     timeout() {
         local secs=$1
         shift
-        "$@" &
+        "$@" <&0 &
         local pid=$!
         (
             sleep "$secs"
