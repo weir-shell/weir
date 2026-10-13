@@ -6970,6 +6970,16 @@ let head = %s
     out=$($BIN check "$mdir/weakr.weir" 2>&1 || true)
     expect "weak purity through a reifier: $rf" "cannot run a command at import" "$out"
 done
+# ...and through the module's own helper: an eager call runs its command
+# at import exactly as the command would — refused at check AND at import,
+# before any side effect
+printf 'module W\nlet v : string\nlet helper () = sh -c "echo SIDE-EFFECT-AT-IMPORT >&2; echo val" |> Seq.exactlyOne\nlet v = helper ()\n' > "$mdir/weakh.weir"
+out=$($BIN check "$mdir/weakh.weir" 2>&1 || true)
+expect "weak purity through a helper (check)" "'helper' runs one, and this calls it now" "$out"
+printf 'import "./weakh.weir"\nprint W.v\n' > "$mdir/weakh_main.weir"
+out=$($BIN "$mdir/weakh_main.weir" 2>&1 || true)
+expect "weak purity through a helper (import)" "cannot run a command at import" "$out"
+case "$out" in *SIDE-EFFECT-AT-IMPORT*) fail "a helper ran its command at import: $out" ;; esac
 
 # the graph [D:modules-v1]: transitive imports resolve and evaluate; a
 # module can import and use another module's members

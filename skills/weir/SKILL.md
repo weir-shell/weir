@@ -1888,7 +1888,10 @@ conf |> Seq.iter print
 - Modules & imports (share code between scripts): a file that starts
   with `module` (or `module Name`) is a MODULE — importable,
   declaration-only (`type`/`let` only, no commands or bare
-  expressions), not runnable. Import it with `import "./lib/x.weir"`
+  expressions; a `let` that runs a command at import is refused,
+  through a reifier or a saturated call of the module's own
+  command-running helper too — wrap it: `let v () = …`), not
+  runnable. Import it with `import "./lib/x.weir"`
   (a literal path, first in the file before declarations) or
   `import "./lib/x.weir" as X`. Access is ALWAYS qualified:
   `X.helper`, `X.Ctx` types cross the boundary. THE EXPORT RULE

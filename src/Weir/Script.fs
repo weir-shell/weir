@@ -4330,6 +4330,21 @@ let private deriveModuleName (absPath: string) : string option =
 // shares it [D:reenum-warning].
 let runsCommandT: Check.TypedExpr -> bool = Check.runsCommandT
 
+// a module let that calls a command-reaching helper of its own runs the
+// command at import, as a direct command would [D:modules-v1]
+let private helperAtImport (name: string) (h: string) =
+    $"a module 'let' cannot run a command at import — '{h}' runs one, and this calls it now; wrap this in a function too (let {name} () = …), the command runs when a script calls it"
+
+/// the module's command-reaching functions so far, in declaration order
+let private moduleCommandHelpers (lets: (string * Check.TypedExpr) list) : Map<string, int> =
+    lets
+    |> List.fold
+        (fun m (n, te) ->
+            match Check.commandHelperArity m te with
+            | Some a -> Map.add n a m
+            | None -> Map.remove n m)
+        Map.empty
+
 // buffer-over-disk [D:modules-v1]: when the LSP sets this, an imported file's
 // content is read through it (open editor buffers first, then disk) so an
 // unsaved dependency checks against what the user sees; None -> CLI, plain
@@ -4495,6 +4510,20 @@ let rec loadModuleCachedWith
                                           Message = d.Message }
                                 | None -> at d.PhysLine d.PhysCol d.Message
                             | Ok chk ->
+                                let eagerHelper =
+                                    match chk.Kind with
+                                    | KLet(_, _, te)
+                                    | KLetPat(_, _, te) ->
+                                        let lets =
+                                            accBody
+                                            |> List.rev
+                                            |> List.choose (function
+                                                | _, CLet(n, t) -> Some(n, t)
+                                                | _ -> None)
+
+                                        Check.eagerCommandHelper (moduleCommandHelpers lets) te
+                                    | _ -> None
+
                                 match chk.Kind with
                                 | KType decl -> go chk.Env sc implLines ((ll, CType decl) :: accBody) tail
                                 | KImport lm -> go chk.Env sc implLines ((ll, CImport lm) :: accBody) tail
@@ -4514,6 +4543,8 @@ let rec loadModuleCachedWith
                                         "a module 'let' cannot run a command at import — wrap it in a function (let f () = …), the command runs when a script calls it"
                                 | KLetPat(_, _, te) when runsCommandT te ->
                                     at ll.Head 1 "a module 'let' cannot run a command at import"
+                                | KLet(name, _, _) when eagerHelper.IsSome -> at ll.Head 1 (helperAtImport name eagerHelper.Value)
+                                | KLetPat _ when eagerHelper.IsSome -> at ll.Head 1 (helperAtImport "f" eagerHelper.Value)
                                 | KLet(name, _, te) ->
                                     let sc' =
                                         { sc with
@@ -6258,6 +6289,8 @@ let analyzeLines
         // explanation. The whole-file rules (orphan, doc-on-impl) are
         // judged after the fold, mirroring the module loader.
         let mutable sigState = if isModule then Some SigContext.empty else None
+        // the module's command-reaching functions so far [D:modules-v1]
+        let mutable moduleHelpers: Map<string, int> = Map.empty
         // aliases of imports that failed: a later "no module named" for
         // one echoes the import's own error, so it is not reported
         let mutable failedImports: Set<string> = Set.empty
@@ -6382,7 +6415,17 @@ let analyzeLines
                          | KLet(_, _, te)
                          | KLetPat(_, _, te) when runsCommandT te ->
                              Some "a module 'let' cannot run a command at import — wrap it in a function (let f () = …)"
+                         | KLet(name, _, te) -> Check.eagerCommandHelper moduleHelpers te |> Option.map (helperAtImport name)
+                         | KLetPat(_, _, te) -> Check.eagerCommandHelper moduleHelpers te |> Option.map (helperAtImport "f")
                          | _ -> None
+
+                     (match chk.Kind with
+                      | KLet(name, _, te) ->
+                          moduleHelpers <-
+                              match Check.commandHelperArity moduleHelpers te with
+                              | Some a -> Map.add name a moduleHelpers
+                              | None -> Map.remove name moduleHelpers
+                      | _ -> ())
 
                      match violation with
                      | Some msg ->

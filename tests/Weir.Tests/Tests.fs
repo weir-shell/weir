@@ -24625,6 +24625,27 @@ let runsCommandReifierTests =
 
               let ok = diagsIn "w.weir" [ "module W"; "let head : unit -> string"; "let head () = git rev-parse HEAD | line" ]
               Expect.isEmpty ok "a function defers the command"
+          }
+          test "a module let calling its own command-reaching helper is refused; a partial application is not [D:modules-v1]" {
+              let helper = "let helper a b = sh -c $\"echo {a}{b}\" |> Seq.exactlyOne"
+
+              for rhs in [ "helper \"a\" \"b\""; "\"b\" |> helper \"a\""; "via ()" ] do
+                  let msgs =
+                      diagsIn "w.weir" [ "module W"; helper; "let via () = helper \"x\" \"y\""; "let v : string"; $"let v = {rhs}" ]
+                      |> List.map (fun d -> d.Message)
+
+                  Expect.exists msgs (fun m -> m.Contains "cannot run a command at import") rhs
+
+              let ok =
+                  diagsIn
+                      "w.weir"
+                      [ "module W"
+                        "let helper : string -> string -> string"
+                        helper
+                        "let part : string -> string"
+                        "let part = helper \"a\"" ]
+
+              Expect.isEmpty ok "a partial application runs nothing"
           } ]
 
 // the GUIDE sweep's findings, pinned [D:sweep-findings]

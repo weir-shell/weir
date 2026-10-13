@@ -6838,6 +6838,58 @@ let rec runsCommandT (te: TypedExpr) : bool =
     | TELambdaPat _ -> false
     | _ -> childExprs te |> List.exists runsCommandT
 
+// the walk sees through the module's own helpers [D:modules-v1]: an
+// earlier function whose body reaches a command (directly, or through
+// another such helper) maps to its arity; a SATURATED call of one on the
+// eager spine runs that command at import, exactly as the command itself
+// would. A partial application builds a closure and runs nothing.
+let rec private lambdaArity (te: TypedExpr) : int =
+    match te.Kind with
+    | TELambda(_, _, b)
+    | TELambdaPat(_, b) -> 1 + lambdaArity b
+    | _ -> 0
+
+let rec private reachesCommand (helpers: Map<string, int>) (te: TypedExpr) : bool =
+    match te.Kind with
+    | TECmd _ -> true
+    | TEVar v when (reifierOfVar v).IsSome || helpers.ContainsKey v -> true
+    | TELet(n, _, v, b) -> reachesCommand helpers v || reachesCommand (Map.remove n helpers) b
+    | _ -> childExprs te |> List.exists (reachesCommand helpers)
+
+/// Some arity when a module binding is a function whose body reaches a
+/// command — the summary the eager-call walk reads
+let commandHelperArity (helpers: Map<string, int>) (te: TypedExpr) : int option =
+    let a = lambdaArity te
+    if a > 0 && reachesCommand helpers te then Some a else None
+
+/// the helper a module let calls eagerly (saturated, outside any lambda)
+let rec eagerCommandHelper (helpers: Map<string, int>) (te: TypedExpr) : string option =
+    let rec spine (e: TypedExpr) (n: int) =
+        match e.Kind with
+        | TEApp(f, _) -> spine f (n + 1)
+        | _ -> e, n
+
+    let saturated (f: TypedExpr) (extra: int) =
+        match spine f extra with
+        | { Kind = TEVar h }, n when (match Map.tryFind h helpers with
+                                      | Some a -> n >= a
+                                      | None -> false) -> Some h
+        | _ -> None
+
+    match te.Kind with
+    | TELambda _
+    | TELambdaPat _ -> None
+    | TEApp _ ->
+        saturated te 0
+        |> Option.orElseWith (fun () -> childExprs te |> List.tryPick (eagerCommandHelper helpers))
+    | TEPipe(_, f) ->
+        saturated f 1
+        |> Option.orElseWith (fun () -> childExprs te |> List.tryPick (eagerCommandHelper helpers))
+    | TELet(n, _, v, b) ->
+        eagerCommandHelper helpers v
+        |> Option.orElseWith (fun () -> eagerCommandHelper (Map.remove n helpers) b)
+    | _ -> childExprs te |> List.tryPick (eagerCommandHelper helpers)
+
 /// the first command on the RHS's eager spine, rendered for a message:
 /// literal argv words as written, splices as $name / $@name, computed
 /// words elided
