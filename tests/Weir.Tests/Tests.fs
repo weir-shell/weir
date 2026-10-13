@@ -11459,6 +11459,19 @@ let optionSweepTests =
               let ex = Expect.throwsC (fun () -> run "Str.sub 2 9 \"abc\"" |> ignore) id
               Expect.stringContains ex.Message "out of bounds" ""
           }
+          // [D:str-code-points]: an astral char is one position everywhere
+          test "strings count code points, never split a surrogate pair" {
+              expectValue "Str.length \"a😀b\"" (VInt 3)
+              expectValue "Str.sub 0 2 \"a😀b\"" (VStr "a😀")
+              expectValue "Str.sub 1 1 \"a😀b\"" (VStr "😀")
+              expectValue "\"a😀b\"[0..1]" (VStr "a😀")
+              expectValue "\"a😀b\"[^2..]" (VStr "😀b")
+              expectValue "Str.tryIndexOf \"b\" \"😀😀b\"" (VUnion("Some", Some(VInt 2)))
+              expectValue "Str.padLeft 3 \"😀\"" (VStr "  😀")
+              expectValue "Str.padRight 3 \"😀\"" (VStr "😀  ")
+              let ex = Expect.throwsC (fun () -> run "Str.sub 0 4 \"a😀b\"" |> ignore) id
+              Expect.stringContains ex.Message "string length 3" ""
+          }
           test "match on Seq.tryHead pins the full idiom" {
               expectValue "match ls |> Seq.tryHead with | Some f -> f.name | None -> \"empty\"" (VStr "a.txt")
           } ]

@@ -17,11 +17,75 @@ let isUserName (n: string) =
 [<Literal>]
 let excerptHead = 64
 
+/// String positions in Unicode code points [D:str-code-points]: a
+/// surrogate pair is one position, so no index, length or cut can split
+/// an astral char. An unpaired surrogate counts as one position.
+module CodePoints =
+    let private pairAt (s: string) (i: int) =
+        System.Char.IsHighSurrogate s[i]
+        && i + 1 < s.Length
+        && System.Char.IsLowSurrogate s[i + 1]
+
+    let private hasSurrogate (s: string) =
+        s |> Seq.exists System.Char.IsSurrogate
+
+    /// the number of code points
+    let length (s: string) : int =
+        if not (hasSurrogate s) then
+            s.Length
+        else
+            let mutable n = 0
+            let mutable i = 0
+
+            while i < s.Length do
+                i <- i + (if pairAt s i then 2 else 1)
+                n <- n + 1
+
+            n
+
+    /// the UTF-16 offset of code point `cp`, clamped to [0, s.Length]
+    let offset (s: string) (cp: int) : int =
+        if cp <= 0 then
+            0
+        elif not (hasSurrogate s) then
+            min cp s.Length
+        else
+            let mutable n = 0
+            let mutable i = 0
+
+            while n < cp && i < s.Length do
+                i <- i + (if pairAt s i then 2 else 1)
+                n <- n + 1
+
+            i
+
+    /// the code-point index of a UTF-16 offset
+    let ofOffset (s: string) (utf16: int) : int = length (s.Substring(0, utf16))
+
+    /// `count` code points from code point `start` (both clamped)
+    let sub (s: string) (start: int) (count: int) : string =
+        let a = offset s start
+        let b = offset s (start + count)
+        s.Substring(a, b - a)
+
+    /// the first `count` code points
+    let head (s: string) (count: int) : string = s.Substring(0, offset s count)
+
+    let padLeft (w: int) (s: string) : string =
+        let n = length s
+        if n >= w then s else System.String(' ', w - n) + s
+
+    let padRight (w: int) (s: string) : string =
+        let n = length s
+        if n >= w then s else s + System.String(' ', w - n)
+
 let excerpt (s: string) : string =
-    if s.Length <= excerptHead then
+    let n = CodePoints.length s
+
+    if n <= excerptHead then
         s
     else
-        $"{s.Substring(0, excerptHead)}… ({s.Length} chars)"
+        $"{CodePoints.head s excerptHead}… ({n} chars)"
 
 type Ty =
     | TInt

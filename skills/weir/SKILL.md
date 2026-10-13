@@ -2145,7 +2145,10 @@ print (f 1)
   `xs[..b]`/`xs[a..]`. `xs[i]` stays the single-element accessor (raises
   out of range; = `Seq.item i xs`) and `Str.sub start len` the
   offset-and-length string form; Bytes has no single `b[i]` (`Bytes.sub
-  start len` takes one byte's window). FROM-THE-END is `^n` (F#'s
+  start len` takes one byte's window). String positions and widths —
+  slices, `Str.length`/`sub`/`tryIndexOf`/`padLeft`/`padRight` — count
+  Unicode code points [D:str-code-points]: `Str.length "a😀b"` is 3 and
+  no cut splits an emoji. FROM-THE-END is `^n` (F#'s
   spelling, `^n` = length − n) — `xs[^1]` is the last element, and it
   works as a slice bound too: `xs[..^2]` is all-but-last, `xs[^2..]` the
   last two, `xs[^3..^1]` both ends from the end. A `^`-bound resolves

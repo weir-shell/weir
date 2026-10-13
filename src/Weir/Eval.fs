@@ -377,7 +377,7 @@ let rec private formatWith (lim: RenderLimits) (depth: int) (v: Value) : string 
         | VStr s ->
             let raw, clipped =
                 match lim.MaxStr with
-                | Some m when s.Length > m -> s.Substring(0, m), true
+                | Some m when CodePoints.length s > m -> CodePoints.head s m, true
                 | _ -> s, false
 
             let escaped =
@@ -825,7 +825,7 @@ let rec private tableCell (v: Value) : (string * bool) option =
     | VStr s ->
         let clipped =
             match echoLimits.MaxStr with
-            | Some m when s.Length > m -> s.Substring(0, m - 1) + "…"
+            | Some m when CodePoints.length s > m -> CodePoints.head s (m - 1) + "…"
             | _ -> s
 
         // the table is a tty-only renderer [D:binary-echo]: a data cell's
@@ -937,7 +937,9 @@ let echoTable (cap: int option) (width: int option) (v: Value) : (string list * 
 
                 let widths =
                     [ 0 .. showKeys.Length - 1 ]
-                    |> List.map (fun i -> rows |> List.fold (fun w r -> max w (fst r[i]).Length) showKeys[i].Length)
+                    |> List.map (fun i ->
+                        rows
+                        |> List.fold (fun w r -> max w (CodePoints.length (fst r[i]))) (CodePoints.length showKeys[i]))
 
                 // terminal-width clamping [D:table-polish]: the widest
                 // column above its floor absorbs the clip (usually the
@@ -949,7 +951,7 @@ let echoTable (cap: int option) (width: int option) (v: Value) : (string list * 
                     match width with
                     | Some termW ->
                         let sep = 2 * (showKeys.Length - 1)
-                        let floorOf i = max 5 showKeys[i].Length
+                        let floorOf i = max 5 (CodePoints.length showKeys[i])
 
                         let rec shrink (ws: int list) =
                             let total = List.sum ws + sep
@@ -975,8 +977,8 @@ let echoTable (cap: int option) (width: int option) (v: Value) : (string list * 
                 // a cell longer than its (possibly clamped) column ends
                 // in the ellipsis — never a silent cut
                 let clip (w: int) (t: string) =
-                    if t.Length > w then
-                        t.Substring(0, max 0 (w - 1)) + "…"
+                    if CodePoints.length t > w then
+                        CodePoints.head t (max 0 (w - 1)) + "…"
                     else
                         t
 
@@ -984,9 +986,9 @@ let echoTable (cap: int option) (width: int option) (v: Value) : (string list * 
                     let t = clip widths[i] t
 
                     if numeric[i] then
-                        t.PadLeft(widths[i])
+                        CodePoints.padLeft widths[i] t
                     else
-                        t.PadRight(widths[i])
+                        CodePoints.padRight widths[i] t
 
                 let line (cells: string list) =
                     (cells |> List.mapi pad |> String.concat "  ").TrimEnd()
@@ -3514,9 +3516,11 @@ and eval (env: Env) (te: TypedExpr) : Value =
         | Check.SliceStr ->
             match eval env target with
             | VStr s ->
-                let a = max 0L (absLo s.Length)
-                let b = absHi s.Length
-                if a > b then VStr "" else VStr(s.Substring(int a, int (b - a + 1L)))
+                // code-point positions [D:str-code-points]
+                let n = CodePoints.length s
+                let a = max 0L (absLo n)
+                let b = absHi n
+                if a > b then VStr "" else VStr(CodePoints.sub s (int a) (int (b - a + 1L)))
             | v -> unreachable $"the checker guarantees a string slice target; got {formatValue v}"
         | Check.SliceBytes ->
             match eval env target with

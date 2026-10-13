@@ -824,7 +824,8 @@ let private globSegRegex (seg: string) : System.Text.RegularExpressions.Regex =
     while i < seg.Length do
         (match seg[i] with
          | '*' -> sb.Append "[^/]*" |> ignore
-         | '?' -> sb.Append "[^/]" |> ignore
+         // one code point, a surrogate pair included [D:str-code-points]
+         | '?' -> sb.Append "(?:[\\uD800-\\uDBFF][\\uDC00-\\uDFFF]|[^/])" |> ignore
          | '[' ->
              let close = seg.IndexOf(']', i + 1)
 
@@ -1166,7 +1167,7 @@ let private replaceImpl: Value =
 let private strLenImpl: Value =
     VBuiltin(fun v ->
         match v with
-        | VStr s -> VInt(int64 s.Length)
+        | VStr s -> VInt(int64 (CodePoints.length s)) // [D:str-code-points]
         | v -> unreachable $"the checker rejects 'strLen' on {formatValue v}")
 
 let private toIntImpl: Value =
@@ -1211,7 +1212,7 @@ let private tryIndexOfImpl: Value =
             | VStr n, VStr s ->
                 match s.IndexOf n with
                 | -1 -> vNone
-                | i -> vSome (VInt(int64 i))
+                | i -> vSome (VInt(int64 (CodePoints.ofOffset s i))) // [D:str-code-points]
             | _ -> unreachable "the checker rejects 'tryIndexOf' on these arguments"))
 
 let private substringImpl: Value =
@@ -1221,11 +1222,14 @@ let private substringImpl: Value =
                 match start, len, subject with
                 | VInt st64, VInt ln64, VStr s ->
                     // bounds in int64, so no start + length can wrap past
-                    // the check [D:int-narrowing]
-                    if st64 < 0L || ln64 < 0L || st64 > int64 s.Length || ln64 > int64 s.Length - st64 then
-                        failwith $"substring: out of bounds (start {st64}, length {ln64}, string length {s.Length})"
+                    // the check [D:int-narrowing]; positions are code
+                    // points [D:str-code-points]
+                    let n = int64 (CodePoints.length s)
+
+                    if st64 < 0L || ln64 < 0L || st64 > n || ln64 > n - st64 then
+                        failwith $"substring: out of bounds (start {st64}, length {ln64}, string length {n})"
                     else
-                        VStr(s.Substring(toIntArg "Str.sub" Position st64, toIntArg "Str.sub" Amount ln64))
+                        VStr(CodePoints.sub s (toIntArg "Str.sub" Position st64) (toIntArg "Str.sub" Amount ln64))
                 | _ -> unreachable "the checker rejects 'substring' on these arguments")))
 
 // Str.replicate / padLeft / padRight [D:port-members]: the width
@@ -1257,7 +1261,8 @@ let private strReplicateImpl: Value =
             | _ -> unreachable "the checker rejects 'Str.replicate' on these arguments"))
 
 // .NET PadLeft/PadRight semantics, deliberately: width is the total
-// width, spaces pad, an already-longer string is unchanged
+// width (in code points [D:str-code-points]), spaces pad, an
+// already-longer string is unchanged
 let private padImpl (name: string) (f: int -> string -> string) : Value =
     VBuiltin(fun wV ->
         VBuiltin(fun sV ->
@@ -1267,7 +1272,8 @@ let private padImpl (name: string) (f: int -> string -> string) : Value =
                     failwith $"Str.{name}: the width must be non-negative; got {w}"
                 else
                     let w32 = toIntArg $"Str.{name}" Amount w
-                    VStr(buildStr $"Str.{name}" (max w (int64 s.Length)) (fun () -> f w32 s))
+                    let pad = max 0L (w - int64 (CodePoints.length s))
+                    VStr(buildStr $"Str.{name}" (int64 s.Length + pad) (fun () -> f w32 s))
             | _ -> unreachable $"the checker rejects 'Str.{name}' on these arguments"))
 
 let private defaultToImpl: Value =
@@ -2654,8 +2660,8 @@ let private strMembers: (string * Ty * Value) list =
       "length", TFun(TStr, TInt), strLenImpl
       "sub", TFun(TInt, TFun(TInt, TFun(TStr, TStr))), substringImpl
       "replicate", TFun(TInt, TFun(TStr, TStr)), strReplicateImpl
-      "padLeft", TFun(TInt, TFun(TStr, TStr)), padImpl "padLeft" (fun w (s: string) -> s.PadLeft(w, ' '))
-      "padRight", TFun(TInt, TFun(TStr, TStr)), padImpl "padRight" (fun w (s: string) -> s.PadRight(w, ' '))
+      "padLeft", TFun(TInt, TFun(TStr, TStr)), padImpl "padLeft" CodePoints.padLeft
+      "padRight", TFun(TInt, TFun(TStr, TStr)), padImpl "padRight" CodePoints.padRight
       "toInt", TFun(TStr, TInt), toIntImpl
       "tryToInt", TFun(TStr, TNamed("Option", [ TInt ])), tryToIntImpl
       // sha256 only [D:encoding-law]: md5 is broken (offering it invites
@@ -4563,7 +4569,7 @@ let private httpExpectImpl: Value =
 
                     let snippet =
                         let flat = resp.Body.Replace("\r", " ").Replace("\n", " ").Trim()
-                        if flat.Length > 200 then flat.Substring(0, 200) + "…" else flat
+                        if CodePoints.length flat > 200 then CodePoints.head flat 200 + "…" else flat
 
                     let detail = if snippet = "" then "" else $": {snippet}"
                     let methodName = httpMethodName (recGet "method" f)
@@ -6385,9 +6391,9 @@ let builtinDocs: Map<string, BuiltinDoc> =
           "Str.replace",
           bd "Replace every occurrence of a substring." (Some "Str.replace \"a\" \"b\" \"aba\"") None
           |> named [ "old"; "new"; "s" ]
-          "Str.length", (bd "The number of characters." (Some "Str.length \"abc\"") None |> named [ "s" ])
+          "Str.length", (bd "The number of characters (Unicode code points)." (Some "Str.length \"abc\"") None |> named [ "s" ])
           "Str.sub",
-          (bd "A substring by start index and length." (Some "Str.sub 0 2 \"abc\"") None
+          (bd "A substring by start index and length, both in characters (code points)." (Some "Str.sub 0 2 \"abc\"") None
            |> named [ "start"; "len"; "s" ])
           "Str.replicate",
           (bd "The string repeated n times. 0 gives the empty string; a negative count raises, as in Seq.replicate."
