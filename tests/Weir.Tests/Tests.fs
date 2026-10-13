@@ -16375,7 +16375,31 @@ let fromJsonSeqTests =
                   with e ->
                       e.Message
 
-              Expect.stringContains m "array element 2 is a JSON number, not an object" ""
+              Expect.stringContains m "array element [1] is a JSON number, not an object" ""
+          }
+          test "json error paths index arrays from zero, as weir's xs[i] does (B30)" {
+              let msgOf' (json: string) prog =
+                  try
+                      runWith [ "src", VSeq [ VStr json ] ] prog |> forceSeq |> ignore
+                      "no error"
+                  with e ->
+                      e.Message
+
+              let row = "{\"name\": \"a\", \"bytes\": 1, \"readOnly\": false}"
+              let bad = "{\"name\": \"b\", \"bytes\": \"x\", \"readOnly\": false}"
+
+              Expect.stringContains
+                  (msgOf' ("[" + row + ", " + bad + "]") "src |> from json seq<JRow>")
+                  "field '[1].bytes'"
+                  "a top-level element's field names its zero-based index"
+
+              let e = env |> declare "type JXs = { xs: seq<int> }"
+
+              match Weir.Check.typecheck e (parse "[\"{\\\"xs\\\": [1, \\\"two\\\"]}\"] |> from json JXs") with
+              | Ok te ->
+                  let ex = Expect.throwsC (fun () -> eval valueEnv te |> ignore) id
+                  Expect.stringContains ex.Message "field 'xs[1]'" "the second element is xs[1]"
+              | Error terr -> failtest (formatError terr)
           }
           test "the wrap is json+yaml: jsonl alone gates with the category teaching [D:yaml-seq]" {
 

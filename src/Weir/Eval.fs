@@ -1410,7 +1410,7 @@ let private jsonDoc
 
             // forced before the document disposes
             prop.EnumerateArray()
-            |> Seq.mapi (fun i el -> readValue $"{name}[{i + 1}]" elem el)
+            |> Seq.mapi (fun i el -> readValue $"{name}[{i}]" elem el)
             |> List.ofSeq
             |> List.toSeq
             |> VSeq
@@ -1612,9 +1612,9 @@ let private jsonDoc
             |> Seq.mapi (fun i el ->
                 if el.ValueKind <> System.Text.Json.JsonValueKind.Object then
                     failwith
-                        $"{who}: array element {i + 1} is a JSON {jsonKindName el.ValueKind}, not an object, in: {shown}"
+                        $"{who}: array element [{i}] is a JSON {jsonKindName el.ValueKind}, not an object, in: {shown}"
                 else
-                    readTopEl "" el)
+                    readTopEl $"[{i}]." el)
             // forced before the document disposes; then seq for the ctor
             |> List.ofSeq
             |> List.toSeq
