@@ -801,23 +801,33 @@ let private instantSpaceSep =
 let private instantLongFrac =
     System.Text.RegularExpressions.Regex @"(T\d{2}:\d{2}:\d{2}\.\d{7})\d+"
 
+// .NET's F-fraction also matches zero digits, so `12:34:56.Z` would
+// read; a fraction dot needs at least one digit
+let private instantEmptyFrac =
+    System.Text.RegularExpressions.Regex @"T\d{2}:\d{2}:\d{2}\.(?!\d)"
+
 let parseInstantMs (text: string) : Result<int64, string> =
     let t = text.Trim()
     let norm = instantLongFrac.Replace(instantSpaceSep.Replace(t, "$1T$2"), "$1")
 
-    match
-        System.DateTimeOffset.TryParseExact(
-            norm,
-            instantFormats,
-            System.Globalization.CultureInfo.InvariantCulture,
-            System.Globalization.DateTimeStyles.AssumeUniversal
-            ||| System.Globalization.DateTimeStyles.AdjustToUniversal
-        )
-    with
-    | true, dto -> Ok(dto.ToUnixTimeMilliseconds())
-    | _ ->
+    let refused () =
         Error
             $"not an ISO 8601 instant ('{excerpt t}'; 2026-08-14T12:34:56Z — offsets allowed, a bare date reads as midnight UTC)"
+
+    if instantEmptyFrac.IsMatch norm then
+        refused ()
+    else
+        match
+            System.DateTimeOffset.TryParseExact(
+                norm,
+                instantFormats,
+                System.Globalization.CultureInfo.InvariantCulture,
+                System.Globalization.DateTimeStyles.AssumeUniversal
+                ||| System.Globalization.DateTimeStyles.AdjustToUniversal
+            )
+        with
+        | true, dto -> Ok(dto.ToUnixTimeMilliseconds())
+        | _ -> refused ()
 
 /// an Instant is an epoch-ms in DateTimeOffset's range (years 1-9999);
 /// a value outside it raises in weir's words at the point it is made,

@@ -19946,6 +19946,14 @@ let instantTests =
               Expect.equal (run "Instant.tryParse \"2026-08-14  12:00:00Z\"") (VUnion("None", None)) "one space only"
               Expect.equal (run "Instant.tryParse \"2026-08-14 \"") (run "Instant.tryParse \"2026-08-14\"") "a bare date is unchanged"
           }
+          test "parse: a fraction dot with no digits is malformed" {
+              for src in [ "2026-08-14T12:34:56.Z"; "2026-08-14T12:34:56."; "2026-08-14 12:34:56.+02:00" ] do
+                  Expect.equal (run $"Instant.tryParse \"{src}\"") (VUnion("None", None)) src
+
+              let ex = Expect.throwsC (fun () -> run "Instant.parse \"2026-08-14T12:34:56.Z\"" |> ignore) id
+              Expect.stringContains ex.Message "not an ISO 8601 instant" "refused like any malformed instant"
+              Expect.equal (run "show (Instant.parse \"2026-08-14T12:34:56.5Z\")") (VStr "2026-08-14T12:34:56.500Z") "one digit reads"
+          }
           test "parseWith: the named-format reader — prefix semantics, %b/%e, position errors, year-less refusal" {
               Expect.equal
                   (run "Instant.parseWith \"%Y/%m/%d %H:%M:%S\" \"2026/08/14 09:15:00 GET /health\" |> show")
