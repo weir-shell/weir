@@ -726,6 +726,8 @@ within serve srv = { port = 8410; maxConcurrent = 4 } handler
   exit 141, no message) — at a tty AND detached (a `kill -INT`/`kill -TERM` on a
   `setsid`/backgrounded weir unwinds the same way, exit 130/143; a
   second signal mid-teardown hard-exits, the double-Ctrl+C escape).
+  A signal sent to weir's pid alone (`timeout`, `docker stop`, a CI
+  cancel) tree-kills the running foreground command too, scoped or not.
   Two carve-outs, both by design: `kill -9` of weir itself cannot, by
   definition — no userspace design closes that hole; and a weir
   BACKGROUNDED IN AN INTERACTIVE SHELL (`weir … &`/`nohup`, which

@@ -630,7 +630,12 @@ let registerProc (p: System.Diagnostics.Process) : unit =
 
     liveProcs[p.Id] <- p
 
-let deregisterProc (p: System.Diagnostics.Process) : unit = liveProcs.TryRemove p.Id |> ignore
+/// remove `p` under `pid` — only that very process, so a late exit
+/// event never drops a newer child that reused the pid
+let deregisterProcAt (pid: int) (p: System.Diagnostics.Process) : unit =
+    liveProcs.TryRemove(System.Collections.Generic.KeyValuePair(pid, p)) |> ignore
+
+let deregisterProc (p: System.Diagnostics.Process) : unit = deregisterProcAt p.Id p
 
 let registerAlways (cleanup: unit -> unit) : int =
     if System.Threading.Interlocked.Exchange(hookInstalled, 1) = 0 then
