@@ -5157,6 +5157,31 @@ WEOF
 rerr=$(printf 'a\nb\n' | $BIN "$pdir/re.weir" 2>&1) && fail "re-enumerating Self.stdin must raise" || true
 echo "$rerr" | grep -qF "already consumed" || fail "the one-enumeration teaching: $rerr"
 echo "e2e ok: Self.prompt reads per-line, EOF refuses, Self.stdin enumerates once"
+# Self.prompt consumes its line and nothing more: the rest of stdin stays
+# for a later child and for Self.stdin — a pipe and a regular file alike
+cat > "$pdir/ahead.weir" <<'WEOF'
+let a = Self.prompt "first?"
+print $"got {a}"
+cat
+WEOF
+printf 'a\r\nb\nc\n' > "$pdir/ahead.in"
+for how in pipe file; do
+    if [ "$how" = pipe ]; then
+        out=$(printf 'a\nb\nc\n' | timeout 10 $BIN "$pdir/ahead.weir" 2>/dev/null) || fail "prompt read-ahead ($how) failed: $out"
+    else
+        out=$(timeout 10 $BIN "$pdir/ahead.weir" < "$pdir/ahead.in" 2>/dev/null) || fail "prompt read-ahead ($how) failed: $out"
+    fi
+    [ "$out" = "$(printf 'got a\nb\nc')" ] || fail "Self.prompt must leave the rest of stdin to cat ($how): $out"
+done
+printf 'x\ny\nz\n' > "$pdir/ahead2.in"
+cat > "$pdir/ahead2.weir" <<'WEOF'
+let a = Self.prompt "first?"
+print $"got {a}"
+Self.stdin |> Seq.iter print
+WEOF
+out=$(timeout 10 $BIN "$pdir/ahead2.weir" < "$pdir/ahead2.in" 2>/dev/null)
+[ "$out" = "$(printf 'got x\ny\nz')" ] || fail "Self.prompt then Self.stdin reads the rest: $out"
+echo "e2e ok: Self.prompt reads no further than its newline (pipe + file, CRLF trimmed)"
 rm -rf "$pdir"
 
 # anonymous record types [D:anon-records]: the shape inline in the
