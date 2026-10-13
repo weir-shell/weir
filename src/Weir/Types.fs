@@ -670,23 +670,28 @@ let parseFloat (text: string) : Result<float, string> =
 // Integer math throughout (no float, the grep-clean bar).
 let formatSize (totalBytes: int64) : string =
     let sign = if totalBytes < 0L then "-" else ""
-    let b = abs totalBytes
+    // the magnitude unsigned (Int64.MinValue has no int64 abs), and tenths
+    // split as whole + remainder so no `* 10` overflows near the max
+    let b =
+        if totalBytes < 0L then
+            uint64 (-(totalBytes + 1L)) + 1UL
+        else
+            uint64 totalBytes
 
     let unitOf =
-        [ 1024L * 1024L * 1024L * 1024L, "TiB"
-          1024L * 1024L * 1024L, "GiB"
-          1024L * 1024L, "MiB"
-          1024L, "KiB" ]
+        [ 1024UL * 1024UL * 1024UL * 1024UL, "TiB"
+          1024UL * 1024UL * 1024UL, "GiB"
+          1024UL * 1024UL, "MiB"
+          1024UL, "KiB" ]
         |> List.tryFind (fun (u, _) -> b >= u)
 
     match unitOf with
     | None -> $"{sign}{b} B"
     | Some(u, name) ->
-        let tenths = b * 10L / u
-        let whole = tenths / 10L
-        let dec = tenths % 10L
+        let whole = b / u
+        let dec = (b % u) * 10UL / u
 
-        if dec = 0L then
+        if dec = 0UL then
             $"{sign}{whole} {name}"
         else
             $"{sign}{whole}.{dec} {name}"
@@ -813,6 +818,18 @@ let parseInstantMs (text: string) : Result<int64, string> =
     | _ ->
         Error
             $"not an ISO 8601 instant ('{excerpt t}'; 2026-08-14T12:34:56Z — offsets allowed, a bare date reads as midnight UTC)"
+
+/// an Instant is an epoch-ms in DateTimeOffset's range (years 1-9999);
+/// a value outside it raises in weir's words at the point it is made,
+/// never later inside a .NET formatter
+let checkInstant (who: string) (ms: int64) : int64 =
+    let lo = System.DateTimeOffset.MinValue.ToUnixTimeMilliseconds()
+    let hi = System.DateTimeOffset.MaxValue.ToUnixTimeMilliseconds()
+
+    if ms < lo || ms > hi then
+        failwith $"{who}: instant out of range — epoch ms {ms} is outside years 0001-9999 ({lo}..{hi})"
+
+    ms
 
 /// UTC always; millis shown only when nonzero (show's spelling)
 let formatInstant (ms: int64) : string =

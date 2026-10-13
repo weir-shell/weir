@@ -1031,6 +1031,19 @@ let private checkedFloat (op: string) (f: unit -> float) : Value =
     else
         failwith $"'{op}' produced a non-finite float (overflow)"
 
+// Size/Duration/Instant arithmetic is checked like int's, in weir's words
+let private checkedUnit (what: string) (f: unit -> int64) : int64 =
+    try
+        f ()
+    with :? System.OverflowException ->
+        failwith $"{what} overflow"
+
+let private unitDiv (what: string) (a: int64) (b: int64) : int64 =
+    if b = 0L then failwith "division by zero" else checkedUnit what (fun () -> a / b)
+
+let private instantShift (a: int64) (d: int64) : Value =
+    VInstant(checkInstant "Instant arithmetic" (checkedUnit "Instant" (fun () -> Checked.(+) a d)))
+
 let private binOp (op: string) (l: Value) (r: Value) : Value =
     match op, l, r with
     | "+", VInt a, VInt b -> checkedInt (fun () -> Checked.(+) a b)
@@ -1046,24 +1059,24 @@ let private binOp (op: string) (l: Value) (r: Value) : Value =
     | "<", VFloat a, VFloat b -> VBool(a < b)
     | ">=", VFloat a, VFloat b -> VBool(a >= b)
     | "<=", VFloat a, VFloat b -> VBool(a <= b)
-    | "+", VSize a, VSize b -> VSize(Checked.(+) a b)
-    | "-", VSize a, VSize b -> VSize(Checked.(-) a b)
-    | "*", VSize a, VInt b -> VSize(Checked.(*) a b)
-    | "*", VInt a, VSize b -> VSize(Checked.(*) a b)
-    | "/", VSize a, VInt b -> VSize(a / b)
+    | "+", VSize a, VSize b -> VSize(checkedUnit "Size" (fun () -> Checked.(+) a b))
+    | "-", VSize a, VSize b -> VSize(checkedUnit "Size" (fun () -> Checked.(-) a b))
+    | "*", VSize a, VInt b -> VSize(checkedUnit "Size" (fun () -> Checked.(*) a b))
+    | "*", VInt a, VSize b -> VSize(checkedUnit "Size" (fun () -> Checked.(*) a b))
+    | "/", VSize a, VInt b -> VSize(unitDiv "Size" a b)
     | ">", VSize a, VSize b -> VBool(a > b)
     | "<", VSize a, VSize b -> VBool(a < b)
     | ">=", VSize a, VSize b -> VBool(a >= b)
     | "<=", VSize a, VSize b -> VBool(a <= b)
-    | "+", VDur a, VDur b -> VDur(Checked.(+) a b)
-    | "-", VDur a, VDur b -> VDur(Checked.(-) a b)
-    | "*", VDur a, VInt b -> VDur(Checked.(*) a b)
-    | "*", VInt a, VDur b -> VDur(Checked.(*) a b)
-    | "/", VDur a, VInt b -> VDur(a / b)
-    | "-", VInstant a, VInstant b -> VDur(Checked.(-) a b)
-    | "+", VInstant a, VDur d -> VInstant(Checked.(+) a d)
-    | "+", VDur d, VInstant a -> VInstant(Checked.(+) a d)
-    | "-", VInstant a, VDur d -> VInstant(Checked.(-) a d)
+    | "+", VDur a, VDur b -> VDur(checkedUnit "Duration" (fun () -> Checked.(+) a b))
+    | "-", VDur a, VDur b -> VDur(checkedUnit "Duration" (fun () -> Checked.(-) a b))
+    | "*", VDur a, VInt b -> VDur(checkedUnit "Duration" (fun () -> Checked.(*) a b))
+    | "*", VInt a, VDur b -> VDur(checkedUnit "Duration" (fun () -> Checked.(*) a b))
+    | "/", VDur a, VInt b -> VDur(unitDiv "Duration" a b)
+    | "-", VInstant a, VInstant b -> VDur(checkedUnit "Duration" (fun () -> Checked.(-) a b))
+    | "+", VInstant a, VDur d -> instantShift a d
+    | "+", VDur d, VInstant a -> instantShift a d
+    | "-", VInstant a, VDur d -> instantShift a (checkedUnit "Instant" (fun () -> Checked.(~-) d))
     | ">", VInstant a, VInstant b -> VBool(a > b)
     | "<", VInstant a, VInstant b -> VBool(a < b)
     | ">=", VInstant a, VInstant b -> VBool(a >= b)
@@ -1172,8 +1185,8 @@ let private decodeCoded (where: string) (c: Codec) (text: string option) (num: i
             | Ok ms -> VInstant ms
             | Error e -> failwith $"{where}: {e}"
         | None -> failwith $"{where}: [<Iso8601>] reads an ISO 8601 string, got a number"
-    | EpochMs -> VInstant(needInt "epoch milliseconds")
-    | EpochSec -> VInstant(seconds (needInt "epoch seconds"))
+    | EpochMs -> VInstant(checkInstant where (needInt "epoch milliseconds"))
+    | EpochSec -> VInstant(checkInstant where (seconds (needInt "epoch seconds")))
     | Millis -> VDur(needInt "milliseconds")
     | Seconds -> VDur(seconds (needInt "seconds"))
     | ByteCount -> VSize(needInt "a byte count")

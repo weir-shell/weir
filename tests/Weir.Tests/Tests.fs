@@ -15349,6 +15349,44 @@ let durationTests =
 
               Expect.stringContains ex.Message "Duration.sleep: negative duration (-5s)" "located, naming the value"
           }
+          // B35: a Duration past Int32.MaxValue ms sleeps (in slices)
+          // instead of leaking .NET's argument error
+          test "Duration.sleep accepts a duration longer than 24.8 days" {
+              let mutable failed: exn option = None
+
+              let t =
+                  System.Threading.Thread(
+                      (fun () ->
+                          try
+                              run "Duration.sleep (Duration.h 1000)" |> ignore
+                          with e ->
+                              failed <- Some e),
+                      IsBackground = true
+                  )
+
+              t.Start()
+              Expect.isFalse (t.Join 300) "still sleeping"
+              Expect.isNone failed "no raise"
+          }
+          // B35: overflow and range failures in weir's words, never .NET's
+          test "Duration/Size/Instant overflow and Str.replace \"\" raise in weir's words" {
+              for src, want in
+                  [ "1h * 9223372036854775807", "Duration overflow"
+                    "Duration.h 9223372036854775807", "Duration.h: 9223372036854775807 overflows a Duration"
+                    "1h / 0", "division by zero"
+                    "(Size.bytes 2) * 9223372036854775807", "Size overflow"
+                    "(Size.bytes 1) / 0", "division by zero"
+                    "Instant.ofEpochMs 9223372036854775807", "Instant.ofEpochMs: instant out of range"
+                    "(Instant.ofEpochMs 253402300799999) + 1ms", "instant out of range"
+                    "(Instant.ofEpochMs 0) - 1h * 999999999", "instant out of range"
+                    "Str.replace \"\" \"x\" \"abc\"", "Str.replace: the text to replace is empty" ] do
+                  let m = msgOf src
+                  Expect.stringContains m want src
+                  Expect.isFalse (m.Contains "Arithmetic operation") "no raw .NET words"
+
+              expectValue "Instant.ofEpochMs 253402300799999 |> show" (VStr "9999-12-31T23:59:59.999Z")
+              expectValue "Size.bytes 9223372036854775807 |> show" (VStr "8388607.9 TiB")
+          }
           test "JSON is parked: the boundary rejects Duration naming the conversion" {
               let e = env |> declare "type DurJ = { dj: Duration }"
 

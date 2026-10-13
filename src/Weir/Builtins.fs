@@ -975,6 +975,7 @@ let private replaceImpl: Value =
         VBuiltin(fun rep ->
             VBuiltin(fun subject ->
                 match pat, rep, subject with
+                | VStr "", VStr _, VStr _ -> failwith "Str.replace: the text to replace is empty — there is nothing to find"
                 | VStr p, VStr r, VStr s -> VStr(s.Replace(p, r))
                 | _ -> unreachable "the checker rejects 'replace' on these arguments")))
 
@@ -3932,7 +3933,11 @@ let private sizeMembers: (string * Ty * Value) list =
 let private durCtor (name: string) (mult: int64) : Value =
     VBuiltin(fun v ->
         match v with
-        | VInt n -> VDur(Checked.(*) n mult)
+        | VInt n ->
+            try
+                VDur(Checked.(*) n mult)
+            with :? System.OverflowException ->
+                failwith $"Duration.{name}: {n} overflows a Duration"
         | v -> unreachable $"the checker rejects 'Duration.{name}' on {formatValue v}")
 
 let private durationMembers: (string * Ty * Value) list =
@@ -3989,10 +3994,15 @@ let private durationMembers: (string * Ty * Value) list =
                   failwith $"Duration.sleep: negative duration ({formatDuration n})"
               elif n > 0L then
                   // integer ticks — no float anywhere [D:duration]
+                  // Thread.Sleep takes at most Int32.MaxValue ms, so a longer
+                  // duration sleeps in slices — every valid Duration sleeps
                   Waiting.during $"sleeping {formatDuration n}" (fun () ->
-                      Session.sleepInterruptible (
-                          System.TimeSpan.FromTicks(n * System.TimeSpan.TicksPerMillisecond)
-                      ))
+                      let mutable left = n
+
+                      while left > 0L do
+                          let slice = min left (int64 System.Int32.MaxValue - 1L)
+                          Session.sleepInterruptible (System.TimeSpan.FromTicks(slice * System.TimeSpan.TicksPerMillisecond))
+                          left <- left - slice)
 
               VUnit
           | v -> unreachable $"the checker rejects 'Duration.sleep' on {formatValue v}") ]
@@ -4654,7 +4664,7 @@ let private instantMembers: (string * Ty * Value) list =
       TFun(TInt, TInstant),
       VBuiltin(fun v ->
           match v with
-          | VInt ms -> VInstant ms
+          | VInt ms -> VInstant(checkInstant "Instant.ofEpochMs" ms)
           | v -> unreachable $"the checker rejects 'Instant.ofEpochMs' on {formatValue v}") ]
 
 // the uuid generators [D:uuid]. Bytes are big-endian (RFC 9562 network
