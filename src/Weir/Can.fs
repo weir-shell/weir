@@ -705,7 +705,11 @@ let run (json: bool) (strict: bool) (path: string) : int =
             let caps = collect path (ofChecked pairs)
 
             if json then
-                System.Console.WriteLine(renderJson path caps)
+                // tty sink only; redirected stays byte-faithful [D:tty-bidi-sanitize]
+                System.Console.WriteLine(
+                    renderJson path caps
+                    |> Eval.sanitizeIfTty System.Console.IsOutputRedirected
+                )
             else
                 System.Console.WriteLine(renderHuman path caps)
 

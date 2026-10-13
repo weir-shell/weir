@@ -11171,6 +11171,45 @@ $BIN "$svdir/f13.weir" > "$svdir/f13.out" 2>/dev/null || true
 python3 -c "import sys; d=open('$svdir/f13.out','rb').read(); sys.exit(0 if (b'\x1b[32mok\x1b]0;PWN\x07mid\rend' in d and b'bidi\xe2\x80\xaetxt' in d) else 1)" \
     || fail "F13: redirected output must stay byte-faithful (raw ESC/OSC/BEL/CR/RLO preserved through a pipe)"
 echo "e2e ok: F13 tty data sanitize (data escapes neutralized at a tty, weir colour intact, pipe byte-faithful)"
+# the CLI's own JSON (`check --json`, `check --can --json`) rides the same
+# tty sanitizer [D:tty-bidi-sanitize]: the path carries an RLO and a C1
+# CSI (the encoder escapes only C0), sanitized at a pty and byte-identical
+# when redirected.
+jname=$(printf 'r\342\200\256q\302\233.weir')
+printf 'let x = \n' > "$svdir/$jname"
+printf 'echo "hi"\n' > "$svdir/c$jname"
+jsan=$(python3 - "$BIN" "$svdir/$jname" "$svdir/c$jname" <<'PYEOF'
+import pty, os, sys
+binp, bad, good = sys.argv[1], sys.argv[2], sys.argv[3]
+def at_pty(args):
+    out = []
+    pid, fd = pty.fork()
+    if pid == 0:
+        os.execv(binp, [binp] + args)
+    try:
+        while True:
+            d = os.read(fd, 1024)
+            if not d: break
+            out.append(d)
+    except OSError:
+        pass
+    return b''.join(out)
+for tag, args in (('CHECK', ['check', '--json', bad]), ('CAN', ['check', '--can', '--json', good])):
+    data = at_pty(args)
+    raw = (b'\xe2\x80\xae' in data) or (b'\xc2\x9b' in data)
+    vis = b'r\\u202Eq\\x9b.weir' in data
+    print('%s_RAW=%s %s_VIS=%s' % (tag, raw, tag, vis))
+PYEOF
+)
+for tag in CHECK CAN; do
+    echo "$jsan" | grep -qF "${tag}_RAW=False" || fail "tty-bidi: $tag --json must not put a raw RLO/C1 on the tty: $jsan"
+    echo "$jsan" | grep -qF "${tag}_VIS=True" || fail "tty-bidi: $tag --json must render RLO/C1 visible at a tty: $jsan"
+done
+$BIN check --json "$svdir/$jname" > "$svdir/j1.out" 2>/dev/null || true
+$BIN check --can --json "$svdir/c$jname" > "$svdir/j2.out" 2>/dev/null || true
+python3 -c "import sys; a=open('$svdir/j1.out','rb').read(); b=open('$svdir/j2.out','rb').read(); n=b'r\xe2\x80\xaeq\xc2\x9b.weir'; sys.exit(0 if (n in a and n in b and b'\\\\u' not in a + b and b'\\\\x9b' not in a + b) else 1)" \
+    || fail "tty-bidi: redirected check --json / --can --json must stay byte-faithful (raw RLO/C1 in the path)"
+echo "e2e ok: tty-bidi check --json and --can --json sanitized at a tty, byte-faithful when redirected"
 else
     echo "e2e skip: F13 tty sanitize is pty-driven — no termios/pty on Windows Python"
 fi

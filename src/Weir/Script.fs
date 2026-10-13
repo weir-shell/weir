@@ -6662,11 +6662,14 @@ let analyzeLines
 /// first line would be told it is not weir at all.
 let printDiags (json: bool) (parsedAny: bool) (diags: Diagnostic list) : unit =
     if json then
+        // the encoder is unchanged; a tty sink gets the safe rendering
+        // [D:tty-bidi-sanitize]
         Console.WriteLine(
             jsonBuild (fun w ->
                 w.WriteStartArray()
                 diags |> List.iter (writeDiag w)
                 w.WriteEndArray())
+            |> Eval.sanitizeIfTty Console.IsOutputRedirected
         )
     else
         let c = Color.onStdout.Value
