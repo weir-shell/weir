@@ -787,12 +787,22 @@ let private instantFormats =
        "yyyy-MM-dd'T'HH:mm:ss.FFFFFFF"
        "yyyy-MM-dd" |]
 
+// RFC 3339 (and so TOML) also spells the separator as a space and the
+// fraction past .NET's 7 digits (nanoseconds); both normalize into the
+// list's spelling — the fraction truncates to ticks, then to ms anyway
+let private instantSpaceSep =
+    System.Text.RegularExpressions.Regex @"^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2})"
+
+let private instantLongFrac =
+    System.Text.RegularExpressions.Regex @"(T\d{2}:\d{2}:\d{2}\.\d{7})\d+"
+
 let parseInstantMs (text: string) : Result<int64, string> =
     let t = text.Trim()
+    let norm = instantLongFrac.Replace(instantSpaceSep.Replace(t, "$1T$2"), "$1")
 
     match
         System.DateTimeOffset.TryParseExact(
-            t,
+            norm,
             instantFormats,
             System.Globalization.CultureInfo.InvariantCulture,
             System.Globalization.DateTimeStyles.AssumeUniversal

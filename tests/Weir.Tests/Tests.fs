@@ -19497,6 +19497,17 @@ let instantTests =
 
               Expect.stringContains m "ISO 8601" "the reader's law is named"
           }
+          test "parse: RFC 3339's space separator and nanosecond fractions read (TOML offset datetimes) (B26)" {
+              for src, want in
+                  [ "1979-05-27 07:32:00Z", "1979-05-27T07:32:00Z"
+                    "1979-05-27T00:32:00.999999999-07:00", "1979-05-27T07:32:00.999Z"
+                    "1979-05-27 00:32:00.123456789+01:00", "1979-05-26T23:32:00.123Z"
+                    "2026-08-14T12:34:56.1234567Z", "2026-08-14T12:34:56.123Z" ] do
+                  Expect.equal (run $"show (Instant.parse \"{src}\")") (VStr want) src
+
+              Expect.equal (run "Instant.tryParse \"2026-08-14  12:00:00Z\"") (VUnion("None", None)) "one space only"
+              Expect.equal (run "Instant.tryParse \"2026-08-14 \"") (run "Instant.tryParse \"2026-08-14\"") "a bare date is unchanged"
+          }
           test "parseWith: the named-format reader — prefix semantics, %b/%e, position errors, year-less refusal" {
               Expect.equal
                   (run "Instant.parseWith \"%Y/%m/%d %H:%M:%S\" \"2026/08/14 09:15:00 GET /health\" |> show")
