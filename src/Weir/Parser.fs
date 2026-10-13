@@ -3202,7 +3202,7 @@ and private parseTplBlockBody
                                     else
                                         Result.Ok(YtItem(YtScalar("", false, spanAt col)))
                                 else
-                                    match Yaml.splitKey 0 inlinePart with
+                                    match Yaml.splitKey inlinePart with
                                     | Some _ ->
                                         // compact map item: the first entry lives on
                                         // this line at a virtual rel of item+2
@@ -3233,7 +3233,7 @@ and private parseTplBlockBody
                         | Result.Error e -> Result.Error e
                         | Result.Ok item -> units j (UItem item :: acc)
                     else
-                        match Yaml.splitKey 0 text with
+                        match Yaml.splitKey text with
                         | None -> Result.Error("expected 'key:', '- ', or 'for … in …' in this yaml block", col)
                         | Some(rawKey, rest) ->
                             let keyR =
