@@ -6195,6 +6195,20 @@ let chooseTests =
               | VInt n -> Expect.equal n 2L "lazy on both sides"
               | v -> failtest $"unexpected {v}"
           }
+          // deep lazy chains walk iteratively [D:seq-depth-iterative]: a fold
+          // nesting Seq.append / Seq.map 200k deep overflowed on the first
+          // pull — reaching the asserts is the pin
+          test "a 200k-deep Seq.append fold enumerates, both nestings [D:seq-depth-iterative]" {
+              expectValue "[1..200000] |> Seq.fold (fun acc i -> Seq.append acc [i]) [] |> Seq.sum" (VInt 20000100000L)
+              expectValue "[1..200000] |> Seq.fold (fun acc i -> Seq.append [i] acc) [] |> Seq.head" (VInt 200000L)
+          }
+          test "a 200k-deep Seq.map fold applies innermost first [D:seq-depth-iterative]" {
+              expectValue "[1..200000] |> Seq.fold (fun acc i -> Seq.map (fun x -> x + 1) acc) [0] |> Seq.head" (VInt 200000L)
+              expectValue "[1; 2] |> Seq.map (fun x -> x + 1) |> Seq.map (fun x -> x * 10) |> Seq.sum" (VInt 50L)
+          }
+          test "alternating append/map nests 100k deep [D:seq-depth-iterative]" {
+              expectValue "[1..100000] |> Seq.fold (fun acc i -> Seq.append (Seq.map (fun x -> x) acc) [i]) [] |> Seq.head" (VInt 1L)
+          }
           test "bare choose resolves — single-home means bare [D:bare-partition]" {
               Expect.equal (run "[1] |> choose (fun x -> Some x) |> Seq.length") (VInt 1L) ""
           }

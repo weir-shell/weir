@@ -151,11 +151,88 @@ let private truncateImpl: Value =
             | VInt n, VSeq items -> VSeq(Seq.truncate (toIntArg "Seq.take" Amount n) items)
             | _ -> unreachable "the checker rejects truncation on these arguments"))
 
+// deep lazy chains walk iteratively [D:seq-depth-iterative], the
+// [D:eq-depth] rule for seqs: a fold building Seq.append/Seq.map 100k deep
+// nested one enumerator per level, and the first pull recursed through
+// every level. A chain is a tree of appends and maps over opaque leaves;
+// its enumerator walks the tree on a heap stack, carrying the maps still
+// to apply as a list (innermost first). Lazy and re-enumerable like the
+// F# combinators it replaces; the active leaf is disposed on early exit.
+type private Chain =
+    | Leaf of seq<Value>
+    | Append of Chain * Chain
+    | Mapped of (Value -> Value) * Chain
+
+type private ChainEnumerator(root: Chain) =
+    let pending = System.Collections.Generic.Stack<Chain * (Value -> Value) list>()
+    let mutable leaf: System.Collections.Generic.IEnumerator<Value> = null
+    let mutable fns: (Value -> Value) list = []
+    let mutable current = VUnit
+    do pending.Push(root, [])
+
+    interface System.Collections.Generic.IEnumerator<Value> with
+        member _.Current = current
+
+    interface System.Collections.IEnumerator with
+        member _.Current = box current
+
+        member _.MoveNext() =
+            let mutable result = None
+
+            while result.IsNone do
+                if not (isNull leaf) then
+                    if leaf.MoveNext() then
+                        let mutable v = leaf.Current
+
+                        for f in fns do
+                            v <- f v
+
+                        current <- v
+                        result <- Some true
+                    else
+                        leaf.Dispose()
+                        leaf <- null
+                elif pending.Count = 0 then
+                    result <- Some false
+                else
+                    match pending.Pop() with
+                    | Leaf s, fs ->
+                        leaf <- s.GetEnumerator()
+                        fns <- fs
+                    | Append(l, r), fs ->
+                        pending.Push(r, fs)
+                        pending.Push(l, fs)
+                    | Mapped(f, inner), fs -> pending.Push(inner, f :: fs)
+
+            result.Value
+
+        member _.Reset() = raise (System.NotSupportedException())
+
+    interface System.IDisposable with
+        member _.Dispose() =
+            if not (isNull leaf) then
+                leaf.Dispose()
+                leaf <- null
+
+type private ChainSeq(root: Chain) =
+    member _.Root = root
+
+    interface System.Collections.Generic.IEnumerable<Value> with
+        member _.GetEnumerator() = new ChainEnumerator(root)
+
+    interface System.Collections.IEnumerable with
+        member _.GetEnumerator() = new ChainEnumerator(root)
+
+let private chainOf (s: seq<Value>) : Chain =
+    match s with
+    | :? ChainSeq as c -> c.Root
+    | s -> Leaf s
+
 let private mapImpl: Value =
     VBuiltin(fun f ->
         VBuiltin(fun s ->
             match s with
-            | VSeq items -> VSeq(items |> Seq.map (apply f))
+            | VSeq items -> VSeq(ChainSeq(Mapped(apply f, chainOf items)))
             | v -> unreachable $"the checker rejects 'map' on {formatValue v}"))
 
 // the match-or-skip member [D:seq-choose]: lazy, constraint-free
@@ -178,7 +255,7 @@ let private appendImpl: Value =
     VBuiltin(fun a ->
         VBuiltin(fun b ->
             match a, b with
-            | VSeq xs, VSeq ys -> VSeq(Seq.append xs ys)
+            | VSeq xs, VSeq ys -> VSeq(ChainSeq(Append(chainOf xs, chainOf ys)))
             | v, _ -> unreachable $"the checker rejects 'append' on {formatValue v}"))
 
 let private sumImpl: Value =
