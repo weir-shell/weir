@@ -19268,6 +19268,8 @@ let floatTests =
           test "-0.0 is unrepresentable: results normalize" {
               Expect.equal (run "-1.0 * 0.0") (VFloat 0.0) ""
               Expect.equal (run "show (-1.0 * 0.0)") (VStr "0.0") "rendering never shows a signed zero"
+              Expect.equal (run "show -0.0") (VStr "0.0") "the literal normalizes too"
+              Expect.equal (run "show [-0.0; -0.0e3]") (VStr "[0.0; 0.0]") "inside data and with an exponent"
           }
           test "mixed arithmetic errors naming Float.ofInt" {
               Expect.stringContains

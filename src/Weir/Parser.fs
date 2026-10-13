@@ -1359,9 +1359,10 @@ let private negAtom =
             let span = { Start = pos p; End = e.Span.End }
 
             // fold into the literal for the non-int scalars [D:floats]:
-            // the 0 - e desugar would mix types (0 is an int)
+            // the 0 - e desugar would mix types (0 is an int); -0.0
+            // normalizes at construction, the literal included
             match e.Kind with
-            | EFloat f -> { Kind = EFloat(-f); Span = span }
+            | EFloat f -> { Kind = EFloat(if f = 0.0 then 0.0 else -f); Span = span }
             | EDur n -> { Kind = EDur(-n); Span = span }
             | ESize b -> { Kind = ESize(-b); Span = span }
             | _ ->
