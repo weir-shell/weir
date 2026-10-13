@@ -2269,6 +2269,19 @@ let boundaryTests =
               | Error e -> Expect.stringContains e "has both an inline value and a nested block" "malformed inline+block still fires"
               | Ok d -> failtest $"malformed input must error, got {d}"
           }
+          test "a line indented between a block and its parent errors with its line, never drops (B9)" {
+              let left = "indented less than the block it belongs to"
+              Expect.stringContains (yamlErr [ "b:"; "  c: 2"; " d: 3"; "e: 5" ]) $"line 3: this line is {left}" "map entry between levels"
+              Expect.stringContains (yamlErr [ "- a: 1"; "  b: 2"; " c: 3" ]) "line 3:" "compact item entry between levels"
+              Expect.stringContains (yamlErr [ "a:"; "    - x"; "  - y" ]) $"line 3: this line is {left}" "seq item between levels"
+              Expect.stringContains (yamlErr [ "a:"; "  - x"; "  b: 1" ]) "line 3: expected a '- ' sequence item" "key after a seq at the seq's column"
+              Expect.stringContains (yamlErr [ "- x"; "y: 1" ]) "line 2: expected a '- ' sequence item" "root seq then a key"
+
+              // control: the zero-indent seq form keeps its sibling key
+              match yamlDoc [ "a:"; "- x"; "b: 1" ] with
+              | Weir.Yaml.NMap([ ("a", Weir.Yaml.NSeq(_, _)); ("b", _) ], _) -> ()
+              | other -> failtest $"zero-indent seq + sibling: {other}"
+          }
           test "empty flow collections read: {} and [] as values (map + seq position); populated flow still rejects [D:yaml-empty-flow]" {
               // `{}` → the empty mapping, `[]` → the empty sequence, as a
               // map value (inner whitespace tolerated)

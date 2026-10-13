@@ -672,6 +672,12 @@ let rec private parseBlock
 
         e
 
+    // every line in [start, fin) belongs to this block (the caller's
+    // extent), so one left of `indent` sits between the parent's level
+    // and this block's — no owner; dropping it would lose data
+    let misIndented (no: int) (col: int) =
+        $"line {no}: this line is indented less than the block it belongs to (its siblings start at column {col + 1}) — align it with them or with its parent"
+
     if start >= fin then
         Ok(
             NNull(
@@ -695,11 +701,11 @@ let rec private parseBlock
                     let ind = indentOf raw
 
                     if ind < indent then
-                        Ok(List.rev acc)
+                        Error(misIndented no indent)
                     elif ind > indent then
                         Error $"line {no}: unexpected indentation (a sequence item line must start with '- ')"
                     elif not (raw.Substring(indent).StartsWith "- " || raw.Substring(indent).TrimEnd() = "-") then
-                        Ok(List.rev acc)
+                        Error $"line {no}: expected a '- ' sequence item at this indentation"
                     else
                         // the item's content: rest of this line at virtual
                         // indent+2, plus deeper lines until the next sibling
@@ -771,7 +777,7 @@ let rec private parseBlock
                         let ind = indentOf raw
 
                         if ind < indent then
-                            Ok(List.rev acc)
+                            Error(misIndented no indent)
                         elif ind > indent then
                             Error $"line {no}: unexpected indentation"
                         else
