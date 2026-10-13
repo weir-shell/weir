@@ -1331,7 +1331,7 @@ let private runParallelWith (degree: int) (f: Value) (items: seq<Value>) : Value
         let tasks =
             Array.init workers (fun _ -> Task.Factory.StartNew(worker, TaskCreationOptions.LongRunning))
 
-        Task.WaitAll(tasks: Task[])
+        Session.waitTask (Task.WhenAll(tasks: Task[]))
     finally
         Session.setParallelDepth depth
 
@@ -1408,6 +1408,7 @@ let private runRaceWith (degree: int) (f: Value) (items: seq<Value>) : Value =
         Session.setParallelDepth depth
 
     try
+        Session.waitTask outcome.Task
         outcome.Task.Result
     with :? System.AggregateException as ae when ae.InnerExceptions.Count = 1 ->
         raise ae.InnerExceptions[0]
@@ -3842,7 +3843,7 @@ let private durationMembers: (string * Ty * Value) list =
               elif n > 0L then
                   // integer ticks — no float anywhere [D:duration]
                   Waiting.during $"sleeping {formatDuration n}" (fun () ->
-                      System.Threading.Thread.Sleep(
+                      Session.sleepInterruptible (
                           System.TimeSpan.FromTicks(n * System.TimeSpan.TicksPerMillisecond)
                       ))
 
@@ -4430,6 +4431,9 @@ let private procMembers: (string * Ty * Value) list =
 
           Waiting.during $"waiting for pid {h.Proc.Id}" (fun () ->
               h.Proc.WaitForExit()
+              // a child killed by a teardown returns no code
+              // [D:signal-main-unwind]
+              Session.checkTeardown ()
               VInt(int64 h.Proc.ExitCode)))
       "stop",
       TFun(procTy, TUnit),

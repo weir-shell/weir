@@ -215,6 +215,9 @@ type CommandFailure(code: int, signalNote: string, shown: string) =
     member _.Shown = shown
 
 let private raiseNonzero (s: Spec) (code: int) =
+    // a child killed by a teardown is the teardown's, not a failure
+    // [D:signal-main-unwind]
+    Session.checkTeardown ()
     let shown = String.concat " " (s.Prog :: s.Args)
 
     let signalNote =

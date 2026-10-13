@@ -713,7 +713,9 @@ within serve srv = { port = 8410; maxConcurrent = 4 } handler
   backgrounding; compose inside `sh -c`); the block starts on the
   NEXT line (the command owns the rest of its own). THE NON-CLAIM,
   stated: normal exit, raise, SIGINT and SIGTERM all close every
-  scope — at a tty AND detached (a `kill -INT`/`kill -TERM` on a
+  scope (on the script's own thread — no statement runs after the
+  signal; a reader closing weir's stdout ends the script the same way,
+  exit 141, no message) — at a tty AND detached (a `kill -INT`/`kill -TERM` on a
   `setsid`/backgrounded weir unwinds the same way, exit 130/143; a
   second signal mid-teardown hard-exits, the double-Ctrl+C escape).
   Two carve-outs, both by design: `kill -9` of weir itself cannot, by

@@ -536,6 +536,39 @@ b]" ] || fail "chain reifiers: succeeds, leftmost code, stderr order, text: $out
     echo "e2e ok: pipe chains — early exit ends the chain quietly; reifiers follow a chain, leftmost code, stderr in order"
 fi
 
+# a closed stdout ends the script like SIGPIPE [D:stdout-epipe]: an endless
+# relayed child and a long print loop under `| head -1` stop at once with
+# exit 141, no diagnostic, and `always` runs (POSIX: EPIPE is the signal)
+if [ "$IS_WINDOWS" != "1" ]; then
+    epdir=$(mkweirtmp)
+    cat > "$epdir/yes.weir" <<'WEOF'
+within
+    yes epipe98763
+always
+    File.write "cleaned-yes" ["ok"]
+WEOF
+    cat > "$epdir/loop.weir" <<'WEOF'
+within
+    for i in [1..2000000] do
+        print $"{i}"
+always
+    File.write "cleaned-loop" ["ok"]
+WEOF
+    for probe in yes loop; do
+        rm -f "$epdir/cleaned-$probe"
+        res=$(cd "$epdir" && { timeout 5 $BIN $probe.weir 2>"$epdir/err-$probe" | head -1 >/dev/null; } ; echo "${PIPESTATUS[0]}")
+        [ "$res" = "141" ] || fail "a closed stdout ends $probe.weir promptly with 141 (got $res; 124 = still running)"
+        [ "$(cat "$epdir/cleaned-$probe" 2>/dev/null)" = "ok" ] || fail "a closed stdout runs always ($probe)"
+        [ ! -s "$epdir/err-$probe" ] || fail "a closed stdout prints no diagnostic ($probe): $(cat "$epdir/err-$probe")"
+    done
+    if pgrep -f "yes epipe98763" >/dev/null 2>&1; then
+        pkill -f "yes epipe98763" 2>/dev/null || true
+        fail "a closed stdout must reap the relayed child (yes left running)"
+    fi
+    rm -rf "$epdir"
+    echo "e2e ok: a closed stdout ends the script with 141, always runs, the child is reaped"
+fi
+
 # a 2-param generic union checks + evals through the binary (was the
 # prelude-Result pin; Result removed [D:no-result], the fixture is now a
 # locally-declared Either)
@@ -2657,6 +2690,54 @@ WEOF
     [ "$(cat "$DM" 2>/dev/null)" != "done" ] || fail "the hard-exit must not let the slow cleanup finish"
     pkill -f "sleep 98761" 2>/dev/null || true
     echo "e2e ok: a second signal mid-teardown hard-exits (the double-Ctrl+C escape)"
+
+    # the main thread unwinds [D:signal-main-unwind]: no statement runs
+    # after a signal — `Proc.wait` on the killed scoped child returns no
+    # code and the lines after it never run, yet `always` does; a main
+    # thread asleep in `Duration.sleep` wakes at once
+    cat > "$dtdir/after.weir" <<'WEOF'
+let marker = Self.args |> Seq.head
+within
+    within proc srv = sh -c "sleep 98762"
+        let code = Proc.wait srv
+        print $"wait returned {code}"
+        File.append marker ["after"]
+always
+    File.append marker ["cleaned-up"]
+WEOF
+    cat > "$dtdir/asleep.weir" <<'WEOF'
+let marker = Self.args |> Seq.head
+within
+    Duration.sleep 60s
+    File.append marker ["after"]
+always
+    File.append marker ["cleaned-up"]
+WEOF
+    for probe in after asleep; do
+        for pair in "INT:130" "TERM:143"; do
+            sig="${pair%%:*}"; want="${pair##*:}"
+            M="$dtdir/m-$probe-$sig"
+            rm -f "$M"
+            setsid "$BIN" "$dtdir/$probe.weir" "$M" </dev/null >"$dtdir/out-$probe" 2>&1 &
+            wpid=$!
+            if [ "$probe" = after ]; then
+                for _ in $(seq 1 40); do pgrep -f "sleep 98762" >/dev/null 2>&1 && break; sleep 0.2; done
+            else
+                sleep 1
+            fi
+            kill -"$sig" "$wpid" 2>/dev/null || true
+            code=timeout
+            for _ in $(seq 1 15); do # 3s: the unwind is prompt, not the 60s sleep
+                if ! kill -0 "$wpid" 2>/dev/null; then code=0; wait "$wpid" 2>/dev/null || code=$?; break; fi
+                sleep 0.2
+            done
+            [ "$code" = "$want" ] || fail "$probe: SIG$sig must exit $want promptly (got $code)"
+            [ "$(cat "$M" 2>/dev/null)" = "cleaned-up" ] || fail "$probe: SIG$sig runs always and no statement after it (marker: $(cat "$M" 2>/dev/null))"
+            ! grep -qF "wait returned" "$dtdir/out-$probe" || fail "$probe: SIG$sig — Proc.wait must not return to the script"
+            pkill -f "sleep 98762" 2>/dev/null || true
+        done
+    done
+    echo "e2e ok: a signal unwinds on the main thread — no statement after it, always runs, sleeps wake"
 else
     echo "e2e skip: detached-signal pins (POSIX + setsid + pgrep)"
 fi

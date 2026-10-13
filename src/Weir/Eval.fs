@@ -8,9 +8,8 @@ open System.Xml.Linq
 
 let unreachable (why: string) : 'a = failwith $"unreachable: {why}"
 
-// Exit.code's carrier: an intentional exit, not an error — the runner
-// returns the code silently instead of printing a located message.
-exception ExitRequest of code: int
+// Exit.code's carrier, declared in Session (the teardown raises it too)
+exception ExitRequest = Session.ExitRequest
 
 // where a runtime raise happened [D:runtime-position]: the node being
 // evaluated, per thread. The runner maps a node to file:line:col and
@@ -3099,6 +3098,9 @@ and private progOf (env: Env) (h: Check.TCmdHead) : string =
 
 and eval (env: Env) (te: TypedExpr) : Value =
     RunPos.Current <- box te
+    // a signal or closed stdout unwinds here, before the node runs
+    // [D:signal-main-unwind]
+    Session.checkTeardown ()
 
     match te.Kind with
     // a failure as a value [D:try-form]: the body runs inside the capture
@@ -3252,17 +3254,9 @@ and eval (env: Env) (te: TypedExpr) : Value =
                         // attempts — the body may own the terminal
                         // [D:waiting-indicator]
                         Waiting.during $"{head}: waiting {formatDuration delayMs}" (fun () ->
-                            try
-                                System.Threading.Tasks.Task
-                                    .Delay(
-                                        System.TimeSpan.FromTicks(delayMs * System.TimeSpan.TicksPerMillisecond),
-                                        cts.Token
-                                    )
-                                    .Wait()
-
-                                false
-                            with _ ->
-                                true)
+                            Session.waitOrCancel
+                                (System.TimeSpan.FromTicks(delayMs * System.TimeSpan.TicksPerMillisecond))
+                                cts.Token)
                     else
                         cts.IsCancellationRequested
 
@@ -3788,7 +3782,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
                         failwith
                             $"within lock: timed out after {formatDuration ms} waiting for {resolved} (held elsewhere)"
                     | _ ->
-                        System.Threading.Thread.Sleep 25
+                        Session.sleepInterruptible (System.TimeSpan.FromMilliseconds 25.0)
                         acquire ()
 
             let fs = acquire ()
