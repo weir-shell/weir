@@ -5198,6 +5198,38 @@ let private tableModuleMembers: (string * Ty * Value) list =
                           "Table.render needs a seq of same-shaped records with scalar fields; for other sequences use Seq.map show"
           | _ -> unreachable $"the checker rejects 'Table.render' on {formatValue v}") ]
 
+// one line for Self.prompt [D:prompt], consuming nothing past its
+// newline: a redirected stdin is read a byte at a time from fd 0, so the
+// rest stays for the children (and Self.stdin) that read after it —
+// Console.In buffers ahead. A terminal delivers a line per read anyway
+// and keeps Console.In's line editing.
+let private promptStdin = lazy (System.Console.OpenStandardInput())
+
+let private readPromptLine () : string =
+    if not System.Console.IsInputRedirected then
+        System.Console.In.ReadLine()
+    else
+        let stdin = promptStdin.Force()
+        let bytes = ResizeArray<byte>()
+        let one = Array.zeroCreate<byte> 1
+        let mutable atEof = false
+        let mutable go = true
+
+        while go do
+            if stdin.Read(one, 0, 1) = 0 then
+                atEof <- true
+                go <- false
+            elif one[0] = 10uy then
+                go <- false
+            else
+                bytes.Add one[0]
+
+        if atEof && bytes.Count = 0 then
+            null
+        else
+            let line = System.Text.Encoding.UTF8.GetString(bytes.ToArray())
+            if line.EndsWith '\r' then line.Substring(0, line.Length - 1) else line
+
 let private moduleTable: (string * (string * Ty * Value) list) list =
     [ "Seq", seqMembers
       "Str", strMembers
@@ -5215,7 +5247,7 @@ let private moduleTable: (string * (string * Ty * Value) list) list =
                 eprintf "%s " msg
                 System.Console.Error.Flush()
 
-                match System.Console.In.ReadLine() with
+                match readPromptLine () with
                 | null ->
                     failwith
                         "Self.prompt: stdin is closed (EOF) — no line to read; pipe an answer in, or run at a terminal"

@@ -66,7 +66,8 @@ print (show 1)
   `Self.stdin : seq<string>` (the WHOLE input stream, ONE
   enumeration — it is live, a second enumeration raises with the
   repair; `Self.prompt "msg?"` reads a line per interaction instead, message
-  to stderr so piped stdout stays data, EOF refuses), `Self.pid : int` (the process id),
+  to stderr so piped stdout stays data, EOF refuses; it consumes nothing
+  past its newline, so later children read the rest), `Self.pid : int` (the process id),
   `Self.scriptPath : string` (the FILE'S OWN absolute path, resolved
   at startup before any `cd`; symlinks unresolved like bash's `$0` —
   an imported module sees its own), and `Self.entryPath : string`
