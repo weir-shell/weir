@@ -88,6 +88,16 @@
   (100k nested); deep `where`/`choose` chains still recurse.
 - **A `plan` body ending in a non-unit value is an error,** like any
   other discarded value.
+- **`weir fmt` keeps the layout inside an open bracket.** A multi-line
+  value inside a `{ … }` entry was flattened to the entry's column, and
+  lines inside an open `(` were re-indented level by level (`else`
+  landing under `then`'s body). Inside a bracket fmt now only shifts a
+  line by as much as its opener moved.
+- **Bidi controls are shown at a terminal.** Data printed to a tty
+  renders U+202A–202E, U+2066–2069, LRM/RLM and ALM as a visible
+  `\uXXXX`, as C1 controls already were, so displayed text matches the
+  bytes. `weir check --json` and `--can --json` get the same treatment.
+  Pipes and files stay byte-for-byte.
 
 ### Changed
 
