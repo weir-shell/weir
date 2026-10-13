@@ -7389,7 +7389,10 @@ let replColorTests =
               let out = colorize "let s = @\"abc def"
               Expect.stringContains out "abc def\x1b[0m" "string span reaches EOL"
           }
-          test "redraw-cost ceiling: 1000 pathological 200-char lines" {
+          // sequenced: a wall-clock ceiling measured while the rest of the
+          // suite runs in parallel times the machine's load, not colorize
+          testSequenced
+          <| test "redraw-cost ceiling: 1000 pathological 200-char lines" {
               let line =
                   String.replicate 5 "let ZZig = $(git log) |> where (fun f -> f.bytes > 12B) ; "
                   + "@\"tail"
