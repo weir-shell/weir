@@ -17677,6 +17677,35 @@ let sizedFindingsTests =
 
               Expect.stringContains m2 "Dir.copy: destination exists:" "the family overwrite rule"
           }
+          // B26: links copy as links (dangling ones too), and a
+          // destination inside the source refuses instead of recursing
+          test "Dir.copy copies symlinks as links and refuses a destination inside the source" {
+              if not (System.OperatingSystem.IsWindows()) then
+                  withTempDir "weir-dircopy" (fun root ->
+                      let src = Path.Combine(root, "src")
+                      Directory.CreateDirectory(Path.Combine(src, "sub")) |> ignore
+                      File.WriteAllText(Path.Combine(src, "sub", "f"), "a")
+                      File.CreateSymbolicLink(Path.Combine(src, "dl"), "sub") |> ignore
+                      File.CreateSymbolicLink(Path.Combine(src, "dang"), "nowhere") |> ignore
+                      Directory.CreateSymbolicLink(Path.Combine(root, "lnk"), src) |> ignore
+                      let w = weirPath root
+                      run $"Dir.copy \"{w}/src\" \"{w}/dst\"" |> ignore
+                      Expect.equal (FileInfo(Path.Combine(root, "dst", "dl")).LinkTarget) "sub" "a dir link stays a link"
+                      Expect.equal (FileInfo(Path.Combine(root, "dst", "dang")).LinkTarget) "nowhere" "a dangling link copies"
+                      Expect.equal (File.ReadAllText(Path.Combine(root, "dst", "sub", "f"))) "a" "files copy"
+
+                      for (s, d) in [ "src", "src/inner"; "lnk", "src/inner"; "src", "lnk/inner" ] do
+                          let m =
+                              try
+                                  run $"Dir.copy \"{w}/{s}\" \"{w}/{d}\"" |> ignore
+                                  ""
+                              with e ->
+                                  e.Message
+
+                          Expect.stringContains m "is inside the source" $"{s} -> {d} refuses"
+
+                      Expect.isFalse (Directory.Exists(Path.Combine(src, "inner"))) "nothing was copied into the source")
+          }
           test "Http.withQuery is data-last: the url pipes in" {
               Expect.equal
                   (run "\"http://x/s\" |> Http.withQuery [(\"q\", \"a b\")]")

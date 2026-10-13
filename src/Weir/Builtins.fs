@@ -3124,20 +3124,58 @@ let private doDirMove (op: string) (src: string) (dst: string) : unit =
 // non-recursive reading, so the delete/deleteAll naming split does
 // not repeat here (no Dir.copyAll) [D:sized-findings]. The family's
 // overwrite rule: refuse an existing destination; Dir.deleteAll is the
-// deliberate replace spelling.
+// deliberate replace spelling. A symlink inside the tree is copied as a
+// link (dangling ones too), never followed — `cp -a`'s reading; a
+// destination inside the source would copy into itself, so it refuses.
 let private doDirCopy (op: string) (src: string) (dst: string) : unit =
     requireDir op src
     refuseExistingDst op dst
+
+    let sep = string System.IO.Path.DirectorySeparatorChar
+
+    // a final symlink is resolved on both sides (the source itself, the
+    // destination's parent), so a link cannot hide the nesting
+    let real (p: string) =
+        let full = System.IO.Path.TrimEndingDirectorySeparator(System.IO.Path.GetFullPath p)
+
+        match DirectoryInfo(full).ResolveLinkTarget true with
+        | null -> full
+        | t -> System.IO.Path.TrimEndingDirectorySeparator t.FullName
+
+    let fs = real src
+
+    let fd =
+        let full = System.IO.Path.GetFullPath dst
+
+        match System.IO.Path.GetDirectoryName full with
+        | null -> full
+        | parent -> System.IO.Path.Combine(real parent, System.IO.Path.GetFileName full)
+
+    let cmp =
+        if System.OperatingSystem.IsLinux() then
+            System.StringComparison.Ordinal
+        else
+            System.StringComparison.OrdinalIgnoreCase
+
+    if fd.StartsWith(fs + sep, cmp) || System.String.Equals(fd, fs, cmp) then
+        failwith $"{op}: destination {dst} is inside the source {src}"
 
     ioGuarded op src (fun () ->
         let rec go (s: string) (d: string) =
             System.IO.Directory.CreateDirectory d |> ignore
 
-            for f in System.IO.Directory.EnumerateFiles s do
-                System.IO.File.Copy(f, System.IO.Path.Combine(d, System.IO.Path.GetFileName f))
+            for e in DirectoryInfo(s).EnumerateFileSystemInfos() do
+                let target = System.IO.Path.Combine(d, e.Name)
 
-            for sub in System.IO.Directory.EnumerateDirectories s do
-                go sub (System.IO.Path.Combine(d, System.IO.Path.GetFileName sub))
+                match e.LinkTarget with
+                | null ->
+                    match e with
+                    | :? DirectoryInfo -> go e.FullName target
+                    | _ -> System.IO.File.Copy(e.FullName, target)
+                | link ->
+                    match e with
+                    | :? DirectoryInfo -> System.IO.Directory.CreateSymbolicLink(target, link) |> ignore
+                    | _ -> System.IO.File.CreateSymbolicLink(target, link) |> ignore
 
         go src dst)
 
@@ -6319,7 +6357,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
            |> named [ "src"; "dst" ])
           "Dir.copy",
           (bd
-              "Copy a directory and everything in it from src to dst. Raises if the destination exists; use Dir.deleteAll first to replace it. The copy is always recursive."
+              "Copy a directory and everything in it from src to dst. Raises if the destination exists (use Dir.deleteAll first to replace it) or lies inside the source. The copy is always recursive; symlinks are copied as links, never followed."
               (Some "let d = Path.newTempDir ()\nDir.copy d $\"{d}-c\"\nDir.deleteAll d\nDir.deleteAll $\"{d}-c\"")
               None
            |> named [ "src"; "dst" ])
