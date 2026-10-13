@@ -221,7 +221,7 @@ let private intoImpl: Value =
         VBuiltin(fun sv ->
             match c, sv with
             | VStr cmdline, VSeq items ->
-                let lines = items |> Seq.map asString
+                let lines = items |> Seq.map asString |> Eval.pinnedFeed
                 // sh resolves on PATH like every other spawn — the /bin/sh
                 // hardcode had no Windows answer (Git Bash puts sh on PATH)
                 VSeq(
@@ -449,7 +449,7 @@ let private textedWithIn (overlay: (string * string) list) : Value =
             VBuiltin(fun stdinV ->
                 match progV, argsV, stdinV with
                 | VStr prog, VSeq args, VSeq stdin ->
-                    let input = stdin |> Seq.map asString
+                    let input = stdin |> Seq.map asString |> Eval.pinnedFeed
                     wholeText (Proc.linesWith overlay (Proc.resolveProg prog) (argStrings args) (Some input))
                 | _ -> unreachable "the checker rejects 'textIn' on these arguments")))
 
@@ -460,7 +460,7 @@ let private linedWithIn (overlay: (string * string) list) : Value =
                 match progV, argsV, stdinV with
                 | VStr prog, VSeq args, VSeq stdin ->
                     let argv = argStrings args
-                    let input = stdin |> Seq.map asString
+                    let input = stdin |> Seq.map asString |> Eval.pinnedFeed
                     oneLine prog argv (Proc.linesWith overlay (Proc.resolveProg prog) argv (Some input))
                 | _ -> unreachable "the checker rejects 'lineIn' on these arguments")))
 
@@ -478,7 +478,7 @@ let private completedWithIn (overlay: (string * string) list) : Value =
                 match progV, argsV, stdinV with
                 | VStr prog, VSeq args, VSeq stdin ->
                     let argv = argStrings args
-                    let input = stdin |> Seq.map asString
+                    let input = stdin |> Seq.map asString |> Eval.pinnedFeed
 
                     let code, out, err =
                         Proc.completeWith overlay (Proc.resolveProg prog) argv (Some input)
@@ -493,7 +493,7 @@ let private succeededWithIn (overlay: (string * string) list) : Value =
                 match progV, argsV, stdinV with
                 | VStr prog, VSeq args, VSeq stdin ->
                     let argv = argStrings args
-                    let input = stdin |> Seq.map asString
+                    let input = stdin |> Seq.map asString |> Eval.pinnedFeed
                     let code, _, _ = Proc.completeWith overlay (Proc.resolveProg prog) argv (Some input)
                     VBool(code = 0)
                 | _ -> unreachable "the checker rejects 'succeededIn' on these arguments")))
@@ -505,7 +505,7 @@ let private exitCodedWithIn (overlay: (string * string) list) : Value =
                 match progV, argsV, stdinV with
                 | VStr prog, VSeq args, VSeq stdin ->
                     let argv = argStrings args
-                    let input = stdin |> Seq.map asString
+                    let input = stdin |> Seq.map asString |> Eval.pinnedFeed
 
                     let code =
                         Proc.streamCodeOf
@@ -527,7 +527,7 @@ let private orFailedWithIn (overlay: (string * string) list) : Value =
                     match msgV, progV, argsV, stdinV with
                     | VStr msg, VStr prog, VSeq args, VSeq stdin ->
                         let argv = argStrings args
-                        let input = stdin |> Seq.map asString
+                        let input = stdin |> Seq.map asString |> Eval.pinnedFeed
 
                         let code =
                             Proc.streamCodeOf

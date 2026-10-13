@@ -58,41 +58,64 @@ let private blameFor (ex: exn) : Blame =
         blameTable.Add(ex, b)
         b
 
+// a seq whose raise (other than exit) is reported to `onRaise` on the
+// thread that pulled it, then rethrown unchanged
+let private tapRaise (onRaise: exn -> unit) (inner: seq<'a>) : seq<'a> =
+    { new System.Collections.Generic.IEnumerable<'a> with
+        member _.GetEnumerator() : System.Collections.Generic.IEnumerator<'a> =
+            let e = inner.GetEnumerator()
+
+            { new System.Collections.Generic.IEnumerator<'a> with
+                member _.Current = e.Current
+              interface System.Collections.IEnumerator with
+                  member _.Current = box e.Current
+
+                  member _.MoveNext() =
+                      try
+                          e.MoveNext()
+                      with
+                      | ExitRequest _ -> reraise ()
+                      | ex ->
+                          onRaise ex
+                          reraise ()
+
+                  member _.Reset() = e.Reset()
+              interface System.IDisposable with
+                  member _.Dispose() = e.Dispose() }
+      interface System.Collections.IEnumerable with
+          member this.GetEnumerator() =
+              ((this :?> System.Collections.Generic.IEnumerable<'a>).GetEnumerator()) :> System.Collections.IEnumerator }
+
 // a command's failure surfaces where its output is READ, maybe statements
 // later: the seq blames the command that produced it
 let private blameOn (node: obj) (inner: seq<'a>) : seq<'a> =
     if isNull node then
         inner
     else
-        { new System.Collections.Generic.IEnumerable<'a> with
-            member _.GetEnumerator() : System.Collections.Generic.IEnumerator<'a> =
-                let e = inner.GetEnumerator()
+        inner
+        |> tapRaise (fun ex ->
+            let b = blameFor ex
 
-                { new System.Collections.Generic.IEnumerator<'a> with
-                    member _.Current = e.Current
-                  interface System.Collections.IEnumerator with
-                      member _.Current = box e.Current
+            if isNull b.Node then
+                b.Node <- node
+                b.Exact <- true)
 
-                      member _.MoveNext() =
-                          try
-                              e.MoveNext()
-                          with
-                          | ExitRequest _ -> reraise ()
-                          | ex ->
-                              let b = blameFor ex
+/// pin a raise to the node THIS thread was evaluating [D:runtime-position]:
+/// positions are per thread, so a raise caught on a worker (a parallel
+/// arm, a command's stdin writer) and rethrown on the main thread would
+/// otherwise be blamed on the main thread's position
+let pinOnThread (ex: exn) : unit =
+    match ex with
+    | ExitRequest _ -> ()
+    | _ ->
+        let b = blameFor ex
 
-                              if isNull b.Node then
-                                  b.Node <- node
-                                  b.Exact <- true
+        if isNull b.Node then
+            b.Node <- RunPos.Current
 
-                              reraise ()
-
-                      member _.Reset() = e.Reset()
-                  interface System.IDisposable with
-                      member _.Dispose() = e.Dispose() }
-          interface System.Collections.IEnumerable with
-              member this.GetEnumerator() =
-                  ((this :?> System.Collections.Generic.IEnumerable<'a>).GetEnumerator()) :> System.Collections.IEnumerator }
+/// a command's stdin feed, pinned where the producer raised: the writer
+/// thread pulls it, the main thread rethrows the raise
+let pinnedFeed (inner: seq<string>) : seq<string> = tapRaise pinOnThread inner
 
 // a scoped process handle [D:scoped-procs]: the live child plus its
 // spill paths; identity is the process itself (reference equality,
@@ -4326,13 +4349,13 @@ and private chainSpecs env (arg: TypedExpr) chead cargs cenvO : Proc.Spec list =
         | Some he ->
             match eval env he with
             | VSeq items ->
-                Some(
-                    items
-                    |> Seq.map (fun v ->
-                        match v with
-                        | VStr s -> s
-                        | v -> unreachable $"the checker rejects non-string stdin: {formatValue v}")
-                )
+                items
+                |> Seq.map (fun v ->
+                    match v with
+                    | VStr s -> s
+                    | v -> unreachable $"the checker rejects non-string stdin: {formatValue v}")
+                |> pinnedFeed
+                |> Some
             | v -> unreachable $"the checker rejects piping {formatValue v} into a command"
 
     let specs =

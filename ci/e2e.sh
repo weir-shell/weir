@@ -6099,6 +6099,33 @@ WEOF
 out=$(timeout 10 $BIN "$fddir/lazy.weir") || fail "value-headed input must be lazy (head -1 over a huge range must terminate)"
 expect "value-headed input laziness on the AOT binary" "1" "$out"
 
+# a producer's raise piped into a command is the script's failure, at the
+# producer's line — only the child closing its stdin early (head -1) is
+# the pipe's business. Every consumer shape: captured, chained, | complete,
+# | exitCode; `exit 5` in the producer keeps its code.
+cat > "$fddir/gen.weir" <<'WEOF'
+let gen i =
+    if i == 3 then fail "boom" else $"{i}"
+
+WEOF
+for shape in 'let _r = [1..10] |> Seq.map gen | HASHTOOL | line' \
+             'let _r = [1..10] |> Seq.map gen | cat |> Seq.length' \
+             'let _r = [1..10] |> Seq.map gen | cat | complete' \
+             'let _r = [1..10] |> Seq.map gen | cat | exitCode'; do
+    { cat "$fddir/gen.weir"; printf '%s\nprint "unreached"\n' "$shape"; } | sed "s|HASHTOOL|$HASHTOOL|" > "$fddir/prodfail.weir"
+    rc=0; out=$(cd "$fddir" && timeout 10 $BIN prodfail.weir 2>&1) || rc=$?
+    [ $rc -eq 1 ] || fail "producer raise into a command must fail ($shape) rc=$rc: $out"
+    echo "$out" | grep -qF "prodfail.weir:2:5: error: boom" || fail "producer raise at the producer's line ($shape): $out"
+    case "$out" in *unreached*) fail "no statement runs after the producer's raise ($shape): $out" ;; esac
+done
+printf 'let _r = [1..10] |> Seq.map (fun i -> if i == 3 then exit 5 else $"{i}") | cat |> Seq.length\nprint "unreached"\n' > "$fddir/prodexit.weir"
+rc=0; out=$(timeout 10 $BIN "$fddir/prodexit.weir" 2>&1) || rc=$?
+[ $rc -eq 5 ] && [ -z "$out" ] || fail "exit 5 in a producer exits 5 (rc=$rc): $out"
+printf 'let r = [1..1000000] |> Seq.map (fun i -> if i == 300000 then fail "late" else $"{i}") | head -1 | line\nprint r\n' > "$fddir/prodhead.weir"
+out=$(timeout 10 $BIN "$fddir/prodhead.weir" 2>&1) || fail "a child closing stdin early is not the producer's failure: $out"
+expect "producer into head -1 still succeeds" "1" "$out"
+echo "e2e ok: a producer's raise into a command fails at its line; exit keeps its code; head -1 stays clean"
+
 # ---- value-headed pipelines, more shapes [D:value-headed-pipe] ----
 # an expression piped into an external command feeds its stdin
 out=$($BIN -e '["a"; "b"; "c"] | tr a-z A-Z')
