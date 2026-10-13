@@ -1317,17 +1317,22 @@ let private runParallelWith (degree: int) (f: Value) (items: seq<Value>) : Value
     let workers = min degree (max 1 arr.Length)
     let mutable next = -1
     let errors = System.Collections.Concurrent.ConcurrentDictionary<int, exn>()
+    // an arm's raise is blamed where the arm raised [D:runtime-position];
+    // an arm that raises before evaluating anything falls back to the call
+    let callNode = RunPos.Current
 
     let worker () =
         let mutable i = System.Threading.Interlocked.Increment &next
 
         while i < arr.Length do
             Session.enterWorker parentCwd
+            RunPos.Current <- callNode
 
             try
                 try
                     out[i] <- apply f arr[i]
                 with e ->
+                    pinOnThread e
                     // every arm still runs (data parallelism does not
                     // half-finish); the first error by input order
                     // rethrows after the join
@@ -1381,6 +1386,8 @@ let private runRaceWith (degree: int) (f: Value) (items: seq<Value>) : Value =
 
     let workers = min degree arr.Length
     let mutable next = -1
+    // blamed where the arm raised, as in runParallelWith
+    let callNode = RunPos.Current
 
     let worker () =
         let mutable i = System.Threading.Interlocked.Increment &next
@@ -1388,6 +1395,7 @@ let private runRaceWith (degree: int) (f: Value) (items: seq<Value>) : Value =
         while i < arr.Length && System.Threading.Volatile.Read &won = 0 do
             Session.enterWorker parentCwd
             Session.enterRace groups[i]
+            RunPos.Current <- callNode
 
             try
                 try
@@ -1400,6 +1408,7 @@ let private runRaceWith (degree: int) (f: Value) (items: seq<Value>) : Value =
 
                         outcome.TrySetResult v |> ignore
                 with e ->
+                    pinOnThread e
                     errors[i] <- e
 
                     if System.Threading.Interlocked.Increment &failedCount = arr.Length then

@@ -3602,6 +3602,24 @@ rp_case lambda "lambda.weir:2:5: error: command failed with exit code 6" '[1] |>
     sh -c "exit 6"
     print $"{i}")
 '
+# a parallel arm's raise is blamed where the arm raised, not on the
+# thread that rethrows it
+rp_case pmap "pmap.weir:4:9: error: arm 2" 'let ys =
+    [1; 2; 3]
+    |> Seq.pmap (fun i ->
+        if i == 2 then fail $"arm {i}" else i)
+print $"{Seq.length ys}"
+'
+rp_case piter "piter.weir:3:9: error: arm 2" 'print "start"
+[1; 2; 3] |> Seq.piter (fun i ->
+        if i == 2 then fail $"arm {i}")
+'
+rp_case pfirst "pfirst.weir:2:5: error: race 1" 'let f i =
+    fail $"race {i}"
+
+let w = [1; 2] |> Seq.pfirst f
+print $"{w}"
+'
 # a failure inside a function defined in ANOTHER statement reports the
 # body line, then one `called from` line per call, innermost first
 rp_case fncall "fncall.weir:2:5: error: command failed with exit code 7" 'let f () =
@@ -3624,6 +3642,7 @@ in: $out"
     echo "e2e ok: runtime trace — $1"
 }
 rp_frames fncall "  called from fncall.weir:6:5"
+rp_frames pfirst "  called from pfirst.weir:4:1"
 rp_case nested "nested.weir:3:5: error: deep" 'let inner () =
     print "i"
     fail "deep"
