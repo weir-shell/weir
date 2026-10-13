@@ -1814,7 +1814,10 @@ print (show (pods |> Seq.head |> _.node))
   the PLAIN multiline literal — every byte below the marker is
   content (`$` and `{` included), interior blank lines and deeper
   indentation survive (relative to the first line; TRAILING blanks
-  clip — the block-scalar rule), and the value is
+  clip — the block-scalar rule; indentation is SPACES ONLY in every
+  block [D:spaces-only-indent] — a tab in a content line's leading
+  whitespace is an error, a tab is content only after the line's
+  first non-whitespace character), and the value is
   `seq<string>`, one element per line (compose with `File.write`,
   pipes, `Seq`). `$<<<` is the interpolated twin with EXACTLY the
   string forms' hole rules: `{expr}` substitutes, `{{`/`}}` are

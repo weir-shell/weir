@@ -144,6 +144,9 @@ value is a `seq<string>` with one element per line.
 - Everything inside is literal, including `$`, `{` and quotes.
 - Indentation is kept relative to the first line. Blank lines inside
   the block are kept; blank lines at the end are dropped.
+- Indentation is spaces only, inside blocks too: a tab in a line's
+  leading whitespace is an error. A tab is content only after the
+  line's first non-whitespace character.
 - `$<<<` puts values into the text with the same `{expr}` holes as
   `$"…"` strings; `{{` and `}}` are literal braces, and `$` stays as is.
 - `$$<<<` uses `$name` and `${expr}` instead and leaves braces and

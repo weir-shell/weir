@@ -11852,6 +11852,25 @@ let multilineTests =
               | Error msg -> Expect.stringContains msg "tabs are not allowed" ""
               | Ok _ -> failtest "expected error"
           }
+          test "a tab in any block content line's leading whitespace is refused, with its column [D:spaces-only-indent]" {
+              let cases =
+                  [ [ "let t = <<<"; "    \tabc" ], 2, 5 // first content line, after the base
+                    [ "let t = <<<"; "    abc"; "    \tdef" ], 3, 5 // later line, after the base
+                    [ "let t = <<<"; "    abc"; "    \t// d" ], 3, 5 // comment-shaped content
+                    [ "let t = yaml"; "    a: |"; "        x"; "        \ty" ], 4, 9 ] // yaml block scalar
+
+              for lines, line, col in cases do
+                  match Weir.Script.assemble (lines |> List.mapi (fun i l -> i + 1, l)) with
+                  | Error msg ->
+                      Expect.stringContains msg $"line {line}: tabs are not allowed in indentation" ""
+                      Expect.stringContains msg $"column {col}" ""
+                  | Ok _ -> failtest $"expected the tab refusal for {lines}"
+
+              // a tab after the first non-whitespace character is content
+              match Weir.Script.assemble [ 1, "let t = <<<"; 2, "    a\tb" ] with
+              | Ok [ _ ] -> ()
+              | other -> failtest $"a mid-line tab is content, got {other}"
+          }
           test "leading continuation is an error" {
               match Weir.Script.assemble [ 1, "    orphan" ] with
               | Error msg -> Expect.stringContains msg "continuation without a statement" ""

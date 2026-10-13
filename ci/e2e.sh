@@ -7832,7 +7832,7 @@ hbdir=$(mkweirtmp)
     printf '            /// weir doc as data\n'
     printf '\n'
     printf '            \n'
-    printf '            \techo tab-first content\n'
+    printf '            echo\tmid-line tab content\n'
     printf '            ---\n'
     printf '            trailing spaces   \n'
     printf '            $name and $(1 + 2)\n'
@@ -7847,7 +7847,7 @@ hbdir=$(mkweirtmp)
 $BIN check "$hbdir/hostile.weir" || fail "hostile-byte fixture must check clean"
 
 cat > "$hbdir/expected.txt" <<'HEOF'
-YMap ([("data", YMap ([("hostile.txt", YStr "#!/bin/sh\n# comment-shaped\n// weir comment as data\n/// weir doc as data\n\n\n\techo tab-first content\n---\ntrailing spaces   \n$name and $(1 + 2)\nfor x in xs\n    more indented\n{ [ unbalanced ( brackets\nback to base\n")]))])
+YMap ([("data", YMap ([("hostile.txt", YStr "#!/bin/sh\n# comment-shaped\n// weir comment as data\n/// weir doc as data\n\n\necho\tmid-line tab content\n---\ntrailing spaces   \n$name and $(1 + 2)\nfor x in xs\n    more indented\n{ [ unbalanced ( brackets\nback to base\n")]))])
 HEOF
 $BIN "$hbdir/hostile.weir" > "$hbdir/got.txt"
 cmp -s "$hbdir/expected.txt" "$hbdir/got.txt" || {
@@ -7855,6 +7855,13 @@ cmp -s "$hbdir/expected.txt" "$hbdir/got.txt" || {
     fail "hostile-byte fixture must survive byte-exact through run"
 }
 echo "e2e ok: the hostile-byte fixture is byte-exact through check and run"
+
+# indentation is spaces only, block content included [D:spaces-only-indent]:
+# a tab in a content line's leading whitespace (even after the space base)
+# is the indentation error, with its column
+printf 'let t = <<<\n    abc\n    \tdef\nprint t\n' > "$hbdir/tablead.weir"
+out=$($BIN check "$hbdir/tablead.weir" 2>&1) && fail "a leading tab in block content must be refused"
+expect "a leading tab in block content is the indentation error" "line 3: tabs are not allowed in indentation (a tab at column 5)" "$out"
 
 # CRLF [D:content-bytes]: a source file's line ending is not data —
 # normalized at read, so a CRLF-saved file behaves identically

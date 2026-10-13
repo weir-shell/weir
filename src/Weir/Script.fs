@@ -303,6 +303,18 @@ let respaceLine (line: string) : string =
 
     sb.ToString()
 
+// the 1-based column of the first tab in a line's leading whitespace
+// [D:spaces-only-indent]
+let private leadingTabCol (raw: string) : int option =
+    raw
+    |> Seq.takeWhile (fun c -> c = ' ' || c = '\t')
+    |> Seq.tryFindIndex ((=) '\t')
+    |> Option.map ((+) 1)
+
+let private tabIndentError (lineNo: int) (raw: string) : string =
+    let col = leadingTabCol raw |> Option.defaultValue 1
+    $"line {lineNo}: tabs are not allowed in indentation (a tab at column {col}) — indent with spaces"
+
 // net { vs } outside strings — interpolation holes sit inside the
 // quotes, so their braces never count; clamping to >= 0 happens at the
 // consumer (stray command-arg } must not poison the statement)
@@ -1503,6 +1515,14 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                             // except inside an active yaml district, where the
                             // line is bytes (`// x` in a block scalar is data)
                             match current with
+                            // a comment-shaped block line is content, so it
+                            // obeys the content indentation rule
+                            // [D:spaces-only-indent]
+                            | Some { District = Some { Yaml = true; MarkerIndent = m } } when
+                                (leadingTabCol raw).IsSome
+                                && (raw |> Seq.takeWhile (fun c -> c = ' ' || c = '\t') |> Seq.length) > m
+                                ->
+                                Error(tabIndentError lineNo raw)
                             | Some({ District = Some { Active = Some bse
                                                        Yaml = true
                                                        MarkerIndent = m } } as p) when
@@ -1565,21 +1585,14 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                             || inOpenBrace
                             || inOpenLambda
                         then
-                            let wsRun = raw |> Seq.takeWhile (fun c -> c = ' ' || c = '\t') |> Seq.length
                             let indent = raw |> Seq.takeWhile ((=) ' ') |> Seq.length
 
-                            // content is bytes: inside an active yaml district a
-                            // tab after the (space) indentation is content — the
-                            // structure-level rejection must not reach it
-                            let inYamlContent =
-                                match current with
-                                | Some { District = Some { Active = Some _
-                                                           Yaml = true
-                                                           MarkerIndent = m } } -> indent > m
-                                | _ -> false
-
-                            if indent < wsRun && not inYamlContent then
-                                Error $"line {lineNo}: tabs are not allowed in indentation"
+                            // indentation is spaces only, block content
+                            // included: a tab is content only after the
+                            // line's first non-whitespace character
+                            // [D:spaces-only-indent]
+                            if (leadingTabCol raw).IsSome then
+                                Error(tabIndentError lineNo raw)
                             else
                                 match current with
                                 | None ->
