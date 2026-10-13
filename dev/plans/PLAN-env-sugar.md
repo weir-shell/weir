@@ -1,7 +1,7 @@
 # PLAN — env sugar: inline-typed `Env.load` and one-var helpers
 
 Status: PARKED — approved in direction (user, 2026-10-13: "plan A+B, do not
-execute yet"). Not scheduled.
+execute yet"). Not scheduled. All rulings settled — ready to execute.
 
 ## Problem
 
@@ -66,10 +66,10 @@ let port  = Env.getOr "PORT" "8080"   // string, with a default
 ```
 
 - `Env.need : string -> string` — raises a located, weir-worded error naming
-  the variable when it is unset (empty-but-set returns "", as `Env.get` does
-  — decide whether empty counts as unset; RECOMMEND: set-but-empty is set,
-  matching `Env.get` and `[<Default>]`).
-- `Env.getOr : string -> string -> string` — the default when unset.
+  the variable when it is unset. RULED (user, 2026-10-13): same as `Env.get`
+  — set-but-empty is set and returns "".
+- `Env.getOr : string -> string -> string` — the default when unset; an
+  empty-but-set var returns "" (same rule).
 - Plain functions, string-typed on purpose: anything typed goes through A.
 - `--can` reports literal names for both, like `Env.get`.
 - Both see the `within env` overlay ([D:env-overlay-read]).
@@ -86,11 +86,10 @@ let port  = Env.getOr "PORT" "8080"   // string, with a default
 
 ## Work (when scheduled)
 
-1. Ruling on empty-is-set (B). (Defaults in A: ruled — none inline.)
-2. B first (small, independent): two builtins, `--can` coverage, unit tests,
+1. B first (small, independent): two builtins, `--can` coverage, unit tests,
    SKILL.md env bullet, reference.json regen.
-3. A: parser acceptance + checker routing for `Env.load` and `Args.load`,
+2. A: parser acceptance + checker routing for `Env.load` and `Args.load`,
    error-message parity tests against the named-record form, `--can` test,
    SKILL.md env and Args bullets, depth measurement.
-4. DECISIONS rows: `env-inline-type`, `env-need-getor`. CHANGELOG under the
+3. DECISIONS rows: `env-inline-type`, `env-need-getor`. CHANGELOG under the
    next version's Added.
