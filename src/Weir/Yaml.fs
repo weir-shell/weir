@@ -763,13 +763,17 @@ let rec private parseBlock
                                     | Error msg -> Error $"line {no}: {msg}"
                                     | Ok(Some _) ->
                                         // compact map item: `- key: v` — the first
-                                        // entry lives on this line at indent+2
+                                        // entry lives on this line at the column
+                                        // after the dash's gap (`-   x: 1` puts its
+                                        // siblings at indent+4, the 4-indent style)
+                                        let col = indent + 2 + indentOf inline'
+
                                         let shifted =
                                             Array.append
-                                                [| no, String.replicate (indent + 2) " " + inline' |]
+                                                [| no, String.replicate col " " + inline'.TrimStart() |]
                                                 lines[i + 1 .. j - 1]
 
-                                        parseBlock rawSrc shifted 0 shifted.Length (indent + 2) (depth + 1)
+                                        parseBlock rawSrc shifted 0 shifted.Length col (depth + 1)
                                     | Ok None ->
                                         match quotedValue no indent i j inline' with
                                         | Some r -> r

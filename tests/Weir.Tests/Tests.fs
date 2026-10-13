@@ -2432,6 +2432,14 @@ let boundaryTests =
               | Weir.Yaml.NMap([ ("f", Weir.Yaml.NScalar("a: b", true, _)); ("u", Weir.Yaml.NScalar("http://x:80/p", false, _)) ], _) -> ()
               | other -> failtest $"quoted ': ' and a bare ':' stay values: {other}"
           }
+          test "a compact sequence map takes its column from the dash gap (triage 15b)" {
+              Expect.equal
+                  (yamlDoc [ "items:"; "-   x: 1"; "    y: 2"; "-   x: 3"; "    y: 4" ])
+                  (yamlDoc [ "items:"; "- x: 1"; "  y: 2"; "- x: 3"; "  y: 4" ])
+                  "the 4-indent formatter style reads as the 2-indent one"
+
+              Expect.stringContains (yamlErr [ "-   x: 1"; "  y: 2" ]) "line 2:" "a sibling left of the gap column still errors"
+          }
           test "quoted yaml keys unescape like values; every key to yaml writes reads back (B25)" {
               let keysOf d =
                   match d with
