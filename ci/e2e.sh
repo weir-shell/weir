@@ -6826,14 +6826,16 @@ fi
 rm -rf "$ddir"
 
 # deep lazy chains walk iteratively [D:seq-depth-iterative]: a fold nesting
-# Seq.append / Seq.map 100k deep enumerates on a small stack (POSIX: 1MB,
+# Seq.append / Seq.map / Seq.where / Seq.choose 100k deep enumerates on a small stack (POSIX: 1MB,
 # Windows' default main-thread size), and `always` runs
 lcdir=$(mkweirtmp)
 cat > "$lcdir/chains.weir" <<'WEOF'
 within
     let a = [1..100000] |> Seq.fold (fun acc i -> Seq.append acc [i]) []
     let m = [1..100000] |> Seq.fold (fun acc i -> Seq.map (fun x -> x + 1) acc) [0]
-    print $"{Seq.length a} {Seq.head m}"
+    let w = [1..100000] |> Seq.fold (fun acc i -> Seq.where (fun x -> x <> i) acc) [0]
+    let c = [1..100000] |> Seq.fold (fun acc i -> Seq.choose (fun x -> Some(x + 1)) acc) [0]
+    print $"{Seq.length a} {Seq.head m} {Seq.head w} {Seq.head c}"
 always
     printerr "cleanup ran"
 WEOF
@@ -6842,10 +6844,10 @@ if [ "$IS_WINDOWS" = "1" ]; then
 else
     out=$( (ulimit -s 1024; $BIN "$lcdir/chains.weir") 2>&1) || fail "deep lazy chains must enumerate on a 1MB stack: $out"
 fi
-[ "$out" = "100000 100000
+[ "$out" = "100000 100000 0 100000
 cleanup ran" ] || fail "deep lazy chains: length, innermost-first maps, always ran: $out"
 rm -rf "$lcdir"
-echo "e2e ok: 100k-deep Seq.append / Seq.map chains enumerate iteratively"
+echo "e2e ok: 100k-deep Seq.append / Seq.map / Seq.where / Seq.choose chains enumerate iteratively"
 
 # ---- user modules and imports, session 1 [D:modules-v1] -------------------
 mdir=$(mkweirtmp)

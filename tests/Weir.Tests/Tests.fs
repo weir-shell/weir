@@ -6214,6 +6214,34 @@ let chooseTests =
           test "alternating append/map nests 100k deep [D:seq-depth-iterative]" {
               expectValue "[1..100000] |> Seq.fold (fun acc i -> Seq.append (Seq.map (fun x -> x) acc) [i]) [] |> Seq.head" (VInt 1L)
           }
+          test "a 200k-deep Seq.where / Seq.choose fold enumerates [D:seq-depth-iterative]" {
+              expectValue "[1..200000] |> Seq.fold (fun acc i -> Seq.where (fun x -> x <> i) acc) [0; 300000] |> Seq.map (fun x -> $\"{x}\") |> Str.join \",\"" (VStr "0,300000")
+              expectValue "[1..200000] |> Seq.fold (fun acc _ -> Seq.choose (fun x -> if x > 0 then Some(x + 1) else None) acc) [-1; 1] |> Seq.sum" (VInt 200001L)
+          }
+          test "200k-deep stateful and splicing combinators enumerate [D:seq-depth-iterative]" {
+              expectValue "[1..200000] |> Seq.fold (fun acc _ -> Seq.take 2 acc) nats |> Seq.sum" (VInt 1L)
+              expectValue "[1..200000] |> Seq.fold (fun acc _ -> Seq.collect (fun x -> [x]) acc) [7] |> Seq.head" (VInt 7L)
+              expectValue "[1..200000] |> Seq.fold (fun acc _ -> Seq.concat [acc]) [7] |> Seq.head" (VInt 7L)
+              expectValue "[1..200000] |> Seq.fold (fun acc _ -> Seq.skipWhile (fun x -> x < 0) acc) [-1; 5] |> Seq.head" (VInt 5L)
+              expectValue "[1..200000] |> Seq.fold (fun acc _ -> Seq.takeWhile (fun x -> x > 0) acc) (Seq.append [1; 2; 0] nats) |> Seq.length" (VInt 2L)
+              expectValue "[1..200000] |> Seq.fold (fun acc _ -> Seq.distinct acc) [1; 1; 2] |> Seq.length" (VInt 2L)
+              expectValue "[1..200000] |> Seq.fold (fun acc _ -> Seq.skip 0 acc) [5] |> Seq.head" (VInt 5L)
+          }
+          test "a mixed 200k-deep where/choose/map/append chain enumerates [D:seq-depth-iterative]" {
+              expectValue
+                  "[1..200000] |> Seq.fold (fun acc i -> match i % 4 with | 0 -> Seq.where (fun x -> x % 2 == 1) acc | 1 -> Seq.choose (fun x -> Some x) acc | 2 -> Seq.map (fun x -> x + 2) acc | _ -> if i > 199990 then Seq.append acc [i] else Seq.append acc []) [] |> Seq.map (fun x -> $\"{x}\") |> Str.join \",\""
+                  (VStr "199995,199997,199999")
+          }
+          test "chain stages keep per-enumeration state and F#'s pull counts [D:seq-depth-iterative]" {
+              // take stops without pulling past its last element
+              expectValue "nats |> Seq.map (fun x -> 10 / (2 - x)) |> Seq.take 2 |> Seq.sum" (VInt 15L)
+              // stateful stages restart on a second enumeration
+              expectValue "let xs = [1; 1; 2] |> Seq.distinct |> Seq.indexed in Seq.length xs + Seq.length xs" (VInt 4L)
+              expectValue "[1; 2; 3] |> Seq.scan (fun a x -> a + x) 0 |> Seq.append [9] |> Seq.map (fun x -> $\"{x}\") |> Str.join \",\"" (VStr "9,0,1,3,6")
+              expectValue "[1..5] |> Seq.chunkBySize 2 |> Seq.map Seq.sum |> Seq.map (fun x -> $\"{x}\") |> Str.join \",\"" (VStr "3,7,5")
+              expectValue "[1; 2; 3] |> Seq.collect (fun x -> nats |> Seq.take x) |> Seq.take 4 |> Seq.map (fun x -> $\"{x}\") |> Str.join \",\"" (VStr "0,0,1,0")
+              expectValue "[1; 2; 3; 2] |> Seq.pairwise |> Seq.length" (VInt 3L)
+          }
           test "bare choose resolves — single-home means bare [D:bare-partition]" {
               Expect.equal (run "[1] |> choose (fun x -> Some x) |> Seq.length") (VInt 1L) ""
           }

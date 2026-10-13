@@ -130,45 +130,67 @@ let private lsForCwd (cwd: string) : Value = VSeq(Seq.delay (fun () -> lsEnumera
 // a `ls` reference rebinds to eval-time capture [D:ambient-capture]
 let private realLs: Value = VSeq(Seq.delay (fun () -> lsEnumerate (Session.Cwd())))
 
-let private whereImpl: Value =
-    VBuiltin(fun pred ->
-        VBuiltin(fun s ->
-            match s with
-            | VSeq items ->
-                VSeq(
-                    items
-                    |> Seq.filter (fun item ->
-                        match apply pred item with
-                        | VBool b -> b
-                        | v -> unreachable $"the checker rejects a non-bool predicate result: {formatValue v}")
-                )
-            | v -> unreachable $"the checker rejects 'where' on {formatValue v}"))
-
-let private truncateImpl: Value =
-    VBuiltin(fun n ->
-        VBuiltin(fun s ->
-            match n, s with
-            | VInt n, VSeq items -> VSeq(Seq.truncate (toIntArg "Seq.take" Amount n) items)
-            | _ -> unreachable "the checker rejects truncation on these arguments"))
-
 // deep lazy chains walk iteratively [D:seq-depth-iterative], the
-// [D:eq-depth] rule for seqs: a fold building Seq.append/Seq.map 100k deep
+// [D:eq-depth] rule for seqs: a fold nesting a lazy combinator 100k deep
 // nested one enumerator per level, and the first pull recursed through
-// every level. A chain is a tree of appends and maps over opaque leaves;
-// its enumerator walks the tree on a heap stack, carrying the maps still
-// to apply as a list (innermost first). Lazy and re-enumerable like the
-// F# combinators it replaces; the active leaf is disposed on early exit.
+// every level. A chain is a tree of appends and per-element stages over
+// opaque leaves; its enumerator walks the tree on a heap stack, carrying
+// the stages still to apply as a list (innermost first). A stage is
+// built fresh per enumeration (its state spans every leaf under it); a
+// Close marker below its subtree runs its finish, and a stage that stops
+// abandons its subtree down to that marker. A Splice (collect/concat)
+// parks the running leaf and walks the spliced seq through the outer
+// stages only. Lazy and re-enumerable like the F# combinators it
+// replaces; parked and active leaves are disposed on early exit.
+type private Step =
+    | Skip
+    | Emit of Value
+    | EmitStop of Value
+    | Stop
+    | Splice of seq<Value>
+
+type private Stage =
+    { Step: Value -> Step
+      Prefix: Value list
+      Finish: unit -> Value list }
+
+let private stage (step: Value -> Step) : Stage =
+    { Step = step
+      Prefix = []
+      Finish = fun () -> [] }
+
 type private Chain =
     | Leaf of seq<Value>
     | Append of Chain * Chain
-    | Mapped of (Value -> Value) * Chain
+    | Staged of (unit -> Stage) * Chain
+
+type private Work =
+    | Node of Chain * Stage list
+    | Resume of System.Collections.Generic.IEnumerator<Value> * Stage list
+    | Close of Stage * Stage list
 
 type private ChainEnumerator(root: Chain) =
-    let pending = System.Collections.Generic.Stack<Chain * (Value -> Value) list>()
+    let pending = System.Collections.Generic.Stack<Work>()
     let mutable leaf: System.Collections.Generic.IEnumerator<Value> = null
-    let mutable fns: (Value -> Value) list = []
+    let mutable fns: Stage list = []
     let mutable current = VUnit
-    do pending.Push(root, [])
+    do pending.Push(Node(root, []))
+
+    let dropLeaf () =
+        if not (isNull leaf) then
+            leaf.Dispose()
+            leaf <- null
+
+    // abandon a stopped stage's subtree: everything above its Close marker
+    let abandon (st: Stage) =
+        dropLeaf ()
+        let mutable found = false
+
+        while not found do
+            match pending.Pop() with
+            | Close(s, _) when obj.ReferenceEquals(s, st) -> found <- true
+            | Resume(e, _) -> e.Dispose()
+            | _ -> ()
 
     interface System.Collections.Generic.IEnumerator<Value> with
         member _.Current = current
@@ -183,26 +205,76 @@ type private ChainEnumerator(root: Chain) =
                 if not (isNull leaf) then
                     if leaf.MoveNext() then
                         let mutable v = leaf.Current
+                        let mutable rest = fns
+                        let mutable dropped = false
+                        let mutable stopAt = None
+                        let mutable splice = None
 
-                        for f in fns do
-                            v <- f v
+                        while not dropped && not rest.IsEmpty do
+                            let st = rest.Head
+                            rest <- rest.Tail
 
-                        current <- v
-                        result <- Some true
+                            match st.Step v with
+                            | Skip -> dropped <- true
+                            | Emit w -> v <- w
+                            | EmitStop w ->
+                                v <- w
+                                stopAt <- Some st
+                            | Stop ->
+                                stopAt <- Some st
+                                dropped <- true
+                            | Splice s ->
+                                splice <- Some(s, rest)
+                                dropped <- true
+
+                        // the outermost stop covers any inner one
+                        match stopAt with
+                        | Some st -> abandon st
+                        | None -> ()
+
+                        match splice with
+                        | Some(s, outer) ->
+                            if not (isNull leaf) then
+                                pending.Push(Resume(leaf, fns))
+                                leaf <- null
+
+                            let inner =
+                                match s with
+                                | :? ChainSeq as c -> c.Root
+                                | s -> Leaf s
+
+                            pending.Push(Node(inner, outer))
+                        | None -> ()
+
+                        if not dropped then
+                            current <- v
+                            result <- Some true
                     else
-                        leaf.Dispose()
-                        leaf <- null
+                        dropLeaf ()
                 elif pending.Count = 0 then
                     result <- Some false
                 else
                     match pending.Pop() with
-                    | Leaf s, fs ->
+                    | Node(Leaf s, fs) ->
                         leaf <- s.GetEnumerator()
                         fns <- fs
-                    | Append(l, r), fs ->
-                        pending.Push(r, fs)
-                        pending.Push(l, fs)
-                    | Mapped(f, inner), fs -> pending.Push(inner, f :: fs)
+                    | Node(Append(l, r), fs) ->
+                        pending.Push(Node(r, fs))
+                        pending.Push(Node(l, fs))
+                    | Node(Staged(mk, inner), fs) ->
+                        let st = mk ()
+                        pending.Push(Close(st, fs))
+                        pending.Push(Node(inner, st :: fs))
+
+                        if not st.Prefix.IsEmpty then
+                            pending.Push(Node(Leaf st.Prefix, fs))
+                    | Resume(e, fs) ->
+                        leaf <- e
+                        fns <- fs
+                    | Close(st, fs) ->
+                        match st.Finish() with
+                        | [] -> ()
+                        | tail -> pending.Push(Node(Leaf tail, fs))
 
             result.Value
 
@@ -210,11 +282,14 @@ type private ChainEnumerator(root: Chain) =
 
     interface System.IDisposable with
         member _.Dispose() =
-            if not (isNull leaf) then
-                leaf.Dispose()
-                leaf <- null
+            dropLeaf ()
 
-type private ChainSeq(root: Chain) =
+            while pending.Count > 0 do
+                match pending.Pop() with
+                | Resume(e, _) -> e.Dispose()
+                | _ -> ()
+
+and private ChainSeq(root: Chain) =
     member _.Root = root
 
     interface System.Collections.Generic.IEnumerable<Value> with
@@ -228,11 +303,45 @@ let private chainOf (s: seq<Value>) : Chain =
     | :? ChainSeq as c -> c.Root
     | s -> Leaf s
 
+let private staged (items: seq<Value>) (mk: unit -> Stage) : Value =
+    VSeq(ChainSeq(Staged(mk, chainOf items)))
+
+let private whereImpl: Value =
+    VBuiltin(fun pred ->
+        VBuiltin(fun s ->
+            match s with
+            | VSeq items ->
+                staged items (fun () ->
+                    stage (fun item ->
+                        match apply pred item with
+                        | VBool true -> Emit item
+                        | VBool false -> Skip
+                        | v -> unreachable $"the checker rejects a non-bool predicate result: {formatValue v}"))
+            | v -> unreachable $"the checker rejects 'where' on {formatValue v}"))
+
+let private truncateImpl: Value =
+    VBuiltin(fun n ->
+        VBuiltin(fun s ->
+            match n, s with
+            | VInt n, VSeq items ->
+                let n = toIntArg "Seq.take" Amount n
+
+                if n <= 0 then
+                    VSeq Seq.empty
+                else
+                    staged items (fun () ->
+                        let taken = ref 0
+
+                        stage (fun x ->
+                            taken.Value <- taken.Value + 1
+                            if taken.Value >= n then EmitStop x else Emit x))
+            | _ -> unreachable "the checker rejects truncation on these arguments"))
+
 let private mapImpl: Value =
     VBuiltin(fun f ->
         VBuiltin(fun s ->
             match s with
-            | VSeq items -> VSeq(ChainSeq(Mapped(apply f, chainOf items)))
+            | VSeq items -> staged items (fun () -> stage (fun x -> Emit(apply f x)))
             | v -> unreachable $"the checker rejects 'map' on {formatValue v}"))
 
 // the match-or-skip member [D:seq-choose]: lazy, constraint-free
@@ -241,14 +350,12 @@ let private chooseImpl: Value =
         VBuiltin(fun s ->
             match s with
             | VSeq items ->
-                VSeq(
-                    items
-                    |> Seq.choose (fun x ->
+                staged items (fun () ->
+                    stage (fun x ->
                         match apply f x with
-                        | VUnion("Some", Some v) -> Some v
-                        | VUnion("None", None) -> None
-                        | v -> unreachable $"the checker guarantees an Option chooser, got {formatValue v}")
-                )
+                        | VUnion("Some", Some v) -> Emit v
+                        | VUnion("None", None) -> Skip
+                        | v -> unreachable $"the checker guarantees an Option chooser, got {formatValue v}"))
             | v -> unreachable $"the checker rejects 'choose' on {formatValue v}"))
 
 let private appendImpl: Value =
@@ -1211,7 +1318,18 @@ let private tB = TVar "b"
 let private pairwiseImpl: Value =
     VBuiltin(fun s ->
         match s with
-        | VSeq items -> VSeq(items |> Seq.pairwise |> Seq.map (fun (a, b) -> VTuple [ a; b ]))
+        | VSeq items ->
+            staged items (fun () ->
+                let prev = ref None
+
+                stage (fun x ->
+                    match prev.Value with
+                    | None ->
+                        prev.Value <- Some x
+                        Skip
+                    | Some p ->
+                        prev.Value <- Some x
+                        Emit(VTuple [ p; x ])))
         | v -> unreachable $"the checker rejects 'pairwise' on {formatValue v}")
 
 let private zipImpl: Value =
@@ -1628,17 +1746,15 @@ let private distinctImpl: Value =
     VBuiltin(fun s ->
         match s with
         | VSeq items ->
-            VSeq(
-                Seq.delay (fun () ->
-                    seq {
-                        let seen = ResizeArray<Value>()
+            staged items (fun () ->
+                let seen = ResizeArray<Value>()
 
-                        for x in items do
-                            if not (seen.Contains x) then
-                                seen.Add x
-                                yield x
-                    })
-            )
+                stage (fun x ->
+                    if seen.Contains x then
+                        Skip
+                    else
+                        seen.Add x
+                        Emit x))
         | v -> unreachable $"the checker rejects 'distinct' on {formatValue v}")
 
 // weir owns its runtime messages [D:message-ownership]: FSharp.Core's
@@ -1691,20 +1807,21 @@ let private skipImpl: Value =
             | VInt i, VSeq items ->
                 // still lazy [D:message-ownership]: the count is checked as
                 // the seq is walked, not by probing its length up front
-                VSeq(
-                    seq {
-                        let mutable seen = 0L
+                staged items (fun () ->
+                    let seen = ref 0L
 
-                        for x in items do
-                            if seen >= i then
-                                yield x
+                    { Step =
+                        fun x ->
+                            let keep = seen.Value >= i
+                            seen.Value <- seen.Value + 1L
+                            if keep then Emit x else Skip
+                      Prefix = []
+                      Finish =
+                        fun () ->
+                            if seen.Value < i then
+                                failwith $"skip: fewer than {i} elements to skip (the seq had {seen.Value})"
 
-                            seen <- seen + 1L
-
-                        if seen < i then
-                            failwith $"skip: fewer than {i} elements to skip (the seq had {seen})"
-                    }
-                )
+                            [] })
             | _ -> unreachable "the checker rejects 'skip' on these arguments"))
 
 
@@ -1716,26 +1833,22 @@ let private collectImpl: Value =
         VBuiltin(fun s ->
             match s with
             | VSeq items ->
-                VSeq(
-                    items
-                    |> Seq.collect (fun x ->
+                staged items (fun () ->
+                    stage (fun x ->
                         match apply f x with
-                        | VSeq inner -> inner
-                        | v -> unreachable $"the checker guarantees a seq-yielding mapper, got {formatValue v}")
-                )
+                        | VSeq inner -> Splice inner
+                        | v -> unreachable $"the checker guarantees a seq-yielding mapper, got {formatValue v}"))
             | v -> unreachable $"the checker rejects 'collect' on {formatValue v}"))
 
 let private concatImpl: Value =
     VBuiltin(fun s ->
         match s with
         | VSeq items ->
-            VSeq(
-                items
-                |> Seq.collect (fun x ->
+            staged items (fun () ->
+                stage (fun x ->
                     match x with
-                    | VSeq inner -> inner
-                    | v -> unreachable $"the checker rejects concatenating {formatValue v}")
-            )
+                    | VSeq inner -> Splice inner
+                    | v -> unreachable $"the checker rejects concatenating {formatValue v}"))
         | v -> unreachable $"the checker rejects 'concat' on {formatValue v}")
 
 // find/tryFind: the X/tryX pair completed — X asserts, tryX asks
@@ -1752,7 +1865,13 @@ let private findImpl: Value =
 let private indexedImpl: Value =
     VBuiltin(fun s ->
         match s with
-        | VSeq items -> VSeq(items |> Seq.mapi (fun i x -> VTuple [ VInt(int64 i); x ]))
+        | VSeq items ->
+            staged items (fun () ->
+                let i = ref -1L
+
+                stage (fun x ->
+                    i.Value <- i.Value + 1L
+                    Emit(VTuple [ VInt i.Value; x ])))
         | v -> unreachable $"the checker rejects 'indexed' on {formatValue v}")
 
 // forcing: reversal needs the whole input (named in when-do-I-force)
@@ -1774,35 +1893,44 @@ let private chunkImpl: Value =
                     // preallocates n slots, so a large n failed in .NET's words
                     let size = toIntArg "chunkBySize" Amount n
 
-                    VSeq(
-                        seq {
-                            let buf = ResizeArray<Value>()
+                    staged items (fun () ->
+                        let buf = ResizeArray<Value>()
 
-                            for x in items do
+                        { Step =
+                            fun x ->
                                 buf.Add x
 
                                 if buf.Count = size then
-                                    yield VSeq(buf.ToArray() :> seq<Value>)
+                                    let chunk = VSeq(buf.ToArray() :> seq<Value>)
                                     buf.Clear()
-
-                            if buf.Count > 0 then
-                                yield VSeq(buf.ToArray() :> seq<Value>)
-                        }
-                    )
+                                    Emit chunk
+                                else
+                                    Skip
+                          Prefix = []
+                          Finish = fun () -> if buf.Count > 0 then [ VSeq(buf.ToArray() :> seq<Value>) ] else [] })
             | v, _ -> unreachable $"the checker rejects 'chunkBySize' on {formatValue v}"))
 
 let private takeWhileImpl: Value =
     VBuiltin(fun pred ->
         VBuiltin(fun s ->
             match s with
-            | VSeq items -> VSeq(items |> Seq.takeWhile (fun x -> apply pred x = VBool true))
+            | VSeq items -> staged items (fun () -> stage (fun x -> if apply pred x = VBool true then Emit x else Stop))
             | v -> unreachable $"the checker rejects 'takeWhile' on {formatValue v}"))
 
 let private skipWhileImpl: Value =
     VBuiltin(fun pred ->
         VBuiltin(fun s ->
             match s with
-            | VSeq items -> VSeq(items |> Seq.skipWhile (fun x -> apply pred x = VBool true))
+            | VSeq items ->
+                staged items (fun () ->
+                    let skipping = ref true
+
+                    stage (fun x ->
+                        if skipping.Value && apply pred x = VBool true then
+                            Skip
+                        else
+                            skipping.Value <- false
+                            Emit x))
             | v -> unreachable $"the checker rejects 'skipWhile' on {formatValue v}"))
 
 // counts by projected key, first-seen key order; forces on first pull
@@ -1823,7 +1951,10 @@ let private distinctByImpl: Value =
     VBuiltin(fun keyf ->
         VBuiltin(fun s ->
             match s with
-            | VSeq items -> VSeq(items |> Seq.distinctBy (apply keyf))
+            | VSeq items ->
+                staged items (fun () ->
+                    let seen = System.Collections.Generic.HashSet<Value>(HashIdentity.Structural)
+                    stage (fun x -> if seen.Add(apply keyf x) then Emit x else Skip))
             | v -> unreachable $"the checker rejects 'distinctBy' on {formatValue v}"))
 
 // fold without a seed: the first element is the accumulator (raises on
@@ -1873,7 +2004,16 @@ let private scanImpl: Value =
         VBuiltin(fun init ->
             VBuiltin(fun s ->
                 match s with
-                | VSeq items -> VSeq(items |> Seq.scan (fun acc x -> apply (apply folder acc) x) init)
+                | VSeq items ->
+                    staged items (fun () ->
+                        let acc = ref init
+
+                        { Step =
+                            fun x ->
+                                acc.Value <- apply (apply folder acc.Value) x
+                                Emit acc.Value
+                          Prefix = [ init ]
+                          Finish = fun () -> [] })
                 | v -> unreachable $"the checker rejects 'scan' on {formatValue v}")))
 
 let private tryPickImpl: Value =
@@ -1915,7 +2055,10 @@ let private exceptImpl: Value =
     VBuiltin(fun excl ->
         VBuiltin(fun s ->
             match excl, s with
-            | VSeq ex, VSeq items -> VSeq(items |> Seq.except ex)
+            | VSeq ex, VSeq items ->
+                staged items (fun () ->
+                    let seen = System.Collections.Generic.HashSet<Value>(ex, HashIdentity.Structural)
+                    stage (fun x -> if seen.Add x then Emit x else Skip))
             | v, _ -> unreachable $"the checker rejects 'except' on {formatValue v}"))
 
 let private replicateImpl: Value =
