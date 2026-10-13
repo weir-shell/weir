@@ -488,7 +488,8 @@ print $"{key} -> {value}"
   (`t + 1d`-style "next day same wall time" does not exist; a shift is
   exact physical time — `t + 24h` means exactly 24 hours). `Instant.now ()`;
   `Instant.parse` reads ISO 8601 (`Z` or numeric offsets, normalized
-  to UTC; a bare date is midnight UTC); `Instant.parseWith`/`tryParseWith`
+  to UTC; a bare date is midnight UTC; RFC 3339's space separator and
+  fractions past 7 digits read, truncated); `Instant.parseWith`/`tryParseWith`
   read NAMED formats for log lines and cert dates — `%Y %m %d %e %b
   %H %M %S %f %z`, prefix semantics (the line's tail rides free), no
   `%z` means UTC. `instant - instant` IS a `Duration`
