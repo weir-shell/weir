@@ -1906,7 +1906,9 @@ git push $"https://{Secret.reveal cfg.GITHUB_TOKEN}@github.com/…"
 `Args.load` accepts a `Secret` field too, but anything passed as a
 flag shows up in the process list, and weir can't hide that.
 `File.readSecret` reads a secret file mounted by Kubernetes or
-Docker. Every use of the value goes through an explicit
+Docker, and a `Secret` field in a record read with `from json` or
+`from yaml` wraps that value (a token in a vault or API response).
+Every use of the value goes through an explicit
 `Secret.reveal`, so to audit where a secret goes, search for those
 calls. To build a new value from a secret and keep it secret, use
 `Secret.map`. Writing `"Bearer " + reveal` would give you an
@@ -1923,7 +1925,8 @@ print (Secret.reveal header)
 A `Secret` spliced into a command is passed as its real value;
 `curl -H $header` is exactly what it's for. Interpolating it
 (`$"tok: {token}"`) is an error that mentions `reveal`, and
-`to json`/`to yaml` reject it.
+`to json`/`to yaml` reject it: reading a Secret in is fine, writing
+one out is not.
 
 ## The script's own front door
 

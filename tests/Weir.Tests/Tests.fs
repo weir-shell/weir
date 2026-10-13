@@ -15953,6 +15953,18 @@ let secretTests =
               let y = (checkErrIn e "{ token = Secret.of \"x\" } |> to yaml").Message
               Expect.stringContains y "must not cross to yaml" ""
           }
+          test "reading INTO a Secret is admitted; the value stays secret [D:secret-read]" {
+              let doc = "[\"{\\\"token\\\": \\\"s3\\\", \\\"alt\\\": null}\"]"
+              let read = doc + " |> from json {| token: Secret; alt: Option<Secret> |}"
+              Expect.equal (run (read + " |> _.token |> Secret.reveal")) (VStr "s3") "json wraps on the way in"
+              Expect.equal (run (read + " |> _.token |> show")) (VStr "***") "and shows as ***"
+              Expect.equal (run (read + " |> _.alt |> (fun o -> o == None)")) (VBool true) "Option<Secret> reads null"
+
+              Expect.equal
+                  (run "[\"token: y3\"] |> from yaml {| token: Secret |} |> _.token |> Secret.reveal")
+                  (VStr "y3")
+                  "yaml wraps on the way in"
+          }
           test "print refuses a Secret (show s -> ***), and Secret is not arithmetic" {
               Expect.stringContains (checkErr "print (Secret.of \"x\")").Message "will not render a Secret" ""
 
@@ -16490,10 +16502,10 @@ let recursiveFieldTests =
 
               Expect.equal te.Ty (TSeq(TNamed("{| a: {| b: int |} |}", []))) "canonical names recurse"
 
-              // a Secret buried two deep still refuses with the dotted path
-              let m = (checkErr "[\"\"] |> from json {| t: {| x: Secret |} |}").Message
+              // a refused type buried two deep still refuses with the dotted path
+              let m = (checkErr "[\"\"] |> from json {| t: {| x: Bytes |} |}").Message
               Expect.stringContains m "t.x" "the path reaches through the nesting"
-              Expect.stringContains m "must not cross to JSON" ""
+              Expect.stringContains m "not representable in JSON" ""
           }
           test "an anonymous shape composes with a nested DECLARED record [D:anon-records]" {
               let e = env |> declare "type Entity = { entityid: string }"

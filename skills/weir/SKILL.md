@@ -537,8 +537,10 @@ print $"{key} -> {value}"
   clear (`curl -H $auth` — `ps`-visible, a stated non-claim). `Eq`
   compares (`s1 == s2`), `Ord` refuses. Produced by `Env.load`/`Args.load`
   `Secret` fields (env is the CI secret channel), `File.readSecret p`
-  (a mounted secret file), and `Secret.of` (assert secrecy, for computed
-  secrets — the safe direction). `Secret.map (fun t -> "Bearer " + t) s`
+  (a mounted secret file), a `Secret` field READ by `from json`/`from
+  yaml`/`from toml` (a vault/API token — wrapping on the way in is the
+  safe direction [D:secret-read]), and `Secret.of` (assert secrecy, for
+  computed secrets — the safe direction). `Secret.map (fun t -> "Bearer " + t) s`
   keeps a derived value secret; `[<Default>]` on a `Secret` field is
   rejected. Qualified-only (no bare `of`/`map`). Not memory-hardening:
   the value is an un-zeroed managed string (see SECURITY.md).

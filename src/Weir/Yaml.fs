@@ -16,6 +16,8 @@ type Shape =
     | SInt
     | SFloat
     | SStr
+    // a string scalar read into a Secret [D:secret-read]
+    | SSecret
     | SBool
     // read through the strict uuid parser [D:wire-table]
     | SUuid

@@ -1328,6 +1328,7 @@ let private jsonAdmittedSet =
     "json fields are int, float, string, bool, Uuid, Option of an admitted type, a record of admitted fields, seq of an admitted type, a seq<string * T> mapping, or Map<string, T> of one"
 
 let rec private jsonAdmitted
+    (reading: bool)
     (span: Span)
     (env: TypeEnv)
     (seen: string list)
@@ -1338,18 +1339,21 @@ let rec private jsonAdmitted
 
     match ty with
     | WireCanonical _ -> Ok()
+    // reading INTO a Secret is the safe direction [D:secret-read]: the
+    // string wraps on the way in, as Env.load wraps
+    | TSecret when reading -> Ok()
     | WireRefused teach -> err span (at + teach "JSON")
     | TNamed("Option", [ TNamed("Option", _) ]) ->
         err span $"{at}Option<Option<…>> has no JSON reading; flatten the type"
-    | TNamed("Option", [ inner ]) -> jsonAdmitted span env seen path inner
+    | TNamed("Option", [ inner ]) -> jsonAdmitted reading span env seen path inner
     // the open mapping seq<string * V> — yaml's [D:yaml-v1] pair-seq law
     // at the json boundary [D:repl-infer]: a JSON object whose keys are
     // data reads/writes as pairs, admitted iff V is
-    | TSeq(TTuple [ TStr; v ]) -> jsonAdmitted span env seen path v
-    | TSeq elem -> jsonAdmitted span env seen path elem
+    | TSeq(TTuple [ TStr; v ]) -> jsonAdmitted reading span env seen path v
+    | TSeq elem -> jsonAdmitted reading span env seen path elem
     // the ID-keyed object [D:map-string]: Map<string, T> is a JSON
     // object whose keys are data — admitted iff T is
-    | TNamed("Map", [ TStr; inner ]) -> jsonAdmitted span env seen path inner
+    | TNamed("Map", [ TStr; inner ]) -> jsonAdmitted reading span env seen path inner
     // a non-string key reaches here through an anonymous shape (declared
     // types validate at declaration) — same teaching as validateTy
     | TNamed("Map", [ k; _ ]) ->
@@ -1366,7 +1370,7 @@ let rec private jsonAdmitted
         match typeDefFor env n with
         | Some(Record def) when def.Params.IsEmpty ->
             allOk def.Fields (fun (fn, fty) ->
-                jsonField span env (n :: seen) def (if path = "" then fn else $"{path}.{fn}") fn fty)
+                jsonField reading span env (n :: seen) def (if path = "" then fn else $"{path}.{fn}") fn fty)
         | Some(Record _) -> err span $"{at}'{n}' is generic; the JSON boundary needs monomorphic records"
         // a tagged union crosses [D:wire-unions]: every case's payload
         // record must admit; the [<Other>] case is string-or-nothing by
@@ -1375,7 +1379,7 @@ let rec private jsonAdmitted
             allOk udef.Cases (fun (c, payload) ->
                 match payload with
                 | Some pty when Some c <> udef.OtherCase ->
-                    jsonAdmitted span env (n :: seen) (if path = "" then c else $"{path}.{c}") pty
+                    jsonAdmitted reading span env (n :: seen) (if path = "" then c else $"{path}.{c}") pty
                 | _ -> Ok())
         | Some(Union _) ->
             err
@@ -1389,6 +1393,7 @@ let rec private jsonAdmitted
 // one field's admission, for the record walk and the top-level record
 // alike: a coded field crosses under its codec [D:wire-codecs]
 and private jsonField
+    (reading: bool)
     (span: Span)
     (env: TypeEnv)
     (seen: string list)
@@ -1400,13 +1405,13 @@ and private jsonField
     match fieldCodec def fn, uncodedFieldTeach "JSON" fty with
     | Some _, _ -> Ok()
     | None, Some teach -> err span $"field '{fpath}': {teach}"
-    | None, None -> jsonAdmitted span env seen fpath fty
+    | None, None -> jsonAdmitted reading span env seen fpath fty
 
-let private jsonableRecord (span: Span) (env: TypeEnv) (def: RecordDef) : Result<unit, TypeError> =
-    allOk def.Fields (fun (name, ty) -> jsonField span env [ def.Name ] def name name ty)
+let private jsonableRecord (reading: bool) (span: Span) (env: TypeEnv) (def: RecordDef) : Result<unit, TypeError> =
+    allOk def.Fields (fun (name, ty) -> jsonField reading span env [ def.Name ] def name name ty)
 
-let private jsonableElem (span: Span) (env: TypeEnv) (elem: Ty) : Result<unit, TypeError> =
-    jsonAdmitted span env [] "" elem
+let private jsonableElem (reading: bool) (span: Span) (env: TypeEnv) (elem: Ty) : Result<unit, TypeError> =
+    jsonAdmitted reading span env [] "" elem
 
 // the read-only XML boundary [D:from-xml]: XML carries text, so every
 // leaf is a string — an element's inner text or, with [<Attr>], one of
@@ -1656,6 +1661,9 @@ let rec private yamlShape
 
     match ty with
     | WireCanonical shape -> Ok shape
+    // yamlShape is the read side: reading INTO a Secret is the safe
+    // direction [D:secret-read]
+    | TSecret -> Ok Yaml.SSecret
     | WireRefused teach -> err span (at + teach "yaml")
     // the opaque `Yaml` node reads structure whole [D:yaml-empty-flow] —
     // the read sibling of yamlableOut's `Yaml`-renders-directly case
@@ -2938,6 +2946,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
             | ty ->
                 do!
                     jsonableElem
+                        false
                         arg.Span
                         env
                         (match ty with
@@ -3457,6 +3466,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                 // None → null; the per-element (NDJSON) form is 'to jsonl'
                 do!
                     jsonableElem
+                        false
                         toExpr.Span
                         env
                         (match ty with
@@ -3475,7 +3485,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                       Ty = TSeq TStr
                       Span = expr.Span }
             | "jsonl", TSeq elem ->
-                do! jsonableElem toExpr.Span env (resolve ctx elem)
+                do! jsonableElem false toExpr.Span env (resolve ctx elem)
                 let! unions = unionWriteTable toExpr.Span env targ.Ty
 
                 let tto =
@@ -4174,7 +4184,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
 
                 match typeDefFor env name with
                 | Some(Record def) when def.Params.IsEmpty ->
-                    do! jsonableRecord expr.Span env def
+                    do! jsonableRecord true expr.Span env def
 
                     let defs =
                         def.Fields
@@ -4192,7 +4202,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                 // dispatches on the tag — `from jsonl KDoc` reads mixed
                 // NDJSON, `from json seq<KDoc>` a mixed array
                 | Some(Union udef) when udef.Tag.IsSome ->
-                    do! jsonableElem expr.Span env (TNamed(name, []))
+                    do! jsonableElem true expr.Span env (TNamed(name, []))
 
                     let defs = jsonDefsClosure env Map.empty (TNamed(name, []))
                     let udefs = jsonUnionsClosure env Map.empty (TNamed(name, []))

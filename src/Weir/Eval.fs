@@ -1395,6 +1395,10 @@ let private jsonDoc
             else
                 failwith $"{who}: field '{name}': number out of float range"
         | TStr, System.Text.Json.JsonValueKind.String -> VStr(prop.GetString())
+        // reading into a Secret wraps on the way in [D:secret-read]
+        | TSecret, System.Text.Json.JsonValueKind.String -> VSecret(prop.GetString())
+        // the document holds the secret: never echo it
+        | TSecret, kind -> failwith $"{who}: field '{name}' expected a string (Secret), got {kind}"
         | TUuid, System.Text.Json.JsonValueKind.String ->
             match parseUuid (prop.GetString()) with
             | Ok g -> VUuid g
@@ -2035,6 +2039,7 @@ let rec private yamlConvert (shape: Yaml.Shape) (node: Yaml.Node) : Value =
                 | Ok f -> VFloat f
                 | Error _ -> failwith $"from yaml: line {line}: expected float, got '{raw}'"
     | Yaml.SStr, Yaml.NScalar(raw, _, _) -> VStr raw
+    | Yaml.SSecret, Yaml.NScalar(raw, _, _) -> VSecret raw
     | Yaml.SCodec c, Yaml.NScalar(raw, quoted, line) ->
         let num =
             match (if quoted then (false, 0L) else System.Int64.TryParse raw) with
@@ -2049,6 +2054,7 @@ let rec private yamlConvert (shape: Yaml.Shape) (node: Yaml.Node) : Value =
     // blockness is quotedness's sibling [D:block-scalars]: a block
     // scalar is unambiguously a string
     | Yaml.SStr, Yaml.NBlock(text, _) -> VStr text
+    | Yaml.SSecret, Yaml.NBlock(text, _) -> VSecret text
     | Yaml.SInt, Yaml.NBlock(_, line) ->
         failwith $"from yaml: line {line}: a block scalar is a string; this field expects int"
     | Yaml.SFloat, Yaml.NBlock(_, line) ->
@@ -2076,7 +2082,7 @@ let rec private yamlConvert (shape: Yaml.Shape) (node: Yaml.Node) : Value =
                 | None, _ ->
                     failwith
                         $"from yaml: line {line}: missing field '{fname}'{wireNote} in '{name}' — if the field is sometimes absent, declare it Option<…>; a type drafted from a sample only sees what the sample had"
-                | Some(_, Yaml.NNull l), (Yaml.SInt | Yaml.SFloat | Yaml.SStr | Yaml.SBool | Yaml.SUuid | Yaml.SCodec _ | Yaml.SRec _) ->
+                | Some(_, Yaml.NNull l), (Yaml.SInt | Yaml.SFloat | Yaml.SStr | Yaml.SSecret | Yaml.SBool | Yaml.SUuid | Yaml.SCodec _ | Yaml.SRec _) ->
                     failwith $"from yaml: line {l}: field '{fname}' is null; declare it Option<…> to allow it"
                 | Some(_, v), _ -> fname, yamlConvert fshape v)
 
@@ -2123,6 +2129,7 @@ let rec private yamlConvert (shape: Yaml.Shape) (node: Yaml.Node) : Value =
             | Yaml.SInt -> "an int scalar"
             | Yaml.SFloat -> "a float scalar"
             | Yaml.SStr -> "a string scalar"
+            | Yaml.SSecret -> "a string scalar (Secret)"
             | Yaml.SBool -> "a bool scalar"
             | Yaml.SUuid -> "a uuid scalar"
             | Yaml.SCodec c -> $"a [<{codecName c}>] scalar"
