@@ -456,7 +456,8 @@ let private formatLinesCore (body: string list) : Result<string list, string> =
                 // a statement that reads as a command under the assume
                 // resolver may BE one — its argv words are data
                 // [D:fmt-argv-verbatim], so only the command-side shape
-                // may vouch for its respace
+                // may vouch for its respace; one the assume side cannot
+                // parse (`echo a||b`) is not proven command-free either
                 let mayRunCommand (text: string) =
                     let rec hasCmd (e: Expr) =
                         match e.Kind with
@@ -465,7 +466,7 @@ let private formatLinesCore (body: string list) : Result<string list, string> =
 
                     match Parser.parseLine shapeResolver text with
                     | Ok stmt -> Parser.stmtExprs stmt |> List.exists hasCmd
-                    | Error _ -> false
+                    | Error _ -> true
 
                 let respaced =
                     formatted

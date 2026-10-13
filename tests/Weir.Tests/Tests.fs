@@ -12626,6 +12626,7 @@ let agentFindingsTests =
                     "git status&&pwd"
                     "echo a&&b"
                     "echo x=1 a:b"
+                    "echo a||b"
                     "if a&&b then print \"x\"" ] do
                   match Weir.Fmt.formatLines [ line ] with
                   | Ok out -> Expect.equal out [ line ] $"argv kept verbatim: {line}"
