@@ -8860,6 +8860,25 @@ let planApplyTests =
               finally
                   System.IO.Directory.Delete(root, true)
           }
+          test "a trailing / globs directories only, each with its slash [D:path-glob]" {
+              let root = td ()
+              let r = weirPath root
+
+              let prog =
+                  [ $"Dir.create \"{r}/a/b\""
+                    $"File.write \"{r}/f1\" [\"x\"]"
+                    $"File.write \"{r}/a/f2\" [\"x\"]"
+                    $"within cd \"{r}\""
+                    "    let star = Path.glob \"*/\" |> Str.join \",\""
+                    "    let deep = Path.glob \"**/\" |> Str.join \",\""
+                    "    if star <> \"a/\" then fail $\"*/ gave {star}\""
+                    "    if deep <> \"a/,a/b/\" then fail $\"**/ gave {deep}\"" ]
+
+              try
+                  Expect.equal (runFile prog) 0 "dirs only"
+              finally
+                  System.IO.Directory.Delete(root, true)
+          }
           test "File.append inside a plan refuses — no v1 Op arm (kind-first)" {
               let dir = td ()
               System.IO.Directory.CreateDirectory dir |> ignore

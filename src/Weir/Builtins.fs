@@ -923,7 +923,14 @@ let private globWalk (rootFs: string) (pattern: string) : seq<string> =
                                     yield! walk sub (prefix + name + "/") rest
             }
 
-        yield! walk rootFs rootDisplay segs
+        // a trailing `/` matches directories only, each shown with its
+        // slash — bash's law (`*/` is `a/`, never a file) [D:path-glob]
+        if pattern.Length > 1 && pattern.EndsWith "/" then
+            for m in walk rootFs rootDisplay segs do
+                if System.IO.Directory.Exists(System.IO.Path.Combine(rootFs, m)) then
+                    yield m + "/"
+        else
+            yield! walk rootFs rootDisplay segs
     }
 
 let private globImpl: Value =

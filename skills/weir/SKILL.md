@@ -1333,7 +1333,8 @@ ls |> Seq.where (fun f -> f.name |> Str.startsWith "lssort-") |> Seq.iter (fun f
   names because weir is curried with no optional-parameter spelling,
   so one name cannot serve both arities), `Dir.list p` its paths
   (`seq<string>` — what `File.*` and argv want), `Path.glob` pattern
-  strings. `File.stat p` is the one-path bridge — `ls`'s OWN
+  strings (a trailing `/` matches directories only, each shown with its
+  slash: `Path.glob "*/"` is `a/`, as in bash). `File.stat p` is the one-path bridge — `ls`'s OWN
   row, so `Path.glob ... |> Seq.map File.stat` filters a
   glob on any row field. It describes a symlink ITSELF (`kind ==
   Symlink`, `target Some` — a dangling link is a row, not an absence),
