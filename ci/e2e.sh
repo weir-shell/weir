@@ -1090,8 +1090,17 @@ $BIN fmt "$fmtdir/ugly.weir" 2>/dev/null
 $BIN fmt --check "$fmtdir/ugly.weir" 2>/dev/null || fail "fmt output must pass --check"
 out=$($BIN "$fmtdir/ugly.weir")
 expect "formatted file runs identically" "2" "$out"
+$BIN "$fmtdir/ugly.weir" >/dev/null 2>&1 && $BIN fmt "$fmtdir/ugly.weir" --check 2>/dev/null || fail "fmt takes --check after the script too"
+# a flag is never read as a script path: usage errors, exit 2
+for args in "--check" "--bogus $fmtdir/ugly.weir" "$fmtdir/ugly.weir $fmtdir/ugly.weir"; do
+    rc=0
+    out=$($BIN fmt $args 2>&1) || rc=$?
+    [ "$rc" = "2" ] || fail "fmt $args: exit 2, got $rc: $out"
+    echo "$out" | grep -qF "usage: weir fmt" || fail "fmt $args: usage text: $out"
+    case "$out" in *"no such script: --"*) fail "fmt $args: a flag read as a script: $out" ;; esac
+done
 rm -rf "$fmtdir"
-echo "e2e ok: fmt canonicalizes, --check gates, output runs"
+echo "e2e ok: fmt canonicalizes, --check gates, output runs; flags never read as scripts"
 
 cat > "$scriptdir/blockmatch.weir" <<'WEOF'
 type Size = Big | Small
