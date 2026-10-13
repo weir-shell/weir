@@ -11194,22 +11194,23 @@ def at_pty(args):
     except OSError:
         pass
     return b''.join(out)
-for tag, args in (('CHECK', ['check', '--json', bad]), ('CAN', ['check', '--can', '--json', good])):
+for tag, args in (('CHECK', ['check', '--json', bad]), ('CAN', ['check', '--can', '--json', good]), ('CANH', ['check', '--can', good])):
     data = at_pty(args)
     raw = (b'\xe2\x80\xae' in data) or (b'\xc2\x9b' in data)
     vis = b'r\\u202Eq\\x9b.weir' in data
     print('%s_RAW=%s %s_VIS=%s' % (tag, raw, tag, vis))
 PYEOF
 )
-for tag in CHECK CAN; do
-    echo "$jsan" | grep -qF "${tag}_RAW=False" || fail "tty-bidi: $tag --json must not put a raw RLO/C1 on the tty: $jsan"
-    echo "$jsan" | grep -qF "${tag}_VIS=True" || fail "tty-bidi: $tag --json must render RLO/C1 visible at a tty: $jsan"
+for tag in CHECK CAN CANH; do
+    echo "$jsan" | grep -qF "${tag}_RAW=False" || fail "tty-bidi: $tag must not put a raw RLO/C1 on the tty: $jsan"
+    echo "$jsan" | grep -qF "${tag}_VIS=True" || fail "tty-bidi: $tag must render RLO/C1 visible at a tty: $jsan"
 done
 $BIN check --json "$svdir/$jname" > "$svdir/j1.out" 2>/dev/null || true
 $BIN check --can --json "$svdir/c$jname" > "$svdir/j2.out" 2>/dev/null || true
+$BIN check --can "$svdir/c$jname" >> "$svdir/j2.out" 2>/dev/null || true
 python3 -c "import sys; a=open('$svdir/j1.out','rb').read(); b=open('$svdir/j2.out','rb').read(); n=b'r\xe2\x80\xaeq\xc2\x9b.weir'; sys.exit(0 if (n in a and n in b and b'\\\\u' not in a + b and b'\\\\x9b' not in a + b) else 1)" \
-    || fail "tty-bidi: redirected check --json / --can --json must stay byte-faithful (raw RLO/C1 in the path)"
-echo "e2e ok: tty-bidi check --json and --can --json sanitized at a tty, byte-faithful when redirected"
+    || fail "tty-bidi: redirected check --json / --can (json and human) must stay byte-faithful (raw RLO/C1 in the path)"
+echo "e2e ok: tty-bidi check --json and --can (json and human) sanitized at a tty, byte-faithful when redirected"
 else
     echo "e2e skip: F13 tty sanitize is pty-driven — no termios/pty on Windows Python"
 fi

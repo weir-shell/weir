@@ -96,7 +96,8 @@
 - **Bidi controls are shown at a terminal.** Data printed to a tty
   renders U+202A–202E, U+2066–2069, LRM/RLM and ALM as a visible
   `\uXXXX`, as C1 controls already were, so displayed text matches the
-  bytes. `weir check --json` and `--can --json` get the same treatment.
+  bytes. `weir check --json` and the `--can` report (both forms) get the
+  same treatment.
   Pipes and files stay byte-for-byte.
 
 ### Changed
