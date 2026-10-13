@@ -96,8 +96,8 @@ let setParallelDepth (d: int) : unit = parallelDepth.Value <- d
 // thread's frame. Proc's spawn point (compiled before Eval) consults
 // this to refuse a process started while a plan captures on this
 // thread — an indirect helper runs on the capturing thread, so the
-// syntactic firstPlanRefusal that cannot follow the helper is backed
-// by this runtime check. Kept minimal (a bool via depth) so the frame
+// syntactic firstPlanRefusal (which follows top-level helpers, not a
+// callable passed as a value) is backed by this runtime check. Kept minimal (a bool via depth) so the frame
 // machinery and its Value dependency stay in Eval.
 let private planGuardDepth = new System.Threading.ThreadLocal<int>(fun () -> 0)
 

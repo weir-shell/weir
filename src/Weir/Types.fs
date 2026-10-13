@@ -470,6 +470,11 @@ type TypeEnv =
       // carried here so every consumer that threads the env — scripts,
       // modules, the REPL — gets `pure` transitivity for free
       PureBindings: Map<string, bool>
+      // earlier top-level FUNCTIONS whose body reaches a plan refusal
+      // (a command, a Proc member, Plan.apply) -> that refusal's
+      // message, so a call inside `plan` refuses through the helper as
+      // `pure` does through PureBindings
+      PlanRefused: Map<string, string>
       Modules: Map<string, Map<string, Scheme>>
       Types: Map<string, TypeDef>
       // imported modules [D:modules-v1]: alias -> the type names that

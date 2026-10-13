@@ -58,9 +58,9 @@ let private spawn
     (env: (string * string) list)
     : Process =
     // runtime plan refusal [D:plan-proc-runtime-guard]: the syntactic
-    // firstPlanRefusal cannot follow a helper reference, so an indirect
-    // proc built inside a plan slipped through the checker and spawned
-    // for real. The helper runs on the capturing thread, so this
+    // firstPlanRefusal follows earlier top-level helpers but not a
+    // callable passed as a value or imported, so an indirect proc
+    // reaches the spawn. The helper runs on the capturing thread, so this
     // thread-local guard is set — refuse here, the one point all
     // process starts funnel through.
     if Session.planGuardActive () then
