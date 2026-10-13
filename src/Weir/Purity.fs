@@ -440,6 +440,7 @@ let rec private planRefusalRoot (refused: Map<string, string>) (te: TypedExpr) :
     // a nested plan composes: it handles its own refusals
     | TEWithin(WithinPlan, _, _, _, _) -> None
     // a helper whose body reaches a refusal refuses at the call
+    // [D:plan-helper-refusal]
     | TEVar n when refused.ContainsKey n ->
         Some(te.Span, $"'{n}' cannot run inside 'plan' — in its body, {refused[n]}", refused[n])
     | TEVar n ->
@@ -477,6 +478,7 @@ let firstPlanRefusal (refused: Map<string, string>) (te: TypedExpr) : (Span * st
 
 /// a top-level binding's plan-refusal summary: Some message when it is a
 /// function whose body reaches a refusal (data ran outside any plan)
+/// [D:plan-helper-refusal]
 let planRefusalOf (refused: Map<string, string>) (te: TypedExpr) : string option =
     if tyHasFun te.Ty then
         planRefusalRoot refused te |> Option.map (fun (_, _, root) -> root)

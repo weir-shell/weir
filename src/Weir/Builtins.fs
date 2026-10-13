@@ -7389,6 +7389,7 @@ let typeEnv: TypeEnv =
               completedDef.Name, Record completedDef
               envVarDef.Name, Record envVarDef ]
       ModuleTypes = Map.empty
+      TypeOrigins = Map.empty
       ModulePrivate = Map.empty
       PureBindings = Map.empty
       PlanRefused = Map.empty

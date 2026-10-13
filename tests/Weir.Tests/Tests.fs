@@ -21434,6 +21434,42 @@ let moduleSignatureTests =
                       Expect.isEmpty (diagsOf td "s.weir") "field access, show, ==, and the union's cases resolve"
                       Expect.isNonEmpty (diagsOf td "q.weir") "B does not re-export Pt as its own")
           }
+          test "a transitive type yields its name to a local declaration and keeps its values [D:transitive-types]" {
+              let a =
+                  [ "module A"
+                    "type Pt = { x: int }"
+                    "let origin : unit -> Pt"
+                    "let origin () = { x = 0 }" ]
+
+              let b = [ "module B"; "import \"./a.weir\""; "let make : int -> Pt"; "let make n = { x = n }" ]
+
+              withDir
+                  [ "a.weir", a
+                    "b.weir", b
+                    // the local Pt takes the name; B's values keep A's Pt
+                    "local.weir",
+                    [ "import \"./b.weir\""
+                      "type Pt = { name: string }"
+                      "let p = B.make 3"
+                      "let q = { name = \"n\" }"
+                      "print $\"{p.x} {show p} {p == B.make 3} {q.name}\"" ]
+                    // ...and never borrows the local one's fields
+                    "wrong.weir", [ "import \"./b.weir\""; "type Pt = { name: string }"; "let p = B.make 3"; "print p.name" ]
+                    // a direct import of the same type, in either order, is one type
+                    "direct1.weir",
+                    [ "import \"./b.weir\""; "import \"./a.weir\""; "print $\"{B.make 0 == A.origin ()}\"" ]
+                    "direct2.weir",
+                    [ "import \"./a.weir\""; "import \"./b.weir\""; "print $\"{B.make 0 == A.origin ()}\"" ] ]
+                  (fun td ->
+                      Expect.isEmpty (diagsOf td "local.weir") "the local declaration does not conflict"
+
+                      match diagsOf td "wrong.weir" with
+                      | d :: _ -> Expect.stringContains d.Message "A.Pt has no field 'name'" "the transitive type keeps its identity"
+                      | [] -> failtest "the shadowed type must not take the local fields"
+
+                      Expect.isEmpty (diagsOf td "direct1.weir") "transitive then direct: one type"
+                      Expect.isEmpty (diagsOf td "direct2.weir") "direct then transitive: one type")
+          }
           test "did-you-mean at the private refusal ranges over SIGNED members only" {
               withDir
                   [ "lib.weir",

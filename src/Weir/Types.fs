@@ -473,7 +473,7 @@ type TypeEnv =
       // earlier top-level FUNCTIONS whose body reaches a plan refusal
       // (a command, a Proc member, Plan.apply) -> that refusal's
       // message, so a call inside `plan` refuses through the helper as
-      // `pure` does through PureBindings
+      // `pure` does through PureBindings [D:plan-helper-refusal]
       PlanRefused: Map<string, string>
       Modules: Map<string, Map<string, Scheme>>
       Types: Map<string, TypeDef>
@@ -483,6 +483,11 @@ type TypeEnv =
       // records provenance so the qualified literal `Git.Ctx { .. }`
       // can confirm the module owns that type. Empty for single-file.
       ModuleTypes: Map<string, Set<string>>
+      // every imported type's identity [D:transitive-types]: its name in
+      // this env -> "Module.Name@absPath" of the module that declared
+      // it, so the same type reached twice is one type, and a type
+      // reached only transitively can yield its plain name
+      TypeOrigins: Map<string, string>
       // imported modules' private members [D:module-signatures]:
       // alias -> unsigned member name -> its inferred scheme. Never
       // resolvable — carried so the import-of-private error can teach
