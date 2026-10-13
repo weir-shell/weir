@@ -44,7 +44,9 @@ type EffectClass =
 // not. This is the set the boolean purity judgement reads and the gate
 // effectClass reads (a name outside it is pure → no class).
 let effectfulModules =
-    Set [ "File"; "Dir"; "Env"; "Args"; "Proc"; "Net"; "Log" ]
+    // Term/Color read the terminal (width, tty-ness) — ambient
+    // [D:purity-ambient]
+    Set [ "File"; "Dir"; "Env"; "Args"; "Proc"; "Net"; "Log"; "Term"; "Color" ]
 
 let effectfulQualified =
     Set
@@ -54,6 +56,11 @@ let effectfulQualified =
           "Path.glob"
           "Path.tempRoot"
           "Path.newTempDir"
+          // the home/XDG dirs read the environment [D:purity-ambient]
+          "Path.home"
+          "Path.configHome"
+          "Path.stateHome"
+          "Path.cacheHome"
           "Instant.now"
           // nondeterministic generators [D:uuid]: randomness is ambient
           // input like the clock; Uuid.v5 is a pure function of its args
@@ -72,7 +79,9 @@ let effectfulQualified =
           // reads stdin, writes stderr — ambient input like Self.stdin
           "Self.prompt" ]
 
-let effectfulBare = Set [ "ls"; "glob"; "print"; "printerr"; "exit" ]
+// `cd` writes the process's directory, `pwd` reads it [D:purity-ambient]
+let effectfulBare =
+    Set [ "ls"; "glob"; "print"; "printerr"; "exit"; "cd"; "pwd" ]
 
 // the library desugars [D:desugar-namespace]: `|`-prefixed keys that a
 // rewrite (for, ranges, retry/poll) targets at a plain library member,
@@ -172,12 +181,18 @@ let effectClass (n: string) : EffectClass option =
         | "printerr" -> Some Mutation // a console write changes the world
         | "Self.prompt" -> Some Mutation // reads stdin and writes the prompt to stderr
         | "exit" -> Some Mutation // takes the process down
+        | "cd" -> Some Mutation // writes the process's directory [D:purity-ambient]
+        | "pwd" -> Some Ambient // reads the process's directory
         | "ls"
         | "glob"
         | "Path.glob" -> Some Ambient // reads the filesystem
         // Path.tempRoot is a pure query (the tmp root path); Path.newTempDir
         // creates a directory — a filesystem write, external mutation
         | "Path.tempRoot" -> Some Ambient
+        | "Path.home"
+        | "Path.configHome"
+        | "Path.stateHome"
+        | "Path.cacheHome" -> Some Ambient // reads HOME / XDG_* [D:purity-ambient]
         | "Path.newTempDir" -> Some Mutation
         | "Instant.now" -> Some Ambient // reads the clock (ambient input)
         | "Uuid.v4"
@@ -196,6 +211,7 @@ let effectClass (n: string) : EffectClass option =
             | [| ("Env" | "Args"); _ |] -> Some Ambient // reads the environment
             | [| "Proc"; _ |] -> Some Mutation // touches a process
             | [| "Net"; _ |] -> Some Ambient // Net.portOpen probes, changes nothing
+            | [| ("Term" | "Color"); _ |] -> Some Ambient // reads the terminal [D:purity-ambient]
             | [| "Http"; _ |] -> Some Ambient // constructors are pure; send handled above
             | [| "Log"; _ |] -> Some Mutation // writes logs to a stream
             | _ -> Some Mutation // an unclassified effect: the safe (refusing) direction

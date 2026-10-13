@@ -763,12 +763,14 @@ let pure leak p = File.write p ["x"]
 - `readonly` + an indented block is the READ-ONLY ASSERTION
   [D:pure-stage2], ONE TIER UP from `pure`: the body must reach no
   EXTERNAL MUTATION — `fs.write`/`fs.delete`, `proc` (a command or a
-  Proc member), console writes, the mutating HTTP methods
+  Proc member), `cd`, console writes, the mutating HTTP methods
   (POST/PUT/DELETE/PATCH), any `within` resource — but AMBIENT READS
-  are fine: `fs.read`, `Env`/`Args`, the clock (`Instant.now`), the
+  are fine: `fs.read`, `Env`/`Args`, `pwd`, `Path.home`/`configHome`/
+  `stateHome`/`cacheHome`, `Term`/`Color` (they read the terminal),
+  the clock (`Instant.now`), the
   `Uuid` generators, the query HTTP methods (`Http.query`, and
   `Http.send`/`Http.expect` of a GET/HEAD/OPTIONS/QUERY request), and
-  `Self.stdin`. So
+  `Self.stdin` — all refused by `pure`. So
   `readonly == only ambient-input`, and a `pure` body (only ∅)
   is trivially read-only. A reachable mutation is a located check
   error naming the offender AND its class ("this 'readonly' block

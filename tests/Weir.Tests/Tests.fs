@@ -7560,6 +7560,17 @@ let pureRegionTests =
                   Expect.stringContains e.Message "this 'pure' block forbids effects, but" $"the law: {phrase}"
                   Expect.stringContains e.Message phrase $"the offender: {phrase}"
           }
+          test "cd, pwd, the home dirs, Term and Color are effects pure refuses [D:purity-ambient]" {
+              for body, phrase in
+                  [ "cd \"/tmp\"", "'cd' changes the working directory"
+                    "pwd", "'pwd' reads the working directory"
+                    "Path.home ()", "'Path.home' reads the environment"
+                    "Path.configHome ()", "'Path.configHome' reads the environment"
+                    "Term.width ()", "'Term.width' reads the terminal"
+                    "Color.red \"x\"", "'Color.red' reads the terminal" ] do
+                  let e = firstErr [ "let x ="; "    pure"; "        " + body; "print $\"{x}\"" ]
+                  Expect.stringContains e.Message phrase body
+          }
           test "the refusal is LOCATED at the offending node" {
               let e = firstErr [ "let x ="; "    pure"; "        print \"no\"" ]
               Expect.equal e.Line 3 "the print's physical line"
@@ -7861,6 +7872,13 @@ let readonlyBlockTests =
           test "a command (proc) REFUSES — a spawn is external mutation" {
               let e = firstErr [ "readonly"; "    echo hi" ]
               Expect.stringContains e.Message "'echo' runs a command" "proc mutates"
+          }
+          test "cd is a mutation readonly refuses; pwd, home dirs, Term, Color are reads [D:purity-ambient]" {
+              let e = firstErr [ "let x ="; "    readonly"; "        cd \"/tmp\""; "print x" ]
+              Expect.stringContains e.Message "'cd' changes the working directory" "cd writes process state"
+
+              for body in [ "pwd"; "Path.home ()"; "Path.cacheHome ()"; "$\"{Term.width ()}\""; "Color.red \"x\"" ] do
+                  Expect.isEmpty (errsOf [ "let x ="; "    readonly"; "        " + body; "print x" ]) body
           }
           test "Http.send{post} refuses, Http.send{get} admits — the per-method net split" {
               Expect.isEmpty
