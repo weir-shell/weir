@@ -976,7 +976,7 @@ print (Option.flatten (Some None) |> Option.defaultValue 0)
   `scan` (fold with intermediates, seed first); `chunkBySize` (the
   batching member); `except` (set difference, exclusions first);
   `replicate`; `max`/`min`/`maxBy`/`minBy` (Ord; raise on empty; one
-  pass, no sort); `first`/`take` are RULED synonyms. Sums: `Seq.sum`
+  pass, no sort); `take` (`first` is retired [D:first-retired]). Sums: `Seq.sum`
   is `seq<int>`; `Float.sum`/`Size.sum`/`Duration.sum` (and their
   `average`s) own the other types — `Seq.average` alone crosses types
   (the mean of ints is a float). `Seq.filter` teaches `where`.
