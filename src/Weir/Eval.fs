@@ -1031,6 +1031,19 @@ let private checkedFloat (op: string) (f: unit -> float) : Value =
     else
         failwith $"'{op}' produced a non-finite float (overflow)"
 
+// Size/Duration/Instant arithmetic is checked like int's, in weir's words
+let private checkedUnit (what: string) (f: unit -> int64) : int64 =
+    try
+        f ()
+    with :? System.OverflowException ->
+        failwith $"{what} overflow"
+
+let private unitDiv (what: string) (a: int64) (b: int64) : int64 =
+    if b = 0L then failwith "division by zero" else checkedUnit what (fun () -> a / b)
+
+let private instantShift (a: int64) (d: int64) : Value =
+    VInstant(checkInstant "Instant arithmetic" (checkedUnit "Instant" (fun () -> Checked.(+) a d)))
+
 let private binOp (op: string) (l: Value) (r: Value) : Value =
     match op, l, r with
     | "+", VInt a, VInt b -> checkedInt (fun () -> Checked.(+) a b)
@@ -1046,24 +1059,24 @@ let private binOp (op: string) (l: Value) (r: Value) : Value =
     | "<", VFloat a, VFloat b -> VBool(a < b)
     | ">=", VFloat a, VFloat b -> VBool(a >= b)
     | "<=", VFloat a, VFloat b -> VBool(a <= b)
-    | "+", VSize a, VSize b -> VSize(Checked.(+) a b)
-    | "-", VSize a, VSize b -> VSize(Checked.(-) a b)
-    | "*", VSize a, VInt b -> VSize(Checked.(*) a b)
-    | "*", VInt a, VSize b -> VSize(Checked.(*) a b)
-    | "/", VSize a, VInt b -> VSize(a / b)
+    | "+", VSize a, VSize b -> VSize(checkedUnit "Size" (fun () -> Checked.(+) a b))
+    | "-", VSize a, VSize b -> VSize(checkedUnit "Size" (fun () -> Checked.(-) a b))
+    | "*", VSize a, VInt b -> VSize(checkedUnit "Size" (fun () -> Checked.(*) a b))
+    | "*", VInt a, VSize b -> VSize(checkedUnit "Size" (fun () -> Checked.(*) a b))
+    | "/", VSize a, VInt b -> VSize(unitDiv "Size" a b)
     | ">", VSize a, VSize b -> VBool(a > b)
     | "<", VSize a, VSize b -> VBool(a < b)
     | ">=", VSize a, VSize b -> VBool(a >= b)
     | "<=", VSize a, VSize b -> VBool(a <= b)
-    | "+", VDur a, VDur b -> VDur(Checked.(+) a b)
-    | "-", VDur a, VDur b -> VDur(Checked.(-) a b)
-    | "*", VDur a, VInt b -> VDur(Checked.(*) a b)
-    | "*", VInt a, VDur b -> VDur(Checked.(*) a b)
-    | "/", VDur a, VInt b -> VDur(a / b)
-    | "-", VInstant a, VInstant b -> VDur(Checked.(-) a b)
-    | "+", VInstant a, VDur d -> VInstant(Checked.(+) a d)
-    | "+", VDur d, VInstant a -> VInstant(Checked.(+) a d)
-    | "-", VInstant a, VDur d -> VInstant(Checked.(-) a d)
+    | "+", VDur a, VDur b -> VDur(checkedUnit "Duration" (fun () -> Checked.(+) a b))
+    | "-", VDur a, VDur b -> VDur(checkedUnit "Duration" (fun () -> Checked.(-) a b))
+    | "*", VDur a, VInt b -> VDur(checkedUnit "Duration" (fun () -> Checked.(*) a b))
+    | "*", VInt a, VDur b -> VDur(checkedUnit "Duration" (fun () -> Checked.(*) a b))
+    | "/", VDur a, VInt b -> VDur(unitDiv "Duration" a b)
+    | "-", VInstant a, VInstant b -> VDur(checkedUnit "Duration" (fun () -> Checked.(-) a b))
+    | "+", VInstant a, VDur d -> instantShift a d
+    | "+", VDur d, VInstant a -> instantShift a d
+    | "-", VInstant a, VDur d -> instantShift a (checkedUnit "Instant" (fun () -> Checked.(~-) d))
     | ">", VInstant a, VInstant b -> VBool(a > b)
     | "<", VInstant a, VInstant b -> VBool(a < b)
     | ">=", VInstant a, VInstant b -> VBool(a >= b)
@@ -1172,8 +1185,8 @@ let private decodeCoded (where: string) (c: Codec) (text: string option) (num: i
             | Ok ms -> VInstant ms
             | Error e -> failwith $"{where}: {e}"
         | None -> failwith $"{where}: [<Iso8601>] reads an ISO 8601 string, got a number"
-    | EpochMs -> VInstant(needInt "epoch milliseconds")
-    | EpochSec -> VInstant(seconds (needInt "epoch seconds"))
+    | EpochMs -> VInstant(checkInstant where (needInt "epoch milliseconds"))
+    | EpochSec -> VInstant(checkInstant where (seconds (needInt "epoch seconds")))
     | Millis -> VDur(needInt "milliseconds")
     | Seconds -> VDur(seconds (needInt "seconds"))
     | ByteCount -> VSize(needInt "a byte count")
@@ -1184,7 +1197,8 @@ let private jsonLine
     (v: Value)
     : string =
     let buffer = new System.Buffers.ArrayBufferWriter<byte>()
-    use writer = new System.Text.Json.Utf8JsonWriter(buffer)
+    // the CLI's encoder, not the HTML-safe default [D:json-raw-user]
+    use writer = new System.Text.Json.Utf8JsonWriter(buffer, rawJsonWriterOptions)
 
     let rec write (v: Value) =
         match v with
@@ -1407,9 +1421,10 @@ let private jsonDoc
                 failwith
                     $"{who}: field '{name}' expected an array ({formatTy ty}), got {jsonKindName prop.ValueKind} in: {shown}"
 
-            // forced before the document disposes
+            // forced before the document disposes; paths index from zero
+            // [D:paths-zero-based]
             prop.EnumerateArray()
-            |> Seq.mapi (fun i el -> readValue $"{name}[{i + 1}]" elem el)
+            |> Seq.mapi (fun i el -> readValue $"{name}[{i}]" elem el)
             |> List.ofSeq
             |> List.toSeq
             |> VSeq
@@ -1611,9 +1626,9 @@ let private jsonDoc
             |> Seq.mapi (fun i el ->
                 if el.ValueKind <> System.Text.Json.JsonValueKind.Object then
                     failwith
-                        $"{who}: array element {i + 1} is a JSON {jsonKindName el.ValueKind}, not an object, in: {shown}"
+                        $"{who}: array element [{i}] is a JSON {jsonKindName el.ValueKind}, not an object, in: {shown}"
                 else
-                    readTopEl "" el)
+                    readTopEl $"[{i}]." el)
             // forced before the document disposes; then seq for the ctor
             |> List.ofSeq
             |> List.toSeq
@@ -1718,11 +1733,12 @@ let private xmlDoc
                             | TNamed(n, []) when defs.ContainsKey n -> Types.xmlElem rdef name n
                             | _ -> Types.xmlElem rdef name name
 
+                        // zero-based, as weir's xs[i] [D:paths-zero-based]
                         childElems el elemName
                         |> Seq.mapi (fun i c ->
                             match elem with
                             | TStr -> VStr c.Value
-                            | TNamed(n, []) when defs.ContainsKey n -> objRowXml $"{shownName}[{i + 1}]." defs[n] c
+                            | TNamed(n, []) when defs.ContainsKey n -> objRowXml $"{shownName}[{i}]." defs[n] c
                             | _ -> unreachable "the checker restricts an XML seq to strings or records")
                         |> List.ofSeq
                         |> List.toSeq
@@ -1862,11 +1878,14 @@ let private fromAdapter
         VBuiltin(fun v ->
             match v with
             | VSeq lines ->
+                // a blank line separates nothing — a trailing newline
+                // (a file's last line, `printf '…\n\n'`) is not a document
                 VSeq(
                     lines
-                    |> Seq.map (fun l ->
+                    |> Seq.choose (fun l ->
                         match l with
-                        | VStr s -> jsonDoc "from jsonl" false false top defs udefs s s
+                        | VStr s when s.Trim() = "" -> None
+                        | VStr s -> Some(jsonDoc "from jsonl" false false top defs udefs s s)
                         | v -> unreachable $"the checker rejects 'from' on non-string elements: {formatValue v}")
                 )
             | v -> unreachable $"the checker rejects 'from' on {formatValue v}")
@@ -2775,6 +2794,19 @@ let private argvParseValue
         values[f] <- wrapOpt ty (VSecret raw)
     | _ -> values[f] <- wrapOpt ty (VStr raw)
 
+// an unknown long flag's message; `--name=value` for a known `--name`
+// teaches the separate-argument spelling (weir's argv has no `=` form)
+let private unknownFlagMessage (t: string) (known: string list) (presence: string -> bool) : string =
+    match t.IndexOf '=' with
+    | i when i > 2 && List.contains (t.Substring(0, i)) known ->
+        let name, value = t.Substring(0, i), t.Substring(i + 1)
+
+        if presence name then
+            $"unknown flag '{t}' — '{name}' is a presence flag and takes no value"
+        else
+            $"unknown flag '{t}' — a flag's value is the next argument: write '{name} {value}'"
+    | _ -> $"unknown flag '{t}'{didYouMean t known}"
+
 let private argvParseRecord (label: string) (def: RecordDef) (tokens: string list) : Value =
     // minted --no-X twins ride the index as negative entries
     // [D:default-attr]; they join did-you-mean via the same list
@@ -2802,7 +2834,12 @@ let private argvParseRecord (label: string) (def: RecordDef) (tokens: string lis
             match Map.tryFind t longIndex with
             | Some(f, ty, neg) -> consume f ty neg t rest
             | None ->
-                problems.Add $"unknown flag '{t}'{didYouMean t (flagged |> List.map fst)}"
+                let presence n =
+                    match Map.tryFind n longIndex with
+                    | Some(_, TBool, _) -> true
+                    | _ -> false
+
+                problems.Add(unknownFlagMessage t (flagged |> List.map fst) presence)
                 go rest
         | t :: rest when t.StartsWith "-" && t.Length = 2 ->
             match Map.tryFind (t.Substring 1) shortIndex with
@@ -2952,7 +2989,13 @@ let private argvLoadShared
                      | [] -> problems.Add $"flag '{t}' needs a value")
             | Choice2Of3() ->
                 let cands = if i < caseIdx then beforeCandidates else afterCandidates
-                problems.Add $"unknown flag '{t}'{didYouMean t cands}"
+                let presence n =
+                    match Map.tryFind n sharedLong, Map.tryFind n payloadLong with
+                    | Some(_, TBool, _), _
+                    | None, Some(_, TBool, _) -> true
+                    | _ -> false
+
+                problems.Add(unknownFlagMessage t cands presence)
                 go (i + 1) rest
             | Choice3Of3() -> go (i + 1) rest
 

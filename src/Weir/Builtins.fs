@@ -151,11 +151,88 @@ let private truncateImpl: Value =
             | VInt n, VSeq items -> VSeq(Seq.truncate (toIntArg "Seq.take" Amount n) items)
             | _ -> unreachable "the checker rejects truncation on these arguments"))
 
+// deep lazy chains walk iteratively [D:seq-depth-iterative], the
+// [D:eq-depth] rule for seqs: a fold building Seq.append/Seq.map 100k deep
+// nested one enumerator per level, and the first pull recursed through
+// every level. A chain is a tree of appends and maps over opaque leaves;
+// its enumerator walks the tree on a heap stack, carrying the maps still
+// to apply as a list (innermost first). Lazy and re-enumerable like the
+// F# combinators it replaces; the active leaf is disposed on early exit.
+type private Chain =
+    | Leaf of seq<Value>
+    | Append of Chain * Chain
+    | Mapped of (Value -> Value) * Chain
+
+type private ChainEnumerator(root: Chain) =
+    let pending = System.Collections.Generic.Stack<Chain * (Value -> Value) list>()
+    let mutable leaf: System.Collections.Generic.IEnumerator<Value> = null
+    let mutable fns: (Value -> Value) list = []
+    let mutable current = VUnit
+    do pending.Push(root, [])
+
+    interface System.Collections.Generic.IEnumerator<Value> with
+        member _.Current = current
+
+    interface System.Collections.IEnumerator with
+        member _.Current = box current
+
+        member _.MoveNext() =
+            let mutable result = None
+
+            while result.IsNone do
+                if not (isNull leaf) then
+                    if leaf.MoveNext() then
+                        let mutable v = leaf.Current
+
+                        for f in fns do
+                            v <- f v
+
+                        current <- v
+                        result <- Some true
+                    else
+                        leaf.Dispose()
+                        leaf <- null
+                elif pending.Count = 0 then
+                    result <- Some false
+                else
+                    match pending.Pop() with
+                    | Leaf s, fs ->
+                        leaf <- s.GetEnumerator()
+                        fns <- fs
+                    | Append(l, r), fs ->
+                        pending.Push(r, fs)
+                        pending.Push(l, fs)
+                    | Mapped(f, inner), fs -> pending.Push(inner, f :: fs)
+
+            result.Value
+
+        member _.Reset() = raise (System.NotSupportedException())
+
+    interface System.IDisposable with
+        member _.Dispose() =
+            if not (isNull leaf) then
+                leaf.Dispose()
+                leaf <- null
+
+type private ChainSeq(root: Chain) =
+    member _.Root = root
+
+    interface System.Collections.Generic.IEnumerable<Value> with
+        member _.GetEnumerator() = new ChainEnumerator(root)
+
+    interface System.Collections.IEnumerable with
+        member _.GetEnumerator() = new ChainEnumerator(root)
+
+let private chainOf (s: seq<Value>) : Chain =
+    match s with
+    | :? ChainSeq as c -> c.Root
+    | s -> Leaf s
+
 let private mapImpl: Value =
     VBuiltin(fun f ->
         VBuiltin(fun s ->
             match s with
-            | VSeq items -> VSeq(items |> Seq.map (apply f))
+            | VSeq items -> VSeq(ChainSeq(Mapped(apply f, chainOf items)))
             | v -> unreachable $"the checker rejects 'map' on {formatValue v}"))
 
 // the match-or-skip member [D:seq-choose]: lazy, constraint-free
@@ -178,7 +255,7 @@ let private appendImpl: Value =
     VBuiltin(fun a ->
         VBuiltin(fun b ->
             match a, b with
-            | VSeq xs, VSeq ys -> VSeq(Seq.append xs ys)
+            | VSeq xs, VSeq ys -> VSeq(ChainSeq(Append(chainOf xs, chainOf ys)))
             | v, _ -> unreachable $"the checker rejects 'append' on {formatValue v}"))
 
 let private sumImpl: Value =
@@ -975,6 +1052,7 @@ let private replaceImpl: Value =
         VBuiltin(fun rep ->
             VBuiltin(fun subject ->
                 match pat, rep, subject with
+                | VStr "", VStr _, VStr _ -> failwith "Str.replace: the text to replace is empty — there is nothing to find"
                 | VStr p, VStr r, VStr s -> VStr(s.Replace(p, r))
                 | _ -> unreachable "the checker rejects 'replace' on these arguments")))
 
@@ -1579,6 +1657,22 @@ let private itemImpl: Value =
                     | Some v -> v
                     | None -> failwith $"item: no element at index {i}"
             | _ -> unreachable "the checker rejects 'item' on these arguments"))
+
+// `xs[^n]` [D:range-slicing]: the element n from the end (`^1` is the
+// last), F#'s rule — `^0` is past the end. Needs the length, so it forces
+// the seq (as Seq.last does); out of range names the `^n` and the length.
+let private itemFromEndImpl: Value =
+    VBuiltin(fun n ->
+        VBuiltin(fun s ->
+            match n, s with
+            | VInt i, VSeq items ->
+                let arr = Seq.toArray items
+
+                if i < 1L || i > int64 arr.Length then
+                    failwith $"item: index ^{i} is out of range for length {arr.Length}"
+                else
+                    arr[arr.Length - toIntArg "item" Position i]
+            | _ -> unreachable "the checker rejects a from-end index on these arguments"))
 
 let private tryItemImpl: Value =
     VBuiltin(fun n ->
@@ -2975,11 +3069,26 @@ let private envMembers: (string * Ty * Value) list =
 // throws here — ReadAllLines substitutes replacement chars, so
 // is-a-directory / not-found / permission are the whole enumerable
 // surface.
+// a symlink whose final target is missing (or a link loop): the path
+// exists as a row, but there is nothing to read through it
+let private isDangling (r: string) : bool =
+    let fi = FileInfo r
+
+    not (isNull fi.LinkTarget)
+    && (try
+            match fi.ResolveLinkTarget true with
+            | null -> true
+            | t -> not t.Exists
+        with :? System.IO.IOException ->
+            true)
+
 let private readGuard (op: string) (r: string) : unit =
     if System.IO.Directory.Exists r then
         failwith $"{op}: {r} is a directory"
     elif not (File.Exists r) then
         failwith $"{op}: no such file: {r}"
+    elif isDangling r then
+        failwith $"{op}: dangling symlink: {r} — its target does not exist"
 
 
 let private writeGuard (op: string) (r: string) : unit =
@@ -3077,6 +3186,9 @@ let private doFileCopy (op: string) (src: string) (dst: string) : unit =
 
     if not (System.IO.File.Exists src) then
         failwith $"{op}: no such file: {src}"
+
+    if isDangling src then
+        failwith $"{op}: dangling symlink: {src} — its target does not exist"
 
     refuseExistingDst op dst
     ioGuarded op src (fun () -> System.IO.File.Copy(src, dst))
@@ -3512,11 +3624,14 @@ let private fsMoreFileMembers: (string * Ty * Value) list =
           | VStr p ->
               let r = Session.resolve p
               PlanMode.checkRead "File.size" r
+              readGuard "File.size" r
 
-              if not (System.IO.File.Exists r) then
-                  failwith $"File.size: no such file: {r}"
+              // the size of what a read sees — a link's target, not the link
+              let fi = System.IO.FileInfo r
 
-              VSize (System.IO.FileInfo r).Length
+              match fi.LinkTarget with
+              | null -> VSize fi.Length
+              | _ -> VSize (fi.ResolveLinkTarget(true) :?> System.IO.FileInfo).Length
           | v -> unreachable $"the checker rejects 'File.size' on {formatValue v}")
       "stat",
       // the bridge from paths to rows [D:file-stat]: ls's own
@@ -3895,7 +4010,11 @@ let private sizeMembers: (string * Ty * Value) list =
 let private durCtor (name: string) (mult: int64) : Value =
     VBuiltin(fun v ->
         match v with
-        | VInt n -> VDur(Checked.(*) n mult)
+        | VInt n ->
+            try
+                VDur(Checked.(*) n mult)
+            with :? System.OverflowException ->
+                failwith $"Duration.{name}: {n} overflows a Duration"
         | v -> unreachable $"the checker rejects 'Duration.{name}' on {formatValue v}")
 
 let private durationMembers: (string * Ty * Value) list =
@@ -3952,10 +4071,15 @@ let private durationMembers: (string * Ty * Value) list =
                   failwith $"Duration.sleep: negative duration ({formatDuration n})"
               elif n > 0L then
                   // integer ticks — no float anywhere [D:duration]
+                  // Thread.Sleep takes at most Int32.MaxValue ms, so a longer
+                  // duration sleeps in slices — every valid Duration sleeps
                   Waiting.during $"sleeping {formatDuration n}" (fun () ->
-                      Session.sleepInterruptible (
-                          System.TimeSpan.FromTicks(n * System.TimeSpan.TicksPerMillisecond)
-                      ))
+                      let mutable left = n
+
+                      while left > 0L do
+                          let slice = min left (int64 System.Int32.MaxValue - 1L)
+                          Session.sleepInterruptible (System.TimeSpan.FromTicks(slice * System.TimeSpan.TicksPerMillisecond))
+                          left <- left - slice)
 
               VUnit
           | v -> unreachable $"the checker rejects 'Duration.sleep' on {formatValue v}") ]
@@ -4617,7 +4741,7 @@ let private instantMembers: (string * Ty * Value) list =
       TFun(TInt, TInstant),
       VBuiltin(fun v ->
           match v with
-          | VInt ms -> VInstant ms
+          | VInt ms -> VInstant(checkInstant "Instant.ofEpochMs" ms)
           | v -> unreachable $"the checker rejects 'Instant.ofEpochMs' on {formatValue v}") ]
 
 // the uuid generators [D:uuid]. Bytes are big-endian (RFC 9562 network
@@ -7276,6 +7400,8 @@ let internalAliases: (string * Ty * Value) list =
     // its target member
     [ for key, modName, field in Weir.Effects.libraryDesugars do
           let ty, v = m modName field
+          // the one desugar whose value is not its classification target
+          let v = if key = "|seqItemFromEnd" then itemFromEndImpl else v
           key, ty, v ]
 
 let bareAliasHomesOf (table: (string * (string * Ty * Value) list) list) : Map<string, string> =

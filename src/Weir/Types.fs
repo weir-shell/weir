@@ -670,23 +670,28 @@ let parseFloat (text: string) : Result<float, string> =
 // Integer math throughout (no float, the grep-clean bar).
 let formatSize (totalBytes: int64) : string =
     let sign = if totalBytes < 0L then "-" else ""
-    let b = abs totalBytes
+    // the magnitude unsigned (Int64.MinValue has no int64 abs), and tenths
+    // split as whole + remainder so no `* 10` overflows near the max
+    let b =
+        if totalBytes < 0L then
+            uint64 (-(totalBytes + 1L)) + 1UL
+        else
+            uint64 totalBytes
 
     let unitOf =
-        [ 1024L * 1024L * 1024L * 1024L, "TiB"
-          1024L * 1024L * 1024L, "GiB"
-          1024L * 1024L, "MiB"
-          1024L, "KiB" ]
+        [ 1024UL * 1024UL * 1024UL * 1024UL, "TiB"
+          1024UL * 1024UL * 1024UL, "GiB"
+          1024UL * 1024UL, "MiB"
+          1024UL, "KiB" ]
         |> List.tryFind (fun (u, _) -> b >= u)
 
     match unitOf with
     | None -> $"{sign}{b} B"
     | Some(u, name) ->
-        let tenths = b * 10L / u
-        let whole = tenths / 10L
-        let dec = tenths % 10L
+        let whole = b / u
+        let dec = (b % u) * 10UL / u
 
-        if dec = 0L then
+        if dec = 0UL then
             $"{sign}{whole} {name}"
         else
             $"{sign}{whole}.{dec} {name}"
@@ -813,6 +818,18 @@ let parseInstantMs (text: string) : Result<int64, string> =
     | _ ->
         Error
             $"not an ISO 8601 instant ('{excerpt t}'; 2026-08-14T12:34:56Z — offsets allowed, a bare date reads as midnight UTC)"
+
+/// an Instant is an epoch-ms in DateTimeOffset's range (years 1-9999);
+/// a value outside it raises in weir's words at the point it is made,
+/// never later inside a .NET formatter
+let checkInstant (who: string) (ms: int64) : int64 =
+    let lo = System.DateTimeOffset.MinValue.ToUnixTimeMilliseconds()
+    let hi = System.DateTimeOffset.MaxValue.ToUnixTimeMilliseconds()
+
+    if ms < lo || ms > hi then
+        failwith $"{who}: instant out of range — epoch ms {ms} is outside years 0001-9999 ({lo}..{hi})"
+
+    ms
 
 /// UTC always; millis shown only when nonzero (show's spelling)
 let formatInstant (ms: int64) : string =
@@ -1092,3 +1109,30 @@ let parseDurationMs (text: string) : Result<int64, string> =
         go 0 0L |> Result.map (fun v -> if neg then -v else v)
     with :? System.OverflowException ->
         Error $"not a duration: '{excerpt text}' — beyond the 64-bit millisecond range"
+
+// The one JSON string encoder: CLI/LSP payloads and user `to json` /
+// `to jsonl` / `--can --json` [D:json-raw-user].
+// UnsafeRelaxedJsonEscaping: "unsafe" means HTML-embedding only — these
+// payloads are never HTML; the default encoder's \u0022-style quote
+// escaping is valid but trips naive clients [D:json-relaxed-escaping]
+// BMP non-ASCII passes through raw [D:json-relaxed-escaping]: a
+// Private-Use glyph (a Powerline/Nerd-Font prompt icon, U+E000–U+F8FF)
+// must reach the client as UTF-8, not a `\u`-escape a naive LSP client
+// leaves as literal text. Every System.Text.Json encoder — including
+// UnsafeRelaxedJsonEscaping and Create(UnicodeRanges.All) — escapes the
+// PUA by a hardcoded policy, so this thin subclass delegates to
+// UnsafeRelaxed but refuses to escape any BMP scalar >= 0x80 (surrogate
+// halves excepted — astral chars stay a valid escaped pair). The
+// JSON-mandatory escapes (`"`, `\`, controls) are untouched.
+type RawBmpEncoder() =
+    inherit System.Text.Encodings.Web.JavaScriptEncoder()
+    let inner = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+    let allow (u: int) = u >= 0x80 && u <= 0xFFFF && not (u >= 0xD800 && u <= 0xDFFF)
+    override _.MaxOutputCharactersPerInputCharacter = inner.MaxOutputCharactersPerInputCharacter
+    override _.WillEncode(u) = if allow u then false else inner.WillEncode u
+    override _.FindFirstCharacterToEncode(text, textLength) = inner.FindFirstCharacterToEncode(text, textLength)
+    override _.TryEncodeUnicodeScalar(u, buffer, bufferLength, written) =
+        inner.TryEncodeUnicodeScalar(u, buffer, bufferLength, &written)
+
+let rawJsonWriterOptions =
+    System.Text.Json.JsonWriterOptions(Encoder = RawBmpEncoder())

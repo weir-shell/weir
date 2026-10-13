@@ -51,10 +51,14 @@ let rec private ofJsonElement (el: System.Text.Json.JsonElement) : INode =
         // apart, exactly as the from-json reader does
         let raw = el.GetRawText()
 
+        // — and an integer past int64 is float, as the readers type it
+        // (an `int` field could never read the sample it was drafted from)
         if raw.Contains '.' || raw.Contains 'e' || raw.Contains 'E' then
             IFloat
         else
-            IInt
+            match Int64.TryParse raw with
+            | true, _ -> IInt
+            | _ -> IFloat
     | _ -> IStr
 
 /// join the sample lines and parse one JSON document into an INode
@@ -92,7 +96,10 @@ let private classifyYamlScalar (text: string) : INode =
     if t = "true" || t = "false" then
         IBool
     elif System.Text.RegularExpressions.Regex.IsMatch(t, "^-?[0-9]+$") then
-        IInt
+        // past int64 the yaml reader types it float; the draft agrees
+        match Int64.TryParse t with
+        | true, _ -> IInt
+        | _ -> IFloat
     elif System.Text.RegularExpressions.Regex.IsMatch(t, "^-?[0-9]+\.[0-9]+([eE][-+]?[0-9]+)?$") then
         IFloat
     elif System.Text.RegularExpressions.Regex.IsMatch(t, "^-?[0-9]+[eE][-+]?[0-9]+$") then
@@ -712,7 +719,7 @@ let private tableDecls (reserved: Set<string>) (topName: string) (lines: string 
                         "Option<string>"
                     else
                         let scanned =
-                            if vals |> List.forall tableIntRx.IsMatch then
+                            if vals |> List.forall (fun v -> tableIntRx.IsMatch v && fst (Int64.TryParse v)) then
                                 "int"
                             elif vals |> List.forall (fun v -> tableIntRx.IsMatch v || tableFloatRx.IsMatch v) then
                                 "float"

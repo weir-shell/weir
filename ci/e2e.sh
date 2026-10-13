@@ -1090,8 +1090,17 @@ $BIN fmt "$fmtdir/ugly.weir" 2>/dev/null
 $BIN fmt --check "$fmtdir/ugly.weir" 2>/dev/null || fail "fmt output must pass --check"
 out=$($BIN "$fmtdir/ugly.weir")
 expect "formatted file runs identically" "2" "$out"
+$BIN "$fmtdir/ugly.weir" >/dev/null 2>&1 && $BIN fmt "$fmtdir/ugly.weir" --check 2>/dev/null || fail "fmt takes --check after the script too"
+# a flag is never read as a script path: usage errors, exit 2
+for args in "--check" "--bogus $fmtdir/ugly.weir" "$fmtdir/ugly.weir $fmtdir/ugly.weir"; do
+    rc=0
+    out=$($BIN fmt $args 2>&1) || rc=$?
+    [ "$rc" = "2" ] || fail "fmt $args: exit 2, got $rc: $out"
+    echo "$out" | grep -qF "usage: weir fmt" || fail "fmt $args: usage text: $out"
+    case "$out" in *"no such script: --"*) fail "fmt $args: a flag read as a script: $out" ;; esac
+done
 rm -rf "$fmtdir"
-echo "e2e ok: fmt canonicalizes, --check gates, output runs"
+echo "e2e ok: fmt canonicalizes, --check gates, output runs; flags never read as scripts"
 
 cat > "$scriptdir/blockmatch.weir" <<'WEOF'
 type Size = Big | Small
@@ -5606,6 +5615,20 @@ got=$($BIN "$odir/sh.weir" push 2>&1 | tail -1 | sed 's/^.*error: //' || true)
 [ "$got" = "Args.load Cli: missing required flag '--level'; missing required flag '--remote'; missing required flag '--depth'" ] \
     || fail "shared-twin fill order oracle: $got"
 echo "e2e ok: shared twin: token-order scan crosses tiers; fills shared-then-payload (exact)"
+# `--name=value` teaches the separate-argument spelling, both twins; a
+# presence flag says it takes no value
+cat > "$odir/eq.weir" <<'WEOF'
+type Cli = { verbose: bool; target: string }
+let cli = Args.load Cli
+print cli.target
+WEOF
+got=$($BIN "$odir/eq.weir" --target=prod --verbose=yes 2>&1 | tail -1 | sed 's/^.*error: //' || true)
+[ "$got" = "Args.load Cli: unknown flag '--target=prod' — a flag's value is the next argument: write '--target prod'; unknown flag '--verbose=yes' — '--verbose' is a presence flag and takes no value; missing required flag '--target'" ] \
+    || fail "--name=value teaching (record): $got"
+got=$($BIN "$odir/sh.weir" --level 1 push --remote=o --depth 2 2>&1 | tail -1 | sed 's/^.*error: //' || true)
+[ "$got" = "Args.load Cli: unknown flag '--remote=o' — a flag's value is the next argument: write '--remote o'; missing required flag '--remote'" ] \
+    || fail "--name=value teaching (shared twin): $got"
+echo "e2e ok: --name=value teaches '--name value'; a presence flag takes no value"
 rm -rf "$odir"
 
 out=$($BIN "$tadir/cli.weir" --bogus --help); rc=$?
@@ -6788,6 +6811,28 @@ else
 fi
 rm -rf "$ddir"
 
+# deep lazy chains walk iteratively [D:seq-depth-iterative]: a fold nesting
+# Seq.append / Seq.map 100k deep enumerates on a small stack (POSIX: 1MB,
+# Windows' default main-thread size), and `always` runs
+lcdir=$(mkweirtmp)
+cat > "$lcdir/chains.weir" <<'WEOF'
+within
+    let a = [1..100000] |> Seq.fold (fun acc i -> Seq.append acc [i]) []
+    let m = [1..100000] |> Seq.fold (fun acc i -> Seq.map (fun x -> x + 1) acc) [0]
+    print $"{Seq.length a} {Seq.head m}"
+always
+    printerr "cleanup ran"
+WEOF
+if [ "$IS_WINDOWS" = "1" ]; then
+    out=$($BIN "$lcdir/chains.weir" 2>&1) || fail "deep lazy chains must enumerate: $out"
+else
+    out=$( (ulimit -s 1024; $BIN "$lcdir/chains.weir") 2>&1) || fail "deep lazy chains must enumerate on a 1MB stack: $out"
+fi
+[ "$out" = "100000 100000
+cleanup ran" ] || fail "deep lazy chains: length, innermost-first maps, always ran: $out"
+rm -rf "$lcdir"
+echo "e2e ok: 100k-deep Seq.append / Seq.map chains enumerate iteratively"
+
 # ---- user modules and imports, session 1 [D:modules-v1] -------------------
 mdir=$(mkweirtmp)
 cat > "$mdir/paths.weir" <<'WEOF'
@@ -7787,7 +7832,7 @@ hbdir=$(mkweirtmp)
     printf '            /// weir doc as data\n'
     printf '\n'
     printf '            \n'
-    printf '            \techo tab-first content\n'
+    printf '            echo\tmid-line tab content\n'
     printf '            ---\n'
     printf '            trailing spaces   \n'
     printf '            $name and $(1 + 2)\n'
@@ -7802,7 +7847,7 @@ hbdir=$(mkweirtmp)
 $BIN check "$hbdir/hostile.weir" || fail "hostile-byte fixture must check clean"
 
 cat > "$hbdir/expected.txt" <<'HEOF'
-YMap ([("data", YMap ([("hostile.txt", YStr "#!/bin/sh\n# comment-shaped\n// weir comment as data\n/// weir doc as data\n\n\n\techo tab-first content\n---\ntrailing spaces   \n$name and $(1 + 2)\nfor x in xs\n    more indented\n{ [ unbalanced ( brackets\nback to base\n")]))])
+YMap ([("data", YMap ([("hostile.txt", YStr "#!/bin/sh\n# comment-shaped\n// weir comment as data\n/// weir doc as data\n\n\necho\tmid-line tab content\n---\ntrailing spaces   \n$name and $(1 + 2)\nfor x in xs\n    more indented\n{ [ unbalanced ( brackets\nback to base\n")]))])
 HEOF
 $BIN "$hbdir/hostile.weir" > "$hbdir/got.txt"
 cmp -s "$hbdir/expected.txt" "$hbdir/got.txt" || {
@@ -7810,6 +7855,13 @@ cmp -s "$hbdir/expected.txt" "$hbdir/got.txt" || {
     fail "hostile-byte fixture must survive byte-exact through run"
 }
 echo "e2e ok: the hostile-byte fixture is byte-exact through check and run"
+
+# indentation is spaces only, block content included [D:spaces-only-indent]:
+# a tab in a content line's leading whitespace (even after the space base)
+# is the indentation error, with its column
+printf 'let t = <<<\n    abc\n    \tdef\nprint t\n' > "$hbdir/tablead.weir"
+out=$($BIN check "$hbdir/tablead.weir" 2>&1) && fail "a leading tab in block content must be refused"
+expect "a leading tab in block content is the indentation error" "line 3: tabs are not allowed in indentation (a tab at column 5)" "$out"
 
 # CRLF [D:content-bytes]: a source file's line ending is not data —
 # normalized at read, so a CRLF-saved file behaves identically

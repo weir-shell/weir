@@ -298,11 +298,20 @@ let main argv =
                 else
                     Script.checkOnly (has "--json") path
 
-        | [ "fmt"; "--check"; path ] -> Fmt.formatFile true path
-        | [ "fmt"; path ] -> Fmt.formatFile false path
-        | "fmt" :: _ ->
-            Console.Error.WriteLine "usage: weir fmt [--check] <script>"
-            2
+        // fmt's one flag in either position, one script — a flag is
+        // never read as a script path, as check does
+        | "fmt" :: rest ->
+            let flags, paths = rest |> List.partition (fun a -> a.StartsWith "-" && a <> "-")
+
+            let usage (why: string) =
+                Console.Error.WriteLine $"weir fmt: {why}\nusage: weir fmt [--check] <script>"
+                2
+
+            match flags |> List.tryFind (fun f -> f <> "--check"), paths with
+            | Some f, _ -> usage $"unknown flag {f}"
+            | None, [] -> usage "which script? — give its path"
+            | None, _ :: _ :: _ -> usage $"""one script at a time — got {paths |> String.concat " "}"""
+            | None, [ path ] -> Fmt.formatFile (List.contains "--check" flags) path
         // external contracts [D:contracts-spine]: `add <kind>` is
         // kind-aware (acquiring differs per kind); `restore`/`verify`
         // operate on the lockfile and are kind-agnostic by construction.

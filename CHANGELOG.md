@@ -67,6 +67,42 @@
   inside the source.
 - **`Instant.parse` reads a space separator and nanosecond fractions,**
   so TOML offset date-times load.
+- **`from jsonl` skips blank lines,** so a file ending in an extra
+  newline reads.
+- **`Json.inferShape`/`Yaml.inferShape` draft `float` for an integer
+  past int64,** which the readers already typed that way.
+- **`Args.load` teaches `--name value` for `--name=value`,** and a field
+  that would derive `--help` is a check error.
+- **`weir fmt` reads no flag as a script path:** an unknown flag or a
+  missing script is a usage error (exit 2).
+- **Clearer errors:** a dangling symlink and a directory passed to
+  `File.size`/`File.delete` are named as such; `xs[^n]` out of range
+  names `^n` and the length; Duration/Size/Instant overflow and
+  `Str.replace ""` fail in weir's words instead of .NET's;
+  `0x10`, `1_000` and `1.5.2` get their own messages, and unit suffixes
+  no longer clutter "Expecting" lists; `Some 1 < None`, Show/Ord
+  leftovers, opaque built-in types and a failed import are reported as
+  what they are.
+- **`Duration.sleep` past 24.8 days sleeps** instead of failing.
+- **Deep `Seq.append`/`Seq.map` chains no longer overflow the stack**
+  (100k nested); deep `where`/`choose` chains still recurse.
+- **A `plan` body ending in a non-unit value is an error,** like any
+  other discarded value.
+
+### Changed
+
+- **`to json`, `to jsonl` and `weir check --can --json` write non-ASCII
+  text raw.** `"é <b> & \"q\""` was written as
+  `"\u00E9 \u003Cb\u003E \u0026 \u0022q\u0022"`; it is now
+  `"é <b> & \"q\""`. Characters outside the BMP (emoji) stay an
+  escaped pair. Readers are unaffected; a script comparing JSON bytes
+  sees the new form.
+- **Field paths in `from json`/`from xml` errors index from 0**
+  (`refs[0].Include`), as weir indexing does.
+- **Indentation is spaces only, inside heredoc and yaml blocks too.** A
+  tab in a content line's leading whitespace is an error on every line
+  (it was refused only on the first). A tab after the first
+  non-whitespace character is still content.
 
 ## v0.0.72
 

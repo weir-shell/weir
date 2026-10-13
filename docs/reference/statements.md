@@ -18,7 +18,9 @@ ls |> Seq.length // computes an int and discards it — bind it, or pipe it to p
 ## Layout
 
 A statement starts at column 0. Indented lines continue it, and the
-next line at column 0 ends it. Blank lines and comment lines are
+next line at column 0 ends it. Indentation is spaces only — a tab in
+a line's leading whitespace is an error, inside text and `yaml`
+blocks too. Blank lines and comment lines are
 ignored for layout, so you can put gaps inside a block.
 
 An indented `let` ends at the next line with the same indentation.

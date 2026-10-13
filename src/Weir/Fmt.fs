@@ -268,9 +268,9 @@ let private formatLinesCore (body: string list) : Result<string list, string> =
                                     yamlBase <- Some indent
                                     indent
 
-                            // bytes: trailing whitespace and a content-
-                            // leading tab survive [D:content-bytes] — strip
-                            // only the space indentation
+                            // bytes: trailing whitespace survives
+                            // [D:content-bytes]; indentation is spaces only
+                            // [D:spaces-only-indent] — strip just that
                             String.replicate ((mDepth + 1) * 4 + (indent - b)) " "
                             + raw.Substring(min indent raw.Length)
                         else

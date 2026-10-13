@@ -497,6 +497,32 @@ let private occurs (ctx: Ctx) (v: string) (ty: Ty) : bool =
 
     go ty
 
+// the def-less builtin nominals beside Map [D:scoped-procs][D:yaml-nodes]:
+// type constructors with no Record/Union entry. One list — Prelude's
+// built-in-name registration and validateTy's arity table both read it,
+// so a nominal cannot be registered-but-unnameable (otherwise the
+// privacy teaching could suggest a signature validateTy refuses).
+// Plan is an opaque nominal [D:plan-apply]: its runtime rep is a record
+// of captured Ops, but the value surface is the `Plan.*` members
+// (ops/preview/apply/isEmpty) plus `==` — never a field, so a user
+// `plan.ops` field-access is not offered. Def-less like Proc/YamlPatch.
+// Server is def-less like Proc [D:http-serve]: its runtime rep is a
+// listener handle, its value surface the `Server.*` members (port),
+// never a field — so a user `srv.port` field-access is not offered.
+let deflessBuiltinNominals = [ "Proc"; "YamlPatch"; "Plan"; "Server" ]
+
+// an opaque built-in value: no fields, never rendered
+let private opaqueNominal (t: Ty) : string option =
+    match t with
+    | TNamed(n, _) when List.contains n deflessBuiltinNominals -> Some n
+    | _ -> None
+
+// what an opaque value offers instead of fields
+let private opaqueNoFields (name: string) : string =
+    match name with
+    | "YamlPatch" -> "a patch has no fields — it is instructions for a merge; Yaml.merge applies it"
+    | n -> $"{n} has no fields — it is an opaque value; use the {n}.* members"
+
 // the hole law's refusals [D:interp-show] [D:hole-generic] — one text
 // for the eager check and an instantiated Render constraint
 let private holeDescribe (t: Ty) : string =
@@ -505,7 +531,23 @@ let private holeDescribe (t: Ty) : string =
     // secret reaches a log line. show renders ***; using the value is
     // the deliberate Secret.reveal
     | TSecret -> "a Secret does not interpolate — Secret.reveal s to use its value, or show s to render ***"
+    | TNamed("YamlPatch", _) ->
+        "a patch does not render — it is instructions for a merge, not data; Yaml.merge applies it"
+    | t when (opaqueNominal t).IsSome ->
+        $"interpolation holes render what show renders; {formatTy t} is an opaque value and cannot be shown"
     | t -> $"interpolation holes render what show renders; {formatTy t} cannot be shown (functions never render)"
+
+// a class requirement left on a type nothing determines, named by its
+// class — show/interpolation and ordering are not equality
+let private strandedMessage (cls: Cls) : string =
+    let req =
+        match cls with
+        | Cls.Eq -> "an equality"
+        | Cls.Ord -> "an ordering"
+        | Cls.Show
+        | Cls.Render -> "a rendering"
+
+    $"this leaves {req} requirement on a type nothing determines — pipe in data or use a concrete value"
 
 let private instantiate (ctx: Ctx) (span: Span) (sch: Scheme) : Ty =
     if Set.isEmpty sch.Forall then
@@ -579,6 +621,8 @@ let private instantiate (ctx: Ctx) (span: Span) (sch: Scheme) : Ty =
                                 fun t ->
                                     if tyHasFloat t then
                                         floatEqTeaching
+                                    elif (opaqueNominal t).IsSome then
+                                        $"this use requires equatable values, got {formatTy t} — an opaque value cannot be compared with '=='"
                                     else
                                         $"this use requires equatable values, got {formatTy t} — sequences and functions cannot be compared with '=='"
                             | Cls.Show ->
@@ -587,6 +631,8 @@ let private instantiate (ctx: Ctx) (span: Span) (sch: Scheme) : Ty =
                                     // a patch is opaque by design [D:yaml-nodes]
                                     | TNamed("YamlPatch", _) ->
                                         "a patch does not show — it is instructions for a merge, not data; Yaml.merge applies it"
+                                    | t when (opaqueNominal t).IsSome ->
+                                        $"show cannot render {formatTy t} — it is an opaque value"
                                     | _ -> $"show cannot render functions; this is {formatTy t}"
                             | Cls.Ord ->
                                 fun t ->
@@ -849,6 +895,7 @@ and private dischargeRow
                         let hint = didYouMean field (List.map fst def.Fields)
                         atAccess field fspan $"{name} has no field '{field}'{hint}"))
     | Some(Union _) -> err span $"{name} is a union; only records have fields"
+    | None when List.contains name deflessBuiltinNominals -> err span (opaqueNoFields name)
     | None -> err span $"unknown type '{name}'"
 
 and private mergeRows (ctx: Ctx) (env: TypeEnv) (r1: string) (r2: string) : Result<unit, TypeError> =
@@ -1149,6 +1196,8 @@ let rec private typeBinOp
                     fun t ->
                         if tyHasFloat t then
                             floatEqTeaching
+                        elif (opaqueNominal t).IsSome then
+                            $"'{op}' is not defined for {formatTy t}; an opaque value cannot be compared"
                         else
                             $"'{op}' is not defined for {formatTy t}; sequences and functions cannot be compared" }
 
@@ -1206,6 +1255,10 @@ let rec private typeBinOp
     | ("*" | "/"), TInt, TInt -> Ok(TInt)
     | (">" | "<" | ">=" | "<="), TInt, TInt -> Ok TBool
     | ("&&" | "||"), TBool, TBool -> Ok TBool
+    // no operator here is defined for these on the left, whatever the
+    // right side is — say so before any operand mismatch
+    | _, ((TNamed _ | TSeq _ | TTuple _ | TUnit) as a), _ ->
+        err opSpan $"operator '{op}' is not defined for {formatTy a}"
     | _, (TInt as a), (TInt as b) when a <> b -> mismatch r.Span a b
     | _, a, b when a <> b ->
         let shorthandHint =
@@ -2619,7 +2672,11 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
         // type is the body's type
         result {
             let! targ, topts, benv = withinContracts ctx env kind binder arg opts
-            let! tbody = infer ctx benv body
+
+            let! tbody =
+                match kind with
+                | WithinPlan -> inferPlanBody ctx benv body
+                | _ -> infer ctx benv body
 
             // the scope's type is the body's [D:within-scopes] — except a
             // plan block, which reifies the body's mutations and yields a
@@ -2937,7 +2994,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
             // target is inferred first, before the index can mis-report.
             let mapIndexHint =
                 match head.Kind, args with
-                | EVar "|seqItem", [ _; target ] ->
+                | EVar("|seqItem" | "|seqItemFromEnd"), [ _; target ] ->
                     match infer ctx env target with
                     | Ok t ->
                         match resolve ctx t.Ty with
@@ -3671,6 +3728,8 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                             return! err fieldSpan $"{typeName} has no field '{field}'{hint}"
                 | Some(Union _) ->
                     return! err fieldSpan $"{typeName} is a union; match on it instead of accessing fields"
+                | None when List.contains typeName deflessBuiltinNominals ->
+                    return! err fieldSpan (opaqueNoFields typeName)
                 | None -> return! err target.Span $"unknown type '{typeName}'"
             | TVar v ->
                 let r = freshName ctx "r"
@@ -3863,6 +3922,8 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                                         fieldSpan
                                         $"record update cannot add fields: {typeName} has no field '{field}'{hint}"
                             | Some(Union _) -> err subjectSpan $"{typeName} is a union; only records update"
+                            | None when List.contains typeName deflessBuiltinNominals ->
+                                err subjectSpan (opaqueNoFields typeName)
                             | None -> err subjectSpan $"unknown type '{typeName}'"
                         | TVar v ->
                             let r = freshName ctx "r"
@@ -4571,6 +4632,32 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
     // MatchFailureException.
     | ESplat _ -> failwith "unreachable: $@ splat outside command arguments (parser confines it to argv)"
 
+// a plan body's value is discarded (the block yields the Plan
+// [D:plan-apply]), so its tail obeys the sequenced-unit rule; a command
+// tail is armed so the plan's own command refusal names it
+and private inferPlanBody (ctx: Ctx) (env: TypeEnv) (body: Expr) : Result<TypedExpr, TypeError> =
+    result {
+        let! tbody = infer ctx env (armTail body)
+
+        let rec tail (e: Expr) =
+            match e.Kind with
+            | ESeq(_, rest) -> tail rest
+            | _ -> e
+
+        match resolve ctx tbody.Ty with
+        | TUnit -> return tbody
+        | TVar _ as v ->
+            do! bind ctx env body.Span TUnit v
+            return tbody
+        | ty ->
+            let last = tail body
+
+            return!
+                err
+                    last.Span
+                    $"a plan block's value is discarded (the block yields the Plan); this one is {formatTy ty} — bind it or print it"
+    }
+
 and private checkSpine
     (ctx: Ctx)
     (env: TypeEnv)
@@ -5019,7 +5106,7 @@ and private check (ctx: Ctx) (env: TypeEnv) (expr: Expr) (expected: Ty) : Result
     | EWithin(WithinPlan, binder, arg, opts, body), _ ->
         result {
             let! targ, topts, benv = withinContracts ctx env WithinPlan binder arg opts
-            let! tbody = infer ctx benv body
+            let! tbody = inferPlanBody ctx benv body
             let planTy = TNamed("Plan", [])
             do! bind ctx env expr.Span expected planTy
 
@@ -5491,7 +5578,7 @@ let withAnonDefs (env: TypeEnv) (expr: Expr) : TypeEnv =
 // a budget diagnostic beside its single source and stop the multi-error
 // fold on it (one burn bounds the file) [D:budget-stop-first].
 let budgetMsgSized =
-    "this expression's type grew too large to infer — split the expression into smaller bindings, or annotate the intended type"
+    "this expression's type grew too large to infer — split the expression into smaller bindings"
 
 let budgetMsgUnsized =
     "type inference ran out of budget on this expression — split it into smaller bindings"
@@ -5558,7 +5645,7 @@ let typecheckBinderCore
                     | Some p ->
                         err
                             p.Span
-                            "this leaves an equality requirement on a type nothing determines — pipe in data or use a concrete value"
+                            (strandedMessage p.Cls)
                     | None -> Ok(te, schemes)
 
 let typecheckBinder (env: TypeEnv) (pat: Pattern) (expr: Expr) : Result<TypedExpr * (string * Scheme) list, TypeError> =
@@ -5605,7 +5692,7 @@ let typecheckWithCore
             | Some(_, p) ->
                 err
                     p.Span
-                    "this leaves an equality requirement on a type nothing determines — pipe in data or use a concrete value"
+                    (strandedMessage p.Cls)
             | None ->
                 let residue =
                     openCons
@@ -6010,7 +6097,7 @@ let private typecheckAgainstSigCore (env: TypeEnv) (sigTy: Ty) (expr: Expr) : Re
                             SigBody
                                 { Span = p.Span
                                   Message =
-                                    "this leaves an equality requirement on a type nothing determines — pipe in data or use a concrete value"
+                                    (strandedMessage p.Cls)
                                   Origin = None }
                         )
                     | None ->
@@ -6035,19 +6122,6 @@ let typecheckAgainstSig (env: TypeEnv) (sigTy: Ty) (expr: Expr) : Result<TypedEx
     with BudgetExceeded(span, sized) ->
         Error(SigBody(budgetError span sized))
 
-// the def-less builtin nominals beside Map [D:scoped-procs][D:yaml-nodes]:
-// type constructors with no Record/Union entry. One list — Prelude's
-// built-in-name registration and validateTy's arity table both read it,
-// so a nominal cannot be registered-but-unnameable (otherwise the
-// privacy teaching could suggest a signature validateTy refuses).
-// Plan is an opaque nominal [D:plan-apply]: its runtime rep is a record
-// of captured Ops, but the value surface is the `Plan.*` members
-// (ops/preview/apply/isEmpty) plus `==` — never a field, so a user
-// `plan.ops` field-access is not offered. Def-less like Proc/YamlPatch.
-// Server is def-less like Proc [D:http-serve]: its runtime rep is a
-// listener handle, its value surface the `Server.*` members (port),
-// never a field — so a user `srv.port` field-access is not offered.
-let deflessBuiltinNominals = [ "Proc"; "YamlPatch"; "Plan"; "Server" ]
 
 let rec private validateTy
     (env: TypeEnv)

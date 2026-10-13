@@ -303,6 +303,18 @@ let respaceLine (line: string) : string =
 
     sb.ToString()
 
+// the 1-based column of the first tab in a line's leading whitespace
+// [D:spaces-only-indent]
+let private leadingTabCol (raw: string) : int option =
+    raw
+    |> Seq.takeWhile (fun c -> c = ' ' || c = '\t')
+    |> Seq.tryFindIndex ((=) '\t')
+    |> Option.map ((+) 1)
+
+let private tabIndentError (lineNo: int) (raw: string) : string =
+    let col = leadingTabCol raw |> Option.defaultValue 1
+    $"line {lineNo}: tabs are not allowed in indentation (a tab at column {col}) — indent with spaces"
+
 // net { vs } outside strings — interpolation holes sit inside the
 // quotes, so their braces never count; clamping to >= 0 happens at the
 // consumer (stray command-arg } must not poison the statement)
@@ -1503,6 +1515,14 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                             // except inside an active yaml district, where the
                             // line is bytes (`// x` in a block scalar is data)
                             match current with
+                            // a comment-shaped block line is content, so it
+                            // obeys the content indentation rule
+                            // [D:spaces-only-indent]
+                            | Some { District = Some { Yaml = true; MarkerIndent = m } } when
+                                (leadingTabCol raw).IsSome
+                                && (raw |> Seq.takeWhile (fun c -> c = ' ' || c = '\t') |> Seq.length) > m
+                                ->
+                                Error(tabIndentError lineNo raw)
                             | Some({ District = Some { Active = Some bse
                                                        Yaml = true
                                                        MarkerIndent = m } } as p) when
@@ -1565,21 +1585,14 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                             || inOpenBrace
                             || inOpenLambda
                         then
-                            let wsRun = raw |> Seq.takeWhile (fun c -> c = ' ' || c = '\t') |> Seq.length
                             let indent = raw |> Seq.takeWhile ((=) ' ') |> Seq.length
 
-                            // content is bytes: inside an active yaml district a
-                            // tab after the (space) indentation is content — the
-                            // structure-level rejection must not reach it
-                            let inYamlContent =
-                                match current with
-                                | Some { District = Some { Active = Some _
-                                                           Yaml = true
-                                                           MarkerIndent = m } } -> indent > m
-                                | _ -> false
-
-                            if indent < wsRun && not inYamlContent then
-                                Error $"line {lineNo}: tabs are not allowed in indentation"
+                            // indentation is spaces only, block content
+                            // included: a tab is content only after the
+                            // line's first non-whitespace character
+                            // [D:spaces-only-indent]
+                            if (leadingTabCol raw).IsSome then
+                                Error(tabIndentError lineNo raw)
                             else
                                 match current with
                                 | None ->
@@ -4796,35 +4809,11 @@ let private codeOf (parse: bool) (msg: string) : string =
 
 // AOT-safe JSON writing: Utf8JsonWriter (reflection-free, the write
 // twin of the JsonDocument reader) — escaping is the library's job,
-// never string interpolation's. UnsafeRelaxedJsonEscaping: "unsafe"
-// means HTML-embedding only — these payloads are LSP/CLI, never HTML;
-// the default encoder's \u0022-style quote escaping is valid but
-// trips naive clients [D:json-relaxed-escaping]
-// BMP non-ASCII passes through raw [D:json-relaxed-escaping]: a
-// Private-Use glyph (a Powerline/Nerd-Font prompt icon, U+E000–U+F8FF)
-// must reach the client as UTF-8, not a `\u`-escape a naive LSP client
-// leaves as literal text. Every System.Text.Json encoder — including
-// UnsafeRelaxedJsonEscaping and Create(UnicodeRanges.All) — escapes the
-// PUA by a hardcoded policy, so this thin subclass delegates to
-// UnsafeRelaxed but refuses to escape any BMP scalar >= 0x80 (surrogate
-// halves excepted — astral chars stay a valid escaped pair). The
-// JSON-mandatory escapes (`"`, `\`, controls) are untouched.
-type private RawBmpEncoder() =
-    inherit System.Text.Encodings.Web.JavaScriptEncoder()
-    let inner = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping
-    let allow (u: int) = u >= 0x80 && u <= 0xFFFF && not (u >= 0xD800 && u <= 0xDFFF)
-    override _.MaxOutputCharactersPerInputCharacter = inner.MaxOutputCharactersPerInputCharacter
-    override _.WillEncode(u) = if allow u then false else inner.WillEncode u
-    override _.FindFirstCharacterToEncode(text, textLength) = inner.FindFirstCharacterToEncode(text, textLength)
-    override _.TryEncodeUnicodeScalar(u, buffer, bufferLength, written) =
-        inner.TryEncodeUnicodeScalar(u, buffer, bufferLength, &written)
-
-let private jsonWriterOptions =
-    System.Text.Json.JsonWriterOptions(Encoder = RawBmpEncoder())
-
+// never string interpolation's; the encoder is Types.RawBmpEncoder
+// [D:json-relaxed-escaping]
 let jsonBuild (build: System.Text.Json.Utf8JsonWriter -> unit) : string =
     use ms = new IO.MemoryStream()
-    use w = new System.Text.Json.Utf8JsonWriter(ms, jsonWriterOptions)
+    use w = new System.Text.Json.Utf8JsonWriter(ms, Types.rawJsonWriterOptions)
     build w
     w.Flush()
     Text.Encoding.UTF8.GetString(ms.ToArray())
@@ -6236,6 +6225,9 @@ let analyzeLines
         // explanation. The whole-file rules (orphan, doc-on-impl) are
         // judged after the fold, mirroring the module loader.
         let mutable sigState = if isModule then Some SigContext.empty else None
+        // aliases of imports that failed: a later "no module named" for
+        // one echoes the import's own error, so it is not reported
+        let mutable failedImports: Set<string> = Set.empty
         let sigImplLines = ResizeArray<string * int>()
 
         // unused bindings [D:unused-bindings]: fed per statement, judged
@@ -6467,6 +6459,13 @@ let analyzeLines
                          | SLetPat(pat, _) -> patVars pat
                          | _ -> []
 
+                     (match stmt with
+                      | SImport(_, _, Some(alias, _)) -> failedImports <- Set.add alias failedImports
+                      | SImport(ipath, _, None) ->
+                          deriveModuleName ipath
+                          |> Option.iter (fun alias -> failedImports <- Set.add alias failedImports)
+                      | _ -> ())
+
                      // an errored implementation still discharges its
                      // pending signature — one real error beats a trailing
                      // orphan echo [D:module-signatures]
@@ -6504,18 +6503,23 @@ let analyzeLines
                                            HoleDefaults = [] }
                                          tenv.Values })
 
+                let echoesFailedImport =
+                    failedImports
+                    |> Set.exists (fun a -> d.Message.StartsWith $"no module named '{a}'")
+
                 // multi-file [D:modules-v1]: a module error carries File +
                 // PhysLine/Col into that other file; its Note is the "imported
                 // here" pointer at the import line in this file
-                diags.Add
-                    { File = d.File |> Option.defaultValue path
-                      Line = d.PhysLine
-                      Col = d.PhysCol
-                      EndLine = d.PhysEnd |> Option.map fst
-                      EndCol = d.PhysEnd |> Option.map snd
-                      Severity = "error"
-                      Code = codeOf d.Parse d.Message
-                      Message = d.Message }
+                if not echoesFailedImport then
+                    diags.Add
+                        { File = d.File |> Option.defaultValue path
+                          Line = d.PhysLine
+                          Col = d.PhysCol
+                          EndLine = d.PhysEnd |> Option.map fst
+                          EndCol = d.PhysEnd |> Option.map snd
+                          Severity = "error"
+                          Code = codeOf d.Parse d.Message
+                          Message = d.Message }
 
                 (match d.Note with
                  | Some(nl, nc, nmsg) ->

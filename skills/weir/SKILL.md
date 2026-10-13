@@ -1518,7 +1518,8 @@ type Bad = { type: string }
   `value |> to json` writes ONE minified document (a record is an
   object, a seq an ARRAY — building the one line forces the seq);
   `xs |> to jsonl` writes one document per element, lazily — the
-  streaming form. Every adapter pairs with its own name across the
+  streaming form. Strings escape only what JSON requires — `<`, `&`,
+  `'` and non-ASCII stay raw (astral chars as a `\u` pair). Every adapter pairs with its own name across the
   arrow: `to json |> from json T`, `xs |> to json |> from json
   seq<T>`, `xs |> to jsonl |> from jsonl T`.
   A TAGGED UNION crosses the wire [D:wire-unions]: `[<Tag "kind">]`
@@ -1813,7 +1814,10 @@ print (show (pods |> Seq.head |> _.node))
   the PLAIN multiline literal — every byte below the marker is
   content (`$` and `{` included), interior blank lines and deeper
   indentation survive (relative to the first line; TRAILING blanks
-  clip — the block-scalar rule), and the value is
+  clip — the block-scalar rule; indentation is SPACES ONLY in every
+  block [D:spaces-only-indent] — a tab in a content line's leading
+  whitespace is an error, a tab is content only after the line's
+  first non-whitespace character), and the value is
   `seq<string>`, one element per line (compose with `File.write`,
   pipes, `Seq`). `$<<<` is the interpolated twin with EXACTLY the
   string forms' hole rules: `{expr}` substitutes, `{{`/`}}` are
@@ -2167,8 +2171,10 @@ print (f 1)
   literals only in the attribute. Default on Option/false-on-bool/
   the subcommand slot are check errors. STRICT: unknown flags (did-you-mean), unexpected
   arguments, repeats, missing requireds — all collected into ONE
-  boundary error. `--help` prints derived usage (short truth +
-  the `///` doc's first line), exit 0, even on invalid invocations. No
+  boundary error. A value is the NEXT argument (`--out x`; `--out=x`
+  is refused, teaching the spaced form). `--help` prints derived usage (short truth +
+  the `///` doc's first line), exit 0, even on invalid invocations; a
+  field deriving `--help` is a check error (reserved). No
   positionals — spell operands as flags. The untyped floor:
   `Args.flag "--clean" "-c"` (bool), `Args.value "--out"`
   (Option of the next token).
