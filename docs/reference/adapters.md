@@ -4,8 +4,8 @@
 Three formats work in both directions (`json`, `jsonl`, `yaml`), and
 three more are read-only (`toml`, `xml`, `table`). You always say which format
 you mean: `from json T` reads one document however many lines it
-spans, while `from jsonl T` reads one document per line and yields
-`seq<T>`.
+spans, while `from jsonl T` reads one document per line (blank lines
+are skipped) and yields `seq<T>`.
 
 ```weir
 type Peer = { host: string; port: int }

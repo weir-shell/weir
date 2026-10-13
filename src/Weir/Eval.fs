@@ -1862,11 +1862,14 @@ let private fromAdapter
         VBuiltin(fun v ->
             match v with
             | VSeq lines ->
+                // a blank line separates nothing — a trailing newline
+                // (a file's last line, `printf '…\n\n'`) is not a document
                 VSeq(
                     lines
-                    |> Seq.map (fun l ->
+                    |> Seq.choose (fun l ->
                         match l with
-                        | VStr s -> jsonDoc "from jsonl" false false top defs udefs s s
+                        | VStr s when s.Trim() = "" -> None
+                        | VStr s -> Some(jsonDoc "from jsonl" false false top defs udefs s s)
                         | v -> unreachable $"the checker rejects 'from' on non-string elements: {formatValue v}")
                 )
             | v -> unreachable $"the checker rejects 'from' on {formatValue v}")

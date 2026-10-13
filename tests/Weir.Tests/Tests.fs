@@ -1211,6 +1211,18 @@ let boundaryTests =
                   [ VRecord("JRow", [ "name", VStr "x"; "bytes", VInt 1048576L; "readOnly", VBool true ]) ]
                   ""
           }
+          test "from jsonl skips blank lines — a trailing newline is not a document (B27)" {
+              let row = """{"name":"x","bytes":1,"readOnly":true}"""
+              let src = VSeq [ VStr ""; VStr row; VStr "   "; VStr row; VStr "\r"; VStr "" ]
+
+              Expect.equal
+                  (runWith [ "src", src ] "src |> from jsonl JRow |> Seq.length")
+                  (VInt 2L)
+                  "blank and whitespace-only lines are skipped"
+
+              let bad = VSeq [ VStr row; VStr "x" ]
+              Expect.throws (fun () -> runWith [ "src", bad ] "src |> from jsonl JRow" |> forceSeq |> ignore) "a non-blank bad line still fails"
+          }
           test "from jsonl: an Option field reads present as Some, missing AND null as None [D:json-option]" {
               let src =
                   VSeq
