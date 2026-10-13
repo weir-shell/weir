@@ -870,7 +870,7 @@ let rec private parseBlock
                         | None -> parseScalar firstNo firstBody
 
 /// Parse numbered raw lines into documents (`---` separated, indent-0
-/// separators only; a leading `---` is allowed)
+/// separators only; a leading `---` is allowed, a `...` ends a document)
 let parseDocs (numbered: (int * string) list) : Result<Node list, string> =
     let content =
         numbered
@@ -900,7 +900,10 @@ let parseDocs (numbered: (int * string) list) : Result<Node list, string> =
             docs.Add(ResizeArray())
 
             for (no, raw) in content do
-                if raw.TrimEnd() = "---" then
+                // `...` is the spec's document-end marker: it closes the
+                // document as `---` does, and a following `---` opens no
+                // empty one
+                if raw.TrimEnd() = "---" || raw.TrimEnd() = "..." then
                     if docs[docs.Count - 1].Count > 0 then
                         docs.Add(ResizeArray())
                 else

@@ -2440,6 +2440,19 @@ let boundaryTests =
 
               Expect.stringContains (yamlErr [ "-   x: 1"; "  y: 2" ]) "line 2:" "a sibling left of the gap column still errors"
           }
+          test "'...' ends a document (triage 15c)" {
+              match yamlDoc [ "f: a"; "..." ] with
+              | Weir.Yaml.NMap([ ("f", Weir.Yaml.NScalar("a", false, _)) ], _) -> ()
+              | other -> failtest $"trailing '...': {other}"
+
+              match Weir.Yaml.parseDocs ([ "a: 1"; "..."; "---"; "b: 2"; "..." ] |> List.mapi (fun i l -> i + 1, l)) with
+              | Ok [ _; _ ] -> ()
+              | other -> failtest $"'...' then '---' is two documents, no empty one: {other}"
+
+              match yamlDoc [ "f: \"...\"" ] with
+              | Weir.Yaml.NMap([ ("f", Weir.Yaml.NScalar("...", true, _)) ], _) -> ()
+              | other -> failtest $"'...' as a value stays data: {other}"
+          }
           test "quoted yaml keys unescape like values; every key to yaml writes reads back (B25)" {
               let keysOf d =
                   match d with
