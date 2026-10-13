@@ -247,7 +247,9 @@ let private formatLinesCore (body: string list) : Result<string list, string> =
                                 yamlBase <- Some cIndent
                                 cIndent
 
-                        String.replicate ((mDepth + 1) * 4 + (cIndent - b)) " "
+                        // a comment outdented past the base keeps its
+                        // offset, clamped to stay inside the district
+                        String.replicate (max (mDepth * 4 + 1) ((mDepth + 1) * 4 + (cIndent - b))) " "
                         + raw.Substring(min cIndent raw.Length)
                     | _ -> raw.TrimEnd()
                 else
