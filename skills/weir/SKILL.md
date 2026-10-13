@@ -313,7 +313,10 @@ echo --flag="quoted v" // the quoted part would be its own argument; quote the w
   ordinary one. An unterminated string of ANY kind now names its
   opener. Rawness belongs to the
   literal KIND, never to position — a string means the same thing
-  everywhere.
+  everywhere: `"""…"""` is one argv word too. The one exception is
+  `@"…"` in a command line, refused [D:argv-at-raw]: `@` is argv text
+  there (curl's `@file`) — quote the whole word (`"@my file"`), or
+  bind the verbatim string and splice it.
 
 ```weir
 let v = "1.2.3"

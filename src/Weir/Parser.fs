@@ -3942,6 +3942,16 @@ let private tildeExpr (w: string) (span: Span) : Expr =
 
     if w = "~" then home else at (EBinOp("+", home, at (EStr(w.Substring 1))))
 
+// `@"…"` is not an argv word [D:argv-at-raw]: `@` is argv text (curl's
+// `@file`), so `-d @"my file"` reading as a verbatim string would drop it
+let private verbatimArgTeach: Parser<Expr, unit> =
+    getPosition
+    >>= fun at ->
+        anyChar
+        >>. failFatallyAt
+                at
+                "a verbatim string `@\"…\"` is not an argv word — `@` is meaningful argv text (curl's `@file`). For a literal `@` argument quote the whole word (`\"@my file\"`, `$\"@{path}\"`); for a verbatim string bind it first (`let p = @\"C:\\x\"`) and splice `$p`"
+
 let private cmdArgStops (stopAtIn: bool) (stopAtThen: bool) (stopAtElse: bool) =
     let stopWord (w: string) =
         notFollowedBy (attempt (pstring w .>> notFollowedBy (satisfy cmdWordChar)))
@@ -3986,8 +3996,12 @@ let private cmdArgStops (stopAtIn: bool) (stopAtThen: bool) (stopAtElse: bool) =
     // the fatal fires only where a piece genuinely starts — never on the
     // `|` of `hi |grep` or the `)` that closes a capture
     choice
-        [ lookAhead (pchar '"') >>. notGluedPiece >>. strLit
+        // rawness is a kind, never positional [D:raw-strings]: a triple
+        // quote is one word here as anywhere [D:argv-at-raw]
+        [ lookAhead (pstring "\"\"\"") >>. notGluedPiece >>. tripleLit
+          lookAhead (pchar '"') >>. notGluedPiece >>. strLit
           lookAhead (pchar '\'') >>. notGluedPiece >>. singleQuoted
+          lookAhead (pstring "@\"") >>. notGluedPiece >>. verbatimArgTeach
           dollarAtTeach
           lookAhead (pstring "$\"\"\"") >>. notGluedPiece >>. interpRawLit
           lookAhead (pstring "$\"") >>. notGluedPiece >>. interpLit
@@ -4025,6 +4039,7 @@ let private envValue: Parser<Expr, unit> =
           lookAhead (pstring "$\"") >>. interpLit
           lookAhead (pstring "$(") >>. captureSigil
           spanned (pchar '$' >>. rawWord) |>> fun (n, sp) -> { Kind = EVar n; Span = sp }
+          lookAhead (pstring "\"\"\"") >>. tripleLit
           lookAhead (pchar '"') >>. strLit
           lookAhead (pchar '\'') >>. singleQuoted
           spanned cmdWord

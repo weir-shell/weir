@@ -12783,6 +12783,18 @@ let agentFindingsTests =
                   | Ok _ -> ()
                   | Error msg -> failtest $"legal form refused: {legal}: {msg}"
           }
+          test "a triple-quoted string is one argv word; @\"…\" refuses with its own teaching [D:argv-at-raw]" {
+              match Weir.Parser.parseLine cmdResolver "echo \"\"\"a \"b\" c\"\"\" x" with
+              | Ok(Weir.Ast.SCmd e) -> Expect.stringContains (sprintf "%A" e) "EStr \"a \"b\" c\"" "the raw body is one piece"
+              | Ok s -> failtest $"expected a command, got {s}"
+              | Error msg -> failtest $"the triple form must be one word: {msg}"
+
+              match Weir.Parser.parseLine cmdResolver "curl -d @\"my file\"" with
+              | Error msg ->
+                  Expect.stringContains msg "is not an argv word" "own teaching"
+                  Expect.isFalse (msg.Contains "do not concatenate") "not the concatenation teaching"
+              | Ok _ -> failtest "@\"…\" in argv must refuse"
+          }
           test "the homepage quotes the concatenation refusal EXACTLY [D:argv-concat]" {
               // byte-equality with the message the site shows — a wording
               // change must move the homepage in the same commit

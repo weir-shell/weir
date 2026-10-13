@@ -6755,6 +6755,11 @@ echo "$errout" | grep -qF "argv words do not concatenate" || fail "glued-tail te
 errout=$(printf 'echo --flag="quoted v"
 ' | checkPiped 2>&1) && fail "glued quote must reject"
 echo "$errout" | grep -qF "argv words do not concatenate" || fail "glued-quote teaching: $errout"
+# a triple-quoted string is ONE argv word; @"…" refuses with its own teaching [D:argv-at-raw]
+out=$(printf 'echo """a "b" c""" x\n' | runPiped 2>&1) || fail "triple-quoted argv word: $out"
+[ "$out" = 'a "b" c x' ] || fail "triple-quoted argv word: $out"
+errout=$(printf 'echo @"C:\\x"\n' | checkPiped 2>&1) && fail "verbatim argv word must reject"
+echo "$errout" | grep -qF "is not an argv word" || fail "verbatim argv teaching: $errout"
 # a path-shaped word gets the path hint, not the flag hint [D:argv-splat]:
 # the space repair splits one path into two args, so the message leads with
 # interpolation and Path.under (the confining join — combine would follow an escaping tail)
