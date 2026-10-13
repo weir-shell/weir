@@ -854,6 +854,24 @@ let warningTests =
                   "let s = \"\"\"x // y\"\"\""
                   "triple + a real comment after"
           }
+          test "the scanner: interpolation holes nest their own strings [D:one-scanner]" {
+              let src = "print $\"{\"a\" + \" // x\"}\""
+              Expect.equal (Weir.Script.stripComment src) src "a // inside a hole's string is content"
+
+              Expect.equal
+                  (Weir.Script.stripComment "print $\"{\"\\\"\"}\" // c")
+                  "print $\"{\"\\\"\"}\""
+                  "an escaped quote in a hole's string, then a real comment"
+
+              Expect.equal
+                  (Weir.Script.stripComment "print $\"\"\"{ \"}\" } // y\"\"\" // z")
+                  "print $\"\"\"{ \"}\" } // y\"\"\""
+                  "raw interpolated: a brace in a hole's string does not close the hole"
+
+              Expect.isFalse (Weir.Script.endsInsideString "print $\"{\"}\"}\"") "closed"
+              Expect.isTrue (Weir.Script.endsInsideString "print $\"{f \"a\"") "an open hole is inside the string"
+              expectValue "$\"{\"a\" + \" // x\"}\"" (VStr "a // x")
+          }
           test "the repair closers understand raw kinds" {
               Expect.equal (Weir.Script.closers "let s = @\"dangling") "\"" "verbatim closer"
               Expect.equal (Weir.Script.closers "let s = \"\"\"dangling") "\"\"\"" "triple closer"
