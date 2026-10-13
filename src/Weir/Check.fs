@@ -1897,6 +1897,8 @@ let rec private checkPattern (ctx: Ctx) (env: TypeEnv) (ty: Ty) (p: Pattern) : R
         | PSeqNil
         | PCons _
         | PSeqList _ -> Some(TSeq(TVar(freshName ctx "a")))
+        // a tuple pattern fixes the arity, its elements stay open
+        | PTuple ps -> Some(TTuple(ps |> List.map (fun _ -> TVar(freshName ctx "a"))))
         | _ -> None
 
     let pre =
