@@ -1,0 +1,1248 @@
+#!/usr/bin/env weir
+// Acceptance instrument for dev/plans/PLAN-sweep-fixes.md. Each probe prints
+// `Bnn OK` when its item is fixed and `Bnn REPRODUCES (...)` otherwise, naming
+// every sub-case still failing, so one script is both the bug report and the
+// stage gate.
+//
+//     weir tools/sweep-repro.weir --bin ./path/to/weir
+//
+// Probe labels match the plan's numbering exactly (B1-B40).
+//
+// Loud, in every direction:
+//   - a probe that fails to run counts as reproducing, never as a pass;
+//   - a missing instrument (timeout, sh, ln, kill, head, env) is a named SKIP
+//     counted with the failures — absence is never a pass;
+//   - "fixed" for a raise is exit 1 with a weir-located diagnostic; a crash
+//     (>= 128) is never a fix, so those sub-cases test == 1, never <> 0;
+//   - a "not a raw .NET message" judgement is loose: no telltale .NET phrase,
+//     exit 1, and the fixture's own file named in the diagnostic.
+//
+// B28 waits on ruling R9: it is probed and printed as `B28 (pending R9)` but
+// does not count toward the exit code.
+//
+// Positive controls (`control-*`) pin the neighbouring behaviour each probe
+// leans on, so no probe can pass by the binary being broken in a new way; a
+// failed control counts toward the exit code.
+//
+// Process-level probes shell out where weir cannot express the shape:
+//   - B4 needs a shell pipe to `head -1` whose left side's exit code is
+//     readable (a weir chain treats an early-closing downstream as success);
+//   - B13's regular-file stdin needs a `<` redirect.
+// Both are logged in dev/NOTES-agent.md under fallbacks.
+
+type Cli = {
+    /// the weir binary under test
+    [<Default "weir">]
+    bin: string
+}
+
+let cli = Args.load Cli
+
+let toolsReady =
+    sh -c "command -v timeout && command -v ln && command -v kill && command -v head && command -v env" | succeeds
+
+// ---- runners ---------------------------------------------------------------
+
+let put dir name lines =
+    let p = $"{dir}/{name}"
+    lines |> File.write p
+    p
+
+let runAt dir secs p =
+    within cd dir
+        let r = timeout $secs $cli.bin $p | complete
+        r
+
+let runArgs dir p args =
+    within cd dir
+        let r = timeout 30 $cli.bin $p $@args | complete
+        r
+
+let checkW p =
+    let r = timeout 60 $cli.bin check $p | complete
+    r
+
+let fmtW p =
+    let r = timeout 60 $cli.bin fmt $p | complete
+    r
+
+let outOf { stdout = s } = s |> Str.join "\n"
+let errOf { stderr = s } = s |> Str.join "\n"
+
+// `weir check` writes its diagnostics to stdout; judge both streams
+let diagOf r = outOf r + "\n" + errOf r
+let codeOf { exitCode = c } = c
+
+// ---- judges ----------------------------------------------------------------
+
+let netPhrases =
+    [ "Parameter '"
+      "Arithmetic operation resulted"
+      "Valid values are between"
+      "count ="
+      "Actual value was"
+      "cannot be an empty string"
+      "must be less than or equal"
+      "Could not find file"
+      "internal error"
+      "   at Weir." ]
+
+let leaks t = netPhrases |> Seq.exists (fun ph -> t |> Str.contains ph)
+
+// a raise in weir's own words: exit 1, no .NET text, located in the fixture
+let cleanRaise name r =
+    let e = errOf r
+    codeOf r == 1 && not (leaks e) && (e |> Str.contains $"{name}:")
+
+let prints expected r = codeOf r == 0 && outOf r == expected
+
+let failing cases =
+    cases |> Seq.where (fun (_, ok) -> not ok) |> Seq.map fst |> Seq.freeze
+
+let isLink p =
+    let st = File.stat p |> try
+    st |> Option.map (fun s -> s.kind == Symlink) |> Option.defaultValue false
+
+// ---- B1: plan + Dir.delete / File.copy / Dir.move ---------------------------
+
+let b1Delete = <<<
+    let p =
+        plan
+            Dir.delete "keep"
+    p |> Plan.apply
+
+let b1Copy = <<<
+    let p =
+        plan
+            File.copy "srcdir" "dstcopy"
+    p |> Plan.apply
+
+let b1Move = <<<
+    let p =
+        plan
+            Dir.move "afile" "moved"
+    p |> Plan.apply
+
+let b1 d =
+    let w = $"{d}/b1"
+    Dir.create $"{w}/keep/sub/d"
+    Dir.create $"{w}/srcdir/x"
+    ["hi"] |> File.write $"{w}/srcdir/x/f"
+    ["f"] |> File.write $"{w}/afile"
+    let rDel = runAt w "30" (put w "del.weir" b1Delete)
+    let rCopy = runAt w "30" (put w "copy.weir" b1Copy)
+    let rMove = runAt w "30" (put w "move.weir" b1Move)
+
+    failing [
+        ("plan Dir.delete removed a non-empty tree", codeOf rDel == 1 && Dir.exists $"{w}/keep/sub/d")
+        ("plan File.copy copied a directory", codeOf rCopy == 1 && not (Dir.exists $"{w}/dstcopy"))
+        ("plan Dir.move moved a file", codeOf rMove == 1 && File.exists $"{w}/afile" && not (File.exists $"{w}/moved"))
+    ]
+
+// ---- B2: fmt rewrites command arguments -------------------------------------
+
+let b2Lines =
+    [ "chmod u+x f"
+      "echo a+b"
+      "echo c&&d"
+      "echo a-b"
+      "echo a*b"
+      "echo a/b"
+      "echo a||b"
+      "echo k=v"
+      "echo a:b" ]
+
+let b2 d =
+    b2Lines
+    |> Seq.indexed
+    |> Seq.map (fun (i, line) ->
+        let p = put d $"b2-{i}.weir" [line]
+        let r = fmtW p
+        let after = File.read p |> Str.join "\n"
+        ($"'{line}' became '{after}'", codeOf r == 0 && after == line))
+    |> failing
+
+// ---- B3: a producer error piped into a command is swallowed ----------------
+
+let b3Hash = <<<
+    let h = [1..10] |> Seq.map (fun i -> if i == 3 then fail "boom" else $"{i}") | sha256sum | line
+    print h
+
+let b3Complete = <<<
+    let r = [1..10] |> Seq.map (fun i -> if i == 3 then fail "boom" else $"{i}") | cat | complete
+    print $"{r.exitCode}"
+
+let b3Exit = <<<
+    let h = [1..10] |> Seq.map (fun i -> if i == 3 then exit 5 else $"{i}") | cat | text
+    print h
+
+let b3Stmt = <<<
+    [1..10] |> Seq.map (fun i -> if i == 3 then fail "boom" else $"{i}") | cat
+    print "after"
+
+let b3 d =
+    let rHash = runAt d "30" (put d "b3-hash.weir" b3Hash)
+    let rComplete = runAt d "30" (put d "b3-complete.weir" b3Complete)
+    let rExit = runAt d "30" (put d "b3-exit.weir" b3Exit)
+    let rStmt = runAt d "30" (put d "b3-stmt.weir" b3Stmt)
+    let boom r = codeOf r == 1 && (errOf r |> Str.contains "boom")
+
+    failing [
+        ("| sha256sum | line", boom rHash)
+        ("| cat | complete", boom rComplete)
+        ("exit 5 in the producer", codeOf rExit == 5)
+        ("statement | cat", boom rStmt && not (outOf rStmt |> Str.contains "after"))
+    ]
+
+// ---- B4: `weir s.weir | head -1` never stops ---------------------------------
+
+let b4Yes = <<<
+    within
+        yes
+    always
+        File.write "always" ["x"]
+
+let b4Endless = <<<
+    within
+        nats |> Seq.iter (fun i -> print $"{i}")
+    always
+        File.write "always" ["x"]
+
+let b4Finite = <<<
+    within
+        [1..2000000] |> Seq.iter (fun i -> print $"{i}")
+        File.write "after" ["x"]
+    always
+        File.write "always" ["x"]
+
+// fallback: sh -c — the left side's own exit code behind `| head -1` is not
+// observable from a weir chain, and `timeout` bounds the hang.
+let b4Case d name fixture =
+    let w = $"{d}/b4-{name}"
+    Dir.create w
+    let _p = put w "s.weir" fixture
+    let r = timeout 6 sh -c $"cd '{w}' && {{ '{cli.bin}' s.weir; echo $? > rc; }} | head -1" | complete
+    let rc = if File.exists $"{w}/rc" then File.read $"{w}/rc" |> Str.join "" else "none"
+    let ok = codeOf r <> 124 && rc == "141" && File.exists $"{w}/always" && not (File.exists $"{w}/after")
+    ($"{name} (timed out: {codeOf r == 124}, weir exit {rc})", ok)
+
+let b4 d =
+    failing [ b4Case d "yes" b4Yes; b4Case d "endless-print" b4Endless; b4Case d "finite-2M-print" b4Finite ]
+
+// ---- B5: integer args truncated to int32 ------------------------------------
+
+let b5Cases =
+    [ ("Seq.item", ["print (show (Seq.item 4294967296 [10; 20]))"], false)
+      ("index", ["let xs = [10; 20]"; "let v = xs[4294967297]"; "print (show v)"], false)
+      ("Seq.take", ["print (show ([1; 2; 3] |> Seq.take 4294967297 |> Seq.length))"], false)
+      ("Str.sub", ["""print (Str.sub 4294967296 1 "abc")"""], false)
+      ("Str.replicate", ["""print (Str.replicate 4294967297 "ab")"""], false)
+      ("Str.padLeft", ["""print (Str.padLeft 4294967300 "ab")"""], false)
+      ("Seq.chunkBySize", ["print (show ([1; 2; 3] |> Seq.chunkBySize 4294967296 |> Seq.length))"], false)
+      ("Seq.replicate", ["print (show (Seq.replicate 4294967297 1 |> Seq.length))"], false)
+      ("slice", ["""print "abcdef"[4294967297..4294967298]"""], true) ]
+
+let b5 d =
+    b5Cases
+    |> Seq.indexed
+    |> Seq.map (fun (i, (name, lines, isSlice)) ->
+        let file = $"b5-{i}.weir"
+        let r = runAt d "20" (put d file lines)
+        // take may answer the true count; a slice clamps by design [D:range-slicing]
+        let truthful =
+            if name == "Seq.take" then prints "3" r
+            elif isSlice then prints "" r
+            else false
+        (name, cleanRaise file r || truthful))
+    |> failing
+
+// ---- B6: non-exhaustive match on an unresolved payload ----------------------
+
+let b6Some = <<<
+    let f o =
+        match o with
+        | Some 0 -> "zero"
+        | None -> "none"
+    print (f (Some 5))
+
+let b6SomeSome = <<<
+    let f o =
+        match o with
+        | Some (Some n) -> n
+        | None -> 0
+    print (show (f (Some None)))
+
+let b6OkSome = <<<
+    let f o =
+        match o with
+        | Ok (Some n) -> n
+        | Error e -> 0
+    print (show (f (Ok None)))
+
+let b6Record = <<<
+    type R = { n: int }
+    let f o =
+        match o with
+        | Some { n = 0 } -> "zero"
+        | None -> "none"
+    print (f (Some { n = 4 }))
+
+let b6List = <<<
+    let f o =
+        match o with
+        | Some [] -> 0
+        | None -> 1
+    print (show (f (Some [1])))
+
+let b6Generic = <<<
+    type Box<'a> =
+        | Full of 'a
+        | Empty
+    let f b =
+        match b with
+        | Full 0 -> "zero"
+        | Empty -> "empty"
+    print (f (Full 3))
+
+let b6 d =
+    [ ("Some 0", b6Some)
+      ("Some (Some n)", b6SomeSome)
+      ("Ok (Some n)", b6OkSome)
+      ("Some {record}", b6Record)
+      ("Some []", b6List)
+      ("user generic union", b6Generic) ]
+    |> Seq.indexed
+    |> Seq.map (fun (i, (name, src)) ->
+        let r = checkW (put d $"b6-{i}.weir" src)
+        (name, codeOf r == 1 && (diagOf r |> Str.contains "exhaustive")))
+    |> failing
+
+// ---- B7: pure/readonly accept effects ---------------------------------------
+
+let b7Cases =
+    [ ("pure cd", ["let pure go d = cd d"; """print (go "/tmp")"""])
+      ("pure pwd", ["let pure here () = pwd"; "print (here ())"])
+      ("pure Path.home", ["let pure h () = Path.home ()"; "print (h ())"])
+      ("pure Path.configHome", ["let pure h () = Path.configHome ()"; "print (h ())"])
+      ("pure Term.width", ["let pure h () = Term.width ()"; "print (h ())"])
+      ("pure Color.red", ["let pure h s = Color.red s"; """print (h "x")"""])
+      ("readonly cd", ["let x ="; "    readonly"; """        let _d = cd "/tmp" """; """        "ok" """; "print x"]) ]
+
+let b7 d =
+    b7Cases
+    |> Seq.indexed
+    |> Seq.map (fun (i, (name, lines)) ->
+        let r = checkW (put d $"b7-{i}.weir" lines)
+        (name, codeOf r == 1))
+    |> failing
+
+// ---- B8: YAML null / ~ read as strings --------------------------------------
+
+let b8Fixture v =
+    [ "type T = { a: Option<string> }"; $"let v = [\"a: {v}\"] |> from yaml T"; "print $\"{v.a}\"" ]
+
+let b8Required = <<<
+    type T = { a: string }
+    let v = ["a: null"] |> from yaml T
+    print v.a
+
+let b8Roundtrip = <<<
+    type T = { ys: seq<Option<int>> }
+    let r = { ys = [Some 1; None] } |> to yaml |> from yaml T
+    print $"{r.ys}"
+
+let b8 d =
+    let plain =
+        ["null"; "Null"; "NULL"; "~"]
+        |> Seq.indexed
+        |> Seq.map (fun (i, v) ->
+            let r = runAt d "30" (put d $"b8-{i}.weir" (b8Fixture v))
+            ($"a: {v} into Option<string>", prints "None" r))
+        |> Seq.freeze
+    let file = "b8-required.weir"
+    let rReq = runAt d "30" (put d file b8Required)
+    let rRound = runAt d "30" (put d "b8-roundtrip.weir" b8Roundtrip)
+
+    let typed = [
+        ("null into a string field", cleanRaise file rReq)
+        ("Option seq roundtrip", codeOf rRound == 0 && (outOf rRound |> Str.contains "None"))
+    ]
+
+    failing (typed |> Seq.append plain)
+
+// ---- B9: mis-indented YAML lines dropped ------------------------------------
+
+let b9Parse = <<<
+    let d = ["b:"; "  c: 2"; " d: 3"; "e: 5"] |> Yaml.parse
+    d |> to yaml |> Seq.iter print
+
+let b9Typed = <<<
+    type B = { c: int }
+    type T = { b: B; e: int }
+    let d = ["b:"; "  c: 2"; " d: 3"; "e: 5"] |> from yaml T
+    print $"{d}"
+
+let b9 d =
+    let pf = "b9-parse.weir"
+    let tf = "b9-typed.weir"
+    let rP = runAt d "30" (put d pf b9Parse)
+    let rT = runAt d "30" (put d tf b9Typed)
+
+    failing [
+        ("Yaml.parse", cleanRaise pf rP && (errOf rP |> Str.contains "line 3"))
+        ("from yaml T", cleanRaise tf rT && (errOf rT |> Str.contains "line 3"))
+    ]
+
+// ---- B10: ~ / Path.home when HOME names a missing dir -----------------------
+
+let b10Fixture = <<<
+    echo ~/x
+    print (Path.home ())
+    print (Path.configHome ())
+
+let b10 d =
+    let p = put d "b10.weir" b10Fixture
+    let h = $"{d}/no-such-home"
+
+    let rMissing =
+        within env HOME=$h
+            let r = runAt d "30" p
+            r
+
+    let rEmpty =
+        within env HOME=""
+            let r = runAt d "30" p
+            r
+
+    let rUnset = env -u HOME timeout 30 $cli.bin $p | complete
+    let line r i = r.stdout |> Seq.tryItem i |> Option.defaultValue "<none>"
+
+    failing [
+        ("missing HOME: ~/x", line rMissing 0 == $"{h}/x")
+        ("missing HOME: Path.home", line rMissing 1 == h)
+        ("missing HOME: Path.configHome", line rMissing 2 == $"{h}/.config")
+        ("empty HOME expands ~ to ''", codeOf rEmpty < 128 && line rEmpty 0 <> "/x")
+        ("unset HOME", codeOf rUnset == 0 && (line rUnset 0 |> Str.startsWith "/") && line rUnset 0 <> "/x")
+    ]
+
+// ---- B11: code runs after SIGTERM -------------------------------------------
+
+let b11Fixture = <<<
+    within proc srv = sh -c "sleep 100"
+        File.write "ready" ["x"]
+        let rc = Proc.wait srv
+        print $"wait returned {rc}"
+        File.write "marker" ["x"]
+
+let b11Run d i =
+    let w = $"{d}/b11-{i}"
+    Dir.create w
+    let p = put w "s.weir" b11Fixture
+
+    within cd w
+        within proc child = ^$cli.bin $p
+            poll timeout=20s interval=50ms watch=child
+                File.exists $"{w}/ready"
+
+            Duration.sleep 300ms
+            let pid = Proc.pid child
+            kill -TERM $pid
+            let code = Proc.wait child
+            let said = Proc.tail child |> Str.join "\n"
+            let ran = (said |> Str.contains "wait returned") || File.exists $"{w}/marker"
+            ($"run {i} (exit {code}, statements ran after the signal: {ran})", not ran && code < 256)
+
+let b11 d = failing [ b11Run d 1; b11Run d 2 ]
+
+// ---- B12: parallel worker errors blamed at the call ------------------------
+
+let b12Piter = <<<
+    print "start"
+    [1; 2; 3]
+    |> Seq.piter (fun i ->
+        if i == 2 then
+            fail "par boom")
+
+let b12Pmap = <<<
+    print "start"
+    let xs =
+        [1; 2; 3]
+        |> Seq.pmap (fun i ->
+            if i == 2 then
+                fail "par boom"
+            i)
+    print $"{xs |> Seq.length}"
+
+let b12Pfirst = <<<
+    print "start"
+    let w =
+        [1; 2; 3]
+        |> Seq.pfirst (fun i ->
+            if i > 0 then
+                fail "par boom"
+            i)
+    print $"{w}"
+
+let b12 d =
+    [ ("Seq.piter", "b12-piter.weir", b12Piter, 5)
+      ("Seq.pmap", "b12-pmap.weir", b12Pmap, 6)
+      ("Seq.pfirst", "b12-pfirst.weir", b12Pfirst, 6) ]
+    |> Seq.map (fun (name, file, src, line) ->
+        let r = runAt d "30" (put d file src)
+        (name, codeOf r == 1 && (errOf r |> Str.contains $"{file}:{line}:")))
+    |> failing
+
+// ---- B13: Self.prompt swallows stdin meant for later children ---------------
+
+let b13Fixture = <<<
+    let a = Self.prompt "first?"
+    print $"got {a}"
+    cat
+
+let b13 d =
+    let p = put d "b13.weir" b13Fixture
+    let inFile = put d "b13-in.txt" ["a"; "b"; "c"]
+    let rPipe = ["a"; "b"; "c"] | timeout 10 $cli.bin $p | complete
+    // fallback: sh -c — weir has no `<` redirect for a regular-file stdin
+    let rFile = sh -c $"timeout 10 '{cli.bin}' '{p}' < '{inFile}'" | complete
+    let want = "got a\nb\nc"
+
+    failing [ ("pipe stdin", prints want rPipe); ("regular-file stdin", prints want rFile) ]
+
+// ---- B14: fmt crashes on an outdented comment in a block -------------------
+
+let b14Heredoc = ["let x = <<<"; "        a"; "  // c"; "        b"; "x |> Seq.iter print"]
+
+let b14Yaml = ["let d = yaml"; "        a: 1"; "  // c"; "        b: 2"; "d |> to yaml |> Seq.iter print"]
+
+// fmt must not crash, and what the script does must not move
+let fmtKeeps d file src =
+    let p = put d file src
+    let before = runAt d "30" p
+    let f = fmtW p
+    let after = runAt d "30" p
+    let fmtText = outOf f + errOf f
+    codeOf f < 128 && not (leaks fmtText) && codeOf after == codeOf before && outOf after == outOf before
+
+let b14 d =
+    failing [
+        ("heredoc", fmtKeeps d "b14-heredoc.weir" b14Heredoc && codeOf (fmtW $"{d}/b14-heredoc.weir") == 0)
+        ("yaml block", fmtKeeps d "b14-yaml.weir" b14Yaml && codeOf (fmtW $"{d}/b14-yaml.weir") == 0)
+    ]
+
+// ---- B15: fmt moves a /// line into heredoc content -------------------------
+
+let b15Head = ["let d = <<<"; "/// doc"; "    a"; "    b"; "d |> Seq.iter (fun l -> print $\"[{l}]\")"]
+
+let b15Mid = ["let d = <<<"; "    a"; "/// doc"; "    b"; "d |> Seq.iter (fun l -> print $\"[{l}]\")"]
+
+let b15 d =
+    failing [
+        ("/// above the first content line", fmtKeeps d "b15-head.weir" b15Head)
+        ("/// between content lines", fmtKeeps d "b15-mid.weir" b15Mid)
+    ]
+
+// ---- B16: the comment scanner ignores interpolation holes -------------------
+
+let b16Slashes = <<<
+    print $"{"a" + " // x"}"
+
+let b16Quote = <<<
+    print $"{"\""}" // c
+
+let b16 d =
+    let rS = runAt d "30" (put d "b16-slashes.weir" b16Slashes)
+    let rQ = runAt d "30" (put d "b16-quote.weir" b16Quote)
+    failing [ ("// inside a hole's string", prints "a // x" rS); ("escaped quote in a hole, then a comment", prints "\"" rQ) ]
+
+// ---- B17: malformed ${...} in $$<<< becomes literal text --------------------
+
+let b17Bad = <<<
+    let t = $$<<<
+        v=${1 +}
+    t |> Seq.iter print
+
+let b17Unclosed = <<<
+    let t = $$<<<
+        v=${nope
+    t |> Seq.iter print
+
+let b17 d =
+    let rB = checkW (put d "b17-bad.weir" b17Bad)
+    let rU = checkW (put d "b17-unclosed.weir" b17Unclosed)
+    failing [ ("${1 +}", codeOf rB == 1); ("unclosed ${name", codeOf rU == 1) ]
+
+// ---- B18: |> after a multi-line match closed inside parens ------------------
+
+let b18Lambda = <<<
+    let k a =
+        a |> Seq.map (fun x -> match x with
+                               | 1 -> "one"
+                               | _ -> "other")
+        |> Str.join ","
+    print (k [1;2])
+
+let b18Indented = <<<
+    let k =
+        [1;2] |> Seq.map (fun x -> match x with
+                                   | 1 -> "one"
+                                   | _ -> "other")
+            |> Str.join ","
+    print k
+
+let b18Paren = <<<
+    let x = 2
+    let r =
+        (match x with
+            | 1 -> "one"
+            | _ -> "other")
+        |> Str.toUpper
+    print r
+
+let b18 d =
+    let rL = runAt d "30" (put d "b18-lambda.weir" b18Lambda)
+    let rI = runAt d "30" (put d "b18-indented.weir" b18Indented)
+    let rP = runAt d "30" (put d "b18-paren.weir" b18Paren)
+
+    failing [
+        ("lambda-closed match |> at the let body", prints "one,other" rL)
+        ("lambda-closed match |> indented", prints "one,other" rI)
+        ("paren-closed match |> on the next line", prints "OTHER" rP)
+    ]
+
+// ---- B19: Seq.groupBy non-scalar keys ---------------------------------------
+
+let b19Tuple = <<<
+    [(1, "a"); (1, "b"); (2, "c")]
+        |> Seq.groupBy (fun (n, s) -> (n, n))
+        |> Seq.iter (fun (k, g) -> print $"{k}:{g |> Seq.length}")
+
+let b19Record = <<<
+    type K = { n: int }
+    [1; 1; 2]
+        |> Seq.groupBy (fun n -> { n = n })
+        |> Seq.iter (fun (k, g) -> print $"{k.n}:{g |> Seq.length}")
+
+let b19Option = <<<
+    [1; 1; 2]
+        |> Seq.groupBy (fun n -> Some n)
+        |> Seq.iter (fun (k, g) -> print $"{k}:{g |> Seq.length}")
+
+let b19 d =
+    let rT = runAt d "30" (put d "b19-tuple.weir" b19Tuple)
+    let rR = runAt d "30" (put d "b19-record.weir" b19Record)
+    let rO = runAt d "30" (put d "b19-option.weir" b19Option)
+
+    failing [
+        ("tuple key", prints "(1, 1):2\n(2, 2):1" rT)
+        ("record key", prints "1:2\n2:1" rR)
+        ("Option key", prints "Some 1:2\nSome 2:1" rO)
+    ]
+
+// ---- B20: over-application through a returned function ---------------------
+
+let b20 d =
+    [ ("id f x", ["print (show (id (fun x -> x + 1) 2))"], "3")
+      ("(snd t) x", ["let t = (1, fun x -> x + 1)"; "print (show ((snd t) 5))"], "6")
+      ("Map.get k m x", ["""let handlers = Map.ofPairs [("k", fun x -> x * 2)]"""; """print (show (Map.get "k" handlers 4))"""], "8") ]
+    |> Seq.indexed
+    |> Seq.map (fun (i, (name, lines, want)) ->
+        let r = runAt d "30" (put d $"b20-{i}.weir" lines)
+        (name, prints want r))
+    |> failing
+
+// ---- B21: tuple pattern on an unresolved type -------------------------------
+
+let b21 d =
+    [ ("function | (a, b)", ["let f = function | (a, b) -> a - b"; "print (show (f (5, 2)))"], "3")
+      ("match p with | (a, b)", ["let f p = match p with | (a, b) -> a - b"; "print (show (f (5, 2)))"], "3")
+      ("3-tuple", ["let g = fun p -> match p with | (a, b, c) -> a * b * c"; "print (show (g (1, 2, 3)))"], "6") ]
+    |> Seq.indexed
+    |> Seq.map (fun (i, (name, lines, want)) ->
+        let r = runAt d "30" (put d $"b21-{i}.weir" lines)
+        (name, prints want r))
+    |> failing
+
+// ---- B22: plan's command refusal not enforced through helpers ---------------
+
+let b22Helper = <<<
+    let mk () = touch b22-marker | complete
+    let p =
+        plan
+            let r = mk ()
+            File.write "b22-out" [$"{r.exitCode}"]
+    print $"{p |> Plan.isEmpty}"
+
+let b22 d =
+    let r = checkW (put d "b22-helper.weir" b22Helper)
+    failing [ ("a command reached through a helper", codeOf r == 1) ]
+
+// ---- B23: types a module gets from its own imports --------------------------
+
+let b23A = <<<
+    module A
+    type Pt = { x: int; y: int }
+
+let b23B = <<<
+    module B
+    import "./a.weir" as A
+    let origin : unit -> Pt
+    let origin () = { x = 1; y = 2 }
+
+let b23Field = <<<
+    import "./b.weir" as B
+    let p = B.origin ()
+    print $"{p.x}"
+
+let b23Show = <<<
+    import "./b.weir" as B
+    let p = B.origin ()
+    print $"{p}"
+
+let b23Eq = <<<
+    import "./b.weir" as B
+    print $"{B.origin () == B.origin ()}"
+
+let b23Setup d =
+    let w = $"{d}/b23"
+    Dir.create w
+    let _a = put w "a.weir" b23A
+    let _b = put w "b.weir" b23B
+    w
+
+let b23 d =
+    let w = b23Setup d
+    let rF = runAt w "30" (put w "field.weir" b23Field)
+    let rS = runAt w "30" (put w "show.weir" b23Show)
+    let rE = runAt w "30" (put w "eq.weir" b23Eq)
+    failing [ ("field access", prints "1" rF); ("show", prints "{ x = 1; y = 2 }" rS); ("==", prints "true" rE) ]
+
+// ---- B24: unit-suffixed literals overflow silently --------------------------
+
+let b24 d =
+    let rS = checkW (put d "b24-size.weir" ["print $\"{9999999999TiB}\""])
+    let rD = checkW (put d "b24-duration.weir" ["print $\"{9999999999999999h}\""])
+    failing [ ("9999999999TiB", codeOf rS == 1); ("9999999999999999h", codeOf rD == 1) ]
+
+// ---- B25: quoted YAML keys skip escape handling -----------------------------
+
+let b25Fixture = <<<
+    type T = { labels: seq<string * string> }
+    let keys = [("tab", "a\tb"); ("newline", "n\nl"); ("quote", "q\"q"); ("empty", ""); ("plain", "plain")]
+    for (name, k) in keys do
+        let r = { labels = [(k, "v")] } |> to yaml |> from yaml T |> try
+        let ok =
+            match r with
+            | Some b -> (b.labels |> Seq.map fst |> Seq.freeze |> Seq.tryExactlyOne) == Some k
+            | None -> false
+        print $"{name} {ok}"
+
+let b25 d =
+    let r = runAt d "30" (put d "b25.weir" b25Fixture)
+    ["tab"; "newline"; "quote"; "empty"]
+    |> Seq.map (fun k -> ($"key with {k} roundtrips", r.stdout |> Seq.contains $"{k} true"))
+    |> failing
+
+// ---- B26: Dir.copy follows symlinks; Instant.parse refuses valid input -------
+
+let b26 d =
+    let w = $"{d}/b26"
+    Dir.create $"{w}/src"
+    ["hi"] |> File.write $"{w}/src/f"
+    ln -s f $"{w}/src/link"
+    Dir.create $"{w}/insrc"
+    ["x"] |> File.write $"{w}/insrc/x"
+    Dir.create $"{w}/dsrc"
+    ["x"] |> File.write $"{w}/dsrc/x"
+    ln -s /nonexistent-weir-sweep $"{w}/dsrc/dangle"
+    Dir.create $"{w}/loopsrc/sub"
+    ["x"] |> File.write $"{w}/loopsrc/x"
+    ln -s .. $"{w}/loopsrc/sub/up"
+
+    let rLink = runAt w "30" (put w "link.weir" ["""Dir.copy "src" "dst" """])
+    let rInside = runAt w "30" (put w "inside.weir" ["""Dir.copy "insrc" "insrc/inner" """])
+    let rDangle = runAt w "30" (put w "dangle.weir" ["""Dir.copy "dsrc" "ddst" """])
+    let rLoop = runAt w "30" (put w "loop.weir" ["""Dir.copy "loopsrc" "loopdst" """])
+    let rFrac = runAt w "30" (put w "frac.weir" ["""print $"{Instant.parse "2026-01-02T03:04:05.123456789Z"}" """])
+    let rSpace = runAt w "30" (put w "space.weir" ["""print $"{Instant.parse "2026-01-02 03:04:05Z"}" """])
+
+    let toml =
+        [ "type T = { [<Iso8601>] at: Instant }"
+          """let v = ["at = 2026-01-02 03:04:05.123456789+02:00"] |> from toml T"""
+          """print $"{v.at}" """ ]
+
+    let rToml = runAt w "30" (put w "toml.weir" toml)
+    let starts pre r = codeOf r == 0 && (outOf r |> Str.startsWith pre)
+
+    failing [
+        ("a symlink copies as a link", codeOf rLink == 0 && isLink $"{w}/dst/link")
+        ("a destination inside the source refused", codeOf rInside == 1 && not (Dir.exists $"{w}/insrc/inner"))
+        ("a dangling link copies as a link", codeOf rDangle == 0 && isLink $"{w}/ddst/dangle")
+        ("a link to .. copies as a link", codeOf rLoop == 0 && isLink $"{w}/loopdst/sub/up")
+        ("Instant.parse 9 fractional digits", starts "2026-01-02T03:04:05.123" rFrac)
+        ("Instant.parse space separator", starts "2026-01-02T03:04:05" rSpace)
+        ("TOML offset datetime", starts "2026-01-02T01:04:05.123" rToml)
+    ]
+
+// ---- B27: from jsonl fails on a blank line ----------------------------------
+
+let b27Interior = <<<
+    type T = { a: int }
+    let xs = ["{\"a\": 1}"; ""; "{\"a\": 2}"; ""] |> from jsonl T |> Seq.freeze
+    print $"{xs |> Seq.length}"
+
+let b27File = <<<
+    type T = { a: int }
+    let xs = File.read "b27.jsonl" |> from jsonl T |> Seq.freeze
+    print $"{xs |> Seq.length}"
+
+let b27 d =
+    let _j = put d "b27.jsonl" ["{\"a\": 1}"; "{\"a\": 2}"; ""]
+    let rI = runAt d "30" (put d "b27-interior.weir" b27Interior)
+    let rF = runAt d "30" (put d "b27-file.weir" b27File)
+    failing [ ("blank elements", prints "2" rI); ("trailing blank line in a file", prints "2" rF) ]
+
+// ---- B28: to json escapes non-ASCII and HTML characters (pending R9) --------
+
+let b28Fixture = <<<
+    {| s = "héllo <a>&b ✓" |} |> to json |> Seq.iter print
+
+let b28 d =
+    let r = runAt d "30" (put d "b28.weir" b28Fixture)
+    let o = outOf r
+    failing [
+        ("BMP non-ASCII emitted raw", codeOf r == 0 && (o |> Str.contains "héllo") && (o |> Str.contains "✓"))
+        ("<>& not escaped", codeOf r == 0 && (o |> Str.contains "<a>&b"))
+    ]
+
+// ---- B29: inferShape drafts int beyond int64 --------------------------------
+
+let b29 d =
+    let json = ["""print (Json.inferShape ["{\"big\": 99999999999999999999, \"small\": 1}"])"""]
+    let yaml = ["""print (Yaml.inferShape ["big: 99999999999999999999"; "small: 1"])"""]
+    let rJ = runAt d "30" (put d "b29-json.weir" json)
+    let rY = runAt d "30" (put d "b29-yaml.weir" yaml)
+    let honest r = codeOf r < 128 && not (leaks (errOf r)) && not (outOf r |> Str.contains "big: int")
+    failing [ ("Json.inferShape", honest rJ); ("Yaml.inferShape", honest rY) ]
+
+// ---- B30: JSON error paths number array elements from 1 ---------------------
+
+let b30Scalar = <<<
+    type T = { b: seq<int> }
+    let v = ["{\"b\": [1, \"x\"]}"] |> from json T
+    print $"{v.b}"
+
+let b30Record = <<<
+    type E = { n: int }
+    type T = { b: seq<E> }
+    let v = ["{\"b\": [{\"n\": 1}, {\"n\": \"x\"}]}"] |> from json T
+    print $"{v.b}"
+
+let b30 d =
+    let rS = runAt d "30" (put d "b30-scalar.weir" b30Scalar)
+    let rR = runAt d "30" (put d "b30-record.weir" b30Record)
+    let zeroBased r = codeOf r == 1 && (errOf r |> Str.contains "b[1]") && not (errOf r |> Str.contains "b[2]")
+    failing [ ("seq<int> element", zeroBased rS); ("seq<record> element", zeroBased rR) ]
+
+// ---- B31: Args.load --name=x and a help field --------------------------------
+
+let b31Name = <<<
+    type Cli = { name: string }
+    let c = Args.load Cli
+    print c.name
+
+let b31Help = <<<
+    type Cli = { help: bool }
+    let c = Args.load Cli
+    print $"{c.help}"
+
+let b31 d =
+    let rN = runArgs d (put d "b31-name.weir" b31Name) ["--name=x"]
+    let rH = checkW (put d "b31-help.weir" b31Help)
+    let taught = prints "x" rN || (codeOf rN == 1 && (errOf rN |> Str.contains "--name x"))
+    failing [ ("--name=x neither accepted nor taught", taught); ("help: bool field checks clean", codeOf rH == 1) ]
+
+// ---- B32: weir fmt --check with no script -----------------------------------
+
+let b32 d =
+    let r =
+        within cd d
+            let x = timeout 30 $cli.bin fmt --check | complete
+            x
+    let t = outOf r + errOf r
+    let ok = codeOf r <> 0 && codeOf r < 128 && not (t |> Str.contains "no such script") && (t |> Str.contains "usage")
+    failing [ ("fmt --check with no script", ok) ]
+
+// ---- B33: dangling symlinks and directories in File.* ----------------------
+
+let b33 d =
+    let w = $"{d}/b33"
+    Dir.create $"{w}/adir"
+    ln -s /nonexistent-weir-sweep $"{w}/dl"
+    let rRead = runAt w "30" (put w "read.weir" ["""File.read "dl" |> Seq.iter print"""])
+    let rSize = runAt w "30" (put w "size.weir" ["""print $"{File.size "adir"}" """])
+    let rDel = runAt w "30" (put w "delete.weir" ["""File.delete "adir" """])
+    let says needle file r = cleanRaise file r && (errOf r |> Str.contains needle) && not (errOf r |> Str.contains "no such file")
+
+    failing [
+        ("File.read on a dangling link", says "dangling" "read.weir" rRead)
+        ("File.size on a directory", says "director" "size.weir" rSize)
+        ("File.delete on a directory", says "director" "delete.weir" rDel)
+    ]
+
+// ---- B34: xs[^n] out of range says "index 0" ---------------------------------
+
+let b34 d =
+    let file = "b34.weir"
+    let r = runAt d "30" (put d file ["let xs = [1; 2; 3]"; "print $\"{xs[^5]}\""])
+    let e = errOf r
+    failing [ ("xs[^5] on 3 elements", cleanRaise file r && (e |> Str.contains "^5") && not (e |> Str.contains "index 0")) ]
+
+// ---- B35: raw .NET messages --------------------------------------------------
+
+let b35Cases =
+    [ ("Duration overflow", ["print $\"{1h * 9223372036854775807}\""])
+      ("Size overflow", ["print $\"{1KiB * 9223372036854775807}\""])
+      ("Duration.sleep past 24.8 days", ["Duration.sleep (Duration.ms 2147483648)"])
+      ("Instant + Duration past range", ["print $\"{Instant.now () + Duration.h 900000000}\""])
+      ("Instant.ofEpochMs", ["print $\"{Instant.ofEpochMs 999999999999999999}\""])
+      ("Str.replace \"\"", ["""print (Str.replace "" "x" "abc")"""])
+      ("Str.replicate 1000000000", ["""print (Str.replicate 1000000000 "abc")"""]) ]
+
+let b35 d =
+    b35Cases
+    |> Seq.indexed
+    |> Seq.map (fun (i, (name, lines)) ->
+        let file = $"b35-{i}.weir"
+        let r = runAt d "5" (put d file lines)
+        // a sleep that really sleeps (timeout's 124) has stopped leaking .NET
+        let sleeping = (name |> Str.startsWith "Duration.sleep") && codeOf r == 124
+        (name, cleanRaise file r || sleeping))
+    |> failing
+
+// ---- B36: deep Seq.append / Seq.map chains overflow the stack ---------------
+
+let b36Append = <<<
+    within
+        let xs = [1..100000] |> Seq.fold (fun acc i -> [i] |> Seq.append acc) []
+        print $"{xs |> Seq.length}"
+    always
+        print "always ran"
+
+let b36Map = <<<
+    within
+        let xs = [1..100000] |> Seq.fold (fun acc i -> acc |> Seq.map (fun x -> x + 1)) [0]
+        print $"{xs |> Seq.head}"
+    always
+        print "always ran"
+
+let b36 d =
+    let rA = runAt d "120" (put d "b36-append.weir" b36Append)
+    let rM = runAt d "120" (put d "b36-map.weir" b36Map)
+    let survived r = codeOf r < 2 && (r.stdout |> Seq.contains "always ran")
+    failing [ ("100000 nested Seq.append", survived rA); ("100000 nested Seq.map", survived rM) ]
+
+// ---- B37: misleading parse messages -----------------------------------------
+
+let b37Heredoc = <<<
+    let t = $<<<
+        a {1 +}
+    t |> Seq.iter print
+
+let b37Yaml = <<<
+    let d = yaml
+        a: $(1 +)
+    d |> to yaml |> Seq.iter print
+
+let b37 d =
+    let rHex = checkW (put d "b37-hex.weir" ["print $\"{0x10}\""])
+    let rUnd = checkW (put d "b37-underscore.weir" ["print $\"{1_000}\""])
+    let rDots = checkW (put d "b37-dots.weir" ["print $\"{1.5.2}\""])
+    let rUnit = checkW (put d "b37-units.weir" ["let x = 5)"])
+    let rH = checkW (put d "b37-heredoc.weir" b37Heredoc)
+    let rY = checkW (put d "b37-yaml.weir" b37Yaml)
+    let notFn r = codeOf r == 0 || (codeOf r == 1 && not (diagOf r |> Str.contains "not a function"))
+    let ue = diagOf rUnit
+
+    failing [
+        ("0x10 says 'not a function'", notFn rHex)
+        ("1_000 says 'not a function'", notFn rUnd)
+        ("1.5.2 says 'digit before the point'", codeOf rDots == 1 && not (diagOf rDots |> Str.contains "digit before the point"))
+        ("unit suffixes in Expecting", codeOf rUnit == 1 && not (ue |> Str.contains "'KiB'") && not (ue |> Str.contains "'ms'"))
+        ("heredoc splice error truncated", codeOf rH == 1 && (diagOf rH |> Str.contains "Expecting"))
+        ("yaml splice error truncated", codeOf rY == 1 && (diagOf rY |> Str.contains "Expecting"))
+    ]
+
+// ---- B38: misleading checker messages ---------------------------------------
+
+let b38Budget = <<<
+    let f0 x = (x, x)
+    let f1 x = f0 (f0 x)
+    let f2 x = f1 (f1 x)
+    let f3 x = f2 (f2 x)
+    let f4 x = f3 (f3 x)
+    let f5 x = f4 (f4 x)
+    let v = f5 1
+    print "x"
+    let _w = v
+
+let b38Patch = <<<
+    let p = yaml patch
+        a: 1
+    print $"{p}"
+
+let b38Proc = <<<
+    within proc srv = sh -c "sleep 1"
+        [srv] |> to json |> Seq.iter print
+
+let b38Import = <<<
+    import "./b38-no-such-module.weir" as N
+    print (N.x)
+
+let b38 d =
+    let rOrd = checkW (put d "b38-ord.weir" ["print $\"{Some 1 < None}\""])
+    let rShow = checkW (put d "b38-show.weir" ["print (show None)"])
+    let rSort = checkW (put d "b38-sort.weir" ["print $\"{[] |> Seq.sort |> Seq.length}\""])
+    let rBudget = checkW (put d "b38-budget.weir" b38Budget)
+    let rPatch = checkW (put d "b38-patch.weir" b38Patch)
+    let rProc = checkW (put d "b38-proc.weir" b38Proc)
+    let rImport = checkW (put d "b38-import.weir" b38Import)
+    let refuses r needle = codeOf r == 1 && not (diagOf r |> Str.contains needle)
+
+    failing [
+        ("Some 1 < None names no '<'", codeOf rOrd == 1 && (diagOf rOrd |> Str.contains "'<'"))
+        ("a Show leftover called equality", refuses rShow "equality")
+        ("an Ord leftover called equality", refuses rSort "equality")
+        ("budget error says annotate", refuses rBudget "annotate")
+        ("YamlPatch 'functions never render'", refuses rPatch "functions never render")
+        ("Proc 'unknown type'", refuses rProc "unknown type")
+        ("failed import adds 'no module named'", refuses rImport "no module named")
+    ]
+
+// ---- B39: heredoc tab rule only on the first content line -------------------
+
+let b39 d =
+    let r = checkW (put d "b39.weir" ["let x = <<<"; "    a"; "    \tb"; "x |> Seq.iter print"])
+    failing [ ("a tab in a later line's indentation", codeOf r == 1) ]
+
+// ---- B40: a plan body ending in a non-unit value ----------------------------
+
+let b40Fixture = <<<
+    let p =
+        plan
+            File.write "b40-out" ["x"]
+            42
+    print $"{p |> Plan.isEmpty}"
+
+let b40 d =
+    let r = checkW (put d "b40.weir" b40Fixture)
+    failing [ ("plan body ending in 42", codeOf r == 1) ]
+
+// ---- controls ----------------------------------------------------------------
+
+let ctlRuns d = prints "hello" (runAt d "30" (put d "c-runs.weir" ["print \"hello\""]))
+
+let ctlCheckClean d = codeOf (checkW (put d "c-clean.weir" ["print \"hello\""])) == 0
+
+let ctlCheckRefuses d = codeOf (checkW (put d "c-refuses.weir" ["let x = 1 + \"a\""; "print x"])) == 1
+
+let ctlFmt d =
+    let p = put d "c-fmt.weir" ["let x=1"; "print (show x)"]
+    let f = fmtW p
+    codeOf f == 0 && (File.read p |> Seq.contains "let x = 1") && prints "1" (runAt d "30" p)
+
+let ctlPlanApplies d =
+    let w = $"{d}/c-plan"
+    Dir.create $"{w}/emptyd"
+    ["f"] |> File.write $"{w}/afile"
+    let src = ["let p ="; "    plan"; """        Dir.delete "emptyd" """; """        File.copy "afile" "copied" """; "p |> Plan.apply"]
+    let r = runAt w "30" (put w "s.weir" src)
+    codeOf r == 0 && not (Dir.exists $"{w}/emptyd") && File.exists $"{w}/copied"
+
+let ctlExhaustiveClean d =
+    let src = ["let f o ="; "    match o with"; """    | Some 0 -> "zero" """; """    | Some _ -> "some" """; """    | None -> "none" """; "print (f (Some 5))"]
+    codeOf (checkW (put d "c-exhaustive.weir" src)) == 0
+
+let ctlConcreteNonExhaustive d =
+    let src = ["let x = Some 5"; "let s ="; "    match x with"; """    | Some 0 -> "zero" """; """    | None -> "none" """; "print s"]
+    codeOf (checkW (put d "c-nonexhaustive.weir" src)) == 1
+
+let ctlPureRefusesWrite d =
+    codeOf (checkW (put d "c-pure.weir" ["""let pure w p = File.write p ["x"]"""; """w "a" """])) == 1
+
+let ctlReadonlyAdmitsPwd d =
+    codeOf (checkW (put d "c-readonly.weir" ["let x ="; "    readonly"; "        let _d = pwd"; """        "ok" """; "print x"])) == 0
+
+let ctlYamlQuotedNull d =
+    let src = ["type T = { a: Option<string> }"; """let v = ["a: \"null\""] |> from yaml T"""; """print $"{v.a}" """]
+    prints "Some \"null\"" (runAt d "30" (put d "c-yaml-quoted.weir" src))
+
+let ctlPipeEarlyClose d =
+    let src = ["""let h = [1..100000] |> Seq.map (fun i -> $"{i}") | head -1 | line"""; "print h"]
+    prints "1" (runAt d "30" (put d "c-head.weir" src))
+
+let ctlSeqBlame d =
+    let src = ["print \"start\""; "[1; 2; 3]"; "|> Seq.iter (fun i ->"; "    if i == 2 then"; "        fail \"seq boom\")"]
+    let r = runAt d "30" (put d "c-seqblame.weir" src)
+    codeOf r == 1 && (errOf r |> Str.contains "c-seqblame.weir:5:")
+
+let ctlInterpHole d = prints "ab" (runAt d "30" (put d "c-hole.weir" ["""print $"{"a" + "b"}" // c"""]))
+
+let ctlSpliceHeredoc d =
+    let src = ["let name = \"n\""; "let t = $$<<<"; "    v=${name} $$x"; "t |> Seq.iter print"]
+    prints "v=n $x" (runAt d "30" (put d "c-splice.weir" src))
+
+let ctlMatchNoPipe d =
+    let src = ["let k ="; "    [1;2] |> Seq.map (fun x -> match x with"; "                               | 1 -> \"one\""; "                               | _ -> \"other\")"; "print (show k)"]
+    prints "[\"one\"; \"other\"]" (runAt d "30" (put d "c-match.weir" src))
+
+let ctlGroupByScalar d =
+    let src = ["[1; 1; 2]"; "    |> Seq.groupBy (fun n -> n)"; """    |> Seq.iter (fun (k, g) -> print $"{k}:{g |> Seq.length}")"""]
+    prints "1:2\n2:1" (runAt d "30" (put d "c-groupby.weir" src))
+
+let ctlOverapplyUser d = prints "3" (runAt d "30" (put d "c-overapply.weir" ["let mk () = fun x -> x + 1"; "print (show (mk () 2))"]))
+
+let ctlParamTuple d = prints "3" (runAt d "30" (put d "c-tuple.weir" ["let f (a, b) = a - b"; "print (show (f (5, 2)))"]))
+
+let ctlPlanDirectCmd d =
+    let src = ["let p ="; "    plan"; "        let r = touch b22-marker | complete"; """        File.write "b22-out" [$"{r.exitCode}"]"""; """print $"{p |> Plan.isEmpty}" """]
+    codeOf (checkW (put d "c-plan-cmd.weir" src)) == 1
+
+let ctlPlanHelperClean d =
+    let src = ["""let mk () = File.write "c-helper-out" ["y"]"""; "let p ="; "    plan"; "        mk ()"; """print $"{p |> Plan.isEmpty}" """]
+    codeOf (checkW (put d "c-plan-helper.weir" src)) == 0
+
+let ctlImportDirect d =
+    let w = b23Setup $"{d}/c"
+    prints "1 { x = 1; y = 2 } true" (runAt w "30" (put w "direct.weir" ["import \"./a.weir\" as A"; "let p = { x = 1; y = 2 }"; """print $"{p.x} {p} {p == p}" """]))
+
+let ctlUnitLiteral d = codeOf (checkW (put d "c-unit.weir" ["print $\"{1TiB} {100000000000ms}\""])) == 0
+
+let ctlYamlPlainKey d =
+    let r = runAt d "30" (put d "c-yaml-key.weir" b25Fixture)
+    r.stdout |> Seq.contains "plain true"
+
+let ctlDirCopyPlain d =
+    let w = $"{d}/c-copy"
+    Dir.create $"{w}/src/sub"
+    ["x"] |> File.write $"{w}/src/sub/f"
+    let r = runAt w "30" (put w "s.weir" ["""Dir.copy "src" "dst" """])
+    codeOf r == 0 && File.exists $"{w}/dst/sub/f"
+
+let ctlJsonlPlain d =
+    let src = ["type T = { a: int }"; """let xs = ["{\"a\": 1}"; "{\"a\": 2}"] |> from jsonl T |> Seq.freeze"""; """print $"{xs |> Seq.length}" """]
+    prints "2" (runAt d "30" (put d "c-jsonl.weir" src))
+
+let ctlEqMessage d =
+    let r = checkW (put d "c-eq.weir" ["let x = None == None"; """print $"{x}" """])
+    codeOf r == 1 && (diagOf r |> Str.contains "equality")
+
+let ctlTabFirstLine d = codeOf (checkW (put d "c-tab-first.weir" ["let x = <<<"; "    \ta"; "    b"; "x |> Seq.iter print"])) == 1
+
+let ctlTabMidContent d = codeOf (checkW (put d "c-tab-mid.weir" ["let x = <<<"; "    a\tb"; "x |> Seq.iter print"])) == 0
+
+let ctlPlanUnit d =
+    codeOf (checkW (put d "c-plan-unit.weir" ["let p ="; "    plan"; """        File.write "c-out" ["x"]"""; """print $"{p |> Plan.isEmpty}" """])) == 0
+
+let controls =
+    [ ("control-runs", ctlRuns)
+      ("control-check-clean", ctlCheckClean)
+      ("control-check-refuses", ctlCheckRefuses)
+      ("control-fmt-formats", ctlFmt)
+      ("control-plan-applies (B1)", ctlPlanApplies)
+      ("control-pipe-early-close (B3)", ctlPipeEarlyClose)
+      ("control-exhaustive-clean (B6)", ctlExhaustiveClean)
+      ("control-concrete-nonexhaustive (B6)", ctlConcreteNonExhaustive)
+      ("control-pure-refuses-write (B7)", ctlPureRefusesWrite)
+      ("control-readonly-admits-pwd (B7)", ctlReadonlyAdmitsPwd)
+      ("control-yaml-quoted-null (B8)", ctlYamlQuotedNull)
+      ("control-seq-blame (B12)", ctlSeqBlame)
+      ("control-interp-hole (B16)", ctlInterpHole)
+      ("control-splice-heredoc (B17)", ctlSpliceHeredoc)
+      ("control-match-no-pipe (B18)", ctlMatchNoPipe)
+      ("control-groupby-scalar (B19)", ctlGroupByScalar)
+      ("control-overapply-user (B20)", ctlOverapplyUser)
+      ("control-param-tuple (B21)", ctlParamTuple)
+      ("control-plan-direct-cmd-refused (B22)", ctlPlanDirectCmd)
+      ("control-plan-helper-clean (B22)", ctlPlanHelperClean)
+      ("control-import-direct (B23)", ctlImportDirect)
+      ("control-unit-literal (B24)", ctlUnitLiteral)
+      ("control-yaml-plain-key (B25)", ctlYamlPlainKey)
+      ("control-dircopy-plain (B26)", ctlDirCopyPlain)
+      ("control-jsonl-plain (B27)", ctlJsonlPlain)
+      ("control-eq-message (B38)", ctlEqMessage)
+      ("control-tab-first-line (B39)", ctlTabFirstLine)
+      ("control-tab-mid-content (B39)", ctlTabMidContent)
+      ("control-plan-unit (B40)", ctlPlanUnit) ]
+
+let probes =
+    [ ("B1", b1); ("B2", b2); ("B3", b3); ("B4", b4); ("B5", b5); ("B6", b6); ("B7", b7); ("B8", b8)
+      ("B9", b9); ("B10", b10); ("B11", b11); ("B12", b12); ("B13", b13); ("B14", b14); ("B15", b15)
+      ("B16", b16); ("B17", b17); ("B18", b18); ("B19", b19); ("B20", b20); ("B21", b21); ("B22", b22)
+      ("B23", b23); ("B24", b24); ("B25", b25); ("B26", b26); ("B27", b27); ("B28 (pending R9)", b28)
+      ("B29", b29); ("B30", b30); ("B31", b31); ("B32", b32); ("B33", b33); ("B34", b34); ("B35", b35)
+      ("B36", b36); ("B37", b37); ("B38", b38); ("B39", b39); ("B40", b40) ]
+
+// ---- the verdict channel ------------------------------------------------------
+
+let record vpath line =
+    print $"  {line}"
+    File.append vpath [line]
+
+let runProbe vpath d (label, probe) =
+    let w = $"{d}/{label |> Str.replace " " "-" |> Str.replace "(" "" |> Str.replace ")" ""}"
+    Dir.create w
+    let res = probe w |> try result
+    match res with
+    | Ok fs when fs |> Seq.isEmpty -> record vpath $"{label} OK"
+    | Ok fs -> record vpath $"""{label} REPRODUCES ({fs |> Str.join "; "})"""
+    | Error m -> record vpath $"{label} REPRODUCES (the probe failed to run: {m})"
+
+let runControl vpath d (label, ctl) =
+    let w = $"{d}/{label |> Str.replace " " "-" |> Str.replace "(" "" |> Str.replace ")" ""}"
+    Dir.create w
+    let res = ctl w |> try
+    match res with
+    | Some true -> record vpath $"{label} OK"
+    | Some false -> record vpath $"*** CONTROL FAILED: {label}"
+    | None -> record vpath $"*** CONTROL FAILED: {label} (the control failed to run)"
+
+// ---- the gate ----------------------------------------------------------------
+
+print "bug sweep — repro gate (dev/plans/PLAN-sweep-fixes.md)"
+print $"  binary: {cli.bin}"
+
+within tmp d
+    let vpath = $"{d}/verdicts"
+    [] |> File.write vpath
+
+    if not toolsReady then
+        record vpath "instruments SKIP (timeout/sh/ln/kill/head/env missing) — every item stays OPEN"
+
+    if toolsReady then
+        print ""
+        print "controls"
+        controls |> Seq.iter (runControl vpath d)
+        print ""
+        print "probes"
+        probes |> Seq.iter (runProbe vpath d)
+
+    print ""
+    let verdicts = File.read vpath |> Seq.freeze
+    let open =
+        verdicts
+        |> Seq.where (fun l -> not (l |> Str.startsWith "B28 "))
+        |> Seq.where (fun l ->
+            (l |> Str.contains "REPRODUCES") || (l |> Str.contains "CONTROL FAILED") || (l |> Str.contains "SKIP"))
+        |> Seq.freeze
+
+    let repro = verdicts |> Seq.where (fun l -> l |> Str.contains "REPRODUCES") |> Seq.length
+    let ok = verdicts |> Seq.where (fun l -> (l |> Str.startsWith "B") && (l |> Str.contains " OK")) |> Seq.length
+    print $"summary: {ok} probe(s) OK, {repro} REPRODUCE (B28 pending R9, not counted)"
+
+    if open |> Seq.isEmpty then
+        print "ALL ITEMS FIXED"
+    else
+        print $"{open |> Seq.length} line(s) keep the gate shut (a SKIP or a failed control counts):"
+        open |> Seq.iter (fun l -> print $"  {l}")
+        exit 1
