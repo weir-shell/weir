@@ -1126,7 +1126,19 @@ type private District =
       Yaml: bool
       // the marker kind that armed this district — errors name its word
       Marker: MarkerKind
-      Active: int option }
+      Active: int option
+      // a heredoc's outdented `//` line, transparent only if the block
+      // ends there — further content makes it an outdent error
+      OutdentedComment: int option }
+
+// content after an outdented heredoc comment: the comment sat inside the
+// block, where every line is content — refuse like any outdent
+let private heredocCommentGap (dst: District) : string option =
+    match dst.Marker, dst.OutdentedComment with
+    | MarkerKind.Heredoc, Some n ->
+        Some
+            $"line {n}: this comment line outdents below the heredoc's first line — inside a heredoc it is content: indent it to keep it, or move the comment out of the block"
+    | _ -> None
 
 // a marker-ending line arms its district, whatever kind of line it is —
 // a plain head, a `| pat ->` arm, an `else` [D:arm-blocks]
@@ -1139,7 +1151,8 @@ let private armDistrict (marker: MarkerKind) (indent: int) (lineNo: int) : Distr
           Strip = strip
           Yaml = isYaml
           Marker = marker
-          Active = None })
+          Active = None
+          OutdentedComment = None })
 
 type private Pend =
     { Buf: PendBuf
@@ -1530,20 +1543,23 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                 && (raw |> Seq.takeWhile (fun c -> c = ' ' || c = '\t') |> Seq.length) > m
                                 ->
                                 Error(tabIndentError lineNo raw)
-                            | Some({ District = Some { Active = Some bse
+                            | Some({ District = Some({ Active = Some bse
                                                        Yaml = true
-                                                       MarkerIndent = m } } as p) when
+                                                       MarkerIndent = m } as dst) } as p) when
                                 (let ind = raw |> Seq.takeWhile ((=) ' ') |> Seq.length in ind > m && ind >= bse)
                                 ->
                                 let ind = raw |> Seq.takeWhile ((=) ' ') |> Seq.length
 
-                                Ok(
-                                    Some
-                                        { p with
-                                            Buf = applyJoin (JYamlLine(ind - bse)) p.Buf (raw.Substring ind) lineNo ind },
-                                    acc,
-                                    blankSinceHead
-                                )
+                                if (heredocCommentGap dst).IsSome then
+                                    Error (heredocCommentGap dst).Value
+                                else
+                                    Ok(
+                                        Some
+                                            { p with
+                                                Buf = applyJoin (JYamlLine(ind - bse)) p.Buf (raw.Substring ind) lineNo ind },
+                                        acc,
+                                        blankSinceHead
+                                    )
                             // a comment-only FIRST content line is bytes in a
                             // HEREDOC [D:block-scalars]: it arms the district
                             // and fixes the block base exactly as any first
@@ -1571,6 +1587,14 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                     acc,
                                     blankSinceHead
                                 )
+                            // an outdented `//` inside an ACTIVE heredoc: transparent
+                            // only if the block ends here; content after it makes it
+                            // an outdent error (pasted code lost its comment)
+                            | Some({ District = Some({ Active = Some _
+                                                       Yaml = true
+                                                       Marker = MarkerKind.Heredoc
+                                                       OutdentedComment = None } as dst) } as p) ->
+                                Ok(Some { p with District = Some { dst with OutdentedComment = Some lineNo } }, acc, blankSinceHead)
                             | Some p -> Ok(Some p, acc, blankSinceHead)
                             | None -> Ok(None, acc, blankSinceHead)
                         elif
@@ -1733,7 +1757,9 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                             | Some({ Active = Some bse; Yaml = true } as dst) when
                                                 indent > dst.MarkerIndent
                                                 ->
-                                                if indent < bse then
+                                                if (heredocCommentGap dst).IsSome then
+                                                    Error (heredocCommentGap dst).Value
+                                                elif indent < bse then
                                                     let noun =
                                                         match dst.Marker with
                                                         | MarkerKind.Heredoc -> "heredoc"

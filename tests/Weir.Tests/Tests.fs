@@ -2074,6 +2074,20 @@ let boundaryTests =
                   [ "first"; "// mid"; "tail // stays" ]
                   "mid comment-only and trailing-comment bytes both survive"
           }
+          test "an outdented comment inside a heredoc is an outdent error, after it a comment ends the block" {
+              let assembled lines =
+                  Weir.Script.assemble (lines |> List.mapi (fun i l -> i + 1, l))
+
+              for comment in [ "  // outdented"; "// col0" ] do
+                  match assembled [ "let t = <<<"; "    one"; comment; "    two"; "print t" ] with
+                  | Error e ->
+                      Expect.stringContains e "line 3: this comment line outdents below the heredoc's first line" comment
+                  | Ok _ -> failtest $"a comment inside the block must not vanish: {comment}"
+
+              match assembled [ "let t = <<<"; "    one"; "// after the block"; ""; "print t" ] with
+              | Ok lls -> Expect.equal lls.Length 2 "a comment after the block stays transparent"
+              | Error e -> failtest $"a comment after the block is fine: {e}"
+          }
           test "a heredoc block is a seq<string>: verbatim lines, blanks survive [D:text-block]" {
               let src = asm [ "let t = <<<"; "    a $HOME {x}"; ""; "        deep" ]
 
