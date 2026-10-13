@@ -2563,6 +2563,23 @@ let boundaryTests =
               Expect.stringContains ty "[<Wire \"type\">]" "a reserved word still rides Wire"
               Expect.stringContains ty "kind: string" "type still lands on 'kind'"
           }
+          test "inferShape drafts float for an integer past int64, as the readers type it (B29)" {
+              let inferStr (v: Value) =
+                  match v with
+                  | VStr s -> s
+                  | v -> failtest $"expected a string, got {formatValue v}"
+
+              let j =
+                  inferStr (run "Json.inferShape [\"{\\\"big\\\":99999999999999999999,\\\"min\\\":-9223372036854775808,\\\"n\\\":5}\"]")
+
+              Expect.stringContains j "big: float" "json: past int64 drafts float"
+              Expect.stringContains j "min: int" "json: int64's edge stays int"
+              Expect.stringContains j "n: int" "json: a small integer stays int"
+
+              let y = inferStr (run "Yaml.inferShape [\"big: 99999999999999999999\"; \"n: 5\"]")
+              Expect.stringContains y "big: float" "yaml: past int64 drafts float"
+              Expect.stringContains y "n: int" "yaml: a small integer stays int"
+          }
           test "block scalars render: the form follows the value, both directions [D:block-scalars]" {
               // no policy exists: | means ends-with-one-newline, |- means
               // ends-with-none — read and write agree by construction
