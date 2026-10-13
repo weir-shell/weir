@@ -3185,6 +3185,23 @@ let private envOfPairsImpl: Value =
             )
         | v -> unreachable $"the checker rejects 'Env.ofPairs' on {formatValue v}")
 
+// Env.vars under an overlay snapshot (None = the live overlay at force);
+// the bare value rebinds to its eval-site snapshot, as `pwd` does
+// [D:ambient-capture] [D:env-overlay-read]
+let private envVarsFor (snap: (string * string) list list option) : Value =
+    VSeq(
+        Seq.delay (fun () ->
+            // hashtable order is noise [D:ls-sort]: sorted by name,
+            // the same ordinal rule. (fromFile/ofPairs stay in given
+            // order — there the order is the author's information,
+            // the YMap argument.)
+            Session.envVarsIn (snap |> Option.defaultWith Session.envOverlay)
+            |> Seq.sortBy fst
+            |> Seq.map (fun (k, v) -> recordOf envVarDef [ VStr k; VStr v ]))
+    )
+
+let private envVarsImpl: Value = envVarsFor None
+
 // Env — process environment [D:typed-env]
 let private envMembers: (string * Ty * Value) list =
     [ "pair", TFun(TStr, TFun(TStr, TNamed("EnvVar", []))), envPairImpl
@@ -3194,23 +3211,12 @@ let private envMembers: (string * Ty * Value) list =
       VBuiltin(fun v ->
           match v with
           | VStr name ->
-              match System.Environment.GetEnvironmentVariable name with
-              | null -> VUnion("None", None)
-              | value -> VUnion("Some", Some(VStr value))
+              // the `within env` overlay included [D:env-overlay-read]
+              match Session.getEnv name with
+              | None -> VUnion("None", None)
+              | Some value -> VUnion("Some", Some(VStr value))
           | v -> unreachable $"the checker rejects 'Env.get' on {formatValue v}")
-      "vars",
-      TSeq(TNamed(envVarDef.Name, [])),
-      VSeq(
-          Seq.delay (fun () ->
-              // hashtable order is noise [D:ls-sort]: sorted by name,
-              // the same ordinal rule. (fromFile/ofPairs stay in given
-              // order — there the order is the author's information,
-              // the YMap argument.)
-              System.Environment.GetEnvironmentVariables()
-              |> Seq.cast<System.Collections.DictionaryEntry>
-              |> Seq.sortBy (fun e -> string e.Key)
-              |> Seq.map (fun e -> recordOf envVarDef [ VStr(string e.Key); VStr(string e.Value) ]))
-      )
+      "vars", TSeq(TNamed(envVarDef.Name, [])), envVarsImpl
       "fromFile", TFun(TStr, TSeq(TNamed(envVarDef.Name, []))), envFromFileImpl ]
 
 // the read-side guards [D:sized-findings]: reads must give the same
@@ -7767,3 +7773,4 @@ Check.reservedBinderNames.Value <-
 // arm. glob captures at its call, so it needs no rebinder.
 Eval.ambientRebinders["ls"] <- (realLs, (fun () -> lsForCwd (Session.Cwd())))
 Eval.ambientRebinders["pwd"] <- (pwdImpl, (fun () -> pwdForCwd (Session.Cwd())))
+Eval.ambientRebinders["Env.vars"] <- (envVarsImpl, (fun () -> envVarsFor (Some(Session.envOverlay ()))))

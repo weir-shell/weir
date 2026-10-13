@@ -802,7 +802,8 @@ kinds take an argument rather than giving you one:
   back however the block exits. If the directory doesn't exist,
   you get an error naming its absolute path before the block runs.
 - `within env vars` adds environment variables for every command the
-  block runs. Weir's own environment isn't changed. Nested `within env`
+  block runs. `Env.get`, `Env.vars` and `Env.load` inside the block
+  see them too; after the block they're gone. Nested `within env`
   blocks combine, and the inner one wins when both set the same
   variable.
 
@@ -1088,8 +1089,8 @@ Without an editor, as in CI or an agent loop, use
 
 You can run a command with extra environment variables. They're
 added on top of the inherited environment: the names you give are
-set, everything else is kept, and weir's own environment isn't
-changed. For a single command, write the variables before it, as in
+set, everything else is kept, and nothing outside the command or
+block sees them. For a single command, write the variables before it, as in
 bash:
 
 ```weir

@@ -3716,7 +3716,8 @@ and eval (env: Env) (te: TypedExpr) : Value =
                 // `name` is the wire name from here on, so every message names
                 // the variable the author actually asked for.
                 let name = Types.wireName def field
-                let raw = System.Environment.GetEnvironmentVariable name
+                // the `within env` overlay included [D:env-overlay-read]
+                let raw = Session.getEnv name |> Option.toObj
 
                 let value =
                     match ty, raw with

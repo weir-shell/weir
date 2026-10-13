@@ -78,6 +78,41 @@ let popEnvOverlay () : unit =
         | _ :: rest -> rootEnvOverlay.Value <- rest
         | [] -> ()
 
+// weir's own env reads see the overlay a child would [D:env-overlay-read]:
+// newest layer first, the last pair within a layer wins (the spawn's
+// apply order), the process env beneath. Names compare as the platform's
+// env does (case-insensitive on Windows).
+let private envNameCmp =
+    if System.OperatingSystem.IsWindows() then
+        System.StringComparer.OrdinalIgnoreCase
+    else
+        System.StringComparer.Ordinal
+
+/// one var under the given layers (newest first)
+let getEnvIn (layers: (string * string) list list) (name: string) : string option =
+    layers
+    |> List.tryPick (fun layer -> layer |> List.rev |> List.tryFind (fun (k, _) -> envNameCmp.Equals(k, name)))
+    |> Option.map snd
+    |> Option.orElseWith (fun () ->
+        match System.Environment.GetEnvironmentVariable name with
+        | null -> None
+        | v -> Some v)
+
+/// one var under the live overlay
+let getEnv (name: string) : string option = getEnvIn (envOverlay ()) name
+
+/// every var under the given layers (newest first), unordered
+let envVarsIn (layers: (string * string) list list) : (string * string) list =
+    let d = System.Collections.Generic.Dictionary<string, string>(envNameCmp)
+
+    for e in System.Environment.GetEnvironmentVariables() |> Seq.cast<System.Collections.DictionaryEntry> do
+        d[string e.Key] <- string e.Value
+
+    for k, v in layers |> List.rev |> List.collect id do
+        d[k] <- v
+
+    [ for kv in d -> kv.Key, kv.Value ]
+
 // worker lifecycle (Seq.pmap / Seq.piter)
 // nesting-aware parallel ceilings [D:parallel-ladder]: the fan-out
 // depth rides AsyncLocal beside cwd/env/raceGroup — read at spawn time

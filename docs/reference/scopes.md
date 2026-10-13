@@ -52,8 +52,9 @@ before the block runs, that shows the absolute path.
 ## `env`
 
 Adds environment variables for every process started in the block.
-weir's own environment is unchanged (`Env.get` does not see the
-overlay). Nested overlays combine, with inner values winning, and an
+Inside the block, `Env.get`, `Env.vars` and `Env.load` see the overlay
+too, as `pwd` sees `within cd`; after it, they read the unchanged
+process environment. Nested overlays combine, with inner values winning, and an
 env given directly on a capture (`$e(...)`) wins over any enclosing
 `within env`:
 

@@ -2224,6 +2224,18 @@ echo "$eout" | grep -qF "pre=out-keep" || fail "outer overlay applies: $eout"
 echo "$eout" | grep -qF "nested=in-keep" || fail "collision: inner wins, outer key survives: $eout"
 echo "e2e ok: within env — overlay on spawns, nested collision pinned (inner wins, outer survives)"
 
+# weir's own env reads see the overlay [D:env-overlay-read]
+cat > "$widir/envread.weir" <<'WEOF'
+type C = { WA: Option<string> }
+within env WA=in
+    print $"get={Env.get "WA" |> Option.defaultValue "-"}"
+    print $"load={(Env.load C).WA |> Option.defaultValue "-"}"
+print $"after={Env.get "WA" |> Option.defaultValue "-"}"
+WEOF
+erout=$( cd "$widir" && env -u WA $BIN envread.weir 2>&1 )
+[ "$erout" = "$(printf 'get=in\nload=in\nafter=-')" ] || fail "Env.get/Env.load see the within env overlay: $erout"
+echo "e2e ok: Env.get/Env.load read the within env overlay, not after it"
+
 # a typed ~ is home in a command line [D:tilde]: the expected home is
 # weir's own Path.home — on POSIX a fake HOME moves it (pinned), on Windows
 # the profile comes from the OS API and no env var moves it; data stays

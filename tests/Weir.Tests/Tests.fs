@@ -9271,6 +9271,20 @@ let withinEnvPairsTests =
                       Expect.equal pairs 2 $"A in the head, B on its command: {sx}"
                   | Error f -> failtest f.Message
               | other -> failtest $"unexpected assembly: {other}"
+          }
+          test "Env.get and Env.vars see the overlay; a bare Env.vars keeps its site's [D:env-overlay-read]" {
+              let pin = "[Env.pair \"WEIR_T_OVL\" \"bar\"]"
+              expectValue $"within env {pin} Env.get \"WEIR_T_OVL\"" (VUnion("Some", Some(VStr "bar")))
+              expectValue "Env.get \"WEIR_T_OVL\"" (VUnion("None", None))
+
+              expectValue
+                  $"within env {pin} Env.vars |> Seq.where (fun v -> v.name == \"WEIR_T_OVL\") |> Seq.map _.value |> Seq.freeze"
+                  (VSeq [ VStr "bar" ])
+
+              // forced after the scope exits: the eval site's overlay applies
+              expectValue
+                  $"(within env {pin} Env.vars) |> Seq.where (fun v -> v.name == \"WEIR_T_OVL\") |> Seq.length"
+                  (VInt 1)
           } ]
 
 let withinAlwaysAnyTests =

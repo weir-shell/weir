@@ -2306,7 +2306,10 @@ print $"exit={r.exitCode}"
   unset spelling: `env -u NAME cmd`. The same words scope a BLOCK:
   `within env A=1 B=$x` + an indented body [D:within-env-pairs] (or
   `within env e` for a bound `seq<EnvVar>`); a body line's own
-  `NAME=value cmd` prefix stays that one command's.
+  `NAME=value cmd` prefix stays that one command's. Inside the block
+  weir's own reads see the overlay too — `Env.get`/`Env.vars`/`Env.load`
+  [D:env-overlay-read], as `pwd` sees `within cd`; the process env
+  itself is never written.
 - The env capture sigil `$e(...)` (ident GLUED to glyph and paren)
   injects child-env into every spawn in the captured chain (overlay:
   set those names, inherit the rest; parent untouched). `Env.fromFile "x.env"`
