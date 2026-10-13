@@ -1,7 +1,8 @@
 # weir — fixing the 2026-10-13 bug sweep
 
 Status: APPROVED (user, 2026-10-13) — R1–R8, R10 blessed as recommended (R1
-sharpened: fmt never re-spaces argv, no resolver check at all); R9 pending.
+sharpened: fmt never re-spaces argv, no resolver check at all); R9 ruled
+(b): reuse RawBmpEncoder unchanged, [D:json-raw-user].
 
 Source: a four-area black-box sweep (runtime, parser/fmt, checker, stdlib/CLI)
 against HEAD 92789e3. Every item below was reproduced at least twice; the
