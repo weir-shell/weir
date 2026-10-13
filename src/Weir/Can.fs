@@ -704,10 +704,11 @@ let run (json: bool) (strict: bool) (path: string) : int =
         else
             let caps = collect path (ofChecked pairs)
 
-            if json then
-                System.Console.WriteLine(renderJson path caps)
-            else
-                System.Console.WriteLine(renderHuman path caps)
+            // tty sink only; redirected stays byte-faithful [D:tty-bidi-sanitize]
+            // — the human report is the audit a person reads, so a path or
+            // argv from the script must display as its bytes
+            let report = if json then renderJson path caps else renderHuman path caps
+            System.Console.WriteLine(report |> Eval.sanitizeIfTty System.Console.IsOutputRedirected)
 
             if strict && opaqueCount caps > 0 then 2 else 0
 

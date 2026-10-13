@@ -162,6 +162,24 @@ let private canonicalizeDistrictMarkers (body: string list) : string list =
 
     List.ofSeq out
 
+// an open bracket as fmt tracks it: inside one, a line that is not a
+// new entry or a closer moves by the delta (formatted − original indent)
+// of the line it continues [D:fmt-bracket-shift]
+type private OpenBracket =
+    { Kind: char
+      // formatted column
+      Col: int
+      Stroustrup: bool
+      // the opener line's formatted indent
+      LineIndent: int
+      // the opener line's original indent
+      OrigLineIndent: int
+      // first entry's formatted column (inline `{`/`[`) [D:field-alignment]
+      Anchor: int option
+      // entries' original indent; a deeper line continues an entry
+      EntryIndent: int option
+      Delta: int }
+
 let private formatLinesCore (body: string list) : Result<string list, string> =
     // trailing whitespace is never significant (strings are single-line and
     // close with a quote), so both equivalence passes compare TrimEnd'd code
@@ -199,14 +217,16 @@ let private formatLinesCore (body: string list) : Result<string list, string> =
         // deeper line opens a level, a line at a level returns to it,
         // col-0 resets — depth preserves every relational comparison
         // the assembler makes (=, <, >), so re-assembly is
-        // join-for-join identical.
-        let mutable levels: int list = []
-        // open brackets, annotated: (kind, column, stroustrup, opener
-        // line's formatted indent). A dangling opener (line ends at the
-        // bracket, or a `{ ... with` header) takes Stroustrup rules —
-        // entries at opener-indent+4, closers at opener-indent; an
-        // inline opener keeps column alignment [D:fmt-stroustrup]
-        let mutable braces: (char * int * bool * int * int option) list = []
+        // join-for-join identical. Each level keeps (original indent,
+        // formatted column): a line inside a bracket opens a level at the
+        // column it was shifted to [D:fmt-bracket-shift], and a deeper
+        // line goes to the next 4-column stop past its parent's column.
+        let mutable levels: (int * int) list = []
+        // open brackets, innermost first. A dangling opener (line ends
+        // at the bracket, or a `{ ... with` header) takes Stroustrup
+        // rules — entries at opener-indent+4, closers at opener-indent;
+        // an inline opener keeps column alignment [D:fmt-stroustrup]
+        let mutable braces: OpenBracket list = []
         // district: Some(markerOrigIndent, markerDepth) while inside a
         // district block — yaml is the one surviving marker
         // [D:district-retirement], so yamlDistrict is always true here;
@@ -284,102 +304,143 @@ let private formatLinesCore (body: string list) : Result<string list, string> =
                         yamlDistrict <- false
                         yamlBase <- None
 
-                        let formatted =
+                        // match arms align under the m [D:fmt-match-arms];
+                        // runs outside brackets and inside a paren (`(match`)
+                        let armColOf () =
+                            let isPipe =
+                                piece.StartsWith "|"
+                                && not (piece.StartsWith "|>")
+                                && not (piece.StartsWith "||")
+
+                            // a match closes at the offside boundary:
+                            // strictly-shallower lines pop for arms too;
+                            // same-indent non-arm lines pop as siblings
+                            matches <-
+                                matches
+                                |> List.skipWhile (fun (mi, _, _) -> mi > indent || (mi >= indent && not isPipe))
+
+                            if isPipe then
+                                match matches with
+                                | (mi, col, None) :: rest ->
+                                    // the first pipe after a match head
+                                    // is an arm; its indent anchors the
+                                    // arm set [D:fmt-match-arms]
+                                    matches <- (mi, col, Some indent) :: rest
+                                    Some col
+                                | (_, col, Some armIndent) :: _ when indent = armIndent -> Some col
+                                | _ -> None
+                            else
+                                None
+
+                        let isCloser = piece.StartsWith "]" || piece.StartsWith "}" || piece.StartsWith ")"
+
+                        // a continuation keeps its offset: it moves by the
+                        // delta of the line it continues [D:fmt-bracket-shift]
+                        let shifted delta =
+                            if indent = 0 then 0 else max 1 (indent + delta)
+
+                        let joinLevel col =
+                            levels <- (indent, col) :: (levels |> List.filter (fun (k, _) -> k < indent))
+                            col
+
+                        // the assembler does not track parens: a line back at
+                        // or left of a paren's opener line is outside it
+                        braces <-
+                            braces
+                            |> List.skipWhile (fun b -> b.Kind = '(' && not isCloser && indent <= b.OrigLineIndent)
+
+                        let col =
                             match braces with
-                            | (_, _, true, oIndent, _) :: _ ->
+                            | b :: rest when b.Stroustrup ->
                                 // Stroustrup: closers return to the opener
                                 // line's indent, entries sit one level in
-                                let col =
-                                    if piece.StartsWith "]" || piece.StartsWith "}" then
-                                        oIndent
-                                    else
-                                        oIndent + 4
+                                if isCloser then
+                                    joinLevel b.LineIndent
+                                else
+                                    match (if b.Kind = '(' then armColOf () else None), b.EntryIndent with
+                                    | Some col, _ ->
+                                        braces <- { b with Delta = col - indent } :: rest
+                                        col
+                                    | _, Some e when indent > e -> joinLevel (shifted b.Delta)
+                                    | _ ->
+                                        let col = b.LineIndent + 4
 
-                                String.replicate col " " + content
-                            | (kind, top, false, _, anchor) :: _ ->
-                                // bracket continuation: align under the first
-                                // entry's measured column [D:field-alignment]
-                                let col =
-                                    match anchor with
-                                    | Some a -> a
-                                    | None -> top + (if kind = '{' then 2 else 1)
+                                        braces <-
+                                            { b with
+                                                EntryIndent = Some(defaultArg b.EntryIndent indent)
+                                                Delta = col - indent }
+                                            :: rest
 
-                                String.replicate col " " + content
+                                        joinLevel col
+                            | b :: rest when b.Kind = '(' ->
+                                // an arm's body moves with its arm
+                                match armColOf () with
+                                | Some col ->
+                                    braces <- { b with Delta = col - indent } :: rest
+                                    col
+                                | None -> joinLevel (shifted b.Delta)
+                            | b :: rest ->
+                                // a new entry (or a closer) aligns under the
+                                // first entry's measured column
+                                // [D:field-alignment]; deeper lines continue
+                                // an entry and shift with it
+                                let anchor = defaultArg b.Anchor (b.Col + (if b.Kind = '{' then 2 else 1))
+                                let entry = defaultArg b.EntryIndent (anchor - b.Delta)
+
+                                if isCloser then
+                                    joinLevel anchor
+                                elif indent <= entry then
+                                    braces <- { b with Delta = anchor - indent } :: rest
+                                    joinLevel anchor
+                                else
+                                    joinLevel (shifted b.Delta)
                             | [] ->
-                                let isPipe =
-                                    piece.StartsWith "|"
-                                    && not (piece.StartsWith "|>")
-                                    && not (piece.StartsWith "||")
-
-                                // a match closes at the offside boundary:
-                                // strictly-shallower lines pop for arms too;
-                                // same-indent non-arm lines pop as siblings
-                                matches <-
-                                    matches
-                                    |> List.skipWhile (fun (mi, _, _) -> mi > indent || (mi >= indent && not isPipe))
-
-                                let armCol =
-                                    if isPipe then
-                                        match matches with
-                                        | (mi, col, None) :: rest ->
-                                            // the first pipe after a match head
-                                            // is an arm; its indent anchors the
-                                            // arm set [D:fmt-match-arms]
-                                            matches <- (mi, col, Some indent) :: rest
-                                            Some col
-                                        | (_, col, Some armIndent) :: _ when indent = armIndent -> Some col
-                                        | _ -> None
-                                    else
-                                        None
-
-                                match armCol with
-                                | Some col -> String.replicate col " " + content
+                                match armColOf () with
+                                | Some col -> col
                                 | None ->
-                                    let depth =
-                                        if indent = 0 then
-                                            levels <- []
-                                            0
-                                        else
-                                            let kept = levels |> List.filter (fun k -> k < indent)
-                                            levels <- indent :: kept
-                                            List.length kept + 1
+                                    if indent = 0 then
+                                        levels <- []
+                                        0
+                                    else
+                                        let col =
+                                            match levels |> List.tryFind (fun (k, _) -> k <= indent) with
+                                            | Some(k, c) when k = indent -> c
+                                            | Some(_, c) -> (c / 4 + 1) * 4
+                                            | None -> 4
 
-                                    match (Script.classifyPiece piece).Marker with
-                                    | Script.MarkerKind.NoMarker -> ()
-                                    | marker ->
-                                        district <- Some(indent, depth)
-                                        // heredoc districts are content-bytes exactly as
-                                        // yaml's are [D:text-block] — the flag means
-                                        // "district content is verbatim", not "is yaml"
-                                        yamlDistrict <-
-                                            (marker = Script.MarkerKind.Yaml || marker = Script.MarkerKind.Heredoc)
+                                        joinLevel col
 
-                                        yamlBase <- None
+                        let formatted = String.replicate col " " + content
 
-                                    let line = String.replicate (depth * 4) " " + content
+                        match (Script.classifyPiece piece).Marker with
+                        | Script.MarkerKind.NoMarker -> ()
+                        | marker ->
+                            district <- Some(indent, col / 4)
+                            // heredoc districts are content-bytes exactly as
+                            // yaml's are [D:text-block] — the flag means
+                            // "district content is verbatim", not "is yaml"
+                            yamlDistrict <- (marker = Script.MarkerKind.Yaml || marker = Script.MarkerKind.Heredoc)
 
-                                    // a match head, possibly opened by `(` on the
-                                    // same line (`(match …`), aligns its arms under
-                                    // the `m` [D:fmt-match-arms] — so the stored
-                                    // column is the keyword's OWN (line indent + its
-                                    // offset in the piece), not the line indent,
-                                    // which only coincided for a bare `match`.
-                                    // Parens are the only opener that reaches here;
-                                    // `[`/`{` ride the braces path above.
-                                    let mOff =
-                                        piece |> Seq.takeWhile (fun c -> c = '(' || c = ' ') |> Seq.length
+                            yamlBase <- None
 
-                                    let mRest = piece.Substring mOff
+                        // a match head, possibly opened by `(` on the same
+                        // line (`(match …`), aligns its arms under the `m`
+                        // [D:fmt-match-arms] — the stored column is the
+                        // keyword's own, not the line indent
+                        let mOff =
+                            piece |> Seq.takeWhile (fun c -> c = '(' || c = ' ') |> Seq.length
 
-                                    if mRest.StartsWith "match " || mRest = "match" then
-                                        matches <- (indent, depth * 4 + mOff, None) :: matches
+                        let mRest = piece.Substring mOff
 
-                                    line
+                        if mRest.StartsWith "match " || mRest = "match" then
+                            matches <- (indent, col + mOff, None) :: matches
 
-                        // re-annotate: entries pushed on this line learn
+                        // re-annotate: brackets pushed on this line learn
                         // their style from where the line leaves its opener
-                        let raw = braces |> List.map (fun (k, c, _, _, _) -> k, c)
-                        let newRaw = Script.braceStack raw formatted
+                        // (comments carry no brackets)
+                        let code = Script.stripComment formatted
+                        let raw = braces |> List.map (fun b -> b.Kind, b.Col)
+                        let newRaw = Script.braceStack raw code
 
                         let survived =
                             let rec common j =
@@ -392,8 +453,7 @@ let private formatLinesCore (body: string list) : Result<string list, string> =
 
                             common 0
 
-                        let trimmed = formatted.TrimEnd()
-                        let lineIndent = formatted.Length - formatted.TrimStart().Length
+                        let trimmed = code.TrimEnd()
 
                         let pushed =
                             newRaw
@@ -408,15 +468,24 @@ let private formatLinesCore (body: string list) : Result<string list, string> =
                                 let anchor =
                                     let mutable j = c + 1
 
-                                    while j < formatted.Length && formatted[j] = ' ' do
+                                    while j < trimmed.Length && trimmed[j] = ' ' do
                                         j <- j + 1
 
-                                    if j < formatted.Length && stroustrup |> not then
+                                    if j < trimmed.Length && stroustrup |> not then
                                         Some j
                                     else
                                         None
 
-                                k, c, stroustrup, lineIndent, anchor)
+                                let delta = col - indent
+
+                                { Kind = k
+                                  Col = c
+                                  Stroustrup = stroustrup
+                                  LineIndent = col
+                                  OrigLineIndent = indent
+                                  Anchor = anchor
+                                  EntryIndent = anchor |> Option.map (fun a -> a - delta)
+                                  Delta = delta })
 
                         braces <- pushed @ (braces |> List.skip (List.length braces - survived))
                         formatted)

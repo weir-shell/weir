@@ -1381,6 +1381,8 @@ let rec private jsonAdmitted
             err
                 span
                 $"{at}'{n}' is an untagged union — a union crosses the wire with [<Tag \"field\">] on its declaration; {jsonAdmittedSet}"
+        | None when List.contains n deflessBuiltinNominals ->
+            err span $"{at}{n} is an opaque value with no JSON form — encode the fields you need into a record"
         | None -> err span $"{at}unknown type '{n}'{didYouMean n (Map.keys env.Types)}"
     | ty -> err span $"{at}type {formatTy ty} is not admitted; {jsonAdmittedSet}"
 
@@ -1483,6 +1485,8 @@ let rec private xmlAdmitted
         | Some(Record _) -> err span $"{at}'{n}' is generic; the XML boundary needs monomorphic records"
         | Some(Union _) ->
             err span $"{at}'{n}' is a union — XML has no tagged-union reading; {xmlAdmittedSet}"
+        | None when List.contains n deflessBuiltinNominals ->
+            err span $"{at}{n} is an opaque value with no XML form — encode the fields you need into a record"
         | None -> err span $"{at}unknown type '{n}'{didYouMean n (Map.keys env.Types)}"
     | ty -> err span $"{at}type {formatTy ty} is not admitted; {xmlAdmittedSet}"
 
@@ -1718,6 +1722,8 @@ let rec private yamlShape
                 err
                     span
                     $"{at}'{n}' is an untagged union — a union crosses the wire with [<Tag \"field\">] on its declaration"
+            | None when List.contains n deflessBuiltinNominals ->
+                err span $"{at}{n} is an opaque value with no YAML form — encode the fields you need into a record"
             | None -> err span $"{at}unknown type '{n}'{didYouMean n (Map.keys env.Types)}"
     | TVar v when v.StartsWith "__hole" ->
         // cascade suppression [PLAN-diagnostics-arc B6]: the hole means
@@ -1777,6 +1783,8 @@ let rec private yamlableOut (span: Span) (env: TypeEnv) (seen: Set<string>) (pat
                 err
                     span
                     $"{at}'{n}' is an untagged union — a union crosses the wire with [<Tag \"field\">] on its declaration"
+            | None when List.contains n deflessBuiltinNominals ->
+                err span $"{at}{n} is an opaque value with no YAML form — encode the fields you need into a record"
             | None -> err span $"{at}unknown type '{n}'"
     | TVar v when v.StartsWith "__hole" ->
         // cascade suppression [PLAN-diagnostics-arc B6]

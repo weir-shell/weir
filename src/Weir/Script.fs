@@ -969,8 +969,8 @@ let closers (text: string) : string =
     |> String.concat ""
 
 // Still-open brackets (kind, column) after folding a line into the
-// running stack — fmt aligns record fields at top+2 and list elements
-// at top+1, under the first field/element either way
+// running stack — fmt's only caller; parens ride it too, since inside
+// any open bracket fmt shifts rather than re-levels [D:fmt-bracket-shift]
 // (quote-aware via the scanner family; lives here per the rule).
 let braceStack (prev: (char * int) list) (line: string) : (char * int) list =
     // rides the one scanner [D:one-scanner]
@@ -978,7 +978,14 @@ let braceStack (prev: (char * int) list) (line: string) : (char * int) list =
         (fun stack i c ->
             match c with
             | '{'
-            | '[' -> (c, i) :: stack
+            | '['
+            | '(' -> (c, i) :: stack
+            // fmt drops a paren the offside rule has already closed, so a
+            // `)` pops only its own kind
+            | ')' ->
+                (match stack with
+                 | ('(', _) :: rest -> rest
+                 | _ -> stack)
             | '}'
             | ']' ->
                 (match stack with
@@ -6655,11 +6662,14 @@ let analyzeLines
 /// first line would be told it is not weir at all.
 let printDiags (json: bool) (parsedAny: bool) (diags: Diagnostic list) : unit =
     if json then
+        // the encoder is unchanged; a tty sink gets the safe rendering
+        // [D:tty-bidi-sanitize]
         Console.WriteLine(
             jsonBuild (fun w ->
                 w.WriteStartArray()
                 diags |> List.iter (writeDiag w)
                 w.WriteEndArray())
+            |> Eval.sanitizeIfTty Console.IsOutputRedirected
         )
     else
         let c = Color.onStdout.Value

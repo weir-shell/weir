@@ -1102,6 +1102,20 @@ done
 rm -rf "$fmtdir"
 echo "e2e ok: fmt canonicalizes, --check gates, output runs; flags never read as scripts"
 
+# every tracked script is already formatted — a repo-wide fmt regression
+# fails here [D:fmt-bracket-shift]; outside a git checkout (an unpacked
+# tarball) the repo's script dirs stand in
+fmtroot="$(dirname "$0")/.."
+fmtfiles=$(git -C "$fmtroot" ls-files '*.weir' 2>/dev/null) \
+    || fmtfiles=$(cd "$fmtroot" && find ci examples tools -name '*.weir')
+[ -n "$fmtfiles" ] || fail "fmt repo gate found no .weir files under $fmtroot"
+for f in $fmtfiles; do
+    rc=0
+    out=$($BIN fmt --check "$fmtroot/$f" 2>&1) || rc=$?
+    [ $rc -eq 0 ] || fail "tracked script is not fmt-clean: $f — $out"
+done
+echo "e2e ok: every tracked .weir file passes fmt --check"
+
 cat > "$scriptdir/blockmatch.weir" <<'WEOF'
 type Size = Big | Small
 
@@ -11068,12 +11082,15 @@ echo "e2e ok: within serve — F12 request-body read timeout refuses a slow clie
 # name-hiding, BEL) render sanitized at a tty, while SGR colour passes
 # (display-only, cannot hijack) and weir's own colour is unaffected;
 # redirected output stays byte-faithful. Driven through a pty.
+# Bidi controls (RLO here) render as visible \uXXXX [D:tty-bidi-sanitize].
 cat > "$svdir/f13.weir" <<'WEOF'
 let esc = Str.fromBase64 "Gw=="
 let bel = Str.fromBase64 "Bw=="
 let cr = Str.fromBase64 "DQ=="
 let name = esc + "[32mok" + esc + "]0;PWN" + bel + "mid" + cr + "end"
 print name
+let rlo = Str.fromBase64 "4oCu"
+print ("bidi" + rlo + "txt")
 WEOF
 cat > "$svdir/f13err.weir" <<'WEOF'
 let esc = Str.fromBase64 "Gw=="
@@ -11110,7 +11127,9 @@ else:
     osc_vis = b'\\x1b]0;PWN' in data          # OSC defanged to visible text
     cr_raw = b'mid\rend' in data              # the name-hiding CR must NOT appear raw
     cr_vis = b'\\x0d' in data                 # CR visible as \x0d
-    print('SGR_KEPT=%s OSC_RAW=%s OSC_VIS=%s CR_RAW=%s CR_VIS=%s' % (sgr_kept, osc_raw, osc_vis, cr_raw, cr_vis))
+    bidi_raw = b'\xe2\x80\xae' in data         # a raw RLO must NOT appear
+    bidi_vis = b'bidi\\u202Etxt' in data       # RLO visible as \u202E
+    print('SGR_KEPT=%s OSC_RAW=%s OSC_VIS=%s CR_RAW=%s CR_VIS=%s BIDI_RAW=%s BIDI_VIS=%s' % (sgr_kept, osc_raw, osc_vis, cr_raw, cr_vis, bidi_raw, bidi_vis))
 PYEOF
 )
 echo "$sanit" | grep -qF "SGR_KEPT=True" || fail "F13: SGR colour from data should reach the tty (display-only): $sanit"
@@ -11118,6 +11137,8 @@ echo "$sanit" | grep -qF "OSC_RAW=False" || fail "F13: a raw OSC from data must 
 echo "$sanit" | grep -qF "OSC_VIS=True" || fail "F13: an OSC must render as visible \\x1b] at a tty: $sanit"
 echo "$sanit" | grep -qF "CR_RAW=False" || fail "F13: a name-hiding CR must not reach the tty: $sanit"
 echo "$sanit" | grep -qF "CR_VIS=True" || fail "F13: CR must render as visible \\x0d at a tty: $sanit"
+echo "$sanit" | grep -qF "BIDI_RAW=False" || fail "F13: a raw bidi control must not reach the tty: $sanit"
+echo "$sanit" | grep -qF "BIDI_VIS=True" || fail "F13: a bidi control must render as visible \\u202E at a tty: $sanit"
 # weir's own colour survives: the error word stays coloured while the
 # data in the message is sanitized
 colour=$(python3 - "$BIN" "$svdir/f13err.weir" <<'PYEOF'
@@ -11147,9 +11168,49 @@ echo "$colour" | grep -qF "WEIR_COLOUR=True" || fail "F13: weir's own colour mus
 echo "$colour" | grep -qF "DATA_SANITIZED=True" || fail "F13: the name-hiding CR in error text must be sanitized: $colour"
 # redirected (piped) output stays byte-faithful — every raw byte survives
 $BIN "$svdir/f13.weir" > "$svdir/f13.out" 2>/dev/null || true
-python3 -c "import sys; d=open('$svdir/f13.out','rb').read(); sys.exit(0 if (b'\x1b[32mok\x1b]0;PWN\x07mid\rend' in d) else 1)" \
-    || fail "F13: redirected output must stay byte-faithful (raw ESC/OSC/BEL/CR preserved through a pipe)"
+python3 -c "import sys; d=open('$svdir/f13.out','rb').read(); sys.exit(0 if (b'\x1b[32mok\x1b]0;PWN\x07mid\rend' in d and b'bidi\xe2\x80\xaetxt' in d) else 1)" \
+    || fail "F13: redirected output must stay byte-faithful (raw ESC/OSC/BEL/CR/RLO preserved through a pipe)"
 echo "e2e ok: F13 tty data sanitize (data escapes neutralized at a tty, weir colour intact, pipe byte-faithful)"
+# the CLI's own JSON (`check --json`, `check --can --json`) rides the same
+# tty sanitizer [D:tty-bidi-sanitize]: the path carries an RLO and a C1
+# CSI (the encoder escapes only C0), sanitized at a pty and byte-identical
+# when redirected.
+jname=$(printf 'r\342\200\256q\302\233.weir')
+printf 'let x = \n' > "$svdir/$jname"
+printf 'echo "hi"\n' > "$svdir/c$jname"
+jsan=$(python3 - "$BIN" "$svdir/$jname" "$svdir/c$jname" <<'PYEOF'
+import pty, os, sys
+binp, bad, good = sys.argv[1], sys.argv[2], sys.argv[3]
+def at_pty(args):
+    out = []
+    pid, fd = pty.fork()
+    if pid == 0:
+        os.execv(binp, [binp] + args)
+    try:
+        while True:
+            d = os.read(fd, 1024)
+            if not d: break
+            out.append(d)
+    except OSError:
+        pass
+    return b''.join(out)
+for tag, args in (('CHECK', ['check', '--json', bad]), ('CAN', ['check', '--can', '--json', good]), ('CANH', ['check', '--can', good])):
+    data = at_pty(args)
+    raw = (b'\xe2\x80\xae' in data) or (b'\xc2\x9b' in data)
+    vis = b'r\\u202Eq\\x9b.weir' in data
+    print('%s_RAW=%s %s_VIS=%s' % (tag, raw, tag, vis))
+PYEOF
+)
+for tag in CHECK CAN CANH; do
+    echo "$jsan" | grep -qF "${tag}_RAW=False" || fail "tty-bidi: $tag must not put a raw RLO/C1 on the tty: $jsan"
+    echo "$jsan" | grep -qF "${tag}_VIS=True" || fail "tty-bidi: $tag must render RLO/C1 visible at a tty: $jsan"
+done
+$BIN check --json "$svdir/$jname" > "$svdir/j1.out" 2>/dev/null || true
+$BIN check --can --json "$svdir/c$jname" > "$svdir/j2.out" 2>/dev/null || true
+$BIN check --can "$svdir/c$jname" >> "$svdir/j2.out" 2>/dev/null || true
+python3 -c "import sys; a=open('$svdir/j1.out','rb').read(); b=open('$svdir/j2.out','rb').read(); n=b'r\xe2\x80\xaeq\xc2\x9b.weir'; sys.exit(0 if (n in a and n in b and b'\\\\u' not in a + b and b'\\\\x9b' not in a + b) else 1)" \
+    || fail "tty-bidi: redirected check --json / --can (json and human) must stay byte-faithful (raw RLO/C1 in the path)"
+echo "e2e ok: tty-bidi check --json and --can (json and human) sanitized at a tty, byte-faithful when redirected"
 else
     echo "e2e skip: F13 tty sanitize is pty-driven — no termios/pty on Windows Python"
 fi

@@ -6450,6 +6450,124 @@ let bracketContinuationTests =
               Expect.equal (joined [ "let s ="; "    [\"a[\""; "     \"b\"]" ]) "let s = [\"a[\" ; \"b\"]" ""
           } ]
 
+// inside an open bracket fmt shifts, never re-levels [D:fmt-bracket-shift]
+let fmtBracketShiftTests =
+    // formats, asserts the expected layout, then that fmt is the identity
+    // on its own output (formatLines' safety check pins the parse)
+    let fmtTo (input: string list) (expected: string list) =
+        match Weir.Fmt.formatLines input with
+        | Ok out ->
+            Expect.equal out expected "layout"
+
+            match Weir.Fmt.formatLines out with
+            | Ok again -> Expect.equal again out "idempotent"
+            | Error e -> failtest e
+        | Error e -> failtest e
+
+    let keeps (input: string list) = fmtTo input input
+
+    testList
+        "fmt: bracket layout shifts, never re-levels"
+        [ test "F1: a multi-line value inside a record entry keeps its layout" {
+              keeps
+                  [ "let step st line ="
+                    "    { A = not st.A"
+                    "      Kept ="
+                    "        (if st.A then"
+                    "             st.Kept"
+                    "         else"
+                    "             $\"{st.Kept}\\n{line}\") }" ]
+          }
+          test "F2: lines inside an open paren keep their paren-aligned columns" {
+              keeps [ "let s ="; "    (if true then"; "         \"a\""; "     else"; "         \"b\")" ]
+
+              keeps
+                  [ "let burned ="
+                    "    (File.read \"ci/release-burned.yaml\""
+                    "     |> from yaml {| burned: seq<{| tag: string; reason: string |}> |})"
+                    "        .burned"
+                    "    |> Seq.freeze" ]
+          }
+          test "a record inside a list keeps its entry's multi-line value" {
+              keeps
+                  [ "let xs ="
+                    "    [ { A = true"
+                    "        Kept ="
+                    "          (if true then"
+                    "               \"x\""
+                    "           else"
+                    "               \"y\") }"
+                    "      { A = false; Kept = \"z\" } ]" ]
+          }
+          test "a record inside a paren keeps its layout" {
+              keeps
+                  [ "let r ="
+                    "    ({ A = 1"
+                    "       B ="
+                    "         (if true then"
+                    "              2"
+                    "          else"
+                    "              3) })" ]
+          }
+          test "a Stroustrup entry's continuation keeps its depth" {
+              keeps [ "let x = {"; "    A ="; "        1"; "    B = 2"; "}" ]
+          }
+          test "when the opener moves, the inside shifts by the same amount" {
+              fmtTo
+                  [ "let s ="; "      (if true then"; "           \"a\""; "       else"; "           \"b\")" ]
+                  [ "let s ="; "    (if true then"; "         \"a\""; "     else"; "         \"b\")" ]
+
+              fmtTo
+                  [ "let xs ="; "      [ [ 1"; "          2 ]"; "        [ 3 ] ]" ]
+                  [ "let xs ="; "    [ [ 1"; "        2 ]"; "      [ 3 ] ]" ]
+
+              fmtTo
+                  [ "let step st line ="
+                    "      { A = not st.A"
+                    "        Kept ="
+                    "          (if st.A then"
+                    "               st.Kept"
+                    "           else"
+                    "               \"x\") }" ]
+                  [ "let step st line ="
+                    "    { A = not st.A"
+                    "      Kept ="
+                    "        (if st.A then"
+                    "             st.Kept"
+                    "         else"
+                    "             \"x\") }" ]
+          }
+          test "a pulled-back `(match` arm carries its body with it [D:fmt-match-arms]" {
+              fmtTo
+                  [ "let f x ="
+                    "    match x with"
+                    "    | Some n ->"
+                    "        (match n with"
+                    "            | 1 ->"
+                    "                \"a\""
+                    "            | _ -> \"b\")"
+                    "    | None -> \"c\"" ]
+                  [ "let f x ="
+                    "    match x with"
+                    "    | Some n ->"
+                    "        (match n with"
+                    "         | 1 ->"
+                    "             \"a\""
+                    "         | _ -> \"b\")"
+                    "    | None -> \"c\"" ]
+          }
+          test "a line after a closed paren levels past the paren's lines" {
+              keeps
+                  [ "let r ="
+                    "    if true then"
+                    "        1"
+                    "    else"
+                    "        (r.body"
+                    "            |> from json {| runs: seq<{| id: int |}> |})"
+                    "                .runs"
+                    "        |> Seq.length" ]
+          } ]
+
 let fmtMatchTests =
     testList
         "fmt: match arm alignment"
@@ -15172,6 +15290,9 @@ let adversarialTests =
               let p = errs [ "let p ="; "    yaml patch"; "        a: 1"; "print $\"{p}\"" ]
               Expect.exists p (fun s -> s.Contains "a patch does not render") $"no functions wording: {p}"
 
+              let j = errs [ "within proc srv = sh -c \"sleep 1\""; "    [srv] |> to json |> Seq.iter print" ]
+              Expect.exists j (fun s -> s.Contains "Proc is an opaque value with no JSON form") $"opaque at the boundary, not unknown: {j}"
+
               match errs [ "import \"./weir-b38-nope.weir\" as N"; "print (N.f 1)" ] with
               | [ only ] -> Expect.stringContains only "cannot resolve import" "the import's own error"
               | other -> failtest $"a failed import must not echo 'no module named': {other}"
@@ -21067,6 +21188,26 @@ let ttySanitizeTests =
               Expect.equal (Weir.Eval.sanitizeIfTty true hostile) hostile "redirected: raw (a pipe/file is byte-faithful)"
               Expect.stringContains (Weir.Eval.sanitizeIfTty false hostile) "\\x1b" "tty: sanitized"
           }
+          test "bidi controls render as visible \\uXXXX at a tty; redirected stays raw [D:tty-bidi-sanitize]" {
+              // Trojan Source: an RLO makes the displayed name differ from the bytes
+              let rlo = "a\u202Etxt.exe"
+              Expect.equal (Weir.Eval.sanitizeTtyData rlo) "a\\u202Etxt.exe" "RLO renders visible, uppercase hex"
+
+              let all =
+                  [ 0x202A; 0x202B; 0x202C; 0x202D; 0x202E; 0x2066; 0x2067; 0x2068; 0x2069; 0x200E; 0x200F; 0x061C ]
+
+              for n in all do
+                  let c = string (char n)
+                  let shown = Weir.Eval.sanitizeTtyData c
+                  Expect.equal shown ("\\u" + n.ToString("X4")) $"U+{n:X4} renders visible"
+
+              // neighbours of the ranges are ordinary text
+              for n in [ 0x2029; 0x202F; 0x2065; 0x206A; 0x200D; 0x2010; 0x061B ] do
+                  let c = string (char n)
+                  Expect.equal (Weir.Eval.sanitizeTtyData c) c $"U+{n:X4} untouched"
+
+              Expect.equal (Weir.Eval.sanitizeIfTty true rlo) rlo "redirected: bidi bytes pass through"
+          }
           test "Color helpers auto-off when colour is off (piped/NO_COLOR) [D:tty-color]" {
               // the test process's stdout is captured, so onStdout is false —
               // the helpers return the plain string, no escapes (the colour
@@ -24442,6 +24583,7 @@ let allTests =
           chooseTests
           bracketContinuationTests
           fmtMatchTests
+          fmtBracketShiftTests
           fmtStroustrupTests
           replEchoTests
           replColorTests
