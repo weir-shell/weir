@@ -2794,6 +2794,19 @@ let private argvParseValue
         values[f] <- wrapOpt ty (VSecret raw)
     | _ -> values[f] <- wrapOpt ty (VStr raw)
 
+// an unknown long flag's message; `--name=value` for a known `--name`
+// teaches the separate-argument spelling (weir's argv has no `=` form)
+let private unknownFlagMessage (t: string) (known: string list) (presence: string -> bool) : string =
+    match t.IndexOf '=' with
+    | i when i > 2 && List.contains (t.Substring(0, i)) known ->
+        let name, value = t.Substring(0, i), t.Substring(i + 1)
+
+        if presence name then
+            $"unknown flag '{t}' — '{name}' is a presence flag and takes no value"
+        else
+            $"unknown flag '{t}' — a flag's value is the next argument: write '{name} {value}'"
+    | _ -> $"unknown flag '{t}'{didYouMean t known}"
+
 let private argvParseRecord (label: string) (def: RecordDef) (tokens: string list) : Value =
     // minted --no-X twins ride the index as negative entries
     // [D:default-attr]; they join did-you-mean via the same list
@@ -2821,7 +2834,12 @@ let private argvParseRecord (label: string) (def: RecordDef) (tokens: string lis
             match Map.tryFind t longIndex with
             | Some(f, ty, neg) -> consume f ty neg t rest
             | None ->
-                problems.Add $"unknown flag '{t}'{didYouMean t (flagged |> List.map fst)}"
+                let presence n =
+                    match Map.tryFind n longIndex with
+                    | Some(_, TBool, _) -> true
+                    | _ -> false
+
+                problems.Add(unknownFlagMessage t (flagged |> List.map fst) presence)
                 go rest
         | t :: rest when t.StartsWith "-" && t.Length = 2 ->
             match Map.tryFind (t.Substring 1) shortIndex with
@@ -2971,7 +2989,13 @@ let private argvLoadShared
                      | [] -> problems.Add $"flag '{t}' needs a value")
             | Choice2Of3() ->
                 let cands = if i < caseIdx then beforeCandidates else afterCandidates
-                problems.Add $"unknown flag '{t}'{didYouMean t cands}"
+                let presence n =
+                    match Map.tryFind n sharedLong, Map.tryFind n payloadLong with
+                    | Some(_, TBool, _), _
+                    | None, Some(_, TBool, _) -> true
+                    | _ -> false
+
+                problems.Add(unknownFlagMessage t cands presence)
                 go (i + 1) rest
             | Choice3Of3() -> go (i + 1) rest
 

@@ -5606,6 +5606,20 @@ got=$($BIN "$odir/sh.weir" push 2>&1 | tail -1 | sed 's/^.*error: //' || true)
 [ "$got" = "Args.load Cli: missing required flag '--level'; missing required flag '--remote'; missing required flag '--depth'" ] \
     || fail "shared-twin fill order oracle: $got"
 echo "e2e ok: shared twin: token-order scan crosses tiers; fills shared-then-payload (exact)"
+# `--name=value` teaches the separate-argument spelling, both twins; a
+# presence flag says it takes no value
+cat > "$odir/eq.weir" <<'WEOF'
+type Cli = { verbose: bool; target: string }
+let cli = Args.load Cli
+print cli.target
+WEOF
+got=$($BIN "$odir/eq.weir" --target=prod --verbose=yes 2>&1 | tail -1 | sed 's/^.*error: //' || true)
+[ "$got" = "Args.load Cli: unknown flag '--target=prod' — a flag's value is the next argument: write '--target prod'; unknown flag '--verbose=yes' — '--verbose' is a presence flag and takes no value; missing required flag '--target'" ] \
+    || fail "--name=value teaching (record): $got"
+got=$($BIN "$odir/sh.weir" --level 1 push --remote=o --depth 2 2>&1 | tail -1 | sed 's/^.*error: //' || true)
+[ "$got" = "Args.load Cli: unknown flag '--remote=o' — a flag's value is the next argument: write '--remote o'; missing required flag '--remote'" ] \
+    || fail "--name=value teaching (shared twin): $got"
+echo "e2e ok: --name=value teaches '--name value'; a presence flag takes no value"
 rm -rf "$odir"
 
 out=$($BIN "$tadir/cli.weir" --bogus --help); rc=$?

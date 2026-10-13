@@ -240,8 +240,22 @@ let private positionalAtArgs (label: string) (def: RecordDef) : string option =
         |> Option.map (fun _ ->
             $"{label}'{f}' has [<Positional>], which only describes a tool's operands in a command signature — a weir script's own arguments are flags (--{f}); for free arguments read Self.args"))
 
+// `--help` is the usage text's own flag (as `-h` its short): a field
+// deriving it would be shadowed and never set, so it is refused
+let private helpAtArgs (label: string) (def: RecordDef) : string option =
+    def.Fields
+    |> List.tryPick (fun (f, _) ->
+        if kebabFlag f = "help" then
+            Some $"{label}'{f}' would derive '--help', which is reserved for the usage text — name the field something else"
+        else
+            None)
+
 let fieldProblems (label: string) (def: RecordDef) : string option =
     match positionalAtArgs label def with
+    | Some m -> Some m
+    | None ->
+
+    match helpAtArgs label def with
     | Some m -> Some m
     | None ->
 

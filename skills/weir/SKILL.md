@@ -2168,8 +2168,10 @@ print (f 1)
   literals only in the attribute. Default on Option/false-on-bool/
   the subcommand slot are check errors. STRICT: unknown flags (did-you-mean), unexpected
   arguments, repeats, missing requireds — all collected into ONE
-  boundary error. `--help` prints derived usage (short truth +
-  the `///` doc's first line), exit 0, even on invalid invocations. No
+  boundary error. A value is the NEXT argument (`--out x`; `--out=x`
+  is refused, teaching the spaced form). `--help` prints derived usage (short truth +
+  the `///` doc's first line), exit 0, even on invalid invocations; a
+  field deriving `--help` is a check error (reserved). No
   positionals — spell operands as flags. The untyped floor:
   `Args.flag "--clean" "-c"` (bool), `Args.value "--out"`
   (Option of the next token).

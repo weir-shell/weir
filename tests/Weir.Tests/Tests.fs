@@ -24228,6 +24228,11 @@ let sweepFindingTests =
               let m = msgs "p.weir" [ "type Cli = {"; "    [<Positional>]"; "    target: string"; "}"; "let cli = Args.load Cli"; "print cli.target" ]
               Expect.exists m (fun s -> s.Contains "has [<Positional>], which only describes a tool's operands") "refused"
           }
+          // B31: `--help` belongs to the usage text
+          test "an Args.load field deriving --help is refused as reserved" {
+              let m = msgs "h.weir" [ "type Cli = { help: bool; name: string }"; "let cli = Args.load Cli"; "print cli.name" ]
+              Expect.exists m (fun s -> s.Contains "'help' would derive '--help', which is reserved") "refused"
+          }
           test "a command inside plan says commands are refused, not proc" {
               let m = msgs "p.weir" [ "let p = plan"; "    echo hi"; "print (Plan.preview p |> Str.join \"\")" ]
               Expect.exists m (fun s -> s.Contains "commands are refused inside 'plan'") "the message"
