@@ -175,7 +175,7 @@
         {
           "name": "copy",
           "signature": "Dir.copy (src: string) (dst: string) : unit",
-          "summary": "Copy a directory and everything in it from src to dst. Raises if the destination exists; use Dir.deleteAll first to replace it. The copy is always recursive.",
+          "summary": "Copy a directory and everything in it from src to dst. Raises if the destination exists (use Dir.deleteAll first to replace it) or lies inside the source. The copy is always recursive; symlinks are copied as links, never followed.",
           "example": "let d = Path.newTempDir ()\nDir.copy d $\u0022{d}-c\u0022\nDir.deleteAll d\nDir.deleteAll $\u0022{d}-c\u0022",
           "pointer": null
         },

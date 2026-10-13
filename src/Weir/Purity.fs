@@ -423,46 +423,75 @@ let rec firstMutation (env: Map<string, bool>) (te: TypedExpr) : (Span * string)
 /// mutation cannot be coherently captured). A nested `plan` region
 /// composes: this walk stops at it (its own pureViolation arm
 /// re-enters), so a nested plan's proc is caught by the inner region,
-/// not double-reported here.
-let rec firstPlanRefusal (te: TypedExpr) : (Span * string) option =
+/// not double-reported here. The walk carries (span, message, root):
+/// root is the refusal a helper call stands for, so a chain of helpers
+/// names the command, not every hop.
+let rec private planRefusalRoot (refused: Map<string, string>) (te: TypedExpr) : (Span * string * string) option =
+    let found (span: Span) (msg: string) = Some(span, msg, msg)
+
+    let without names = names |> List.fold (fun m n -> Map.remove n m) refused
+
     match te.Kind with
     // a command is a proc spawn — uncapturable
     | TECmd(h, _, _) ->
-        Some(
-            te.Span,
+        found
+            te.Span
             $"'{theadDisplay h}' runs a command, and commands are refused inside 'plan' — a spawned binary reads and writes opaquely, so its effects cannot be captured; plan covers weir-native mutation only (File/Dir/Http)"
-        )
     // a nested plan composes: it handles its own refusals
     | TEWithin(WithinPlan, _, _, _, _) -> None
+    // a helper whose body reaches a refusal refuses at the call
+    // [D:plan-helper-refusal]
+    | TEVar n when refused.ContainsKey n ->
+        Some(te.Span, $"'{n}' cannot run inside 'plan' — in its body, {refused[n]}", refused[n])
     | TEVar n ->
         match n.Split '.' with
         | [| "Proc"; m |] ->
-            Some(
-                te.Span,
+            found
+                te.Span
                 $"'Proc.{m}' touches a process, and 'proc' is refused inside 'plan' — a spawned binary's effects cannot be captured; plan covers weir-native mutation only (File/Dir/Http)"
-            )
         | [| "Plan"; "apply" |] ->
-            Some(
-                te.Span,
+            found
+                te.Span
                 "'Plan.apply' is refused inside 'plan' — a mutation cannot be coherently captured; build the plan here, apply it OUTSIDE the block"
-            )
         // a command reifier targets a spawn (proc) — refused; a
         // library desugar (|seqIter/…) targets a plain member and is
         // captured like any weir-native op, never refused
         // [D:desugar-namespace]
         | _ when Weir.Effects.isCommandReifier n ->
-            Some(
-                te.Span,
+            found
+                te.Span
                 "a reifier runs a command, and commands are refused inside 'plan' — what a program changes cannot be recorded; plan covers weir's own File/Dir/Http changes only"
-            )
         | _ -> None
-    | _ -> Check.childExprs te |> List.tryPick firstPlanRefusal
+    // a local binder shadows a refusing top-level helper
+    | TELet(n, _, v, b) ->
+        planRefusalRoot refused v
+        |> Option.orElseWith (fun () -> planRefusalRoot (without [ n ]) b)
+    | TELetPat(p, v, b) ->
+        planRefusalRoot refused v
+        |> Option.orElseWith (fun () -> planRefusalRoot (without (patBound p)) b)
+    | TELambda(p, _, b) -> planRefusalRoot (without [ p ]) b
+    | TELambdaPat(p, b) -> planRefusalRoot (without (patBound p)) b
+    | _ -> Check.childExprs te |> List.tryPick (planRefusalRoot refused)
+
+let firstPlanRefusal (refused: Map<string, string>) (te: TypedExpr) : (Span * string) option =
+    planRefusalRoot refused te |> Option.map (fun (span, msg, _) -> span, msg)
+
+/// a top-level binding's plan-refusal summary: Some message when it is a
+/// function whose body reaches a refusal (data ran outside any plan)
+/// [D:plan-helper-refusal]
+let planRefusalOf (refused: Map<string, string>) (te: TypedExpr) : string option =
+    if tyHasFun te.Ty then
+        planRefusalRoot refused te |> Option.map (fun (_, _, root) -> root)
+    else
+        None
 
 /// scan a checked statement's tree for `pure` regions and report the
 /// first violation [D:pure-stage1] — the env tracks bindings on the way
 /// down exactly as isPureExpr does, so a region deep in a statement
 /// still sees the statement's own earlier lets
-let rec pureViolation (env: Map<string, bool>) (te: TypedExpr) : (Span * string) option =
+let rec pureViolation (refused: Map<string, string>) (env: Map<string, bool>) (te: TypedExpr) : (Span * string) option =
+    let pureViolation = pureViolation refused
+
     match te.Kind with
     | TEWithin(kind, _, arg, opts, body) ->
         (match kind with
@@ -483,7 +512,7 @@ let rec pureViolation (env: Map<string, bool>) (te: TypedExpr) : (Span * string)
          // captured (fine), proc and nested apply refuse — then keep
          // walking the body for nested pure/readonly/plan regions
          | WithinPlan ->
-             firstPlanRefusal body
+             firstPlanRefusal refused body
              |> Option.orElseWith (fun () -> pureViolation env body)
          | WithinTmp
          | WithinCd

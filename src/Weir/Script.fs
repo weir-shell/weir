@@ -12,54 +12,97 @@ open Weir.Types
 // machine [D:one-scanner] — a second inline quote machine is a review
 // flag. stringScan returns the fold result and whether the line ends
 // inside a string.
+// The scanner's lexical modes: an interpolation hole is code nested
+// inside a string — its own strings and braces nest, and none of it is
+// "outside strings" (a `//` or `{` in a hole is string turf).
+type private ScanMode =
+    | Plain
+    | Single
+    | Verbatim
+    | Triple
+    | Interp
+    | InterpTriple
+    | Hole of depth: int
+
 let private stringScan (f: 'a -> int -> char -> 'a) (init: 'a) (s: string) : 'a * bool =
     let mutable st = init
     let mutable i = 0
-    let mutable inDouble = false
-    let mutable inSingle = false
-    // raw kinds [D:raw-strings]: verbatim @"..." ("" = one quote, no
-    // escapes) and triple-quoted """...""" (no escapes at all,
-    // closes at the first triple [D:raw-strings])
-    let mutable inVerbatim = false
-    let mutable inTriple = false
+    // innermost first; empty = top-level code
+    let mutable modes: ScanMode list = []
+
+    let tripleAt (j: int) =
+        j + 2 < s.Length && s[j] = '"' && s[j + 1] = '"' && s[j + 2] = '"'
+
+    // a string opener at i in code (top level or a hole): raw kinds
+    // [D:raw-strings] — verbatim @"..." ("" = one quote, no escapes) and
+    // triple-quoted """...""" (no escapes, closes at the first triple);
+    // `$` turns a plain or triple quote into its interpolated twin
+    let opener () : bool =
+        let c = s[i]
+        let dollar = i > 0 && s[i - 1] = '$'
+
+        if c = '@' && i + 1 < s.Length && s[i + 1] = '"' then
+            modes <- Verbatim :: modes
+            i <- i + 1
+            true
+        elif tripleAt i then
+            modes <- (if dollar then InterpTriple else Triple) :: modes
+            i <- i + 2
+            true
+        elif c = '"' then
+            modes <- (if dollar then Interp else Plain) :: modes
+            true
+        elif c = '\'' then
+            modes <- Single :: modes
+            true
+        else
+            false
 
     while i < s.Length do
         let c = s[i]
 
-        if inDouble then
+        match modes with
+        | [] ->
+            if not (opener ()) then
+                st <- f st i c
+        | Hole d :: rest ->
+            if not (opener ()) then
+                if c = '{' then modes <- Hole(d + 1) :: rest
+                elif c = '}' then modes <- (if d = 0 then rest else Hole(d - 1) :: rest)
+        | (Plain
+          | Interp as m) :: rest ->
             if c = '\\' && i + 1 < s.Length then
                 i <- i + 1
             elif c = '"' then
-                inDouble <- false
-        elif inSingle then
+                modes <- rest
+            elif m = Interp && c = '{' then
+                if i + 1 < s.Length && s[i + 1] = '{' then
+                    i <- i + 1
+                else
+                    modes <- Hole 0 :: modes
+        | Single :: rest ->
             if c = '\'' then
-                inSingle <- false
-        elif inVerbatim then
+                modes <- rest
+        | Verbatim :: rest ->
             if c = '"' then
                 if i + 1 < s.Length && s[i + 1] = '"' then
                     i <- i + 1
                 else
-                    inVerbatim <- false
-        elif inTriple then
-            if c = '"' && i + 2 < s.Length && s[i + 1] = '"' && s[i + 2] = '"' then
+                    modes <- rest
+        | (Triple
+          | InterpTriple as m) :: rest ->
+            if tripleAt i then
                 i <- i + 2
-                inTriple <- false
-        elif c = '@' && i + 1 < s.Length && s[i + 1] = '"' then
-            inVerbatim <- true
-            i <- i + 1
-        elif c = '"' && i + 2 < s.Length && s[i + 1] = '"' && s[i + 2] = '"' then
-            inTriple <- true
-            i <- i + 2
-        elif c = '"' then
-            inDouble <- true
-        elif c = '\'' then
-            inSingle <- true
-        else
-            st <- f st i c
+                modes <- rest
+            elif m = InterpTriple && c = '{' then
+                if i + 1 < s.Length && s[i + 1] = '{' then
+                    i <- i + 1
+                else
+                    modes <- Hole 0 :: modes
 
         i <- i + 1
 
-    st, (inDouble || inSingle || inVerbatim || inTriple)
+    st, not modes.IsEmpty
 
 let private foldOutsideStrings (f: 'a -> int -> char -> 'a) (init: 'a) (s: string) : 'a = fst (stringScan f init s)
 
@@ -1086,14 +1129,17 @@ type private Pend =
       // sibling pipe columns, innermost first [D:pipe-alignment]: a
       // consecutive `|` line must sit exactly on a group column; the
       // first pipe after a non-pipe line opens a group. Per group:
-      // (groupCol, bodyCol, isForward) [D:match-pipe-offside]. isForward =
+      // (groupCol, bodyCol, isForward, parenDepth) [D:match-pipe-offside]. isForward =
       // a `|>` group vs a bare `|` (match/union arm) group; bodyCol = the
       // arm body's column (after the arm `->`; for a dangling arm resolved
       // to the body line's indent when it arrives; MaxValue until then).
       // A forward `|>` landing on a bare arm group: at the `|` it closes
       // the match, at or under the body it extends the arm, left of the
       // body it is rejected.
-      PipeGroups: (int * int * bool) list
+      // The 4th element is the paren depth at open: a line whose closers
+      // drop below it ends the group — `(match … | _ -> x)` leaves no arm
+      // group behind [D:compound-paren-prune]
+      PipeGroups: (int * int * bool * int) list
       LastWasPipe: bool
       District: District option
       // (headIndent, textStart, parenDepthAtOpen) [D:compound-paren-prune]
@@ -1831,7 +1877,8 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                                         |> List.filter (fun (_, _, d) -> d <= depth)
                                                                     PipeGroups =
                                                                         p.PipeGroups
-                                                                        |> List.skipWhile (fun (g, _, _) -> g > backTo)
+                                                                        |> List.skipWhile (fun (g, _, _, _) -> g > backTo)
+                                                                        |> List.filter (fun (_, _, _, d) -> d <= depth)
                                                                     LastWasPipe = false
                                                                     Brackets = brackets },
                                                             acc,
@@ -1852,7 +1899,7 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                     | _ ->
                                                         // deeper groups close at this line's column
                                                         let groups =
-                                                            p.PipeGroups |> List.skipWhile (fun (g, _, _) -> g > indent)
+                                                            p.PipeGroups |> List.skipWhile (fun (g, _, _, _) -> g > indent)
 
                                                         // the arm body's column [D:match-pipe-offside]: the
                                                         // token after the arm `->` for an inline body;
@@ -1884,15 +1931,15 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                                 // whether the arm body was inline or dangled
                                                                 isFwd
                                                                 && (match groups with
-                                                                    | (_, _, false) :: _ -> true
+                                                                    | (_, _, false, _) :: _ -> true
                                                                     | _ -> false)
                                                             then
                                                                 match groups with
-                                                                | (g, _, _) :: _ when indent = g ->
+                                                                | (g, _, _, _) :: _ when indent = g ->
                                                                     // at the `|` column: close the match,
                                                                     // pipe the whole
                                                                     Ok(true, groups)
-                                                                | (g, bc, _) :: _ when indent < bc ->
+                                                                | (g, bc, _, _) :: _ when indent < bc ->
                                                                     // left of the arm body: neither closes
                                                                     // nor continues
                                                                     let bodyDesc =
@@ -1906,7 +1953,7 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                                 | _ ->
                                                                     // at or under the body: extend the arm
                                                                     // body, opening a forward group
-                                                                    Ok(false, (indent, indent, true) :: groups)
+                                                                    Ok(false, (indent, indent, true, p.ParenDepth) :: groups)
                                                             elif not p.LastWasPipe || p.PrevDangles then
                                                                 // first pipe after a non-pipe line
                                                                 // opens a group — anchored at or
@@ -1917,7 +1964,7 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                                 // its arms sit deeper by design
                                                                 // [D:function-keyword]
                                                                 match groups with
-                                                                | (g, _, false) :: rest when g = indent && not isFwd ->
+                                                                | (g, _, false, d) :: rest when g = indent && not isFwd ->
                                                                     // a returning arm after a non-pipe
                                                                     // body [D:match-pipe-offside]: the
                                                                     // group at this exact column is the
@@ -1925,7 +1972,7 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                                     // compound (the previous arm's
                                                                     // if/let tail) offside-closes below,
                                                                     // it is not "its match"
-                                                                    Ok(false, (g, bodyCol, false) :: rest)
+                                                                    Ok(false, (g, bodyCol, false, d) :: rest)
                                                                 | _ ->
                                                                     match p.Compounds with
                                                                     | (h, _, _) :: _ when indent < h ->
@@ -1934,26 +1981,26 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                                     | _ ->
                                                                         Ok(
                                                                             false,
-                                                                            (indent, (if isFwd then indent else bodyCol), isFwd)
+                                                                            (indent, (if isFwd then indent else bodyCol), isFwd, p.ParenDepth)
                                                                             :: groups
                                                                         )
                                                             else
                                                                 match groups with
-                                                                | (g, _, false) :: rest when g = indent && not isFwd ->
+                                                                | (g, _, false, d) :: rest when g = indent && not isFwd ->
                                                                     // a new arm aligns with its siblings:
                                                                     // reset the group's body column to this
                                                                     // arm's — each arm has its own body
                                                                     // offside [D:match-pipe-offside]
-                                                                    Ok(false, (g, bodyCol, false) :: rest)
-                                                                | (g, _, _) :: _ when g = indent ->
+                                                                    Ok(false, (g, bodyCol, false, d) :: rest)
+                                                                | (g, _, _, _) :: _ when g = indent ->
                                                                     // aligned sibling (pipeline stage)
                                                                     Ok(false, groups)
-                                                                | (g, _, _) :: _ ->
+                                                                | (g, _, _, _) :: _ ->
                                                                     Error
                                                                         $"line {lineNo}: this line is indented off its siblings (they sit at column {g}) — align the group exactly"
                                                                 | [] ->
                                                                     Error
-                                                                        $"line {lineNo}: this line is indented off its siblings — align the group exactly"
+                                                                        $"line {lineNo}: this line (column {indent}) is indented off its siblings — align the group exactly"
 
                                                         match aligned with
                                                         | Error e -> Error e
@@ -1993,6 +2040,17 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                                     (lineNo, indent, depth - 1, p.StmtLevel) :: keptL
                                                                 else
                                                                     keptL
+
+                                                            let unpruned =
+                                                                if closes then
+                                                                    (indent, indent, true, p.ParenDepth)
+                                                                    :: (groups
+                                                                        |> List.filter (fun (g, _, _, _) -> g < indent))
+                                                                else
+                                                                    groups
+
+                                                            let pipeGroups =
+                                                                unpruned |> List.filter (fun (_, _, _, d) -> d <= depth)
 
                                                             let lastIndent, stmtLevel =
                                                                 match poppedL with
@@ -2034,14 +2092,12 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                                         // group and opens a fresh forward
                                                                         // group so a following `|>` aligns
                                                                         // as a pipeline [D:match-pipe-offside]
-                                                                        PipeGroups =
-                                                                            if closes then
-                                                                                (indent, indent, true)
-                                                                                :: (groups
-                                                                                    |> List.filter (fun (g, _, _) -> g < indent))
-                                                                            else
-                                                                                groups
-                                                                        LastWasPipe = not (isUntil || isAlways)
+                                                                        PipeGroups = pipeGroups
+                                                                        // a group this line's `)` closed ends the
+                                                                        // pipe run: the next pipe opens afresh
+                                                                        LastWasPipe =
+                                                                            not (isUntil || isAlways)
+                                                                            && pipeGroups.Length = unpruned.Length
                                                                         Compounds =
                                                                             compounds
                                                                             |> List.filter (fun (_, _, d) ->
@@ -2207,15 +2263,16 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                                             // dangling arm resolves its body
                                                                             // column [D:match-pipe-offside]
                                                                             (match p.PipeGroups with
-                                                                             | (g, bc, false) :: rest when
+                                                                             | (g, bc, false, d) :: rest when
                                                                                  bc = System.Int32.MaxValue
                                                                                  && p.PrevDangles
                                                                                  && indent > g
                                                                                  ->
-                                                                                 (g, indent, false) :: rest
+                                                                                 (g, indent, false, d) :: rest
                                                                              | pg -> pg)
-                                                                            |> List.skipWhile (fun (g, _, _) ->
+                                                                            |> List.skipWhile (fun (g, _, _, _) ->
                                                                                 g > lastIndent)
+                                                                            |> List.filter (fun (_, _, _, d) -> d <= depth)
                                                                         LastWasPipe = false },
                                                                 acc,
                                                                 blankSinceHead)
@@ -2604,6 +2661,8 @@ and LoadedModule =
       // the signature to add (type included)
       PrivateMembers: (string * Scheme) list
       TypeNames: string list
+      // each TypeDefs entry's identity [D:transitive-types]
+      TypeOrigins: (string * string) list
       // each statement with its logical line [D:can-report]: the line
       // carries the segment table, so a capability inside a module can
       // name its own file:line:col like any diagnostic
@@ -3087,15 +3146,133 @@ let private cleanParseDump (ll: LogicalLine) (msg: string) : string =
     |> dropEmptyOpeners
     |> String.concat "\n"
 
+// ---- transitive types [D:transitive-types] -------------------------------
+// a type reached only through another module's signatures holds its plain
+// name while nothing else wants it; a local declaration or a direct
+// import of another same-named type takes the name, and the transitive
+// one moves to its origin-qualified name ("A.Pt") everywhere in the env,
+// so its values keep their type
+
+let rec private renameTy (m: Map<string, string>) (ty: Ty) : Ty =
+    match ty with
+    | TNamed(n, args) ->
+        TNamed(Map.tryFind n m |> Option.defaultValue n, args |> List.map (renameTy m))
+    | TFun(a, b) -> TFun(renameTy m a, renameTy m b)
+    | TSeq t -> TSeq(renameTy m t)
+    | TTuple ts -> TTuple(ts |> List.map (renameTy m))
+    | TRowVar(r, fields) -> TRowVar(r, fields |> List.map (fun (f, t) -> f, renameTy m t))
+    | t -> t
+
+let private renameScheme (m: Map<string, string>) (sch: Scheme) : Scheme = { sch with Ty = renameTy m sch.Ty }
+
+let private renameDef (m: Map<string, string>) (def: TypeDef) : TypeDef =
+    match def with
+    | Record rd ->
+        Record
+            { rd with
+                Fields = rd.Fields |> List.map (fun (f, t) -> f, renameTy m t) }
+    | Union u ->
+        Union
+            { u with
+                Cases = u.Cases |> List.map (fun (c, p) -> c, p |> Option.map (renameTy m)) }
+
+let private renameEnvTypes (m: Map<string, string>) (tenv: TypeEnv) : TypeEnv =
+    if Map.isEmpty m then
+        tenv
+    else
+        let key n = Map.tryFind n m |> Option.defaultValue n
+
+        { tenv with
+            Values = tenv.Values |> Map.map (fun _ sch -> renameScheme m sch)
+            Modules = tenv.Modules |> Map.map (fun _ ms -> ms |> Map.map (fun _ sch -> renameScheme m sch))
+            ModulePrivate = tenv.ModulePrivate |> Map.map (fun _ ms -> ms |> Map.map (fun _ sch -> renameScheme m sch))
+            Types = tenv.Types |> Map.toList |> List.map (fun (n, d) -> key n, renameDef m d) |> Map.ofList
+            TypeOrigins = tenv.TypeOrigins |> Map.toList |> List.map (fun (n, o) -> key n, o) |> Map.ofList }
+
+// "A.Pt@/abs/a.weir" -> "A.Pt", made unique against the env's types
+let private qualifiedFree (tenv: TypeEnv) (origin: string) : string =
+    let at = origin.IndexOf '@'
+    let q = if at > 0 then origin.Substring(0, at) else origin
+
+    let rec free (c: string) =
+        if Map.containsKey c tenv.Types then free (c + "'") else c
+
+    free q
+
+let private isTransitive (tenv: TypeEnv) (n: string) =
+    tenv.TypeOrigins.ContainsKey n
+    && not (tenv.ModuleTypes |> Map.exists (fun _ owned -> owned.Contains n))
+
+/// a transitive type named `n` gives its plain name up (see above)
+let yieldTransitive (n: string) (tenv: TypeEnv) : TypeEnv =
+    if isTransitive tenv n then
+        renameEnvTypes (Map [ n, qualifiedFree tenv tenv.TypeOrigins[n] ]) tenv
+    else
+        tenv
+
 // merge a loaded module into the importer's env [D:modules-v1]: values
 // (and union ctors) under Modules[Alias], types flat under their plain
 // name, and the provenance for the qualified literal under ModuleTypes.
+// Its transitive types [D:transitive-types] join an existing entry of the
+// same origin, else take the plain name if free, else the qualified one.
 let private mergeModule (tenv: TypeEnv) (lm: LoadedModule) : TypeEnv =
+    let originOf n =
+        lm.TypeOrigins |> List.tryFind (fst >> (=) n) |> Option.map snd
+
+    let own = Set.ofList lm.TypeNames
+
+    // an own type takes its name from a transitive holder of another origin
+    let tenv =
+        lm.TypeNames
+        |> List.fold
+            (fun (t: TypeEnv) n ->
+                match Map.tryFind n t.TypeOrigins, originOf n with
+                | Some held, Some o when held = o -> t
+                | _ -> yieldTransitive n t)
+            tenv
+
+    let subst =
+        lm.TypeDefs
+        |> List.filter (fun (n, _) -> not (own.Contains n))
+        |> List.fold
+            (fun (acc: Map<string, string>, taken: Set<string>) (n, _) ->
+                let o = originOf n |> Option.defaultValue n
+
+                match tenv.TypeOrigins |> Map.tryFindKey (fun _ held -> held = o) with
+                | Some existing -> Map.add n existing acc, taken
+                | None when not (Map.containsKey n tenv.Types) && not (own.Contains n) && not (taken.Contains n) ->
+                    acc, Set.add n taken
+                | None ->
+                    let q = qualifiedFree tenv o
+                    Map.add n q acc, Set.add q taken)
+            (Map.empty, Set.empty)
+        |> fst
+
+    let rename n = Map.tryFind n subst |> Option.defaultValue n
+
+    let typeDefs =
+        lm.TypeDefs
+        |> List.choose (fun (n, d) ->
+            let n' = rename n
+            // joined an existing same-origin entry: nothing to add
+            if n' <> n && Map.containsKey n' tenv.Types && not (own.Contains n) then
+                None
+            else
+                Some(n', renameDef subst d))
+
+    let origins =
+        lm.TypeOrigins |> List.map (fun (n, o) -> rename n, o)
+
     { tenv with
-        Modules = Map.add lm.Alias (Map.ofList lm.Members) tenv.Modules
-        Types = lm.TypeDefs |> List.fold (fun ts (n, d) -> Map.add n d ts) tenv.Types
-        ModuleTypes = Map.add lm.Alias (Set.ofList lm.TypeNames) tenv.ModuleTypes
-        ModulePrivate = Map.add lm.Alias (Map.ofList lm.PrivateMembers) tenv.ModulePrivate }
+        Modules = Map.add lm.Alias (lm.Members |> List.map (fun (n, s) -> n, renameScheme subst s) |> Map.ofList) tenv.Modules
+        Types = typeDefs |> List.fold (fun ts (n, d) -> Map.add n d ts) tenv.Types
+        ModuleTypes = Map.add lm.Alias own tenv.ModuleTypes
+        TypeOrigins = origins |> List.fold (fun m (n, o) -> Map.add n o m) tenv.TypeOrigins
+        ModulePrivate =
+            Map.add
+                lm.Alias
+                (lm.PrivateMembers |> List.map (fun (n, s) -> n, renameScheme subst s) |> Map.ofList)
+                tenv.ModulePrivate }
 
 let private checkStatementCore
     (gateExprs: bool)
@@ -3243,7 +3420,9 @@ let private checkStatementCore
                       Note = None
                       Warnings = [] }
         | Ok(SType decl) ->
-            match Check.checkDecl tenv decl with
+            // a local declaration takes its name from a transitive type
+            // [D:transitive-types]
+            match Check.checkDecl (yieldTransitive decl.Name tenv) decl with
             | Error terr -> Error(typed StmtTag.Type terr)
             | Ok tenv' ->
                 Ok
@@ -3620,7 +3799,18 @@ let private checkStatementCore
                         $"the name '{lm.Alias}' is already a module in scope; import it under a different name with 'as'"
                 )
             | Ok lm ->
-                match lm.TypeNames |> List.tryFind (fun n -> Map.containsKey n tenv.Types) with
+                // a transitive holder yields, the same type reached again is
+                // no clash [D:transitive-types]
+                let sameOrigin n =
+                    match Map.tryFind n tenv.TypeOrigins, lm.TypeOrigins |> List.tryFind (fst >> (=) n) with
+                    | Some held, Some(_, o) -> held = o
+                    | _ -> false
+
+                match
+                    lm.TypeNames
+                    |> List.tryFind (fun n ->
+                        Map.containsKey n tenv.Types && not (sameOrigin n) && not (isTransitive tenv n))
+                with
                 | Some clash ->
                     Error(
                         stmtErr
@@ -3669,7 +3859,7 @@ let checkStatement
             // pureViolation returns the complete located message
             // (pure's "…forbids effects, but…" or readonly's
             // "…forbids external mutation, but…") [D:pure-stage2]
-            match Purity.pureViolation tenv.PureBindings te with
+            match Purity.pureViolation tenv.PlanRefused tenv.PureBindings te with
             | Some(span, message) ->
                 let physLine, physCol = translate ll span.Start.Col
 
@@ -3692,7 +3882,11 @@ let checkStatement
                         { st with
                             Env =
                                 { st.Env with
-                                    PureBindings = Map.add name (Purity.isPureExpr tenv.PureBindings te) st.Env.PureBindings } }
+                                    PureBindings = Map.add name (Purity.isPureExpr tenv.PureBindings te) st.Env.PureBindings
+                                    PlanRefused =
+                                        match Purity.planRefusalOf tenv.PlanRefused te with
+                                        | Some why -> Map.add name why st.Env.PlanRefused
+                                        | None -> Map.remove name st.Env.PlanRefused } }
                 | _ -> Ok st)
 
 // ---- unused bindings [D:unused-bindings]: whole-file threading ------------
@@ -4350,10 +4544,10 @@ let rec loadModuleCachedWith
                         | Some(l, c, msg) -> at l c msg
                         | None ->
 
-                            // a module exports only its own types (from its Body's
-                            // decls), not what it transitively imported (no re-export,
-                            // decision 3); Members already exclude imported ones
-                            // (those live under Modules[·], not Values)
+                            // a module's own types (from its Body's decls); what it
+                            // imported crosses only as reachableDefs below, never as
+                            // its own [D:transitive-types]; Members already exclude
+                            // imported ones (those live under Modules[·], not Values)
                             let typeDefs =
                                 moduleBody
                                 |> List.choose (function
@@ -4387,14 +4581,63 @@ let rec loadModuleCachedWith
                                 |> List.filter (fun (n, _) ->
                                     not (Set.contains n sc.Signed) && not (Set.contains n ctorNames))
 
+                            // an imported type reachable from what this module
+                            // exports (a signature, an own type's field or case)
+                            // crosses with it, so an importer can read, show and
+                            // compare the values it receives; it is not this
+                            // module's type (TypeNames: no qualified literal, no
+                            // re-export under this alias) [D:transitive-types]
+                            let reachableDefs =
+                                let own = typeDefs |> List.map fst |> Set.ofList
+
+                                let rec walk (seen: Set<string>) (ty: Ty) =
+                                    match ty with
+                                    | TFun(a, b) -> walk (walk seen a) b
+                                    | TSeq t -> walk seen t
+                                    | TTuple ts -> ts |> List.fold walk seen
+                                    | TRowVar(_, fields) -> fields |> List.map snd |> List.fold walk seen
+                                    | TNamed(n, args) ->
+                                        let seen = args |> List.fold walk seen
+
+                                        if seen.Contains n || Map.containsKey n baseTenv.Types then
+                                            seen
+                                        else
+                                            match Map.tryFind n finalTenv.Types with
+                                            | Some def -> defTys def |> List.fold walk (Set.add n seen)
+                                            | None -> seen
+                                    | _ -> seen
+
+                                and defTys (def: TypeDef) =
+                                    match def with
+                                    | Record rd -> rd.Fields |> List.map snd
+                                    | Union u -> u.Cases |> List.choose snd
+
+                                let roots =
+                                    (members |> List.map (fun (_, sch) -> sch.Ty))
+                                    @ (typeDefs |> List.collect (snd >> defTys))
+
+                                roots
+                                |> List.fold walk own
+                                |> Set.filter (fun n -> not (own.Contains n))
+                                |> Set.toList
+                                |> List.choose (fun n -> Map.tryFind n finalTenv.Types |> Option.map (fun d -> n, d))
+
                             let loaded =
                                 { Alias = alias
                                   NaturalName = natural |> Option.defaultValue alias
                                   AbsPath = absPath
-                                  TypeDefs = typeDefs
+                                  TypeDefs = typeDefs @ reachableDefs
                                   Members = members
                                   PrivateMembers = privateMembers
                                   TypeNames = typeDefs |> List.map fst
+                                  TypeOrigins =
+                                      let ownOrigin n =
+                                          $"{natural |> Option.defaultValue alias}.{n}@{absPath}"
+
+                                      (typeDefs |> List.map (fun (n, _) -> n, ownOrigin n))
+                                      @ (reachableDefs
+                                         |> List.map (fun (n, _) ->
+                                             n, Map.tryFind n finalTenv.TypeOrigins |> Option.defaultValue (ownOrigin n)))
                                   Body = moduleBody }
 
                             cache[absPath] <- loaded

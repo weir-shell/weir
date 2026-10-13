@@ -854,6 +854,24 @@ let warningTests =
                   "let s = \"\"\"x // y\"\"\""
                   "triple + a real comment after"
           }
+          test "the scanner: interpolation holes nest their own strings [D:one-scanner]" {
+              let src = "print $\"{\"a\" + \" // x\"}\""
+              Expect.equal (Weir.Script.stripComment src) src "a // inside a hole's string is content"
+
+              Expect.equal
+                  (Weir.Script.stripComment "print $\"{\"\\\"\"}\" // c")
+                  "print $\"{\"\\\"\"}\""
+                  "an escaped quote in a hole's string, then a real comment"
+
+              Expect.equal
+                  (Weir.Script.stripComment "print $\"\"\"{ \"}\" } // y\"\"\" // z")
+                  "print $\"\"\"{ \"}\" } // y\"\"\""
+                  "raw interpolated: a brace in a hole's string does not close the hole"
+
+              Expect.isFalse (Weir.Script.endsInsideString "print $\"{\"}\"}\"") "closed"
+              Expect.isTrue (Weir.Script.endsInsideString "print $\"{f \"a\"") "an open hole is inside the string"
+              expectValue "$\"{\"a\" + \" // x\"}\"" (VStr "a // x")
+          }
           test "the repair closers understand raw kinds" {
               Expect.equal (Weir.Script.closers "let s = @\"dangling") "\"" "verbatim closer"
               Expect.equal (Weir.Script.closers "let s = \"\"\"dangling") "\"\"\"" "triple closer"
@@ -2074,6 +2092,12 @@ let boundaryTests =
                   | Error terr -> failtest (formatError terr)
               | other -> failtest $"unexpected: {other}"
           }
+          test "$$<<< a malformed ${…} splice is a parse error, never literal text [D:heredoc-splice]" {
+              for line in [ "v=${1 +}"; "v=${name"; "v=${}" ] do
+                  match Weir.Parser.parseLine realResolver (asm [ "let t = $$<<<"; $"    {line}" ]) with
+                  | Error _ -> ()
+                  | other -> failtest $"{line}: expected a parse error, got {other}"
+          }
           test "$<<< dedents IDENTICALLY to <<<: only the hole differs [D:text-block]" {
               // the regression [D:text-block]: $<<< once left-trimmed every
               // line (runFragmentAt's `ws`), flattening deeper-indented lines
@@ -2320,6 +2344,34 @@ let boundaryTests =
               match yamlDoc [ "a:"; "- x"; "b: 1" ] with
               | Weir.Yaml.NMap([ ("a", Weir.Yaml.NSeq(_, _)); ("b", _) ], _) -> ()
               | other -> failtest $"zero-indent seq + sibling: {other}"
+          }
+          test "quoted yaml keys unescape like values; every key to yaml writes reads back (B25)" {
+              let keysOf d =
+                  match d with
+                  | Weir.Yaml.NMap(es, _) -> es |> List.map fst
+                  | other -> failtest $"expected a mapping, got {other}"
+
+              Expect.equal
+                  (keysOf (yamlDoc [ "\"a\\tb\": 1"; "\"n\\nl\": 2"; "\"q\\\"\": 3"; "\"\": 4"; "'it''s': 5"; "\"\\u00e9\": 6" ]))
+                  [ "a\tb"; "n\nl"; "q\""; ""; "it's"; "é" ]
+                  "escapes resolve in quoted keys; \"\" is the empty key"
+
+              Expect.stringContains (yamlErr [ "\"a\\q\": 1" ]) "line 1: in this key: unsupported escape" "a bad key escape is located"
+              Expect.stringContains (yamlErr [ "k: 1"; ": 2" ]) "line 2: expected 'key: value'" "a bare ':' is still no key"
+
+              let keys = [ "a\tb"; "n\nl"; "q\""; ""; "null"; "it's"; "back\\"; " lead" ]
+
+              let written =
+                  let lit (k: string) =
+                      k.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\t", "\\t").Replace("\n", "\\n")
+
+                  run ("[" + (keys |> List.map (fun k -> "(\"" + lit k + "\", 1)") |> String.concat "; ") + "] |> to yaml")
+                  |> forceSeq
+                  |> List.map (function
+                      | VStr s -> s
+                      | other -> failtest $"{other}")
+
+              Expect.equal (keysOf (yamlDoc written)) keys "to yaml keys read back verbatim"
           }
           test "empty flow collections read: {} and [] as values (map + seq position); populated flow still rejects [D:yaml-empty-flow]" {
               // `{}` → the empty mapping, `[]` → the empty sequence, as a
@@ -5355,6 +5407,19 @@ let genericsTests =
                   (formatTy (checkOk "[1; 2] |> Seq.groupBy (fun x -> x)").Ty)
                   "seq<int * seq<int>>"
                   "type display"
+          }
+          test "Seq.groupBy groups by any Eq key — tuples, options, records [D:groupby-eq-keys]" {
+              expectValue
+                  "[1; 2; 3; 4] |> Seq.groupBy (fun n -> (n % 2, n > 2)) |> Seq.length"
+                  (VInt 4L)
+
+              expectValue
+                  "[1; 2; 3] |> Seq.groupBy (fun n -> if n > 1 then Some 0 else None) |> Seq.map (fun (k, g) -> Seq.length g) |> sum"
+                  (VInt 3L)
+
+              expectValue
+                  "[(\"a\", Ok 1); (\"a\", Ok 1); (\"b\", Error \"e\")] |> Seq.groupBy (fun p -> p) |> Seq.map (fun (k, g) -> Seq.length g) |> Seq.max"
+                  (VInt 2L)
           } ]
 
 
@@ -7054,6 +7119,18 @@ let seqPatternTests =
               Expect.stringContains m "tuple patterns need a tuple value" "the plain message"
               Expect.isFalse (m.Contains "groups looser than") "no precedence hint on a non-cons tuple pattern"
           }
+          test "a tuple pattern types an unresolved value as a tuple of its arity (B21)" {
+              expectValue "let f = function | (a, b) -> $\"{a}{b}\" in f (1, \"x\")" (VStr "1x")
+              expectValue "let f = fun (a, b) -> a in f (1, 2)" (VInt 1L)
+
+              expectValue
+                  "let g p = match p with | (0, s) -> s | (n, s) -> $\"{n}{s}\" in g (1, \"x\")"
+                  (VStr "1x")
+
+              expectValue "let m o = match o with | Some (a, b) -> b | None -> 0 in m (Some (1, 2))" (VInt 2L)
+              // the arity is fixed by the pattern
+              checkErr "let h p = match p with | (a, b) -> a in h (1, 2, 3)" |> ignore
+          }
           test "no user-facing pattern message says 'scrutinee' (the vocabulary sweep)" {
               // a representative spread across the moved messages (bool, int
               // literal, seq, unit) — none may carry the jargon
@@ -8557,9 +8634,44 @@ let planApplyTests =
               finally
                   System.IO.Directory.Delete(dir, true)
           }
+          test "a top-level helper that runs a command refuses at check inside plan, through every hop (B22)" {
+              let msgs lines =
+                  diagsIn "h.weir" lines |> List.map (fun d -> d.Message)
+
+              let m =
+                  msgs
+                      [ "let mk () = touch /tmp/weir-b22-never | complete"
+                        "let mk2 () ="
+                        "    let _r = mk ()"
+                        "    ()"
+                        "let changes ="
+                        "    plan"
+                        "        mk2 ()"
+                        "print $\"{changes |> Plan.isEmpty}\"" ]
+
+              Expect.exists m (fun s -> s.Contains "'mk2' cannot run inside 'plan' — in its body, a reifier runs a command") "names the helper and the root"
+
+              // a File.write helper is captured, a local shadow is not the helper,
+              // and data computed by a command outside the plan is just data
+              let clean =
+                  msgs
+                      [ "let mk () = touch /tmp/weir-b22-never | complete"
+                        "let w () = File.write \"/tmp/weir-b22-never\" [\"a\"]"
+                        "let out = echo hi | complete"
+                        "let changes ="
+                        "    plan"
+                        "        w ()"
+                        "        let mk () = print \"local\""
+                        "        mk ()"
+                        "        print $\"{out.exitCode}\""
+                        "print $\"{changes |> Plan.isEmpty} {mk () |> fun c -> c.exitCode}\"" ]
+
+              Expect.isFalse (clean |> List.exists (fun s -> s.Contains "inside 'plan'")) $"no refusal: {clean}"
+          }
           // [D:plan-proc-runtime-guard] DA-02: firstPlanRefusal is a
-          // syntactic walk that cannot follow a helper reference, so an
-          // indirect proc slips past the checker. A thread-local guard at
+          // syntactic walk that follows top-level helpers but not a
+          // callable passed as a value, so that indirect proc slips past
+          // the checker. A thread-local guard at
           // the one spawn point refuses at runtime (the helper runs on the
           // capturing thread). The syntactic diagnostic stays for usability.
           test "DA-02: a helper-wrapped proc inside a plan REFUSES at runtime, no process runs" {
@@ -8574,10 +8686,11 @@ let planApplyTests =
                           [ "let runMarker () ="
                             $"    let lines = sh -c \"printf marker > {markerW}\""
                             "    lines |> Seq.length"
-                            "let changes ="
+                            "let capture f ="
                             "    plan"
-                            "        let _forced = runMarker ()"
+                            "        let _forced = f ()"
                             "        ()"
+                            "let changes = capture runMarker"
                             "print $\"empty={changes |> Plan.isEmpty}\"" ]
 
                   Expect.notEqual code 0 "the plan refused the indirect proc"
@@ -8599,10 +8712,11 @@ let planApplyTests =
                       runFile
                           [ "let doExec () ="
                             $"    sh -c \"printf marker > {markerW}\" | exec"
-                            "let changes ="
+                            "let capture f ="
                             "    plan"
-                            "        let _forced = doExec ()"
+                            "        let _forced = f ()"
                             "        ()"
+                            "let changes = capture doExec"
                             "print $\"empty={changes |> Plan.isEmpty}\"" ]
 
                   Expect.notEqual code 0 "the plan refused the indirect exec"
@@ -9614,6 +9728,14 @@ let semanticTokenTests =
                   | Ok out2 -> Expect.equal out2 out "fmt is idempotent with docs present"
                   | Error e -> failtestf "second fmt failed: %s" e
           }
+          test "doc comments: fmt never anchors a /// inside a heredoc/yaml block into its content [D:content-bytes]" {
+              for src in
+                  [ [ "let t = <<<"; "    abc"; "/// doc"; "    def"; "print t" ]
+                    [ "let t = yaml"; "    a: 1"; "/// doc"; "    b: 2"; "print t" ] ] do
+                  match Weir.Fmt.formatLines src with
+                  | Ok out -> Expect.equal out src "the /// line stays where it is"
+                  | Error e -> failtestf "fmt failed: %s" e
+          }
           test "fmt: a yaml district keeps relative indentation, re-anchors the base [D:yaml-district]" {
               // the block's relative indentation is semantic (JYamlLine rel),
               // so fmt re-anchors the base to marker+1 depth and preserves
@@ -9645,6 +9767,24 @@ let semanticTokenTests =
                   match Weir.Fmt.formatLines out with
                   | Ok out2 -> Expect.equal out2 out "fmt is idempotent on nested districts"
                   | Error e -> failtestf "second fmt failed: %s" e
+          }
+          test "fmt: a comment outdented past a district's base clamps inside the district" {
+              for marker, a, b in [ "<<<", "abc", "def"; "yaml", "a: 1", "b: 2" ] do
+                  let src =
+                      [ $"let t = {marker}"
+                        $"          {a}"
+                        "  // c"
+                        $"          {b}"
+                        "print t" ]
+
+                  match Weir.Fmt.formatLines src with
+                  | Error e -> failtestf "fmt failed (%s): %s" marker e
+                  | Ok out ->
+                      Expect.equal out [ $"let t = {marker}"; $"    {a}"; " // c"; $"    {b}"; "print t" ] marker
+
+                      match Weir.Fmt.formatLines out with
+                      | Ok out2 -> Expect.equal out2 out $"idempotent ({marker})"
+                      | Error e -> failtestf "second fmt failed: %s" e
           }
           test "fmt: a next-line district marker merges onto the binding line [D:district-canonical]" {
               // canonical layout puts the marker on the binding line; the
@@ -14915,6 +15055,21 @@ let adversarialTests =
         [ test "wrong arity application" {
               Expect.stringContains (checkErr "double 1 2").Message "'double' takes at most 1 argument(s), but got 2" ""
           }
+          test "over-application through a returned function applies the result (B20)" {
+              expectValue "id (fun x -> x + 1) 2" (VInt 3L)
+              expectValue "let t = (1, fun x -> x * 10) in (snd t) 5" (VInt 50L)
+              expectValue "let t = (1, fun x -> x * 10) in 5 |> snd t" (VInt 50L)
+
+              expectValue
+                  "let handlers = Map.ofPairs [ (\"k\", fun x -> x + 1) ] in Map.get \"k\" handlers 4"
+                  (VInt 5L)
+
+              // a result that is not a function keeps the arity teaching
+              Expect.stringContains
+                  (checkErr "let f x = x in f 1 2").Message
+                  "'f' takes at most 1 argument(s), but got 2"
+                  ""
+          }
           test "shadowing with a different type is respected" {
               Expect.stringContains
                   (checkErr "let x = 1 in let x = \"s\" in x + 1").Message
@@ -16745,6 +16900,18 @@ let matchPipeOffsideTests =
               | Ok [ ll ] -> Expect.isFalse (ll.Text.Contains "(xs") "a pipeline head stays unwrapped"
               | other -> failtest $"expected one logical line, got {other}"
           }
+          test "a match closed inside parens leaves no arm group: a following |> pipes the paren [D:compound-paren-prune]" {
+              for lines in
+                  [ [ "let r ="; "    (match 1 with"; "     | 1 -> \"a\""; "     | _ -> \"b\")"; "    |> Str.toUpper" ]
+                    [ "let r = (match 1 with"; "         | 1 -> \"a\""; "         | _ -> \"b\")"; "        |> Str.toUpper" ] ] do
+                  match assemble lines with
+                  | Ok [ ll ] -> Expect.stringContains ll.Text "\"b\") |> Str.toUpper" "the pipe follows the paren"
+                  | other -> failtest $"expected one logical line, got {other}"
+
+              match typecheck env (parse "(match 1 with\n | 1 -> \"a\"\n | _ -> \"b\")\n|> Str.toUpper") with
+              | Ok te -> Expect.equal te.Ty TStr "the parenthesized match, piped"
+              | Error terr -> failtest (formatError terr)
+          }
           test "a misaligned pipeline stage is still caught" {
               match assemble [ "xs"; "|> Seq.sum"; "  |> print" ] with
               | Error _ -> ()
@@ -17234,15 +17401,9 @@ let pinsWalkTests =
     // source (the grep pass's list) — fragments, not joined sentences
     testList
         "pins walk: source-only teaching messages [D:pins-walk]"
-        [ test "groupBy rejects non-scalar keys naming the set" {
-              let m =
-                  try
-                      run "[(fun x -> x)] |> Seq.groupBy (fun f -> f) |> Seq.freeze" |> ignore
-                      ""
-                  with e ->
-                      e.Message
-
-              Expect.stringContains m "groupBy: keys must be ints, strings or bools" ""
+        [ test "groupBy refuses a non-Eq key at check [D:groupby-eq-keys]" {
+              let e = checkErr "[(fun x -> x)] |> Seq.groupBy (fun f -> f) |> Seq.freeze"
+              Expect.stringContains e.Message "requires equatable values" ""
           }
           test "Float.toInt out of range names the value" {
               let m =
@@ -17516,6 +17677,35 @@ let sizedFindingsTests =
 
               Expect.stringContains m2 "Dir.copy: destination exists:" "the family overwrite rule"
           }
+          // B26: links copy as links (dangling ones too), and a
+          // destination inside the source refuses instead of recursing
+          test "Dir.copy copies symlinks as links and refuses a destination inside the source" {
+              if not (System.OperatingSystem.IsWindows()) then
+                  withTempDir "weir-dircopy" (fun root ->
+                      let src = Path.Combine(root, "src")
+                      Directory.CreateDirectory(Path.Combine(src, "sub")) |> ignore
+                      File.WriteAllText(Path.Combine(src, "sub", "f"), "a")
+                      File.CreateSymbolicLink(Path.Combine(src, "dl"), "sub") |> ignore
+                      File.CreateSymbolicLink(Path.Combine(src, "dang"), "nowhere") |> ignore
+                      Directory.CreateSymbolicLink(Path.Combine(root, "lnk"), src) |> ignore
+                      let w = weirPath root
+                      run $"Dir.copy \"{w}/src\" \"{w}/dst\"" |> ignore
+                      Expect.equal (FileInfo(Path.Combine(root, "dst", "dl")).LinkTarget) "sub" "a dir link stays a link"
+                      Expect.equal (FileInfo(Path.Combine(root, "dst", "dang")).LinkTarget) "nowhere" "a dangling link copies"
+                      Expect.equal (File.ReadAllText(Path.Combine(root, "dst", "sub", "f"))) "a" "files copy"
+
+                      for (s, d) in [ "src", "src/inner"; "lnk", "src/inner"; "src", "lnk/inner" ] do
+                          let m =
+                              try
+                                  run $"Dir.copy \"{w}/{s}\" \"{w}/{d}\"" |> ignore
+                                  ""
+                              with e ->
+                                  e.Message
+
+                          Expect.stringContains m "is inside the source" $"{s} -> {d} refuses"
+
+                      Expect.isFalse (Directory.Exists(Path.Combine(src, "inner"))) "nothing was copied into the source")
+          }
           test "Http.withQuery is data-last: the url pipes in" {
               Expect.equal
                   (run "\"http://x/s\" |> Http.withQuery [(\"q\", \"a b\")]")
@@ -17628,6 +17818,12 @@ let sizeTests =
               Expect.stringContains (perr "1MB") "(MiB)" "names the fix (FParsec wraps the line)"
               Expect.stringContains (perr "1.5MiB") "decimal size literals do not exist" ""
               Expect.stringContains (perr "1GiB512MiB") "sizes take a single unit" "nobody writes compound sizes"
+          }
+          test "a unit-suffixed literal past int64 (bytes / ms) is a parse error, never a wrap" {
+              Expect.stringContains (perr "9999999999TiB") "size literal out of range" "TiB overflow"
+              Expect.stringContains (perr "9999999999999999h") "duration literal out of range" "h overflow"
+              Expect.stringContains (perr "99999999999999999999ms") "duration literal out of range" "digits past int64"
+              Expect.equal (run "8388607TiB") (VSize(8388607L * 1024L * 1024L * 1024L * 1024L)) "the largest TiB fits"
           }
           test "File.size returns Size — the one intended break, and it compares" {
               let d =
@@ -19329,6 +19525,17 @@ let instantTests =
                       e.Message
 
               Expect.stringContains m "ISO 8601" "the reader's law is named"
+          }
+          test "parse: RFC 3339's space separator and nanosecond fractions read (TOML offset datetimes) (B26)" {
+              for src, want in
+                  [ "1979-05-27 07:32:00Z", "1979-05-27T07:32:00Z"
+                    "1979-05-27T00:32:00.999999999-07:00", "1979-05-27T07:32:00.999Z"
+                    "1979-05-27 00:32:00.123456789+01:00", "1979-05-26T23:32:00.123Z"
+                    "2026-08-14T12:34:56.1234567Z", "2026-08-14T12:34:56.123Z" ] do
+                  Expect.equal (run $"show (Instant.parse \"{src}\")") (VStr want) src
+
+              Expect.equal (run "Instant.tryParse \"2026-08-14  12:00:00Z\"") (VUnion("None", None)) "one space only"
+              Expect.equal (run "Instant.tryParse \"2026-08-14 \"") (run "Instant.tryParse \"2026-08-14\"") "a bare date is unchanged"
           }
           test "parseWith: the named-format reader — prefix semantics, %b/%e, position errors, year-less refusal" {
               Expect.equal
@@ -21278,6 +21485,64 @@ let moduleSignatureTests =
                               "'Lib.helper' is module-private (no signature) — add `let helper : int -> int` in the module to export it"
                               "the migration teaching, inferred type included"
                       | [] -> failtest "the private member must refuse")
+          }
+          test "a type a module imports crosses with the signatures that mention it (B23)" {
+              withDir
+                  [ "a.weir",
+                    [ "module A"
+                      "type Verdict = Good of int | Bad"
+                      "type Pt = { x: int; v: Verdict }"
+                      "let origin : unit -> Pt"
+                      "let origin () = { x = 0; v = Bad }" ]
+                    "b.weir", [ "module B"; "import \"./a.weir\""; "let make : int -> seq<Pt>"; "let make n = [ A.origin () ]" ]
+                    "s.weir",
+                    [ "import \"./b.weir\""
+                      "for p in B.make 3 do"
+                      "    print $\"{p.x} {show p} {p == p}\""
+                      "    match p.v with"
+                      "    | Good n -> print $\"{n}\""
+                      "    | Bad -> print \"bad\"" ]
+                    // reachable is not owned: no qualified literal under B
+                    "q.weir", [ "import \"./b.weir\""; "let p = B.Pt { x = 1; v = Bad }"; "print p.x" ] ]
+                  (fun td ->
+                      Expect.isEmpty (diagsOf td "s.weir") "field access, show, ==, and the union's cases resolve"
+                      Expect.isNonEmpty (diagsOf td "q.weir") "B does not re-export Pt as its own")
+          }
+          test "a transitive type yields its name to a local declaration and keeps its values [D:transitive-types]" {
+              let a =
+                  [ "module A"
+                    "type Pt = { x: int }"
+                    "let origin : unit -> Pt"
+                    "let origin () = { x = 0 }" ]
+
+              let b = [ "module B"; "import \"./a.weir\""; "let make : int -> Pt"; "let make n = { x = n }" ]
+
+              withDir
+                  [ "a.weir", a
+                    "b.weir", b
+                    // the local Pt takes the name; B's values keep A's Pt
+                    "local.weir",
+                    [ "import \"./b.weir\""
+                      "type Pt = { name: string }"
+                      "let p = B.make 3"
+                      "let q = { name = \"n\" }"
+                      "print $\"{p.x} {show p} {p == B.make 3} {q.name}\"" ]
+                    // ...and never borrows the local one's fields
+                    "wrong.weir", [ "import \"./b.weir\""; "type Pt = { name: string }"; "let p = B.make 3"; "print p.name" ]
+                    // a direct import of the same type, in either order, is one type
+                    "direct1.weir",
+                    [ "import \"./b.weir\""; "import \"./a.weir\""; "print $\"{B.make 0 == A.origin ()}\"" ]
+                    "direct2.weir",
+                    [ "import \"./a.weir\""; "import \"./b.weir\""; "print $\"{B.make 0 == A.origin ()}\"" ] ]
+                  (fun td ->
+                      Expect.isEmpty (diagsOf td "local.weir") "the local declaration does not conflict"
+
+                      match diagsOf td "wrong.weir" with
+                      | d :: _ -> Expect.stringContains d.Message "A.Pt has no field 'name'" "the transitive type keeps its identity"
+                      | [] -> failtest "the shadowed type must not take the local fields"
+
+                      Expect.isEmpty (diagsOf td "direct1.weir") "transitive then direct: one type"
+                      Expect.isEmpty (diagsOf td "direct2.weir") "direct then transitive: one type")
           }
           test "did-you-mean at the private refusal ranges over SIGNED members only" {
               withDir

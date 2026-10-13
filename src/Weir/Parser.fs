@@ -676,18 +676,33 @@ let private intLit =
                 // no 'd' [D:duration]: a day is not a uniform length
                 failFatallyAt at "durations have no 'd' suffix — a day is not a fixed length; write hours (24h)"
             | _, Some(unit, None) ->
-                match dec, expo, System.Int64.TryParse digits with
-                | None, None, (true, n) ->
-                    match unit with
-                    | "ms" -> preturn (EDur n)
-                    | "s" -> preturn (EDur(n * 1000L))
-                    | "m" -> preturn (EDur(n * 60000L))
-                    | "h" -> preturn (EDur(n * 3600000L))
-                    | "B" -> preturn (ESize n)
-                    | "KiB" -> preturn (ESize(n * 1024L))
-                    | "MiB" -> preturn (ESize(n * 1024L * 1024L))
-                    | "GiB" -> preturn (ESize(n * 1024L * 1024L * 1024L))
-                    | _ -> preturn (ESize(n * 1024L * 1024L * 1024L * 1024L))
+                match dec, expo with
+                | None, None ->
+                    let factor =
+                        match unit with
+                        | "ms"
+                        | "B" -> 1L
+                        | "s" -> 1000L
+                        | "m" -> 60000L
+                        | "h" -> 3600000L
+                        | "KiB" -> 1024L
+                        | "MiB" -> 1024L * 1024L
+                        | "GiB" -> 1024L * 1024L * 1024L
+                        | _ -> 1024L * 1024L * 1024L * 1024L
+
+                    // checked: the value is stored in ms / bytes, and a
+                    // literal past int64 there is an error, never a wrap
+                    match System.Int64.TryParse digits with
+                    | true, n when n <= System.Int64.MaxValue / factor ->
+                        preturn (if isSizeUnit unit then ESize(n * factor) else EDur(n * factor))
+                    | _ ->
+                        let what =
+                            if isSizeUnit unit then
+                                "size literal out of range (64-bit bytes)"
+                            else
+                                "duration literal out of range (64-bit milliseconds)"
+
+                        failFatallyAt at $"{what}: {digits}{unit}"
                 | _ -> failFatallyAt at (compoundTeaching unit)
             | None, None ->
                 match dec, expo with
@@ -3187,7 +3202,7 @@ and private parseTplBlockBody
                                     else
                                         Result.Ok(YtItem(YtScalar("", false, spanAt col)))
                                 else
-                                    match Yaml.splitKey 0 inlinePart with
+                                    match Yaml.splitKey inlinePart with
                                     | Some _ ->
                                         // compact map item: the first entry lives on
                                         // this line at a virtual rel of item+2
@@ -3218,7 +3233,7 @@ and private parseTplBlockBody
                         | Result.Error e -> Result.Error e
                         | Result.Ok item -> units j (UItem item :: acc)
                     else
-                        match Yaml.splitKey 0 text with
+                        match Yaml.splitKey text with
                         | None -> Result.Error("expected 'key:', '- ', or 'for … in …' in this yaml block", col)
                         | Some(rawKey, rest) ->
                             let keyR =
@@ -3437,7 +3452,11 @@ let private heredocInterpLine: Parser<InterpPart<Expr> list, unit> =
 let private heredocSplicePart: Parser<InterpPart<Expr>, unit> =
     choice
         [ pstring "$$" >>% IStr "$"
-          attempt (pchar '$' >>. pchar '{' >>. ws >>. holeExpr .>> pchar '}') |>> IExpr
+          // committed after `${`: a malformed splice is an error, never
+          // literal text
+          pstring "${" >>. ws >>. holeExpr
+          .>> (pchar '}' <?> "'}' closing the ${ splice")
+          |>> IExpr
           attempt (spanned (pchar '$' >>. many1Satisfy2 isIdentStart isIdentCont))
           |>> (fun (n, sp) -> IExpr { Kind = EVar n; Span = sp })
           pchar '$' >>% IStr "$"

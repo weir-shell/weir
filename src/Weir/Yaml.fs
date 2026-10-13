@@ -278,8 +278,10 @@ let private emptyFlow (lineNo: int) (raw: string) : Node option =
     | _ -> None
 
 // split `key: value` / `key:` at the first unquoted `: ` (or `:` at EOL);
-// keys may be plain (k8s dotted/slashed labels) or quoted
-let splitKey (lineNo: int) (s: string) : (string * string) option =
+// keys may be plain (k8s dotted/slashed labels) or quoted — a quoted key
+// unescapes through scalarCore (one machine with values, so the
+// emitter's keys read back, `""` included). Ok None = not a key line
+let splitKeyR (s: string) : Result<(string * string) option, string> =
     let mutable inD = false
     let mutable inS = false
     let mutable i = 0
@@ -306,19 +308,26 @@ let splitKey (lineNo: int) (s: string) : (string * string) option =
         i <- i + 1
 
     if found < 0 then
-        None
+        Ok None
     else
         let rawKey = s.Substring(0, found).Trim()
+        let rest = s.Substring(found + 1)
 
-        let key =
-            if rawKey.StartsWith "\"" && rawKey.EndsWith "\"" && rawKey.Length >= 2 then
-                rawKey.Substring(1, rawKey.Length - 2)
-            elif rawKey.StartsWith "'" && rawKey.EndsWith "'" && rawKey.Length >= 2 then
-                rawKey.Substring(1, rawKey.Length - 2).Replace("''", "'")
-            else
-                rawKey
+        if rawKey = "" then
+            Ok None
+        elif (rawKey.StartsWith "\"" && rawKey.EndsWith "\"" || rawKey.StartsWith "'" && rawKey.EndsWith "'")
+             && rawKey.Length >= 2 then
+            match scalarCore rawKey with
+            | Ok(Some(key, _)) -> Ok(Some(key, rest))
+            | Ok None -> Ok(Some("", rest))
+            | Error msg -> Error $"in this key: {msg}"
+        else
+            Ok(Some(rawKey, rest))
 
-        if key = "" then None else Some(key, s.Substring(found + 1))
+let splitKey (s: string) : (string * string) option =
+    match splitKeyR s with
+    | Ok r -> r
+    | Error _ -> None
 
 // ---- multi-line quoted flow scalars [D:quoted-fold] ------------------------
 
@@ -743,8 +752,9 @@ let rec private parseBlock
                                         parseScalar no inline'
                                     | None ->
 
-                                    match splitKey no inline' with
-                                    | Some _ ->
+                                    match splitKeyR inline' with
+                                    | Error msg -> Error $"line {no}: {msg}"
+                                    | Ok(Some _) ->
                                         // compact map item: `- key: v` — the first
                                         // entry lives on this line at indent+2
                                         let shifted =
@@ -753,7 +763,7 @@ let rec private parseBlock
                                                 lines[i + 1 .. j - 1]
 
                                         parseBlock rawSrc shifted 0 shifted.Length (indent + 2) (depth + 1)
-                                    | None ->
+                                    | Ok None ->
                                         match quotedValue no indent i j inline' with
                                         | Some r -> r
                                         | None ->
@@ -768,8 +778,9 @@ let rec private parseBlock
 
             items start [] |> Result.map (fun its -> NSeq(its, firstNo))
         else
-            match splitKey firstNo firstBody with
-            | Some _ ->
+            match splitKeyR firstBody with
+            | Error msg -> Error $"line {firstNo}: {msg}"
+            | Ok(Some _) ->
                 // a block map: entries at exactly this indent
                 let rec entries i acc (seen: Set<string>) =
                     if i >= fin then
@@ -783,9 +794,10 @@ let rec private parseBlock
                         elif ind > indent then
                             Error $"line {no}: unexpected indentation"
                         else
-                            match splitKey no (raw.Substring indent) with
-                            | None -> Error $"line {no}: expected 'key: value' in this mapping"
-                            | Some(key, rest) ->
+                            match splitKeyR (raw.Substring indent) with
+                            | Error msg -> Error $"line {no}: {msg}"
+                            | Ok None -> Error $"line {no}: expected 'key: value' in this mapping"
+                            | Ok(Some(key, rest)) ->
                                 if seen.Contains key then
                                     Error $"line {no}: duplicate key '{key}'"
                                 else
@@ -832,7 +844,7 @@ let rec private parseBlock
                                     | Ok v -> entries jSeq ((key, v) :: acc) (seen.Add key)
 
                 entries start [] Set.empty |> Result.map (fun es -> NMap(es, firstNo))
-            | None ->
+            | Ok None ->
                 match blockHeaderIndicated firstBody with
                 | Some(Error msg) -> Error $"line {firstNo}: {msg}"
                 | Some(Ok header) ->

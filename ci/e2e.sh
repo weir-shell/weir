@@ -271,12 +271,15 @@ else
 fi
 
 # macOS ships no GNU timeout — a background-watchdog polyfill (same
-# contract: run the command, kill it after N seconds, nonzero on kill)
+# contract: run the command, kill it after N seconds, nonzero on kill).
+# `<&0` keeps the caller's stdin: without job control an `&` command's
+# stdin is /dev/null unless redirected explicitly, so a piped or `<` input
+# would never reach the command.
 if ! command -v timeout >/dev/null 2>&1; then
     timeout() {
         local secs=$1
         shift
-        "$@" &
+        "$@" <&0 &
         local pid=$!
         (
             sleep "$secs"
@@ -3602,6 +3605,24 @@ rp_case lambda "lambda.weir:2:5: error: command failed with exit code 6" '[1] |>
     sh -c "exit 6"
     print $"{i}")
 '
+# a parallel arm's raise is blamed where the arm raised, not on the
+# thread that rethrows it
+rp_case pmap "pmap.weir:4:9: error: arm 2" 'let ys =
+    [1; 2; 3]
+    |> Seq.pmap (fun i ->
+        if i == 2 then fail $"arm {i}" else i)
+print $"{Seq.length ys}"
+'
+rp_case piter "piter.weir:3:9: error: arm 2" 'print "start"
+[1; 2; 3] |> Seq.piter (fun i ->
+        if i == 2 then fail $"arm {i}")
+'
+rp_case pfirst "pfirst.weir:2:5: error: race 1" 'let f i =
+    fail $"race {i}"
+
+let w = [1; 2] |> Seq.pfirst f
+print $"{w}"
+'
 # a failure inside a function defined in ANOTHER statement reports the
 # body line, then one `called from` line per call, innermost first
 rp_case fncall "fncall.weir:2:5: error: command failed with exit code 7" 'let f () =
@@ -3624,6 +3645,7 @@ in: $out"
     echo "e2e ok: runtime trace — $1"
 }
 rp_frames fncall "  called from fncall.weir:6:5"
+rp_frames pfirst "  called from pfirst.weir:4:1"
 rp_case nested "nested.weir:3:5: error: deep" 'let inner () =
     print "i"
     fail "deep"
@@ -5138,6 +5160,31 @@ WEOF
 rerr=$(printf 'a\nb\n' | $BIN "$pdir/re.weir" 2>&1) && fail "re-enumerating Self.stdin must raise" || true
 echo "$rerr" | grep -qF "already consumed" || fail "the one-enumeration teaching: $rerr"
 echo "e2e ok: Self.prompt reads per-line, EOF refuses, Self.stdin enumerates once"
+# Self.prompt consumes its line and nothing more: the rest of stdin stays
+# for a later child and for Self.stdin — a pipe and a regular file alike
+cat > "$pdir/ahead.weir" <<'WEOF'
+let a = Self.prompt "first?"
+print $"got {a}"
+cat
+WEOF
+printf 'a\r\nb\nc\n' > "$pdir/ahead.in"
+for how in pipe file; do
+    if [ "$how" = pipe ]; then
+        out=$(printf 'a\nb\nc\n' | timeout 10 $BIN "$pdir/ahead.weir" 2>/dev/null) || fail "prompt read-ahead ($how) failed: $out"
+    else
+        out=$(timeout 10 $BIN "$pdir/ahead.weir" < "$pdir/ahead.in" 2>/dev/null) || fail "prompt read-ahead ($how) failed: $out"
+    fi
+    [ "$out" = "$(printf 'got a\nb\nc')" ] || fail "Self.prompt must leave the rest of stdin to cat ($how): $out"
+done
+printf 'x\ny\nz\n' > "$pdir/ahead2.in"
+cat > "$pdir/ahead2.weir" <<'WEOF'
+let a = Self.prompt "first?"
+print $"got {a}"
+Self.stdin |> Seq.iter print
+WEOF
+out=$(timeout 10 $BIN "$pdir/ahead2.weir" < "$pdir/ahead2.in" 2>/dev/null)
+[ "$out" = "$(printf 'got x\ny\nz')" ] || fail "Self.prompt then Self.stdin reads the rest: $out"
+echo "e2e ok: Self.prompt reads no further than its newline (pipe + file, CRLF trimmed)"
 rm -rf "$pdir"
 
 # anonymous record types [D:anon-records]: the shape inline in the
@@ -10578,23 +10625,24 @@ expect "the parallel combinator ran outside a plan" "ran" "$out"
 [ "$(ls "$padir"/paro-*.txt 2>/dev/null | wc -l)" -eq 3 ] || fail "the outside-plan parallel combinator did not write all arms"
 echo "e2e ok: plan/apply — a parallel combinator OUTSIDE a plan still runs"
 
-# DA-02 [D:plan-proc-runtime-guard]: the syntactic firstPlanRefusal cannot
-# follow a helper reference, so an indirect proc built inside a plan slips
-# past `check`. A runtime guard at the one spawn point refuses it: no
-# child process runs, no marker file. (Direct proc still refuses at check
-# above — belt and suspenders.)
+# DA-02 [D:plan-proc-runtime-guard]: the syntactic firstPlanRefusal follows
+# top-level helpers but not a callable passed as a value, so that indirect
+# proc slips past `check`. A runtime guard at the one spawn point refuses
+# it: no child process runs, no marker file. (Direct proc and a named
+# helper still refuse at check — belt and suspenders.)
 cat > "$padir/indirect.weir" <<WEOF
 let runMarker () =
     let lines = sh -c "printf marker > $padir/proc-marker.txt"
     lines |> Seq.length
-let changes =
+let capture f =
     plan
-        let _forced = runMarker ()
+        let _forced = f ()
         ()
+let changes = capture runMarker
 print \$"empty={changes |> Plan.isEmpty}"
 WEOF
-# it checks clean (the syntactic walk cannot see through the helper)...
-$BIN check "$padir/indirect.weir" >/dev/null 2>&1 || true
+# it checks clean (the syntactic walk cannot see through the parameter)...
+out=$($BIN check "$padir/indirect.weir" 2>&1) || fail "a callable passed into a plan must check clean: $out"
 # ...but refuses at runtime before the child spawns
 out=$($BIN "$padir/indirect.weir" 2>&1) && fail "an indirect proc inside a plan must refuse at runtime" || true
 echo "$out" | grep -qF "refused inside 'plan'" || fail "the runtime proc-in-plan guard must fire: $out"

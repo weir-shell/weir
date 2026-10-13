@@ -1897,6 +1897,8 @@ let rec private checkPattern (ctx: Ctx) (env: TypeEnv) (ty: Ty) (p: Pattern) : R
         | PSeqNil
         | PCons _
         | PSeqList _ -> Some(TSeq(TVar(freshName ctx "a")))
+        // a tuple pattern fixes the arity, its elements stay open
+        | PTuple ps -> Some(TTuple(ps |> List.map (fun _ -> TVar(freshName ctx "a"))))
         | _ -> None
 
     let pre =
@@ -4578,6 +4580,19 @@ and private checkSpine
     : Result<TypedExpr, TypeError> =
     result {
         let! thead = infer ctx env head
+        return! checkSpineOn ctx env head thead args piped
+    }
+
+// the spine with its head already typed — `head` supplies spans only
+and private checkSpineOn
+    (ctx: Ctx)
+    (env: TypeEnv)
+    (head: Expr)
+    (thead: TypedExpr)
+    (args: Expr list)
+    (piped: (Ty * Span) option)
+    : Result<TypedExpr, TypeError> =
+    result {
         let arity = args.Length + (if piped.IsSome then 1 else 0)
 
         // applying a callee whose type is still an unconstrained variable
@@ -4602,6 +4617,46 @@ and private checkSpine
 
                 bind ctx env head.Span (TVar v) arrow
             | _ -> Ok()
+
+        let rec arrows n ty =
+            match resolve ctx ty with
+            | TFun(_, cod) -> arrows (n + 1) cod
+            | res -> n, res
+
+        // over-application through a returned function: when the declared
+        // arrows run out at a type variable (`id f x`, `snd t 5`), apply
+        // what the arrows take, then apply the rest to the result — the
+        // result's variable unifies with a fresh arrow like any callee
+        let split =
+            match funParams ctx arity thead.Ty with
+            | Some _ -> None
+            | None ->
+                match arrows 0 thead.Ty with
+                | available, TVar _ when available > 0 && available <= args.Length ->
+                    let taken, rest = List.splitAt available args
+
+                    let partial =
+                        taken
+                        |> List.fold (fun (acc: Expr) a -> { Kind = EApp(acc, a); Span = Span.union acc.Span a.Span }) head
+
+                    Some(partial, taken, rest)
+                | _ -> None
+
+        // a result that is no function after all keeps the arity teaching
+        let! applied =
+            match split with
+            | Some(partial, taken, rest) ->
+                checkSpineOn ctx env head thead taken None
+                |> Result.map (fun tpartial ->
+                    match resolve ctx tpartial.Ty with
+                    | TFun _
+                    | TVar _ -> Some(partial, tpartial, rest)
+                    | _ -> None)
+            | None -> Ok None
+
+        match applied with
+        | Some(partial, tpartial, rest) -> return! checkSpineOn ctx env partial tpartial rest piped
+        | None ->
 
         match funParams ctx arity thead.Ty with
         | None ->

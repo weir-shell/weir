@@ -1149,23 +1149,12 @@ let private groupByImpl: Value =
             match s with
             | VSeq items ->
                 VSeq(
+                    // any Eq key, by Value's structural equality — countBy's
+                    // key [D:groupby-eq-keys]
                     Seq.delay (fun () ->
                         items
-                        |> Seq.groupBy (fun item ->
-                            match apply keyf item with
-                            | VInt n -> box n
-                            | VStr str -> box str
-                            | VBool b -> box b
-                            | v -> failwith $"groupBy: keys must be ints, strings or bools, got {formatValue v}")
-                        |> Seq.map (fun (key, group) ->
-                            let keyValue =
-                                match key with
-                                | :? int64 as n -> VInt n
-                                | :? string as str -> VStr str
-                                | :? bool as b -> VBool b
-                                | _ -> unreachable "groupBy key box"
-
-                            VTuple [ keyValue; VSeq(List.ofSeq group :> seq<Value>) ]))
+                        |> Seq.groupBy (apply keyf)
+                        |> Seq.map (fun (key, group) -> VTuple [ key; VSeq(List.ofSeq group :> seq<Value>) ]))
                 )
             | v -> unreachable $"the checker rejects 'groupBy' on {formatValue v}"))
 
@@ -1317,17 +1306,22 @@ let private runParallelWith (degree: int) (f: Value) (items: seq<Value>) : Value
     let workers = min degree (max 1 arr.Length)
     let mutable next = -1
     let errors = System.Collections.Concurrent.ConcurrentDictionary<int, exn>()
+    // an arm's raise is blamed where the arm raised [D:runtime-position];
+    // an arm that raises before evaluating anything falls back to the call
+    let callNode = RunPos.Current
 
     let worker () =
         let mutable i = System.Threading.Interlocked.Increment &next
 
         while i < arr.Length do
             Session.enterWorker parentCwd
+            RunPos.Current <- callNode
 
             try
                 try
                     out[i] <- apply f arr[i]
                 with e ->
+                    pinOnThread e
                     // every arm still runs (data parallelism does not
                     // half-finish); the first error by input order
                     // rethrows after the join
@@ -1381,6 +1375,8 @@ let private runRaceWith (degree: int) (f: Value) (items: seq<Value>) : Value =
 
     let workers = min degree arr.Length
     let mutable next = -1
+    // blamed where the arm raised, as in runParallelWith
+    let callNode = RunPos.Current
 
     let worker () =
         let mutable i = System.Threading.Interlocked.Increment &next
@@ -1388,6 +1384,7 @@ let private runRaceWith (degree: int) (f: Value) (items: seq<Value>) : Value =
         while i < arr.Length && System.Threading.Volatile.Read &won = 0 do
             Session.enterWorker parentCwd
             Session.enterRace groups[i]
+            RunPos.Current <- callNode
 
             try
                 try
@@ -1400,6 +1397,7 @@ let private runRaceWith (degree: int) (f: Value) (items: seq<Value>) : Value =
 
                         outcome.TrySetResult v |> ignore
                 with e ->
+                    pinOnThread e
                     errors[i] <- e
 
                     if System.Threading.Interlocked.Increment &failedCount = arr.Length then
@@ -3126,20 +3124,58 @@ let private doDirMove (op: string) (src: string) (dst: string) : unit =
 // non-recursive reading, so the delete/deleteAll naming split does
 // not repeat here (no Dir.copyAll) [D:sized-findings]. The family's
 // overwrite rule: refuse an existing destination; Dir.deleteAll is the
-// deliberate replace spelling.
+// deliberate replace spelling. A symlink inside the tree is copied as a
+// link (dangling ones too), never followed — `cp -a`'s reading; a
+// destination inside the source would copy into itself, so it refuses.
 let private doDirCopy (op: string) (src: string) (dst: string) : unit =
     requireDir op src
     refuseExistingDst op dst
+
+    let sep = string System.IO.Path.DirectorySeparatorChar
+
+    // a final symlink is resolved on both sides (the source itself, the
+    // destination's parent), so a link cannot hide the nesting
+    let real (p: string) =
+        let full = System.IO.Path.TrimEndingDirectorySeparator(System.IO.Path.GetFullPath p)
+
+        match DirectoryInfo(full).ResolveLinkTarget true with
+        | null -> full
+        | t -> System.IO.Path.TrimEndingDirectorySeparator t.FullName
+
+    let fs = real src
+
+    let fd =
+        let full = System.IO.Path.GetFullPath dst
+
+        match System.IO.Path.GetDirectoryName full with
+        | null -> full
+        | parent -> System.IO.Path.Combine(real parent, System.IO.Path.GetFileName full)
+
+    let cmp =
+        if System.OperatingSystem.IsLinux() then
+            System.StringComparison.Ordinal
+        else
+            System.StringComparison.OrdinalIgnoreCase
+
+    if fd.StartsWith(fs + sep, cmp) || System.String.Equals(fd, fs, cmp) then
+        failwith $"{op}: destination {dst} is inside the source {src}"
 
     ioGuarded op src (fun () ->
         let rec go (s: string) (d: string) =
             System.IO.Directory.CreateDirectory d |> ignore
 
-            for f in System.IO.Directory.EnumerateFiles s do
-                System.IO.File.Copy(f, System.IO.Path.Combine(d, System.IO.Path.GetFileName f))
+            for e in DirectoryInfo(s).EnumerateFileSystemInfos() do
+                let target = System.IO.Path.Combine(d, e.Name)
 
-            for sub in System.IO.Directory.EnumerateDirectories s do
-                go sub (System.IO.Path.Combine(d, System.IO.Path.GetFileName sub))
+                match e.LinkTarget with
+                | null ->
+                    match e with
+                    | :? DirectoryInfo -> go e.FullName target
+                    | _ -> System.IO.File.Copy(e.FullName, target)
+                | link ->
+                    match e with
+                    | :? DirectoryInfo -> System.IO.Directory.CreateSymbolicLink(target, link) |> ignore
+                    | _ -> System.IO.File.CreateSymbolicLink(target, link) |> ignore
 
         go src dst)
 
@@ -5189,6 +5225,38 @@ let private tableModuleMembers: (string * Ty * Value) list =
                           "Table.render needs a seq of same-shaped records with scalar fields; for other sequences use Seq.map show"
           | _ -> unreachable $"the checker rejects 'Table.render' on {formatValue v}") ]
 
+// one line for Self.prompt [D:prompt], consuming nothing past its
+// newline: a redirected stdin is read a byte at a time from fd 0, so the
+// rest stays for the children (and Self.stdin) that read after it —
+// Console.In buffers ahead. A terminal delivers a line per read anyway
+// and keeps Console.In's line editing.
+let private promptStdin = lazy (System.Console.OpenStandardInput())
+
+let private readPromptLine () : string =
+    if not System.Console.IsInputRedirected then
+        System.Console.In.ReadLine()
+    else
+        let stdin = promptStdin.Force()
+        let bytes = ResizeArray<byte>()
+        let one = Array.zeroCreate<byte> 1
+        let mutable atEof = false
+        let mutable go = true
+
+        while go do
+            if stdin.Read(one, 0, 1) = 0 then
+                atEof <- true
+                go <- false
+            elif one[0] = 10uy then
+                go <- false
+            else
+                bytes.Add one[0]
+
+        if atEof && bytes.Count = 0 then
+            null
+        else
+            let line = System.Text.Encoding.UTF8.GetString(bytes.ToArray())
+            if line.EndsWith '\r' then line.Substring(0, line.Length - 1) else line
+
 let private moduleTable: (string * (string * Ty * Value) list) list =
     [ "Seq", seqMembers
       "Str", strMembers
@@ -5206,7 +5274,7 @@ let private moduleTable: (string * (string * Ty * Value) list) list =
                 eprintf "%s " msg
                 System.Console.Error.Flush()
 
-                match System.Console.In.ReadLine() with
+                match readPromptLine () with
                 | null ->
                     failwith
                         "Self.prompt: stdin is closed (EOF) — no line to read; pipe an answer in, or run at a terminal"
@@ -6289,7 +6357,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
            |> named [ "src"; "dst" ])
           "Dir.copy",
           (bd
-              "Copy a directory and everything in it from src to dst. Raises if the destination exists; use Dir.deleteAll first to replace it. The copy is always recursive."
+              "Copy a directory and everything in it from src to dst. Raises if the destination exists (use Dir.deleteAll first to replace it) or lies inside the source. The copy is always recursive; symlinks are copied as links, never followed."
               (Some "let d = Path.newTempDir ()\nDir.copy d $\"{d}-c\"\nDir.deleteAll d\nDir.deleteAll $\"{d}-c\"")
               None
            |> named [ "src"; "dst" ])
@@ -7276,6 +7344,13 @@ let private eqKeyCountBy: Scheme =
       RowOrigins = Map.empty
       HoleDefaults = [] }
 
+let private eqKeyGroupBy: Scheme =
+    { Forall = Set [ "a"; "b" ]
+      Cs = Map [ "b", Set [ Cls.Eq ] ]
+      Ty = TFun(TFun(TVar "a", TVar "b"), TFun(TSeq(TVar "a"), TSeq(TTuple [ TVar "b"; TSeq(TVar "a") ])))
+      RowOrigins = Map.empty
+      HoleDefaults = [] }
+
 let private eqKeyDistinctBy: Scheme =
     { Forall = Set [ "a"; "b" ]
       Cs = Map [ "b", Set [ Cls.Eq ] ]
@@ -7316,6 +7391,7 @@ let private seqSchemeOverrides: (string * Scheme) list =
       "maxBy", ordByToElem
       "minBy", ordByToElem
       "countBy", eqKeyCountBy
+      "groupBy", eqKeyGroupBy
       "distinctBy", eqKeyDistinctBy
       "except", eqExcept ]
 
@@ -7351,8 +7427,10 @@ let typeEnv: TypeEnv =
               completedDef.Name, Record completedDef
               envVarDef.Name, Record envVarDef ]
       ModuleTypes = Map.empty
+      TypeOrigins = Map.empty
       ModulePrivate = Map.empty
       PureBindings = Map.empty
+      PlanRefused = Map.empty
       AnonLitDefs = System.Collections.Generic.Dictionary() }
 
 let typeEnvStrict: TypeEnv =

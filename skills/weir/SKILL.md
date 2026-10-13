@@ -66,7 +66,8 @@ print (show 1)
   `Self.stdin : seq<string>` (the WHOLE input stream, ONE
   enumeration — it is live, a second enumeration raises with the
   repair; `Self.prompt "msg?"` reads a line per interaction instead, message
-  to stderr so piped stdout stays data, EOF refuses), `Self.pid : int` (the process id),
+  to stderr so piped stdout stays data, EOF refuses; it consumes nothing
+  past its newline, so later children read the rest), `Self.pid : int` (the process id),
   `Self.scriptPath : string` (the FILE'S OWN absolute path, resolved
   at startup before any `cd`; symlinks unresolved like bash's `$0` —
   an imported module sees its own), and `Self.entryPath : string`
@@ -487,7 +488,8 @@ print $"{key} -> {value}"
   (`t + 1d`-style "next day same wall time" does not exist; a shift is
   exact physical time — `t + 24h` means exactly 24 hours). `Instant.now ()`;
   `Instant.parse` reads ISO 8601 (`Z` or numeric offsets, normalized
-  to UTC; a bare date is midnight UTC); `Instant.parseWith`/`tryParseWith`
+  to UTC; a bare date is midnight UTC; RFC 3339's space separator and
+  fractions past 7 digits read, truncated); `Instant.parseWith`/`tryParseWith`
   read NAMED formats for log lines and cert dates — `%Y %m %d %e %b
   %H %M %S %f %z`, prefix semantics (the line's tail rides free), no
   `%z` means UTC. `instant - instant` IS a `Duration`
@@ -1819,7 +1821,8 @@ print (show (pods |> Seq.head |> _.node))
   through untouched). `$$<<<` is the SPLICE twin for templating
   brace-heavy text (JSON/config) [D:heredoc-splice]: `$name` /
   `${expr}` substitute, `$$` is a literal `$` (a `$` not starting a
-  name/`${` stays literal), and `{`/`}`/`"` are ALL literal — a pasted
+  name/`${` stays literal; a malformed `${…}` is a parse error), and
+  `{`/`}`/`"` are ALL literal — a pasted
   JSON blob templates with no `{{`/`}}` doubling. It substitutes raw
   like any template (a `"`/newline in a value can break the output —
   reach for `to json` from a record/`{| … |}`/Map when a value is
@@ -1887,7 +1890,10 @@ conf |> Seq.iter print
   INTO its checking, so a param can pattern-match its declared union
   and a generic sig (`'a -> 'a`) is honoured — an impl that pins `'a`
   refuses as less-general. A signature names types bare — an imported
-  type resolves by its plain name, never `X.Ty`.
+  type resolves by its plain name, never `X.Ty`. A type a module
+  imports crosses to ITS importers with the signatures that mention
+  it (fields, show, `==`, match all work), but stays the defining
+  module's — no `B.Pt { … }` literal through the re-exporter.
   The sig precedes its impl; a sig without
   an impl is a check error at the sig. `///` docs live ON the
   signature line (hover reads sig + doc there; a doc on the impl of

@@ -35,6 +35,38 @@
 - **`~` and `Path.home` use `$HOME` as set,** even when the directory is
   missing; `HOME=/nonexistent` made `~/x` expand to `/x`. An empty
   `HOME` raises.
+- **A raise inside a `Seq.pmap`/`piter`/`pfirst` arm is reported at the
+  arm's line,** not at the parallel call.
+- **`Self.prompt` reads only its own line from stdin,** so a command run
+  afterwards gets the rest (`printf 'a\nb\n' | weir s.weir`).
+- **`weir fmt` fixes:** no crash on a comment outdented inside a heredoc
+  or yaml block; a `///` line inside a block is never moved into its
+  content.
+- **`//` inside a string inside an interpolation hole is data,** and a
+  trailing comment after such a string is stripped.
+- **A malformed `${…}` in a `$$<<<` heredoc is a parse error,** not
+  literal text.
+- **`|>` after a multi-line `match` closed inside parens pipes the
+  paren,** instead of failing with an indentation error.
+- **`Seq.groupBy` accepts any key that supports equality,** as
+  `countBy` does; tuple, record and option keys failed at run time.
+- **Applying a returned function works:** `id (fun x -> x + 1) 2`,
+  `(snd t) 5`, `Map.get "k" handlers x`.
+- **A tuple pattern types a value whose type isn't known yet**
+  (`let f = function | (a, b) -> a - b`).
+- **`plan` refuses a command reached through a helper at check time,**
+  not only at run time.
+- **Types a module gets from its own imports work for its importers**
+  (fields, `show`, `==`). A local type of the same name takes
+  precedence; the imported one is then shown qualified (`A.Pt`).
+- **A unit-suffixed literal too large for its unit is a parse error**
+  (`9999999999TiB` wrapped silently).
+- **Quoted YAML keys unescape,** and an empty key written by `to yaml`
+  reads back.
+- **`Dir.copy` copies symlinks as links** and refuses a destination
+  inside the source.
+- **`Instant.parse` reads a space separator and nanosecond fractions,**
+  so TOML offset date-times load.
 
 ## v0.0.72
 

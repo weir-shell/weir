@@ -46,7 +46,9 @@ let private canonicalizeDocs (out: string list) : string list =
             while j < arr.Length && isDoc arr[j] do
                 j <- j + 1
 
-            if j < arr.Length && isCode arr[j] then
+            // a run followed by content sits inside the block (an
+            // outdented comment never ends a district) — no anchor
+            if j < arr.Length && isCode arr[j] && not masked[j] then
                 let anchor = arr[j].Length - arr[j].TrimStart().Length
                 arr[i] <- String.replicate anchor " " + arr[i].TrimStart()
 
@@ -247,7 +249,9 @@ let private formatLinesCore (body: string list) : Result<string list, string> =
                                 yamlBase <- Some cIndent
                                 cIndent
 
-                        String.replicate ((mDepth + 1) * 4 + (cIndent - b)) " "
+                        // a comment outdented past the base keeps its
+                        // offset, clamped to stay inside the district
+                        String.replicate (max (mDepth * 4 + 1) ((mDepth + 1) * 4 + (cIndent - b))) " "
                         + raw.Substring(min cIndent raw.Length)
                     | _ -> raw.TrimEnd()
                 else
