@@ -9646,6 +9646,24 @@ let semanticTokenTests =
                   | Ok out2 -> Expect.equal out2 out "fmt is idempotent on nested districts"
                   | Error e -> failtestf "second fmt failed: %s" e
           }
+          test "fmt: a comment outdented past a district's base clamps inside the district" {
+              for marker, a, b in [ "<<<", "abc", "def"; "yaml", "a: 1", "b: 2" ] do
+                  let src =
+                      [ $"let t = {marker}"
+                        $"          {a}"
+                        "  // c"
+                        $"          {b}"
+                        "print t" ]
+
+                  match Weir.Fmt.formatLines src with
+                  | Error e -> failtestf "fmt failed (%s): %s" marker e
+                  | Ok out ->
+                      Expect.equal out [ $"let t = {marker}"; $"    {a}"; " // c"; $"    {b}"; "print t" ] marker
+
+                      match Weir.Fmt.formatLines out with
+                      | Ok out2 -> Expect.equal out2 out $"idempotent ({marker})"
+                      | Error e -> failtestf "second fmt failed: %s" e
+          }
           test "fmt: a next-line district marker merges onto the binding line [D:district-canonical]" {
               // canonical layout puts the marker on the binding line; the
               // next-line spelling stays parseable at the assembler and fmt
