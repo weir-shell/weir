@@ -2672,7 +2672,11 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
         // type is the body's type
         result {
             let! targ, topts, benv = withinContracts ctx env kind binder arg opts
-            let! tbody = infer ctx benv body
+
+            let! tbody =
+                match kind with
+                | WithinPlan -> inferPlanBody ctx benv body
+                | _ -> infer ctx benv body
 
             // the scope's type is the body's [D:within-scopes] — except a
             // plan block, which reifies the body's mutations and yields a
@@ -4628,6 +4632,32 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
     // MatchFailureException.
     | ESplat _ -> failwith "unreachable: $@ splat outside command arguments (parser confines it to argv)"
 
+// a plan body's value is discarded (the block yields the Plan
+// [D:plan-apply]), so its tail obeys the sequenced-unit rule; a command
+// tail is armed so the plan's own command refusal names it
+and private inferPlanBody (ctx: Ctx) (env: TypeEnv) (body: Expr) : Result<TypedExpr, TypeError> =
+    result {
+        let! tbody = infer ctx env (armTail body)
+
+        let rec tail (e: Expr) =
+            match e.Kind with
+            | ESeq(_, rest) -> tail rest
+            | _ -> e
+
+        match resolve ctx tbody.Ty with
+        | TUnit -> return tbody
+        | TVar _ as v ->
+            do! bind ctx env body.Span TUnit v
+            return tbody
+        | ty ->
+            let last = tail body
+
+            return!
+                err
+                    last.Span
+                    $"a plan block's value is discarded (the block yields the Plan); this one is {formatTy ty} — bind it or print it"
+    }
+
 and private checkSpine
     (ctx: Ctx)
     (env: TypeEnv)
@@ -5076,7 +5106,7 @@ and private check (ctx: Ctx) (env: TypeEnv) (expr: Expr) (expected: Ty) : Result
     | EWithin(WithinPlan, binder, arg, opts, body), _ ->
         result {
             let! targ, topts, benv = withinContracts ctx env WithinPlan binder arg opts
-            let! tbody = infer ctx benv body
+            let! tbody = inferPlanBody ctx benv body
             let planTy = TNamed("Plan", [])
             do! bind ctx env expr.Span expected planTy
 

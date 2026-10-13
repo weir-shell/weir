@@ -8637,12 +8637,20 @@ let planApplyTests =
               // File.write to a never-existing path proves no worker ran:
               // a captured write is a no-op, a refusal precedes any worker
               refuses "piter" "[1; 2; 3; 4] |> Seq.piter (fun n -> File.write \"/tmp/weir-da01-never\" [\"x\"])"
-              refuses "pmap" "[1; 2] |> Seq.pmap (fun n -> File.write \"/tmp/weir-da01-never\" [\"x\"]) |> Seq.length"
+              refuses "pmap" "if ([1; 2] |> Seq.pmap (fun n -> File.write \"/tmp/weir-da01-never\" [\"x\"]) |> Seq.length) > 0 then ()"
               refuses "pfirst" "[1; 2] |> Seq.pfirst (fun n -> File.write \"/tmp/weir-da01-never\" [\"x\"])"
               refuses "piterWith" "[1] |> Seq.piterWith 1 (fun n -> File.write \"/tmp/weir-da01-never\" [\"x\"])"
-              refuses "pmapWith" "[1] |> Seq.pmapWith 1 (fun n -> File.write \"/tmp/weir-da01-never\" [\"x\"]) |> Seq.length"
+              refuses "pmapWith" "if ([1] |> Seq.pmapWith 1 (fun n -> File.write \"/tmp/weir-da01-never\" [\"x\"]) |> Seq.length) > 0 then ()"
               refuses "pfirstWith" "[1] |> Seq.pfirstWith 1 (fun n -> File.write \"/tmp/weir-da01-never\" [\"x\"])"
               Expect.isFalse (System.IO.File.Exists "/tmp/weir-da01-never") "no combinator wrote the marker"
+          }
+          test "a plan body's tail value is discarded, so it must be unit (B40)" {
+              let e = checkErr ("plan" + Weir.Parser.sibSepStr + "File.write \"/tmp/weir-b40-never\" [\"a\"]; 42")
+              Expect.stringContains e.Message "a plan block's value is discarded" ""
+              Expect.stringContains e.Message "this one is int" ""
+
+              checkOk ("plan" + Weir.Parser.sibSepStr + "File.write \"/tmp/weir-b40-never\" [\"a\"]") |> ignore
+              checkOk ("plan" + Weir.Parser.sibSepStr + "fail \"x\"") |> ignore
           }
           test "DA-01: a nested plan's parallel combinator REFUSES too (filesystem)" {
               let dir = td ()
