@@ -2345,6 +2345,34 @@ let boundaryTests =
               | Weir.Yaml.NMap([ ("a", Weir.Yaml.NSeq(_, _)); ("b", _) ], _) -> ()
               | other -> failtest $"zero-indent seq + sibling: {other}"
           }
+          test "quoted yaml keys unescape like values; every key to yaml writes reads back (B25)" {
+              let keysOf d =
+                  match d with
+                  | Weir.Yaml.NMap(es, _) -> es |> List.map fst
+                  | other -> failtest $"expected a mapping, got {other}"
+
+              Expect.equal
+                  (keysOf (yamlDoc [ "\"a\\tb\": 1"; "\"n\\nl\": 2"; "\"q\\\"\": 3"; "\"\": 4"; "'it''s': 5"; "\"\\u00e9\": 6" ]))
+                  [ "a\tb"; "n\nl"; "q\""; ""; "it's"; "é" ]
+                  "escapes resolve in quoted keys; \"\" is the empty key"
+
+              Expect.stringContains (yamlErr [ "\"a\\q\": 1" ]) "line 1: in this key: unsupported escape" "a bad key escape is located"
+              Expect.stringContains (yamlErr [ "k: 1"; ": 2" ]) "line 2: expected 'key: value'" "a bare ':' is still no key"
+
+              let keys = [ "a\tb"; "n\nl"; "q\""; ""; "null"; "it's"; "back\\"; " lead" ]
+
+              let written =
+                  let lit (k: string) =
+                      k.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\t", "\\t").Replace("\n", "\\n")
+
+                  run ("[" + (keys |> List.map (fun k -> "(\"" + lit k + "\", 1)") |> String.concat "; ") + "] |> to yaml")
+                  |> forceSeq
+                  |> List.map (function
+                      | VStr s -> s
+                      | other -> failtest $"{other}")
+
+              Expect.equal (keysOf (yamlDoc written)) keys "to yaml keys read back verbatim"
+          }
           test "empty flow collections read: {} and [] as values (map + seq position); populated flow still rejects [D:yaml-empty-flow]" {
               // `{}` → the empty mapping, `[]` → the empty sequence, as a
               // map value (inner whitespace tolerated)
