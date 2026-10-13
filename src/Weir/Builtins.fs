@@ -3554,6 +3554,8 @@ let private fileMembers: (string * Ty * Value) list =
 let private exitImpl: Value =
     VBuiltin(fun v ->
         match v with
+        // the OS keeps only the low byte, so `exit 256` would exit 0 [D:exit-range]
+        | VInt n when n < 0L || n > 255L -> failwith $"exit {n}: an exit code is 0..255 — the OS keeps only the low byte, so it would exit {n &&& 255L}"
         | VInt n -> raise (ExitRequest(int n))
         | v -> unreachable $"the checker rejects 'exit' on {formatValue v}")
 

@@ -2344,7 +2344,8 @@ print $"exit={r.exitCode}"
   untyped scrutinee by the union owning ALL the arms' cases). Commands
   keep their own spelling: `cmd | complete`.
 - `exit n` exits with code n silently (propagation:
-  `if r.exitCode <> 0 then exit (r.exitCode)`); `fail "msg"` is
+  `if r.exitCode <> 0 then exit (r.exitCode)`); n outside 0..255
+  raises (a literal is a check error) [D:exit-range]; `fail "msg"` is
   the message-carrying exit-1. No GENERAL try/finally — cleanup-always
   is SCOPED: resource kinds release on every exit
   (`within tmp/cd/env/proc/lock`, raise included), and a bare

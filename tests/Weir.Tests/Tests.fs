@@ -14873,6 +14873,12 @@ let offsideTests =
           test "exit rejects a string" {
               let terr = checkErr "exit \"boom\""
               Expect.stringContains (formatError terr) "int" ""
+          }
+          test "exit outside 0..255: a literal is a check error, a value raises [D:exit-range]" {
+              Expect.stringContains (formatError (checkErr "exit 256")) "it would exit 0" ""
+              Expect.stringContains (formatError (checkErr "exit -1")) "0..255" ""
+              let ex = Expect.throwsC (fun () -> run "let n = 257 in exit n" |> ignore) id
+              Expect.stringContains ex.Message "it would exit 1" ""
           } ]
 
 let sequencingTests =

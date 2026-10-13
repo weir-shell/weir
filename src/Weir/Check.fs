@@ -1810,6 +1810,14 @@ let rec private yamlableOut (span: Span) (env: TypeEnv) (seen: Set<string>) (pat
             span
             $"{at}type {formatTy ty} cannot cross the yaml boundary (scalars, records, seqs, seq<string * _>, Option, Yaml)"
 
+/// an `exit` argument's literal value: `n`, or `-n` (prefix minus
+/// desugars to `0 - n`)
+let private exitLiteral (e: Expr) : int64 option =
+    match e.Kind with
+    | EInt n -> Some n
+    | EBinOp("-", { Kind = EInt 0L }, { Kind = EInt n }) -> Some -n
+    | _ -> None
+
 // One Regex instance per distinct literal, shared by check and eval
 // (same shape as the snippet-hash-cache). Interpreted mode only —
 // RegexOptions.Compiled is Reflection.Emit, banned by the AOT rule
@@ -2923,6 +2931,16 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                 lambdaCore env expr.Span (fun tb -> TELambda(param, pspan, tb)) paramTy [ param, paramTy ] (fun e ->
                     infer ctx e body)
         }
+    // a literal exit code outside 0..255 is a check error [D:exit-range]
+    // (`exit` is reserved, so the head is always the builtin); `-n`
+    // arrives as the prefix-minus desugar `0 - n`
+    | EApp({ Kind = EVar "exit" }, arg) when
+        (match exitLiteral arg with
+         | Some n -> n < 0L || n > 255L
+         | None -> false)
+        ->
+        let code = (exitLiteral arg).Value
+        err arg.Span $"exit {code}: an exit code is 0..255 — the OS keeps only the low byte, so it would exit {code &&& 255L}"
     | EApp({ Kind = EVar "Json"; Span = headSpan }, arg) when ctorOwners env "Json" = [ "HttpBody" ] ->
         // Http's Json body takes the value [D:http-dx]: a jsonable
         // argument routes through `to json`'s own law and wire maps at
