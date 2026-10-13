@@ -7391,6 +7391,7 @@ let typeEnv: TypeEnv =
       ModuleTypes = Map.empty
       ModulePrivate = Map.empty
       PureBindings = Map.empty
+      PlanRefused = Map.empty
       AnonLitDefs = System.Collections.Generic.Dictionary() }
 
 let typeEnvStrict: TypeEnv =

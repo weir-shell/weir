@@ -10622,23 +10622,24 @@ expect "the parallel combinator ran outside a plan" "ran" "$out"
 [ "$(ls "$padir"/paro-*.txt 2>/dev/null | wc -l)" -eq 3 ] || fail "the outside-plan parallel combinator did not write all arms"
 echo "e2e ok: plan/apply — a parallel combinator OUTSIDE a plan still runs"
 
-# DA-02 [D:plan-proc-runtime-guard]: the syntactic firstPlanRefusal cannot
-# follow a helper reference, so an indirect proc built inside a plan slips
-# past `check`. A runtime guard at the one spawn point refuses it: no
-# child process runs, no marker file. (Direct proc still refuses at check
-# above — belt and suspenders.)
+# DA-02 [D:plan-proc-runtime-guard]: the syntactic firstPlanRefusal follows
+# top-level helpers but not a callable passed as a value, so that indirect
+# proc slips past `check`. A runtime guard at the one spawn point refuses
+# it: no child process runs, no marker file. (Direct proc and a named
+# helper still refuse at check — belt and suspenders.)
 cat > "$padir/indirect.weir" <<WEOF
 let runMarker () =
     let lines = sh -c "printf marker > $padir/proc-marker.txt"
     lines |> Seq.length
-let changes =
+let capture f =
     plan
-        let _forced = runMarker ()
+        let _forced = f ()
         ()
+let changes = capture runMarker
 print \$"empty={changes |> Plan.isEmpty}"
 WEOF
-# it checks clean (the syntactic walk cannot see through the helper)...
-$BIN check "$padir/indirect.weir" >/dev/null 2>&1 || true
+# it checks clean (the syntactic walk cannot see through the parameter)...
+out=$($BIN check "$padir/indirect.weir" 2>&1) || fail "a callable passed into a plan must check clean: $out"
 # ...but refuses at runtime before the child spawns
 out=$($BIN "$padir/indirect.weir" 2>&1) && fail "an indirect proc inside a plan must refuse at runtime" || true
 echo "$out" | grep -qF "refused inside 'plan'" || fail "the runtime proc-in-plan guard must fire: $out"

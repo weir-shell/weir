@@ -3726,7 +3726,7 @@ let checkStatement
             // pureViolation returns the complete located message
             // (pure's "…forbids effects, but…" or readonly's
             // "…forbids external mutation, but…") [D:pure-stage2]
-            match Purity.pureViolation tenv.PureBindings te with
+            match Purity.pureViolation tenv.PlanRefused tenv.PureBindings te with
             | Some(span, message) ->
                 let physLine, physCol = translate ll span.Start.Col
 
@@ -3749,7 +3749,11 @@ let checkStatement
                         { st with
                             Env =
                                 { st.Env with
-                                    PureBindings = Map.add name (Purity.isPureExpr tenv.PureBindings te) st.Env.PureBindings } }
+                                    PureBindings = Map.add name (Purity.isPureExpr tenv.PureBindings te) st.Env.PureBindings
+                                    PlanRefused =
+                                        match Purity.planRefusalOf tenv.PlanRefused te with
+                                        | Some why -> Map.add name why st.Env.PlanRefused
+                                        | None -> Map.remove name st.Env.PlanRefused } }
                 | _ -> Ok st)
 
 // ---- unused bindings [D:unused-bindings]: whole-file threading ------------

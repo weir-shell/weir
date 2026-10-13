@@ -8606,9 +8606,44 @@ let planApplyTests =
               finally
                   System.IO.Directory.Delete(dir, true)
           }
+          test "a top-level helper that runs a command refuses at check inside plan, through every hop (B22)" {
+              let msgs lines =
+                  diagsIn "h.weir" lines |> List.map (fun d -> d.Message)
+
+              let m =
+                  msgs
+                      [ "let mk () = touch /tmp/weir-b22-never | complete"
+                        "let mk2 () ="
+                        "    let _r = mk ()"
+                        "    ()"
+                        "let changes ="
+                        "    plan"
+                        "        mk2 ()"
+                        "print $\"{changes |> Plan.isEmpty}\"" ]
+
+              Expect.exists m (fun s -> s.Contains "'mk2' cannot run inside 'plan' — in its body, a reifier runs a command") "names the helper and the root"
+
+              // a File.write helper is captured, a local shadow is not the helper,
+              // and data computed by a command outside the plan is just data
+              let clean =
+                  msgs
+                      [ "let mk () = touch /tmp/weir-b22-never | complete"
+                        "let w () = File.write \"/tmp/weir-b22-never\" [\"a\"]"
+                        "let out = echo hi | complete"
+                        "let changes ="
+                        "    plan"
+                        "        w ()"
+                        "        let mk () = print \"local\""
+                        "        mk ()"
+                        "        print $\"{out.exitCode}\""
+                        "print $\"{changes |> Plan.isEmpty} {mk () |> fun c -> c.exitCode}\"" ]
+
+              Expect.isFalse (clean |> List.exists (fun s -> s.Contains "inside 'plan'")) $"no refusal: {clean}"
+          }
           // [D:plan-proc-runtime-guard] DA-02: firstPlanRefusal is a
-          // syntactic walk that cannot follow a helper reference, so an
-          // indirect proc slips past the checker. A thread-local guard at
+          // syntactic walk that follows top-level helpers but not a
+          // callable passed as a value, so that indirect proc slips past
+          // the checker. A thread-local guard at
           // the one spawn point refuses at runtime (the helper runs on the
           // capturing thread). The syntactic diagnostic stays for usability.
           test "DA-02: a helper-wrapped proc inside a plan REFUSES at runtime, no process runs" {
@@ -8623,10 +8658,11 @@ let planApplyTests =
                           [ "let runMarker () ="
                             $"    let lines = sh -c \"printf marker > {markerW}\""
                             "    lines |> Seq.length"
-                            "let changes ="
+                            "let capture f ="
                             "    plan"
-                            "        let _forced = runMarker ()"
+                            "        let _forced = f ()"
                             "        ()"
+                            "let changes = capture runMarker"
                             "print $\"empty={changes |> Plan.isEmpty}\"" ]
 
                   Expect.notEqual code 0 "the plan refused the indirect proc"
@@ -8648,10 +8684,11 @@ let planApplyTests =
                       runFile
                           [ "let doExec () ="
                             $"    sh -c \"printf marker > {markerW}\" | exec"
-                            "let changes ="
+                            "let capture f ="
                             "    plan"
-                            "        let _forced = doExec ()"
+                            "        let _forced = f ()"
                             "        ()"
+                            "let changes = capture doExec"
                             "print $\"empty={changes |> Plan.isEmpty}\"" ]
 
                   Expect.notEqual code 0 "the plan refused the indirect exec"
