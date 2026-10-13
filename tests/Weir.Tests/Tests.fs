@@ -2092,6 +2092,12 @@ let boundaryTests =
                   | Error terr -> failtest (formatError terr)
               | other -> failtest $"unexpected: {other}"
           }
+          test "$$<<< a malformed ${…} splice is a parse error, never literal text [D:heredoc-splice]" {
+              for line in [ "v=${1 +}"; "v=${name"; "v=${}" ] do
+                  match Weir.Parser.parseLine realResolver (asm [ "let t = $$<<<"; $"    {line}" ]) with
+                  | Error _ -> ()
+                  | other -> failtest $"{line}: expected a parse error, got {other}"
+          }
           test "$<<< dedents IDENTICALLY to <<<: only the hole differs [D:text-block]" {
               // the regression [D:text-block]: $<<< once left-trimmed every
               // line (runFragmentAt's `ws`), flattening deeper-indented lines
