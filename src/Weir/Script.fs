@@ -2661,6 +2661,8 @@ and LoadedModule =
       // the signature to add (type included)
       PrivateMembers: (string * Scheme) list
       TypeNames: string list
+      // each TypeDefs entry's identity [D:transitive-types]
+      TypeOrigins: (string * string) list
       // each statement with its logical line [D:can-report]: the line
       // carries the segment table, so a capability inside a module can
       // name its own file:line:col like any diagnostic
@@ -3144,15 +3146,133 @@ let private cleanParseDump (ll: LogicalLine) (msg: string) : string =
     |> dropEmptyOpeners
     |> String.concat "\n"
 
+// ---- transitive types [D:transitive-types] -------------------------------
+// a type reached only through another module's signatures holds its plain
+// name while nothing else wants it; a local declaration or a direct
+// import of another same-named type takes the name, and the transitive
+// one moves to its origin-qualified name ("A.Pt") everywhere in the env,
+// so its values keep their type
+
+let rec private renameTy (m: Map<string, string>) (ty: Ty) : Ty =
+    match ty with
+    | TNamed(n, args) ->
+        TNamed(Map.tryFind n m |> Option.defaultValue n, args |> List.map (renameTy m))
+    | TFun(a, b) -> TFun(renameTy m a, renameTy m b)
+    | TSeq t -> TSeq(renameTy m t)
+    | TTuple ts -> TTuple(ts |> List.map (renameTy m))
+    | TRowVar(r, fields) -> TRowVar(r, fields |> List.map (fun (f, t) -> f, renameTy m t))
+    | t -> t
+
+let private renameScheme (m: Map<string, string>) (sch: Scheme) : Scheme = { sch with Ty = renameTy m sch.Ty }
+
+let private renameDef (m: Map<string, string>) (def: TypeDef) : TypeDef =
+    match def with
+    | Record rd ->
+        Record
+            { rd with
+                Fields = rd.Fields |> List.map (fun (f, t) -> f, renameTy m t) }
+    | Union u ->
+        Union
+            { u with
+                Cases = u.Cases |> List.map (fun (c, p) -> c, p |> Option.map (renameTy m)) }
+
+let private renameEnvTypes (m: Map<string, string>) (tenv: TypeEnv) : TypeEnv =
+    if Map.isEmpty m then
+        tenv
+    else
+        let key n = Map.tryFind n m |> Option.defaultValue n
+
+        { tenv with
+            Values = tenv.Values |> Map.map (fun _ sch -> renameScheme m sch)
+            Modules = tenv.Modules |> Map.map (fun _ ms -> ms |> Map.map (fun _ sch -> renameScheme m sch))
+            ModulePrivate = tenv.ModulePrivate |> Map.map (fun _ ms -> ms |> Map.map (fun _ sch -> renameScheme m sch))
+            Types = tenv.Types |> Map.toList |> List.map (fun (n, d) -> key n, renameDef m d) |> Map.ofList
+            TypeOrigins = tenv.TypeOrigins |> Map.toList |> List.map (fun (n, o) -> key n, o) |> Map.ofList }
+
+// "A.Pt@/abs/a.weir" -> "A.Pt", made unique against the env's types
+let private qualifiedFree (tenv: TypeEnv) (origin: string) : string =
+    let at = origin.IndexOf '@'
+    let q = if at > 0 then origin.Substring(0, at) else origin
+
+    let rec free (c: string) =
+        if Map.containsKey c tenv.Types then free (c + "'") else c
+
+    free q
+
+let private isTransitive (tenv: TypeEnv) (n: string) =
+    tenv.TypeOrigins.ContainsKey n
+    && not (tenv.ModuleTypes |> Map.exists (fun _ owned -> owned.Contains n))
+
+/// a transitive type named `n` gives its plain name up (see above)
+let yieldTransitive (n: string) (tenv: TypeEnv) : TypeEnv =
+    if isTransitive tenv n then
+        renameEnvTypes (Map [ n, qualifiedFree tenv tenv.TypeOrigins[n] ]) tenv
+    else
+        tenv
+
 // merge a loaded module into the importer's env [D:modules-v1]: values
 // (and union ctors) under Modules[Alias], types flat under their plain
 // name, and the provenance for the qualified literal under ModuleTypes.
+// Its transitive types [D:transitive-types] join an existing entry of the
+// same origin, else take the plain name if free, else the qualified one.
 let private mergeModule (tenv: TypeEnv) (lm: LoadedModule) : TypeEnv =
+    let originOf n =
+        lm.TypeOrigins |> List.tryFind (fst >> (=) n) |> Option.map snd
+
+    let own = Set.ofList lm.TypeNames
+
+    // an own type takes its name from a transitive holder of another origin
+    let tenv =
+        lm.TypeNames
+        |> List.fold
+            (fun (t: TypeEnv) n ->
+                match Map.tryFind n t.TypeOrigins, originOf n with
+                | Some held, Some o when held = o -> t
+                | _ -> yieldTransitive n t)
+            tenv
+
+    let subst =
+        lm.TypeDefs
+        |> List.filter (fun (n, _) -> not (own.Contains n))
+        |> List.fold
+            (fun (acc: Map<string, string>, taken: Set<string>) (n, _) ->
+                let o = originOf n |> Option.defaultValue n
+
+                match tenv.TypeOrigins |> Map.tryFindKey (fun _ held -> held = o) with
+                | Some existing -> Map.add n existing acc, taken
+                | None when not (Map.containsKey n tenv.Types) && not (own.Contains n) && not (taken.Contains n) ->
+                    acc, Set.add n taken
+                | None ->
+                    let q = qualifiedFree tenv o
+                    Map.add n q acc, Set.add q taken)
+            (Map.empty, Set.empty)
+        |> fst
+
+    let rename n = Map.tryFind n subst |> Option.defaultValue n
+
+    let typeDefs =
+        lm.TypeDefs
+        |> List.choose (fun (n, d) ->
+            let n' = rename n
+            // joined an existing same-origin entry: nothing to add
+            if n' <> n && Map.containsKey n' tenv.Types && not (own.Contains n) then
+                None
+            else
+                Some(n', renameDef subst d))
+
+    let origins =
+        lm.TypeOrigins |> List.map (fun (n, o) -> rename n, o)
+
     { tenv with
-        Modules = Map.add lm.Alias (Map.ofList lm.Members) tenv.Modules
-        Types = lm.TypeDefs |> List.fold (fun ts (n, d) -> Map.add n d ts) tenv.Types
-        ModuleTypes = Map.add lm.Alias (Set.ofList lm.TypeNames) tenv.ModuleTypes
-        ModulePrivate = Map.add lm.Alias (Map.ofList lm.PrivateMembers) tenv.ModulePrivate }
+        Modules = Map.add lm.Alias (lm.Members |> List.map (fun (n, s) -> n, renameScheme subst s) |> Map.ofList) tenv.Modules
+        Types = typeDefs |> List.fold (fun ts (n, d) -> Map.add n d ts) tenv.Types
+        ModuleTypes = Map.add lm.Alias own tenv.ModuleTypes
+        TypeOrigins = origins |> List.fold (fun m (n, o) -> Map.add n o m) tenv.TypeOrigins
+        ModulePrivate =
+            Map.add
+                lm.Alias
+                (lm.PrivateMembers |> List.map (fun (n, s) -> n, renameScheme subst s) |> Map.ofList)
+                tenv.ModulePrivate }
 
 let private checkStatementCore
     (gateExprs: bool)
@@ -3300,7 +3420,9 @@ let private checkStatementCore
                       Note = None
                       Warnings = [] }
         | Ok(SType decl) ->
-            match Check.checkDecl tenv decl with
+            // a local declaration takes its name from a transitive type
+            // [D:transitive-types]
+            match Check.checkDecl (yieldTransitive decl.Name tenv) decl with
             | Error terr -> Error(typed StmtTag.Type terr)
             | Ok tenv' ->
                 Ok
@@ -3677,7 +3799,18 @@ let private checkStatementCore
                         $"the name '{lm.Alias}' is already a module in scope; import it under a different name with 'as'"
                 )
             | Ok lm ->
-                match lm.TypeNames |> List.tryFind (fun n -> Map.containsKey n tenv.Types) with
+                // a transitive holder yields, the same type reached again is
+                // no clash [D:transitive-types]
+                let sameOrigin n =
+                    match Map.tryFind n tenv.TypeOrigins, lm.TypeOrigins |> List.tryFind (fst >> (=) n) with
+                    | Some held, Some(_, o) -> held = o
+                    | _ -> false
+
+                match
+                    lm.TypeNames
+                    |> List.tryFind (fun n ->
+                        Map.containsKey n tenv.Types && not (sameOrigin n) && not (isTransitive tenv n))
+                with
                 | Some clash ->
                     Error(
                         stmtErr
@@ -4411,10 +4544,10 @@ let rec loadModuleCachedWith
                         | Some(l, c, msg) -> at l c msg
                         | None ->
 
-                            // a module exports only its own types (from its Body's
-                            // decls), not what it transitively imported (no re-export,
-                            // decision 3); Members already exclude imported ones
-                            // (those live under Modules[·], not Values)
+                            // a module's own types (from its Body's decls); what it
+                            // imported crosses only as reachableDefs below, never as
+                            // its own [D:transitive-types]; Members already exclude
+                            // imported ones (those live under Modules[·], not Values)
                             let typeDefs =
                                 moduleBody
                                 |> List.choose (function
@@ -4453,7 +4586,7 @@ let rec loadModuleCachedWith
                             // crosses with it, so an importer can read, show and
                             // compare the values it receives; it is not this
                             // module's type (TypeNames: no qualified literal, no
-                            // re-export under this alias)
+                            // re-export under this alias) [D:transitive-types]
                             let reachableDefs =
                                 let own = typeDefs |> List.map fst |> Set.ofList
 
@@ -4497,6 +4630,14 @@ let rec loadModuleCachedWith
                                   Members = members
                                   PrivateMembers = privateMembers
                                   TypeNames = typeDefs |> List.map fst
+                                  TypeOrigins =
+                                      let ownOrigin n =
+                                          $"{natural |> Option.defaultValue alias}.{n}@{absPath}"
+
+                                      (typeDefs |> List.map (fun (n, _) -> n, ownOrigin n))
+                                      @ (reachableDefs
+                                         |> List.map (fun (n, _) ->
+                                             n, Map.tryFind n finalTenv.TypeOrigins |> Option.defaultValue (ownOrigin n)))
                                   Body = moduleBody }
 
                             cache[absPath] <- loaded
