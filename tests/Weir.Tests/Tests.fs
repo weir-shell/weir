@@ -2118,6 +2118,11 @@ let boundaryTests =
                   match Weir.Parser.parseLine realResolver (asm [ "let t = $$<<<"; $"    {line}" ]) with
                   | Error _ -> ()
                   | other -> failtest $"{line}: expected a parse error, got {other}"
+
+              // the whole Expecting list survives, not the tail of a wrapped line
+              match Weir.Parser.parseLine realResolver (asm [ "let t = $$<<<"; "    v=${1 +}" ]) with
+              | Error e -> Expect.stringContains e "Expecting: identifier" "the list's head is kept"
+              | other -> failtest $"expected a parse error, got {other}"
           }
           test "$<<< dedents IDENTICALLY to <<<: only the hole differs [D:text-block]" {
               // the regression [D:text-block]: $<<< once left-trimmed every
@@ -19070,6 +19075,23 @@ let floatTests =
                   (perr "2.5s")
                   "decimal duration literals do not exist"
                   "the duration teaching stands"
+          }
+          test "other notations glued to a literal are named, not applied" {
+              Expect.stringContains (perr "0x10") "int literals are decimal only" "hex"
+              Expect.stringContains (perr "0x10") "write 16" "the decimal value is computed"
+              Expect.stringContains (perr "1_000") "no digit separators — write 1000" "separators"
+              Expect.stringContains (perr "1.5.2") "one decimal point at most" "version text"
+              Expect.stringContains (perr "1.5.2") "(\"1.5.2\")" "the quoted spelling"
+          }
+          test "a literal's optional unit/exponent tails never reach an Expecting list" {
+              let msg = perr "(1"
+              Expect.stringContains msg "Expecting:" "a plain expecting list"
+
+              for leaked in [ "'KiB'"; "'ms'"; "'TB'"; "'e'"; "'<'" ] do
+                  Expect.isFalse (msg.Contains leaked) $"{leaked} leaked into: {msg}"
+
+              Expect.equal (run "[1..3] |> Seq.length") (VInt 3L) "ranges unaffected"
+              Expect.equal (run "1.5e2") (VFloat 150.0) "exponent unaffected"
           }
           test "ranges and field shorthand keep their dots" {
               Expect.equal (run "[1..10] |> Seq.length") (VInt 10L) "1.. stays a range"

@@ -595,14 +595,67 @@ let private floatExponent =
             + ds
     )
 
+// an optional literal tail whose alternatives never reach an Expecting
+// list — `1` then a stray token is not missing a unit suffix
+let private quietOpt (p: Parser<'a, unit>) : Parser<'a option, unit> =
+    fun stream ->
+        let tag = stream.StateTag
+        let r = p stream
+
+        if r.Status = Ok then Reply(Some r.Result)
+        elif r.Status = Error && stream.StateTag = tag then Reply(None)
+        else Reply(r.Status, r.Error)
+
+// the upcoming run of chars matching pred, unconsumed
+let private peekRun (pred: char -> bool) : Parser<string, unit> =
+    fun stream ->
+        let mutable n = 0
+
+        while pred (stream.Peek n) && stream.Peek n <> CharStream.EndOfStreamChar do
+            n <- n + 1
+
+        Reply(stream.PeekString n)
+
+// a literal glued to its next char that reads as another notation —
+// named here, before it falls through to an application of the literal
+let private literalTailTeaching (at: Position) (text: string) (isFloat: bool) : Parser<unit, unit> =
+    peekRun (fun c -> System.Char.IsLetterOrDigit c || c = '_' || c = '.')
+    >>= fun tail ->
+        let digitAt i =
+            tail.Length > i && System.Char.IsDigit tail[i]
+
+        let whole = text + tail
+
+        if not isFloat && text = "0" && tail.Length > 1 && "xXoObB".Contains tail[0] && System.Char.IsLetterOrDigit tail[1] then
+            let radix =
+                match System.Char.ToLowerInvariant tail[0] with
+                | 'x' -> 16
+                | 'o' -> 8
+                | _ -> 2
+
+            let value =
+                try
+                    $"write {System.Convert.ToInt64(tail.Substring 1, radix)}"
+                with _ ->
+                    "write the decimal value"
+
+            failFatallyAt at $"int literals are decimal only — '{whole}' has no literal form (no 0x/0o/0b prefixes); {value}"
+        elif tail.StartsWith "_" && digitAt 1 then
+            let plain = whole.Replace("_", "")
+            failFatallyAt at $"number literals have no digit separators — write {plain}"
+        elif isFloat && tail.StartsWith "." && digitAt 1 then
+            failFatallyAt at $"a number has one decimal point at most — '{whole}' reads as version text; quote it (\"{whole}\")"
+        else
+            preturn ()
+
 let private intLit =
     spanned (
         // anchor at the literal's start [D:anchor-before-read]: the fail
         // fires after consuming the digits (and the measure), so seek back
         getPosition
         .>>. (many1Satisfy isDigit
-              .>>. opt (attempt (pchar '<' >>. rawWord .>> pchar '>'))
-              .>>. opt (
+              .>>. quietOpt (attempt (pchar '<' >>. rawWord .>> pchar '>'))
+              .>>. quietOpt (
                   attempt (
                       // a digit after the unit is captured, not rejected:
                       // 1m30s deserves its own teaching, below
@@ -627,7 +680,7 @@ let private intLit =
               )
               // fraction digits optional so `1.` reaches its teaching;
               // `..` (a range) backtracks before consuming [D:floats]
-              .>>. opt (
+              .>>. quietOpt (
                   attempt (
                       pchar '.' >>. notFollowedBy (pchar '.') >>. opt (many1Satisfy isDigit)
                       .>>. opt (
@@ -644,7 +697,7 @@ let private intLit =
                       )
                   )
               )
-              .>>. opt floatExponent)
+              .>>. quietOpt floatExponent)
         >>= fun (at, ((((digits, m), sfx), dec), expo)) ->
             let isSizeUnit u =
                 match u with
@@ -727,7 +780,7 @@ let private intLit =
                            | None -> "")
 
                     match parseFloat text with
-                    | Result.Ok f -> preturn (EFloat f)
+                    | Result.Ok f -> literalTailTeaching at text true >>. preturn (EFloat f)
                     | Result.Error _ -> failFatallyAt at $"float literal out of range: {text}"
                 | None, Some e ->
                     match parseFloat $"{digits}e{e}" with
@@ -735,7 +788,7 @@ let private intLit =
                     | Result.Error _ -> failFatallyAt at $"float literal out of range: {digits}e{e}"
                 | None, None ->
                     match System.Int64.TryParse digits with
-                    | true, n -> preturn (EInt n)
+                    | true, n -> literalTailTeaching at digits false >>. preturn (EInt n)
                     | _ -> failFatallyAt at $"int literal out of range (64-bit): {digits}"
     )
     |>> mkExpr
@@ -2885,8 +2938,15 @@ comprehensionLitRef.Value <-
 // shifting is ever needed
 // the message's tail can be an "Other error messages:" trailer (interp
 // note messages) — cut there, or the extraction lands on the trailer
-// instead of the Expecting line
-let private fragmentErrorLine (msg: string) =
+// instead of the Expecting line. Rendered unwrapped and snippet-free:
+// FParsec's default dump wraps at 79 columns, and the last line alone
+// was the tail of a wrapped Expecting list
+let private fragmentErrorLine (err: ParserError) =
+    let msg =
+        use sw = new System.IO.StringWriter()
+        err.WriteTo(sw, positionPrinter = (fun _ _ _ _ -> ()), columnWidth = System.Int32.MaxValue)
+        sw.ToString()
+
     let lines = msg.Split '\n'
 
     let cut =
@@ -2901,7 +2961,7 @@ let private fragmentErrorLine (msg: string) =
 let private runFragment (col: int) (frag: string) (p: Parser<'a, unit>) : Result<'a, string> =
     match run (ws >>. p .>> eof) (System.String(' ', col - 1) + frag) with
     | Success(v, _, _) -> Result.Ok v
-    | Failure(msg, _, _) -> Result.Error(fragmentErrorLine msg)
+    | Failure(_, err, _) -> Result.Error(fragmentErrorLine err)
 
 // runFragment plus the error position — the padded run's column is
 // already the true logical column, so a heredoc line's hole errors land
@@ -2913,7 +2973,7 @@ let private runFragment (col: int) (frag: string) (p: Parser<'a, unit>) : Result
 let private runFragmentAt (col: int) (frag: string) (p: Parser<'a, unit>) : Result<'a, string * int> =
     match run (skipManyMinMaxSatisfy (col - 1) (col - 1) (fun c -> c = ' ') >>. p .>> eof) (System.String(' ', col - 1) + frag) with
     | Success(v, _, _) -> Result.Ok v
-    | Failure(msg, err, _) -> Result.Error(fragmentErrorLine msg, int err.Position.Column)
+    | Failure(_, err, _) -> Result.Error(fragmentErrorLine err, int err.Position.Column)
 
 let private isIdentWord (w: string) =
     w.Length > 0
