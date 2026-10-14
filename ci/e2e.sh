@@ -1820,6 +1820,9 @@ PYADP
     python3 "$(dirname "$0")/../tests/repl/repl-wordnav.py" "$BIN" || fail "repl word navigation"
     echo "e2e ok: repl Ctrl+Left/Right word navigation"
 
+    python3 "$(dirname "$0")/../tests/repl/repl-codepoints.py" "$BIN" || fail "repl code-point editing"
+    echo "e2e ok: repl Left/Right/Backspace/^D step over a surrogate pair whole [D:str-code-points]"
+
     python3 "$(dirname "$0")/../tests/repl/repl-color.py" "$BIN" || fail "repl coloring"
     echo "e2e ok: repl lexical coloring, head verdicts, NO_COLOR"
 

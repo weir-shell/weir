@@ -1221,6 +1221,19 @@ let private readLineTty () : string option =
 
     let cur () = lines[row]
 
+    // the editor moves and deletes by code point [D:str-code-points]: a
+    // surrogate pair (an emoji) is one step, never split
+    let pairAt (t: Text.StringBuilder) (i: int) =
+        i >= 1 && i < t.Length && Char.IsHighSurrogate t[i - 1] && Char.IsLowSurrogate t[i]
+
+    let stepBack () = if pairAt (cur ()) (col - 1) then 2 else 1
+    let stepFwd () = if pairAt (cur ()) (col + 1) then 2 else 1
+
+    // a column carried across lines (Up/Down) lands on a boundary
+    let snapCol (c: int) =
+        let c = min c (cur().Length)
+        if pairAt (cur ()) c then c - 1 else c
+
     let redraw () =
         // region repaint [D:repl-multiline]: climb to the region top (the
         // tracked cursor offset), clear to screen end, repaint every line
@@ -1387,7 +1400,7 @@ let private readLineTty () : string option =
                 Console.WriteLine()
                 result <- Some None
             elif col < cur().Length then
-                cur().Remove(col, 1) |> ignore
+                cur().Remove(col, stepFwd ()) |> ignore
                 redraw ()
             elif row < lines.Count - 1 then
                 cur().Append(lines[row + 1].ToString()) |> ignore
@@ -1401,7 +1414,7 @@ let private readLineTty () : string option =
                 Console.WriteLine()
                 result <- Some None // EOF
             elif col < cur().Length then
-                cur().Remove(col, 1) |> ignore // readline delete-char
+                cur().Remove(col, stepFwd ()) |> ignore // readline delete-char
                 redraw ()
             elif row < lines.Count - 1 then
                 // delete at line end joins the next line
@@ -1427,8 +1440,9 @@ let private readLineTty () : string option =
              | None -> redraw ())
         | ConsoleKey.Backspace ->
             if col > 0 then
-                cur().Remove(col - 1, 1) |> ignore
-                col <- col - 1
+                let n = stepBack ()
+                cur().Remove(col - n, n) |> ignore
+                col <- col - n
                 redraw ()
             elif row > 0 then
                 // backspace at line start joins the previous line
@@ -1465,7 +1479,7 @@ let private readLineTty () : string option =
             redraw ()
         | ConsoleKey.LeftArrow ->
             if col > 0 then
-                col <- col - 1
+                col <- col - stepBack ()
                 redraw ()
             elif row > 0 then
                 row <- row - 1
@@ -1473,7 +1487,7 @@ let private readLineTty () : string option =
                 redraw ()
         | ConsoleKey.RightArrow ->
             if col < cur().Length then
-                col <- col + 1
+                col <- col + stepFwd ()
                 redraw ()
             elif row < lines.Count - 1 then
                 row <- row + 1
@@ -1533,7 +1547,7 @@ let private readLineTty () : string option =
             // path)
             if row > 0 then
                 row <- row - 1
-                col <- min col lines[row].Length
+                col <- snapCol col
                 redraw ()
             elif histIdx > 0 then
                 if histIdx = history.Count then
@@ -1547,7 +1561,7 @@ let private readLineTty () : string option =
             // last line is a no-op (Up's asymmetry) [D:repl-multiline]
             if row < lines.Count - 1 then
                 row <- row + 1
-                col <- min col lines[row].Length
+                col <- snapCol col
                 redraw ()
             elif histIdx < history.Count then
                 histIdx <- histIdx + 1
