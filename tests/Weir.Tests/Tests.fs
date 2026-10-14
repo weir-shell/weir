@@ -22811,6 +22811,23 @@ let moduleSignatureTests =
                       "print $\"{x} {B.pick ()} {n}\"" ] ]
                   (fun td -> Expect.isEmpty (diagsOf td "m.weir") "the local Red is the bare one; B's Color still matches")
           }
+          test "an imported union's case types an unannotated parameter [D:match-scrutinee-infer]" {
+              let area arms =
+                  [ "import \"./a.weir\" as A"; "let area s ="; "    match s with" ]
+                  @ arms
+                  @ [ "print $\"{area (A.Circle 2)}\"" ]
+
+              withDir
+                  [ "a.weir", [ "module A"; "type Shape ="; "    | Circle of int"; "    | Square of int" ]
+                    "m.weir", area [ "    | Circle r -> r * 3"; "    | Square w -> w * w" ]
+                    "partial.weir", area [ "    | Circle r -> r * 3" ] ]
+                  (fun td ->
+                      Expect.isEmpty (diagsOf td "m.weir") "the imported Shape types s"
+
+                      match diagsOf td "partial.weir" with
+                      | d :: _ -> Expect.stringContains d.Message "missing: Square" "exhaustiveness names the case"
+                      | [] -> failtest "a missing case must refuse")
+          }
           test "did-you-mean at the private refusal ranges over SIGNED members only" {
               withDir
                   [ "lib.weir",

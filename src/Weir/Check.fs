@@ -1993,6 +1993,23 @@ and ctorOwnersAll (env: TypeEnv) (name: string) : string list =
 
         owners
 
+// the imported unions declaring a case — the owners ctorOwnersAll
+// leaves out (their cases are not in scope bare), consulted only where
+// a pattern types its scrutinee [D:match-scrutinee-infer]
+let private importedCtorOwners (env: TypeEnv) (name: string) : string list =
+    let imported =
+        env.ModuleTypes
+        |> Map.toList
+        |> List.map snd
+        |> List.fold Set.union (env.TypeOrigins |> Map.keys |> Set.ofSeq)
+
+    env.Types
+    |> Map.toList
+    |> List.choose (fun (tn, d) ->
+        match d with
+        | Union u when imported.Contains tn && u.Cases |> List.exists (fun (c, _) -> c = name) -> Some tn
+        | _ -> None)
+
 let rec private checkPattern (ctx: Ctx) (env: TypeEnv) (ty: Ty) (p: Pattern) : Result<(string * Ty) list, TypeError> =
     // a pattern whose shape determines a type binds an unresolved
     // scrutinee instead of demanding one [D:record-pattern-rows] — the
@@ -2271,7 +2288,14 @@ let rec private checkPattern (ctx: Ctx) (env: TypeEnv) (ty: Ty) (p: Pattern) : R
                         ("constructor patterns need a scrutinee whose type is already known — params are not typed from patterns. "
                          + "Two repairs: inline the lambda at its use site (a typed pipe position types the binder there), or match on already-typed data")
 
-                match ctorOwners env ctor with
+                // an imported union's case types it too, as it does at a
+                // typed scrutinee — when no in-scope union declares the name
+                let owners =
+                    match ctorOwners env ctor with
+                    | [] -> importedCtorOwners env ctor
+                    | local -> local
+
+                match owners with
                 | [ owner ] ->
                     match typeDefFor env owner with
                     | Some(Union def) ->
