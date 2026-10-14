@@ -1859,6 +1859,9 @@ PYADP
     python3 "$(dirname "$0")/../tests/repl/repl-mapkeys.py" "$BIN" || fail "repl map-key completion"
     echo "e2e ok: repl map-key completion — a bound value's keys inside a Map lookup literal; a pipeline receiver stays silent [D:value-key-complete]"
 
+    python3 "$(dirname "$0")/../tests/repl/repl-anon-complete.py" "$BIN" || fail "repl anonymous-record field completion"
+    echo "e2e ok: repl an anonymous record's fields complete on the next line [D:anon-literals]"
+
     python3 "$(dirname "$0")/../tests/repl/repl-multiline.py" "$BIN" || fail "repl multiline editor"
     fi
     echo "e2e ok: repl 2D buffer, Enter-completeness, whole-entry history, wrap at two widths"

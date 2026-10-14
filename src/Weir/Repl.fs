@@ -3388,6 +3388,11 @@ let private saveDirective (state: State) (path: string) : unit =
                         Console.WriteLine $"#save: could not write {path}: {ex.Message}"
 
 let rec private loop (state: State) =
+    // an anonymous record bound last line completes its fields now
+    let state =
+        { state with
+            TypeEnv = Check.withPendingAnonDefs state.TypeEnv }
+
     currentEnv.Value <- state.TypeEnv
     // the alias names ride along [D:command-head-alias]: the head tint
     // and the Tab pool read the ref, never a second table

@@ -5879,6 +5879,11 @@ let private withDefList (env: TypeEnv) (defs: (string * TypeDef) list) : TypeEnv
 let withAnonDefs (env: TypeEnv) (expr: Expr) : TypeEnv =
     withDefList env (anonDefs expr @ pendingAnonRecords ())
 
+/// the anonymous shapes the last statement minted, registered now
+/// rather than at the next statement's drain [D:anon-literals] — the
+/// REPL's completion reads the session env between statements
+let withPendingAnonDefs (env: TypeEnv) : TypeEnv = withDefList env (pendingAnonRecords ())
+
 // budget exhaustion surfaces as an ordinary located TypeError; the
 // text names what the author can act on, never the internal counter.
 // The two messages are named so the whole-file collectors can recognize

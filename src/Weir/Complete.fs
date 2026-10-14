@@ -102,10 +102,12 @@ let helpNames (env: TypeEnv) : string list =
           Map.keys env.Types |> List.ofSeq ]
     |> List.distinct
 
+// an anonymous record's def may live only in the mid-statement table
+// [D:anon-literals] — typeDefFor reads both
 let private recordFields (env: TypeEnv) (ty: Ty) : (string * Ty) list option =
     match ty with
     | TNamed(n, _) ->
-        match Map.tryFind n env.Types with
+        match Types.typeDefFor env n with
         | Some(Record def) -> Some def.Fields
         | _ -> None
     | _ -> None
