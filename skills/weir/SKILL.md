@@ -1908,7 +1908,9 @@ conf |> Seq.iter print
   [D:module-import-no-commands]), not runnable. Import it with `import "./lib/x.weir"`
   (a literal path, first in the file before declarations) or
   `import "./lib/x.weir" as X`. Access is ALWAYS qualified:
-  `X.helper`, `X.Ctx` types cross the boundary. THE EXPORT RULE
+  `X.helper`, `X.Ctx` types cross the boundary; a member named like
+  a builtin (`Doc.Text`, `M.id`) exports too, reached qualified — the
+  bare name stays the builtin [D:module-builtin-names]. THE EXPORT RULE
   [D:module-signatures]: a SIGNATURE line — `let helper : int -> int`
   with NO `=` — declares a member's type AND exports it; the
   signature IS the export. An unsigned member is module-PRIVATE

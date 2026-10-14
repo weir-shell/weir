@@ -4661,10 +4661,23 @@ let rec loadModuleCachedWith
                                     | Record _ -> [])
                                 |> Set.ofList
 
+                            // own = declared in this body, a builtin's name
+                            // included — exported, reachable qualified
+                            // (`Doc.Text`); the bare name stays the builtin
+                            // [D:module-builtin-names]
+                            let declared =
+                                moduleBody
+                                |> List.collect (function
+                                    | _, CLet(n, _) -> [ n ]
+                                    | _, CLetPat(p, _) -> Parser.patLeafNames p
+                                    | _ -> [])
+                                |> Set.ofList
+                                |> Set.union ctorNames
+
                             let ownMembers =
                                 finalTenv.Values
                                 |> Map.toList
-                                |> List.filter (fun (n, _) -> not (Map.containsKey n baseTenv.Values))
+                                |> List.filter (fun (n, _) -> declared.Contains n)
 
                             let members =
                                 ownMembers

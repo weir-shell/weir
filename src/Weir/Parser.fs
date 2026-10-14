@@ -1841,7 +1841,7 @@ let private lambdaBody =
 // bounded-depth structure). The post-parse iterative gate does the
 // same for the AST walk. Caller uses the names as a Set, so
 // pop-order is immaterial.
-let private patLeafNames (p: Pattern) : string list =
+let patLeafNames (p: Pattern) : string list =
     let names = System.Collections.Generic.List<string>()
     let stack = System.Collections.Generic.Stack<Pattern>()
     stack.Push p

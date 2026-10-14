@@ -7086,6 +7086,13 @@ printf 'import "./dd17.weir" as T\nprint (show T.x)\n' > "$mdir/dd-main.weir"
 out=$(timeout 20 $BIN "$mdir/dd-main.weir" 2>&1)
 expect "an 18-level double diamond evaluates each module once" "131072" "$out"
 
+# a member named like a builtin is exported, reachable qualified; the bare
+# name stays the builtin [D:module-builtin-names]
+printf 'module Doc\ntype Doc = Text of string | Empty\nlet id : int -> int\nlet id n = n + 100\nlet render : Doc -> string\nlet render d =\n    match d with\n    | Text s -> s\n    | Empty -> ""\n' > "$mdir/bdoc.weir"
+printf 'import "./bdoc.weir"\nprint $"{Doc.render (Doc.Text "hi")} {Doc.id 1} {id 1} {Text "b"}"\n' > "$mdir/bdoc-main.weir"
+out=$($BIN "$mdir/bdoc-main.weir" 2>&1)
+expect "builtin-named members export; the bare name stays the builtin" 'hi 101 1 Text "b"' "$out"
+
 # an import cycle is a check error naming the loop, at its closing edge
 printf 'module CA\nimport "./cb.weir"\nlet a = 1\n' > "$mdir/ca.weir"
 printf 'module CB\nimport "./ca.weir"\nlet b = 2\n' > "$mdir/cb.weir"
