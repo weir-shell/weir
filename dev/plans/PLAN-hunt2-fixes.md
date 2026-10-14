@@ -26,7 +26,7 @@ run at most two at a time (the OOM lesson).
   the serve config (a `Size`), default 16 MiB, answered 413 past it.
 - **R3 — builtin-named module members (H6).** RECOMMEND: export them; a member
   is always reachable qualified (`Doc.Text`). The bare name stays the builtin.
-- **R4 — the same module through a symlink (H58 minor).** RECOMMEND: module
+- **R4 — the same module through a symlink (rides H3).** RECOMMEND: module
   identity = the real path, so a symlinked import is the same module.
 - **R5 — invalid UTF-8 in a source file (H47).** RECOMMEND: a located error
   (line:col of the first bad byte), never a silent U+FFFD.
