@@ -2047,7 +2047,9 @@ print (show (let r = sh -c "echo x" | complete in r.exitCode))
   patterns (arity 2+). `Seq.pairwise : seq<'a * 'a>`, `Seq.zip`.
   Destructure ANYWHERE irrefutable: `let x, y = pair`,
   `let (k, _) = pair`, `fun (k, v) -> ...` (parens required on
-  params). Refutable patterns in binders are errors — use match.
+  params). A SINGLE-case union's constructor is irrefutable too
+  (`type W = W of int` then `let un (W x) = x`). Refutable patterns in
+  binders are errors — use match.
 - Irrefutable RECORD patterns [D:record-patterns] destructure at every
   binding position — `let { names = n } = c`, params (bare, no parens
   needed), lambdas, match arms (the `when` guard does the testing),

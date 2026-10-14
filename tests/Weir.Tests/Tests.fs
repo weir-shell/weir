@@ -14323,6 +14323,22 @@ let binderTests =
                     "let (true, y) = (true, 2) in y" ] do
                   Expect.stringContains (checkErr bad).Message "this pattern can fail; use match" bad
           }
+          test "a single-case union's constructor destructures — params, lets, lambdas, nested" {
+              let w = "type W = W of int"
+              let b = "type Box<'a> = Box of 'a"
+
+              for lines in
+                  [ [ w; "let un (W x) = x"; "print $\"{un (W 3)}\"" ]
+                    [ w; "let (W y) = W 4"; "print $\"{y}\"" ]
+                    [ w; "let f = fun (W z) -> z + 1"; "print $\"{f (W 5)}\"" ]
+                    [ b; "let un (Box x) = x"; "print $\"{un (Box 3)} {un (Box \"s\")}\"" ]
+                    [ b; "let ((Box a), c) = (Box 1, 2)"; "print $\"{a + c}\"" ] ] do
+                  checkEqRun lines
+
+              // two cases can fail
+              let e = firstErrorIn "two.weir" [ "type V = A of int | B"; "let un (A x) = x"; "print $\"{un (A 1)}\"" ]
+              Expect.stringContains e.Message "this pattern can fail; use match" "two cases"
+          }
           test "per-name generalization: one component polymorphic, one ground" {
               expectValue "let (f, n) = ((fun x -> x), 3) in (if f true then f n else 0)" (VInt 3L)
           }

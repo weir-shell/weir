@@ -1799,6 +1799,7 @@ let private lambdaBody =
                         | PVar n -> [ n ]
                         | PTuple pts -> pts |> List.collect leafNames
                         | PRecord fields -> fields |> List.map snd |> List.collect leafNames
+                        | PCase(_, Some inner) -> leafNames inner
                         | _ -> []
 
                     let names = ps |> List.collect leafNames |> Set.ofList
@@ -1964,6 +1965,7 @@ let private letInBody =
                               | PVar n -> [ n ]
                               | PTuple pts -> pts |> List.collect leafNames
                               | PRecord fields -> fields |> List.map snd |> List.collect leafNames
+                              | PCase(_, Some inner) -> leafNames inner
                               | _ -> []
 
                           let names = ps |> List.collect leafNames |> Set.ofList
@@ -5295,6 +5297,7 @@ let private topLet (r: Resolver) =
                     | PVar n -> [ n ]
                     | PTuple ps -> ps |> List.collect leafNames
                     | PRecord fields -> fields |> List.map snd |> List.collect leafNames
+                    | PCase(_, Some inner) -> leafNames inner
                     | _ -> []
 
                 let paramNames = ps |> List.collect leafNames |> Set.ofList

@@ -2383,6 +2383,34 @@ let rec private binderShape (ctx: Ctx) (env: TypeEnv) (p: Pattern) : Result<Ty *
         // an unknown uppercase name in a binder is the casing law's
         // case (a function/name spelled uppercase), not refutability
         casingError p.PSpan ctor
+    // a single-case union's constructor cannot fail — `let un (W x) = x`
+    // destructures as F#'s does
+    | PCase(ctor, argPat) when
+        (match ctorOwners env ctor with
+         | [ owner ] ->
+             match typeDefFor env owner with
+             | Some(Union u) -> u.Cases.Length = 1
+             | _ -> false
+         | _ -> false)
+        ->
+        let owner = (ctorOwners env ctor).Head
+
+        match typeDefFor env owner with
+        | Some(Union u) ->
+            let targs = u.Params |> List.map (fun _ -> TVar(freshName ctx "a"))
+            let ty = TNamed(owner, targs)
+
+            match snd u.Cases.Head, argPat with
+            | None, None -> Ok(ty, [])
+            | None, Some ap -> err ap.PSpan $"'{ctor}' has no payload"
+            | Some payload, Some ap ->
+                result {
+                    let! t, binds = binderShape ctx env ap
+                    do! bind ctx env ap.PSpan (substParams u.Params targs payload) t
+                    return ty, binds
+                }
+            | Some payload, None -> err p.PSpan $"'{ctor}' carries {formatTy (substParams u.Params targs payload)}; add a pattern for it"
+        | _ -> err p.PSpan "this pattern can fail; use match"
     | PBool _
     | PInt _
     | PStr _
