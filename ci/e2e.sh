@@ -8432,6 +8432,14 @@ out=$($BIN "$u8dir/bom.weir" 2>&1)
 crlf" ] || fail "a BOM and CRLF still read: $out"
 rm -rf "$u8dir"
 
+# an error in the join text between continuation lines sits just past the
+# physical line's last character, never beyond it
+jcdir=$(mkweirtmp)
+printf 'd\n    within lock""t\n    w\n' > "$jcdir/join.weir"
+out=$($BIN check "$jcdir/join.weir" 2>&1)
+expect "a joined-line error column stays on its line" "join.weir:2:19: error" "$out"
+rm -rf "$jcdir"
+
 # check-time catches on the real schema: the typo (did-you-mean) and a
 # misplaced nesting (a field at the wrong level)
 cat > "$ctdir/proj/sub/cm.weir" <<'WEOF'

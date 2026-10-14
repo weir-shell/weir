@@ -1108,11 +1108,19 @@ let bracketFold
 //   LastSegStart — index just past the last sibling sentinel (or 0): the
 //                 proc/serve binder-head scan runs over the last segment
 //                 only, never the whole growing text (LastIndexOf was O(N)).
+// each assembled line's segment ends, aligned with its Segments — set at
+// statement close (bufToLL), read by translate
+let private segmentEnds =
+    System.Runtime.CompilerServices.ConditionalWeakTable<LogicalLine, int[]>()
+
 type private PendBuf =
     { Sb: System.Text.StringBuilder
       // the statement's first physical line (LogicalLine.Head)
       Head: int
       Segments: (int * int * int) list
+      // where each segment's own text ends (aligned with Segments): the
+      // synthetic join text after it is no physical column
+      Ends: int list
       // index of the last non-whitespace char in Sb, or -1
       LastNonWs: int
       // index just past the last sibling sentinel (Parser.sibSep) in Sb, or 0
@@ -1325,9 +1333,13 @@ let private bufEndsInEnvHead (b: PendBuf) : bool =
 // materialize a LogicalLine from a finished pending buffer (segments are
 // reversed at the boundary exactly as before)
 let private bufToLL (b: PendBuf) : LogicalLine =
-    { Text = b.Sb.ToString()
-      Head = b.Head
-      Segments = List.rev b.Segments }
+    let ll =
+        { Text = b.Sb.ToString()
+          Head = b.Head
+          Segments = List.rev b.Segments }
+
+    segmentEnds.AddOrUpdate(ll, List.rev b.Ends |> List.toArray)
+    ll
 
 // a fresh single-line buffer (the assembler's per-statement seed)
 let private bufNew (text: string) (lineNo: int) (indent: int) : PendBuf =
@@ -1337,6 +1349,7 @@ let private bufNew (text: string) (lineNo: int) (indent: int) : PendBuf =
     { Sb = sb
       Head = lineNo
       Segments = [ (0, lineNo, indent) ]
+      Ends = [ text.Length ]
       LastNonWs = nonWs
       LastSegStart = segStart }
 
@@ -1370,7 +1383,12 @@ let private applyJoin (j: Join) (b: PendBuf) (piece: string) (lineNo: int) (inde
 
             let nonWs, segStart = scanTail b.Sb 0 -1 0
 
-            let b = { b with LastNonWs = nonWs; LastSegStart = segStart }
+            let b =
+                { b with
+                    LastNonWs = nonWs
+                    LastSegStart = segStart
+                    Ends = b.Ends |> List.map (min b.Sb.Length) }
+
             bufAppend b (opener + piece + ")")
         | JDistrictSibling opener -> bufAppend b (" ; " + opener + piece + ")")
         | JDistrictPipe ->
@@ -1379,11 +1397,26 @@ let private applyJoin (j: Join) (b: PendBuf) (piece: string) (lineNo: int) (inde
             b.Sb.Remove(b.Sb.Length - 1, 1) |> ignore
             let nonWs, segStart = scanTail b.Sb 0 -1 0
 
-            let b = { b with LastNonWs = nonWs; LastSegStart = segStart }
+            let b =
+                { b with
+                    LastNonWs = nonWs
+                    LastSegStart = segStart
+                    Ends = b.Ends |> List.map (min b.Sb.Length) }
+
             bufAppend b (" " + piece + ")")
         | JYamlLine rel -> bufAppend b (Parser.sibSepStr + String(' ', rel) + piece)
 
-    { b with Segments = (joinedStart, lineNo, indent) :: b.Segments }
+    // the piece ends before a district's closing ")"
+    let pieceEnd =
+        match j with
+        | JDistrictOpen _
+        | JDistrictSibling _
+        | JDistrictPipe -> bufLen b - 1
+        | _ -> bufLen b
+
+    { b with
+        Segments = (joinedStart, lineNo, indent) :: b.Segments
+        Ends = pieceEnd :: b.Ends }
 
 let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> =
     // trailing comments strip here, per physical line [D:trailing-comments]:
@@ -1478,7 +1511,9 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                 LastSegStart = (if b.LastSegStart >= ts then b.LastSegStart + 1 else b.LastSegStart)
                 Segments =
                     b.Segments
-                    |> List.map (fun (js, l, i) -> (if js >= ts then js + 1 else js), l, i) }
+                    |> List.map (fun (js, l, i) -> (if js >= ts then js + 1 else js), l, i)
+                Ends =
+                    List.map2 (fun (js, _, _) e -> if js >= ts || e > ts then e + 1 else e) b.Segments b.Ends }
 
         let folded =
             numbered
@@ -2445,8 +2480,11 @@ let private buildSegIndex (ll: LogicalLine) : SegIndex =
     let segs = List.toArray ll.Segments
     let starts = segs |> Array.map (fun (js, _, _) -> js)
 
+    // a line not from the assembler has no join text to step over
     let ends =
-        Array.init starts.Length (fun i -> if i + 1 < starts.Length then starts[i + 1] else ll.Text.Length)
+        match segmentEnds.TryGetValue ll with
+        | true, e when e.Length = starts.Length -> e
+        | _ -> Array.init starts.Length (fun i -> if i + 1 < starts.Length then starts[i + 1] else ll.Text.Length)
 
     { Starts = starts
       Lines = segs |> Array.map (fun (_, l, _) -> l)
