@@ -66,10 +66,13 @@ Some behaviours worth knowing:
 - **A path completes quoted in an expression, and unquoted as a
   command argument.** `File.read ./x<TAB>` gives `File.read "./x"`,
   because a bare path is not a valid weir expression. As a command
-  argument (`cat ./x`, `ls ./dir`) the path stays unquoted. If you
-  already typed the opening quote (`File.read "./x<TAB>`), the
-  completion goes inside it without adding a second quote; a directory
-  keeps its trailing `/` inside the quotes.
+  argument (`cat ./x`, `ls ./dir`) the path stays unquoted, unless a
+  character would split or end the word: `cat my<TAB>` gives
+  `cat "my file.txt"`. If you already typed the opening quote
+  (`File.read "./x<TAB>`), the completion goes inside it without adding
+  a second quote, escaped for that kind of string (`\"` in `"…"`, `""`
+  in `@"…"`, `{{` in `$"…"`); a directory keeps its trailing `/` inside
+  the quotes.
 - **A leading `~` completes to your home directory's literal path.**
   `cat ~/.con<TAB>` becomes `cat /home/you/.config/`, and `cd ~<TAB>`
   becomes `cd "/home/you/"`, so the line shows exactly what will run.

@@ -163,9 +163,32 @@ t = pty_steps(["cd %s/su" % work, "\t", "d", "\t"])
 if ('cd "%s/sub/deep.txt"' % work) not in t:
     failures.append(f"a quoted dir completion must leave the caret inside the quote (re-Tab must nest): {t[-400:]!r}")
 
+# (5) an argv path a bare word cannot hold comes back as one string
+# literal — a space would split it, a quote would end it — and Enter runs
+# the real file (waits on the prompt, no fixed sleeps)
+from ptysession import Repl
+
+spaced = tempfile.mkdtemp(prefix="weir-pathq2-")
+with open(os.path.join(spaced, "my file.txt"), "w") as f:
+    f.write("SPACE-OK\n")
+with open(os.path.join(spaced, 'qu"ote.txt'), "w") as f:
+    f.write("QUOTE-OK\n")
+for prefix, want in (("cat my", "SPACE-OK"), ("cat qu", "QUOTE-OK")):
+    r = Repl(WEIR, cwd=spaced)
+    try:
+        r.prompt()
+        start = len(r.out)
+        r.send(prefix + "\t")
+        r.wait_for(r"\.txt", start)
+        t = r.submit("\r")
+        if want not in [l.strip() for l in t.split("\n")]:
+            failures.append(f"{prefix}<Tab> must run the real file ({want}): {t[-300:]!r}")
+    finally:
+        r.close()
+
 if failures:
     for f in failures:
         print("repl-pathquote FAIL:", f)
     sys.exit(1)
 
-print("repl-pathquote: expression-slot path completes quoted (File.read \"./somefile.txt\"), command-argv stays bare, an open quote is not doubled, a quoted dir keeps the caret inside so a re-Tab nests")
+print("repl-pathquote: expression-slot path completes quoted (File.read \"./somefile.txt\"), command-argv stays bare unless a space/quote needs one literal, an open quote is not doubled, a quoted dir keeps the caret inside so a re-Tab nests")

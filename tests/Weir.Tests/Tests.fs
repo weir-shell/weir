@@ -4104,6 +4104,46 @@ let completionTests =
               finally
                   System.IO.Directory.Delete(d, true)
           }
+          test "a completed path is spelled for its slot: argv quotes what a bare word cannot hold, literals escape [D:repl-path-quote]" {
+              skipOnWindows ()
+              let d = tempPath "weir-pq2"
+              System.IO.Directory.CreateDirectory d |> ignore
+              System.IO.File.WriteAllText(System.IO.Path.Combine(d, "my file.txt"), "x")
+              System.IO.File.WriteAllText(System.IO.Path.Combine(d, "qu\"ote.txt"), "x")
+              System.IO.File.WriteAllText(System.IO.Path.Combine(d, "br{a}ce.txt"), "x")
+              let dir = d.Replace("\\", "/")
+
+              try
+                  let ask (line: string) =
+                      suggest line (Weir.Complete.wordStartAt line line.Length)
+
+                  let one (line: string) =
+                      match ask line with
+                      | [ c ] -> c
+                      | got -> failtestf "one candidate for %s, got %A" line got
+
+                  // argv: a space or a quote would split/end the word — one
+                  // string literal is one argv word
+                  Expect.equal (one ("cat " + dir + "/my")) ("\"" + dir + "/my file.txt\"") "argv: a space is quoted"
+                  Expect.equal (one ("cat " + dir + "/qu")) ("\"" + dir + "/qu\\\"ote.txt\"") "argv: a quote is escaped inside quotes"
+                  // an expression slot escapes inside its literal
+                  Expect.equal (one ("File.read " + dir + "/qu")) ("\"" + dir + "/qu\\\"ote.txt\"") "expression: escaped"
+                  // inside an open literal: escaped for that literal's kind
+                  Expect.equal (one ("File.read \"" + dir + "/qu")) (dir + "/qu\\\"ote.txt") "inside \"…: \\\""
+                  Expect.equal (one ("File.read @\"" + dir + "/qu")) (dir + "/qu\"\"ote.txt") "inside @\"…: a doubled quote"
+                  Expect.equal (one ("File.read $\"" + dir + "/br")) (dir + "/br{{a}}ce.txt") "inside $\"…: doubled braces"
+
+                  // every spelling parses back to the real path
+                  for line in [ "cat " + dir + "/my"; "cat " + dir + "/qu"; "File.read " + dir + "/qu" ] do
+                      let ws = Weir.Complete.wordStartAt line line.Length
+                      let produced = line.Substring(0, ws) + one line
+
+                      match Weir.Parser.parseExpr produced with
+                      | Ok _ -> ()
+                      | Error e -> failtestf "the completed line must parse: %s -> %s" produced e
+              finally
+                  System.IO.Directory.Delete(d, true)
+          }
           test "command argv completes paths, never fields — and an unbound scrutinee offers NOTHING [D:complete-argv]" {
               let sug (t: string) =
                   // the word under completion runs from after the last
