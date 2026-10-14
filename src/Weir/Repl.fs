@@ -2068,9 +2068,22 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
                 commandSeqNames <- Set.remove n commandSeqNames
 
             // one destructuring line reports each binding on its
-            // own line — matching what two lets would have shown
+            // own line, value included — matching what two lets would
+            // have shown (the one-line form; tables stay the plain let's)
+            let cap =
+                if Console.IsOutputRedirected then
+                    Eval.echoPipedCap
+                else
+                    echoCap
+
             for n, sch in schemes do
-                Console.WriteLine $"{n} : {formatEchoTy sch.Ty}"
+                match bindings |> List.tryFind (fun (bn, _) -> bn = n) with
+                | Some(_, bv) when bv <> Eval.VUnit ->
+                    let rendered, hint = Eval.echoValue cap (Eval.echoPrep bv)
+
+                    Console.WriteLine
+                        $"{n} : {formatEchoTy sch.Ty} = {Eval.sanitizeTtyData rendered}{Eval.echoTail hint}"
+                | _ -> Console.WriteLine $"{n} : {formatEchoTy sch.Ty}"
 
             { state with
                 TypeEnv = chk.Env

@@ -1542,6 +1542,10 @@ out=$(printf 'let a = 1\na + 1\n"hi"\n' | $BIN 2>&1)
 expect "single-line: let echoes" "a : int = 1" "$out"
 expect "single-line: expression echoes" "2 : int" "$out"
 expect "single-line: string echoes" '"hi" : string' "$out"
+# a destructuring let echoes each binding with its value, as two lets would
+out=$(printf 'let (a, b) = (1, "s")\n' | $BIN 2>&1)
+expect "destructuring: the first binding's value" "a : int = 1" "$out"
+expect "destructuring: the second binding's value" 'b : string = "s"' "$out"
 
 # a blank line ends a pending entry, as the tty's blank-line escape does:
 # the incomplete line errors and the rest of stdin still runs
