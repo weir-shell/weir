@@ -1,6 +1,6 @@
 # PLAN — fixing the second bug hunt (H1–H57)
 
-Status: DRAFT, awaiting bless.
+Status: APPROVED (user, 2026-10-14) — R1–R7 as recommended; R1 restated by the user as "forbid": no command runs while a module is imported, enforced at run time too.
 
 Source: a five-area black-box hunt (regressions in v0.0.73, REPL/LSP/CLI,
 modules/contracts/HTTP, docs-vs-binary, crash fuzzing) against main @ 16cc7c6.
