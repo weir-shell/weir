@@ -22083,6 +22083,66 @@ let serveTests =
     let okHandler =
         "let h = fun req -> HttpServerResponse { status = 200; headers = []; body = Text \"ok\" }"
 
+    // drive the Serve leg over a real loopback socket: `answer` maps the
+    // read request to a response, each raw request is sent in turn on ONE
+    // kept-alive connection, and each reply's raw bytes (Date dropped)
+    // come back — the wire view a unit can pin
+    let wire (answer: Weir.Serve.SReq -> Weir.Serve.SResp) (raws: string list) : string list =
+        let probe = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0)
+        probe.Start()
+        let port = (probe.LocalEndpoint :?> System.Net.IPEndPoint).Port
+        probe.Stop()
+        let h = Weir.Serve.start port
+
+        let loop () =
+            let mutable go = true
+
+            while go do
+                match Weir.Serve.accept h with
+                | None -> go <- false
+                | Some ctx ->
+                    let resp =
+                        try
+                            answer (Weir.Serve.readRequest ctx 5000)
+                        with ex ->
+                            { Status = 599
+                              Headers = []
+                              Body = Weir.Serve.RText ex.Message }
+
+                    Weir.Serve.writeResponse ctx resp ignore
+
+        let t = System.Threading.Thread(loop)
+        t.IsBackground <- true
+        t.Start()
+
+        try
+            use c = new System.Net.Sockets.TcpClient("127.0.0.1", port)
+            c.ReceiveTimeout <- 700
+            let st = c.GetStream()
+
+            [ for raw in raws do
+                  let b = System.Text.Encoding.Latin1.GetBytes(raw: string)
+                  st.Write(b, 0, b.Length)
+                  let buf = Array.zeroCreate<byte> 65536
+                  let sb = System.Text.StringBuilder()
+
+                  (try
+                      let mutable n = st.Read(buf, 0, buf.Length)
+
+                      while n > 0 do
+                          sb.Append(System.Text.Encoding.Latin1.GetString(buf, 0, n)) |> ignore
+                          n <- st.Read(buf, 0, buf.Length)
+                   with _ ->
+                       ())
+
+                  yield
+                      System.Text.RegularExpressions.Regex.Replace(sb.ToString(), "Date: [^\r]*\r\n", "") ]
+        finally
+            Weir.Serve.stop h
+
+    let get (m: string) (path: string) =
+        $"{m} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n"
+
     testList
         "within serve [D:http-serve]"
         [ test "the head form checks clean: binder = config record + handler, body sequences with lets" {
@@ -22178,6 +22238,25 @@ let serveTests =
               let h2 = Weir.Serve.start 8199
               Expect.isFalse h2.Closed "the second bind succeeds after the first freed"
               Weir.Serve.stop h2
+          }
+          test "no body on 204, 304 or HEAD — a kept-alive connection stays in frame (H16)" {
+              let answer (r: Weir.Serve.SReq) : Weir.Serve.SResp =
+                  match r.Path with
+                  | "/nc" -> { Status = 204; Headers = []; Body = Weir.Serve.RText "LEAK204" }
+                  | "/nm" -> { Status = 304; Headers = []; Body = Weir.Serve.RJson "LEAK304" }
+                  | _ -> { Status = 200; Headers = []; Body = Weir.Serve.RText "hello" }
+
+              let replies = wire answer [ get "GET" "/nc"; get "HEAD" "/x"; get "GET" "/nm"; get "GET" "/x" ]
+
+              match replies with
+              | [ nc; head; nm; ok ] ->
+                  Expect.stringContains nc "204" nc
+                  Expect.isFalse (nc.Contains "LEAK204") $"204 carries no body: {nc}"
+                  Expect.isTrue (head.EndsWith "\r\n\r\n") $"HEAD ends at the head: {head}"
+                  Expect.stringContains head "Content-Length: 5" "HEAD declares the GET length"
+                  Expect.isFalse (nm.Contains "LEAK304") $"304 carries no body: {nm}"
+                  Expect.isTrue (ok.StartsWith "HTTP/1.1 200" && ok.EndsWith "hello") $"the next reply is in frame: {ok}"
+              | other -> failtest $"four replies expected: {other}"
           }
           // ---- F9: the method boundary [D:serve-method] ----
           test "HttpMethod carries a well-formed unlisted verb as Other; an inlined handler routes on it and on Query" {

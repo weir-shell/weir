@@ -279,8 +279,35 @@ let writeResponse (ctx: HttpListenerContext) (resp: SResp) (onStreamFailure: str
         with _ ->
             ()
 
+    // no body on HEAD, 1xx, 204 or 304 (RFC 9110 §6.4.1): bytes there
+    // are read as the start of the next response on a kept-alive
+    // connection. HEAD still declares the length a GET would carry.
+    let isHead =
+        String.Equals(ctx.Request.HttpMethod, "HEAD", StringComparison.OrdinalIgnoreCase)
+
+    let bodyless = isHead || resp.Status < 200 || resp.Status = 204 || resp.Status = 304
+
+    let fixedBytes =
+        match resp.Body with
+        | RNoBody -> Some [||]
+        | RText s
+        | RJson s
+        | RForm s -> Some(Encoding.UTF8.GetBytes s)
+        | RStream _ -> None
+
     try
         match resp.Body with
+        | _ when bodyless ->
+            match resp.Body with
+            | RJson _ when isNull out.ContentType -> out.ContentType <- "application/json"
+            | RForm _ when isNull out.ContentType -> out.ContentType <- "application/x-www-form-urlencoded"
+            | RStream _ when isNull out.ContentType -> out.ContentType <- "text/event-stream"
+            | _ -> ()
+
+            match fixedBytes with
+            | Some b when isHead && resp.Status >= 200 && resp.Status <> 204 && resp.Status <> 304 ->
+                out.ContentLength64 <- int64 b.Length
+            | _ -> out.ContentLength64 <- 0L
         | RNoBody -> out.ContentLength64 <- 0L
         | RText s ->
             let bytes = Encoding.UTF8.GetBytes s
@@ -357,7 +384,7 @@ let writeResponse (ctx: HttpListenerContext) (resp: SResp) (onStreamFailure: str
             | None -> out.OutputStream.Close()
 
         match resp.Body with
-        | RStream _ -> () // the stream arm closed/aborted above
+        | RStream _ when not bodyless -> () // the stream arm closed/aborted above
         | _ -> out.OutputStream.Close()
     with _ ->
         // any late write failure (client vanished) — the connection is

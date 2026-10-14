@@ -672,7 +672,9 @@ print $"{key} -> {value}"
   the seq ends. If a `Stream` producer RAISES mid-body, the failure is
   surfaced to the script through `Server.streamErrors srv` (the
   designated channel, Proc.wait's shape — it is not raised out of the
-  handler). `maxConcurrent` bounds handlers-at-once (the `pmapWith` law);
+  handler). A HEAD, 1xx, 204 or 304 reply carries no body bytes
+  whatever the handler returned (HEAD still declares the GET length).
+  `maxConcurrent` bounds handlers-at-once (the `pmapWith` law);
   excess queues. `bodyTimeout` (a `Duration`, OPTIONAL — default 30s)
   bounds the request-body read so a slow client cannot park a slot; the
   config is `{ port; maxConcurrent }` or `{ port; maxConcurrent;
