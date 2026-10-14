@@ -2594,6 +2594,27 @@ let private lambdaCore
 /// answer confidently where the checker refuses, and a later
 /// declaration cannot miss the collision. env.Values holds one entry
 /// per name, so by the time a bare use is resolved the earlier
+// a comma between record-literal fields parses as a tuple value whose
+// later item is `name = …` — taught as the separator it is, as the list
+// literal's one-tuple teaching does, before the field set mis-resolves
+let private commaBetweenFields (fields: (string * Span * Expr) list) : Result<unit, TypeError> =
+    fields
+    |> List.tryPick (fun (_, _, v) ->
+        match v.Kind with
+        | ETuple(_ :: rest) ->
+            rest
+            |> List.tryPick (fun item ->
+                match item.Kind with
+                | EBinOp("=", { Kind = EVar n }, _) -> Some(n, item.Span)
+                | _ -> None)
+        | _ -> None)
+    |> function
+        | Some(n, span) ->
+            err
+                span
+                $"record fields are separated by ';' or a newline, not ',' — the comma made a tuple and '{n} = …' an equality; write {{ … ; {n} = … }}"
+        | None -> Ok()
+
 let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr, TypeError> =
     match expr.Kind with
     // a failure as a value [D:try-form]: Option, or Result carrying the message
@@ -3139,6 +3160,8 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                 // no change to `Some { .. }` (Some is a ctor, not a type).
                 let namedRecord (typeName: string) (fields: (string * Span * Expr) list) =
                     result {
+                        do! commaBetweenFields fields
+
                         let def =
                             match typeDefFor env typeName with
                             | Some(Record d) -> d
@@ -4033,6 +4056,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
         // generalize. Paths walk nested records (the F# 8 I.X sugar);
         // rows demand a field per hop, mirroring EField.
         result {
+            do! commaBetweenFields (updates |> List.map (fun (path, v) -> fst (List.head path), expr.Span, v))
             let! tsource = infer ctx env source
 
             match firstDup (updates |> List.map (fun (path, _) -> fst (List.head path))) with
@@ -4121,6 +4145,8 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
         }
     | ERecord fields ->
         result {
+            do! commaBetweenFields fields
+
             match firstDup (fields |> List.map (fun (n, _, _) -> n)) with
             | Some dup ->
                 let _, dupSpan, _ = fields |> List.findBack (fun (n, _, _) -> n = dup)
@@ -4178,6 +4204,8 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
     // node is TERecord — eval/writers/LSP gain no arms.
     | EAnonRecord fields ->
         result {
+            do! commaBetweenFields fields
+
             match firstDup (fields |> List.map (fun (n, _, _) -> n)) with
             | Some dup ->
                 let _, dupSpan, _ = fields |> List.findBack (fun (n, _, _) -> n = dup)

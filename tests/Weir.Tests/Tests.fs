@@ -708,6 +708,15 @@ let warningTests =
               Expect.isEmpty (msgs "[\"a\", 1; \"b\", 2]") "a list of pairs is the F# idiom"
               Expect.isEmpty (msgs "[1; 2]") ""
           }
+          test "a comma between record-literal fields teaches the separator" {
+              for src in [ "let v = { a = 1, b = 2 }"; "let v = {| a = 1, b = 2 |}"; "let v = { T.zero with a = 1, b = 2 }" ] do
+                  let e = firstErrorIn "comma.weir" [ "type T = { a: int; b: int }"; src; "print $\"{v.a}\"" ]
+                  Expect.stringContains e.Message "record fields are separated by ';' or a newline, not ','" src
+                  Expect.isFalse (e.Message.Contains "no declared record") src
+
+              // a tuple-typed field keeps its tuple
+              errorsCleanIn "comma.weir" [ "type P = { a: int * int }"; "let v = { a = 1, 2 }"; "print $\"{v.a}\"" ] "a tuple value"
+          }
           test "arm after a catch-all is a hard error" {
               let terr = checkErr "match Running 5 with | _ -> 0 | Stopped -> 1"
               Expect.stringContains terr.Message "unreachable" ""
