@@ -221,7 +221,10 @@ runs (or the directory is listed) each time the value is read. It
 runs in the directory and environment current when it is read, as an
 F# `seq` reading `Environment.CurrentDirectory` would. The exception
 is a value written inside `within cd` or `within env`: it keeps that
-scope however late it is read:
+scope however late it is read. A relative `within cd` path resolves
+when the `within` line runs, against the current directory (or the
+enclosing scope's), and the value keeps that resolved directory, not
+the relative text:
 
 ```weir
 Dir.create "proj/src"
