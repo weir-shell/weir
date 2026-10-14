@@ -1361,7 +1361,7 @@ let private jsonGotWord (k: System.Text.Json.JsonValueKind) : string =
 /// demands a top-level array (one row per element), otherwise an
 /// object — the type decides what the top level must be, never the
 /// input [D:from-json-seq]
-let private jsonDoc
+let private jsonDocRead
     (who: string)
     (wantSeq: bool)
     (wantMap: bool)
@@ -1692,6 +1692,16 @@ let private jsonDoc
                     "from jsonl T reads one object per element"
 
             failwith $"{who}: the top level is a JSON {jsonKindName k}, not an object — {contract}, in: {shown}"
+
+// a string's decode is the one InvalidOperationException a parsed
+// document can still raise: an escape naming a lone surrogate
+// (`"\ud800"`) is valid JSON grammar but not text — named in weir's
+// words, never System.Text.Json's [D:json-boundary]
+let private jsonDoc who wantSeq wantMap top defs udefs (shown: string) text =
+    try
+        jsonDocRead who wantSeq wantMap top defs udefs shown text
+    with :? System.InvalidOperationException ->
+        failwith $"{who}: a string escape is a lone surrogate (\\uD800-\\uDFFF without its pair), which is not text, in: {shown}"
 
 // a document snippet for error messages: whole if short, truncated if
 // not (a joined body can be megabytes; the message stays a message)
