@@ -571,7 +571,8 @@ let docsJson () : string =
 type private ReplConfig =
     { HistorySize: int
       HistoryDedup: bool
-      HistoryPath: string
+      // None = the default under the state home, resolved on first use
+      HistoryPath: string option
       FinderFlags: string list
       // feeds the session echo cap [D:echo-cap]
       EchoElems: int }
@@ -585,7 +586,7 @@ let private defaultConfig =
     { HistorySize = 5000
       HistoryDedup = true
       // state, not config — history is data the REPL produced, not settings
-      HistoryPath = Path.Combine(stateHome (), "weir", "history")
+      HistoryPath = None
       FinderFlags = [ "--height"; "40%"; "--reverse" ]
       EchoElems = 100 }
 
@@ -596,9 +597,15 @@ let private configKeys =
 // unknown keys are rejected with did-you-mean — a typo must not silently
 // do nothing. Absent file / parse error -> defaults.
 let private loadConfig () : ReplConfig =
-    let path = Path.Combine(configHome (), "weir", "config.json")
+    // no home (HOME=) means no config file to read [D:home-verbatim] —
+    // the REPL still starts
+    let path =
+        try
+            Path.Combine(configHome (), "weir", "config.json")
+        with _ ->
+            ""
 
-    if not (File.Exists path) then
+    if path = "" || not (File.Exists path) then
         defaultConfig
     else
         try
@@ -635,7 +642,10 @@ let private loadConfig () : ReplConfig =
 
             { HistorySize = getInt "historySize" defaultConfig.HistorySize
               HistoryDedup = getBool "historyDedup" defaultConfig.HistoryDedup
-              HistoryPath = getStr "historyPath" defaultConfig.HistoryPath
+              HistoryPath =
+                match getStr "historyPath" "" with
+                | "" -> defaultConfig.HistoryPath
+                | p -> Some p
               FinderFlags = getStrList "finderFlags" defaultConfig.FinderFlags
               EchoElems = getInt "echoElems" defaultConfig.EchoElems }
         with ex ->
@@ -654,7 +664,31 @@ let mutable private echoCap: int option =
         Console.Error.WriteLine $"weir: config: echoElems must be positive; got {config.EchoElems} (using 100)"
         Some 100
 
-let private historyFile = config.HistoryPath
+// the history path resolves lazily [D:repl-history]: an unusable home
+// (HOME= is empty [D:home-verbatim]) or an unwritable file turns history
+// off with one note — the REPL never fails to start over its history
+let mutable private historyOff = false
+
+let private historyOffNote (why: string) =
+    if not historyOff then
+        historyOff <- true
+        Console.Error.WriteLine $"weir: history off for this session — {why}"
+
+let private historyPath =
+    lazy
+        (match config.HistoryPath with
+         | Some p -> Some p
+         | None ->
+             try
+                 Some(Path.Combine(stateHome (), "weir", "history"))
+             with ex ->
+                 historyOffNote ex.Message
+                 None)
+
+let private historyFile () =
+    match historyPath.Force() with
+    | Some p when not historyOff -> Some p
+    | _ -> None
 
 // the table's tint is positional [D:table-polish]: echoTable's lines
 // stay plain (one law, its pinned output unchanged) — the printer knows
@@ -800,7 +834,7 @@ let private displayEntry (entry: string) = entry.Replace("\n", " ⏎ ")
 
 // the history file is created 0600 [D:repl-quality] — a REPL line can carry a
 // secret (`runEnv [Env.pair "TOKEN" "…"]`), so it is a place secrets land
-let private ensureHistoryFile () =
+let private ensureHistoryFile (historyFile: string) =
     let dir = Path.GetDirectoryName historyFile
 
     if dir <> "" then
@@ -819,7 +853,7 @@ let private ensureHistoryFile () =
         with _ ->
             ()
 
-let private loadHistory () =
+let private loadHistoryFrom (historyFile: string) =
     if File.Exists historyFile then
         let lines = File.ReadAllLines historyFile
         // front-truncate to the cap once at load (per-line append never
@@ -848,37 +882,50 @@ let private loadHistory () =
                 decoded
 
         if deduped.Length <> lines.Length then
-            ensureHistoryFile ()
+            ensureHistoryFile historyFile
             File.WriteAllLines(historyFile, deduped |> Array.map encodeEntry)
 
         history.AddRange deduped
+
+let mutable private historyLoaded = false
+
+let private loadHistory () =
+    if not historyLoaded then
+        historyLoaded <- true
+
+        match historyFile () with
+        | Some f ->
+            try
+                loadHistoryFrom f
+            with ex ->
+                historyOffNote $"cannot read {f}: {ex.Message}"
+        | None -> ()
 
 // per-entry append with erasedups [D:repl-history-dedup]: a re-entered
 // line moves to the most-recent position — earlier copies drop, so history
 // is a recency-ordered set (each command once). On a dedup hit the file is
 // rewritten (an earlier line must go); otherwise it is appended.
 let private appendHistory (entry: string) =
-    if config.HistoryDedup then
-        let removed = history.RemoveAll(System.Predicate(fun e -> e = entry))
-        history.Add entry
+    let removed =
+        if config.HistoryDedup then
+            history.RemoveAll(System.Predicate(fun e -> e = entry))
+        else
+            0
 
+    history.Add entry
+
+    match historyFile () with
+    | Some f ->
         try
-            ensureHistoryFile ()
+            ensureHistoryFile f
 
             if removed > 0 then
-                File.WriteAllLines(historyFile, history |> Seq.map encodeEntry)
+                File.WriteAllLines(f, history |> Seq.map encodeEntry)
             else
-                File.AppendAllText(historyFile, encodeEntry entry + Environment.NewLine)
-        with _ ->
-            ()
-    else
-        history.Add entry
-
-        try
-            ensureHistoryFile ()
-            File.AppendAllText(historyFile, encodeEntry entry + Environment.NewLine)
-        with _ ->
-            ()
+                File.AppendAllText(f, encodeEntry entry + Environment.NewLine)
+        with ex ->
+            historyOffNote $"cannot write {f}: {ex.Message}"
+    | None -> ()
 
 // #history [N] [D:repl-history]: dump the session's history with the
 // file's path in the header — a user cannot cat what they cannot find,
@@ -890,9 +937,14 @@ let private appendHistory (entry: string) =
 // the line-per-entry appends not yet load-capped. Bare = all (cat
 // parity); a positive N = the last N (tail).
 let private historyDirective (arg: string) : string =
+    let where =
+        match historyFile () with
+        | Some f -> $"history at {f}"
+        | None -> "history (off — not saved)"
+
     let render (startIdx: int) =
         if history.Count = 0 then
-            $"history at {historyFile} (empty)"
+            $"{where} (empty)"
         else
             let width = history.Count.ToString().Length
 
@@ -901,7 +953,7 @@ let private historyDirective (arg: string) : string =
                       let n = (i + 1).ToString().PadLeft width
                       $"  {n}  {displayEntry history[i]}" ]
 
-            String.concat "\n" ($"history at {historyFile} ({history.Count} entries)" :: lines)
+            String.concat "\n" ($"{where} ({history.Count} entries)" :: lines)
 
     match arg.Trim() with
     | "" -> render 0
@@ -3748,9 +3800,14 @@ let private applySessionField
 /// state to start with and prints the one report line (stderr — a piped
 /// session's stdout stays data).
 let private loadInit (baseState: State) : State =
-    let path = initFilePath ()
+    // no home means no init file [D:home-verbatim]
+    let path =
+        try
+            initFilePath ()
+        with _ ->
+            ""
 
-    if not (File.Exists path) then
+    if path = "" || not (File.Exists path) then
         baseState // no init is the normal case — silent
     else
         let lines = File.ReadAllLines path

@@ -195,7 +195,9 @@ The history file is at `$XDG_STATE_HOME/weir/history` (otherwise
 `~/.local/state/weir/history`; `%LOCALAPPDATA%\weir\` on Windows).
 It is created with mode `0600`, since a REPL line can contain a
 secret. To find that base directory from a script, use
-`Path.stateHome ()`.
+`Path.stateHome ()`. If there is no usable home (`HOME=` is empty, or
+the file cannot be written), the REPL still starts: history is off for
+that session, with one note saying why.
 
 History keeps each entry once: when you enter a command again, it
 moves to the most recent position and the earlier copy is removed. So

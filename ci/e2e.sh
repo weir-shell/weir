@@ -7304,6 +7304,15 @@ out=$(printf '#echo\n#quit\n' | XDG_CONFIG_HOME="$cfgdir" XDG_STATE_HOME="$cfgdi
 echo "$out" | grep -qF "echoElems must be positive; got 0 (using 100)" || fail "a non-positive echoElems must teach: $out"
 echo "$out" | grep -qF "echo cap: 100" || fail "…and default: $out"
 
+# an unusable home never stops the REPL [D:repl-history]: HOME= is no
+# home [D:home-verbatim] — history turns off with one note, lines run
+if [ "$IS_WINDOWS" != "1" ]; then
+    out=$(printf 'print (Str.toUpper "hi")\n#history\n' | env -u XDG_CONFIG_HOME -u XDG_STATE_HOME HOME= $BIN 2>&1); rc=$?
+    [ $rc -eq 0 ] || fail "HOME= must not stop the REPL (rc $rc): $out"
+    expect "HOME= runs the REPL line" "HI" "$out"
+    expect "…and turns history off with a note" "history off for this session" "$out"
+fi
+
 # a malformed config must not affect a script — scripts never read it, so the
 # script runs clean rather than erroring on the broken JSON
 printf 'not valid json {{{\n' > "$CFGHOME/weir/config.json"
