@@ -86,15 +86,20 @@ what a working day hits. Agents each run a scripted "day" end to end,
 logging every crash, internal error, hang, misleading message and surprise:
 - port three real bash scripts of different shapes to weir (a CI job, a
   deploy helper, a data-wrangling one-off) and run them;
-- a long REPL session: exploration, mistakes, history, `#save`, aliases;
+- **the REPL as a login shell for a whole day** — the user already does
+  this in containers, so it is the primary scenario: navigation (`cd`,
+  `~`, completion), long-running and interactive children, Ctrl-C/Ctrl-D,
+  history across sessions, aliases, pasting multi-line text, mistakes and
+  recovery, `#save` of what worked;
 - an editor session over the LSP: open/edit/format/hover/complete for an
   hour of edits on a growing file, multi-file with imports;
 - operations: `within` scopes, signals (Ctrl-C mid-run), pipes, `serve` +
   `Http` talking to each other, a `plan` reviewed then applied;
 - install-to-first-script from the release assets on a clean machine.
 Every finding is fixed or ruled intended (DECISIONS) before the next day.
-The last day is the user's own: a real working day on the release
-candidate. v0.1.0 ships when that day is clean.
+The user's own REPL-as-shell use is the running real-world day: whatever it
+hits is a W8 finding as it happens, and the release gate is a clean stretch
+of it on the release candidate.
 
 ### W7 — Release
 v0.1.0 notes that say what the version means; README/site wording ("first
