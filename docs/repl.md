@@ -662,8 +662,10 @@ but it still groups multi-line statements the way a script does. It
 keeps reading lines while the statement is unfinished (a heredoc
 body, a multi-line `type`, an indented `if`/`match` block, a pipeline
 continued with `|>` lines), so a pasted or scripted block runs as one
-statement. Input with one statement per line works as usual, and a
-directive is always a single line.
+statement. A blank line ends the statement even if it is unfinished,
+as an empty last line does in the editor: the error is shown and the
+lines after it still run. Input with one statement per line works as
+usual, and a directive is always a single line.
 
 ## weir and fzf
 

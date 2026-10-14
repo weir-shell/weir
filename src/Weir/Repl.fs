@@ -1712,9 +1712,9 @@ let mutable private pendingLine: string option = None
 // A directive line (#help/#quit/#infer/…) is one line by definition —
 // returned immediately, its own multi-line handling (#infer) untouched.
 // A blank/comment-only first line has no statement to open, so it
-// returns alone (the no-op arm). At EOF with an unclosed buffer: return
-// what accumulated and let it error normally — the tty editor's
-// blank-line/Ctrl+D escape does the same at its equivalent boundary.
+// returns alone (the no-op arm). A blank line after the first ends the
+// entry, complete or not, as the tty editor's blank-line escape does;
+// at EOF an unclosed buffer is returned the same way, to error normally.
 let private readRedirected () : string =
     let readLine () =
         match pendingLine with
@@ -1761,6 +1761,11 @@ let private readRedirected () : string =
 
             if firstLineComplete then
                 ret buf
+            elif line.Trim() = "" then
+                // the tty's blank-line escape [D:windows-s2]: a blank line
+                // ends a pending entry, so an incomplete one errors here
+                // instead of swallowing the rest of stdin
+                ret (List.rev acc)
             elif not (bufferComplete buf) then
                 go acc' // structurally incomplete — read the body
             else

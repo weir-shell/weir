@@ -1542,6 +1542,12 @@ out=$(printf 'let a = 1\na + 1\n"hi"\n' | $BIN 2>&1)
 expect "single-line: let echoes" "a : int = 1" "$out"
 expect "single-line: expression echoes" "2 : int" "$out"
 expect "single-line: string echoes" '"hi" : string' "$out"
+
+# a blank line ends a pending entry, as the tty's blank-line escape does:
+# the incomplete line errors and the rest of stdin still runs
+out=$(printf 'let x = [1;\n\nprint (Str.toUpper "after")\nprint (Str.toUpper "later")\n' | $BIN 2>&1)
+expect "piped: a blank line ends an incomplete entry" "AFTER" "$out"
+expect "…and the next line still runs" "LATER" "$out"
 echo "e2e ok: piped REPL assembles multi-line statements; single-line lines each still echo"
 
 stmtdir=$(mkweirtmp)
