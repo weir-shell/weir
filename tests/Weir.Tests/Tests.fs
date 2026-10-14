@@ -19990,6 +19990,14 @@ let floatTests =
               Expect.stringContains (checkErr "[0.5] |> Seq.contains 0.5").Message "Float.near" ""
               Expect.equal (run "Float.near (0.1 + 0.2) 0.3 1e-9") (VBool true) "the idiom"
           }
+          test "a record or union holding a float names Float.near at ==, not 'sequences and functions'" {
+              for decl in [ "type P = { x: float }"; "type P = { inner: Q }"; "type P = | A of float | B" ] do
+                  let lit = if decl.Contains "|" then "A 1.0" elif decl.Contains "Q" then "{ inner = { y = 1.0 } }" else "{ x = 1.0 }"
+                  let e = firstErrorIn "feq.weir" [ "type Q = { y: float }"; decl; $"let a = {lit}"; "print $\"{a == a}\"" ]
+                  Expect.stringContains e.Message "Float.near" decl
+                  Expect.isFalse (e.Message.Contains "sequences and functions") decl
+                  Expect.equal e.Code "eq" "the eq diagnostic code"
+          }
           test "Ord admitted: total because finite" {
               Expect.equal (run "[3.5; 1.5; 2.5] |> Seq.sortBy (fun x -> x) |> Seq.head") (VFloat 1.5) ""
               Expect.equal (run "0.5 < 1.5") (VBool true) ""

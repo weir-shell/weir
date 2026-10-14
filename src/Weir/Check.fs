@@ -332,6 +332,26 @@ let rec private tyHasFloat (ty: Ty) : bool =
 let private floatEqTeaching =
     "floats do not join '==' (0.1 + 0.2 is not 0.3); use Float.near a b eps, or compare after Float.round"
 
+// a float reached through a declared record/union [D:floats]: the type
+// names no float itself, so the teaching names the field it holds
+let private floatInsideNamed (env: TypeEnv) (ty: Ty) : bool =
+    let rec go (seen: Set<string>) (t: Ty) =
+        tyHasFloat t
+        || (match t with
+            | TSeq t -> go seen t
+            | TTuple ts -> ts |> List.exists (go seen)
+            | TNamed(n, targs) when not (seen.Contains n) ->
+                let seen = seen.Add n
+
+                targs |> List.exists (go seen)
+                || (match typeDefFor env n with
+                    | Some(Record d) -> d.Fields |> List.exists (snd >> go seen)
+                    | Some(Union u) -> u.Cases |> List.exists (snd >> Option.exists (go seen))
+                    | _ -> false)
+            | _ -> false)
+
+    go Set.empty ty
+
 type private Ctx =
     { mutable Fresh: int
       mutable Subst: Map<string, Ty>
@@ -1196,6 +1216,8 @@ let rec private typeBinOp
                     fun t ->
                         if tyHasFloat t then
                             floatEqTeaching
+                        elif floatInsideNamed env t then
+                            $"'{op}' is not defined for {formatTy t}: it holds a float, and floats cannot be compared with '==' (0.1 + 0.2 is not 0.3) — compare the float fields with Float.near a b eps, or after Float.round"
                         elif (opaqueNominal t).IsSome then
                             $"'{op}' is not defined for {formatTy t}; an opaque value cannot be compared"
                         else
