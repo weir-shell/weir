@@ -25464,6 +25464,17 @@ let tryTests =
                   let msgs = diagsIn "stray.weir" [ src ] |> List.map (fun d -> d.Message)
                   Expect.exists msgs (fun m -> m.Contains "'try' goes after a pipeline") src
           }
+          test "a command chain's |> try teaches the reifier, in every position" {
+              for src in
+                  [ "let r = sh -c \"exit 3\" |> try"
+                    "let r = sh -c \"exit 3\" |> Seq.length |> try result"
+                    "sh -c \"exit 3\" |> try" ] do
+                  let msgs = diagsIn "trycmd.weir" [ src; "print \"x\"" ] |> List.map (fun d -> d.Message)
+                  Expect.exists msgs (fun m -> m.Contains "a command's failure is data through a reifier") src
+                  Expect.isFalse (msgs |> List.exists (fun m -> m.Contains "Expecting")) src
+
+              errorsCleanIn "trycmd.weir" [ "let r = $(sh -c \"exit 3\") |> try"; "print $\"{r}\"" ] "the capture is an expression"
+          }
           test "a script's own Ok/Error cases shadow the prelude's" {
               let diags = diagsIn "shadow.weir" [ "type Status ="; "    | Ok"; "    | Error"; "let s = Ok"; "print (show s)" ]
               Expect.isEmpty diags "no ambiguity with Result's cases"

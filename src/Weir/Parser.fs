@@ -4938,6 +4938,11 @@ let private armBoundaryAhead: Parser<unit, unit> =
         else
             ifail "not in a match arm" stream
 
+// `cmd |> try` [D:try-form]: the form catches an expression's raise; a
+// command chain's stage is never one — the stage parses (the checker
+// teaches the reifier, so no let-spine attempt can swallow the lesson)
+let private tryCmdStage: Parser<Seg, unit> = tryForm |>> Stage
+
 let private pipedStages (builtinHeads: bool) (argP: Parser<Expr, unit>) (sigilEnv: Expr option) (r: Resolver) =
     many (
         notFollowedBy armBoundaryAhead >>. pipeSepSpanned
@@ -4952,6 +4957,7 @@ let private pipedStages (builtinHeads: bool) (argP: Parser<Expr, unit>) (sigilEn
               <|> andMarker builtinHeads argP sigilEnv r
               <|> orMarker builtinHeads argP sigilEnv r
               <|> reifierStageGuard
+              <|> tryCmdStage
               <|> (segment builtinHeads argP sigilEnv r |>> Stage))
     )
 

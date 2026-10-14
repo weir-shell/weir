@@ -2633,6 +2633,12 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                   Ty = ty
                   Span = expr.Span }
         }
+    // a command chain's `|> try` stage [D:try-form]: the form catches an
+    // expression's raise, a command's failure is data through a reifier
+    | EPipe(_, ({ Kind = ETryForm _ } as tf)) ->
+        err
+            tf.Span
+            "a command's failure is data through a reifier, not `|> try` — `<command> | complete` (exitCode, stdout, stderr), `| succeeds` or `| exitCode`; or make it an expression first: `$(<command>) |> try`"
     | ETryForm _ ->
         err
             expr.Span
