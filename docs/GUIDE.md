@@ -218,8 +218,26 @@ One difference from F#: `Seq.sum` only works on ints. `Float`,
 A `let` bound to a command, `ls`, or `Path.glob` stores the recipe,
 not the result. Nothing runs when the `let` is evaluated; the command
 runs (or the directory is listed) each time the value is read. It
-runs in the directory and `within env` settings in effect where the
-`let` was written, so a later `cd` doesn't move it (see
+runs in the directory and environment current when it is read, as an
+F# `seq` reading `Environment.CurrentDirectory` would. The exception
+is a value written inside `within cd` or `within env`: it keeps that
+scope however late it is read:
+
+```weir
+Dir.create "proj/src"
+File.write "proj/a.txt" ["a"]
+File.write "proj/src/b.txt" ["b"]
+cd "proj"
+let top = ls |> Seq.map _.name
+let inside = within cd "src" (ls |> Seq.map _.name)
+let greet = within env [Env.pair "GREETING" "hi"] $(sh -c "echo ${GREETING:-unset}")
+cd "src"
+print (show top)      // ["b.txt"]: read after the cd
+print (show inside)   // ["b.txt"]: written inside within cd "src"
+print (show greet)    // ["hi"]: the within env still applies
+```
+
+The same holds for `Path.glob` (see
 [File batches](#file-batches-glob-is-a-function-not-an-expansion)).
 
 ```weir
@@ -1272,9 +1290,10 @@ arguments, and none of them is split on spaces:
 
 `git add $@(Path.glob "*.txt" |> Seq.freeze)`
 
-A relative pattern uses the directory you're in when `Path.glob`
-runs, even if you `cd` before reading it. But the sequence is lazy:
-the files are listed again each time it's read. To pin the list, say
+A relative pattern uses the directory you're in when the sequence is
+read, unless `Path.glob` was called inside `within cd`, which it then
+keeps. The sequence is lazy: the files are listed again each time
+it's read. To pin the list, say
 before you create or delete files, `Seq.freeze` the result first. For paths relative to the script itself rather than the
 current directory:
 

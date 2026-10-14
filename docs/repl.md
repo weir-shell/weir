@@ -496,9 +496,9 @@ it, every time. A `let` that would run its command at load is refused
 with the reason: a reifier (`| line`, `| text`, `| succeeds`…),
 `|> Seq.freeze`, or passing the command to a function. Wrap those in
 a function, as with `pu` above. A command value runs in the directory
-it was written in, which for the init file is the starting directory;
-for a command that should follow `cd`, write a function
-(`let gl () = git log --oneline -n 10`).
+you are in when you use it, so `gl` logs the repo you have `cd`-ed
+into; only a command written inside `within cd`/`within env` keeps
+that scope.
 
 Loading is all-or-nothing. If the init file has an error, the REPL
 prints the error with its location plus `init: not loaded`, and the

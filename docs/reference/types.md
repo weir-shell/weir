@@ -77,8 +77,10 @@ being frozen (`possible re-enumeration`; this is only a warning, and
 
 A `let` bound to a command, a pipeline of commands, `ls` or
 `Path.glob` holds a lazy value: nothing runs when it is bound, and
-each read runs it again, in the directory and `within env` scope
-where the `let` was written. These run at once instead: the reifiers
+each read runs it again, in the directory and environment current at
+that read; only a `within cd`/`within env` it was written inside is
+kept, however late the read (`let top = ls`, then `cd "src"`: `top`
+lists `src`). These run at once instead: the reifiers
 (`| line`, `| text`, `| complete`, `| succeeds`, `| exitCode`,
 `| orFail`, `| and`/`| or`), `Seq.freeze` and any other function that
 reads the whole sequence, and a `$(…)` or `$@xs` in a command

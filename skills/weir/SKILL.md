@@ -993,8 +993,10 @@ print (Option.flatten (Some None) |> Option.defaultValue 0)
   on each use; type name to run it)` and NEVER runs it
   [D:repl-let-echo-lazy]); TIMING (a lazy `ls`/`Path.glob`/command
   re-runs on each read, so files created after the `let` show up;
-  the cwd and `within env` are captured where it was WRITTEN — a
-  later `cd` does not move it [D:ambient-capture]; force pins the
+  only an enclosing `within cd`/`within env` is captured where it
+  was WRITTEN — outside any `within` it runs in the cwd/env current at
+  the read, so a later `cd` moves it [D:ambient-capture-within]; force
+  pins the
   data NOW); and the non-customer: a
   SPLAT (`$@xs`) forces at spawn by necessity — argv is finite, no
   explicit force needed at the splice.
