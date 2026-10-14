@@ -3031,7 +3031,7 @@ let boundaryTests =
               let imagePos = g.Text.IndexOf "\n    image:"
               Expect.isTrue (imagePos < namePos && imagePos > 0) "fields sort alphabetically"
           }
-          test "schema-types: refs name types, allOf flattens, arrays nest, cycles keep opaque [D:schema-types]" {
+          test "schema-types: refs name types, allOf flattens, arrays nest, cycles omit the field [D:schema-types]" {
               let genAs asName src =
                   match Weir.Contracts.parseSchema "t" src with
                   | Error e -> failtest e
@@ -3101,8 +3101,32 @@ let boundaryTests =
                   | Ok g -> g
                   | Error e -> failtest e
 
-              Expect.stringContains cyc.Text "items: Option<seq<Yaml>>" "a self-ref field keeps opaque Yaml"
-              Expect.stringContains cyc.Text "self-referential" "the cycle note fires"
+              // a self-ref field is omitted with a note, so the type stays one
+              // `from json` admits — no opaque Yaml field (H19)
+              Expect.isFalse (cyc.Text.Contains "Yaml") cyc.Text
+              Expect.isFalse (cyc.Text.Contains "    items:") "the cyclic field is omitted"
+              Expect.stringContains cyc.Text "name: Option<string>" "the finite fields stay"
+              Expect.stringContains cyc.Text "items: refers back to its own definition — omitted" "the cycle note fires"
+
+              let ds =
+                  diagsIn
+                      "h19.weir"
+                      ((cyc.Text.Split '\n' |> List.ofArray |> List.filter (fun l -> not (l.StartsWith "module ")))
+                       @ [ "let x = [\"{\\\"name\\\":\\\"a\\\",\\\"items\\\":[{\\\"name\\\":\\\"b\\\"}]}\"] |> from json Props"
+                           "print (show x.name)" ])
+
+              Expect.isEmpty (ds |> List.filter (fun d -> d.Severity = "error")) $"from json admits the generated type: {ds}"
+
+              // a definition that is nothing but its own cycle has no record
+              match
+                  genAs
+                      None
+                      """{ "$ref": "#/definitions/Loop",
+                           "definitions": { "Loop": { "type": "object", "properties": {
+                             "next": { "$ref": "#/definitions/Loop" } } } } }"""
+              with
+              | Ok g -> failtest $"an all-cyclic top must refuse, got {g.Text}"
+              | Error e -> Expect.stringContains e "finite tree" e
 
               // an unrepresentable top level refuses with the located reason
               let refusal =
