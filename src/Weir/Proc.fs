@@ -130,31 +130,35 @@ let private spawn
     psi.RedirectStandardError <- redirectErr
     psi.RedirectStandardInput <- redirectIn
 
-    let p =
-        try
-            Process.Start psi
-        with :? System.ComponentModel.Win32Exception ->
-            failwith $"command not found or not executable: {prog}"
+    // start through registration inside the spawn gate: the teardown kill
+    // sees every started child, and none starts after it
+    // [D:signal-main-unwind]
+    Session.gatedSpawn (fun () ->
+        let p =
+            try
+                Process.Start psi
+            with :? System.ComponentModel.Win32Exception ->
+                failwith $"command not found or not executable: {prog}"
 
-    // a racing arm's children join its group [D:seq-pfirst] — a no-op
-    // outside pfirst, and the scoped child owes it too: the spill path
-    // reached the exit-hook backstop without ever joining the group
-    Session.registerChild p
+        // a racing arm's children join its group [D:seq-pfirst] — a no-op
+        // outside pfirst, and the scoped child owes it too: the spill path
+        // reached the exit-hook backstop without ever joining the group
+        Session.registerChild p
 
-    // every live child is the signal handler's to tree-kill
-    // [D:signal-main-unwind]: a pid-targeted SIGTERM (timeout, docker
-    // stop, a CI cancel) reaches weir alone, and an unregistered
-    // foreground child outlived it, reparented to init. Deregistered at
-    // its exit; the check after subscribing covers an exit that raced it.
-    let pid = p.Id
-    Session.registerForeground p
-    p.Exited.Add(fun _ -> Session.deregisterProcAt pid p)
-    p.EnableRaisingEvents <- true
+        // every live child is the signal handler's to tree-kill
+        // [D:signal-main-unwind]: a pid-targeted SIGTERM (timeout, docker
+        // stop, a CI cancel) reaches weir alone, and an unregistered
+        // foreground child outlived it, reparented to init. Deregistered at
+        // its exit; the check after subscribing covers an exit that raced it.
+        let pid = p.Id
+        Session.registerForeground p
+        p.Exited.Add(fun _ -> Session.deregisterProcAt pid p)
+        p.EnableRaisingEvents <- true
 
-    if p.HasExited then
-        Session.deregisterProcAt pid p
+        if p.HasExited then
+            Session.deregisterProcAt pid p
 
-    p
+        p)
 
 // the one starter: the shared spawn plus the stdin writer, which pulls
 // the input seq lazily as the pipe accepts (laziness reaches inputs too).

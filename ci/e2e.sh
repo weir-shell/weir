@@ -2732,6 +2732,33 @@ WEOF
     [ "$left" = "0" ] || fail "SIGTERM to weir must tree-kill its foreground child (orphans left: $left)"
     echo "e2e ok: SIGTERM to weir's pid reaps the foreground child"
 
+    # ...and every pmap worker's tree, exactly once, after spawning stops
+    # [D:signal-main-unwind]: the kill raced the exit (a SIGSTOPped
+    # grandchild left behind) — 20 runs, no `sleep` may survive
+    cat > "$dtdir/pmapterm.weir" <<'WEOF'
+within
+    [1..4] |> Seq.pmap (fun _ -> sh -c "sleep 98764; echo x" |> Seq.freeze) |> Seq.iter (fun _ -> ())
+always
+    printerr "cleanup"
+WEOF
+    pkill -9 -f "^sleep 98764" 2>/dev/null || true
+    orphans=0
+    for _ in $(seq 1 20); do
+        setsid "$BIN" "$dtdir/pmapterm.weir" </dev/null >/dev/null 2>&1 &
+        wpid=$!
+        for _ in $(seq 1 40); do [ "$(pgrep -cf "^sleep 98764" 2>/dev/null || true)" = "4" ] && break; sleep 0.1; done
+        kill -TERM "$wpid" 2>/dev/null || true
+        code=0; wait "$wpid" 2>/dev/null || code=$?
+        [ "$code" = "143" ] || fail "SIGTERM to a pmap script must exit 143 (got $code)"
+        sleep 0.2
+        if pgrep -f "^sleep 98764" >/dev/null 2>&1; then
+            orphans=$((orphans + 1))
+            pkill -9 -f "^sleep 98764" 2>/dev/null || true
+        fi
+    done
+    [ "$orphans" = "0" ] || fail "SIGTERM must tree-kill every pmap worker's child ($orphans of 20 runs left orphans)"
+    echo "e2e ok: SIGTERM reaps every pmap worker's grandchild, 20 runs"
+
     # the double-signal escape [D:signal-teardown]: a second signal during
     # a slow teardown hard-exits (the shell's double-Ctrl+C), never wedging
     # on a stuck cleanup. The always sleeps 20s; the second SIGINT must land
