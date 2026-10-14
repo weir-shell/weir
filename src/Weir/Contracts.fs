@@ -1375,9 +1375,13 @@ let restore (weirDir: string) : Result<string list, string> =
                     | Ok(bytes, _) ->
                         let hash = sha256Hex bytes
 
+                        // the re-add names the entry's own kind — a module's
+                        // locked url is the raw URL `add module` accepts
+                        let readd = $"`weir add {e.Kind} {e.Url} --as {e.Name}`"
+
                         if hash <> e.Sha256 then
                             Error
-                                $"{e.Kind} {e.Name}: fetched bytes hash {hash.Substring(0, 12)}… but the lock records {e.Sha256.Substring(0, 12)}… — the source changed; if intended, `weir add schema` again"
+                                $"{e.Kind} {e.Name}: fetched bytes hash {hash.Substring(0, 12)}… but the lock records {e.Sha256.Substring(0, 12)}… — the source changed; if intended, re-add it: {readd}"
                         else
                             let repaired = File.Exists dest
 

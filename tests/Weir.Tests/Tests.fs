@@ -11768,6 +11768,46 @@ let lockfileConfinementTests =
                   for v, old in saved do
                       System.Environment.SetEnvironmentVariable(v, old)
           }
+          test "a module's restore hash mismatch names `weir add module`, not schema (H56)" {
+              let dir = tempDir "weir-h56c"
+              let l = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0)
+              l.Start()
+              let port = (l.LocalEndpoint :?> System.Net.IPEndPoint).Port
+
+              let t =
+                  System.Threading.Thread(fun () ->
+                      try
+                          use c = l.AcceptTcpClient()
+                          use st = c.GetStream()
+                          let buf = Array.zeroCreate<byte> 8192
+                          st.Read(buf, 0, buf.Length) |> ignore
+                          let r = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nhi"B
+                          st.Write(r, 0, r.Length)
+                      with _ ->
+                          ())
+
+              t.IsBackground <- true
+              t.Start()
+
+              try
+                  let url = $"http://127.0.0.1:{port}/m.weir"
+
+                  Weir.Contracts.writeLock
+                      dir
+                      [ { Kind = "module"
+                          Name = "m"
+                          Url = url
+                          Sha256 = System.String('a', 64)
+                          Path = "modules/m.weir"
+                          Version = None } ]
+
+                  match Weir.Contracts.restore dir with
+                  | Ok lines -> failtest $"a hash mismatch must refuse: {lines}"
+                  | Error e -> Expect.stringContains e $"weir add module {url} --as m" e
+              finally
+                  l.Stop()
+                  System.IO.Directory.Delete(dir, true)
+          }
           test "entryDest refuses a leaf symlinked to the lockfile (H5)" {
               if not (System.OperatingSystem.IsWindows()) then
                   let dir = tempDir "weir-h5"
@@ -18423,6 +18463,48 @@ let walkCohortTests =
                   Expect.isTrue
                       hit
                       $"the declare-after-import half must name the import: {diags |> List.map (fun d -> d.Message)}"
+              finally
+                  System.IO.Directory.Delete(td, true)
+          }
+          test "an import alias spelled like a union case in scope is refused (H56)" {
+              let td = tempDir "weir-h56a"
+              System.IO.File.WriteAllLines(System.IO.Path.Combine(td, "m.weir"), [| "module M"; "let x : int"; "let x = 1" |])
+
+              try
+                  for alias in [ "Some"; "Ok" ] do
+                      let diags =
+                          diagsIn (System.IO.Path.Combine(td, "main.weir")) [ $"import \"./m.weir\" as {alias}"; "print \"x\"" ]
+
+                      Expect.exists
+                          diags
+                          (fun d -> d.Message.Contains $"the name '{alias}' is a union case in scope")
+                          $"{alias}: {diags |> List.map (fun d -> d.Message)}"
+
+                  let ok = diagsIn (System.IO.Path.Combine(td, "main.weir")) [ "import \"./m.weir\" as Mine"; "print (show Mine.x)" ]
+                  Expect.isEmpty (ok |> List.filter (fun d -> d.Severity = "error")) "an ordinary alias stays clean"
+              finally
+                  System.IO.Directory.Delete(td, true)
+          }
+          test "weir:<name> in both .weir/modules and .weir/types is an error, not a silent precedence (H56)" {
+              let td = tempDir "weir-h56b"
+              System.IO.Directory.CreateDirectory(System.IO.Path.Combine(td, ".git")) |> ignore
+              let wd = System.IO.Path.Combine(td, ".weir")
+              System.IO.Directory.CreateDirectory(System.IO.Path.Combine(wd, "modules")) |> ignore
+              System.IO.Directory.CreateDirectory(System.IO.Path.Combine(wd, "types")) |> ignore
+              System.IO.File.WriteAllLines(System.IO.Path.Combine(wd, "modules", "x.weir"), [| "module X"; "let a : int"; "let a = 1" |])
+              System.IO.File.WriteAllLines(System.IO.Path.Combine(wd, "types", "x.weir"), [| "module X"; "type T = { a: int }" |])
+
+              try
+                  let diags = diagsIn (System.IO.Path.Combine(td, "main.weir")) [ "import \"weir:x\" as X"; "print \"x\"" ]
+
+                  Expect.exists
+                      diags
+                      (fun d -> d.Message.Contains "names two vendored files")
+                      $"{diags |> List.map (fun d -> d.Message)}"
+
+                  System.IO.File.Delete(System.IO.Path.Combine(wd, "types", "x.weir"))
+                  let ok = diagsIn (System.IO.Path.Combine(td, "main.weir")) [ "import \"weir:x\" as X"; "print (show X.a)" ]
+                  Expect.isEmpty (ok |> List.filter (fun d -> d.Severity = "error")) "one home resolves"
               finally
                   System.IO.Directory.Delete(td, true)
           }

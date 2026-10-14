@@ -3938,6 +3938,20 @@ let private checkStatementCore
                     stmtErr
                         $"the name '{lm.Alias}' is already a module in scope; import it under a different name with 'as'"
                 )
+            // an alias spelled like a union case in scope (`as Some`) would
+            // read as the constructor at every use — refused, as a second
+            // module of one name is
+            | Ok lm when
+                tenv.Types
+                |> Map.exists (fun _ def ->
+                    match def with
+                    | Union u -> u.Cases |> List.exists (fun (c, _) -> c = lm.Alias)
+                    | _ -> false)
+                ->
+                Error(
+                    stmtErr
+                        $"the name '{lm.Alias}' is a union case in scope; import the module under a different name with 'as'"
+                )
             | Ok lm ->
                 // a transitive holder yields, the same type reached again is
                 // no clash [D:transitive-types]
@@ -4388,7 +4402,8 @@ let private resolveImportPathRaw (importingAbsPath: string) (path: string) : str
             else
                 // one namespace, two homes [D:schema-types]: vendored
                 // modules first, then generated types (.weir/types/ —
-                // `weir gen types` output); a missing name still errors
+                // `weir gen types` output); a name in both is refused at
+                // import (vendoredCollision), a missing name still errors
                 // through the modules path below
                 let typesPath = IO.Path.GetFullPath(IO.Path.Combine(wd, "types", name + ".weir"))
 
@@ -4418,6 +4433,22 @@ let rec private realPath (full: string) : string =
 // symlink-resolved — the module's identity [D:module-once]
 let private resolveImportPath (importingAbsPath: string) (path: string) : string =
     realPath (resolveImportPathRaw importingAbsPath path)
+
+// one `weir:` name, two vendored homes: a module under .weir/modules and a
+// generated types module under .weir/types both named <name> — an error,
+// never a silent precedence (the modules file would shadow the types one)
+let private vendoredCollision (importingAbsPath: string) (path: string) : (string * string) option =
+    if path.StartsWith "weir:" then
+        let name = path.Substring 5
+
+        match Contracts.findWeirDir (IO.Path.GetDirectoryName importingAbsPath) with
+        | Ok wd ->
+            let m = IO.Path.GetFullPath(IO.Path.Combine(wd, "modules", name + ".weir"))
+            let t = IO.Path.GetFullPath(IO.Path.Combine(wd, "types", name + ".weir"))
+            if IO.File.Exists m && IO.File.Exists t then Some(m, t) else None
+        | Error _ -> None
+    else
+        None
 
 // F#'s filename fallback for a bare `module`: capitalize the base name. A
 // non-identifier filename has no derivation (name it, or import `as`).
@@ -4628,6 +4659,11 @@ let rec loadModuleCachedWith
         && (let n = path.Substring 5 in n = "" || n.Contains "/" || n.Contains "\\" || n.Contains "..")
     then
         stmt "a weir: import names a vendored module, never a path — weir:<name>, no separators"
+    elif (vendoredCollision importingAbsPath path).IsSome then
+        let m, t = (vendoredCollision importingAbsPath path).Value
+
+        stmt
+            $"'{path}' names two vendored files, {m} and {t} — a vendored module and a generated types module cannot share a name; regenerate the types under another name (weir gen types --schema <schema> --out .weir/types/<other>.weir) or re-add the module with another --as"
     elif absPath = importingAbsPath then
         stmt "a file cannot import itself"
     elif List.contains absPath chain then

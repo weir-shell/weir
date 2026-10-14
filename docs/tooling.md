@@ -228,7 +228,9 @@ weir gen types --schema pod [--as Pod] [--out <path>|-]
 
 This reads the vendored `.weir/schemas/pod.json` (never the
 network), writes a weir module containing only type declarations to
-`.weir/types/pod.weir`, and prints the line to import it.
+`.weir/types/pod.weir`, and prints the line to import it. `weir:pod`
+then names that file; if a vendored module `.weir/modules/pod.weir`
+also exists, the import is an error — rename one.
 
 `#infer` drafts types from a sample, so it only knows what that
 sample contained: if the next run returns a container without `env`,
