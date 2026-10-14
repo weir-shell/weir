@@ -8342,6 +8342,40 @@ else
     echo "e2e skip: F2 unreadable-import (POSIX mode bits)"
 fi
 
+# the entry script's read is weir-worded in every mode, never an internal
+# exception: unreadable (mode 000), a directory, a device; and fmt on a
+# read-only file names the write it cannot make
+if [ "$IS_WINDOWS" = "0" ]; then
+    h11dir=$(mkweirtmp)
+    printf 'print "hi"\n' > "$h11dir/deny.weir"
+    chmod 000 "$h11dir/deny.weir"
+    mkdir "$h11dir/adir"
+    for mode in "" "check" "check --can" "check --json" "check --can --json" "fmt"; do
+        if [ ! -r "$h11dir/deny.weir" ]; then
+            out=$($BIN $mode "$h11dir/deny.weir" 2>&1); rc=$?
+            [ "$rc" = "2" ] || fail "an unreadable script ($mode) exits 2, got $rc: $out"
+            expect "an unreadable script is weir-worded ($mode)" "cannot read $h11dir/deny.weir: permission denied" "$out"
+        fi
+        out=$($BIN $mode "$h11dir/adir" 2>&1); rc=$?
+        [ "$rc" = "2" ] || fail "a directory argument ($mode) exits 2, got $rc: $out"
+        expect "a directory argument names itself ($mode)" "$h11dir/adir is a directory, not a script" "$out"
+        out=$($BIN $mode /dev/zero 2>&1); rc=$?
+        [ "$rc" = "2" ] || fail "a device ($mode) exits 2, got $rc: $out"
+        expect "a device is refused, not read forever ($mode)" "not a regular file" "$out"
+    done
+    chmod 644 "$h11dir/deny.weir"
+    printf 'print  "x"\n' > "$h11dir/ro.weir"
+    chmod 444 "$h11dir/ro.weir"
+    if [ ! -w "$h11dir/ro.weir" ]; then
+        out=$($BIN fmt "$h11dir/ro.weir" 2>&1); rc=$?
+        [ "$rc" = "2" ] || fail "fmt on a read-only file exits 2, got $rc: $out"
+        expect "fmt on a read-only file is weir-worded" "cannot write $h11dir/ro.weir: permission denied" "$out"
+    fi
+    rm -rf "$h11dir"
+else
+    echo "e2e skip: unreadable entry script (POSIX mode bits, /dev/zero)"
+fi
+
 # check-time catches on the real schema: the typo (did-you-mean) and a
 # misplaced nesting (a field at the wrong level)
 cat > "$ctdir/proj/sub/cm.weir" <<'WEOF'

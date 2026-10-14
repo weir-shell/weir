@@ -4362,6 +4362,78 @@ let private moduleCommandHelpers (lets: (string * Check.TypedExpr) list) : Map<s
             | None -> Map.remove n m)
         Map.empty
 
+// a source file's read, once into a result: an entry script or an import
+// that is missing, a directory, unreadable or not a regular file (a device
+// that never ends) is a weir-worded refusal, never a raw .NET exception
+type SourceFault =
+    | NotFound
+    | IsDirectory
+    | PermissionDenied
+    | NotRegular
+    | IoFault of string
+
+// a zero-length stat is a pipe, a procfs file or a device: read it with a
+// ceiling, so /dev/zero refuses instead of filling memory
+let private unsizedCap = 16 * 1024 * 1024
+
+let private readSourceBytes (path: string) : byte[] =
+    use fs = new IO.FileStream(path, IO.FileMode.Open, IO.FileAccess.Read, IO.FileShare.ReadWrite)
+    let sized = try fs.Length with _ -> 0L
+
+    if sized > 0L then
+        use ms = new IO.MemoryStream(int sized)
+        fs.CopyTo ms
+        ms.ToArray()
+    else
+        use ms = new IO.MemoryStream()
+        let buf = Array.zeroCreate<byte> 65536
+        let mutable n = fs.Read(buf, 0, buf.Length)
+
+        while n > 0 do
+            if ms.Length + int64 n > int64 unsizedCap then
+                raise (IO.InvalidDataException "unsized")
+
+            ms.Write(buf, 0, n)
+            n <- fs.Read(buf, 0, buf.Length)
+
+        ms.ToArray()
+
+// the lines of a source file — ReadAllLines' splitting (\r\n, \n, \r) and
+// BOM detection
+let private decodeSourceLines (bytes: byte[]) : string list =
+    use sr = new IO.StreamReader(new IO.MemoryStream(bytes), Text.Encoding.UTF8, true)
+    let acc = Collections.Generic.List<string>()
+    let mutable line = sr.ReadLine()
+
+    while not (isNull line) do
+        acc.Add line
+        line <- sr.ReadLine()
+
+    List.ofSeq acc
+
+let readSourceFile (path: string) : Result<string list, SourceFault> =
+    if IO.Directory.Exists path then
+        Error IsDirectory
+    else
+        try
+            Ok(decodeSourceLines (readSourceBytes path))
+        with
+        | :? IO.FileNotFoundException
+        | :? IO.DirectoryNotFoundException -> Error NotFound
+        | :? UnauthorizedAccessException -> Error PermissionDenied
+        | :? IO.InvalidDataException -> Error NotRegular
+        | :? IO.IOException as ex -> Error(IoFault ex.Message)
+
+/// the entry script's read, worded for the CLI: `weir: <message>`, exit 2
+let readEntryScript (path: string) : Result<string list, string> =
+    readSourceFile path
+    |> Result.mapError (function
+        | NotFound -> $"no such script: {path}"
+        | IsDirectory -> $"{path} is a directory, not a script"
+        | PermissionDenied -> $"cannot read {path}: permission denied"
+        | NotRegular -> $"cannot read {path}: not a regular file — a script is a text file"
+        | IoFault m -> $"cannot read {path}: {m}")
+
 // buffer-over-disk [D:modules-v1]: when the LSP sets this, an imported file's
 // content is read through it (open editor buffers first, then disk) so an
 // unsaved dependency checks against what the user sees; None -> CLI, plain
@@ -6829,11 +6901,11 @@ let printDiags (json: bool) (parsedAny: bool) (diags: Diagnostic list) : unit =
             Console.WriteLine(Color.bold c $"{d.File}:{d.Line}:{d.Col}" + $": {sev}: {d.Message}")
 
 let checkOnly (json: bool) (path: string) : int =
-    if not (IO.File.Exists path) then
-        Console.Error.WriteLine $"weir: no such script: {path}"
+    match readEntryScript path with
+    | Error msg ->
+        Console.Error.WriteLine $"weir: {msg}"
         2
-    else
-        let rawLines = IO.File.ReadAllLines path |> Array.toList
+    | Ok rawLines ->
         let diags, stmts, _, _ = analyzeLines path rawLines
         printDiags json (not (List.isEmpty stmts)) diags
 
@@ -6865,11 +6937,11 @@ let private fieldDocsFor (rawLines: string list) (ll: LogicalLine) : Map<string,
     |> Map.ofList
 
 let run (path: string) (scriptArgs: string list) : int =
-    if not (IO.File.Exists path) then
-        Console.Error.WriteLine $"weir: no such script: {path}"
+    match readEntryScript path with
+    | Error msg ->
+        Console.Error.WriteLine $"weir: {msg}"
         2
-    else
-        let rawLines = IO.File.ReadAllLines path |> Array.toList
+    | Ok rawLines ->
 
         let body, bodyOffset, runSigDecls = scriptBody rawLines
 
