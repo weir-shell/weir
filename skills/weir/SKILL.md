@@ -674,6 +674,9 @@ print $"{key} -> {value}"
   designated channel, Proc.wait's shape — it is not raised out of the
   handler). A HEAD, 1xx, 204 or 304 reply carries no body bytes
   whatever the handler returned (HEAD still declares the GET length).
+  Framing and hop-by-hop headers a handler returns (`Transfer-Encoding`,
+  `Content-Length`, `Connection`, `Keep-Alive`, `TE`, `Trailer`,
+  `Upgrade`) are dropped — the listener frames the response.
   `maxConcurrent` bounds handlers-at-once (the `pmapWith` law);
   excess queues. `bodyTimeout` (a `Duration`, OPTIONAL — default 30s)
   bounds the request-body read so a slow client cannot park a slot; the

@@ -264,11 +264,26 @@ let private abortWithoutTrailer (out: HttpListenerResponse) : unit =
     with _ ->
         ()
 
+/// the framing and hop-by-hop headers (RFC 9110 §7.6.1, RFC 9112 §6) —
+/// the listener owns them: a handler's Transfer-Encoding beside the
+/// computed Content-Length (or a stale Content-Length) desynchronizes the
+/// client's framing, so they are dropped from a handler's response
+let framingHeaders: Set<string> =
+    Set.ofList
+        [ "transfer-encoding"
+          "content-length"
+          "connection"
+          "keep-alive"
+          "proxy-connection"
+          "te"
+          "trailer"
+          "upgrade" ]
+
 let writeResponse (ctx: HttpListenerContext) (resp: SResp) (onStreamFailure: string -> unit) : unit =
     let out = ctx.Response
     out.StatusCode <- resp.Status
 
-    for (k, v) in resp.Headers do
+    for (k, v) in resp.Headers |> List.filter (fun (k, _) -> not (framingHeaders.Contains(k.ToLowerInvariant()))) do
         // ContentType/ContentLength are properties, not header adds;
         // set the common one explicitly, pass the rest through
         try

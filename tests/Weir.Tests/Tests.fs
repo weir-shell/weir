@@ -22258,6 +22258,30 @@ let serveTests =
                   Expect.isTrue (ok.StartsWith "HTTP/1.1 200" && ok.EndsWith "hello") $"the next reply is in frame: {ok}"
               | other -> failtest $"four replies expected: {other}"
           }
+          test "a handler's framing and hop-by-hop headers are dropped; others pass (H17)" {
+              let answer (_: Weir.Serve.SReq) : Weir.Serve.SResp =
+                  { Status = 200
+                    Headers =
+                      [ "Transfer-Encoding", "chunked"
+                        "content-length", "99"
+                        "Connection", "close"
+                        "Keep-Alive", "timeout=5"
+                        "Upgrade", "h2c"
+                        "X-Ok", "kept" ]
+                    Body = Weir.Serve.RText "hello" }
+
+              match wire answer [ get "GET" "/a"; get "GET" "/b" ] with
+              | [ a; b ] ->
+                  let lower = a.ToLowerInvariant()
+
+                  for bad in [ "transfer-encoding"; "content-length: 99"; "connection: close"; "keep-alive"; "upgrade" ] do
+                      Expect.isFalse (lower.Contains bad) $"'{bad}' is dropped: {a}"
+
+                  Expect.stringContains a "Content-Length: 5" "the listener's own length"
+                  Expect.stringContains a "X-Ok: kept" "an ordinary header passes"
+                  Expect.isTrue (b.EndsWith "hello") $"the connection stays in frame: {b}"
+              | other -> failtest $"two replies expected: {other}"
+          }
           // ---- F9: the method boundary [D:serve-method] ----
           test "HttpMethod carries a well-formed unlisted verb as Other; an inlined handler routes on it and on Query" {
               // Other is an open-world inbound case; the handler is inlined
