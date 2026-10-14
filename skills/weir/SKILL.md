@@ -563,9 +563,10 @@ print $"{key} -> {value}"
   `Http.send` captures the Op). `url |> Http.withQuery [(k, v)]` percent-encodes
   a query string. `resp |> Http.header "etag" : Option<string>` reads a
   response header case-insensitively (HTTP's own law — a hand-rolled
-  pairs filter misses ETag vs etag); `Http.headerAll` is the
-  multiplicity read for repeating headers (Set-Cookie), wire order
-  kept. `Http.query` is the QUERY method (idempotent, so
+  pairs filter misses ETag vs etag) — the first line's value;
+  `Http.headerAll` is the multiplicity read for repeating headers
+  (Set-Cookie): one entry per received header line, wire order kept,
+  values verbatim (never split or comma-joined). `Http.query` is the QUERY method (idempotent, so
   `retry` around it is safe by definition). TLS verification is ON;
   `{ req with insecure = true }` disables it for ONE request (a loud
   per-call field for self-signed clusters). `Http.defaults` is the

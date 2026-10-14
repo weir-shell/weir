@@ -287,11 +287,17 @@ let send (req: Req) : Result<Resp, string * TransportError> =
 
         use resp = result
 
+        // one pair per received header line, the value verbatim: the
+        // parsed view splits a value into tokens (a Server header's
+        // product list) and the old "," join merged repeats into one
         let headers =
-            [ for h in resp.Headers -> h.Key, String.concat "," h.Value ]
+            [ for h in resp.Headers.NonValidated do
+                  for v in h.Value -> h.Key, v ]
             @ (match resp.Content with
                | null -> []
-               | c -> [ for h in c.Headers -> h.Key, String.concat "," h.Value ])
+               | c ->
+                   [ for h in c.Headers.NonValidated do
+                         for v in h.Value -> h.Key, v ])
 
         let body =
             match resp.Content with

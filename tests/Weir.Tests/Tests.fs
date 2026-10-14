@@ -16261,6 +16261,40 @@ let httpTests =
         | VStr s -> s
         | v -> failtest $"not a string: {v}"
 
+    // a raw one-response-per-connection server on a free loopback port:
+    // `answer` maps the request head to the exact response bytes, so a
+    // test controls repeated headers and charsets byte-for-byte; the
+    // request heads land in the returned list
+    let rawServe (answer: string -> string) : int * System.Collections.Concurrent.ConcurrentQueue<string> =
+        let l = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0)
+        l.Start()
+        let seen = System.Collections.Concurrent.ConcurrentQueue<string>()
+
+        let loop () =
+            try
+                while true do
+                    use c = l.AcceptTcpClient()
+                    use st = c.GetStream()
+                    let buf = Array.zeroCreate<byte> 65536
+                    let sb = System.Text.StringBuilder()
+
+                    while not (sb.ToString().Contains "\r\n\r\n") do
+                        let n = st.Read(buf, 0, buf.Length)
+                        if n = 0 then failwith "eof"
+                        sb.Append(System.Text.Encoding.Latin1.GetString(buf, 0, n)) |> ignore
+
+                    let head = sb.ToString()
+                    seen.Enqueue head
+                    let bytes = System.Text.Encoding.Latin1.GetBytes(answer head)
+                    st.Write(bytes, 0, bytes.Length)
+            with _ ->
+                ()
+
+        let t = System.Threading.Thread(loop)
+        t.IsBackground <- true
+        t.Start()
+        (l.LocalEndpoint :?> System.Net.IPEndPoint).Port, seen
+
     testList
         "Http [D:http]"
         [ test "the response body reads under weir's line law [D:http-body-lines]: no trailing empty, CRLF normalized, empty is empty" {
@@ -16538,6 +16572,25 @@ let httpTests =
                   (run "\"http://x?a=1\" |> Http.withQuery [(\"b\", \"2\")]")
                   (VStr "http://x?a=1&b=2")
                   "an existing query gets & not ?"
+          }
+          test "response headers: one pair per received line, values verbatim (H14)" {
+              let port, _ =
+                  rawServe (fun _ ->
+                      "HTTP/1.1 200 OK\r\nServer: BaseHTTP/0.6 Python/3.14.4\r\nX-Rep: a\r\nX-Rep: b, c\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+
+              let r = $"Http.send (Http.get \"http://127.0.0.1:{port}/\")"
+
+              Expect.equal
+                  (run $"{r} |> Http.header \"server\"")
+                  (VUnion("Some", Some(VStr "BaseHTTP/0.6 Python/3.14.4")))
+                  "a single value is never re-joined"
+
+              Expect.equal
+                  (run $"{r} |> Http.headerAll \"x-rep\" |> Str.join \"|\"")
+                  (VStr "a|b, c")
+                  "one entry per header line, the list value untouched"
+
+              Expect.equal (run $"{r} |> Http.header \"X-Rep\"") (VUnion("Some", Some(VStr "a"))) "header is the first line"
           } ]
 
 let functionKeywordTests =
