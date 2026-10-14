@@ -721,6 +721,14 @@ let warningTests =
               let terr = checkErr "match Running 5 with | _ -> 0 | Stopped -> 1"
               Expect.stringContains terr.Message "unreachable" ""
           }
+          test "a catch-all inside an or-pattern names its own later alternatives, arms counted once [D:or-patterns]" {
+              let alt = checkErr "match Some 1 with | Some 1 -> 1 | _ | None -> 2"
+              Expect.stringContains alt.Message "the or-pattern's alternative after it is unreachable" "same arm"
+              Expect.isFalse (alt.Message.Contains "arm below") "no arm below"
+
+              let arms = checkErr "match Some 1 with | _ -> 1 | Some 2 | Some 3 -> 2"
+              Expect.stringContains arms.Message "the arm below is unreachable" "one arm, two alternatives"
+          }
           test "mid-match variable binder errors at the cause with a constructor hint" {
               let terr =
                   checkErr "match Running 5 with | zStopped -> 1 | Running n -> n | Stopped -> 0"

@@ -2513,8 +2513,10 @@ let private exhaustive
     (env: TypeEnv)
     (span: Span)
     (scrutTy: Ty)
-    (arms: (Pattern * 'g option) list)
+    (armsWithBody: (Pattern * 'g option * Span) list)
     : Result<unit, TypeError> =
+    let arms = armsWithBody |> List.map (fun (p, g, _) -> p, g)
+
     let unguarded =
         arms |> List.choose (fun (p, g) -> if g.IsNone then Some p else None)
 
@@ -2530,13 +2532,41 @@ let private exhaustive
     match deadArms with
     | Some i ->
         let p, _ = arms[i]
-        let later = List.length arms - i - 1
+        let _, _, body = armsWithBody[i]
+
+        // an or-pattern desugars to one arm per alternative sharing the
+        // body [D:or-patterns]: alternatives after this one sit on its own
+        // arm, and the arms below count once each, however many
+        // alternatives they carry
+        let rest = armsWithBody |> List.skip (i + 1)
+        let alts = rest |> List.takeWhile (fun (_, _, b) -> b = body) |> List.length
+
+        let later =
+            rest
+            |> List.skip alts
+            |> List.map (fun (_, _, b) -> b)
+            |> List.distinct
+            |> List.length
+
+        let altPart =
+            if alts = 1 then
+                "the or-pattern's alternative after it"
+            else
+                $"the or-pattern's {alts} alternatives after it"
+
+        let armPart =
+            if later = 1 then
+                "the arm below"
+            else
+                $"the {later} arms below"
 
         let tail =
-            if later = 1 then
-                "the arm below is unreachable"
-            else
-                $"the {later} arms below are unreachable"
+            match alts, later with
+            | 0, 1 -> "the arm below is unreachable"
+            | 0, _ -> $"{armPart} are unreachable"
+            | 1, 0 -> $"{altPart} is unreachable"
+            | _, 0 -> $"{altPart} are unreachable"
+            | _ -> $"{altPart} and {armPart} are unreachable"
 
         match p.PKind with
         | PVar name ->
@@ -4789,7 +4819,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                 let tarms = (pat0, tguard0, tbody0) :: List.rev trest
                 // re-resolve: a constructor pattern may have typed the
                 // scrutinee var during arm checking [D:match-scrutinee-infer]
-                do! exhaustive env expr.Span (finalTy ctx tscrutinee.Ty) (tarms |> List.map (fun (p, g, _) -> p, g))
+                do! exhaustive env expr.Span (finalTy ctx tscrutinee.Ty) (tarms |> List.map (fun (p, g, (b: TypedExpr)) -> p, g, b.Span))
 
                 return
                     { Kind = TEMatch(tscrutinee, tarms)
