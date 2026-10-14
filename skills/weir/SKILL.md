@@ -959,8 +959,10 @@ print first
   effect; `Option.orElse fallback opt` stays in Option
   (`defaultValue` is the one that unwraps). `Option.bind f opt` chains
   an Option-returning step (map without the re-wrap); `Option.flatten`
-  collapses `Option<Option<T>>` to `Option<T>`. `Path.tempRoot ()` is the
-  pure query; `Path.newTempDir ()` CREATES (cleanup is yours —
+  collapses `Option<Option<T>>` to `Option<T>`. `Path.tempRoot ()` only
+  READS where temp lives (it creates nothing, but `pure` counts it a
+  filesystem touch and refuses it, as it refuses `Path.glob`);
+  `Path.newTempDir ()` CREATES (cleanup is yours —
   `within tmp` is the scoped-cleanup spelling). Binding a `newTempDir`
   then `Dir.delete`/`Dir.deleteAll`-ing it in the same scope is a
   checker WARNING [D:newtempdir-lint] pointing at `within tmp` (which
