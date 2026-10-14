@@ -594,3 +594,4 @@ the old key, never an edit-in-place.
 | source-utf8 | 2026-10-14 | A SOURCE FILE MUST BE VALID UTF-8 — the first invalid byte is a located error, never a silent U+FFFD (user ruling R5) | dev/plans/PLAN-hunt2-fixes.md H47 |
 | uuid-strict | 2026-10-14 | `Uuid.parse`/`tryParse` REFUSE SURROUNDING WHITESPACE, as documented (R6) | dev/plans/PLAN-hunt2-fixes.md H50 |
 | block-width | 2026-10-14 | STATEMENTS IN A BLOCK ARE WIDTH, NOT DEPTH — they never count toward the [D:depth-guard] nesting limit; the runner walks statements in a loop (R7) | dev/plans/PLAN-hunt2-fixes.md H2/H48 |
+| gen-types-cycles | 2026-10-14 | `gen types` LEAVES A SELF-REFERENTIAL FIELD OUT (with a note) so the generated type crosses `from json`; a top level made only of its own cycle is refused. A `Yaml`-typed field readable by `from json` is the backlog alternative (user ruling) | dev/plans/PLAN-hunt2-fixes.md H19 |
