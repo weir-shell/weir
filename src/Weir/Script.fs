@@ -2509,9 +2509,23 @@ let translate (ll: LogicalLine) (col: int) : int * int =
         | i -> max 0 (~~~i - 1)
 
     // a position in the join text sits just past its line's last
-    // character, never beyond the physical line
-    let at = min joinedIdx ix.Ends[i]
-    ix.Lines[i], at - ix.Starts[i] + ix.Indents[i] + 1
+    // character, never beyond the physical line — except on the
+    // assembler's wrapping "(" directly before the next segment, which
+    // opens that segment's compound: it maps to the segment's start
+    let next = i + 1
+
+    if
+        joinedIdx > ix.Ends[i]
+        && next < ix.Starts.Length
+        && (let mutable k = joinedIdx
+            while k < ix.Starts[next] && ll.Text[k] = '(' do
+                k <- k + 1
+            k = ix.Starts[next])
+    then
+        ix.Lines[next], ix.Indents[next] + 1
+    else
+        let at = min joinedIdx ix.Ends[i]
+        ix.Lines[i], at - ix.Starts[i] + ix.Indents[i] + 1
 
 // ANSI color for interactive diagnostics: gated per stream on TTY,
 // NO_COLOR, and TERM=dumb — pipes and CI capture always get plain

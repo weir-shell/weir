@@ -10782,7 +10782,7 @@ for line in \
     "ci/deep-lock.sh × 2  tools/fuzz.weir:31:1, 66:5" \
     "File.read (path not statically known)  tools/fuzz.weir:59:20" \
     "within tmp (a temporary directory)  tools/fuzz.weir:47:1" \
-    "sets WEIR_FUZZ_SEED, WEIR_FUZZ_COUNT, WEIR_FUZZ_REPORT for children (within env)  tools/fuzz.weir:48:41" \
+    "sets WEIR_FUZZ_SEED, WEIR_FUZZ_COUNT, WEIR_FUZZ_REPORT for children (within env)  tools/fuzz.weir:52:5" \
     "fail  tools/fuzz.weir:62:9"; do
     echo "$hcan" | grep -qF "$line" || fail "the homepage's --can quote drifted — update index.astro; missing: $line"
 done
