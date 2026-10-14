@@ -9705,7 +9705,7 @@ let schemaHoverTests =
 
         System.IO.File.WriteAllText(
             System.IO.Path.Combine(td, ".weir", "lock.json"),
-            """{ "artifacts": [ { "kind": "schema", "name": "six", "url": "https://example.com/six.json", "sha256": "abc", "path": "schemas/six.json" }, { "kind": "schema", "name": "ghost", "url": "https://example.com/ghost.json", "sha256": "def", "path": "schemas/ghost.json" } ] }"""
+            """{ "artifacts": [ { "kind": "schema", "name": "six", "url": "https://example.com/six.json", "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "path": "schemas/six.json" }, { "kind": "schema", "name": "ghost", "url": "https://example.com/ghost.json", "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "path": "schemas/ghost.json" } ] }"""
         )
 
         let entry = System.IO.Path.Combine(td, "main.weir")
@@ -11678,6 +11678,43 @@ let lockfileConfinementTests =
                   match Weir.Contracts.entryDest root (mkEntry bad) with
                   | Ok d -> failtest $"'{bad}' must refuse, got {d}"
                   | Error msg -> Expect.stringContains msg "lockfile" $"'{bad}': the refusal names the lockfile"
+          }
+          test "a malformed lock entry is a weir-worded refusal naming the entry and field (H12)" {
+              let dir = tempDir "weir-h12"
+
+              try
+                  let sha = System.String('a', 64)
+
+                  let entry (fields: string) =
+                      "{ \"artifacts\": [ { " + fields + " } ] }"
+
+                  let full =
+                      $"\"kind\": \"schema\", \"name\": \"n\", \"url\": \"http://x\", \"sha256\": \"{sha}\", \"path\": \"schemas/n.json\""
+
+                  let cases =
+                      [ entry (full.Replace(sha, "abc")), "\"sha256\" must be 64 hex digits"
+                        entry (full.Replace("\"path\": \"schemas/n.json\"", "\"path\": null")), "\"path\" must be a string"
+                        entry (full.Replace("\"url\": \"http://x\", ", "")), "missing \"url\""
+                        entry (full.Replace("schemas/n.json", "")), "\"path\" is empty"
+                        "{ \"artifacts\": [ 3 ] }", "artifacts[0] must be an object"
+                        "[]", "must be a JSON object" ]
+
+                  for text, want in cases do
+                      System.IO.File.WriteAllText(System.IO.Path.Combine(dir, "lock.json"), text)
+
+                      match Weir.Contracts.readLock dir with
+                      | Ok _ -> failtest $"{text} must refuse"
+                      | Error msg ->
+                          Expect.stringContains msg "malformed lockfile" "weir-worded"
+                          Expect.stringContains msg want $"names the field: {text}"
+
+                  System.IO.File.WriteAllText(System.IO.Path.Combine(dir, "lock.json"), entry full)
+
+                  match Weir.Contracts.readLock dir with
+                  | Ok [ e ] -> Expect.equal e.Path "schemas/n.json" "a well-formed entry reads"
+                  | other -> failtest $"a well-formed lock reads: {other}"
+              finally
+                  System.IO.Directory.Delete(dir, true)
           }
           test "entryDest refuses a leaf symlinked to the lockfile (H5)" {
               if not (System.OperatingSystem.IsWindows()) then

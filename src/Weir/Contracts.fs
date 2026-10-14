@@ -374,6 +374,8 @@ let sha256Hex (bytes: byte[]) : string =
 
 let private lockPath (weirDir: string) = Path.Combine(weirDir, "lock.json")
 
+exception private LockShape of string
+
 let readLock (weirDir: string) : Result<LockEntry list, string> =
     let p = lockPath weirDir
 
@@ -383,29 +385,71 @@ let readLock (weirDir: string) : Result<LockEntry list, string> =
         try
             use doc = Text.Json.JsonDocument.Parse(File.ReadAllText p)
 
+            if doc.RootElement.ValueKind <> Text.Json.JsonValueKind.Object then
+                raise (LockShape "the lockfile must be a JSON object")
+
             let ver =
                 match doc.RootElement.TryGetProperty "schemaVersion" with
-                | true, v -> v.GetInt32()
+                | true, v when v.ValueKind = Text.Json.JsonValueKind.Number -> v.GetInt32()
+                | true, _ -> raise (LockShape "\"schemaVersion\" must be a number")
                 | _ -> 1 // pre-field locks are version 1
 
             if ver > 1 then
                 failwith $"lock schemaVersion {ver} is newer than this weir understands — upgrade weir"
 
-            doc.RootElement.GetProperty("artifacts").EnumerateArray()
-            |> Seq.map (fun e ->
-                { Kind = e.GetProperty("kind").GetString()
-                  Name = e.GetProperty("name").GetString()
-                  Url = e.GetProperty("url").GetString()
-                  Sha256 = e.GetProperty("sha256").GetString()
-                  Path = e.GetProperty("path").GetString()
-                  Version =
-                    match e.TryGetProperty "version" with
-                    | true, v -> Some(v.GetString())
-                    | _ -> None })
+            // every entry is validated at read, naming the entry and the
+            // field [D:lockfile-confinement]: a hand-edited lock must be a
+            // weir-worded refusal, never a null or a short-sha crash in a
+            // consumer
+            let bad (msg: string) = raise (LockShape msg)
+
+            let artifacts =
+                match doc.RootElement.TryGetProperty "artifacts" with
+                | true, a when a.ValueKind = Text.Json.JsonValueKind.Array -> a
+                | true, _ -> bad "\"artifacts\" must be an array"
+                | _ -> bad "no \"artifacts\" array"
+
+            artifacts.EnumerateArray()
+            |> Seq.mapi (fun i e ->
+                let at = $"artifacts[{i}]"
+
+                if e.ValueKind <> Text.Json.JsonValueKind.Object then
+                    bad $"{at} must be an object"
+
+                let str (field: string) (required: bool) : string option =
+                    match e.TryGetProperty field with
+                    | true, v when v.ValueKind = Text.Json.JsonValueKind.String -> Some(v.GetString())
+                    | true, _ -> bad $"{at}: \"{field}\" must be a string"
+                    | _ when required -> bad $"{at}: missing \"{field}\""
+                    | _ -> None
+
+                let need (field: string) =
+                    match str field true with
+                    | Some "" -> bad $"{at}: \"{field}\" is empty"
+                    | Some v -> v
+                    | None -> ""
+
+                let kind = need "kind"
+                let name = need "name"
+                let at = $"{at} ({kind} {name})"
+                let url = need "url"
+                let sha = need "sha256"
+                let path = need "path"
+
+                if sha.Length <> 64 || not (sha |> Seq.forall Uri.IsHexDigit) then
+                    bad $"{at}: \"sha256\" must be 64 hex digits, got '{sha}'"
+
+                { Kind = kind
+                  Name = name
+                  Url = url
+                  Sha256 = sha.ToLowerInvariant()
+                  Path = path
+                  Version = str "version" false })
             |> List.ofSeq
             |> Ok
-        with ex ->
-            Error $"{p}: cannot read the lockfile: {ex.Message}"
+        with
+        | LockShape msg -> Error $"{p}: malformed lockfile — {msg}; re-add the artifact or fix the entry"
+        | ex -> Error $"{p}: cannot read the lockfile: {ex.Message}"
 
 let writeLock (weirDir: string) (entries: LockEntry list) : unit =
     use ms = new MemoryStream()
