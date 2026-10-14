@@ -6,6 +6,14 @@ weekly: self-correction rate (stranded = failures), fallback ranking
 skill lines and targeted hints).
 
 ## fallbacks
+- 2026-10-14 | hunt2 repro gate (tools/hunt2-repro.weir) -> python3 via
+  value-headed pipes, `sh -c` once | the REPL line editor needs a
+  pseudo-terminal (H24/H25/H27/H34), the LSP items need raw JSON-RPC
+  framing incl. a lowercase header and a non-JSON body (H28/H29), and the
+  HTTP items need bytes on a socket weir's own client/server cannot
+  produce or observe (duplicate response headers, an unknown charset, a
+  header echo, pipelined requests: H14-H18/H55); H2's 1 MB stack needs
+  `ulimit -s` (`sh -c`).
 - 2026-10-13 | sweep repro gate (tools/sweep-repro.weir) -> `sh -c` for
   two probes | B4 needs the exit code of weir's left side behind
   `| head -1` (a weir chain counts an early-closing downstream as

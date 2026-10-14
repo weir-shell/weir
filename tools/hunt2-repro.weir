@@ -1,0 +1,1353 @@
+#!/usr/bin/env weir
+// Acceptance instrument for dev/plans/PLAN-hunt2-fixes.md. Each probe prints
+// `Hnn OK` when its item is fixed and `Hnn REPRODUCES (...)` otherwise, naming
+// every sub-case still failing, so one script is both the bug report and the
+// stage gate.
+//
+//     weir tools/hunt2-repro.weir --bin ./path/to/weir
+//
+// Probe labels match the plan's numbering exactly (H1-H57); the judgements
+// follow the FIXED behaviour the plan and its rulings R1-R7 describe.
+//
+// Loud, in every direction:
+//   - a probe that fails to run counts as reproducing, never as a pass;
+//   - a missing instrument (timeout, sh, python3, curl, pgrep, pkill, kill,
+//     chmod) is a named SKIP counted with the failures;
+//   - "fixed" for a raise is exit 1 with a weir-located diagnostic; a crash
+//     (>= 128) is never a fix;
+//   - a "not a raw .NET message" judgement is loose: no telltale .NET phrase,
+//     exit 1, and the fixture's own file named in the diagnostic.
+//
+// Every probe runs in its own `within tmp` directory. Servers bind 127.0.0.1
+// on ports probed free; nothing leaves the machine; bodies stay tiny (H20
+// probes a 1 KiB `maxBody`, never the 16 MiB default).
+//
+// Positive controls (`control-*`) pin the neighbouring behaviour each probe
+// leans on, so no probe can pass by the binary being broken in a new way; a
+// failed control counts toward the exit code.
+//
+// python3 helpers (logged in dev/NOTES-agent.md under fallbacks) where weir
+// cannot express the shape: a pseudo-terminal for the REPL line editor (H24,
+// H25, H27, H34), raw LSP framing (H28, H29), and raw HTTP bytes on a socket
+// (H14, H15, H16, H17, H18, H55: duplicate/odd response headers, pipelined
+// requests, a request-header echo). H2's 1 MB stack needs `ulimit` via `sh -c`.
+
+type Cli = {
+    /// the weir binary under test
+    [<Default "weir">]
+    bin: string
+}
+
+let cli = Args.load Cli
+
+let repo = Self.scriptPath |> Path.dir |> Path.dir
+
+let toolsReady =
+    sh -c "command -v timeout && command -v python3 && command -v curl && command -v pgrep && command -v pkill && command -v kill && command -v chmod && command -v printf" | succeeds
+
+// ---- runners ---------------------------------------------------------------
+
+let put dir name lines =
+    let p = $"{dir}/{name}"
+    lines |> File.write p
+    p
+
+let runAt dir secs p =
+    within cd dir
+        let r = timeout $secs $cli.bin $p | complete
+        r
+
+let runArgs dir p args =
+    within cd dir
+        let r = timeout 30 $cli.bin $p $@args | complete
+        r
+
+let checkW p =
+    let r = timeout 60 $cli.bin check $p | complete
+    r
+
+let fmtW p =
+    let r = timeout 60 $cli.bin fmt $p | complete
+    r
+
+let outOf { stdout = s } = s |> Str.join "\n"
+let errOf { stderr = s } = s |> Str.join "\n"
+
+// `weir check` writes its diagnostics to stdout; judge both streams
+let diagOf r = outOf r + "\n" + errOf r
+let codeOf { exitCode = c } = c
+
+// a piped REPL session, HOME pinned to the probe dir (history lands there)
+let piped dir lines =
+    within cd dir
+        within env HOME=$dir
+            let r = lines | timeout 20 $cli.bin | complete
+            r
+
+// ---- judges ----------------------------------------------------------------
+
+let netPhrases =
+    [ "Parameter '"
+      "Exception"
+      "Object reference"
+      "Index and length"
+      "given key was not present"
+      "Access to the path"
+      "minimumLength"
+      "UTF-16"
+      "not a supported encoding"
+      "Invalid pattern"
+      "Could not find file"
+      "internal error"
+      "   at Weir." ]
+
+let leaks t = netPhrases |> Seq.exists (fun ph -> t |> Str.contains ph)
+
+// a raise in weir's own words: exit 1, no .NET text, located in the fixture
+let cleanRaise name r =
+    let e = diagOf r
+    codeOf r == 1 && not (leaks e) && (e |> Str.contains $"{name}:")
+
+let prints expected r = codeOf r == 0 && outOf r == expected
+
+let failing cases =
+    cases |> Seq.where (fun (_, ok) -> not ok) |> Seq.map fst |> Seq.freeze
+
+let count pat t = Str.rmatchAll pat t |> Seq.length
+
+let hx s = Bytes.toHex (Str.toUtf8 s)
+
+// ports: a per-run base, a per-probe block, the first one nothing listens on
+let basePort = 20000 + (Self.pid % 1400) * 20
+
+let freePort off =
+    [0..19] |> Seq.map (fun i -> basePort + off * 1000 + i) |> Seq.find (fun p -> not (Net.portOpen p))
+
+// ---- python helpers ----------------------------------------------------------
+
+// a pseudo-terminal: `HEX <bytes>` / `SLEEP <ms>` lines on stdin, the whole
+// session (CR stripped) on stdout, then `EXIT <code>`
+let ptyPy = <<<
+    import os, pty, sys, time, select, signal, fcntl, termios, struct
+    timeout = float(sys.argv[1]); cmd = sys.argv[2:]
+    steps = []
+    for line in sys.stdin.read().splitlines():
+        if line.startswith("SLEEP "): steps.append(("sleep", int(line[6:])))
+        elif line.startswith("HEX "): steps.append(("send", bytes.fromhex(line[4:].strip())))
+    pid, fd = pty.fork()
+    if pid == 0:
+        for sig in (signal.SIGINT, signal.SIGQUIT, signal.SIGHUP, signal.SIGTERM):
+            signal.signal(sig, signal.SIG_DFL)
+        os.execvp(cmd[0], cmd)
+    fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 120, 0, 0))
+    os.kill(pid, signal.SIGWINCH)
+    out = b""
+    def pump(until):
+        global out
+        while time.monotonic() < until:
+            r, _, _ = select.select([fd], [], [], 0.02)
+            if r:
+                try: c = os.read(fd, 65536)
+                except OSError: return False
+                if not c: return False
+                out += c
+        return True
+    alive = True
+    for kind, arg in steps:
+        if not alive: break
+        if kind == "sleep": alive = pump(time.monotonic() + arg / 1000.0)
+        else: os.write(fd, arg)
+    deadline = time.monotonic() + timeout
+    code = "timeout"
+    while time.monotonic() < deadline:
+        done, status = os.waitpid(pid, os.WNOHANG)
+        if done:
+            pump(time.monotonic() + 0.3); code = os.waitstatus_to_exitcode(status); break
+        pump(time.monotonic() + 0.05)
+    else:
+        os.kill(pid, signal.SIGKILL); os.waitpid(pid, 0)
+    sys.stdout.write(out.decode("utf-8", "replace").replace("\r", ""))
+    print("\nEXIT", code)
+
+// raw LSP: `MSG <json>` (Content-Length framed), `LOWER <json>` (lowercase
+// header), `BAD <text>` (framed non-JSON), `SLEEP <ms>`, `CLOSE`; prints
+// `RECV <json>` per message received, then `EXIT <code>`
+let lspPy = <<<
+    import json, subprocess, sys, threading, time
+    total = float(sys.argv[1]); cmd = sys.argv[2:]
+    p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    got = []
+    def reader():
+        f = p.stdout
+        while True:
+            hdrs = {}
+            while True:
+                line = f.readline()
+                if not line: return
+                line = line.strip()
+                if not line: break
+                k, _, v = line.partition(b":")
+                hdrs[k.strip().lower()] = v.strip()
+            n = int(hdrs.get(b"content-length", b"0"))
+            body = f.read(n)
+            try: got.append(json.loads(body))
+            except Exception: got.append({"unparsed": body.decode("utf-8", "replace")})
+    threading.Thread(target=reader, daemon=True).start()
+    def send(raw):
+        try: p.stdin.write(raw); p.stdin.flush()
+        except Exception: pass
+    for line in sys.stdin.read().splitlines():
+        kind, _, rest = line.partition(" ")
+        if kind == "SLEEP": time.sleep(int(rest) / 1000.0)
+        elif kind in ("MSG", "LOWER", "BAD"):
+            body = rest.encode()
+            name = "content-length" if kind == "LOWER" else "Content-Length"
+            send(f"{name}: {len(body)}\r\n\r\n".encode() + body)
+        elif kind == "CLOSE":
+            try: p.stdin.close()
+            except Exception: pass
+    code = "timeout"
+    try: code = p.wait(timeout=total)
+    except subprocess.TimeoutExpired: p.kill(); p.wait()
+    time.sleep(0.2)
+    for m in got: print("RECV " + json.dumps(m, ensure_ascii=False))
+    print("EXIT", code)
+
+// a raw HTTP client: stdin is the request (\n becomes \r\n), stdout the raw
+// response bytes until close or 3s of silence
+let rawCliPy = <<<
+    import socket, sys, time
+    port = int(sys.argv[1]); req = sys.stdin.buffer.read().replace(b"\n", b"\r\n")
+    s = socket.create_connection(("127.0.0.1", port), timeout=3)
+    s.sendall(req)
+    out = b""; end = time.time() + 3
+    try:
+        while time.time() < end:
+            c = s.recv(65536)
+            if not c: break
+            out += c
+    except socket.timeout: pass
+    sys.stdout.write(out.decode("utf-8", "replace"))
+
+// a raw HTTP server: canned responses a .NET listener cannot produce
+let rawSrvPy = <<<
+    import socket, sys, threading
+    port = int(sys.argv[1])
+    def handle(c):
+        try:
+            data = b""
+            while b"\r\n\r\n" not in data:
+                ch = c.recv(65536)
+                if not ch: return
+                data += ch
+            head = data.split(b"\r\n\r\n")[0].decode("latin-1")
+            path = head.split("\r\n")[0].split(" ")[1]
+            def reply(status, hdrs, body):
+                b = body.encode()
+                h = "".join(f"{k}: {v}\r\n" for k, v in hdrs)
+                c.sendall(f"HTTP/1.1 {status}\r\n{h}Content-Length: {len(b)}\r\nConnection: close\r\n\r\n".encode() + b)
+            if path == "/dup": reply("200 OK", [("X-A", "1"), ("X-A", "2"), ("Server", "BaseHTTP/0.6 Python/3.14.4")], "ok")
+            elif path == "/charset": reply("200 OK", [("Content-Type", "text/plain; charset=x-weir-unknown")], "hello")
+            elif path == "/loop": reply("302 Found", [("Location", "/loop")], "")
+            elif path == "/cross": reply("302 Found", [("Location", f"http://localhost:{port}/echo")], "")
+            elif path == "/echo": reply("200 OK", [("Content-Type", "text/plain")], "\n".join(head.split("\r\n")[1:]))
+            else: reply("404 Not Found", [], "nf")
+        finally:
+            c.close()
+    s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    s.bind(("127.0.0.1", port)); s.listen(16)
+    while True:
+        c, _ = s.accept()
+        threading.Thread(target=handle, args=(c,), daemon=True).start()
+
+let ptyRun dir scenario =
+    let py = put dir "ptydrive.py" ptyPy
+    within cd dir
+        within env HOME=$dir
+            let r = scenario | timeout 40 python3 $py 15 $cli.bin | complete
+            outOf r
+
+let ptyLines dir scenario = ptyRun dir scenario |> Str.split "\n" |> Seq.map Str.trim |> Seq.freeze
+
+// type a line and press Enter after the REPL has started
+let typed s = [ "SLEEP 1500"; $"HEX {hx s}0d"; "SLEEP 1000"; "HEX 04"; "SLEEP 500" ]
+
+let lspRun dir scenario =
+    let py = put dir "lspdrive.py" lspPy
+    let r = scenario | timeout 40 python3 $py 6 $cli.bin lsp | complete
+    r.stdout |> Seq.freeze
+
+let lspInit = """MSG {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}"""
+
+// the response line for one request id
+let reply id lines = lines |> Seq.tryFind (fun l -> l |> Str.contains $"\"id\": {id},") |> Option.defaultValue ""
+
+let withRawServer dir off body =
+    let py = put dir "rawsrv.py" rawSrvPy
+    let port = freePort off
+    within proc srv = python3 $py $port
+        poll timeout=10s interval=100ms watch=srv
+            Net.portOpen port
+        let v = body port
+        v
+
+// ---- H1: `into` runs sh -c past every effect check --------------------------
+
+let h1Pure = <<<
+    let pure f () = ["a"] |> into "touch h1-pure-marker"
+    f () |> Seq.iter print
+
+let h1Module = <<<
+    module M
+    let _v = ["a"] |> into "touch h1-module-marker" |> Seq.length
+
+let h1Main = <<<
+    import "./h1-mod.weir" as M
+    print "main"
+
+let h1Can = <<<
+    ["a"] |> into "touch h1-can-marker" |> Seq.iter print
+
+let h1 d =
+    let rPure = checkW (put d "h1-pure.weir" h1Pure)
+    let _m = put d "h1-mod.weir" h1Module
+    let rMod = runAt d "30" (put d "h1-main.weir" h1Main)
+    let pCan = put d "h1-can.weir" h1Can
+    let rCan =
+        within cd d
+            let x = timeout 30 $cli.bin check --can --strict $pCan | complete
+            x
+    let rRun = runAt d "30" pCan
+
+    failing [
+        ("a pure body admits into", codeOf rPure == 1)
+        ("a module let runs into at import", codeOf rMod == 1 && not (File.exists $"{d}/h1-module-marker"))
+        ("--can --strict passes into", codeOf rCan <> 0 && codeOf rCan < 128)
+        ("into still runs its command", codeOf rRun == 1 && not (File.exists $"{d}/h1-can-marker"))
+    ]
+
+// ---- H2: stack overflow on a long flat script --------------------------------
+
+// fallback: sh -c — `ulimit -s` has no weir spelling
+let h2 d =
+    let long = put d "h2-long.weir" (Seq.replicate 20000 "print \"x\"")
+    let rLong = runAt d "120" long
+    let small = put d "h2-small.weir" (Seq.replicate 2000 "print \"x\"")
+    let rSmall = sh -c $"ulimit -s 1024; exec timeout 60 '{cli.bin}' '{small}'" | complete
+    let lines r = r.stdout |> Seq.length
+
+    failing [
+        ($"20000 statements (exit {codeOf rLong})", codeOf rLong == 0 && lines rLong == 20000)
+        ($"2000 statements under a 1 MB stack (exit {codeOf rSmall})", codeOf rSmall == 0 && lines rSmall == 2000)
+    ]
+
+// ---- H3: a module body runs once per import site -----------------------------
+
+let h3U = <<<
+    module U
+    let uid : Uuid
+    let uid = Uuid.v4 ()
+
+let h3V = <<<
+    module V
+    import "./u.weir" as U
+    let id2 : Uuid
+    let id2 = U.uid
+
+let h3Main = <<<
+    import "./u.weir" as U
+    import "./v.weir" as V
+    import "./u.weir" as U2
+    import "./ulink.weir" as U3
+    print $"{U.uid}"
+    print $"{V.id2}"
+    print $"{U2.uid}"
+    print $"{U3.uid}"
+
+let h3 d =
+    let _u = put d "u.weir" h3U
+    let _v = put d "v.weir" h3V
+    within cd d
+        ln -s u.weir ulink.weir
+    let r = runAt d "30" (put d "main.weir" h3Main)
+    let ids = r.stdout |> Seq.freeze
+    let at i = ids |> Seq.tryItem i |> Option.defaultValue "<none>"
+    let ok = codeOf r == 0 && (ids |> Seq.length) == 4
+
+    // a 16-level diamond: every level imports the next twice
+    let w = $"{d}/diamond"
+    Dir.create w
+    [0..15]
+    |> Seq.iter (fun k ->
+        [ $"module M{k}"; $"import \"./m{k + 1}.weir\" as A"; $"import \"./m{k + 1}.weir\" as B"; "let v : int"; "let v = A.v + B.v" ]
+        |> File.write $"{w}/m{k}.weir")
+    ["module M16"; "let v : int"; "let v = 1"] |> File.write $"{w}/m16.weir"
+    let rD = runAt w "8" (put w "main.weir" ["import \"./m0.weir\" as M"; "print $\"{M.v}\""])
+
+    failing [
+        ("a diamond through V re-evaluates U", ok && at 0 == at 1)
+        ("the same path imported twice", ok && at 0 == at 2)
+        ("the same module through a symlink (R4)", ok && at 0 == at 3)
+        ($"a 16-level diamond within 8s (exit {codeOf rD})", prints "65536" rD)
+    ]
+
+// ---- H4: a module let runs a command at import through a value --------------
+
+let h4Forms =
+    [ ("Seq.map helper", ["let _v = [()] |> Seq.map helper |> Seq.freeze |> Seq.length"])
+      ("an applied lambda", ["let _v = (fun () -> helper ()) ()"])
+      ("composition", ["let _v = (helper >> fun r -> r + 1) ()"])
+      ("Seq.collect", ["let _v = [()] |> Seq.collect (fun u -> [helper u]) |> Seq.length"])
+      ("a record field", ["type T = { f: unit -> int }"; "let t = { f = helper }"; "let _v = t.f ()"])
+      ("$( ) in a Seq.map lambda", ["let _v = [1] |> Seq.map (fun _ -> $(touch mark) |> Seq.length) |> Seq.sum"; "let _h = helper"]) ]
+
+let h4 d =
+    h4Forms
+    |> Seq.indexed
+    |> Seq.map (fun (i, (name, body)) ->
+        let w = $"{d}/f{i}"
+        Dir.create w
+        let _m = put w "m.weir" (Seq.concat [["module M"; "let helper () = touch mark | exitCode"]; body])
+        let r = runAt w "30" (put w "main.weir" ["import \"./m.weir\" as M"; "print \"main\""])
+        (name, codeOf r == 1 && not (File.exists $"{w}/mark") && not (outOf r |> Str.contains "main")))
+    |> failing
+
+// ---- H5: `weir restore` overwrites lock.json -----------------------------------
+
+let h5 d =
+    let port = freePort 1
+    let w = $"{d}/p"
+    Dir.create $"{w}/.weir"
+    let sha = Str.sha256 "pwned"
+    let lock = $$<<<
+        {"schemaVersion":1,"artifacts":[{"kind":"schema","name":"a","url":"http://127.0.0.1:$port/x","sha256":"$sha","path":"lock.json"}]}
+    let lockPath = put $"{w}/.weir" "lock.json" lock
+    let handler = fun req -> HttpServerResponse { status = 200; headers = []; body = Text "pwned" }
+
+    let r =
+        within serve srv = { port = port; maxConcurrent = 4 } handler
+            within cd w
+                let x = timeout 30 $cli.bin restore | complete
+                x
+
+    let after = File.read lockPath |> Str.join "\n"
+    failing [ ($"an entry with path lock.json (exit {codeOf r})", after == (lock |> Str.join "\n") && codeOf r == 1) ]
+
+// ---- H6: builtin-named module members not exported (R3) -----------------------
+
+let h6Doc = <<<
+    module Doc
+    type Node =
+        | Text of string
+        | Para of string
+    let id : int -> int
+    let id n = n + 100
+
+let h6 d =
+    let _doc = put d "doc.weir" h6Doc
+    let rId = runAt d "30" (put d "a.weir" ["import \"./doc.weir\" as Doc"; "print $\"{Doc.id 1}\""])
+    let rText = runAt d "30" (put d "b.weir" ["import \"./doc.weir\" as Doc"; "let n = Doc.Text \"x\""; "print $\"{n}\""])
+    failing [ ("Doc.id", prints "101" rId); ("Doc.Text", prints "Text \"x\"" rText) ]
+
+// ---- H7: a Secret argument refused whenever the command is reified ------------
+
+let h7Cases =
+    [ ("| complete", ["let r = echo $s | complete"; "print (r.stdout |> Str.join \"\")"], "tok")
+      ("| line", ["let l = echo $s | line"; "print l"], "tok")
+      ("| text", ["let l = echo $s | text"; "print l"], "tok")
+      ("| succeeds", ["let l = echo $s | succeeds"; "print $\"{l}\""], "true")
+      ("| exitCode", ["let c = echo $s | exitCode"; "print $\"{c}\""], "tok\n0")
+      ("| orFail", ["echo $s | orFail \"m\""], "tok")
+      ("| or", ["sh -c \"exit 1\" $s | or echo fb"], "fb")
+      ("$e( )", ["let e = Env.ofPairs [(\"A\", \"1\")]"; "let l = $e(echo $s | line)"; "print l"], "tok")
+      ("NAME=$s cmd", ["A=$s sh -c \"echo $A\""], "tok")
+      ("within env A=$s", ["within env A=$s"; "    sh -c \"echo $A\""], "tok") ]
+
+let h7 d =
+    h7Cases
+    |> Seq.indexed
+    |> Seq.map (fun (i, (name, body, want)) ->
+        let r = runAt d "30" (put d $"h7-{i}.weir" (Seq.concat [["let s = Secret.of \"tok\""]; body]))
+        (name, prints want r))
+    |> failing
+
+// ---- H8: SIGTERM orphans a pmap worker's grandchild ---------------------------
+
+let h8Fixture n = $$<<<
+    within
+        let xs = [1..8] |> Seq.pmap (fun i -> $(sh -c "sleep $n; echo x") |> Seq.freeze)
+        print $"{xs |> Seq.length}"
+    always
+        print "cleanup"
+
+let survivors n =
+    let r = pgrep -f $"^sleep {n}$" | complete
+    r.stdout |> Seq.length
+
+let h8Run d (i, delay) =
+    let n = 41000 + (Self.pid % 1000) * 10 + i
+    let p = put d $"h8-{i}.weir" (h8Fixture n)
+    let left =
+        within proc child = ^$cli.bin $p
+            poll timeout=20s interval=50ms watch=child
+                survivors n >= 8
+            Duration.sleep delay
+            kill -TERM (Proc.pid child)
+            let _code = Proc.wait child
+            Duration.sleep 500ms
+            let s = survivors n
+            let _k = pkill -f $"^sleep {n}$" | complete
+            s
+    ($"attempt {i} ({delay} after spawn): {left} leaked", left == 0)
+
+let h8 d = [(1, 0ms); (2, 50ms); (3, 100ms); (4, 200ms); (5, 300ms); (6, 500ms)] |> Seq.map (h8Run d) |> failing
+
+// ---- H9: HOME= crashes the REPL ------------------------------------------------
+
+let h9 d =
+    let r =
+        within cd d
+            within env HOME=""
+                let x = ["print (Str.toUpper \"hi\")"] | timeout 20 $cli.bin | complete
+                x
+    failing [ ($"HOME= piped REPL (exit {codeOf r})", codeOf r == 0 && (outOf r |> Str.contains "HI") && not (leaks (errOf r))) ]
+
+// ---- H10: #save writes `let _(a, b) = ...` -------------------------------------
+
+let h10 d =
+    let saved = $"{d}/saved.weir"
+    let _r = piped d ["let (a, b) = (1, 2)"; "let c = a"; $"#save {saved}"]
+    let text = if File.exists saved then File.read saved |> Str.join "\n" else "<not written>"
+    let rCheck = checkW saved
+    let rRun = runAt d "30" saved
+    failing [
+        ("the saved file prefixes a pattern", File.exists saved && not (text |> Str.contains "let _("))
+        ("the saved file checks clean", codeOf rCheck == 0 && not (diagOf rCheck |> Str.contains "cmd-not-found"))
+        ("the saved file runs", codeOf rRun == 0)
+    ]
+
+// ---- H11: unreadable entry script -> internal UnauthorizedAccessException -----
+
+let h11 d =
+    let u = put d "u.weir" ["print \"x\""]
+    chmod 000 $u
+    let modes = [("run", []); ("check", ["check"]); ("check --can", ["check"; "--can"]); ("check --json", ["check"; "--json"]); ("fmt", ["fmt"])]
+    let unreadable =
+        modes
+        |> Seq.map (fun (name, args) ->
+            let r =
+                within cd d
+                    let x = timeout 30 $cli.bin $@args u.weir | complete
+                    x
+            ($"{name} on an unreadable script", codeOf r <> 0 && codeOf r < 128 && not (leaks (diagOf r)) && (diagOf r |> Str.contains "u.weir")))
+        |> Seq.freeze
+    chmod 644 $u
+    let ro = put d "ro.weir" ["let x=1"; "print (show x)"]
+    chmod 444 $ro
+    let rRo = fmtW ro
+    chmod 644 $ro
+    Dir.create $"{d}/adir"
+    let rDir =
+        within cd d
+            let x = timeout 30 $cli.bin adir | complete
+            x
+
+    failing (Seq.append unreadable [
+        ("fmt on a read-only file", codeOf rRo <> 0 && codeOf rRo < 128 && not (leaks (diagOf rRo)) && (diagOf rRo |> Str.contains "ro.weir"))
+        ("a directory argument names itself", codeOf rDir <> 0 && (diagOf rDir |> Str.contains "director"))
+    ])
+
+// ---- H12: malformed lock entries crash restore/verify -------------------------
+
+let lockOf entry = [$"{{\"schemaVersion\":1,\"artifacts\":[{entry}]}}"]
+
+let lockRun w entry verb =
+    let _l = put $"{w}/.weir" "lock.json" (lockOf entry)
+    within cd w
+        let r = timeout 30 $cli.bin $verb | complete
+        r
+
+let h12 d =
+    let w = $"{d}/p"
+    Dir.create $"{w}/.weir/schemas"
+    let _s = put $"{w}/.weir/schemas" "a.json" ["{}"]
+    let shortSha = """{"kind":"schema","name":"a","url":"http://127.0.0.1:1/a","sha256":"abc","path":"schemas/a.json"}"""
+    let nullPath = """{"kind":"schema","name":"a","url":"http://127.0.0.1:1/a","sha256":"abc","path":null}"""
+    let nullUrl = """{"kind":"schema","name":"a","url":null,"sha256":"abc","path":"schemas/b.json"}"""
+    let noUrl = """{"kind":"schema","name":"a","sha256":"abc","path":"schemas/a.json"}"""
+    let emptyPath = """{"kind":"schema","name":"a","url":"http://127.0.0.1:1/a","sha256":"abc","path":""}"""
+    let clean r = codeOf r == 1 && not (leaks (diagOf r))
+    let rShort = lockRun w shortSha "verify"
+    let rNullV = lockRun w nullPath "verify"
+    let rNullR = lockRun w nullPath "restore"
+    let rUrl = lockRun w nullUrl "restore"
+    let rKey = lockRun w noUrl "verify"
+    let rEmptyV = lockRun w emptyPath "verify"
+    let rEmptyR = lockRun w emptyPath "restore"
+
+    failing [
+        ("verify: a short sha", clean rShort)
+        ("verify: a null path", clean rNullV)
+        ("restore: a null path", clean rNullR)
+        ("restore: a null url", clean rUrl)
+        ("a missing key is named", clean rKey && (diagOf rKey |> Str.contains "url"))
+        ("verify: an empty path called ABSENT", clean rEmptyV && not (diagOf rEmptyV |> Str.contains "ABSENT"))
+        ("restore: an empty path is fetched", clean rEmptyR && not (diagOf rEmptyR |> Str.contains "refused the connection"))
+    ]
+
+// ---- H13: `weir restore` omits the host token -------------------------------
+
+let h13 d =
+    let port = freePort 2
+    let w = $"{d}/p"
+    Dir.create $"{w}/.weir"
+    let sha = Str.sha256 "module H"
+    let lock = $$<<<
+        {"schemaVersion":1,"artifacts":[{"kind":"module","name":"h","url":"http://127.0.0.1:$port/h.weir","sha256":"$sha","path":"modules/h.weir"}]}
+    let _l = put $"{w}/.weir" "lock.json" lock
+    let authorized req = req.headers |> Seq.exists (fun (k, v) -> (Str.toLower k == "authorization") && (v |> Str.contains "tok-h13"))
+    let handler = fun req ->
+        if authorized req then HttpServerResponse { status = 200; headers = []; body = Text "module H" }
+        else HttpServerResponse { status = 404; headers = []; body = Text "nf" }
+
+    let r =
+        within serve srv = { port = port; maxConcurrent = 4 } handler
+            within cd w
+                within env WEIR_TOKEN_127_0_0_1=tok-h13
+                    let x = timeout 30 $cli.bin restore | complete
+                    x
+
+    failing [ ($"a private module restores with WEIR_TOKEN_<host> (exit {codeOf r})", codeOf r == 0 && File.exists $"{w}/.weir/modules/h.weir") ]
+
+// ---- H14: Http.header/headerAll join repeated headers ------------------------
+
+let h14Fixture u = $$<<<
+    let r = Http.send (Http.get "$u/dup")
+    print $"{Http.headerAll "x-a" r}"
+    print $"{Http.header "server" r}"
+
+let h14 d =
+    let r = withRawServer d 3 (fun port -> runAt d "30" (put d "h14.weir" (h14Fixture $"http://127.0.0.1:{port}")))
+    let line i = r.stdout |> Seq.tryItem i |> Option.defaultValue "<none>"
+    failing [
+        ($"repeated X-A (got {line 0})", codeOf r == 0 && line 0 == "[\"1\"; \"2\"]")
+        ($"a single Server value (got {line 1})", codeOf r == 0 && line 1 == "Some \"BaseHTTP/0.6 Python/3.14.4\"")
+    ]
+
+// ---- H15: unknown response charset reported as "cannot reach host" -----------
+
+let h15Fixture u = $$<<<
+    let r = Http.send (Http.get "$u/charset")
+    print $"{r.status}"
+
+let h15 d =
+    let r = withRawServer d 4 (fun port -> runAt d "30" (put d "h15.weir" (h15Fixture $"http://127.0.0.1:{port}")))
+    let e = diagOf r
+    failing [ ("charset=x-weir-unknown", codeOf r < 128 && not (e |> Str.contains "cannot reach") && not (leaks e)) ]
+
+// ---- H16/H17/H18: serve's wire ----------------------------------------------
+
+let serveFixture port = $$<<<
+    let handler = fun req ->
+        match req.path with
+        | "/nc" -> HttpServerResponse { status = 204; headers = []; body = Text "should-not-appear" }
+        | "/te" -> HttpServerResponse { status = 200; headers = [("Transfer-Encoding", "chunked")]; body = Text "hello" }
+        | "/sse" -> HttpServerResponse { status = 200; headers = []; body = Stream ["a\n\ndata: evil"; "b"] }
+        | _ -> HttpServerResponse { status = 200; headers = []; body = Text "body-text" }
+    within serve srv = { port = $port; maxConcurrent = 4 } handler
+        printf "GET /nc HTTP/1.1\nHost: 127.0.0.1:$port\n\nGET /x HTTP/1.1\nHost: 127.0.0.1:$port\nConnection: close\n\n" | python3 rawcli.py $port |> File.write "nc.out"
+        printf "HEAD /x HTTP/1.1\nHost: 127.0.0.1:$port\n\nGET /x HTTP/1.1\nHost: 127.0.0.1:$port\nConnection: close\n\n" | python3 rawcli.py $port |> File.write "head.out"
+        printf "GET /te HTTP/1.1\nHost: 127.0.0.1:$port\nConnection: close\n\n" | python3 rawcli.py $port |> File.write "te.out"
+        printf "GET /sse HTTP/1.1\nHost: 127.0.0.1:$port\nConnection: close\n\n" | python3 rawcli.py $port |> File.write "sse.out"
+
+// runs the serve fixture; the raw response for one case
+let serveRun d off =
+    let _c = put d "rawcli.py" rawCliPy
+    let r = runAt d "60" (put d "serve.weir" (serveFixture (freePort off)))
+    fun name -> if File.exists $"{d}/{name}.out" then File.read $"{d}/{name}.out" |> Str.join "\n" else $"<no {name}.out: exit {codeOf r}>"
+
+let h16 d =
+    let raw = serveRun d 5
+    let nc = raw "nc"
+    let head = raw "head"
+    failing [
+        ("a 204 carries a body / the pipelined request is lost", not (nc |> Str.contains "should-not-appear") && (nc |> Str.contains "body-text"))
+        ("HEAD carries a body / the pipelined request is lost", count "HTTP/1.1 200" head == 2 && count "body-text" head == 1)
+    ]
+
+let h17 d =
+    let te = serveRun d 6 "te" |> Str.toLower
+    failing [ ("Transfer-Encoding next to Content-Length", (te |> Str.contains "hello") && not ((te |> Str.contains "transfer-encoding") && (te |> Str.contains "content-length"))) ]
+
+let h18 d =
+    let sse = serveRun d 7 "sse" |> Str.split "\n" |> Seq.map Str.trim |> Seq.freeze
+    failing [ ("a newline in a Stream element forges an event", (sse |> Seq.contains "data: a") && not (sse |> Seq.contains "data: evil")) ]
+
+// ---- H19: gen types from a self-referential schema ---------------------------
+
+let h19Schema = <<<
+    {"$ref":"#/definitions/Node","definitions":{"Node":{"type":"object","properties":{"name":{"type":"string"},"child":{"$ref":"#/definitions/Node"}},"required":["name"]}}}
+
+let h19Main = <<<
+    import "weir:node" as N
+    let v = ["{\"name\": \"a\", \"child\": {\"name\": \"b\"}}"] |> from json Node
+    print v.name
+
+let h19 d =
+    Dir.create $"{d}/.weir/schemas"
+    let s = put $"{d}/.weir/schemas" "node.json" h19Schema
+    let sha = File.sha256 s
+    let lock = $$<<<
+        {"schemaVersion":1,"artifacts":[{"kind":"schema","name":"node","url":"http://127.0.0.1:1/node.json","sha256":"$sha","path":"schemas/node.json"}]}
+    let _l = put $"{d}/.weir" "lock.json" lock
+    let rGen =
+        within cd d
+            let x = timeout 30 $cli.bin gen types --schema node | complete
+            x
+    let r = runAt d "30" (put d "main.weir" h19Main)
+    failing [ ($"the generated Node reads its own JSON (gen exit {codeOf rGen})", codeOf rGen == 0 && prints "a" r) ]
+
+// ---- H20: serve has no request body limit (R2) --------------------------------
+
+let h20Fixture port = $$<<<
+    let handler = fun req -> HttpServerResponse { status = 200; headers = []; body = Text $"got {Str.length req.body}" }
+    within serve srv = { port = $port; maxConcurrent = 2; maxBody = 1KiB } handler
+        let code = curl -s -o /dev/null -w "%{http_code}" --data-binary "@body.txt" http://127.0.0.1:$port/ | line
+        print code
+
+let h20 d =
+    let _b = put d "body.txt" [Str.replicate 2048 "x"]
+    let r = runAt d "30" (put d "h20.weir" (h20Fixture (freePort 8)))
+    failing [ ($"a 2 KiB body past maxBody = 1KiB (exit {codeOf r})", prints "413" r) ]
+
+// ---- H21: a transitively reachable union makes a local constructor ambiguous --
+
+let h21 d =
+    let _a = put d "a.weir" ["module A"; "type Color ="; "    | Red"; "    | Green"]
+    let _b = put d "b.weir" ["module B"; "import \"./a.weir\" as A"; "let pick : unit -> Color"; "let pick () = A.Red"]
+    let r = runAt d "30" (put d "m.weir" ["import \"./b.weir\" as B"; "type Light ="; "    | Red"; "    | Off"; "let x = Red"; "print $\"{x} {B.pick ()}\""])
+    failing [ ("a local Red beside B's transitive Color", prints "Red Red" r) ]
+
+// ---- H22: multi-line copy-and-update aligned under the first field ------------
+
+let h22Fixture = <<<
+    type Cfg = { host: string; port: int }
+    let d = { host = "h"; port = 1 }
+    let c = { d with host = "x"
+                     port = 2 }
+    print $"{c.host}:{c.port}"
+
+let skillText () = File.read $"{repo}/skills/weir/SKILL.md" |> Str.join " " |> Str.fields |> Str.join " "
+
+let h22 d =
+    let r = runAt d "30" (put d "h22.weir" h22Fixture)
+    failing [
+        ("fields aligned under the first", prints "x:2" r)
+        ("SKILL still says 'Braces ignore indentation'", not (skillText () |> Str.contains "Braces ignore indentation"))
+    ]
+
+// ---- H23: imported union cases can't type an unannotated parameter ------------
+
+let h23 d =
+    let _a = put d "a.weir" ["module A"; "type Shape ="; "    | Circle of int"; "    | Square of int"]
+    let src = ["import \"./a.weir\" as A"; "let area s ="; "    match s with"; "    | Circle r -> r * 3"; "    | Square w -> w * w"; "print $\"{area (A.Circle 2)}\""]
+    let r = runAt d "30" (put d "m.weir" src)
+    failing [ ("an imported case types the param", prints "6" r) ]
+
+// ---- H24: the REPL editor splits surrogate pairs ------------------------------
+
+let h24 d =
+    let left = [ "SLEEP 1500"; $"HEX {hx "print (Str.toUpper \"x😀\")"}"; "HEX 1b5b44"; "HEX 1b5b44"; "HEX 1b5b44"; $"HEX {hx "y"}0d"; "SLEEP 1000"; "HEX 04"; "SLEEP 500" ]
+    let back = [ "SLEEP 1500"; $"HEX {hx "print (Str.toUpper \"a😀b\")"}"; "HEX 1b5b44"; "HEX 1b5b44"; "HEX 1b5b44"; "HEX 7f0d"; "SLEEP 1000"; "HEX 04"; "SLEEP 500" ]
+    failing [
+        ("Left over an emoji", ptyLines d left |> Seq.contains "XY😀")
+        ("Backspace over an emoji", ptyLines d back |> Seq.contains "AB")
+    ]
+
+// ---- H25: path completion inserts unquoted paths ------------------------------
+
+let h25 d =
+    let _s = put d "my file.txt" ["SPACE-OK"]
+    let _q = put d "qu\"ote.txt" ["QUOTE-OK"]
+    let tab prefix = [ "SLEEP 1500"; $"HEX {hx prefix}09"; "SLEEP 800"; "HEX 0d"; "SLEEP 1000"; "HEX 04"; "SLEEP 500" ]
+    failing [
+        ("a path with a space", ptyLines d (tab "cat my") |> Seq.contains "SPACE-OK")
+        ("a path with a quote", ptyLines d (tab "cat qu") |> Seq.contains "QUOTE-OK")
+    ]
+
+// ---- H26: piped REPL: an incomplete line swallows the rest -------------------
+
+let h26 d =
+    let r = piped d ["let x = [1;"; ""; "print (Str.toUpper \"after\")"; "print (Str.toUpper \"later\")"]
+    let o = outOf r
+    failing [ ("a blank line ends the pending entry", (o |> Str.contains "AFTER") && (o |> Str.contains "LATER")) ]
+
+// ---- H27: Enter typed before the REPL is ready -------------------------------
+
+let h27 d =
+    let scen = [ $"HEX {hx "print (Str.toUpper \"early\")"}0d"; "SLEEP 2500"; $"HEX {hx "print (Str.toUpper \"late\")"}0d"; "SLEEP 1000"; "HEX 04"; "SLEEP 500" ]
+    let o = ptyRun d scen
+    let after =
+        match Str.trySplitOnce "EARLY" o with
+        | Some (_, rest) -> rest
+        | None -> ""
+    failing [ ("an early Enter submits the early line", after |> Str.contains "toUpper") ]
+
+// ---- H28: fmt vs LSP formatting and the shebang ------------------------------
+
+let formatSession text =
+    [ lspInit
+      $"MSG {{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{{\"textDocument\":{{\"uri\":\"file:///w/x.weir\",\"languageId\":\"weir\",\"version\":1,\"text\":{text}}}}}}}"
+      """MSG {"jsonrpc":"2.0","id":5,"method":"textDocument/formatting","params":{"textDocument":{"uri":"file:///w/x.weir"},"options":{"tabSize":4,"insertSpaces":true}}}"""
+      "SLEEP 800"
+      "CLOSE" ]
+
+let h28 d =
+    let p = put d "h28.weir" ["#!/usr/bin/env weir"; "print \"a\""; "let x = <<<"]
+    let rFmt = fmtW p
+    let fe = errOf rFmt
+    let shebang = reply 5 (lspRun d (formatSession "\"#!/usr/bin/env weir  \\nlet x=1\\nprint (show x)\\n\""))
+    let finalNl = reply 5 (lspRun d (formatSession "\"let x=1\\nprint (show x)\""))
+    let refused = reply 5 (lspRun d (formatSession "\"#!/usr/bin/env weir\\n  print \\\"a\\\"\\n\""))
+
+    failing [
+        ($"fmt's error line under a shebang ({fe})", (fe |> Str.contains "line 3") && not (fe |> Str.contains "line 2"))
+        ("LSP trims the shebang", shebang |> Str.contains "\"newText\": \"#!/usr/bin/env weir  \\n")
+        ("LSP omits the final newline", finalNl |> Str.contains "print (show x)\\n\"")
+        ("LSP indents where the CLI refuses", (refused |> Str.contains "\"id\": 5") && not (refused |> Str.contains "newText"))
+    ]
+
+// ---- H29: LSP protocol --------------------------------------------------------
+
+let hover id = $"MSG {{\"jsonrpc\":\"2.0\",\"id\":{id},\"method\":\"textDocument/hover\",\"params\":{{\"textDocument\":{{\"uri\":\"file:///w/x.weir\"}},\"position\":{{\"line\":0,\"character\":0}}}}}}"
+
+let didOpen = """MSG {"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///w/x.weir","languageId":"weir","version":1,"text":"print \"a\"\n"}}}"""
+
+let lspExit = """MSG {"jsonrpc":"2.0","method":"exit"}"""
+
+let h29 d =
+    let throwing = lspRun d [ lspInit; didOpen; """MSG {"jsonrpc":"2.0","id":5,"method":"textDocument/hover","params":{"textDocument":{"uri":"file:///w/x.weir"},"position":{"line":1e30,"character":1}}}"""; "SLEEP 800"; "CLOSE" ]
+    let unknown = lspRun d [ lspInit; """MSG {"jsonrpc":"2.0","id":6,"method":"weir/noSuchMethod","params":{}}"""; "SLEEP 800"; "CLOSE" ]
+    let badJson = lspRun d [ lspInit; "BAD {\"jsonrpc\":\"2.0\",\"id\":"; hover 9; "SLEEP 800"; "CLOSE" ]
+    let noShutdown = lspRun d [ lspInit; lspExit; "SLEEP 800" ]
+    let afterShutdown = lspRun d [ lspInit; """MSG {"jsonrpc":"2.0","id":10,"method":"shutdown"}"""; hover 11; "SLEEP 800"; lspExit; "SLEEP 500" ]
+    let lower = lspRun d [ lspInit; hover 12 |> Str.replace "MSG " "LOWER "; "SLEEP 800"; "CLOSE" ]
+    let has needle lines = lines |> Seq.exists (Str.contains needle)
+
+    failing [
+        ("a throwing handler answers", reply 5 throwing <> "")
+        ("unknown method -> -32601", reply 6 unknown |> Str.contains "-32601")
+        ("invalid JSON -> -32700", has "-32700" badJson)
+        ("exit without shutdown exits 1", noShutdown |> Seq.contains "EXIT 1")
+        ("a request after shutdown -> InvalidRequest", reply 11 afterShutdown |> Str.contains "-32600")
+        ("a lowercase content-length header", reply 12 lower <> "")
+    ]
+
+// ---- H30: fmt flip-flops forever ------------------------------------------------
+
+let h30 d =
+    let p = put d "h30.weir" ["match {((}"; "| _ -> 1"]
+    let pass () =
+        let _r = fmtW p
+        File.read p |> Str.join "\n"
+    let a = pass ()
+    let b = pass ()
+    let c = pass ()
+    failing [ ("fmt is not idempotent on `match {((}`", a == b && b == c) ]
+
+// ---- H31: fmt changes whether a file checks ----------------------------------
+
+let h31Case d (name, hex) =
+    let p = $"{d}/h31-{name}.weir"
+    File.writeBytes p (Bytes.fromHex hex)
+    let before = codeOf (checkW p)
+    let _f = fmtW p
+    let after = codeOf (checkW p)
+    ($"{name} (check {before} -> {after})", before == after)
+
+let h31 d =
+    [ ("trailing U+3000", $"{hx "print \"a\""}e38080" + "0a"); ("trailing U+2028", $"{hx "print \"a\""}e280a8" + "0a") ]
+    |> Seq.map (h31Case d)
+    |> failing
+
+// ---- H32: run time quadratic in a statement's physical lines ------------------
+
+let h32 d =
+    let body = [0..47999] |> Seq.map (fun i -> $"    line {i}")
+    let p = put d "h32.weir" (Seq.concat [["let t = <<<"]; body; ["print $\"{t |> Seq.length}\""]])
+    let r = runAt d "8" p
+    failing [ ($"a 48000-line heredoc within 8s (exit {codeOf r})", prints "48000" r) ]
+
+// ---- H33: Path.glob bracket bodies go raw into .NET regex --------------------
+
+let h33 d =
+    ["a"; "w"; "_"; "b"] |> Seq.iter (fun n -> [""] |> File.write $"{d}/{n}")
+    let glob i pat = runAt d "30" (put d $"g{i}.weir" [$"Path.glob @\"{pat}\" |> Seq.iter print"])
+    let rRange = glob 1 "[z-a]"
+    let rEmpty = glob 2 "[]"
+    let rBang = glob 3 "[!]"
+    let rClass = glob 4 @"[\w]"
+    let quiet r = codeOf r < 128 && not (leaks (diagOf r))
+    failing [
+        ("[z-a]", quiet rRange)
+        ("[]", quiet rEmpty)
+        ("[!]", quiet rBang)
+        ("[\\w] matches like regex \\w", codeOf rClass < 128 && not (rClass.stdout |> Seq.contains "a"))
+    ]
+
+// ---- H34: no field completion on anonymous records ----------------------------
+
+let completeField decls =
+    let typedDecls = decls |> Seq.collect (fun l -> [$"HEX {hx l}0d"; "SLEEP 800"])
+    Seq.concat [["SLEEP 1500"]; typedDecls; [$"HEX {hx "r.zn"}09"; "SLEEP 600"; $"HEX {hx " |> Str.toUpper |> print"}0d"; "SLEEP 1000"; "HEX 04"; "SLEEP 500"]]
+
+let h34 d =
+    let lines = ptyLines d (completeField ["let r = {| zname = \"xq\"; zport = 1 |}"])
+    failing [ ("r.zn<Tab> on an anonymous record", lines |> Seq.contains "XQ") ]
+
+// ---- H35: `-e ''` / `-e '// c'` print a bare ^ ---------------------------------
+
+let h35 d =
+    [ ("-e ''", ""); ("-e '// c'", "// c") ]
+    |> Seq.map (fun (name, prog) ->
+        let r =
+            within cd d
+                let x = timeout 30 $cli.bin -e $prog | complete
+                x
+        (name, codeOf r < 128 && (diagOf r |> Str.isMatch @"[A-Za-z]{4,}")))
+    |> failing
+
+// ---- H36/H37: REPL directive and echo messages --------------------------------
+
+let h36 d =
+    let r = piped d ["#quit now"; "print (Str.toUpper \"still\")"]
+    failing [ ("#quit now says did-you-mean #quit", not (outOf r + errOf r |> Str.contains "Did you mean '#quit'")) ]
+
+let h37 d =
+    let r = piped d ["let (a, b) = (1, \"s\")"]
+    let lines = Seq.append (r.stdout) (r.stderr) |> Seq.freeze
+    failing [ ("a destructuring let echoes its values", lines |> Seq.exists (Str.isMatch @"(^|\s)a\b.*=\s*1\b")) ]
+
+// ---- H38: error column past the end of a joined continuation line --------------
+
+let h38 d =
+    let src = ["d"; "    within lock\"\"t"; "    w"]
+    let r = checkW (put d "h38.weir" src)
+    let ok =
+        match Str.rmatch @"h38\.weir:(\d+):(\d+)" (diagOf r) with
+        | Some [l; c] ->
+            let line = src |> Seq.tryItem (Str.toInt l - 1) |> Option.defaultValue ""
+            Str.toInt c <= Str.length line + 1
+        | _ -> false
+    failing [ ("the reported column lies on its line", codeOf r == 1 && ok) ]
+
+// ---- H39: a timed-out retry reports configured attempts ------------------------
+
+let h39 d =
+    let r = runAt d "30" (put d "h39.weir" ["retry attempts=50 delay=200ms timeout=(Some 1s)"; "    false"; "print \"x\""])
+    failing [ ("timed out after ~5 tries, says 50", codeOf r == 1 && not (errOf r |> Str.contains "50 attempt")) ]
+
+// ---- H40/H41: JSON messages ------------------------------------------------------
+
+let h40 d =
+    let file = "h40.weir"
+    let r = runAt d "30" (put d file ["type T = { a: string }"; """let v = ["{\"a\": \"\\ud800\"}"] |> from json T"""; "print v.a"])
+    failing [ ("a lone surrogate escape", cleanRaise file r) ]
+
+let h41 d =
+    let rBool = runAt d "30" (put d "h41-bool.weir" ["type T = { a: int }"; """let v = ["{\"a\": true}"] |> from json T"""; "print $\"{v.a}\""])
+    let rStr = runAt d "30" (put d "h41-str.weir" ["type T = { a: int }"; """let v = ["{\"a\": \"s\"}"] |> from json T"""; "print $\"{v.a}\""])
+    failing [
+        ("got True", codeOf rBool == 1 && not (errOf rBool |> Str.contains "got True"))
+        ("got String", codeOf rStr == 1 && not (errOf rStr |> Str.contains "got String"))
+    ]
+
+// ---- H42: a comma between record-literal fields --------------------------------
+
+let h42 d =
+    let r = checkW (put d "h42.weir" ["type T = { a: int; b: int }"; "let v = { a = 1, b = 2 }"; "print $\"{v.a}\""])
+    let t = diagOf r |> Str.toLower
+    failing [ ("the comma is taught", codeOf r == 1 && (t |> Str.contains "comma") && not (t |> Str.contains "no declared record")) ]
+
+// ---- H43: show doubles the parens around tuple payloads -------------------------
+
+let h43 d =
+    let rSome = runAt d "30" (put d "h43-some.weir" ["print (show (Some (1, 2)))"])
+    let rPlan = runAt d "30" (put d "h43-plan.weir" ["let p ="; "    plan"; "        File.copy \"a\" \"b\""; "print (show p)"])
+    failing [
+        ("Some (1, 2)", prints "Some (1, 2)" rSome)
+        ("a Plan op", codeOf rPlan == 0 && not (outOf rPlan |> Str.contains "(("))
+    ]
+
+// ---- H44: Path.tempRoot called "the pure query" ----------------------------------
+
+let h44 d =
+    let r = checkW (put d "h44.weir" ["let pure t () = Path.tempRoot ()"; "print (t ())"])
+    let refuses = codeOf r == 1
+    failing [ ("SKILL calls Path.tempRoot the pure query while pure refuses it", not (refuses && (skillText () |> Str.contains "`Path.tempRoot ()` is the pure query"))) ]
+
+// ---- H45: `sh -c "exit 3" |> try` --------------------------------------------------
+
+let h45 d =
+    let r = checkW (put d "h45.weir" ["let r = sh -c \"exit 3\" |> try"; "print $\"{r}\""])
+    failing [ ("a raw Expecting", codeOf r == 1 && not (diagOf r |> Str.contains "Expecting")) ]
+
+// ---- H46: `| _ | None` unreachable message misplaced ------------------------------
+
+let h46 d =
+    let r = checkW (put d "h46.weir" ["let f o ="; "    match o with"; "    | Some 1 -> \"one\""; "    | _ | None -> \"other\""; "print (f (Some 1))"])
+    failing [ ("'the arm below' with no arm below", codeOf r == 1 && not (diagOf r |> Str.contains "arm below")) ]
+
+// ---- H47: invalid UTF-8 source (R5) -------------------------------------------------
+
+let h47 d =
+    let p = $"{d}/h47.weir"
+    File.writeBytes p (Bytes.fromHex $"{hx "print \"a"}ff220a")
+    let r = runAt d "30" p
+    failing [ ("a 0xFF byte runs as U+FFFD", codeOf r == 1 && (diagOf r |> Str.contains "h47.weir:1:")) ]
+
+// ---- H48: a block of 500+ statements (R7) --------------------------------------------
+
+let h48 d =
+    let p = put d "h48.weir" (Seq.concat [["if 1 > 0 then"]; Seq.replicate 600 "    print \"x\""])
+    let r = runAt d "60" p
+    failing [ ($"600 statements in one block (exit {codeOf r})", codeOf r == 0 && (r.stdout |> Seq.length) == 600) ]
+
+// ---- H49: poll interval=0s busy-loops ---------------------------------------------
+
+let h49 d =
+    let r = runAt d "10" (put d "h49.weir" ["poll timeout=1s interval=0s"; "    false"])
+    failing [ ("interval=0s", codeOf r == 1 && (diagOf r |> Str.contains "interval") && not (diagOf r |> Str.contains "attempt(s)")) ]
+
+// ---- H50: Uuid.parse accepts surrounding whitespace (R6) ---------------------------
+
+let h50 d =
+    let rParse = runAt d "30" (put d "h50-p.weir" ["let s = \" 6ba7b810-9dad-11d1-80b4-00c04fd430c8\""; "print $\"{Uuid.parse s}\""])
+    let rTry = runAt d "30" (put d "h50-t.weir" ["let s = \"6ba7b810-9dad-11d1-80b4-00c04fd430c8 \""; "print $\"{Uuid.tryParse s}\""])
+    failing [ ("Uuid.parse \" …\"", cleanRaise "h50-p.weir" rParse); ("Uuid.tryParse \"… \"", prints "None" rTry) ]
+
+// ---- H51: float-field record == message -------------------------------------------
+
+let h51 d =
+    let r = checkW (put d "h51.weir" ["type P = { x: float }"; "let a = { x = 1.0 }"; "print $\"{a == a}\""])
+    failing [ ("names Float.near", codeOf r == 1 && (diagOf r |> Str.contains "Float.near")) ]
+
+// ---- H52: union-only Args.load: `build --help` -------------------------------------
+
+let h52 d =
+    let src = ["type BuildArgs = { target: string }"; "type Cmd ="; "    | Build of BuildArgs"; "    | Clean"; "let c = Args.load Cmd"; "print $\"{c}\""]
+    let r = runArgs d (put d "h52.weir" src) ["build"; "--help"]
+    failing [ ("build --help is scoped", codeOf r == 0 && (outOf r |> Str.contains "--target") && not (outOf r |> Str.contains "clean")) ]
+
+// ---- H53: single-case union destructuring --------------------------------------------
+
+let h53 d =
+    let r = runAt d "30" (put d "h53.weir" ["type W = W of int"; "let un (W x) = x"; "print $\"{un (W 3)}\""])
+    failing [ ("let un (W x) = x", prints "3" r) ]
+
+// ---- H54: contracts/imports raw .NET text --------------------------------------------
+
+let h54 d =
+    Dir.create $"{d}/adir"
+    let case i src = runAt d "10" (put d $"h54-{i}.weir" src)
+    let rDir = case 1 ["import \"./adir\" as A"; "print \"x\""]
+    let rZero = case 2 ["import \"/dev/zero\" as A"; "print \"x\""]
+    let rLockDir = case 3 ["within lock \"adir\""; "    print \"in\""]
+    let rLockEmpty = case 4 ["within lock \"\""; "    print \"in\""]
+    let rNeg = case 5 ["within lock \"l.lock\" timeout=-1s"; "    print \"in\""]
+    failing [
+        ("importing a directory", cleanRaise "h54-1.weir" rDir)
+        ("importing /dev/zero", cleanRaise "h54-2.weir" rZero)
+        ("within lock on a directory", cleanRaise "h54-3.weir" rLockDir)
+        ("within lock \"\"", cleanRaise "h54-4.weir" rLockEmpty)
+        ("timeout=-1s accepted", codeOf rNeg == 1 && not (outOf rNeg |> Str.contains "in"))
+    ]
+
+// ---- H55: HTTP auth/cookie/redirect -----------------------------------------------
+
+let h55Auth u = $$<<<
+    let r = Http.send { Http.get "$u/echo" with auth = Basic ("u", Secret.of "p"); headers = [("Authorization", "Bearer zz")] }
+    r.body |> Seq.iter print
+
+let h55Cookie u = $$<<<
+    let r = Http.send { Http.get "$u/cross" with headers = [("Cookie", "sid=1")] }
+    print $"{r.status}"
+    r.body |> Seq.iter print
+
+let h55Loop u = $$<<<
+    let r = Http.send (Http.get "$u/loop")
+    print $"{r.status}"
+
+let h55Body d port =
+    let u = $"http://127.0.0.1:{port}"
+    let rAuth = runAt d "30" (put d "h55-auth.weir" (h55Auth u))
+    let rCookie = runAt d "30" (put d "h55-cookie.weir" (h55Cookie u))
+    let rLoop = runAt d "60" (put d "h55-loop.weir" (h55Loop u))
+    let merged = rAuth.stdout |> Seq.exists (fun l -> (l |> Str.contains "Basic") && (l |> Str.contains "Bearer"))
+    failing [
+        ("Basic auth + Authorization merged", codeOf rAuth < 128 && not merged && not (leaks (diagOf rAuth)))
+        ("Cookie follows a cross-origin redirect", codeOf rCookie < 128 && not (outOf rCookie |> Str.contains "sid=1"))
+        ("a redirect loop returns 302 as data", codeOf rLoop == 1 && not (leaks (diagOf rLoop)))
+    ]
+
+let h55 d = withRawServer d 9 (h55Body d)
+
+// ---- H56: contracts small inconsistencies -------------------------------------------
+
+let h56 d =
+    let _m = put d "m.weir" ["module M"; "let v : int"; "let v = 1"]
+    let rSome = checkW (put d "a.weir" ["import \"./m.weir\" as Some"; "print $\"{Some.v}\""])
+    Dir.create $"{d}/.weir/modules"
+    Dir.create $"{d}/.weir/types"
+    let _x1 = put $"{d}/.weir/modules" "x.weir" ["module X"; "let v : int"; "let v = 1"]
+    let _x2 = put $"{d}/.weir/types" "x.weir" ["module X"; "let w : int"; "let w = 2"]
+    let rShadow = checkW (put d "b.weir" ["import \"weir:x\" as X"; "print $\"{X.v}\""])
+
+    let port = freePort 10
+    let w = $"{d}/p"
+    Dir.create $"{w}/.weir"
+    let lock = $$<<<
+        {"schemaVersion":1,"artifacts":[{"kind":"module","name":"m","url":"http://127.0.0.1:$port/m.weir","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","path":"modules/m.weir"}]}
+    let _l = put $"{w}/.weir" "lock.json" lock
+    let handler = fun req -> HttpServerResponse { status = 200; headers = []; body = Text "changed" }
+    let rMis =
+        within serve srv = { port = port; maxConcurrent = 4 } handler
+            within cd w
+                let x = timeout 30 $cli.bin restore | complete
+                x
+
+    failing [
+        ("`as Some` accepted as an alias", codeOf rSome == 1 && (diagOf rSome |> Str.contains "a.weir:1:"))
+        (".weir/modules silently shadows .weir/types", diagOf rShadow |> Str.contains "types")
+        ("restore mismatch says `weir add schema` for a module", codeOf rMis == 1 && (diagOf rMis |> Str.contains "weir add module") && not (diagOf rMis |> Str.contains "weir add schema"))
+    ]
+
+// ---- H57: REPL small inconsistencies -----------------------------------------------
+
+let h57 d =
+    let r = piped d [ "let zz = 41"; "#history"; "#alias let = echo"; "#help map"; """#infer ["{\"DE\": null}"] from json as Root""" ]
+    let o = (outOf r + "\n" + errOf r)
+    let lo = o |> Str.toLower
+    let staleIt =
+        File.read $"{repo}/docs/DECISIONS.md"
+        |> Seq.exists (fun l -> (l |> Str.startsWith "| repl-it |") && (l |> Str.contains "or a `let` RHS"))
+    failing [
+        ("#alias let = … accepted", (lo |> Str.contains "keyword") || (lo |> Str.contains "reserved"))
+        ("piped #history says (empty)", not (o |> Str.contains "(empty)"))
+        ("the repl-it DECISIONS row says a let binds it", not staleIt)
+        ("#help map lacks the doc #help Seq.map shows", o |> Str.contains "Apply a function")
+        ("#infer note spells 'DE' for dE", o |> Str.contains "'dE'")
+    ]
+
+// ---- controls ----------------------------------------------------------------
+
+let ctlRuns d = prints "hello" (runAt d "30" (put d "c-runs.weir" ["print \"hello\""]))
+
+let ctlCheckClean d = codeOf (checkW (put d "c-clean.weir" ["print \"hello\""])) == 0
+
+let ctlCheckRefuses d = codeOf (checkW (put d "c-refuses.weir" ["let x = 1 + \"a\""; "print x"])) == 1
+
+let ctlPipedRepl d = outOf (piped d ["print (Str.toUpper \"piped\")"]) |> Str.contains "PIPED"
+
+let ctlPty d = ptyLines d (typed "print (Str.toUpper \"pty\")") |> Seq.contains "PTY"
+
+let ctlPtyRecordField d =
+    ptyLines d (completeField ["type R = { zname: string; zport: int }"; "let r = { zname = \"xq\"; zport = 1 }"]) |> Seq.contains "XQ"
+
+let ctlLsp d =
+    let lines = lspRun d [ lspInit; didOpen; hover 2; "SLEEP 800"; """MSG {"jsonrpc":"2.0","id":3,"method":"shutdown"}"""; lspExit; "SLEEP 500" ]
+    (reply 1 lines |> Str.contains "capabilities") && (reply 2 lines |> Str.contains "print") && (lines |> Seq.contains "EXIT 0")
+
+let ctlLspFormat d = reply 5 (lspRun d (formatSession "\"let x=1\\nprint (show x)\\n\"")) |> Str.contains "let x = 1"
+
+let ctlModuleMember d =
+    let _doc = put d "doc.weir" h6Doc
+    prints "Para \"x\"" (runAt d "30" (put d "c.weir" ["import \"./doc.weir\" as Doc"; "let n = Doc.Para \"x\""; "print $\"{n}\""]))
+
+let ctlModuleSigned d =
+    let _m = put d "m.weir" ["module M"; "let helper : unit -> int"; "let helper () = touch mark | exitCode"]
+    let r = runAt d "30" (put d "main.weir" ["import \"./m.weir\" as M"; "print $\"{M.helper ()}\""])
+    prints "0" r && File.exists $"{d}/mark"
+
+let ctlModuleDirectCmd d =
+    let _m = put d "m.weir" ["module M"; "let _v = touch mark | complete"]
+    let r = runAt d "30" (put d "main.weir" ["import \"./m.weir\" as M"; "print \"main\""])
+    codeOf r == 1 && not (File.exists $"{d}/mark")
+
+let ctlSecretStatement d = prints "tok" (runAt d "30" (put d "c.weir" ["let s = Secret.of \"tok\""; "echo $s"]))
+
+let ctlSecretCapture d = prints "tok" (runAt d "30" (put d "c.weir" ["let s = Secret.of \"tok\""; "let l = $(echo $s) |> Seq.head"; "print l"]))
+
+let ctlServeGet d =
+    let port = freePort 11
+    let src = $$<<<
+        let handler = fun req -> HttpServerResponse { status = 200; headers = []; body = Text $"got {Str.length req.body}" }
+        within serve srv = { port = $port; maxConcurrent = 2 } handler
+            let b = curl -s --data-binary "0123456789" http://127.0.0.1:$port/ | line
+            print b
+    prints "got 10" (runAt d "30" (put d "c.weir" src))
+
+let rawEcho port =
+    let r = curl -s $"http://127.0.0.1:{port}/echo" | complete
+    codeOf r == 0 && (outOf r |> Str.contains "Host: 127.0.0.1")
+
+let ctlRawServer d = withRawServer d 12 rawEcho
+
+let ctlRawClient d =
+    let raw = serveRun d 13 "nc"
+    raw |> Str.contains "HTTP/1.1 204"
+
+let ctlRestorePlain d =
+    let port = freePort 14
+    let w = $"{d}/p"
+    Dir.create $"{w}/.weir"
+    let sha = Str.sha256 "{}"
+    let lock = $$<<<
+        {"schemaVersion":1,"artifacts":[{"kind":"schema","name":"a","url":"http://127.0.0.1:$port/a.json","sha256":"$sha","path":"schemas/a.json"}]}
+    let _l = put $"{w}/.weir" "lock.json" lock
+    let handler = fun req -> HttpServerResponse { status = 200; headers = []; body = Text "{}" }
+    let r =
+        within serve srv = { port = port; maxConcurrent = 4 } handler
+            within cd w
+                let x = timeout 30 $cli.bin restore | complete
+                x
+    codeOf r == 0 && File.exists $"{w}/.weir/schemas/a.json"
+
+let ctlLocalUnionParam d =
+    let src = ["type Shape ="; "    | Circle of int"; "    | Square of int"; "let area s ="; "    match s with"; "    | Circle r -> r * 3"; "    | Square w -> w * w"; "print $\"{area (Circle 2)}\""]
+    prints "6" (runAt d "30" (put d "c.weir" src))
+
+let ctlCopyUpdateOneLine d =
+    prints "x:2" (runAt d "30" (put d "c.weir" ["type Cfg = { host: string; port: int }"; "let d = { host = \"h\"; port = 1 }"; "let c = { d with host = \"x\"; port = 2 }"; "print $\"{c.host}:{c.port}\""]))
+
+let ctlFmtStable d =
+    let p = put d "c.weir" ["let x=1"; "print (show x)"]
+    let _a = fmtW p
+    let first = File.read p |> Str.join "\n"
+    let r = fmtW p
+    codeOf r == 0 && first == (File.read p |> Str.join "\n") && (first |> Str.contains "let x = 1")
+
+let ctlGlobPlain d =
+    ["a"; "b"; "c"] |> Seq.iter (fun n -> [""] |> File.write $"{d}/{n}")
+    prints "a\nb" (runAt d "30" (put d "c.weir" ["Path.glob \"[ab]\" |> Seq.iter print"]))
+
+let ctlUuidParse d = prints "6ba7b810-9dad-11d1-80b4-00c04fd430c8" (runAt d "30" (put d "c.weir" ["print $\"{Uuid.parse \"6ba7b810-9dad-11d1-80b4-00c04fd430c8\"}\""]))
+
+let ctlArgsTopHelp d =
+    let src = ["type BuildArgs = { target: string }"; "type Cmd ="; "    | Build of BuildArgs"; "    | Clean"; "let c = Args.load Cmd"; "print $\"{c}\""]
+    let r = runArgs d (put d "c.weir" src) ["--help"]
+    codeOf r == 0 && (outOf r |> Str.contains "clean")
+
+let ctlPollTimeoutZero d = codeOf (runAt d "10" (put d "c.weir" ["poll timeout=0s interval=1s"; "    false"])) == 1
+
+let ctlPmapFinishes d =
+    let src = ["let xs = [1; 2] |> Seq.pmap (fun i -> $(sh -c \"echo x\") |> Seq.freeze)"; "print $\"{xs |> Seq.length}\""]
+    prints "2" (runAt d "30" (put d "c.weir" src))
+
+let ctlShortBlock d = prints "x\nx" (runAt d "30" (put d "c.weir" ["if 1 > 0 then"; "    print \"x\""; "    print \"x\""]))
+
+let ctlSaveSimple d =
+    let saved = $"{d}/saved.weir"
+    let _r = piped d ["let q = 5"; $"#save {saved}"]
+    File.exists saved && codeOf (checkW saved) == 0
+
+let controls =
+    [ ("control-runs", ctlRuns)
+      ("control-check-clean", ctlCheckClean)
+      ("control-check-refuses", ctlCheckRefuses)
+      ("control-piped-repl (H9 H26 H36 H37 H57)", ctlPipedRepl)
+      ("control-pty-repl (H24 H25 H27)", ctlPty)
+      ("control-pty-record-field (H34)", ctlPtyRecordField)
+      ("control-lsp-session (H29)", ctlLsp)
+      ("control-lsp-format (H28)", ctlLspFormat)
+      ("control-module-member (H6)", ctlModuleMember)
+      ("control-module-signed-helper (H4)", ctlModuleSigned)
+      ("control-module-direct-cmd-refused (H4)", ctlModuleDirectCmd)
+      ("control-secret-statement (H7)", ctlSecretStatement)
+      ("control-secret-capture (H7)", ctlSecretCapture)
+      ("control-serve-post (H16 H20)", ctlServeGet)
+      ("control-raw-server (H14 H15 H55)", ctlRawServer)
+      ("control-raw-client (H16 H17 H18)", ctlRawClient)
+      ("control-restore-plain (H5 H13)", ctlRestorePlain)
+      ("control-local-union-param (H23)", ctlLocalUnionParam)
+      ("control-copy-update-one-line (H22)", ctlCopyUpdateOneLine)
+      ("control-fmt-stable (H30)", ctlFmtStable)
+      ("control-glob-plain (H33)", ctlGlobPlain)
+      ("control-uuid-parse (H50)", ctlUuidParse)
+      ("control-args-top-help (H52)", ctlArgsTopHelp)
+      ("control-poll-timeout-zero (H49)", ctlPollTimeoutZero)
+      ("control-pmap-finishes (H8)", ctlPmapFinishes)
+      ("control-short-block (H48)", ctlShortBlock)
+      ("control-save-simple (H10)", ctlSaveSimple) ]
+
+let probes =
+    [ ("H1", h1); ("H2", h2); ("H3", h3); ("H4", h4); ("H5", h5); ("H6", h6); ("H7", h7); ("H8", h8)
+      ("H9", h9); ("H10", h10); ("H11", h11); ("H12", h12); ("H13", h13); ("H14", h14); ("H15", h15)
+      ("H16", h16); ("H17", h17); ("H18", h18); ("H19", h19); ("H20", h20); ("H21", h21); ("H22", h22)
+      ("H23", h23); ("H24", h24); ("H25", h25); ("H26", h26); ("H27", h27); ("H28", h28); ("H29", h29)
+      ("H30", h30); ("H31", h31); ("H32", h32); ("H33", h33); ("H34", h34); ("H35", h35); ("H36", h36)
+      ("H37", h37); ("H38", h38); ("H39", h39); ("H40", h40); ("H41", h41); ("H42", h42); ("H43", h43)
+      ("H44", h44); ("H45", h45); ("H46", h46); ("H47", h47); ("H48", h48); ("H49", h49); ("H50", h50)
+      ("H51", h51); ("H52", h52); ("H53", h53); ("H54", h54); ("H55", h55); ("H56", h56); ("H57", h57) ]
+
+// ---- the verdict channel ------------------------------------------------------
+
+let record vpath line =
+    print $"  {line}"
+    File.append vpath [line]
+
+// every probe and control gets its own temp dir
+let runProbe vpath (label, probe) =
+    within tmp w
+        let res = probe w |> try result
+        match res with
+        | Ok fs when fs |> Seq.isEmpty -> record vpath $"{label} OK"
+        | Ok fs -> record vpath $"""{label} REPRODUCES ({fs |> Str.join "; "})"""
+        | Error m -> record vpath $"{label} REPRODUCES (the probe failed to run: {m})"
+
+let runControl vpath (label, ctl) =
+    within tmp w
+        let res = ctl w |> try
+        match res with
+        | Some true -> record vpath $"{label} OK"
+        | Some false -> record vpath $"*** CONTROL FAILED: {label}"
+        | None -> record vpath $"*** CONTROL FAILED: {label} (the control failed to run)"
+
+// ---- the gate ----------------------------------------------------------------
+
+print "second bug hunt — repro gate (dev/plans/PLAN-hunt2-fixes.md)"
+print $"  binary: {cli.bin}"
+
+within tmp d
+    let vpath = $"{d}/verdicts"
+    [] |> File.write vpath
+
+    if not toolsReady then
+        record vpath "instruments SKIP (timeout/python3/curl/pgrep/pkill/kill/chmod/printf missing) — every item stays OPEN"
+
+    if toolsReady then
+        print ""
+        print "controls"
+        controls |> Seq.iter (runControl vpath)
+        print ""
+        print "probes"
+        probes |> Seq.iter (runProbe vpath)
+
+    print ""
+    let verdicts = File.read vpath |> Seq.freeze
+    let open =
+        verdicts
+        |> Seq.where (fun l ->
+            (l |> Str.contains "REPRODUCES") || (l |> Str.contains "CONTROL FAILED") || (l |> Str.contains "SKIP"))
+        |> Seq.freeze
+
+    let repro = verdicts |> Seq.where (fun l -> l |> Str.contains "REPRODUCES") |> Seq.length
+    let ok = verdicts |> Seq.where (fun l -> (l |> Str.startsWith "H") && (l |> Str.contains " OK")) |> Seq.length
+    print $"summary: {ok} probe(s) OK, {repro} REPRODUCE"
+
+    if open |> Seq.isEmpty then
+        print "ALL ITEMS FIXED"
+    else
+        print $"{open |> Seq.length} line(s) keep the gate shut (a SKIP or a failed control counts):"
+        open |> Seq.iter (fun l -> print $"  {l}")
+        exit 1
