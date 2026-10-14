@@ -2949,6 +2949,27 @@ else
     echo "e2e skip: within lock matrix (POSIX rows)"
 fi
 
+# weir-worded refusals, never raw .NET text: a lock on a directory or "",
+# a negative lock timeout; importing a directory or a device
+h54dir=$(mkweirtmp)
+mkdir "$h54dir/adir"
+for spec in 'lock "adir"|is a directory — the lock is a file' 'lock ""|the lock path is empty' 'lock "x.lock" timeout=-1s|timeout must not be negative, got -1s'; do
+    printf 'within %s\n    print "in"\n' "${spec%%|*}" > "$h54dir/l.weir"
+    out=$( cd "$h54dir" && $BIN l.weir 2>&1 ); rc=$?
+    [ "$rc" = "1" ] || fail "within ${spec%%|*} must raise, rc=$rc: $out"
+    expect "within ${spec%%|*} is refused, weir-worded" "${spec##*|}" "$out"
+    case "$out" in *"Access to the path"*) fail "raw .NET text leaked: $out" ;; esac
+done
+printf 'import "./adir" as D\nprint "x"\n' > "$h54dir/imd.weir"
+out=$($BIN check "$h54dir/imd.weir" 2>&1)
+expect "importing a directory is weir-worded" "it is a directory, not a module" "$out"
+if [ "$IS_WINDOWS" = "0" ]; then
+    printf 'import "/dev/zero" as Z\nprint "x"\n' > "$h54dir/imz.weir"
+    out=$(timeout 10 $BIN check "$h54dir/imz.weir" 2>&1)
+    expect "importing a device is refused, not read forever" "not a regular file" "$out"
+fi
+rm -rf "$h54dir"
+
 # ---- streaming statement echo [D:stream-echo] -------------------------------
 # the general pty instrument (tests/pty/pty-run.py — built for these
 # pins, deliberately general: C14 TTY-contention and the REPL SIGINT

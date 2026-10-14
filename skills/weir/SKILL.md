@@ -713,7 +713,8 @@ within serve srv = { port = 8410; maxConcurrent = 4 } handler
 - `within lock "path"` holds an ADVISORY file lock for the block
   [D:within-lock]: created if missing, nothing bound (there is
   nothing to ask a lock). Blocking by default; `timeout=30s` bounds
-  the wait and exhaustion raises, retry-style. Excludes across
+  the wait and exhaustion raises, retry-style (a negative timeout, an
+  empty path or a directory raises). Excludes across
   processes AND across `pmap` arms (flock semantics, per open file —
   probe-pinned), and interoperates with `flock(1)`. The one scope
   whose guarantee survives `kill -9`: the KERNEL releases the lock on

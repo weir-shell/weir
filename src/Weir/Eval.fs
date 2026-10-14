@@ -3916,12 +3916,20 @@ and eval (env: Env) (te: TypedExpr) : Value =
                 | VStr s -> s
                 | v -> unreachable $"the checker rejects a lock path of {formatValue v}"
 
+            if path = "" then
+                failwith "within lock: the lock path is empty — name a lock file"
+
             let resolved = Session.resolve path
+
+            if System.IO.Directory.Exists resolved then
+                failwith $"within lock: {resolved} is a directory — the lock is a file (e.g. {resolved}/.lock)"
 
             let timeoutMs =
                 topts
                 |> Option.map (fun o ->
                     match eval env o with
+                    | VDur ms when ms < 0L ->
+                        failwith $"within lock: timeout must not be negative, got {formatDuration ms}"
                     | VDur ms -> ms
                     | v -> unreachable $"the checker rejects a lock timeout of {formatValue v}")
 
@@ -3944,6 +3952,8 @@ and eval (env: Env) (te: TypedExpr) : Value =
                      // elsewhere"
                      | :? System.IO.DirectoryNotFoundException ->
                          failwith $"within lock: no such directory for {resolved} — the lock file's parent must exist"
+                     | :? System.UnauthorizedAccessException ->
+                         failwith $"within lock: cannot open {resolved}: permission denied"
                      | :? System.IO.IOException -> None)
                 with
                 | Some fs -> fs
