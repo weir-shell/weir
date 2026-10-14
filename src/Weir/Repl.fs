@@ -3503,6 +3503,8 @@ let rec private loop (state: State) =
                     "#session is read from the init file at startup (config dir, weir/init.weir) — edit it and restart"
                 elif word = "#sig" || word = "#schema" then
                     $"{word} is a file directive, read at check time — it has no effect in the REPL"
+                elif word = "#quit" then
+                    "#quit takes no argument — type #quit on its own (or press Ctrl+D)"
                 else
                     // the did-you-mean pool is the dispatch's one source
                     // (Complete.sessionDirectives) [D:repl-directives]

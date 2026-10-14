@@ -109,6 +109,13 @@ t = piped("#quit\nprint \"unreached\"\n")
 if "unreached" in t:
     failures.append("#quit must leave the REPL")
 
+# an argument to #quit teaches its form — never "did you mean '#quit'"
+t = piped("#quit now\nprint \"still-here\"\n#quit\n")
+if "takes no argument" not in t or "Did you mean" in t:
+    failures.append(f"#quit now must teach the bare form: {t[-200:]!r}")
+if "still-here" not in t:
+    failures.append("#quit now must not quit")
+
 t = piped(":q\nprint \"still-here\"\n#quit\n")
 if "`:q` is now" in t:
     failures.append("the :q teaching arm should be gone")
