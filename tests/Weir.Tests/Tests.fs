@@ -8904,6 +8904,37 @@ let planApplyTests =
               finally
                   System.IO.Directory.Delete(root, true)
           }
+          test "bracket classes are glob classes, never raw regex [D:surface-glob]" {
+              skipOnWindows ()
+              let root = td ()
+              System.IO.Directory.CreateDirectory root |> ignore
+
+              for n in [ "a"; "b"; "w"; "_"; "\\"; "[]"; "é"; "😀" ] do
+                  System.IO.File.WriteAllText(System.IO.Path.Combine(root, n), "x")
+
+              // (pattern, expected names joined by `,`) — verbatim strings,
+              // so a backslash is itself on both sides
+              let cells =
+                  [ "[z-a]", ""
+                    "[]", "[]"
+                    "[!]", ""
+                    "[\\w]", "\\,w"
+                    "[a-c]", "a,b"
+                    "[!a-w]", "\\,_,é,😀"
+                    "[]a]", "a"
+                    "[😀]", "😀" ]
+
+              let prog =
+                  [ $"within cd \"{weirPath root}\""
+                    for i, (pat, want) in List.indexed cells do
+                        $"    let g{i} = Path.glob @\"{pat}\" |> Str.join \",\""
+                        $"    if g{i} <> @\"{want}\" then fail $\"cell {i} gave {{g{i}}}\"" ]
+
+              try
+                  Expect.equal (runFile prog) 0 "each class matched as a glob"
+              finally
+                  System.IO.Directory.Delete(root, true)
+          }
           test "File.append inside a plan refuses — no v1 Op arm (kind-first)" {
               let dir = td ()
               System.IO.Directory.CreateDirectory dir |> ignore

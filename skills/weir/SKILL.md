@@ -2144,7 +2144,9 @@ print (f 1)
 - `Path.glob "src/**/*.fs" : seq<string>` — typed discovery
   (nothing expands in argv, ever): `*` within-segment, `**`
   cross-segment (never through symlinked dirs — bash globstar),
-  `?`, `[abc]`/`[!abc]`. Bash's dotfile law: `*` skips dotfiles, a
+  `?`, `[abc]`/`[!abc]`/`[a-z]` (one code point; a `]` first is a
+  member, a reversed range matches nothing, `\` is a plain member —
+  never regex). Bash's dotfile law: `*` skips dotfiles, a
   `.`-leading segment matches them. Sorted; relative patterns
   echo relative and resolve against the cwd AT ENUMERATION —
   `|> Seq.freeze` pins the answer before a `cd`. No matches = the

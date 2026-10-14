@@ -808,6 +808,85 @@ let private rsplitImpl: Value =
 // pattern is discovery, not assertion); no matches = the empty seq.
 // Hand-rolled: FileSystemGlobbing cannot express the dotfile law
 // (and is unrestorable offline).
+// one glob bracket class at seg[i] = '[' [D:surface-glob], translated
+// member by member — never raw regex text: `!`/`^` negates, a `]` first
+// is a member, `a-z` is a code-point range (a reversed one matches
+// nothing), a `-` at either end and a backslash are members. Matches
+// one code point, never `/`. None = no closer, so the `[` is literal.
+let private globClass (seg: string) (i: int) : (string * int) option =
+    let mutable j = i + 1
+    let negate = j < seg.Length && (seg[j] = '!' || seg[j] = '^')
+
+    if negate then
+        j <- j + 1
+
+    let start = j
+    let mutable k = if start < seg.Length && seg[start] = ']' then start + 1 else start
+
+    while k < seg.Length && seg[k] <> ']' do
+        k <- k + 1
+
+    if k >= seg.Length then
+        None
+    else
+        let body = seg.Substring(start, k - start)
+
+        let cps =
+            [ let mutable q = 0
+
+              while q < body.Length do
+                  if System.Char.IsSurrogatePair(body, q) then
+                      yield System.Char.ConvertToUtf32(body, q)
+                      q <- q + 2
+                  else
+                      yield int body[q]
+                      q <- q + 1 ]
+
+        let rec ranges acc cps =
+            match cps with
+            | a :: 45 :: b :: rest -> ranges ((a, b) :: acc) rest
+            | a :: rest -> ranges ((a, a) :: acc) rest
+            | [] -> List.rev acc
+
+        let u (c: int) = $"\\u{c:X4}"
+        let bmp = System.Text.StringBuilder()
+        let astral = ResizeArray<string>()
+
+        let addBmp lo hi =
+            if lo <= hi then
+                (if lo = hi then bmp.Append(u lo) else bmp.Append(u lo).Append('-').Append(u hi)) |> ignore
+
+        for (lo, hi) in ranges [] cps do
+            if lo <= hi then
+                // BMP minus the surrogate block: a class unit must never
+                // match half a pair [D:str-code-points]
+                addBmp lo (min hi 0xD7FF)
+                addBmp (max lo 0xE000) (min hi 0xFFFF)
+
+                let alo, ahi = max lo 0x10000, hi
+
+                if alo <= ahi then
+                    if ahi - alo > 4096 then
+                        failwith "Path.glob: a bracket range past U+FFFF may span at most 4096 code points"
+
+                    for c in alo..ahi do
+                        astral.Add(System.Text.RegularExpressions.Regex.Escape(System.Char.ConvertFromUtf32 c))
+
+        let alts =
+            [ if bmp.Length > 0 then
+                  yield "[" + bmp.ToString() + "]"
+              yield! astral ]
+
+        let set = if alts.IsEmpty then "(?!)" else "(?:" + String.concat "|" alts + ")"
+
+        let rx =
+            if negate then
+                "(?:(?!" + set + ")(?:[\\uD800-\\uDBFF][\\uDC00-\\uDFFF]|[^/]))"
+            else
+                set
+
+        Some(rx, k)
+
 let private globSegRegex (seg: string) : System.Text.RegularExpressions.Regex =
     let sb = System.Text.StringBuilder("^")
     let mutable i = 0
@@ -818,15 +897,11 @@ let private globSegRegex (seg: string) : System.Text.RegularExpressions.Regex =
          // one code point, a surrogate pair included [D:str-code-points]
          | '?' -> sb.Append "(?:[\\uD800-\\uDBFF][\\uDC00-\\uDFFF]|[^/])" |> ignore
          | '[' ->
-             let close = seg.IndexOf(']', i + 1)
-
-             if close < 0 then
-                 sb.Append(System.Text.RegularExpressions.Regex.Escape "[") |> ignore
-             else
-                 let body = seg.Substring(i + 1, close - i - 1)
-                 let body = if body.StartsWith "!" then "^" + body.Substring 1 else body
-                 sb.Append('[').Append(body).Append(']') |> ignore
+             match globClass seg i with
+             | Some(rx, close) ->
+                 sb.Append rx |> ignore
                  i <- close
+             | None -> sb.Append(System.Text.RegularExpressions.Regex.Escape "[") |> ignore
          | c -> sb.Append(System.Text.RegularExpressions.Regex.Escape(string c)) |> ignore)
 
         i <- i + 1
