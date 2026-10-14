@@ -132,6 +132,15 @@ REPL / LSP / fmt
   classes properly.
 - **H34 no field completion on anonymous records** (`Complete.fs:105`).
 
+- **H58 a lazy command `let` is refused in the init file and modules**
+  (`let gl = git log --oneline -n 10` → "cannot run a command at load",
+  untrue — the binding is lazy). Allow the lazy forms; keep refusing eager
+  ones with an accurate message [D:lazy-command-lets]. Found in the user's
+  own init.weir.
+- **H59 the REPL echo runs a command-backed `let`** (`let cleanup = rm -rf
+  build` deletes on Enter; a script doesn't). Echo the type and a hint
+  instead [D:repl-let-echo-lazy].
+
 ## Stage 3 — messages and small inconsistencies (`fix/hunt2-messages`)
 
 - **H35** `weir -e ''` / `-e '// c'` print a bare `^` (`Program.fs:34`).
