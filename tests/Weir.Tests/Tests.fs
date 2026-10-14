@@ -7155,9 +7155,9 @@ let replEchoTests =
               // the meta seam: state alone, hint alone, both (one
               // parenthetical, state first), neither
               Expect.equal
-                  (Weir.Repl.letEchoMeta "pods" (TSeq TStr) (Some "command-backed — re-runs on each use") None)
-                  "pods : seq<string> (command-backed — re-runs on each use)"
-                  "the hazard annotation, exact bytes"
+                  (Weir.Repl.commandBackedEcho "pods" (TSeq TStr))
+                  "pods : seq<string> (command-backed — runs on each use; type pods to run it)"
+                  "the command-backed echo, exact bytes [D:repl-let-echo-lazy]"
 
               Expect.equal
                   (Weir.Repl.letEchoMeta "pods" (TSeq TStr) (Some "frozen") None)
@@ -7171,7 +7171,7 @@ let replEchoTests =
 
               Expect.equal (Weir.Repl.letEchoMeta "pods" (TSeq TStr) None None) "pods : seq<string>" "silence is the default"
           }
-          test "letSeqState: the one probe decides frozen; command-backed only speaks unforced [D:reenum-warning]" {
+          test "letSeqState decides frozen; letCommandBacked flags an unforced command seq, never a forced or pure one [D:repl-let-echo-lazy]" {
               let sp: Weir.Ast.Span =
                   { Start = { Line = 1; Col = 1 }
                     End = { Line = 1; Col = 2 } }
@@ -7189,16 +7189,15 @@ let replEchoTests =
               let unforced = Weir.Eval.VSeq(Seq.delay (fun () -> Seq.empty))
               let forced = Weir.Eval.VSeq([ Weir.Eval.VStr "a" ] :> seq<Weir.Eval.Value>)
 
-              Expect.equal
-                  (Weir.Repl.letSeqState cmdTe unforced)
-                  (Some "command-backed — re-runs on each use")
-                  "command-backed unforced states the hazard"
+              Expect.isTrue (Weir.Repl.letCommandBacked cmdTe unforced) "command-backed unforced: the echo must not enumerate"
+              Expect.isFalse (Weir.Repl.letCommandBacked cmdTe forced) "forced already ran: the echo shows it"
+              Expect.isFalse (Weir.Repl.letCommandBacked pureTe unforced) "a pure lazy seq echoes as before"
 
-              Expect.equal (Weir.Repl.letSeqState cmdTe forced) (Some "frozen") "forced states the resolution, command or not"
+              Expect.equal (Weir.Repl.letSeqState forced) (Some "frozen") "forced states the resolution, command or not"
 
-              Expect.equal (Weir.Repl.letSeqState pureTe unforced) None "a pure lazy seq stays silent"
+              Expect.equal (Weir.Repl.letSeqState unforced) None "an unforced seq carries no state"
 
-              Expect.equal (Weir.Repl.letSeqState pureTe (Weir.Eval.VInt 3L)) None "a non-seq value carries no state"
+              Expect.equal (Weir.Repl.letSeqState (Weir.Eval.VInt 3L)) None "a non-seq value carries no state"
           }
           test "the streamed-it misuse repair carries the command verbatim [D:repl-it]" {
               Expect.equal

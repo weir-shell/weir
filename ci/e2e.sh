@@ -3055,16 +3055,19 @@ WEOF
     echo "e2e ok: a let-bound truncated seq echoes the unforced teaching, visible and without a dangling '='"
 
     # ---- the binding echo states seq state [D:reenum-warning] ----------
-    # a command-backed unforced bind says it re-runs; a materialized
-    # bind says frozen; the pure-lazy nats cell above stays unannotated
-    # (its teaching grep pins the meta with no state joined)
-    rsout=$(printf 'SLEEP 400\nSEND let pods = sh -c "echo one"\\r\nSLEEP 1200\nSEND let snap = ["a"; "b"]\\r\nSLEEP 800\nSEND #quit\\r\n' | python3 "$ptyrun" 10 "$BIN")
+    # a command-backed unforced bind is not run by the echo
+    # [D:repl-let-echo-lazy]; a materialized bind says frozen; the
+    # pure-lazy nats cell above stays unannotated (its teaching grep pins
+    # the meta with no state joined)
+    rsout=$(printf 'SLEEP 400\nSEND let pods = sh -c "echo ran-$((40+2))"\\r\nSLEEP 1200\nSEND let snap = ["a"; "b"]\\r\nSLEEP 800\nSEND #quit\\r\n' | python3 "$ptyrun" 10 "$BIN")
     # the harness echoes a bytes repr, so the em-dash rides as \xe2\x80\x94 —
     # pin the ASCII halves around it
     echo "$rsout" | grep -qF 'pods : seq<string> (command-backed' \
-      || fail "the command-backed unforced bind must state the re-run hazard: $rsout"
-    echo "$rsout" | grep -qF 're-runs on each use)' \
-      || fail "the hazard annotation names the re-run: $rsout"
+      || fail "the command-backed unforced bind must say so: $rsout"
+    echo "$rsout" | grep -qF 'runs on each use; type pods to run it)' \
+      || fail "the command-backed echo names how to run it: $rsout"
+    echo "$rsout" | grep -qF 'ran-42' \
+      && fail "the echo of a command-backed let ran the command: $rsout"
     echo "$rsout" | grep -qF 'snap : seq<string> (frozen)' \
       || fail "a materialized bind must state frozen: $rsout"
     echo "e2e ok: the binding echo states seq state (re-runs / frozen)"
@@ -10537,6 +10540,15 @@ WEOF
     echo "$iout" | grep -qF "init: not loaded" && fail "a lazy command let must load: $iout" || true
     [ "$(grep -c lazy-out <<<"$iout")" = 2 ] || fail "each use of a lazy init let runs it: $iout"
     [ "$(tr '\n' ' ' < "$initcfg/lazymark")" = "main run run " ] || fail "the init load spawned (or a use did not): $(cat "$initcfg/lazymark")"
+    # the echo of a command-backed let never runs it, piped too
+    # [D:repl-let-echo-lazy]; typing the name does
+    rm -f "$initcfg/lazymark"
+    iout=$(printf 'let c = sh -c "echo cleanup >> %s/lazymark"\nlet g2 = gl\nlet fz = gl |> Seq.freeze\n#quit\n' "$initcfg" \
+        | XDG_CONFIG_HOME="$initcfg" XDG_STATE_HOME="$initcfg/state" "$BIN" 2>&1)
+    echo "$iout" | grep -qF "c : seq<string> (command-backed — runs on each use; type c to run it)" || fail "a command-backed let echoes its type and hint: $iout"
+    echo "$iout" | grep -qF "g2 : seq<string> (command-backed" || fail "a let reading a command-backed binding is command-backed too: $iout"
+    echo "$iout" | grep -qF 'fz : seq<string> = ["lazy-out"]' || fail "an eager let echoes its value: $iout"
+    [ "$(tr '\n' ' ' < "$initcfg/lazymark")" = "run " ] || fail "only the frozen let ran: $(cat "$initcfg/lazymark")"
 fi
 cat > "$INITHOME/weir/init.weir" <<'WEOF'
 #init

@@ -682,11 +682,11 @@ let private echoMeta (s: string) =
 // carries — one spelling, so a clipped `let` bind can never look like
 // it silently dropped data (the tail is printed after the lines, so it
 // stays visible). The meta also states the bound seq's state
-// [D:reenum-warning]: a command-backed unforced seq re-runs its command
-// on each use and the echo says so; a materialized one is frozen; a
-// pure lazy seq stays unannotated — silence is the default, only the
-// hazard and its resolution speak. Both ride the one parenthetical, the
-// state joined before the truncation teaching.
+// [D:reenum-warning]: a command-backed unforced seq is echoed as this
+// meta alone, never enumerated [D:repl-let-echo-lazy]; a materialized
+// one is frozen; a pure lazy seq stays unannotated — silence is the
+// default. Both ride the one parenthetical, the state joined before the
+// truncation teaching.
 let letEchoMeta (name: string) (ty: Ty) (state: string option) (hint: string option) : string =
     let tail =
         match state, hint with
@@ -696,22 +696,43 @@ let letEchoMeta (name: string) (ty: Ty) (state: string option) (hint: string opt
 
     $"{name} : {formatEchoTy ty}{Eval.echoTail tail}"
 
-/// the bound seq's state for the meta line [D:reenum-warning]: the
-/// forcedItems probe (the one source echo and completion already share)
-/// decides frozen; an unforced value is annotated only when its RHS is
-/// command-backed (the weak-purity walk). Display only, tty-only — the
-/// piped meta bytes are pinned surface and never carry it.
-let letSeqState (te: Check.TypedExpr) (v: Eval.Value) : string option =
+// the session's command-backed bindings [D:repl-let-echo-lazy]: a `let`
+// reading one (`let g = gl`, `gl |> Seq.filter f`) is command-backed too
+let mutable private commandSeqNames: Set<string> = Set.empty
+
+/// an unforced seq whose RHS runs a command (the weak-purity walk) or
+/// reads a command-backed binding — enumerating it would run the command
+/// [D:repl-let-echo-lazy]
+let letCommandBacked (te: Check.TypedExpr) (v: Eval.Value) : bool =
     match v with
     | Eval.VSeq items ->
-        match Eval.forcedItems items with
-        | Some _ -> Some "frozen"
-        | None ->
-            if Check.runsCommandT te then
-                Some "command-backed — re-runs on each use"
-            else
-                None
+        (Eval.forcedItems items).IsNone
+        && (Check.runsCommandT te || (Check.eagerNameRef commandSeqNames te).IsSome)
+    | _ -> false
+
+/// remember (or forget, on a shadow) a session binding's command-backing
+let noteCommandSeq (name: string) (te: Check.TypedExpr) (v: Eval.Value) =
+    commandSeqNames <-
+        if letCommandBacked te v then
+            Set.add name commandSeqNames
+        else
+            Set.remove name commandSeqNames
+
+/// the bound seq's state for the meta line [D:reenum-warning]: the
+/// forcedItems probe (the one source echo and completion already share)
+/// decides frozen; a pure lazy seq stays unannotated, and a
+/// command-backed one never reaches the echo [D:repl-let-echo-lazy].
+/// Display only, tty-only — the piped meta bytes are pinned surface and
+/// never carry it.
+let letSeqState (v: Eval.Value) : string option =
+    match v with
+    | Eval.VSeq items when (Eval.forcedItems items).IsSome -> Some "frozen"
     | _ -> None
+
+/// the echo of a command-backed `let`: the type and how to run it, never
+/// the enumeration (a `let` binds, as in a script) [D:repl-let-echo-lazy]
+let commandBackedEcho (name: string) (ty: Ty) : string =
+    letEchoMeta name ty (Some "command-backed — runs on each use") (Some $"type {name} to run it")
 
 // the misuse repair after a streamed statement [D:repl-it]: `it` is
 // unit-bound (the stream's `()`), so using it where unit fails the check
@@ -1939,6 +1960,9 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
             let v = Eval.eval state.Values te
             let bindings = Eval.bindPattern pat v
 
+            for n, _ in schemes do
+                commandSeqNames <- Set.remove n commandSeqNames
+
             // one destructuring line reports each binding on its
             // own line — matching what two lets would have shown
             for n, sch in schemes do
@@ -1962,8 +1986,12 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
 
         (try
             let v = Eval.eval state.Values te
+            let commandBacked = letCommandBacked te v
+            noteCommandSeq name te v
 
-            if v <> Eval.VUnit then
+            if commandBacked then
+                echoMeta (commandBackedEcho name te.Ty)
+            elif v <> Eval.VUnit then
                 // one enumeration for the whole echo [D:echo-once] — the
                 // table probe and the line rendering share a cached
                 // prefix; the stored value keeps the original seq (the
@@ -2016,7 +2044,7 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
                      else
                          printTable lines)
 
-                    echoMeta (letEchoMeta name te.Ty (letSeqState te v) hint)
+                    echoMeta (letEchoMeta name te.Ty (letSeqState v) hint)
                 | None ->
                     let rendered, hint = Eval.echoValue cap ev
                     let tail = Eval.echoTail hint
@@ -3986,7 +4014,9 @@ let private loadInit (baseState: State) : State =
                                              | Ast.DRecord _ -> ())
                                         | Script.KLet(name, _, te) ->
                                             names <- names + 1
-                                            venv <- Map.add name (Eval.eval venv te) venv
+                                            let v = Eval.eval venv te
+                                            noteCommandSeq name te v
+                                            venv <- Map.add name v venv
 
                                             (match
                                                 attachments

@@ -7130,12 +7130,13 @@ let rec eagerCommandHelper (helpers: Map<string, int>) (te: TypedExpr) : string 
 let private lazyNames (helpers: Map<string, int>) =
     helpers |> Map.filter (fun _ a -> a = 0) |> Map.keys |> Set.ofSeq
 
-let rec private eagerLazyRef (names: Set<string>) (te: TypedExpr) : string option =
+/// the first of `names` read on the eager spine (outside lambdas)
+let rec eagerNameRef (names: Set<string>) (te: TypedExpr) : string option =
     match te.Kind with
     | TEVar v when names.Contains v -> Some v
     | TELambda _
     | TELambdaPat _ -> None
-    | _ -> childExprs te |> List.tryPick (eagerLazyRef names)
+    | _ -> childExprs te |> List.tryPick (eagerNameRef names)
 
 /// evaluating this builds a command seq and spawns nothing: a command, a
 /// pipeline of commands, a value-headed pipe into a command, or another
@@ -7143,7 +7144,7 @@ let rec private eagerLazyRef (names: Set<string>) (te: TypedExpr) : string optio
 /// (argv is built when the value is, so a splice forces) [D:lazy-command-lets]
 let rec private lazyCommandSeq (names: Set<string>) (te: TypedExpr) : bool =
     let quiet e =
-        not (runsCommandT e) && (eagerLazyRef names e).IsNone
+        not (runsCommandT e) && (eagerNameRef names e).IsNone
 
     match te.Kind with
     | TECmd _ -> childExprs te |> List.forall quiet
@@ -7196,7 +7197,7 @@ let commandRunsNow (helpers: Map<string, int>) (te: TypedExpr) : string option =
         match
             (if runs then eagerVar (fun v -> v = "|print") te else None),
             (if runs then eagerVar (fun v -> (reifierOfVar v).IsSome) te else None),
-            eagerLazyRef names te
+            eagerNameRef names te
         with
         // `| and` / `| or` stream their commands (the |print desugar)
         | Some _, _, _ -> Some $"`| and`/`| or` runs the commands now — {lazyFix}"

@@ -2644,7 +2644,9 @@ print "done"
 
 `weir` with no arguments starts the REPL. Here you can use short names
 like `map` and `where` (scripts need `Seq.map` and so on). Each value
-is echoed back with its type. An entry can span several lines: weir
+is echoed back with its type. A `let` bound to a command is the
+exception: the echo shows its type and doesn't run it (`let cleanup =
+rm -rf build` deletes nothing until you type `cleanup`). An entry can span several lines: weir
 checks whether what you've typed so far is a complete statement and
 keeps reading if it isn't. `Ctrl+C` throws away the current entry,
 and `Ctrl+D` or `#quit` exits.
