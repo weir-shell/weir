@@ -2349,7 +2349,11 @@ print $"exit={r.exitCode}"
   capture.
 - Multi-line record literals separate fields by newline, F#-style
   (trailing `;` also fine); blank lines inside brackets are
-  transparent. Braces ignore indentation.
+  transparent. Sibling fields/elements align EXACTLY with the first
+  one (`{ a = 1` then `  b = 2` under `a`); a copy-and-update aligns
+  under its first FIELD, not the source:
+  `{ d with host = "x"` then `port = 2 }` under `host`. The closer's
+  indentation is free.
 - Blocks are offside, F#-style: a line at an `if`/`match`'s OWN indent
   is a sibling (runs after, unconditionally); only deeper lines are
   the body. Guard lines before a block result work:

@@ -1041,32 +1041,66 @@ let bracketFold
                             j <- j + 1
 
                         // an update header's opener-line content is the
-                        // source, not a field — the first continuation entry
-                        // anchors instead [D:record-update]. Only a record
-                        // brace can carry a `with`; and the check is
-                        // index-based — no per-opener `piece.Substring(j)`
-                        // allocation, so a bracket-heavy single line stays
-                        // linear [D:assemble-quadratic].
-                        let isWithHeader =
-                            c = '{'
-                            && (let mutable e = piece.Length - 1
+                        // source, not a field — the first field after `with`
+                        // anchors, on this line or (dangling `with`) the next
+                        // [D:field-alignment] [D:record-update]. Only a record
+                        // brace can carry a `with`. The scan is bounded: it
+                        // stops at the first top-level `=`, `;`, opener or
+                        // closer, so a bracket-heavy single line stays linear
+                        // [D:assemble-quadratic].
+                        let withField =
+                            if c <> '{' then
+                                None
+                            else
+                                let mutable k = j
+                                let mutable depth = 0
+                                let mutable found = None
+                                let mutable stop = false
 
-                                while e >= j && piece[e] = ' ' do
-                                    e <- e - 1
-                                // does piece[j..e] end with the word "with"?
-                                // (either the whole trimmed tail is "with", or
-                                // it ends " with" — a space precedes it)
-                                e >= j + 3
-                                && piece[e] = 'h'
-                                && piece[e - 1] = 't'
-                                && piece[e - 2] = 'i'
-                                && piece[e - 3] = 'w'
-                                && (e - 3 = j || piece[e - 4] = ' '))
+                                while not stop && k < piece.Length do
+                                    let ch = piece[k]
 
-                        if j < piece.Length && piece[j] <> '}' && piece[j] <> ']' && not isWithHeader then
-                            Some(indent + j)
-                        else
-                            None
+                                    if ch = '"' then
+                                        k <- k + 1
+
+                                        while k < piece.Length && piece[k] <> '"' do
+                                            if piece[k] = '\\' then k <- k + 1
+                                            k <- k + 1
+                                    elif ch = '(' then
+                                        depth <- depth + 1
+                                    elif ch = ')' then
+                                        depth <- depth - 1
+                                        if depth < 0 then stop <- true
+                                    elif depth = 0 && (ch = '=' || ch = ';' || ch = '{' || ch = '}' || ch = '[' || ch = ']') then
+                                        stop <- true
+                                    elif
+                                        depth = 0
+                                        && ch = 'w'
+                                        && k > j
+                                        && piece[k - 1] = ' '
+                                        && k + 3 < piece.Length
+                                        && piece[k + 1] = 'i'
+                                        && piece[k + 2] = 't'
+                                        && piece[k + 3] = 'h'
+                                        && (k + 4 = piece.Length || piece[k + 4] = ' ')
+                                    then
+                                        let mutable f = k + 4
+
+                                        while f < piece.Length && piece[f] = ' ' do
+                                            f <- f + 1
+
+                                        found <- Some f
+                                        stop <- true
+
+                                    k <- k + 1
+
+                                found
+
+                        match withField with
+                        | Some f when f >= piece.Length -> None
+                        | Some f -> Some(indent + f)
+                        | None when j < piece.Length && piece[j] <> '}' && piece[j] <> ']' -> Some(indent + j)
+                        | None -> None
 
                     Ok((c, lineNo, entryCol) :: stack)
                 | '}'
@@ -1418,7 +1452,10 @@ let private applyJoin (j: Join) (b: PendBuf) (piece: string) (lineNo: int) (inde
         Segments = (joinedStart, lineNo, indent) :: b.Segments
         Ends = pieceEnd :: b.Ends }
 
-let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> =
+// onMisaligned (line, siblings' column) fires before a sibling-alignment
+// error — the recovering assembler re-indents that line instead of
+// dropping it, so its closers survive (no cascading "still open")
+let assembleWith (onMisaligned: int -> int -> unit) (numbered: (int * string) list) : Result<LogicalLine list, string> =
     // trailing comments strip here, per physical line [D:trailing-comments]:
     // stripComment is the whitespace-preceded rule (glued // — http://a,
     // --format=a//b — stays data). Skipped: yaml district content (bytes)
@@ -1752,6 +1789,8 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                 then
                                                     match entryCol with
                                                     | Some c when indent <> c ->
+                                                        onMisaligned lineNo c
+
                                                         Error
                                                             $"line {lineNo}: this field/element is indented off its siblings (they sit at column {c}) — align the group exactly"
                                                     | Some _ -> Ok p.Brackets
@@ -2079,6 +2118,8 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                                     // aligned sibling (pipeline stage)
                                                                     Ok(false, groups)
                                                                 | (g, _, _, _) :: _ ->
+                                                                    onMisaligned lineNo g
+
                                                                     Error
                                                                         $"line {lineNo}: this line is indented off its siblings (they sit at column {g}) — align the group exactly"
                                                                 | [] ->
@@ -2434,6 +2475,9 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
 // pending statement) is "not yet countable" -> None. The piped REPL's
 // continuation oracle: an added line that keeps the count merged into the
 // pending statement; one that raises it started a new statement.
+let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> =
+    assembleWith (fun _ _ -> ()) numbered
+
 let statementCount (bufLines: string list) : int option =
     let numbered =
         bufLines
@@ -6483,7 +6527,9 @@ let analyzeLines
     let assemblyDiags = ResizeArray<Diagnostic>()
 
     let rec assembleRecovering (attempts: int) (input: (int * string) list) =
-        match assemble input with
+        let misaligned = ref None
+
+        match assembleWith (fun l c -> misaligned.Value <- Some(l, c)) input with
         | Ok lls -> lls
         | Error msg when attempts > 0 ->
             let line =
@@ -6496,20 +6542,34 @@ let analyzeLines
                          | false, _ -> -1)
                 | None -> -1
 
+            // the named line's content start is the column
+            let col =
+                input
+                |> List.tryFind (fun (n, _) -> n = line)
+                |> Option.map (fun (_, raw) -> (raw |> Seq.takeWhile ((=) ' ') |> Seq.length) + 1)
+                |> Option.defaultValue 1
+
             assemblyDiags.Add
                 { File = path
                   Line = (if line > 0 then line else 1)
-                  Col = 1
+                  Col = col
                   EndLine = None
                   EndCol = None
                   Severity = "error"
                   Code = "assembly"
                   Message = msg }
 
-            if line > 0 && input |> List.exists (fun (n, _) -> n = line) then
+            match misaligned.Value with
+            | Some(l, c) when l = line ->
+                // re-indent onto the siblings' column: the line's closers
+                // still close, so the statement checks on
+                let fix (n, raw: string) =
+                    if n = line then n, String(' ', c) + raw.TrimStart(' ') else n, raw
+
+                assembleRecovering (attempts - 1) (input |> List.map fix)
+            | _ when line > 0 && input |> List.exists (fun (n, _) -> n = line) ->
                 assembleRecovering (attempts - 1) (input |> List.filter (fun (n, _) -> n <> line))
-            else
-                []
+            | _ -> []
         | Error _ -> []
 
     let logicalLines = numbered |> assembleRecovering 10 // raw lines: assemble classifies/strips internally

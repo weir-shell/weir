@@ -13943,6 +13943,28 @@ let fmtRecordTests =
               with
               | Ok lines -> Expect.equal (lines[3].TrimEnd()) (String.replicate 13 " " + "W = 2 } }") ""
               | Error e -> failtest e
+          }
+          test "an update header anchors on its first FIELD, not the source [D:field-alignment]" {
+              let asm lines =
+                  Weir.Script.assemble (lines |> List.mapi (fun i l -> i + 1, l))
+
+              match asm [ "let c = { d with host = \"x\""; "                 port = 2 }" ] with
+              | Ok [ ll ] -> Expect.stringContains ll.Text "port = 2" "one statement, aligned under host"
+              | other -> failtest $"expected one statement: %A{other}"
+
+              match asm [ "let c = { d with host = \"x\""; "          port = 2 }" ] with
+              | Error e -> Expect.stringContains e "they sit at column 17" "under the source is off the field"
+              | Ok _ -> failtest "aligned under the source must refuse"
+
+              // a source with parens and a string still finds its `with`
+              match asm [ "let c = { (pick \"a with b\") with host = \"x\""; "                                 port = 2 }" ] with
+              | Ok [ _ ] -> ()
+              | other -> failtest $"expected one statement: %A{other}"
+
+              // `match … with` inside a field value is not a header
+              match asm [ "let r = { a = match x with"; "              | _ -> 1"; "          b = 2 }" ] with
+              | Ok _ -> ()
+              | Error e -> failtest e
           } ]
 
 let assemblyRecoveryTests =
@@ -13964,6 +13986,22 @@ let assemblyRecoveryTests =
               Expect.exists diags (fun d -> d.Code = "assembly") "assembly diag present"
               Expect.exists diags (fun d -> d.Code = "eq") "later statement still checked"
               Expect.isTrue (stmts |> List.exists (fun (_, c) -> c.Env.Types.ContainsKey "T")) "types survive"
+          }
+          test "a misaligned field is one located diag — re-indented, its closer still closes [D:field-alignment]" {
+              let diags, _, _, _ =
+                  Weir.Script.analyzeLines
+                      "t.weir"
+                      [ "type Cfg = { host: string; port: int }"
+                        "let d = { host = \"h\"; port = 1 }"
+                        "let c = { d with host = \"x\""
+                        "          port = 2 }"
+                        "print $\"{c.port}\"" ]
+
+              match diags |> List.filter (fun d -> d.Severity = "error") with
+              | [ d ] ->
+                  Expect.equal d.Code "assembly" "the alignment error"
+                  Expect.equal (d.Line, d.Col) (4, 11) "located at the field"
+              | other -> failtest $"expected exactly one error: {other |> List.map (fun d -> d.Message)}"
           } ]
 
 let closersTests =
