@@ -6732,6 +6732,12 @@ let fmtSourceTests =
                   Expect.isFalse changed "is canonical"
               | Error e -> failtest e
           }
+          test "only parser whitespace is trimmed: U+3000/U+2028/U+FEFF are tokens and stay" {
+              for tail in [ "\u3000"; "\u2028"; "\uFEFF" ] do
+                  match Weir.Fmt.formatSource ("print \"a\"" + tail + "\n") with
+                  | Ok(lines, _) -> Expect.equal lines [ "print \"a\"" + tail ] $"kept: U+{int tail[0]:X4}"
+                  | Error _ -> () // a refusal also leaves the file as it is
+          }
           test "a layout that would not settle is refused, never flip-flopped" {
               match Weir.Fmt.formatLines [ "match {((}"; "| _ -> 1" ] with
               | Error e -> Expect.stringContains e "does not settle" "named"

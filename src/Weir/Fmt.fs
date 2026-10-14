@@ -2,6 +2,11 @@ module Weir.Fmt
 
 open Weir.Ast
 
+// fmt trims only what the parser skips as whitespace: any other
+// character (U+3000, U+2028, a BOM) is a token to the parser, so
+// trimming it would change whether the file checks
+let private parserWs = [| ' '; '\t'; '\r'; '\n' |]
+
 let collectBareUses (e: Expr) : (Span * string) list =
     // traversal is Ast.exprChildren's job; only EVar collects
     let acc = ResizeArray<Span * string>()
@@ -32,8 +37,8 @@ let collectBareUses (e: Expr) : (Span * string) list =
 // the output is always clean under the doc-alignment lint. Idempotent:
 // an already-anchored doc is left where it is.
 let private canonicalizeDocs (out: string list) : string list =
-    let isDoc (s: string) = s.TrimStart().StartsWith "///"
-    let isCode (s: string) = (Script.stripComment s).Trim() <> ""
+    let isDoc (s: string) = s.TrimStart(parserWs).StartsWith "///"
+    let isCode (s: string) = (Script.stripComment s).Trim(parserWs) <> ""
     let arr = List.toArray out
     // district content is bytes [D:content-bytes] — a ///-shaped line
     // inside one is data, never re-anchored
@@ -49,8 +54,8 @@ let private canonicalizeDocs (out: string list) : string list =
             // a run followed by content sits inside the block (an
             // outdented comment never ends a district) — no anchor
             if j < arr.Length && isCode arr[j] && not masked[j] then
-                let anchor = arr[j].Length - arr[j].TrimStart().Length
-                arr[i] <- String.replicate anchor " " + arr[i].TrimStart()
+                let anchor = arr[j].Length - arr[j].TrimStart(parserWs).Length
+                arr[i] <- String.replicate anchor " " + arr[i].TrimStart(parserWs)
 
     List.ofArray arr
 
@@ -69,7 +74,7 @@ let private canonicalizeDocs (out: string list) : string list =
 let private canonicalizeDistrictMarkers (body: string list) : string list =
     let arr = List.toArray body
     let indentOf (s: string) = s |> Seq.takeWhile ((=) ' ') |> Seq.length
-    let isBlank (s: string) = s.Trim() = ""
+    let isBlank (s: string) = s.Trim(parserWs) = ""
 
     // the whole piece must be the marker — `<<<`, `$<<<`, `yaml` plus
     // its marker-line modifiers (`patch`, `by=`, `schema=`), nothing
@@ -90,7 +95,7 @@ let private canonicalizeDistrictMarkers (body: string list) : string list =
 
     let shifted (raw: string) (ind: int) =
         match tailShift with
-        | Some(delta, floor) when ind > floor -> String.replicate (max floor (ind - delta)) " " + raw.TrimStart()
+        | Some(delta, floor) when ind > floor -> String.replicate (max floor (ind - delta)) " " + raw.TrimStart(parserWs)
         | _ -> raw
 
     for i in 0 .. arr.Length - 1 do
@@ -99,7 +104,7 @@ let private canonicalizeDistrictMarkers (body: string list) : string list =
 
         if isBlank raw then
             out.Add raw
-        elif code.Trim() = "" then
+        elif code.Trim(parserWs) = "" then
             // comment-only: rides a live tail shift, otherwise verbatim
             // (content bytes and transparent comments alike)
             out.Add(shifted raw (indentOf raw))
@@ -126,7 +131,7 @@ let private canonicalizeDistrictMarkers (body: string list) : string list =
                 let raw = shifted raw ind
                 let code = Script.stripComment raw
                 let ind = indentOf code
-                let piece = code.TrimStart()
+                let piece = code.TrimStart(parserWs)
 
                 let mergeTarget =
                     if markerOnly piece && ind > 0 && i > 0 && out.Count > 0 then
@@ -139,9 +144,9 @@ let private canonicalizeDistrictMarkers (body: string list) : string list =
 
                         if
                             not (isBlank prevRaw)
-                            && (Script.stripComment prevRaw).Trim() <> ""
+                            && (Script.stripComment prevRaw).Trim(parserWs) <> ""
                             && indentOf (Script.stripComment prev) < ind
-                            && (Script.stripComment prev).TrimEnd() = prev.TrimEnd()
+                            && (Script.stripComment prev).TrimEnd(parserWs) = prev.TrimEnd(parserWs)
                         then
                             Some prev
                         else
@@ -151,7 +156,7 @@ let private canonicalizeDistrictMarkers (body: string list) : string list =
 
                 match mergeTarget with
                 | Some prev ->
-                    out[out.Count - 1] <- prev.TrimEnd() + " " + raw.TrimStart().TrimEnd()
+                    out[out.Count - 1] <- prev.TrimEnd(parserWs) + " " + raw.TrimStart(parserWs).TrimEnd(parserWs)
                     armed <- Some ind // the OLD marker indent still bounds the content
                     pendingShift <- Some(indentOf (Script.stripComment prev))
                 | None ->
@@ -192,7 +197,7 @@ let private formatLinesCore (lineOffset: int) (body: string list) : Result<strin
         ls
         |> List.mapi (fun i l -> i + 1 + off, l)
         |> List.filter (fun (_, raw) -> not (commentOnly raw))
-        |> List.map (fun (n, raw) -> n, (Script.stripComment raw).TrimEnd())
+        |> List.map (fun (n, raw) -> n, (Script.stripComment raw).TrimEnd(parserWs))
         |> Script.assemble
 
     let logicalOf = logicalAt 0
@@ -249,14 +254,14 @@ let private formatLinesCore (lineOffset: int) (body: string list) : Result<strin
             body
             |> List.map (fun raw ->
                 let code = Script.stripComment raw
-                let content = raw.TrimStart().TrimEnd()
+                let content = raw.TrimStart(parserWs).TrimEnd(parserWs)
 
-                if raw.Trim() = "" then
+                if raw.Trim(parserWs) = "" then
                     // blanks never end statements [D:body-blanks]: all
                     // state survives the gap; the col-0 branches reset
                     // levels/matches at real statement boundaries
                     ""
-                elif code.Trim() = "" then
+                elif code.Trim(parserWs) = "" then
                     // comment-only: transparent to assembly [D:comment-transparency];
                     // keep it verbatim and leave formatter state alone
                     // — except inside a yaml district, where the line
@@ -277,10 +282,10 @@ let private formatLinesCore (lineOffset: int) (body: string list) : Result<strin
                         // offset, clamped to stay inside the district
                         String.replicate (max (mDepth * 4 + 1) ((mDepth + 1) * 4 + (cIndent - b))) " "
                         + raw.Substring(min cIndent raw.Length)
-                    | _ -> raw.TrimEnd()
+                    | _ -> raw.TrimEnd(parserWs)
                 else
                     let indent = code |> Seq.takeWhile ((=) ' ') |> Seq.length
-                    let piece = code.TrimStart()
+                    let piece = code.TrimStart(parserWs)
 
                     match district with
                     | Some(m, mDepth) when indent > m ->
@@ -457,7 +462,7 @@ let private formatLinesCore (lineOffset: int) (body: string list) : Result<strin
 
                             common 0
 
-                        let trimmed = code.TrimEnd()
+                        let trimmed = code.TrimEnd(parserWs)
 
                         let pushed =
                             newRaw
@@ -551,7 +556,7 @@ let private formatLinesCore (lineOffset: int) (body: string list) : Result<strin
                         // respace the code only; the gap before a
                         // trailing comment is alignment and survives
                         let code = Script.stripComment raw
-                        let codeTrim = code.TrimEnd()
+                        let codeTrim = code.TrimEnd(parserWs)
 
                         Script.respaceLine codeTrim
                         + code.Substring codeTrim.Length
@@ -783,7 +788,14 @@ let formatFile (checkOnly: bool) (path: string) : int =
                 1
             else
                 try
-                    System.IO.File.WriteAllLines(path, result)
+                    // a leading BOM is kept: the reader strips exactly one, so
+                    // dropping it would expose a second one to the parser
+                    let bom =
+                        use f = System.IO.File.OpenRead path
+                        let head = Array.zeroCreate<byte> 3
+                        f.Read(head, 0, 3) = 3 && head = [| 0xEFuy; 0xBBuy; 0xBFuy |]
+
+                    System.IO.File.WriteAllLines(path, result, System.Text.UTF8Encoding(bom))
                     System.Console.Error.WriteLine $"weir fmt: formatted {path}"
                     0
                 with
