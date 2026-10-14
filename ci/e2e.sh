@@ -6251,6 +6251,16 @@ echo "$out" | grep -qF "usage: cli.weir run [flags]" || fail "case-scoped help: 
 echo "$out" | grep -qF -- "-q, --quiet" || fail "scoped help shows the scope-derived short: $out"
 echo "e2e ok: two-tier and case-scoped help"
 
+# a union-only target scopes its help to the leading case token too
+printf 'type BuildArgs = { target: string }\ntype Cmd =\n    | Build of BuildArgs\n    | Clean\nlet c = Args.load Cmd\nprint $"{c}"\n' > "$sfdir/uo.weir"
+out=$($BIN "$sfdir/uo.weir" build --help)
+echo "$out" | grep -qF "usage: uo.weir build [flags]" || fail "union-only case-scoped help: $out"
+echo "$out" | grep -qF -- "--target" || fail "union-only scoped help shows the case's flags: $out"
+echo "$out" | grep -qF "clean" && fail "union-only scoped help lists other cases: $out"
+out=$($BIN "$sfdir/uo.weir" --help)
+echo "$out" | grep -qF "commands:" || fail "union-only top help lists the commands: $out"
+echo "e2e ok: union-only case-scoped help"
+
 # declaration collisions reject at check (both routes)
 errout=$(printf 'type CA = { quiet: bool }\ntype Cmd = Go of CA | Stop\ntype Cli = { quiet: bool; cmd: Cmd }\nlet c = Args.load Cli\nprint "x"\n' | checkPiped 2>&1) && fail "kebab collision must reject"
 echo "$errout" | grep -qF "shared flags are declared once" || fail "kebab collision route: $errout"

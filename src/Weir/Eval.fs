@@ -2721,7 +2721,26 @@ let private argvUsage (target: ArgsTarget) (argv: string list) : string =
                 | Some rdef when not rdef.Fields.IsEmpty -> $"{c.ToLowerInvariant()} flags:" :: argvUsageLines rdef
                 | _ -> [])
 
-        String.concat "\n" ([ $"usage: {usageProg ()}<command> [flags]"; "commands:" ] @ caseLines @ blocks)
+        // case-scoped help when the case token leads [D:shared-flags],
+        // as the shared-flags twin scopes it — no global flags precede it
+        let scoped =
+            argv
+            |> List.filter (fun t -> t <> "--help" && t <> "-h")
+            |> List.tryHead
+            |> Option.bind (fun tok -> udef.Cases |> List.tryFind (fun (c, _) -> c.ToLowerInvariant() = tok))
+
+        match scoped with
+        | Some(c, _) ->
+            let name = c.ToLowerInvariant()
+
+            match Map.tryFind c payloads with
+            | Some rdef when not rdef.Fields.IsEmpty ->
+                String.concat
+                    "\n"
+                    ([ $"usage: {usageProg ()}{name} [flags]"; $"{name} flags:" ] @ argvUsageLines rdef)
+            | _ -> $"usage: {usageProg ()}{name}"
+        | None ->
+            String.concat "\n" ([ $"usage: {usageProg ()}<command> [flags]"; "commands:" ] @ caseLines @ blocks)
     | ArgsShared(outer, uf, udef, payloads) ->
         let sharedDef = Argv.sharedOf outer uf
 
