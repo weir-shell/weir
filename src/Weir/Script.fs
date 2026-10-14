@@ -7229,130 +7229,114 @@ let run (path: string) (scriptArgs: string list) : int =
                             |> String.concat Environment.NewLine
                         | None -> runtimeErrorLine path lineNo ex.Message
 
-                    let rec exec (venv: Eval.Env) (rest: (int * CheckedStmt) list) : int =
-                        match rest with
-                        | [] -> 0
-                        | (lineNo, stmt) :: tail ->
-                            // each top-level statement starts at its own root; a
-                            // closure from this statement is not a call
-                            Eval.RunPos.SameStatement <-
-                                System.Func<obj, bool>(fun body ->
-                                    match runPositions.TryGetValue body with
-                                    | true, (f, s, _, _) -> f = path && s = lineNo
-                                    | _ -> false)
+                    // statements are width, not depth: a loop, each step in
+                    // its own try [D:block-width]
+                    let fail (lineNo: int) (ex: exn) : Result<Eval.Env, int> =
+                        match ex with
+                        | Eval.ExitRequest code -> Error code
+                        | ex ->
+                            Console.Error.WriteLine(runtimeErrorAt lineNo ex)
+                            Error 1
 
-                            match stmt with
-                            | CLet(_, te)
-                            | CLetPat(_, te)
-                            | CExpr te
-                            | CCmd te -> Eval.RunPos.Current <- box te
-                            // an import's module code has no positions here:
-                            // the statement's own line, never a stale node
-                            | _ -> Eval.RunPos.Current <- null
+                    let step (venv: Eval.Env) (lineNo: int) (stmt: CheckedStmt) : Result<Eval.Env, int> =
+                        // each top-level statement starts at its own root; a
+                        // closure from this statement is not a call
+                        Eval.RunPos.SameStatement <-
+                            System.Func<obj, bool>(fun body ->
+                                match runPositions.TryGetValue body with
+                                | true, (f, s, _, _) -> f = path && s = lineNo
+                                | _ -> false)
 
-                            match stmt with
-                            | CNoop -> exec venv tail
-                            | CImport lm ->
-                                try
-                                    // replay the module (its Body, including any
-                                    // nested imports) and expose its members as
-                                    // `alias.member` [D:modules-v1]
-                                    // process facts (incl. entryPath) ride from
-                                    // the entry; the module keeps its own scriptPath
-                                    let procFacts =
-                                        [ "Self.pid"; "Self.args"; "Self.stdin"; "Self.entryPath" ]
-                                        |> List.choose (fun k -> Map.tryFind k venv |> Option.map (fun v -> k, v))
+                        match stmt with
+                        | CLet(_, te)
+                        | CLetPat(_, te)
+                        | CExpr te
+                        | CCmd te -> Eval.RunPos.Current <- box te
+                        // an import's module code has no positions here:
+                        // the statement's own line, never a stale node
+                        | _ -> Eval.RunPos.Current <- null
 
-                                    let moduleVenv = replayModule procFacts lm
+                        match stmt with
+                        | CNoop -> Ok venv
+                        | CImport lm ->
+                            try
+                                // replay the module (its Body, including any
+                                // nested imports) and expose its members as
+                                // `alias.member` [D:modules-v1]
+                                // process facts (incl. entryPath) ride from
+                                // the entry; the module keeps its own scriptPath
+                                let procFacts =
+                                    [ "Self.pid"; "Self.args"; "Self.stdin"; "Self.entryPath" ]
+                                    |> List.choose (fun k -> Map.tryFind k venv |> Option.map (fun v -> k, v))
 
-                                    let venv' =
-                                        lm.Members
-                                        |> List.fold
-                                            (fun acc (n, _) ->
-                                                match Map.tryFind n moduleVenv with
-                                                | Some v -> Map.add $"{lm.Alias}.{n}" v acc
-                                                | None -> acc)
-                                            venv
+                                let moduleVenv = replayModule procFacts lm
 
-                                    exec venv' tail
-                                with
-                                | Eval.ExitRequest code -> code
-                                | ex ->
-                                    Console.Error.WriteLine(
-                                        runtimeErrorAt lineNo ex
-                                    )
+                                lm.Members
+                                |> List.fold
+                                    (fun acc (n, _) ->
+                                        match Map.tryFind n moduleVenv with
+                                        | Some v -> Map.add $"{lm.Alias}.{n}" v acc
+                                        | None -> acc)
+                                    venv
+                                |> Ok
+                            with ex ->
+                                fail lineNo ex
+                        | CType decl ->
+                            match decl.Body with
+                            | DUnion cases ->
+                                Eval.constructorValues cases |> List.fold (fun m (n, v) -> Map.add n v m) venv
+                            | DRecord _ -> venv
+                            |> Ok
+                        | CLetPat(pat, te) ->
+                            try
+                                let bindings = Eval.bindPattern pat (Eval.eval venv te)
+                                Ok(bindings |> List.fold (fun m (n, v) -> Map.add n v m) venv)
+                            with ex ->
+                                fail lineNo ex
+                        | CLet(name, te) ->
+                            try
+                                Ok(Map.add name (Eval.eval venv te) venv)
+                            with ex ->
+                                fail lineNo ex
+                        | CCmd te ->
+                            try
+                                // the bare command statement at a tty
+                                // inherits stdout [D:colour-inherit]: the
+                                // child sees the terminal (isatty true,
+                                // colour on) and weir never holds the
+                                // bytes; redirected output keeps the
+                                // batched path — byte-identical, decided
+                                // at spawn
+                                (match te.Kind with
+                                 | _ when Eval.inheritsStdout te ->
+                                     // no mid-line tidy: a DSR query
+                                     // hangs under a non-answering
+                                     // terminal — bash's posture, wart
+                                     // and all
+                                     Console.Out.Flush()
+                                     Eval.inheritCommandStatement venv te
+                                 | _ -> printResult (Eval.eval venv te))
 
-                                    1
-                            | CType decl ->
-                                let venv' =
-                                    match decl.Body with
-                                    | DUnion cases ->
-                                        Eval.constructorValues cases |> List.fold (fun m (n, v) -> Map.add n v m) venv
-                                    | DRecord _ -> venv
+                                Ok venv
+                            with ex ->
+                                fail lineNo ex
+                        | CExpr te ->
+                            try
+                                Eval.eval venv te |> ignore
+                                Ok venv
+                            with ex ->
+                                fail lineNo ex
 
-                                exec venv' tail
-                            | CLetPat(pat, te) ->
-                                try
-                                    let bindings = Eval.bindPattern pat (Eval.eval venv te)
-                                    exec (bindings |> List.fold (fun m (n, v) -> Map.add n v m) venv) tail
-                                with
-                                | Eval.ExitRequest code -> code
-                                | ex ->
-                                    Console.Error.WriteLine(
-                                        runtimeErrorAt lineNo ex
-                                    )
+                    let mutable venv = valueEnv0
+                    let mutable rest = stmts
+                    let mutable code = None
 
-                                    1
-                            | CLet(name, te) ->
-                                try
-                                    exec (Map.add name (Eval.eval venv te) venv) tail
-                                with
-                                | Eval.ExitRequest code -> code
-                                | ex ->
-                                    Console.Error.WriteLine(
-                                        runtimeErrorAt lineNo ex
-                                    )
+                    while code.IsNone && not (List.isEmpty rest) do
+                        let (lineNo, stmt) = List.head rest
+                        rest <- List.tail rest
 
-                                    1
-                            | CCmd te ->
-                                try
-                                    // the bare command statement at a tty
-                                    // inherits stdout [D:colour-inherit]: the
-                                    // child sees the terminal (isatty true,
-                                    // colour on) and weir never holds the
-                                    // bytes; redirected output keeps the
-                                    // batched path — byte-identical, decided
-                                    // at spawn
-                                    (match te.Kind with
-                                     | _ when Eval.inheritsStdout te ->
-                                         // no mid-line tidy: a DSR query
-                                         // hangs under a non-answering
-                                         // terminal — bash's posture, wart
-                                         // and all
-                                         Console.Out.Flush()
-                                         Eval.inheritCommandStatement venv te
-                                     | _ -> printResult (Eval.eval venv te))
+                        match step venv lineNo stmt with
+                        | Ok venv' -> venv <- venv'
+                        | Error c -> code <- Some c
 
-                                    exec venv tail
-                                with
-                                | Eval.ExitRequest code -> code
-                                | ex ->
-                                    Console.Error.WriteLine(
-                                        runtimeErrorAt lineNo ex
-                                    )
-
-                                    1
-                            | CExpr te ->
-                                try
-                                    Eval.eval venv te |> ignore
-                                    exec venv tail
-                                with
-                                | Eval.ExitRequest code -> code
-                                | ex ->
-                                    Console.Error.WriteLine(
-                                        runtimeErrorAt lineNo ex
-                                    )
-
-                                    1
-
-                    exec valueEnv0 stmts
+                    defaultArg code 0

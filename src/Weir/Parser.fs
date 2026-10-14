@@ -1416,6 +1416,22 @@ let private deepen (p: Parser<'a, unit>) : Parser<'a, unit> =
         finally
             parseDepth.Value <- parseDepth.Value - 1
 
+// a block's continuation is width, not depth [D:block-width]: the body
+// after a `let … in` parses at its binder's depth, so a long block never
+// meets the ceiling. The stack probe still guards it unconditionally —
+// the counter no longer climbs past the probe floor here.
+let private undeepen (p: Parser<'a, unit>) : Parser<'a, unit> =
+    fun stream ->
+        if not (System.Runtime.CompilerServices.RuntimeHelpers.TryEnsureSufficientExecutionStack()) then
+            raise (DepthExceeded(pos stream.Position))
+
+        parseDepth.Value <- parseDepth.Value - 1
+
+        try
+            p stream
+        finally
+            parseDepth.Value <- parseDepth.Value + 1
+
 // [for p in xs -> e] — forward-declared: the comprehension needs the
 // pattern grammar, which is defined after atom [D:for-do]
 let private comprehensionLit, private comprehensionLitRef =
@@ -1881,7 +1897,7 @@ let private letInBody =
               // the pattern's names are bindings in the body, as a plain
               // let's name is — a bound name heads no command
               // [D:paramful-rhs]
-              withPatNames binder seqExpr
+              withPatNames binder (undeepen seqExpr)
               |>> fun body ->
                   { Kind = ELetPat(binder, value, body)
                     Span = { Start = pos p; End = body.Span.End } }
@@ -1970,7 +1986,7 @@ let private letInBody =
                    >>. fun stream -> failFatally $"this binding has no value — give '{name}' a right-hand side" stream)
                   <|> (withParams (cmdRhs <|> ((seqExpr >>= pipeOrHint))) .>> keyword "in")
                   >>= fun value ->
-                      withAmbientName name (withExprParen false seqExpr)
+                      withAmbientName name (withExprParen false (undeepen seqExpr))
                       |>> fun body ->
                           { Kind = ELet(name, nameSpan, curryParams ps value, body)
                             Span = { Start = pos p; End = body.Span.End } } ]
@@ -5489,8 +5505,21 @@ let private nodeTooDeep (root: DeepNode) : Span option =
         if d > maxDepth then
             hit <- Some(nodeSpan node)
         else
-            for c in nodeChildren node do
-                stack.Push(c, d + 1)
+            match node with
+            // a block's continuation is width, not depth [D:block-width]
+            | NExpr({ Kind = ELet(_, _, v, body) }) ->
+                stack.Push(NExpr v, d + 1)
+                stack.Push(NExpr body, d)
+            | NExpr({ Kind = ELetPat(p, v, body) }) ->
+                stack.Push(NPat p, d + 1)
+                stack.Push(NExpr v, d + 1)
+                stack.Push(NExpr body, d)
+            | NExpr({ Kind = ESeq(a, rest) }) ->
+                stack.Push(NExpr a, d + 1)
+                stack.Push(NExpr rest, d)
+            | _ ->
+                for c in nodeChildren node do
+                    stack.Push(c, d + 1)
 
     hit
 

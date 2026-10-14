@@ -6859,17 +6859,37 @@ if [ "$IS_WINDOWS" = "1" ]; then
     # exist there; the depth guard itself ran above at full stack
     echo "e2e SKIP: the small-stack probe cell — no POSIX stack limit on Windows (depth 499 parsed above)"
 else
-    errout=$( (ulimit -s 512; $BIN check "$ddir/deep.weir") 2>&1 ) && fail "small-stack deep parse must diagnose"
+    # the front end runs on weir's own stack, not the process main
+    # thread's [D:block-width]: a 512KB `ulimit -s` no longer starves the
+    # parse (the probe itself stays pinned by the unit 512KB-thread test)
+    errout=$( (ulimit -s 512; $BIN check "$ddir/deep.weir") 2>&1 )
     rc=$?
-    # the 512KB budget is calibrated against AOT frames — a JIT build's
-    # are larger and overflow before the guard fires, which reads as a
-    # SEGV in this assertion. Name the requirement rather than let a
-    # wrong-binary run masquerade as a depth-guard regression.
-    [ "$rc" -lt 128 ] || fail "small-stack deep parse crashed (rc=$rc) — the probe must fire first (this cell needs the PUBLISHED AOT binary; a dotnet-build/JIT \$BIN overflows 512KB on frame size alone — run ./publish.sh, or set WEIR_BIN to the published binary)"
-    echo "$errout" | grep -qF "nested too deeply" || fail "probe diagnostic missing: $errout"
-    echo "e2e ok: depth probe diagnoses on a 512KB stack (no SIGSEGV), full stack still parses 499"
+    [ "$rc" -eq 0 ] || fail "depth 499 must parse under ulimit -s 512 (rc=$rc): $errout"
+    echo "e2e ok: depth 499 parses under ulimit -s 512 (weir's own stack), and on a full-size stack"
 fi
 rm -rf "$ddir"
+
+# statements are width, not depth [D:block-width]: 20k top-level
+# statements run in a loop, and a 2000-statement function body neither
+# meets the nesting ceiling nor overflows a 1MB `ulimit -s`
+bwdir=$(mkweirtmp)
+python3 -c "print('\n'.join('print \"x\"' for _ in range(20000)))" > "$bwdir/flat.weir"
+python3 -c "
+print('let f () =')
+for i in range(2000): print(f'    let _x{i} = {i}')
+print('    _x0 + _x1999')
+print('print \$\"{f ()}\"')" > "$bwdir/body.weir"
+if [ "$IS_WINDOWS" = "1" ]; then
+    n=$($BIN "$bwdir/flat.weir" | wc -l | tr -d ' ') || fail "20k flat statements must run"
+    out=$($BIN "$bwdir/body.weir" 2>&1) || fail "a 2000-statement body must run: $out"
+else
+    n=$( (ulimit -s 1024; $BIN "$bwdir/flat.weir") | wc -l | tr -d ' ') || fail "20k flat statements must run on a 1MB stack"
+    out=$( (ulimit -s 1024; $BIN "$bwdir/body.weir") 2>&1) || fail "a 2000-statement body must run on a 1MB stack: $out"
+fi
+[ "$n" = "20000" ] || fail "20k flat statements: all printed, got $n"
+[ "$out" = "1999" ] || fail "a 2000-statement body: its value, got: $out"
+rm -rf "$bwdir"
+echo "e2e ok: 20k top-level statements and a 2000-statement body run under a 1MB stack"
 
 # deep lazy chains walk iteratively [D:seq-depth-iterative]: a fold nesting
 # Seq.append / Seq.map / Seq.where / Seq.choose 100k deep enumerates on a small stack (POSIX: 1MB,

@@ -12515,6 +12515,30 @@ let depthGuardTests =
               | Some(Ok _) -> failtest "a 512KB stack cannot fit depth 499 — the probe should have fired"
               | None -> failtest "the parse thread produced no result"
           }
+          test "a block's statements are width, not depth [D:block-width]" {
+              // 600 lets and a 600-element `;` sequence: past the ceiling
+              // as a nest, but statements never count toward it. A thread
+              // with room — the CLI's own stack — so the probe stays quiet.
+              let lets =
+                  (List.init 600 (fun i -> $"let _a{i} = {i} in") |> String.concat " ") + " _a0 + _a599"
+
+              let seqs = List.replicate 600 "1" |> String.concat "; "
+              let mutable result = None
+
+              let t =
+                  System.Threading.Thread(
+                      (fun () -> result <- Some(Weir.Parser.parseExpr lets, Weir.Parser.parseExpr seqs)),
+                      64 * 1024 * 1024
+                  )
+
+              t.Start()
+              t.Join()
+
+              match result with
+              | Some(Ok _, Ok _) -> ()
+              | Some(a, b) -> failtestf "block width counted as depth: %A / %A" (Result.isOk a) b
+              | None -> failtest "the parse thread produced no result"
+          }
           test "over-ceiling parens diagnose, located, no crash" {
               match Weir.Parser.parseExpr (nestDeep "(" ")" 600) with
               | Error m -> Expect.stringContains m "nested too deeply" "located depth diagnostic"

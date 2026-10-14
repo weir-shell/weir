@@ -715,22 +715,39 @@ let main argv =
             | _ ->
                 Console.Error.WriteLine usage
                 2
-    try
-        dispatch ()
-    with
-    | Eval.ExitRequest code -> code
-    | ex ->
-        // located like a lint error: file:1:1 with the class, non-zero
-        // (2 — the tool's own failure, distinct from a script's exit 1)
-        // ex.Message interpolates attacker-influenced data (a filename,
-        // URL, or value), so it is sanitized at a tty like every other
-        // error-echo site [D:binary-echo]; the class name is weir-internal.
-        Console.Error.WriteLine(
-            Types.Color.red Types.Color.onStderr.Value "internal error"
-            + $": {ex.GetType().Name}: {Eval.sanitizeIfTty Console.IsErrorRedirected ex.Message}"
-        )
 
-        Console.Error.WriteLine
-            "this is a weir bug — the front end should have produced a located diagnostic; please report it with the script"
+    let guarded () =
+        try
+            dispatch ()
+        with
+        | Eval.ExitRequest code -> code
+        | ex ->
+            // located like a lint error: file:1:1 with the class, non-zero
+            // (2 — the tool's own failure, distinct from a script's exit 1)
+            // ex.Message interpolates attacker-influenced data (a filename,
+            // URL, or value), so it is sanitized at a tty like every other
+            // error-echo site [D:binary-echo]; the class name is weir-internal.
+            Console.Error.WriteLine(
+                Types.Color.red Types.Color.onStderr.Value "internal error"
+                + $": {ex.GetType().Name}: {Eval.sanitizeIfTty Console.IsErrorRedirected ex.Message}"
+            )
 
-        2
+            Console.Error.WriteLine
+                "this is a weir bug — the front end should have produced a located diagnostic; please report it with the script"
+
+            2
+
+    // the front end and the runner get a stack of their own, not the
+    // platform's main-thread size (1MB on Windows, `ulimit -s` on POSIX):
+    // a block's statements are width, not depth, so a long function body
+    // recurses once per statement through parse/check/eval [D:block-width];
+    // nesting stays bounded by the counted ceiling and the stack probe
+    // [D:depth-guard]. Reserved, not committed — pages are touched on use.
+    let code = ref 0
+
+    let worker =
+        Threading.Thread((fun () -> code.Value <- guarded ()), 256 * 1024 * 1024)
+
+    worker.Start()
+    worker.Join()
+    code.Value
