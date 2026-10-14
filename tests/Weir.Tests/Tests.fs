@@ -23707,6 +23707,21 @@ let replSaveDistillTests =
               Expect.equal dropped 0 "nothing referenced session-only state"
               Expect.isTrue (distilledChecks lines) "and it checks clean"
           }
+          test "(g) PROTECT renames the unused binder inside a pattern, never the pattern" {
+              let lines, dropped =
+                  distill
+                      [ ("ab", "let (a, b) = (1, 2)")
+                        ("c", "let c = a")
+                        ("pq", "let { x = p; y = q } = {| x = 1; y = 2 |}") ]
+
+              let joined = String.concat "\n" lines
+              Expect.isFalse (joined.Contains "let _(") $"a pattern is never prefixed: {lines}"
+              Expect.stringContains joined "let (a, _b) = (1, 2)" "the unused pattern binder takes the `_`"
+              Expect.stringContains joined "{ x = _p; y = _q }" "two findings on one line both land"
+              Expect.stringContains joined "let _c = a" "a plain binder as before"
+              Expect.equal dropped 0 "nothing referenced session-only state"
+              Expect.isTrue (distilledChecks lines) "and it checks clean"
+          }
           test "a bare alias is qualified (map -> Seq.map) in a survivor" {
               let lines, _ = distill [ ("picked", "let picked = [\"a\"] |> map (Str.toUpper)") ]
               let joined = String.concat "\n" lines

@@ -400,7 +400,10 @@ names are replaced with qualified ones (`map` → `Seq.map`,
 
 The file always passes `weir check`. Any statement that depends on
 something that only exists in the session (such as `let x = it`) is
-dropped, and `#save` prints a note saying how many were dropped.
+dropped, and `#save` prints a note saying how many were dropped. A
+binding nothing in the file reads is kept with a `_` added to its
+name (`let _total = …`, or `let (a, _b) = …` inside a pattern), so
+the unused-binding check accepts it.
 
 `#save` also expands [command aliases](#alias-command-head-aliases),
 since scripts don't have them. Each saved line's command is rewritten

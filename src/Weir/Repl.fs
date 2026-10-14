@@ -3122,31 +3122,30 @@ let private candidateErrors (stmts: DistillStmt list) : Script.Diagnostic list =
         let diags, _, _, _ = Script.analyzeLines "#save" lines
         diags |> List.filter (fun d -> d.Severity = "error" || namesSessionIt d)
 
-// protect a self-contained-but-unused named `let` [D:repl-save]: the
+// protect a self-contained-but-unused binder [D:repl-save]: the
 // unused-binding law refuses a top-level `let x = <<<…>>>` that nothing
 // reads, but a distilled definition is the product, not scratch — so it
-// is kept, its binder `_`-prefixed (the deliberate-discard escape, which
-// the law exempts) rather than dropped. This is not a session-only-state
-// drop and is not counted. A `type` decl never needs this (types do not
-// trip unused-binding). Only the first line carries the binder.
-let private protectUnusedLet (s: DistillStmt) : DistillStmt =
-    match s.Lines with
-    | first :: rest ->
-        let t = first.TrimStart()
-        let indent = first.Substring(0, first.Length - t.Length)
+// is kept, the finding's own binder `_`-prefixed (the deliberate-discard
+// escape, which the law exempts) rather than dropped. The finding's
+// line:col places the `_`, so a pattern binder is renamed in place
+// (`let (a, _b) = …`) and the pattern itself is never touched. This is
+// not a session-only-state drop and is not counted. A `type` decl never
+// needs this (types do not trip unused-binding). `localLine` is 0-based
+// within the statement, `col` 1-based.
+let private protectUnusedAt (s: DistillStmt) (localLine: int) (col: int) (name: string) : DistillStmt =
+    let at = col - 1
 
-        if t.StartsWith "let " then
-            let afterLet = t.Substring 4
-            let binder = afterLet.Split([| ' '; '=' |]).[0]
-
-            if binder <> "" && not (binder.StartsWith "_") then
-                { s with
-                    Lines = (indent + "let _" + afterLet) :: rest }
-            else
-                s
-        else
-            s
-    | [] -> s
+    match List.tryItem localLine s.Lines with
+    | Some line when
+        name <> ""
+        && not (name.StartsWith "_")
+        && at >= 0
+        && at + name.Length <= line.Length
+        && String.CompareOrdinal(line, at, name, 0, name.Length) = 0
+        ->
+        { s with
+            Lines = s.Lines |> List.mapi (fun i l -> if i = localLine then l.Insert(at, "_") else l) }
+    | _ -> s
 
 // The check guarantee [D:repl-save]: return the survivors that check
 // clean, plus the count dropped for referencing session-only state. Two
@@ -3163,7 +3162,8 @@ let private protectUnusedLet (s: DistillStmt) : DistillStmt =
 // Which survivor owns a candidate-file line? Blocks are concatenated in
 // order, each contributing `Lines.Length` physical lines — so a running
 // offset maps a 1-based file line to the survivor index containing it.
-let private ownerOf (kept: DistillStmt list) (fileLine: int) : int option =
+// The owner's index and the line's 0-based position within it.
+let private ownerAt (kept: DistillStmt list) (fileLine: int) : (int * int) option =
     let rec go idx offset rest =
         match rest with
         | [] -> None
@@ -3171,11 +3171,19 @@ let private ownerOf (kept: DistillStmt list) (fileLine: int) : int option =
             let n = s.Lines.Length
 
             if fileLine >= offset + 1 && fileLine <= offset + n then
-                Some idx
+                Some(idx, fileLine - offset - 1)
             else
                 go (idx + 1) (offset + n) tail
 
     go 0 0 kept
+
+let private ownerOf (kept: DistillStmt list) (fileLine: int) : int option =
+    ownerAt kept fileLine |> Option.map fst
+
+// the binder an unused-binding finding names: 'b' is bound but never used
+let private unusedName (d: Script.Diagnostic) : string =
+    let m = Text.RegularExpressions.Regex.Match(d.Message, "^'([^']+)'")
+    if m.Success then m.Groups[1].Value else ""
 
 let rec private guaranteeChecks (kept: DistillStmt list) (dropped: int) : DistillStmt list * int =
     let errs = candidateErrors kept
@@ -3217,9 +3225,19 @@ let rec private guaranteeChecks (kept: DistillStmt list) (dropped: int) : Distil
                 let unusedOwners =
                     errs |> List.choose (fun d -> ownerOf kept d.Line) |> List.distinct
 
+                // right to left, so an earlier insert never shifts a later column
                 let protectedSet =
-                    kept
-                    |> List.mapi (fun j s -> if List.contains j unusedOwners then protectUnusedLet s else s)
+                    errs
+                    |> List.sortBy (fun d -> d.Line, -d.Col)
+                    |> List.fold
+                        (fun (acc: DistillStmt list) d ->
+                            match ownerAt acc d.Line with
+                            | Some(j, localLine) ->
+                                acc
+                                |> List.mapi (fun i s ->
+                                    if i = j then protectUnusedAt s localLine d.Col (unusedName d) else s)
+                            | None -> acc)
+                        kept
 
                 if protectedSet <> kept then
                     guaranteeChecks protectedSet dropped
