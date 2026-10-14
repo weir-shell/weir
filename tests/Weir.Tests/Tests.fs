@@ -16591,6 +16591,23 @@ let httpTests =
                   "one entry per header line, the list value untouched"
 
               Expect.equal (run $"{r} |> Http.header \"X-Rep\"") (VUnion("Some", Some(VStr "a"))) "header is the first line"
+          }
+          test "an undecodable response charset is its own error, never 'cannot reach' (H15)" {
+              let port, _ =
+                  rawServe (fun head ->
+                      let cs = if head.Contains "/latin" then "iso-8859-1" else "x-bogus"
+                      $"HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset={cs}\r\nContent-Length: 2\r\nConnection: close\r\n\r\n\u00e9!")
+
+              let ex =
+                  Expect.throwsC (fun () -> run $"Http.send (Http.get \"http://127.0.0.1:{port}/\")" |> ignore) id
+
+              Expect.stringContains ex.Message "charset 'x-bogus'" ex.Message
+              Expect.isFalse (ex.Message.Contains "cannot reach") ex.Message
+
+              Expect.equal
+                  (run $"(Http.send (Http.get \"http://127.0.0.1:{port}/latin\")).body |> Str.join \"\"")
+                  (VStr "\u00e9!")
+                  "a known charset still decodes"
           } ]
 
 let functionKeywordTests =

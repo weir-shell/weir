@@ -46,6 +46,13 @@ type TransportError =
     | Refused of port: int
     | TlsUntrusted
     | OtherTransport of root: string
+    // not a transport failure but the same Error channel: the response
+    // declared a charset .NET cannot decode
+    | UnknownCharset of charset: string * status: int
+
+// raised inside send when the body's declared charset is unknown — the
+// catch turns it into UnknownCharset, never the cannot-reach umbrella
+exception private CharsetUnknown of string * int
 
 let private rootMessage (ex: exn) : string =
     let rec inner (e: exn) =
@@ -115,6 +122,8 @@ let transportMessage (host: string) (err: TransportError) : string =
     | Refused port -> $"{host}:{port} refused the connection — nothing is listening there"
     | TlsUntrusted -> $"cannot establish TLS with {host} — the certificate is not trusted"
     | OtherTransport root -> $"cannot reach {host} — {root}"
+    | UnknownCharset(cs, status) ->
+        $"{host} answered {status} with a body in charset '{cs}', which weir cannot decode — weir decodes utf-8, utf-16, utf-32, us-ascii and iso-8859-1; a mislabelled body is never guessed at"
 
 /// two URLs share an origin [D:secret-redirect] iff scheme, host and port
 /// all match (a port change is a different origin — the same rule the BCL
@@ -299,10 +308,30 @@ let send (req: Req) : Result<Resp, string * TransportError> =
                    [ for h in c.Headers.NonValidated do
                          for v in h.Value -> h.Key, v ])
 
+        // an undecodable declared charset is its own error, never a
+        // guessed decode — the same never-silent-U+FFFD law as
+        // [D:source-utf8]
         let body =
             match resp.Content with
             | null -> ""
-            | c -> c.ReadAsStringAsync(deadline.Token).Result
+            | c ->
+                match c.Headers.ContentType with
+                | null -> ()
+                | t when String.IsNullOrWhiteSpace t.CharSet -> ()
+                | t ->
+                    let cs = t.CharSet.Trim().Trim('"')
+
+                    let known =
+                        try
+                            Text.Encoding.GetEncoding cs |> ignore
+                            true
+                        with _ ->
+                            false
+
+                    if not known then
+                        raise (CharsetUnknown(cs, int resp.StatusCode))
+
+                c.ReadAsStringAsync(deadline.Token).Result
 
         Ok
             { Status = int resp.StatusCode
@@ -319,7 +348,10 @@ let send (req: Req) : Result<Resp, string * TransportError> =
                 // `user:pass@host` credential must not print verbatim)
                 redactUrl req.Url, 0
 
-        let err = classifyTransport req.TimeoutMs port ex
+        let err =
+            match ex with
+            | CharsetUnknown(cs, status) -> UnknownCharset(cs, status)
+            | _ -> classifyTransport req.TimeoutMs port ex
         Error(transportMessage host err, err)
 
 /// Basic auth is an encoding, not a prefix: base64(user:pass) [D:http] —
