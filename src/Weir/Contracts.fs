@@ -726,6 +726,32 @@ let resolveModuleSpec (spec: string) : Result<ResolvedModuleSource, string> =
                             Error
                                 $"unknown host '{h}' — the shorthand knows github.com and gitlab.com; any other host takes the full raw URL: weir add module https://… --as <name>"
 
+/// the credential a re-fetch of a locked module carries — the same
+/// WEIR_TOKEN_<host> header `add module` sent, derived from the locked
+/// raw URL (the lock never stores a token). A raw.githubusercontent.com
+/// URL is the github.com shorthand's download, so it reads that host's
+/// token when its own is unset.
+let moduleFetchHeaders (url: string) : (string * string) list * string option =
+    let host =
+        try
+            (Uri url).Host
+        with _ ->
+            ""
+
+    let token, tokenHost =
+        match hostToken host with
+        | Some t -> Some t, host
+        | None when host = "raw.githubusercontent.com" -> hostToken "github.com", "github.com"
+        | None -> None, host
+
+    let auth =
+        match token with
+        | Some t when host = "gitlab.com" -> [ "PRIVATE-TOKEN", t ]
+        | Some t -> [ "Authorization", "token " + t ]
+        | None -> []
+
+    uaHeader @ auth, (if tokenHost = "" then None else Some tokenHost)
+
 /// the shared vendoring tail: write the artifact and upsert its lock
 /// entry together, or neither. Returns (sha256, prior entry's sha) so
 /// the caller can render added/updated — a re-add is the update path,
@@ -1330,7 +1356,21 @@ let restore (weirDir: string) : Result<string list, string> =
                     Error
                         $"{e.Kind} {e.Name}: ABSENT and generated (nothing to fetch) — the file should be checked in; recreate deliberately with `weir add sig {e.Name}`"
                 else
-                    match fetchBytes e.Url with
+                    // a module re-fetch carries the host token `add module`
+                    // sent, or a private module 404s
+                    let fetched =
+                        if e.Kind = "module" then
+                            let headers, tokenHost = moduleFetchHeaders e.Url
+
+                            fetchBytesWith headers e.Url
+                            |> Result.mapError (fun err ->
+                                match tokenHost with
+                                | Some h -> hintPrivate h err
+                                | None -> err)
+                        else
+                            fetchBytes e.Url
+
+                    match fetched with
                     | Error err -> Error $"{e.Kind} {e.Name}: {err}"
                     | Ok(bytes, _) ->
                         let hash = sha256Hex bytes

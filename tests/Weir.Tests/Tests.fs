@@ -11716,6 +11716,34 @@ let lockfileConfinementTests =
               finally
                   System.IO.Directory.Delete(dir, true)
           }
+          test "a module re-fetch carries the WEIR_TOKEN_<host> credential add sent (H13)" {
+              let var = Weir.Contracts.hostTokenVar "modules.example.test"
+              let gl = Weir.Contracts.hostTokenVar "gitlab.com"
+              let gh = Weir.Contracts.hostTokenVar "github.com"
+              let saved = [ var; gl; gh ] |> List.map (fun v -> v, System.Environment.GetEnvironmentVariable v)
+
+              try
+                  System.Environment.SetEnvironmentVariable(var, "t1")
+                  System.Environment.SetEnvironmentVariable(gl, "t2")
+                  System.Environment.SetEnvironmentVariable(gh, "t3")
+
+                  let auth url =
+                      fst (Weir.Contracts.moduleFetchHeaders url)
+                      |> List.filter (fun (k, _) -> k <> "User-Agent")
+
+                  Expect.equal (auth "https://modules.example.test/m.weir") [ "Authorization", "token t1" ] "raw URL host"
+                  Expect.equal (auth "https://gitlab.com/g/r/-/raw/abc/m.weir") [ "PRIVATE-TOKEN", "t2" ] "gitlab"
+
+                  Expect.equal
+                      (auth "https://raw.githubusercontent.com/o/r/abc/m.weir")
+                      [ "Authorization", "token t3" ]
+                      "github raw reads the github.com token"
+
+                  Expect.equal (auth "https://other.example.test/m.weir") [] "no token, no header"
+              finally
+                  for v, old in saved do
+                      System.Environment.SetEnvironmentVariable(v, old)
+          }
           test "entryDest refuses a leaf symlinked to the lockfile (H5)" {
               if not (System.OperatingSystem.IsWindows()) then
                   let dir = tempDir "weir-h5"
