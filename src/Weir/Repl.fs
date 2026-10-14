@@ -1154,6 +1154,38 @@ let private bufferComplete (bufLines: string list) : bool =
 // tty only.
 let mutable private contPrompt = "   … "
 
+// type-ahead [D:owned-line-editor]: keys typed before the first prompt
+// arrived while the terminal was still cooked, where ICRNL already turned
+// Enter into '\n' — the Ctrl+J force-newline key. Everything pending at
+// the editor's first entry is drained here once, a '\n' read back as
+// Enter, and replayed ahead of live keys (across entries: an early line's
+// Enter submits it, the rest feeds the next prompt).
+let private typeAhead = Collections.Generic.Queue<ConsoleKeyInfo>()
+let mutable private typeAheadDrained = false
+
+let private drainTypeAhead () =
+    if not typeAheadDrained then
+        typeAheadDrained <- true
+
+        try
+            while Console.KeyAvailable do
+                let k = Console.ReadKey(intercept = true)
+
+                typeAhead.Enqueue(
+                    if k.KeyChar = '\n' then
+                        ConsoleKeyInfo('\r', ConsoleKey.Enter, false, false, false)
+                    else
+                        k
+                )
+        with _ ->
+            ()
+
+let private readKey () =
+    if typeAhead.Count > 0 then
+        typeAhead.Dequeue()
+    else
+        Console.ReadKey(intercept = true)
+
 let private deriveContPrompt (w: int) =
     let on = Types.Color.onStdout.Value
 
@@ -1357,9 +1389,10 @@ let private readLineTty () : string option =
     // [D:repl-cooked-trap].
     Term.reassert ()
     Term.startWatchdog ()
+    drainTypeAhead ()
 
     while result.IsNone do
-        let k = Console.ReadKey(intercept = true)
+        let k = readKey ()
         Term.snapshot ()
         let ctrl = k.Modifiers.HasFlag ConsoleModifiers.Control
         let alt = k.Modifiers.HasFlag ConsoleModifiers.Alt

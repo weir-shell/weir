@@ -642,7 +642,8 @@ when it is not. weir uses its own parser to decide, so after
 `match x with` you get a new line, while `1 + 1` is submitted. Up and
 Down move between lines, and a recalled history entry comes back
 whole: a three-line match comes back as three lines that you can
-edit.
+edit. Lines you type before the first prompt appears are kept, and
+their Enter submits them as usual.
 
 The key bindings (they can't be customized):
 

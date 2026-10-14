@@ -1829,6 +1829,9 @@ PYADP
     python3 "$(dirname "$0")/../tests/repl/repl-codepoints.py" "$BIN" || fail "repl code-point editing"
     echo "e2e ok: repl Left/Right/Backspace/^D step over a surrogate pair whole [D:str-code-points]"
 
+    python3 "$(dirname "$0")/../tests/repl/repl-typeahead.py" "$BIN" || fail "repl type-ahead"
+    echo "e2e ok: repl an Enter typed before the first prompt submits [D:owned-line-editor]"
+
     python3 "$(dirname "$0")/../tests/repl/repl-color.py" "$BIN" || fail "repl coloring"
     echo "e2e ok: repl lexical coloring, head verdicts, NO_COLOR"
 
