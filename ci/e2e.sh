@@ -1113,7 +1113,7 @@ echo "e2e ok: fmt canonicalizes, --check gates, output runs; flags never read as
 # tarball) the repo's script dirs stand in
 fmtroot="$(dirname "$0")/.."
 fmtfiles=$(git -C "$fmtroot" ls-files '*.weir' 2>/dev/null) \
-    || fmtfiles=$(cd "$fmtroot" && find ci examples tools -name '*.weir')
+    || fmtfiles=$(cd "$fmtroot" && find ci examples tools -type f -name '*.weir')
 [ -n "$fmtfiles" ] || fail "fmt repo gate found no .weir files under $fmtroot"
 for f in $fmtfiles; do
     rc=0
