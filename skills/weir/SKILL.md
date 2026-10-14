@@ -581,7 +581,11 @@ print $"{key} -> {value}"
   (`NoAuth`/`Bearer of Secret`/`Basic of string * Secret` — Basic does
   the base64); a `Secret` carries WHOLE (interpolating a token is a
   check error) and `show` masks it. Status is DATA (`if resp.status >=
-  400 then fail …`, a 404 binds); only TRANSPORT failure raises. The
+  400 then fail …`, a 404 binds); only TRANSPORT failure raises (and a
+  redirect loop — past 50 hops it raises, naming it). `auth` plus an
+  explicit `Authorization` header is refused (two credentials). On a
+  cross-origin redirect `auth`, every `secretHeaders` name and a plain
+  `Authorization`/`Proxy-Authorization`/`Cookie` header are dropped. The
   body is `NoBody`/`Json`/`Text of string`/`Form of seq<string * string>`
   [D:http-dx] — `Json` takes the VALUE (any shape `to json` admits, the
   same law checked at the call site) and renders at the boundary,

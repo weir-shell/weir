@@ -49,10 +49,14 @@ type TransportError =
     // not a transport failure but the same Error channel: the response
     // declared a charset .NET cannot decode
     | UnknownCharset of charset: string * status: int
+    // the redirect bound ran out — a loop, never a 3xx handed back as data
+    | RedirectLoop of hops: int * last: string
 
 // raised inside send when the body's declared charset is unknown — the
 // catch turns it into UnknownCharset, never the cannot-reach umbrella
 exception private CharsetUnknown of string * int
+
+exception private TooManyRedirects of int * string
 
 let private rootMessage (ex: exn) : string =
     let rec inner (e: exn) =
@@ -124,6 +128,8 @@ let transportMessage (host: string) (err: TransportError) : string =
     | OtherTransport root -> $"cannot reach {host} — {root}"
     | UnknownCharset(cs, status) ->
         $"{host} answered {status} with a body in charset '{cs}', which weir cannot decode — weir decodes utf-8, utf-16, utf-32, us-ascii and iso-8859-1; a mislabelled body is never guessed at"
+    | RedirectLoop(hops, last) ->
+        $"{host}: still redirecting after {hops} hops (the last at {redactUrl last}) — a redirect loop"
 
 /// two URLs share an origin [D:secret-redirect] iff scheme, host and port
 /// all match (a port change is a different origin — the same rule the BCL
@@ -290,6 +296,9 @@ let send (req: Req) : Result<Resp, string * TransportError> =
                     curBody <- None
 
                 curUrl <- nextUri.ToString()
+            | Some _ when isRedirect code ->
+                resp.Dispose()
+                raise (TooManyRedirects(hops, curUrl))
             | _ ->
                 result <- resp
                 go <- false
@@ -351,6 +360,7 @@ let send (req: Req) : Result<Resp, string * TransportError> =
         let err =
             match ex with
             | CharsetUnknown(cs, status) -> UnknownCharset(cs, status)
+            | TooManyRedirects(hops, last) -> RedirectLoop(hops, last)
             | _ -> classifyTransport req.TimeoutMs port ex
         Error(transportMessage host err, err)
 

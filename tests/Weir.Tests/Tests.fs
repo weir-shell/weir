@@ -16632,6 +16632,45 @@ let httpTests =
                   (run $"(Http.send (Http.get \"http://127.0.0.1:{port}/latin\")).body |> Str.join \"\"")
                   (VStr "\u00e9!")
                   "a known charset still decodes"
+          }
+          test "auth plus an explicit Authorization header is refused — two credentials (H55)" {
+              let ex =
+                  Expect.throwsC
+                      (fun () ->
+                          run
+                              "Http.send { Http.get \"http://127.0.0.1:9/\" with auth = Basic (\"u\", Secret.of \"p\"); headers = [(\"authorization\", \"Bearer x\")] }"
+                          |> ignore)
+                      id
+
+              Expect.stringContains ex.Message "two credentials" ex.Message
+          }
+          test "a plain Cookie/Authorization header is dropped on a cross-origin redirect (H55)" {
+              let portB, seenB =
+                  rawServe (fun _ -> "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+
+              let portA, _ =
+                  rawServe (fun _ ->
+                      $"HTTP/1.1 302 Found\r\nLocation: http://localhost:{portB}/b\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+
+              Expect.equal
+                  (run
+                      $"(Http.send {{ Http.get \"http://127.0.0.1:{portA}/a\" with headers = [(\"Cookie\", \"sid=SECRET\"); (\"Authorization\", \"Bearer SECRET\"); (\"X-Control\", \"kept\")] }}).status")
+                  (VInt 200L)
+                  "the redirect is followed"
+
+              let head = String.concat "" seenB
+              Expect.isFalse (head.Contains "SECRET") $"no credential crosses origins: {head}"
+              Expect.stringContains head "X-Control: kept" "an ordinary header crosses"
+          }
+          test "a redirect loop is a named error, never a 3xx handed back as data (H55)" {
+              let port, _ =
+                  rawServe (fun _ -> "HTTP/1.1 302 Found\r\nLocation: /again\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+
+              let ex =
+                  Expect.throwsC (fun () -> run $"Http.send (Http.get \"http://127.0.0.1:{port}/\")" |> ignore) id
+
+              Expect.stringContains ex.Message "redirect loop" ex.Message
+              Expect.stringContains ex.Message "50 hops" ex.Message
           } ]
 
 let functionKeywordTests =
