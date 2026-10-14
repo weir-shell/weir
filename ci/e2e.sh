@@ -1696,6 +1696,9 @@ if command -v python3 >/dev/null 2>&1; then
     WEIR_BIN="$BIN" python3 "$(dirname "$0")/../tests/lsp/lsp-framing.py" || fail "lsp framing hardening (oversized Content-Length)"
     echo "e2e ok: lsp survives oversized Content-Length (no OOM, stream stays synced)"
 
+    WEIR_BIN="$BIN" python3 "$(dirname "$0")/../tests/lsp/lsp-protocol.py" || fail "lsp protocol conformance"
+    echo "e2e ok: lsp answers every request (-32603/-32601/-32700/-32600), exit codes per lifecycle, case-insensitive headers"
+
     # conventional client argv is tolerated (languageclient v10 appends
     # --stdio/--clientProcessId to Executables — usage-exit-2 here put
     # the VS Code client in a crash-restart loop)
