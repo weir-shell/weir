@@ -11595,13 +11595,13 @@ within env [Env.pair "FOO" v]
     print (show r.exitCode)
 WEOF
     nul_refuses ambient
-    # 4. into — the sh -c cmdline tail past the NUL would drop
-    cat > "$nuldir/into.weir" <<'WEOF'
+    # 4. a value piped into `sh -c` — the cmdline tail past the NUL would drop
+    cat > "$nuldir/pipesh.weir" <<'WEOF'
 let tail = emitnul |> Seq.exactlyOne
 let cmd = $"argvdump before{tail}after"
-["one"] |> into cmd |> Seq.iter print
+["one"] | sh -c $cmd |> Seq.iter print
 WEOF
-    nul_refuses into
+    nul_refuses pipesh
     # 5. the $e(...) env twin — an env value via the sigil
     cat > "$nuldir/envsigil.weir" <<'WEOF'
 let v = emitnul |> Seq.exactlyOne
