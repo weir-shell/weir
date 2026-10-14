@@ -4371,6 +4371,8 @@ type SourceFault =
     | PermissionDenied
     | NotRegular
     | IoFault of string
+    // the first invalid byte's 1-based line and column [D:source-utf8]
+    | InvalidUtf8 of line: int * col: int
 
 // a zero-length stat is a pipe, a procfs file or a device: read it with a
 // ceiling, so /dev/zero refuses instead of filling memory
@@ -4398,10 +4400,34 @@ let private readSourceBytes (path: string) : byte[] =
 
         ms.ToArray()
 
-// the lines of a source file — ReadAllLines' splitting (\r\n, \n, \r) and
-// BOM detection
+// a source file is UTF-8 [D:source-utf8]: strict decoding, so the first
+// invalid byte is a located refusal, never a silent U+FFFD. One leading
+// BOM is skipped; lines split as ReadAllLines splits (\r\n, \n, \r).
+exception private BadUtf8 of line: int * col: int
+
+let private strictUtf8 = Text.UTF8Encoding(false, true)
+
 let private decodeSourceLines (bytes: byte[]) : string list =
-    use sr = new IO.StreamReader(new IO.MemoryStream(bytes), Text.Encoding.UTF8, true)
+    let start =
+        if bytes.Length >= 3 && bytes[0] = 0xEFuy && bytes[1] = 0xBBuy && bytes[2] = 0xBFuy then
+            3
+        else
+            0
+
+    let text =
+        try
+            strictUtf8.GetString(bytes, start, bytes.Length - start)
+        with :? Text.DecoderFallbackException as ex ->
+            // the bad byte's offset; its line is the newlines before it,
+            // its column the code points before it on that line, plus one
+            let at = start + max 0 ex.Index
+            let lineStart = (Array.LastIndexOf(bytes, 10uy, max 0 (at - 1)) + 1) |> max start
+            let line = 1 + (bytes[start .. at - 1] |> Array.sumBy (fun b -> if b = 10uy then 1 else 0))
+            let prefix = Text.Encoding.UTF8.GetString(bytes, lineStart, at - lineStart)
+            let col = 1 + (prefix.EnumerateRunes() |> Seq.length)
+            raise (BadUtf8(line, col))
+
+    use sr = new IO.StringReader(text)
     let acc = Collections.Generic.List<string>()
     let mutable line = sr.ReadLine()
 
@@ -4422,6 +4448,7 @@ let readSourceFile (path: string) : Result<string list, SourceFault> =
         | :? IO.DirectoryNotFoundException -> Error NotFound
         | :? UnauthorizedAccessException -> Error PermissionDenied
         | :? IO.InvalidDataException -> Error NotRegular
+        | BadUtf8(l, c) -> Error(InvalidUtf8(l, c))
         | :? IO.IOException as ex -> Error(IoFault ex.Message)
 
 /// the entry script's read, worded for the CLI: `weir: <message>`, exit 2
@@ -4432,7 +4459,8 @@ let readEntryScript (path: string) : Result<string list, string> =
         | IsDirectory -> $"{path} is a directory, not a script"
         | PermissionDenied -> $"cannot read {path}: permission denied"
         | NotRegular -> $"cannot read {path}: not a regular file — a script is a text file"
-        | IoFault m -> $"cannot read {path}: {m}")
+        | IoFault m -> $"cannot read {path}: {m}"
+        | InvalidUtf8(l, c) -> $"{path}:{l}:{c}: invalid UTF-8 — a source file must be UTF-8; this byte is not")
 
 // buffer-over-disk [D:modules-v1]: when the LSP sets this, an imported file's
 // content is read through it (open editor buffers first, then disk) so an
@@ -4451,6 +4479,7 @@ type private ImportRead =
     | ISource of string list
     | IAbsent
     | IUnreadable of string
+    | IBadUtf8 of line: int * col: int
 
 let private readImportSource (absPath: string) : ImportRead =
     match importSourceOverride.Value with
@@ -4459,15 +4488,16 @@ let private readImportSource (absPath: string) : ImportRead =
         | Some lines -> ISource lines
         | None -> IAbsent
     | None ->
-        try
-            ISource(IO.File.ReadAllLines absPath |> Array.toList)
-        with
-        | :? IO.FileNotFoundException
-        | :? IO.DirectoryNotFoundException -> IAbsent
-        | ex ->
-            // present but unreadable — permission denied, a directory in
-            // the path, an IO fault; name the path and the reason, located
-            IUnreadable ex.Message
+        // present but unreadable — permission denied, a directory, a
+        // device, an IO fault; name the path and the reason, located
+        match readSourceFile absPath with
+        | Ok lines -> ISource lines
+        | Error NotFound -> IAbsent
+        | Error IsDirectory -> IUnreadable "it is a directory, not a module"
+        | Error PermissionDenied -> IUnreadable "permission denied"
+        | Error NotRegular -> IUnreadable "not a regular file — a module is a text file"
+        | Error(IoFault m) -> IUnreadable m
+        | Error(InvalidUtf8(l, c)) -> IBadUtf8(l, c)
 
 // resolve + check an imported module to a LoadedModule, or an ImportError.
 // The graph [D:modules-v1]: `cache` (normalized abs path -> module) checks a
@@ -4538,6 +4568,12 @@ let rec loadModuleCachedWith
         else
             stmt $"cannot resolve import: no file at {absPath}"
     | IUnreadable reason -> stmt $"cannot read import {absPath}: {reason}"
+    | IBadUtf8(l, c) ->
+        Error
+            { File = Some absPath
+              Line = l
+              Col = c
+              Message = "invalid UTF-8 — a source file must be UTF-8; this byte is not" }
     | ISource rawLines ->
         let body, bodyOffset, _ = scriptBody rawLines
 
@@ -4896,6 +4932,7 @@ let checkVendoredModule (absPath: string) : Result<int, string> =
     match readImportSource absPath with
     | IAbsent -> Error $"cannot read {absPath}"
     | IUnreadable reason -> Error $"cannot read {absPath}: {reason}"
+    | IBadUtf8(l, c) -> Error $"{absPath}:{l}:{c}: invalid UTF-8 — a source file must be UTF-8; this byte is not"
     | ISource raws ->
         if raws |> List.exists (fun l -> l.StartsWith "import ") then
             Error
@@ -5410,7 +5447,8 @@ let targetSourceLines (absPath: string) : string list option =
     match readImportSource absPath with
     | ISource lines -> Some lines
     | IAbsent
-    | IUnreadable _ -> None
+    | IUnreadable _
+    | IBadUtf8 _ -> None
 
 /// the signatures a file's #sig head declares, loaded; quiet on load
 /// errors — diagnostics are analyzeLines' job [D:lsp-cross-file]

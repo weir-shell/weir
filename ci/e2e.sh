@@ -8376,6 +8376,26 @@ else
     echo "e2e skip: unreadable entry script (POSIX mode bits, /dev/zero)"
 fi
 
+# a source file must be UTF-8 [D:source-utf8]: the first invalid byte is a
+# located refusal (entry and import alike), never a silent U+FFFD; a BOM
+# and CRLF still read
+u8dir=$(mkweirtmp)
+printf 'print "ok"\nprint "\303\251t\303\251 \377 x"\n' > "$u8dir/bad.weir"
+for mode in "" "check" "fmt"; do
+    out=$($BIN $mode "$u8dir/bad.weir" 2>&1); rc=$?
+    [ "$rc" = "2" ] || fail "invalid UTF-8 ($mode) exits 2, got $rc: $out"
+    expect "invalid UTF-8 is located ($mode)" "bad.weir:2:12: invalid UTF-8" "$out"
+done
+printf 'module M\nlet x : int\nlet x = 1 // \376\n' > "$u8dir/m.weir"
+printf 'import "./m.weir"\nprint (show M.x)\n' > "$u8dir/main.weir"
+out=$($BIN "$u8dir/main.weir" 2>&1)
+expect "invalid UTF-8 in a module is located in the module" "m.weir:3:14: error: invalid UTF-8" "$out"
+printf '\357\273\277print "bom"\r\nprint "crlf"\r\n' > "$u8dir/bom.weir"
+out=$($BIN "$u8dir/bom.weir" 2>&1)
+[ "$out" = "bom
+crlf" ] || fail "a BOM and CRLF still read: $out"
+rm -rf "$u8dir"
+
 # check-time catches on the real schema: the typo (did-you-mean) and a
 # misplaced nesting (a field at the wrong level)
 cat > "$ctdir/proj/sub/cm.weir" <<'WEOF'
