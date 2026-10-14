@@ -78,6 +78,41 @@ let popEnvOverlay () : unit =
         | _ :: rest -> rootEnvOverlay.Value <- rest
         | [] -> ()
 
+// weir's own env reads see the overlay a child would [D:env-overlay-read]:
+// newest layer first, the last pair within a layer wins (the spawn's
+// apply order), the process env beneath. Names compare as the platform's
+// env does (case-insensitive on Windows).
+let private envNameCmp =
+    if System.OperatingSystem.IsWindows() then
+        System.StringComparer.OrdinalIgnoreCase
+    else
+        System.StringComparer.Ordinal
+
+/// one var under the given layers (newest first)
+let getEnvIn (layers: (string * string) list list) (name: string) : string option =
+    layers
+    |> List.tryPick (fun layer -> layer |> List.rev |> List.tryFind (fun (k, _) -> envNameCmp.Equals(k, name)))
+    |> Option.map snd
+    |> Option.orElseWith (fun () ->
+        match System.Environment.GetEnvironmentVariable name with
+        | null -> None
+        | v -> Some v)
+
+/// one var under the live overlay
+let getEnv (name: string) : string option = getEnvIn (envOverlay ()) name
+
+/// every var under the given layers (newest first), unordered
+let envVarsIn (layers: (string * string) list list) : (string * string) list =
+    let d = System.Collections.Generic.Dictionary<string, string>(envNameCmp)
+
+    for e in System.Environment.GetEnvironmentVariables() |> Seq.cast<System.Collections.DictionaryEntry> do
+        d[string e.Key] <- string e.Value
+
+    for k, v in layers |> List.rev |> List.collect id do
+        d[k] <- v
+
+    [ for kv in d -> kv.Key, kv.Value ]
+
 // worker lifecycle (Seq.pmap / Seq.piter)
 // nesting-aware parallel ceilings [D:parallel-ladder]: the fan-out
 // depth rides AsyncLocal beside cwd/env/raceGroup — read at spawn time
@@ -401,7 +436,7 @@ let waitOrCancel (span: System.TimeSpan) (token: System.Threading.CancellationTo
         try
             System.Threading.Tasks.Task.Delay(span, token).Wait()
             false
-        with _ ->
+        with :? System.AggregateException as e when (e.InnerException :? System.OperationCanceledException) ->
             true
 
 /// join a task; a teardown request raises on the main thread without
@@ -595,7 +630,44 @@ let registerProc (p: System.Diagnostics.Process) : unit =
 
     liveProcs[p.Id] <- p
 
-let deregisterProc (p: System.Diagnostics.Process) : unit = liveProcs.TryRemove p.Id |> ignore
+// a foreground child alone installs only a SIGTERM reaper
+// [D:signal-main-unwind]: a pid-targeted TERM tree-kills the live children,
+// then default termination proceeds (weir still dies BY the signal, as
+// before any scope exists; a ^C reaches the child through the group
+// anyway). Once a scope installs the full hook, that hook does the kill
+// as part of its teardown and this one stands down. POSIX only.
+let private fgHookInstalled = ref 0
+
+let registerForeground (p: System.Diagnostics.Process) : unit =
+    if
+        not (System.OperatingSystem.IsWindows())
+        && System.Threading.Interlocked.Exchange(fgHookInstalled, 1) = 0
+    then
+        let reg =
+            System.Runtime.InteropServices.PosixSignalRegistration.Create(
+                System.Runtime.InteropServices.PosixSignal.SIGTERM,
+                fun _ ->
+                    // the full hook owns the signal once installed: it must
+                    // request the teardown BEFORE any child dies, or the
+                    // main thread's wait returns and runs the next statement
+                    if System.Threading.Volatile.Read &hookInstalled.contents = 0 then
+                        for kv in liveProcs do
+                            try
+                                kv.Value.Kill true
+                            with _ ->
+                                ()
+            )
+
+        hookRoots <- (reg :> obj) :: hookRoots
+
+    liveProcs[p.Id] <- p
+
+/// remove `p` under `pid` — only that very process, so a late exit
+/// event never drops a newer child that reused the pid
+let deregisterProcAt (pid: int) (p: System.Diagnostics.Process) : unit =
+    liveProcs.TryRemove(System.Collections.Generic.KeyValuePair(pid, p)) |> ignore
+
+let deregisterProc (p: System.Diagnostics.Process) : unit = deregisterProcAt p.Id p
 
 let registerAlways (cleanup: unit -> unit) : int =
     if System.Threading.Interlocked.Exchange(hookInstalled, 1) = 0 then

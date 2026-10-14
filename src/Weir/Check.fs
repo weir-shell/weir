@@ -1324,10 +1324,17 @@ let private uncodedFieldTeach (fmt: string) (fty: Ty) : string option =
         Some $"{subject} is not representable in {fmt} on its own — declare the field's encoding ({codecAttrs cs}), or {repair}"
     | _ -> None
 
+// a generic value at a write boundary: serialization is resolved at
+// check time from the type, so a helper's unconstrained parameter has
+// nothing to resolve — teach the repair, not the type variable
+let private genericWireTeach (fmt: string) (ty: Ty) : string =
+    $"'to {fmt}' needs a concrete type, but this value is generic ({formatTy ty}) — the encoding is chosen from the type at check time; call 'to {fmt}' where the type is known (at the call site, passing the rendered text on)"
+
 let private jsonAdmittedSet =
     "json fields are int, float, string, bool, Uuid, Option of an admitted type, a record of admitted fields, seq of an admitted type, a seq<string * T> mapping, or Map<string, T> of one"
 
 let rec private jsonAdmitted
+    (reading: bool)
     (span: Span)
     (env: TypeEnv)
     (seen: string list)
@@ -1338,18 +1345,21 @@ let rec private jsonAdmitted
 
     match ty with
     | WireCanonical _ -> Ok()
+    // reading INTO a Secret is the safe direction [D:secret-read]: the
+    // string wraps on the way in, as Env.load wraps
+    | TSecret when reading -> Ok()
     | WireRefused teach -> err span (at + teach "JSON")
     | TNamed("Option", [ TNamed("Option", _) ]) ->
         err span $"{at}Option<Option<…>> has no JSON reading; flatten the type"
-    | TNamed("Option", [ inner ]) -> jsonAdmitted span env seen path inner
+    | TNamed("Option", [ inner ]) -> jsonAdmitted reading span env seen path inner
     // the open mapping seq<string * V> — yaml's [D:yaml-v1] pair-seq law
     // at the json boundary [D:repl-infer]: a JSON object whose keys are
     // data reads/writes as pairs, admitted iff V is
-    | TSeq(TTuple [ TStr; v ]) -> jsonAdmitted span env seen path v
-    | TSeq elem -> jsonAdmitted span env seen path elem
+    | TSeq(TTuple [ TStr; v ]) -> jsonAdmitted reading span env seen path v
+    | TSeq elem -> jsonAdmitted reading span env seen path elem
     // the ID-keyed object [D:map-string]: Map<string, T> is a JSON
     // object whose keys are data — admitted iff T is
-    | TNamed("Map", [ TStr; inner ]) -> jsonAdmitted span env seen path inner
+    | TNamed("Map", [ TStr; inner ]) -> jsonAdmitted reading span env seen path inner
     // a non-string key reaches here through an anonymous shape (declared
     // types validate at declaration) — same teaching as validateTy
     | TNamed("Map", [ k; _ ]) ->
@@ -1366,7 +1376,7 @@ let rec private jsonAdmitted
         match typeDefFor env n with
         | Some(Record def) when def.Params.IsEmpty ->
             allOk def.Fields (fun (fn, fty) ->
-                jsonField span env (n :: seen) def (if path = "" then fn else $"{path}.{fn}") fn fty)
+                jsonField reading span env (n :: seen) def (if path = "" then fn else $"{path}.{fn}") fn fty)
         | Some(Record _) -> err span $"{at}'{n}' is generic; the JSON boundary needs monomorphic records"
         // a tagged union crosses [D:wire-unions]: every case's payload
         // record must admit; the [<Other>] case is string-or-nothing by
@@ -1375,7 +1385,7 @@ let rec private jsonAdmitted
             allOk udef.Cases (fun (c, payload) ->
                 match payload with
                 | Some pty when Some c <> udef.OtherCase ->
-                    jsonAdmitted span env (n :: seen) (if path = "" then c else $"{path}.{c}") pty
+                    jsonAdmitted reading span env (n :: seen) (if path = "" then c else $"{path}.{c}") pty
                 | _ -> Ok())
         | Some(Union _) ->
             err
@@ -1384,11 +1394,13 @@ let rec private jsonAdmitted
         | None when List.contains n deflessBuiltinNominals ->
             err span $"{at}{n} is an opaque value with no JSON form — encode the fields you need into a record"
         | None -> err span $"{at}unknown type '{n}'{didYouMean n (Map.keys env.Types)}"
+    | TVar v when not reading && not (v.StartsWith "__hole") -> err span (at + genericWireTeach "json" ty)
     | ty -> err span $"{at}type {formatTy ty} is not admitted; {jsonAdmittedSet}"
 
 // one field's admission, for the record walk and the top-level record
 // alike: a coded field crosses under its codec [D:wire-codecs]
 and private jsonField
+    (reading: bool)
     (span: Span)
     (env: TypeEnv)
     (seen: string list)
@@ -1400,13 +1412,13 @@ and private jsonField
     match fieldCodec def fn, uncodedFieldTeach "JSON" fty with
     | Some _, _ -> Ok()
     | None, Some teach -> err span $"field '{fpath}': {teach}"
-    | None, None -> jsonAdmitted span env seen fpath fty
+    | None, None -> jsonAdmitted reading span env seen fpath fty
 
-let private jsonableRecord (span: Span) (env: TypeEnv) (def: RecordDef) : Result<unit, TypeError> =
-    allOk def.Fields (fun (name, ty) -> jsonField span env [ def.Name ] def name name ty)
+let private jsonableRecord (reading: bool) (span: Span) (env: TypeEnv) (def: RecordDef) : Result<unit, TypeError> =
+    allOk def.Fields (fun (name, ty) -> jsonField reading span env [ def.Name ] def name name ty)
 
-let private jsonableElem (span: Span) (env: TypeEnv) (elem: Ty) : Result<unit, TypeError> =
-    jsonAdmitted span env [] "" elem
+let private jsonableElem (reading: bool) (span: Span) (env: TypeEnv) (elem: Ty) : Result<unit, TypeError> =
+    jsonAdmitted reading span env [] "" elem
 
 // the read-only XML boundary [D:from-xml]: XML carries text, so every
 // leaf is a string — an element's inner text or, with [<Attr>], one of
@@ -1656,6 +1668,9 @@ let rec private yamlShape
 
     match ty with
     | WireCanonical shape -> Ok shape
+    // yamlShape is the read side: reading INTO a Secret is the safe
+    // direction [D:secret-read]
+    | TSecret -> Ok Yaml.SSecret
     | WireRefused teach -> err span (at + teach "yaml")
     // the opaque `Yaml` node reads structure whole [D:yaml-empty-flow] —
     // the read sibling of yamlableOut's `Yaml`-renders-directly case
@@ -1789,10 +1804,19 @@ let rec private yamlableOut (span: Span) (env: TypeEnv) (seen: Set<string>) (pat
     | TVar v when v.StartsWith "__hole" ->
         // cascade suppression [PLAN-diagnostics-arc B6]
         Ok()
+    | TVar _ -> err span (at + genericWireTeach "yaml" ty)
     | ty ->
         err
             span
             $"{at}type {formatTy ty} cannot cross the yaml boundary (scalars, records, seqs, seq<string * _>, Option, Yaml)"
+
+/// an `exit` argument's literal value: `n`, or `-n` (prefix minus
+/// desugars to `0 - n`)
+let private exitLiteral (e: Expr) : int64 option =
+    match e.Kind with
+    | EInt n -> Some n
+    | EBinOp("-", { Kind = EInt 0L }, { Kind = EInt n }) -> Some -n
+    | _ -> None
 
 // One Regex instance per distinct literal, shared by check and eval
 // (same shape as the snippet-hash-cache). Interpreted mode only —
@@ -1801,12 +1825,30 @@ let rec private yamlableOut (span: Span) (env: TypeEnv) (seen: Set<string>) (pat
 let private regexCache =
     System.Collections.Concurrent.ConcurrentDictionary<string, System.Text.RegularExpressions.Regex>()
 
+// every match carries a timeout [D:regex-timeout]: catastrophic
+// backtracking (`^(a+)+$` on a long near-miss) hung the script, and a
+// `within serve` handler matching request input made it a DoS.
+// NonBacktracking would forbid lookbehind, which weir admits. 5s per
+// match call is far beyond any sane match on real input (a linear scan
+// covers hundreds of MB in that time) and short enough to fail loudly.
+let regexTimeout = System.TimeSpan.FromSeconds 5.0
+
+/// run a match against `pat`, turning the engine's timeout into weir's
+/// named error [D:regex-timeout]
+let regexGuarded (pat: string) (f: unit -> 'a) : 'a =
+    try
+        f ()
+    with :? System.Text.RegularExpressions.RegexMatchTimeoutException ->
+        failwith
+            $"regex timeout: matching @\"{Types.excerpt pat}\" ran past {int regexTimeout.TotalSeconds}s — the pattern backtracks catastrophically on this input (nested repetition like (a+)+ or (a|a)*); rewrite it so each character can match only one way"
+
 let compileRegex (pat: string) : Result<System.Text.RegularExpressions.Regex, string> =
     match regexCache.TryGetValue pat with
     | true, rx -> Ok rx
     | _ ->
         try
-            let rx = System.Text.RegularExpressions.Regex pat
+            let rx =
+                System.Text.RegularExpressions.Regex(pat, System.Text.RegularExpressions.RegexOptions.None, regexTimeout)
 
             // named groups are rejected [D:no-named-groups]: .NET
             // numbers positional groups first and named ones after —
@@ -1911,7 +1953,19 @@ let builtinTypeNames: System.Collections.Concurrent.ConcurrentDictionary<string,
 
 /// constructor is already overwritten; ownership must be asked of the
 /// type table, not the value table.
-let ctorOwners (env: TypeEnv) (name: string) : string list =
+let rec ctorOwners (env: TypeEnv) (name: string) : string list =
+    preferLocal (ctorOwnersAll env name)
+
+// a script's own case shadows a prelude case of the same name
+// [D:try-form] — the import rule: a local declaration takes
+// precedence (`type Status = Ok | Error` predates Result)
+and private preferLocal (owners: string list) : string list =
+    match owners |> List.filter (fun o -> not (builtinTypeNames.ContainsKey o)) with
+    | [] -> owners
+    | local -> local
+
+// every in-scope union declaring the case, local and prelude alike
+and ctorOwnersAll (env: TypeEnv) (name: string) : string list =
     // uppercase only: the casing law makes every constructor uppercase, so
     // this skips the scan for ordinary bindings
     if name.Length = 0 || not (System.Char.IsUpper name[0]) then
@@ -1933,12 +1987,7 @@ let ctorOwners (env: TypeEnv) (name: string) : string list =
                 | _ -> None)
             |> List.sort
 
-        // a script's own case shadows a prelude case of the same name
-        // [D:try-form] — the import rule: a local declaration takes
-        // precedence (`type Status = Ok | Error` predates Result)
-        match owners |> List.filter (fun o -> not (builtinTypeNames.ContainsKey o)) with
-        | [] -> owners
-        | local -> local
+        owners
 
 let rec private checkPattern (ctx: Ctx) (env: TypeEnv) (ty: Ty) (p: Pattern) : Result<(string * Ty) list, TypeError> =
     // a pattern whose shape determines a type binds an unresolved
@@ -2900,6 +2949,16 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                 lambdaCore env expr.Span (fun tb -> TELambda(param, pspan, tb)) paramTy [ param, paramTy ] (fun e ->
                     infer ctx e body)
         }
+    // a literal exit code outside 0..255 is a check error [D:exit-range]
+    // (`exit` is reserved, so the head is always the builtin); `-n`
+    // arrives as the prefix-minus desugar `0 - n`
+    | EApp({ Kind = EVar "exit" }, arg) when
+        (match exitLiteral arg with
+         | Some n -> n < 0L || n > 255L
+         | None -> false)
+        ->
+        let code = (exitLiteral arg).Value
+        err arg.Span $"exit {code}: an exit code is 0..255 — the OS keeps only the low byte, so it would exit {code &&& 255L}"
     | EApp({ Kind = EVar "Json"; Span = headSpan }, arg) when ctorOwners env "Json" = [ "HttpBody" ] ->
         // Http's Json body takes the value [D:http-dx]: a jsonable
         // argument routes through `to json`'s own law and wire maps at
@@ -2938,6 +2997,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
             | ty ->
                 do!
                     jsonableElem
+                        false
                         arg.Span
                         env
                         (match ty with
@@ -3457,6 +3517,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                 // None → null; the per-element (NDJSON) form is 'to jsonl'
                 do!
                     jsonableElem
+                        false
                         toExpr.Span
                         env
                         (match ty with
@@ -3475,7 +3536,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                       Ty = TSeq TStr
                       Span = expr.Span }
             | "jsonl", TSeq elem ->
-                do! jsonableElem toExpr.Span env (resolve ctx elem)
+                do! jsonableElem false toExpr.Span env (resolve ctx elem)
                 let! unions = unionWriteTable toExpr.Span env targ.Ty
 
                 let tto =
@@ -4174,7 +4235,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
 
                 match typeDefFor env name with
                 | Some(Record def) when def.Params.IsEmpty ->
-                    do! jsonableRecord expr.Span env def
+                    do! jsonableRecord true expr.Span env def
 
                     let defs =
                         def.Fields
@@ -4192,7 +4253,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                 // dispatches on the tag — `from jsonl KDoc` reads mixed
                 // NDJSON, `from json seq<KDoc>` a mixed array
                 | Some(Union udef) when udef.Tag.IsSome ->
-                    do! jsonableElem expr.Span env (TNamed(name, []))
+                    do! jsonableElem true expr.Span env (TNamed(name, []))
 
                     let defs = jsonDefsClosure env Map.empty (TNamed(name, []))
                     let udefs = jsonUnionsClosure env Map.empty (TNamed(name, []))
@@ -4536,11 +4597,51 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                     bind ctx env scrutinee.Span TStr tscrutinee.Ty
                 | TVar _ when arms |> List.exists (fun (p, _, _) -> p.PKind.IsPUnit) ->
                     bind ctx env scrutinee.Span TUnit tscrutinee.Ty
-                // a constructor pattern types the scrutinee from its union
-                // [D:match-scrutinee-infer] — the per-pattern bind in
-                // checkPattern (a single-owner constructor resolves an
-                // unresolved scrutinee, nested payloads included); the
-                // shared scrutinee var carries the binding across arms
+                // the arms' constructors together pick the union: the one
+                // owning ALL of them (local first), so `Ok`/`Error` arms
+                // read as Result even when the script declares its own `Ok`
+                // — the first arm alone would pick the shadowing union
+                | TVar _ as tv ->
+                    let ctors =
+                        arms
+                        |> List.choose (fun (p, _, _) ->
+                            match p.PKind with
+                            | PCase(c, _) -> Some(c, p.PSpan)
+                            | _ -> None)
+
+                    let names = ctors |> List.map fst |> List.distinct
+
+                    if names.Length < 2 || names |> List.exists (fun c -> (ctorOwnersAll env c).IsEmpty) then
+                        // one constructor (or an unknown one): checkPattern's
+                        // per-pattern bind and its messages decide
+                        Ok()
+                    else
+                        let common =
+                            names
+                            |> List.map (ctorOwnersAll env >> Set.ofList)
+                            |> Set.intersectMany
+                            |> Set.toList
+                            |> preferLocal
+
+                        match common with
+                        | [ owner ] ->
+                            match typeDefFor env owner with
+                            | Some(Union def) ->
+                                let targs = def.Params |> List.map (fun _ -> TVar(freshName ctx "a"))
+                                bind ctx env scrutinee.Span (TNamed(owner, targs)) tv
+                            | _ -> Ok()
+                        | [] ->
+                            let owned =
+                                names
+                                |> List.map (fun c ->
+                                    let os = ctorOwners env c |> String.concat "/"
+                                    $"'{c}' ({os})")
+                                |> String.concat ", "
+
+                            err
+                                (snd ctors.Head)
+                                $"these arms name cases of different unions — {owned}; no one union declares them all, so the match has no single type"
+                        | _ -> Ok()
                 | _ -> Ok()
 
             let scrutTy = resolve ctx tscrutinee.Ty
@@ -6772,6 +6873,58 @@ let rec runsCommandT (te: TypedExpr) : bool =
     | TELambda _
     | TELambdaPat _ -> false
     | _ -> childExprs te |> List.exists runsCommandT
+
+// the walk sees through the module's own helpers [D:modules-v1]: an
+// earlier function whose body reaches a command (directly, or through
+// another such helper) maps to its arity; a SATURATED call of one on the
+// eager spine runs that command at import, exactly as the command itself
+// would. A partial application builds a closure and runs nothing.
+let rec private lambdaArity (te: TypedExpr) : int =
+    match te.Kind with
+    | TELambda(_, _, b)
+    | TELambdaPat(_, b) -> 1 + lambdaArity b
+    | _ -> 0
+
+let rec private reachesCommand (helpers: Map<string, int>) (te: TypedExpr) : bool =
+    match te.Kind with
+    | TECmd _ -> true
+    | TEVar v when (reifierOfVar v).IsSome || helpers.ContainsKey v -> true
+    | TELet(n, _, v, b) -> reachesCommand helpers v || reachesCommand (Map.remove n helpers) b
+    | _ -> childExprs te |> List.exists (reachesCommand helpers)
+
+/// Some arity when a module binding is a function whose body reaches a
+/// command — the summary the eager-call walk reads
+let commandHelperArity (helpers: Map<string, int>) (te: TypedExpr) : int option =
+    let a = lambdaArity te
+    if a > 0 && reachesCommand helpers te then Some a else None
+
+/// the helper a module let calls eagerly (saturated, outside any lambda)
+let rec eagerCommandHelper (helpers: Map<string, int>) (te: TypedExpr) : string option =
+    let rec spine (e: TypedExpr) (n: int) =
+        match e.Kind with
+        | TEApp(f, _) -> spine f (n + 1)
+        | _ -> e, n
+
+    let saturated (f: TypedExpr) (extra: int) =
+        match spine f extra with
+        | { Kind = TEVar h }, n when (match Map.tryFind h helpers with
+                                      | Some a -> n >= a
+                                      | None -> false) -> Some h
+        | _ -> None
+
+    match te.Kind with
+    | TELambda _
+    | TELambdaPat _ -> None
+    | TEApp _ ->
+        saturated te 0
+        |> Option.orElseWith (fun () -> childExprs te |> List.tryPick (eagerCommandHelper helpers))
+    | TEPipe(_, f) ->
+        saturated f 1
+        |> Option.orElseWith (fun () -> childExprs te |> List.tryPick (eagerCommandHelper helpers))
+    | TELet(n, _, v, b) ->
+        eagerCommandHelper helpers v
+        |> Option.orElseWith (fun () -> eagerCommandHelper (Map.remove n helpers) b)
+    | _ -> childExprs te |> List.tryPick (eagerCommandHelper helpers)
 
 /// the first command on the RHS's eager spine, rendered for a message:
 /// literal argv words as written, splices as $name / $@name, computed

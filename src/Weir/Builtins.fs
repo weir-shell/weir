@@ -130,45 +130,67 @@ let private lsForCwd (cwd: string) : Value = VSeq(Seq.delay (fun () -> lsEnumera
 // a `ls` reference rebinds to eval-time capture [D:ambient-capture]
 let private realLs: Value = VSeq(Seq.delay (fun () -> lsEnumerate (Session.Cwd())))
 
-let private whereImpl: Value =
-    VBuiltin(fun pred ->
-        VBuiltin(fun s ->
-            match s with
-            | VSeq items ->
-                VSeq(
-                    items
-                    |> Seq.filter (fun item ->
-                        match apply pred item with
-                        | VBool b -> b
-                        | v -> unreachable $"the checker rejects a non-bool predicate result: {formatValue v}")
-                )
-            | v -> unreachable $"the checker rejects 'where' on {formatValue v}"))
-
-let private truncateImpl: Value =
-    VBuiltin(fun n ->
-        VBuiltin(fun s ->
-            match n, s with
-            | VInt n, VSeq items -> VSeq(Seq.truncate (toIntArg "Seq.take" Amount n) items)
-            | _ -> unreachable "the checker rejects truncation on these arguments"))
-
 // deep lazy chains walk iteratively [D:seq-depth-iterative], the
-// [D:eq-depth] rule for seqs: a fold building Seq.append/Seq.map 100k deep
+// [D:eq-depth] rule for seqs: a fold nesting a lazy combinator 100k deep
 // nested one enumerator per level, and the first pull recursed through
-// every level. A chain is a tree of appends and maps over opaque leaves;
-// its enumerator walks the tree on a heap stack, carrying the maps still
-// to apply as a list (innermost first). Lazy and re-enumerable like the
-// F# combinators it replaces; the active leaf is disposed on early exit.
+// every level. A chain is a tree of appends and per-element stages over
+// opaque leaves; its enumerator walks the tree on a heap stack, carrying
+// the stages still to apply as a list (innermost first). A stage is
+// built fresh per enumeration (its state spans every leaf under it); a
+// Close marker below its subtree runs its finish, and a stage that stops
+// abandons its subtree down to that marker. A Splice (collect/concat)
+// parks the running leaf and walks the spliced seq through the outer
+// stages only. Lazy and re-enumerable like the F# combinators it
+// replaces; parked and active leaves are disposed on early exit.
+type private Step =
+    | Skip
+    | Emit of Value
+    | EmitStop of Value
+    | Stop
+    | Splice of seq<Value>
+
+type private Stage =
+    { Step: Value -> Step
+      Prefix: Value list
+      Finish: unit -> Value list }
+
+let private stage (step: Value -> Step) : Stage =
+    { Step = step
+      Prefix = []
+      Finish = fun () -> [] }
+
 type private Chain =
     | Leaf of seq<Value>
     | Append of Chain * Chain
-    | Mapped of (Value -> Value) * Chain
+    | Staged of (unit -> Stage) * Chain
+
+type private Work =
+    | Node of Chain * Stage list
+    | Resume of System.Collections.Generic.IEnumerator<Value> * Stage list
+    | Close of Stage * Stage list
 
 type private ChainEnumerator(root: Chain) =
-    let pending = System.Collections.Generic.Stack<Chain * (Value -> Value) list>()
+    let pending = System.Collections.Generic.Stack<Work>()
     let mutable leaf: System.Collections.Generic.IEnumerator<Value> = null
-    let mutable fns: (Value -> Value) list = []
+    let mutable fns: Stage list = []
     let mutable current = VUnit
-    do pending.Push(root, [])
+    do pending.Push(Node(root, []))
+
+    let dropLeaf () =
+        if not (isNull leaf) then
+            leaf.Dispose()
+            leaf <- null
+
+    // abandon a stopped stage's subtree: everything above its Close marker
+    let abandon (st: Stage) =
+        dropLeaf ()
+        let mutable found = false
+
+        while not found do
+            match pending.Pop() with
+            | Close(s, _) when obj.ReferenceEquals(s, st) -> found <- true
+            | Resume(e, _) -> e.Dispose()
+            | _ -> ()
 
     interface System.Collections.Generic.IEnumerator<Value> with
         member _.Current = current
@@ -183,26 +205,76 @@ type private ChainEnumerator(root: Chain) =
                 if not (isNull leaf) then
                     if leaf.MoveNext() then
                         let mutable v = leaf.Current
+                        let mutable rest = fns
+                        let mutable dropped = false
+                        let mutable stopAt = None
+                        let mutable splice = None
 
-                        for f in fns do
-                            v <- f v
+                        while not dropped && not rest.IsEmpty do
+                            let st = rest.Head
+                            rest <- rest.Tail
 
-                        current <- v
-                        result <- Some true
+                            match st.Step v with
+                            | Skip -> dropped <- true
+                            | Emit w -> v <- w
+                            | EmitStop w ->
+                                v <- w
+                                stopAt <- Some st
+                            | Stop ->
+                                stopAt <- Some st
+                                dropped <- true
+                            | Splice s ->
+                                splice <- Some(s, rest)
+                                dropped <- true
+
+                        // the outermost stop covers any inner one
+                        match stopAt with
+                        | Some st -> abandon st
+                        | None -> ()
+
+                        match splice with
+                        | Some(s, outer) ->
+                            if not (isNull leaf) then
+                                pending.Push(Resume(leaf, fns))
+                                leaf <- null
+
+                            let inner =
+                                match s with
+                                | :? ChainSeq as c -> c.Root
+                                | s -> Leaf s
+
+                            pending.Push(Node(inner, outer))
+                        | None -> ()
+
+                        if not dropped then
+                            current <- v
+                            result <- Some true
                     else
-                        leaf.Dispose()
-                        leaf <- null
+                        dropLeaf ()
                 elif pending.Count = 0 then
                     result <- Some false
                 else
                     match pending.Pop() with
-                    | Leaf s, fs ->
+                    | Node(Leaf s, fs) ->
                         leaf <- s.GetEnumerator()
                         fns <- fs
-                    | Append(l, r), fs ->
-                        pending.Push(r, fs)
-                        pending.Push(l, fs)
-                    | Mapped(f, inner), fs -> pending.Push(inner, f :: fs)
+                    | Node(Append(l, r), fs) ->
+                        pending.Push(Node(r, fs))
+                        pending.Push(Node(l, fs))
+                    | Node(Staged(mk, inner), fs) ->
+                        let st = mk ()
+                        pending.Push(Close(st, fs))
+                        pending.Push(Node(inner, st :: fs))
+
+                        if not st.Prefix.IsEmpty then
+                            pending.Push(Node(Leaf st.Prefix, fs))
+                    | Resume(e, fs) ->
+                        leaf <- e
+                        fns <- fs
+                    | Close(st, fs) ->
+                        match st.Finish() with
+                        | [] -> ()
+                        | tail -> pending.Push(Node(Leaf tail, fs))
 
             result.Value
 
@@ -210,11 +282,14 @@ type private ChainEnumerator(root: Chain) =
 
     interface System.IDisposable with
         member _.Dispose() =
-            if not (isNull leaf) then
-                leaf.Dispose()
-                leaf <- null
+            dropLeaf ()
 
-type private ChainSeq(root: Chain) =
+            while pending.Count > 0 do
+                match pending.Pop() with
+                | Resume(e, _) -> e.Dispose()
+                | _ -> ()
+
+and private ChainSeq(root: Chain) =
     member _.Root = root
 
     interface System.Collections.Generic.IEnumerable<Value> with
@@ -228,11 +303,47 @@ let private chainOf (s: seq<Value>) : Chain =
     | :? ChainSeq as c -> c.Root
     | s -> Leaf s
 
+let private staged (items: seq<Value>) (mk: unit -> Stage) : Value =
+    VSeq(ChainSeq(Staged(mk, chainOf items)))
+
+let private whereImpl: Value =
+    VBuiltin(fun pred ->
+        VBuiltin(fun s ->
+            match s with
+            | VSeq items ->
+                staged items (fun () ->
+                    stage (fun item ->
+                        match apply pred item with
+                        | VBool true -> Emit item
+                        | VBool false -> Skip
+                        | v -> unreachable $"the checker rejects a non-bool predicate result: {formatValue v}"))
+            | v -> unreachable $"the checker rejects 'where' on {formatValue v}"))
+
+let private truncateImpl: Value =
+    VBuiltin(fun n ->
+        VBuiltin(fun s ->
+            match n, s with
+            // a negative count raises, Seq.replicate's convention [D:seq-gaps]
+            | VInt n, VSeq _ when n < 0L -> failwith $"take: the count must be non-negative; got {n}"
+            | VInt n, VSeq items ->
+                let n = toIntArg "Seq.take" Amount n
+
+                if n <= 0 then
+                    VSeq Seq.empty
+                else
+                    staged items (fun () ->
+                        let taken = ref 0
+
+                        stage (fun x ->
+                            taken.Value <- taken.Value + 1
+                            if taken.Value >= n then EmitStop x else Emit x))
+            | _ -> unreachable "the checker rejects truncation on these arguments"))
+
 let private mapImpl: Value =
     VBuiltin(fun f ->
         VBuiltin(fun s ->
             match s with
-            | VSeq items -> VSeq(ChainSeq(Mapped(apply f, chainOf items)))
+            | VSeq items -> staged items (fun () -> stage (fun x -> Emit(apply f x)))
             | v -> unreachable $"the checker rejects 'map' on {formatValue v}"))
 
 // the match-or-skip member [D:seq-choose]: lazy, constraint-free
@@ -241,14 +352,12 @@ let private chooseImpl: Value =
         VBuiltin(fun s ->
             match s with
             | VSeq items ->
-                VSeq(
-                    items
-                    |> Seq.choose (fun x ->
+                staged items (fun () ->
+                    stage (fun x ->
                         match apply f x with
-                        | VUnion("Some", Some v) -> Some v
-                        | VUnion("None", None) -> None
-                        | v -> unreachable $"the checker guarantees an Option chooser, got {formatValue v}")
-                )
+                        | VUnion("Some", Some v) -> Emit v
+                        | VUnion("None", None) -> Skip
+                        | v -> unreachable $"the checker guarantees an Option chooser, got {formatValue v}"))
             | v -> unreachable $"the checker rejects 'choose' on {formatValue v}"))
 
 let private appendImpl: Value =
@@ -633,7 +742,7 @@ let private isMatchImpl: Value =
     VBuiltin(fun patV ->
         VBuiltin(fun subjectV ->
             match patV, subjectV with
-            | VStr pat, VStr s -> VBool((compiledOrRaise pat).IsMatch s)
+            | VStr pat, VStr s -> VBool(Check.regexGuarded pat (fun () -> (compiledOrRaise pat).IsMatch s))
             | _ -> unreachable "the checker rejects 'isMatch' on these arguments"))
 
 let private rmatchImpl: Value =
@@ -641,7 +750,7 @@ let private rmatchImpl: Value =
         VBuiltin(fun subjectV ->
             match patV, subjectV with
             | VStr pat, VStr s ->
-                let m = (compiledOrRaise pat).Match s
+                let m = Check.regexGuarded pat (fun () -> (compiledOrRaise pat).Match s)
 
                 if m.Success then
                     VUnion("Some", Some(VSeq [ for i in 1 .. m.Groups.Count - 1 -> VStr m.Groups[i].Value ]))
@@ -664,11 +773,11 @@ let private rmatchAllImpl: Value =
 
                 VSeq(
                     seq {
-                        let mutable m = re.Match s
+                        let mutable m = Check.regexGuarded pat (fun () -> re.Match s)
 
                         while m.Success do
                             yield VSeq [ for i in 1 .. m.Groups.Count - 1 -> VStr m.Groups[i].Value ]
-                            m <- m.NextMatch()
+                            m <- Check.regexGuarded pat m.NextMatch
                     }
                 )
             | _ -> unreachable "the checker rejects 'rmatchAll' on these arguments"))
@@ -688,12 +797,12 @@ let private rsplitImpl: Value =
                 VSeq(
                     seq {
                         let mutable pos = 0
-                        let mutable m = re.Match s
+                        let mutable m = Check.regexGuarded pat (fun () -> re.Match s)
 
                         while m.Success do
                             yield VStr(s.Substring(pos, m.Index - pos))
                             pos <- m.Index + m.Length
-                            m <- m.NextMatch()
+                            m <- Check.regexGuarded pat m.NextMatch
 
                         yield VStr(s.Substring pos)
                     }
@@ -717,7 +826,8 @@ let private globSegRegex (seg: string) : System.Text.RegularExpressions.Regex =
     while i < seg.Length do
         (match seg[i] with
          | '*' -> sb.Append "[^/]*" |> ignore
-         | '?' -> sb.Append "[^/]" |> ignore
+         // one code point, a surrogate pair included [D:str-code-points]
+         | '?' -> sb.Append "(?:[\\uD800-\\uDBFF][\\uDC00-\\uDFFF]|[^/])" |> ignore
          | '[' ->
              let close = seg.IndexOf(']', i + 1)
 
@@ -813,7 +923,14 @@ let private globWalk (rootFs: string) (pattern: string) : seq<string> =
                                     yield! walk sub (prefix + name + "/") rest
             }
 
-        yield! walk rootFs rootDisplay segs
+        // a trailing `/` matches directories only, each shown with its
+        // slash — bash's law (`*/` is `a/`, never a file) [D:path-glob]
+        if pattern.Length > 1 && pattern.EndsWith "/" then
+            for m in walk rootFs rootDisplay segs do
+                if System.IO.Directory.Exists(System.IO.Path.Combine(rootFs, m)) then
+                    yield m + "/"
+        else
+            yield! walk rootFs rootDisplay segs
     }
 
 let private globImpl: Value =
@@ -1059,7 +1176,7 @@ let private replaceImpl: Value =
 let private strLenImpl: Value =
     VBuiltin(fun v ->
         match v with
-        | VStr s -> VInt(int64 s.Length)
+        | VStr s -> VInt(int64 (CodePoints.length s)) // [D:str-code-points]
         | v -> unreachable $"the checker rejects 'strLen' on {formatValue v}")
 
 let private toIntImpl: Value =
@@ -1104,7 +1221,7 @@ let private tryIndexOfImpl: Value =
             | VStr n, VStr s ->
                 match s.IndexOf n with
                 | -1 -> vNone
-                | i -> vSome (VInt(int64 i))
+                | i -> vSome (VInt(int64 (CodePoints.ofOffset s i))) // [D:str-code-points]
             | _ -> unreachable "the checker rejects 'tryIndexOf' on these arguments"))
 
 let private substringImpl: Value =
@@ -1114,11 +1231,14 @@ let private substringImpl: Value =
                 match start, len, subject with
                 | VInt st64, VInt ln64, VStr s ->
                     // bounds in int64, so no start + length can wrap past
-                    // the check [D:int-narrowing]
-                    if st64 < 0L || ln64 < 0L || st64 > int64 s.Length || ln64 > int64 s.Length - st64 then
-                        failwith $"substring: out of bounds (start {st64}, length {ln64}, string length {s.Length})"
+                    // the check [D:int-narrowing]; positions are code
+                    // points [D:str-code-points]
+                    let n = int64 (CodePoints.length s)
+
+                    if st64 < 0L || ln64 < 0L || st64 > n || ln64 > n - st64 then
+                        failwith $"substring: out of bounds (start {st64}, length {ln64}, string length {n})"
                     else
-                        VStr(s.Substring(toIntArg "Str.sub" Position st64, toIntArg "Str.sub" Amount ln64))
+                        VStr(CodePoints.sub s (toIntArg "Str.sub" Position st64) (toIntArg "Str.sub" Amount ln64))
                 | _ -> unreachable "the checker rejects 'substring' on these arguments")))
 
 // Str.replicate / padLeft / padRight [D:port-members]: the width
@@ -1150,7 +1270,8 @@ let private strReplicateImpl: Value =
             | _ -> unreachable "the checker rejects 'Str.replicate' on these arguments"))
 
 // .NET PadLeft/PadRight semantics, deliberately: width is the total
-// width, spaces pad, an already-longer string is unchanged
+// width (in code points [D:str-code-points]), spaces pad, an
+// already-longer string is unchanged
 let private padImpl (name: string) (f: int -> string -> string) : Value =
     VBuiltin(fun wV ->
         VBuiltin(fun sV ->
@@ -1160,7 +1281,8 @@ let private padImpl (name: string) (f: int -> string -> string) : Value =
                     failwith $"Str.{name}: the width must be non-negative; got {w}"
                 else
                     let w32 = toIntArg $"Str.{name}" Amount w
-                    VStr(buildStr $"Str.{name}" (max w (int64 s.Length)) (fun () -> f w32 s))
+                    let pad = max 0L (w - int64 (CodePoints.length s))
+                    VStr(buildStr $"Str.{name}" (int64 s.Length + pad) (fun () -> f w32 s))
             | _ -> unreachable $"the checker rejects 'Str.{name}' on these arguments"))
 
 let private defaultToImpl: Value =
@@ -1211,7 +1333,18 @@ let private tB = TVar "b"
 let private pairwiseImpl: Value =
     VBuiltin(fun s ->
         match s with
-        | VSeq items -> VSeq(items |> Seq.pairwise |> Seq.map (fun (a, b) -> VTuple [ a; b ]))
+        | VSeq items ->
+            staged items (fun () ->
+                let prev = ref None
+
+                stage (fun x ->
+                    match prev.Value with
+                    | None ->
+                        prev.Value <- Some x
+                        Skip
+                    | Some p ->
+                        prev.Value <- Some x
+                        Emit(VTuple [ p; x ])))
         | v -> unreachable $"the checker rejects 'pairwise' on {formatValue v}")
 
 let private zipImpl: Value =
@@ -1628,17 +1761,15 @@ let private distinctImpl: Value =
     VBuiltin(fun s ->
         match s with
         | VSeq items ->
-            VSeq(
-                Seq.delay (fun () ->
-                    seq {
-                        let seen = ResizeArray<Value>()
+            staged items (fun () ->
+                let seen = ResizeArray<Value>()
 
-                        for x in items do
-                            if not (seen.Contains x) then
-                                seen.Add x
-                                yield x
-                    })
-            )
+                stage (fun x ->
+                    if seen.Contains x then
+                        Skip
+                    else
+                        seen.Add x
+                        Emit x))
         | v -> unreachable $"the checker rejects 'distinct' on {formatValue v}")
 
 // weir owns its runtime messages [D:message-ownership]: FSharp.Core's
@@ -1688,23 +1819,25 @@ let private skipImpl: Value =
     VBuiltin(fun n ->
         VBuiltin(fun s ->
             match n, s with
+            | VInt i, VSeq _ when i < 0L -> failwith $"skip: the count must be non-negative; got {i}"
             | VInt i, VSeq items ->
                 // still lazy [D:message-ownership]: the count is checked as
                 // the seq is walked, not by probing its length up front
-                VSeq(
-                    seq {
-                        let mutable seen = 0L
+                staged items (fun () ->
+                    let seen = ref 0L
 
-                        for x in items do
-                            if seen >= i then
-                                yield x
+                    { Step =
+                        fun x ->
+                            let keep = seen.Value >= i
+                            seen.Value <- seen.Value + 1L
+                            if keep then Emit x else Skip
+                      Prefix = []
+                      Finish =
+                        fun () ->
+                            if seen.Value < i then
+                                failwith $"skip: fewer than {i} elements to skip (the seq had {seen.Value})"
 
-                            seen <- seen + 1L
-
-                        if seen < i then
-                            failwith $"skip: fewer than {i} elements to skip (the seq had {seen})"
-                    }
-                )
+                            [] })
             | _ -> unreachable "the checker rejects 'skip' on these arguments"))
 
 
@@ -1716,26 +1849,22 @@ let private collectImpl: Value =
         VBuiltin(fun s ->
             match s with
             | VSeq items ->
-                VSeq(
-                    items
-                    |> Seq.collect (fun x ->
+                staged items (fun () ->
+                    stage (fun x ->
                         match apply f x with
-                        | VSeq inner -> inner
-                        | v -> unreachable $"the checker guarantees a seq-yielding mapper, got {formatValue v}")
-                )
+                        | VSeq inner -> Splice inner
+                        | v -> unreachable $"the checker guarantees a seq-yielding mapper, got {formatValue v}"))
             | v -> unreachable $"the checker rejects 'collect' on {formatValue v}"))
 
 let private concatImpl: Value =
     VBuiltin(fun s ->
         match s with
         | VSeq items ->
-            VSeq(
-                items
-                |> Seq.collect (fun x ->
+            staged items (fun () ->
+                stage (fun x ->
                     match x with
-                    | VSeq inner -> inner
-                    | v -> unreachable $"the checker rejects concatenating {formatValue v}")
-            )
+                    | VSeq inner -> Splice inner
+                    | v -> unreachable $"the checker rejects concatenating {formatValue v}"))
         | v -> unreachable $"the checker rejects 'concat' on {formatValue v}")
 
 // find/tryFind: the X/tryX pair completed — X asserts, tryX asks
@@ -1752,7 +1881,13 @@ let private findImpl: Value =
 let private indexedImpl: Value =
     VBuiltin(fun s ->
         match s with
-        | VSeq items -> VSeq(items |> Seq.mapi (fun i x -> VTuple [ VInt(int64 i); x ]))
+        | VSeq items ->
+            staged items (fun () ->
+                let i = ref -1L
+
+                stage (fun x ->
+                    i.Value <- i.Value + 1L
+                    Emit(VTuple [ VInt i.Value; x ])))
         | v -> unreachable $"the checker rejects 'indexed' on {formatValue v}")
 
 // forcing: reversal needs the whole input (named in when-do-I-force)
@@ -1774,35 +1909,44 @@ let private chunkImpl: Value =
                     // preallocates n slots, so a large n failed in .NET's words
                     let size = toIntArg "chunkBySize" Amount n
 
-                    VSeq(
-                        seq {
-                            let buf = ResizeArray<Value>()
+                    staged items (fun () ->
+                        let buf = ResizeArray<Value>()
 
-                            for x in items do
+                        { Step =
+                            fun x ->
                                 buf.Add x
 
                                 if buf.Count = size then
-                                    yield VSeq(buf.ToArray() :> seq<Value>)
+                                    let chunk = VSeq(buf.ToArray() :> seq<Value>)
                                     buf.Clear()
-
-                            if buf.Count > 0 then
-                                yield VSeq(buf.ToArray() :> seq<Value>)
-                        }
-                    )
+                                    Emit chunk
+                                else
+                                    Skip
+                          Prefix = []
+                          Finish = fun () -> if buf.Count > 0 then [ VSeq(buf.ToArray() :> seq<Value>) ] else [] })
             | v, _ -> unreachable $"the checker rejects 'chunkBySize' on {formatValue v}"))
 
 let private takeWhileImpl: Value =
     VBuiltin(fun pred ->
         VBuiltin(fun s ->
             match s with
-            | VSeq items -> VSeq(items |> Seq.takeWhile (fun x -> apply pred x = VBool true))
+            | VSeq items -> staged items (fun () -> stage (fun x -> if apply pred x = VBool true then Emit x else Stop))
             | v -> unreachable $"the checker rejects 'takeWhile' on {formatValue v}"))
 
 let private skipWhileImpl: Value =
     VBuiltin(fun pred ->
         VBuiltin(fun s ->
             match s with
-            | VSeq items -> VSeq(items |> Seq.skipWhile (fun x -> apply pred x = VBool true))
+            | VSeq items ->
+                staged items (fun () ->
+                    let skipping = ref true
+
+                    stage (fun x ->
+                        if skipping.Value && apply pred x = VBool true then
+                            Skip
+                        else
+                            skipping.Value <- false
+                            Emit x))
             | v -> unreachable $"the checker rejects 'skipWhile' on {formatValue v}"))
 
 // counts by projected key, first-seen key order; forces on first pull
@@ -1823,7 +1967,10 @@ let private distinctByImpl: Value =
     VBuiltin(fun keyf ->
         VBuiltin(fun s ->
             match s with
-            | VSeq items -> VSeq(items |> Seq.distinctBy (apply keyf))
+            | VSeq items ->
+                staged items (fun () ->
+                    let seen = System.Collections.Generic.HashSet<Value>(HashIdentity.Structural)
+                    stage (fun x -> if seen.Add(apply keyf x) then Emit x else Skip))
             | v -> unreachable $"the checker rejects 'distinctBy' on {formatValue v}"))
 
 // fold without a seed: the first element is the accumulator (raises on
@@ -1873,7 +2020,16 @@ let private scanImpl: Value =
         VBuiltin(fun init ->
             VBuiltin(fun s ->
                 match s with
-                | VSeq items -> VSeq(items |> Seq.scan (fun acc x -> apply (apply folder acc) x) init)
+                | VSeq items ->
+                    staged items (fun () ->
+                        let acc = ref init
+
+                        { Step =
+                            fun x ->
+                                acc.Value <- apply (apply folder acc.Value) x
+                                Emit acc.Value
+                          Prefix = [ init ]
+                          Finish = fun () -> [] })
                 | v -> unreachable $"the checker rejects 'scan' on {formatValue v}")))
 
 let private tryPickImpl: Value =
@@ -1915,7 +2071,10 @@ let private exceptImpl: Value =
     VBuiltin(fun excl ->
         VBuiltin(fun s ->
             match excl, s with
-            | VSeq ex, VSeq items -> VSeq(items |> Seq.except ex)
+            | VSeq ex, VSeq items ->
+                staged items (fun () ->
+                    let seen = System.Collections.Generic.HashSet<Value>(ex, HashIdentity.Structural)
+                    stage (fun x -> if seen.Add x then Emit x else Skip))
             | v, _ -> unreachable $"the checker rejects 'except' on {formatValue v}"))
 
 let private replicateImpl: Value =
@@ -2511,8 +2670,8 @@ let private strMembers: (string * Ty * Value) list =
       "length", TFun(TStr, TInt), strLenImpl
       "sub", TFun(TInt, TFun(TInt, TFun(TStr, TStr))), substringImpl
       "replicate", TFun(TInt, TFun(TStr, TStr)), strReplicateImpl
-      "padLeft", TFun(TInt, TFun(TStr, TStr)), padImpl "padLeft" (fun w (s: string) -> s.PadLeft(w, ' '))
-      "padRight", TFun(TInt, TFun(TStr, TStr)), padImpl "padRight" (fun w (s: string) -> s.PadRight(w, ' '))
+      "padLeft", TFun(TInt, TFun(TStr, TStr)), padImpl "padLeft" CodePoints.padLeft
+      "padRight", TFun(TInt, TFun(TStr, TStr)), padImpl "padRight" CodePoints.padRight
       "toInt", TFun(TStr, TInt), toIntImpl
       "tryToInt", TFun(TStr, TNamed("Option", [ TInt ])), tryToIntImpl
       // sha256 only [D:encoding-law]: md5 is broken (offering it invites
@@ -3033,6 +3192,23 @@ let private envOfPairsImpl: Value =
             )
         | v -> unreachable $"the checker rejects 'Env.ofPairs' on {formatValue v}")
 
+// Env.vars under an overlay snapshot (None = the live overlay at force);
+// the bare value rebinds to its eval-site snapshot, as `pwd` does
+// [D:ambient-capture] [D:env-overlay-read]
+let private envVarsFor (snap: (string * string) list list option) : Value =
+    VSeq(
+        Seq.delay (fun () ->
+            // hashtable order is noise [D:ls-sort]: sorted by name,
+            // the same ordinal rule. (fromFile/ofPairs stay in given
+            // order — there the order is the author's information,
+            // the YMap argument.)
+            Session.envVarsIn (snap |> Option.defaultWith Session.envOverlay)
+            |> Seq.sortBy fst
+            |> Seq.map (fun (k, v) -> recordOf envVarDef [ VStr k; VStr v ]))
+    )
+
+let private envVarsImpl: Value = envVarsFor None
+
 // Env — process environment [D:typed-env]
 let private envMembers: (string * Ty * Value) list =
     [ "pair", TFun(TStr, TFun(TStr, TNamed("EnvVar", []))), envPairImpl
@@ -3042,23 +3218,12 @@ let private envMembers: (string * Ty * Value) list =
       VBuiltin(fun v ->
           match v with
           | VStr name ->
-              match System.Environment.GetEnvironmentVariable name with
-              | null -> VUnion("None", None)
-              | value -> VUnion("Some", Some(VStr value))
+              // the `within env` overlay included [D:env-overlay-read]
+              match Session.getEnv name with
+              | None -> VUnion("None", None)
+              | Some value -> VUnion("Some", Some(VStr value))
           | v -> unreachable $"the checker rejects 'Env.get' on {formatValue v}")
-      "vars",
-      TSeq(TNamed(envVarDef.Name, [])),
-      VSeq(
-          Seq.delay (fun () ->
-              // hashtable order is noise [D:ls-sort]: sorted by name,
-              // the same ordinal rule. (fromFile/ofPairs stay in given
-              // order — there the order is the author's information,
-              // the YMap argument.)
-              System.Environment.GetEnvironmentVariables()
-              |> Seq.cast<System.Collections.DictionaryEntry>
-              |> Seq.sortBy (fun e -> string e.Key)
-              |> Seq.map (fun e -> recordOf envVarDef [ VStr(string e.Key); VStr(string e.Value) ]))
-      )
+      "vars", TSeq(TNamed(envVarDef.Name, [])), envVarsImpl
       "fromFile", TFun(TStr, TSeq(TNamed(envVarDef.Name, []))), envFromFileImpl ]
 
 // the read-side guards [D:sized-findings]: reads must give the same
@@ -3405,6 +3570,8 @@ let private fileMembers: (string * Ty * Value) list =
 let private exitImpl: Value =
     VBuiltin(fun v ->
         match v with
+        // the OS keeps only the low byte, so `exit 256` would exit 0 [D:exit-range]
+        | VInt n when n < 0L || n > 255L -> failwith $"exit {n}: an exit code is 0..255 — the OS keeps only the low byte, so it would exit {n &&& 255L}"
         | VInt n -> raise (ExitRequest(int n))
         | v -> unreachable $"the checker rejects 'exit' on {formatValue v}")
 
@@ -4303,7 +4470,9 @@ let private runRequest (reqV: Value) : Http.Resp =
               Body = httpBodyOf (get "body")
               TimeoutMs =
                 (match get "timeout" with
-                 | VDur ms -> toIntArg "Http timeout (ms)" Amount ms
+                 // any positive Duration is honoured [D:long-waits]
+                 | VDur ms when ms <= 0L -> failwith $"Http: the timeout must be positive; got {formatDuration ms}"
+                 | VDur ms -> ms
                  | v -> unreachable $"timeout {formatValue v}")
               Insecure =
                 (match get "insecure" with
@@ -4420,7 +4589,7 @@ let private httpExpectImpl: Value =
 
                     let snippet =
                         let flat = resp.Body.Replace("\r", " ").Replace("\n", " ").Trim()
-                        if flat.Length > 200 then flat.Substring(0, 200) + "…" else flat
+                        if CodePoints.length flat > 200 then CodePoints.head flat 200 + "…" else flat
 
                     let detail = if snippet = "" then "" else $": {snippet}"
                     let methodName = httpMethodName (recGet "method" f)
@@ -6242,9 +6411,9 @@ let builtinDocs: Map<string, BuiltinDoc> =
           "Str.replace",
           bd "Replace every occurrence of a substring." (Some "Str.replace \"a\" \"b\" \"aba\"") None
           |> named [ "old"; "new"; "s" ]
-          "Str.length", (bd "The number of characters." (Some "Str.length \"abc\"") None |> named [ "s" ])
+          "Str.length", (bd "The number of characters (Unicode code points)." (Some "Str.length \"abc\"") None |> named [ "s" ])
           "Str.sub",
-          (bd "A substring by start index and length." (Some "Str.sub 0 2 \"abc\"") None
+          (bd "A substring by start index and length, both in characters (code points)." (Some "Str.sub 0 2 \"abc\"") None
            |> named [ "start"; "len"; "s" ])
           "Str.replicate",
           (bd "The string repeated n times. 0 gives the empty string; a negative count raises, as in Seq.replicate."
@@ -7613,3 +7782,4 @@ Check.reservedBinderNames.Value <-
 // arm. glob captures at its call, so it needs no rebinder.
 Eval.ambientRebinders["ls"] <- (realLs, (fun () -> lsForCwd (Session.Cwd())))
 Eval.ambientRebinders["pwd"] <- (pwdImpl, (fun () -> pwdForCwd (Session.Cwd())))
+Eval.ambientRebinders["Env.vars"] <- (envVarsImpl, (fun () -> envVarsFor (Some(Session.envOverlay ()))))

@@ -932,6 +932,15 @@ let streamingTests =
               // lazy over matches: first 2 of many yields exactly 2
               expectValue "Str.rmatchAll @\"(\\d)\" \"12345\" |> take 2 |> Seq.length" (VInt 2L)
           }
+          test "catastrophic backtracking raises the named regex timeout [D:regex-timeout]" {
+              let ex =
+                  Expect.throwsC
+                      (fun () -> run "Str.isMatch @\"^(a+)+$\" (Str.replicate 40 \"a\" + \"!\")" |> ignore)
+                      id
+
+              Expect.stringContains ex.Message "regex timeout" ""
+              Expect.equal Weir.Check.regexTimeout (System.TimeSpan.FromSeconds 5.0) "the documented bound"
+          }
           test "feed pulls its INPUT lazily: an early-exiting child bounds the pulls [D:spawn-spec]" {
               // the standing laziness rule reaches inputs — the writer
               // task pulls as the pipe accepts, so `head -1` over a
@@ -1646,6 +1655,55 @@ let boundaryTests =
               let empty = Expect.throwsC (fun () -> runWith [ "src", VSeq [ VStr "" ] ] "src |> from xml XProj" |> ignore) id
               Expect.stringContains empty.Message "empty input — expected one XML document" ""
           }
+          test "from xml: a DTD refuses — no entity expands or resolves [D:xml-no-dtd]" {
+              let refuse (doc: string list) =
+                  (Expect.throwsC (fun () -> runWith [ "src", VSeq(doc |> List.map VStr) ] "src |> from xml XProj" |> ignore) id)
+                      .Message
+
+              let ext = refuse [ "<!DOCTYPE Project [<!ENTITY e SYSTEM \"file:///etc/hostname\">]>"; "<Project>&e;</Project>" ]
+              Expect.stringContains ext "a DTD (<!DOCTYPE ...>) is outside the XML subset" "an external entity is never silently dropped"
+
+              let inner = refuse [ "<!DOCTYPE Project [<!ENTITY e \"X\">]>"; "<Project>&e;</Project>" ]
+              Expect.stringContains inner "outside the XML subset" "an internal entity never expands"
+
+              Expect.stringContains (refuse [ "<!DOCTYPE Project>"; "<Project/>" ]) "remove it" "a bare DOCTYPE too"
+
+              Expect.equal
+                  (runWith [ "src", VSeq [ VStr "<?xml version=\"1.0\"?>"; VStr "<Project>&amp;&#65;</Project>" ] ] "src |> from xml XProj")
+                  (VRecord("XProj", [ "groups", VSeq []; "refs", VSeq [] ]))
+                  "the predefined entities and character references still read"
+          }
+          test "from xml: a repeated element into a scalar or record field refuses, teaching the seq (triage 16b)" {
+              let env2 =
+                  env
+                  |> declare "type XOne = { AssemblyName: string }"
+                  |> declare "type XOpt = { AssemblyName: Option<string> }"
+                  |> declare "type XRec = { PropertyGroup: XOne }"
+
+              let refuse ty (doc: string) =
+                  match Weir.Parser.parseStmt $"src |> from xml {ty}" with
+                  | Ok(SExpr e) ->
+                      match Weir.Check.typecheck env2 e with
+                      | Ok te ->
+                          (Expect.throwsC (fun () -> Weir.Eval.eval (Map.add "src" (VSeq [ VStr doc ]) valueEnv) te |> ignore) id)
+                              .Message
+                      | Error terr -> failtest (formatError terr)
+                  | other -> failtest $"unexpected: {other}"
+
+              let twice = "<P><AssemblyName>a</AssemblyName><AssemblyName>b</AssemblyName></P>"
+
+              Expect.stringContains
+                  (refuse "XOne" twice)
+                  "element <AssemblyName> repeats in <P> for field 'AssemblyName' — declare seq<string>"
+                  "never silently the first"
+
+              Expect.stringContains (refuse "XOpt" twice) "declare seq<string>" "Option<string> too"
+
+              Expect.stringContains
+                  (refuse "XRec" "<P><PropertyGroup/><PropertyGroup/></P>")
+                  "declare [<Elem \"PropertyGroup\">] seq<XOne>"
+                  "a record field names the [<Elem>] the seq needs"
+          }
           test "from xml: check-time laws — text-only leaves, [<Attr>]/[<Elem>] fit, no wrap, read-only [D:from-xml]" {
               Expect.stringContains (checkErr "src |> from xml XInt").Message "XML values are text" "numbers must be declared string"
 
@@ -1985,6 +2043,44 @@ let boundaryTests =
                   | Error terr -> failtest (formatError terr)
               | other -> failtest $"unexpected: {other}"
           }
+          test "a quoted district key is literal, like a quoted value; a bare $name key splices [D:yaml-district]" {
+              let src =
+                  asm
+                      [ "let d = yaml"
+                        "    \"$(z)\": 1"
+                        "    m:"
+                        "        for (k, v) in [(\"a\", \"x\")]"
+                        "            $k: $v"
+                        "            \"$k\": $v"
+                        "            '$v': \"$k\""
+                        "    l:"
+                        "        - \"$q\": 2" ]
+
+              let rec keys (v: Weir.Eval.Value) : string list =
+                  match v with
+                  | Weir.Eval.VUnion("YMap", Some(Weir.Eval.VSeq pairs)) ->
+                      pairs
+                      |> Seq.collect (fun p ->
+                          match p with
+                          | Weir.Eval.VTuple [ Weir.Eval.VStr k; inner ] -> k :: keys inner
+                          | _ -> failtest "bad pair")
+                      |> List.ofSeq
+                  | Weir.Eval.VUnion("YSeq", Some(Weir.Eval.VSeq items)) -> items |> Seq.collect keys |> List.ofSeq
+                  | Weir.Eval.VUnion("YStr", Some(Weir.Eval.VStr s)) -> [ $"={s}" ]
+                  | Weir.Eval.VUnion("YInt", Some(Weir.Eval.VInt n)) -> [ $"={n}" ]
+                  | _ -> []
+
+              match Weir.Parser.parseLine realResolver src with
+              | Ok(SLet(_, e)) ->
+                  match typecheck env e with
+                  | Ok te ->
+                      Expect.equal
+                          (keys (Weir.Eval.eval valueEnv te))
+                          [ "$(z)"; "=1"; "m"; "a"; "=x"; "$k"; "=x"; "$v"; "=$k"; "l"; "$q"; "=2" ]
+                          "quoted keys stay text, as quoted values do"
+                  | Error terr -> failtest (formatError terr)
+              | other -> failtest $"unexpected: {other}"
+          }
           test "the heredoc district assembles exactly as yaml's does [D:text-block]" {
               match Weir.Script.assemble [ 1, "let t = <<<"; 2, "    echo $HOME {x}"; 3, ""; 4, "        deep" ] with
               | Ok [ ll ] ->
@@ -2035,6 +2131,20 @@ let boundaryTests =
                   (evalStrs (asm [ "let t = <<<"; "    first"; "    // mid"; "    tail // stays" ]))
                   [ "first"; "// mid"; "tail // stays" ]
                   "mid comment-only and trailing-comment bytes both survive"
+          }
+          test "an outdented comment inside a heredoc is an outdent error, after it a comment ends the block" {
+              let assembled lines =
+                  Weir.Script.assemble (lines |> List.mapi (fun i l -> i + 1, l))
+
+              for comment in [ "  // outdented"; "// col0" ] do
+                  match assembled [ "let t = <<<"; "    one"; comment; "    two"; "print t" ] with
+                  | Error e ->
+                      Expect.stringContains e "line 3: this comment line outdents below the heredoc's first line" comment
+                  | Ok _ -> failtest $"a comment inside the block must not vanish: {comment}"
+
+              match assembled [ "let t = <<<"; "    one"; "// after the block"; ""; "print t" ] with
+              | Ok lls -> Expect.equal lls.Length 2 "a comment after the block stays transparent"
+              | Error e -> failtest $"a comment after the block is fine: {e}"
           }
           test "a heredoc block is a seq<string>: verbatim lines, blanks survive [D:text-block]" {
               let src = asm [ "let t = <<<"; "    a $HOME {x}"; ""; "        deep" ]
@@ -2370,6 +2480,36 @@ let boundaryTests =
               match yamlDoc [ "a:"; "- x"; "b: 1" ] with
               | Weir.Yaml.NMap([ ("a", Weir.Yaml.NSeq(_, _)); ("b", _) ], _) -> ()
               | other -> failtest $"zero-indent seq + sibling: {other}"
+          }
+          test "a plain value holding ': ' refuses like every other yaml reader (triage 15a)" {
+              Expect.stringContains (yamlErr [ "f: a: b" ]) "line 1: mapping values are not allowed here — quote the value" "inner ': '"
+              Expect.stringContains (yamlErr [ "f: a:" ]) "quote the value" "trailing ':'"
+              Expect.stringContains (yamlErr [ "- x"; "- a: b: c" ]) "line 2:" "inside a compact item"
+
+              match yamlDoc [ "f: \"a: b\""; "u: http://x:80/p" ] with
+              | Weir.Yaml.NMap([ ("f", Weir.Yaml.NScalar("a: b", true, _)); ("u", Weir.Yaml.NScalar("http://x:80/p", false, _)) ], _) -> ()
+              | other -> failtest $"quoted ': ' and a bare ':' stay values: {other}"
+          }
+          test "a compact sequence map takes its column from the dash gap (triage 15b)" {
+              Expect.equal
+                  (yamlDoc [ "items:"; "-   x: 1"; "    y: 2"; "-   x: 3"; "    y: 4" ])
+                  (yamlDoc [ "items:"; "- x: 1"; "  y: 2"; "- x: 3"; "  y: 4" ])
+                  "the 4-indent formatter style reads as the 2-indent one"
+
+              Expect.stringContains (yamlErr [ "-   x: 1"; "  y: 2" ]) "line 2:" "a sibling left of the gap column still errors"
+          }
+          test "'...' ends a document (triage 15c)" {
+              match yamlDoc [ "f: a"; "..." ] with
+              | Weir.Yaml.NMap([ ("f", Weir.Yaml.NScalar("a", false, _)) ], _) -> ()
+              | other -> failtest $"trailing '...': {other}"
+
+              match Weir.Yaml.parseDocs ([ "a: 1"; "..."; "---"; "b: 2"; "..." ] |> List.mapi (fun i l -> i + 1, l)) with
+              | Ok [ _; _ ] -> ()
+              | other -> failtest $"'...' then '---' is two documents, no empty one: {other}"
+
+              match yamlDoc [ "f: \"...\"" ] with
+              | Weir.Yaml.NMap([ ("f", Weir.Yaml.NScalar("...", true, _)) ], _) -> ()
+              | other -> failtest $"'...' as a value stays data: {other}"
           }
           test "quoted yaml keys unescape like values; every key to yaml writes reads back (B25)" {
               let keysOf d =
@@ -3421,7 +3561,13 @@ let boundaryCheckTests =
               let e = "let xs = nats |> map (fun n -> Running n) in xs |> to json"
               Expect.stringContains (checkErr e).Message "is an untagged union" ""
           }
-          test "to json standalone is rejected" { Expect.stringContains (checkErr "to json").Message "pipe stage" "" } ]
+          test "to json standalone is rejected" { Expect.stringContains (checkErr "to json").Message "pipe stage" "" }
+          test "to json/yaml on a generic value teaches where to call it, not the type variable" {
+              for fmt in [ "json"; "yaml" ] do
+                  let m = (checkErr $"let dump x = x |> to {fmt} in dump 1").Message
+                  Expect.stringContains m $"'to {fmt}' needs a concrete type" fmt
+                  Expect.stringContains m "where the type is known" fmt
+          } ]
 
 let shorthandTests =
     testList
@@ -6214,6 +6360,34 @@ let chooseTests =
           test "alternating append/map nests 100k deep [D:seq-depth-iterative]" {
               expectValue "[1..100000] |> Seq.fold (fun acc i -> Seq.append (Seq.map (fun x -> x) acc) [i]) [] |> Seq.head" (VInt 1L)
           }
+          test "a 200k-deep Seq.where / Seq.choose fold enumerates [D:seq-depth-iterative]" {
+              expectValue "[1..200000] |> Seq.fold (fun acc i -> Seq.where (fun x -> x <> i) acc) [0; 300000] |> Seq.map (fun x -> $\"{x}\") |> Str.join \",\"" (VStr "0,300000")
+              expectValue "[1..200000] |> Seq.fold (fun acc _ -> Seq.choose (fun x -> if x > 0 then Some(x + 1) else None) acc) [-1; 1] |> Seq.sum" (VInt 200001L)
+          }
+          test "200k-deep stateful and splicing combinators enumerate [D:seq-depth-iterative]" {
+              expectValue "[1..200000] |> Seq.fold (fun acc _ -> Seq.take 2 acc) nats |> Seq.sum" (VInt 1L)
+              expectValue "[1..200000] |> Seq.fold (fun acc _ -> Seq.collect (fun x -> [x]) acc) [7] |> Seq.head" (VInt 7L)
+              expectValue "[1..200000] |> Seq.fold (fun acc _ -> Seq.concat [acc]) [7] |> Seq.head" (VInt 7L)
+              expectValue "[1..200000] |> Seq.fold (fun acc _ -> Seq.skipWhile (fun x -> x < 0) acc) [-1; 5] |> Seq.head" (VInt 5L)
+              expectValue "[1..200000] |> Seq.fold (fun acc _ -> Seq.takeWhile (fun x -> x > 0) acc) (Seq.append [1; 2; 0] nats) |> Seq.length" (VInt 2L)
+              expectValue "[1..200000] |> Seq.fold (fun acc _ -> Seq.distinct acc) [1; 1; 2] |> Seq.length" (VInt 2L)
+              expectValue "[1..200000] |> Seq.fold (fun acc _ -> Seq.skip 0 acc) [5] |> Seq.head" (VInt 5L)
+          }
+          test "a mixed 200k-deep where/choose/map/append chain enumerates [D:seq-depth-iterative]" {
+              expectValue
+                  "[1..200000] |> Seq.fold (fun acc i -> match i % 4 with | 0 -> Seq.where (fun x -> x % 2 == 1) acc | 1 -> Seq.choose (fun x -> Some x) acc | 2 -> Seq.map (fun x -> x + 2) acc | _ -> if i > 199990 then Seq.append acc [i] else Seq.append acc []) [] |> Seq.map (fun x -> $\"{x}\") |> Str.join \",\""
+                  (VStr "199995,199997,199999")
+          }
+          test "chain stages keep per-enumeration state and F#'s pull counts [D:seq-depth-iterative]" {
+              // take stops without pulling past its last element
+              expectValue "nats |> Seq.map (fun x -> 10 / (2 - x)) |> Seq.take 2 |> Seq.sum" (VInt 15L)
+              // stateful stages restart on a second enumeration
+              expectValue "let xs = [1; 1; 2] |> Seq.distinct |> Seq.indexed in Seq.length xs + Seq.length xs" (VInt 4L)
+              expectValue "[1; 2; 3] |> Seq.scan (fun a x -> a + x) 0 |> Seq.append [9] |> Seq.map (fun x -> $\"{x}\") |> Str.join \",\"" (VStr "9,0,1,3,6")
+              expectValue "[1..5] |> Seq.chunkBySize 2 |> Seq.map Seq.sum |> Seq.map (fun x -> $\"{x}\") |> Str.join \",\"" (VStr "3,7,5")
+              expectValue "[1; 2; 3] |> Seq.collect (fun x -> nats |> Seq.take x) |> Seq.take 4 |> Seq.map (fun x -> $\"{x}\") |> Str.join \",\"" (VStr "0,0,1,0")
+              expectValue "[1; 2; 3; 2] |> Seq.pairwise |> Seq.length" (VInt 3L)
+          }
           test "bare choose resolves — single-home means bare [D:bare-partition]" {
               Expect.equal (run "[1] |> choose (fun x -> Some x) |> Seq.length") (VInt 1L) ""
           }
@@ -7215,7 +7389,10 @@ let replColorTests =
               let out = colorize "let s = @\"abc def"
               Expect.stringContains out "abc def\x1b[0m" "string span reaches EOL"
           }
-          test "redraw-cost ceiling: 1000 pathological 200-char lines" {
+          // sequenced: a wall-clock ceiling measured while the rest of the
+          // suite runs in parallel times the machine's load, not colorize
+          testSequenced
+          <| test "redraw-cost ceiling: 1000 pathological 200-char lines" {
               let line =
                   String.replicate 5 "let ZZig = $(git log) |> where (fun f -> f.bytes > 12B) ; "
                   + "@\"tail"
@@ -8695,6 +8872,25 @@ let planApplyTests =
               finally
                   System.IO.Directory.Delete(root, true)
           }
+          test "a trailing / globs directories only, each with its slash [D:path-glob]" {
+              let root = td ()
+              let r = weirPath root
+
+              let prog =
+                  [ $"Dir.create \"{r}/a/b\""
+                    $"File.write \"{r}/f1\" [\"x\"]"
+                    $"File.write \"{r}/a/f2\" [\"x\"]"
+                    $"within cd \"{r}\""
+                    "    let star = Path.glob \"*/\" |> Str.join \",\""
+                    "    let deep = Path.glob \"**/\" |> Str.join \",\""
+                    "    if star <> \"a/\" then fail $\"*/ gave {star}\""
+                    "    if deep <> \"a/,a/b/\" then fail $\"**/ gave {deep}\"" ]
+
+              try
+                  Expect.equal (runFile prog) 0 "dirs only"
+              finally
+                  System.IO.Directory.Delete(root, true)
+          }
           test "File.append inside a plan refuses — no v1 Op arm (kind-first)" {
               let dir = td ()
               System.IO.Directory.CreateDirectory dir |> ignore
@@ -9106,6 +9302,20 @@ let withinEnvPairsTests =
                       Expect.equal pairs 2 $"A in the head, B on its command: {sx}"
                   | Error f -> failtest f.Message
               | other -> failtest $"unexpected assembly: {other}"
+          }
+          test "Env.get and Env.vars see the overlay; a bare Env.vars keeps its site's [D:env-overlay-read]" {
+              let pin = "[Env.pair \"WEIR_T_OVL\" \"bar\"]"
+              expectValue $"within env {pin} Env.get \"WEIR_T_OVL\"" (VUnion("Some", Some(VStr "bar")))
+              expectValue "Env.get \"WEIR_T_OVL\"" (VUnion("None", None))
+
+              expectValue
+                  $"within env {pin} Env.vars |> Seq.where (fun v -> v.name == \"WEIR_T_OVL\") |> Seq.map _.value |> Seq.freeze"
+                  (VSeq [ VStr "bar" ])
+
+              // forced after the scope exits: the eval site's overlay applies
+              expectValue
+                  $"(within env {pin} Env.vars) |> Seq.where (fun v -> v.name == \"WEIR_T_OVL\") |> Seq.length"
+                  (VInt 1)
           } ]
 
 let withinAlwaysAnyTests =
@@ -11294,6 +11504,19 @@ let optionSweepTests =
               let ex = Expect.throwsC (fun () -> run "Str.sub 2 9 \"abc\"" |> ignore) id
               Expect.stringContains ex.Message "out of bounds" ""
           }
+          // [D:str-code-points]: an astral char is one position everywhere
+          test "strings count code points, never split a surrogate pair" {
+              expectValue "Str.length \"a😀b\"" (VInt 3)
+              expectValue "Str.sub 0 2 \"a😀b\"" (VStr "a😀")
+              expectValue "Str.sub 1 1 \"a😀b\"" (VStr "😀")
+              expectValue "\"a😀b\"[0..1]" (VStr "a😀")
+              expectValue "\"a😀b\"[^2..]" (VStr "😀b")
+              expectValue "Str.tryIndexOf \"b\" \"😀😀b\"" (VUnion("Some", Some(VInt 2)))
+              expectValue "Str.padLeft 3 \"😀\"" (VStr "  😀")
+              expectValue "Str.padRight 3 \"😀\"" (VStr "😀  ")
+              let ex = Expect.throwsC (fun () -> run "Str.sub 0 4 \"a😀b\"" |> ignore) id
+              Expect.stringContains ex.Message "string length 3" ""
+          }
           test "match on Seq.tryHead pins the full idiom" {
               expectValue "match ls |> Seq.tryHead with | Some f -> f.name | None -> \"empty\"" (VStr "a.txt")
           } ]
@@ -12308,7 +12531,9 @@ let depthGuardTests =
               let spine = List.replicate 3000 "1" |> String.concat " + "
 
               match Weir.Parser.parseExpr spine with
-              | Error m -> Expect.stringContains m "nested too deeply" "spine caught by the post-parse gate"
+              | Error m ->
+                  Expect.stringContains m "nested too deeply" "spine caught by the post-parse gate"
+                  Expect.stringContains m "bind intermediates with let" "the flat chain's repair is named"
               | Ok _ -> failtest "a 3000-term spine must be rejected"
           }
           test "over-ceiling nested brackets diagnose, not hang (was O(2^n))" {
@@ -12714,6 +12939,18 @@ let agentFindingsTests =
                   match Weir.Parser.parseLine cmdResolver legal with
                   | Ok _ -> ()
                   | Error msg -> failtest $"legal form refused: {legal}: {msg}"
+          }
+          test "a triple-quoted string is one argv word; @\"…\" refuses with its own teaching [D:argv-at-raw]" {
+              match Weir.Parser.parseLine cmdResolver "echo \"\"\"a \"b\" c\"\"\" x" with
+              | Ok(Weir.Ast.SCmd e) -> Expect.stringContains (sprintf "%A" e) "EStr \"a \"b\" c\"" "the raw body is one piece"
+              | Ok s -> failtest $"expected a command, got {s}"
+              | Error msg -> failtest $"the triple form must be one word: {msg}"
+
+              match Weir.Parser.parseLine cmdResolver "echo -d @\"my file\"" with
+              | Error msg ->
+                  Expect.stringContains msg "is not an argv word" "own teaching"
+                  Expect.isFalse (msg.Contains "do not concatenate") "not the concatenation teaching"
+              | Ok _ -> failtest "@\"…\" in argv must refuse"
           }
           test "the homepage quotes the concatenation refusal EXACTLY [D:argv-concat]" {
               // byte-equality with the message the site shows — a wording
@@ -14681,6 +14918,12 @@ let offsideTests =
           test "exit rejects a string" {
               let terr = checkErr "exit \"boom\""
               Expect.stringContains (formatError terr) "int" ""
+          }
+          test "exit outside 0..255: a literal is a check error, a value raises [D:exit-range]" {
+              Expect.stringContains (formatError (checkErr "exit 256")) "it would exit 0" ""
+              Expect.stringContains (formatError (checkErr "exit -1")) "0..255" ""
+              let ex = Expect.throwsC (fun () -> run "let n = 257 in exit n" |> ignore) id
+              Expect.stringContains ex.Message "it would exit 1" ""
           } ]
 
 let sequencingTests =
@@ -15859,6 +16102,18 @@ let secretTests =
               let y = (checkErrIn e "{ token = Secret.of \"x\" } |> to yaml").Message
               Expect.stringContains y "must not cross to yaml" ""
           }
+          test "reading INTO a Secret is admitted; the value stays secret [D:secret-read]" {
+              let doc = "[\"{\\\"token\\\": \\\"s3\\\", \\\"alt\\\": null}\"]"
+              let read = doc + " |> from json {| token: Secret; alt: Option<Secret> |}"
+              Expect.equal (run (read + " |> _.token |> Secret.reveal")) (VStr "s3") "json wraps on the way in"
+              Expect.equal (run (read + " |> _.token |> show")) (VStr "***") "and shows as ***"
+              Expect.equal (run (read + " |> _.alt |> (fun o -> o == None)")) (VBool true) "Option<Secret> reads null"
+
+              Expect.equal
+                  (run "[\"token: y3\"] |> from yaml {| token: Secret |} |> _.token |> Secret.reveal")
+                  (VStr "y3")
+                  "yaml wraps on the way in"
+          }
           test "print refuses a Secret (show s -> ***), and Secret is not arithmetic" {
               Expect.stringContains (checkErr "print (Secret.of \"x\")").Message "will not render a Secret" ""
 
@@ -15946,6 +16201,32 @@ let httpTests =
               finally
                   System.IO.File.Delete p
           }
+          test "a timeout past Int32.MaxValue ms is honoured, not refused [D:long-waits]" {
+              // 30 days > the 24.8-day timer ceiling: the send runs and fails
+              // on the transport (nothing listens on port 9), not the timeout
+              let ex =
+                  Expect.throwsC
+                      (fun () ->
+                          run "Http.send { Http.defaults with url = \"http://127.0.0.1:9/\"; timeout = 720h } |> _.status"
+                          |> ignore)
+                      id
+
+              Expect.stringContains ex.Message "refused" ex.Message
+
+              let zero =
+                  Expect.throwsC
+                      (fun () -> run "Http.send { Http.defaults with url = \"http://127.0.0.1:9/\"; timeout = 0s }" |> ignore)
+                      id
+
+              Expect.stringContains zero.Message "the timeout must be positive" ""
+
+              // the sliced deadline re-arms past each slice and fires at the total
+              use cts = new System.Threading.CancellationTokenSource()
+              let sw = System.Diagnostics.Stopwatch.StartNew()
+              Weir.Http.cancelAfterSliced 40L cts 150L
+              Expect.isTrue (cts.Token.WaitHandle.WaitOne 5000) "the deadline fires"
+              Expect.isGreaterThanOrEqual sw.ElapsedMilliseconds 140L "not at the first slice"
+          }
           test "Basic auth is base64(user:pass) — an ENCODING the runner does, not a caller" {
               Expect.equal (Weir.Http.basicToken "alice" "s3cr3t") "YWxpY2U6czNjcjN0" ""
           }
@@ -15959,7 +16240,7 @@ let httpTests =
 
               Expect.equal
                   (classify 30000 (nested (System.Threading.Tasks.TaskCanceledException())))
-                  (Weir.Http.Timeout 30000)
+                  (Weir.Http.Timeout 30000L)
                   "cancellation IS timeout — weir passes no tokens"
 
               Expect.equal
@@ -15987,10 +16268,10 @@ let httpTests =
           }
           test "transport messages: each case its own words, the repair nameable" {
               let msg = Weir.Http.transportMessage "weir.sh"
-              Expect.equal (msg (Weir.Http.Timeout 30000)) "timed out after 30s reaching weir.sh" "whole seconds"
+              Expect.equal (msg (Weir.Http.Timeout 30000L)) "timed out after 30s reaching weir.sh" "whole seconds"
 
               Expect.equal
-                  (msg (Weir.Http.Timeout 1500))
+                  (msg (Weir.Http.Timeout 1500L))
                   "timed out after 1500ms reaching weir.sh"
                   "sub-second stays ms"
 
@@ -16396,10 +16677,10 @@ let recursiveFieldTests =
 
               Expect.equal te.Ty (TSeq(TNamed("{| a: {| b: int |} |}", []))) "canonical names recurse"
 
-              // a Secret buried two deep still refuses with the dotted path
-              let m = (checkErr "[\"\"] |> from json {| t: {| x: Secret |} |}").Message
+              // a refused type buried two deep still refuses with the dotted path
+              let m = (checkErr "[\"\"] |> from json {| t: {| x: Bytes |} |}").Message
               Expect.stringContains m "t.x" "the path reaches through the nesting"
-              Expect.stringContains m "must not cross to JSON" ""
+              Expect.stringContains m "not representable in JSON" ""
           }
           test "an anonymous shape composes with a nested DECLARED record [D:anon-records]" {
               let e = env |> declare "type Entity = { entityid: string }"
@@ -18764,6 +19045,23 @@ let retryPollTests =
               Expect.isTrue
                   (sw.ElapsedMilliseconds < 2000L)
                   $"waited {sw.ElapsedMilliseconds}ms — the 10s interval was not cancelled"
+          }
+          // every valid Duration waits [D:duration]: past the timers'
+          // Int32.MaxValue ms the wait runs in slices, never a fake timeout
+          test "a delay/interval past Int32.MaxValue ms really waits until the timeout" {
+              for src, msg in
+                  [ "retry attempts=2 delay=2000h timeout=(Some 300ms) (1 == 2)", "retry: exhausted 2 attempt(s)"
+                    "poll timeout=300ms interval=2000h (1 == 2)", "poll: timed out" ] do
+                  let sw = System.Diagnostics.Stopwatch.StartNew()
+                  let ex = Expect.throwsC (fun () -> run src |> ignore) id
+                  sw.Stop()
+                  Expect.stringContains ex.Message msg src
+                  Expect.isTrue (sw.ElapsedMilliseconds >= 250L) $"{src}: gave up after {sw.ElapsedMilliseconds}ms"
+                  Expect.isTrue (sw.ElapsedMilliseconds < 5000L) $"{src}: the timeout did not cut the wait"
+          }
+          test "a timeout past Int32.MaxValue ms is a valid ceiling" {
+              expectValue "poll timeout=1440h interval=1ms (1 == 1)" VUnit
+              expectValue "retry attempts=2 delay=1ms timeout=(Some 1440h) (1 == 1)" VUnit
           } ]
 
 let tasksUnderneathTests =
@@ -19185,6 +19483,8 @@ let floatTests =
           test "-0.0 is unrepresentable: results normalize" {
               Expect.equal (run "-1.0 * 0.0") (VFloat 0.0) ""
               Expect.equal (run "show (-1.0 * 0.0)") (VStr "0.0") "rendering never shows a signed zero"
+              Expect.equal (run "show -0.0") (VStr "0.0") "the literal normalizes too"
+              Expect.equal (run "show [-0.0; -0.0e3]") (VStr "[0.0; 0.0]") "inside data and with an exponent"
           }
           test "mixed arithmetic errors naming Float.ofInt" {
               Expect.stringContains
@@ -19620,6 +19920,9 @@ let seqGapsTests =
                   (msgOf "Seq.replicate (0 - 1) \"x\" |> Seq.freeze")
                   "replicate: the count must be non-negative; got -1"
                   ""
+
+              Expect.equal (msgOf "[1; 2] |> Seq.take -1 |> Seq.freeze") "take: the count must be non-negative; got -1" ""
+              Expect.equal (msgOf "[1; 2] |> Seq.skip -1 |> Seq.freeze") "skip: the count must be non-negative; got -1" ""
           }
           test "the sum ruling: Seq.sum stays seq<int>; each numeric type owns its own [D:seq-gaps]" {
               Expect.equal (checkOk "[1; 2] |> Seq.average").Ty TFloat "the mean of ints IS a float"
@@ -19900,6 +20203,14 @@ let instantTests =
 
               Expect.equal (run "Instant.tryParse \"2026-08-14  12:00:00Z\"") (VUnion("None", None)) "one space only"
               Expect.equal (run "Instant.tryParse \"2026-08-14 \"") (run "Instant.tryParse \"2026-08-14\"") "a bare date is unchanged"
+          }
+          test "parse: a fraction dot with no digits is malformed" {
+              for src in [ "2026-08-14T12:34:56.Z"; "2026-08-14T12:34:56."; "2026-08-14 12:34:56.+02:00" ] do
+                  Expect.equal (run $"Instant.tryParse \"{src}\"") (VUnion("None", None)) src
+
+              let ex = Expect.throwsC (fun () -> run "Instant.parse \"2026-08-14T12:34:56.Z\"" |> ignore) id
+              Expect.stringContains ex.Message "not an ISO 8601 instant" "refused like any malformed instant"
+              Expect.equal (run "show (Instant.parse \"2026-08-14T12:34:56.5Z\")") (VStr "2026-08-14T12:34:56.500Z") "one digit reads"
           }
           test "parseWith: the named-format reader — prefix semantics, %b/%e, position errors, year-less refusal" {
               Expect.equal
@@ -20321,12 +20632,25 @@ let wireTableTests =
                   [ "Instant", "Instant.now ()"
                     "Duration", "5s"
                     "Size", "Size.parse \"1KiB\""
-                    "Bytes", "Str.toUtf8 \"x\""
-                    "Secret", "Secret.of \"x\"" ] do
+                    "Bytes", "Str.toUtf8 \"x\"" ] do
                   let msgs = cells ty value
                   let distinct = msgs |> List.map snd |> List.distinct
                   Expect.equal distinct.Length 1 $"{ty}: one text across the cells, got {msgs}"
                   Expect.stringContains distinct.Head "field 't': " $"{ty}: every cell names the field"
+          }
+          test "Secret refuses both write cells identically and reads in both [D:secret-read]" {
+              let write fmt =
+                  [ "type R = { t: Secret }"
+                    "let r = { t = Secret.of \"x\" }"
+                    $"let _j = [r] |> to {fmt} |> Seq.freeze" ]
+
+              let j = (firstErr (write "json")).Replace("JSON", "<fmt>")
+              let y = (firstErr (write "yaml")).Replace("yaml", "<fmt>")
+              Expect.equal j y "one text across the write cells"
+              Expect.stringContains j "field 't': a Secret must not cross" "the write refusal"
+
+              for read in [ "let _x = [\"\"] |> from json R"; "let _x = [\"t: x\"] |> from yaml R" ] do
+                  Expect.isEmpty (errorsIn "wire.weir" [ "type R = { t: Secret }"; read ]) read
           }
           test "Uuid crosses yaml both ways, as it crosses JSON" {
               let lines =
@@ -23850,6 +24174,62 @@ let fromTableTests =
                         ) ])
                   "columns slice at header offsets; int cells convert; blank interior lines skip"
           }
+          test "header offsets count code points — an astral cell does not shift the cut [D:str-code-points]" {
+              // tabwriter pads by rune count: 6 emoji + 2 spaces fill an 8-wide column
+              let sample =
+                  VSeq
+                      [ VStr "NAME    READY   STATUS             RESTARTS   AGE"
+                        VStr "😀😀😀😀😀😀  1/1     Running            0          5m" ]
+
+              match runT [ "src", sample ] "src |> from table TPod" with
+              | VSeq rows ->
+                  match List.ofSeq rows with
+                  | [ VRecord(_, fs) ] ->
+                      Expect.equal (fs |> List.map snd) [ VStr "😀😀😀😀😀😀"; VStr "1/1"; VStr "Running"; VInt 0L; VStr "5m" ] ""
+                  | other -> failtest $"unexpected rows {other}"
+              | v -> failtest $"unexpected {v}"
+          }
+          test "cells slice like per-column offsets: astral header, astral cells, a short line" {
+              let header = "N😀ME  READY  😀STATUS  AGE"
+              let cols = Weir.Table.columns header
+
+              for line in
+                  [ "😀😀😀😀😀😀  1/1    Run😀ning  5m"
+                    "plain   1/1    Running  5m"
+                    "😀😀"
+                    "" ] do
+                  let naive =
+                      cols
+                      |> List.mapi (fun i c ->
+                          let s = CodePoints.offset line c.Start
+
+                          let e =
+                              match List.tryItem (i + 1) cols with
+                              | Some n -> CodePoints.offset line n.Start
+                              | None -> line.Length
+
+                          line.Substring(s, max 0 (e - s)).Trim())
+
+                  Expect.equal (Weir.Table.cells cols line) naive $"one walk = per-column offsets: {line}"
+          }
+          // sequenced: a wall-clock ceiling under the parallel suite's load
+          // times the machine, not the walk
+          testSequenced
+          <| test "a wide table slices in linear time per line (2000 columns x 200 rows) [D:str-code-points]" {
+              let n = 2000
+              let header = [ for i in 0 .. n - 1 -> $"C{i:D4}" ] |> String.concat "   "
+              let row = [ for i in 0 .. n - 1 -> $"v{i:D4}" ] |> String.concat "   "
+              let cols = Weir.Table.columns header
+              let sw = System.Diagnostics.Stopwatch.StartNew()
+
+              for _ in 1..200 do
+                  Weir.Table.cells cols row |> ignore
+
+              sw.Stop()
+              Expect.equal (List.last (Weir.Table.cells cols row)) "v1999" "last cell"
+              // a per-column whole-line scan took ~60s here; one walk takes milliseconds
+              Expect.isTrue (sw.ElapsedMilliseconds < 5000L) $"200 rows took {sw.ElapsedMilliseconds}ms"
+          }
           test "az `-o table` dashes separator under the header is skipped, never a garbage row [D:from-table-az]" {
               // az (and tabulate-style tools) draw `----  ----` between the
               // header and the data; it must not parse as a data row. The
@@ -24405,6 +24785,37 @@ let tryTests =
               let diags = diagsIn "shadow.weir" [ "type Status ="; "    | Ok"; "    | Error"; "let s = Ok"; "print (show s)" ]
               Expect.isEmpty diags "no ambiguity with Result's cases"
           }
+          test "match arms resolve by the union owning ALL their cases, not the first arm's" {
+              // Ok alone prefers the script's Outcome; Ok + Error together
+              // only fit Result — in either arm order
+              for arms in [ "| Ok n -> show (n + 1) | Error e -> e"; "| Error e -> e | Ok n -> show (n + 1)" ] do
+                  let diags =
+                      diagsIn
+                          "arms.weir"
+                          [ "type Outcome = Ok of int | Bad"
+                            $"let g r = match r with {arms}"
+                            "print (g (Error \"x\"))" ]
+
+                  Expect.isEmpty diags arms
+
+              // Ok + Bad: only Outcome owns both
+              Expect.isEmpty
+                  (diagsIn
+                      "arms2.weir"
+                      [ "type Outcome = Ok of int | Bad"
+                        "let h o = match o with | Ok n -> show n | Bad -> \"bad\""
+                        "print (h Bad)" ])
+                  "the local union owning both"
+
+              // no one union owns them all: say so, naming each case's owner
+              let msgs =
+                  diagsIn
+                      "arms3.weir"
+                      [ "type A = X | Y"; "type B = Z | W"; "let g r = match r with | X -> 1 | Z -> 2 | _ -> 3"; "print (show (g X))" ]
+                  |> List.map (fun d -> d.Message)
+
+              Expect.exists msgs (fun m -> m.Contains "no one union declares them all" && m.Contains "'Z' (B)") "the mixed arms"
+          }
           test "Result members" {
               Expect.equal (run "(if 1 == 1 then fail \"x\" else 3) |> try result |> Result.defaultValue 7") (VInt 7L) "defaultValue"
               Expect.equal (run "3 |> try result |> Result.map (fun n -> n + 1) |> Result.toOption") (VUnion("Some", Some(VInt 4L))) "map + toOption"
@@ -24442,6 +24853,27 @@ let runsCommandReifierTests =
 
               let ok = diagsIn "w.weir" [ "module W"; "let head : unit -> string"; "let head () = git rev-parse HEAD | line" ]
               Expect.isEmpty ok "a function defers the command"
+          }
+          test "a module let calling its own command-reaching helper is refused; a partial application is not [D:modules-v1]" {
+              let helper = "let helper a b = sh -c $\"echo {a}{b}\" |> Seq.exactlyOne"
+
+              for rhs in [ "helper \"a\" \"b\""; "\"b\" |> helper \"a\""; "via ()" ] do
+                  let msgs =
+                      diagsIn "w.weir" [ "module W"; helper; "let via () = helper \"x\" \"y\""; "let v : string"; $"let v = {rhs}" ]
+                      |> List.map (fun d -> d.Message)
+
+                  Expect.exists msgs (fun m -> m.Contains "cannot run a command at import") rhs
+
+              let ok =
+                  diagsIn
+                      "w.weir"
+                      [ "module W"
+                        "let helper : string -> string -> string"
+                        helper
+                        "let part : string -> string"
+                        "let part = helper \"a\"" ]
+
+              Expect.isEmpty ok "a partial application runs nothing"
           } ]
 
 // the GUIDE sweep's findings, pinned [D:sweep-findings]

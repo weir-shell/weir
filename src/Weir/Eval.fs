@@ -377,7 +377,7 @@ let rec private formatWith (lim: RenderLimits) (depth: int) (v: Value) : string 
         | VStr s ->
             let raw, clipped =
                 match lim.MaxStr with
-                | Some m when s.Length > m -> s.Substring(0, m), true
+                | Some m when CodePoints.length s > m -> CodePoints.head s m, true
                 | _ -> s, false
 
             let escaped =
@@ -825,7 +825,7 @@ let rec private tableCell (v: Value) : (string * bool) option =
     | VStr s ->
         let clipped =
             match echoLimits.MaxStr with
-            | Some m when s.Length > m -> s.Substring(0, m - 1) + "…"
+            | Some m when CodePoints.length s > m -> CodePoints.head s (m - 1) + "…"
             | _ -> s
 
         // the table is a tty-only renderer [D:binary-echo]: a data cell's
@@ -937,7 +937,9 @@ let echoTable (cap: int option) (width: int option) (v: Value) : (string list * 
 
                 let widths =
                     [ 0 .. showKeys.Length - 1 ]
-                    |> List.map (fun i -> rows |> List.fold (fun w r -> max w (fst r[i]).Length) showKeys[i].Length)
+                    |> List.map (fun i ->
+                        rows
+                        |> List.fold (fun w r -> max w (CodePoints.length (fst r[i]))) (CodePoints.length showKeys[i]))
 
                 // terminal-width clamping [D:table-polish]: the widest
                 // column above its floor absorbs the clip (usually the
@@ -949,7 +951,7 @@ let echoTable (cap: int option) (width: int option) (v: Value) : (string list * 
                     match width with
                     | Some termW ->
                         let sep = 2 * (showKeys.Length - 1)
-                        let floorOf i = max 5 showKeys[i].Length
+                        let floorOf i = max 5 (CodePoints.length showKeys[i])
 
                         let rec shrink (ws: int list) =
                             let total = List.sum ws + sep
@@ -975,8 +977,8 @@ let echoTable (cap: int option) (width: int option) (v: Value) : (string list * 
                 // a cell longer than its (possibly clamped) column ends
                 // in the ellipsis — never a silent cut
                 let clip (w: int) (t: string) =
-                    if t.Length > w then
-                        t.Substring(0, max 0 (w - 1)) + "…"
+                    if CodePoints.length t > w then
+                        CodePoints.head t (max 0 (w - 1)) + "…"
                     else
                         t
 
@@ -984,9 +986,9 @@ let echoTable (cap: int option) (width: int option) (v: Value) : (string list * 
                     let t = clip widths[i] t
 
                     if numeric[i] then
-                        t.PadLeft(widths[i])
+                        CodePoints.padLeft widths[i] t
                     else
-                        t.PadRight(widths[i])
+                        CodePoints.padRight widths[i] t
 
                 let line (cells: string list) =
                     (cells |> List.mapi pad |> String.concat "  ").TrimEnd()
@@ -1395,6 +1397,10 @@ let private jsonDoc
             else
                 failwith $"{who}: field '{name}': number out of float range"
         | TStr, System.Text.Json.JsonValueKind.String -> VStr(prop.GetString())
+        // reading into a Secret wraps on the way in [D:secret-read]
+        | TSecret, System.Text.Json.JsonValueKind.String -> VSecret(prop.GetString())
+        // the document holds the secret: never echo it
+        | TSecret, kind -> failwith $"{who}: field '{name}' expected a string (Secret), got {kind}"
         | TUuid, System.Text.Json.JsonValueKind.String ->
             match parseUuid (prop.GetString()) with
             | Ok g -> VUuid g
@@ -1695,10 +1701,29 @@ let private xmlDoc
     (shown: string)
     (text: string)
     : Value =
+    // DTDs are prohibited [D:xml-no-dtd]: no declared entity expands and
+    // no external one resolves; XDocument.Parse's defaults would process
+    // an internal subset
+    let settings =
+        System.Xml.XmlReaderSettings(
+            DtdProcessing = System.Xml.DtdProcessing.Prohibit,
+            XmlResolver = null,
+            // XDocument.Parse's LoadOptions.None reading
+            IgnoreWhitespace = true
+        )
+
     let root =
         try
-            (XDocument.Parse text).Root
-        with _ ->
+            use sr = new System.IO.StringReader(text)
+            use reader = System.Xml.XmlReader.Create(sr, settings)
+            (XDocument.Load reader).Root
+        with
+        // Prohibit's own error carries no position; the declaration's
+        // spelling is what names it
+        | :? System.Xml.XmlException when text.Contains "<!DOCTYPE" ->
+            failwith
+                $"{who}: a DTD (<!DOCTYPE ...>) is outside the XML subset — remove it; only the five predefined entities (&amp; &lt; &gt; &quot; &apos;) and character references read: {shown}"
+        | _ ->
             // never System.Xml's words, mirroring the JSON boundary
             failwith $"{who}: not valid XML: {shown}"
 
@@ -1708,7 +1733,15 @@ let private xmlDoc
     let childElems (el: XElement) (name: string) =
         el.Elements() |> Seq.filter (fun e -> e.Name.LocalName = name)
 
-    let childElem (el: XElement) (name: string) = childElems el name |> Seq.tryHead
+    // a scalar or record field takes ONE element — a repeat is a seq
+    // field's shape, never silently its first (yaml refuses a duplicate key)
+    let childElem (el: XElement) (name: string) (shownName: string) (want: string) =
+        match childElems el name |> Seq.truncate 2 |> List.ofSeq with
+        | [] -> None
+        | [ c ] -> Some c
+        | _ ->
+            failwith
+                $"{who}: element <{name}> repeats in <{el.Name.LocalName}> for field '{shownName}' — declare {want} to read every one: {shown}"
 
     let attr (el: XElement) (name: string) =
         el.Attributes()
@@ -1737,13 +1770,13 @@ let private xmlDoc
                     match ty with
                     // a child element's inner text (required / optional)
                     | TStr ->
-                        match childElem el name with
+                        match childElem el name shownName "seq<string>" with
                         | Some c -> VStr c.Value
                         | None ->
                             failwith
                                 $"{who}: missing element <{name}> in <{el.Name.LocalName}> for field '{shownName}' in: {shown}"
                     | TNamed("Option", [ TStr ]) ->
-                        match childElem el name with
+                        match childElem el name shownName "seq<string>" with
                         | Some c -> VUnion("Some", Some(VStr c.Value))
                         | None -> VUnion("None", None)
                     // repeated children: [<Elem "X">] names them, else the
@@ -1766,7 +1799,7 @@ let private xmlDoc
                         |> VSeq
                     // a nested element read as a record
                     | TNamed(n, []) when defs.ContainsKey n ->
-                        match childElem el name with
+                        match childElem el name shownName (if n = name then $"seq<{n}>" else $"[<Elem \"{name}\">] seq<{n}>") with
                         | Some c -> objRowXml (shownName + ".") defs[n] c
                         | None ->
                             failwith
@@ -2035,6 +2068,7 @@ let rec private yamlConvert (shape: Yaml.Shape) (node: Yaml.Node) : Value =
                 | Ok f -> VFloat f
                 | Error _ -> failwith $"from yaml: line {line}: expected float, got '{raw}'"
     | Yaml.SStr, Yaml.NScalar(raw, _, _) -> VStr raw
+    | Yaml.SSecret, Yaml.NScalar(raw, _, _) -> VSecret raw
     | Yaml.SCodec c, Yaml.NScalar(raw, quoted, line) ->
         let num =
             match (if quoted then (false, 0L) else System.Int64.TryParse raw) with
@@ -2049,6 +2083,7 @@ let rec private yamlConvert (shape: Yaml.Shape) (node: Yaml.Node) : Value =
     // blockness is quotedness's sibling [D:block-scalars]: a block
     // scalar is unambiguously a string
     | Yaml.SStr, Yaml.NBlock(text, _) -> VStr text
+    | Yaml.SSecret, Yaml.NBlock(text, _) -> VSecret text
     | Yaml.SInt, Yaml.NBlock(_, line) ->
         failwith $"from yaml: line {line}: a block scalar is a string; this field expects int"
     | Yaml.SFloat, Yaml.NBlock(_, line) ->
@@ -2076,7 +2111,7 @@ let rec private yamlConvert (shape: Yaml.Shape) (node: Yaml.Node) : Value =
                 | None, _ ->
                     failwith
                         $"from yaml: line {line}: missing field '{fname}'{wireNote} in '{name}' — if the field is sometimes absent, declare it Option<…>; a type drafted from a sample only sees what the sample had"
-                | Some(_, Yaml.NNull l), (Yaml.SInt | Yaml.SFloat | Yaml.SStr | Yaml.SBool | Yaml.SUuid | Yaml.SCodec _ | Yaml.SRec _) ->
+                | Some(_, Yaml.NNull l), (Yaml.SInt | Yaml.SFloat | Yaml.SStr | Yaml.SSecret | Yaml.SBool | Yaml.SUuid | Yaml.SCodec _ | Yaml.SRec _) ->
                     failwith $"from yaml: line {l}: field '{fname}' is null; declare it Option<…> to allow it"
                 | Some(_, v), _ -> fname, yamlConvert fshape v)
 
@@ -2123,6 +2158,7 @@ let rec private yamlConvert (shape: Yaml.Shape) (node: Yaml.Node) : Value =
             | Yaml.SInt -> "an int scalar"
             | Yaml.SFloat -> "a float scalar"
             | Yaml.SStr -> "a string scalar"
+            | Yaml.SSecret -> "a string scalar (Secret)"
             | Yaml.SBool -> "a bool scalar"
             | Yaml.SUuid -> "a uuid scalar"
             | Yaml.SCodec c -> $"a [<{codecName c}>] scalar"
@@ -2470,7 +2506,7 @@ let rec private tryBind (p: Pattern) (v: Value) : (string * Value) list option =
         (match compileRegex pat with
          | Error msg -> unreachable $"the checker rejects invalid regex literals: {msg}"
          | Ok rx ->
-             let m = rx.Match s
+             let m = regexGuarded pat (fun () -> rx.Match s)
 
              if not m.Success then
                  None
@@ -3286,9 +3322,46 @@ and eval (env: Env) (te: TypedExpr) : Value =
         // it out; an external token can join the source later
         use cts = new System.Threading.CancellationTokenSource()
 
+        // .NET timers take at most Int32.MaxValue ms; a longer ceiling is
+        // the stopwatch's, enforced by the wait's slices — every valid
+        // Duration is honoured, as Duration.sleep honours it [D:duration]
+        let maxSliceMs = int64 System.Int32.MaxValue - 1L
+
         match timeoutMs with
-        | Some t -> cts.CancelAfter(System.TimeSpan.FromTicks(t * System.TimeSpan.TicksPerMillisecond))
-        | None -> ()
+        | Some t when t <= maxSliceMs ->
+            cts.CancelAfter(System.TimeSpan.FromTicks(t * System.TimeSpan.TicksPerMillisecond))
+        | _ -> ()
+
+        let pastDeadline () =
+            match timeoutMs with
+            | Some t -> sw.ElapsedMilliseconds >= t
+            | None -> false
+
+        // the delay in timer-sized slices, each bounded by what is left of
+        // the timeout — true when the timeout ended the wait
+        let waitDelay () =
+            let mutable left = delayMs
+            let mutable cancelled = false
+
+            while left > 0L && not cancelled do
+                let budget =
+                    match timeoutMs with
+                    | Some t -> t - sw.ElapsedMilliseconds
+                    | None -> System.Int64.MaxValue
+
+                if budget <= 0L then
+                    cancelled <- true
+                else
+                    let slice = min left (min budget maxSliceMs)
+
+                    cancelled <-
+                        Session.waitOrCancel
+                            (System.TimeSpan.FromTicks(slice * System.TimeSpan.TicksPerMillisecond))
+                            cts.Token
+
+                    left <- left - slice
+
+            cancelled
 
         let predicate (v: Value) =
             match until with
@@ -3327,7 +3400,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
                 match until with
                 | Some _ -> v
                 | None -> VUnit
-            elif n >= attempts || cts.IsCancellationRequested then
+            elif n >= attempts || cts.IsCancellationRequested || pastDeadline () then
                 exhausted n
             else
                 let timedOut =
@@ -3335,12 +3408,9 @@ and eval (env: Env) (te: TypedExpr) : Value =
                         // the indicator wraps only the wait between
                         // attempts — the body may own the terminal
                         // [D:waiting-indicator]
-                        Waiting.during $"{head}: waiting {formatDuration delayMs}" (fun () ->
-                            Session.waitOrCancel
-                                (System.TimeSpan.FromTicks(delayMs * System.TimeSpan.TicksPerMillisecond))
-                                cts.Token)
+                        Waiting.during $"{head}: waiting {formatDuration delayMs}" waitDelay
                     else
-                        cts.IsCancellationRequested
+                        cts.IsCancellationRequested || pastDeadline ()
 
                 if timedOut then exhausted n else loop (n + 1)
 
@@ -3446,9 +3516,11 @@ and eval (env: Env) (te: TypedExpr) : Value =
         | Check.SliceStr ->
             match eval env target with
             | VStr s ->
-                let a = max 0L (absLo s.Length)
-                let b = absHi s.Length
-                if a > b then VStr "" else VStr(s.Substring(int a, int (b - a + 1L)))
+                // code-point positions [D:str-code-points]
+                let n = CodePoints.length s
+                let a = max 0L (absLo n)
+                let b = absHi n
+                if a > b then VStr "" else VStr(CodePoints.sub s (int a) (int (b - a + 1L)))
             | v -> unreachable $"the checker guarantees a string slice target; got {formatValue v}"
         | Check.SliceBytes ->
             match eval env target with
@@ -3644,7 +3716,8 @@ and eval (env: Env) (te: TypedExpr) : Value =
                 // `name` is the wire name from here on, so every message names
                 // the variable the author actually asked for.
                 let name = Types.wireName def field
-                let raw = System.Environment.GetEnvironmentVariable name
+                // the `within env` overlay included [D:env-overlay-read]
+                let raw = Session.getEnv name |> Option.toObj
 
                 let value =
                     match ty, raw with

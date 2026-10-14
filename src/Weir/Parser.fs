@@ -1089,8 +1089,8 @@ let private negIntLit =
     spanned (
         pchar '-' >>. many1Satisfy isDigit
         >>= fun digits ->
-            match System.Int64.TryParse digits with
-            | true, n -> preturn (EInt(-n))
+            match System.Int64.TryParse("-" + digits) with
+            | true, n -> preturn (EInt n)
             // not anchored [D:anchor-before-read]: seeking to the '-' would
             // drop the fatal into the unary-minus operator's contested spot
             // and merge its expecting-list — a message-domination finding,
@@ -1343,19 +1343,31 @@ let private negAtom =
     // instead of being swallowed by the attempt (a fatal inside an attempt
     // is not a fatal) and merged into a dump
     >>= fun p ->
-        postfixAtomFwd
+        // Int64.MinValue's magnitude has no positive literal, so the 0 - e
+        // desugar cannot spell it; F# reads `-9223372036854775808` as one
+        // literal and so does weir
+        (attempt (
+            pstring "9223372036854775808"
+            >>. notFollowedBy (satisfy (fun c -> Char.IsLetterOrDigit c || c = '_'))
+            >>. notFollowedBy (pchar '.' >>. satisfy isDigit)
+         )
+         >>. getPosition
+         .>> ws
+         |>> fun e -> { Kind = EInt Int64.MinValue; Span = { Start = pos p; End = pos e } })
+        <|> (postfixAtomFwd
         |>> fun e ->
             let span = { Start = pos p; End = e.Span.End }
 
             // fold into the literal for the non-int scalars [D:floats]:
-            // the 0 - e desugar would mix types (0 is an int)
+            // the 0 - e desugar would mix types (0 is an int); -0.0
+            // normalizes at construction, the literal included
             match e.Kind with
-            | EFloat f -> { Kind = EFloat(-f); Span = span }
+            | EFloat f -> { Kind = EFloat(if f = 0.0 then 0.0 else -f); Span = span }
             | EDur n -> { Kind = EDur(-n); Span = span }
             | ESize b -> { Kind = ESize(-b); Span = span }
             | _ ->
                 { Kind = EBinOp("-", { Kind = EInt 0L; Span = e.Span }, e)
-                  Span = span }
+                  Span = span })
 
 // Depth guard [D:depth-guard]: unbounded expression depth blows the
 // native stack — the recursive-descent parser on deep nesting (parens/
@@ -3289,8 +3301,12 @@ and private parseTplBlockBody
                         match Yaml.splitKey text with
                         | None -> Result.Error("expected 'key:', '- ', or 'for … in …' in this yaml block", col)
                         | Some(rawKey, rest) ->
+                            // a quoted key is literal, as a quoted value is:
+                            // only a bare `$name` key splices
+                            let quotedKey = text.StartsWith "\"" || text.StartsWith "'"
+
                             let keyR =
-                                if rawKey.StartsWith "$" then
+                                if rawKey.StartsWith "$" && not quotedKey then
                                     let kIdent = rawKey.Substring 1
 
                                     if isIdentWord kIdent then
@@ -3926,6 +3942,16 @@ let private tildeExpr (w: string) (span: Span) : Expr =
 
     if w = "~" then home else at (EBinOp("+", home, at (EStr(w.Substring 1))))
 
+// `@"…"` is not an argv word [D:argv-at-raw]: `@` is argv text (curl's
+// `@file`), so `-d @"my file"` reading as a verbatim string would drop it
+let private verbatimArgTeach: Parser<Expr, unit> =
+    getPosition
+    >>= fun at ->
+        anyChar
+        >>. failFatallyAt
+                at
+                "a verbatim string `@\"…\"` is not an argv word — `@` is meaningful argv text (curl's `@file`). For a literal `@` argument quote the whole word (`\"@my file\"`, `$\"@{path}\"`); for a verbatim string bind it first (`let p = @\"C:\\x\"`) and splice `$p`"
+
 let private cmdArgStops (stopAtIn: bool) (stopAtThen: bool) (stopAtElse: bool) =
     let stopWord (w: string) =
         notFollowedBy (attempt (pstring w .>> notFollowedBy (satisfy cmdWordChar)))
@@ -3970,8 +3996,12 @@ let private cmdArgStops (stopAtIn: bool) (stopAtThen: bool) (stopAtElse: bool) =
     // the fatal fires only where a piece genuinely starts — never on the
     // `|` of `hi |grep` or the `)` that closes a capture
     choice
-        [ lookAhead (pchar '"') >>. notGluedPiece >>. strLit
+        // rawness is a kind, never positional [D:raw-strings]: a triple
+        // quote is one word here as anywhere [D:argv-at-raw]
+        [ lookAhead (pstring "\"\"\"") >>. notGluedPiece >>. tripleLit
+          lookAhead (pchar '"') >>. notGluedPiece >>. strLit
           lookAhead (pchar '\'') >>. notGluedPiece >>. singleQuoted
+          lookAhead (pstring "@\"") >>. notGluedPiece >>. verbatimArgTeach
           dollarAtTeach
           lookAhead (pstring "$\"\"\"") >>. notGluedPiece >>. interpRawLit
           lookAhead (pstring "$\"") >>. notGluedPiece >>. interpLit
@@ -4009,6 +4039,7 @@ let private envValue: Parser<Expr, unit> =
           lookAhead (pstring "$\"") >>. interpLit
           lookAhead (pstring "$(") >>. captureSigil
           spanned (pchar '$' >>. rawWord) |>> fun (n, sp) -> { Kind = EVar n; Span = sp }
+          lookAhead (pstring "\"\"\"") >>. tripleLit
           lookAhead (pchar '"') >>. strLit
           lookAhead (pchar '\'') >>. singleQuoted
           spanned cmdWord
@@ -5569,8 +5600,11 @@ let parseLineFull (r: Resolver) (input: string) : Result<Stmt, ParseFailure> =
                 | Some span ->
                     let col = if span.Start.Line = 1 then Some span.Start.Col else None
 
+                    // the recursive parse already passed, so the depth is a flat
+                    // chain's left spine [D:depth-guard]: name that repair
                     Result.Error
-                        { Message = $"expression nested too deeply (limit {maxDepth})"
+                        { Message =
+                            $"expression nested too deeply (limit {maxDepth}) — a long chain (a + b + …, x |> f |> …) nests one level per operator; bind intermediates with let, or fold a list (Seq.sum, Seq.fold)"
                           Col = col }
                 | None ->
                     match s |> stmtExprs |> List.tryPick (pipeToCommand r) with

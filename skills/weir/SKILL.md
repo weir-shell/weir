@@ -313,7 +313,10 @@ echo --flag="quoted v" // the quoted part would be its own argument; quote the w
   ordinary one. An unterminated string of ANY kind now names its
   opener. Rawness belongs to the
   literal KIND, never to position — a string means the same thing
-  everywhere.
+  everywhere: `"""…"""` is one argv word too. The one exception is
+  `@"…"` in a command line, refused [D:argv-at-raw]: `@` is argv text
+  there (curl's `@file`) — quote the whole word (`"@my file"`), or
+  bind the verbatim string and splice it.
 
 ```weir
 let v = "1.2.3"
@@ -386,7 +389,10 @@ print (Str.toUtf8 "x") // print refuses Bytes; Bytes.toBase64 is the exit
 ```
   patterns live on the expression side: `Str.isMatch pat s` (bool),
   `Str.rmatch pat s` (Option<seq<string>>) — any string, and raw
-  literals read best: `Seq.where (Str.isMatch @"\.md$")`.
+  literals read best: `Seq.where (Str.isMatch @"\.md$")`. Every
+  match (these and `Regex` patterns) has a 5s timeout that raises
+  `regex timeout: …` [D:regex-timeout] — catastrophic backtracking
+  (`^(a+)+$` on a long near-miss) fails loudly instead of hanging.
   `Str.rmatchAll pat s : seq<seq<string>>` is the plural — EVERY
   match's GROUPS, lazily; no Option (absence is the empty seq). Groups
   ONLY: a pattern with no capturing group yields an EMPTY inner seq per
@@ -433,7 +439,8 @@ print $"{key} -> {value}"
   (`git rev-parse HEAD |> Seq.exactlyOne`) — `Seq.head` takes the
   first and silently accepts more; save it for "the first of many".
   `Seq.first` is RETIRED [D:first-retired]: one name per operation —
-  `Seq.take` (pairs with `skip`).
+  `Seq.take` (pairs with `skip`). A negative count raises in both,
+  Seq.replicate's rule [D:seq-gaps].
 
 ```weir-error
 // retired: one name per operation (take pairs with skip)
@@ -534,8 +541,10 @@ print $"{key} -> {value}"
   clear (`curl -H $auth` — `ps`-visible, a stated non-claim). `Eq`
   compares (`s1 == s2`), `Ord` refuses. Produced by `Env.load`/`Args.load`
   `Secret` fields (env is the CI secret channel), `File.readSecret p`
-  (a mounted secret file), and `Secret.of` (assert secrecy, for computed
-  secrets — the safe direction). `Secret.map (fun t -> "Bearer " + t) s`
+  (a mounted secret file), a `Secret` field READ by `from json`/`from
+  yaml`/`from toml` (a vault/API token — wrapping on the way in is the
+  safe direction [D:secret-read]), and `Secret.of` (assert secrecy, for
+  computed secrets — the safe direction). `Secret.map (fun t -> "Bearer " + t) s`
   keeps a derived value secret; `[<Default>]` on a `Secret` field is
   rejected. Qualified-only (no bare `of`/`map`). Not memory-hardening:
   the value is an un-zeroed managed string (see SECURITY.md).
@@ -560,7 +569,8 @@ print $"{key} -> {value}"
   `retry` around it is safe by definition). TLS verification is ON;
   `{ req with insecure = true }` disables it for ONE request (a loud
   per-call field for self-signed clusters). `Http.defaults` is the
-  template (Get, 30s timeout, secure). Every request sends
+  template (Get, 30s timeout, secure); any positive Duration is an
+  enforced `timeout`, however long [D:long-waits]. Every request sends
   `User-Agent: weir/<stamp>` (the `--version` string) unless the
   caller sets one — an explicit `User-Agent` WINS (via `headers` or
   `secretHeaders`, any casing) and exactly one is ever sent. The
@@ -720,6 +730,8 @@ within serve srv = { port = 8410; maxConcurrent = 4 } handler
   exit 141, no message) — at a tty AND detached (a `kill -INT`/`kill -TERM` on a
   `setsid`/backgrounded weir unwinds the same way, exit 130/143; a
   second signal mid-teardown hard-exits, the double-Ctrl+C escape).
+  A signal sent to weir's pid alone (`timeout`, `docker stop`, a CI
+  cancel) tree-kills the running foreground command too, scoped or not.
   Two carve-outs, both by design: `kill -9` of weir itself cannot, by
   definition — no userspace design closes that hole; and a weir
   BACKGROUNDED IN AN INTERACTIVE SHELL (`weir … &`/`nohup`, which
@@ -973,7 +985,7 @@ print (Option.flatten (Some None) |> Option.defaultValue 0)
   `scan` (fold with intermediates, seed first); `chunkBySize` (the
   batching member); `except` (set difference, exclusions first);
   `replicate`; `max`/`min`/`maxBy`/`minBy` (Ord; raise on empty; one
-  pass, no sort); `first`/`take` are RULED synonyms. Sums: `Seq.sum`
+  pass, no sort); `take` (`first` is retired [D:first-retired]). Sums: `Seq.sum`
   is `seq<int>`; `Float.sum`/`Size.sum`/`Duration.sum` (and their
   `average`s) own the other types — `Seq.average` alone crosses types
   (the mean of ints is a float). `Seq.filter` teaches `where`.
@@ -1325,7 +1337,8 @@ ls |> Seq.where (fun f -> f.name |> Str.startsWith "lssort-") |> Seq.iter (fun f
   names because weir is curried with no optional-parameter spelling,
   so one name cannot serve both arities), `Dir.list p` its paths
   (`seq<string>` — what `File.*` and argv want), `Path.glob` pattern
-  strings. `File.stat p` is the one-path bridge — `ls`'s OWN
+  strings (a trailing `/` matches directories only, each shown with its
+  slash: `Path.glob "*/"` is `a/`, as in bash). `File.stat p` is the one-path bridge — `ls`'s OWN
   row, so `Path.glob ... |> Seq.map File.stat` filters a
   glob on any row field. It describes a symlink ITSELF (`kind ==
   Symlink`, `target Some` — a dangling link is a row, not an absence),
@@ -1596,7 +1609,7 @@ type Bad = C of int
   top-level SEQUENCE document -> `seq<T>` (nested records, seqs,
   `seq<string * string>` for labels, `Option`; bool is EXACTLY
   true/false; plain `null`/`Null`/`NULL`/`~` and an empty value are
-  null -> `None`, quoted `"null"` is a string; anchors rejected). A block sequence reads in BOTH indent
+  null -> `None`, quoted `"null"` is a string; anchors rejected). A plain value holding `: ` (`f: a: b`) refuses, as every YAML reader does — quote it. A block sequence reads in BOTH indent
   styles — indented under its key OR at the SAME column as its key
   (kubectl's `items:` / `- apiVersion: v1` flush-left form). Only the
   EMPTY flow collections `{}` and `[]` are read (into an empty
@@ -1636,7 +1649,8 @@ type Bad = C of int
   `yaml` or a `= yaml` RHS arms; `yaml` as a command ARGUMENT stays
   argv (`kubectl get po -o yaml`, `--format yaml` are commands, not
   districts). `$name`/`$(expr)` splice VALUES (never text — no
-  injection is possible), a `None` splice omits its entry, and
+  injection is possible); a QUOTED key or value is literal text
+  (`"$x": …`, `v: '$x'` keep the `$`); a `None` splice omits its entry, and
   `for (k, v) in pairs` under a mapping yields dynamic keys (under a
   sequence, items). `yaml schema=<name>` on the marker line validates
   the district against `.weir/schemas/<name>.json` at CHECK time
@@ -1761,7 +1775,10 @@ doc |> Yaml.merge p |> to yaml |> Seq.iter print
   converted (`Str.toInt`), the checker teaches it. `[<Attr>]` fits only
   `string`/`Option<string>`, `[<Elem>]` only a `seq`, the top level is
   one root (`from xml seq<T>` refuses — a repeat is a `seq< >` field),
-  and there is NO `to xml`.
+  and there is NO `to xml`. A DTD (`<!DOCTYPE …>`) refuses
+  [D:xml-no-dtd] — no declared entity expands or resolves.
+  An element that repeats under a `string`/`Option<string>`/record
+  field refuses (never silently the first) — declare a `seq< >`.
 
 ```weir
 type Ref  = { [<Attr>] Include: string }
@@ -1777,7 +1794,8 @@ refs |> Seq.iter (fun r -> print r.Include)
   aligned data rows — into row records, yielding `seq<T>`
   (`kubectl get po |> from table Pod`). The first non-blank line is
   the HEADER; columns slice at HEADER OFFSETS, never whitespace runs,
-  so a spaced value (`Up 2 hours`) survives; a header boundary is a
+  so a spaced value (`Up 2 hours`) survives; offsets count code points
+  as the tools pad [D:str-code-points], so an emoji cell stays put; a header boundary is a
   run of 2+ SPACES — a single interior space stays inside one header
   (`CONTAINER ID` is ONE column; both tools pad with 3 spaces). A
   field matches its header by normalized name, case-insensitively on
@@ -1817,7 +1835,9 @@ print (show (pods |> Seq.head |> _.node))
   clip — the block-scalar rule; indentation is SPACES ONLY in every
   block [D:spaces-only-indent] — a tab in a content line's leading
   whitespace is an error, a tab is content only after the line's
-  first non-whitespace character), and the value is
+  first non-whitespace character; a `//` line is content too, so one
+  outdented below the first line is an outdent error unless the block
+  ends there), and the value is
   `seq<string>`, one element per line (compose with `File.write`,
   pipes, `Seq`). `$<<<` is the interpolated twin with EXACTLY the
   string forms' hole rules: `{expr}` substitutes, `{{`/`}}` are
@@ -1880,7 +1900,10 @@ conf |> Seq.iter print
 - Modules & imports (share code between scripts): a file that starts
   with `module` (or `module Name`) is a MODULE — importable,
   declaration-only (`type`/`let` only, no commands or bare
-  expressions), not runnable. Import it with `import "./lib/x.weir"`
+  expressions; a `let` that runs a command at import is refused,
+  through a reifier or a saturated call of the module's own
+  command-running helper too — wrap it: `let v () = …`), not
+  runnable. Import it with `import "./lib/x.weir"`
   (a literal path, first in the file before declarations) or
   `import "./lib/x.weir" as X`. Access is ALWAYS qualified:
   `X.helper`, `X.Ctx` types cross the boundary. THE EXPORT RULE
@@ -2131,7 +2154,10 @@ print (f 1)
   `xs[..b]`/`xs[a..]`. `xs[i]` stays the single-element accessor (raises
   out of range; = `Seq.item i xs`) and `Str.sub start len` the
   offset-and-length string form; Bytes has no single `b[i]` (`Bytes.sub
-  start len` takes one byte's window). FROM-THE-END is `^n` (F#'s
+  start len` takes one byte's window). String positions and widths —
+  slices, `Str.length`/`sub`/`tryIndexOf`/`padLeft`/`padRight` — count
+  Unicode code points [D:str-code-points]: `Str.length "a😀b"` is 3 and
+  no cut splits an emoji. FROM-THE-END is `^n` (F#'s
   spelling, `^n` = length − n) — `xs[^1]` is the last element, and it
   works as a slice bound too: `xs[..^2]` is all-but-last, `xs[^2..]` the
   last two, `xs[^3..^1]` both ends from the end. A `^`-bound resolves
@@ -2287,7 +2313,10 @@ print $"exit={r.exitCode}"
   unset spelling: `env -u NAME cmd`. The same words scope a BLOCK:
   `within env A=1 B=$x` + an indented body [D:within-env-pairs] (or
   `within env e` for a bound `seq<EnvVar>`); a body line's own
-  `NAME=value cmd` prefix stays that one command's.
+  `NAME=value cmd` prefix stays that one command's. Inside the block
+  weir's own reads see the overlay too — `Env.get`/`Env.vars`/`Env.load`
+  [D:env-overlay-read], as `pwd` sees `within cd`; the process env
+  itself is never written.
 - The env capture sigil `$e(...)` (ident GLUED to glyph and paren)
   injects child-env into every spawn in the captured chain (overlay:
   set those names, inherit the rest; parent untouched). `Env.fromFile "x.env"`
@@ -2322,10 +2351,12 @@ print $"exit={r.exitCode}"
   right) and forces the value inside (lazy seqs included, so an infinite
   one never finishes). `exit` passes through; earlier effects are not
   undone. `try` anywhere else is an error. A script's own `Ok`/`Error`
-  cases shadow Result's for construction; patterns resolve by type.
-  Commands keep their own spelling: `cmd | complete`.
+  cases shadow Result's for construction; patterns resolve by type (an
+  untyped scrutinee by the union owning ALL the arms' cases). Commands
+  keep their own spelling: `cmd | complete`.
 - `exit n` exits with code n silently (propagation:
-  `if r.exitCode <> 0 then exit (r.exitCode)`); `fail "msg"` is
+  `if r.exitCode <> 0 then exit (r.exitCode)`); n outside 0..255
+  raises (a literal is a check error) [D:exit-range]; `fail "msg"` is
   the message-carrying exit-1. No GENERAL try/finally — cleanup-always
   is SCOPED: resource kinds release on every exit
   (`within tmp/cd/env/proc/lock`, raise included), and a bare

@@ -12,8 +12,10 @@ module Weir.Table
 // the drafting arm in Infer — the json/yaml layering.
 
 open System
+open Weir.Types
 
-/// one column: the header's raw text and its start offset (0-based)
+/// one column: the header's raw text and its start offset (0-based, in
+/// code points [D:str-code-points] — Go's tabwriter pads by rune count)
 type Column = { Header: string; Start: int }
 
 /// split a header line into columns [D:from-table]: a column boundary is
@@ -21,6 +23,10 @@ type Column = { Header: string; Start: int }
 let columns (header: string) : Column list =
     let cols = ResizeArray<Column>()
     let mutable i = 0
+    // the last column's start in both units: each start converts only the
+    // text since the previous one, so the header costs one pass
+    let mutable prevUtf16 = 0
+    let mutable prevCp = 0
 
     while i < header.Length do
         if header[i] = ' ' then
@@ -40,9 +46,12 @@ let columns (header: string) : Column list =
                 else
                     fin <- true
 
+            prevCp <- prevCp + CodePoints.length (header.Substring(prevUtf16, start - prevUtf16))
+            prevUtf16 <- start
+
             cols.Add
                 { Header = header.Substring(start, i - start)
-                  Start = start }
+                  Start = prevCp }
 
     List.ofSeq cols
 
@@ -51,18 +60,21 @@ let columns (header: string) : Column list =
 /// line shorter than a column's start yields the empty cell. Cells trim.
 let cells (cols: Column list) (line: string) : string list =
     let arr = List.toArray cols
+    // column starts increase, so one resumed walk converts them all —
+    // linear in the line, not one scan per column
+    let offs = Array.zeroCreate arr.Length
+    let mutable u = 0
+    let mutable c = 0
+
+    for i in 0 .. arr.Length - 1 do
+        u <- CodePoints.offsetFrom line u c arr[i].Start
+        c <- arr[i].Start
+        offs[i] <- u
 
     arr
-    |> Array.mapi (fun i c ->
-        let s = min c.Start line.Length
-
-        let e =
-            if i + 1 < arr.Length then
-                min arr[i + 1].Start line.Length
-            else
-                line.Length
-
-        line.Substring(s, max 0 (e - s)).Trim())
+    |> Array.mapi (fun i _ ->
+        let e = if i + 1 < arr.Length then offs[i + 1] else line.Length
+        line.Substring(offs[i], max 0 (e - offs[i])).Trim())
     |> Array.toList
 
 /// the read-side match key: keep the alphanumerics, lowercased — header

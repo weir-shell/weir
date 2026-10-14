@@ -2224,6 +2224,18 @@ echo "$eout" | grep -qF "pre=out-keep" || fail "outer overlay applies: $eout"
 echo "$eout" | grep -qF "nested=in-keep" || fail "collision: inner wins, outer key survives: $eout"
 echo "e2e ok: within env — overlay on spawns, nested collision pinned (inner wins, outer survives)"
 
+# weir's own env reads see the overlay [D:env-overlay-read]
+cat > "$widir/envread.weir" <<'WEOF'
+type C = { WA: Option<string> }
+within env WA=in
+    print $"get={Env.get "WA" |> Option.defaultValue "-"}"
+    print $"load={(Env.load C).WA |> Option.defaultValue "-"}"
+print $"after={Env.get "WA" |> Option.defaultValue "-"}"
+WEOF
+erout=$( cd "$widir" && env -u WA $BIN envread.weir 2>&1 )
+[ "$erout" = "$(printf 'get=in\nload=in\nafter=-')" ] || fail "Env.get/Env.load see the within env overlay: $erout"
+echo "e2e ok: Env.get/Env.load read the within env overlay, not after it"
+
 # a typed ~ is home in a command line [D:tilde]: the expected home is
 # weir's own Path.home — on POSIX a fake HOME moves it (pinned), on Windows
 # the profile comes from the OS API and no env var moves it; data stays
@@ -2702,6 +2714,23 @@ WEOF
         pkill -f "sleep 98761" 2>/dev/null || true
     done
     echo "e2e ok: detached SIGINT/SIGTERM tear down — always cleanup runs, child reaped, exit 130/143"
+
+    # a pid-targeted SIGTERM tree-kills the FOREGROUND child too
+    # [D:signal-main-unwind]: `timeout`/`docker stop` signal weir alone; an
+    # unregistered foreground child outlived it, reparented to init
+    printf 'sleep 98763\n' > "$dtdir/fg.weir"
+    pkill -f "sleep 98763" 2>/dev/null || true
+    setsid "$BIN" "$dtdir/fg.weir" </dev/null >/dev/null 2>&1 &
+    wpid=$!
+    for _ in $(seq 1 40); do pgrep -f "sleep 98763" >/dev/null 2>&1 && break; sleep 0.2; done
+    kill -TERM "$wpid" 2>/dev/null || true
+    code=0; wait "$wpid" 2>/dev/null || code=$?
+    [ "$code" = "143" ] || fail "SIGTERM to weir with a foreground child must exit 143 (got $code)"
+    sleep 0.3
+    left=$(pgrep -cf "sleep 98763" 2>/dev/null || true); left=${left:-0}
+    pkill -f "sleep 98763" 2>/dev/null || true
+    [ "$left" = "0" ] || fail "SIGTERM to weir must tree-kill its foreground child (orphans left: $left)"
+    echo "e2e ok: SIGTERM to weir's pid reaps the foreground child"
 
     # the double-signal escape [D:signal-teardown]: a second signal during
     # a slow teardown hard-exits (the shell's double-Ctrl+C), never wedging
@@ -4703,6 +4732,18 @@ print j.N
 WEOF
 out=$($BIN "$adir/attrs-json.weir")
 expect "from json loads a documented record identically (/// inert)" "5" "$out"
+
+# a check error means nothing runs [D:check-error-no-run]: a misaligned
+# /// is a check error, so run refuses before the first statement
+cat > "$adir/doc-misaligned.weir" <<'WEOF'
+print "SIDE-EFFECT"
+    /// misaligned doc
+let x = 1
+print (show x)
+WEOF
+out=$($BIN "$adir/doc-misaligned.weir" 2>&1) && fail "a doc-align check error must refuse the run: $out"
+case "$out" in *SIDE-EFFECT*) fail "a doc-align check error ran a statement: $out" ;; esac
+echo "$out" | grep -qF "a doc aligns with what it describes" || fail "run names the doc-align error: $out"
 
 # the recursive field law [D:recursive-fields]: nested records and seq
 # fields read from real response shapes — the World Bank receipt (its
@@ -6755,6 +6796,11 @@ echo "$errout" | grep -qF "argv words do not concatenate" || fail "glued-tail te
 errout=$(printf 'echo --flag="quoted v"
 ' | checkPiped 2>&1) && fail "glued quote must reject"
 echo "$errout" | grep -qF "argv words do not concatenate" || fail "glued-quote teaching: $errout"
+# a triple-quoted string is ONE argv word; @"…" refuses with its own teaching [D:argv-at-raw]
+out=$(printf 'echo """a "b" c""" x\n' | runPiped 2>&1) || fail "triple-quoted argv word: $out"
+[ "$out" = 'a "b" c x' ] || fail "triple-quoted argv word: $out"
+errout=$(printf 'echo @"C:\\x"\n' | checkPiped 2>&1) && fail "verbatim argv word must reject"
+echo "$errout" | grep -qF "is not an argv word" || fail "verbatim argv teaching: $errout"
 # a path-shaped word gets the path hint, not the flag hint [D:argv-splat]:
 # the space repair splits one path into two args, so the message leads with
 # interpolation and Path.under (the confining join — combine would follow an escaping tail)
@@ -6826,14 +6872,16 @@ fi
 rm -rf "$ddir"
 
 # deep lazy chains walk iteratively [D:seq-depth-iterative]: a fold nesting
-# Seq.append / Seq.map 100k deep enumerates on a small stack (POSIX: 1MB,
+# Seq.append / Seq.map / Seq.where / Seq.choose 100k deep enumerates on a small stack (POSIX: 1MB,
 # Windows' default main-thread size), and `always` runs
 lcdir=$(mkweirtmp)
 cat > "$lcdir/chains.weir" <<'WEOF'
 within
     let a = [1..100000] |> Seq.fold (fun acc i -> Seq.append acc [i]) []
     let m = [1..100000] |> Seq.fold (fun acc i -> Seq.map (fun x -> x + 1) acc) [0]
-    print $"{Seq.length a} {Seq.head m}"
+    let w = [1..100000] |> Seq.fold (fun acc i -> Seq.where (fun x -> x <> i) acc) [0]
+    let c = [1..100000] |> Seq.fold (fun acc i -> Seq.choose (fun x -> Some(x + 1)) acc) [0]
+    print $"{Seq.length a} {Seq.head m} {Seq.head w} {Seq.head c}"
 always
     printerr "cleanup ran"
 WEOF
@@ -6842,10 +6890,10 @@ if [ "$IS_WINDOWS" = "1" ]; then
 else
     out=$( (ulimit -s 1024; $BIN "$lcdir/chains.weir") 2>&1) || fail "deep lazy chains must enumerate on a 1MB stack: $out"
 fi
-[ "$out" = "100000 100000
+[ "$out" = "100000 100000 0 100000
 cleanup ran" ] || fail "deep lazy chains: length, innermost-first maps, always ran: $out"
 rm -rf "$lcdir"
-echo "e2e ok: 100k-deep Seq.append / Seq.map chains enumerate iteratively"
+echo "e2e ok: 100k-deep Seq.append / Seq.map / Seq.where / Seq.choose chains enumerate iteratively"
 
 # ---- user modules and imports, session 1 [D:modules-v1] -------------------
 mdir=$(mkweirtmp)
@@ -6951,6 +6999,16 @@ let head = %s
     out=$($BIN check "$mdir/weakr.weir" 2>&1 || true)
     expect "weak purity through a reifier: $rf" "cannot run a command at import" "$out"
 done
+# ...and through the module's own helper: an eager call runs its command
+# at import exactly as the command would — refused at check AND at import,
+# before any side effect
+printf 'module W\nlet v : string\nlet helper () = sh -c "echo SIDE-EFFECT-AT-IMPORT >&2; echo val" |> Seq.exactlyOne\nlet v = helper ()\n' > "$mdir/weakh.weir"
+out=$($BIN check "$mdir/weakh.weir" 2>&1 || true)
+expect "weak purity through a helper (check)" "'helper' runs one, and this calls it now" "$out"
+printf 'import "./weakh.weir"\nprint W.v\n' > "$mdir/weakh_main.weir"
+out=$($BIN "$mdir/weakh_main.weir" 2>&1 || true)
+expect "weak purity through a helper (import)" "cannot run a command at import" "$out"
+case "$out" in *SIDE-EFFECT-AT-IMPORT*) fail "a helper ran its command at import: $out" ;; esac
 
 # the graph [D:modules-v1]: transitive imports resolve and evaluate; a
 # module can import and use another module's members
@@ -8943,6 +9001,14 @@ out=$($BIN -e 'poll timeout=80ms interval=10s (1 == 2)' 2>&1) && fail "poll time
 took=$(( $(now_ms) - start_ms ))
 echo "$out" | grep -qF "poll: timed out after" || fail "poll exhaustion: $out"
 [ "$took" -lt 5000 ] || fail "the pending 10s interval was not cancelled (took ${took}ms)"
+# past the timers' Int32.MaxValue ms the main-thread wait slices [D:duration]:
+# the timeout ends it, never a .NET range error or an instant fake timeout
+start_ms=$(now_ms)
+out=$($BIN -e 'poll timeout=300ms interval=2000h (1 == 2)' 2>&1) && fail "long-interval poll must time out" || true
+took=$(( $(now_ms) - start_ms ))
+echo "$out" | grep -qF "poll: timed out after" || fail "long-interval poll: $out"
+[ "$took" -ge 250 ] && [ "$took" -lt 5000 ] || fail "long-interval poll waited ${took}ms, not the 300ms timeout"
+out=$($BIN -e 'poll timeout=2000h interval=1ms (1 == 1)' 2>&1) || fail "a 2000h poll timeout is a valid ceiling: $out"
 rm -rf "$rpdir"
 echo "e2e ok: retry/poll (yields value, computed options, exhaustion messages, cancellable wait)"
 

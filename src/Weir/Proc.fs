@@ -129,6 +129,19 @@ let private spawn
     // reached the exit-hook backstop without ever joining the group
     Session.registerChild p
 
+    // every live child is the signal handler's to tree-kill
+    // [D:signal-main-unwind]: a pid-targeted SIGTERM (timeout, docker
+    // stop, a CI cancel) reaches weir alone, and an unregistered
+    // foreground child outlived it, reparented to init. Deregistered at
+    // its exit; the check after subscribing covers an exit that raced it.
+    let pid = p.Id
+    Session.registerForeground p
+    p.Exited.Add(fun _ -> Session.deregisterProcAt pid p)
+    p.EnableRaisingEvents <- true
+
+    if p.HasExited then
+        Session.deregisterProcAt pid p
+
     p
 
 // the one starter: the shared spawn plus the stdin writer, which pulls

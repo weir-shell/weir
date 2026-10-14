@@ -1126,7 +1126,19 @@ type private District =
       Yaml: bool
       // the marker kind that armed this district — errors name its word
       Marker: MarkerKind
-      Active: int option }
+      Active: int option
+      // a heredoc's outdented `//` line, transparent only if the block
+      // ends there — further content makes it an outdent error
+      OutdentedComment: int option }
+
+// content after an outdented heredoc comment: the comment sat inside the
+// block, where every line is content — refuse like any outdent
+let private heredocCommentGap (dst: District) : string option =
+    match dst.Marker, dst.OutdentedComment with
+    | MarkerKind.Heredoc, Some n ->
+        Some
+            $"line {n}: this comment line outdents below the heredoc's first line — inside a heredoc it is content: indent it to keep it, or move the comment out of the block"
+    | _ -> None
 
 // a marker-ending line arms its district, whatever kind of line it is —
 // a plain head, a `| pat ->` arm, an `else` [D:arm-blocks]
@@ -1139,7 +1151,8 @@ let private armDistrict (marker: MarkerKind) (indent: int) (lineNo: int) : Distr
           Strip = strip
           Yaml = isYaml
           Marker = marker
-          Active = None })
+          Active = None
+          OutdentedComment = None })
 
 type private Pend =
     { Buf: PendBuf
@@ -1530,20 +1543,23 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                 && (raw |> Seq.takeWhile (fun c -> c = ' ' || c = '\t') |> Seq.length) > m
                                 ->
                                 Error(tabIndentError lineNo raw)
-                            | Some({ District = Some { Active = Some bse
+                            | Some({ District = Some({ Active = Some bse
                                                        Yaml = true
-                                                       MarkerIndent = m } } as p) when
+                                                       MarkerIndent = m } as dst) } as p) when
                                 (let ind = raw |> Seq.takeWhile ((=) ' ') |> Seq.length in ind > m && ind >= bse)
                                 ->
                                 let ind = raw |> Seq.takeWhile ((=) ' ') |> Seq.length
 
-                                Ok(
-                                    Some
-                                        { p with
-                                            Buf = applyJoin (JYamlLine(ind - bse)) p.Buf (raw.Substring ind) lineNo ind },
-                                    acc,
-                                    blankSinceHead
-                                )
+                                if (heredocCommentGap dst).IsSome then
+                                    Error (heredocCommentGap dst).Value
+                                else
+                                    Ok(
+                                        Some
+                                            { p with
+                                                Buf = applyJoin (JYamlLine(ind - bse)) p.Buf (raw.Substring ind) lineNo ind },
+                                        acc,
+                                        blankSinceHead
+                                    )
                             // a comment-only FIRST content line is bytes in a
                             // HEREDOC [D:block-scalars]: it arms the district
                             // and fixes the block base exactly as any first
@@ -1571,6 +1587,14 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                     acc,
                                     blankSinceHead
                                 )
+                            // an outdented `//` inside an ACTIVE heredoc: transparent
+                            // only if the block ends here; content after it makes it
+                            // an outdent error (pasted code lost its comment)
+                            | Some({ District = Some({ Active = Some _
+                                                       Yaml = true
+                                                       Marker = MarkerKind.Heredoc
+                                                       OutdentedComment = None } as dst) } as p) ->
+                                Ok(Some { p with District = Some { dst with OutdentedComment = Some lineNo } }, acc, blankSinceHead)
                             | Some p -> Ok(Some p, acc, blankSinceHead)
                             | None -> Ok(None, acc, blankSinceHead)
                         elif
@@ -1733,7 +1757,9 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                             | Some({ Active = Some bse; Yaml = true } as dst) when
                                                 indent > dst.MarkerIndent
                                                 ->
-                                                if indent < bse then
+                                                if (heredocCommentGap dst).IsSome then
+                                                    Error (heredocCommentGap dst).Value
+                                                elif indent < bse then
                                                     let noun =
                                                         match dst.Marker with
                                                         | MarkerKind.Heredoc -> "heredoc"
@@ -4304,6 +4330,21 @@ let private deriveModuleName (absPath: string) : string option =
 // shares it [D:reenum-warning].
 let runsCommandT: Check.TypedExpr -> bool = Check.runsCommandT
 
+// a module let that calls a command-reaching helper of its own runs the
+// command at import, as a direct command would [D:modules-v1]
+let private helperAtImport (name: string) (h: string) =
+    $"a module 'let' cannot run a command at import — '{h}' runs one, and this calls it now; wrap this in a function too (let {name} () = …), the command runs when a script calls it"
+
+/// the module's command-reaching functions so far, in declaration order
+let private moduleCommandHelpers (lets: (string * Check.TypedExpr) list) : Map<string, int> =
+    lets
+    |> List.fold
+        (fun m (n, te) ->
+            match Check.commandHelperArity m te with
+            | Some a -> Map.add n a m
+            | None -> Map.remove n m)
+        Map.empty
+
 // buffer-over-disk [D:modules-v1]: when the LSP sets this, an imported file's
 // content is read through it (open editor buffers first, then disk) so an
 // unsaved dependency checks against what the user sees; None -> CLI, plain
@@ -4469,6 +4510,20 @@ let rec loadModuleCachedWith
                                           Message = d.Message }
                                 | None -> at d.PhysLine d.PhysCol d.Message
                             | Ok chk ->
+                                let eagerHelper =
+                                    match chk.Kind with
+                                    | KLet(_, _, te)
+                                    | KLetPat(_, _, te) ->
+                                        let lets =
+                                            accBody
+                                            |> List.rev
+                                            |> List.choose (function
+                                                | _, CLet(n, t) -> Some(n, t)
+                                                | _ -> None)
+
+                                        Check.eagerCommandHelper (moduleCommandHelpers lets) te
+                                    | _ -> None
+
                                 match chk.Kind with
                                 | KType decl -> go chk.Env sc implLines ((ll, CType decl) :: accBody) tail
                                 | KImport lm -> go chk.Env sc implLines ((ll, CImport lm) :: accBody) tail
@@ -4488,6 +4543,8 @@ let rec loadModuleCachedWith
                                         "a module 'let' cannot run a command at import — wrap it in a function (let f () = …), the command runs when a script calls it"
                                 | KLetPat(_, _, te) when runsCommandT te ->
                                     at ll.Head 1 "a module 'let' cannot run a command at import"
+                                | KLet(name, _, _) when eagerHelper.IsSome -> at ll.Head 1 (helperAtImport name eagerHelper.Value)
+                                | KLetPat _ when eagerHelper.IsSome -> at ll.Head 1 (helperAtImport "f" eagerHelper.Value)
                                 | KLet(name, _, te) ->
                                     let sc' =
                                         { sc with
@@ -6232,6 +6289,8 @@ let analyzeLines
         // explanation. The whole-file rules (orphan, doc-on-impl) are
         // judged after the fold, mirroring the module loader.
         let mutable sigState = if isModule then Some SigContext.empty else None
+        // the module's command-reaching functions so far [D:modules-v1]
+        let mutable moduleHelpers: Map<string, int> = Map.empty
         // aliases of imports that failed: a later "no module named" for
         // one echoes the import's own error, so it is not reported
         let mutable failedImports: Set<string> = Set.empty
@@ -6356,7 +6415,17 @@ let analyzeLines
                          | KLet(_, _, te)
                          | KLetPat(_, _, te) when runsCommandT te ->
                              Some "a module 'let' cannot run a command at import — wrap it in a function (let f () = …)"
+                         | KLet(name, _, te) -> Check.eagerCommandHelper moduleHelpers te |> Option.map (helperAtImport name)
+                         | KLetPat(_, _, te) -> Check.eagerCommandHelper moduleHelpers te |> Option.map (helperAtImport "f")
                          | _ -> None
+
+                     (match chk.Kind with
+                      | KLet(name, _, te) ->
+                          moduleHelpers <-
+                              match Check.commandHelperArity moduleHelpers te with
+                              | Some a -> Map.add name a moduleHelpers
+                              | None -> Map.remove name moduleHelpers
+                      | _ -> ())
 
                      match violation with
                      | Some msg ->
@@ -7062,6 +7131,23 @@ let run (path: string) (scriptArgs: string list) : int =
                             + ": "
                             + Color.red c "check error"
                             + $":\n{src}\n{underline}\n{f.UMessage}"
+                        )
+
+                    1
+                | Ok _ when not (docMisalignments path rawLines).IsEmpty ->
+                    // a check error means nothing runs [D:check-error-no-run],
+                    // the doc-alignment lint included
+                    let c = Color.onStderr.Value
+
+                    for d in docMisalignments path rawLines do
+                        let src = rawByLine |> Map.tryFind d.Line |> Option.defaultValue ""
+                        let caret = Color.red c (String(' ', max 0 (d.Col - 1)) + "^")
+
+                        Console.Error.WriteLine(
+                            Color.bold c $"{path}:{d.Line}:{d.Col}"
+                            + ": "
+                            + Color.red c "check error"
+                            + $":\n{src}\n{caret}\n{d.Message}"
                         )
 
                     1

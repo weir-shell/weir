@@ -16,6 +16,8 @@ type Shape =
     | SInt
     | SFloat
     | SStr
+    // a string scalar read into a Secret [D:secret-read]
+    | SSecret
     | SBool
     // read through the strict uuid parser [D:wire-table]
     | SUuid
@@ -249,6 +251,11 @@ let scalarCore (raw: string) : Result<(string * bool) option, string> =
         Error "flow style is outside the yaml subset (use block maps and sequences)"
     elif t.StartsWith "!" then
         Error "tags are outside the yaml subset"
+    // a plain scalar never holds `: ` or a trailing `:` — every other
+    // YAML reader refuses `f: a: b`, so reading it as "a: b" would
+    // diverge from them
+    elif t.Contains ": " || t.EndsWith ":" then
+        Error "mapping values are not allowed here — quote the value (\"a: b\")"
     elif t.StartsWith "|" || t.StartsWith ">" then
         // block scalars live in value positions (mapping value, sequence
         // item, whole document) and are intercepted there; a header
@@ -756,13 +763,17 @@ let rec private parseBlock
                                     | Error msg -> Error $"line {no}: {msg}"
                                     | Ok(Some _) ->
                                         // compact map item: `- key: v` — the first
-                                        // entry lives on this line at indent+2
+                                        // entry lives on this line at the column
+                                        // after the dash's gap (`-   x: 1` puts its
+                                        // siblings at indent+4, the 4-indent style)
+                                        let col = indent + 2 + indentOf inline'
+
                                         let shifted =
                                             Array.append
-                                                [| no, String.replicate (indent + 2) " " + inline' |]
+                                                [| no, String.replicate col " " + inline'.TrimStart() |]
                                                 lines[i + 1 .. j - 1]
 
-                                        parseBlock rawSrc shifted 0 shifted.Length (indent + 2) (depth + 1)
+                                        parseBlock rawSrc shifted 0 shifted.Length col (depth + 1)
                                     | Ok None ->
                                         match quotedValue no indent i j inline' with
                                         | Some r -> r
@@ -859,7 +870,7 @@ let rec private parseBlock
                         | None -> parseScalar firstNo firstBody
 
 /// Parse numbered raw lines into documents (`---` separated, indent-0
-/// separators only; a leading `---` is allowed)
+/// separators only; a leading `---` is allowed, a `...` ends a document)
 let parseDocs (numbered: (int * string) list) : Result<Node list, string> =
     let content =
         numbered
@@ -889,7 +900,10 @@ let parseDocs (numbered: (int * string) list) : Result<Node list, string> =
             docs.Add(ResizeArray())
 
             for (no, raw) in content do
-                if raw.TrimEnd() = "---" then
+                // `...` is the spec's document-end marker: it closes the
+                // document as `---` does, and a following `---` opens no
+                // empty one
+                if raw.TrimEnd() = "---" || raw.TrimEnd() = "..." then
                     if docs[docs.Count - 1].Count > 0 then
                         docs.Add(ResizeArray())
                 else

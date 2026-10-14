@@ -1826,7 +1826,7 @@
         {
           "name": "length",
           "signature": "Str.length (s: string) : int",
-          "summary": "The number of characters.",
+          "summary": "The number of characters (Unicode code points).",
           "example": "Str.length \u0022abc\u0022",
           "pointer": null
         },
@@ -1924,7 +1924,7 @@
         {
           "name": "sub",
           "signature": "Str.sub (start: int) (len: int) (s: string) : string",
-          "summary": "A substring by start index and length.",
+          "summary": "A substring by start index and length, both in characters (code points).",
           "example": "Str.sub 0 2 \u0022abc\u0022",
           "pointer": null
         },

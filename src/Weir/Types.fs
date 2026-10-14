@@ -17,11 +17,76 @@ let isUserName (n: string) =
 [<Literal>]
 let excerptHead = 64
 
+/// String positions in Unicode code points [D:str-code-points]: a
+/// surrogate pair is one position, so no index, length or cut can split
+/// an astral char. An unpaired surrogate counts as one position.
+module CodePoints =
+    let private pairAt (s: string) (i: int) =
+        System.Char.IsHighSurrogate s[i]
+        && i + 1 < s.Length
+        && System.Char.IsLowSurrogate s[i + 1]
+
+    let private hasSurrogate (s: string) =
+        s |> Seq.exists System.Char.IsSurrogate
+
+    /// the number of code points
+    let length (s: string) : int =
+        if not (hasSurrogate s) then
+            s.Length
+        else
+            let mutable n = 0
+            let mutable i = 0
+
+            while i < s.Length do
+                i <- i + (if pairAt s i then 2 else 1)
+                n <- n + 1
+
+            n
+
+    /// `offset`, resuming a walk already at UTF-16 offset `fromUtf16` =
+    /// code point `fromCp`: a run of increasing targets costs one pass
+    let offsetFrom (s: string) (fromUtf16: int) (fromCp: int) (cp: int) : int =
+        let mutable n = fromCp
+        let mutable i = fromUtf16
+
+        while n < cp && i < s.Length do
+            i <- i + (if pairAt s i then 2 else 1)
+            n <- n + 1
+
+        i
+
+    /// the UTF-16 offset of code point `cp`, clamped to [0, s.Length] —
+    /// O(cp), never a whole-string scan
+    let offset (s: string) (cp: int) : int =
+        if cp <= 0 then 0 else offsetFrom s 0 0 cp
+
+    /// the code-point index of a UTF-16 offset
+    let ofOffset (s: string) (utf16: int) : int = length (s.Substring(0, utf16))
+
+    /// `count` code points from code point `start` (both clamped)
+    let sub (s: string) (start: int) (count: int) : string =
+        let a = offset s start
+        let b = offset s (start + count)
+        s.Substring(a, b - a)
+
+    /// the first `count` code points
+    let head (s: string) (count: int) : string = s.Substring(0, offset s count)
+
+    let padLeft (w: int) (s: string) : string =
+        let n = length s
+        if n >= w then s else System.String(' ', w - n) + s
+
+    let padRight (w: int) (s: string) : string =
+        let n = length s
+        if n >= w then s else s + System.String(' ', w - n)
+
 let excerpt (s: string) : string =
-    if s.Length <= excerptHead then
+    let n = CodePoints.length s
+
+    if n <= excerptHead then
         s
     else
-        $"{s.Substring(0, excerptHead)}… ({s.Length} chars)"
+        $"{CodePoints.head s excerptHead}… ({n} chars)"
 
 type Ty =
     | TInt
@@ -801,23 +866,33 @@ let private instantSpaceSep =
 let private instantLongFrac =
     System.Text.RegularExpressions.Regex @"(T\d{2}:\d{2}:\d{2}\.\d{7})\d+"
 
+// .NET's F-fraction also matches zero digits, so `12:34:56.Z` would
+// read; a fraction dot needs at least one digit
+let private instantEmptyFrac =
+    System.Text.RegularExpressions.Regex @"T\d{2}:\d{2}:\d{2}\.(?!\d)"
+
 let parseInstantMs (text: string) : Result<int64, string> =
     let t = text.Trim()
     let norm = instantLongFrac.Replace(instantSpaceSep.Replace(t, "$1T$2"), "$1")
 
-    match
-        System.DateTimeOffset.TryParseExact(
-            norm,
-            instantFormats,
-            System.Globalization.CultureInfo.InvariantCulture,
-            System.Globalization.DateTimeStyles.AssumeUniversal
-            ||| System.Globalization.DateTimeStyles.AdjustToUniversal
-        )
-    with
-    | true, dto -> Ok(dto.ToUnixTimeMilliseconds())
-    | _ ->
+    let refused () =
         Error
             $"not an ISO 8601 instant ('{excerpt t}'; 2026-08-14T12:34:56Z — offsets allowed, a bare date reads as midnight UTC)"
+
+    if instantEmptyFrac.IsMatch norm then
+        refused ()
+    else
+        match
+            System.DateTimeOffset.TryParseExact(
+                norm,
+                instantFormats,
+                System.Globalization.CultureInfo.InvariantCulture,
+                System.Globalization.DateTimeStyles.AssumeUniversal
+                ||| System.Globalization.DateTimeStyles.AdjustToUniversal
+            )
+        with
+        | true, dto -> Ok(dto.ToUnixTimeMilliseconds())
+        | _ -> refused ()
 
 /// an Instant is an epoch-ms in DateTimeOffset's range (years 1-9999);
 /// a value outside it raises in weir's words at the point it is made,
