@@ -1,18 +1,19 @@
-# PLAN — the road to v0.1.0
+# PLAN — daily driver: a day of use without a crash or surprise
 
 Status: PARKED until v0.0.74 (the second bug hunt's fixes) is pushed
 (user, 2026-10-14). Definition confirmed by the user (below).
 
-## What v0.1.0 means (user, 2026-10-14)
+## The goal (user, 2026-10-14)
 
-**The first version a human can use extensively for a day without a crash
-or unintended behaviour.** The test is usage, not a feature list: a full day
+**A weir a human can use extensively for a day without a crash or
+unintended behaviour.** Not tied to a version number: no release is due
+when this plan is done — the user releases when they choose. The test is usage, not a feature list: a full day
 of real work — writing and running scripts, the REPL, an editor on the LSP,
 automation in CI — with no crash and nothing that surprises. "Unintended
 behaviour" includes the doc saying one thing and the binary doing another.
 
-Not a stability promise — that is 1.0. Pre-1.0 breaking changes stay allowed
-without shims; v0.1.0 only adds the notes (W5).
+Not a stability promise. Breaking changes stay allowed without shims; W5
+only adds migration notes.
 
 ## Exit criteria
 
@@ -66,11 +67,11 @@ loop stops at the first round with no high/medium findings (exit criterion 1).
   `dx/retire-bang`) — check what's left against main, then rule.
 - Syntax DX batch (`dx/*` branches) — verify everything landed; delete
   merged branches.
-- `dev/BACKLOG.md` — each open item tagged "0.1.0" or "later".
+- `dev/BACKLOG.md` — each open item tagged "daily-driver" or "later".
 "In" items get their own plans and land before the release.
 
 ### W5 — Breaking-change policy (small, alongside W1)
-A DECISIONS row: from v0.1.0, every breaking change gets a `### Breaking`
+A DECISIONS row: from the point the user picks, every breaking change gets a `### Breaking`
 CHANGELOG section entry with a one-line migration; still no shims pre-1.0.
 
 ### W6 — Regression automation (1 session)
@@ -130,12 +131,11 @@ logging every crash, internal error, hang, misleading message and surprise:
 Every finding is fixed or ruled intended (DECISIONS) before the next day.
 The user's own REPL-as-shell use is the running real-world day: whatever it
 hits is a W8 finding as it happens, and the release gate is a clean stretch
-of it on the release candidate.
+of it on a build from main.
 
-### W7 — Release
-v0.1.0 notes that say what the version means; README/site wording ("first
-version we recommend"); editor extensions' versions checked against the
-runbook; then the usual runbook.
+### W7 — Afterwards (no version implied)
+When the exit criteria hold, report it. Whether and when that becomes a
+named release is the user's call; nothing in this plan triggers one.
 
 ## Estimate
 
