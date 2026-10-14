@@ -141,6 +141,11 @@ REPL / LSP / fmt
   build` deletes on Enter; a script doesn't). Echo the type and a hint
   instead [D:repl-let-echo-lazy].
 
+- **H60 a lazy binding outside any `within` replays the cwd/env where it
+  was written** (`let here = ls`, `cd src`, `here` lists the old directory;
+  an init `let gl = git log …` always logs the startup directory). Capture
+  only the `within` scopes it sits in [D:ambient-capture-within].
+
 ## Stage 3 — messages and small inconsistencies (`fix/hunt2-messages`)
 
 - **H35** `weir -e ''` / `-e '// c'` print a bare `^` (`Program.fs:34`).
