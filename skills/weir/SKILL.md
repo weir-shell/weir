@@ -667,7 +667,8 @@ print $"{key} -> {value}"
   is refused at the boundary with 400. The response `body` is an
   `HttpBody` — the SAME union the `Http` client uses (`NoBody`/`Text`/
   `Json`/`Form`), plus `Stream of seq<string>`: the runtime PULLS and FLUSHES
-  each element as produced (chunked, SSE-shaped `data:` lines), so a lazy
+  each element as produced (chunked, SSE-shaped: one event per element,
+  one `data:` line per line of it — a newline cannot forge an event), so a lazy
   producer streams incrementally — the client sees early elements before
   the seq ends. If a `Stream` producer RAISES mid-body, the failure is
   surfaced to the script through `Server.streamErrors srv` (the

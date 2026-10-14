@@ -22282,6 +22282,24 @@ let serveTests =
                   Expect.isTrue (b.EndsWith "hello") $"the connection stays in frame: {b}"
               | other -> failtest $"two replies expected: {other}"
           }
+          test "a Stream element's newlines become data: lines of ONE event — no forged events (H18)" {
+              let answer (_: Weir.Serve.SReq) : Weir.Serve.SResp =
+                  { Status = 200
+                    Headers = []
+                    Body = Weir.Serve.RStream(seq { "a\n\nevent: evil\ndata: x"; "b\r\nc\rd"; "e" }) }
+
+              match wire answer [ get "GET" "/s" ] with
+              | [ r ] ->
+                  let body = System.Text.RegularExpressions.Regex.Replace(r, "\r\n[0-9a-fA-F]+\r\n", "")
+
+                  Expect.stringContains
+                      body
+                      "data: a\ndata: \ndata: event: evil\ndata: data: x\n\ndata: b\ndata: c\ndata: d\n\ndata: e\n\n"
+                      r
+
+                  Expect.isFalse (body.Contains "\nevent: evil") "no forged field line"
+              | other -> failtest $"one reply expected: {other}"
+          }
           // ---- F9: the method boundary [D:serve-method] ----
           test "HttpMethod carries a well-formed unlisted verb as Other; an inlined handler routes on it and on Query" {
               // Other is an open-world inbound case; the handler is inlined

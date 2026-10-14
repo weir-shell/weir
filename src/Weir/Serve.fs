@@ -41,7 +41,7 @@ type SBody =
     // the lazy body [D:http-serve]: each element written and flushed as
     // produced, so a client sees bytes before the seq ends (the
     // incremental law the acceptance pins). Chunked transfer, one SSE
-    // `data:` line per element.
+    // event per element, one `data:` line per line of it.
     | RStream of seq<string>
 
 type SResp =
@@ -374,8 +374,15 @@ let writeResponse (ctx: HttpListenerContext) (resp: SResp) (onStreamFailure: str
                 | None -> go <- false
                 | Some false -> go <- false
                 | Some true ->
-                    let line = e.Current
-                    let frame = Encoding.UTF8.GetBytes($"data: {line}\n\n")
+                    // one `data:` line per line of the element: SSE ends
+                    // a field at CR, LF or CRLF, so an embedded newline
+                    // would otherwise forge a new field or event
+                    let fields =
+                        e.Current.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n')
+                        |> Array.map (fun l -> $"data: {l}\n")
+                        |> String.concat ""
+
+                    let frame = Encoding.UTF8.GetBytes(fields + "\n")
 
                     try
                         out.OutputStream.Write(frame, 0, frame.Length)
