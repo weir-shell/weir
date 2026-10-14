@@ -180,18 +180,22 @@ type private OpenBracket =
       EntryIndent: int option
       Delta: int }
 
-let private formatLinesCore (body: string list) : Result<string list, string> =
+// `lineOffset`: the physical lines above `body` (a shebang), so an error
+// names the file's own line number
+let private formatLinesCore (lineOffset: int) (body: string list) : Result<string list, string> =
     // trailing whitespace is never significant (strings are single-line and
     // close with a quote), so both equivalence passes compare TrimEnd'd code
     let commentOnly (raw: string) =
         Script.classifyLine raw = Script.LineKind.CommentOnly
 
-    let logicalOf (ls: string list) =
+    let logicalAt (off: int) (ls: string list) =
         ls
-        |> List.mapi (fun i l -> i + 1, l)
+        |> List.mapi (fun i l -> i + 1 + off, l)
         |> List.filter (fun (_, raw) -> not (commentOnly raw))
         |> List.map (fun (n, raw) -> n, (Script.stripComment raw).TrimEnd())
         |> Script.assemble
+
+    let logicalOf = logicalAt 0
 
     let texts (lls: Script.LogicalLine list) = lls |> List.map (fun ll -> ll.Text)
 
@@ -209,7 +213,7 @@ let private formatLinesCore (body: string list) : Result<string list, string> =
             | Ok a, Ok b when texts a = texts b -> candidate
             | _ -> body
 
-    match logicalOf body with
+    match logicalAt lineOffset body with
     | Error e -> Error $"cannot format: {e} (fix errors first)"
     | Ok originalLogical ->
 
@@ -490,7 +494,7 @@ let private formatLinesCore (body: string list) : Result<string list, string> =
                         braces <- pushed @ (braces |> List.skip (List.length braces - survived))
                         formatted)
 
-        match logicalOf formatted with
+        match logicalAt lineOffset formatted with
         | Error e -> Error $"fmt safety check failed (file left unchanged): {e}"
         | Ok formattedLogical ->
             if texts originalLogical <> texts formattedLogical then
@@ -595,7 +599,39 @@ let private formatLinesCore (body: string list) : Result<string list, string> =
                     Ok final
 
 let formatLines (body: string list) : Result<string list, string> =
-    formatLinesCore body |> Result.map canonicalizeDocs
+    formatLinesCore 0 body |> Result.map canonicalizeDocs
+
+/// The one formatter entry point for `weir fmt` and the LSP's
+/// formatting request [D:fmt-v1]: a source text in, its canonical lines
+/// out, plus whether they differ from the source. The shebang line
+/// rides verbatim (never formatted), an error names the file's own line
+/// number, and the canonical text ends in exactly one newline — a
+/// source without it is not canonical. CRLF reads as LF.
+let formatSource (text: string) : Result<string list * bool, string> =
+    let normalized = text.Replace("\r\n", "\n")
+
+    let lines =
+        if normalized = "" then
+            []
+        else
+            let all = normalized.Split '\n' |> Array.toList
+
+            if normalized.EndsWith "\n" then
+                List.take (all.Length - 1) all
+            else
+                all
+
+    let finalNewline = normalized = "" || normalized.EndsWith "\n"
+
+    let header, body =
+        match lines with
+        | first :: rest when first.StartsWith "#!" -> [ first ], rest
+        | _ -> [], lines
+
+    formatLinesCore header.Length body
+    |> Result.map (fun formattedBody ->
+        let result = header @ canonicalizeDocs formattedBody
+        result, (result <> lines || not finalNewline))
 
 // #save's bare-alias qualifier [D:repl-save]: a saved script is
 // strict, where bare aliases (`map`, `where`, `startsWith`) do not
@@ -709,21 +745,15 @@ let formatFile (checkOnly: bool) (path: string) : int =
     | Error msg ->
         System.Console.Error.WriteLine $"weir: {msg}"
         2
-    | Ok lines ->
-
-        let header, body =
-            match lines with
-            | first :: rest when first.StartsWith "#!" -> [ first ], rest
-            | _ -> [], lines
-
-        match formatLines body with
+    | Ok _ ->
+        // the entry read validated the file [D:source-utf8]; the formatter
+        // takes the raw text so a BOM and the shebang survive verbatim
+        match formatSource (System.IO.File.ReadAllText path) with
         | Error msg ->
             System.Console.Error.WriteLine $"weir fmt: {msg}"
             3
-        | Ok formattedBody ->
-            let result = header @ formattedBody
-
-            if result = lines then
+        | Ok(result, changed) ->
+            if not changed then
                 if not checkOnly then
                     System.Console.Error.WriteLine "weir fmt: already formatted"
 

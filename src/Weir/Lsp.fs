@@ -2503,17 +2503,17 @@ let run (debug: bool) : int =
                         idStr |> Option.iter (fun id -> respond id writeResult)
                     | "textDocument/formatting" ->
                         // client-sent text only (the security non-claim holds);
-                        // editor options are ignored — weir fmt is canonical.
-                        // formatLines keeps unparseable statements verbatim, so
-                        // format-on-save on a broken file still normalizes what
-                        // it can; an assemble failure returns no edits.
+                        // editor options are ignored — weir fmt is canonical,
+                        // and this is its own entry point (Fmt.formatSource):
+                        // the edit is what `weir fmt` would write, and where
+                        // the CLI refuses there are no edits.
                         let writeResult (w: Text.Json.Utf8JsonWriter) =
                             match docOf () with
                             | Some(_, text) ->
                                 let lines = text.Replace("\r\n", "\n").Split('\n') |> Array.toList
 
-                                match Fmt.formatLines lines with
-                                | Ok formatted when formatted <> lines ->
+                                match Fmt.formatSource text with
+                                | Ok(formatted, true) ->
                                     let arr = List.toArray lines
                                     let lastIdx = arr.Length - 1
                                     w.WriteStartArray()
@@ -2531,7 +2531,7 @@ let run (debug: bool) : int =
                                     w.WriteNumber("character", arr[lastIdx].Length)
                                     w.WriteEndObject()
                                     w.WriteEndObject()
-                                    w.WriteString("newText", String.concat "\n" formatted)
+                                    w.WriteString("newText", String.concat "\n" formatted + "\n")
                                     w.WriteEndObject()
                                     w.WriteEndArray()
                                 | _ -> w.WriteNullValue() // refusal or already canonical

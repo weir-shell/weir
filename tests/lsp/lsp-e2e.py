@@ -847,6 +847,31 @@ while m.get("id") != 72:
 expect(m.get("result") == [] or m.get("result") is None,
        f"a canonical doc needs no edits: {m}")
 
+# formatting is `weir fmt`'s own entry point [D:fmt-v1]: the shebang
+# rides verbatim, the text ends in one newline, and where the CLI refuses
+# (an indented first statement under a shebang) there are no edits
+def format5(rid, text):
+    uri = f"file:///fmt{rid}.weir"
+    send5({"jsonrpc": "2.0", "method": "textDocument/didOpen",
+           "params": {"textDocument": {"uri": uri, "text": text}}})
+    send5({"jsonrpc": "2.0", "id": rid, "method": "textDocument/formatting",
+           "params": {"textDocument": {"uri": uri},
+                      "options": {"tabSize": 4, "insertSpaces": True}}})
+    m = read5()
+    while m.get("id") != rid:
+        m = read5()
+    return m.get("result")
+
+r = format5(73, "#!/usr/bin/env weir  \nlet x=1\nprint (show x)\n")
+expect(isinstance(r, list) and len(r) == 1
+       and r[0]["newText"] == "#!/usr/bin/env weir  \nlet x = 1\nprint (show x)\n",
+       f"the shebang rides verbatim: {r}")
+r = format5(74, "let x=1\nprint (show x)")
+expect(isinstance(r, list) and len(r) == 1 and r[0]["newText"].endswith("print (show x)\n"),
+       f"the formatted text ends in a newline: {r}")
+r = format5(75, "#!/usr/bin/env weir\n  print \"a\"\n")
+expect(r == [] or r is None, f"where the CLI refuses, no edits: {r}")
+
 send5({"jsonrpc": "2.0", "id": 2, "method": "shutdown", "params": {}})
 m = read5()
 while m.get("id") != 2:

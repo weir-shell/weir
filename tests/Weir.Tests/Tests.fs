@@ -6694,6 +6694,45 @@ let bracketContinuationTests =
               Expect.equal (joined [ "let s ="; "    [\"a[\""; "     \"b\"]" ]) "let s = [\"a[\" ; \"b\"]" ""
           } ]
 
+// the one formatter entry point the CLI and the LSP share [D:fmt-v1]
+let fmtSourceTests =
+    testList
+        "fmt: formatSource (CLI and LSP)"
+        [ test "the shebang rides verbatim, trailing spaces and all" {
+              match Weir.Fmt.formatSource "#!/usr/bin/env weir  \nlet x=1\nprint (show x)\n" with
+              | Ok(lines, changed) ->
+                  Expect.equal lines [ "#!/usr/bin/env weir  "; "let x = 1"; "print (show x)" ] "formatted body"
+                  Expect.isTrue changed "the body changed"
+              | Error e -> failtest e
+          }
+          test "an error names the file's own line under a shebang" {
+              match Weir.Fmt.formatSource "#!/usr/bin/env weir\nprint \"a\"\nlet x = <<<\n" with
+              | Error e -> Expect.stringContains e "line 3" "counted from the shebang line"
+              | Ok r -> failtestf "must refuse: %A" r
+          }
+          test "an indented first statement under a shebang is refused, not re-indented" {
+              match Weir.Fmt.formatSource "#!/usr/bin/env weir\n  print \"a\"\n" with
+              | Error _ -> ()
+              | Ok r -> failtestf "must refuse as the CLI does: %A" r
+          }
+          test "a missing final newline is not canonical; CRLF is" {
+              match Weir.Fmt.formatSource "let x = 1\nprint (show x)" with
+              | Ok(_, changed) -> Expect.isTrue changed "no final newline"
+              | Error e -> failtest e
+
+              match Weir.Fmt.formatSource "let x = 1\r\nprint (show x)\r\n" with
+              | Ok(lines, changed) ->
+                  Expect.isFalse changed "CRLF reads as LF"
+                  Expect.equal lines [ "let x = 1"; "print (show x)" ] ""
+              | Error e -> failtest e
+
+              match Weir.Fmt.formatSource "" with
+              | Ok(lines, changed) ->
+                  Expect.isEmpty lines "an empty file"
+                  Expect.isFalse changed "is canonical"
+              | Error e -> failtest e
+          } ]
+
 // inside an open bracket fmt shifts, never re-levels [D:fmt-bracket-shift]
 let fmtBracketShiftTests =
     // formats, asserts the expected layout, then that fmt is the identity
@@ -25906,6 +25945,7 @@ let allTests =
           chooseTests
           bracketContinuationTests
           fmtMatchTests
+          fmtSourceTests
           fmtBracketShiftTests
           fmtStroustrupTests
           replEchoTests
