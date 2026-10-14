@@ -3480,6 +3480,58 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                                  err arg.Span $"Args.load needs a monomorphic type; '{tyName}' is generic"
                              | None -> err arg.Span $"unknown type '{tyName}'{didYouMean tyName (Map.keys env.Types)}"
                          | _ -> err arg.Span "Args.load takes a type name, e.g. Args.load Cli")
+                // a reified command's argv words [D:secret]: each element
+                // obeys the command-argument law a bare command's does, so
+                // `curl -H $auth … | complete` takes the Secret; the marker
+                // erases to the list (seq<string> to the reifier — Builtins
+                // renders each word as Eval.scalarString does)
+                | EVar "|argv", [ { Kind = EList items } as lst ] ->
+                    result {
+                        let! titems =
+                            items
+                            |> List.fold
+                                (fun acc a ->
+                                    acc
+                                    |> Result.bind (fun ts ->
+                                        checkScalarSplice ctx env CmdArg a |> Result.map (fun t -> t :: ts)))
+                                (Ok [])
+
+                        return
+                            { Kind = TEList(List.rev titems)
+                              Ty = TSeq TStr
+                              Span = lst.Span }
+                    }
+                // `NAME=$s cmd` / `within env NAME=$s` [D:secret]: the
+                // overlay value is a string or a Secret (the CI token's
+                // channel into a child) — Env.pair itself stays string-only
+                | EVar "|envPair", [ k; v ] ->
+                    result {
+                        let! tk = check ctx env k TStr
+                        let! tv = infer ctx env v
+
+                        let! vTy =
+                            match resolve ctx tv.Ty with
+                            | TSecret -> Ok TSecret
+                            | _ -> bind ctx env v.Span TStr tv.Ty |> Result.map (fun () -> TStr)
+
+                        let envVarTy = TNamed("EnvVar", [])
+
+                        let tf =
+                            { Kind = TEVar "|envPair"
+                              Ty = TFun(TStr, TFun(vTy, envVarTy))
+                              Span = head.Span }
+
+                        return
+                            { Kind =
+                                TEApp(
+                                    { Kind = TEApp(tf, tk)
+                                      Ty = TFun(vTy, envVarTy)
+                                      Span = expr.Span },
+                                    tv
+                                )
+                              Ty = envVarTy
+                              Span = expr.Span }
+                    }
                 | EVar(("print" | "printerr" | "|print") as pname), [ arg ] when isPrintFamily env pname ->
                     result {
                         let! targ = infer ctx env arg

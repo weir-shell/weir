@@ -538,7 +538,9 @@ print $"{key} -> {value}"
   inside a shown record), interpolation REFUSES (`$"tok: {s}"` is a
   check error), `to json`/`to yaml` REFUSE, `print` refuses — each
   naming `Secret.reveal`, the one exit. It DOES splice into argv in the
-  clear (`curl -H $auth` — `ps`-visible, a stated non-claim). `Eq`
+  clear (`curl -H $auth`, reified too: `… | complete`/`line`/`$e(…)`;
+  and as an env value: `TOKEN=$s cmd`, `within env TOKEN=$s` —
+  `ps`-visible, a stated non-claim). `Eq`
   compares (`s1 == s2`), `Ord` refuses. Produced by `Env.load`/`Args.load`
   `Secret` fields (env is the CI secret channel), `File.readSecret p`
   (a mounted secret file), a `Secret` field READ by `from json`/`from

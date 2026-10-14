@@ -16308,6 +16308,39 @@ let secretTests =
           }
           test "the argv splice is ALLOWED — a Secret reaches argv in the clear (the ruling)" {
               Expect.equal (Weir.Eval.scalarString "command argument" (VSecret "tok")) "tok" "argv gets the raw value"
+          }
+          test "a reified command and an env prefix take a Secret too — the argv law, not seq<string>" {
+              skipOnWindows ()
+              let clean = errorsCleanIn "secret-argv.weir"
+              let s = "let s = Secret.of \"tok\""
+              clean [ s; "let r = echo $s | complete"; "print (r.stdout |> Str.join \"\")" ] "| complete"
+              clean [ s; "let e = Env.ofPairs [(\"A\", \"1\")]"; "let l = $e(echo $s | line)"; "print l" ] "$e( )"
+              clean [ s; "A=$s sh -c \"echo $A\"" ] "NAME=$s cmd"
+              clean [ s; "within env A=$s"; "    sh -c \"echo $A\"" ] "within env A=$s"
+              clean [ "let u = Uuid.nil"; "let n = 3"; "let r = echo $u $n | text"; "print r" ] "mixed argv words"
+              mustSayIn "secret-argv.weir" [ "let f = 1.5"; "let r = echo $f | line"; "print r" ] "command arguments must be" "float refused"
+              mustSayIn "secret-argv.weir" [ "let d = 3s"; "let r = echo $d | line"; "print r" ] "Duration.toMillis" "Duration teaches"
+              mustSayIn "secret-argv.weir" [ "let p = Env.pair \"A\" (Secret.of \"x\")"; "print (show p)" ] "Secret" "Env.pair stays string-only"
+
+              // the words reach the child as the bare command's would
+              let path = tempPath "weir-secret-argv" + ".weir"
+
+              System.IO.File.WriteAllLines(
+                  path,
+                  [ s
+                    "let a = echo $s | line"
+                    "let b = A=$s sh -c \"echo $A\" | line"
+                    "let e = Env.ofPairs [(\"B\", \"1\")]"
+                    "let u = Uuid.nil"
+                    "let c = $e(echo $s $u | text)"
+                    "if a <> \"tok\" || b <> \"tok\" || c <> \"tok 00000000-0000-0000-0000-000000000000\" then"
+                    "    exit 3" ]
+              )
+
+              try
+                  Expect.equal (Weir.Script.run path []) 0 "every reified form spliced the clear value"
+              finally
+                  System.IO.File.Delete path
           } ]
 
 let httpTests =

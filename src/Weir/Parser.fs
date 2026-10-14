@@ -4719,8 +4719,16 @@ let rec private foldChain (h: Expr) (rest: ((string * Span) * Seg) list) : Resul
                                 | ESplat _ -> true
                                 | _ -> false)
 
+                        // each literal chunk rides `|argv`, the checker's marker
+                        // for argv words: elements obey the command-argument
+                        // law (Secret, Uuid, int, bool), not seq<string>'s
+                        // element unification [D:secret]; erased at check
+                        let argvList (items: Expr list) (span: Span) =
+                            { Kind = EApp({ Kind = EVar "|argv"; Span = span }, { Kind = EList items; Span = span })
+                              Span = span }
+
                         if not hasSplat then
-                            { Kind = EList args; Span = acc.Span }
+                            argvList args acc.Span
                         else
                             let seqAppend (a: Expr) (b: Expr) =
                                 let span = Span.union a.Span b.Span
@@ -4733,8 +4741,7 @@ let rec private foldChain (h: Expr) (rest: ((string * Span) * Seg) list) : Resul
                                   Span = span }
 
                             let listOf (chunk: Expr list) =
-                                { Kind = EList chunk
-                                  Span = Span.union (List.head chunk).Span (List.last chunk).Span }
+                                argvList chunk (Span.union (List.head chunk).Span (List.last chunk).Span)
 
                             let flush chunk parts =
                                 match chunk with

@@ -400,7 +400,10 @@ let private asString (v: Value) : string =
     | VStr s -> s
     | v -> unreachable $"the checker rejects non-string command arguments: {formatValue v}"
 
-let private argStrings (args: seq<Value>) : string list = args |> Seq.map asString |> List.ofSeq
+// argv words follow the command-argument law [D:secret]: the checker's
+// `|argv` marker admits Secret/Uuid/int/bool beside string
+let private argStrings (args: seq<Value>) : string list =
+    args |> Seq.map (Eval.scalarString "command argument") |> List.ofSeq
 
 let private cdImpl: Value =
     VBuiltin(fun v ->
@@ -3162,6 +3165,8 @@ let private envPairImpl: Value =
         VBuiltin(fun v ->
             match n, v with
             | VStr n, VStr v -> recordOf envVarDef [ VStr n; VStr v ]
+            // the `NAME=$s` desugar admits a Secret [D:secret]
+            | VStr n, VSecret v -> recordOf envVarDef [ VStr n; VStr v ]
             | _ -> unreachable "the checker rejects 'Env.pair' on these arguments"))
 
 let private envOfPairsImpl: Value =
