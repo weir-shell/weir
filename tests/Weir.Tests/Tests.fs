@@ -19462,7 +19462,13 @@ let retryPollTests =
           }
           test "retry yields the successful attempt's value; poll the same (they differ by BOUND)" {
               expectValue "retry attempts=3 delay=0ms (2 + 2) until r (r == 4)" (VInt 4L)
-              expectValue "poll timeout=2s interval=0ms (2 + 2) until r (r == 4)" (VInt 4L)
+              expectValue "poll timeout=2s interval=1ms (2 + 2) until r (r == 4)" (VInt 4L)
+          }
+          test "poll refuses interval=0s, as it refuses timeout=0s — retry's delay=0ms stays" {
+              let ex = Expect.throwsC (fun () -> run "poll timeout=1s interval=0s (1 == 2)" |> ignore) id
+              Expect.stringContains ex.Message "poll: interval must be positive" "named"
+              Expect.isFalse (ex.Message.Contains "attempt(s)") "refused up front, never looped"
+              expectValue "retry attempts=2 delay=0ms (1 == 1)" VUnit
           }
           test "exhaustion raises with attempts AND elapsed; poll with its timeout" {
               let ex =

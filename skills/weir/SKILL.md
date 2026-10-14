@@ -889,7 +889,8 @@ let p =
   optionally `until r` + an indented predicate block binding the
   body's value. A `bool` body IS the predicate (no `until`, yields
   unit); a value body REQUIRES `until` and yields the value.
-  `poll timeout=5m interval=10s` is the time-bounded twin. The head
+  `poll timeout=5m interval=10s` is the time-bounded twin (its
+  `timeout` and `interval` must be positive — no busy loop). The head
   desugars over a record — `retry { Retry.defaults with attempts = 5 }`
   is the same form, so options can be computed and shared. Exhaustion
   RAISES; raises inside the body propagate (retry on the predicate,

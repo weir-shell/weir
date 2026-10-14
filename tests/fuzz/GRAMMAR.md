@@ -78,7 +78,7 @@ composition, not type complexity.
   holds). Trailing comments ride the append-trailing metamorphic over
   these lines like any other code line.
 - retry/poll statements (top-level only): `let v = retry attempts=1
-  delay=0ms` / `poll timeout=1s interval=0ms` heads, an int body
+  delay=0ms` / `poll timeout=1s interval=1ms` heads, an int body
   block, a col-0 `until r` segment with its predicate block, and a
   trailing print — single-attempt DETERMINISTIC (the threshold sits
   below the value; the loop never sleeps). Exercises the two-segment

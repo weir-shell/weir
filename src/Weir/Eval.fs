@@ -3337,6 +3337,12 @@ and eval (env: Env) (te: TypedExpr) : Value =
             let key = if isPoll then "interval" else "delay"
             failwith $"{head}: a negative {key} ({formatDuration delayMs})"
 
+        // poll is bounded by time alone, so a zero interval re-runs the
+        // body in a busy loop until the timeout — refused like timeout=0s
+        // [D:retry-poll]; retry's attempts bound it, so delay=0ms stays
+        if isPoll && delayMs = 0L then
+            failwith "poll: interval must be positive, got 0ms — a zero interval re-runs the body in a busy loop"
+
         match timeoutMs with
         | Some t when t <= 0L -> failwith $"{head}: timeout must be positive, got {formatDuration t}"
         | _ -> ()
