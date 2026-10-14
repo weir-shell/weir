@@ -3386,8 +3386,12 @@ and eval (env: Env) (te: TypedExpr) : Value =
                     | None -> ""
 
                 failwith $"poll: timed out after {formatDuration sw.ElapsedMilliseconds} ({n} attempt(s)){watchedNote}"
-            else
+            elif n >= attempts then
                 failwith $"retry: exhausted {attempts} attempt(s) over {formatDuration sw.ElapsedMilliseconds}"
+            else
+                // the timeout ended it: the attempts actually made
+                failwith
+                    $"retry: timed out after {formatDuration sw.ElapsedMilliseconds} ({n} attempt(s) made of {attempts} allowed)"
 
         let rec loop (n: int) =
             watchCheck sw

@@ -19432,6 +19432,14 @@ let retryPollTests =
 
               Expect.stringContains ex.Message "retry: exhausted 3 attempt(s) over" "attempts + elapsed"
 
+              // a timeout ends it early: the attempts actually made, never the configured count
+              let ex1 =
+                  Expect.throwsC (fun () -> run "retry attempts=50 delay=100ms timeout=(Some 250ms) (1 == 2)" |> ignore) id
+
+              Expect.stringContains ex1.Message "retry: timed out after" "the timeout named"
+              Expect.stringContains ex1.Message " attempt(s) made of 50 allowed)" "made of configured"
+              Expect.isFalse (ex1.Message.Contains "exhausted 50") "not the configured count"
+
               let ex2 =
                   Expect.throwsC (fun () -> run "poll timeout=40ms interval=10ms (1 == 2)" |> ignore) id
 
@@ -19478,7 +19486,7 @@ let retryPollTests =
           // Int32.MaxValue ms the wait runs in slices, never a fake timeout
           test "a delay/interval past Int32.MaxValue ms really waits until the timeout" {
               for src, msg in
-                  [ "retry attempts=2 delay=2000h timeout=(Some 300ms) (1 == 2)", "retry: exhausted 2 attempt(s)"
+                  [ "retry attempts=2 delay=2000h timeout=(Some 300ms) (1 == 2)", "retry: timed out after"
                     "poll timeout=300ms interval=2000h (1 == 2)", "poll: timed out" ] do
                   let sw = System.Diagnostics.Stopwatch.StartNew()
                   let ex = Expect.throwsC (fun () -> run src |> ignore) id
