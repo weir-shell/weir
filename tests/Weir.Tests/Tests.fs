@@ -17137,6 +17137,21 @@ let jsonBoundaryTests =
               Expect.stringContains m "declare seq<JRow> to read it" "the pointer is real now [D:from-json-seq]"
               Expect.isFalse (m.Contains "requested operation") "no System.Text.Json words"
           }
+          test "a field's wrong value speaks weir's words" {
+              let msg (doc: string) =
+                  try
+                      runWith [ "src", VSeq [ VStr doc ] ] "(src |> from json JRow).name" |> ignore
+                      "no error"
+                  with e ->
+                      e.Message
+
+              let bytesTrue = msg "{\"name\": \"x\", \"bytes\": true, \"readOnly\": false}"
+              Expect.stringContains bytesTrue "field 'bytes' expected int, got bool" "bool, not True"
+              let bytesStr = msg "{\"name\": \"x\", \"bytes\": \"s\", \"readOnly\": false}"
+              Expect.stringContains bytesStr "field 'bytes' expected int, got string" "string, not String"
+              let nameArr = msg "{\"name\": [1], \"bytes\": 1, \"readOnly\": false}"
+              Expect.stringContains nameArr "field 'name' expected string, got an array" "an array, not Array"
+          }
           test "every non-object top level is named (number, string, boolean, null) — both adapters" {
               for lit, kind in [ "42", "number"; "\"s\"", "string"; "true", "boolean"; "null", "null" ] do
                   let mJson =

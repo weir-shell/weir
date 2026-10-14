@@ -1340,6 +1340,19 @@ let private jsonKindName (k: System.Text.Json.JsonValueKind) : string =
     | System.Text.Json.JsonValueKind.Null -> "null"
     | _ -> "non-object"
 
+// the value a field met, in weir's words beside a weir type — never
+// System.Text.Json's enum names (`True`, `String`) [D:json-boundary]
+let private jsonGotWord (k: System.Text.Json.JsonValueKind) : string =
+    match k with
+    | System.Text.Json.JsonValueKind.True
+    | System.Text.Json.JsonValueKind.False -> "bool"
+    | System.Text.Json.JsonValueKind.String -> "string"
+    | System.Text.Json.JsonValueKind.Number -> "a number"
+    | System.Text.Json.JsonValueKind.Array -> "an array"
+    | System.Text.Json.JsonValueKind.Object -> "an object"
+    | System.Text.Json.JsonValueKind.Null -> "null"
+    | _ -> "nothing"
+
 /// one object document/element -> one row of `def`. `who` names the
 /// adapter in every message ("from json" / "from jsonl") and `shown`
 /// is the input to cite — the line for jsonl, a snippet for a joined
@@ -1400,14 +1413,14 @@ let private jsonDoc
         // reading into a Secret wraps on the way in [D:secret-read]
         | TSecret, System.Text.Json.JsonValueKind.String -> VSecret(prop.GetString())
         // the document holds the secret: never echo it
-        | TSecret, kind -> failwith $"{who}: field '{name}' expected a string (Secret), got {kind}"
+        | TSecret, kind -> failwith $"{who}: field '{name}' expected a string (Secret), got {jsonGotWord kind}"
         | TUuid, System.Text.Json.JsonValueKind.String ->
             match parseUuid (prop.GetString()) with
             | Ok g -> VUuid g
             | Error e -> failwith $"{who}: field '{name}': {e}"
         | TBool, System.Text.Json.JsonValueKind.True -> VBool true
         | TBool, System.Text.Json.JsonValueKind.False -> VBool false
-        | ty, kind -> failwith $"{who}: field '{name}' expected {formatTy ty}, got {kind} in: {shown}"
+        | ty, kind -> failwith $"{who}: field '{name}' expected {formatTy ty}, got {jsonGotWord kind} in: {shown}"
 
     // the recursive reader [D:recursive-fields]: nested objects
     // convert through `defs` (the check-time closure — eval has no
