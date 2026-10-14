@@ -13851,6 +13851,8 @@ let showTests =
           }
           test "unions, seqs, scalars" {
               expectValue "show (Some 3)" (VStr "Some 3")
+              expectValue "show (Some (1, 2))" (VStr "Some (1, 2)")
+              expectValue "show (Some [1])" (VStr "Some ([1])")
               expectValue "show [1; 2]" (VStr "[1; 2]")
               expectValue "show 5" (VStr "5")
               expectValue "show \"a\"" (VStr "\"a\"")

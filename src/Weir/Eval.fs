@@ -398,7 +398,9 @@ let rec private formatWith (lim: RenderLimits) (depth: int) (v: Value) : string 
             match payload with
             | VInt _
             | VStr _
-            | VBool _ -> $"{case} {inner}"
+            | VBool _
+            // a tuple renders its own parens: `Some (1, 2)`, never `Some ((1, 2))`
+            | VTuple _ -> $"{case} {inner}"
             | _ -> $"{case} ({inner})"
         | VMap entries ->
             // sorted by construction (F# Map iterates in key order), so
