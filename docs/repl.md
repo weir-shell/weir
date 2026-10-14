@@ -483,6 +483,16 @@ have to call them with `()`, and they don't accept command-line
 arguments. When you want a short command name that passes its
 arguments straight through, like `k get po`, use `#alias` (below).
 
+A `let` can hold a command: `let gl = git log --oneline -n 10` binds a
+lazy value, so nothing runs while the file loads, and typing `gl` runs
+it, every time. A `let` that would run its command at load is refused
+with the reason: a reifier (`| line`, `| text`, `| succeeds`…),
+`|> Seq.freeze`, or passing the command to a function. Wrap those in
+a function, as with `pu` above. A command value runs in the directory
+it was written in, which for the init file is the starting directory;
+for a command that should follow `cd`, write a function
+(`let gl () = git log --oneline -n 10`).
+
 Loading is all-or-nothing. If the init file has an error, the REPL
 prints the error with its location plus `init: not loaded`, and the
 session starts without any of it. This is safe because nothing in the

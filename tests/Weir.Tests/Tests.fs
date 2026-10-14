@@ -25610,6 +25610,67 @@ let runsCommandReifierTests =
                         "let part = helper \"a\"" ]
 
               Expect.isEmpty ok "a partial application runs nothing"
+          }
+          test "a lazy command let is a module value; the eager forms are refused, naming why [D:lazy-command-lets]" {
+              for rhs in
+                  [ "git log --oneline -n 10"
+                    "git log | grep a | sort"
+                    "[\"a\"] | grep a"
+                    "$(git log)"
+                    "other"
+                    "other | grep a" ] do
+                  let ds =
+                      diagsIn "w.weir" [ "module W"; "let other : seq<string>"; "let other = git status"; "let gl : seq<string>"; $"let gl = {rhs}" ]
+
+                  Expect.isEmpty (ds |> List.filter (fun d -> d.Severity = "error")) rhs
+
+              let refused (body: string list) (needle: string) =
+                  let msgs = diagsIn "w.weir" ("module W" :: body) |> List.map (fun d -> d.Message)
+
+                  Expect.exists msgs (fun m -> m.Contains "cannot run a command at import" && m.Contains needle) (String.concat "; " body)
+
+              refused
+                  [ "let _h = git rev-parse HEAD | line" ]
+                  "`| line` runs the command now — drop the reifier to keep it lazy, or wrap it in a function"
+              refused [ "let _h = echo $(git rev-parse HEAD | line)" ] "`| line` runs the command now"
+              refused [ "let _h = git log |> Seq.freeze" ] "passed to `Seq.freeze`"
+              refused [ "let _h = git status | or echo x" ] "`| and`/`| or` runs the commands now"
+              // forcing a lazy binding runs its command just the same
+              refused [ "let gl : seq<string>"; "let gl = git log"; "let _n = gl |> Seq.length" ] "'gl' is a lazy command passed to `Seq.length`"
+              refused [ "let gl : seq<string>"; "let gl = git log"; "let _m = echo $@gl" ] "'gl' is a lazy command read here"
+              refused [ "let gl : seq<string>"; "let gl = git log"; "let f () = gl |> Seq.length"; "let _v = f ()" ] "'f' runs one"
+          }
+          test "importing a module with a lazy command let spawns nothing; each use runs it [D:lazy-command-lets]" {
+              if not (System.OperatingSystem.IsWindows()) then
+                  let dir = tempDir "weir-lazylet"
+
+                  try
+                      let mark = System.IO.Path.Combine(dir, "mark")
+                      let modP = System.IO.Path.Combine(dir, "w.weir")
+
+                      System.IO.File.WriteAllLines(
+                          modP,
+                          [ "module W"; "let gl : seq<string>"; $"let gl = sh -c \"echo run >> '{mark}'; echo out\"" ]
+                      )
+
+                      let mainP = System.IO.Path.Combine(dir, "main.weir")
+
+                      System.IO.File.WriteAllLines(
+                          mainP,
+                          [ "import \"./w.weir\""
+                            $"sh -c \"echo main >> '{mark}'\""
+                            "W.gl |> Seq.iter (fun _ -> ())"
+                            "W.gl |> Seq.iter (fun _ -> ())" ]
+                      )
+
+                      Expect.equal (Weir.Script.run mainP []) 0 "the script runs clean"
+                      // no "run" ahead of "main": the import spawned nothing
+                      Expect.equal (System.IO.File.ReadAllLines mark |> List.ofArray) [ "main"; "run"; "run" ] "lazy at import, run per use"
+                  finally
+                      try
+                          System.IO.Directory.Delete(dir, true)
+                      with _ ->
+                          ()
           } ]
 
 // the GUIDE sweep's findings, pinned [D:sweep-findings]

@@ -3890,6 +3890,8 @@ let private loadInit (baseState: State) : State =
                         notLoaded ()
                     | Ok checked' ->
                         let mutable bad = None
+                        // a lazy command let binds and spawns nothing; forcing one at load is refused [D:lazy-command-lets]
+                        let mutable cmdBindings: Map<string, int> = Map.empty
 
                         for ll, chk in checked' do
                             if bad.IsNone then
@@ -3897,12 +3899,11 @@ let private loadInit (baseState: State) : State =
                                 | Script.KType _ -> ()
                                 | Script.KLet(_, _, te)
                                 | Script.KLetPat(_, _, te) ->
-                                    if Script.runsCommandT te then
-                                        bad <-
-                                            Some(
-                                                ll,
-                                                "an init 'let' cannot run a command at load — wrap it in a function (let f () = …), the command runs when the prompt calls it"
-                                            )
+                                    (match Weir.Check.commandRunsNow cmdBindings te, chk.Kind with
+                                     | Some why, _ -> bad <- Some(ll, $"an init 'let' cannot run a command at load: {why}")
+                                     | None, Script.KLet(name, _, _) ->
+                                         cmdBindings <- Weir.Check.recordCommandBinding cmdBindings name te
+                                     | None, _ -> ())
                                 | Script.KCmd _
                                 | Script.KExpr _ ->
                                     bad <-

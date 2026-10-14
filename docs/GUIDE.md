@@ -2196,8 +2196,11 @@ print (if r.exitCode <> 0 then "importing a non-module is a named check error" e
 (The error printed by the inner script names the file by its full
 path: ``…/plain.weir is not a module; add `module` at the top, or
 invoke it as a command``.) A module
-`let` that runs a command is an error too; wrap it in a function.
-Modules only define things, and scripts run them.
+`let` that runs a command while the module loads is an error too
+(`| line`, `| text` and the other reifiers, `|> Seq.freeze`); wrap it
+in a function. A plain command `let`, like `let log = git log -n 10`,
+is fine: it runs nothing until a script uses it, and runs again on
+every use. Modules only define things, and scripts run them.
 
 A module can also come from another repo, copied into your project
 and committed.

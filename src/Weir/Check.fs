@@ -7124,6 +7124,92 @@ let rec eagerCommandHelper (helpers: Map<string, int>) (te: TypedExpr) : string 
         |> Option.orElseWith (fun () -> eagerCommandHelper (Map.remove n helpers) b)
     | _ -> childExprs te |> List.tryPick (eagerCommandHelper helpers)
 
+// lazy command-backed lets [D:lazy-command-lets]: in the helpers map an
+// arity-0 entry is a binding holding a lazy command seq — reading it
+// spawns nothing, forcing it runs its command
+let private lazyNames (helpers: Map<string, int>) =
+    helpers |> Map.filter (fun _ a -> a = 0) |> Map.keys |> Set.ofSeq
+
+let rec private eagerLazyRef (names: Set<string>) (te: TypedExpr) : string option =
+    match te.Kind with
+    | TEVar v when names.Contains v -> Some v
+    | TELambda _
+    | TELambdaPat _ -> None
+    | _ -> childExprs te |> List.tryPick (eagerLazyRef names)
+
+/// evaluating this builds a command seq and spawns nothing: a command, a
+/// pipeline of commands, a value-headed pipe into a command, or another
+/// lazy binding — with a head, argv and value head that run nothing
+/// (argv is built when the value is, so a splice forces) [D:lazy-command-lets]
+let rec private lazyCommandSeq (names: Set<string>) (te: TypedExpr) : bool =
+    let quiet e =
+        not (runsCommandT e) && (eagerLazyRef names e).IsNone
+
+    match te.Kind with
+    | TECmd _ -> childExprs te |> List.forall quiet
+    | TEPipe(arg, ({ Kind = TECmd _ } as c)) -> lazyCommandSeq names c && (lazyCommandSeq names arg || quiet arg)
+    | TEVar v -> names.Contains v
+    | _ -> false
+
+/// the module/init binding summary after `let name = te`: a
+/// command-reaching function keeps its arity, a lazy command seq is 0,
+/// anything else drops the name (a shadow)
+let recordCommandBinding (helpers: Map<string, int>) (name: string) (te: TypedExpr) : Map<string, int> =
+    match commandHelperArity helpers te with
+    | Some a -> Map.add name a helpers
+    | None when lazyCommandSeq (lazyNames helpers) te -> Map.add name 0 helpers
+    | None -> Map.remove name helpers
+
+/// why evaluating a module/init binding RHS runs a command now — None when
+/// it runs none or only builds a lazy command seq [D:lazy-command-lets]
+let commandRunsNow (helpers: Map<string, int>) (te: TypedExpr) : string option =
+    let names = lazyNames helpers
+    let lazyFix =
+        "only a command, a pipeline of commands or a value piped into one stays lazy; or wrap it in a function (let f () = …)"
+
+    let rec eagerVar (pick: string -> bool) (e: TypedExpr) =
+        match e.Kind with
+        | TEVar v when pick v -> Some v
+        | TELambda _
+        | TELambdaPat _ -> None
+        | _ -> childExprs e |> List.tryPick (eagerVar pick)
+
+    // the stage that forces a seq: `xs |> Seq.freeze` / `Seq.length xs`
+    let rec forcer (e: TypedExpr) =
+        match e.Kind with
+        | TEVar v when not (v.StartsWith "|") -> Some v
+        | TEApp(f, _) -> forcer f
+        | _ -> None
+
+    let forcing () =
+        match te.Kind with
+        | TEPipe(_, f) -> forcer f
+        | TEApp(f, _) -> forcer f
+        | _ -> None
+        |> Option.map (fun f -> $"passed to `{f}` here")
+
+    if lazyCommandSeq names te then
+        None
+    else
+        let runs = runsCommandT te
+
+        match
+            (if runs then eagerVar (fun v -> v = "|print") te else None),
+            (if runs then eagerVar (fun v -> (reifierOfVar v).IsSome) te else None),
+            eagerLazyRef names te
+        with
+        // `| and` / `| or` stream their commands (the |print desugar)
+        | Some _, _, _ -> Some $"`| and`/`| or` runs the commands now — {lazyFix}"
+        | None, Some r, _ ->
+            Some $"`| {(reifierOfVar r).Value}` runs the command now — drop the reifier to keep it lazy, or wrap it in a function (let f () = …)"
+        | None, None, Some n ->
+            let what = forcing () |> Option.defaultValue "read here, which runs it"
+            Some $"'{n}' is a lazy command {what} — {lazyFix}"
+        | None, None, None when runs ->
+            let what = forcing () |> Option.defaultValue "part of a larger expression here"
+            Some $"the command is {what} — {lazyFix}"
+        | None, None, None -> None
+
 /// the first command on the RHS's eager spine, rendered for a message:
 /// literal argv words as written, splices as $name / $@name, computed
 /// words elided

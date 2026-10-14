@@ -7081,8 +7081,11 @@ printf 'module B\nlet x = 1\nprint x\n' > "$mdir/declonly.weir"
 out=$($BIN check "$mdir/declonly.weir" 2>&1 || true)
 expect "a module is declaration-only (direct check enforces it)" "a module declares only" "$out"
 
-# weak purity: a module 'let' cannot run a command at import
-printf 'module W\nlet head = git rev-parse HEAD\n' > "$mdir/weak.weir"
+# weak purity: a module 'let' cannot run a command at import; a lazy
+# command let is a value — binding it spawns nothing [D:lazy-command-lets]
+printf 'module W\nlet head : seq<string>\nlet head = git rev-parse HEAD\n' > "$mdir/weak.weir"
+out=$($BIN check "$mdir/weak.weir" 2>&1) || fail "a lazy command let must check clean in a module: $out"
+printf 'module W\nlet head = git rev-parse HEAD |> Seq.freeze\n' > "$mdir/weak.weir"
 out=$($BIN check "$mdir/weak.weir" 2>&1 || true)
 expect "weak purity: a module let cannot run a command at import" "cannot run a command at import" "$out"
 # ...including through a reifier [D:module-let-reifier]: `cmd | line`
@@ -10520,6 +10523,28 @@ echo "$iout" | grep -qE "init\.weir:2:" || fail "the raising let must be LOCATED
 echo "$iout" | grep -qF "init: not loaded" || fail "a raising init let must not load"
 echo "$iout" | grep -qF "unknown name 'hi'" || fail "all-or-nothing broke after a raising init let"
 echo "$iout" | grep -qF "Unhandled exception" && fail "a raising init let dumped a .NET trace: $iout" || true
+
+# a lazy command let loads and spawns nothing; each use runs it; an
+# eager one is refused naming why [D:lazy-command-lets]
+if [ "$IS_WINDOWS" != "1" ]; then
+    rm -f "$initcfg/lazymark"
+    cat > "$INITHOME/weir/init.weir" <<WEOF
+#init
+let gl = sh -c "echo run >> '$initcfg/lazymark'; echo lazy-out"
+WEOF
+    iout=$(printf 'sh -c "echo main >> %s/lazymark"\ngl\ngl\n#quit\n' "$initcfg" \
+        | XDG_CONFIG_HOME="$initcfg" XDG_STATE_HOME="$initcfg/state" "$BIN" 2>&1)
+    echo "$iout" | grep -qF "init: not loaded" && fail "a lazy command let must load: $iout" || true
+    [ "$(grep -c lazy-out <<<"$iout")" = 2 ] || fail "each use of a lazy init let runs it: $iout"
+    [ "$(tr '\n' ' ' < "$initcfg/lazymark")" = "main run run " ] || fail "the init load spawned (or a use did not): $(cat "$initcfg/lazymark")"
+fi
+cat > "$INITHOME/weir/init.weir" <<'WEOF'
+#init
+let br = git rev-parse --abbrev-ref HEAD | line
+WEOF
+iout=$(printf '#quit\n' | XDG_CONFIG_HOME="$initcfg" XDG_STATE_HOME="$initcfg/state" "$BIN" 2>&1)
+echo "$iout" | grep -qF "\`| line\` runs the command now — drop the reifier to keep it lazy, or wrap it in a function" || fail "an eager init let must name its reifier: $iout"
+echo "$iout" | grep -qF "init: not loaded" || fail "an eager init let must not load: $iout"
 
 # the marker is required [D:init-marker]: the canonical file without
 # #init refuses, located, and the session starts without it

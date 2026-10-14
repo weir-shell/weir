@@ -1957,7 +1957,9 @@ conf |> Seq.iter print
   in scope has those fields. The alias defaults to the module's
   declared name (or the capitalized filename). Errors are named:
   running a module, importing a non-module, a self-import, a module
-  `let` that runs a command (wrap it in a function), or a missing
+  `let` that runs a command at import (a reifier, `$(… | line)`,
+  `|> Seq.freeze` or any function the command is passed to — wrap it
+  in a function), or a missing
   file (the message shows the resolved absolute path). Resolution is
   check-time — nothing loads at runtime. `import` needs a file: not
   `-e` or the REPL prompt, but the REPL init file may import
@@ -1967,7 +1969,10 @@ conf |> Seq.iter print
   shared module is checked once and its body RUNS once per program
   [D:module-once] — diamonds, re-aliases and symlinks (identity is
   the real path) share one instance — and an import cycle is a named
-  check error.
+  check error. A LAZY command `let` (`let gl = git
+  log -n 10`, a pipeline of commands, a value piped into a command)
+  is a value: binding it spawns nothing, each use runs it — allowed
+  in a module and in the init file [D:lazy-command-lets].
 
 ```weir
 // a module: the signed member exports, the unsigned one is private

@@ -4508,7 +4508,8 @@ let private deriveModuleName (absPath: string) : string option =
 // does evaluating this RHS at import run a command? — the weak purity rule
 // [D:modules-v1]. Eager positions only, stops at lambdas: a command in a
 // lambda body is deferred, so a param-ful `let f r = git …` is a function,
-// not an import-time effect; only a paramless `let x = git …` is rejected.
+// not an import-time effect. A module/init let refines it with
+// Check.commandRunsNow (a lazy command seq passes, [D:lazy-command-lets]).
 // The walk lives in Check beside the re-enumeration machinery that
 // shares it [D:reenum-warning].
 let runsCommandT: Check.TypedExpr -> bool = Check.runsCommandT
@@ -4518,15 +4519,15 @@ let runsCommandT: Check.TypedExpr -> bool = Check.runsCommandT
 let private helperAtImport (name: string) (h: string) =
     $"a module 'let' cannot run a command at import — '{h}' runs one, and this calls it now; wrap this in a function too (let {name} () = …), the command runs when a script calls it"
 
-/// the module's command-reaching functions so far, in declaration order
+// a module let whose RHS runs a command now; a lazy command seq is a
+// value and passes [D:lazy-command-lets]
+let private commandAtImport (why: string) =
+    $"a module 'let' cannot run a command at import: {why}"
+
+/// the module's command-reaching functions and lazy command values so
+/// far, in declaration order
 let private moduleCommandHelpers (lets: (string * Check.TypedExpr) list) : Map<string, int> =
-    lets
-    |> List.fold
-        (fun m (n, te) ->
-            match Check.commandHelperArity m te with
-            | Some a -> Map.add n a m
-            | None -> Map.remove n m)
-        Map.empty
+    lets |> List.fold (fun m (n, te) -> Check.recordCommandBinding m n te) Map.empty
 
 // a source file's read, once into a result: an entry script or an import
 // that is missing, a directory, unreadable or not a regular file (a device
@@ -4810,18 +4811,24 @@ let rec loadModuleCachedWith
                                           Message = d.Message }
                                 | None -> at d.PhysLine d.PhysCol d.Message
                             | Ok chk ->
+                                let helpers =
+                                    accBody
+                                    |> List.rev
+                                    |> List.choose (function
+                                        | _, CLet(n, t) -> Some(n, t)
+                                        | _ -> None)
+                                    |> moduleCommandHelpers
+
                                 let eagerHelper =
                                     match chk.Kind with
                                     | KLet(_, _, te)
-                                    | KLetPat(_, _, te) ->
-                                        let lets =
-                                            accBody
-                                            |> List.rev
-                                            |> List.choose (function
-                                                | _, CLet(n, t) -> Some(n, t)
-                                                | _ -> None)
+                                    | KLetPat(_, _, te) -> Check.eagerCommandHelper helpers te
+                                    | _ -> None
 
-                                        Check.eagerCommandHelper (moduleCommandHelpers lets) te
+                                let runsNow =
+                                    match chk.Kind with
+                                    | KLet(_, _, te)
+                                    | KLetPat(_, _, te) -> Check.commandRunsNow helpers te
                                     | _ -> None
 
                                 match chk.Kind with
@@ -4836,13 +4843,8 @@ let rec loadModuleCachedWith
                                             Signed = Set.add name sc.Signed }
 
                                     go chk.Env sc' implLines accBody tail
-                                | KLet(_, _, te) when runsCommandT te ->
-                                    at
-                                        ll.Head
-                                        1
-                                        "a module 'let' cannot run a command at import — wrap it in a function (let f () = …), the command runs when a script calls it"
-                                | KLetPat(_, _, te) when runsCommandT te ->
-                                    at ll.Head 1 "a module 'let' cannot run a command at import"
+                                | KLet _
+                                | KLetPat _ when runsNow.IsSome -> at ll.Head 1 (commandAtImport runsNow.Value)
                                 | KLet(name, _, _) when eagerHelper.IsSome -> at ll.Head 1 (helperAtImport name eagerHelper.Value)
                                 | KLetPat _ when eagerHelper.IsSome -> at ll.Head 1 (helperAtImport "f" eagerHelper.Value)
                                 | KLet(name, _, te) ->
@@ -6768,18 +6770,15 @@ let analyzeLines
                          | KCmd _
                          | KExpr _ -> Some "a module declares only — 'type' and 'let', no commands or bare expressions"
                          | KLet(_, _, te)
-                         | KLetPat(_, _, te) when runsCommandT te ->
-                             Some "a module 'let' cannot run a command at import — wrap it in a function (let f () = …)"
+                         | KLetPat(_, _, te) when (Check.commandRunsNow moduleHelpers te).IsSome ->
+                             Some(commandAtImport (Check.commandRunsNow moduleHelpers te).Value)
                          | KLet(name, _, te) -> Check.eagerCommandHelper moduleHelpers te |> Option.map (helperAtImport name)
                          | KLetPat(_, _, te) -> Check.eagerCommandHelper moduleHelpers te |> Option.map (helperAtImport "f")
                          | _ -> None
 
                      (match chk.Kind with
                       | KLet(name, _, te) ->
-                          moduleHelpers <-
-                              match Check.commandHelperArity moduleHelpers te with
-                              | Some a -> Map.add name a moduleHelpers
-                              | None -> Map.remove name moduleHelpers
+                          moduleHelpers <- Check.recordCommandBinding moduleHelpers name te
                       | _ -> ())
 
                      match violation with
