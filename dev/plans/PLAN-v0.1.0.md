@@ -1,21 +1,24 @@
 # PLAN — the road to v0.1.0
 
 Status: PARKED until v0.0.74 (the second bug hunt's fixes) is pushed
-(user, 2026-10-14). The definition below is the coordinator's proposal and
-is the first thing to confirm when this plan is picked up.
+(user, 2026-10-14). Definition confirmed by the user (below).
 
-## What v0.1.0 means (to confirm)
+## What v0.1.0 means (user, 2026-10-14)
 
-**The first version we tell people to use.** Rough edges are expected; known
-serious bugs are not. Concretely: no known high- or medium-severity bug, every
-part of the surface is deliberate and documented, the docs match the binary,
-and breaking changes from here on arrive with a migration note.
+**The first version a human can use extensively for a day without a crash
+or unintended behaviour.** The test is usage, not a feature list: a full day
+of real work — writing and running scripts, the REPL, an editor on the LSP,
+automation in CI — with no crash and nothing that surprises. "Unintended
+behaviour" includes the doc saying one thing and the binary doing another.
 
 Not a stability promise — that is 1.0. Pre-1.0 breaking changes stay allowed
 without shims; v0.1.0 only adds the notes (W5).
 
 ## Exit criteria
 
+0. **The day test (W8) passes:** simulated day-long sessions, then a real
+   day of the user's own work, end with zero crashes and zero unintended
+   behaviours (anything surprising is a finding until ruled intended).
 1. A bug hunt over the targeted areas (W3) reports no high- or
    medium-severity findings.
 2. Every builtin is documented in SKILL.md (and the reference) or deleted.
@@ -76,6 +79,22 @@ CHANGELOG section entry with a one-line migration; still no shims pre-1.0.
 - Add the invariants hunt 2 found to `tools/fuzz.weir` / Weir.Fuzz: no
   "internal error" output, no exit code ≥ 128, `fmt` idempotent, `fmt` never
   changes whether a file checks, no line:col past the end of its line.
+
+### W8 — The day test (the gate; 1–2 sessions, repeated until clean)
+Usage-shaped, not area-shaped — the hunts find bugs by attacking; this finds
+what a working day hits. Agents each run a scripted "day" end to end,
+logging every crash, internal error, hang, misleading message and surprise:
+- port three real bash scripts of different shapes to weir (a CI job, a
+  deploy helper, a data-wrangling one-off) and run them;
+- a long REPL session: exploration, mistakes, history, `#save`, aliases;
+- an editor session over the LSP: open/edit/format/hover/complete for an
+  hour of edits on a growing file, multi-file with imports;
+- operations: `within` scopes, signals (Ctrl-C mid-run), pipes, `serve` +
+  `Http` talking to each other, a `plan` reviewed then applied;
+- install-to-first-script from the release assets on a clean machine.
+Every finding is fixed or ruled intended (DECISIONS) before the next day.
+The last day is the user's own: a real working day on the release
+candidate. v0.1.0 ships when that day is clean.
 
 ### W7 — Release
 v0.1.0 notes that say what the version means; README/site wording ("first
