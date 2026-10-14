@@ -303,6 +303,12 @@ expect() {
 
 out=$($BIN -e '(1 + 2) * 2')
 expect "expression eval" "6 : int" "$out"
+# blank or comment-only -e says so — never a bare caret under nothing
+for e in '' '// c' '   '; do
+    out=$($BIN -e "$e" 2>&1); rc=$?
+    [ "$rc" = "2" ] || fail "-e '$e' exits 2, got $rc: $out"
+    expect "-e '$e' names the problem" "nothing to evaluate" "$out"
+done
 
 out=$($BIN -e 'ls |> Seq.where (fun f -> f.bytes > 1MiB) |> Seq.take 5' 2>&1); rc=$?
 [ $rc -eq 0 ] || fail "flagship pipeline must run measure-free: $out"
