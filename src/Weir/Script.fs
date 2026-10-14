@@ -4755,7 +4755,14 @@ let rec replayModule (procFacts: (string * Eval.Value) list) (lm: LoadedModule) 
     match replayed.TryGetValue lm.AbsPath with
     | true, (body, venv) when obj.ReferenceEquals(body, lm.Body) -> venv
     | _ ->
-        let venv = replayModuleBody procFacts lm
+        Session.enterImportGuard lm.NaturalName
+
+        let venv =
+            try
+                replayModuleBody procFacts lm
+            finally
+                Session.exitImportGuard ()
+
         replayed[lm.AbsPath] <- (lm.Body, venv)
         venv
 

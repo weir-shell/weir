@@ -43,6 +43,16 @@ let private nulRefusal (what: string) (s: string) : unit =
         failwith
             $"{what} contains a NUL byte — it would silently truncate at the process boundary (argv and env are NUL-terminated); NUL-bearing data is binary: pass it via a file or stdin, not an argument"
 
+// no command runs while a module is imported [D:module-import-no-commands]:
+// the check-time walk refuses the direct forms; a helper reached through
+// a value, a lambda or composition lands here
+let private importRefusal (prog: string) : unit =
+    match Session.importGuardModule () with
+    | Some m ->
+        failwith
+            $"'{prog}' runs a command while module {m} is imported — a module's lets must not run commands at import; wrap the value in a function: let v () = …"
+    | None -> ()
+
 // the single spawn point [D:spawn-spec]: psi construction, the env
 // law, cwd, the not-found mapping, and the race-group registration
 // every child owes [D:seq-pfirst]. Redirection is the caller's — the
@@ -66,6 +76,8 @@ let private spawn
     if Session.planGuardActive () then
         failwith
             $"'{prog}' runs a command, and commands are refused inside 'plan' — a spawned binary reads and writes opaquely, so its effects cannot be captured; plan covers weir-native mutation only (File/Dir/Http)"
+
+    importRefusal prog
 
     // ambient `within env` layers apply outer-first under the explicit
     // spec env, so inner and explicit keys win [D:within-scopes] —
@@ -373,6 +385,8 @@ let exec (s: Spec) : unit =
     if Session.planGuardActive () then
         failwith
             $"'{s.Prog}' runs a command, and commands are refused inside 'plan' — a spawned binary reads and writes opaquely, so its effects cannot be captured; plan covers weir-native mutation only (File/Dir/Http)"
+
+    importRefusal s.Prog
 
     // the same boundary spawn enforces [D:spawn-nul-funnel]
     nulRefusal "the command program name" s.Prog

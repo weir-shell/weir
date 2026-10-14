@@ -7029,6 +7029,22 @@ printf 'import "./weakh.weir"\nprint W.v\n' > "$mdir/weakh_main.weir"
 out=$($BIN "$mdir/weakh_main.weir" 2>&1 || true)
 expect "weak purity through a helper (import)" "cannot run a command at import" "$out"
 case "$out" in *SIDE-EFFECT-AT-IMPORT*) fail "a helper ran its command at import: $out" ;; esac
+# ...and at run time, whatever the route [D:module-import-no-commands]:
+# a helper through a value, a lambda, composition, collect or a pmap arm
+# slips past the check-time walk, and the spawn itself is refused, located
+for form in '[()] |> Seq.map helper |> Seq.map Seq.length |> Seq.sum' \
+            '(fun () -> helper ()) () |> Seq.length' \
+            '(helper >> Seq.length) ()' \
+            '[()] |> Seq.collect helper |> Seq.freeze |> Seq.length' \
+            '[1; 2] |> Seq.pmap (fun _ -> helper () |> Seq.length) |> Seq.sum'; do
+    printf 'module W\nlet helper () = sh -c "echo SIDE-EFFECT-AT-IMPORT >&2; echo val"\nlet _h = helper\nlet v : int\nlet v = %s\n' "$form" > "$mdir/weakv.weir"
+    printf 'import "./weakv.weir"\nprint $"{W.v}"\n' > "$mdir/weakv_main.weir"
+    out=$($BIN "$mdir/weakv_main.weir" 2>&1); rc=$?
+    [ "$rc" -eq 1 ] || fail "a command at import must fail the run ($form): rc=$rc $out"
+    expect "no command at import, run time: $form" "weakv.weir:2:" "$out"
+    expect "no command at import, run time (message): $form" "runs a command while module W is imported" "$out"
+    case "$out" in *SIDE-EFFECT-AT-IMPORT*) fail "a command ran at import ($form): $out" ;; esac
+done
 
 # the graph [D:modules-v1]: transitive imports resolve and evaluate; a
 # module can import and use another module's members

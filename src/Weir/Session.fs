@@ -143,6 +143,23 @@ let enterPlanGuard () : unit = planGuardDepth.Value <- planGuardDepth.Value + 1
 
 let exitPlanGuard () : unit = planGuardDepth.Value <- max 0 (planGuardDepth.Value - 1)
 
+// the import guard [D:module-import-no-commands]: while a module body is
+// evaluated, no command runs — on any thread (a `Seq.pmap` arm at import
+// runs on a worker), so process-wide, not thread-local. Imports evaluate
+// before the importer's first statement, so nothing else spawns then.
+// Holds the importing modules' names, innermost first.
+let mutable private importGuard: string list = []
+
+/// the module being imported right now, if any (Proc's spawn-time refusal)
+let importGuardModule () : string option =
+    List.tryHead (System.Threading.Volatile.Read &importGuard)
+
+let enterImportGuard (name: string) : unit =
+    System.Threading.Volatile.Write(&importGuard, name :: importGuard)
+
+let exitImportGuard () : unit =
+    System.Threading.Volatile.Write(&importGuard, (match importGuard with _ :: t -> t | [] -> []))
+
 let enterWorker (parentCwd: string) : unit = localCwd.Value <- Some parentCwd
 
 let exitWorker () : unit =

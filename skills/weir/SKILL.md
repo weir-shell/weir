@@ -1902,8 +1902,10 @@ conf |> Seq.iter print
   declaration-only (`type`/`let` only, no commands or bare
   expressions; a `let` that runs a command at import is refused,
   through a reifier or a saturated call of the module's own
-  command-running helper too — wrap it: `let v () = …`), not
-  runnable. Import it with `import "./lib/x.weir"`
+  command-running helper too — wrap it: `let v () = …`; a command
+  reached at import any other way — a helper passed as a value,
+  composed, or in a `Seq.pmap` arm — raises at run time, located
+  [D:module-import-no-commands]), not runnable. Import it with `import "./lib/x.weir"`
   (a literal path, first in the file before declarations) or
   `import "./lib/x.weir" as X`. Access is ALWAYS qualified:
   `X.helper`, `X.Ctx` types cross the boundary. THE EXPORT RULE
