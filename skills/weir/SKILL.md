@@ -680,9 +680,11 @@ print $"{key} -> {value}"
   `Upgrade`) are dropped — the listener frames the response.
   `maxConcurrent` bounds handlers-at-once (the `pmapWith` law);
   excess queues. `bodyTimeout` (a `Duration`, OPTIONAL — default 30s)
-  bounds the request-body read so a slow client cannot park a slot; the
-  config is `{ port; maxConcurrent }` or `{ port; maxConcurrent;
-  bodyTimeout }`. The handle surface is `Server.port`/`Server.running`/
+  bounds the request-body read so a slow client cannot park a slot;
+  `maxBody` (a `Size`, OPTIONAL — default 16MiB) bounds its size, a
+  larger body answered 413 without being buffered [D:serve-max-body].
+  The config is `{ port; maxConcurrent }` plus either optional field
+  (`{ port = 8080; maxConcurrent = 4; maxBody = 1MiB }`). The handle surface is `Server.port`/`Server.running`/
   `Server.streamErrors` — no `stop` (the scope IS the teardown). ONE type
   family: `HttpMethod`, header pairs and the body union are shared
   client↔server; only the records differ where the wire does

@@ -22087,7 +22087,7 @@ let serveTests =
     // read request to a response, each raw request is sent in turn on ONE
     // kept-alive connection, and each reply's raw bytes (Date dropped)
     // come back — the wire view a unit can pin
-    let wire (answer: Weir.Serve.SReq -> Weir.Serve.SResp) (raws: string list) : string list =
+    let wireWith (maxBody: int64) (answer: Weir.Serve.SReq -> Weir.Serve.SResp) (raws: string list) : string list =
         let probe = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0)
         probe.Start()
         let port = (probe.LocalEndpoint :?> System.Net.IPEndPoint).Port
@@ -22103,8 +22103,15 @@ let serveTests =
                 | Some ctx ->
                     let resp =
                         try
-                            answer (Weir.Serve.readRequest ctx 5000)
-                        with ex ->
+                            answer (Weir.Serve.readRequest ctx 5000 maxBody)
+                        with
+                        | Weir.Serve.BodyTooLarge ->
+                            ctx.Response.KeepAlive <- false
+
+                            { Status = 413
+                              Headers = []
+                              Body = Weir.Serve.RText "too large" }
+                        | ex ->
                             { Status = 599
                               Headers = []
                               Body = Weir.Serve.RText ex.Message }
@@ -22139,6 +22146,8 @@ let serveTests =
                       System.Text.RegularExpressions.Regex.Replace(sb.ToString(), "Date: [^\r]*\r\n", "") ]
         finally
             Weir.Serve.stop h
+
+    let wire = wireWith (16L * 1024L * 1024L)
 
     let get (m: string) (path: string) =
         $"{m} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n"
@@ -22299,6 +22308,54 @@ let serveTests =
 
                   Expect.isFalse (body.Contains "\nevent: evil") "no forged field line"
               | other -> failtest $"one reply expected: {other}"
+          }
+          test "maxBody: a body past the bound is 413 whether declared or chunked; within it reads whole (H20)" {
+              let echo (r: Weir.Serve.SReq) : Weir.Serve.SResp =
+                  { Status = 200
+                    Headers = []
+                    Body = Weir.Serve.RText $"got:{r.Body}" }
+
+              let post (body: string) =
+                  $"POST /p HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: {body.Length}\r\n\r\n{body}"
+
+              let chunked (body: string) =
+                  $"POST /p HTTP/1.1\r\nHost: 127.0.0.1\r\nTransfer-Encoding: chunked\r\n\r\n{body.Length:x}\r\n{body}\r\n0\r\n\r\n"
+
+              match wireWith 10L echo [ post "0123456789" ] with
+              | [ r ] -> Expect.isTrue (r.EndsWith "got:0123456789") $"exactly maxBody reads: {r}"
+              | other -> failtest $"{other}"
+
+              match wireWith 10L echo [ post "0123456789X" ] with
+              | [ r ] -> Expect.stringContains r "HTTP/1.1 413" r
+              | other -> failtest $"{other}"
+
+              match wireWith 10L echo [ chunked "0123456789XYZ" ] with
+              | [ r ] -> Expect.stringContains r "HTTP/1.1 413" r
+              | other -> failtest $"{other}"
+
+              match wireWith 10L echo [ chunked "abc" ] with
+              | [ r ] -> Expect.isTrue (r.EndsWith "got:abc") $"a small chunked body reads: {r}"
+              | other -> failtest $"{other}"
+          }
+          test "maxBody is an optional Size field of the serve config literal (H20)" {
+              clean
+                  [ okHandler
+                    "within serve srv = { port = 80; maxConcurrent = 1; maxBody = 1MiB } h"
+                    "    print \"ok\"" ]
+                  "maxBody alone"
+
+              clean
+                  [ okHandler
+                    "within serve srv = { port = 80; maxConcurrent = 1; bodyTimeout = 2s; maxBody = 64KiB } h"
+                    "    print \"ok\"" ]
+                  "both optional fields"
+
+              mustSay
+                  [ okHandler
+                    "within serve srv = { port = 80; maxConcurrent = 1; maxBody = 5 } h"
+                    "    print \"ok\"" ]
+                  "Size"
+                  "maxBody is a Size"
           }
           // ---- F9: the method boundary [D:serve-method] ----
           test "HttpMethod carries a well-formed unlisted verb as Other; an inlined handler routes on it and on Query" {

@@ -11335,6 +11335,36 @@ out=$($BIN "$svdir/timeout.weir" 2>&1) || fail "serve body-timeout run failed: $
 echo "$out" | grep -qF "status=HTTP/1.1 408" || fail "F12: a slow body must be refused with 408: $out"
 echo "e2e ok: within serve — F12 request-body read timeout refuses a slow client with 408"
 
+# (H20) the request-body size bound [D:serve-max-body]: a body past
+# maxBody is answered 413 (never buffered whole); one within it reaches
+# the handler. Small bound — the test never sends a large body.
+svport7=8477
+cat > "$svdir/maxbody.py" <<'PYEOF'
+import socket, sys
+port, n = int(sys.argv[1]), int(sys.argv[2])
+s = socket.socket(); s.connect(('127.0.0.1', port))
+s.sendall(('POST /x HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: %d\r\nConnection: close\r\n\r\n' % n).encode() + b'x' * n)
+d = b''
+while True:
+    c = s.recv(4096)
+    if not c: break
+    d += c
+print('status=%s body=%s' % (d.split(b'\r\n', 1)[0].decode(), d.split(b'\r\n\r\n', 1)[-1].decode()))
+PYEOF
+cat > "$svdir/maxbody.weir" <<WEOF
+within serve srv = { port = $svport7; maxConcurrent = 2; maxBody = 16B } (fun req -> HttpServerResponse { status = 200; headers = []; body = Text \$"len={Str.length req.body}" })
+    poll timeout=8s interval=100ms
+        Net.portOpen $svport7
+    let fits = sh -c "python3 '$svdir/maxbody.py' $svport7 16" | complete
+    fits.stdout |> Seq.iter print
+    let over = sh -c "python3 '$svdir/maxbody.py' $svport7 17" | complete
+    over.stdout |> Seq.iter print
+WEOF
+out=$($BIN "$svdir/maxbody.weir" 2>&1) || fail "serve maxBody run failed: $out"
+echo "$out" | grep -qF "status=HTTP/1.1 200 OK body=len=16" || fail "H20: a body of exactly maxBody must reach the handler: $out"
+echo "$out" | grep -qF "status=HTTP/1.1 413" || fail "H20: a body past maxBody must be 413: $out"
+echo "e2e ok: within serve — H20 maxBody answers 413 past the bound"
+
 # (F13) tty data sanitize [D:binary-echo]/[D:tty-color]: a data value's
 # terminal-DRIVING escapes (OSC title/clipboard, cursor/screen CSI, CR
 # name-hiding, BEL) render sanitized at a tty, while SGR colour passes

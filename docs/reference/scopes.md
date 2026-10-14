@@ -173,10 +173,12 @@ client can tell it was cut short). `maxConcurrent` limits how many
 handlers run at once, as with `Seq.pmapWith`; extra requests wait in a
 queue.
 
-The config record is `{ port; maxConcurrent }`, optionally with a third
-field `bodyTimeout` (a `Duration`, default 30s) that limits how long
-reading the request body may take. A client that sends its body too
-slowly gets a 408 instead of tying up a handler.
+The config record is `{ port; maxConcurrent }`, optionally with
+`bodyTimeout` (a `Duration`, default 30s) that limits how long
+reading the request body may take, and `maxBody` (a `Size`, default
+16MiB) that limits its size. A client that sends its body too slowly
+gets a 408 instead of tying up a handler; a body larger than `maxBody`
+gets a 413 and is never buffered whole.
 
 `HttpServerRequest` carries:
 

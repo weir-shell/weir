@@ -167,6 +167,10 @@ let methodTokenOk (m: string) : bool =
 /// inside the handler)
 exception BodyReadTimeout
 
+/// raised when the request body is larger than the configured maxBody
+/// [D:serve-max-body] — the accept loop answers 413 without reading on
+exception BodyTooLarge
+
 /// raised when a handler-returned response header carries CR/LF/NUL
 /// [D:http-header-bytes] — the inbound-response face of the review's F3.
 /// A distinguishable signal (BodyReadTimeout's shape) so the accept loop
@@ -180,22 +184,39 @@ exception ResponseHeaderInjection of message: string
 /// a task the deadline cancels; exhaustion raises BodyReadTimeout. The
 /// underlying socket read is not itself cancellable, so the task is
 /// abandoned on timeout and the connection is closed by the caller.
-let private readBodyBounded (stream: IO.Stream) (enc: Text.Encoding) (timeoutMs: int) : string =
+let private readBodyBounded (stream: IO.Stream) (enc: Text.Encoding) (timeoutMs: int) (maxBody: int64) : string =
+    // the size bound [D:serve-max-body] counts bytes as they arrive, so a
+    // chunked body with no Content-Length is bounded too: at most
+    // maxBody + 1 bytes are ever buffered
     let work =
         System.Threading.Tasks.Task.Run(fun () ->
-            use r = new IO.StreamReader(stream, enc)
-            r.ReadToEnd())
+            use ms = new IO.MemoryStream()
+            let buf = Array.zeroCreate<byte> 65536
+            let mutable n = stream.Read(buf, 0, buf.Length)
+
+            while n > 0 && ms.Length <= maxBody do
+                ms.Write(buf, 0, n)
+                n <- if ms.Length > maxBody then 0 else stream.Read(buf, 0, buf.Length)
+
+            if ms.Length > maxBody then
+                None
+            else
+                use r = new IO.StreamReader(new IO.MemoryStream(ms.ToArray()), enc)
+                Some(r.ReadToEnd()))
 
     if work.Wait timeoutMs then
-        work.Result
+        match work.Result with
+        | Some body -> body
+        | None -> raise BodyTooLarge
     else
         raise BodyReadTimeout
 
 /// read the request primitives off a context — path, query (no '?'),
 /// method, headers (in wire order, duplicates preserved), body as UTF-8
 /// text (request-body streaming is out of scope v1 [D:http-serve]). The
-/// body read is bounded by `bodyTimeoutMs` [D:serve-body-timeout].
-let readRequest (ctx: HttpListenerContext) (bodyTimeoutMs: int) : SReq =
+/// body read is bounded by `bodyTimeoutMs` [D:serve-body-timeout] and its
+/// size by `maxBody` [D:serve-max-body].
+let readRequest (ctx: HttpListenerContext) (bodyTimeoutMs: int) (maxBody: int64) : SReq =
     let req = ctx.Request
 
     // GetValues over the indexer [D:http-serve]: for a header the parser
@@ -218,8 +239,10 @@ let readRequest (ctx: HttpListenerContext) (bodyTimeoutMs: int) : SReq =
                           key, v ]
 
     let body =
-        if req.HasEntityBody then
-            readBodyBounded req.InputStream req.ContentEncoding bodyTimeoutMs
+        if req.ContentLength64 > maxBody then
+            raise BodyTooLarge
+        elif req.HasEntityBody then
+            readBodyBounded req.InputStream req.ContentEncoding bodyTimeoutMs maxBody
         else
             ""
 

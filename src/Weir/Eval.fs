@@ -4095,6 +4095,17 @@ and eval (env: Env) (te: TypedExpr) : Value =
             if bodyTimeoutMs < 1 then
                 failwith $"serve: bodyTimeout is at least 1ms, got {bodyTimeoutMs}ms"
 
+            // the request-body size bound [D:serve-max-body]: optional,
+            // 16 MiB, answered 413 past it
+            let maxBody =
+                match List.tryFind (fun (n, _) -> n = "maxBody") cfg with
+                | Some(_, VSize b) -> b
+                | Some(_, v) -> unreachable $"serve maxBody {formatValue v}"
+                | None -> 16L * 1024L * 1024L
+
+            if maxBody < 0L then
+                failwith $"serve: maxBody cannot be negative, got {formatSize maxBody}"
+
             // the handler closure, evaluated once at scope entry
             let handler =
                 match topts with
@@ -4232,7 +4243,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
                                         // a slow client dribbling its body
                                         // cannot park this slot forever —
                                         // 408 on exhaustion
-                                        let req = Serve.readRequest ctx bodyTimeoutMs
+                                        let req = Serve.readRequest ctx bodyTimeoutMs maxBody
 
                                         // a malformed method token is refused
                                         // at the boundary [D:serve-method]:
@@ -4264,6 +4275,21 @@ and eval (env: Env) (te: TypedExpr) : Value =
                                                 { Status = 408
                                                   Headers = []
                                                   Body = Serve.RText "request body read timed out" }
+                                                ignore
+                                         with _ ->
+                                             ())
+                                    | Serve.BodyTooLarge ->
+                                        // past maxBody [D:serve-max-body]: the
+                                        // rest of the body is never read, so the
+                                        // connection closes after the 413
+                                        (try
+                                            ctx.Response.KeepAlive <- false
+
+                                            Serve.writeResponse
+                                                ctx
+                                                { Status = 413
+                                                  Headers = []
+                                                  Body = Serve.RText $"request body exceeds maxBody ({formatSize maxBody})" }
                                                 ignore
                                          with _ ->
                                              ())
