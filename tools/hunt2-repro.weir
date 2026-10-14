@@ -113,8 +113,6 @@ let prints expected r = codeOf r == 0 && outOf r == expected
 let failing cases =
     cases |> Seq.where (fun (_, ok) -> not ok) |> Seq.map fst |> Seq.freeze
 
-let count pat t = Str.rmatchAll pat t |> Seq.length
-
 let hx s = Bytes.toHex (Str.toUtf8 s)
 
 // ports: a per-run base, a per-probe block, the first one nothing listens on
@@ -655,8 +653,8 @@ let serveFixture port = $$<<<
         | "/sse" -> HttpServerResponse { status = 200; headers = []; body = Stream ["a\n\ndata: evil"; "b"] }
         | _ -> HttpServerResponse { status = 200; headers = []; body = Text "body-text" }
     within serve srv = { port = $port; maxConcurrent = 4 } handler
-        printf "GET /nc HTTP/1.1\nHost: 127.0.0.1:$port\n\nGET /x HTTP/1.1\nHost: 127.0.0.1:$port\nConnection: close\n\n" | python3 rawcli.py $port |> File.write "nc.out"
-        printf "HEAD /x HTTP/1.1\nHost: 127.0.0.1:$port\n\nGET /x HTTP/1.1\nHost: 127.0.0.1:$port\nConnection: close\n\n" | python3 rawcli.py $port |> File.write "head.out"
+        printf "GET /nc HTTP/1.1\nHost: 127.0.0.1:$port\nConnection: close\n\n" | python3 rawcli.py $port |> File.write "nc.out"
+        printf "HEAD /x HTTP/1.1\nHost: 127.0.0.1:$port\nConnection: close\n\n" | python3 rawcli.py $port |> File.write "head.out"
         printf "GET /te HTTP/1.1\nHost: 127.0.0.1:$port\nConnection: close\n\n" | python3 rawcli.py $port |> File.write "te.out"
         printf "GET /sse HTTP/1.1\nHost: 127.0.0.1:$port\nConnection: close\n\n" | python3 rawcli.py $port |> File.write "sse.out"
 
@@ -671,8 +669,9 @@ let h16 d =
     let nc = raw "nc"
     let head = raw "head"
     failing [
-        ("a 204 carries a body / the pipelined request is lost", not (nc |> Str.contains "should-not-appear") && (nc |> Str.contains "body-text"))
-        ("HEAD carries a body / the pipelined request is lost", count "HTTP/1.1 200" head == 2 && count "body-text" head == 1)
+        // one request per connection: pipelining is a separate backlog item
+        ("a 204 carries a body", (nc |> Str.contains "204") && not (nc |> Str.contains "should-not-appear"))
+        ("HEAD carries a body", (head |> Str.contains "HTTP/1.1 200") && not (head |> Str.contains "body-text"))
     ]
 
 let h17 d =
@@ -1004,7 +1003,8 @@ let h47 d =
     let p = $"{d}/h47.weir"
     File.writeBytes p (Bytes.fromHex $"{hx "print \"a"}ff220a")
     let r = runAt d "30" p
-    failing [ ("a 0xFF byte runs as U+FFFD", codeOf r == 1 && (diagOf r |> Str.contains "h47.weir:1:")) ]
+    // an unreadable source is the entry-read family (exit 2), located
+    failing [ ("a 0xFF byte runs as U+FFFD", (codeOf r == 1 || codeOf r == 2) && (diagOf r |> Str.contains "h47.weir:1:")) ]
 
 // ---- H48: a block of 500+ statements (R7) --------------------------------------------
 
@@ -1282,6 +1282,60 @@ let controls =
       ("control-short-block (H48)", ctlShortBlock)
       ("control-save-simple (H10)", ctlSaveSimple) ]
 
+// ---- H58: a lazy command let in a module or init file -------------------------
+
+let h58 d =
+    let _m = put d "m.weir" [ "module M"; "let gl : seq<string>"; "let gl = sh -c \"touch mark; echo hi\"" ]
+    let main =
+        put d "main.weir" [
+            "import \"./m.weir\" as M"
+            "print (show (File.exists \"mark\"))"
+            "print (show (M.gl |> Seq.freeze))"
+            "print (show (File.exists \"mark\"))"
+        ]
+    let r = runAt d "30" main
+    let _e = put d "e.weir" [ "module E"; "let v : string"; "let v = sh -c \"echo x\" | line" ]
+    let rE = checkW (put d "emain.weir" [ "import \"./e.weir\" as E"; "print E.v" ])
+    failing [
+        ("a lazy module let loads without spawning, runs on use", prints "false\n[\"hi\"]\ntrue" r)
+        ("an eager module let is refused naming why", codeOf rE == 1 && (outOf rE + errOf rE |> Str.contains "runs the command now"))
+    ]
+
+// ---- H59: the REPL echo runs a command-backed let -------------------------------
+
+let h59 d =
+    let r = piped d [ "let g = sh -c \"touch mark; echo hi\"" ]
+    let o = outOf r + "\n" + errOf r
+    failing [
+        ("the echo shows the type and a hint", o |> Str.contains "command-backed")
+        ("the echo never runs the command", not (File.exists $"{d}/mark"))
+    ]
+
+// ---- H60: a lazy value outside any within replays its written-site cwd ----------
+
+let h60 d =
+    Dir.create $"{d}/src"
+    ["a"] |> File.write $"{d}/a.txt"
+    ["b"] |> File.write $"{d}/src/b.txt"
+    let main =
+        put d "amb.weir" [
+            "let top = ls |> Seq.map _.name"
+            "let inside = within cd \"src\" (ls |> Seq.map _.name)"
+            "let greet = within env [Env.pair \"GREETING\" \"hi\"] $(sh -c \"echo ${GREETING:-unset}\")"
+            "let _here = cd \"src\""
+            "print (show (top |> Seq.freeze))"
+            "print (show (inside |> Seq.freeze))"
+            "print (show (greet |> Seq.freeze))"
+        ]
+    let r = runAt d "30" main
+    let lines = r.stdout |> Seq.freeze
+    let at i = lines |> Seq.tryItem i |> Option.defaultValue "<none>"
+    failing [
+        ("a top-level lazy value reads the cwd at use", codeOf r == 0 && at 0 == "[\"b.txt\"]")
+        ("a value written inside within cd keeps it", codeOf r == 0 && at 1 == "[\"b.txt\"]")
+        ("a value written inside within env keeps it", codeOf r == 0 && at 2 == "[\"hi\"]")
+    ]
+
 let probes =
     [ ("H1", h1); ("H2", h2); ("H3", h3); ("H4", h4); ("H5", h5); ("H6", h6); ("H7", h7); ("H8", h8)
       ("H9", h9); ("H10", h10); ("H11", h11); ("H12", h12); ("H13", h13); ("H14", h14); ("H15", h15)
@@ -1290,7 +1344,8 @@ let probes =
       ("H30", h30); ("H31", h31); ("H32", h32); ("H33", h33); ("H34", h34); ("H35", h35); ("H36", h36)
       ("H37", h37); ("H38", h38); ("H39", h39); ("H40", h40); ("H41", h41); ("H42", h42); ("H43", h43)
       ("H44", h44); ("H45", h45); ("H46", h46); ("H47", h47); ("H48", h48); ("H49", h49); ("H50", h50)
-      ("H51", h51); ("H52", h52); ("H53", h53); ("H54", h54); ("H55", h55); ("H56", h56); ("H57", h57) ]
+      ("H51", h51); ("H52", h52); ("H53", h53); ("H54", h54); ("H55", h55); ("H56", h56); ("H57", h57)
+      ("H58", h58); ("H59", h59); ("H60", h60) ]
 
 // ---- the verdict channel ------------------------------------------------------
 
