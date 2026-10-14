@@ -305,7 +305,7 @@ out=$($BIN -e '(1 + 2) * 2')
 expect "expression eval" "6 : int" "$out"
 # blank or comment-only -e says so — never a bare caret under nothing
 for e in '' '// c' '   '; do
-    out=$($BIN -e "$e" 2>&1); rc=$?
+    rc=0; out=$($BIN -e "$e" 2>&1) || rc=$?
     [ "$rc" = "2" ] || fail "-e '$e' exits 2, got $rc: $out"
     expect "-e '$e' names the problem" "nothing to evaluate" "$out"
 done
@@ -2961,17 +2961,17 @@ h54dir=$(mkweirtmp)
 mkdir "$h54dir/adir"
 for spec in 'lock "adir"|is a directory — the lock is a file' 'lock ""|the lock path is empty' 'lock "x.lock" timeout=-1s|timeout must not be negative, got -1s'; do
     printf 'within %s\n    print "in"\n' "${spec%%|*}" > "$h54dir/l.weir"
-    out=$( cd "$h54dir" && $BIN l.weir 2>&1 ); rc=$?
+    rc=0; out=$( cd "$h54dir" && $BIN l.weir 2>&1 ) || rc=$?
     [ "$rc" = "1" ] || fail "within ${spec%%|*} must raise, rc=$rc: $out"
     expect "within ${spec%%|*} is refused, weir-worded" "${spec##*|}" "$out"
     case "$out" in *"Access to the path"*) fail "raw .NET text leaked: $out" ;; esac
 done
 printf 'import "./adir" as D\nprint "x"\n' > "$h54dir/imd.weir"
-out=$($BIN check "$h54dir/imd.weir" 2>&1)
+out=$($BIN check "$h54dir/imd.weir" 2>&1) || true
 expect "importing a directory is weir-worded" "it is a directory, not a module" "$out"
 if [ "$IS_WINDOWS" = "0" ]; then
     printf 'import "/dev/zero" as Z\nprint "x"\n' > "$h54dir/imz.weir"
-    out=$(timeout 10 $BIN check "$h54dir/imz.weir" 2>&1)
+    out=$(timeout 10 $BIN check "$h54dir/imz.weir" 2>&1) || true
     expect "importing a device is refused, not read forever" "not a regular file" "$out"
 fi
 rm -rf "$h54dir"
@@ -7102,7 +7102,7 @@ for form in '[()] |> Seq.map helper |> Seq.map Seq.length |> Seq.sum' \
             '[1; 2] |> Seq.pmap (fun _ -> helper () |> Seq.length) |> Seq.sum'; do
     printf 'module W\nlet helper () = sh -c "echo SIDE-EFFECT-AT-IMPORT >&2; echo val"\nlet _h = helper\nlet v : int\nlet v = %s\n' "$form" > "$mdir/weakv.weir"
     printf 'import "./weakv.weir"\nprint $"{W.v}"\n' > "$mdir/weakv_main.weir"
-    out=$($BIN "$mdir/weakv_main.weir" 2>&1); rc=$?
+    rc=0; out=$($BIN "$mdir/weakv_main.weir" 2>&1) || rc=$?
     [ "$rc" -eq 1 ] || fail "a command at import must fail the run ($form): rc=$rc $out"
     expect "no command at import, run time: $form" "weakv.weir:2:" "$out"
     expect "no command at import, run time (message): $form" "runs a command while module W is imported" "$out"
@@ -8388,14 +8388,14 @@ if [ "$IS_WINDOWS" = "0" ]; then
     mkdir "$h11dir/adir"
     for mode in "" "check" "check --can" "check --json" "check --can --json" "fmt"; do
         if [ ! -r "$h11dir/deny.weir" ]; then
-            out=$($BIN $mode "$h11dir/deny.weir" 2>&1); rc=$?
+            rc=0; out=$($BIN $mode "$h11dir/deny.weir" 2>&1) || rc=$?
             [ "$rc" = "2" ] || fail "an unreadable script ($mode) exits 2, got $rc: $out"
             expect "an unreadable script is weir-worded ($mode)" "cannot read $h11dir/deny.weir: permission denied" "$out"
         fi
-        out=$($BIN $mode "$h11dir/adir" 2>&1); rc=$?
+        rc=0; out=$($BIN $mode "$h11dir/adir" 2>&1) || rc=$?
         [ "$rc" = "2" ] || fail "a directory argument ($mode) exits 2, got $rc: $out"
         expect "a directory argument names itself ($mode)" "$h11dir/adir is a directory, not a script" "$out"
-        out=$($BIN $mode /dev/zero 2>&1); rc=$?
+        rc=0; out=$($BIN $mode /dev/zero 2>&1) || rc=$?
         [ "$rc" = "2" ] || fail "a device ($mode) exits 2, got $rc: $out"
         expect "a device is refused, not read forever ($mode)" "not a regular file" "$out"
     done
@@ -8403,7 +8403,7 @@ if [ "$IS_WINDOWS" = "0" ]; then
     printf 'print  "x"\n' > "$h11dir/ro.weir"
     chmod 444 "$h11dir/ro.weir"
     if [ ! -w "$h11dir/ro.weir" ]; then
-        out=$($BIN fmt "$h11dir/ro.weir" 2>&1); rc=$?
+        rc=0; out=$($BIN fmt "$h11dir/ro.weir" 2>&1) || rc=$?
         [ "$rc" = "2" ] || fail "fmt on a read-only file exits 2, got $rc: $out"
         expect "fmt on a read-only file is weir-worded" "cannot write $h11dir/ro.weir: permission denied" "$out"
     fi
@@ -8418,13 +8418,13 @@ fi
 u8dir=$(mkweirtmp)
 printf 'print "ok"\nprint "\303\251t\303\251 \377 x"\n' > "$u8dir/bad.weir"
 for mode in "" "check" "fmt"; do
-    out=$($BIN $mode "$u8dir/bad.weir" 2>&1); rc=$?
+    rc=0; out=$($BIN $mode "$u8dir/bad.weir" 2>&1) || rc=$?
     [ "$rc" = "2" ] || fail "invalid UTF-8 ($mode) exits 2, got $rc: $out"
     expect "invalid UTF-8 is located ($mode)" "bad.weir:2:12: invalid UTF-8" "$out"
 done
 printf 'module M\nlet x : int\nlet x = 1 // \376\n' > "$u8dir/m.weir"
 printf 'import "./m.weir"\nprint (show M.x)\n' > "$u8dir/main.weir"
-out=$($BIN "$u8dir/main.weir" 2>&1)
+out=$($BIN "$u8dir/main.weir" 2>&1) || true
 expect "invalid UTF-8 in a module is located in the module" "m.weir:3:14: error: invalid UTF-8" "$out"
 printf '\357\273\277print "bom"\r\nprint "crlf"\r\n' > "$u8dir/bom.weir"
 out=$($BIN "$u8dir/bom.weir" 2>&1)
@@ -8436,7 +8436,7 @@ rm -rf "$u8dir"
 # physical line's last character, never beyond it
 jcdir=$(mkweirtmp)
 printf 'd\n    within lock""t\n    w\n' > "$jcdir/join.weir"
-out=$($BIN check "$jcdir/join.weir" 2>&1)
+out=$($BIN check "$jcdir/join.weir" 2>&1) || true
 expect "a joined-line error column stays on its line" "join.weir:2:19: error" "$out"
 rm -rf "$jcdir"
 
