@@ -20869,7 +20869,11 @@ let uuidTests =
                     "g81d4fae-7dec-11d0-a765-00a0c91e6bf6" // non-hex
                     "f81d4fae-7dec-11d0-a765-00a0c91e6bf６" // a non-ASCII digit
                     "urn:uuid:"
-                    "urn:uuid:f81d4fae7dec11d0a76500a0c91e6bf" ]
+                    "urn:uuid:f81d4fae7dec11d0a76500a0c91e6bf"
+                    // surrounding whitespace is no spelling [D:uuid-strict]
+                    " f81d4fae-7dec-11d0-a765-00a0c91e6bf6"
+                    "f81d4fae-7dec-11d0-a765-00a0c91e6bf6 "
+                    "f81d4fae-7dec-11d0-a765-00a0c91e6bf6\n" ]
 
               for text in bad do
                   Expect.equal (call "Uuid.tryParse" (VStr text)) (VUnion("None", None)) $"tryParse '{text}'"

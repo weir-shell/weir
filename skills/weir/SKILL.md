@@ -522,8 +522,9 @@ print $"{key} -> {value}"
   own namespace). `Uuid.v7At t` stamps a given `Instant` (ms-truncated;
   orders with v7 only when `t` lies between the last id and now;
   raises before 1970). `Uuid.parse` reads 8-4-4-4-12 or 32 bare hex,
-  any case, optional `urn:uuid:` — never braces; it RAISES on anything
-  else, `Uuid.tryParse` returns `Option` (weir has no Result).
+  any case, optional `urn:uuid:` — never braces, never surrounding
+  whitespace (`Str.trim` first); it RAISES on anything else,
+  `Uuid.tryParse` returns `Option` (weir has no Result).
   `Uuid.version id : int`, `Uuid.instant id : Option<Instant>` (`Some`
   for v7 only), `Uuid.toString` (lowercase canonical — what `show`,
   JSON and argv use), `Uuid.nil`/`Uuid.max`, `Uuid.toBytes`/
