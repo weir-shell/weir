@@ -3151,7 +3151,7 @@ let ambientRebinders =
 
 // the explicit sigil env only — ambient `within env` layers apply in
 // Proc's starters themselves [D:within-scopes], so every spawn
-// (reifier desugars, cmd/into included) obeys the outer-first rule,
+// (reifier desugars included) obeys the outer-first rule,
 // not just these Eval paths
 let rec private overlayOf (env: Env) (cenvO: TypedExpr option) : (string * string) list =
     match cenvO with

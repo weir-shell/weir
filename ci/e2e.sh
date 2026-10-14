@@ -2515,7 +2515,7 @@ within env outer
     print $"succeeds={ok}"
     let r2 = feedIt ()
     print $"{r2.stdout |> Seq.head}"
-    ["z"] |> into "echo into=$RA" |> Seq.iter print
+    ["z"] | sh -c "cat >/dev/null; echo vpipe=$RA"
     within env inner
         sh -c "echo nested=$RA-$RB" | orFail "nested orFail lost a layer"
         $sig1(sh -c "echo sigil=$RA-$RB" | orFail "sigil twin lost the ambient underlay")
@@ -2525,7 +2525,7 @@ echo "$rout" | grep -qF "orfail=amb-keep"  || fail "orFail sees ambient env: $ro
 echo "$rout" | grep -qF "complete=amb"     || fail "complete sees ambient env: $rout"
 echo "$rout" | grep -qF "succeeds=true"    || fail "succeeds sees ambient env: $rout"
 echo "$rout" | grep -qF "intwin=amb"       || fail "stdin twin sees ambient env (dynamic scope): $rout"
-echo "$rout" | grep -qF "into=amb"         || fail "into sees ambient env: $rout"
+echo "$rout" | grep -qF "vpipe=amb"        || fail "value-headed pipe sees ambient env: $rout"
 echo "$rout" | grep -qF "nested=in-keep"   || fail "reifier nesting: inner wins, outer key survives: $rout"
 echo "$rout" | grep -qF "sigil=sig-keep"   || fail "explicit sigil wins over ambient, ambient underlay survives: $rout"
 echo "e2e ok: ambient env reaches every spawn — reifier family, In/Env twins, into; nesting outer-first"

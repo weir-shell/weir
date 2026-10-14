@@ -1131,7 +1131,7 @@ let boundaryTests =
           test "funnel: a NUL in the `into` cmdline refuses (into path) [D:spawn-nul-funnel]" {
               skipOnWindows ()
               // into spawns `sh -c <cmdline>` — the cmdline is arg[1]
-              nulMsg (fun () -> Weir.Proc.lines "sh" [ "-c"; $"echo before{nul}after" ] None |> Seq.iter ignore) "into cmdline"
+              nulMsg (fun () -> Weir.Proc.lines "sh" [ "-c"; $"echo before{nul}after" ] None |> Seq.iter ignore) "sh -c cmdline"
           }
           test "funnel: a NUL PROGRAM name refuses (dynamic head ^$name) [D:spawn-nul-funnel]" {
               skipOnWindows ()
@@ -3221,17 +3221,6 @@ let boundaryTests =
                   match Weir.Fmt.formatLines out with
                   | Ok out2 -> Expect.equal out2 out "idempotent with a block scalar inside"
                   | Error e -> failtestf "second fmt failed: %s" e
-          }
-          test "into feeds stdin and yields stdout" {
-              // into is the documented sh -c path, so the fixture is a
-              // POSIX shell by definition. into's Windows semantics are
-              // undecided [D:windows-s3] — its default shell there would
-              // be cmd /c, a real (small) feature awaiting a receipt; a
-              // stated gap beats a blind shim.
-              skipOnWindows ()
-              // tr strips BSD wc's left-padding — the subject is the stdin
-              // plumbing, not wc's platform formatting
-              Expect.equal (run "nats |> take 3 |> to jsonl |> into \"wc -l | tr -d ' '\"" |> forceSeq) [ VStr "3" ] ""
           }
           test "from can be let-bound" {
               expectValue
@@ -9234,6 +9223,10 @@ let reserveBuiltinTests =
               // the escape-bearer, not an alias [D:dir-stat]: Dir.stat
               // "." is ls's way back, so ls binds
               expectValue "let ls = 3 in ls" (VInt 3L)
+          }
+          test "into is deleted: an ordinary unbound, bindable name [D:into-deleted]" {
+              expectValue "let into = 4 in into" (VInt 4L)
+              Expect.stringContains (checkErr "[\"a\"] |> into \"cat\"").Message "into" "unbound into"
           } ]
 
 let wireKeyTests =

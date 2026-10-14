@@ -1264,7 +1264,7 @@ print x
   (the checker catches future shadowing loudly — expression mode, not
   a silent tool swap). Builtins WITHOUT a
   qualified spelling (`cd`, `pwd`, `print`, `printerr`, `show`,
-  `exit`, `fail`, `into`, `not`, `fst`, `snd`, `nats`) are RESERVED
+  `exit`, `fail`, `not`, `fst`, `snd`, `nats`) are RESERVED
   binder names [D:reserve-builtins] — a binding would shadow them for
   the whole file with no way back, so the checker refuses; bare
   aliases (`max`, `find`, `item`…) stay bindable because the

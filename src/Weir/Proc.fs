@@ -33,7 +33,7 @@ let liveAmbient () =
 // env are NUL-terminated C strings, so a NUL-bearing word would
 // silently truncate at the child (the prefix runs; exit 0; no
 // diagnostic). The evaluator's statement path already refused, but the
-// reifier builtins, the ambient `within env` overlay, `into`, and the
+// reifier builtins, the ambient `within env` overlay, and the
 // dynamic head assemble argv/env downstream and skipped it, so the
 // byte leaked. Refusing here — the one point every process start
 // funnels through — covers all of them. Same located message the
@@ -69,7 +69,7 @@ let private spawn
 
     // ambient `within env` layers apply outer-first under the explicit
     // spec env, so inner and explicit keys win [D:within-scopes] —
-    // applied at the spawn so every child (reifiers, cmd/into, scoped
+    // applied at the spawn so every child (reifiers, scoped
     // procs) obeys the one law, not just the Eval command paths. A lazy
     // spawn replays its written-site snapshot [D:ambient-capture].
     let ambient =

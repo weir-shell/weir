@@ -402,20 +402,6 @@ let private asString (v: Value) : string =
 
 let private argStrings (args: seq<Value>) : string list = args |> Seq.map asString |> List.ofSeq
 
-let private intoImpl: Value =
-    VBuiltin(fun c ->
-        VBuiltin(fun sv ->
-            match c, sv with
-            | VStr cmdline, VSeq items ->
-                let lines = items |> Seq.map asString |> Eval.pinnedFeed
-                // sh resolves on PATH like every other spawn — the /bin/sh
-                // hardcode had no Windows answer (Git Bash puts sh on PATH)
-                VSeq(
-                    Proc.lines (Proc.resolveProg "sh") [ "-c"; cmdline ] (Some lines)
-                    |> Seq.map VStr
-                )
-            | _ -> unreachable "the checker rejects 'into' on these arguments"))
-
 let private cdImpl: Value =
     VBuiltin(fun v ->
         match v with
@@ -7456,7 +7442,6 @@ let private chainTy (result: Ty) : Ty =
 let private entries: (string * Ty * Value) list =
     [ "ls", seqFileRow, realLs
       "nats", seqInt, natsImpl
-      "into", TFun(TStr, TFun(seqStr, seqStr)), intoImpl
       "cd", TFun(TStr, TStr), cdImpl
       "pwd", TStr, pwdImpl
       "not", TFun(TBool, TBool), notImpl
