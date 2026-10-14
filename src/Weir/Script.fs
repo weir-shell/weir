@@ -1369,6 +1369,7 @@ let private applyJoin (j: Join) (b: PendBuf) (piece: string) (lineNo: int) (inde
                 b.Sb.Remove(b.Sb.Length - strip, strip) |> ignore
 
             let nonWs, segStart = scanTail b.Sb 0 -1 0
+
             let b = { b with LastNonWs = nonWs; LastSegStart = segStart }
             bufAppend b (opener + piece + ")")
         | JDistrictSibling opener -> bufAppend b (" ; " + opener + piece + ")")
@@ -1377,6 +1378,7 @@ let private applyJoin (j: Join) (b: PendBuf) (piece: string) (lineNo: int) (inde
             // quadratic path; rescan the (now one-shorter) buffer whole
             b.Sb.Remove(b.Sb.Length - 1, 1) |> ignore
             let nonWs, segStart = scanTail b.Sb 0 -1 0
+
             let b = { b with LastNonWs = nonWs; LastSegStart = segStart }
             bufAppend b (" " + piece + ")")
         | JYamlLine rel -> bufAppend b (Parser.sibSepStr + String(' ', rel) + piece)
@@ -2425,13 +2427,53 @@ let pipedAttaches (buf: string list) (next: string) : bool =
         | None, Some _ -> true
         | Some a, Some b -> b <= a
 
+// a logical line's segment index, built once per line: translate is called
+// per typed node, and a linear scan per call made a long statement
+// quadratic (a 64k-line heredoc)
+type private SegIndex =
+    { Starts: int[]
+      Lines: int[]
+      Indents: int[]
+      // where each segment's own text ends — the synthetic join text
+      // between it and the next segment is no physical column
+      Ends: int[] }
+
+let private segIndexes =
+    System.Runtime.CompilerServices.ConditionalWeakTable<LogicalLine, SegIndex>()
+
+let private buildSegIndex (ll: LogicalLine) : SegIndex =
+    let segs = List.toArray ll.Segments
+    let starts = segs |> Array.map (fun (js, _, _) -> js)
+
+    let ends =
+        Array.init starts.Length (fun i -> if i + 1 < starts.Length then starts[i + 1] else ll.Text.Length)
+
+    { Starts = starts
+      Lines = segs |> Array.map (fun (_, l, _) -> l)
+      Indents = segs |> Array.map (fun (_, _, i) -> i)
+      Ends = ends }
+
 let translate (ll: LogicalLine) (col: int) : int * int =
+    let ix = segIndexes.GetValue(ll, buildSegIndex)
     let joinedIdx = col - 1
 
-    let segStart, physLine, physIndent =
-        ll.Segments |> List.filter (fun (js, _, _) -> js <= joinedIdx) |> List.last
+    // the last segment starting at or before the index
+    let i =
+        match Array.BinarySearch(ix.Starts, joinedIdx) with
+        | i when i >= 0 ->
+            // equal starts (an empty segment): the last of them, as before
+            let mutable j = i
 
-    physLine, joinedIdx - segStart + physIndent + 1
+            while j + 1 < ix.Starts.Length && ix.Starts[j + 1] = joinedIdx do
+                j <- j + 1
+
+            j
+        | i -> max 0 (~~~i - 1)
+
+    // a position in the join text sits just past its line's last
+    // character, never beyond the physical line
+    let at = min joinedIdx ix.Ends[i]
+    ix.Lines[i], at - ix.Starts[i] + ix.Indents[i] + 1
 
 // ANSI color for interactive diagnostics: gated per stream on TTY,
 // NO_COLOR, and TERM=dumb — pipes and CI capture always get plain

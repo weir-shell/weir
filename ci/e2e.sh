@@ -6923,6 +6923,15 @@ else
 fi
 rm -rf "$ddir"
 
+# position translation is indexed once per statement: a 64k-line heredoc
+# runs as fast as it checks (a per-node segment scan made run quadratic)
+hpdir=$(mkweirtmp)
+python3 -c "print('\n'.join(['let s = <<<'] + ['    line %d' % i for i in range(64000)] + ['print (Seq.length s)']))" > "$hpdir/long.weir"
+out=$(timeout 20 $BIN "$hpdir/long.weir" 2>&1) || fail "a 64k-line heredoc must run in well under 20s: $out"
+[ "$out" = "64000" ] || fail "a 64k-line heredoc: its line count, got: $out"
+rm -rf "$hpdir"
+echo "e2e ok: a 64k-line heredoc runs in linear time"
+
 # statements are width, not depth [D:block-width]: 20k top-level
 # statements run in a loop, and a 2000-statement function body neither
 # meets the nesting ceiling nor overflows a 1MB `ulimit -s`
