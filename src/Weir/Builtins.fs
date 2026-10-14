@@ -122,12 +122,12 @@ let private lsEnumerate (cwd: string) : seq<Value> =
     // locale; coreutils ls inherits LC_COLLATE, weir does not)
     infos |> Array.sortBy (fun i -> i.Name) |> Seq.map lsRow
 
-// cwd bound at construction — the eval-time capture Eval's rebinder uses
-// [D:ambient-capture]; the directory read stays lazy inside the delay
+// cwd bound at construction — the `within cd` capture Eval's rebinder uses
+// [D:ambient-capture-within]; the directory read stays lazy inside the delay
 let private lsForCwd (cwd: string) : Value = VSeq(Seq.delay (fun () -> lsEnumerate cwd))
 
-// the env entry reads the cwd at force time (the non-reference fallback);
-// a `ls` reference rebinds to eval-time capture [D:ambient-capture]
+// reads the cwd at force time — what `ls` is outside any `within cd`
+// [D:ambient-capture-within]
 let private realLs: Value = VSeq(Seq.delay (fun () -> lsEnumerate (Session.Cwd())))
 
 // deep lazy chains walk iteratively [D:seq-depth-iterative], the
@@ -1001,12 +1001,20 @@ let private globImpl: Value =
     VBuiltin(fun patV ->
         match patV with
         | VStr pat ->
-            // capture the cwd where glob is CALLED [D:ambient-capture]: a
-            // relative pattern binds the scope it was written in, so a lazy
-            // glob escaping `within cd` still walks that directory (an
-            // absolute pattern ignores the cwd). The walk stays lazy.
-            let rootFs = if pat.StartsWith "/" then "/" else Session.Cwd()
-            VSeq(Seq.delay (fun () -> globWalk rootFs pat |> Seq.map VStr))
+            // a relative pattern captures the enclosing `within cd` where
+            // glob is CALLED, else walks the cwd current at enumeration
+            // [D:ambient-capture-within] (an absolute pattern ignores the
+            // cwd). The walk stays lazy.
+            let scoped = Session.scopedCwd ()
+
+            VSeq(
+                Seq.delay (fun () ->
+                    let rootFs =
+                        if pat.StartsWith "/" then "/"
+                        else scoped |> Option.defaultWith Session.Cwd
+
+                    globWalk rootFs pat |> Seq.map VStr)
+            )
         | _ -> unreachable "the checker rejects 'glob' on this argument")
 
 let private str1 (name: string) (f: string -> string) : Value =
@@ -3258,8 +3266,8 @@ let private envOfPairsImpl: Value =
         | v -> unreachable $"the checker rejects 'Env.ofPairs' on {formatValue v}")
 
 // Env.vars under an overlay snapshot (None = the live overlay at force);
-// the bare value rebinds to its eval-site snapshot, as `pwd` does
-// [D:ambient-capture] [D:env-overlay-read]
+// the bare value captures an enclosing `within env` at eval
+// [D:ambient-capture-within] [D:env-overlay-read]
 let private envVarsFor (snap: (string * string) list list option) : Value =
     VSeq(
         Seq.delay (fun () ->
@@ -7857,10 +7865,23 @@ Check.reservedBinderNames.Value <-
         && not (Set.contains n escapeBearers))
     |> Set.ofList
 
-// ls/pwd capture the cwd where they are EVALUATED [D:ambient-capture]:
-// keyed by the builtin's own object (the value the env still holds), so a
-// user shadow is returned untouched. Eval consults this in the identifier
-// arm. glob captures at its call, so it needs no rebinder.
-Eval.ambientRebinders["ls"] <- (realLs, (fun () -> lsForCwd (Session.Cwd())))
+// ls/Env.vars capture the enclosing `within` scope where they are EVALUATED
+// [D:ambient-capture-within], live outside one; `pwd` is a string, read
+// where evaluated: keyed by the builtin's own object (the value the env
+// still holds), so a user shadow is returned untouched. Eval consults this
+// in the identifier arm. glob captures at its call, so it needs no rebinder.
+Eval.ambientRebinders["ls"] <-
+    (realLs,
+     (fun () ->
+         match Session.scopedCwd () with
+         | Some cwd -> lsForCwd cwd
+         | None -> realLs))
+
 Eval.ambientRebinders["pwd"] <- (pwdImpl, (fun () -> pwdForCwd (Session.Cwd())))
-Eval.ambientRebinders["Env.vars"] <- (envVarsImpl, (fun () -> envVarsFor (Some(Session.envOverlay ()))))
+
+Eval.ambientRebinders["Env.vars"] <-
+    (envVarsImpl,
+     (fun () ->
+         match Session.scopedOverlay () with
+         | Some layers -> envVarsFor (Some layers)
+         | None -> envVarsImpl))

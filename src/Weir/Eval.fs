@@ -3182,13 +3182,10 @@ let private envPairsOf (v: Value) : (string * string) list =
         |> List.ofSeq
     | _ -> unreachable "the checker rejects non-seq overlays"
 
-// eval-time cwd capture for the ambient bare values `ls`/`pwd`
-// [D:ambient-capture]: a bare value reads Session.Cwd() at force time, so
-// a listing built inside `within cd` but forced after it exits (the REPL
-// echo) resolved against the restored cwd — `Dir.stat`/`Dir.list` were
-// right because they snapshot at the call. A rebinder snapshots the cwd
-// where the identifier is EVALUATED (the same closure rule the command
-// pipe uses), keyed by the builtin's own object so a user shadow
+// eval-time scope capture for the ambient bare values `ls`/`pwd`/`Env.vars`
+// [D:ambient-capture] [D:ambient-capture-within]: a rebinder snapshots the
+// enclosing `within` scope where the identifier is EVALUATED (the rule the
+// command pipe uses), keyed by the builtin's own object so a user shadow
 // (`let ls = …`) is returned untouched. Populated by Builtins at load.
 let ambientRebinders =
     System.Collections.Generic.Dictionary<string, Value * (unit -> Value)>()
@@ -3656,15 +3653,15 @@ and eval (env: Env) (te: TypedExpr) : Value =
     | TECmd(head, args, cenvO) ->
         let argv = argvOf env args
 
-        // ambient captured at the written site [D:ambient-capture],
-        // per the lazy-spawn rule
+        // only the enclosing `within` scopes are captured
+        // [D:ambient-capture-within]
         let spec: Proc.Spec =
             { Prog = Proc.resolveProg (progOf env head)
               Args = argv
               Env = overlayOf env cenvO
               Input = None
-              Cwd = Some(Weir.Session.Cwd())
-              Ambient = Some(Weir.Session.envOverlay () |> List.rev |> List.collect id) }
+              Cwd = Weir.Session.scopedCwd ()
+              Ambient = Weir.Session.scopedAmbient () }
 
         // the command takes the blame wherever it is read [D:runtime-position]
         VSeq(Seq.delay (fun () -> Proc.linesOf spec) |> Seq.map VStr |> blameOn (box te))
@@ -4043,10 +4040,12 @@ and eval (env: Env) (te: TypedExpr) : Value =
 
             let saved = Session.Cwd()
             Session.setCwd resolved
+            Session.enterWithinCd ()
 
             try
                 eval env body
             finally
+                Session.exitWithinCd ()
                 Session.setCwd saved
         | WithinEnv ->
             // env pushes an ambient overlay that child spawns see;
@@ -4565,13 +4564,12 @@ and private evalYamlItems (env: Env) (items: Check.TypedYamlTplItem list) : Valu
 // for the captured chain and the inherited statement chain
 // [D:armed-inherit], so the two cannot drift
 and private chainSpecs env (arg: TypedExpr) chead cargs cenvO : Proc.Spec list =
-    // the ambient snapshot [D:ambient-capture]: taken here, where
-    // the pipe is written — a lazy seq escaping a `within` scope
-    // still spawns under the scope it was written in (closure rule)
-    let snapCwd = Some(Weir.Session.Cwd())
+    // the scope snapshot [D:ambient-capture] [D:ambient-capture-within]:
+    // a lazy seq escaping a `within` scope still spawns under the scope
+    // it was written in; outside any scope nothing is captured
+    let snapCwd = Weir.Session.scopedCwd ()
 
-    let snapAmb =
-        Some(Weir.Session.envOverlay () |> List.rev |> List.collect id)
+    let snapAmb = Weir.Session.scopedAmbient ()
 
     let rec collect (e: TypedExpr) (acc: Proc.Spec list) : TypedExpr option * Proc.Spec list =
         match e.Kind with

@@ -5181,6 +5181,16 @@ WEOF
 out=$(cd "$adir2" && $BIN amb.weir)
 echo "$out" | grep -q "/inner$" || fail "an escaped lazy command must keep its written-site cwd: $out"
 echo "e2e ok: ambient capture — an escaped lazy command spawns under its written-site scope"
+# [D:ambient-capture-within]: outside any `within` nothing is captured —
+# the lazy value runs in the cwd current at enumeration
+cat > "$adir2/top.weir" <<'WEOF'
+let top = sh -c "pwd"
+let _c = cd "inner"
+top |> Seq.iter (fun l -> print l)
+WEOF
+out=$(cd "$adir2" && $BIN top.weir)
+echo "$out" | grep -q "/inner$" || fail "a lazy command outside any within must run in the force-time cwd: $out"
+echo "e2e ok: ambient capture — outside any within, the force-time cwd applies"
 rm -rf "$adir2"
 
 # within tail pipes [D:within-tail-pipe]: a pipe on a body line belongs

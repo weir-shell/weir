@@ -8901,6 +8901,46 @@ let planApplyTests =
               finally
                   System.IO.Directory.Delete(root, true)
           }
+          // [D:ambient-capture-within]: outside any `within` nothing is
+          // captured — a lazy ls/glob/command/Env.vars runs in the cwd and
+          // env current at enumeration; inside one the scope still applies
+          test "AMB: a lazy value outside any within reads the cwd/env at force [D:ambient-capture-within]" {
+              skipOnWindows ()
+              let root = td ()
+              let dirA = weirPath (System.IO.Path.Combine(root, "A"))
+              let dirB = weirPath (System.IO.Path.Combine(root, "B"))
+
+              let prog =
+                  [ $"Dir.create \"{dirA}\""
+                    $"Dir.create \"{dirB}\""
+                    $"File.write \"{dirA}/Aonly.txt\" [\"x\"]"
+                    $"File.write \"{dirB}/Bonly.txt\" [\"x\"]"
+                    $"let _a = cd \"{dirA}\""
+                    "let rows = ls |> Seq.map (fun r -> r.name)"
+                    "let g = Path.glob \"*.txt\""
+                    "let c = sh -c \"ls\""
+                    "let v = sh -c \"echo ${AMBW:-unset}\""
+                    "let ev = Env.vars |> Seq.where (fun e -> e.name == \"AMBW\") |> Seq.map (fun e -> e.value)"
+                    "let s = within env [Env.pair \"AMBW\" \"in\"] $(sh -c \"echo ${AMBW:-unset}\")"
+                    $"let _b = cd \"{dirB}\""
+                    "if Str.join \",\" rows <> \"Bonly.txt\" then fail $\"ls: {Str.join \",\" rows}\""
+                    "if Str.join \",\" g <> \"Bonly.txt\" then fail $\"glob: {Str.join \",\" g}\""
+                    "if Str.join \",\" c <> \"Bonly.txt\" then fail $\"cmd: {Str.join \",\" c}\""
+                    "let late = within env [Env.pair \"AMBW\" \"late\"] (v |> Seq.freeze)"
+                    "if Str.join \",\" late <> \"late\" then fail $\"env: {Str.join \",\" late}\""
+                    "let elate = within env [Env.pair \"AMBW\" \"late\"] (ev |> Seq.freeze)"
+                    "if Str.join \",\" elate <> \"late\" then fail $\"Env.vars: {Str.join \",\" elate}\""
+                    "if Str.join \",\" s <> \"in\" then fail $\"within env lost: {Str.join \",\" s}\""
+                    "print \"ok\"" ]
+
+              let saved = Weir.Session.Cwd()
+
+              try
+                  Expect.equal (runFile prog) 0 "outside any within, the force-time cwd/env applies"
+              finally
+                  Weir.Session.setCwd saved
+                  System.IO.Directory.Delete(root, true)
+          }
           test "a trailing / globs directories only, each with its slash [D:path-glob]" {
               let root = td ()
               let r = weirPath root
