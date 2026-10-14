@@ -80,6 +80,37 @@ CHANGELOG section entry with a one-line migration; still no shims pre-1.0.
   "internal error" output, no exit code ≥ 128, `fmt` idempotent, `fmt` never
   changes whether a file checks, no line:col past the end of its line.
 
+### W0 — The bash-habit sweep (first in W8; 1–2 sessions)
+The user's real REPL-as-shell use shows the biggest class of "unintended
+behaviour" is bash muscle memory: most recent fixes were reflexes (`~`,
+`NAME=v cmd`, `&&`/`||`, `!=`, `else` ending a command, unknown heads).
+Rule: **every common interactive idiom either works or teaches — nothing
+falls through silently.** A probe of 19 idioms on main @ 16cc7c6 found:
+
+| typed | today | class |
+|---|---|---|
+| `echo hi; echo yo` | prints `hi; echo yo` | silent wrong |
+| `sleep 1 &` | passes `&` to sleep | silent wrong |
+| `echo hi 2>&1` | literal arg (`>` alone warns) | silent wrong |
+| `cat <<< hi` | literal args | silent wrong |
+| `[ -f x ] && echo y` | "unbound 'f'. Did you mean 'cd'?" | misleading |
+| `ls *.txt` | raw "Expecting: …" | no teach (Path.glob) |
+| `echo $?` | raw "Expecting: identifier" | no teach (`\| exitCode`) |
+| `for f in a b; do …; done` | raw "Expecting: …" | no teach (`for … do`) |
+| `echo $HOME` | "unbound variable 'HOME'" | no teach (Env.get / `~`) |
+| `cd -` | "no such directory …/-" | support or teach (ruling) |
+| `export` / `source` / `pushd` | "unknown command … PATH" | teach (within env, Env.fromFile/import, within cd) |
+| bare `exit` in the REPL | prints `int -> 'a` | quit or teach (ruling) |
+
+Already right: `>` warns toward `File.write`; `which`, `cmd | grep` work.
+Work: extend the probe to a catalog (~50 idioms: job control `&`/`fg`/
+`jobs`, `!!`/`!$`, `$(…)` vs backticks, `[[ ]]`, `test`, `$((…))`,
+`set -e`, `trap`, `alias x=…`, `unset`, `read`, `printf -v`, `2>/dev/null`,
+`|&`, `&>`, brace expansion, `~user`, `cd` with no arg, `..` as a command,
+Ctrl-R) run in both script and REPL mode; rulings batched in one table
+(support vs teach per idiom); every row pinned in e2e so a future change
+can't reopen a silent fall-through.
+
 ### W8 — The day test (the gate; 1–2 sessions, repeated until clean)
 Usage-shaped, not area-shaped — the hunts find bugs by attacking; this finds
 what a working day hits. Agents each run a scripted "day" end to end,
