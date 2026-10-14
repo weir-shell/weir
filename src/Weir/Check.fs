@@ -1974,9 +1974,13 @@ and ctorOwnersAll (env: TypeEnv) (name: string) : string list =
         // imported types are excluded: they live flat in `Types` so signatures
         // and field access resolve, but their cases are not in scope bare
         // (access is always qualified), so they are not candidates for this
-        // name and must not make a local declaration look ambiguous
+        // name and must not make a local declaration look ambiguous — a type
+        // reached only transitively [D:transitive-types] included
         let imported =
-            env.ModuleTypes |> Map.toList |> List.map snd |> List.fold Set.union Set.empty
+            env.ModuleTypes
+            |> Map.toList
+            |> List.map snd
+            |> List.fold Set.union (env.TypeOrigins |> Map.keys |> Set.ofSeq)
 
         let owners =
             env.Types

@@ -22794,6 +22794,23 @@ let moduleSignatureTests =
                       Expect.isEmpty (diagsOf td "direct1.weir") "transitive then direct: one type"
                       Expect.isEmpty (diagsOf td "direct2.weir") "direct then transitive: one type")
           }
+          test "a transitive union's case never makes a local constructor ambiguous [D:transitive-types]" {
+              withDir
+                  [ "a.weir", [ "module A"; "type Color ="; "    | Red"; "    | Green" ]
+                    "b.weir", [ "module B"; "import \"./a.weir\" as A"; "let pick : unit -> Color"; "let pick () = A.Red" ]
+                    "m.weir",
+                    [ "import \"./b.weir\" as B"
+                      "type Light ="
+                      "    | Red"
+                      "    | Off"
+                      "let x = Red"
+                      "let n ="
+                      "    match B.pick () with"
+                      "    | Red -> 1"
+                      "    | Green -> 2"
+                      "print $\"{x} {B.pick ()} {n}\"" ] ]
+                  (fun td -> Expect.isEmpty (diagsOf td "m.weir") "the local Red is the bare one; B's Color still matches")
+          }
           test "did-you-mean at the private refusal ranges over SIGNED members only" {
               withDir
                   [ "lib.weir",
