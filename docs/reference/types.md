@@ -75,6 +75,23 @@ being frozen (`possible re-enumeration`; this is only a warning, and
 `weir check` still exits 0). Capturing a command gives a
 `seq<string>`, one element per line.
 
+A `let` bound to a command, a pipeline of commands, `ls` or
+`Path.glob` holds a lazy value: nothing runs when it is bound, and
+each read runs it again, in the directory and `within env` scope
+where the `let` was written. These run at once instead: the reifiers
+(`| line`, `| text`, `| complete`, `| succeeds`, `| exitCode`,
+`| orFail`, `| and`/`| or`), `Seq.freeze` and any other function that
+reads the whole sequence, and a `$(…)` or `$@xs` in a command
+argument (argv is built immediately). The contexts
+([guide](../GUIDE.md#lazy-values-a-let-is-a-recipe)):
+
+- script: nothing runs until the value is used
+- REPL: the echo of a lazy `let` shows `name : type (command-backed —
+  runs on each use; type name to run it)` and never runs it
+- init file and modules: a command, a pipeline of commands or a value
+  piped into a command is allowed; the eager forms and passing the
+  command to a function are refused, since nothing may run at load
+
 List items are separated by `;` (or by line breaks). A comma builds a
 tuple, so `[1, 2]` is a one-item list holding `(1, 2)`; the checker
 warns about that shape and suggests `[1; 2]`, or `[(1, 2)]` if the

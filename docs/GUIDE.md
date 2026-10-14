@@ -213,6 +213,53 @@ One difference from F#: `Seq.sum` only works on ints. `Float`,
 `Size` and `Duration` each have their own `sum` and `average`
 (`ls |> Seq.map _.bytes |> Size.sum`).
 
+### Lazy values: a `let` is a recipe
+
+A `let` bound to a command, `ls`, or `Path.glob` stores the recipe,
+not the result. Nothing runs when the `let` is evaluated; the command
+runs (or the directory is listed) each time the value is read. It
+runs in the directory and `within env` settings in effect where the
+`let` was written, so a later `cd` doesn't move it (see
+[File batches](#file-batches-glob-is-a-function-not-an-expansion)).
+
+```weir
+let here = ls
+let before = here |> Seq.length
+touch notes.txt
+print $"{(here |> Seq.length) - before} new"
+
+let log = git log --oneline -n 10
+let snapshot = git log --oneline -n 10 |> Seq.freeze
+print $"{log |> Seq.length} {snapshot |> Seq.length}"
+```
+
+`here` lists the directory again on each read, so it sees
+`notes.txt`. `log` runs `git` every time it is used; `snapshot` ran
+`git` once, when its `let` was evaluated, and keeps that output.
+
+These forms run right away instead:
+
+- the reifiers: `| line`, `| text`, `| complete`, `| succeeds`,
+  `| exitCode`, `| orFail`, and `| and`/`| or`
+- `Seq.freeze`, and anything else that reads the whole sequence
+  (`Seq.length`, `Seq.iter`, a `for` loop, `$@xs` in a command)
+- `$(…)` when something reads it at once, such as a command argument;
+  on its own, `let x = $(cmd)` is the same lazy command
+
+Everything else that touches commands or the filesystem stays lazy.
+What that means depends on where the `let` is:
+
+- In a script, nothing runs until the value is used, and the checker
+  warns if a command-backed value is used twice without `Seq.freeze`.
+- In the REPL, the echo of a lazy `let` shows its type and a hint and
+  never runs it; type the name to run it ([repl.md](repl.md#what-the-echo-shows)).
+- In the init file and in modules, nothing may run while they load:
+  a command, a pipeline of commands, or a value piped into a command
+  is allowed; the eager forms, and passing the command to a function,
+  are refused.
+
+[Types: seq](reference/types.md#seq) has the reference version.
+
 ### Indexing and slicing
 
 Use brackets to get a single element: `xs[0]` is the same as

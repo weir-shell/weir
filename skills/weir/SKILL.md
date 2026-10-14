@@ -985,16 +985,17 @@ print (Option.flatten (Some None) |> Option.defaultValue 0)
   (full paths, sorted, both kinds; `Path.glob "**"` recurses)/`move`.
   Every failure names its path.
 - `Seq.freeze` materializes (consume to completion, eager in-memory;
-  STRICT — not for infinite seqs). When to force, four customers:
+  STRICT — not for infinite seqs). When to force, three customers:
   REUSE (a command-backed seq re-runs its process per enumeration —
   force once, consume twice; `weir check` WARNS on the second pull of
   an unforced command-backed binding — advisory, exit stays 0; the
   REPL echo of such a `let` shows `name : type (command-backed — runs
   on each use; type name to run it)` and NEVER runs it
-  [D:repl-let-echo-lazy]); TIMING (a lazy `ls` enumerated after a
-  `cd` sees the new directory; force pins the data NOW); GLOB's cd
-  seam (`Path.glob` resolves relative patterns at ENUMERATION —
-  force pins the batch before a `cd`); and the non-customer: a
+  [D:repl-let-echo-lazy]); TIMING (a lazy `ls`/`Path.glob`/command
+  re-runs on each read, so files created after the `let` show up;
+  the cwd and `within env` are captured where it was WRITTEN — a
+  later `cd` does not move it [D:ambient-capture]; force pins the
+  data NOW); and the non-customer: a
   SPLAT (`$@xs`) forces at spawn by necessity — argv is finite, no
   explicit force needed at the splice.
 - Concatenation is `Seq.append` (lazy; piped spelling puts the TAIL
