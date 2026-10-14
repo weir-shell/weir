@@ -1940,8 +1940,10 @@ conf |> Seq.iter print
   [D:init-import]. A relative path resolves from the importing file's
   REAL location (a symlinked script or init imports beside the
   original; `Self.scriptPath` keeps the link). Imports are transitive (a module may import); a
-  shared module is checked once (diamonds collapse) and an import
-  cycle is a named check error.
+  shared module is checked once and its body RUNS once per program
+  [D:module-once] — diamonds, re-aliases and symlinks (identity is
+  the real path) share one instance — and an import cycle is a named
+  check error.
 
 ```weir
 // a module: the signed member exports, the unsigned one is private

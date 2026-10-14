@@ -2693,7 +2693,7 @@ type CheckedStmt =
 // a checked, imported module [D:modules-v1]. Its check-time contributions
 // (Members -> Modules[Alias], TypeDefs -> Types, TypeNames -> ModuleTypes)
 // merge into the importer's tenv; Body replays at exec to build the
-// module's values. AbsPath is the normalized identity (symlinks unresolved).
+// module's values. AbsPath is the identity: the real path [D:module-once].
 and LoadedModule =
     { Alias: string
       // the module's own name (declared or filename-derived), independent
@@ -4274,10 +4274,7 @@ let private moduleBaseEnvs (absPath: string) : TypeEnv * Eval.Env =
         Modules = te.Modules |> Map.add "Self" selfMembers },
     ve |> Map.add "Self.scriptPath" (Eval.VStr absPath)
 
-// the one import path resolver [D:modules-v1]: absolute + normalized (for
-// identity and, later, caching); symlinks stay unresolved — as in
-// Path.glob, two links to one file are two files.
-let private resolveImportPath (importingAbsPath: string) (path: string) : string =
+let private resolveImportPathRaw (importingAbsPath: string) (path: string) : string =
     let dir = IO.Path.GetDirectoryName importingAbsPath
 
     if path.StartsWith "weir:" then
@@ -4307,6 +4304,26 @@ let private resolveImportPath (importingAbsPath: string) (path: string) : string
             IO.Path.GetFullPath(IO.Path.Combine(dir, ".weir", "modules", name + ".weir"))
     else
         IO.Path.GetFullPath(IO.Path.Combine(dir, path))
+
+// a module's identity is its real path [D:module-once]: every symlinked
+// component resolved, so two links to one file import one module
+let rec private realPath (full: string) : string =
+    match IO.Path.GetDirectoryName full with
+    | null -> full
+    | parent ->
+        let here = IO.Path.Combine(realPath parent, IO.Path.GetFileName full)
+
+        try
+            match IO.FileInfo(here).ResolveLinkTarget true with
+            | null -> here
+            | target -> realPath target.FullName
+        with _ ->
+            here
+
+// the one import path resolver [D:modules-v1]: absolute, normalized and
+// symlink-resolved — the module's identity [D:module-once]
+let private resolveImportPath (importingAbsPath: string) (path: string) : string =
+    realPath (resolveImportPathRaw importingAbsPath path)
 
 // F#'s filename fallback for a bare `module`: capitalize the base name. A
 // non-identifier filename has no derivation (name it, or import `as`).
@@ -4727,7 +4744,22 @@ let rec loadModuleCachedWith
 // from the entry), exposing a nested import's members as `alias.member` for
 // this module's own lets. Returns the module's venv (bindings under bare
 // names); the caller exposes this module's Members qualified.
+//
+// A module's body runs once per program [D:module-once]: keyed by its
+// identity, and by the checked Body itself — a reloaded module (the REPL
+// re-importing an edited file) is a new body and runs afresh.
+let private replayed =
+    System.Collections.Generic.Dictionary<string, (LogicalLine * CheckedStmt) list * Eval.Env>()
+
 let rec replayModule (procFacts: (string * Eval.Value) list) (lm: LoadedModule) : Eval.Env =
+    match replayed.TryGetValue lm.AbsPath with
+    | true, (body, venv) when obj.ReferenceEquals(body, lm.Body) -> venv
+    | _ ->
+        let venv = replayModuleBody procFacts lm
+        replayed[lm.AbsPath] <- (lm.Body, venv)
+        venv
+
+and private replayModuleBody (procFacts: (string * Eval.Value) list) (lm: LoadedModule) : Eval.Env =
     let _, mBase0 = moduleBaseEnvs lm.AbsPath
     let mBase = procFacts |> List.fold (fun m (k, v) -> Map.add k v m) mBase0
 

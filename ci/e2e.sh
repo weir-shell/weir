@@ -7046,6 +7046,30 @@ printf 'import "./left.weir"\nimport "./right.weir"\nprint (show (L.x + R.y))\n'
 out=$($BIN "$mdir/diamond.weir" 2>&1)
 expect "a diamond shares one module across both paths" "13" "$out"
 
+# a module's body runs once per program, identity = its real path
+# [D:module-once]: a diamond, a re-alias and a symlinked import share one
+# Uuid.v4; an 18-level double diamond (2^17 import paths) stays instant
+printf 'module U\nlet uid : Uuid\nlet uid = Uuid.v4 ()\n' > "$mdir/once.weir"
+printf 'module V\nimport "./once.weir"\nlet id2 : Uuid\nlet id2 = U.uid\n' > "$mdir/oncev.weir"
+ln -s once.weir "$mdir/oncelink.weir" 2>/dev/null || cp "$mdir/once.weir" "$mdir/oncelink.weir"
+printf 'import "./once.weir"\nimport "./oncev.weir"\nimport "./once.weir" as U2\nimport "./oncelink.weir" as U3\nprint $"{U.uid == V.id2} {U.uid == U2.uid} {U.uid == U3.uid}"\n' > "$mdir/once-main.weir"
+out=$($BIN "$mdir/once-main.weir" 2>&1)
+if [ -L "$mdir/oncelink.weir" ]; then
+    expect "a module evaluates once: diamond, re-alias, symlink" "true true true" "$out"
+else
+    expect "a module evaluates once: diamond, re-alias" "true true false" "$out"
+fi
+for i in $(seq 0 17); do
+    if [ "$i" = 0 ]; then
+        printf 'module M0\nlet x : int\nlet x = 1\n' > "$mdir/dd0.weir"
+    else
+        printf 'module M%s\nimport "./dd%s.weir" as A\nimport "./dd%s.weir" as B\nlet x : int\nlet x = A.x + B.x\n' "$i" "$((i-1))" "$((i-1))" > "$mdir/dd$i.weir"
+    fi
+done
+printf 'import "./dd17.weir" as T\nprint (show T.x)\n' > "$mdir/dd-main.weir"
+out=$(timeout 20 $BIN "$mdir/dd-main.weir" 2>&1)
+expect "an 18-level double diamond evaluates each module once" "131072" "$out"
+
 # an import cycle is a check error naming the loop, at its closing edge
 printf 'module CA\nimport "./cb.weir"\nlet a = 1\n' > "$mdir/ca.weir"
 printf 'module CB\nimport "./ca.weir"\nlet b = 2\n' > "$mdir/cb.weir"
