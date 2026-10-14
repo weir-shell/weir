@@ -162,7 +162,9 @@ only applies to lazy ones. Piped output is not affected.
 `#help` lists the directives and the modules, one module per line
 with a short description. `#help Seq` lists one module's members the
 same way: one per line, each with the first line of its doc, cut to
-fit the terminal. `#help Seq.collect` shows one member's full doc.
+fit the terminal. `#help Seq.collect` shows one member's full doc,
+and a short name such as `#help map` shows the same doc, saying which
+member it stands for (`map is Seq.map`).
 It is the same doc that editor hover shows, and the one-line
 summaries are its first line.
 
@@ -198,7 +200,9 @@ The history file is at `$XDG_STATE_HOME/weir/history` (otherwise
 `~/.local/state/weir/history`; `%LOCALAPPDATA%\weir\` on Windows).
 It is created with mode `0600`, since a REPL line can contain a
 secret. To find that base directory from a script, use
-`Path.stateHome ()`. If there is no usable home (`HOME=` is empty, or
+`Path.stateHome ()`. In a piped session (`printf '…' | weir`),
+`#history` shows the file plus that session's lines, which are not
+saved. If there is no usable home (`HOME=` is empty, or
 the file cannot be written), the REPL still starts: history is off for
 that session, with one note saying why.
 
@@ -603,7 +607,8 @@ arguments go right after the program, followed by yours. An alias is
 not a text substitution. Your arguments are passed exactly as usual,
 so `k get $x` still passes `$x` as one argument, and a `k` in a
 string, a variable or an argument is left alone. Only the command
-word itself is replaced.
+word itself is replaced. A keyword (`let`, `if`, …) can't be an alias
+name, since a line starting with it is never a command.
 
 Because an alias is just a program plus fixed words, not a command
 line, weir syntax in it is **not interpreted**: `$(…)` captures,

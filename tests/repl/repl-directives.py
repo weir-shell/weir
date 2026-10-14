@@ -109,6 +109,25 @@ t = piped("#quit\nprint \"unreached\"\n")
 if "unreached" in t:
     failures.append("#quit must leave the REPL")
 
+# a keyword can never head a command — #alias refuses it
+t = piped("#alias let = echo\n#quit\n")
+if "keyword" not in t or "alias let = echo" in t:
+    failures.append(f"#alias let = … must be refused as a keyword: {t[-200:]!r}")
+
+# piped #history reads the history file and lists this session's lines
+# (which are not saved — piped input is not the user's history file)
+home = tempfile.mkdtemp(prefix="weir-hist-piped-")
+os.makedirs(os.path.join(home, "state", "weir"))
+with open(os.path.join(home, "state", "weir", "history"), "w") as f:
+    f.write("let fromfile = 1\n")
+p = subprocess.run([WEIR], input="let zz = 41\n#history\n#quit\n", capture_output=True, text=True,
+                   timeout=30, env=dict(os.environ, XDG_STATE_HOME=os.path.join(home, "state")))
+if "let fromfile = 1" not in p.stdout or "let zz = 41" not in p.stdout or "(empty)" in p.stdout:
+    failures.append(f"piped #history must read the file and this session: {p.stdout[-300:]!r}")
+with open(os.path.join(home, "state", "weir", "history")) as f:
+    if "zz" in f.read():
+        failures.append("a piped session must not write the history file")
+
 # an argument to #quit teaches its form — never "did you mean '#quit'"
 t = piped("#quit now\nprint \"still-here\"\n#quit\n")
 if "takes no argument" not in t or "Did you mean" in t:

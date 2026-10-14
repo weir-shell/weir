@@ -564,6 +564,14 @@ let inferRules =
                   Expect.stringContains out "runAsNonRoot: Option<bool>" "the bool field stays bool"
           }
 
+          test "a note names the drafted field as spelled, never the derived type stem" {
+              match Infer.infer Parser.keywords takenBase Infer.Json "Root" [ "{\"dE\": null}" ] with
+              | Error e -> failtestf "infer failed: %s" e
+              | Ok(decls, notes) ->
+                  Expect.stringContains (String.concat "\n" decls) "dE: Option<string>" "the field"
+                  Expect.isTrue (notes |> List.exists (fun n -> n.Contains "under 'dE'")) $"the note: {notes}"
+          }
+
           test "an empty {} drafts seq<string * string> and READS on both boundaries [D:yaml-empty-flow]" {
               // json draft + note
               match Infer.infer Parser.keywords takenBase Infer.Json "Spec" [ "{\"resources\": {}}" ] with
@@ -574,7 +582,7 @@ let inferRules =
                   Expect.isTrue
                       (notes
                        |> List.exists (fun n ->
-                           n.Contains "an empty mapping under 'Resources'"
+                           n.Contains "an empty mapping under 'resources'"
                            && n.Contains "drafted as seq<string * string>"))
                       "the empty-map note, pinned wording"
 

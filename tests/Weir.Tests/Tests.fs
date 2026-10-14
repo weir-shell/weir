@@ -24034,6 +24034,10 @@ let aliasTests =
               Expect.isTrue (Weir.Repl.parseAliasLineForTest "kb = kustomize build" |> Result.isOk) "with prefix"
               Expect.isTrue (Weir.Repl.parseAliasLineForTest "= kubectl" |> Result.isError) "no name"
               Expect.isTrue (Weir.Repl.parseAliasLineForTest "k" |> Result.isError) "no ="
+
+              match Weir.Repl.parseAliasLineForTest "let = echo" with
+              | Error e -> Expect.stringContains e "keyword" "a keyword name is refused, named"
+              | Ok _ -> failtest "#alias let = … must be refused"
           }
           test "(k) an alias to the builtin cd APPLIES it, never spawns /usr/sbin/cd [D:command-head-alias]" {
               // #alias up = cd .. — `up` must resolve cd as the builtin (the
@@ -24871,6 +24875,11 @@ let helpUxTests =
                     yield! offenders "bare #help" (Weir.Repl.helpTextForTest "") ]
 
               Expect.equal hits [] "shouting caps in user-facing prose — rewrite, or allowlist a real acronym"
+          }
+          test "#help on a bare alias answers as its qualified member, named [D:bare-partition]" {
+              let t = Weir.Repl.helpTextForTest "map"
+              Expect.stringContains t "map is Seq.map" "names the member it aliases"
+              Expect.stringContains t "Apply a function" "with Seq.map's own doc"
           }
           test "(b) #help Module: ONE member per line, name + the doc's first line" {
               let t = Weir.Repl.helpTextForTest "Option"

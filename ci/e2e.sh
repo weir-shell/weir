@@ -7886,7 +7886,7 @@ out=$(cd "$ydir" && $BIN inferdecl.weir)
 # and the dirty-keyed labels object drafts as the mapping — its keys
 # are data, so no [<Wire>] rides at all
 echo "$out" | grep -qF "resources: seq<string * string>" || fail "empty {} must infer as the empty open mapping: $out"
-echo "$out" | grep -qF "an empty mapping under 'Resources'" || fail "empty {} must print a note: $out"
+echo "$out" | grep -qF "an empty mapping under 'resources'" || fail "empty {} must print a note: $out"
 echo "$out" | grep -qi "not valid YAML" && fail "the real kubectl List must infer clean: $out" || true
 echo "$out" | grep -qF "labels: seq<string * string>" || fail "the dirty-keyed labels must draft as a mapping: $out"
 echo "$out" | grep -qF "'labels' has mostly non-identifier keys" || fail "the labels map note must print: $out"

@@ -430,6 +430,11 @@ let private parseAliasLine (body: string) : Result<string * Alias, string> =
         body.Trim()
         |> fun s -> System.Text.RegularExpressions.Regex.Match(s, @"^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$")
     with
+    | m when m.Success && Parser.isKeyword m.Groups.[1].Value ->
+        // a keyword heads its own statement form, never a command — the
+        // alias could never resolve
+        let name = m.Groups.[1].Value
+        Error $"#alias {name}: '{name}' is a keyword — a line starting with it is never a command; pick another name"
     | m when m.Success ->
         let name = m.Groups.[1].Value
 
@@ -905,7 +910,9 @@ let private loadHistory () =
 // line moves to the most-recent position — earlier copies drop, so history
 // is a recency-ordered set (each command once). On a dedup hit the file is
 // rewritten (an earlier line must go); otherwise it is appended.
-let private appendHistory (entry: string) =
+// the in-memory half: a piped session's entries stop here — #history
+// shows them, but piped input is not the user's history file
+let private rememberEntry (entry: string) : int =
     let removed =
         if config.HistoryDedup then
             history.RemoveAll(System.Predicate(fun e -> e = entry))
@@ -913,6 +920,10 @@ let private appendHistory (entry: string) =
             0
 
     history.Add entry
+    removed
+
+let private appendHistory (entry: string) =
+    let removed = rememberEntry entry
 
     match historyFile () with
     | Some f ->
@@ -937,6 +948,9 @@ let private appendHistory (entry: string) =
 // the line-per-entry appends not yet load-capped. Bare = all (cat
 // parity); a positive N = the last N (tail).
 let private historyDirective (arg: string) : string =
+    // a piped session never ran the editor's load — read the file now
+    loadHistory ()
+
     let where =
         match historyFile () with
         | Some f -> $"history at {f}"
@@ -1820,7 +1834,13 @@ let private readInput () =
     contPrompt <- deriveContPrompt promptWidth
 
     if Console.IsInputRedirected then
-        readRedirected ()
+        let entry = readRedirected ()
+
+        if not (isNull entry) && entry.Trim() <> "" then
+            loadHistory ()
+            rememberEntry entry |> ignore
+
+        entry
     else
         Term.editorActive.Value <- true
 
@@ -2455,6 +2475,16 @@ let private memberHelp (color: bool) (te: TypeEnv) (name: string) : string optio
 // with its doc — and a failed init leaves this empty, never stale
 let mutable private initDocs: Map<string, string list> = Map.empty
 
+// the module a bare name aliases, while the session has not rebound it
+// (the same scheme as the qualified member) [D:bare-partition]
+let private bareAliasHome (te: TypeEnv) (name: string) : string option =
+    match Map.tryFind name Builtins.bareAliasHomes with
+    | Some home when not (Builtins.builtinDocs.ContainsKey name) ->
+        match Map.tryFind name te.Values, te.Modules |> Map.tryFind home |> Option.bind (Map.tryFind name) with
+        | Some a, Some b when a = b -> Some home
+        | _ -> None
+    | _ -> None
+
 let private helpDirective (color: bool) (te: TypeEnv) (arg: string) : string =
     match arg.Trim() with
     | "" ->
@@ -2501,6 +2531,14 @@ let private helpDirective (color: bool) (te: TypeEnv) (arg: string) : string =
         // candidate would be a confident wrong suggestion
         let owners = Check.ctorOwners te name |> String.concat ", "
         $"'{name}' is an ambiguous constructor; it is declared by: {owners} — rename one of the cases"
+    | name when (bareAliasHome te name).IsSome ->
+        // a bare alias answers as its qualified member does — `map` is
+        // `Seq.map`, one doc, named [D:help-glance]
+        let home = (bareAliasHome te name).Value
+
+        match memberHelp color te $"{home}.{name}" with
+        | Some h -> $"{name} is {home}.{name}\n\n{h}"
+        | None -> $"{name} is {home}.{name}"
     | name ->
         match memberHelp color te name with
         | Some h ->
