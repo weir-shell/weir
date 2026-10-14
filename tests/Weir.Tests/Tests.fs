@@ -6731,6 +6731,14 @@ let fmtSourceTests =
                   Expect.isEmpty lines "an empty file"
                   Expect.isFalse changed "is canonical"
               | Error e -> failtest e
+          }
+          test "a layout that would not settle is refused, never flip-flopped" {
+              match Weir.Fmt.formatLines [ "match {((}"; "| _ -> 1" ] with
+              | Error e -> Expect.stringContains e "does not settle" "named"
+              | Ok out ->
+                  match Weir.Fmt.formatLines out with
+                  | Ok again -> Expect.equal again out "if accepted, a fixed point"
+                  | Error e -> failtestf "accepted once, refused after: %s" e
           } ]
 
 // inside an open bracket fmt shifts, never re-levels [D:fmt-bracket-shift]

@@ -598,8 +598,28 @@ let private formatLinesCore (lineOffset: int) (body: string list) : Result<strin
 
                     Ok final
 
-let formatLines (body: string list) : Result<string list, string> =
-    formatLinesCore 0 body |> Result.map canonicalizeDocs
+// fmt is idempotent on everything it accepts: a layout that moves again
+// on a second pass (mismatched brackets the re-indenter cannot place) is
+// refused, never written to flip-flop between two forms
+let private formatSettled (lineOffset: int) (body: string list) : Result<string list, string> =
+    let once = formatLinesCore lineOffset body |> Result.map canonicalizeDocs
+
+    match once with
+    | Ok first ->
+        match formatLinesCore lineOffset first |> Result.map canonicalizeDocs with
+        | Ok second when second = first -> once
+        | Ok second ->
+            let moved =
+                Seq.zip first second
+                |> Seq.tryFindIndex (fun (a, b) -> a <> b)
+                |> Option.defaultValue (min first.Length second.Length)
+
+            Error
+                $"cannot format: line {moved + 1 + lineOffset}: the layout does not settle — a bracket is likely mismatched (fix errors first)"
+        | Error e -> Error e
+    | Error e -> Error e
+
+let formatLines (body: string list) : Result<string list, string> = formatSettled 0 body
 
 /// The one formatter entry point for `weir fmt` and the LSP's
 /// formatting request [D:fmt-v1]: a source text in, its canonical lines
@@ -628,9 +648,9 @@ let formatSource (text: string) : Result<string list * bool, string> =
         | first :: rest when first.StartsWith "#!" -> [ first ], rest
         | _ -> [], lines
 
-    formatLinesCore header.Length body
+    formatSettled header.Length body
     |> Result.map (fun formattedBody ->
-        let result = header @ canonicalizeDocs formattedBody
+        let result = header @ formattedBody
         result, (result <> lines || not finalNewline))
 
 // #save's bare-alias qualifier [D:repl-save]: a saved script is
