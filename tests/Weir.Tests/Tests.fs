@@ -11671,6 +11671,35 @@ let lockfileConfinementTests =
                   Expect.stringContains msg "escapes .weir/" "the refusal names the escape"
                   Expect.stringContains msg "../ESCAPE.json" "and the offending path"
           }
+          test "entryDest refuses the lockfile and .weir/ itself — restore never overwrites lock.json (H5)" {
+              let root = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "weir-conf-root")
+
+              for bad in [ "lock.json"; "./lock.json"; "schemas/../lock.json"; "LOCK.JSON"; "."; "schemas/.." ] do
+                  match Weir.Contracts.entryDest root (mkEntry bad) with
+                  | Ok d -> failtest $"'{bad}' must refuse, got {d}"
+                  | Error msg -> Expect.stringContains msg "lockfile" $"'{bad}': the refusal names the lockfile"
+          }
+          test "entryDest refuses a leaf symlinked to the lockfile (H5)" {
+              if not (System.OperatingSystem.IsWindows()) then
+                  let dir = tempDir "weir-h5"
+
+                  try
+                      let weirDir = System.IO.Path.Combine(dir, ".weir")
+                      System.IO.Directory.CreateDirectory(System.IO.Path.Combine(weirDir, "schemas")) |> ignore
+                      System.IO.File.WriteAllText(System.IO.Path.Combine(weirDir, "lock.json"), "{}")
+
+                      System.IO.File.CreateSymbolicLink(
+                          System.IO.Path.Combine(weirDir, "schemas", "x.json"),
+                          System.IO.Path.Combine(weirDir, "lock.json")
+                      )
+                      |> ignore
+
+                      match Weir.Contracts.entryDest weirDir (mkEntry "schemas/x.json") with
+                      | Ok d -> failtest $"a leaf linked to lock.json must refuse, got {d}"
+                      | Error msg -> Expect.stringContains msg "lockfile" "the refusal names the lockfile"
+                  finally
+                      System.IO.Directory.Delete(dir, true)
+          }
           test "an unreadable import is a LOCATED diagnostic, never a crash (F2)" {
               // mode-000 on the imported file: check must give a located
               // 'cannot read import' error, not throw (the old crash)

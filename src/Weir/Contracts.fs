@@ -337,12 +337,33 @@ let entryDest (weirDir: string) (e: LockEntry) : Result<string, string> =
     let tampered () =
         $"{e.Kind} {e.Name}: the lock records path '{e.Path}', which escapes .weir/ — a lock entry must stay under the vendor directory; this lock was tampered with or hand-edited"
 
+    // the lockfile and the vendor root itself are inside .weir/ but are
+    // never an artifact [D:lockfile-confinement] — an entry naming either
+    // (lexically or through a symlinked leaf) would let restore overwrite
+    // the lock it is reading
+    let reserved (p: string) =
+        let full = Path.TrimEndingDirectorySeparator(Path.GetFullPath p)
+        let root = Path.TrimEndingDirectorySeparator(Path.GetFullPath weirDir)
+
+        String.Equals(full, root, StringComparison.OrdinalIgnoreCase)
+        || String.Equals(full, Path.Combine(root, "lock.json"), StringComparison.OrdinalIgnoreCase)
+
+    let reservedReal (dest: string) =
+        match resolveExistingPrefix weirDir, resolveExistingPrefix dest with
+        | Ok realRoot, Ok realDest ->
+            String.Equals(realDest, realRoot, StringComparison.OrdinalIgnoreCase)
+            || String.Equals(realDest, Path.Combine(realRoot, "lock.json"), StringComparison.OrdinalIgnoreCase)
+        | _ -> false
+
     match confineUnder weirDir e.Path with
     | Error _ -> Error(tampered ())
     | Ok dest ->
         match confineRealUnder weirDir dest with
-        | Ok _ -> Ok dest
         | Error _ -> Error(tampered ())
+        | Ok _ when reserved dest || reservedReal dest ->
+            Error
+                $"{e.Kind} {e.Name}: the lock records path '{e.Path}', which names .weir/lock.json or .weir/ itself — an artifact never overwrites the lockfile; this lock was tampered with or hand-edited"
+        | Ok _ -> Ok dest
 
 let sha256Hex (bytes: byte[]) : string =
     use sha = Security.Cryptography.SHA256.Create()
