@@ -1125,12 +1125,14 @@ let h56 d =
 // ---- H57: REPL small inconsistencies -----------------------------------------------
 
 let h57 d =
-    let r = piped d [ "let zz = 41"; "#history"; "#alias let = echo"; "#help map"; """#infer ["{\"DE\": null}"] from json as Root""" ]
+    let r = piped d [ "let zz = 41"; "#history"; "#alias let = echo"; "#help map"; """#infer ["{\"dE\": null}"] from json as Root""" ]
     let o = (outOf r + "\n" + errOf r)
     let lo = o |> Str.toLower
+    // DECISIONS is append-only: the stale row stays, a superseding row fixes it
     let staleIt =
         File.read $"{repo}/docs/DECISIONS.md"
-        |> Seq.exists (fun l -> (l |> Str.startsWith "| repl-it |") && (l |> Str.contains "or a `let` RHS"))
+        |> Seq.exists (fun l -> l |> Str.startsWith "| repl-it-let |")
+        |> not
     failing [
         ("#alias let = … accepted", (lo |> Str.contains "keyword") || (lo |> Str.contains "reserved"))
         ("piped #history says (empty)", not (o |> Str.contains "(empty)"))
