@@ -1,6 +1,6 @@
 # PLAN — daily driver: a day of use without a crash or surprise
 
-Status: IN PROGRESS — W1 done (2026-10-15, the bare-surface gate [D:surface-gate]); W5 ruled [D:breaking-policy]; W4 rulings owed. Definition confirmed by the user (below).
+Status: IN PROGRESS — W1 done (2026-10-15, the bare-surface gate [D:surface-gate]); W5 ruled [D:breaking-policy]; W4 ruled; W2, W6 in flight. Definition confirmed by the user (below).
 
 ## The goal (user, 2026-10-14)
 
@@ -60,7 +60,18 @@ not yet swept:
 Swept areas are re-probed only for regressions from the latest changes. The
 loop stops at the first round with no high/medium findings (exit criterion 1).
 
-### W4 — Parked designs: decide in or out (1 session of rulings)
+### W4 — Parked designs: decide in or out — RULED (user, 2026-10-15)
+- Env sugar B (`Env.need`/`Env.getOr`) and A (inline `{| … |}` in
+  `Env.load`/`Args.load`): IN.
+- Branches: all ten (dx/*, within-always-any, retire-bang, next) were
+  squash-merged; deleted from the remote.
+- dev/BACKLOG.md hunt-2 items: ALL daily-driver — fix all.
+- PLAN-review-fixes: F8 (serve stream truncation is silent) and F11 (an
+  unsendable header is dropped silently) IN; F10 (duplicate request
+  headers collapse) later.
+- Nine landed plans marked LANDED in their status lines.
+
+Original brief:
 - Env sugar (`dev/plans/PLAN-env-sugar.md`) — ready to execute.
 - `within … always` any + `!()` removal (`feat/within-always-any`,
   `dx/retire-bang`) — check what's left against main, then rule.

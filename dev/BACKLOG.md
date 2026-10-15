@@ -23,6 +23,8 @@ equatability and short-circuit `&&`/`||`, as pre-committed.)
 
 ## From the second bug hunt (2026-10-14, PLAN-hunt2-fixes.md)
 
+Ruled 2026-10-15 (PLAN-daily-driver W4): **every item below is daily-driver — fix all.**
+
 - **`from json` reading a `Yaml` field** — would let `gen types` keep a
   self-referential field instead of omitting it [D:gen-types-cycles].
 - **`serve` answers only the first of pipelined requests** on one
