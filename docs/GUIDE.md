@@ -54,7 +54,8 @@ Five reasons, most important first:
 - `weir` starts the interactive REPL. See [The REPL](#the-repl) at
   the end of this guide.
 - `weir -e '1 + 2'` runs a small program and prints the value of its
-  last statement, which must be an expression. Newlines separate
+  last statement with its type, as the REPL echoes it (`3 : int`).
+  That statement must be an expression. Newlines separate
   statements, as in a file. A declaration on its own is rejected,
   since there would be nothing to show. The same strict rules as
   scripts apply.
@@ -1712,7 +1713,8 @@ make it an `Option`.
 
 When an object's keys are data rather than fixed field names, like
 objects keyed by ID, read it as a `Map<string, T>`. That works for a
-field, or for the whole document:
+field, or for the whole document when `T` is a record (declared or
+anonymous):
 
 ```weir
 type WDoc = { id: string }
@@ -1722,9 +1724,9 @@ docs |> Map.pairs |> Seq.iter (fun (k, d) -> print $"{k}={d.id}")
 ```
 
 Keys can only be strings, since JSON object keys are strings. A
-`Map<int, …>` is an error that explains this. Pairs come out sorted
-by key, if a key appears twice the last one wins, and `to json`
-writes the object back. The `Map` functions:
+`Map<int, …>` field is an error that explains this. Pairs come out
+sorted by key, if a key appears twice the last one wins, and
+`to json` writes the object back. The `Map` functions:
 
 - `ofPairs` (last key wins), `pairs`, `keys`, `values` (sorted by
   key)
