@@ -1311,7 +1311,6 @@ let private optionFlattenImpl: Value =
         | v -> unreachable $"the checker rejects 'Option.flatten' on {formatValue v}")
 
 let private seqInt = TSeq(TInt)
-let private seqStr = TSeq TStr
 let private tA = TVar "a"
 let private tB = TVar "b"
 
