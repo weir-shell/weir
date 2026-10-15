@@ -304,8 +304,9 @@ expect() {
 out=$($BIN -e '(1 + 2) * 2')
 expect "expression eval" "6 : int" "$out"
 # blank or comment-only -e says so — never a bare caret under nothing
+# (Git Bash on Windows rewrites a leading `//` argument as a path — off here)
 for e in '' '// c' '   '; do
-    rc=0; out=$($BIN -e "$e" 2>&1) || rc=$?
+    rc=0; out=$(MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' $BIN -e "$e" 2>&1) || rc=$?
     [ "$rc" = "2" ] || fail "-e '$e' exits 2, got $rc: $out"
     expect "-e '$e' names the problem" "nothing to evaluate" "$out"
 done
