@@ -1,6 +1,6 @@
 # weir — tagged unions cross the wire (and yaml gains its jsonl)
 
-Status: PROPOSED (2026-09-04). Three sessions, ordered; each ships
+Status: LANDED ([D:wire-unions]); originally PROPOSED (2026-09-04). Three sessions, ordered; each ships
 alone. Supersedes PLAN-yaml-splitdocs (the splitter's user surface
 is skipped by the designer's ruling — no receipt pressure, so the
 typed endgame is built properly instead of the stopgap; the split

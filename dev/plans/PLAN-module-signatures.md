@@ -1,6 +1,6 @@
 # weir — module signatures: a signature IS the export
 
-Status: APPROVED (2026-09-12, designer ruling). Driver: the module
+Status: LANDED ([D:module-signatures]); originally APPROVED (2026-09-12, designer ruling). Driver: the module
 boundary is the LAST untyped wire — weir refuses inference at every
 other boundary (json/yaml/xml/env/args all demand declared shapes), and
 the KSL-port findings showed module code hitting inference walls scripts

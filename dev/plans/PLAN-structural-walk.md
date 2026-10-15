@@ -1,6 +1,6 @@
 # weir — structural walk combinators: bounded recursion without `let rec`
 
-Status: PROPOSED (2026-09-11). The answer to two `let rec` receipts (dbt
+Status: LANDED ([D:structural-walk]); originally PROPOSED (2026-09-11). The answer to two `let rec` receipts (dbt
 dependency-graph traversal; KSL `RenderTo.fileSystem` tree walk) that keeps
 weir's bounded-iteration identity.
 

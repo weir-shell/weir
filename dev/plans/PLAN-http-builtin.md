@@ -54,7 +54,7 @@ closed:**
 
 ---
 
-Status: DRAFT for bless (2026-08-01). Origin: the parked sixth
+Status: LANDED ([D:http]); originally DRAFT for bless (2026-08-01). Origin: the parked sixth
 boundary-loader instance (SEMANTICS "http parked"), unparked by two
 events — the AOT leg resolved (HttpClient verified end-to-end on the
 published binary, HTTPS included, zero new dependency bytes), and the
