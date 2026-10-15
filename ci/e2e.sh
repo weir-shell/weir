@@ -9125,6 +9125,35 @@ echo "$nout" | grep -qF "this report is incomplete: 5 opaque site" || fail "the 
 echo "$nout" | grep -qF "takes a program as its argument" && fail "the opaque section is json-only now (F5): $nout"
 echo "e2e ok: --can names literal env overlays, groups identical entries, sees through nothing weir-shaped"
 
+# env sugar [D:env-need-getor] [D:env-inline-type]: the one-var reads and the
+# inline Env.load name their literal variables like Env.get and Env.load T
+cat > "$candir/envsugar.weir" <<'WEOF'
+let t = Env.need "SUGAR_TOKEN"
+let p = Env.getOr "SUGAR_PORT" "8080"
+let e = Env.load {| SUGAR_HOST: string; SUGAR_CI: Option<string> |}
+print $"{t} {p} {e.SUGAR_HOST} {e.SUGAR_CI}"
+WEOF
+sout=$($BIN check --can "$candir/envsugar.weir" 2>&1) || fail "envsugar --can errored: $sout"
+echo "$sout" | grep -qF "reads SUGAR_TOKEN (Env.need)" || fail "Env.need names its literal: $sout"
+echo "$sout" | grep -qF "reads SUGAR_PORT (Env.getOr)" || fail "Env.getOr names its literal: $sout"
+echo "$sout" | grep -qF "reads SUGAR_HOST (Env.load" || fail "inline Env.load names its fields: $sout"
+echo "$sout" | grep -qF "reads SUGAR_CI (Env.load" || fail "inline Env.load names every field: $sout"
+srun=$(SUGAR_TOKEN=tk SUGAR_HOST=h $BIN "$candir/envsugar.weir" 2>&1) || fail "envsugar run failed: $srun"
+[ "$srun" = "tk 8080 h None" ] || fail "envsugar values: $srun"
+src=0
+sneed=$(SUGAR_HOST=h $BIN "$candir/envsugar.weir" 2>&1) || src=$?
+[ "$src" = "1" ] || fail "an unset Env.need must exit 1 (got $src): $sneed"
+echo "$sneed" | grep -qF "envsugar.weir:1:" || fail "Env.need fails AT its line: $sneed"
+echo "$sneed" | grep -qF "Env.need: SUGAR_TOKEN is not set" || fail "Env.need names the variable: $sneed"
+cat > "$candir/argsinline.weir" <<'WEOF'
+let cli = Args.load {| verbose: bool; out: Option<string> |}
+print $"{cli.verbose} {cli.out}"
+WEOF
+aout=$($BIN "$candir/argsinline.weir" -v --out x 2>&1) || fail "inline Args.load run failed: $aout"
+[ "$aout" = "true Some \"x\"" ] || fail "inline Args.load values: $aout"
+$BIN "$candir/argsinline.weir" --help 2>&1 | grep -qF -- "--verbose" || fail "inline Args.load derives --help"
+echo "e2e ok: Env.need/getOr and inline Env.load/Args.load — values, located need failure, --can names, --help"
+
 # --strict: opaque sites become a distinct nonzero for CI's choosing
 strictrc=0
 $BIN check --can --strict "$candir/cap.weir" >/dev/null 2>&1 || strictrc=$?

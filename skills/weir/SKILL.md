@@ -2283,7 +2283,12 @@ print (f 1)
   field deriving `--help` is a check error (reserved). No
   positionals — spell operands as flags. The untyped floor:
   `Args.flag "--clean" "-c"` (bool), `Args.value "--out"`
-  (Option of the next token).
+  (Option of the next token). For a small script the record can be
+  INLINE [D:env-inline-type]: `Args.load {| verbose: bool; out:
+  Option<string> |}` — the same rules as a named record, but an
+  anonymous type takes NO attributes (`[<Short>]`, `[<Default>]`… need
+  a declared `type`), and its fields sort by name, so `--help` lists
+  flags alphabetically.
 
 ```weir
 type Cli = {
@@ -2316,6 +2321,12 @@ print c.flag
 ```
 
 - Environment: `Env.get "NAME"` (Option<string>) for one var;
+  `Env.need "NAME"` (string — raises `Env.need: NAME is not set` at
+  that line when unset) and `Env.getOr "NAME" "default"` (string — the
+  default only when unset) [D:env-need-getor]. All three read the same
+  way: a set-but-EMPTY var is set and gives `""`, the `within env`
+  overlay counts, and `--can` names a literal variable. They are
+  string-only on purpose — anything typed goes through `Env.load`.
   `Env.load Config` for typed config — declare
   `type Config = { PORT: int; DEBUG: bool; TOKEN: Option<string> }`
   (field names = env-var names VERBATIM unless `[<Wire "NAME">]` says
@@ -2337,7 +2348,25 @@ print c.flag
   resting point sits below the whole overlay stack). No twin mints
   here: env bools are text, so `[<Default false>]` is legal
   ("absent → false" is a real statement, unlike argv presence). `Env.vars` lists everything.
+  The type may be written INLINE [D:env-inline-type] — `Env.load {|
+  TOKEN: string; PORT: int; CI: Option<string> |}`, the `from json
+  {| … |}` shape: same field law, same one-error report, same `--can`
+  names. An anonymous type takes NO attributes, here or anywhere
+  (F#'s rule): an optional var is `Option<T>` + `Option.defaultValue`
+  at the use, and `[<Default>]`/`[<Wire>]` need a declared `type`.
   No `$NAME` expansion in commands — interpolate: `-H $"token {key}"`.
+
+```weir
+let home = Env.need "HOME"
+let port = Env.getOr "WEIR_SKILL_PORT_ZZ" "8080"
+let env = Env.load {| HOME: string; WEIR_SKILL_CI_ZZ: Option<string> |}
+print $"{home == env.HOME} {port} {env.WEIR_SKILL_CI_ZZ}"
+```
+
+```weir-error
+// attributes need a named type — declare `type Cfg = { … }`
+let env = Env.load {| [<Default 8080>] PORT: int |}
+```
 - `//` mid-token is NOT a comment: bareword URLs (`https://...`) pass
   through; comments need line start or a preceding space.
 - Every command head is a LITERAL program name resolved at check
@@ -2539,7 +2568,7 @@ not the teaching.
 - `Args`: `flag` `load` `value`
 - `Dir`: `copy` `create` `delete` `deleteAll` `exists` `list` `move` `stat`
 - `Duration`: `average` `h` `m` `ms` `parse` `s` `sleep` `sum` `toMillis` `toSeconds` `tryParse`
-- `Env`: `fromFile` `get` `load` `ofPairs` `pair` `vars`
+- `Env`: `fromFile` `get` `getOr` `load` `need` `ofPairs` `pair` `vars`
 - `File`: `append` `copy` `delete` `exists` `isExecutable` `mode` `move` `read` `readBytes` `readSecret` `sha256` `size` `stat` `write` `writeAtomic` `writeBytes` — `mode` is the permissions as `Some "rwxr-xr-x"` (`None` on Windows); `stat` is one path's `FileRow` (a symlink describes the link itself); `append` is kernel-atomic for CONCURRENT appenders (O_APPEND on Unix, one write per call: calls land contiguous and intact, no lock ever blocks a reader) [D:append-oappend]; `write` is in-place (same inode, hardlinks/held handles/`tail -f`/bind mounts keep working) and leaves the file untouched when its payload raises; `writeAtomic` is the whole-file swap (same-dir temp + fsync + rename): a reader sees complete old or complete new, never a window — but the INODE CHANGES (hardlinks split, held handles and `tail -f` keep the old file, a Docker single-file bind mount breaks); it replaces a symlink's TARGET and preserves mode and an existing BOM [D:write-integrity]
 - `Float`: `abs` `average` `near` `ofInt` `parse` `round` `sum` `toInt` `tryParse`
 - `Instant`: `epochMs` `now` `ofEpochMs` `parse` `parseWith` `tryParse` `tryParseWith`

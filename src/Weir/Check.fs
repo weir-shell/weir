@@ -3449,6 +3449,9 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                              err arg.Span $"Env.load needs a monomorphic record; '{tyName}' is generic"
                          | Some(Union _) -> err arg.Span $"'{tyName}' is a union; Env.load needs a record"
                          | None -> err arg.Span $"unknown type '{tyName}'{didYouMean tyName (Map.keys env.Types)}"
+                     // a value literal where the inline TYPE goes [D:env-inline-type]
+                     | EAnonRecord _ ->
+                         err arg.Span "Env.load takes a type, not a value — the inline type spells fields with ':': Env.load {| PORT: int |}"
                      | _ -> err arg.Span "Env.load takes a record type name, e.g. Env.load Config")
                 | EField({ Kind = EVar "Args" }, "load", _), [ arg ] when
                     not (Map.containsKey "Args" env.Values) && Map.containsKey "Args" env.Modules
@@ -3616,6 +3619,8 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                              | Some(Union _) ->
                                  err arg.Span $"Args.load needs a monomorphic type; '{tyName}' is generic"
                              | None -> err arg.Span $"unknown type '{tyName}'{didYouMean tyName (Map.keys env.Types)}"
+                         | EAnonRecord _ ->
+                             err arg.Span "Args.load takes a type, not a value — the inline type spells fields with ':': Args.load {| verbose: bool |}"
                          | _ -> err arg.Span "Args.load takes a type name, e.g. Args.load Cli")
                 // a reified command's argv words [D:secret]: each element
                 // obeys the command-argument law a bare command's does, so

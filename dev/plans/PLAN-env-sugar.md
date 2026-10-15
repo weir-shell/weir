@@ -1,7 +1,33 @@
 # PLAN — env sugar: inline-typed `Env.load` and one-var helpers
 
-Status: PARKED — approved in direction (user, 2026-10-13: "plan A+B, do not
-execute yet"). Not scheduled. All rulings settled — ready to execute.
+Status: LANDED (2026-10-15, A+B) — ruled IN (user, 2026-10-15,
+PLAN-daily-driver W4); [D:env-need-getor] [D:env-inline-type].
+
+## Session (2026-10-15)
+
+- B: `Env.need`/`Env.getOr` are Builtins members on `Session.getEnv`
+  (Env.get's read — overlay included, set-but-empty returns ""). The
+  unset error is `Env.need: NAME is not set`, located at the statement.
+  `--can` names literal variables (`reads X (Env.need)`). Purity needs
+  nothing new: the whole `Env` module is ambient. Naming check: the
+  names are the user's ruling; `need` is a new verb (Map's raising
+  read is `get`, but `Env.get` already answers Option), `getOr` has no
+  sibling — recorded in the DECISIONS row, not reopened.
+- A: the dedicated-argument-parser route. `appChain` tries the shape
+  only after an `Env.load`/`Args.load` head (commit on `{| name :` or
+  `{| [<`), and passes the canonical anonymous name as an `EVar`
+  (registered through the pending table, like a nested shape) — so the
+  checker's named-record arm is unchanged and the messages match by
+  construction (unit-pinned). No new Expr node. A `{| a = 1 |}` literal
+  in the slot now teaches the `:` spelling.
+- No attributes on an anonymous type: the fence lives in the shared
+  `anonShape`, so `from json {| [<…>] … |}` teaches too.
+- Consequence to know: anonymous fields sort by name, so an inline
+  `Args.load`'s `--help` lists flags alphabetically.
+- Depth: weir parses on its own thread, so `ulimit -s` 1024/512/256/128
+  changes nothing; three fixtures (499 parens, 240 nested
+  applications, 240 nested `Env.load (`) gave the same verdicts before
+  and after.
 
 ## Problem
 

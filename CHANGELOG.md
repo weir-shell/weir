@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### Added
+
+- **`Env.need` and `Env.getOr` read one variable as a string.**
+  `Env.need "TOKEN"` fails at that line with `Env.need: TOKEN is not
+  set` when it is unset; `Env.getOr "PORT" "8080"` gives the default
+  when unset. A set-but-empty variable gives `""` in both, as with
+  `Env.get`, and `within env` applies.
+- **`Env.load` and `Args.load` take an inline type:**
+  `Env.load {| TOKEN: string; PORT: int; CI: Option<string> |}` — no
+  `type` declaration needed for a small script. An anonymous type takes
+  no attributes; `{| [<Default 3>] a: int |}` now says to declare a
+  `type` instead of failing with a generic parse error.
+
 ### Removed
 
 - **`nats` is gone; use `Seq.initInfinite`.** F#'s name: `Seq.initInfinite f`

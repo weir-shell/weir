@@ -4395,7 +4395,7 @@ let completionTests =
 
               Expect.equal
                   (suggest "Env." 0)
-                  [ "Env.fromFile"; "Env.get"; "Env.load"; "Env.ofPairs"; "Env.pair"; "Env.vars" ]
+                  [ "Env.fromFile"; "Env.get"; "Env.getOr"; "Env.load"; "Env.need"; "Env.ofPairs"; "Env.pair"; "Env.vars" ]
                   "Env.load in the sorted members"
 
               Expect.equal (suggest "Args.lo" 0) [ "Args.load" ] "prefix narrows to the arm"
@@ -9632,6 +9632,105 @@ let withinEnvPairsTests =
               expectValue
                   $"(within env {pin} Env.vars) |> Seq.where (fun v -> v.name == \"WEIR_T_OVL\") |> Seq.length"
                   (VInt 1)
+          } ]
+
+let envSugarTests =
+    // Env.need / Env.getOr [D:env-need-getor] and the inline anonymous
+    // type in Env.load / Args.load [D:env-inline-type]
+    let parseErr (src: string) =
+        match Weir.Parser.parseStmt src with
+        | Error msg -> msg
+        | Ok s -> failtest $"expected a parse rejection, got {s}"
+
+    let withVar (name: string) (value: string) (f: unit -> unit) =
+        System.Environment.SetEnvironmentVariable(name, value)
+
+        try
+            f ()
+        finally
+            System.Environment.SetEnvironmentVariable(name, null)
+
+    testList
+        "env sugar"
+        [ test "Env.need reads a set var and raises naming an unset one [D:env-need-getor]" {
+              withVar "WEIR_T_NEED" "tok" (fun () -> expectValue "Env.need \"WEIR_T_NEED\"" (VStr "tok"))
+              Expect.equal (msgOf "Env.need \"WEIR_T_NEED_ABSENT\"") "Env.need: WEIR_T_NEED_ABSENT is not set" ""
+          }
+          test "Env.getOr gives the default only when unset [D:env-need-getor]" {
+              expectValue "Env.getOr \"WEIR_T_GETOR_ABSENT\" \"8080\"" (VStr "8080")
+              withVar "WEIR_T_GETOR" "9" (fun () -> expectValue "Env.getOr \"WEIR_T_GETOR\" \"8080\"" (VStr "9"))
+          }
+          test "set-but-empty is set: need and getOr both return \"\" [D:env-need-getor]" {
+              // .NET's SetEnvironmentVariable(n, "") UNSETS, so the empty
+              // value rides the overlay — the same read path Session.getEnv owns
+              let pin = "[Env.pair \"WEIR_T_EMPTY\" \"\"]"
+              expectValue $"within env {pin} Env.need \"WEIR_T_EMPTY\"" (VStr "")
+              expectValue $"within env {pin} Env.getOr \"WEIR_T_EMPTY\" \"d\"" (VStr "")
+          }
+          test "both see the within env overlay [D:env-overlay-read]" {
+              let pin = "[Env.pair \"WEIR_T_OVL2\" \"bar\"]"
+              expectValue $"within env {pin} Env.need \"WEIR_T_OVL2\"" (VStr "bar")
+              expectValue $"within env {pin} Env.getOr \"WEIR_T_OVL2\" \"d\"" (VStr "bar")
+              expectValue "Env.getOr \"WEIR_T_OVL2\" \"d\"" (VStr "d")
+          }
+          test "both are string-typed and read the environment (pure refuses)" {
+              Expect.equal (checkOk "Env.need \"X\"").Ty TStr ""
+              Expect.equal (checkOk "Env.getOr \"X\" \"d\"").Ty TStr ""
+
+              mustSayIn
+                  "es.weir"
+                  [ "let x ="; "    pure"; "        Env.need \"HOME\"" ]
+                  "'Env.need' reads the environment"
+                  "purity classifies it as an env read"
+          }
+          test "Env.load takes an inline anonymous type [D:env-inline-type]" {
+              withVar "WEIR_T_PORT" "8081" (fun () ->
+                  expectValue
+                      "let e = Env.load {| WEIR_T_PORT: int; WEIR_T_CI: Option<string> |} in $\"{e.WEIR_T_PORT} {e.WEIR_T_CI}\""
+                      (VStr "8081 None"))
+
+              cleanIn
+                  "ei.weir"
+                  [ "let env = Env.load {| HOME: string; PORT: int; CI: Option<string> |}"
+                    "print $\"{env.HOME} {env.PORT} {env.CI}\"" ]
+                  "the plan's example checks"
+          }
+          test "the inline form reports missing vars like the named form [D:env-inline-type]" {
+              let m = msgOf "Env.load {| WEIR_T_MISS_A: int; WEIR_T_MISS_B: string |}"
+              Expect.stringContains m "WEIR_T_MISS_A" "every missing var in one error"
+              Expect.stringContains m "WEIR_T_MISS_B" ""
+          }
+          test "the inline form's field law matches the named form's message [D:env-inline-type]" {
+              let named =
+                  errorMsgsIn "en.weir" [ "type C = { xs: seq<string> }"; "let c = Env.load C"; "print (show c)" ]
+
+              let inline' = errorMsgsIn "ea.weir" [ "let c = Env.load {| xs: seq<string> |}"; "print (show c)" ]
+              Expect.equal inline' named "same validation, same message"
+              Expect.stringContains (List.head inline') "Env.load fields must be" ""
+          }
+          test "Args.load takes the inline type too [D:env-inline-type]" {
+              cleanIn
+                  "aa.weir"
+                  [ "let cli = Args.load {| verbose: bool; out: Option<string> |}"; "print $\"{cli.verbose} {cli.out}\"" ]
+                  "a flag record, inline"
+
+              mustSayIn
+                  "ab.weir"
+                  [ "let cli = Args.load {| [<Short \"x\">] verbose: bool |}"; "print (show cli.verbose)" ]
+                  "field attributes need a named type"
+                  "attributes refuse on Args too"
+          }
+          test "no attributes on an anonymous type, anywhere — the teaching names a declared type [D:env-inline-type]" {
+              for src in
+                  [ "let e = Env.load {| [<Default 3>] PORT: int |}"
+                    "let x = [\"{}\"] |> from json {| [<Default 3>] a: int |}" ] do
+                  let m = parseErr src
+                  Expect.stringContains m "field attributes need a named type" src
+                  Expect.stringContains m "type T = {" "names the repair"
+          }
+          test "a value literal in the slot teaches the ':' spelling; elsewhere ':' still teaches the literal [D:env-inline-type]" {
+              Expect.stringContains (checkErr "Env.load {| HOME = \"x\" |}").Message "Env.load {| PORT: int |}" ""
+              Expect.stringContains (parseErr "let x = {| a: int |}") "spells the anonymous TYPE" "outside the slot, unchanged"
           } ]
 
 let withinAlwaysAnyTests =
@@ -26317,6 +26416,7 @@ let allTests =
           withinAlwaysLockTests
           withinAlwaysAnyTests
           withinEnvPairsTests
+          envSugarTests
           wireKeyTests
           reserveBuiltinTests
           fileRowReshapeTests

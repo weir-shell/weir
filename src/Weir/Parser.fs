@@ -1683,6 +1683,32 @@ rangeTermRef.Value <-
 
 postfixAtomFwdRef.Value <- postfixAtom
 
+// the anonymous shape's field-list parser is set after tySyn and
+// fieldNameDecl exist (forward ref, as sigilChain does)
+// [D:anon-records]
+let private anonShape, private anonShapeRef =
+    createParserForwardedToRef<(string * Ty) list, unit> ()
+
+// `Env.load {| … |}` / `Args.load {| … |}` [D:env-inline-type]: the one
+// expression position an anonymous TYPE takes. The shape passes as its
+// canonical name — the name IS the type [D:anon-records], registered
+// through the pending table like a nested shape — so the checker's
+// named-record arm validates it unchanged. Commits on `{| name :` or
+// `{| [<` (the attribute teaching); a `{| name = …` literal falls
+// through to the ordinary argument.
+let private isLoadHead (e: Expr) =
+    match e.Kind with
+    | EField({ Kind = EVar("Env" | "Args") }, "load", _) -> true
+    | _ -> false
+
+let private loadShapeArg: Parser<Expr, unit> =
+    attempt (lookAhead (pstring "{|" >>. ws >>. ((pstring "[<" >>% ()) <|> (identSpanned >>. ws >>. skipChar ':'))))
+    >>. spanned anonShape
+    |>> fun (fields, span) ->
+        let n = anonRecordName fields
+        pushAnonDef n fields
+        { Kind = EVar n; Span = span }
+
 // a text block after an application is a trailing argument
 // [D:arm-blocks]: its content would end mid-call, so teach the pipe
 let private blockArgGuard: Parser<unit, unit> =
@@ -1715,7 +1741,14 @@ let private finishAppChain (stream: CharStream<unit>) (reply: Reply<Expr list>) 
         )
 
 let private appChain: Parser<Expr, unit> =
-    let atoms = many1 postfixAtom
+    let atoms =
+        postfixAtom
+        >>= fun head ->
+            if isLoadHead head then
+                opt loadShapeArg .>>. many postfixAtom
+                |>> fun (shape, rest) -> head :: (Option.toList shape @ rest)
+            else
+                many postfixAtom |>> fun rest -> head :: rest
 
     fun stream ->
         let reply = atoms stream
@@ -2245,12 +2278,6 @@ binderParamRef.Value <-
           patParens ]
 
 binderPatRef.Value <- commaPats
-
-// the anonymous shape's field-list parser is set after tySyn and
-// fieldNameDecl exist (forward ref, as sigilChain does)
-// [D:anon-records]
-let private anonShape, private anonShapeRef =
-    createParserForwardedToRef<(string * Ty) list, unit> ()
 
 // a qualified type name in the adapter slot [D:qualified-name-teach]
 // teaches: an imported module's types resolve by their plain name
@@ -5220,10 +5247,19 @@ let private recordBody =
 // the slot (a record literal/update cannot sit there), and tySyn does
 // not nest the form (a nested object needs a declared record).
 anonShapeRef.Value <-
+    // no attributes on an anonymous type [D:env-inline-type] (F#'s rule
+    // too): Default/Wire/… need a declared record
+    let attrFence: Parser<string * Ty, unit> =
+        getPosition .>> followedBy (pstring "[<")
+        >>= fun at ->
+            failFatallyAt
+                at
+                "field attributes need a named type — declare `type T = { … }` and use T (an anonymous type takes no attributes)"
+
     between
         (attempt (pstring "{|") .>> ws)
         (str_ws "|}")
-        (sepBy1 (fieldNameDecl .>> str_ws ":" .>>. tySyn) fieldSepP)
+        (sepBy1 (attrFence <|> (fieldNameDecl .>> str_ws ":" .>>. tySyn)) fieldSepP)
 
 let private caseDecl =
     // a case hosts attributes [D:attr-positions] — [<Wire>]/[<Other>]

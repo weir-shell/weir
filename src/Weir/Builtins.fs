@@ -3300,7 +3300,25 @@ let private envMembers: (string * Ty * Value) list =
               | None -> VUnion("None", None)
               | Some value -> VUnion("Some", Some(VStr value))
           | v -> unreachable $"the checker rejects 'Env.get' on {formatValue v}")
-      "vars", TSeq(TNamed(envVarDef.Name, [])), envVarsImpl
+      // the one-var string forms [D:env-need-getor]: Env.get's read
+      // (overlay included, set-but-empty is set) with the unwrap built in
+      "need",
+      TFun(TStr, TStr),
+      VBuiltin(fun v ->
+          match v with
+          | VStr name ->
+              match Session.getEnv name with
+              | Some value -> VStr value
+              | None -> failwith $"Env.need: {name} is not set"
+          | v -> unreachable $"the checker rejects 'Env.need' on {formatValue v}")
+      "getOr",
+      TFun(TStr, TFun(TStr, TStr)),
+      VBuiltin(fun n ->
+          VBuiltin(fun d ->
+              match n, d with
+              | VStr name, VStr dflt -> VStr(Session.getEnv name |> Option.defaultValue dflt)
+              | _ -> unreachable "the checker rejects 'Env.getOr' on these arguments"))
+      "vars",TSeq(TNamed(envVarDef.Name, [])), envVarsImpl
       "fromFile", TFun(TStr, TSeq(TNamed(envVarDef.Name, []))), envFromFileImpl ]
 
 // the read-side guards [D:sized-findings]: reads must give the same
@@ -6874,7 +6892,19 @@ let builtinDocs: Map<string, BuiltinDoc> =
           "Env.get",
           (bd "A process environment variable as an Option." (Some "Env.get \"PATH\"") None
            |> named [ "name" ])
-          "Env.vars", bd "Every environment variable as EnvVar records." (Some "Env.vars |> Seq.freeze") None
+          "Env.need",
+          (bd
+              "A required environment variable as a string; raises naming the variable when it is unset. A set-but-empty variable gives \"\"."
+              (Some "Env.need \"PATH\"")
+              (Some "For a typed or multi-variable read, use Env.load.")
+           |> named [ "name" ])
+          "Env.getOr",
+          (bd
+              "An environment variable as a string, or the default when it is unset. A set-but-empty variable gives \"\", not the default."
+              (Some "Env.getOr \"PORT\" \"8080\"")
+              None
+           |> named [ "name"; "fallback" ])
+          "Env.vars",bd "Every environment variable as EnvVar records." (Some "Env.vars |> Seq.freeze") None
           "Env.pair",
           (bd "Build one EnvVar from a name and value." (Some "Env.pair \"K\" \"V\"") None
            |> named [ "name"; "value" ])

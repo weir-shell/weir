@@ -330,6 +330,20 @@
           "pointer": null
         },
         {
+          "name": "getOr",
+          "signature": "Env.getOr (name: string) (fallback: string) : string",
+          "summary": "An environment variable as a string, or the default when it is unset. A set-but-empty variable gives \u0022\u0022, not the default.",
+          "example": "Env.getOr \u0022PORT\u0022 \u00228080\u0022",
+          "pointer": null
+        },
+        {
+          "name": "need",
+          "signature": "Env.need (name: string) : string",
+          "summary": "A required environment variable as a string; raises naming the variable when it is unset. A set-but-empty variable gives \u0022\u0022.",
+          "example": "Env.need \u0022PATH\u0022",
+          "pointer": "For a typed or multi-variable read, use Env.load."
+        },
+        {
           "name": "ofPairs",
           "signature": "Env.ofPairs (pairs: seq\u003Cstring * string\u003E) : seq\u003CEnvVar\u003E",
           "summary": "Build EnvVar records from name/value tuples.",
