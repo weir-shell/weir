@@ -4104,6 +4104,46 @@ let completionTests =
               finally
                   System.IO.Directory.Delete(d, true)
           }
+          test "a completed path is spelled for its slot: argv quotes what a bare word cannot hold, literals escape [D:repl-path-quote]" {
+              skipOnWindows ()
+              let d = tempPath "weir-pq2"
+              System.IO.Directory.CreateDirectory d |> ignore
+              System.IO.File.WriteAllText(System.IO.Path.Combine(d, "my file.txt"), "x")
+              System.IO.File.WriteAllText(System.IO.Path.Combine(d, "qu\"ote.txt"), "x")
+              System.IO.File.WriteAllText(System.IO.Path.Combine(d, "br{a}ce.txt"), "x")
+              let dir = d.Replace("\\", "/")
+
+              try
+                  let ask (line: string) =
+                      suggest line (Weir.Complete.wordStartAt line line.Length)
+
+                  let one (line: string) =
+                      match ask line with
+                      | [ c ] -> c
+                      | got -> failtestf "one candidate for %s, got %A" line got
+
+                  // argv: a space or a quote would split/end the word — one
+                  // string literal is one argv word
+                  Expect.equal (one ("cat " + dir + "/my")) ("\"" + dir + "/my file.txt\"") "argv: a space is quoted"
+                  Expect.equal (one ("cat " + dir + "/qu")) ("\"" + dir + "/qu\\\"ote.txt\"") "argv: a quote is escaped inside quotes"
+                  // an expression slot escapes inside its literal
+                  Expect.equal (one ("File.read " + dir + "/qu")) ("\"" + dir + "/qu\\\"ote.txt\"") "expression: escaped"
+                  // inside an open literal: escaped for that literal's kind
+                  Expect.equal (one ("File.read \"" + dir + "/qu")) (dir + "/qu\\\"ote.txt") "inside \"…: \\\""
+                  Expect.equal (one ("File.read @\"" + dir + "/qu")) (dir + "/qu\"\"ote.txt") "inside @\"…: a doubled quote"
+                  Expect.equal (one ("File.read $\"" + dir + "/br")) (dir + "/br{{a}}ce.txt") "inside $\"…: doubled braces"
+
+                  // every spelling parses back to the real path
+                  for line in [ "cat " + dir + "/my"; "cat " + dir + "/qu"; "File.read " + dir + "/qu" ] do
+                      let ws = Weir.Complete.wordStartAt line line.Length
+                      let produced = line.Substring(0, ws) + one line
+
+                      match Weir.Parser.parseExpr produced with
+                      | Ok _ -> ()
+                      | Error e -> failtestf "the completed line must parse: %s -> %s" produced e
+              finally
+                  System.IO.Directory.Delete(d, true)
+          }
           test "command argv completes paths, never fields — and an unbound scrutinee offers NOTHING [D:complete-argv]" {
               let sug (t: string) =
                   // the word under completion runs from after the last
@@ -6652,6 +6692,59 @@ let bracketContinuationTests =
           }
           test "brackets never engage inside strings (the scanner guarantee)" {
               Expect.equal (joined [ "let s ="; "    [\"a[\""; "     \"b\"]" ]) "let s = [\"a[\" ; \"b\"]" ""
+          } ]
+
+// the one formatter entry point the CLI and the LSP share [D:fmt-v1]
+let fmtSourceTests =
+    testList
+        "fmt: formatSource (CLI and LSP)"
+        [ test "the shebang rides verbatim, trailing spaces and all" {
+              match Weir.Fmt.formatSource "#!/usr/bin/env weir  \nlet x=1\nprint (show x)\n" with
+              | Ok(lines, changed) ->
+                  Expect.equal lines [ "#!/usr/bin/env weir  "; "let x = 1"; "print (show x)" ] "formatted body"
+                  Expect.isTrue changed "the body changed"
+              | Error e -> failtest e
+          }
+          test "an error names the file's own line under a shebang" {
+              match Weir.Fmt.formatSource "#!/usr/bin/env weir\nprint \"a\"\nlet x = <<<\n" with
+              | Error e -> Expect.stringContains e "line 3" "counted from the shebang line"
+              | Ok r -> failtestf "must refuse: %A" r
+          }
+          test "an indented first statement under a shebang is refused, not re-indented" {
+              match Weir.Fmt.formatSource "#!/usr/bin/env weir\n  print \"a\"\n" with
+              | Error _ -> ()
+              | Ok r -> failtestf "must refuse as the CLI does: %A" r
+          }
+          test "a missing final newline is not canonical; CRLF is" {
+              match Weir.Fmt.formatSource "let x = 1\nprint (show x)" with
+              | Ok(_, changed) -> Expect.isTrue changed "no final newline"
+              | Error e -> failtest e
+
+              match Weir.Fmt.formatSource "let x = 1\r\nprint (show x)\r\n" with
+              | Ok(lines, changed) ->
+                  Expect.isFalse changed "CRLF reads as LF"
+                  Expect.equal lines [ "let x = 1"; "print (show x)" ] ""
+              | Error e -> failtest e
+
+              match Weir.Fmt.formatSource "" with
+              | Ok(lines, changed) ->
+                  Expect.isEmpty lines "an empty file"
+                  Expect.isFalse changed "is canonical"
+              | Error e -> failtest e
+          }
+          test "only parser whitespace is trimmed: U+3000/U+2028/U+FEFF are tokens and stay" {
+              for tail in [ "\u3000"; "\u2028"; "\uFEFF" ] do
+                  match Weir.Fmt.formatSource ("print \"a\"" + tail + "\n") with
+                  | Ok(lines, _) -> Expect.equal lines [ "print \"a\"" + tail ] $"kept: U+{int tail[0]:X4}"
+                  | Error _ -> () // a refusal also leaves the file as it is
+          }
+          test "a layout that would not settle is refused, never flip-flopped" {
+              match Weir.Fmt.formatLines [ "match {((}"; "| _ -> 1" ] with
+              | Error e -> Expect.stringContains e "does not settle" "named"
+              | Ok out ->
+                  match Weir.Fmt.formatLines out with
+                  | Ok again -> Expect.equal again out "if accepted, a fixed point"
+                  | Error e -> failtestf "accepted once, refused after: %s" e
           } ]
 
 // inside an open bracket fmt shifts, never re-levels [D:fmt-bracket-shift]
@@ -23707,6 +23800,21 @@ let replSaveDistillTests =
               Expect.equal dropped 0 "nothing referenced session-only state"
               Expect.isTrue (distilledChecks lines) "and it checks clean"
           }
+          test "(g) PROTECT renames the unused binder inside a pattern, never the pattern" {
+              let lines, dropped =
+                  distill
+                      [ ("ab", "let (a, b) = (1, 2)")
+                        ("c", "let c = a")
+                        ("pq", "let { x = p; y = q } = {| x = 1; y = 2 |}") ]
+
+              let joined = String.concat "\n" lines
+              Expect.isFalse (joined.Contains "let _(") $"a pattern is never prefixed: {lines}"
+              Expect.stringContains joined "let (a, _b) = (1, 2)" "the unused pattern binder takes the `_`"
+              Expect.stringContains joined "{ x = _p; y = _q }" "two findings on one line both land"
+              Expect.stringContains joined "let _c = a" "a plain binder as before"
+              Expect.equal dropped 0 "nothing referenced session-only state"
+              Expect.isTrue (distilledChecks lines) "and it checks clean"
+          }
           test "a bare alias is qualified (map -> Seq.map) in a survivor" {
               let lines, _ = distill [ ("picked", "let picked = [\"a\"] |> map (Str.toUpper)") ]
               let joined = String.concat "\n" lines
@@ -23926,6 +24034,10 @@ let aliasTests =
               Expect.isTrue (Weir.Repl.parseAliasLineForTest "kb = kustomize build" |> Result.isOk) "with prefix"
               Expect.isTrue (Weir.Repl.parseAliasLineForTest "= kubectl" |> Result.isError) "no name"
               Expect.isTrue (Weir.Repl.parseAliasLineForTest "k" |> Result.isError) "no ="
+
+              match Weir.Repl.parseAliasLineForTest "let = echo" with
+              | Error e -> Expect.stringContains e "keyword" "a keyword name is refused, named"
+              | Ok _ -> failtest "#alias let = … must be refused"
           }
           test "(k) an alias to the builtin cd APPLIES it, never spawns /usr/sbin/cd [D:command-head-alias]" {
               // #alias up = cd .. — `up` must resolve cd as the builtin (the
@@ -24763,6 +24875,11 @@ let helpUxTests =
                     yield! offenders "bare #help" (Weir.Repl.helpTextForTest "") ]
 
               Expect.equal hits [] "shouting caps in user-facing prose — rewrite, or allowlist a real acronym"
+          }
+          test "#help on a bare alias answers as its qualified member, named [D:bare-partition]" {
+              let t = Weir.Repl.helpTextForTest "map"
+              Expect.stringContains t "map is Seq.map" "names the member it aliases"
+              Expect.stringContains t "Apply a function" "with Seq.map's own doc"
           }
           test "(b) #help Module: ONE member per line, name + the doc's first line" {
               let t = Weir.Repl.helpTextForTest "Option"
@@ -25851,6 +25968,7 @@ let allTests =
           chooseTests
           bracketContinuationTests
           fmtMatchTests
+          fmtSourceTests
           fmtBracketShiftTests
           fmtStroustrupTests
           replEchoTests

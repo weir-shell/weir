@@ -102,10 +102,12 @@ let helpNames (env: TypeEnv) : string list =
           Map.keys env.Types |> List.ofSeq ]
     |> List.distinct
 
+// an anonymous record's def may live only in the mid-statement table
+// [D:anon-literals] — typeDefFor reads both
 let private recordFields (env: TypeEnv) (ty: Ty) : (string * Ty) list option =
     match ty with
     | TNamed(n, _) ->
-        match Map.tryFind n env.Types with
+        match Types.typeDefFor env n with
         | Some(Record def) -> Some def.Fields
         | _ -> None
     | _ -> None
@@ -227,6 +229,39 @@ let private filesystemComplete (word: string) : string list =
         |> Array.toList
     with _ ->
         []
+
+// a completed path spelled for where it lands [D:repl-path-quote]. Inside
+// an open literal it is escaped for that literal's kind (`@"` doubles a
+// quote, `$"` doubles a brace, `"""` has no escapes); as a fresh string
+// literal it is quoted and escaped; as an argv word it stays bare unless a
+// character would end or split the word, then it becomes a string literal
+// (one argv word, `"my file.txt"`).
+let private escapeFor (opener: string) (s: string) : string =
+    match opener with
+    | "@\"" -> s.Replace("\"", "\"\"")
+    | "\"\"\"" -> s
+    | "$\"" -> s.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("{", "{{").Replace("}", "}}")
+    | _ -> s.Replace("\\", "\\\\").Replace("\"", "\\\"")
+
+let private stringLiteral (s: string) = "\"" + escapeFor "\"" s + "\""
+
+let private bareArgvSafe (s: string) =
+    s <> ""
+    && s
+       |> Seq.forall (fun c -> System.Char.IsLetterOrDigit c || "._-/~+,=:%@^".IndexOf c >= 0)
+
+let private argvWord (s: string) =
+    if bareArgvSafe s then s else stringLiteral s
+
+// the literal a completion word sits inside, read from its opening quote
+let private openerAt (text: string) (wordStart: int) : string =
+    let ends (o: string) =
+        wordStart >= o.Length && text.Substring(wordStart - o.Length, o.Length) = o
+
+    if ends "\"\"\"" then "\"\"\""
+    elif ends "@\"" then "@\""
+    elif ends "$\"" then "$\""
+    else "\""
 
 /// where the completion word starts, scanning back from the cursor. One
 /// rule, consulted by the REPL and the LSP alike — diverging copies once
@@ -820,11 +855,21 @@ let rec suggestScopedWith
                 || stmt.Contains '('
                 || stmt.Contains '[')
 
+        let opener = openerAt text wordStart
+
         let quoteFor (before: string) (candidates: string list) : string list =
-            if not insideOpenQuote && expressionSlot before then
-                candidates |> List.map (fun c -> "\"" + c + "\"")
+            if insideOpenQuote then
+                candidates |> List.map (escapeFor opener)
+            elif expressionSlot before then
+                candidates |> List.map stringLiteral
             else
-                candidates
+                candidates |> List.map argvWord
+
+        let argvPaths (candidates: string list) : string list =
+            if insideOpenQuote then
+                candidates |> List.map (escapeFor opener)
+            else
+                candidates |> List.map argvWord
 
         if word.StartsWith "~" || word.Contains '/' then
             // an explicit path word — filesystem entries [D:repl-quality],
@@ -875,7 +920,7 @@ let rec suggestScopedWith
                         None)
                 |> List.sort
             else
-                filesystemComplete word
+                filesystemComplete word |> argvPaths
         elif pathParamAt before then
             // a path position wants paths and string bindings — `cd
             // target` applies the binding, so hard-removing identifiers
@@ -895,9 +940,14 @@ let rec suggestScopedWith
             // … dst` complete the bare stem (the [D:path-param-completion]
             // pins), and a string binding here is already a valid expression.
             // An explicit path word (`File.read ./x`, with a `/` or `~`) took
-            // the quoting branch above before reaching here.
-            (filesystemComplete word @ stringBindings)
-            |> List.filter (fun c -> c.StartsWith word && c <> word)
+            // the quoting branch above before reaching here. A stem a bare
+            // word cannot spell (a space, a quote) still comes back quoted.
+            let paths =
+                filesystemComplete word
+                |> List.filter (fun c -> c.StartsWith word && c <> word)
+                |> argvPaths
+
+            (paths @ (stringBindings |> List.filter (fun c -> c.StartsWith word && c <> word)))
             |> List.distinct
             |> List.sort
         elif word.Contains '.' then

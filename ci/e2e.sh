@@ -1542,6 +1542,16 @@ out=$(printf 'let a = 1\na + 1\n"hi"\n' | $BIN 2>&1)
 expect "single-line: let echoes" "a : int = 1" "$out"
 expect "single-line: expression echoes" "2 : int" "$out"
 expect "single-line: string echoes" '"hi" : string' "$out"
+# a destructuring let echoes each binding with its value, as two lets would
+out=$(printf 'let (a, b) = (1, "s")\n' | $BIN 2>&1)
+expect "destructuring: the first binding's value" "a : int = 1" "$out"
+expect "destructuring: the second binding's value" 'b : string = "s"' "$out"
+
+# a blank line ends a pending entry, as the tty's blank-line escape does:
+# the incomplete line errors and the rest of stdin still runs
+out=$(printf 'let x = [1;\n\nprint (Str.toUpper "after")\nprint (Str.toUpper "later")\n' | $BIN 2>&1)
+expect "piped: a blank line ends an incomplete entry" "AFTER" "$out"
+expect "…and the next line still runs" "LATER" "$out"
 echo "e2e ok: piped REPL assembles multi-line statements; single-line lines each still echo"
 
 stmtdir=$(mkweirtmp)
@@ -1690,6 +1700,9 @@ if command -v python3 >/dev/null 2>&1; then
     WEIR_BIN="$BIN" python3 "$(dirname "$0")/../tests/lsp/lsp-framing.py" || fail "lsp framing hardening (oversized Content-Length)"
     echo "e2e ok: lsp survives oversized Content-Length (no OOM, stream stays synced)"
 
+    WEIR_BIN="$BIN" python3 "$(dirname "$0")/../tests/lsp/lsp-protocol.py" || fail "lsp protocol conformance"
+    echo "e2e ok: lsp answers every request (-32603/-32601/-32700/-32600), exit codes per lifecycle, case-insensitive headers"
+
     # conventional client argv is tolerated (languageclient v10 appends
     # --stdio/--clientProcessId to Executables — usage-exit-2 here put
     # the VS Code client in a crash-restart loop)
@@ -1820,6 +1833,12 @@ PYADP
     python3 "$(dirname "$0")/../tests/repl/repl-wordnav.py" "$BIN" || fail "repl word navigation"
     echo "e2e ok: repl Ctrl+Left/Right word navigation"
 
+    python3 "$(dirname "$0")/../tests/repl/repl-codepoints.py" "$BIN" || fail "repl code-point editing"
+    echo "e2e ok: repl Left/Right/Backspace/^D step over a surrogate pair whole [D:str-code-points]"
+
+    python3 "$(dirname "$0")/../tests/repl/repl-typeahead.py" "$BIN" || fail "repl type-ahead"
+    echo "e2e ok: repl an Enter typed before the first prompt submits [D:owned-line-editor]"
+
     python3 "$(dirname "$0")/../tests/repl/repl-color.py" "$BIN" || fail "repl coloring"
     echo "e2e ok: repl lexical coloring, head verdicts, NO_COLOR"
 
@@ -1843,6 +1862,9 @@ PYADP
 
     python3 "$(dirname "$0")/../tests/repl/repl-mapkeys.py" "$BIN" || fail "repl map-key completion"
     echo "e2e ok: repl map-key completion — a bound value's keys inside a Map lookup literal; a pipeline receiver stays silent [D:value-key-complete]"
+
+    python3 "$(dirname "$0")/../tests/repl/repl-anon-complete.py" "$BIN" || fail "repl anonymous-record field completion"
+    echo "e2e ok: repl an anonymous record's fields complete on the next line [D:anon-literals]"
 
     python3 "$(dirname "$0")/../tests/repl/repl-multiline.py" "$BIN" || fail "repl multiline editor"
     fi
@@ -7304,6 +7326,15 @@ out=$(printf '#echo\n#quit\n' | XDG_CONFIG_HOME="$cfgdir" XDG_STATE_HOME="$cfgdi
 echo "$out" | grep -qF "echoElems must be positive; got 0 (using 100)" || fail "a non-positive echoElems must teach: $out"
 echo "$out" | grep -qF "echo cap: 100" || fail "…and default: $out"
 
+# an unusable home never stops the REPL [D:repl-history]: HOME= is no
+# home [D:home-verbatim] — history turns off with one note, lines run
+if [ "$IS_WINDOWS" != "1" ]; then
+    out=$(printf 'print (Str.toUpper "hi")\n#history\n' | env -u XDG_CONFIG_HOME -u XDG_STATE_HOME HOME= $BIN 2>&1); rc=$?
+    [ $rc -eq 0 ] || fail "HOME= must not stop the REPL (rc $rc): $out"
+    expect "HOME= runs the REPL line" "HI" "$out"
+    expect "…and turns history off with a note" "history off for this session" "$out"
+fi
+
 # a malformed config must not affect a script — scripts never read it, so the
 # script runs clean rather than erroring on the broken JSON
 printf 'not valid json {{{\n' > "$CFGHOME/weir/config.json"
@@ -7855,7 +7886,7 @@ out=$(cd "$ydir" && $BIN inferdecl.weir)
 # and the dirty-keyed labels object drafts as the mapping — its keys
 # are data, so no [<Wire>] rides at all
 echo "$out" | grep -qF "resources: seq<string * string>" || fail "empty {} must infer as the empty open mapping: $out"
-echo "$out" | grep -qF "an empty mapping under 'Resources'" || fail "empty {} must print a note: $out"
+echo "$out" | grep -qF "an empty mapping under 'resources'" || fail "empty {} must print a note: $out"
 echo "$out" | grep -qi "not valid YAML" && fail "the real kubectl List must infer clean: $out" || true
 echo "$out" | grep -qF "labels: seq<string * string>" || fail "the dirty-keyed labels must draft as a mapping: $out"
 echo "$out" | grep -qF "'labels' has mostly non-identifier keys" || fail "the labels map note must print: $out"
@@ -10553,11 +10584,13 @@ WEOF
     # the echo of a command-backed let never runs it, piped too
     # [D:repl-let-echo-lazy]; typing the name does
     rm -f "$initcfg/lazymark"
-    iout=$(printf 'let c = sh -c "echo cleanup >> %s/lazymark"\nlet g2 = gl\nlet fz = gl |> Seq.freeze\n#quit\n' "$initcfg" \
+    iout=$(printf 'let c = sh -c "echo cleanup >> %s/lazymark"\nlet g2 = gl\nlet fz = gl |> Seq.freeze\nlet (n1, d1) = (1, gl)\n#quit\n' "$initcfg" \
         | XDG_CONFIG_HOME="$initcfg" XDG_STATE_HOME="$initcfg/state" "$BIN" 2>&1)
     echo "$iout" | grep -qF "c : seq<string> (command-backed — runs on each use; type c to run it)" || fail "a command-backed let echoes its type and hint: $iout"
     echo "$iout" | grep -qF "g2 : seq<string> (command-backed" || fail "a let reading a command-backed binding is command-backed too: $iout"
     echo "$iout" | grep -qF 'fz : seq<string> = ["lazy-out"]' || fail "an eager let echoes its value: $iout"
+    echo "$iout" | grep -qF "d1 : seq<string> (command-backed" || fail "a destructured command-backed component echoes its type, never runs: $iout"
+    echo "$iout" | grep -qF "n1 : int = 1" || fail "a destructured pure component still echoes its value: $iout"
     [ "$(tr '\n' ' ' < "$initcfg/lazymark")" = "run " ] || fail "only the frozen let ran: $(cat "$initcfg/lazymark")"
 fi
 cat > "$INITHOME/weir/init.weir" <<'WEOF'

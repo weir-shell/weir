@@ -66,10 +66,13 @@ Some behaviours worth knowing:
 - **A path completes quoted in an expression, and unquoted as a
   command argument.** `File.read ./x<TAB>` gives `File.read "./x"`,
   because a bare path is not a valid weir expression. As a command
-  argument (`cat ./x`, `ls ./dir`) the path stays unquoted. If you
-  already typed the opening quote (`File.read "./x<TAB>`), the
-  completion goes inside it without adding a second quote; a directory
-  keeps its trailing `/` inside the quotes.
+  argument (`cat ./x`, `ls ./dir`) the path stays unquoted, unless a
+  character would split or end the word: `cat my<TAB>` gives
+  `cat "my file.txt"`. If you already typed the opening quote
+  (`File.read "./x<TAB>`), the completion goes inside it without adding
+  a second quote, escaped for that kind of string (`\"` in `"…"`, `""`
+  in `@"…"`, `{{` in `$"…"`); a directory keeps its trailing `/` inside
+  the quotes.
 - **A leading `~` completes to your home directory's literal path.**
   `cat ~/.con<TAB>` becomes `cat /home/you/.config/`, and `cd ~<TAB>`
   becomes `cd "/home/you/"`, so the line shows exactly what will run.
@@ -159,7 +162,9 @@ only applies to lazy ones. Piped output is not affected.
 `#help` lists the directives and the modules, one module per line
 with a short description. `#help Seq` lists one module's members the
 same way: one per line, each with the first line of its doc, cut to
-fit the terminal. `#help Seq.collect` shows one member's full doc.
+fit the terminal. `#help Seq.collect` shows one member's full doc,
+and a short name such as `#help map` shows the same doc, saying which
+member it stands for (`map is Seq.map`).
 It is the same doc that editor hover shows, and the one-line
 summaries are its first line.
 
@@ -195,7 +200,11 @@ The history file is at `$XDG_STATE_HOME/weir/history` (otherwise
 `~/.local/state/weir/history`; `%LOCALAPPDATA%\weir\` on Windows).
 It is created with mode `0600`, since a REPL line can contain a
 secret. To find that base directory from a script, use
-`Path.stateHome ()`.
+`Path.stateHome ()`. In a piped session (`printf '…' | weir`),
+`#history` shows the file plus that session's lines, which are not
+saved. If there is no usable home (`HOME=` is empty, or
+the file cannot be written), the REPL still starts: history is off for
+that session, with one note saying why.
 
 History keeps each entry once: when you enter a command again, it
 moves to the most recent position and the earlier copy is removed. So
@@ -398,7 +407,10 @@ names are replaced with qualified ones (`map` → `Seq.map`,
 
 The file always passes `weir check`. Any statement that depends on
 something that only exists in the session (such as `let x = it`) is
-dropped, and `#save` prints a note saying how many were dropped.
+dropped, and `#save` prints a note saying how many were dropped. A
+binding nothing in the file reads is kept with a `_` added to its
+name (`let _total = …`, or `let (a, _b) = …` inside a pattern), so
+the unused-binding check accepts it.
 
 `#save` also expands [command aliases](#alias-command-head-aliases),
 since scripts don't have them. Each saved line's command is rewritten
@@ -595,7 +607,8 @@ arguments go right after the program, followed by yours. An alias is
 not a text substitution. Your arguments are passed exactly as usual,
 so `k get $x` still passes `$x` as one argument, and a `k` in a
 string, a variable or an argument is left alone. Only the command
-word itself is replaced.
+word itself is replaced. A keyword (`let`, `if`, …) can't be an alias
+name, since a line starting with it is never a command.
 
 Because an alias is just a program plus fixed words, not a command
 line, weir syntax in it is **not interpreted**: `$(…)` captures,
@@ -634,7 +647,8 @@ when it is not. weir uses its own parser to decide, so after
 `match x with` you get a new line, while `1 + 1` is submitted. Up and
 Down move between lines, and a recalled history entry comes back
 whole: a three-line match comes back as three lines that you can
-edit.
+edit. Lines you type before the first prompt appears are kept, and
+their Enter submits them as usual.
 
 The key bindings (they can't be customized):
 
@@ -654,8 +668,10 @@ but it still groups multi-line statements the way a script does. It
 keeps reading lines while the statement is unfinished (a heredoc
 body, a multi-line `type`, an indented `if`/`match` block, a pipeline
 continued with `|>` lines), so a pasted or scripted block runs as one
-statement. Input with one statement per line works as usual, and a
-directive is always a single line.
+statement. A blank line ends the statement even if it is unfinished,
+as an empty last line does in the editor: the error is shown and the
+lines after it still run. Input with one statement per line works as
+usual, and a directive is always a single line.
 
 ## weir and fzf
 

@@ -1,5 +1,90 @@
 # Changelog
 
+## v0.0.74
+
+### Removed
+
+- **`into` is gone.** The undocumented `xs |> into "cmdline"` ran `sh -c`
+  past every effect check (`pure`, `readonly`, `plan`, module loading,
+  `--can`). Pipe instead: `xs | sh -c "…"`, or better `xs | prog args`.
+
+### Changed
+
+- **A lazy value runs where it is used, unless it was written inside a
+  `within`.** `let here = ls` then `cd src` then `here` lists `src/`
+  (it listed the old directory). A value written inside `within cd` /
+  `within env` still keeps that scope however late it runs. An init
+  file's `let gl = git log …` now logs the repo you are in.
+- **The REPL echo of a command-backed `let` never runs it.** It shows
+  `gl : seq<string> (command-backed — runs on each use; type gl to run
+  it)`; `let cleanup = rm -rf build` no longer deletes on Enter. A
+  frozen or reified value still echoes its data.
+- **A lazy command `let` is allowed in the init file and in modules**
+  (`let gl = git log --oneline -n 10`); eager forms (`| line`, `$(…)`
+  read at once, `Seq.freeze`) stay refused, with a message that says
+  why.
+- **A module's body runs once per program**, shared by every import of
+  it (diamonds, aliases, symlinks — identity is the real path). It ran
+  once per import site, so nested imports could take exponential time.
+- **No command runs while a module is imported** — refused at run time
+  too, so a lambda or a helper passed as a value can't slip through.
+- **`serve` bounds request bodies**: `maxBody` (a `Size`, default
+  16 MiB), answered 413 past it.
+- **`Uuid` parsing refuses surrounding whitespace**, in `Uuid.parse`
+  and in JSON fields alike.
+- **A source file must be valid UTF-8**: an invalid byte is a located
+  error, not a silent U+FFFD.
+- **Statements in a block don't count toward the nesting limit**, so a
+  function or `within` body can be any length.
+
+### Fixed
+
+- **A long flat script no longer overflows the stack** (6,000 lines
+  crashed with exit 134; 700 on a 1 MB stack).
+- **A `Secret` argument works in captured commands** — `curl -H $auth …
+  | complete`, `| line`, `$e(…)`, `NAME=$s cmd`, `within env A=$s`.
+- **Module members named like a builtin are exported** (`Doc.Text`).
+- **SIGTERM stops every child tree once**, including `pmap` workers'
+  grandchildren, which could be orphaned.
+- **`weir restore`** sends the host token as `add` does, never writes
+  `lock.json`, and names the entry and field of a malformed lock entry
+  instead of crashing.
+- **HTTP client:** one header pair per received line (`Set-Cookie` no
+  longer merged, values never rewritten); an unknown charset is a
+  precise error; `auth` plus an explicit `Authorization` is refused;
+  `Authorization`/`Cookie` are dropped on a cross-origin redirect; a
+  redirect loop is a named error.
+- **`serve`:** no body on HEAD, 1xx, 204 or 304; framing and hop-by-hop
+  headers from a handler are dropped; a `Stream` element is split into
+  one `data:` line per line, so a newline can't forge an SSE event.
+- **`gen types`** leaves a self-referential field out (with a note), so
+  the type reads with `from json`.
+- **REPL:** `HOME=` no longer crashes it; `#save` writes a script that
+  runs; the line editor moves and deletes an emoji whole; path
+  completion quotes spaces and quotes; typed-ahead input and Enter
+  before the first prompt work; a piped blank line ends an unfinished
+  entry; anonymous-record fields complete; `#quit now`, `#alias let`,
+  `#help map`, piped `#history` and destructuring `let` echoes behave.
+- **One formatter for the CLI and the LSP:** the shebang stays
+  verbatim, error lines count from line 1, `fmt` refuses rather than
+  flip-flopping, and trims only what the parser treats as whitespace.
+- **LSP:** every request gets an answer, with the JSON-RPC error codes;
+  `exit` without `shutdown` exits 1; header names are case-insensitive.
+- **Checker:** copy-and-update fields align under the first field;
+  imported unions type an unannotated parameter; a union reached only
+  through another module doesn't make a local constructor ambiguous;
+  `let un (W x) = x` works for a single-case union.
+- **Weir-worded errors** for an unreadable or directory script,
+  importing a directory or device, `within lock` on a directory, a
+  negative or zero `poll interval`, a lone surrogate in JSON, `from json`
+  type mismatches, a comma between record fields, `cmd |> try`, `-e ''`.
+- **Smaller fixes:** run time is linear in a statement's lines (a 64k-
+  line heredoc took 53 s); `Path.glob` bracket classes never reach the
+  regex engine raw; `show` prints `Some (1, 2)`; a timed-out `retry`
+  reports the attempts it made; float-holding `==` names `Float.near`;
+  `build --help` on a union-only `Args.load` is scoped; error columns
+  stay on their line.
+
 ## v0.0.73
 
 ### Fixed

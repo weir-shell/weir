@@ -430,6 +430,11 @@ let private parseAliasLine (body: string) : Result<string * Alias, string> =
         body.Trim()
         |> fun s -> System.Text.RegularExpressions.Regex.Match(s, @"^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$")
     with
+    | m when m.Success && Parser.isKeyword m.Groups.[1].Value ->
+        // a keyword heads its own statement form, never a command — the
+        // alias could never resolve
+        let name = m.Groups.[1].Value
+        Error $"#alias {name}: '{name}' is a keyword — a line starting with it is never a command; pick another name"
     | m when m.Success ->
         let name = m.Groups.[1].Value
 
@@ -571,7 +576,8 @@ let docsJson () : string =
 type private ReplConfig =
     { HistorySize: int
       HistoryDedup: bool
-      HistoryPath: string
+      // None = the default under the state home, resolved on first use
+      HistoryPath: string option
       FinderFlags: string list
       // feeds the session echo cap [D:echo-cap]
       EchoElems: int }
@@ -585,7 +591,7 @@ let private defaultConfig =
     { HistorySize = 5000
       HistoryDedup = true
       // state, not config — history is data the REPL produced, not settings
-      HistoryPath = Path.Combine(stateHome (), "weir", "history")
+      HistoryPath = None
       FinderFlags = [ "--height"; "40%"; "--reverse" ]
       EchoElems = 100 }
 
@@ -596,9 +602,15 @@ let private configKeys =
 // unknown keys are rejected with did-you-mean — a typo must not silently
 // do nothing. Absent file / parse error -> defaults.
 let private loadConfig () : ReplConfig =
-    let path = Path.Combine(configHome (), "weir", "config.json")
+    // no home (HOME=) means no config file to read [D:home-verbatim] —
+    // the REPL still starts
+    let path =
+        try
+            Path.Combine(configHome (), "weir", "config.json")
+        with _ ->
+            ""
 
-    if not (File.Exists path) then
+    if path = "" || not (File.Exists path) then
         defaultConfig
     else
         try
@@ -635,7 +647,10 @@ let private loadConfig () : ReplConfig =
 
             { HistorySize = getInt "historySize" defaultConfig.HistorySize
               HistoryDedup = getBool "historyDedup" defaultConfig.HistoryDedup
-              HistoryPath = getStr "historyPath" defaultConfig.HistoryPath
+              HistoryPath =
+                match getStr "historyPath" "" with
+                | "" -> defaultConfig.HistoryPath
+                | p -> Some p
               FinderFlags = getStrList "finderFlags" defaultConfig.FinderFlags
               EchoElems = getInt "echoElems" defaultConfig.EchoElems }
         with ex ->
@@ -654,7 +669,31 @@ let mutable private echoCap: int option =
         Console.Error.WriteLine $"weir: config: echoElems must be positive; got {config.EchoElems} (using 100)"
         Some 100
 
-let private historyFile = config.HistoryPath
+// the history path resolves lazily [D:repl-history]: an unusable home
+// (HOME= is empty [D:home-verbatim]) or an unwritable file turns history
+// off with one note — the REPL never fails to start over its history
+let mutable private historyOff = false
+
+let private historyOffNote (why: string) =
+    if not historyOff then
+        historyOff <- true
+        Console.Error.WriteLine $"weir: history off for this session — {why}"
+
+let private historyPath =
+    lazy
+        (match config.HistoryPath with
+         | Some p -> Some p
+         | None ->
+             try
+                 Some(Path.Combine(stateHome (), "weir", "history"))
+             with ex ->
+                 historyOffNote ex.Message
+                 None)
+
+let private historyFile () =
+    match historyPath.Force() with
+    | Some p when not historyOff -> Some p
+    | _ -> None
 
 // the table's tint is positional [D:table-polish]: echoTable's lines
 // stay plain (one law, its pinned output unchanged) — the printer knows
@@ -800,7 +839,7 @@ let private displayEntry (entry: string) = entry.Replace("\n", " ⏎ ")
 
 // the history file is created 0600 [D:repl-quality] — a REPL line can carry a
 // secret (`runEnv [Env.pair "TOKEN" "…"]`), so it is a place secrets land
-let private ensureHistoryFile () =
+let private ensureHistoryFile (historyFile: string) =
     let dir = Path.GetDirectoryName historyFile
 
     if dir <> "" then
@@ -819,7 +858,7 @@ let private ensureHistoryFile () =
         with _ ->
             ()
 
-let private loadHistory () =
+let private loadHistoryFrom (historyFile: string) =
     if File.Exists historyFile then
         let lines = File.ReadAllLines historyFile
         // front-truncate to the cap once at load (per-line append never
@@ -848,37 +887,56 @@ let private loadHistory () =
                 decoded
 
         if deduped.Length <> lines.Length then
-            ensureHistoryFile ()
+            ensureHistoryFile historyFile
             File.WriteAllLines(historyFile, deduped |> Array.map encodeEntry)
 
         history.AddRange deduped
+
+let mutable private historyLoaded = false
+
+let private loadHistory () =
+    if not historyLoaded then
+        historyLoaded <- true
+
+        match historyFile () with
+        | Some f ->
+            try
+                loadHistoryFrom f
+            with ex ->
+                historyOffNote $"cannot read {f}: {ex.Message}"
+        | None -> ()
 
 // per-entry append with erasedups [D:repl-history-dedup]: a re-entered
 // line moves to the most-recent position — earlier copies drop, so history
 // is a recency-ordered set (each command once). On a dedup hit the file is
 // rewritten (an earlier line must go); otherwise it is appended.
-let private appendHistory (entry: string) =
-    if config.HistoryDedup then
-        let removed = history.RemoveAll(System.Predicate(fun e -> e = entry))
-        history.Add entry
+// the in-memory half: a piped session's entries stop here — #history
+// shows them, but piped input is not the user's history file
+let private rememberEntry (entry: string) : int =
+    let removed =
+        if config.HistoryDedup then
+            history.RemoveAll(System.Predicate(fun e -> e = entry))
+        else
+            0
 
+    history.Add entry
+    removed
+
+let private appendHistory (entry: string) =
+    let removed = rememberEntry entry
+
+    match historyFile () with
+    | Some f ->
         try
-            ensureHistoryFile ()
+            ensureHistoryFile f
 
             if removed > 0 then
-                File.WriteAllLines(historyFile, history |> Seq.map encodeEntry)
+                File.WriteAllLines(f, history |> Seq.map encodeEntry)
             else
-                File.AppendAllText(historyFile, encodeEntry entry + Environment.NewLine)
-        with _ ->
-            ()
-    else
-        history.Add entry
-
-        try
-            ensureHistoryFile ()
-            File.AppendAllText(historyFile, encodeEntry entry + Environment.NewLine)
-        with _ ->
-            ()
+                File.AppendAllText(f, encodeEntry entry + Environment.NewLine)
+        with ex ->
+            historyOffNote $"cannot write {f}: {ex.Message}"
+    | None -> ()
 
 // #history [N] [D:repl-history]: dump the session's history with the
 // file's path in the header — a user cannot cat what they cannot find,
@@ -890,9 +948,17 @@ let private appendHistory (entry: string) =
 // the line-per-entry appends not yet load-capped. Bare = all (cat
 // parity); a positive N = the last N (tail).
 let private historyDirective (arg: string) : string =
+    // a piped session never ran the editor's load — read the file now
+    loadHistory ()
+
+    let where =
+        match historyFile () with
+        | Some f -> $"history at {f}"
+        | None -> "history (off — not saved)"
+
     let render (startIdx: int) =
         if history.Count = 0 then
-            $"history at {historyFile} (empty)"
+            $"{where} (empty)"
         else
             let width = history.Count.ToString().Length
 
@@ -901,7 +967,7 @@ let private historyDirective (arg: string) : string =
                       let n = (i + 1).ToString().PadLeft width
                       $"  {n}  {displayEntry history[i]}" ]
 
-            String.concat "\n" ($"history at {historyFile} ({history.Count} entries)" :: lines)
+            String.concat "\n" ($"{where} ({history.Count} entries)" :: lines)
 
     match arg.Trim() with
     | "" -> render 0
@@ -1102,6 +1168,38 @@ let private bufferComplete (bufLines: string list) : bool =
 // tty only.
 let mutable private contPrompt = "   … "
 
+// type-ahead [D:owned-line-editor]: keys typed before the first prompt
+// arrived while the terminal was still cooked, where ICRNL already turned
+// Enter into '\n' — the Ctrl+J force-newline key. Everything pending at
+// the editor's first entry is drained here once, a '\n' read back as
+// Enter, and replayed ahead of live keys (across entries: an early line's
+// Enter submits it, the rest feeds the next prompt).
+let private typeAhead = Collections.Generic.Queue<ConsoleKeyInfo>()
+let mutable private typeAheadDrained = false
+
+let private drainTypeAhead () =
+    if not typeAheadDrained then
+        typeAheadDrained <- true
+
+        try
+            while Console.KeyAvailable do
+                let k = Console.ReadKey(intercept = true)
+
+                typeAhead.Enqueue(
+                    if k.KeyChar = '\n' then
+                        ConsoleKeyInfo('\r', ConsoleKey.Enter, false, false, false)
+                    else
+                        k
+                )
+        with _ ->
+            ()
+
+let private readKey () =
+    if typeAhead.Count > 0 then
+        typeAhead.Dequeue()
+    else
+        Console.ReadKey(intercept = true)
+
 let private deriveContPrompt (w: int) =
     let on = Types.Color.onStdout.Value
 
@@ -1168,6 +1266,19 @@ let private readLineTty () : string option =
             above + dr, dc
 
     let cur () = lines[row]
+
+    // the editor moves and deletes by code point [D:str-code-points]: a
+    // surrogate pair (an emoji) is one step, never split
+    let pairAt (t: Text.StringBuilder) (i: int) =
+        i >= 1 && i < t.Length && Char.IsHighSurrogate t[i - 1] && Char.IsLowSurrogate t[i]
+
+    let stepBack () = if pairAt (cur ()) (col - 1) then 2 else 1
+    let stepFwd () = if pairAt (cur ()) (col + 1) then 2 else 1
+
+    // a column carried across lines (Up/Down) lands on a boundary
+    let snapCol (c: int) =
+        let c = min c (cur().Length)
+        if pairAt (cur ()) c then c - 1 else c
 
     let redraw () =
         // region repaint [D:repl-multiline]: climb to the region top (the
@@ -1292,9 +1403,10 @@ let private readLineTty () : string option =
     // [D:repl-cooked-trap].
     Term.reassert ()
     Term.startWatchdog ()
+    drainTypeAhead ()
 
     while result.IsNone do
-        let k = Console.ReadKey(intercept = true)
+        let k = readKey ()
         Term.snapshot ()
         let ctrl = k.Modifiers.HasFlag ConsoleModifiers.Control
         let alt = k.Modifiers.HasFlag ConsoleModifiers.Alt
@@ -1335,7 +1447,7 @@ let private readLineTty () : string option =
                 Console.WriteLine()
                 result <- Some None
             elif col < cur().Length then
-                cur().Remove(col, 1) |> ignore
+                cur().Remove(col, stepFwd ()) |> ignore
                 redraw ()
             elif row < lines.Count - 1 then
                 cur().Append(lines[row + 1].ToString()) |> ignore
@@ -1349,7 +1461,7 @@ let private readLineTty () : string option =
                 Console.WriteLine()
                 result <- Some None // EOF
             elif col < cur().Length then
-                cur().Remove(col, 1) |> ignore // readline delete-char
+                cur().Remove(col, stepFwd ()) |> ignore // readline delete-char
                 redraw ()
             elif row < lines.Count - 1 then
                 // delete at line end joins the next line
@@ -1375,8 +1487,9 @@ let private readLineTty () : string option =
              | None -> redraw ())
         | ConsoleKey.Backspace ->
             if col > 0 then
-                cur().Remove(col - 1, 1) |> ignore
-                col <- col - 1
+                let n = stepBack ()
+                cur().Remove(col - n, n) |> ignore
+                col <- col - n
                 redraw ()
             elif row > 0 then
                 // backspace at line start joins the previous line
@@ -1413,7 +1526,7 @@ let private readLineTty () : string option =
             redraw ()
         | ConsoleKey.LeftArrow ->
             if col > 0 then
-                col <- col - 1
+                col <- col - stepBack ()
                 redraw ()
             elif row > 0 then
                 row <- row - 1
@@ -1421,7 +1534,7 @@ let private readLineTty () : string option =
                 redraw ()
         | ConsoleKey.RightArrow ->
             if col < cur().Length then
-                col <- col + 1
+                col <- col + stepFwd ()
                 redraw ()
             elif row < lines.Count - 1 then
                 row <- row + 1
@@ -1481,7 +1594,7 @@ let private readLineTty () : string option =
             // path)
             if row > 0 then
                 row <- row - 1
-                col <- min col lines[row].Length
+                col <- snapCol col
                 redraw ()
             elif histIdx > 0 then
                 if histIdx = history.Count then
@@ -1495,7 +1608,7 @@ let private readLineTty () : string option =
             // last line is a no-op (Up's asymmetry) [D:repl-multiline]
             if row < lines.Count - 1 then
                 row <- row + 1
-                col <- min col lines[row].Length
+                col <- snapCol col
                 redraw ()
             elif histIdx < history.Count then
                 histIdx <- histIdx + 1
@@ -1646,9 +1759,9 @@ let mutable private pendingLine: string option = None
 // A directive line (#help/#quit/#infer/…) is one line by definition —
 // returned immediately, its own multi-line handling (#infer) untouched.
 // A blank/comment-only first line has no statement to open, so it
-// returns alone (the no-op arm). At EOF with an unclosed buffer: return
-// what accumulated and let it error normally — the tty editor's
-// blank-line/Ctrl+D escape does the same at its equivalent boundary.
+// returns alone (the no-op arm). A blank line after the first ends the
+// entry, complete or not, as the tty editor's blank-line escape does;
+// at EOF an unclosed buffer is returned the same way, to error normally.
 let private readRedirected () : string =
     let readLine () =
         match pendingLine with
@@ -1695,6 +1808,11 @@ let private readRedirected () : string =
 
             if firstLineComplete then
                 ret buf
+            elif line.Trim() = "" then
+                // the tty's blank-line escape [D:windows-s2]: a blank line
+                // ends a pending entry, so an incomplete one errors here
+                // instead of swallowing the rest of stdin
+                ret (List.rev acc)
             elif not (bufferComplete buf) then
                 go acc' // structurally incomplete — read the body
             else
@@ -1716,7 +1834,13 @@ let private readInput () =
     contPrompt <- deriveContPrompt promptWidth
 
     if Console.IsInputRedirected then
-        readRedirected ()
+        let entry = readRedirected ()
+
+        if not (isNull entry) && entry.Trim() <> "" then
+            loadHistory ()
+            rememberEntry entry |> ignore
+
+        entry
     else
         Term.editorActive.Value <- true
 
@@ -1964,9 +2088,29 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
                 commandSeqNames <- Set.remove n commandSeqNames
 
             // one destructuring line reports each binding on its
-            // own line — matching what two lets would have shown
+            // own line, value included — matching what two lets would
+            // have shown (the one-line form; tables stay the plain let's)
+            let cap =
+                if Console.IsOutputRedirected then
+                    Eval.echoPipedCap
+                else
+                    echoCap
+
             for n, sch in schemes do
-                Console.WriteLine $"{n} : {formatEchoTy sch.Ty}"
+                match bindings |> List.tryFind (fun (bn, _) -> bn = n) with
+                | Some(_, bv) when bv <> Eval.VUnit ->
+                    // a command-backed component never runs at echo
+                    // [D:repl-let-echo-lazy]; judged against the whole RHS,
+                    // so a pure seq beside one is conservatively not echoed
+                    if letCommandBacked te bv then
+                        noteCommandSeq n te bv
+                        echoMeta (commandBackedEcho n sch.Ty)
+                    else
+                        let rendered, hint = Eval.echoValue cap (Eval.echoPrep bv)
+
+                        Console.WriteLine
+                            $"{n} : {formatEchoTy sch.Ty} = {Eval.sanitizeTtyData rendered}{Eval.echoTail hint}"
+                | _ -> Console.WriteLine $"{n} : {formatEchoTy sch.Ty}"
 
             { state with
                 TypeEnv = chk.Env
@@ -2338,6 +2482,16 @@ let private memberHelp (color: bool) (te: TypeEnv) (name: string) : string optio
 // with its doc — and a failed init leaves this empty, never stale
 let mutable private initDocs: Map<string, string list> = Map.empty
 
+// the module a bare name aliases, while the session has not rebound it
+// (the same scheme as the qualified member) [D:bare-partition]
+let private bareAliasHome (te: TypeEnv) (name: string) : string option =
+    match Map.tryFind name Builtins.bareAliasHomes with
+    | Some home when not (Builtins.builtinDocs.ContainsKey name) ->
+        match Map.tryFind name te.Values, te.Modules |> Map.tryFind home |> Option.bind (Map.tryFind name) with
+        | Some a, Some b when a = b -> Some home
+        | _ -> None
+    | _ -> None
+
 let private helpDirective (color: bool) (te: TypeEnv) (arg: string) : string =
     match arg.Trim() with
     | "" ->
@@ -2384,6 +2538,14 @@ let private helpDirective (color: bool) (te: TypeEnv) (arg: string) : string =
         // candidate would be a confident wrong suggestion
         let owners = Check.ctorOwners te name |> String.concat ", "
         $"'{name}' is an ambiguous constructor; it is declared by: {owners} — rename one of the cases"
+    | name when (bareAliasHome te name).IsSome ->
+        // a bare alias answers as its qualified member does — `map` is
+        // `Seq.map`, one doc, named [D:help-glance]
+        let home = (bareAliasHome te name).Value
+
+        match memberHelp color te $"{home}.{name}" with
+        | Some h -> $"{name} is {home}.{name}\n\n{h}"
+        | None -> $"{name} is {home}.{name}"
     | name ->
         match memberHelp color te name with
         | Some h ->
@@ -3070,31 +3232,30 @@ let private candidateErrors (stmts: DistillStmt list) : Script.Diagnostic list =
         let diags, _, _, _ = Script.analyzeLines "#save" lines
         diags |> List.filter (fun d -> d.Severity = "error" || namesSessionIt d)
 
-// protect a self-contained-but-unused named `let` [D:repl-save]: the
+// protect a self-contained-but-unused binder [D:repl-save]: the
 // unused-binding law refuses a top-level `let x = <<<…>>>` that nothing
 // reads, but a distilled definition is the product, not scratch — so it
-// is kept, its binder `_`-prefixed (the deliberate-discard escape, which
-// the law exempts) rather than dropped. This is not a session-only-state
-// drop and is not counted. A `type` decl never needs this (types do not
-// trip unused-binding). Only the first line carries the binder.
-let private protectUnusedLet (s: DistillStmt) : DistillStmt =
-    match s.Lines with
-    | first :: rest ->
-        let t = first.TrimStart()
-        let indent = first.Substring(0, first.Length - t.Length)
+// is kept, the finding's own binder `_`-prefixed (the deliberate-discard
+// escape, which the law exempts) rather than dropped. The finding's
+// line:col places the `_`, so a pattern binder is renamed in place
+// (`let (a, _b) = …`) and the pattern itself is never touched. This is
+// not a session-only-state drop and is not counted. A `type` decl never
+// needs this (types do not trip unused-binding). `localLine` is 0-based
+// within the statement, `col` 1-based.
+let private protectUnusedAt (s: DistillStmt) (localLine: int) (col: int) (name: string) : DistillStmt =
+    let at = col - 1
 
-        if t.StartsWith "let " then
-            let afterLet = t.Substring 4
-            let binder = afterLet.Split([| ' '; '=' |]).[0]
-
-            if binder <> "" && not (binder.StartsWith "_") then
-                { s with
-                    Lines = (indent + "let _" + afterLet) :: rest }
-            else
-                s
-        else
-            s
-    | [] -> s
+    match List.tryItem localLine s.Lines with
+    | Some line when
+        name <> ""
+        && not (name.StartsWith "_")
+        && at >= 0
+        && at + name.Length <= line.Length
+        && String.CompareOrdinal(line, at, name, 0, name.Length) = 0
+        ->
+        { s with
+            Lines = s.Lines |> List.mapi (fun i l -> if i = localLine then l.Insert(at, "_") else l) }
+    | _ -> s
 
 // The check guarantee [D:repl-save]: return the survivors that check
 // clean, plus the count dropped for referencing session-only state. Two
@@ -3111,7 +3272,8 @@ let private protectUnusedLet (s: DistillStmt) : DistillStmt =
 // Which survivor owns a candidate-file line? Blocks are concatenated in
 // order, each contributing `Lines.Length` physical lines — so a running
 // offset maps a 1-based file line to the survivor index containing it.
-let private ownerOf (kept: DistillStmt list) (fileLine: int) : int option =
+// The owner's index and the line's 0-based position within it.
+let private ownerAt (kept: DistillStmt list) (fileLine: int) : (int * int) option =
     let rec go idx offset rest =
         match rest with
         | [] -> None
@@ -3119,11 +3281,19 @@ let private ownerOf (kept: DistillStmt list) (fileLine: int) : int option =
             let n = s.Lines.Length
 
             if fileLine >= offset + 1 && fileLine <= offset + n then
-                Some idx
+                Some(idx, fileLine - offset - 1)
             else
                 go (idx + 1) (offset + n) tail
 
     go 0 0 kept
+
+let private ownerOf (kept: DistillStmt list) (fileLine: int) : int option =
+    ownerAt kept fileLine |> Option.map fst
+
+// the binder an unused-binding finding names: 'b' is bound but never used
+let private unusedName (d: Script.Diagnostic) : string =
+    let m = Text.RegularExpressions.Regex.Match(d.Message, "^'([^']+)'")
+    if m.Success then m.Groups[1].Value else ""
 
 let rec private guaranteeChecks (kept: DistillStmt list) (dropped: int) : DistillStmt list * int =
     let errs = candidateErrors kept
@@ -3165,9 +3335,19 @@ let rec private guaranteeChecks (kept: DistillStmt list) (dropped: int) : Distil
                 let unusedOwners =
                     errs |> List.choose (fun d -> ownerOf kept d.Line) |> List.distinct
 
+                // right to left, so an earlier insert never shifts a later column
                 let protectedSet =
-                    kept
-                    |> List.mapi (fun j s -> if List.contains j unusedOwners then protectUnusedLet s else s)
+                    errs
+                    |> List.sortBy (fun d -> d.Line, -d.Col)
+                    |> List.fold
+                        (fun (acc: DistillStmt list) d ->
+                            match ownerAt acc d.Line with
+                            | Some(j, localLine) ->
+                                acc
+                                |> List.mapi (fun i s ->
+                                    if i = j then protectUnusedAt s localLine d.Col (unusedName d) else s)
+                            | None -> acc)
+                        kept
 
                 if protectedSet <> kept then
                     guaranteeChecks protectedSet dropped
@@ -3266,6 +3446,11 @@ let private saveDirective (state: State) (path: string) : unit =
                         Console.WriteLine $"#save: could not write {path}: {ex.Message}"
 
 let rec private loop (state: State) =
+    // an anonymous record bound last line completes its fields now
+    let state =
+        { state with
+            TypeEnv = Check.withPendingAnonDefs state.TypeEnv }
+
     currentEnv.Value <- state.TypeEnv
     // the alias names ride along [D:command-head-alias]: the head tint
     // and the Tab pool read the ref, never a second table
@@ -3376,6 +3561,8 @@ let rec private loop (state: State) =
                     "#session is read from the init file at startup (config dir, weir/init.weir) — edit it and restart"
                 elif word = "#sig" || word = "#schema" then
                     $"{word} is a file directive, read at check time — it has no effect in the REPL"
+                elif word = "#quit" then
+                    "#quit takes no argument — type #quit on its own (or press Ctrl+D)"
                 else
                     // the did-you-mean pool is the dispatch's one source
                     // (Complete.sessionDirectives) [D:repl-directives]
@@ -3748,9 +3935,14 @@ let private applySessionField
 /// state to start with and prints the one report line (stderr — a piped
 /// session's stdout stays data).
 let private loadInit (baseState: State) : State =
-    let path = initFilePath ()
+    // no home means no init file [D:home-verbatim]
+    let path =
+        try
+            initFilePath ()
+        with _ ->
+            ""
 
-    if not (File.Exists path) then
+    if path = "" || not (File.Exists path) then
         baseState // no init is the normal case — silent
     else
         let lines = File.ReadAllLines path

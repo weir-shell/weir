@@ -2,6 +2,11 @@ module Weir.Fmt
 
 open Weir.Ast
 
+// fmt trims only what the parser skips as whitespace: any other
+// character (U+3000, U+2028, a BOM) is a token to the parser, so
+// trimming it would change whether the file checks
+let private parserWs = [| ' '; '\t'; '\r'; '\n' |]
+
 let collectBareUses (e: Expr) : (Span * string) list =
     // traversal is Ast.exprChildren's job; only EVar collects
     let acc = ResizeArray<Span * string>()
@@ -32,8 +37,8 @@ let collectBareUses (e: Expr) : (Span * string) list =
 // the output is always clean under the doc-alignment lint. Idempotent:
 // an already-anchored doc is left where it is.
 let private canonicalizeDocs (out: string list) : string list =
-    let isDoc (s: string) = s.TrimStart().StartsWith "///"
-    let isCode (s: string) = (Script.stripComment s).Trim() <> ""
+    let isDoc (s: string) = s.TrimStart(parserWs).StartsWith "///"
+    let isCode (s: string) = (Script.stripComment s).Trim(parserWs) <> ""
     let arr = List.toArray out
     // district content is bytes [D:content-bytes] — a ///-shaped line
     // inside one is data, never re-anchored
@@ -49,8 +54,8 @@ let private canonicalizeDocs (out: string list) : string list =
             // a run followed by content sits inside the block (an
             // outdented comment never ends a district) — no anchor
             if j < arr.Length && isCode arr[j] && not masked[j] then
-                let anchor = arr[j].Length - arr[j].TrimStart().Length
-                arr[i] <- String.replicate anchor " " + arr[i].TrimStart()
+                let anchor = arr[j].Length - arr[j].TrimStart(parserWs).Length
+                arr[i] <- String.replicate anchor " " + arr[i].TrimStart(parserWs)
 
     List.ofArray arr
 
@@ -69,7 +74,7 @@ let private canonicalizeDocs (out: string list) : string list =
 let private canonicalizeDistrictMarkers (body: string list) : string list =
     let arr = List.toArray body
     let indentOf (s: string) = s |> Seq.takeWhile ((=) ' ') |> Seq.length
-    let isBlank (s: string) = s.Trim() = ""
+    let isBlank (s: string) = s.Trim(parserWs) = ""
 
     // the whole piece must be the marker — `<<<`, `$<<<`, `yaml` plus
     // its marker-line modifiers (`patch`, `by=`, `schema=`), nothing
@@ -90,7 +95,7 @@ let private canonicalizeDistrictMarkers (body: string list) : string list =
 
     let shifted (raw: string) (ind: int) =
         match tailShift with
-        | Some(delta, floor) when ind > floor -> String.replicate (max floor (ind - delta)) " " + raw.TrimStart()
+        | Some(delta, floor) when ind > floor -> String.replicate (max floor (ind - delta)) " " + raw.TrimStart(parserWs)
         | _ -> raw
 
     for i in 0 .. arr.Length - 1 do
@@ -99,7 +104,7 @@ let private canonicalizeDistrictMarkers (body: string list) : string list =
 
         if isBlank raw then
             out.Add raw
-        elif code.Trim() = "" then
+        elif code.Trim(parserWs) = "" then
             // comment-only: rides a live tail shift, otherwise verbatim
             // (content bytes and transparent comments alike)
             out.Add(shifted raw (indentOf raw))
@@ -126,7 +131,7 @@ let private canonicalizeDistrictMarkers (body: string list) : string list =
                 let raw = shifted raw ind
                 let code = Script.stripComment raw
                 let ind = indentOf code
-                let piece = code.TrimStart()
+                let piece = code.TrimStart(parserWs)
 
                 let mergeTarget =
                     if markerOnly piece && ind > 0 && i > 0 && out.Count > 0 then
@@ -139,9 +144,9 @@ let private canonicalizeDistrictMarkers (body: string list) : string list =
 
                         if
                             not (isBlank prevRaw)
-                            && (Script.stripComment prevRaw).Trim() <> ""
+                            && (Script.stripComment prevRaw).Trim(parserWs) <> ""
                             && indentOf (Script.stripComment prev) < ind
-                            && (Script.stripComment prev).TrimEnd() = prev.TrimEnd()
+                            && (Script.stripComment prev).TrimEnd(parserWs) = prev.TrimEnd(parserWs)
                         then
                             Some prev
                         else
@@ -151,7 +156,7 @@ let private canonicalizeDistrictMarkers (body: string list) : string list =
 
                 match mergeTarget with
                 | Some prev ->
-                    out[out.Count - 1] <- prev.TrimEnd() + " " + raw.TrimStart().TrimEnd()
+                    out[out.Count - 1] <- prev.TrimEnd(parserWs) + " " + raw.TrimStart(parserWs).TrimEnd(parserWs)
                     armed <- Some ind // the OLD marker indent still bounds the content
                     pendingShift <- Some(indentOf (Script.stripComment prev))
                 | None ->
@@ -180,18 +185,22 @@ type private OpenBracket =
       EntryIndent: int option
       Delta: int }
 
-let private formatLinesCore (body: string list) : Result<string list, string> =
+// `lineOffset`: the physical lines above `body` (a shebang), so an error
+// names the file's own line number
+let private formatLinesCore (lineOffset: int) (body: string list) : Result<string list, string> =
     // trailing whitespace is never significant (strings are single-line and
     // close with a quote), so both equivalence passes compare TrimEnd'd code
     let commentOnly (raw: string) =
         Script.classifyLine raw = Script.LineKind.CommentOnly
 
-    let logicalOf (ls: string list) =
+    let logicalAt (off: int) (ls: string list) =
         ls
-        |> List.mapi (fun i l -> i + 1, l)
+        |> List.mapi (fun i l -> i + 1 + off, l)
         |> List.filter (fun (_, raw) -> not (commentOnly raw))
-        |> List.map (fun (n, raw) -> n, (Script.stripComment raw).TrimEnd())
+        |> List.map (fun (n, raw) -> n, (Script.stripComment raw).TrimEnd(parserWs))
         |> Script.assemble
+
+    let logicalOf = logicalAt 0
 
     let texts (lls: Script.LogicalLine list) = lls |> List.map (fun ll -> ll.Text)
 
@@ -209,7 +218,7 @@ let private formatLinesCore (body: string list) : Result<string list, string> =
             | Ok a, Ok b when texts a = texts b -> candidate
             | _ -> body
 
-    match logicalOf body with
+    match logicalAt lineOffset body with
     | Error e -> Error $"cannot format: {e} (fix errors first)"
     | Ok originalLogical ->
 
@@ -245,14 +254,14 @@ let private formatLinesCore (body: string list) : Result<string list, string> =
             body
             |> List.map (fun raw ->
                 let code = Script.stripComment raw
-                let content = raw.TrimStart().TrimEnd()
+                let content = raw.TrimStart(parserWs).TrimEnd(parserWs)
 
-                if raw.Trim() = "" then
+                if raw.Trim(parserWs) = "" then
                     // blanks never end statements [D:body-blanks]: all
                     // state survives the gap; the col-0 branches reset
                     // levels/matches at real statement boundaries
                     ""
-                elif code.Trim() = "" then
+                elif code.Trim(parserWs) = "" then
                     // comment-only: transparent to assembly [D:comment-transparency];
                     // keep it verbatim and leave formatter state alone
                     // — except inside a yaml district, where the line
@@ -273,10 +282,10 @@ let private formatLinesCore (body: string list) : Result<string list, string> =
                         // offset, clamped to stay inside the district
                         String.replicate (max (mDepth * 4 + 1) ((mDepth + 1) * 4 + (cIndent - b))) " "
                         + raw.Substring(min cIndent raw.Length)
-                    | _ -> raw.TrimEnd()
+                    | _ -> raw.TrimEnd(parserWs)
                 else
                     let indent = code |> Seq.takeWhile ((=) ' ') |> Seq.length
-                    let piece = code.TrimStart()
+                    let piece = code.TrimStart(parserWs)
 
                     match district with
                     | Some(m, mDepth) when indent > m ->
@@ -453,7 +462,7 @@ let private formatLinesCore (body: string list) : Result<string list, string> =
 
                             common 0
 
-                        let trimmed = code.TrimEnd()
+                        let trimmed = code.TrimEnd(parserWs)
 
                         let pushed =
                             newRaw
@@ -490,7 +499,7 @@ let private formatLinesCore (body: string list) : Result<string list, string> =
                         braces <- pushed @ (braces |> List.skip (List.length braces - survived))
                         formatted)
 
-        match logicalOf formatted with
+        match logicalAt lineOffset formatted with
         | Error e -> Error $"fmt safety check failed (file left unchanged): {e}"
         | Ok formattedLogical ->
             if texts originalLogical <> texts formattedLogical then
@@ -547,7 +556,7 @@ let private formatLinesCore (body: string list) : Result<string list, string> =
                         // respace the code only; the gap before a
                         // trailing comment is alignment and survives
                         let code = Script.stripComment raw
-                        let codeTrim = code.TrimEnd()
+                        let codeTrim = code.TrimEnd(parserWs)
 
                         Script.respaceLine codeTrim
                         + code.Substring codeTrim.Length
@@ -594,8 +603,60 @@ let private formatLinesCore (body: string list) : Result<string list, string> =
 
                     Ok final
 
-let formatLines (body: string list) : Result<string list, string> =
-    formatLinesCore body |> Result.map canonicalizeDocs
+// fmt is idempotent on everything it accepts: a layout that moves again
+// on a second pass (mismatched brackets the re-indenter cannot place) is
+// refused, never written to flip-flop between two forms
+let private formatSettled (lineOffset: int) (body: string list) : Result<string list, string> =
+    let once = formatLinesCore lineOffset body |> Result.map canonicalizeDocs
+
+    match once with
+    | Ok first ->
+        match formatLinesCore lineOffset first |> Result.map canonicalizeDocs with
+        | Ok second when second = first -> once
+        | Ok second ->
+            let moved =
+                Seq.zip first second
+                |> Seq.tryFindIndex (fun (a, b) -> a <> b)
+                |> Option.defaultValue (min first.Length second.Length)
+
+            Error
+                $"cannot format: line {moved + 1 + lineOffset}: the layout does not settle — a bracket is likely mismatched (fix errors first)"
+        | Error e -> Error e
+    | Error e -> Error e
+
+let formatLines (body: string list) : Result<string list, string> = formatSettled 0 body
+
+/// The one formatter entry point for `weir fmt` and the LSP's
+/// formatting request [D:fmt-v1]: a source text in, its canonical lines
+/// out, plus whether they differ from the source. The shebang line
+/// rides verbatim (never formatted), an error names the file's own line
+/// number, and the canonical text ends in exactly one newline — a
+/// source without it is not canonical. CRLF reads as LF.
+let formatSource (text: string) : Result<string list * bool, string> =
+    let normalized = text.Replace("\r\n", "\n")
+
+    let lines =
+        if normalized = "" then
+            []
+        else
+            let all = normalized.Split '\n' |> Array.toList
+
+            if normalized.EndsWith "\n" then
+                List.take (all.Length - 1) all
+            else
+                all
+
+    let finalNewline = normalized = "" || normalized.EndsWith "\n"
+
+    let header, body =
+        match lines with
+        | first :: rest when first.StartsWith "#!" -> [ first ], rest
+        | _ -> [], lines
+
+    formatSettled header.Length body
+    |> Result.map (fun formattedBody ->
+        let result = header @ formattedBody
+        result, (result <> lines || not finalNewline))
 
 // #save's bare-alias qualifier [D:repl-save]: a saved script is
 // strict, where bare aliases (`map`, `where`, `startsWith`) do not
@@ -709,21 +770,15 @@ let formatFile (checkOnly: bool) (path: string) : int =
     | Error msg ->
         System.Console.Error.WriteLine $"weir: {msg}"
         2
-    | Ok lines ->
-
-        let header, body =
-            match lines with
-            | first :: rest when first.StartsWith "#!" -> [ first ], rest
-            | _ -> [], lines
-
-        match formatLines body with
+    | Ok _ ->
+        // the entry read validated the file [D:source-utf8]; the formatter
+        // takes the raw text so a BOM and the shebang survive verbatim
+        match formatSource (System.IO.File.ReadAllText path) with
         | Error msg ->
             System.Console.Error.WriteLine $"weir fmt: {msg}"
             3
-        | Ok formattedBody ->
-            let result = header @ formattedBody
-
-            if result = lines then
+        | Ok(result, changed) ->
+            if not changed then
                 if not checkOnly then
                     System.Console.Error.WriteLine "weir fmt: already formatted"
 
@@ -733,7 +788,14 @@ let formatFile (checkOnly: bool) (path: string) : int =
                 1
             else
                 try
-                    System.IO.File.WriteAllLines(path, result)
+                    // a leading BOM is kept: the reader strips exactly one, so
+                    // dropping it would expose a second one to the parser
+                    let bom =
+                        use f = System.IO.File.OpenRead path
+                        let head = Array.zeroCreate<byte> 3
+                        f.Read(head, 0, 3) = 3 && head = [| 0xEFuy; 0xBBuy; 0xBFuy |]
+
+                    System.IO.File.WriteAllLines(path, result, System.Text.UTF8Encoding(bom))
                     System.Console.Error.WriteLine $"weir fmt: formatted {path}"
                     0
                 with

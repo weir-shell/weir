@@ -111,6 +111,10 @@ let private writeId (w: Text.Json.Utf8JsonWriter) (id: MsgId) =
     | IdNum n -> w.WriteNumber("id", n)
     | IdStr s -> w.WriteString("id", s)
 
+// the last request answered — the dispatch backstop reads it so a
+// handler that throws after answering is not answered twice
+let mutable private lastAnswered: MsgId option = None
+
 let private respond (id: MsgId) (writeResult: Text.Json.Utf8JsonWriter -> unit) =
     send (
         Script.jsonBuild (fun w ->
@@ -121,6 +125,36 @@ let private respond (id: MsgId) (writeResult: Text.Json.Utf8JsonWriter -> unit) 
             writeResult w
             w.WriteEndObject())
     )
+
+    lastAnswered <- Some id
+
+// JSON-RPC error codes: every request is answered
+// — with a result or with one of these. No id (an unparseable message)
+// answers with a null id, as JSON-RPC prescribes.
+let private parseError = -32700
+let private invalidRequest = -32600
+let private methodNotFound = -32601
+let private internalError = -32603
+
+let private respondError (id: MsgId option) (code: int) (message: string) =
+    send (
+        Script.jsonBuild (fun w ->
+            w.WriteStartObject()
+            w.WriteString("jsonrpc", "2.0")
+
+            match id with
+            | Some i -> writeId w i
+            | None -> w.WriteNull "id"
+
+            w.WritePropertyName "error"
+            w.WriteStartObject()
+            w.WriteNumber("code", code)
+            w.WriteString("message", message)
+            w.WriteEndObject()
+            w.WriteEndObject())
+    )
+
+    lastAnswered <- id
 
 let private notify (method: string) (writeParams: Text.Json.Utf8JsonWriter -> unit) =
     send (
@@ -2027,7 +2061,7 @@ let run (debug: bool) : int =
 
                     if l = "" then
                         headerDone <- contentLength >= 0
-                    elif l.StartsWith "Content-Length:" then
+                    elif l.StartsWith("Content-Length:", StringComparison.OrdinalIgnoreCase) then
                         match Int64.TryParse(l.Substring(15).Trim()) with
                         | true, n when n >= 0L && n <= int64 Int32.MaxValue -> contentLength <- int n
                         // a length that overflows Int32 is definitively
@@ -2198,6 +2232,9 @@ let run (debug: bool) : int =
 
     let mutable running = true
     let mutable exitCode = 0
+    // after `shutdown` only `exit` is served; an `exit` without it ends
+    // with 1, as the LSP lifecycle prescribes
+    let mutable shutDown = false
 
     while running do
         match readMessage () with
@@ -2208,9 +2245,13 @@ let run (debug: bool) : int =
                 try
                     JsonDocument.Parse raw
                 with _ ->
-                    JsonDocument.Parse "{}"
+                    respondError None parseError "Parse error: the message is not JSON"
+                    JsonDocument.Parse "null"
 
             let msg = doc.RootElement
+
+            if msg.ValueKind <> JsonValueKind.Object && msg.ValueKind <> JsonValueKind.Null then
+                respondError None invalidRequest "Invalid Request: a message is a JSON object"
 
             if msg.ValueKind = JsonValueKind.Object then
                 let idStr =
@@ -2244,11 +2285,20 @@ let run (debug: bool) : int =
                         | Some l, Some c -> Some(l + 1, c + 1) // to 1-based
                         | _ -> None)
 
+                lastAnswered <- None
+
                 // a malformed request (bad URI, bad params) must not kill
                 // the server [D:windows-s3] — one bad document becomes a
                 // logged skip, the server keeps serving
                 try
                     match method with
+                    | "exit" ->
+                        exitCode <- if shutDown then 0 else 1
+                        running <- false
+                    | _ when shutDown ->
+                        idStr
+                        |> Option.iter (fun id ->
+                            respondError (Some id) invalidRequest $"Invalid Request: '{method}' after shutdown")
                     | "initialize" ->
                         // resolve relative-path command heads against the
                         // workspace root, not the server's launch cwd — editors
@@ -2277,8 +2327,9 @@ let run (debug: bool) : int =
                                         .Replace("__WEIR_VERSION__", Weir.Version.current)
                                 )))
                     | "initialized" -> ()
-                    | "shutdown" -> idStr |> Option.iter (fun id -> respond id (fun w -> w.WriteNullValue()))
-                    | "exit" -> running <- false
+                    | "shutdown" ->
+                        shutDown <- true
+                        idStr |> Option.iter (fun id -> respond id (fun w -> w.WriteNullValue()))
                     | "textDocument/didOpen" ->
                         (match jObj "textDocument" ps with
                          | Some td ->
@@ -2503,17 +2554,17 @@ let run (debug: bool) : int =
                         idStr |> Option.iter (fun id -> respond id writeResult)
                     | "textDocument/formatting" ->
                         // client-sent text only (the security non-claim holds);
-                        // editor options are ignored — weir fmt is canonical.
-                        // formatLines keeps unparseable statements verbatim, so
-                        // format-on-save on a broken file still normalizes what
-                        // it can; an assemble failure returns no edits.
+                        // editor options are ignored — weir fmt is canonical,
+                        // and this is its own entry point (Fmt.formatSource):
+                        // the edit is what `weir fmt` would write, and where
+                        // the CLI refuses there are no edits.
                         let writeResult (w: Text.Json.Utf8JsonWriter) =
                             match docOf () with
                             | Some(_, text) ->
                                 let lines = text.Replace("\r\n", "\n").Split('\n') |> Array.toList
 
-                                match Fmt.formatLines lines with
-                                | Ok formatted when formatted <> lines ->
+                                match Fmt.formatSource text with
+                                | Ok(formatted, true) ->
                                     let arr = List.toArray lines
                                     let lastIdx = arr.Length - 1
                                     w.WriteStartArray()
@@ -2531,7 +2582,7 @@ let run (debug: bool) : int =
                                     w.WriteNumber("character", arr[lastIdx].Length)
                                     w.WriteEndObject()
                                     w.WriteEndObject()
-                                    w.WriteString("newText", String.concat "\n" formatted)
+                                    w.WriteString("newText", String.concat "\n" formatted + "\n")
                                     w.WriteEndObject()
                                     w.WriteEndArray()
                                 | _ -> w.WriteNullValue() // refusal or already canonical
@@ -2959,10 +3010,23 @@ let run (debug: bool) : int =
                                 w.WriteEndArray()
 
                         idStr |> Option.iter (fun id -> respond id writeResult)
+                    | "" when (tryProp "result" msg).IsSome || (tryProp "error" msg).IsSome -> () // a client response
+                    | "" ->
+                        idStr
+                        |> Option.iter (fun id -> respondError (Some id) invalidRequest "Invalid Request: no method")
                     | _ ->
-                        // unknown request: respond null; unknown notification: ignore
-                        idStr |> Option.iter (fun id -> respond id (fun w -> w.WriteNullValue()))
+                        // unknown request: MethodNotFound; unknown notification: ignore
+                        idStr
+                        |> Option.iter (fun id ->
+                            respondError (Some id) methodNotFound $"Method not found: '{method}'")
                 with ex ->
                     Console.Error.WriteLine $"weir lsp: request '{method}' failed: {ex.Message}"
+
+                    // a request is always answered — a throwing handler
+                    // answers with an error, never silence
+                    match idStr with
+                    | Some id when lastAnswered <> Some id ->
+                        respondError (Some id) internalError $"Internal error: '{method}' failed: {ex.Message}"
+                    | _ -> ()
 
     exitCode

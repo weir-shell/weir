@@ -58,7 +58,9 @@ usage: weir                                    the REPL
   `--json` gives machine-readable output.
 - `weir fmt script.weir` — format the script in place. With
   `--check`, it doesn't write anything and exits nonzero if the file
-  isn't formatted, which is what you want in CI.
+  isn't formatted, which is what you want in CI. A shebang line is
+  left exactly as written, and a formatted file ends in one newline.
+  A file that doesn't parse is not touched; the error names its line.
 
 ### The project subcommands
 

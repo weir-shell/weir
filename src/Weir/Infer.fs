@@ -390,8 +390,9 @@ let private mergeElems (note: Note -> unit) (path: string) (items: INode list) :
     | [] -> None
     | first :: rest -> Some(rest |> List.fold (mergeTwo note path) first |> openMaps note path)
 
-// `srcKey` is the wire key (or top name) that produced `desired` — the
-// shadow note names the user's own spelling, not the derived stem
+// `srcKey` is the wire key (or top name) that produced `desired` — every
+// note names the user's own spelling (the drafted field), not the derived
+// type stem
 let rec private shapeOf (reg: Registry) (desired: string) (srcKey: string) (parentStem: string) (node: INode) : string =
     match node with
     | IStr -> "string"
@@ -400,7 +401,7 @@ let rec private shapeOf (reg: Registry) (desired: string) (srcKey: string) (pare
     | IBool -> "bool"
     | INull ->
         // a null field cannot be inferred — Option<string> + a note
-        reg.AddNote $"a null value under '{desired}' — inferred Option<string> (edit if the real type is known)"
+        reg.AddNote $"a null value under '{srcKey}' — inferred Option<string> (edit if the real type is known)"
         "Option<string>"
     | IOpt inner ->
         // a merge verdict: the key is absent (or null) in some of the
@@ -416,7 +417,7 @@ let rec private shapeOf (reg: Registry) (desired: string) (srcKey: string) (pare
         // No evidence for V, so string, with a note (as for empty
         // arrays); the mapping shape reads on both wire boundaries,
         // which an opaque Yaml field does not
-        reg.AddNote $"an empty mapping under '{desired}' — no entries to infer, drafted as seq<string * string> (edit if the real shape is known)"
+        reg.AddNote $"an empty mapping under '{srcKey}' — no entries to infer, drafted as seq<string * string> (edit if the real shape is known)"
         "seq<string * string>"
     | IObj fields ->
         match detectOpenMap fields with
@@ -439,7 +440,7 @@ let rec private shapeOf (reg: Registry) (desired: string) (srcKey: string) (pare
 
             if List.length spellable < List.length fields then
                 reg.AddNote
-                    $"an empty-string key under '{desired}' — no field name can spell it and [<Wire>] refuses an empty wire key, so the key is DROPPED from the draft (reading tolerates the extra key)"
+                    $"an empty-string key under '{srcKey}' — no field name can spell it and [<Wire>] refuses an empty wire key, so the key is DROPPED from the draft (reading tolerates the extra key)"
 
             match spellable with
             | [] ->
@@ -463,7 +464,7 @@ let rec private shapeOf (reg: Registry) (desired: string) (srcKey: string) (pare
     | IArr items ->
         match items with
         | [] ->
-            reg.AddNote $"an empty array under '{desired}' — element type unknown, inferred seq<string> (edit if known)"
+            reg.AddNote $"an empty array under '{srcKey}' — element type unknown, inferred seq<string> (edit if known)"
             "seq<string>"
         | _ ->
             // array elements merge [D:repl-infer]: the element type is
@@ -471,7 +472,7 @@ let rec private shapeOf (reg: Registry) (desired: string) (srcKey: string) (pare
             // Option, conflicts keep the first with a verify note
             match mergeElems reg.AddNote srcKey items with
             | None ->
-                reg.AddNote $"an all-null array under '{desired}' — inferred seq<Option<string>> (edit if known)"
+                reg.AddNote $"an all-null array under '{srcKey}' — inferred seq<Option<string>> (edit if known)"
                 "seq<Option<string>>"
             | Some elem ->
                 // the element of a seq-of-record takes the singularised
