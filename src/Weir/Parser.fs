@@ -5570,6 +5570,13 @@ let private pipeToCommand (r: Resolver) (root: Expr) : (Span * string option) op
     // statement mis-reads as a program (the acme port's false positive).
     // Bindings beat PATH, block-locals included.
     let rec walk (bound: Set<string>) (e: Expr) =
+        // a long block is width to the parser [D:block-width] but depth to
+        // this walk: on a small stack (a test host, an embedder) it stops
+        // with the depth diagnostic instead of overflowing; the CLI's
+        // 256MB thread never gets here
+        if not (System.Runtime.CompilerServices.RuntimeHelpers.TryEnsureSufficientExecutionStack()) then
+            raise (DepthExceeded e.Span.Start)
+
         let kids b = exprChildren e |> List.tryPick (walk b)
 
         match e.Kind with
