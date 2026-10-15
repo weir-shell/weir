@@ -1,5 +1,32 @@
 # Spike Notes
 
+## W6 — regression automation (2026-10-15)
+
+The two bug hunts' acceptance harnesses (tools/sweep-repro.weir,
+tools/hunt2-repro.weir) were run by hand per stage and then by nobody.
+They now gate ci.yml's linux job and ci/local.sh [D:repro-gates].
+
+Ports [D:harness-ports]. hunt2's H14 once died `Address already in
+use` between `freePort` and the python server's bind. The old picker
+probed `Net.portOpen` over 20000..62000 — most of that is the Linux
+ephemeral range (32768-60999), where any outbound client socket (every
+curl and restore in the run) holds a local port that is NOT listening,
+so `portOpen` calls it free and the bind then fails. Python servers
+now bind port 0 and print the kernel's pick (no window at all); `within
+serve` is HttpListener, which takes no port 0, so its probes draw
+candidates from a per-run block in 20000..31999 and rerun on the next
+candidate when the bind is lost. Exercised by holding two candidates
+bound-but-not-listening: the serve landed on the third.
+
+Local gate vs CI. ci/local.sh already ran the default (Debug)
+configuration and dead-privates — the drift was in the ad-hoc gates
+sessions ran instead (`-c Release`), which hid a Debug-frame stack
+overflow, and a leftover private only CI's dead-privates caught. Both
+files now state `-c Debug` explicitly and the PROCESS rule names the
+battery. Also found: local.sh's image excluded .git (the root
+.dockerignore), so its decision-keys step (`git ls-files`) could not
+pass in the container; ci/run.Dockerfile.dockerignore keeps .git.
+
 ## NUL in a path — the resolve funnel guard (STRIX-5) (2026-09-21)
 
 A `.weir` file whose one line was `./a<NUL>b c` did not error — it

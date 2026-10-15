@@ -1,0 +1,4 @@
+**/bin
+**/obj
+site/node_modules
+site/dist

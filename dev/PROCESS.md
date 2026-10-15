@@ -508,3 +508,14 @@ rename the file, do not fork the parser. Tree-checking harnesses
 different inputs, so the split is real. Ruled with the fourth-harness
 question in view, before the second harness existed
 [D:derived-prints].
+
+## The local gate is CI's configuration
+
+A stage gate run by hand uses the configuration CI uses, never a
+faster neighbour: the unit suite is `dotnet test
+tests/Weir.Tests/Weir.Tests.fsproj -c Debug` (Debug frames are larger —
+a Release-only gate hid a stack overflow CI then hit), and the gate
+includes `weir tools/dead-privates.weir` and both repro harnesses
+(`tools/sweep-repro.weir`, `tools/hunt2-repro.weir`, `--bin` the build
+under test). `ci/local.sh` is the full mirror; a partial hand gate
+names what it skipped [D:repro-gates].
