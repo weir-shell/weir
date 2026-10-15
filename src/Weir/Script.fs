@@ -2498,7 +2498,9 @@ let statementCount (bufLines: string list) : int option =
 /// more). Drives the piped REPL's read-ahead so a multi-line statement
 /// assembles the way a script does.
 let pipedAttaches (buf: string list) (next: string) : bool =
-    if classifyLine next <> LineKind.Code then
+    // a column-0 `#` line is a directive, one line by definition — it
+    // never continues the statement above it [D:repl-multiline]
+    if classifyLine next <> LineKind.Code || next.StartsWith "#" then
         false
     else
         match statementCount buf, statementCount (buf @ [ next ]) with

@@ -2443,6 +2443,13 @@ let boundaryTests =
               // a blank/comment line breaks a completed statement (no attach)
               Expect.isFalse (Weir.Script.pipedAttaches [ "let x = 1" ] "") "a blank line breaks a completed statement"
               Expect.isFalse (Weir.Script.pipedAttaches [ "let x = 1" ] "// c") "a comment line breaks a completed statement"
+              // a directive is one line: it never joins a block whose next
+              // line could still continue it (match arms, a |> chain)
+              Expect.isFalse
+                  (Weir.Script.pipedAttaches [ "match 1 with"; "| 1 -> \"one\""; "| _ -> \"other\"" ] "#echo")
+                  "a directive after match arms does not attach"
+              Expect.isFalse (Weir.Script.pipedAttaches [ "let xs ="; "    [1]"; "    |> Seq.map id" ] "#help") "a directive after a |> chain does not attach"
+              Expect.isTrue (Weir.Script.pipedAttaches [ "let block = <<<"; "    a" ] "    #b") "an indented # line in a heredoc body still attaches"
           }
           test "block scalars read: | and |- chomp semantically; content is bytes [D:block-scalars]" {
               let blockText d =

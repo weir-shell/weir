@@ -52,6 +52,14 @@
 - **A tuple alone on its own line in a multi-line list no longer warns.**
   `env = [` / `"A", "b"` / `]` is one pair per line, not the `[1, 2]`
   comma habit; a single-line `["a", 1]` still warns.
+- **A directive right after a multi-line statement runs in a piped
+  REPL.** After match arms or a `|>` chain, `#echo` (any `#` line) was
+  glued onto the statement and reported as a parse error.
+- **A mistyped `--help`, `check` flag or `fmt` flag gets a "did you
+  mean"** (`weir --hlep`, `weir check --cna`); only other top-level
+  options got one.
+- Docs: `-e` echoes its result with the type (`3 : int`); a
+  whole-document `from json Map<string, T>` needs a record `T`.
 
 ## v0.0.74
 

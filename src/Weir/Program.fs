@@ -291,7 +291,7 @@ let main argv =
                 2
 
             match flags |> List.tryFind (fun f -> not (known.Contains f)), paths with
-            | Some f, _ -> usage $"unknown flag {f}"
+            | Some f, _ -> usage $"unknown flag {f}{didYouMean f known}"
             | None, [] -> usage "which script? — give its path"
             | None, _ :: _ :: _ -> usage $"""one script at a time — got {paths |> String.concat " "}"""
             | None, [ path ] ->
@@ -314,7 +314,7 @@ let main argv =
                 2
 
             match flags |> List.tryFind (fun f -> f <> "--check"), paths with
-            | Some f, _ -> usage $"unknown flag {f}"
+            | Some f, _ -> usage $"""unknown flag {f}{didYouMean f [ "--check" ]}"""
             | None, [] -> usage "which script? — give its path"
             | None, _ :: _ :: _ -> usage $"""one script at a time — got {paths |> String.concat " "}"""
             | None, [ path ] -> Fmt.formatFile (List.contains "--check" flags) path
@@ -691,7 +691,7 @@ let main argv =
             2
         | opt :: _ when opt.StartsWith "-" && opt <> "--help" && opt <> "-h" ->
             let spellings =
-                [ "-e"; "--version"; "check"; "fmt"; "lsp"; "add"; "gen"; "restore"; "verify" ]
+                [ "-e"; "--help"; "--version"; "check"; "fmt"; "lsp"; "add"; "gen"; "restore"; "verify" ]
 
             Console.Error.WriteLine $"weir: unknown option '{opt}'{didYouMean opt spellings} (weir --help for usage)"
             2

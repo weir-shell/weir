@@ -11782,4 +11782,36 @@ echo "$out" | grep -qF "nests deeper than 100" || fail "emitter depth cap messag
 echo "e2e ok: STRIX-6 — a 100k-deep 'to yaml' hits the emitter cap (no crash)"
 rm -rf "$s6dir"
 
+# ---- W2 docs-vs-binary: GUIDE/tooling/repl claims no fence pins
+w2dir=$(mkweirtmp)
+# tooling.md: a mistyped option gets the closest one, top level and per subcommand
+out=$($BIN --hlep 2>&1) && fail "--hlep must exit 2" || true
+expect "a mistyped --help suggests it" "Did you mean '--help'?" "$out"
+out=$($BIN check --cna x.weir 2>&1) && fail "check --cna must exit 2" || true
+expect "a mistyped check flag suggests the closest" "Did you mean '--can'?" "$out"
+out=$($BIN fmt --chek x.weir 2>&1) && fail "fmt --chek must exit 2" || true
+expect "a mistyped fmt flag suggests the closest" "Did you mean '--check'?" "$out"
+# repl.md: a directive is always a single line — even right after match
+# arms or a |> chain, whose next line could still have continued them
+printf 'match 1 with\n| 1 -> "one"\n| _ -> "other"\n#echo\nlet xs =\n    [1]\n    |> Seq.map id\n#echo\n#quit\n' >"$w2dir/in.txt"
+out=$(cd "$w2dir" && XDG_CONFIG_HOME="$w2dir/cfg" XDG_STATE_HOME="$w2dir/st" "$BIN" <"$w2dir/in.txt" 2>&1)
+[ "$(echo "$out" | grep -c 'echo cap: 100')" = 2 ] || fail "a directive after a block must run as a directive: $out"
+echo "$out" | grep -qF "parse error" && fail "a directive after a block must not be parsed as code: $out"
+echo "e2e ok: piped REPL — a directive never continues the block above it"
+# GUIDE "Lazy values": the stated outputs of the within cd / within env example
+cat >"$w2dir/lazy.weir" <<'WEOF'
+Dir.create "proj/src"
+File.write "proj/a.txt" ["a"]
+File.write "proj/src/b.txt" ["b"]
+cd "proj"
+let top = ls |> Seq.map _.name
+let inside = within cd "src" (ls |> Seq.map _.name)
+let greet = within env [Env.pair "GREETING" "hi"] $(sh -c "echo ${GREETING:-unset}")
+cd "src"
+print $"{show top}|{show inside}|{show greet}"
+WEOF
+out=$(cd "$w2dir" && "$BIN" lazy.weir 2>&1) || fail "GUIDE lazy-values example: $out"
+expect "GUIDE lazy values: read late, within cd/env keep their scope" '["b.txt"]|["b.txt"]|["hi"]' "$out"
+rm -rf "$w2dir"
+
 echo "e2e battery: all green"

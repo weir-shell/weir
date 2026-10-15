@@ -1805,6 +1805,11 @@ let private readRedirected () : string =
                 Console.Write prompt
                 null
             | _ -> ret (List.rev acc)
+        // a column-0 directive never continues an open statement: it
+        // ends the entry and is read next as its own line
+        | line when not (List.isEmpty acc) && line.StartsWith "#" ->
+            pendingLine <- Some line
+            ret (List.rev acc)
         | line ->
             let acc' = line :: acc
             let buf = List.rev acc'
