@@ -1,7 +1,6 @@
 # PLAN — daily driver: a day of use without a crash or surprise
 
-Status: PARKED until v0.0.74 (the second bug hunt's fixes) is pushed
-(user, 2026-10-14). Definition confirmed by the user (below).
+Status: READY — v0.0.74 landed (2026-10-15); not started. Definition confirmed by the user (below).
 
 ## The goal (user, 2026-10-14)
 
@@ -76,7 +75,15 @@ CHANGELOG section entry with a one-line migration; still no shims pre-1.0.
 
 ### W6 — Regression automation (1 session)
 - Run `tools/sweep-repro.weir` and `tools/hunt2-repro.weir` in CI (a
-  Linux job; each must print all OK).
+  Linux job; each must print all OK). First harden their free-port
+  picking: H14's probe once lost its port between pick and bind
+  (`Address already in use`).
+- Make the local gate match CI: run the unit suite in Debug (CI's
+  configuration — Release hid the Debug-frame stack overflow) and run
+  `tools/dead-privates.weir` (H1 left `seqStr` behind; only CI caught it).
+- Pin down the Linux-CI-only fuzz failure at `--seed 4242 --count 10`
+  (one property of 46; passes locally) — the e2e cell now prints the
+  failing property and its input.
 - Add the invariants hunt 2 found to `tools/fuzz.weir` / Weir.Fuzz: no
   "internal error" output, no exit code ≥ 128, `fmt` idempotent, `fmt` never
   changes whether a file checks, no line:col past the end of its line.
@@ -145,5 +152,6 @@ The swing factors are what W1 turns up and how much of W4 is "in".
 ## Memory constraint
 
 Until the new host arrives: at most two heavy dotnet agents at a time with
-the memory flags (no node reuse, `-m:1`, capped test heap), scratch and
+the memory flags (no node reuse, `-m:1`, `DOTNET_GCHeapHardLimit=3GB` on
+every .NET process — that cap is what stopped the OOM restarts), scratch and
 binaries under /output/wt, never /tmp.
