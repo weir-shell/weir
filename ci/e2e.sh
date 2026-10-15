@@ -579,6 +579,29 @@ WEOF
     echo "e2e ok: a closed stdout ends the script with 141, always runs, the child is reaped"
 fi
 
+# docs-vs-binary prose pins (SKILL.md claims no fence covers)
+dvdir=$(mkweirtmp)
+printf 'print "one"\nprinterr "two"\nprint "three"\nsh -c "echo four >&2"\nprint "five"\n' > "$dvdir/il.weir"
+$BIN "$dvdir/il.weir" > "$dvdir/il.log" 2>&1 || fail "interleave script must run"
+[ "$(cat "$dvdir/il.log")" = "one
+two
+three
+four
+five" ] || fail "> log 2>&1 keeps every stdout line in order [D:stdout-epipe]: $(cat "$dvdir/il.log")"
+printf 'no-such-cmd-zz a\n' > "$dvdir/dash.weir"
+$BIN check "$dvdir/dash.weir" >/dev/null 2>&1 || fail "check only warns on a missing command"
+out=$($BIN "$dvdir/dash.weir" 2>&1) && fail "a missing dashed command must fail the run"
+expect "a dashed missing command is named whole at run" "unknown command 'no-such-cmd-zz'" "$out"
+out=$($BIN -e 'let n = echo a | complete in n.exitCode' 2>&1) && fail "a reifier in single-line let…in must refuse"
+expect "a reifier in single-line let…in teaches \$()" "wrap the chain: \$(<command> | complete)" "$out"
+out=$($BIN -e 'echo $HOME' 2>&1) && fail "\$HOME in argv is a splice, not env expansion"
+expect "\$HOME in argv is an unbound splice" "unbound variable 'HOME'" "$out"
+mkdir -p "$dvdir/g/a/b"
+touch "$dvdir/g/x.fs" "$dvdir/g/a/y.fs" "$dvdir/g/a/b/z.fs" "$dvdir/g/a/b.fs"
+out=$(cd "$dvdir/g" && $BIN -e 'Path.glob "**/*.fs" |> Str.join ","')
+expect "Path.glob sorts per level, files before subdirectories" '"x.fs,a/b.fs,a/y.fs,a/b/z.fs"' "$out"
+rm -rf "$dvdir"
+
 # a 2-param generic union checks + evals through the binary (was the
 # prelude-Result pin; Result removed [D:no-result], the fixture is now a
 # locally-declared Either)

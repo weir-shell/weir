@@ -584,6 +584,12 @@ type private EpipeWriter(inner: System.IO.StreamWriter) =
     override this.WriteLine(s: string) = this.Guard(fun () -> inner.WriteLine s)
     override this.Flush() = this.Guard ignore
 
+/// only a non-seekable stdout (pipe, FIFO, socket) can EPIPE; a seekable
+/// one (a regular file) must keep the default writer — a FileStream on
+/// fd 1 writes at its own cached offset and overwrites whatever stderr
+/// put in a shared `> log 2>&1` file [D:stdout-epipe]
+let armsStdoutFor (fd1: System.IO.Stream) : bool = not fd1.CanSeek
+
 /// route Console.Out through EpipeWriter when stdout is redirected
 /// (POSIX: a terminal never EPIPEs, and Windows keeps its console stream)
 let armStdout () : unit =
@@ -595,11 +601,14 @@ let armStdout () : unit =
                 1
             )
 
-        let inner =
-            new System.IO.StreamWriter(fd1, System.Text.UTF8Encoding(false), 4096)
+        if not (armsStdoutFor fd1) then
+            fd1.Dispose()
+        else
+            let inner =
+                new System.IO.StreamWriter(fd1, System.Text.UTF8Encoding(false), 4096)
 
-        inner.NewLine <- System.Console.Out.NewLine
-        System.Console.SetOut(System.IO.TextWriter.Synchronized(new EpipeWriter(inner)))
+            inner.NewLine <- System.Console.Out.NewLine
+            System.Console.SetOut(System.IO.TextWriter.Synchronized(new EpipeWriter(inner)))
 
 // a second signal during teardown hard-exits [D:signal-teardown] — the
 // shell's double-Ctrl+C escape, so a slow or stuck cleanup can never

@@ -26009,11 +26009,62 @@ let sweepFindingTests =
               Expect.isFalse (m |> List.exists (fun s -> s.Contains "'!'")) "no '!' in the expectation list"
           } ]
 
+let docsBinaryTests =
+    let stmtMsg (line: string) =
+        let ll =
+            match Weir.Script.assemble [ 1, line ] with
+            | Ok [ ll ] -> ll
+            | other -> failtest $"assembly: {other}"
+
+        match
+            Weir.Script.checkStatement
+                false
+                None
+                Weir.Script.resolver
+                Weir.Script.scriptOnlyImport
+                Weir.Builtins.typeEnvStrict
+                ll
+        with
+        | Error d -> d.Message
+        | Ok _ -> failtest $"expected {line} to fail"
+
+    testList
+        "docs vs binary"
+        [ test "a dashed missing head names the program, not its first segment [D:missing-command-diagnosis]" {
+              let m = stmtMsg "no-such-cmd-zz a"
+              Expect.stringContains m "unknown command 'no-such-cmd-zz'" "the program"
+              Expect.isFalse (m.Contains "unbound variable") "no subtraction reading"
+          }
+          test "a glued arithmetic typo stays an unbound variable [D:missing-command-diagnosis]" {
+              Expect.stringContains (stmtMsg "let y = lenth-1") "unbound variable" "arithmetic, not a program"
+          }
+          test "an exact reifier in a refused position teaches $(), never 'did you mean' itself [D:statement-lets]" {
+              let m = stmtMsg "let n = echo a | complete in n.exitCode"
+              Expect.stringContains m "'complete' is a reifier" "names the reifier"
+              Expect.stringContains m "$(<command> | complete)" "the repair"
+              Expect.isFalse (m.Contains "Did you mean") "no self-suggestion"
+          }
+          test "a seekable stdout keeps the default writer; a pipe arms EPIPE [D:stdout-epipe]" {
+              let path = System.IO.Path.GetTempFileName()
+
+              try
+                  use f = new System.IO.FileStream(path, System.IO.FileMode.Open)
+                  Expect.isFalse (Weir.Session.armsStdoutFor f) "a regular file shares its offset with stderr"
+              finally
+                  System.IO.File.Delete path
+
+              use pipe =
+                  new System.IO.Pipes.AnonymousPipeServerStream(System.IO.Pipes.PipeDirection.Out)
+
+              Expect.isTrue (Weir.Session.armsStdoutFor pipe) "a pipe can EPIPE"
+          } ]
+
 [<Tests>]
 let allTests =
     testList
         "Weir"
         [ hardeningTests
+          docsBinaryTests
           sweepFindingTests
           runsCommandReifierTests
           hoverReflowTests

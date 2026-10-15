@@ -60,6 +60,18 @@
   options got one.
 - Docs: `-e` echoes its result with the type (`3 : int`); a
   whole-document `from json Map<string, T>` needs a record `T`.
+- **`weir s.weir > log 2>&1` keeps all of stdout.** Stdout written to a
+  regular file shared with stderr overwrote stderr's lines and lost its
+  own; output now lands in order.
+- **A missing dashed command is named at run.** `no-such-tool a` said
+  `unbound variable 'no'` where `weir check` warned about the command;
+  it now says `unknown command 'no-such-tool'`.
+- **A reifier in a single-line `let … in` teaches `$()`.** It said
+  `unknown command 'complete' … Did you mean the reifier 'complete'?`.
+- **Docs:** SKILL.md prose corrected against the binary (`print` and argv
+  splices take `Uuid`, `isEmpty` is qualified-only in the REPL, `$HOME`
+  in argv is a splice, `&&` warns, `Path.glob` sorts per level, and
+  smaller wording fixes).
 
 ## v0.0.74
 

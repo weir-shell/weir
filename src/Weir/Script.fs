@@ -3506,7 +3506,7 @@ let private checkStatementCore
     // a command head not on PATH, named precisely: the parse path's dump
     // and the runner's "unbound variable" for an unknown statement head both
     // come down to a missing program [D:missing-command-diagnosis]
-    let missingCommandDiag (onlyName: string option) : StmtDiag option =
+    let missingCommandDiag (onlyName: (string * bool) option) : StmtDiag option =
         let missingHeads =
             match Parser.parseLineFull (assumeResolver tenv) ll.Text with
             | Error _ -> []
@@ -3531,8 +3531,15 @@ let private checkStatementCore
 
                 e |> Option.map heads |> Option.defaultValue []
 
+        // the runner reads a dashed head as subtraction (`no-such-tool` as
+        // `no - …`) and reports its first segment unbound — no weir name has
+        // a dash, so it is the program even past a near-miss suggestion
+        // [D:missing-command-diagnosis]
+        let namesHead (n: string, suggested: bool) (prog: string) =
+            (n = prog && not suggested) || prog.StartsWith(n + "-")
+
         match missingHeads with
-        | (prog, span) :: rest when (match onlyName with Some n -> n = prog | None -> true) ->
+        | (prog, span) :: rest when (match onlyName with Some n -> namesHead n prog | None -> true) ->
             let physLine, physCol = translate ll span.Start.Col
 
             let others =
@@ -3568,6 +3575,10 @@ let private checkStatementCore
                              |> List.tryHead
 
                          match reifier with
+                         // an exact reifier read as a program: the position
+                         // refuses the chain, not the spelling [D:statement-lets]
+                         | Some(c, 0) when afterPipe ->
+                             $"'{c}' is a reifier, but this position is an expression — wrap the chain: $(<command> | {c}); bare command lets belong to statement bodies (top level, if/for/match arms, within blocks)"
                          | Some(c, _) when afterPipe ->
                              $"unknown command '{prog}' — not found on PATH. Did you mean the reifier '{c}'? (`<command> | {c}`)"
                          | _ ->
@@ -3809,8 +3820,8 @@ let private checkStatementCore
                 // a near-miss binding suggestion means a likely typo of a
                 // weir name: keep it; otherwise the head is a missing program
                 let unboundName =
-                    if terr.Message.StartsWith "unbound variable '" && not (terr.Message.Contains "Did you mean") then
-                        Some(terr.Message.Substring(18).Split('\'').[0])
+                    if terr.Message.StartsWith "unbound variable '" then
+                        Some(terr.Message.Substring(18).Split('\'').[0], terr.Message.Contains "Did you mean")
                     else
                         None
 
@@ -3887,8 +3898,8 @@ let private checkStatementCore
                 // a near-miss binding suggestion means a likely typo of a
                 // weir name: keep it; otherwise the head is a missing program
                 let unboundName =
-                    if terr.Message.StartsWith "unbound variable '" && not (terr.Message.Contains "Did you mean") then
-                        Some(terr.Message.Substring(18).Split('\'').[0])
+                    if terr.Message.StartsWith "unbound variable '" then
+                        Some(terr.Message.Substring(18).Split('\'').[0], terr.Message.Contains "Did you mean")
                     else
                         None
 
