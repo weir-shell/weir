@@ -22278,8 +22278,13 @@ let serveTests =
                   let buf = Array.zeroCreate<byte> 65536
                   let sb = System.Text.StringBuilder()
 
+                  // the first byte may wait on a cold listener (JIT, a loaded
+                  // CI runner); once a reply flows, a short quiet gap ends it
+                  c.ReceiveTimeout <- 10000
+
                   (try
                       let mutable n = st.Read(buf, 0, buf.Length)
+                      c.ReceiveTimeout <- 700
 
                       while n > 0 do
                           sb.Append(System.Text.Encoding.Latin1.GetString(buf, 0, n)) |> ignore
