@@ -56,7 +56,7 @@ stops being true fails the build.
   `where`, `sortBy`) exist in the REPL session ONLY, and the REPL's
   set is DERIVED [D:bare-partition]: every single-home member of
   `Seq`/`Str` is bare there; a name with two homes is qualified-only
-  everywhere — `contains`, `length` and `replicate`, the whole list. The qualified
+  everywhere — `contains`, `isEmpty`, `length` and `replicate`, the whole list. The qualified
   spelling always works. A bare name in a file errors naming the
   qualified spelling, and the LSP offers the rewrite as a code action.
 
@@ -95,7 +95,7 @@ print (show 1)
   shaped): to sequence AFTER an if, parenthesize it.
 - `;` does NOT chain commands: in a command line it is a literal argv
   word (you get a warning). One command per line.
-- `print` takes string, int, bool, or `seq<string>`. For records,
+- `print` takes string, int, float, bool, `Uuid`, or `seq<string>`. For records,
   unions, options: AN INTERPOLATION HOLE renders any Show value —
   `print $"{row}"` (only functions reject; a bare string hole stays
   raw/unquoted). `show x` produces the same text as a plain string;
@@ -105,7 +105,8 @@ print (show 1)
   [D:hole-generic]: `let addr s = $"{s.name}:{s.port}"` takes any
   record with those fields and any renderable field types (a Secret
   argument still refuses at the call); only a hole nothing generalizes
-  defaults to string. Command-argument splices stay string/int/bool. Lossy debug format (strings come quoted, long
+  defaults to string. Command-argument splices stay string/int/bool
+  (plus `Uuid` and `Secret`). Lossy debug format (strings come quoted, long
   seqs truncate); `print` remains the raw data channel. The REPL's
   echo is tighter still (100 unforced elements — `#echo` moves it,
   forced seqs echo whole; clipped strings, a hint naming the way
@@ -189,7 +190,7 @@ print (show (f 2))
   the source may be an expression — bare match/if need parens).
   Update never ADDS fields, and a row-typed updater
   (`let bump r = { r with N = r.N + 1 }`) generalizes to any record
-  with the field. A comma between fields is a parse error (F#
+  with the field. A comma between fields is refused (F#
   silently makes the field a TUPLE there; weir refuses the trap).
 - Type declarations and list literals continue across lines inside
   the open bracket (line break = separator; a dangling operator
@@ -377,9 +378,10 @@ print v
   `File.sha256 path` (streams internally — hash a file without loading
   it). The capture law scopes the type: bounded and in-memory (~2GB
   cap); a gigabyte artifact is not a value. Laws: `==` is byte
-  equality; no ordering; `print`, `to json`/`to yaml`, argv splices
-  and `Args.load`/`Env.load` all REFUSE, each naming `Bytes.toBase64`
-  or `File.writeBytes` as the exit; a hole or `show` renders a SUMMARY
+  equality; no ordering; `print`, `to json`/`to yaml` and argv splices
+  REFUSE, each naming `Bytes.toBase64` or `File.writeBytes` as the
+  exit (`Args.load`/`Env.load` refuse too, listing the field types
+  they take); a hole or `show` renders a SUMMARY
   (`<1.4 MiB>`), never content — raw bytes wreck terminals.
 
 ```weir
@@ -1052,7 +1054,7 @@ print (Option.flatten (Some None) |> Option.defaultValue 0)
   directions differ); `(&&)`/`(||)` refuse (a value
   cannot short-circuit); the pipes and `>>` refuse (grammar /
   already the composed function).
-- Match-or-skip over a stream is `Seq.choose` (lazy, qualified-only):
+- Match-or-skip over a stream is `Seq.choose` (lazy):
   the arm returns `Some out` or `None`, never a sentinel `""` to
   filter later. The natural pair with the `Regex` pattern:
 
@@ -1103,8 +1105,8 @@ refs
   case-runner idiom, no sigil: `| "build" -> sh -c "make"`. In
   statement position each arm streams; a value-position match (a `let`
   RHS) captures the last arm's chain as `seq<string>`. The chain ends
-  at the next `| <pattern> ->`, so an argv word spelling `x ->` needs
-  quoting to stay an argument.
+  at the next `| <pattern> ->`, so argv spelling `| x ->` needs
+  quoting to stay an argument (a lone `x ->` is fine).
 - `let x = e in body` inline; in multi-line scripts an indented `let`
   line closes at the next line of the same indent (F# light syntax).
 - String/seq ops are data-last for piping: `Seq.where (Str.contains "err")`.
@@ -1420,9 +1422,11 @@ Path.glob "*" |> Seq.map (File)
   (`--flag=$@xs` — map the prefix on, or separate args).
 - No glob EXPANSION (`Path.glob` is the typed spelling — a
   function, not argv magic), no redirects, no `&&`, no `$VAR` env
-  expansion — those
+  expansion (`$HOME` is a weir SPLICE — unbound unless you bind it;
+  `Env.get "HOME"` / `Path.home ()` are the typed reads) — the other
   characters pass through as literal argv (`echo a && b` prints
-  "a && b"); `>`/`>>` additionally WARN with the File spelling
+  "a && b", warning with `| and`; `||` refuses, naming `| or`);
+  `>`/`>>` WARN with the File spelling
   (redirection is the fenced block below / `File.append`).
   For bash semantics: `sh -c "the bash line"` (a command
   line; streams, completes, pipes like any command). Inside that
@@ -1622,7 +1626,7 @@ Deploy { replicas = 2 } |> to json |> Seq.iter print
 type Bad = C of int
 ```
   The field law is RECURSIVE: a field is a scalar (`int`, `float`,
-  `string`, `bool`), an `Option` of an admitted type, a record whose
+  `string`, `bool`, `Uuid`), an `Option` of an admitted type, a record whose
   fields are all admitted, a `seq` of an admitted type, a
   `seq<string * T>` mapping (an object whose keys are DATA — k8s
   `data`/`labels`: reads as pairs in document order, writes back as
@@ -2190,7 +2194,8 @@ print (f 1)
   `?`, `[abc]`/`[!abc]`/`[a-z]` (one code point; a `]` first is a
   member, a reversed range matches nothing, `\` is a plain member —
   never regex). Bash's dotfile law: `*` skips dotfiles, a
-  `.`-leading segment matches them. Sorted; relative patterns
+  `.`-leading segment matches them. Sorted per level (a directory's
+  matches, then its subdirectories' — not one global sort); relative patterns
   echo relative and resolve against the cwd AT ENUMERATION —
   `|> Seq.freeze` pins the answer before a `cd`. No matches = the
   empty seq (`match ... with | [] -> fail "no matches"`).
@@ -2411,7 +2416,7 @@ print $"exit={r.exitCode}"
   literal urls, environment reads/writes, Secret loads AND any Secret
   reaching a command's argv (the ps-visible non-claim, surfaced), and
   scoped processes. `sh -c` and the other interpreters are FIRST-CLASS
-  UNKNOWNS — the report's header says "incomplete: N opaque sites" and
+  UNKNOWNS — the report's header says "incomplete: N opaque site(s)" and
   `--strict` exits 2 on any, so CI chooses whether unanalysable means
   failure. `--json` for machines. The boundary, stated: the report
   covers what WEIR does; any external can itself do anything.
