@@ -255,8 +255,9 @@ More of the mapping:
 - an `enum` becomes `string` plus a `//` note listing the values
   (string unions are planned)
 - `anyOf` uses the first variant, with a note asking you to check it
-- a field that refers back to its own definition is omitted, with a
-  note — a weir record is a finite tree, and reading ignores the key
+- a field that refers back to its own definition becomes `Yaml`, with
+  a note — a weir record is a finite tree, so the subtree is read
+  whole as an untyped node
 - field names are cleaned up the same way `#infer` does it, so a
   `type:` key becomes `[<Wire "type">] kind`
 

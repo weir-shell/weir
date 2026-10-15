@@ -192,6 +192,32 @@ print (show (f 2))
   (`let bump r = { r with N = r.N + 1 }`) generalizes to any record
   with the field. A comma between fields is refused (F#
   silently makes the field a TUPLE there; weir refuses the trap).
+- User GENERICS, F#'s spelling: `type Page<'a> = { items: seq<'a> }`,
+  `type Either<'a, 'e> = Left of 'a | Right of 'e`. Use sites never
+  write the args — a literal or a constructor infers the instance
+  (`{ items = [1] }` is `Page<int>`). Write the instance in a TYPE
+  position: fields (`{ first: Page<int> }`), signatures, and the
+  adapter slot — `from json Page<string>`, `seq<Page<int>>`,
+  `Map<string, Page<int>>`, `from jsonl`/`from yaml` alike
+  [D:wire-generics]; the wire law runs on the instance's fields, and
+  `to json`/`to yaml` take any concrete instance. REFUSED: a bare
+  generic name in the slot (`from json Page` names the instance to
+  write), `from toml`/`xml`/`table`, `Env.load`/`Args.load`, a
+  generic TAGGED union, and a value whose instance is still open
+  where it is written (`to json` in a helper over `'a` — write it at
+  the call site).
+
+```weir
+type Page<'a> = { items: seq<'a>; next: Option<string> }
+let p = { items = [1; 2]; next = None }
+p |> to json |> Seq.iter print
+let q = ["{\"items\": [\"a\"]}"] |> from json Page<string>
+q.items |> Seq.iter print
+```
+```weir-error
+type Page<'a> = { items: seq<'a> }
+let q = ["{\"items\": []}"] |> from json Page // generic: name the instance, Page<int>
+```
 - Type declarations and list literals continue across lines inside
   the open bracket (line break = separator; a dangling operator
   continues the same element; blank lines are transparent here as
@@ -300,8 +326,11 @@ echo $root/* // argv words do not concatenate — the tail would be its own argu
 ```weir-error
 echo --flag="quoted v" // the quoted part would be its own argument; quote the whole word
 ```
-- `+` on two unknown params cannot infer (int-or-string): anchor one
-  side (`x + 0`) or take data in. All single-typing operators
+- `+` on two unknowns waits for the rest of the statement
+  [D:plus-defer]: an anchor ANYWHERE decides it — either operand, the
+  result's use, a later link (`a + b + 0` infers like `0 + a + b`).
+  Nothing deciding it by the statement's end cannot infer
+  (int-or-string): anchor one side (`x + 0`) or take data in. All single-typing operators
   (`- * / % > <`) default to int; `let rec` and `mutable` are reserved
   words with no meaning. `%` is integer remainder, TRUNCATED like
   F#/.NET (`-7 % 3` is `-1`, NOT Python's `2`); zero divisor raises
@@ -1638,8 +1667,11 @@ type Bad = C of int
   fields are all admitted, a `seq` of an admitted type, a
   `seq<string * T>` mapping (an object whose keys are DATA — k8s
   `data`/`labels`: reads as pairs in document order, writes back as
-  ONE object; an empty mapping writes `[]` and reads back empty), or
-  a `Map<string, T>` of one — so `{ entityids: Entity }`,
+  ONE object; an empty mapping writes `[]` and reads back empty),
+  a `Map<string, T>` of one, or an opaque `Yaml` node — any subtree
+  read whole (JSON is a YAML subset: object -> `YMap` in document
+  order, `null` -> `YNull`) and written back as the JSON it denotes
+  [D:json-yaml-field] — so `{ entityids: Entity }`,
   `{ items: seq<Item> }`, `{ labels: seq<string * string> }`, and an
   ID-keyed `{ documents: Map<string, Doc> }` all read. A `Map`'s keys are DATA, not schema, and strings
   ONLY (JSON object keys ARE strings; `Map<int, …>` teaches). The

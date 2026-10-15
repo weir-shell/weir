@@ -181,6 +181,8 @@ let exitCodeDiscardMsg =
 type FromShape =
     | FromName of string
     | FromAnon of fields: (string * Ty) list
+    // a generic record instantiated in the slot, `B<int>` [D:wire-generics]
+    | FromApp of name: string * args: Ty list
     // the ID-keyed object [D:map-string]: Map<string, Name|{|…|}> in
     // the adapter slot — the inner shape is a record, string keys only
     | FromMap of inner: FromShape
@@ -648,6 +650,12 @@ let rec sexpr (e: Expr) : string =
     | EFrom(fmt, Some(FromName ty), false, true) -> $"(from {fmt} stream {ty})"
     | EFrom(fmt, Some(FromName ty), false, _) -> $"(from {fmt} {ty})"
     | EFrom(fmt, Some(FromName ty), true, _) -> $"(from {fmt} seq<{ty}>)"
+    | EFrom(fmt, Some(FromApp(n, args)), s, st) ->
+        let shape = formatTy (TNamed(n, args))
+
+        if st then $"(from {fmt} stream {shape})"
+        elif s then $"(from {fmt} seq<{shape}>)"
+        else $"(from {fmt} {shape})"
     | EFrom(fmt, Some(FromAnon fields), s, _) ->
         let shape = anonRecordName fields
 
@@ -659,6 +667,7 @@ let rec sexpr (e: Expr) : string =
         let shape =
             match inner with
             | FromName n -> n
+            | FromApp(n, args) -> formatTy (TNamed(n, args))
             | FromAnon fields -> anonRecordName fields
             | FromMap _ -> "…"
 

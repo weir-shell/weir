@@ -569,8 +569,8 @@ let rejectedAtCheckTests =
           test "field typo in a pipeline" { checkErr "ls |> where (fun f -> f.bytse > 1)" |> ignore }
           test "wrong argument to a builtin" { checkErr "double \"x\"" |> ignore }
           test "piping a seq into an int function" { checkErr "ls |> double" |> ignore }
-          test "let-bound bare lambda cannot infer without annotations" {
-              checkErr "let add = fun a -> fun b -> a + b in add 1 2" |> ignore
+          test "let-bound bare lambda cannot infer when nothing in the statement decides it [D:plus-defer]" {
+              checkErr "let add = fun a -> fun b -> a + b in add" |> ignore
           } ]
 
 let private warningsOf input = Weir.Check.warnings (checkOk input)
@@ -3190,12 +3190,11 @@ let boundaryTests =
                   | Ok g -> g
                   | Error e -> failtest e
 
-              // a self-ref field is omitted with a note, so the type stays one
-              // `from json` admits — no opaque Yaml field (H19)
-              Expect.isFalse (cyc.Text.Contains "Yaml") cyc.Text
-              Expect.isFalse (cyc.Text.Contains "    items:") "the cyclic field is omitted"
+              // a self-ref field drafts the opaque Yaml node with a note, and
+              // `from json` reads the subtree whole [D:json-yaml-field]
+              Expect.stringContains cyc.Text "items: Option<seq<Yaml>>" cyc.Text
               Expect.stringContains cyc.Text "name: Option<string>" "the finite fields stay"
-              Expect.stringContains cyc.Text "items: refers back to its own definition — omitted" "the cycle note fires"
+              Expect.stringContains cyc.Text "items: refers back to its own definition — drafted Yaml" "the cycle note fires"
 
               let ds =
                   diagsIn
@@ -3206,7 +3205,8 @@ let boundaryTests =
 
               Expect.isEmpty (ds |> List.filter (fun d -> d.Severity = "error")) $"from json admits the generated type: {ds}"
 
-              // a definition that is nothing but its own cycle has no record
+              // a definition that is nothing but its own cycle still drafts:
+              // the cycle is a Yaml node
               match
                   genAs
                       None
@@ -3214,8 +3214,8 @@ let boundaryTests =
                            "definitions": { "Loop": { "type": "object", "properties": {
                              "next": { "$ref": "#/definitions/Loop" } } } } }"""
               with
-              | Ok g -> failtest $"an all-cyclic top must refuse, got {g.Text}"
-              | Error e -> Expect.stringContains e "finite tree" e
+              | Ok g -> Expect.stringContains g.Text "next: Option<Yaml>" g.Text
+              | Error e -> failtest e
 
               // an unrepresentable top level refuses with the located reason
               let refusal =
@@ -14210,8 +14210,10 @@ let paramSugarTests =
               Expect.equal (formatTy te.Ty) "int" ""
           }
           test "operator ambiguity unchanged through the sugar" {
-              let terr = checkErr "let add x y = x + y in add 1 2"
+              let terr = checkErr "let add x y = x + y in add"
               Expect.stringContains (formatError terr) "cannot infer" ""
+              // a use later in the statement decides it [D:plus-defer]
+              Expect.equal (checkOk "let add x y = x + y in add 1 2").Ty TInt ""
           } ]
 
 let fmtTests =
@@ -18891,7 +18893,7 @@ let pinsWalkTests =
               // available here" fires first) — Env.load and from json
               // carry the monomorphic-refusal class
               match Weir.Check.typecheck g (parse "[\"x\"] |> from json G2") with
-              | Error terr -> Expect.stringContains terr.Message "needs a monomorphic record" ""
+              | Error terr -> Expect.stringContains terr.Message "'G2' is generic — name the instance" ""
               | Ok _ -> failtest "generic from json must refuse"
           }
           test "'to json' takes ONE value; 'to jsonl' demands a seq; unknown formats teach [D:to-jsonl]" {
@@ -21897,10 +21899,17 @@ let operatorValueTests =
                   (run "[1; 2; 3] |> Seq.reduce (fun a b -> a + b)")
                   "the desugar is verbatim"
 
+              // a later argument pins the operands for both spellings
+              // [D:plus-defer]
+              Expect.equal
+                  (run "Seq.fold (+) 100 [1; 2; 3]")
+                  (run "Seq.fold (fun a b -> a + b) 100 [1; 2; 3]")
+                  "a later anchor decides both"
+
               // both spellings fail identically where nothing pins the
               // operands — the (op) form must not be better either
-              let m1 = (checkErr "Seq.fold (+) 100 [1; 2; 3]").Message
-              let m2 = (checkErr "Seq.fold (fun a b -> a + b) 100 [1; 2; 3]").Message
+              let m1 = (checkErr "fun xs -> Seq.reduce (+) xs").Message
+              let m2 = (checkErr "fun xs -> Seq.reduce (fun a b -> a + b) xs").Message
               Expect.equal m1 m2 "failure parity, same message"
           }
           test "(==) as a value carries its Eq constraint (the class-in-value-position answer)" {
@@ -26287,12 +26296,151 @@ let docsBinaryTests =
               Expect.isTrue (Weir.Session.armsStdoutFor pipe) "a pipe can EPIPE"
           } ]
 
+let hunt2CheckerTests =
+    // the second hunt's checker/adapter backlog: `+` decided by a later
+    // anchor [D:plus-defer], generic records at the wire
+    // [D:wire-generics], a `Yaml` field read by `from json`
+    // [D:json-yaml-field]
+    let text v =
+        forceSeq v
+        |> List.map (function
+            | VStr s -> s
+            | v -> failtest $"expected text, got {formatValue v}")
+        |> String.concat "\n"
+
+    let genv =
+        env
+        |> declare "type GB<'a> = { v: 'a; [<Wire \"type\">] kind: string }"
+        |> declare "type GW = { one: GB<int>; two: GB<string>; p: Option<GB<bool>> }"
+        |> declare "type GL<'a> = { h: 'a; next: Option<GL<'a>> }"
+        |> declare "type YR = { name: string; extra: Yaml; more: Option<Yaml> }"
+
+    // a JSON document as the weir source of a one-element string list
+    let doc (json: string) =
+        "[\"" + json.Replace("\"", "\\\"") + "\"]"
+
+    testList
+        "hunt2 checker backlog"
+        [ test "a later anchor decides `+` over two unknowns [D:plus-defer]" {
+              Expect.equal (checkOk "fun a -> fun b -> a + b + 0").Ty (TFun(TInt, TFun(TInt, TInt))) "a + b + 0"
+              Expect.equal (checkOk "fun a -> fun b -> 0 + a + b").Ty (TFun(TInt, TFun(TInt, TInt))) "0 + a + b"
+
+              Expect.equal
+                  (checkOk "fun a -> fun b -> fun c -> a + b + c + \"x\"").Ty
+                  (TFun(TStr, TFun(TStr, TFun(TStr, TStr))))
+                  "a chain resolves back to its first link"
+
+              Expect.equal
+                  (checkOk "fun a -> fun b -> Str.length (a + b)").Ty
+                  (TFun(TStr, TFun(TStr, TInt)))
+                  "the result's use decides"
+
+              Expect.equal
+                  (checkOk "fun a -> fun b -> (a + b) + 1.5").Ty
+                  (TFun(TFloat, TFun(TFloat, TFloat)))
+                  "float"
+
+              Expect.equal
+                  (checkOk "fun x -> (let h y = x + y in h 1)").Ty
+                  (TFun(TInt, TInt))
+                  "an undecided + stays monomorphic until a use decides it"
+
+              Expect.equal (run "let f a b = a + b + 0 in f 1 2") (VInt 3L) "runs"
+          }
+          test "an undecided `+` keeps the cannot-infer teaching; a non-addable anchor refuses [D:plus-defer]" {
+              Expect.stringContains
+                  (checkErr "fun a -> fun b -> a + b").Message
+                  "cannot infer the operand types of '+'"
+                  ""
+
+              Expect.stringContains
+                  (checkErr "fun a -> fun b -> a + b + true").Message
+                  "operator '+' is not defined for bool"
+                  ""
+
+              // Instant + Duration or Duration + Instant: still ambiguous
+              Expect.stringContains
+                  (checkErr "fun a -> fun b -> (a + b) - Instant.now ()").Message
+                  "cannot infer the operand types of '+'"
+                  ""
+          }
+          test "a generic record crosses json/jsonl/yaml once instantiated [D:wire-generics]" {
+              let one = runUnder genv (doc """{"v":1,"type":"k"}""" + " |> from json GB<int> |> _.v")
+              Expect.equal one (VInt 1L) "from json GB<int>"
+
+              let many =
+                  runUnder
+                      genv
+                      (doc """[{"v":"a","type":"k"}]""" + " |> from json seq<GB<string>> |> Seq.map _.v |> Seq.head")
+
+              Expect.equal many (VStr "a") "from json seq<GB<string>> parses and reads"
+
+              let w =
+                  "{ one = { v = 1; kind = \"a\" }; two = { v = \"s\"; kind = \"b\" }; p = Some { v = true; kind = \"c\" } }"
+
+              Expect.equal
+                  (runUnder genv $"{w} |> to json" |> text)
+                  """{"one":{"v":1,"type":"a"},"two":{"v":"s","type":"b"},"p":{"v":true,"type":"c"}}"""
+                  "instances write under their declared name's wire keys"
+
+              Expect.equal
+                  (runUnder genv $"{w} |> to json |> from json GW |> fun r -> r == {w}")
+                  (VBool true)
+                  "json roundtrip"
+
+              Expect.equal
+                  (runUnder genv $"{w} |> to yaml |> from yaml GW |> fun r -> r == {w}")
+                  (VBool true)
+                  "yaml roundtrip"
+
+              Expect.equal (runUnder genv $"[{w}] |> to jsonl |> from jsonl GW |> Seq.length") (VInt 1L) "jsonl"
+          }
+          test "an uninstantiated generic teaches the instance; a cycle and the other adapters still refuse [D:wire-generics]" {
+              Expect.stringContains
+                  (checkErrUnder genv (doc "{}" + " |> from json GB")).Message
+                  "name the instance the document holds, e.g. from json GB<int>"
+                  ""
+
+              Expect.stringContains
+                  (checkErrUnder genv (doc "{}" + " |> from json GL<int>")).Message
+                  "the type cycle GL<int> → GL<int> cannot cross the JSON boundary"
+                  ""
+
+              Expect.stringContains
+                  (checkErrUnder genv (doc "{}" + " |> from toml GB<int>")).Message
+                  "'from toml' needs a monomorphic record"
+                  ""
+
+              Expect.stringContains
+                  (checkErrUnder genv "fun x -> { v = x; kind = \"k\" } |> to json").Message
+                  "'to json' needs a concrete type, but this value is generic (GB<"
+                  ""
+          }
+          test "from json reads a Yaml field whole; to json writes it back [D:json-yaml-field]" {
+              let src = doc """{"name":"a","extra":{"k":[1,2.5,"s",true,null,{}]}}"""
+
+              Expect.equal
+                  (runUnder genv $"{src} |> from json YR |> to json" |> text)
+                  """{"name":"a","extra":{"k":[1,2.5,"s",true,null,{}]}}"""
+                  "json -> Yaml -> json"
+
+              Expect.equal
+                  (runUnder genv $"{src} |> from json YR |> to yaml" |> text)
+                  "name: a\nextra:\n  k:\n    - 1\n    - 2.5\n    - s\n    - true\n    - null\n    - {}"
+                  "the same node renders as yaml"
+
+              match runUnder genv (doc """{"name":"a","extra":null}""" + " |> from json YR") with
+              | VRecord("YR", [ _; "extra", VUnion("YNull", None); "more", VUnion("None", None) ]) -> ()
+              | v -> failtest $"null is a YNull node (as from yaml reads it), a missing Option<Yaml> is None: {formatValue v}"
+          } ]
+
 [<Tests>]
 let allTests =
     testList
         "Weir"
         [ hardeningTests
           docsBinaryTests
+          hunt2CheckerTests
           sweepFindingTests
           runsCommandReifierTests
           hoverReflowTests

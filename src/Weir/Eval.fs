@@ -1216,6 +1216,39 @@ let private decodeCoded (where: string) (c: Codec) (text: string option) (num: i
     | Seconds -> VDur(seconds (needInt "seconds"))
     | ByteCount -> VSize(needInt "a byte count")
 
+// a JSON value as a `Yaml` node [D:json-yaml-field]: JSON is a YAML
+// subset, so an opaque `Yaml` field reads any subtree whole — object
+// -> YMap (document order), array -> YSeq, and a number by the YAML
+// scalar rule (integer-shaped -> YInt, else YFloat)
+let rec private jsonYamlNode (where: string) (e: System.Text.Json.JsonElement) : Value =
+    match e.ValueKind with
+    | System.Text.Json.JsonValueKind.Object ->
+        VUnion(
+            "YMap",
+            Some(
+                VSeq(
+                    e.EnumerateObject()
+                    |> Seq.map (fun p -> VTuple [ VStr p.Name; jsonYamlNode where p.Value ])
+                    |> List.ofSeq
+                )
+            )
+        )
+    | System.Text.Json.JsonValueKind.Array ->
+        VUnion("YSeq", Some(VSeq(e.EnumerateArray() |> Seq.map (jsonYamlNode where) |> List.ofSeq)))
+    | System.Text.Json.JsonValueKind.String -> VUnion("YStr", Some(VStr(e.GetString())))
+    | System.Text.Json.JsonValueKind.True -> VUnion("YBool", Some(VBool true))
+    | System.Text.Json.JsonValueKind.False -> VUnion("YBool", Some(VBool false))
+    | System.Text.Json.JsonValueKind.Number ->
+        let raw = e.GetRawText()
+
+        match System.Int64.TryParse raw with
+        | true, n -> VUnion("YInt", Some(VInt n))
+        | _ ->
+            match parseFloat raw with
+            | Ok f -> VUnion("YFloat", Some(VFloat f))
+            | Error _ -> failwith $"{where}: number {raw} is out of float range"
+    | _ -> VUnion("YNull", None)
+
 let private jsonLine
     (renames: Map<string, Map<string, string>>)
     (unions: Map<string, string * string * bool>)
@@ -1306,6 +1339,25 @@ let private jsonLine
             writer.WriteStartObject()
             writeFields rname fields
             writer.WriteEndObject()
+        // a `Yaml` node writes as the JSON it denotes [D:json-yaml-field]
+        // — after the tagged arm, which owns any user case names
+        | VUnion("YMap", Some(VSeq entries)) ->
+            writer.WriteStartObject()
+
+            for e in entries do
+                match e with
+                | VTuple [ VStr k; v ] ->
+                    writer.WritePropertyName k
+                    write v
+                | v -> unreachable $"a YMap entry is a pair, not {formatValue v}"
+
+            writer.WriteEndObject()
+        | VUnion("YSeq", Some(VSeq items)) ->
+            writer.WriteStartArray()
+            items |> Seq.iter write
+            writer.WriteEndArray()
+        | VUnion(("YStr" | "YInt" | "YFloat" | "YBool"), Some scalar) -> write scalar
+        | VUnion("YNull", None) -> writer.WriteNullValue()
         | v -> unreachable $"the checker rejects 'to json' on {formatValue v}"
 
     // the field loop, shared by records and tagged payloads
@@ -1482,6 +1534,7 @@ let private jsonDocRead
             prop.EnumerateObject()
             |> Seq.fold (fun m p -> Map.add p.Name (readValue $"{name}[\"{p.Name}\"]" inner p.Value) m) Map.empty
             |> VMap
+        | TNamed("Yaml", []) -> jsonYamlNode $"{who}: field '{name}'" prop
         | TNamed(n, []) when defs.ContainsKey n ->
             if prop.ValueKind <> System.Text.Json.JsonValueKind.Object then
                 failwith
@@ -1591,6 +1644,9 @@ let private jsonDocRead
                     // only sees what the sample had [D:schema-types]
                     failwith
                         $"{who}: missing field '{shownName}'{wireNote} in: {shown} — if the field is sometimes absent, declare it Option<{formatTy ty}>; a type drafted from a sample only sees what the sample had"
+                // a null is a `Yaml` node like any other, as `from yaml`
+                // reads it [D:json-yaml-field]
+                | TNamed("Yaml", []) when isNull -> VUnion("YNull", None)
                 | _ when isNull ->
                     failwith
                         $"{who}: field '{shownName}' is null; declare it Option<{formatTy ty}> to allow it, in: {shown}"

@@ -25,18 +25,22 @@ equatability and short-circuit `&&`/`||`, as pre-committed.)
 
 Ruled 2026-10-15 (PLAN-daily-driver W4): **every item below is daily-driver — fix all.**
 
-- **`from json` reading a `Yaml` field** — would let `gen types` keep a
-  self-referential field instead of omitting it [D:gen-types-cycles].
+- ~~**`from json` reading a `Yaml` field**~~ — done: `Yaml` crosses json
+  both ways and `gen types` drafts a cyclic field as `Yaml`
+  [D:json-yaml-field].
 - **`serve` answers only the first of pipelined requests** on one
   connection. Needs a ruling (2026-10-15): the managed HttpListener drops
   the pipelined bytes itself, so the fix is replacing the listener (see
   PLAN-review-fixes.md, session 2026-10-15).
 - **Inference order:** `a + b + 0` doesn't infer while `0 + a + b` does.
+  connection.
+- ~~**Inference order:**~~ — done: `+` over two unknowns defers to any
+  later anchor in the statement [D:plus-defer].
 - **Re-enumeration warning** misses indirect pulls (through a function, a
   loop, a derived binding).
-- **User generic types at the wire:** generic records are refused at the
-  json/yaml boundary and `from json seq<B<int>>` is a parse error; user
-  generics are undocumented in SKILL.md.
+- ~~**User generic types at the wire**~~ — done: `from json B<int>` /
+  `seq<B<int>>` and instances inside records cross json/jsonl/yaml;
+  SKILL documents user generics [D:wire-generics].
 - **Runtime error positions** are statement-granular inside a one-line
   `if … then fail … else …`.
 - **LSP re-analyzes a large file per hover** (20k lines ≈ 3s).

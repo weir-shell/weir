@@ -45,6 +45,18 @@
   became `{ a }`) or a `$"…{ … }"` hole that spans lines.
 - **`weir fmt` ends every file in exactly one newline** — trailing blank
   lines are removed, as the docs always said.
+- **`a + b + 0` infers.** `+` on two unknown values now waits for the
+  rest of the statement: the other operand, a later `+ 0`, or how the
+  result is used decides it, so the order you write it in no longer
+  matters. Nothing deciding it is still the "cannot infer" error.
+- **Generic records cross json, jsonl and yaml.** Name the instance in
+  the slot — `from json Page<string>`, `from json seq<Page<int>>` (was
+  a parse error) — and a record holding one, like
+  `{ first: Page<int> }`, reads and writes too.
+- **`from json` reads a `Yaml` field,** keeping any subtree whole, and
+  `to json` writes it back. `weir gen types` uses it: a field that refers
+  back to its own definition is now `Yaml` instead of left out.
+
 - **`#alias` completes and gets a did-you-mean**, like the other
   directives; `#help`'s directive list now comes from the same table.
 - **Hover and `#help` explain `fst`, `snd`, `ls`, `pwd`, `[<Attr>]` and

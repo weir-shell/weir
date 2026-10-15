@@ -2291,6 +2291,18 @@ let private bareAdapterName (w: string) : Parser<string, unit> =
                   $"the adapter slot takes a bare record name — write '{m}', not '{w}.{m}': imported types resolve by their plain name (they live flat; the module alias qualifies values, not types here)"
           preturn w ]
 
+// a generic record's instantiation in the slot, `B<int>`
+// [D:wire-generics] — the args are the one type grammar (tySyn),
+// set after it exists
+let private slotTyArgs, private slotTyArgsRef =
+    createParserForwardedToRef<Ty list, unit> ()
+
+let private slotName (w: string) : Parser<FromShape, unit> =
+    opt slotTyArgs
+    |>> function
+        | Some args -> FromApp(w, args)
+        | None -> FromName w
+
 let private fromExpr =
     spanned (
         keyword "from" >>. ident
@@ -2303,8 +2315,8 @@ let private fromExpr =
             // the slot takes a record name, the narrow seq<…> wrap
             // [D:from-json-seq], or an anonymous shape `{| f: ty |}`
             // [D:anon-records] — never the general type grammar (tySyn
-            // is reachable only inside the shape's fields; the admitted
-            // set stays closed)
+            // is reachable only inside the shape's fields and a generic
+            // name's args [D:wire-generics]; the admitted set stays closed)
             (anonShape |>> fun fs -> FromAnon fs, false)
             // the qualified spelling is recognized whole first, so the
             // fatal fires outside the slot's attempt (a fatal inside it
@@ -2353,7 +2365,7 @@ let private fromExpr =
                                   <|> (identSpanned
                                        >>= fun (inner, _) ->
                                            if Char.IsUpper inner[0] then
-                                               bareAdapterName inner |>> FromName
+                                               bareAdapterName inner >>= slotName
                                            else
                                                fail "a record name inside Map< >")))
                         |>> fun sh -> FromMap sh, false
@@ -2365,12 +2377,12 @@ let private fromExpr =
                              <|> (identSpanned
                                   >>= fun (inner, _) ->
                                       if Char.IsUpper inner[0] then
-                                          bareAdapterName inner |>> FromName
+                                          bareAdapterName inner >>= slotName
                                       else
                                           fail "a record name inside seq< >"))
                         |>> fun sh -> sh, true
                     elif Char.IsUpper w[0] then
-                        preturn (FromName w, false)
+                        slotName w |>> fun sh -> sh, false
                     else
                         fail "a record name"
             )
@@ -5246,6 +5258,8 @@ let private recordBody =
 // attrs, no docs — a foreign shape read once. `{|` is unambiguous in
 // the slot (a record literal/update cannot sit there), and tySyn does
 // not nest the form (a nested object needs a declared record).
+slotTyArgsRef.Value <- attempt (between (str_ws "<") (str_ws ">") (sepBy1 tySyn (str_ws ",")))
+
 anonShapeRef.Value <-
     // no attributes on an anonymous type [D:env-inline-type] (F#'s rule
     // too): Default/Wire/… need a declared record

@@ -386,7 +386,12 @@ type private Ctx =
       // physical positions of bare holes whose var took the string
       // default this statement (PLAN-dx-review D6) — ride the let's
       // scheme so a later call-site mismatch can name the anchor
-      mutable HoleDefaulted: (int * int) list }
+      mutable HoleDefaulted: (int * int) list
+      // `+` over two unknowns, deferred [D:plus-defer]: retries keyed
+      // by the vars that can decide them; the open set (by creation
+      // order: span + operand/result types) is stranded at the boundary
+      mutable Adds: Map<string, (int * (unit -> Result<unit, TypeError>)) list>
+      mutable AddsOpen: Map<int, Span * Ty list> }
 
 // exhaustion carries whether type size is actually in evidence — the
 // message must not claim "your type grew too large" merely because the
@@ -410,7 +415,9 @@ let private newCtx () =
           End = { Line = 1; Col = 1 } }
       WorkTys = TUnit, TUnit
       PendingPrints = []
-      HoleDefaulted = [] }
+      HoleDefaulted = []
+      Adds = Map.empty
+      AddsOpen = Map.empty }
 
 let private freshName (ctx: Ctx) (prefix: string) : string =
     ctx.Fresh <- ctx.Fresh + 1
@@ -668,14 +675,19 @@ let private instantiate (ctx: Ctx) (span: Span) (sch: Scheme) : Ty =
 // statement's ctx, whose var names this ctx's subst may reuse, so it
 // must not be resolved here [D:hole-generic]
 let private envFreeVars (ctx: Ctx) (env: TypeEnv) : Set<string> =
-    env.Values
-    |> Map.fold
-        (fun acc _ sch ->
-            if Set.isEmpty (tyVars sch.Ty - sch.Forall) then
-                acc
-            else
-                acc + (tyVars (finalTy ctx sch.Ty) - sch.Forall))
-        Set.empty
+    let fromEnv =
+        env.Values
+        |> Map.fold
+            (fun acc _ (sch: Scheme) ->
+                if Set.isEmpty (tyVars sch.Ty - sch.Forall) then
+                    acc
+                else
+                    acc + (tyVars (finalTy ctx sch.Ty) - sch.Forall))
+            Set.empty
+    // an undecided `+` keeps its vars monomorphic [D:plus-defer]: a
+    // later use in the statement may still decide it
+    ctx.AddsOpen
+    |> Map.fold (fun acc _ (_, tys) -> tys |> List.fold (fun a t -> a + tyVars (finalTy ctx t)) acc) fromEnv
 
 // The class solver. Concrete types run the shape predicate; applied
 // constructors decompose structurally; bare vars (and row vars) carry
@@ -829,6 +841,14 @@ let private dischargeCons (ctx: Ctx) (env: TypeEnv) (v: string) (t: Ty) : Result
         ctx.Cons <- Map.remove v ctx.Cons
         allOk ps (fun p -> demand ctx env p t)
 
+// a deferred `+` retries the moment one of its vars resolves [D:plus-defer]
+let private dischargeAdds (ctx: Ctx) (v: string) : Result<unit, TypeError> =
+    match Map.tryFind v ctx.Adds with
+    | None -> Ok()
+    | Some fs ->
+        ctx.Adds <- Map.remove v ctx.Adds
+        allOk (List.rev fs) (fun (_, f) -> f ())
+
 let rec private bind (ctx: Ctx) (env: TypeEnv) (span: Span) (expected: Ty) (actual: Ty) : Result<unit, TypeError> =
     // the budget ticks in resolve (the step every walk pays); bind
     // keeps the anchor and the evidence operands current so exhaustion
@@ -846,7 +866,9 @@ let rec private bind (ctx: Ctx) (env: TypeEnv) (span: Span) (expected: Ty) (actu
             err span $"cannot construct the infinite type '{v} = {formatTy (finalTy ctx t)}"
         else
             ctx.Subst <- Map.add v t ctx.Subst
+
             dischargeCons ctx env v t
+            |> Result.bind (fun () -> dischargeAdds ctx v)
     | TNamed(n1, a1), TNamed(n2, a2) when n1 = n2 && List.length a1 = List.length a2 ->
         allOk (List.zip a1 a2) (fun (x, y) -> bind ctx env span x y)
     | TRowVar(r, _), TNamed(n, targs)
@@ -1224,6 +1246,65 @@ let rec private typeBinOp
                             $"'{op}' is not defined for {formatTy t}; sequences and functions cannot be compared" }
 
             demand ctx env p a |> Result.map (fun () -> TBool))
+    // `+` on two unknowns DEFERS [D:plus-defer]: int, float, string,
+    // Size, Duration (and Instant + Duration) all add, so either
+    // operand or the result — whichever resolves first, anywhere later
+    // in the statement — decides it (`a + b + 0` as `0 + a + b`). Still
+    // undecided at the statement boundary: the cannot-infer teaching
+    | "+", TVar _, TVar _ ->
+        let res = TVar(freshName ctx "a")
+        let id = ctx.Fresh
+        ctx.AddsOpen <- Map.add id (opSpan, [ l.Ty; r.Ty; res ]) ctx.AddsOpen
+
+        let rec attempt () : Result<unit, TypeError> =
+            if not (ctx.AddsOpen.ContainsKey id) then
+                Ok()
+            else
+                let close () =
+                    ctx.AddsOpen <- Map.remove id ctx.AddsOpen
+
+                let retry () =
+                    typeBinOp ctx env opSpan op l r
+                    |> Result.bind (fun t -> bind ctx env opSpan res t)
+
+                let pin (side: TypedExpr) t =
+                    close ()
+                    bind ctx env side.Span t side.Ty |> Result.bind retry
+
+                match resolve ctx l.Ty, resolve ctx r.Ty, resolve ctx res with
+                | TVar _, TVar _, (TVar _ | TInstant) -> park ()
+                // the result decides both operands (each addable type
+                // adds only to itself); anything else gets the operator's
+                // own refusal
+                | TVar _, TVar _, t ->
+                    close ()
+
+                    bind ctx env l.Span t l.Ty
+                    |> Result.bind (fun () -> bind ctx env r.Span t r.Ty)
+                    |> Result.bind (fun () -> typeBinOp ctx env opSpan op l r |> Result.map ignore)
+                // a point shifts only by a Duration, and only a point
+                // plus a Duration is a point
+                | TInstant, TVar _, _ -> pin r TDur
+                | TVar _, TInstant, _ -> pin l TDur
+                | TDur, TVar _, TInstant -> pin r TInstant
+                | TVar _, TDur, TInstant -> pin l TInstant
+                | _ ->
+                    close ()
+                    retry ()
+
+        and park () =
+            for t in [ l.Ty; r.Ty; res ] do
+                match resolve ctx t with
+                | TVar v ->
+                    let fs = Map.tryFind v ctx.Adds |> Option.defaultValue []
+
+                    if not (fs |> List.exists (fun (k, _) -> k = id)) then
+                        ctx.Adds <- Map.add v ((id, attempt) :: fs) ctx.Adds
+                | _ -> ()
+
+            Ok()
+
+        park () |> Result.map (fun () -> res)
     | _, TVar _, TVar _ -> err opSpan $"cannot infer the operand types of '{op}'; pipe data in or use concrete values"
     | _, TRowVar _, _
     | _, _, TRowVar _ -> err opSpan $"operator '{op}' is not defined for records"
@@ -1352,8 +1433,73 @@ let private uncodedFieldTeach (fmt: string) (fty: Ty) : string option =
 let private genericWireTeach (fmt: string) (ty: Ty) : string =
     $"'to {fmt}' needs a concrete type, but this value is generic ({formatTy ty}) — the encoding is chosen from the type at check time; call 'to {fmt}' where the type is known (at the call site, passing the rendered text on)"
 
+// a generic record at the wire [D:wire-generics]: every fully
+// instantiated generic record the type reaches becomes a monomorphic
+// def keyed by its rendered type (`B<int>`) in a wire-local env, so the
+// field law runs after substitution and the readers/writers see only
+// monomorphic names. The def keeps its declared name — values, renames
+// and codecs stay B's own. A var left in the args stays generic and
+// meets the boundary's refusal; the depth cap stops polymorphic
+// recursion (`L<'a>` holding `L<L<'a>>`) expanding forever.
+let private wireMono (ctx: Ctx) (env: TypeEnv) (ty: Ty) : Ty * TypeEnv =
+    let mutable types = env.Types
+    let visited = System.Collections.Generic.HashSet<string>()
+
+    let rec go (depth: int) (ty: Ty) =
+        match resolve ctx ty with
+        | TSeq t -> TSeq(go depth t)
+        | TTuple ts -> TTuple(ts |> List.map (go depth))
+        | TNamed(n, (_ :: _ as args)) as t ->
+            let args = args |> List.map (go depth)
+            let t' = TNamed(n, args)
+
+            match typeDefFor env n with
+            | Some(Record def) when
+                def.Params.Length = args.Length
+                && depth < 32
+                && Set.isEmpty (tyVars (finalTy ctx t))
+                ->
+                let key = formatTy t'
+
+                if not (types.ContainsKey key) then
+                    // a placeholder first: a cycle back to this instance
+                    // meets the boundary's cycle refusal, not a loop
+                    types <- Map.add key (Record { def with Params = [] }) types
+
+                    let fields =
+                        def.Fields
+                        |> List.map (fun (f, fty) -> f, go (depth + 1) (substParams def.Params args fty))
+
+                    types <- Map.add key (Record { def with Params = []; Fields = fields }) types
+
+                TNamed(key, [])
+            | _ -> t'
+        // a monomorphic record or tagged union may hold an instance in
+        // a field or payload: its def is rewritten in the wire-local env
+        | TNamed(n, []) as t when not (visited.Contains n) ->
+            visited.Add n |> ignore
+
+            match typeDefFor env n with
+            | Some(Record def) when def.Params.IsEmpty ->
+                let fields = def.Fields |> List.map (fun (f, fty) -> f, go depth fty)
+
+                if fields <> def.Fields then
+                    types <- Map.add n (Record { def with Fields = fields }) types
+            | Some(Union udef) when udef.Params.IsEmpty ->
+                let cases = udef.Cases |> List.map (fun (c, p) -> c, p |> Option.map (go depth))
+
+                if cases <> udef.Cases then
+                    types <- Map.add n (Union { udef with Cases = cases }) types
+            | _ -> ()
+
+            t
+        | t -> t
+
+    let ty' = go 0 ty
+    ty', { env with Types = types }
+
 let private jsonAdmittedSet =
-    "json fields are int, float, string, bool, Uuid, Option of an admitted type, a record of admitted fields, seq of an admitted type, a seq<string * T> mapping, or Map<string, T> of one"
+    "json fields are int, float, string, bool, Uuid, Option of an admitted type, a record of admitted fields, seq of an admitted type, a seq<string * T> mapping, Map<string, T> of one, or an opaque Yaml node"
 
 let rec private jsonAdmitted
     (reading: bool)
@@ -1389,6 +1535,9 @@ let rec private jsonAdmitted
             span
             $"{at}Map keys are strings only (every receipt has them — JSON object keys ARE strings); got Map<{formatTy k}, …>"
     | TNamed("Map", args) -> err span $"{at}Map takes two type arguments (Map<string, T>); got {args.Length}"
+    // an opaque `Yaml` node holds any JSON subtree whole — JSON is a
+    // YAML subset [D:json-yaml-field]
+    | TNamed("Yaml", []) -> Ok()
     | TNamed(n, []) when seen |> List.contains n ->
         let cycle =
             ((seen |> List.rev |> List.skipWhile ((<>) n)) @ [ n ]) |> String.concat " → "
@@ -1417,6 +1566,9 @@ let rec private jsonAdmitted
             err span $"{at}{n} is an opaque value with no JSON form — encode the fields you need into a record"
         | None -> err span $"{at}unknown type '{n}'{didYouMean n (Map.keys env.Types)}"
     | TVar v when not reading && not (v.StartsWith "__hole") -> err span (at + genericWireTeach "json" ty)
+    // a generic record left uninstantiated [D:wire-generics]
+    | TNamed(_, _ :: _) when not reading && not (Set.isEmpty (tyVars ty)) ->
+        err span (at + genericWireTeach "json" ty)
     | ty -> err span $"{at}type {formatTy ty} is not admitted; {jsonAdmittedSet}"
 
 // one field's admission, for the record walk and the top-level record
@@ -1435,9 +1587,6 @@ and private jsonField
     | Some _, _ -> Ok()
     | None, Some teach -> err span $"field '{fpath}': {teach}"
     | None, None -> jsonAdmitted reading span env seen fpath fty
-
-let private jsonableRecord (reading: bool) (span: Span) (env: TypeEnv) (def: RecordDef) : Result<unit, TypeError> =
-    allOk def.Fields (fun (name, ty) -> jsonField reading span env [ def.Name ] def name name ty)
 
 let private jsonableElem (reading: bool) (span: Span) (env: TypeEnv) (elem: Ty) : Result<unit, TypeError> =
     jsonAdmitted reading span env [] "" elem
@@ -1560,9 +1709,12 @@ let private tableableRecord (span: Span) (def: RecordDef) : Result<unit, TypeErr
 let rec wireRenamesOf (env: TypeEnv) (ty: Ty) : Map<string, Map<string, string>> =
     let defs = jsonDefsClosure env Map.empty ty
 
+    // keyed by the declared name a value carries — a generic record's
+    // instances share it [D:wire-generics]
     defs
     |> Map.toList
-    |> List.choose (fun (n, def) ->
+    |> List.choose (fun (_, def) ->
+        let n = def.Name
         let renamed =
             def.Fields
             |> List.choose (fun (f, _) ->
@@ -1579,11 +1731,11 @@ let rec wireRenamesOf (env: TypeEnv) (ty: Ty) : Map<string, Map<string, string>>
 and wireCodecsOf (env: TypeEnv) (ty: Ty) : Map<string, Map<string, Codec>> =
     jsonDefsClosure env Map.empty ty
     |> Map.toList
-    |> List.choose (fun (n, def) ->
+    |> List.choose (fun (_, def) ->
         let coded =
             def.Fields |> List.choose (fun (f, _) -> fieldCodec def f |> Option.map (fun c -> f, c))
 
-        if coded.IsEmpty then None else Some(n, Map.ofList coded))
+        if coded.IsEmpty then None else Some(def.Name, Map.ofList coded))
     |> Map.ofList
 
 and private jsonDefsClosure (env: TypeEnv) (acc: Map<string, RecordDef>) (ty: Ty) : Map<string, RecordDef> =
@@ -1727,7 +1879,7 @@ let rec private yamlShape
 
                             fieldShape |> Result.map (fun s -> (fname, wireName def fname, s) :: fs)))
                     (Ok [])
-                |> Result.map (fun fs -> Yaml.SRec(n, List.rev fs))
+                |> Result.map (fun fs -> Yaml.SRec(def.Name, List.rev fs))
             | Some(Record _) -> err span $"{at}'{n}' is generic; the yaml boundary needs monomorphic records"
             // a tagged union dispatches on its wire discriminator
             // [D:wire-unions]; case payloads shape recursively
@@ -1827,6 +1979,7 @@ let rec private yamlableOut (span: Span) (env: TypeEnv) (seen: Set<string>) (pat
         // cascade suppression [PLAN-diagnostics-arc B6]
         Ok()
     | TVar _ -> err span (at + genericWireTeach "yaml" ty)
+    | TNamed(_, _ :: _) when not (Set.isEmpty (tyVars ty)) -> err span (at + genericWireTeach "yaml" ty)
     | ty ->
         err
             span
@@ -3129,20 +3282,15 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
             | TVar _ ->
                 do! bind ctx env arg.Span (TSeq TStr) targ.Ty
                 return app targ
-            | ty ->
-                do!
-                    jsonableElem
-                        false
-                        arg.Span
-                        env
-                        (match ty with
-                         | TSeq elem -> TSeq(resolve ctx elem)
-                         | t -> t)
+            | _ ->
+                // generic records cross monomorphized [D:wire-generics]
+                let wty, wenv = wireMono ctx env targ.Ty
+                do! jsonableElem false arg.Span wenv wty
 
-                let! unions = unionWriteTable arg.Span env targ.Ty
+                let! unions = unionWriteTable arg.Span wenv wty
 
                 let tto =
-                    { Kind = TETo("json", wireRenamesOf env targ.Ty, wireCodecsOf env targ.Ty, unions, false)
+                    { Kind = TETo("json", wireRenamesOf wenv wty, wireCodecsOf wenv wty, unions, false)
                       Ty = TFun(targ.Ty, TSeq TStr)
                       Span = arg.Span }
 
@@ -3705,23 +3853,18 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                     Ok()
 
             match fmt, resolve ctx targ.Ty with
-            | "json", ty ->
+            | "json", _ ->
                 // One document [D:to-jsonl]: the top level admits exactly
                 // what an element admits — record → object, seq → array,
-                // None → null; the per-element (NDJSON) form is 'to jsonl'
-                do!
-                    jsonableElem
-                        false
-                        toExpr.Span
-                        env
-                        (match ty with
-                         | TSeq elem -> TSeq(resolve ctx elem)
-                         | ty -> ty)
+                // None → null; the per-element (NDJSON) form is 'to jsonl'.
+                // Generic records cross monomorphized [D:wire-generics]
+                let wty, wenv = wireMono ctx env targ.Ty
+                do! jsonableElem false toExpr.Span wenv wty
 
-                let! unions = unionWriteTable toExpr.Span env targ.Ty
+                let! unions = unionWriteTable toExpr.Span wenv wty
 
                 let tto =
-                    { Kind = TETo(fmt, wireRenamesOf env targ.Ty, wireCodecsOf env targ.Ty, unions, false)
+                    { Kind = TETo(fmt, wireRenamesOf wenv wty, wireCodecsOf wenv wty, unions, false)
                       Ty = TFun(targ.Ty, TSeq TStr)
                       Span = toExpr.Span }
 
@@ -3730,11 +3873,13 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                       Ty = TSeq TStr
                       Span = expr.Span }
             | "jsonl", TSeq elem ->
-                do! jsonableElem false toExpr.Span env (resolve ctx elem)
-                let! unions = unionWriteTable toExpr.Span env targ.Ty
+                let wty, wenv = wireMono ctx env targ.Ty
+                let welem, _ = wireMono ctx env elem
+                do! jsonableElem false toExpr.Span wenv welem
+                let! unions = unionWriteTable toExpr.Span wenv wty
 
                 let tto =
-                    { Kind = TETo(fmt, wireRenamesOf env targ.Ty, wireCodecsOf env targ.Ty, unions, false)
+                    { Kind = TETo(fmt, wireRenamesOf wenv wty, wireCodecsOf wenv wty, unions, false)
                       Ty = TFun(targ.Ty, TSeq TStr)
                       Span = toExpr.Span }
 
@@ -3751,18 +3896,20 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                 // `to yaml stream` [D:yaml-seq-doc]: one document per
                 // element — the bundle write, mirror of `from yaml
                 // stream T`. Demands a seq, like jsonl.
+                let wty, wenv = wireMono ctx env targ.Ty
+
                 do!
-                    match ty with
-                    | TSeq elem -> yamlableOut toExpr.Span env Set.empty "" (resolve ctx elem)
-                    | ty ->
+                    match wty with
+                    | TSeq elem -> yamlableOut toExpr.Span wenv Set.empty "" elem
+                    | _ ->
                         err
                             arg.Span
                             $"'to yaml stream' needs a seq (a document per element), got {formatTy ty} — one document is 'to yaml'"
 
-                let! unions = unionWriteTable toExpr.Span env targ.Ty
+                let! unions = unionWriteTable toExpr.Span wenv wty
 
                 let tto =
-                    { Kind = TETo("yaml", wireRenamesOf env targ.Ty, wireCodecsOf env targ.Ty, unions, true)
+                    { Kind = TETo("yaml", wireRenamesOf wenv wty, wireCodecsOf wenv wty, unions, true)
                       Ty = TFun(targ.Ty, TSeq TStr)
                       Span = toExpr.Span }
 
@@ -3777,22 +3924,25 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                     err
                         toExpr.Span
                         "a patch is instructions for a merge, not a document — Yaml.merge applies it; there is nothing to render"
-            | "yaml", ty ->
+            | "yaml", _ ->
                 // to yaml [D:yaml-seq-doc]: one document — a record is a
                 // mapping, a seq a sequence document (the yaml analogue
                 // of json's array), pairing with `from yaml T`/`from
                 // yaml seq<T>`. A top-level seq<string * _> stays one
                 // mapping document. The `---` stream is `to yaml stream`.
-                do!
-                    match ty with
-                    | TSeq(TTuple [ TStr; _ ]) -> yamlableOut toExpr.Span env Set.empty "" ty
-                    | TSeq elem -> yamlableOut toExpr.Span env Set.empty "" (resolve ctx elem)
-                    | ty -> yamlableOut toExpr.Span env Set.empty "" ty
+                // Generic records cross monomorphized [D:wire-generics]
+                let wty, wenv = wireMono ctx env targ.Ty
 
-                let! unions = unionWriteTable toExpr.Span env targ.Ty
+                do!
+                    match wty with
+                    | TSeq(TTuple [ TStr; _ ]) -> yamlableOut toExpr.Span wenv Set.empty "" wty
+                    | TSeq elem -> yamlableOut toExpr.Span wenv Set.empty "" elem
+                    | ty -> yamlableOut toExpr.Span wenv Set.empty "" ty
+
+                let! unions = unionWriteTable toExpr.Span wenv wty
 
                 let tto =
-                    { Kind = TETo("yaml", wireRenamesOf env targ.Ty, wireCodecsOf env targ.Ty, unions, false)
+                    { Kind = TETo("yaml", wireRenamesOf wenv wty, wireCodecsOf wenv wty, unions, false)
                       Ty = TFun(targ.Ty, TSeq TStr)
                       Span = toExpr.Span }
 
@@ -4361,11 +4511,43 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                 match inner with
                 | None -> Ok None
                 | Some(FromName n) -> Ok(Some n)
+                | Some(FromApp(n, args)) ->
+                    // a generic record instantiated in the slot
+                    // [D:wire-generics]: json/jsonl/yaml read it through
+                    // its monomorphic instance (wireMono's key)
+                    match typeDefFor env n with
+                    | _ when not (List.contains fmt [ "json"; "jsonl"; "yaml" ]) ->
+                        err expr.Span $"'from {fmt}' needs a monomorphic record; '{n}' is generic"
+                    | Some(Record def) when def.Params.Length = args.Length ->
+                        match args |> List.tryFind (fun a -> not (Set.isEmpty (tyVars a))) with
+                        | Some a ->
+                            err
+                                expr.Span
+                                $"the adapter slot needs a concrete type — '{formatTy a}' in {formatTy (TNamed(n, args))} is a type variable"
+                        | None -> Ok(Some(formatTy (TNamed(n, args))))
+                    | Some(Record def) when def.Params.IsEmpty -> err expr.Span $"'{n}' takes no type arguments"
+                    | Some(Record def) ->
+                        err expr.Span $"'{n}' takes {def.Params.Length} type argument(s), got {args.Length}"
+                    | Some(Union _) -> err expr.Span $"'{n}' is a union; a generic union does not cross the wire"
+                    | None -> err expr.Span $"unknown type '{n}'{didYouMean n (Map.keys env.Types)}"
                 | Some(FromMap _) -> err expr.Span "Map< > does not nest in the adapter slot"
                 | Some(FromAnon fields) ->
                     match firstDup (fields |> List.map fst) with
                     | Some d -> err expr.Span $"duplicate field '{d}' in the anonymous record"
                     | None -> Ok(Some(anonRecordName fields))
+
+            // the type the slot names, as the program sees it; `name`
+            // below is the wire-local key [D:wire-generics]
+            let slotTy, env =
+                match inner with
+                | Some(FromApp(n, args)) ->
+                    let _, wenv = wireMono ctx env (TNamed(n, args))
+                    TNamed(n, args), wenv
+                // a monomorphic record may hold an instance in a field
+                | _ when List.contains fmt [ "json"; "jsonl"; "yaml" ] && tyName.IsSome ->
+                    let ty = TNamed(tyName.Value, [])
+                    ty, snd (wireMono ctx env ty)
+                | _ -> TNamed(defaultArg tyName "", []), env
 
             // per-adapter admitted set for seq<Name> [D:from-json-seq]
             // [D:yaml-seq]: json and yaml admit the wrap (one document,
@@ -4428,13 +4610,13 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
             // nothing sniffs.
             | ("json" | "jsonl"), Some name ->
                 let resultTy =
-                    if mapOf then TNamed("Map", [ TStr; TNamed(name, []) ])
-                    elif fmt = "json" && not seqOf then TNamed(name, [])
-                    else TSeq(TNamed(name, []))
+                    if mapOf then TNamed("Map", [ TStr; slotTy ])
+                    elif fmt = "json" && not seqOf then slotTy
+                    else TSeq slotTy
 
                 match typeDefFor env name with
                 | Some(Record def) when def.Params.IsEmpty ->
-                    do! jsonableRecord true expr.Span env def
+                    do! jsonAdmitted true expr.Span env [] "" (TNamed(name, []))
 
                     let defs =
                         def.Fields
@@ -4461,8 +4643,13 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                         { Kind = TEFrom(fmt, TopUnion udef, defs, udefs, seqOf, mapOf)
                           Ty = TFun(TSeq TStr, resultTy)
                           Span = expr.Span }
-                | Some(Record _) ->
-                    return! err expr.Span $"'from {fmt}' needs a monomorphic record; '{name}' is generic"
+                | Some(Record def) ->
+                    let args = def.Params |> List.map (fun _ -> "int") |> String.concat ", "
+
+                    return!
+                        err
+                            expr.Span
+                            $"'{name}' is generic — name the instance the document holds, e.g. from {fmt} {name}<{args}>"
                 | Some(Union _) ->
                     return!
                         err
@@ -4487,10 +4674,11 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                 // decides the top level, never the input.
                 match typeDefFor env name with
                 | Some(Record def) when def.Params.IsEmpty ->
-                    let perDoc = if seqOf then TSeq(TNamed(name, [])) else TNamed(name, [])
+                    let wirePerDoc = if seqOf then TSeq(TNamed(name, [])) else TNamed(name, [])
+                    let perDoc = if seqOf then TSeq slotTy else slotTy
                     let declared = if streamOf then TSeq perDoc else perDoc
 
-                    let! shape = yamlShape expr.Span env Set.empty "" perDoc
+                    let! shape = yamlShape expr.Span env Set.empty "" wirePerDoc
 
                     return
                         { Kind = TEFromYaml(name, shape, streamOf)
@@ -4508,7 +4696,13 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                         { Kind = TEFromYaml(name, shape, streamOf)
                           Ty = TFun(TSeq TStr, declared)
                           Span = expr.Span }
-                | Some(Record _) -> return! err expr.Span $"'from yaml' needs a monomorphic record; '{name}' is generic"
+                | Some(Record def) ->
+                    let args = def.Params |> List.map (fun _ -> "int") |> String.concat ", "
+
+                    return!
+                        err
+                            expr.Span
+                            $"'{name}' is generic — name the instance the document holds, e.g. from yaml {name}<{args}>"
                 | Some(Union _) ->
                     return!
                         err
@@ -5703,7 +5897,7 @@ and private checkYamlItem (ctx: Ctx) (env: TypeEnv) (item: YamlTplItem) : Result
 // `generic`: the vars the statement's binding will generalize — a hole
 // on one keeps its Render constraint for the scheme instead of the
 // string default [D:hole-generic]
-let private resolvePendingSplices (ctx: Ctx) (env: TypeEnv) (generic: Set<string>) : Result<unit, TypeError> =
+let private resolvePendingSplicesCore (ctx: Ctx) (env: TypeEnv) (generic: Set<string>) : Result<unit, TypeError> =
     ctx.PendingSplices
     |> List.rev
     |> List.fold
@@ -5737,6 +5931,12 @@ let private resolvePendingSplices (ctx: Ctx) (env: TypeEnv) (generic: Set<string
                 acc
                 |> Result.bind (fun () -> printArgTy ctx env span (TVar v) |> Result.map ignore))
             (Ok()))
+
+let private resolvePendingSplices (ctx: Ctx) (env: TypeEnv) (generic: Set<string>) : Result<unit, TypeError> =
+    // a `+` nothing decided [D:plus-defer] — the first one written
+    match ctx.AddsOpen |> Map.toList |> List.tryHead with
+    | Some(_, (span, _)) -> err span "cannot infer the operand types of '+'; pipe data in or use concrete values"
+    | None -> resolvePendingSplicesCore ctx env generic
 
 let rec private finalizeExpr (ctx: Ctx) (te: TypedExpr) : TypedExpr =
     let kind =
