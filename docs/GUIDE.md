@@ -213,6 +213,74 @@ One difference from F#: `Seq.sum` only works on ints. `Float`,
 `Size` and `Duration` each have their own `sum` and `average`
 (`ls |> Seq.map _.bytes |> Size.sum`).
 
+### Lazy values: a `let` is a recipe
+
+A `let` bound to a command, `ls`, or `Path.glob` stores the recipe,
+not the result. Nothing runs when the `let` is evaluated; the command
+runs (or the directory is listed) each time the value is read. It
+runs in the directory and environment current when it is read, as an
+F# `seq` reading `Environment.CurrentDirectory` would. The exception
+is a value written inside `within cd` or `within env`: it keeps that
+scope however late it is read. A relative `within cd` path resolves
+when the `within` line runs, against the current directory (or the
+enclosing scope's), and the value keeps that resolved directory, not
+the relative text:
+
+```weir
+Dir.create "proj/src"
+File.write "proj/a.txt" ["a"]
+File.write "proj/src/b.txt" ["b"]
+cd "proj"
+let top = ls |> Seq.map _.name
+let inside = within cd "src" (ls |> Seq.map _.name)
+let greet = within env [Env.pair "GREETING" "hi"] $(sh -c "echo ${GREETING:-unset}")
+cd "src"
+print (show top)      // ["b.txt"]: read after the cd
+print (show inside)   // ["b.txt"]: written inside within cd "src"
+print (show greet)    // ["hi"]: the within env still applies
+```
+
+The same holds for `Path.glob` (see
+[File batches](#file-batches-glob-is-a-function-not-an-expansion)).
+
+```weir
+let here = ls
+let before = here |> Seq.length
+touch notes.txt
+print $"{(here |> Seq.length) - before} new"
+
+let log = git log --oneline -n 10
+let snapshot = git log --oneline -n 10 |> Seq.freeze
+print $"{log |> Seq.length} {snapshot |> Seq.length}"
+```
+
+`here` lists the directory again on each read, so it sees
+`notes.txt`. `log` runs `git` every time it is used; `snapshot` ran
+`git` once, when its `let` was evaluated, and keeps that output.
+
+These forms run right away instead:
+
+- the reifiers: `| line`, `| text`, `| complete`, `| succeeds`,
+  `| exitCode`, `| orFail`, and `| and`/`| or`
+- `Seq.freeze`, and anything else that reads the whole sequence
+  (`Seq.length`, `Seq.iter`, a `for` loop, `$@xs` in a command)
+- `$(…)` when something reads it at once, such as a command argument;
+  on its own, `let x = $(cmd)` is the same lazy command
+
+Everything else that touches commands or the filesystem stays lazy.
+What that means depends on where the `let` is:
+
+- In a script, nothing runs until the value is used, and the checker
+  warns if a command-backed value is used twice without `Seq.freeze`.
+- In the REPL, the echo of a lazy `let` shows its type and a hint and
+  never runs it; type the name to run it ([repl.md](repl.md#what-the-echo-shows)).
+- In the init file and in modules, nothing may run while they load:
+  a command, a pipeline of commands, or a value piped into a command
+  is allowed; the eager forms, and passing the command to a function,
+  are refused.
+
+[Types: seq](reference/types.md#seq) has the reference version.
+
 ### Indexing and slicing
 
 Use brackets to get a single element: `xs[0]` is the same as
@@ -1225,9 +1293,10 @@ arguments, and none of them is split on spaces:
 
 `git add $@(Path.glob "*.txt" |> Seq.freeze)`
 
-A relative pattern uses the directory you're in when `Path.glob`
-runs, even if you `cd` before reading it. But the sequence is lazy:
-the files are listed again each time it's read. To pin the list, say
+A relative pattern uses the directory you're in when the sequence is
+read, unless `Path.glob` was called inside `within cd`, which it then
+keeps. The sequence is lazy: the files are listed again each time
+it's read. To pin the list, say
 before you create or delete files, `Seq.freeze` the result first. For paths relative to the script itself rather than the
 current directory:
 
@@ -2196,8 +2265,11 @@ print (if r.exitCode <> 0 then "importing a non-module is a named check error" e
 (The error printed by the inner script names the file by its full
 path: ``…/plain.weir is not a module; add `module` at the top, or
 invoke it as a command``.) A module
-`let` that runs a command is an error too; wrap it in a function.
-Modules only define things, and scripts run them.
+`let` that runs a command while the module loads is an error too
+(`| line`, `| text` and the other reifiers, `|> Seq.freeze`); wrap it
+in a function. A plain command `let`, like `let log = git log -n 10`,
+is fine: it runs nothing until a script uses it, and runs again on
+every use. Modules only define things, and scripts run them.
 
 A module can also come from another repo, copied into your project
 and committed.
@@ -2641,7 +2713,9 @@ print "done"
 
 `weir` with no arguments starts the REPL. Here you can use short names
 like `map` and `where` (scripts need `Seq.map` and so on). Each value
-is echoed back with its type. An entry can span several lines: weir
+is echoed back with its type. A `let` bound to a command is the
+exception: the echo shows its type and doesn't run it (`let cleanup =
+rm -rf build` deletes nothing until you type `cleanup`). An entry can span several lines: weir
 checks whether what you've typed so far is a complete statement and
 keeps reading if it isn't. `Ctrl+C` throws away the current entry,
 and `Ctrl+D` or `#quit` exits.

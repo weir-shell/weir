@@ -332,6 +332,26 @@ let rec private tyHasFloat (ty: Ty) : bool =
 let private floatEqTeaching =
     "floats do not join '==' (0.1 + 0.2 is not 0.3); use Float.near a b eps, or compare after Float.round"
 
+// a float reached through a declared record/union [D:floats]: the type
+// names no float itself, so the teaching names the field it holds
+let private floatInsideNamed (env: TypeEnv) (ty: Ty) : bool =
+    let rec go (seen: Set<string>) (t: Ty) =
+        tyHasFloat t
+        || (match t with
+            | TSeq t -> go seen t
+            | TTuple ts -> ts |> List.exists (go seen)
+            | TNamed(n, targs) when not (seen.Contains n) ->
+                let seen = seen.Add n
+
+                targs |> List.exists (go seen)
+                || (match typeDefFor env n with
+                    | Some(Record d) -> d.Fields |> List.exists (snd >> go seen)
+                    | Some(Union u) -> u.Cases |> List.exists (snd >> Option.exists (go seen))
+                    | _ -> false)
+            | _ -> false)
+
+    go Set.empty ty
+
 type private Ctx =
     { mutable Fresh: int
       mutable Subst: Map<string, Ty>
@@ -1196,6 +1216,8 @@ let rec private typeBinOp
                     fun t ->
                         if tyHasFloat t then
                             floatEqTeaching
+                        elif floatInsideNamed env t then
+                            $"'{op}' is not defined for {formatTy t}: it holds a float, and floats cannot be compared with '==' (0.1 + 0.2 is not 0.3) — compare the float fields with Float.near a b eps, or after Float.round"
                         elif (opaqueNominal t).IsSome then
                             $"'{op}' is not defined for {formatTy t}; an opaque value cannot be compared"
                         else
@@ -1974,9 +1996,13 @@ and ctorOwnersAll (env: TypeEnv) (name: string) : string list =
         // imported types are excluded: they live flat in `Types` so signatures
         // and field access resolve, but their cases are not in scope bare
         // (access is always qualified), so they are not candidates for this
-        // name and must not make a local declaration look ambiguous
+        // name and must not make a local declaration look ambiguous — a type
+        // reached only transitively [D:transitive-types] included
         let imported =
-            env.ModuleTypes |> Map.toList |> List.map snd |> List.fold Set.union Set.empty
+            env.ModuleTypes
+            |> Map.toList
+            |> List.map snd
+            |> List.fold Set.union (env.TypeOrigins |> Map.keys |> Set.ofSeq)
 
         let owners =
             env.Types
@@ -1988,6 +2014,23 @@ and ctorOwnersAll (env: TypeEnv) (name: string) : string list =
             |> List.sort
 
         owners
+
+// the imported unions declaring a case — the owners ctorOwnersAll
+// leaves out (their cases are not in scope bare), consulted only where
+// a pattern types its scrutinee [D:match-scrutinee-infer]
+let private importedCtorOwners (env: TypeEnv) (name: string) : string list =
+    let imported =
+        env.ModuleTypes
+        |> Map.toList
+        |> List.map snd
+        |> List.fold Set.union (env.TypeOrigins |> Map.keys |> Set.ofSeq)
+
+    env.Types
+    |> Map.toList
+    |> List.choose (fun (tn, d) ->
+        match d with
+        | Union u when imported.Contains tn && u.Cases |> List.exists (fun (c, _) -> c = name) -> Some tn
+        | _ -> None)
 
 let rec private checkPattern (ctx: Ctx) (env: TypeEnv) (ty: Ty) (p: Pattern) : Result<(string * Ty) list, TypeError> =
     // a pattern whose shape determines a type binds an unresolved
@@ -2267,7 +2310,14 @@ let rec private checkPattern (ctx: Ctx) (env: TypeEnv) (ty: Ty) (p: Pattern) : R
                         ("constructor patterns need a scrutinee whose type is already known — params are not typed from patterns. "
                          + "Two repairs: inline the lambda at its use site (a typed pipe position types the binder there), or match on already-typed data")
 
-                match ctorOwners env ctor with
+                // an imported union's case types it too, as it does at a
+                // typed scrutinee — when no in-scope union declares the name
+                let owners =
+                    match ctorOwners env ctor with
+                    | [] -> importedCtorOwners env ctor
+                    | local -> local
+
+                match owners with
                 | [ owner ] ->
                     match typeDefFor env owner with
                     | Some(Union def) ->
@@ -2333,6 +2383,34 @@ let rec private binderShape (ctx: Ctx) (env: TypeEnv) (p: Pattern) : Result<Ty *
         // an unknown uppercase name in a binder is the casing law's
         // case (a function/name spelled uppercase), not refutability
         casingError p.PSpan ctor
+    // a single-case union's constructor cannot fail — `let un (W x) = x`
+    // destructures as F#'s does
+    | PCase(ctor, argPat) when
+        (match ctorOwners env ctor with
+         | [ owner ] ->
+             match typeDefFor env owner with
+             | Some(Union u) -> u.Cases.Length = 1
+             | _ -> false
+         | _ -> false)
+        ->
+        let owner = (ctorOwners env ctor).Head
+
+        match typeDefFor env owner with
+        | Some(Union u) ->
+            let targs = u.Params |> List.map (fun _ -> TVar(freshName ctx "a"))
+            let ty = TNamed(owner, targs)
+
+            match snd u.Cases.Head, argPat with
+            | None, None -> Ok(ty, [])
+            | None, Some ap -> err ap.PSpan $"'{ctor}' has no payload"
+            | Some payload, Some ap ->
+                result {
+                    let! t, binds = binderShape ctx env ap
+                    do! bind ctx env ap.PSpan (substParams u.Params targs payload) t
+                    return ty, binds
+                }
+            | Some payload, None -> err p.PSpan $"'{ctor}' carries {formatTy (substParams u.Params targs payload)}; add a pattern for it"
+        | _ -> err p.PSpan "this pattern can fail; use match"
     | PBool _
     | PInt _
     | PStr _
@@ -2485,8 +2563,10 @@ let private exhaustive
     (env: TypeEnv)
     (span: Span)
     (scrutTy: Ty)
-    (arms: (Pattern * 'g option) list)
+    (armsWithBody: (Pattern * 'g option * Span) list)
     : Result<unit, TypeError> =
+    let arms = armsWithBody |> List.map (fun (p, g, _) -> p, g)
+
     let unguarded =
         arms |> List.choose (fun (p, g) -> if g.IsNone then Some p else None)
 
@@ -2502,13 +2582,41 @@ let private exhaustive
     match deadArms with
     | Some i ->
         let p, _ = arms[i]
-        let later = List.length arms - i - 1
+        let _, _, body = armsWithBody[i]
+
+        // an or-pattern desugars to one arm per alternative sharing the
+        // body [D:or-patterns]: alternatives after this one sit on its own
+        // arm, and the arms below count once each, however many
+        // alternatives they carry
+        let rest = armsWithBody |> List.skip (i + 1)
+        let alts = rest |> List.takeWhile (fun (_, _, b) -> b = body) |> List.length
+
+        let later =
+            rest
+            |> List.skip alts
+            |> List.map (fun (_, _, b) -> b)
+            |> List.distinct
+            |> List.length
+
+        let altPart =
+            if alts = 1 then
+                "the or-pattern's alternative after it"
+            else
+                $"the or-pattern's {alts} alternatives after it"
+
+        let armPart =
+            if later = 1 then
+                "the arm below"
+            else
+                $"the {later} arms below"
 
         let tail =
-            if later = 1 then
-                "the arm below is unreachable"
-            else
-                $"the {later} arms below are unreachable"
+            match alts, later with
+            | 0, 1 -> "the arm below is unreachable"
+            | 0, _ -> $"{armPart} are unreachable"
+            | 1, 0 -> $"{altPart} is unreachable"
+            | _, 0 -> $"{altPart} are unreachable"
+            | _ -> $"{altPart} and {armPart} are unreachable"
 
         match p.PKind with
         | PVar name ->
@@ -2566,6 +2674,27 @@ let private lambdaCore
 /// answer confidently where the checker refuses, and a later
 /// declaration cannot miss the collision. env.Values holds one entry
 /// per name, so by the time a bare use is resolved the earlier
+// a comma between record-literal fields parses as a tuple value whose
+// later item is `name = …` — taught as the separator it is, as the list
+// literal's one-tuple teaching does, before the field set mis-resolves
+let private commaBetweenFields (fields: (string * Span * Expr) list) : Result<unit, TypeError> =
+    fields
+    |> List.tryPick (fun (_, _, v) ->
+        match v.Kind with
+        | ETuple(_ :: rest) ->
+            rest
+            |> List.tryPick (fun item ->
+                match item.Kind with
+                | EBinOp("=", { Kind = EVar n }, _) -> Some(n, item.Span)
+                | _ -> None)
+        | _ -> None)
+    |> function
+        | Some(n, span) ->
+            err
+                span
+                $"record fields are separated by ';' or a newline, not ',' — the comma made a tuple and '{n} = …' an equality; write {{ … ; {n} = … }}"
+        | None -> Ok()
+
 let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr, TypeError> =
     match expr.Kind with
     // a failure as a value [D:try-form]: Option, or Result carrying the message
@@ -2584,6 +2713,12 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                   Ty = ty
                   Span = expr.Span }
         }
+    // a command chain's `|> try` stage [D:try-form]: the form catches an
+    // expression's raise, a command's failure is data through a reifier
+    | EPipe(_, ({ Kind = ETryForm _ } as tf)) ->
+        err
+            tf.Span
+            "a command's failure is data through a reifier, not `|> try` — `<command> | complete` (exitCode, stdout, stderr), `| succeeds` or `| exitCode`; or make it an expression first: `$(<command>) |> try`"
     | ETryForm _ ->
         err
             expr.Span
@@ -3111,6 +3246,8 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                 // no change to `Some { .. }` (Some is a ctor, not a type).
                 let namedRecord (typeName: string) (fields: (string * Span * Expr) list) =
                     result {
+                        do! commaBetweenFields fields
+
                         let def =
                             match typeDefFor env typeName with
                             | Some(Record d) -> d
@@ -3480,6 +3617,58 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                                  err arg.Span $"Args.load needs a monomorphic type; '{tyName}' is generic"
                              | None -> err arg.Span $"unknown type '{tyName}'{didYouMean tyName (Map.keys env.Types)}"
                          | _ -> err arg.Span "Args.load takes a type name, e.g. Args.load Cli")
+                // a reified command's argv words [D:secret]: each element
+                // obeys the command-argument law a bare command's does, so
+                // `curl -H $auth … | complete` takes the Secret; the marker
+                // erases to the list (seq<string> to the reifier — Builtins
+                // renders each word as Eval.scalarString does)
+                | EVar "|argv", [ { Kind = EList items } as lst ] ->
+                    result {
+                        let! titems =
+                            items
+                            |> List.fold
+                                (fun acc a ->
+                                    acc
+                                    |> Result.bind (fun ts ->
+                                        checkScalarSplice ctx env CmdArg a |> Result.map (fun t -> t :: ts)))
+                                (Ok [])
+
+                        return
+                            { Kind = TEList(List.rev titems)
+                              Ty = TSeq TStr
+                              Span = lst.Span }
+                    }
+                // `NAME=$s cmd` / `within env NAME=$s` [D:secret]: the
+                // overlay value is a string or a Secret (the CI token's
+                // channel into a child) — Env.pair itself stays string-only
+                | EVar "|envPair", [ k; v ] ->
+                    result {
+                        let! tk = check ctx env k TStr
+                        let! tv = infer ctx env v
+
+                        let! vTy =
+                            match resolve ctx tv.Ty with
+                            | TSecret -> Ok TSecret
+                            | _ -> bind ctx env v.Span TStr tv.Ty |> Result.map (fun () -> TStr)
+
+                        let envVarTy = TNamed("EnvVar", [])
+
+                        let tf =
+                            { Kind = TEVar "|envPair"
+                              Ty = TFun(TStr, TFun(vTy, envVarTy))
+                              Span = head.Span }
+
+                        return
+                            { Kind =
+                                TEApp(
+                                    { Kind = TEApp(tf, tk)
+                                      Ty = TFun(vTy, envVarTy)
+                                      Span = expr.Span },
+                                    tv
+                                )
+                              Ty = envVarTy
+                              Span = expr.Span }
+                    }
                 | EVar(("print" | "printerr" | "|print") as pname), [ arg ] when isPrintFamily env pname ->
                     result {
                         let! targ = infer ctx env arg
@@ -3953,6 +4142,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
         // generalize. Paths walk nested records (the F# 8 I.X sugar);
         // rows demand a field per hop, mirroring EField.
         result {
+            do! commaBetweenFields (updates |> List.map (fun (path, v) -> fst (List.head path), expr.Span, v))
             let! tsource = infer ctx env source
 
             match firstDup (updates |> List.map (fun (path, _) -> fst (List.head path))) with
@@ -4041,6 +4231,8 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
         }
     | ERecord fields ->
         result {
+            do! commaBetweenFields fields
+
             match firstDup (fields |> List.map (fun (n, _, _) -> n)) with
             | Some dup ->
                 let _, dupSpan, _ = fields |> List.findBack (fun (n, _, _) -> n = dup)
@@ -4098,6 +4290,8 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
     // node is TERecord — eval/writers/LSP gain no arms.
     | EAnonRecord fields ->
         result {
+            do! commaBetweenFields fields
+
             match firstDup (fields |> List.map (fun (n, _, _) -> n)) with
             | Some dup ->
                 let _, dupSpan, _ = fields |> List.findBack (fun (n, _, _) -> n = dup)
@@ -4675,7 +4869,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                 let tarms = (pat0, tguard0, tbody0) :: List.rev trest
                 // re-resolve: a constructor pattern may have typed the
                 // scrutinee var during arm checking [D:match-scrutinee-infer]
-                do! exhaustive env expr.Span (finalTy ctx tscrutinee.Ty) (tarms |> List.map (fun (p, g, _) -> p, g))
+                do! exhaustive env expr.Span (finalTy ctx tscrutinee.Ty) (tarms |> List.map (fun (p, g, (b: TypedExpr)) -> p, g, b.Span))
 
                 return
                     { Kind = TEMatch(tscrutinee, tarms)
@@ -6929,6 +7123,93 @@ let rec eagerCommandHelper (helpers: Map<string, int>) (te: TypedExpr) : string 
         eagerCommandHelper helpers v
         |> Option.orElseWith (fun () -> eagerCommandHelper (Map.remove n helpers) b)
     | _ -> childExprs te |> List.tryPick (eagerCommandHelper helpers)
+
+// lazy command-backed lets [D:lazy-command-lets]: in the helpers map an
+// arity-0 entry is a binding holding a lazy command seq — reading it
+// spawns nothing, forcing it runs its command
+let private lazyNames (helpers: Map<string, int>) =
+    helpers |> Map.filter (fun _ a -> a = 0) |> Map.keys |> Set.ofSeq
+
+/// the first of `names` read on the eager spine (outside lambdas)
+let rec eagerNameRef (names: Set<string>) (te: TypedExpr) : string option =
+    match te.Kind with
+    | TEVar v when names.Contains v -> Some v
+    | TELambda _
+    | TELambdaPat _ -> None
+    | _ -> childExprs te |> List.tryPick (eagerNameRef names)
+
+/// evaluating this builds a command seq and spawns nothing: a command, a
+/// pipeline of commands, a value-headed pipe into a command, or another
+/// lazy binding — with a head, argv and value head that run nothing
+/// (argv is built when the value is, so a splice forces) [D:lazy-command-lets]
+let rec private lazyCommandSeq (names: Set<string>) (te: TypedExpr) : bool =
+    let quiet e =
+        not (runsCommandT e) && (eagerNameRef names e).IsNone
+
+    match te.Kind with
+    | TECmd _ -> childExprs te |> List.forall quiet
+    | TEPipe(arg, ({ Kind = TECmd _ } as c)) -> lazyCommandSeq names c && (lazyCommandSeq names arg || quiet arg)
+    | TEVar v -> names.Contains v
+    | _ -> false
+
+/// the module/init binding summary after `let name = te`: a
+/// command-reaching function keeps its arity, a lazy command seq is 0,
+/// anything else drops the name (a shadow)
+let recordCommandBinding (helpers: Map<string, int>) (name: string) (te: TypedExpr) : Map<string, int> =
+    match commandHelperArity helpers te with
+    | Some a -> Map.add name a helpers
+    | None when lazyCommandSeq (lazyNames helpers) te -> Map.add name 0 helpers
+    | None -> Map.remove name helpers
+
+/// why evaluating a module/init binding RHS runs a command now — None when
+/// it runs none or only builds a lazy command seq [D:lazy-command-lets]
+let commandRunsNow (helpers: Map<string, int>) (te: TypedExpr) : string option =
+    let names = lazyNames helpers
+    let lazyFix =
+        "only a command, a pipeline of commands or a value piped into one stays lazy; or wrap it in a function (let f () = …)"
+
+    let rec eagerVar (pick: string -> bool) (e: TypedExpr) =
+        match e.Kind with
+        | TEVar v when pick v -> Some v
+        | TELambda _
+        | TELambdaPat _ -> None
+        | _ -> childExprs e |> List.tryPick (eagerVar pick)
+
+    // the stage that forces a seq: `xs |> Seq.freeze` / `Seq.length xs`
+    let rec forcer (e: TypedExpr) =
+        match e.Kind with
+        | TEVar v when not (v.StartsWith "|") -> Some v
+        | TEApp(f, _) -> forcer f
+        | _ -> None
+
+    let forcing () =
+        match te.Kind with
+        | TEPipe(_, f) -> forcer f
+        | TEApp(f, _) -> forcer f
+        | _ -> None
+        |> Option.map (fun f -> $"passed to `{f}` here")
+
+    if lazyCommandSeq names te then
+        None
+    else
+        let runs = runsCommandT te
+
+        match
+            (if runs then eagerVar (fun v -> v = "|print") te else None),
+            (if runs then eagerVar (fun v -> (reifierOfVar v).IsSome) te else None),
+            eagerNameRef names te
+        with
+        // `| and` / `| or` stream their commands (the |print desugar)
+        | Some _, _, _ -> Some $"`| and`/`| or` runs the commands now — {lazyFix}"
+        | None, Some r, _ ->
+            Some $"`| {(reifierOfVar r).Value}` runs the command now — drop the reifier to keep it lazy, or wrap it in a function (let f () = …)"
+        | None, None, Some n ->
+            let what = forcing () |> Option.defaultValue "read here, which runs it"
+            Some $"'{n}' is a lazy command {what} — {lazyFix}"
+        | None, None, None when runs ->
+            let what = forcing () |> Option.defaultValue "part of a larger expression here"
+            Some $"the command is {what} — {lazyFix}"
+        | None, None, None -> None
 
 /// the first command on the RHS's eager spine, rendered for a message:
 /// literal argv words as written, splices as $name / $@name, computed

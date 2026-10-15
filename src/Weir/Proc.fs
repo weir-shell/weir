@@ -13,10 +13,10 @@ type Spec =
       Args: string list
       Env: (string * string) list
       Input: seq<string> option
-      // the ambient snapshot [D:ambient-capture]: a lazy command spawn
-      // replays the scope state captured where the expression was
-      // written (closure semantics); None reads the live session (the
-      // eager statement paths, where site and spawn coincide)
+      // the scope snapshot [D:ambient-capture] [D:ambient-capture-within]:
+      // a lazy command spawn replays the enclosing `within` scope it was
+      // written in; None reads the live session at spawn (outside any
+      // scope, and the eager statement paths)
       Cwd: string option
       Ambient: (string * string) list option }
 
@@ -83,7 +83,7 @@ let private spawn
     // spec env, so inner and explicit keys win [D:within-scopes] —
     // applied at the spawn so every child (reifiers, scoped
     // procs) obeys the one law, not just the Eval command paths. A lazy
-    // spawn replays its written-site snapshot [D:ambient-capture].
+    // spawn replays its scope snapshot [D:ambient-capture-within].
     let ambient =
         match ambientO with
         | Some snap -> snap

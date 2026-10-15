@@ -1041,32 +1041,66 @@ let bracketFold
                             j <- j + 1
 
                         // an update header's opener-line content is the
-                        // source, not a field — the first continuation entry
-                        // anchors instead [D:record-update]. Only a record
-                        // brace can carry a `with`; and the check is
-                        // index-based — no per-opener `piece.Substring(j)`
-                        // allocation, so a bracket-heavy single line stays
-                        // linear [D:assemble-quadratic].
-                        let isWithHeader =
-                            c = '{'
-                            && (let mutable e = piece.Length - 1
+                        // source, not a field — the first field after `with`
+                        // anchors, on this line or (dangling `with`) the next
+                        // [D:field-alignment] [D:record-update]. Only a record
+                        // brace can carry a `with`. The scan is bounded: it
+                        // stops at the first top-level `=`, `;`, opener or
+                        // closer, so a bracket-heavy single line stays linear
+                        // [D:assemble-quadratic].
+                        let withField =
+                            if c <> '{' then
+                                None
+                            else
+                                let mutable k = j
+                                let mutable depth = 0
+                                let mutable found = None
+                                let mutable stop = false
 
-                                while e >= j && piece[e] = ' ' do
-                                    e <- e - 1
-                                // does piece[j..e] end with the word "with"?
-                                // (either the whole trimmed tail is "with", or
-                                // it ends " with" — a space precedes it)
-                                e >= j + 3
-                                && piece[e] = 'h'
-                                && piece[e - 1] = 't'
-                                && piece[e - 2] = 'i'
-                                && piece[e - 3] = 'w'
-                                && (e - 3 = j || piece[e - 4] = ' '))
+                                while not stop && k < piece.Length do
+                                    let ch = piece[k]
 
-                        if j < piece.Length && piece[j] <> '}' && piece[j] <> ']' && not isWithHeader then
-                            Some(indent + j)
-                        else
-                            None
+                                    if ch = '"' then
+                                        k <- k + 1
+
+                                        while k < piece.Length && piece[k] <> '"' do
+                                            if piece[k] = '\\' then k <- k + 1
+                                            k <- k + 1
+                                    elif ch = '(' then
+                                        depth <- depth + 1
+                                    elif ch = ')' then
+                                        depth <- depth - 1
+                                        if depth < 0 then stop <- true
+                                    elif depth = 0 && (ch = '=' || ch = ';' || ch = '{' || ch = '}' || ch = '[' || ch = ']') then
+                                        stop <- true
+                                    elif
+                                        depth = 0
+                                        && ch = 'w'
+                                        && k > j
+                                        && piece[k - 1] = ' '
+                                        && k + 3 < piece.Length
+                                        && piece[k + 1] = 'i'
+                                        && piece[k + 2] = 't'
+                                        && piece[k + 3] = 'h'
+                                        && (k + 4 = piece.Length || piece[k + 4] = ' ')
+                                    then
+                                        let mutable f = k + 4
+
+                                        while f < piece.Length && piece[f] = ' ' do
+                                            f <- f + 1
+
+                                        found <- Some f
+                                        stop <- true
+
+                                    k <- k + 1
+
+                                found
+
+                        match withField with
+                        | Some f when f >= piece.Length -> None
+                        | Some f -> Some(indent + f)
+                        | None when j < piece.Length && piece[j] <> '}' && piece[j] <> ']' -> Some(indent + j)
+                        | None -> None
 
                     Ok((c, lineNo, entryCol) :: stack)
                 | '}'
@@ -1418,7 +1452,10 @@ let private applyJoin (j: Join) (b: PendBuf) (piece: string) (lineNo: int) (inde
         Segments = (joinedStart, lineNo, indent) :: b.Segments
         Ends = pieceEnd :: b.Ends }
 
-let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> =
+// onMisaligned (line, siblings' column) fires before a sibling-alignment
+// error — the recovering assembler re-indents that line instead of
+// dropping it, so its closers survive (no cascading "still open")
+let assembleWith (onMisaligned: int -> int -> unit) (numbered: (int * string) list) : Result<LogicalLine list, string> =
     // trailing comments strip here, per physical line [D:trailing-comments]:
     // stripComment is the whitespace-preceded rule (glued // — http://a,
     // --format=a//b — stays data). Skipped: yaml district content (bytes)
@@ -1752,6 +1789,8 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                 then
                                                     match entryCol with
                                                     | Some c when indent <> c ->
+                                                        onMisaligned lineNo c
+
                                                         Error
                                                             $"line {lineNo}: this field/element is indented off its siblings (they sit at column {c}) — align the group exactly"
                                                     | Some _ -> Ok p.Brackets
@@ -2079,6 +2118,8 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                                                                     // aligned sibling (pipeline stage)
                                                                     Ok(false, groups)
                                                                 | (g, _, _, _) :: _ ->
+                                                                    onMisaligned lineNo g
+
                                                                     Error
                                                                         $"line {lineNo}: this line is indented off its siblings (they sit at column {g}) — align the group exactly"
                                                                 | [] ->
@@ -2434,6 +2475,9 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
 // pending statement) is "not yet countable" -> None. The piped REPL's
 // continuation oracle: an added line that keeps the count merged into the
 // pending statement; one that raises it started a new statement.
+let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> =
+    assembleWith (fun _ _ -> ()) numbered
+
 let statementCount (bufLines: string list) : int option =
     let numbered =
         bufLines
@@ -4464,7 +4508,8 @@ let private deriveModuleName (absPath: string) : string option =
 // does evaluating this RHS at import run a command? — the weak purity rule
 // [D:modules-v1]. Eager positions only, stops at lambdas: a command in a
 // lambda body is deferred, so a param-ful `let f r = git …` is a function,
-// not an import-time effect; only a paramless `let x = git …` is rejected.
+// not an import-time effect. A module/init let refines it with
+// Check.commandRunsNow (a lazy command seq passes, [D:lazy-command-lets]).
 // The walk lives in Check beside the re-enumeration machinery that
 // shares it [D:reenum-warning].
 let runsCommandT: Check.TypedExpr -> bool = Check.runsCommandT
@@ -4474,15 +4519,15 @@ let runsCommandT: Check.TypedExpr -> bool = Check.runsCommandT
 let private helperAtImport (name: string) (h: string) =
     $"a module 'let' cannot run a command at import — '{h}' runs one, and this calls it now; wrap this in a function too (let {name} () = …), the command runs when a script calls it"
 
-/// the module's command-reaching functions so far, in declaration order
+// a module let whose RHS runs a command now; a lazy command seq is a
+// value and passes [D:lazy-command-lets]
+let private commandAtImport (why: string) =
+    $"a module 'let' cannot run a command at import: {why}"
+
+/// the module's command-reaching functions and lazy command values so
+/// far, in declaration order
 let private moduleCommandHelpers (lets: (string * Check.TypedExpr) list) : Map<string, int> =
-    lets
-    |> List.fold
-        (fun m (n, te) ->
-            match Check.commandHelperArity m te with
-            | Some a -> Map.add n a m
-            | None -> Map.remove n m)
-        Map.empty
+    lets |> List.fold (fun m (n, te) -> Check.recordCommandBinding m n te) Map.empty
 
 // a source file's read, once into a result: an entry script or an import
 // that is missing, a directory, unreadable or not a regular file (a device
@@ -4766,18 +4811,24 @@ let rec loadModuleCachedWith
                                           Message = d.Message }
                                 | None -> at d.PhysLine d.PhysCol d.Message
                             | Ok chk ->
+                                let helpers =
+                                    accBody
+                                    |> List.rev
+                                    |> List.choose (function
+                                        | _, CLet(n, t) -> Some(n, t)
+                                        | _ -> None)
+                                    |> moduleCommandHelpers
+
                                 let eagerHelper =
                                     match chk.Kind with
                                     | KLet(_, _, te)
-                                    | KLetPat(_, _, te) ->
-                                        let lets =
-                                            accBody
-                                            |> List.rev
-                                            |> List.choose (function
-                                                | _, CLet(n, t) -> Some(n, t)
-                                                | _ -> None)
+                                    | KLetPat(_, _, te) -> Check.eagerCommandHelper helpers te
+                                    | _ -> None
 
-                                        Check.eagerCommandHelper (moduleCommandHelpers lets) te
+                                let runsNow =
+                                    match chk.Kind with
+                                    | KLet(_, _, te)
+                                    | KLetPat(_, _, te) -> Check.commandRunsNow helpers te
                                     | _ -> None
 
                                 match chk.Kind with
@@ -4792,13 +4843,8 @@ let rec loadModuleCachedWith
                                             Signed = Set.add name sc.Signed }
 
                                     go chk.Env sc' implLines accBody tail
-                                | KLet(_, _, te) when runsCommandT te ->
-                                    at
-                                        ll.Head
-                                        1
-                                        "a module 'let' cannot run a command at import — wrap it in a function (let f () = …), the command runs when a script calls it"
-                                | KLetPat(_, _, te) when runsCommandT te ->
-                                    at ll.Head 1 "a module 'let' cannot run a command at import"
+                                | KLet _
+                                | KLetPat _ when runsNow.IsSome -> at ll.Head 1 (commandAtImport runsNow.Value)
                                 | KLet(name, _, _) when eagerHelper.IsSome -> at ll.Head 1 (helperAtImport name eagerHelper.Value)
                                 | KLetPat _ when eagerHelper.IsSome -> at ll.Head 1 (helperAtImport "f" eagerHelper.Value)
                                 | KLet(name, _, te) ->
@@ -6483,7 +6529,9 @@ let analyzeLines
     let assemblyDiags = ResizeArray<Diagnostic>()
 
     let rec assembleRecovering (attempts: int) (input: (int * string) list) =
-        match assemble input with
+        let misaligned = ref None
+
+        match assembleWith (fun l c -> misaligned.Value <- Some(l, c)) input with
         | Ok lls -> lls
         | Error msg when attempts > 0 ->
             let line =
@@ -6496,20 +6544,34 @@ let analyzeLines
                          | false, _ -> -1)
                 | None -> -1
 
+            // the named line's content start is the column
+            let col =
+                input
+                |> List.tryFind (fun (n, _) -> n = line)
+                |> Option.map (fun (_, raw) -> (raw |> Seq.takeWhile ((=) ' ') |> Seq.length) + 1)
+                |> Option.defaultValue 1
+
             assemblyDiags.Add
                 { File = path
                   Line = (if line > 0 then line else 1)
-                  Col = 1
+                  Col = col
                   EndLine = None
                   EndCol = None
                   Severity = "error"
                   Code = "assembly"
                   Message = msg }
 
-            if line > 0 && input |> List.exists (fun (n, _) -> n = line) then
+            match misaligned.Value with
+            | Some(l, c) when l = line ->
+                // re-indent onto the siblings' column: the line's closers
+                // still close, so the statement checks on
+                let fix (n, raw: string) =
+                    if n = line then n, String(' ', c) + raw.TrimStart(' ') else n, raw
+
+                assembleRecovering (attempts - 1) (input |> List.map fix)
+            | _ when line > 0 && input |> List.exists (fun (n, _) -> n = line) ->
                 assembleRecovering (attempts - 1) (input |> List.filter (fun (n, _) -> n <> line))
-            else
-                []
+            | _ -> []
         | Error _ -> []
 
     let logicalLines = numbered |> assembleRecovering 10 // raw lines: assemble classifies/strips internally
@@ -6708,18 +6770,15 @@ let analyzeLines
                          | KCmd _
                          | KExpr _ -> Some "a module declares only — 'type' and 'let', no commands or bare expressions"
                          | KLet(_, _, te)
-                         | KLetPat(_, _, te) when runsCommandT te ->
-                             Some "a module 'let' cannot run a command at import — wrap it in a function (let f () = …)"
+                         | KLetPat(_, _, te) when (Check.commandRunsNow moduleHelpers te).IsSome ->
+                             Some(commandAtImport (Check.commandRunsNow moduleHelpers te).Value)
                          | KLet(name, _, te) -> Check.eagerCommandHelper moduleHelpers te |> Option.map (helperAtImport name)
                          | KLetPat(_, _, te) -> Check.eagerCommandHelper moduleHelpers te |> Option.map (helperAtImport "f")
                          | _ -> None
 
                      (match chk.Kind with
                       | KLet(name, _, te) ->
-                          moduleHelpers <-
-                              match Check.commandHelperArity moduleHelpers te with
-                              | Some a -> Map.add name a moduleHelpers
-                              | None -> Map.remove name moduleHelpers
+                          moduleHelpers <- Check.recordCommandBinding moduleHelpers name te
                       | _ -> ())
 
                      match violation with

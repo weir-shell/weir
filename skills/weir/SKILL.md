@@ -522,8 +522,9 @@ print $"{key} -> {value}"
   own namespace). `Uuid.v7At t` stamps a given `Instant` (ms-truncated;
   orders with v7 only when `t` lies between the last id and now;
   raises before 1970). `Uuid.parse` reads 8-4-4-4-12 or 32 bare hex,
-  any case, optional `urn:uuid:` — never braces; it RAISES on anything
-  else, `Uuid.tryParse` returns `Option` (weir has no Result).
+  any case, optional `urn:uuid:` — never braces, never surrounding
+  whitespace (`Str.trim` first); it RAISES on anything else,
+  `Uuid.tryParse` returns `Option` (weir has no Result).
   `Uuid.version id : int`, `Uuid.instant id : Option<Instant>` (`Some`
   for v7 only), `Uuid.toString` (lowercase canonical — what `show`,
   JSON and argv use), `Uuid.nil`/`Uuid.max`, `Uuid.toBytes`/
@@ -538,7 +539,9 @@ print $"{key} -> {value}"
   inside a shown record), interpolation REFUSES (`$"tok: {s}"` is a
   check error), `to json`/`to yaml` REFUSE, `print` refuses — each
   naming `Secret.reveal`, the one exit. It DOES splice into argv in the
-  clear (`curl -H $auth` — `ps`-visible, a stated non-claim). `Eq`
+  clear (`curl -H $auth`, reified too: `… | complete`/`line`/`$e(…)`;
+  and as an env value: `TOKEN=$s cmd`, `within env TOKEN=$s` —
+  `ps`-visible, a stated non-claim). `Eq`
   compares (`s1 == s2`), `Ord` refuses. Produced by `Env.load`/`Args.load`
   `Secret` fields (env is the CI secret channel), `File.readSecret p`
   (a mounted secret file), a `Secret` field READ by `from json`/`from
@@ -887,7 +890,8 @@ let p =
   optionally `until r` + an indented predicate block binding the
   body's value. A `bool` body IS the predicate (no `until`, yields
   unit); a value body REQUIRES `until` and yields the value.
-  `poll timeout=5m interval=10s` is the time-bounded twin. The head
+  `poll timeout=5m interval=10s` is the time-bounded twin (its
+  `timeout` and `interval` must be positive — no busy loop). The head
   desugars over a record — `retry { Retry.defaults with attempts = 5 }`
   is the same form, so options can be computed and shared. Exhaustion
   RAISES; raises inside the body propagate (retry on the predicate,
@@ -957,8 +961,10 @@ print first
   effect; `Option.orElse fallback opt` stays in Option
   (`defaultValue` is the one that unwraps). `Option.bind f opt` chains
   an Option-returning step (map without the re-wrap); `Option.flatten`
-  collapses `Option<Option<T>>` to `Option<T>`. `Path.tempRoot ()` is the
-  pure query; `Path.newTempDir ()` CREATES (cleanup is yours —
+  collapses `Option<Option<T>>` to `Option<T>`. `Path.tempRoot ()` only
+  READS where temp lives (it creates nothing, but `pure` counts it a
+  filesystem touch and refuses it, as it refuses `Path.glob`);
+  `Path.newTempDir ()` CREATES (cleanup is yours —
   `within tmp` is the scoped-cleanup spelling). Binding a `newTempDir`
   then `Dir.delete`/`Dir.deleteAll`-ing it in the same scope is a
   checker WARNING [D:newtempdir-lint] pointing at `within tmp` (which
@@ -979,13 +985,19 @@ print (Option.flatten (Some None) |> Option.defaultValue 0)
   (full paths, sorted, both kinds; `Path.glob "**"` recurses)/`move`.
   Every failure names its path.
 - `Seq.freeze` materializes (consume to completion, eager in-memory;
-  STRICT — not for infinite seqs). When to force, four customers:
+  STRICT — not for infinite seqs). When to force, three customers:
   REUSE (a command-backed seq re-runs its process per enumeration —
   force once, consume twice; `weir check` WARNS on the second pull of
-  an unforced command-backed binding — advisory, exit stays 0); TIMING (a lazy `ls` enumerated after a
-  `cd` sees the new directory; force pins the data NOW); GLOB's cd
-  seam (`Path.glob` resolves relative patterns at ENUMERATION —
-  force pins the batch before a `cd`); and the non-customer: a
+  an unforced command-backed binding — advisory, exit stays 0; the
+  REPL echo of such a `let` shows `name : type (command-backed — runs
+  on each use; type name to run it)` and NEVER runs it
+  [D:repl-let-echo-lazy]); TIMING (a lazy `ls`/`Path.glob`/command
+  re-runs on each read, so files created after the `let` show up;
+  only an enclosing `within cd`/`within env` is captured where it
+  was WRITTEN — outside any `within` it runs in the cwd/env current at
+  the read, so a later `cd` moves it [D:ambient-capture-within]; force
+  pins the
+  data NOW); and the non-customer: a
   SPLAT (`$@xs`) forces at spawn by necessity — argv is finite, no
   explicit force needed at the splice.
 - Concatenation is `Seq.append` (lazy; piped spelling puts the TAIL
@@ -1951,7 +1963,9 @@ conf |> Seq.iter print
   in scope has those fields. The alias defaults to the module's
   declared name (or the capitalized filename). Errors are named:
   running a module, importing a non-module, a self-import, a module
-  `let` that runs a command (wrap it in a function), or a missing
+  `let` that runs a command at import (a reifier, `$(… | line)`,
+  `|> Seq.freeze` or any function the command is passed to — wrap it
+  in a function), or a missing
   file (the message shows the resolved absolute path). Resolution is
   check-time — nothing loads at runtime. `import` needs a file: not
   `-e` or the REPL prompt, but the REPL init file may import
@@ -1961,7 +1975,10 @@ conf |> Seq.iter print
   shared module is checked once and its body RUNS once per program
   [D:module-once] — diamonds, re-aliases and symlinks (identity is
   the real path) share one instance — and an import cycle is a named
-  check error.
+  check error. A LAZY command `let` (`let gl = git
+  log -n 10`, a pipeline of commands, a value piped into a command)
+  is a value: binding it spawns nothing, each use runs it — allowed
+  in a module and in the init file [D:lazy-command-lets].
 
 ```weir
 // a module: the signed member exports, the unsigned one is private
@@ -2041,7 +2058,9 @@ print (show (let r = sh -c "echo x" | complete in r.exitCode))
   patterns (arity 2+). `Seq.pairwise : seq<'a * 'a>`, `Seq.zip`.
   Destructure ANYWHERE irrefutable: `let x, y = pair`,
   `let (k, _) = pair`, `fun (k, v) -> ...` (parens required on
-  params). Refutable patterns in binders are errors — use match.
+  params). A SINGLE-case union's constructor is irrefutable too
+  (`type W = W of int` then `let un (W x) = x`). Refutable patterns in
+  binders are errors — use match.
 - Irrefutable RECORD patterns [D:record-patterns] destructure at every
   binding position — `let { names = n } = c`, params (bare, no parens
   needed), lambdas, match arms (the `when` guard does the testing),
@@ -2142,7 +2161,9 @@ print (f 1)
 - `Path.glob "src/**/*.fs" : seq<string>` — typed discovery
   (nothing expands in argv, ever): `*` within-segment, `**`
   cross-segment (never through symlinked dirs — bash globstar),
-  `?`, `[abc]`/`[!abc]`. Bash's dotfile law: `*` skips dotfiles, a
+  `?`, `[abc]`/`[!abc]`/`[a-z]` (one code point; a `]` first is a
+  member, a reversed range matches nothing, `\` is a plain member —
+  never regex). Bash's dotfile law: `*` skips dotfiles, a
   `.`-leading segment matches them. Sorted; relative patterns
   echo relative and resolve against the cwd AT ENUMERATION —
   `|> Seq.freeze` pins the answer before a `cd`. No matches = the
@@ -2347,7 +2368,11 @@ print $"exit={r.exitCode}"
   capture.
 - Multi-line record literals separate fields by newline, F#-style
   (trailing `;` also fine); blank lines inside brackets are
-  transparent. Braces ignore indentation.
+  transparent. Sibling fields/elements align EXACTLY with the first
+  one (`{ a = 1` then `  b = 2` under `a`); a copy-and-update aligns
+  under its first FIELD, not the source:
+  `{ d with host = "x"` then `port = 2 }` under `host`. The closer's
+  indentation is free.
 - Blocks are offside, F#-style: a line at an `if`/`match`'s OWN indent
   is a sibling (runs after, unconditionally); only deeper lines are
   the body. Guard lines before a block result work:

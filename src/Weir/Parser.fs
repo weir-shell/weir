@@ -1799,6 +1799,7 @@ let private lambdaBody =
                         | PVar n -> [ n ]
                         | PTuple pts -> pts |> List.collect leafNames
                         | PRecord fields -> fields |> List.map snd |> List.collect leafNames
+                        | PCase(_, Some inner) -> leafNames inner
                         | _ -> []
 
                     let names = ps |> List.collect leafNames |> Set.ofList
@@ -1964,6 +1965,7 @@ let private letInBody =
                               | PVar n -> [ n ]
                               | PTuple pts -> pts |> List.collect leafNames
                               | PRecord fields -> fields |> List.map snd |> List.collect leafNames
+                              | PCase(_, Some inner) -> leafNames inner
                               | _ -> []
 
                           let names = ps |> List.collect leafNames |> Set.ofList
@@ -4719,8 +4721,16 @@ let rec private foldChain (h: Expr) (rest: ((string * Span) * Seg) list) : Resul
                                 | ESplat _ -> true
                                 | _ -> false)
 
+                        // each literal chunk rides `|argv`, the checker's marker
+                        // for argv words: elements obey the command-argument
+                        // law (Secret, Uuid, int, bool), not seq<string>'s
+                        // element unification [D:secret]; erased at check
+                        let argvList (items: Expr list) (span: Span) =
+                            { Kind = EApp({ Kind = EVar "|argv"; Span = span }, { Kind = EList items; Span = span })
+                              Span = span }
+
                         if not hasSplat then
-                            { Kind = EList args; Span = acc.Span }
+                            argvList args acc.Span
                         else
                             let seqAppend (a: Expr) (b: Expr) =
                                 let span = Span.union a.Span b.Span
@@ -4733,8 +4743,7 @@ let rec private foldChain (h: Expr) (rest: ((string * Span) * Seg) list) : Resul
                                   Span = span }
 
                             let listOf (chunk: Expr list) =
-                                { Kind = EList chunk
-                                  Span = Span.union (List.head chunk).Span (List.last chunk).Span }
+                                argvList chunk (Span.union (List.head chunk).Span (List.last chunk).Span)
 
                             let flush chunk parts =
                                 match chunk with
@@ -4931,6 +4940,11 @@ let private armBoundaryAhead: Parser<unit, unit> =
         else
             ifail "not in a match arm" stream
 
+// `cmd |> try` [D:try-form]: the form catches an expression's raise; a
+// command chain's stage is never one — the stage parses (the checker
+// teaches the reifier, so no let-spine attempt can swallow the lesson)
+let private tryCmdStage: Parser<Seg, unit> = tryForm |>> Stage
+
 let private pipedStages (builtinHeads: bool) (argP: Parser<Expr, unit>) (sigilEnv: Expr option) (r: Resolver) =
     many (
         notFollowedBy armBoundaryAhead >>. pipeSepSpanned
@@ -4945,6 +4959,7 @@ let private pipedStages (builtinHeads: bool) (argP: Parser<Expr, unit>) (sigilEn
               <|> andMarker builtinHeads argP sigilEnv r
               <|> orMarker builtinHeads argP sigilEnv r
               <|> reifierStageGuard
+              <|> tryCmdStage
               <|> (segment builtinHeads argP sigilEnv r |>> Stage))
     )
 
@@ -5282,6 +5297,7 @@ let private topLet (r: Resolver) =
                     | PVar n -> [ n ]
                     | PTuple ps -> ps |> List.collect leafNames
                     | PRecord fields -> fields |> List.map snd |> List.collect leafNames
+                    | PCase(_, Some inner) -> leafNames inner
                     | _ -> []
 
                 let paramNames = ps |> List.collect leafNames |> Set.ofList

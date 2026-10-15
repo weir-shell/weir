@@ -490,7 +490,7 @@ let renderTagged (cfg: RenderCfg) (p: Program) : (string * bool) list =
             emit
                 ind
                 (if isPoll then
-                     "let " + v + " = poll timeout=1s interval=0ms"
+                     "let " + v + " = poll timeout=1s interval=1ms"
                  else
                      "let " + v + " = retry attempts=1 delay=0ms")
 

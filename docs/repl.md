@@ -109,24 +109,31 @@ seqs. That line always comes after the value, so a cut-off value
 never looks as if data silently went missing: you see where it was
 cut, then the note saying so and how to see the rest (`Seq.freeze`).
 
-At a terminal, that line also says what kind of seq you bound:
+A `let` bound to a command is not run by the echo: the binding is
+lazy, as in a script, so the echo shows only its type and how to run
+it. Typing the name runs the command and prints its output, every
+time:
 
 ```
 weir> let pods = kubectl get po -A
+pods : seq<string> (command-backed — runs on each use; type pods to run it)
+weir> pods
 …the pods…
-pods : seq<string> (command-backed — re-runs on each use)
 weir> let snap = kubectl get po -A |> Seq.freeze
 …the pods…
 snap : seq<string> (frozen)
 ```
 
-A binding backed by a command that hasn't been frozen re-runs the
-command every time you use it, and the note warns you about that up
-front (in a script, the checker warns about the same thing when such
-a binding is used twice). A frozen binding shows `(frozen)`. A lazy
-seq that doesn't run commands gets no note, since there is nothing to
-warn about. This note and the truncation note share one pair of
-parentheses, and piped output never includes them.
+So `let cleanup = rm -rf build` deletes nothing until you type
+`cleanup`. The same holds for a `let` that reads such a binding
+(`let running = pods |> Seq.where …`). An eager right-hand side has
+already run when the `let` is evaluated (`|> Seq.freeze`, `| line`,
+`| text` and the other reifiers), so its value is echoed as usual; a
+frozen binding shows `(frozen)`. In a script, the checker warns when
+a command-backed binding is used twice. A lazy seq that doesn't run
+commands gets no note. At a terminal, the `(frozen)` note and the
+truncation note share one pair of parentheses; piped output never
+includes them.
 
 ## Seeing all of the output
 
@@ -482,6 +489,16 @@ alias. Functions can take parameters and span several lines, but you
 have to call them with `()`, and they don't accept command-line
 arguments. When you want a short command name that passes its
 arguments straight through, like `k get po`, use `#alias` (below).
+
+A `let` can hold a command: `let gl = git log --oneline -n 10` binds a
+lazy value, so nothing runs while the file loads, and typing `gl` runs
+it, every time. A `let` that would run its command at load is refused
+with the reason: a reifier (`| line`, `| text`, `| succeeds`…),
+`|> Seq.freeze`, or passing the command to a function. Wrap those in
+a function, as with `pu` above. A command value runs in the directory
+you are in when you use it, so `gl` logs the repo you have `cd`-ed
+into; only a command written inside `within cd`/`within env` keeps
+that scope.
 
 Loading is all-or-nothing. If the init file has an error, the REPL
 prints the error with its location plus `init: not loaded`, and the

@@ -43,6 +43,16 @@ let setCwd (path: string) : unit =
     | Some _ -> localCwd.Value <- Some path
     | None -> rootCwd <- path
 
+// how many `within cd` scopes enclose the evaluation [D:ambient-capture-within]:
+// a lazy value captures the cwd only inside one; outside, it reads the cwd
+// current at enumeration. AsyncLocal so a parallel arm forked inside a
+// scope inherits it and an arm's own scope stays its own.
+let private withinCdDepth = System.Threading.AsyncLocal<int>()
+
+let enterWithinCd () : unit = withinCdDepth.Value <- withinCdDepth.Value + 1
+
+let exitWithinCd () : unit = withinCdDepth.Value <- max 0 (withinCdDepth.Value - 1)
+
 // the ambient env overlay [D:within-scopes]: `within env` pushes a
 // layer; every spawn applies ambient layers outer-first under any
 // explicit sigil env, so inner (and explicit) keys win on collision.
@@ -77,6 +87,22 @@ let popEnvOverlay () : unit =
         match rootEnvOverlay.Value with
         | _ :: rest -> rootEnvOverlay.Value <- rest
         | [] -> ()
+
+// the scope state a lazy value captures at eval [D:ambient-capture-within]:
+// the cwd only under an enclosing `within cd`, the overlay only under an
+// enclosing `within env` (the overlay is non-empty exactly then); None
+// means nothing is captured — the value reads the live session at force
+let scopedCwd () : string option =
+    if withinCdDepth.Value > 0 then Some(Cwd()) else None
+
+let scopedOverlay () : (string * string) list list option =
+    match envOverlay () with
+    | [] -> None
+    | layers -> Some layers
+
+/// the scoped overlay flattened outer-first, the spawn's apply order
+let scopedAmbient () : (string * string) list option =
+    scopedOverlay () |> Option.map (List.rev >> List.collect id)
 
 // weir's own env reads see the overlay a child would [D:env-overlay-read]:
 // newest layer first, the last pair within a layer wins (the spawn's

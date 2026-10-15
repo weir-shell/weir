@@ -919,8 +919,10 @@ let formatInstant (ms: int64) : string =
 // an optional urn:uuid: prefix. Only these — never the platform parser's
 // braces, parens or hex-struct forms. Any 128-bit value reads (nil, max,
 // every version and variant); inspection is Uuid.version's job.
+// exact text, never trimmed [D:uuid-strict]: surrounding whitespace is
+// not a uuid spelling
 let parseUuid (text: string) : Result<System.Guid, string> =
-    let t = text.Trim()
+    let t = text
 
     let body =
         if t.StartsWith("urn:uuid:", System.StringComparison.OrdinalIgnoreCase) then

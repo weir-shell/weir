@@ -3055,16 +3055,19 @@ WEOF
     echo "e2e ok: a let-bound truncated seq echoes the unforced teaching, visible and without a dangling '='"
 
     # ---- the binding echo states seq state [D:reenum-warning] ----------
-    # a command-backed unforced bind says it re-runs; a materialized
-    # bind says frozen; the pure-lazy nats cell above stays unannotated
-    # (its teaching grep pins the meta with no state joined)
-    rsout=$(printf 'SLEEP 400\nSEND let pods = sh -c "echo one"\\r\nSLEEP 1200\nSEND let snap = ["a"; "b"]\\r\nSLEEP 800\nSEND #quit\\r\n' | python3 "$ptyrun" 10 "$BIN")
+    # a command-backed unforced bind is not run by the echo
+    # [D:repl-let-echo-lazy]; a materialized bind says frozen; the
+    # pure-lazy nats cell above stays unannotated (its teaching grep pins
+    # the meta with no state joined)
+    rsout=$(printf 'SLEEP 400\nSEND let pods = sh -c "echo ran-$((40+2))"\\r\nSLEEP 1200\nSEND let snap = ["a"; "b"]\\r\nSLEEP 800\nSEND #quit\\r\n' | python3 "$ptyrun" 10 "$BIN")
     # the harness echoes a bytes repr, so the em-dash rides as \xe2\x80\x94 —
     # pin the ASCII halves around it
     echo "$rsout" | grep -qF 'pods : seq<string> (command-backed' \
-      || fail "the command-backed unforced bind must state the re-run hazard: $rsout"
-    echo "$rsout" | grep -qF 're-runs on each use)' \
-      || fail "the hazard annotation names the re-run: $rsout"
+      || fail "the command-backed unforced bind must say so: $rsout"
+    echo "$rsout" | grep -qF 'runs on each use; type pods to run it)' \
+      || fail "the command-backed echo names how to run it: $rsout"
+    echo "$rsout" | grep -qF 'ran-42' \
+      && fail "the echo of a command-backed let ran the command: $rsout"
     echo "$rsout" | grep -qF 'snap : seq<string> (frozen)' \
       || fail "a materialized bind must state frozen: $rsout"
     echo "e2e ok: the binding echo states seq state (re-runs / frozen)"
@@ -5178,6 +5181,16 @@ WEOF
 out=$(cd "$adir2" && $BIN amb.weir)
 echo "$out" | grep -q "/inner$" || fail "an escaped lazy command must keep its written-site cwd: $out"
 echo "e2e ok: ambient capture — an escaped lazy command spawns under its written-site scope"
+# [D:ambient-capture-within]: outside any `within` nothing is captured —
+# the lazy value runs in the cwd current at enumeration
+cat > "$adir2/top.weir" <<'WEOF'
+let top = sh -c "pwd"
+let _c = cd "inner"
+top |> Seq.iter (fun l -> print l)
+WEOF
+out=$(cd "$adir2" && $BIN top.weir)
+echo "$out" | grep -q "/inner$" || fail "a lazy command outside any within must run in the force-time cwd: $out"
+echo "e2e ok: ambient capture — outside any within, the force-time cwd applies"
 rm -rf "$adir2"
 
 # within tail pipes [D:within-tail-pipe]: a pipe on a body line belongs
@@ -6251,6 +6264,16 @@ echo "$out" | grep -qF "usage: cli.weir run [flags]" || fail "case-scoped help: 
 echo "$out" | grep -qF -- "-q, --quiet" || fail "scoped help shows the scope-derived short: $out"
 echo "e2e ok: two-tier and case-scoped help"
 
+# a union-only target scopes its help to the leading case token too
+printf 'type BuildArgs = { target: string }\ntype Cmd =\n    | Build of BuildArgs\n    | Clean\nlet c = Args.load Cmd\nprint $"{c}"\n' > "$sfdir/uo.weir"
+out=$($BIN "$sfdir/uo.weir" build --help)
+echo "$out" | grep -qF "usage: uo.weir build [flags]" || fail "union-only case-scoped help: $out"
+echo "$out" | grep -qF -- "--target" || fail "union-only scoped help shows the case's flags: $out"
+echo "$out" | grep -qF "clean" && fail "union-only scoped help lists other cases: $out"
+out=$($BIN "$sfdir/uo.weir" --help)
+echo "$out" | grep -qF "commands:" || fail "union-only top help lists the commands: $out"
+echo "e2e ok: union-only case-scoped help"
+
 # declaration collisions reject at check (both routes)
 errout=$(printf 'type CA = { quiet: bool }\ntype Cmd = Go of CA | Stop\ntype Cli = { quiet: bool; cmd: Cmd }\nlet c = Args.load Cli\nprint "x"\n' | checkPiped 2>&1) && fail "kebab collision must reject"
 echo "$errout" | grep -qF "shared flags are declared once" || fail "kebab collision route: $errout"
@@ -7071,8 +7094,11 @@ printf 'module B\nlet x = 1\nprint x\n' > "$mdir/declonly.weir"
 out=$($BIN check "$mdir/declonly.weir" 2>&1 || true)
 expect "a module is declaration-only (direct check enforces it)" "a module declares only" "$out"
 
-# weak purity: a module 'let' cannot run a command at import
-printf 'module W\nlet head = git rev-parse HEAD\n' > "$mdir/weak.weir"
+# weak purity: a module 'let' cannot run a command at import; a lazy
+# command let is a value — binding it spawns nothing [D:lazy-command-lets]
+printf 'module W\nlet head : seq<string>\nlet head = git rev-parse HEAD\n' > "$mdir/weak.weir"
+out=$($BIN check "$mdir/weak.weir" 2>&1) || fail "a lazy command let must check clean in a module: $out"
+printf 'module W\nlet head = git rev-parse HEAD |> Seq.freeze\n' > "$mdir/weak.weir"
 out=$($BIN check "$mdir/weak.weir" 2>&1 || true)
 expect "weak purity: a module let cannot run a command at import" "cannot run a command at import" "$out"
 # ...including through a reifier [D:module-let-reifier]: `cmd | line`
@@ -10510,6 +10536,37 @@ echo "$iout" | grep -qE "init\.weir:2:" || fail "the raising let must be LOCATED
 echo "$iout" | grep -qF "init: not loaded" || fail "a raising init let must not load"
 echo "$iout" | grep -qF "unknown name 'hi'" || fail "all-or-nothing broke after a raising init let"
 echo "$iout" | grep -qF "Unhandled exception" && fail "a raising init let dumped a .NET trace: $iout" || true
+
+# a lazy command let loads and spawns nothing; each use runs it; an
+# eager one is refused naming why [D:lazy-command-lets]
+if [ "$IS_WINDOWS" != "1" ]; then
+    rm -f "$initcfg/lazymark"
+    cat > "$INITHOME/weir/init.weir" <<WEOF
+#init
+let gl = sh -c "echo run >> '$initcfg/lazymark'; echo lazy-out"
+WEOF
+    iout=$(printf 'sh -c "echo main >> %s/lazymark"\ngl\ngl\n#quit\n' "$initcfg" \
+        | XDG_CONFIG_HOME="$initcfg" XDG_STATE_HOME="$initcfg/state" "$BIN" 2>&1)
+    echo "$iout" | grep -qF "init: not loaded" && fail "a lazy command let must load: $iout" || true
+    [ "$(grep -c lazy-out <<<"$iout")" = 2 ] || fail "each use of a lazy init let runs it: $iout"
+    [ "$(tr '\n' ' ' < "$initcfg/lazymark")" = "main run run " ] || fail "the init load spawned (or a use did not): $(cat "$initcfg/lazymark")"
+    # the echo of a command-backed let never runs it, piped too
+    # [D:repl-let-echo-lazy]; typing the name does
+    rm -f "$initcfg/lazymark"
+    iout=$(printf 'let c = sh -c "echo cleanup >> %s/lazymark"\nlet g2 = gl\nlet fz = gl |> Seq.freeze\n#quit\n' "$initcfg" \
+        | XDG_CONFIG_HOME="$initcfg" XDG_STATE_HOME="$initcfg/state" "$BIN" 2>&1)
+    echo "$iout" | grep -qF "c : seq<string> (command-backed — runs on each use; type c to run it)" || fail "a command-backed let echoes its type and hint: $iout"
+    echo "$iout" | grep -qF "g2 : seq<string> (command-backed" || fail "a let reading a command-backed binding is command-backed too: $iout"
+    echo "$iout" | grep -qF 'fz : seq<string> = ["lazy-out"]' || fail "an eager let echoes its value: $iout"
+    [ "$(tr '\n' ' ' < "$initcfg/lazymark")" = "run " ] || fail "only the frozen let ran: $(cat "$initcfg/lazymark")"
+fi
+cat > "$INITHOME/weir/init.weir" <<'WEOF'
+#init
+let br = git rev-parse --abbrev-ref HEAD | line
+WEOF
+iout=$(printf '#quit\n' | XDG_CONFIG_HOME="$initcfg" XDG_STATE_HOME="$initcfg/state" "$BIN" 2>&1)
+echo "$iout" | grep -qF "\`| line\` runs the command now — drop the reifier to keep it lazy, or wrap it in a function" || fail "an eager init let must name its reifier: $iout"
+echo "$iout" | grep -qF "init: not loaded" || fail "an eager init let must not load: $iout"
 
 # the marker is required [D:init-marker]: the canonical file without
 # #init refuses, located, and the session starts without it

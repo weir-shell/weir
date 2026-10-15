@@ -708,9 +708,26 @@ let warningTests =
               Expect.isEmpty (msgs "[\"a\", 1; \"b\", 2]") "a list of pairs is the F# idiom"
               Expect.isEmpty (msgs "[1; 2]") ""
           }
+          test "a comma between record-literal fields teaches the separator" {
+              for src in [ "let v = { a = 1, b = 2 }"; "let v = {| a = 1, b = 2 |}"; "let v = { T.zero with a = 1, b = 2 }" ] do
+                  let e = firstErrorIn "comma.weir" [ "type T = { a: int; b: int }"; src; "print $\"{v.a}\"" ]
+                  Expect.stringContains e.Message "record fields are separated by ';' or a newline, not ','" src
+                  Expect.isFalse (e.Message.Contains "no declared record") src
+
+              // a tuple-typed field keeps its tuple
+              errorsCleanIn "comma.weir" [ "type P = { a: int * int }"; "let v = { a = 1, 2 }"; "print $\"{v.a}\"" ] "a tuple value"
+          }
           test "arm after a catch-all is a hard error" {
               let terr = checkErr "match Running 5 with | _ -> 0 | Stopped -> 1"
               Expect.stringContains terr.Message "unreachable" ""
+          }
+          test "a catch-all inside an or-pattern names its own later alternatives, arms counted once [D:or-patterns]" {
+              let alt = checkErr "match Some 1 with | Some 1 -> 1 | _ | None -> 2"
+              Expect.stringContains alt.Message "the or-pattern's alternative after it is unreachable" "same arm"
+              Expect.isFalse (alt.Message.Contains "arm below") "no arm below"
+
+              let arms = checkErr "match Some 1 with | _ -> 1 | Some 2 | Some 3 -> 2"
+              Expect.stringContains arms.Message "the arm below is unreachable" "one arm, two alternatives"
           }
           test "mid-match variable binder errors at the cause with a constructor hint" {
               let terr =
@@ -7138,9 +7155,9 @@ let replEchoTests =
               // the meta seam: state alone, hint alone, both (one
               // parenthetical, state first), neither
               Expect.equal
-                  (Weir.Repl.letEchoMeta "pods" (TSeq TStr) (Some "command-backed — re-runs on each use") None)
-                  "pods : seq<string> (command-backed — re-runs on each use)"
-                  "the hazard annotation, exact bytes"
+                  (Weir.Repl.commandBackedEcho "pods" (TSeq TStr))
+                  "pods : seq<string> (command-backed — runs on each use; type pods to run it)"
+                  "the command-backed echo, exact bytes [D:repl-let-echo-lazy]"
 
               Expect.equal
                   (Weir.Repl.letEchoMeta "pods" (TSeq TStr) (Some "frozen") None)
@@ -7154,7 +7171,7 @@ let replEchoTests =
 
               Expect.equal (Weir.Repl.letEchoMeta "pods" (TSeq TStr) None None) "pods : seq<string>" "silence is the default"
           }
-          test "letSeqState: the one probe decides frozen; command-backed only speaks unforced [D:reenum-warning]" {
+          test "letSeqState decides frozen; letCommandBacked flags an unforced command seq, never a forced or pure one [D:repl-let-echo-lazy]" {
               let sp: Weir.Ast.Span =
                   { Start = { Line = 1; Col = 1 }
                     End = { Line = 1; Col = 2 } }
@@ -7172,16 +7189,15 @@ let replEchoTests =
               let unforced = Weir.Eval.VSeq(Seq.delay (fun () -> Seq.empty))
               let forced = Weir.Eval.VSeq([ Weir.Eval.VStr "a" ] :> seq<Weir.Eval.Value>)
 
-              Expect.equal
-                  (Weir.Repl.letSeqState cmdTe unforced)
-                  (Some "command-backed — re-runs on each use")
-                  "command-backed unforced states the hazard"
+              Expect.isTrue (Weir.Repl.letCommandBacked cmdTe unforced) "command-backed unforced: the echo must not enumerate"
+              Expect.isFalse (Weir.Repl.letCommandBacked cmdTe forced) "forced already ran: the echo shows it"
+              Expect.isFalse (Weir.Repl.letCommandBacked pureTe unforced) "a pure lazy seq echoes as before"
 
-              Expect.equal (Weir.Repl.letSeqState cmdTe forced) (Some "frozen") "forced states the resolution, command or not"
+              Expect.equal (Weir.Repl.letSeqState forced) (Some "frozen") "forced states the resolution, command or not"
 
-              Expect.equal (Weir.Repl.letSeqState pureTe unforced) None "a pure lazy seq stays silent"
+              Expect.equal (Weir.Repl.letSeqState unforced) None "an unforced seq carries no state"
 
-              Expect.equal (Weir.Repl.letSeqState pureTe (Weir.Eval.VInt 3L)) None "a non-seq value carries no state"
+              Expect.equal (Weir.Repl.letSeqState (Weir.Eval.VInt 3L)) None "a non-seq value carries no state"
           }
           test "the streamed-it misuse repair carries the command verbatim [D:repl-it]" {
               Expect.equal
@@ -8885,6 +8901,46 @@ let planApplyTests =
               finally
                   System.IO.Directory.Delete(root, true)
           }
+          // [D:ambient-capture-within]: outside any `within` nothing is
+          // captured — a lazy ls/glob/command/Env.vars runs in the cwd and
+          // env current at enumeration; inside one the scope still applies
+          test "AMB: a lazy value outside any within reads the cwd/env at force [D:ambient-capture-within]" {
+              skipOnWindows ()
+              let root = td ()
+              let dirA = weirPath (System.IO.Path.Combine(root, "A"))
+              let dirB = weirPath (System.IO.Path.Combine(root, "B"))
+
+              let prog =
+                  [ $"Dir.create \"{dirA}\""
+                    $"Dir.create \"{dirB}\""
+                    $"File.write \"{dirA}/Aonly.txt\" [\"x\"]"
+                    $"File.write \"{dirB}/Bonly.txt\" [\"x\"]"
+                    $"let _a = cd \"{dirA}\""
+                    "let rows = ls |> Seq.map (fun r -> r.name)"
+                    "let g = Path.glob \"*.txt\""
+                    "let c = sh -c \"ls\""
+                    "let v = sh -c \"echo ${AMBW:-unset}\""
+                    "let ev = Env.vars |> Seq.where (fun e -> e.name == \"AMBW\") |> Seq.map (fun e -> e.value)"
+                    "let s = within env [Env.pair \"AMBW\" \"in\"] $(sh -c \"echo ${AMBW:-unset}\")"
+                    $"let _b = cd \"{dirB}\""
+                    "if Str.join \",\" rows <> \"Bonly.txt\" then fail $\"ls: {Str.join \",\" rows}\""
+                    "if Str.join \",\" g <> \"Bonly.txt\" then fail $\"glob: {Str.join \",\" g}\""
+                    "if Str.join \",\" c <> \"Bonly.txt\" then fail $\"cmd: {Str.join \",\" c}\""
+                    "let late = within env [Env.pair \"AMBW\" \"late\"] (v |> Seq.freeze)"
+                    "if Str.join \",\" late <> \"late\" then fail $\"env: {Str.join \",\" late}\""
+                    "let elate = within env [Env.pair \"AMBW\" \"late\"] (ev |> Seq.freeze)"
+                    "if Str.join \",\" elate <> \"late\" then fail $\"Env.vars: {Str.join \",\" elate}\""
+                    "if Str.join \",\" s <> \"in\" then fail $\"within env lost: {Str.join \",\" s}\""
+                    "print \"ok\"" ]
+
+              let saved = Weir.Session.Cwd()
+
+              try
+                  Expect.equal (runFile prog) 0 "outside any within, the force-time cwd/env applies"
+              finally
+                  Weir.Session.setCwd saved
+                  System.IO.Directory.Delete(root, true)
+          }
           test "a trailing / globs directories only, each with its slash [D:path-glob]" {
               let root = td ()
               let r = weirPath root
@@ -8901,6 +8957,37 @@ let planApplyTests =
 
               try
                   Expect.equal (runFile prog) 0 "dirs only"
+              finally
+                  System.IO.Directory.Delete(root, true)
+          }
+          test "bracket classes are glob classes, never raw regex [D:surface-glob]" {
+              skipOnWindows ()
+              let root = td ()
+              System.IO.Directory.CreateDirectory root |> ignore
+
+              for n in [ "a"; "b"; "w"; "_"; "\\"; "[]"; "é"; "😀" ] do
+                  System.IO.File.WriteAllText(System.IO.Path.Combine(root, n), "x")
+
+              // (pattern, expected names joined by `,`) — verbatim strings,
+              // so a backslash is itself on both sides
+              let cells =
+                  [ "[z-a]", ""
+                    "[]", "[]"
+                    "[!]", ""
+                    "[\\w]", "\\,w"
+                    "[a-c]", "a,b"
+                    "[!a-w]", "\\,_,é,😀"
+                    "[]a]", "a"
+                    "[😀]", "😀" ]
+
+              let prog =
+                  [ $"within cd \"{weirPath root}\""
+                    for i, (pat, want) in List.indexed cells do
+                        $"    let g{i} = Path.glob @\"{pat}\" |> Str.join \",\""
+                        $"    if g{i} <> @\"{want}\" then fail $\"cell {i} gave {{g{i}}}\"" ]
+
+              try
+                  Expect.equal (runFile prog) 0 "each class matched as a glob"
               finally
                   System.IO.Directory.Delete(root, true)
           }
@@ -13811,6 +13898,8 @@ let showTests =
           }
           test "unions, seqs, scalars" {
               expectValue "show (Some 3)" (VStr "Some 3")
+              expectValue "show (Some (1, 2))" (VStr "Some (1, 2)")
+              expectValue "show (Some [1])" (VStr "Some ([1])")
               expectValue "show [1; 2]" (VStr "[1; 2]")
               expectValue "show 5" (VStr "5")
               expectValue "show \"a\"" (VStr "\"a\"")
@@ -13943,6 +14032,28 @@ let fmtRecordTests =
               with
               | Ok lines -> Expect.equal (lines[3].TrimEnd()) (String.replicate 13 " " + "W = 2 } }") ""
               | Error e -> failtest e
+          }
+          test "an update header anchors on its first FIELD, not the source [D:field-alignment]" {
+              let asm lines =
+                  Weir.Script.assemble (lines |> List.mapi (fun i l -> i + 1, l))
+
+              match asm [ "let c = { d with host = \"x\""; "                 port = 2 }" ] with
+              | Ok [ ll ] -> Expect.stringContains ll.Text "port = 2" "one statement, aligned under host"
+              | other -> failtest $"expected one statement: %A{other}"
+
+              match asm [ "let c = { d with host = \"x\""; "          port = 2 }" ] with
+              | Error e -> Expect.stringContains e "they sit at column 17" "under the source is off the field"
+              | Ok _ -> failtest "aligned under the source must refuse"
+
+              // a source with parens and a string still finds its `with`
+              match asm [ "let c = { (pick \"a with b\") with host = \"x\""; "                                 port = 2 }" ] with
+              | Ok [ _ ] -> ()
+              | other -> failtest $"expected one statement: %A{other}"
+
+              // `match … with` inside a field value is not a header
+              match asm [ "let r = { a = match x with"; "              | _ -> 1"; "          b = 2 }" ] with
+              | Ok _ -> ()
+              | Error e -> failtest e
           } ]
 
 let assemblyRecoveryTests =
@@ -13964,6 +14075,22 @@ let assemblyRecoveryTests =
               Expect.exists diags (fun d -> d.Code = "assembly") "assembly diag present"
               Expect.exists diags (fun d -> d.Code = "eq") "later statement still checked"
               Expect.isTrue (stmts |> List.exists (fun (_, c) -> c.Env.Types.ContainsKey "T")) "types survive"
+          }
+          test "a misaligned field is one located diag — re-indented, its closer still closes [D:field-alignment]" {
+              let diags, _, _, _ =
+                  Weir.Script.analyzeLines
+                      "t.weir"
+                      [ "type Cfg = { host: string; port: int }"
+                        "let d = { host = \"h\"; port = 1 }"
+                        "let c = { d with host = \"x\""
+                        "          port = 2 }"
+                        "print $\"{c.port}\"" ]
+
+              match diags |> List.filter (fun d -> d.Severity = "error") with
+              | [ d ] ->
+                  Expect.equal d.Code "assembly" "the alignment error"
+                  Expect.equal (d.Line, d.Col) (4, 11) "located at the field"
+              | other -> failtest $"expected exactly one error: {other |> List.map (fun d -> d.Message)}"
           } ]
 
 let closersTests =
@@ -14234,6 +14361,22 @@ let binderTests =
                     "let 1, y = 1, 2 in y"
                     "let (true, y) = (true, 2) in y" ] do
                   Expect.stringContains (checkErr bad).Message "this pattern can fail; use match" bad
+          }
+          test "a single-case union's constructor destructures — params, lets, lambdas, nested" {
+              let w = "type W = W of int"
+              let b = "type Box<'a> = Box of 'a"
+
+              for lines in
+                  [ [ w; "let un (W x) = x"; "print $\"{un (W 3)}\"" ]
+                    [ w; "let (W y) = W 4"; "print $\"{y}\"" ]
+                    [ w; "let f = fun (W z) -> z + 1"; "print $\"{f (W 5)}\"" ]
+                    [ b; "let un (Box x) = x"; "print $\"{un (Box 3)} {un (Box \"s\")}\"" ]
+                    [ b; "let ((Box a), c) = (Box 1, 2)"; "print $\"{a + c}\"" ] ] do
+                  checkEqRun lines
+
+              // two cases can fail
+              let e = firstErrorIn "two.weir" [ "type V = A of int | B"; "let un (A x) = x"; "print $\"{un (A 1)}\"" ]
+              Expect.stringContains e.Message "this pattern can fail; use match" "two cases"
           }
           test "per-name generalization: one component polymorphic, one ground" {
               expectValue "let (f, n) = ((fun x -> x), 3) in (if f true then f n else 0)" (VInt 3L)
@@ -16308,6 +16451,39 @@ let secretTests =
           }
           test "the argv splice is ALLOWED — a Secret reaches argv in the clear (the ruling)" {
               Expect.equal (Weir.Eval.scalarString "command argument" (VSecret "tok")) "tok" "argv gets the raw value"
+          }
+          test "a reified command and an env prefix take a Secret too — the argv law, not seq<string>" {
+              skipOnWindows ()
+              let clean = errorsCleanIn "secret-argv.weir"
+              let s = "let s = Secret.of \"tok\""
+              clean [ s; "let r = echo $s | complete"; "print (r.stdout |> Str.join \"\")" ] "| complete"
+              clean [ s; "let e = Env.ofPairs [(\"A\", \"1\")]"; "let l = $e(echo $s | line)"; "print l" ] "$e( )"
+              clean [ s; "A=$s sh -c \"echo $A\"" ] "NAME=$s cmd"
+              clean [ s; "within env A=$s"; "    sh -c \"echo $A\"" ] "within env A=$s"
+              clean [ "let u = Uuid.nil"; "let n = 3"; "let r = echo $u $n | text"; "print r" ] "mixed argv words"
+              mustSayIn "secret-argv.weir" [ "let f = 1.5"; "let r = echo $f | line"; "print r" ] "command arguments must be" "float refused"
+              mustSayIn "secret-argv.weir" [ "let d = 3s"; "let r = echo $d | line"; "print r" ] "Duration.toMillis" "Duration teaches"
+              mustSayIn "secret-argv.weir" [ "let p = Env.pair \"A\" (Secret.of \"x\")"; "print (show p)" ] "Secret" "Env.pair stays string-only"
+
+              // the words reach the child as the bare command's would
+              let path = tempPath "weir-secret-argv" + ".weir"
+
+              System.IO.File.WriteAllLines(
+                  path,
+                  [ s
+                    "let a = echo $s | line"
+                    "let b = A=$s sh -c \"echo $A\" | line"
+                    "let e = Env.ofPairs [(\"B\", \"1\")]"
+                    "let u = Uuid.nil"
+                    "let c = $e(echo $s $u | text)"
+                    "if a <> \"tok\" || b <> \"tok\" || c <> \"tok 00000000-0000-0000-0000-000000000000\" then"
+                    "    exit 3" ]
+              )
+
+              try
+                  Expect.equal (Weir.Script.run path []) 0 "every reified form spliced the clear value"
+              finally
+                  System.IO.File.Delete path
           } ]
 
 let httpTests =
@@ -17034,6 +17210,25 @@ let jsonBoundaryTests =
               Expect.stringContains m "from json: the top level is a JSON array, not an object" ""
               Expect.stringContains m "declare seq<JRow> to read it" "the pointer is real now [D:from-json-seq]"
               Expect.isFalse (m.Contains "requested operation") "no System.Text.Json words"
+          }
+          test "a field's wrong value and a lone surrogate escape speak weir's words" {
+              let msg (doc: string) =
+                  try
+                      runWith [ "src", VSeq [ VStr doc ] ] "(src |> from json JRow).name" |> ignore
+                      "no error"
+                  with e ->
+                      e.Message
+
+              let bytesTrue = msg "{\"name\": \"x\", \"bytes\": true, \"readOnly\": false}"
+              Expect.stringContains bytesTrue "field 'bytes' expected int, got bool" "bool, not True"
+              let bytesStr = msg "{\"name\": \"x\", \"bytes\": \"s\", \"readOnly\": false}"
+              Expect.stringContains bytesStr "field 'bytes' expected int, got string" "string, not String"
+              let nameArr = msg "{\"name\": [1], \"bytes\": 1, \"readOnly\": false}"
+              Expect.stringContains nameArr "field 'name' expected string, got an array" "an array, not Array"
+
+              let lone = msg "{\"name\": \"\\ud800\", \"bytes\": 1, \"readOnly\": false}"
+              Expect.stringContains lone "from json: a string escape is a lone surrogate" "named"
+              Expect.isFalse (lone.Contains "UTF-16") "no System.Text.Json words"
           }
           test "every non-object top level is named (number, string, boolean, null) — both adapters" {
               for lit, kind in [ "42", "number"; "\"s\"", "string"; "true", "boolean"; "null", "null" ] do
@@ -19322,13 +19517,27 @@ let retryPollTests =
           }
           test "retry yields the successful attempt's value; poll the same (they differ by BOUND)" {
               expectValue "retry attempts=3 delay=0ms (2 + 2) until r (r == 4)" (VInt 4L)
-              expectValue "poll timeout=2s interval=0ms (2 + 2) until r (r == 4)" (VInt 4L)
+              expectValue "poll timeout=2s interval=1ms (2 + 2) until r (r == 4)" (VInt 4L)
+          }
+          test "poll refuses interval=0s, as it refuses timeout=0s — retry's delay=0ms stays" {
+              let ex = Expect.throwsC (fun () -> run "poll timeout=1s interval=0s (1 == 2)" |> ignore) id
+              Expect.stringContains ex.Message "poll: interval must be positive" "named"
+              Expect.isFalse (ex.Message.Contains "attempt(s)") "refused up front, never looped"
+              expectValue "retry attempts=2 delay=0ms (1 == 1)" VUnit
           }
           test "exhaustion raises with attempts AND elapsed; poll with its timeout" {
               let ex =
                   Expect.throwsC (fun () -> run "retry attempts=3 delay=0ms (1 == 2)" |> ignore) id
 
               Expect.stringContains ex.Message "retry: exhausted 3 attempt(s) over" "attempts + elapsed"
+
+              // a timeout ends it early: the attempts actually made, never the configured count
+              let ex1 =
+                  Expect.throwsC (fun () -> run "retry attempts=50 delay=100ms timeout=(Some 250ms) (1 == 2)" |> ignore) id
+
+              Expect.stringContains ex1.Message "retry: timed out after" "the timeout named"
+              Expect.stringContains ex1.Message " attempt(s) made of 50 allowed)" "made of configured"
+              Expect.isFalse (ex1.Message.Contains "exhausted 50") "not the configured count"
 
               let ex2 =
                   Expect.throwsC (fun () -> run "poll timeout=40ms interval=10ms (1 == 2)" |> ignore) id
@@ -19376,7 +19585,7 @@ let retryPollTests =
           // Int32.MaxValue ms the wait runs in slices, never a fake timeout
           test "a delay/interval past Int32.MaxValue ms really waits until the timeout" {
               for src, msg in
-                  [ "retry attempts=2 delay=2000h timeout=(Some 300ms) (1 == 2)", "retry: exhausted 2 attempt(s)"
+                  [ "retry attempts=2 delay=2000h timeout=(Some 300ms) (1 == 2)", "retry: timed out after"
                     "poll timeout=300ms interval=2000h (1 == 2)", "poll: timed out" ] do
                   let sw = System.Diagnostics.Stopwatch.StartNew()
                   let ex = Expect.throwsC (fun () -> run src |> ignore) id
@@ -19835,6 +20044,14 @@ let floatTests =
 
               Expect.stringContains (checkErr "[0.5] |> Seq.contains 0.5").Message "Float.near" ""
               Expect.equal (run "Float.near (0.1 + 0.2) 0.3 1e-9") (VBool true) "the idiom"
+          }
+          test "a record or union holding a float names Float.near at ==, not 'sequences and functions'" {
+              for decl in [ "type P = { x: float }"; "type P = { inner: Q }"; "type P = | A of float | B" ] do
+                  let lit = if decl.Contains "|" then "A 1.0" elif decl.Contains "Q" then "{ inner = { y = 1.0 } }" else "{ x = 1.0 }"
+                  let e = firstErrorIn "feq.weir" [ "type Q = { y: float }"; decl; $"let a = {lit}"; "print $\"{a == a}\"" ]
+                  Expect.stringContains e.Message "Float.near" decl
+                  Expect.isFalse (e.Message.Contains "sequences and functions") decl
+                  Expect.equal e.Code "eq" "the eq diagnostic code"
           }
           test "Ord admitted: total because finite" {
               Expect.equal (run "[3.5; 1.5; 2.5] |> Seq.sortBy (fun x -> x) |> Seq.head") (VFloat 1.5) ""
@@ -20715,7 +20932,11 @@ let uuidTests =
                     "g81d4fae-7dec-11d0-a765-00a0c91e6bf6" // non-hex
                     "f81d4fae-7dec-11d0-a765-00a0c91e6bf６" // a non-ASCII digit
                     "urn:uuid:"
-                    "urn:uuid:f81d4fae7dec11d0a76500a0c91e6bf" ]
+                    "urn:uuid:f81d4fae7dec11d0a76500a0c91e6bf"
+                    // surrounding whitespace is no spelling [D:uuid-strict]
+                    " f81d4fae-7dec-11d0-a765-00a0c91e6bf6"
+                    "f81d4fae-7dec-11d0-a765-00a0c91e6bf6 "
+                    "f81d4fae-7dec-11d0-a765-00a0c91e6bf6\n" ]
 
               for text in bad do
                   Expect.equal (call "Uuid.tryParse" (VStr text)) (VUnion("None", None)) $"tryParse '{text}'"
@@ -22760,6 +22981,40 @@ let moduleSignatureTests =
 
                       Expect.isEmpty (diagsOf td "direct1.weir") "transitive then direct: one type"
                       Expect.isEmpty (diagsOf td "direct2.weir") "direct then transitive: one type")
+          }
+          test "a transitive union's case never makes a local constructor ambiguous [D:transitive-types]" {
+              withDir
+                  [ "a.weir", [ "module A"; "type Color ="; "    | Red"; "    | Green" ]
+                    "b.weir", [ "module B"; "import \"./a.weir\" as A"; "let pick : unit -> Color"; "let pick () = A.Red" ]
+                    "m.weir",
+                    [ "import \"./b.weir\" as B"
+                      "type Light ="
+                      "    | Red"
+                      "    | Off"
+                      "let x = Red"
+                      "let n ="
+                      "    match B.pick () with"
+                      "    | Red -> 1"
+                      "    | Green -> 2"
+                      "print $\"{x} {B.pick ()} {n}\"" ] ]
+                  (fun td -> Expect.isEmpty (diagsOf td "m.weir") "the local Red is the bare one; B's Color still matches")
+          }
+          test "an imported union's case types an unannotated parameter [D:match-scrutinee-infer]" {
+              let area arms =
+                  [ "import \"./a.weir\" as A"; "let area s ="; "    match s with" ]
+                  @ arms
+                  @ [ "print $\"{area (A.Circle 2)}\"" ]
+
+              withDir
+                  [ "a.weir", [ "module A"; "type Shape ="; "    | Circle of int"; "    | Square of int" ]
+                    "m.weir", area [ "    | Circle r -> r * 3"; "    | Square w -> w * w" ]
+                    "partial.weir", area [ "    | Circle r -> r * 3" ] ]
+                  (fun td ->
+                      Expect.isEmpty (diagsOf td "m.weir") "the imported Shape types s"
+
+                      match diagsOf td "partial.weir" with
+                      | d :: _ -> Expect.stringContains d.Message "missing: Square" "exhaustiveness names the case"
+                      | [] -> failtest "a missing case must refuse")
           }
           test "did-you-mean at the private refusal ranges over SIGNED members only" {
               withDir
@@ -25290,6 +25545,17 @@ let tryTests =
                   let msgs = diagsIn "stray.weir" [ src ] |> List.map (fun d -> d.Message)
                   Expect.exists msgs (fun m -> m.Contains "'try' goes after a pipeline") src
           }
+          test "a command chain's |> try teaches the reifier, in every position" {
+              for src in
+                  [ "let r = sh -c \"exit 3\" |> try"
+                    "let r = sh -c \"exit 3\" |> Seq.length |> try result"
+                    "sh -c \"exit 3\" |> try" ] do
+                  let msgs = diagsIn "trycmd.weir" [ src; "print \"x\"" ] |> List.map (fun d -> d.Message)
+                  Expect.exists msgs (fun m -> m.Contains "a command's failure is data through a reifier") src
+                  Expect.isFalse (msgs |> List.exists (fun m -> m.Contains "Expecting")) src
+
+              errorsCleanIn "trycmd.weir" [ "let r = $(sh -c \"exit 3\") |> try"; "print $\"{r}\"" ] "the capture is an expression"
+          }
           test "a script's own Ok/Error cases shadow the prelude's" {
               let diags = diagsIn "shadow.weir" [ "type Status ="; "    | Ok"; "    | Error"; "let s = Ok"; "print (show s)" ]
               Expect.isEmpty diags "no ambiguity with Result's cases"
@@ -25383,6 +25649,67 @@ let runsCommandReifierTests =
                         "let part = helper \"a\"" ]
 
               Expect.isEmpty ok "a partial application runs nothing"
+          }
+          test "a lazy command let is a module value; the eager forms are refused, naming why [D:lazy-command-lets]" {
+              for rhs in
+                  [ "git log --oneline -n 10"
+                    "git log | grep a | sort"
+                    "[\"a\"] | grep a"
+                    "$(git log)"
+                    "other"
+                    "other | grep a" ] do
+                  let ds =
+                      diagsIn "w.weir" [ "module W"; "let other : seq<string>"; "let other = git status"; "let gl : seq<string>"; $"let gl = {rhs}" ]
+
+                  Expect.isEmpty (ds |> List.filter (fun d -> d.Severity = "error")) rhs
+
+              let refused (body: string list) (needle: string) =
+                  let msgs = diagsIn "w.weir" ("module W" :: body) |> List.map (fun d -> d.Message)
+
+                  Expect.exists msgs (fun m -> m.Contains "cannot run a command at import" && m.Contains needle) (String.concat "; " body)
+
+              refused
+                  [ "let _h = git rev-parse HEAD | line" ]
+                  "`| line` runs the command now — drop the reifier to keep it lazy, or wrap it in a function"
+              refused [ "let _h = echo $(git rev-parse HEAD | line)" ] "`| line` runs the command now"
+              refused [ "let _h = git log |> Seq.freeze" ] "passed to `Seq.freeze`"
+              refused [ "let _h = git status | or echo x" ] "`| and`/`| or` runs the commands now"
+              // forcing a lazy binding runs its command just the same
+              refused [ "let gl : seq<string>"; "let gl = git log"; "let _n = gl |> Seq.length" ] "'gl' is a lazy command passed to `Seq.length`"
+              refused [ "let gl : seq<string>"; "let gl = git log"; "let _m = echo $@gl" ] "'gl' is a lazy command read here"
+              refused [ "let gl : seq<string>"; "let gl = git log"; "let f () = gl |> Seq.length"; "let _v = f ()" ] "'f' runs one"
+          }
+          test "importing a module with a lazy command let spawns nothing; each use runs it [D:lazy-command-lets]" {
+              if not (System.OperatingSystem.IsWindows()) then
+                  let dir = tempDir "weir-lazylet"
+
+                  try
+                      let mark = System.IO.Path.Combine(dir, "mark")
+                      let modP = System.IO.Path.Combine(dir, "w.weir")
+
+                      System.IO.File.WriteAllLines(
+                          modP,
+                          [ "module W"; "let gl : seq<string>"; $"let gl = sh -c \"echo run >> '{mark}'; echo out\"" ]
+                      )
+
+                      let mainP = System.IO.Path.Combine(dir, "main.weir")
+
+                      System.IO.File.WriteAllLines(
+                          mainP,
+                          [ "import \"./w.weir\""
+                            $"sh -c \"echo main >> '{mark}'\""
+                            "W.gl |> Seq.iter (fun _ -> ())"
+                            "W.gl |> Seq.iter (fun _ -> ())" ]
+                      )
+
+                      Expect.equal (Weir.Script.run mainP []) 0 "the script runs clean"
+                      // no "run" ahead of "main": the import spawned nothing
+                      Expect.equal (System.IO.File.ReadAllLines mark |> List.ofArray) [ "main"; "run"; "run" ] "lazy at import, run per use"
+                  finally
+                      try
+                          System.IO.Directory.Delete(dir, true)
+                      with _ ->
+                          ()
           } ]
 
 // the GUIDE sweep's findings, pinned [D:sweep-findings]

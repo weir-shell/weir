@@ -122,12 +122,12 @@ let private lsEnumerate (cwd: string) : seq<Value> =
     // locale; coreutils ls inherits LC_COLLATE, weir does not)
     infos |> Array.sortBy (fun i -> i.Name) |> Seq.map lsRow
 
-// cwd bound at construction — the eval-time capture Eval's rebinder uses
-// [D:ambient-capture]; the directory read stays lazy inside the delay
+// cwd bound at construction — the `within cd` capture Eval's rebinder uses
+// [D:ambient-capture-within]; the directory read stays lazy inside the delay
 let private lsForCwd (cwd: string) : Value = VSeq(Seq.delay (fun () -> lsEnumerate cwd))
 
-// the env entry reads the cwd at force time (the non-reference fallback);
-// a `ls` reference rebinds to eval-time capture [D:ambient-capture]
+// reads the cwd at force time — what `ls` is outside any `within cd`
+// [D:ambient-capture-within]
 let private realLs: Value = VSeq(Seq.delay (fun () -> lsEnumerate (Session.Cwd())))
 
 // deep lazy chains walk iteratively [D:seq-depth-iterative], the
@@ -400,7 +400,10 @@ let private asString (v: Value) : string =
     | VStr s -> s
     | v -> unreachable $"the checker rejects non-string command arguments: {formatValue v}"
 
-let private argStrings (args: seq<Value>) : string list = args |> Seq.map asString |> List.ofSeq
+// argv words follow the command-argument law [D:secret]: the checker's
+// `|argv` marker admits Secret/Uuid/int/bool beside string
+let private argStrings (args: seq<Value>) : string list =
+    args |> Seq.map (Eval.scalarString "command argument") |> List.ofSeq
 
 let private cdImpl: Value =
     VBuiltin(fun v ->
@@ -805,6 +808,85 @@ let private rsplitImpl: Value =
 // pattern is discovery, not assertion); no matches = the empty seq.
 // Hand-rolled: FileSystemGlobbing cannot express the dotfile law
 // (and is unrestorable offline).
+// one glob bracket class at seg[i] = '[' [D:surface-glob], translated
+// member by member — never raw regex text: `!`/`^` negates, a `]` first
+// is a member, `a-z` is a code-point range (a reversed one matches
+// nothing), a `-` at either end and a backslash are members. Matches
+// one code point, never `/`. None = no closer, so the `[` is literal.
+let private globClass (seg: string) (i: int) : (string * int) option =
+    let mutable j = i + 1
+    let negate = j < seg.Length && (seg[j] = '!' || seg[j] = '^')
+
+    if negate then
+        j <- j + 1
+
+    let start = j
+    let mutable k = if start < seg.Length && seg[start] = ']' then start + 1 else start
+
+    while k < seg.Length && seg[k] <> ']' do
+        k <- k + 1
+
+    if k >= seg.Length then
+        None
+    else
+        let body = seg.Substring(start, k - start)
+
+        let cps =
+            [ let mutable q = 0
+
+              while q < body.Length do
+                  if System.Char.IsSurrogatePair(body, q) then
+                      yield System.Char.ConvertToUtf32(body, q)
+                      q <- q + 2
+                  else
+                      yield int body[q]
+                      q <- q + 1 ]
+
+        let rec ranges acc cps =
+            match cps with
+            | a :: 45 :: b :: rest -> ranges ((a, b) :: acc) rest
+            | a :: rest -> ranges ((a, a) :: acc) rest
+            | [] -> List.rev acc
+
+        let u (c: int) = $"\\u{c:X4}"
+        let bmp = System.Text.StringBuilder()
+        let astral = ResizeArray<string>()
+
+        let addBmp lo hi =
+            if lo <= hi then
+                (if lo = hi then bmp.Append(u lo) else bmp.Append(u lo).Append('-').Append(u hi)) |> ignore
+
+        for (lo, hi) in ranges [] cps do
+            if lo <= hi then
+                // BMP minus the surrogate block: a class unit must never
+                // match half a pair [D:str-code-points]
+                addBmp lo (min hi 0xD7FF)
+                addBmp (max lo 0xE000) (min hi 0xFFFF)
+
+                let alo, ahi = max lo 0x10000, hi
+
+                if alo <= ahi then
+                    if ahi - alo > 4096 then
+                        failwith "Path.glob: a bracket range past U+FFFF may span at most 4096 code points"
+
+                    for c in alo..ahi do
+                        astral.Add(System.Text.RegularExpressions.Regex.Escape(System.Char.ConvertFromUtf32 c))
+
+        let alts =
+            [ if bmp.Length > 0 then
+                  yield "[" + bmp.ToString() + "]"
+              yield! astral ]
+
+        let set = if alts.IsEmpty then "(?!)" else "(?:" + String.concat "|" alts + ")"
+
+        let rx =
+            if negate then
+                "(?:(?!" + set + ")(?:[\\uD800-\\uDBFF][\\uDC00-\\uDFFF]|[^/]))"
+            else
+                set
+
+        Some(rx, k)
+
 let private globSegRegex (seg: string) : System.Text.RegularExpressions.Regex =
     let sb = System.Text.StringBuilder("^")
     let mutable i = 0
@@ -815,15 +897,11 @@ let private globSegRegex (seg: string) : System.Text.RegularExpressions.Regex =
          // one code point, a surrogate pair included [D:str-code-points]
          | '?' -> sb.Append "(?:[\\uD800-\\uDBFF][\\uDC00-\\uDFFF]|[^/])" |> ignore
          | '[' ->
-             let close = seg.IndexOf(']', i + 1)
-
-             if close < 0 then
-                 sb.Append(System.Text.RegularExpressions.Regex.Escape "[") |> ignore
-             else
-                 let body = seg.Substring(i + 1, close - i - 1)
-                 let body = if body.StartsWith "!" then "^" + body.Substring 1 else body
-                 sb.Append('[').Append(body).Append(']') |> ignore
+             match globClass seg i with
+             | Some(rx, close) ->
+                 sb.Append rx |> ignore
                  i <- close
+             | None -> sb.Append(System.Text.RegularExpressions.Regex.Escape "[") |> ignore
          | c -> sb.Append(System.Text.RegularExpressions.Regex.Escape(string c)) |> ignore)
 
         i <- i + 1
@@ -923,12 +1001,20 @@ let private globImpl: Value =
     VBuiltin(fun patV ->
         match patV with
         | VStr pat ->
-            // capture the cwd where glob is CALLED [D:ambient-capture]: a
-            // relative pattern binds the scope it was written in, so a lazy
-            // glob escaping `within cd` still walks that directory (an
-            // absolute pattern ignores the cwd). The walk stays lazy.
-            let rootFs = if pat.StartsWith "/" then "/" else Session.Cwd()
-            VSeq(Seq.delay (fun () -> globWalk rootFs pat |> Seq.map VStr))
+            // a relative pattern captures the enclosing `within cd` where
+            // glob is CALLED, else walks the cwd current at enumeration
+            // [D:ambient-capture-within] (an absolute pattern ignores the
+            // cwd). The walk stays lazy.
+            let scoped = Session.scopedCwd ()
+
+            VSeq(
+                Seq.delay (fun () ->
+                    let rootFs =
+                        if pat.StartsWith "/" then "/"
+                        else scoped |> Option.defaultWith Session.Cwd
+
+                    globWalk rootFs pat |> Seq.map VStr)
+            )
         | _ -> unreachable "the checker rejects 'glob' on this argument")
 
 let private str1 (name: string) (f: string -> string) : Value =
@@ -3162,6 +3248,8 @@ let private envPairImpl: Value =
         VBuiltin(fun v ->
             match n, v with
             | VStr n, VStr v -> recordOf envVarDef [ VStr n; VStr v ]
+            // the `NAME=$s` desugar admits a Secret [D:secret]
+            | VStr n, VSecret v -> recordOf envVarDef [ VStr n; VStr v ]
             | _ -> unreachable "the checker rejects 'Env.pair' on these arguments"))
 
 let private envOfPairsImpl: Value =
@@ -3178,8 +3266,8 @@ let private envOfPairsImpl: Value =
         | v -> unreachable $"the checker rejects 'Env.ofPairs' on {formatValue v}")
 
 // Env.vars under an overlay snapshot (None = the live overlay at force);
-// the bare value rebinds to its eval-site snapshot, as `pwd` does
-// [D:ambient-capture] [D:env-overlay-read]
+// the bare value captures an enclosing `within env` at eval
+// [D:ambient-capture-within] [D:env-overlay-read]
 let private envVarsFor (snap: (string * string) list list option) : Value =
     VSeq(
         Seq.delay (fun () ->
@@ -7777,10 +7865,23 @@ Check.reservedBinderNames.Value <-
         && not (Set.contains n escapeBearers))
     |> Set.ofList
 
-// ls/pwd capture the cwd where they are EVALUATED [D:ambient-capture]:
-// keyed by the builtin's own object (the value the env still holds), so a
-// user shadow is returned untouched. Eval consults this in the identifier
-// arm. glob captures at its call, so it needs no rebinder.
-Eval.ambientRebinders["ls"] <- (realLs, (fun () -> lsForCwd (Session.Cwd())))
+// ls/Env.vars capture the enclosing `within` scope where they are EVALUATED
+// [D:ambient-capture-within], live outside one; `pwd` is a string, read
+// where evaluated: keyed by the builtin's own object (the value the env
+// still holds), so a user shadow is returned untouched. Eval consults this
+// in the identifier arm. glob captures at its call, so it needs no rebinder.
+Eval.ambientRebinders["ls"] <-
+    (realLs,
+     (fun () ->
+         match Session.scopedCwd () with
+         | Some cwd -> lsForCwd cwd
+         | None -> realLs))
+
 Eval.ambientRebinders["pwd"] <- (pwdImpl, (fun () -> pwdForCwd (Session.Cwd())))
-Eval.ambientRebinders["Env.vars"] <- (envVarsImpl, (fun () -> envVarsFor (Some(Session.envOverlay ()))))
+
+Eval.ambientRebinders["Env.vars"] <-
+    (envVarsImpl,
+     (fun () ->
+         match Session.scopedOverlay () with
+         | Some layers -> envVarsFor (Some layers)
+         | None -> envVarsImpl))

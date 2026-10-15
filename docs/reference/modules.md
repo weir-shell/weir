@@ -6,8 +6,11 @@ A file that starts with `module` (alone, or `module Name`) is a
 module. It can be imported, it contains only declarations (`type`
 and `let`; no commands and no bare expressions), and it cannot be run
 on its own. A module's `let` cannot run a command when the module is
-imported; wrap the command in a function, and it runs when a script
-calls that function. A module's top-level `let` values are evaluated
+imported (`| line` and the other reifiers, `|> Seq.freeze`, passing
+the command to a function); wrap the command in a function, and it
+runs when a script calls that function. A plain command value
+(`let log = git log -n 10`, or a pipeline of commands) is allowed: it
+is lazy, so importing runs nothing and each use runs it again. A module's top-level `let` values are evaluated
 when the importing program runs, never by `weir check`, which never
 evaluates anything.
 

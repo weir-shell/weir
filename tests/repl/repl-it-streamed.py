@@ -183,8 +183,9 @@ if "after" not in out:
     failures.append(f"(h) the session must continue past a failed command: {out!r}")
 
 # --- (h2): a value-position command failure stays the loud error — there
-# it aborted a computation, not a shell `$?` [D:repl-cmd-fail] ---
-out = session([(b'let x = $(sh -c "exit 4")\r', 1.0)])
+# it aborted a computation, not a shell `$?` [D:repl-cmd-fail]. Frozen:
+# a lazy `let` is not run by its echo [D:repl-let-echo-lazy] ---
+out = session([(b'let x = $(sh -c "exit 4") |> Seq.freeze\r', 1.0)])
 if "error: command failed with exit code 4" not in out:
     failures.append(f"(h2) a $() capture failure must keep the loud error (it broke a value): {out!r}")
 

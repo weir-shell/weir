@@ -398,7 +398,9 @@ let rec private formatWith (lim: RenderLimits) (depth: int) (v: Value) : string 
             match payload with
             | VInt _
             | VStr _
-            | VBool _ -> $"{case} {inner}"
+            | VBool _
+            // a tuple renders its own parens: `Some (1, 2)`, never `Some ((1, 2))`
+            | VTuple _ -> $"{case} {inner}"
             | _ -> $"{case} ({inner})"
         | VMap entries ->
             // sorted by construction (F# Map iterates in key order), so
@@ -1340,6 +1342,19 @@ let private jsonKindName (k: System.Text.Json.JsonValueKind) : string =
     | System.Text.Json.JsonValueKind.Null -> "null"
     | _ -> "non-object"
 
+// the value a field met, in weir's words beside a weir type — never
+// System.Text.Json's enum names (`True`, `String`) [D:json-boundary]
+let private jsonGotWord (k: System.Text.Json.JsonValueKind) : string =
+    match k with
+    | System.Text.Json.JsonValueKind.True
+    | System.Text.Json.JsonValueKind.False -> "bool"
+    | System.Text.Json.JsonValueKind.String -> "string"
+    | System.Text.Json.JsonValueKind.Number -> "a number"
+    | System.Text.Json.JsonValueKind.Array -> "an array"
+    | System.Text.Json.JsonValueKind.Object -> "an object"
+    | System.Text.Json.JsonValueKind.Null -> "null"
+    | _ -> "nothing"
+
 /// one object document/element -> one row of `def`. `who` names the
 /// adapter in every message ("from json" / "from jsonl") and `shown`
 /// is the input to cite — the line for jsonl, a snippet for a joined
@@ -1348,7 +1363,7 @@ let private jsonKindName (k: System.Text.Json.JsonValueKind) : string =
 /// demands a top-level array (one row per element), otherwise an
 /// object — the type decides what the top level must be, never the
 /// input [D:from-json-seq]
-let private jsonDoc
+let private jsonDocRead
     (who: string)
     (wantSeq: bool)
     (wantMap: bool)
@@ -1400,14 +1415,14 @@ let private jsonDoc
         // reading into a Secret wraps on the way in [D:secret-read]
         | TSecret, System.Text.Json.JsonValueKind.String -> VSecret(prop.GetString())
         // the document holds the secret: never echo it
-        | TSecret, kind -> failwith $"{who}: field '{name}' expected a string (Secret), got {kind}"
+        | TSecret, kind -> failwith $"{who}: field '{name}' expected a string (Secret), got {jsonGotWord kind}"
         | TUuid, System.Text.Json.JsonValueKind.String ->
             match parseUuid (prop.GetString()) with
             | Ok g -> VUuid g
             | Error e -> failwith $"{who}: field '{name}': {e}"
         | TBool, System.Text.Json.JsonValueKind.True -> VBool true
         | TBool, System.Text.Json.JsonValueKind.False -> VBool false
-        | ty, kind -> failwith $"{who}: field '{name}' expected {formatTy ty}, got {kind} in: {shown}"
+        | ty, kind -> failwith $"{who}: field '{name}' expected {formatTy ty}, got {jsonGotWord kind} in: {shown}"
 
     // the recursive reader [D:recursive-fields]: nested objects
     // convert through `defs` (the check-time closure — eval has no
@@ -1679,6 +1694,16 @@ let private jsonDoc
                     "from jsonl T reads one object per element"
 
             failwith $"{who}: the top level is a JSON {jsonKindName k}, not an object — {contract}, in: {shown}"
+
+// a string's decode is the one InvalidOperationException a parsed
+// document can still raise: an escape naming a lone surrogate
+// (`"\ud800"`) is valid JSON grammar but not text — named in weir's
+// words, never System.Text.Json's [D:json-boundary]
+let private jsonDoc who wantSeq wantMap top defs udefs (shown: string) text =
+    try
+        jsonDocRead who wantSeq wantMap top defs udefs shown text
+    with :? System.InvalidOperationException ->
+        failwith $"{who}: a string escape is a lone surrogate (\\uD800-\\uDFFF without its pair), which is not text, in: {shown}"
 
 // a document snippet for error messages: whole if short, truncated if
 // not (a joined body can be megabytes; the message stays a message)
@@ -2696,7 +2721,26 @@ let private argvUsage (target: ArgsTarget) (argv: string list) : string =
                 | Some rdef when not rdef.Fields.IsEmpty -> $"{c.ToLowerInvariant()} flags:" :: argvUsageLines rdef
                 | _ -> [])
 
-        String.concat "\n" ([ $"usage: {usageProg ()}<command> [flags]"; "commands:" ] @ caseLines @ blocks)
+        // case-scoped help when the case token leads [D:shared-flags],
+        // as the shared-flags twin scopes it — no global flags precede it
+        let scoped =
+            argv
+            |> List.filter (fun t -> t <> "--help" && t <> "-h")
+            |> List.tryHead
+            |> Option.bind (fun tok -> udef.Cases |> List.tryFind (fun (c, _) -> c.ToLowerInvariant() = tok))
+
+        match scoped with
+        | Some(c, _) ->
+            let name = c.ToLowerInvariant()
+
+            match Map.tryFind c payloads with
+            | Some rdef when not rdef.Fields.IsEmpty ->
+                String.concat
+                    "\n"
+                    ([ $"usage: {usageProg ()}{name} [flags]"; $"{name} flags:" ] @ argvUsageLines rdef)
+            | _ -> $"usage: {usageProg ()}{name}"
+        | None ->
+            String.concat "\n" ([ $"usage: {usageProg ()}<command> [flags]"; "commands:" ] @ caseLines @ blocks)
     | ArgsShared(outer, uf, udef, payloads) ->
         let sharedDef = Argv.sharedOf outer uf
 
@@ -3138,13 +3182,10 @@ let private envPairsOf (v: Value) : (string * string) list =
         |> List.ofSeq
     | _ -> unreachable "the checker rejects non-seq overlays"
 
-// eval-time cwd capture for the ambient bare values `ls`/`pwd`
-// [D:ambient-capture]: a bare value reads Session.Cwd() at force time, so
-// a listing built inside `within cd` but forced after it exits (the REPL
-// echo) resolved against the restored cwd — `Dir.stat`/`Dir.list` were
-// right because they snapshot at the call. A rebinder snapshots the cwd
-// where the identifier is EVALUATED (the same closure rule the command
-// pipe uses), keyed by the builtin's own object so a user shadow
+// eval-time scope capture for the ambient bare values `ls`/`pwd`/`Env.vars`
+// [D:ambient-capture] [D:ambient-capture-within]: a rebinder snapshots the
+// enclosing `within` scope where the identifier is EVALUATED (the rule the
+// command pipe uses), keyed by the builtin's own object so a user shadow
 // (`let ls = …`) is returned untouched. Populated by Builtins at load.
 let ambientRebinders =
     System.Collections.Generic.Dictionary<string, Value * (unit -> Value)>()
@@ -3312,6 +3353,12 @@ and eval (env: Env) (te: TypedExpr) : Value =
             let key = if isPoll then "interval" else "delay"
             failwith $"{head}: a negative {key} ({formatDuration delayMs})"
 
+        // poll is bounded by time alone, so a zero interval re-runs the
+        // body in a busy loop until the timeout — refused like timeout=0s
+        // [D:retry-poll]; retry's attempts bound it, so delay=0ms stays
+        if isPoll && delayMs = 0L then
+            failwith "poll: interval must be positive, got 0ms — a zero interval re-runs the body in a busy loop"
+
         match timeoutMs with
         | Some t when t <= 0L -> failwith $"{head}: timeout must be positive, got {formatDuration t}"
         | _ -> ()
@@ -3386,8 +3433,12 @@ and eval (env: Env) (te: TypedExpr) : Value =
                     | None -> ""
 
                 failwith $"poll: timed out after {formatDuration sw.ElapsedMilliseconds} ({n} attempt(s)){watchedNote}"
-            else
+            elif n >= attempts then
                 failwith $"retry: exhausted {attempts} attempt(s) over {formatDuration sw.ElapsedMilliseconds}"
+            else
+                // the timeout ended it: the attempts actually made
+                failwith
+                    $"retry: timed out after {formatDuration sw.ElapsedMilliseconds} ({n} attempt(s) made of {attempts} allowed)"
 
         let rec loop (n: int) =
             watchCheck sw
@@ -3602,15 +3653,15 @@ and eval (env: Env) (te: TypedExpr) : Value =
     | TECmd(head, args, cenvO) ->
         let argv = argvOf env args
 
-        // ambient captured at the written site [D:ambient-capture],
-        // per the lazy-spawn rule
+        // only the enclosing `within` scopes are captured
+        // [D:ambient-capture-within]
         let spec: Proc.Spec =
             { Prog = Proc.resolveProg (progOf env head)
               Args = argv
               Env = overlayOf env cenvO
               Input = None
-              Cwd = Some(Weir.Session.Cwd())
-              Ambient = Some(Weir.Session.envOverlay () |> List.rev |> List.collect id) }
+              Cwd = Weir.Session.scopedCwd ()
+              Ambient = Weir.Session.scopedAmbient () }
 
         // the command takes the blame wherever it is read [D:runtime-position]
         VSeq(Seq.delay (fun () -> Proc.linesOf spec) |> Seq.map VStr |> blameOn (box te))
@@ -3989,10 +4040,12 @@ and eval (env: Env) (te: TypedExpr) : Value =
 
             let saved = Session.Cwd()
             Session.setCwd resolved
+            Session.enterWithinCd ()
 
             try
                 eval env body
             finally
+                Session.exitWithinCd ()
                 Session.setCwd saved
         | WithinEnv ->
             // env pushes an ambient overlay that child spawns see;
@@ -4511,13 +4564,12 @@ and private evalYamlItems (env: Env) (items: Check.TypedYamlTplItem list) : Valu
 // for the captured chain and the inherited statement chain
 // [D:armed-inherit], so the two cannot drift
 and private chainSpecs env (arg: TypedExpr) chead cargs cenvO : Proc.Spec list =
-    // the ambient snapshot [D:ambient-capture]: taken here, where
-    // the pipe is written — a lazy seq escaping a `within` scope
-    // still spawns under the scope it was written in (closure rule)
-    let snapCwd = Some(Weir.Session.Cwd())
+    // the scope snapshot [D:ambient-capture] [D:ambient-capture-within]:
+    // a lazy seq escaping a `within` scope still spawns under the scope
+    // it was written in; outside any scope nothing is captured
+    let snapCwd = Weir.Session.scopedCwd ()
 
-    let snapAmb =
-        Some(Weir.Session.envOverlay () |> List.rev |> List.collect id)
+    let snapAmb = Weir.Session.scopedAmbient ()
 
     let rec collect (e: TypedExpr) (acc: Proc.Spec list) : TypedExpr option * Proc.Spec list =
         match e.Kind with
