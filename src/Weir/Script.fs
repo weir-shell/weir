@@ -2787,7 +2787,8 @@ type CheckedStmt =
 // a checked, imported module [D:modules-v1]. Its check-time contributions
 // (Members -> Modules[Alias], TypeDefs -> Types, TypeNames -> ModuleTypes)
 // merge into the importer's tenv; Body replays at exec to build the
-// module's values. AbsPath is the identity: the real path [D:module-once].
+// module's values. AbsPath is the path as reached; the identity is its
+// real path [D:module-once].
 and LoadedModule =
     { Alias: string
       // the module's own name (declared or filename-derived), independent
@@ -4429,10 +4430,6 @@ let rec private realPath (full: string) : string =
         with _ ->
             here
 
-// the one import path resolver [D:modules-v1]: absolute, normalized and
-// symlink-resolved — the module's identity [D:module-once]
-let private resolveImportPath (importingAbsPath: string) (path: string) : string =
-    realPath (resolveImportPathRaw importingAbsPath path)
 
 // one `weir:` name, two vendored homes: a module under .weir/modules and a
 // generated types module under .weir/types both named <name> — an error,
@@ -4641,7 +4638,11 @@ let rec loadModuleCachedWith
     (path: string)
     (importAs: string option)
     : Result<LoadedModule, ImportError> =
-    let absPath = resolveImportPath importingAbsPath path
+    // the path as the user reaches it (diagnostics, the LSP's locations)
+    // and the identity [D:module-once] apart: on macOS /var is a link to
+    // /private/var, and an editor must get back the path it opened
+    let absPath = resolveImportPathRaw importingAbsPath path
+    let key = realPath absPath
 
     // an import-statement error reports at the import line (File=None)
     let stmt msg =
@@ -4664,22 +4665,22 @@ let rec loadModuleCachedWith
 
         stmt
             $"'{path}' names two vendored files, {m} and {t} — a vendored module and a generated types module cannot share a name; regenerate the types under another name (weir gen types --schema <schema> --out .weir/types/<other>.weir) or re-add the module with another --as"
-    elif absPath = importingAbsPath then
+    elif key = realPath importingAbsPath then
         stmt "a file cannot import itself"
-    elif List.contains absPath chain then
+    elif List.contains key chain then
         // a cycle — same detector as self-import, different rendering
         // (decision 9): render the loop by file name
-        let recent = chain |> List.takeWhile ((<>) absPath)
+        let recent = chain |> List.takeWhile ((<>) key)
 
         let loop =
-            (absPath :: (List.rev recent @ [ absPath ]))
+            (key :: (List.rev recent @ [ key ]))
             |> List.map IO.Path.GetFileName
             |> String.concat " → "
 
         stmt $"import cycle: {loop}"
-    elif cache.ContainsKey absPath then
+    elif cache.ContainsKey key then
         // a diamond's shared module is checked once; re-alias per import site
-        let cached = cache[absPath]
+        let cached = cache[key]
 
         Ok
             { cached with
@@ -4727,7 +4728,7 @@ let rec loadModuleCachedWith
                     // transitive: a reached module's own imports resolve, sharing
                     // the cache, with this module pushed on the chain
                     let childLoader: ImportLoader =
-                        fun p _ a -> loadModuleCachedWith false cache (absPath :: chain) absPath p a
+                        fun p _ a -> loadModuleCachedWith false cache (key :: chain) absPath p a
 
                     // a module-content error reports at the module's own site
                     let at line col msg : Result<_, ImportError> =
@@ -4985,7 +4986,7 @@ let rec loadModuleCachedWith
                                              n, Map.tryFind n finalTenv.TypeOrigins |> Option.defaultValue (ownOrigin n)))
                                   Body = moduleBody }
 
-                            cache[absPath] <- loaded
+                            cache[key] <- loaded
                             Ok loaded
             | Ok _ -> notAModule
             | Error _ -> notAModule
@@ -5003,7 +5004,9 @@ let private replayed =
     System.Collections.Generic.Dictionary<string, (LogicalLine * CheckedStmt) list * Eval.Env>()
 
 let rec replayModule (procFacts: (string * Eval.Value) list) (lm: LoadedModule) : Eval.Env =
-    match replayed.TryGetValue lm.AbsPath with
+    let key = realPath lm.AbsPath
+
+    match replayed.TryGetValue key with
     | true, (body, venv) when obj.ReferenceEquals(body, lm.Body) -> venv
     | _ ->
         Session.enterImportGuard lm.NaturalName
@@ -5014,7 +5017,7 @@ let rec replayModule (procFacts: (string * Eval.Value) list) (lm: LoadedModule) 
             finally
                 Session.exitImportGuard ()
 
-        replayed[lm.AbsPath] <- (lm.Body, venv)
+        replayed[key] <- (lm.Body, venv)
         venv
 
 and private replayModuleBody (procFacts: (string * Eval.Value) list) (lm: LoadedModule) : Eval.Env =
