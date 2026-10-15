@@ -1092,20 +1092,20 @@ let streamingTests =
 
               Expect.equal pulled.Value 0 "evaluation alone must not enumerate"
           }
-          test "nats through map and take" {
+          test "(Seq.initInfinite id) through map and take" {
               Expect.equal
-                  (run "nats |> map (fun x -> x * x) |> take 5" |> forceSeq)
+                  (run "(Seq.initInfinite id) |> map (fun x -> x * x) |> take 5" |> forceSeq)
                   [ VInt 0; VInt 1; VInt 4; VInt 9; VInt 16 ]
                   ""
           }
-          test "sum consumes a finite stream" { expectValue "nats |> take 5 |> sum" (VInt 10) }
-          test "lambda pipe stage stays lazy" { expectValue "nats |> map (fun x -> x + 1) |> take 3 |> sum" (VInt 6) }
+          test "sum consumes a finite stream" { expectValue "(Seq.initInfinite id) |> take 5 |> sum" (VInt 10) }
+          test "lambda pipe stage stays lazy" { expectValue "(Seq.initInfinite id) |> map (fun x -> x + 1) |> take 3 |> sum" (VInt 6) }
           test "equality on seqs is rejected" {
-              Expect.stringContains (checkErr "nats == nats").Message "'==' is not defined for seq<int>" ""
+              Expect.stringContains (checkErr "(Seq.initInfinite id) == (Seq.initInfinite id)").Message "'==' is not defined for seq<int>" ""
           }
           test "equality through a seq-carrying record is rejected" {
               let holderEnv = env |> declare "type Holder = { S: seq<int> }"
-              let e = parse "let h = { S = nats } in h == h"
+              let e = parse "let h = { S = (Seq.initInfinite id) } in h == h"
 
               match Weir.Check.typecheck holderEnv e with
               | Ok _ -> failtest "expected rejection"
@@ -1119,7 +1119,7 @@ let streamingTests =
               // decompose must demand Eq of every field; an Eq-able
               // sibling must not carry the record [D:inferred-type-classes]
               let mixedEnv = env |> declare "type Mixed = { A: int; B: seq<int> }"
-              let e = parse "let m = { A = 1; B = nats } in m == m"
+              let e = parse "let m = { A = 1; B = (Seq.initInfinite id) } in m == m"
 
               match Weir.Check.typecheck mixedEnv e with
               | Ok _ -> failtest "expected rejection"
@@ -1136,17 +1136,17 @@ let polymorphismTests =
               Expect.equal (checkOk "ls |> map (fun f -> f.bytes)").Ty (TSeq TSize) ""
           }
           test "map over ints still works" {
-              Expect.equal (run "nats |> map (fun x -> x * x) |> take 3" |> forceSeq) [ VInt 0; VInt 1; VInt 4 ] ""
+              Expect.equal (run "(Seq.initInfinite id) |> map (fun x -> x * x) |> take 3" |> forceSeq) [ VInt 0; VInt 1; VInt 4 ] ""
           }
           test "map with an inferable function argument works standalone" {
-              Expect.equal (run "nats |> map double |> take 3" |> forceSeq) [ VInt 0; VInt 2; VInt 4 ] ""
+              Expect.equal (run "(Seq.initInfinite id) |> map double |> take 3" |> forceSeq) [ VInt 0; VInt 2; VInt 4 ] ""
           }
           test "full application instantiates from the trailing data argument" {
               expectValue "where (fun f -> f.hidden) ls |> take 1" (VSeq [ Weir.Builtins.file "b.bin" 5242880 true ])
           }
           test "instantiation mismatch is reported" {
               Expect.stringContains
-                  (checkErr "nats |> where (fun f -> f.readOnly)").Message
+                  (checkErr "(Seq.initInfinite id) |> where (fun f -> f.readOnly)").Message
                   "only records have fields"
                   ""
           } ]
@@ -2078,7 +2078,7 @@ let boundaryTests =
           }
           test "district templates check: splice law, key-splice string, for binder [D:yaml-district]" {
               // a record splice violates the liftable law
-              let bad = asm [ "let d = yaml"; "    x: $(nats)" ] // seq<int> IS liftable
+              let bad = asm [ "let d = yaml"; "    x: $((Seq.initInfinite id))" ] // seq<int> IS liftable
 
               match Weir.Parser.parseLine realResolver bad with
               | Ok(SLet(_, e)) ->
@@ -3650,10 +3650,10 @@ let boundaryCheckTests =
               Expect.stringContains (checkErr "[\"x\"] |> from yaml").Message "'from yaml' needs a record name" ""
           }
           test "piping a non-string seq into from is rejected" {
-              Expect.stringContains (checkErr "nats |> from json JRow").Message "expected string, got int" ""
+              Expect.stringContains (checkErr "(Seq.initInfinite id) |> from json JRow").Message "expected string, got int" ""
           }
           test "to json on a union seq is rejected" {
-              let e = "let xs = nats |> map (fun n -> Running n) in xs |> to json"
+              let e = "let xs = (Seq.initInfinite id) |> map (fun n -> Running n) in xs |> to json"
               Expect.stringContains (checkErr e).Message "is an untagged union" ""
           }
           test "to json standalone is rejected" { Expect.stringContains (checkErr "to json").Message "pipe stage" "" }
@@ -3800,7 +3800,7 @@ let completionTests =
               // replacement yields `#help` — never `##help` or `head`
               // the closed set is the one source Complete.sessionDirectives
               // — the '#'-slot and the empty-prompt head both read it
-              Expect.equal (suggest "#" 1) [ "echo"; "find"; "help"; "history"; "infer"; "quit"; "save" ] "the closed set"
+              Expect.equal (suggest "#" 1) [ "alias"; "echo"; "find"; "help"; "history"; "infer"; "quit"; "save" ] "the closed set"
               Expect.equal (suggest "#he" 1) [ "help" ] "the prefix filters"
               Expect.equal (suggest "#q" 1) [ "quit" ] ""
               Expect.isFalse (List.contains "head" (suggest "#he" 1)) "the general pool stays out"
@@ -4405,7 +4405,7 @@ let completionTests =
               Expect.contains (suggest text (text.Length - 2)) "f.name" ""
           }
           test "no fields on a non-record element" {
-              let text = "nats |> map (fun x -> x."
+              let text = "(Seq.initInfinite id) |> map (fun x -> x."
               Expect.equal (suggest text (text.Length - 2)) [] ""
           }
           test "from json completes record names" {
@@ -4465,7 +4465,7 @@ let completionTests =
               // guards `suggest "" 0` against the `StartsWith ""` flood
               // (1130 items: 954 PATH execs + the universe). A fresh Tab
               // teaches the REPL's affordances, `#help` first.
-              Expect.equal (suggest "" 0) [ "#help"; "#find"; "#echo"; "#infer"; "#save"; "#history"; "#quit" ] "the curated directive set"
+              Expect.equal (suggest "" 0) [ "#help"; "#find"; "#echo"; "#infer"; "#save"; "#history"; "#alias"; "#quit" ] "the curated directive set"
 
               // filtered completion is unaffected (a real prefix at a head).
               // Assert only environment-stable facts: the `File` module is
@@ -4524,8 +4524,8 @@ let rowTests =
               let e =
                   parse (
                       "let xs = map _.X in "
-                      + "let a = nats |> take 2 |> map (fun n -> { X = n; Y = n }) |> xs |> sum in "
-                      + "let b = nats |> take 3 |> map (fun n -> { X = n; Z = n }) |> xs |> sum in "
+                      + "let a = (Seq.initInfinite id) |> take 2 |> map (fun n -> { X = n; Y = n }) |> xs |> sum in "
+                      + "let b = (Seq.initInfinite id) |> take 3 |> map (fun n -> { X = n; Z = n }) |> xs |> sum in "
                       + "a + b"
                   )
 
@@ -5575,7 +5575,7 @@ let stringTests =
               expectValue "[7] |> Seq.tryExactlyOne" (VUnion("Some", Some(VInt 7L)))
               expectValue "[] |> Seq.tryExactlyOne" (VUnion("None", None))
               expectValue "[1; 2] |> Seq.tryExactlyOne" (VUnion("None", None))
-              expectValue "nats |> Seq.tryExactlyOne" (VUnion("None", None))
+              expectValue "(Seq.initInfinite id) |> Seq.tryExactlyOne" (VUnion("None", None))
           }
           test "Seq.first is retired; take stands [D:first-retired]" {
               // the reversal's receipt: the teaching, both spellings
@@ -6500,11 +6500,11 @@ let chooseTests =
               expectValue "[1..200000] |> Seq.fold (fun acc _ -> Seq.choose (fun x -> if x > 0 then Some(x + 1) else None) acc) [-1; 1] |> Seq.sum" (VInt 200001L)
           }
           test "200k-deep stateful and splicing combinators enumerate [D:seq-depth-iterative]" {
-              expectValue "[1..200000] |> Seq.fold (fun acc _ -> Seq.take 2 acc) nats |> Seq.sum" (VInt 1L)
+              expectValue "[1..200000] |> Seq.fold (fun acc _ -> Seq.take 2 acc) (Seq.initInfinite id) |> Seq.sum" (VInt 1L)
               expectValue "[1..200000] |> Seq.fold (fun acc _ -> Seq.collect (fun x -> [x]) acc) [7] |> Seq.head" (VInt 7L)
               expectValue "[1..200000] |> Seq.fold (fun acc _ -> Seq.concat [acc]) [7] |> Seq.head" (VInt 7L)
               expectValue "[1..200000] |> Seq.fold (fun acc _ -> Seq.skipWhile (fun x -> x < 0) acc) [-1; 5] |> Seq.head" (VInt 5L)
-              expectValue "[1..200000] |> Seq.fold (fun acc _ -> Seq.takeWhile (fun x -> x > 0) acc) (Seq.append [1; 2; 0] nats) |> Seq.length" (VInt 2L)
+              expectValue "[1..200000] |> Seq.fold (fun acc _ -> Seq.takeWhile (fun x -> x > 0) acc) (Seq.append [1; 2; 0] (Seq.initInfinite id)) |> Seq.length" (VInt 2L)
               expectValue "[1..200000] |> Seq.fold (fun acc _ -> Seq.distinct acc) [1; 1; 2] |> Seq.length" (VInt 2L)
               expectValue "[1..200000] |> Seq.fold (fun acc _ -> Seq.skip 0 acc) [5] |> Seq.head" (VInt 5L)
           }
@@ -6515,12 +6515,12 @@ let chooseTests =
           }
           test "chain stages keep per-enumeration state and F#'s pull counts [D:seq-depth-iterative]" {
               // take stops without pulling past its last element
-              expectValue "nats |> Seq.map (fun x -> 10 / (2 - x)) |> Seq.take 2 |> Seq.sum" (VInt 15L)
+              expectValue "(Seq.initInfinite id) |> Seq.map (fun x -> 10 / (2 - x)) |> Seq.take 2 |> Seq.sum" (VInt 15L)
               // stateful stages restart on a second enumeration
               expectValue "let xs = [1; 1; 2] |> Seq.distinct |> Seq.indexed in Seq.length xs + Seq.length xs" (VInt 4L)
               expectValue "[1; 2; 3] |> Seq.scan (fun a x -> a + x) 0 |> Seq.append [9] |> Seq.map (fun x -> $\"{x}\") |> Str.join \",\"" (VStr "9,0,1,3,6")
               expectValue "[1..5] |> Seq.chunkBySize 2 |> Seq.map Seq.sum |> Seq.map (fun x -> $\"{x}\") |> Str.join \",\"" (VStr "3,7,5")
-              expectValue "[1; 2; 3] |> Seq.collect (fun x -> nats |> Seq.take x) |> Seq.take 4 |> Seq.map (fun x -> $\"{x}\") |> Str.join \",\"" (VStr "0,0,1,0")
+              expectValue "[1; 2; 3] |> Seq.collect (fun x -> (Seq.initInfinite id) |> Seq.take x) |> Seq.take 4 |> Seq.map (fun x -> $\"{x}\") |> Str.join \",\"" (VStr "0,0,1,0")
               expectValue "[1; 2; 3; 2] |> Seq.pairwise |> Seq.length" (VInt 3L)
           }
           test "bare choose resolves — single-home means bare [D:bare-partition]" {
@@ -7340,7 +7340,7 @@ let replEchoTests =
                     Span = sp }
 
               let pureTe: Weir.Check.TypedExpr =
-                  { Kind = Weir.Check.TEVar "nats"
+                  { Kind = Weir.Check.TEVar "squares"
                     Ty = TSeq TInt
                     Span = sp }
 
@@ -10583,6 +10583,71 @@ let semanticTokenTests =
                       (out |> List.exists (fun l -> l.TrimStart().StartsWith "let y = <<<"))
                       "a match-arm binding merges too — the rewrite is position-general"
               | Error e -> failtestf "fmt failed: %s" e
+          }
+          test "SKILL.md's inventory lists every bare builtin and prelude type, both ways [D:surface-gate]" {
+              // ground truth is the checker's own env, not #help: the
+              // module gate (ci/skill-surface.sh) reads #help, which never
+              // listed the bare builtins — the gap `into` and `nats` lived in
+              let strict, _ = Weir.Prelude.extend Weir.Builtins.typeEnvStrict Weir.Builtins.valueEnv
+
+              let cases =
+                  strict.Types
+                  |> Map.toList
+                  |> List.collect (fun (_, d) ->
+                      match d with
+                      | Weir.Types.Union u -> u.Cases |> List.map fst
+                      | _ -> [])
+                  |> Set.ofList
+
+              let bare =
+                  strict.Values
+                  |> Map.keys
+                  |> Seq.filter (fun k -> not (k.StartsWith "|") && not (Set.contains k cases))
+                  |> Set.ofSeq
+
+              let skill =
+                  System.IO.File.ReadAllText(
+                      System.IO.Path.Combine(__SOURCE_DIRECTORY__, "..", "..", "skills", "weir", "SKILL.md")
+                  )
+
+              let inventory = skill.Substring(skill.IndexOf "## Surface inventory")
+              let ticked (s: string) =
+                  System.Text.RegularExpressions.Regex.Matches(s, @"`([A-Za-z][A-Za-z0-9]*)`")
+                  |> Seq.map (fun m -> m.Groups[1].Value)
+                  |> Set.ofSeq
+
+              let lines = inventory.Split('\n')
+
+              let bareLine =
+                  lines |> Array.tryFind (fun l -> l.StartsWith "- bare builtins: ")
+                  |> Option.map ticked
+                  |> Option.defaultValue Set.empty
+
+              Expect.equal bareLine bare "the bare-builtins line is exactly the env's bare builtins"
+
+              let typeLines =
+                  lines
+                  |> Array.choose (fun l ->
+                      let m = System.Text.RegularExpressions.Regex.Match(l, @"^- type `([A-Za-z]+)`: (.*)$")
+                      if m.Success then Some(m.Groups[1].Value, ticked m.Groups[2].Value) else None)
+                  |> Map.ofArray
+
+              Expect.equal (typeLines |> Map.keys |> Set.ofSeq) (strict.Types |> Map.keys |> Set.ofSeq) "a type line per prelude type"
+
+              for KeyValue(n, d) in strict.Types do
+                  let expected =
+                      match d with
+                      | Weir.Types.Union u -> u.Cases |> List.map fst |> Set.ofList
+                      | Weir.Types.Record r -> r.Fields |> List.map fst |> Set.ofList
+
+                  Expect.equal (Map.tryFind n typeLines) (Some expected) $"type {n}: its cases/fields"
+
+              // every bare builtin explains itself on hover and #help
+              let undocumented = bare |> Set.filter (fun b -> not (Map.containsKey b Weir.Builtins.builtinDocs))
+              Expect.isEmpty undocumented "every bare builtin has a builtinDocs entry"
+          }
+          test "every registered attribute has hover docs, and only those [D:surface-gate]" {
+              Expect.equal (Weir.Builtins.attrDocs |> Map.keys |> Set.ofSeq) Weir.Check.attributeNames "attrDocs = the registry"
           }
           test "builtin docs: every module member has an entry — hover coverage is CHECKED [D:docs-coverage]" {
               // the skill-surface rule applied to builtinDocs: a member
@@ -14084,7 +14149,7 @@ let showTests =
               // the constrained scheme (Session B) keeps it genuinely
               // generic — the element type resolves from data, and Show
               // rides until it does
-              expectValue "nats |> take 2 |> Seq.map show |> Seq.freeze |> Seq.length" (VInt 2L)
+              expectValue "(Seq.initInfinite id) |> take 2 |> Seq.map show |> Seq.freeze |> Seq.length" (VInt 2L)
 
               match (checkOk "Seq.map show").Ty with
               | TFun(TSeq(TVar _), TSeq TStr) -> ()
@@ -14226,7 +14291,7 @@ let assemblyRecoveryTests =
                         "let go = 1 > 0"
                         ""
                         "if go then !"
-                        "nats == nats" ]
+                        "(Seq.initInfinite id) == (Seq.initInfinite id)" ]
               // the bare marker with no block is the assembly error; the
               // == error after it must still be found, and earlier
               // statements survive
@@ -14772,11 +14837,11 @@ let typeClassTests =
               Expect.stringContains (formatError terr) "requires equatable values" ""
           }
           test "instantiation at seqs rejects" {
-              let terr = checkErr "let same x y = x == y in same nats nats"
+              let terr = checkErr "let same x y = x == y in same (Seq.initInfinite id) (Seq.initInfinite id)"
               Expect.stringContains (formatError terr) "requires equatable values" ""
           }
           test "concrete failures keep the pre-class message verbatim" {
-              Expect.stringContains (checkErr "nats == nats").Message "'==' is not defined for seq<int>" ""
+              Expect.stringContains (checkErr "(Seq.initInfinite id) == (Seq.initInfinite id)").Message "'==' is not defined for seq<int>" ""
           }
           test "Seq.contains is an ordinary constrained scheme now" {
               expectValue "[1; 2] |> Seq.contains 2" (VBool true)
@@ -14791,7 +14856,7 @@ let typeClassTests =
           }
           test "rows x Eq: row-level constraint discharges against a seq-carrying record (reject)" {
               let holderEnv = env |> declare "type Holder = { S: seq<int> }"
-              let e = parse "let eqr = fun a -> fun b -> a == b in eqr { S = nats } { S = nats }"
+              let e = parse "let eqr = fun a -> fun b -> a == b in eqr { S = (Seq.initInfinite id) } { S = (Seq.initInfinite id) }"
 
               match Weir.Check.typecheck holderEnv e with
               | Ok _ -> failtest "expected rejection through the row discharge"
@@ -14965,7 +15030,7 @@ let typeClassCTests =
 
 
               let bad =
-                  parse "let eqr = fun a -> fun b -> a == b in eqr { S = nats } { S = nats }"
+                  parse "let eqr = fun a -> fun b -> a == b in eqr { S = (Seq.initInfinite id) } { S = (Seq.initInfinite id) }"
 
               match Weir.Check.typecheck holderEnv bad with
               | Ok _ -> failtest "seq-carrying record must reject"
@@ -14975,7 +15040,7 @@ let typeClassCTests =
               let holderEnv = env |> declare "type Holder = { S: seq<int> }"
 
               let e =
-                  parse "let f = fun a -> fun b -> (a == b) && (a == a) in f { S = nats } { S = nats }"
+                  parse "let f = fun a -> fun b -> (a == b) && (a == a) in f { S = (Seq.initInfinite id) } { S = (Seq.initInfinite id) }"
 
               match Weir.Check.typecheck holderEnv e with
               | Ok _ -> failtest "moved constraint must still reject"
@@ -15938,7 +16003,7 @@ let operatorTests =
               expectValue "Running 1 <> Stopped" (VBool true)
           }
           test "not-equal inherits equatability: seqs rejected" {
-              Expect.stringContains (checkErr "nats <> nats").Message "'<>' is not defined for seq<int>" ""
+              Expect.stringContains (checkErr "(Seq.initInfinite id) <> (Seq.initInfinite id)").Message "'<>' is not defined for seq<int>" ""
           }
           test "ordered comparisons include boundaries" {
               expectValue "2 >= 2" (VBool true)
@@ -16025,7 +16090,7 @@ let adversarialTests =
               expectValue "let x = 1 in let x = \"s\" in x + \"!\"" (VStr "s!")
           }
           test "inferred element type contradicts use two stages later" {
-              let terr = checkErr "nats |> map (fun x -> x * x) |> where (fun x -> x.readOnly)"
+              let terr = checkErr "(Seq.initInfinite id) |> map (fun x -> x * x) |> where (fun x -> x.readOnly)"
               Expect.stringContains terr.Message "only records have fields" ""
           }
           test "row constraint conflicts with the declared field type" {
@@ -16083,8 +16148,8 @@ let adversarialTests =
               let expr =
                   parse (
                       "let getV = map _.V in "
-                      + "let a = nats |> take 2 |> map (fun n -> { V = n; Tag = true }) |> getV |> sum in "
-                      + "let b = nats |> take 1 |> map (fun n -> { V = \"s\"; Alt = true }) |> getV in "
+                      + "let a = (Seq.initInfinite id) |> take 2 |> map (fun n -> { V = n; Tag = true }) |> getV |> sum in "
+                      + "let b = (Seq.initInfinite id) |> take 1 |> map (fun n -> { V = \"s\"; Alt = true }) |> getV in "
                       + "a"
                   )
 
@@ -18286,7 +18351,7 @@ let accessorTeachingTests =
               // the positive twins: the members still work, and skip stays
               // lazy (an infinite source must not be probed for length)
               expectValue "[1; 2; 3] |> Seq.item 1" (VInt 2L)
-              expectValue "nats |> Seq.skip 2 |> Seq.head" (VInt 2L)
+              expectValue "(Seq.initInfinite id) |> Seq.skip 2 |> Seq.head" (VInt 2L)
           }
           // B5 [D:int-narrowing]: a 64-bit int past int32 never wraps —
           // a position is out of range, an amount too large; slices clamp
@@ -20555,33 +20620,33 @@ let seqGapsTests =
     let counted () =
         let pulled = ref 0
 
-        let src =
-            Seq.initInfinite (fun i ->
+        let countingId =
+            VBuiltin(fun v ->
                 System.Threading.Interlocked.Increment pulled |> ignore
-                VInt(int64 i))
+                v)
 
-        pulled, VSeq src
+        pulled, countingId
 
-    // the counting source rides the real nats builtin (typed seq<int>);
-    // runWith swaps only its value — the windowed pin's pattern
+    // the counting source is Seq.initInfinite id with `id` swapped for a
+    // counting identity — called once per element pulled [D:init-infinite]
     let pullPin (label: string) (bound: int) (expr: string) =
         test $"{label} is LAZY (pull-count pin)" {
-            let pulled, src = counted ()
-            runWith [ "nats", src ] expr |> forceSeq |> ignore
+            let pulled, countingId = counted ()
+            runWith [ "id", countingId ] expr |> forceSeq |> ignore
             Expect.isTrue (pulled.Value <= bound) $"{label}: pulled {pulled.Value} (bound {bound})"
         }
 
     testList
         "the Seq-gaps cohort [D:seq-gaps]"
-        [ pullPin "collect" 3 "nats |> Seq.collect (fun x -> [x; x]) |> Seq.take 3"
-          pullPin "concat" 3 "[nats] |> Seq.concat |> Seq.take 2"
-          pullPin "indexed" 3 "nats |> Seq.indexed |> Seq.map (fun (i, x) -> i) |> Seq.take 2"
-          pullPin "chunkBySize" 4 "nats |> Seq.chunkBySize 3 |> Seq.take 1 |> Seq.map Seq.freeze"
-          pullPin "takeWhile" 4 "nats |> Seq.takeWhile (fun x -> x < 2)"
-          pullPin "skipWhile" 4 "nats |> Seq.skipWhile (fun x -> x < 2) |> Seq.take 1"
-          pullPin "scan" 3 "nats |> Seq.scan (fun acc x -> acc + x) 0 |> Seq.take 2"
-          pullPin "distinctBy" 3 "nats |> Seq.distinctBy (fun x -> x) |> Seq.take 2"
-          pullPin "except" 3 "nats |> Seq.except [999] |> Seq.take 2"
+        [ pullPin "collect" 3 "(Seq.initInfinite id) |> Seq.collect (fun x -> [x; x]) |> Seq.take 3"
+          pullPin "concat" 3 "[Seq.initInfinite id] |> Seq.concat |> Seq.take 2"
+          pullPin "indexed" 3 "(Seq.initInfinite id) |> Seq.indexed |> Seq.map (fun (i, x) -> i) |> Seq.take 2"
+          pullPin "chunkBySize" 4 "(Seq.initInfinite id) |> Seq.chunkBySize 3 |> Seq.take 1 |> Seq.map Seq.freeze"
+          pullPin "takeWhile" 4 "(Seq.initInfinite id) |> Seq.takeWhile (fun x -> x < 2)"
+          pullPin "skipWhile" 4 "(Seq.initInfinite id) |> Seq.skipWhile (fun x -> x < 2) |> Seq.take 1"
+          pullPin "scan" 3 "(Seq.initInfinite id) |> Seq.scan (fun acc x -> acc + x) 0 |> Seq.take 2"
+          pullPin "distinctBy" 3 "(Seq.initInfinite id) |> Seq.distinctBy (fun x -> x) |> Seq.take 2"
+          pullPin "except" 3 "(Seq.initInfinite id) |> Seq.except [999] |> Seq.take 2"
           test "the receipt pipeline: collect over split, F# semantics" {
               Expect.equal
                   (run "[\"a<b\"; \"\"; \"c\"] |> Seq.collect (Str.split \"<\")" |> forceSeq)
@@ -21846,14 +21911,14 @@ let gapATests =
         [ test "windowed is LAZY: first 1 over infinite pulls exactly the window (pull-count pin)" {
               let pulled = ref 0
 
-              let counting =
-                  Seq.initInfinite (fun i ->
+              let countingId =
+                  VBuiltin(fun v ->
                       System.Threading.Interlocked.Increment pulled |> ignore
-                      VInt(int64 i))
+                      v)
 
               runWith
-                  [ "nats", VSeq counting ]
-                  "nats |> Seq.windowed 2 |> Seq.take 1 |> Seq.iter (fun w -> w |> Seq.iter (fun _ -> print \"\"))"
+                  [ "id", countingId ]
+                  "(Seq.initInfinite id) |> Seq.windowed 2 |> Seq.take 1 |> Seq.iter (fun w -> w |> Seq.iter (fun _ -> print \"\"))"
               |> ignore
 
               Expect.isLessThan pulled.Value 4 "a window of 2 must not pull the world"
@@ -21873,12 +21938,12 @@ let gapATests =
 
               let pulled = ref 0
 
-              let five =
-                  Seq.init 5 (fun i ->
+              let countingId =
+                  VBuiltin(fun v ->
                       System.Threading.Interlocked.Increment pulled |> ignore
-                      VInt(int64 i))
+                      v)
 
-              runWith [ "nats", VSeq five ] "nats |> Seq.last" |> ignore
+              runWith [ "id", countingId ] "Seq.initInfinite id |> Seq.take 5 |> Seq.last" |> ignore
               Expect.equal pulled.Value 5 "reached the end"
           }
           test "Option.iter: None runs NOTHING (side-effect absence pin)" {
@@ -22446,9 +22511,9 @@ let portMembersTests =
               expectValue "[\"a;b\"] |> Seq.equal [\"a\"; \"b\"]" (VBool false)
           }
           test "Seq.equal is lazy-safe: short-circuits, never forces beyond need" {
-              // nats is infinite — lockstep stops where the finite side ends
-              expectValue "[0; 1] |> Seq.equal nats" (VBool false)
-              expectValue "nats |> Seq.equal [5]" (VBool false)
+              // Seq.initInfinite id is infinite — lockstep stops where the finite side ends
+              expectValue "[0; 1] |> Seq.equal (Seq.initInfinite id)" (VBool false)
+              expectValue "(Seq.initInfinite id) |> Seq.equal [5]" (VBool false)
           }
           test "Seq.equal wears Seq.contains's Eq constraint" {
               let terr = checkErr "Seq.equal [fun x -> x] [fun y -> y]"

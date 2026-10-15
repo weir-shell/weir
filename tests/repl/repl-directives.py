@@ -153,9 +153,11 @@ if "#sig" in t or "#schema" in t:
 t = piped("#sig\n#quit\n")
 if "file directive" not in t or "no effect in the REPL" not in t:
     failures.append(f"#sig at the REPL must redirect (file directive): {t[-200:]!r}")
+# #schema never existed (a yaml block names its schema with `yaml schema=`):
+# it is an unknown directive like any other [D:surface-gate]
 t = piped("#schema\n#quit\n")
-if "file directive" not in t:
-    failures.append(f"#schema at the REPL must redirect (file directive): {t[-200:]!r}")
+if "unknown directive '#schema'" not in t:
+    failures.append(f"#schema is not a directive — it must read as unknown: {t[-200:]!r}")
 
 # --- #alias [D:command-head-alias] is a recognized directive ----------
 # bare #alias lists (empty session -> the teaching line); a live add
@@ -462,4 +464,4 @@ if failures:
         print("repl-directives FAIL:", f)
     sys.exit(1)
 
-print("repl-directives: #help x3 (one source), glance rendering (member + module blurbs), #find fallback (substring/usage/no-match), #quit + Ctrl+D, :q retired, comments no-op, #echo cap (report/set/all/teach, tty live, piped pinned), #history (path header, count, bare-all, tail-n, help-listed, typo did-you-mean), unknown-directive message trimmed (#sig/#schema redirect), #alias recognized (list/add/single-hop/help), empty-prompt Tab offers directives, constructor not a head")
+print("repl-directives: #help x3 (one source), glance rendering (member + module blurbs), #find fallback (substring/usage/no-match), #quit + Ctrl+D, :q retired, comments no-op, #echo cap (report/set/all/teach, tty live, piped pinned), #history (path header, count, bare-all, tail-n, help-listed, typo did-you-mean), unknown-directive message trimmed (#sig redirect, #schema unknown), #alias recognized (list/add/single-hop/help), empty-prompt Tab offers directives, constructor not a head")

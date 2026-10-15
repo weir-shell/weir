@@ -387,7 +387,10 @@ let private sumImpl: Value =
             VInt total
         | v -> unreachable $"the checker rejects 'sum' on {formatValue v}")
 
-let private natsImpl: Value = VSeq(Seq.initInfinite (int64 >> VInt))
+// F#'s Seq.initInfinite [D:init-infinite]: f 0, f 1, … lazily, the one
+// infinite-sequence spelling; an int64 index, so no int32 ceiling
+let private initInfiniteImpl: Value =
+    VBuiltin(fun f -> VSeq(Seq.unfold (fun i -> Some(VInt i, i + 1L)) 0L |> Seq.map (apply f)))
 
 let private notImpl: Value =
     VBuiltin(fun v ->
@@ -2350,6 +2353,7 @@ let private seqMembers: (string * Ty * Value) list =
       "pick", TFun(TFun(tA, TNamed("Option", [ tB ])), TFun(TSeq tA, tB)), pickImpl
       "except", TFun(TSeq tA, TFun(TSeq tA, TSeq tA)), exceptImpl
       "replicate", TFun(TInt, TFun(tA, TSeq tA)), replicateImpl
+      "initInfinite", TFun(TFun(TInt, tA), TSeq tA), initInfiniteImpl
       "max", TFun(TSeq tA, tA), extremumImpl "max" (fun c -> c > 0)
       "min", TFun(TSeq tA, tA), extremumImpl "min" (fun c -> c < 0)
       "maxBy", TFun(TFun(tA, tB), TFun(TSeq tA, tA)), extremumByImpl "maxBy" (fun c -> c > 0)
@@ -6217,6 +6221,12 @@ let builtinDocs: Map<string, BuiltinDoc> =
               (Some "Seq.replicate 3 \"x\" |> Seq.freeze")
               None
           |> named [ "n"; "x" ]
+          "Seq.initInfinite",
+          bd
+              "The endless sequence f 0, f 1, f 2, …, computed lazily as it is read. Bound it with take, takeWhile or a slice before forcing it."
+              (Some "Seq.initInfinite (fun i -> i * i) |> Seq.take 4 |> Seq.freeze")
+              None
+          |> named [ "f" ]
           "Seq.max",
           bd "The largest element, found in one pass without sorting. Elements must be comparable; raises on an empty sequence." (Some "Seq.max [3; 1; 2]") None
           |> named [ "xs" ]
@@ -6410,9 +6420,18 @@ let builtinDocs: Map<string, BuiltinDoc> =
               (Some "[Some 1; None; Some 3] |> Seq.choose id")
               None
            |> named [ "x" ])
+          "fst", (bd "The first element of a pair. Wider tuples are a type error, as in F#." (Some "fst (1, \"a\")") None |> named [ "pair" ])
+          "snd", (bd "The second element of a pair. Wider tuples are a type error, as in F#." (Some "snd (1, \"a\")") None |> named [ "pair" ])
+          "ls",
+          (bd
+              "The current directory's entries as typed rows (name, kind, target, bytes, modified, hidden, path), sorted by name. Dir.stat gives the same rows for a named directory; ^ls runs the external ls."
+              (Some "ls |> Seq.where (fun f -> f.kind == Directory)")
+              None)
+          "pwd",
+          (bd "The session's current directory, read where it is used." (Some "pwd") None)
           "cd",
           (bd
-              "Change the session's directory and return the previous one, so you can go back later (`let prev = cd \"/tmp\"`). A bare name uses the value of that binding (`cd target`). `cd` with no argument, or a typed `cd ~`, goes to the home directory; a string argument is used literally. To change directory for a block only, use `within cd`."
+              "Change the session's directory and return the absolute directory it moved to (`let here = cd \"/tmp\"`). A bare name uses the value of that binding (`cd target`). `cd` with no argument, or a typed `cd ~`, goes to the home directory; a string argument is used literally. To change directory for a block only, use `within cd`."
               (Some "cd \".\"")
               None
            |> named [ "path" ])
@@ -7309,7 +7328,10 @@ let attrDocs: Map<string, string> =
           "[<EpochSec>] — an Instant field crosses json/yaml as integer epoch seconds (a sub-second value raises on write)"
           "Millis", "[<Millis>] — a Duration field crosses json/yaml as integer milliseconds"
           "Seconds", "[<Seconds>] — a Duration field crosses json/yaml as integer seconds (a sub-second value raises on write)"
-          "ByteCount", "[<ByteCount>] — a Size field crosses json/yaml as an integer byte count" ]
+          "ByteCount", "[<ByteCount>] — a Size field crosses json/yaml as an integer byte count"
+          "Attr",
+          "[<Attr>] / [<Attr \"Name\">] — read this field from an XML attribute (from xml), named like the field unless given"
+          "Elem", "[<Elem \"Child\">] — the repeated child element a seq field reads (from xml)" ]
 
 let adapterNames (dir: string) : string list =
     builtinDocs
@@ -7545,7 +7567,6 @@ let private chainTy (result: Ty) : Ty =
 
 let private entries: (string * Ty * Value) list =
     [ "ls", seqFileRow, realLs
-      "nats", seqInt, natsImpl
       "cd", TFun(TStr, TStr), cdImpl
       "pwd", TStr, pwdImpl
       "not", TFun(TBool, TBool), notImpl

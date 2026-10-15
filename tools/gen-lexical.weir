@@ -66,10 +66,12 @@ let block = [
     $"({fmt m.adapters.toAdapters}). These words are special only in those positions;"
     "anywhere else they are ordinary names."
     ""
-    "`pure` and `readonly` each start their own indented block. Code in a"
+    "`pure`, `readonly` and `plan` each start their own indented block. Code in a"
     "`pure` block may have no effects at all; code in a `readonly` block may"
-    "read (files, the environment, the clock, HTTP GETs) but change nothing."
-    "`pure` also marks a function: `let pure f x = …`. Neither goes after `within`."
+    "read (files, the environment, the clock, HTTP GETs) but change nothing;"
+    "a `plan` block runs its reads and captures its file and HTTP changes as a"
+    "`Plan` to preview, compare or apply. `pure` also marks a function:"
+    "`let pure f x = …`. None of them goes after `within`."
 ]
 
 let path = "docs/reference/lexical.md"

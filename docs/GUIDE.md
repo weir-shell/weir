@@ -1932,7 +1932,7 @@ that's sent in chunks as it's produced:
 let handler = fun req ->
     match req.path with
     | "/health" -> HttpServerResponse { status = 200; headers = []; body = Text "ok" }
-    | "/events" -> HttpServerResponse { status = 200; headers = []; body = Stream (nats |> Seq.map show) }
+    | "/events" -> HttpServerResponse { status = 200; headers = []; body = Stream (Seq.initInfinite show) }
     | _ -> HttpServerResponse { status = 404; headers = []; body = Text "not found" }
 
 within serve srv = { port = 8080; maxConcurrent = 8 } handler
@@ -2054,8 +2054,10 @@ match Args.load Cmd with // no argv here: "missing subcommand; one of: clone, st
 
 There are no positional arguments. Pass everything as a flag
 (`pull --subdir libx`), for the same reason records beat tuples: a
-name is easier to read than a position you have to count. There is
-no `[<Positional>]` attribute. You only lose the typed,
+name is easier to read than a position you have to count.
+`[<Positional>]` on an `Args.load` field is a check error; it only
+describes a foreign tool's operands in a [command
+signature](tooling.md#command-signatures). You only lose the typed,
 help-generating route, though. To read arguments your own way,
 `Args.flag "--clean" "-c"` and `Args.value "--out"` search the raw
 `Self.args` sequence. An option with several values becomes one flag
@@ -2726,7 +2728,7 @@ shows one member's docs, from the same source as editor hover, so
 the two always match.
 
 A line starting with `#` is an instruction to weir's tools rather than
-code. There are two kinds. File directives (`#sig`, `#schema`) are
+code. There are two kinds. File directives (`#sig`) are
 read when the script is checked. Session directives (`#help`,
 `#quit`) run immediately.
 

@@ -674,7 +674,6 @@ let main argv =
                 "usage: weir gen types --schema <name> [--as <TypeName>] [--out <path>|-]   generate weir types from a locked schema"
 
             2
-        | "run" :: path :: rest -> runOnMain (fun () -> Script.run path rest)
         | path :: rest when not (path.StartsWith "-") -> runOnMain (fun () -> Script.run path rest)
         // teaching arms, not dumps [D:windows-v1]: a mistyped option gets a
         // did-you-mean; a mis-quoted -e gets its arity named (on Windows a
@@ -692,7 +691,7 @@ let main argv =
             2
         | opt :: _ when opt.StartsWith "-" && opt <> "--help" && opt <> "-h" ->
             let spellings =
-                [ "-e"; "--version"; "check"; "fmt"; "lsp"; "add"; "gen"; "restore"; "verify"; "run" ]
+                [ "-e"; "--version"; "check"; "fmt"; "lsp"; "add"; "gen"; "restore"; "verify" ]
 
             Console.Error.WriteLine $"weir: unknown option '{opt}'{didYouMean opt spellings} (weir --help for usage)"
             2

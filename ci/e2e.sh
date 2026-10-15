@@ -1881,7 +1881,7 @@ ckdir=$(mkweirtmp)
 cat > "$ckdir/multi.weir" <<'WEOF'
 let Foo = 1
 
-nats == nats
+Seq.initInfinite id == Seq.initInfinite id
 WEOF
 out=$($BIN check "$ckdir/multi.weir") && fail "check must exit 1 on errors" || true
 echo "$out" | grep -qF "[casing-law]" || fail "casing code missing: $out"
@@ -3065,10 +3065,10 @@ WEOF
     # be visible (printed after the lines, not scrolled off the top). The
     # old shape printed `xs : seq<string> ={hint}` first (a dangling ' ='
     # too); the fix prints the lines, then `xs : seq<string> (hint)` last.
-    # `nats |> Seq.map show` is a deterministic unforced seq<string> — no
+    # `Seq.initInfinite show` is a deterministic unforced seq<string> — no
     # PATH executable. tty-only path (redirected uses the batched form),
     # so this rides the pty instrument.
-    tout=$(printf 'SLEEP 400\nSEND let xs = nats |> Seq.map (fun n -> show n)\\r\nSLEEP 1500\nSEND #quit\\r\n' | python3 "$ptyrun" 8 "$BIN")
+    tout=$(printf 'SLEEP 400\nSEND let xs = Seq.initInfinite show\\r\nSLEEP 1500\nSEND #quit\\r\n' | python3 "$ptyrun" 8 "$BIN")
     echo "$tout" | grep -qF 'seq<string> (first 100 of an unforced' \
       || fail "the let-bound unforced seq echo lost its teaching (or it is not on the meta line): $tout"
     # the dangling ' =' is gone: the meta reads `: seq<string> (…)`, never `: seq<string> =`
@@ -3079,7 +3079,7 @@ WEOF
     # ---- the binding echo states seq state [D:reenum-warning] ----------
     # a command-backed unforced bind is not run by the echo
     # [D:repl-let-echo-lazy]; a materialized bind says frozen; the
-    # pure-lazy nats cell above stays unannotated (its teaching grep pins
+    # pure-lazy Seq.initInfinite cell above stays unannotated (its teaching grep pins
     # the meta with no state joined)
     rsout=$(printf 'SLEEP 400\nSEND let pods = sh -c "echo ran-$((40+2))"\\r\nSLEEP 1200\nSEND let snap = ["a"; "b"]\\r\nSLEEP 800\nSEND #quit\\r\n' | python3 "$ptyrun" 10 "$BIN")
     # the harness echoes a bytes repr, so the em-dash rides as \xe2\x80\x94 —
@@ -7682,7 +7682,7 @@ diff -u "$hdir/headless.txt" "$hdir/prompted.txt" >/dev/null \
 # the directive reference table [D:help-find]: docs/reference/lexical.md
 # names every dispatched directive across its three contexts (the
 # gen-lexical spirit — a new directive without a table row fails here)
-for d in help find echo infer save quit alias session sig schema; do
+for d in help find echo infer save history alias quit init session sig; do
     grep -q "\`#$d\`" "$(dirname "$0")/../docs/reference/lexical.md" \
         || fail "docs/reference/lexical.md directive table is missing #$d"
 done

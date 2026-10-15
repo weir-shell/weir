@@ -6603,6 +6603,9 @@ let private attrRegistry: Map<string, (AttrArg option -> string option) * AttrPo
                 [ FieldPos ])))
     )
 
+/// the registered attribute names — what attrDocs must explain [D:attributes]
+let attributeNames: Set<string> = attrRegistry |> Map.keys |> Set.ofSeq
+
 // two fields resolving to one wire key is nonsense on every adapter —
 // refused at the declaration, not discovered at the boundary
 // [D:wire-keys]

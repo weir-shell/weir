@@ -204,7 +204,7 @@ let b4Yes = <<<
 
 let b4Endless = <<<
     within
-        nats |> Seq.iter (fun i -> print $"{i}")
+        Seq.initInfinite id |> Seq.iter (fun i -> print $"{i}")
     always
         File.write "always" ["x"]
 

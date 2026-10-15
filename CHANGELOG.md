@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Removed
+
+- **`nats` is gone; use `Seq.initInfinite`.** F#'s name: `Seq.initInfinite f`
+  is the endless sequence `f 0, f 1, …`, read lazily. `nats` is
+  `Seq.initInfinite id`; `nats |> Seq.map show` is `Seq.initInfinite show`.
+  The name `nats` is no longer reserved.
+- **`weir run <script>` is gone** — it was undocumented; `weir <script>`
+  does the same.
+
 ### Changed
 
 - **The init file refuses bare names.** It is a script, not typing at
@@ -14,6 +23,17 @@
   The error names the fix: `let inf () = …`.
 
 ### Fixed
+
+- **`#alias` completes and gets a did-you-mean**, like the other
+  directives; `#help`'s directive list now comes from the same table.
+- **Hover and `#help` explain `fst`, `snd`, `ls`, `pwd`, `[<Attr>]` and
+  `[<Elem>]`**, and `cd`'s text says what it returns: the directory it
+  moved to (it said the previous one).
+- **The site reference lists every prelude type** with its cases and
+  fields.
+- **Docs:** `#schema` was documented but never existed (a `yaml` block
+  names its schema with `yaml schema=<name>`); `[<Positional>]` exists
+  for command signatures; retry's `timeout=` option is documented.
 
 - **`weir check` on an init file refuses what the REPL refuses.** Most
   of the loader's rules passed check and then stopped the init from

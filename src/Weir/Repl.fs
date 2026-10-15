@@ -534,6 +534,47 @@ let docsJson () : string =
             w.WriteEndObject()
 
     w.WriteEndArray()
+
+    // the prelude types, generated from the env [D:reference]: every
+    // record with its fields and every union with its cases (the
+    // constructors), so the reference covers them by construction
+    w.WriteStartArray "types"
+
+    for KeyValue(n, def) in te.Types do
+        w.WriteStartObject()
+        w.WriteString("name", n)
+
+        match def with
+        | Types.Record r ->
+            w.WriteString("kind", "record")
+            w.WriteStartArray "fields"
+
+            for f, ty in r.Fields do
+                w.WriteStartObject()
+                w.WriteString("name", f)
+                w.WriteString("type", Types.formatTy ty)
+                w.WriteEndObject()
+
+            w.WriteEndArray()
+        | Types.Union u ->
+            w.WriteString("kind", "union")
+            w.WriteStartArray "cases"
+
+            for c, payload in u.Cases do
+                w.WriteStartObject()
+                w.WriteString("name", c)
+
+                match payload with
+                | Some ty -> w.WriteString("payload", Types.formatTy ty)
+                | None -> w.WriteNull "payload"
+
+                w.WriteEndObject()
+
+            w.WriteEndArray()
+
+        w.WriteEndObject()
+
+    w.WriteEndArray()
     w.WriteEndObject()
     w.Flush()
     Text.Encoding.UTF8.GetString(ms.ToArray())
@@ -2351,7 +2392,7 @@ let itSchemeForTest (statements: string list) : string option =
 
 // ---- session directives [D:repl-directives] -------------------------
 // '#' is the prefix for everything addressed to the tooling: file
-// directives (#sig, #schema) read at check time, session directives
+// directives (#sig) read at check time, session directives
 // (#help, #quit) executed now — one glyph, two lifetimes.
 
 // simple flow-wrap for name lists
@@ -2476,19 +2517,12 @@ let private helpDirective (color: bool) (te: TypeEnv) (arg: string) : string =
             |> List.ofSeq
 
         "Directives:\n"
-        + "  #help                 // this list\n"
-        + "  #help <name>          // documentation for a module or member\n"
-        + "  #find [query]         // fuzzy-search modules and members (fzf + live preview)\n"
-        + "  #echo [<n> | all]     // the unforced-echo cap (default 100); bare reports;\n"
-        + "                        //   all = no cap — an infinite seq will hang (Ctrl+C)\n"
-        + "  #infer [<src>] from <json|jsonl|yaml|table> as <Name|_>\n"
-        + "                        //   draft named types from a sample (src defaults to 'it'; _ auto-names)\n"
-        + "  #infer let <x> = <src> |> from <fmt> as <Name|_>\n"
-        + "                        //   one shot: draft the types and bind the parsed value (runs once)\n"
-        + "  #save <path>          // dump the session's accepted lines to a runnable .weir\n"
-        + "  #history [<n>]        // show history (bare = all, <n> = last n); prints the file path\n"
-        + "  #alias [name = cmd …] // bare lists; a command-head alias (init.weir is canonical)\n"
-        + "  #quit                 // leave the REPL (Ctrl+D works too)\n\n"
+        // derived [D:repl-directives]: the dispatch's own table
+        + (Complete.sessionDirectiveHelp
+           |> List.collect snd
+           |> List.map (fun l -> "  " + l + "\n")
+           |> String.concat "")
+        + "\n"
         + "Modules:\n"
         + glanceTable (glanceWidth ()) mods
     | name when Map.containsKey name te.Modules ->
@@ -3529,7 +3563,7 @@ let rec private loop (state: State) =
             Console.WriteLine(
                 if word = "#session" then
                     "#session is read from the init file at startup (config dir, weir/init.weir) — edit it and restart"
-                elif word = "#sig" || word = "#schema" then
+                elif word = "#sig" then
                     $"{word} is a file directive, read at check time — it has no effect in the REPL"
                 elif word = "#quit" then
                     "#quit takes no argument — type #quit on its own (or press Ctrl+D)"

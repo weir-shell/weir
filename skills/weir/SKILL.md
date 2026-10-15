@@ -13,7 +13,16 @@ stops being true fails the build.
   declaration is refused (`-e` shows you a result, by design — a
   deliberate divergence from `python -c`).
 - `weir fmt file.weir` canonicalizes indentation (4 per block depth);
-  `--check` for CI.
+  `--check` for CI. `weir lsp` is the language server (stdio).
+- Command signatures: `weir add sig <tool>` probes the installed
+  binary and writes `.weir/sigs/<tool>.weir` (+ lock entry); a script
+  opts in with a `#sig <tool>` line at its top, and `weir check` then
+  checks that tool's flags (unknown flag = warning; `let exhaustive =
+  true` in the sig file makes it an error). Vendoring: `weir add
+  module <src>//<file>@<ref> --as <name>` (then `import "weir:<name>"
+  as M`), `weir restore` re-materializes the lock's files, `weir
+  verify` diffs them against the lock (exit 1 on drift). See
+  docs/tooling.md.
 - The whole file typechecks before ANY line runs. A check error = zero
   side effects. Iterate until it checks.
 - Comments are `//`, full-line or TRAILING (`let x = 5 // note`) —
@@ -202,9 +211,10 @@ print (show (f 2))
   reserved word are all legal there), `Args.load` REJECTS it (argv is
   weir's own boundary, so there is no wire to match — flags DERIVE, and
   `[<Short>]`/`[<NoShort>]` are the naming controls), and
-  two fields resolving to one wire key refuse at the declaration. The name set is CLOSED — an unregistered name
-  (`[<Positional>]` among them: dropped, scripts take flags) is a
-  check error with a did-you-mean. Attributes attach to record
+  two fields resolving to one wire key refuse at the declaration. The name set is CLOSED — an unregistered name is a
+  check error with a did-you-mean. `[<Positional>]` is registered for
+  command-signature files only (a foreign tool's operands); on
+  an `Args.load` field it is a check error — scripts take flags. Attributes attach to record
   fields, union cases, and union type declarations (an attribute
   line above `type` binds to it), and the registry is
   POSITION-SCOPED — a registered name in the wrong position names
@@ -518,13 +528,14 @@ print $"{key} -> {value}"
   process (a counter in `rand_a`), so v7 ids sort by creation as
   uuids AND as text — the append-only log key. `Uuid.v4 ()` is
   random; `Uuid.v5 Uuid.ns.dns "name"` is name-based and
-  deterministic (`Uuid.ns.dns`/`url`/`oid`/`x500`, or any uuid as your
+  deterministic (`Uuid.ns : UuidNamespaces`, a record of
+  `dns`/`url`/`oid`/`x500`, or any uuid as your
   own namespace). `Uuid.v7At t` stamps a given `Instant` (ms-truncated;
   orders with v7 only when `t` lies between the last id and now;
   raises before 1970). `Uuid.parse` reads 8-4-4-4-12 or 32 bare hex,
   any case, optional `urn:uuid:` — never braces, never surrounding
   whitespace (`Str.trim` first); it RAISES on anything else,
-  `Uuid.tryParse` returns `Option` (weir has no Result).
+  `Uuid.tryParse` returns `Option`.
   `Uuid.version id : int`, `Uuid.instant id : Option<Instant>` (`Some`
   for v7 only), `Uuid.toString` (lowercase canonical — what `show`,
   JSON and argv use), `Uuid.nil`/`Uuid.max`, `Uuid.toBytes`/
@@ -556,7 +567,8 @@ print $"{key} -> {value}"
   `Http.send (Http.get u)`, `Http.send { Http.post u with auth = Bearer
   tok; body = Json payload }` — one per method
   (get/post/put/delete/patch/head/options/query), each equal to `{
-  Http.defaults with method = M; url = u }`. `Http.expect : HttpRequest
+  Http.defaults with method = M; url = u }` (`HttpMethod` =
+  `Get`/`Post`/`Put`/`Delete`/`Patch`/`Head`/`Options`/`Query`/`Other of string`). `Http.expect : HttpRequest
   -> seq<string>` [D:http-dx] is the raising read (`curl -sf`'s
   posture): body out, raises on non-2xx naming method, redacted url,
   status and a capped body snippet — `Http.get u |> Http.expect` is the
@@ -580,8 +592,8 @@ print $"{key} -> {value}"
   `secretHeaders`, any casing) and exactly one is ever sent. The
   default is applied at SEND time, not a field of `Http.defaults` —
   so a shown/pinned request stays stable across releases, and `show
-  req` does NOT display the UA the wire will carry [D:http-ua]. `auth` is a UNION
-  (`NoAuth`/`Bearer of Secret`/`Basic of string * Secret` — Basic does
+  req` does NOT display the UA the wire will carry [D:http-ua]. `auth` is a UNION,
+  `Auth` (`NoAuth`/`Bearer of Secret`/`Basic of string * Secret` — Basic does
   the base64); a `Secret` carries WHOLE (interpolating a token is a
   check error) and `show` masks it. Status is DATA (`if resp.status >=
   400 then fail …`, a 404 binds); only TRANSPORT failure raises (and a
@@ -653,7 +665,8 @@ print $"{key} -> {value}"
   `watch=` or `Proc.wait`, nowhere else. Nested scopes release LIFO.
   The command position takes splices and env sigils like any command;
 - A SCOPED HTTP LISTENER is `within serve srv = { port;
-  maxConcurrent } handler` + an indented block [D:http-serve]: the
+  maxConcurrent } handler` (the config is a `ServerConfig`: `port`,
+  `maxConcurrent`, `bodyTimeout`, `maxBody`) + an indented block [D:http-serve]: the
   socket lifetime IS the block — served until the scope exits
   (normal, raise, SIGINT/SIGTERM) and CLOSED on every path, so the
   port frees (a second bind then succeeds). Same no-orphan discipline
@@ -886,13 +899,16 @@ let p =
   first `|` optional, guards work) — the usual spelling for
   `Seq.choose` over lines.
 - Bounded loops are `retry`/`poll` compound forms (no `while`):
-  `retry attempts=5 delay=30s` + an indented body block, then
+  `retry attempts=5 delay=30s` + an indented body block (optional
+  total-time ceiling `timeout=(Some 2m)` — an `Option<Duration>`,
+  default `None`; it cancels a pending delay), then
   optionally `until r` + an indented predicate block binding the
   body's value. A `bool` body IS the predicate (no `until`, yields
   unit); a value body REQUIRES `until` and yields the value.
   `poll timeout=5m interval=10s` is the time-bounded twin (its
   `timeout` and `interval` must be positive — no busy loop). The head
-  desugars over a record — `retry { Retry.defaults with attempts = 5 }`
+  desugars over a record (`Retry` = `{ attempts; delay; timeout }`,
+  `Poll` = `{ timeout; interval }`) — `retry { Retry.defaults with attempts = 5 }`
   is the same form, so options can be computed and shared. Exhaustion
   RAISES; raises inside the body propagate (retry on the predicate,
   not on exceptions — use `| succeeds`/`| complete` to make failure
@@ -1010,7 +1026,9 @@ print (Option.flatten (Some None) |> Option.defaultValue 0)
   (Eq on the key); `reduce` (fold without a seed, raises on empty) and
   `scan` (fold with intermediates, seed first); `chunkBySize` (the
   batching member); `except` (set difference, exclusions first);
-  `replicate`; `max`/`min`/`maxBy`/`minBy` (Ord; raise on empty; one
+  `replicate`; `initInfinite f` (F#'s: the endless `f 0, f 1, …`,
+  lazy — the one infinite source; bound it with `take`/`takeWhile`/a
+  slice before forcing); `max`/`min`/`maxBy`/`minBy` (Ord; raise on empty; one
   pass, no sort); `take` (`first` is retired [D:first-retired]). Sums: `Seq.sum`
   is `seq<int>`; `Float.sum`/`Size.sum`/`Duration.sum` (and their
   `average`s) own the other types — `Seq.average` alone crosses types
@@ -1257,8 +1275,8 @@ print x
   mid-line `^D` is NOT EOF), the second at the now-empty line is EOF.
   Works on every build.
 - Bareword heads run externals: `git status` works at a statement head.
-  Builtins shadow PATH (`ls` is typed rows — files AND
-  subdirectories: name, kind (`Regular | Directory | Symlink` — a
+  Builtins shadow PATH (`ls` is typed rows, `seq<FileRow>` — files AND
+  subdirectories: name, kind (`FileKind` = `Regular | Directory | Symlink` — a
   fact, not an answer; `where (fun f -> f.kind == Directory)`),
   target (`Some` for a symlink — the one fact no `File.*` query
   answers; `None` otherwise, and the table hides an all-`None`
@@ -1290,7 +1308,7 @@ print x
   (the checker catches future shadowing loudly — expression mode, not
   a silent tool swap). Builtins WITHOUT a
   qualified spelling (`cd`, `pwd`, `print`, `printerr`, `show`,
-  `exit`, `fail`, `not`, `fst`, `snd`, `nats`) are RESERVED
+  `exit`, `fail`, `not`, `fst`, `snd`) are RESERVED
   binder names [D:reserve-builtins] — a binding would shadow them for
   the whole file with no way back, so the checker refuses; bare
   aliases (`max`, `find`, `item`…) stay bindable because the
@@ -1460,7 +1478,7 @@ within tmp d
   (`then` ends the argv only there — quote `"then"` to pass the word;
   the checker demands bool, so a bare streaming chain errors naming
   it). Bind first when the verdict is used twice.
-  Full inspection: `cmd | complete` gives `{ exitCode; stdout;
+  Full inspection: `cmd | complete` gives a `Completed` record, `{ exitCode; stdout;
   stderr }`; a COMPUTED argv splats into the chain —
   `$author(git commit-tree $@argv | complete) |> _.stdout` (literal
   head, splatted argv, sigil env; works with every reifier,
@@ -1654,7 +1672,8 @@ type Bad = C of int
   element (the bundle write — `to yaml stream |> from yaml stream
   T` roundtrips, `to yaml |> from yaml seq<T>` too). `None` fields
   omit; ambiguous strings like `"no"`/`"007"` auto-quote. `Yaml`
-  nodes (`YMap [("k", YStr "v")]`, `YSeq`, `YInt`…) render directly —
+  nodes (`YStr`/`YInt`/`YFloat`/`YBool`/`YNull`/`YSeq`/`YMap`;
+  `YMap [("k", YStr "v")]`) render directly —
   `YMap` keeps YOUR key order; record fields render in DECLARATION
   order [D:record-order] (wire order for an anonymous shape).
   Literal block scalars `|`/`|-` are in the subset (folded `>` and
@@ -1758,8 +1777,15 @@ type Bad = C of int
   [D:help-find] (fzf with a live doc preview at a tty; a substring
   fallback piped/without fzf). `#history [N]` shows history (bare =
   all, `N` = last N) with the file path in its header — the quick way
-  to find where history lives. All REPL
-  scaffolding — see docs/repl.md.
+  to find where history lives. `#quit` (or `^D`) exits. The init
+  file's FIRST line must be `#init`; it holds declarations, imports,
+  `#alias` lines and one `#session { cwd; env; logLevel; echoCap;
+  prompt }` block (`prompt` = a string or a `unit -> string` /
+  `PromptStatus -> string` function from the file). It is STRICT:
+  script rules (no bare `map`), alias targets refuse `|`/`|>`/`&&`/
+  `||`/`;`, `#session` values cannot run commands nor (except
+  `prompt`) name the file's declarations; `weir check init.weir`
+  checks it. All REPL scaffolding — see docs/repl.md.
 
 ```weir
 let sample = ["{\"id\": 1, \"tags\": [\"a\"]}"]
@@ -2527,7 +2553,33 @@ not the teaching.
 - `Color`: `red` `green` `yellow` `blue` `magenta` `cyan` `gray` `bold` `dim` `underline` `sgr` — each `string -> string`, wrapping in a colour/attribute. Context-aware: emits the escape only at a terminal with colour on (no `NO_COLOR`) and returns the plain string when piped, so `print (Color.green x)` colours interactively and stays plain in a pipe. Nest to combine (`Color.bold (Color.red "!")`); `Color.sgr "38;5;208" s` is the raw-code escape hatch for 256-colour/truecolor. `print` keeps colour (SGR) at a tty but still neutralizes every terminal-driving escape a value carries (title, clipboard, cursor, CR) and shows bidi controls as a visible `\uXXXX`.
 - `Term`: `width` — `Term.width () : int`, the terminal columns queried live; falls back to 80 when there is no terminal (piped/redirected), so it never raises. The `tput cols` primitive.
 - `Self`: `prompt`, everywhere — writes its message to stderr and reads one stdin line (raises at end of input); and `args` `entryPath` `pid` `scriptPath` `stdin` (script-only — absent in the REPL, so `#help` does not list it)
-- `Seq`: `append` `average` `choose` `chunkBySize` `collect` `concat` `contains` `countBy` `distinct` `distinctBy` `equal` `except` `exactlyOne` `exists` `find` `fold` `forall` `freeze` `groupBy` `head` `indexed` `isEmpty` `item` `iter` `last` `length` `map` `max` `maxBy` `min` `minBy` `pairwise` `pfirst` `pfirstWith` `pick` `piter` `piterWith` `pmap` `pmapWith` `range` `reduce` `replicate` `rev` `scan` `skip` `skipWhile` `sort` `sortBy` `sortByDescending` `sortDescending` `sum` `take` `takeWhile` `tryExactlyOne` `tryFind` `tryHead` `tryItem` `tryLast` `tryPick` `tryReduce` `where` `windowed` `zip`
+- `Seq`: `append` `average` `choose` `chunkBySize` `collect` `concat` `contains` `countBy` `distinct` `distinctBy` `equal` `except` `exactlyOne` `exists` `find` `fold` `forall` `freeze` `groupBy` `head` `indexed` `initInfinite` `isEmpty` `item` `iter` `last` `length` `map` `max` `maxBy` `min` `minBy` `pairwise` `pfirst` `pfirstWith` `pick` `piter` `piterWith` `pmap` `pmapWith` `range` `reduce` `replicate` `rev` `scan` `skip` `skipWhile` `sort` `sortBy` `sortByDescending` `sortDescending` `sum` `take` `takeWhile` `tryExactlyOne` `tryFind` `tryHead` `tryItem` `tryLast` `tryPick` `tryReduce` `where` `windowed` `zip`
 - `Bytes`: `fromBase64` `fromHex` `hmacSha256` `length` `sha256` `sub` `toBase64` `toHex` `tryFromBase64`
 - `Size`: `average` `bytes` `parse` `sum` `toBytes` `tryParse`
 - `Str`: `contains` `endsWith` `fields` `fromBase64` `isEmpty` `isMatch` `join` `length` `nonEmpty` `padLeft` `padRight` `replace` `replicate` `rmatch` `rmatchAll` `rsplit` `rsplitOnce` `sha256` `split` `splitOnce` `startsWith` `sub` `toBase64` `toInt` `toLower` `toUpper` `toUtf8` `trim` `trimEnd` `trimStart` `tryFromBase64` `tryFromUtf8` `tryIndexOf` `tryRsplitOnce` `trySplitOnce` `tryToInt` `fromUtf8`
+
+Bare builtins and the prelude types (a union lists its cases, the
+constructors; a record its fields), kept honest by a unit test against
+the checker's own environment [D:surface-gate] — same contract as above:
+
+- bare builtins: `cd` `exit` `fail` `fst` `id` `ls` `not` `print` `printerr` `pwd` `show` `snd`
+- type `Auth`: `NoAuth` `Bearer` `Basic`
+- type `Completed`: { `exitCode` `stdout` `stderr` }
+- type `EnvVar`: { `name` `value` }
+- type `FileKind`: `Regular` `Directory` `Symlink`
+- type `FileRow`: { `name` `kind` `target` `bytes` `modified` `hidden` `path` }
+- type `HttpBody`: `NoBody` `Json` `Text` `Stream` `Form`
+- type `HttpMethod`: `Get` `Post` `Put` `Delete` `Patch` `Head` `Options` `Query` `Other`
+- type `HttpRequest`: { `method` `url` `auth` `headers` `secretHeaders` `body` `timeout` `insecure` }
+- type `HttpResponse`: { `status` `headers` `body` }
+- type `HttpServerRequest`: { `method` `path` `query` `headers` `body` }
+- type `HttpServerResponse`: { `status` `headers` `body` }
+- type `Op`: `WriteFile` `DeleteFile` `Copy` `Move` `CopyDir` `MoveDir` `MakeDir` `DeleteDir` `DeleteTree` `HttpSend`
+- type `Option`: `Some` `None`
+- type `Poll`: { `timeout` `interval` }
+- type `PromptStatus`: { `ok` `exit` }
+- type `Result`: `Ok` `Error`
+- type `Retry`: { `attempts` `delay` `timeout` }
+- type `ServerConfig`: { `port` `maxConcurrent` `bodyTimeout` `maxBody` }
+- type `UuidNamespaces`: { `dns` `url` `oid` `x500` }
+- type `Yaml`: `YStr` `YInt` `YFloat` `YBool` `YNull` `YSeq` `YMap`

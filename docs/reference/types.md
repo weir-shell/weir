@@ -104,8 +104,8 @@ bracket must directly follow the name, because `f [0]` is a function
 call. `xs[a..b]` slices, **inclusive and clamped** to the available
 range (an out-of-range or reversed range gives an empty result rather
 than an error), and either end can be left open: `xs[..b]` / `xs[a..]`.
-A bounded slice stops reading a lazy source, so `nats[0..4]`
-terminates. A slice has the type of what you slice: a `seq` gives a
+A bounded slice stops reading a lazy source, so
+`(Seq.initInfinite id)[0..4]` terminates. A slice has the type of what you slice: a `seq` gives a
 `seq`, a `string` a `string` (`"weir"[1..2]` is `"ei"`, counted in
 UTF-16 chars), and `Bytes` gives `Bytes`. `^n` counts from the end
 (`^n` = length − n): `xs[^1]` is the last element, `xs[..^2]` all but

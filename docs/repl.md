@@ -8,7 +8,7 @@ work as you'd expect. `Ctrl+C` abandons the current line; `Ctrl+D` or
 page covers the details.
 
 A line starting with `#` is an instruction to the tooling, not part
-of the language. Directives in files (`#sig`, `#schema`) are read at
+of the language. The file directive (`#sig`) is read at
 check time; session directives (`#help`, `#quit`) run immediately.
 The [reference table](reference/lexical.md#directives) lists where
 each directive is used.
