@@ -72,7 +72,10 @@ again, including external commands. `Seq.freeze` computes the values
 once and keeps them, and is the usual fix. The checker warns when a
 binding backed by a command is iterated in a second place without
 being frozen (`possible re-enumeration`; this is only a warning, and
-`weir check` still exits 0). Capturing a command gives a
+`weir check` still exits 0) — including indirectly: two calls of a
+function that reads it, a read inside a `for` body or a `Seq.map`
+lambda, or two uses of a lazy binding derived from it (`let ys = xs |>
+Seq.where …`). Capturing a command gives a
 `seq<string>`, one element per line.
 
 A `let` bound to a command, a pipeline of commands, `ls` or

@@ -1786,6 +1786,44 @@ let boundaryTests =
                   "declare [<Elem \"PropertyGroup\">] seq<XOne>"
                   "a record field names the [<Elem>] the seq needs"
           }
+          test "from xml: a text field over mixed content refuses, naming the element and field [D:from-xml-mixed]" {
+              let env2 =
+                  env
+                  |> declare "type XOne = { AssemblyName: string }"
+                  |> declare "type XOpt = { AssemblyName: Option<string> }"
+                  |> declare "type XMany = { [<Elem \"AssemblyName\">] names: seq<string> }"
+
+              let read ty (doc: string) =
+                  match Weir.Parser.parseStmt $"src |> from xml {ty}" with
+                  | Ok(SExpr e) ->
+                      match Weir.Check.typecheck env2 e with
+                      | Ok te -> fun () -> Weir.Eval.eval (Map.add "src" (VSeq [ VStr doc ]) valueEnv) te
+                      | Error terr -> failtest (formatError terr)
+                  | other -> failtest $"unexpected: {other}"
+
+              let refuse ty doc =
+                  (Expect.throwsC (fun () -> read ty doc () |> ignore) id).Message
+
+              let mixed = "<P><AssemblyName>a<b/>c</AssemblyName></P>"
+
+              Expect.stringContains
+                  (refuse "XOne" mixed)
+                  "element <AssemblyName> for field 'AssemblyName' holds a child element <b>"
+                  "never the concatenated 'ac'"
+
+              Expect.stringContains (refuse "XOpt" mixed) "holds a child element <b>" "Option<string> too"
+
+              Expect.stringContains
+                  (refuse "XMany" "<P><AssemblyName>x</AssemblyName><AssemblyName>a<b/></AssemblyName></P>")
+                  "for field 'names[1]'"
+                  "a seq<string> element names its index"
+
+              // text-only content still reads: entities and CDATA are text
+              Expect.equal
+                  (read "XOne" "<P><AssemblyName>a&amp;<![CDATA[<b/>]]></AssemblyName></P>" ())
+                  (VRecord("XOne", [ "AssemblyName", VStr "a&<b/>" ]))
+                  "CDATA is text, not an element"
+          }
           test "from xml: check-time laws — text-only leaves, [<Attr>]/[<Elem>] fit, no wrap, read-only [D:from-xml]" {
               Expect.stringContains (checkErr "src |> from xml XInt").Message "XML values are text" "numbers must be declared string"
 
@@ -10149,7 +10187,21 @@ let schemaHoverTests =
 
     testList
         "schema= hover: the vendored file's facts [D:schema-hover]"
-        [ test "a vendored strict schema hovers path + provenance + strictness + title, VALUE-pinned" {
+        [ test "one analysis per text: a repeat request reuses it, a change or a document event re-analyzes [D:lsp-analysis-cache]" {
+              let path = "lsp-cache-probe.weir"
+              let lines = [ "let probe = 1"; "print (show probe)" ]
+              let a = Weir.Lsp.analyzeCached path lines
+              let b = Weir.Lsp.analyzeCached path lines
+              Expect.isTrue (obj.ReferenceEquals(a, b)) "the same text reuses the analysis"
+              let c = Weir.Lsp.analyzeCached path (lines @ [ "print \"x\"" ])
+              Expect.isFalse (obj.ReferenceEquals(a, c)) "changed text re-analyzes"
+              let d = Weir.Lsp.analyzeCached path (lines @ [ "print \"x\"" ])
+              Expect.isTrue (obj.ReferenceEquals(c, d)) "and is cached in turn"
+              Weir.Lsp.dropAnalyses ()
+              let e = Weir.Lsp.analyzeCached path (lines @ [ "print \"x\"" ])
+              Expect.isFalse (obj.ReferenceEquals(d, e)) "a document event drops it"
+          }
+          test "a vendored strict schema hovers path + provenance + strictness + title, VALUE-pinned" {
               withSchemas (fun entry lines td ->
                   let file = System.IO.Path.Combine(td, ".weir", "schemas", "six.json")
 
@@ -16771,6 +16823,20 @@ let secretTests =
               Expect.equal (run "show (Secret.of \"x\")") (VStr "***") "bare"
               Expect.equal (run "show [Secret.of \"a\"; Secret.of \"b\"]") (VStr "[***; ***]") "seq"
               Expect.equal (run "show (Secret.of \"a\", \"pub\")") (VStr "(***, \"pub\")") "tuple"
+          }
+          test "a Secret spliced into argv is clear for the child, *** in a rendered command line [D:secret-argv-mask]" {
+              let word = Weir.Eval.scalarString "command argument" (VSecret "unit-argv-tok")
+              Expect.equal word "unit-argv-tok" "the child receives the value"
+
+              Expect.equal
+                  (Weir.Proc.showArgv [ "curl"; "-H"; "unit-argv-tok"; "https://x" ])
+                  "curl -H *** https://x"
+                  "the message masks the spliced word, nothing else"
+
+              Expect.equal
+                  (Weir.Proc.showArgv [ "echo"; "unit-argv-tok-longer" ])
+                  "echo unit-argv-tok-longer"
+                  "a word is masked only when it IS the secret's text"
           }
           test "reveal is the one exit; map keeps the derived value secret" {
               Expect.equal (run "Secret.reveal (Secret.of \"hunter\")") (VStr "hunter") "reveal returns the plain value"
@@ -23968,15 +24034,95 @@ let reenumWarningTests =
                   Expect.stringContains d.Message "re-runs 'git ls-files'" "the command named"
               | other -> failtest $"expected one warning, got {other |> List.map (fun d -> d.Message)}"
           }
-          test "the alias rule, classified: a whole-RHS bare name neither pulls nor carries tracking" {
-              // pods pulls once, the alias binds without pulling, and the
-              // alias's own single pull is not tracked — the stated gap
+          test "an alias carries the pulls: a split use across it warns [D:reenum-indirect]" {
+              match
+                  diagsOf
+                      [ "let pods = git ls-files"
+                        "let extra = pods"
+                        "pods |> Seq.iter print"
+                        "extra |> Seq.iter print" ]
+              with
+              | [ d ] ->
+                  Expect.equal d.Line 4 "the alias's use is the second pull"
+                  Expect.stringContains d.Message "'pods' (through 'extra')" "the indirection named"
+              | other -> failtest $"expected one warning, got {other |> List.map (fun d -> d.Message)}"
+
+              silent [ "let pods = git ls-files"; "let extra = pods"; "extra |> Seq.iter print" ] "one pull through the alias"
+          }
+          test "through a function: each call replays the body's pulls [D:reenum-indirect]" {
+              match
+                  diagsOf
+                      [ "let pods = git ls-files"
+                        "let count () = pods |> Seq.length"
+                        "print $\"{count ()}\""
+                        "print $\"{count ()}\"" ]
+              with
+              | [ d ] ->
+                  Expect.equal (d.Line, d.Col) (4, 10) "the second call"
+
+                  Expect.equal
+                      d.Message
+                      ("possible re-enumeration: 'pods' (through 'count') is command-backed and unforced — "
+                       + "each pull re-runs 'git ls-files'; snapshot one run: let pods = git ls-files |> Seq.freeze")
+                      "the exact sentence"
+              | other -> failtest $"expected one warning, got {other |> List.map (fun d -> d.Message)}"
+
+              // defining the function pulls nothing; one call is one pull
               silent
                   [ "let pods = git ls-files"
-                    "let extra = pods"
-                    "pods |> Seq.iter print"
-                    "extra |> Seq.iter print" ]
-                  "alias"
+                    "let count () = pods |> Seq.length"
+                    "print $\"{count ()}\"" ]
+                  "a single call"
+          }
+          test "in a loop: a read inside a for body or a Seq function's lambda repeats [D:reenum-indirect]" {
+              match diagsOf [ "let pods = git ls-files"; "for i in [1; 2] do"; "    print $\"{pods |> Seq.length}\"" ] with
+              | [ d ] ->
+                  Expect.equal d.Line 3 "the read in the body"
+                  Expect.stringContains d.Message "'pods' (read in a loop)" "the loop named"
+              | other -> failtest $"expected one warning, got {other |> List.map (fun d -> d.Message)}"
+
+              match
+                  diagsOf
+                      [ "let pods = git ls-files"
+                        "[1; 2] |> Seq.map (fun i -> pods |> Seq.length) |> Seq.iter (fun n -> print (show n))" ]
+              with
+              | [ _ ] -> ()
+              | other -> failtest $"expected one warning, got {other |> List.map (fun d -> d.Message)}"
+
+              // the loop's own source is one pull; a binding made inside
+              // the body is fresh per iteration
+              silent [ "let pods = git ls-files"; "for p in pods do"; "    print p" ] "the loop source"
+
+              silent
+                  [ "for i in [1; 2] do"; "    let out = git ls-files"; "    out |> Seq.iter print" ]
+                  "a per-iteration binding"
+          }
+          test "a derived lazy binding carries the pulls; deriving alone pulls nothing [D:reenum-indirect]" {
+              match
+                  diagsOf
+                      [ "let pods = git ls-files"
+                        "let named = pods |> Seq.where (Str.contains \"a\")"
+                        "print $\"{named |> Seq.length}\""
+                        "named |> Seq.iter print" ]
+              with
+              | [ d ] ->
+                  Expect.equal d.Line 4 "the derived binding's second use"
+                  Expect.stringContains d.Message "'pods' (through 'named')" "the source named"
+              | other -> failtest $"expected one warning, got {other |> List.map (fun d -> d.Message)}"
+
+              silent
+                  [ "let pods = git ls-files"
+                    "let named = pods |> Seq.where (Str.contains \"a\")"
+                    "named |> Seq.iter print" ]
+                  "derive then read once"
+
+              // a forced derivation is a snapshot: one pull, then data
+              silent
+                  [ "let pods = git ls-files"
+                    "let named = pods |> Seq.where (Str.contains \"a\") |> Seq.freeze"
+                    "print $\"{named |> Seq.length}\""
+                    "named |> Seq.iter print" ]
+                  "a forced derivation"
           }
           test "a block-local binding warns inside its own body, generic repair" {
               match

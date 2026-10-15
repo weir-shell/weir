@@ -4243,8 +4243,9 @@ type ReenumFinding =
       RMessage: string }
 
 type ReenumTracker() =
-    // top-level tracked binders: name -> id; id -> (command, repair)
-    let tracked = System.Collections.Generic.Dictionary<string, int>()
+    // top-level tracked names -> their pulls [D:reenum-indirect];
+    // id -> (command, repair)
+    let tracked = System.Collections.Generic.Dictionary<string, (int * string) list>()
     let info = System.Collections.Generic.Dictionary<int, string * string>()
     let counts = System.Collections.Generic.Dictionary<int, int>()
     let found = ResizeArray<ReenumFinding>()
@@ -4256,22 +4257,24 @@ type ReenumTracker() =
         nextId <- nextId + 1
         id
 
-    /// walk one statement tree: count enumerating uses of the tracked
-    /// set (top-level and any qualifying block-locals), a warning at
-    /// the second and later sites — the first pull is the binding's
-    /// point, the second is where the command silently runs again
-    let consume (ll: LogicalLine) (te: Check.TypedExpr) =
-        let tracked0 =
-            tracked |> Seq.map (fun kv -> kv.Key, kv.Value) |> Map.ofSeq
+    let tracked0 () =
+        tracked |> Seq.map (fun kv -> kv.Key, kv.Value) |> Map.ofSeq
 
-        for ev in Check.reenumEvents fresh tracked0 te do
+    /// count one statement's events: enumerating uses of the tracked set
+    /// (top-level and any qualifying block-locals), a warning at the
+    /// second and later sites — the first pull is the binding's point,
+    /// the second is where the command silently runs again
+    let consume (ll: LogicalLine) (events: Check.ReenumEvent list) =
+        for ev in events do
             match ev with
             | Check.ReenumBind(id, _, cmd) ->
                 // a block-local binder has no clean one-line source to
                 // ride the repair — the generic spelling instead
-                info[id] <- (cmd, "add '|> Seq.freeze' at the binding")
+                if not (info.ContainsKey id) then
+                    info[id] <- (cmd, "add '|> Seq.freeze' at the binding")
+
                 counts[id] <- 0
-            | Check.ReenumUse(id, name, span) ->
+            | Check.ReenumUse(id, name, note, span) ->
                 let n =
                     (match counts.TryGetValue id with
                      | true, c -> c
@@ -4290,7 +4293,7 @@ type ReenumTracker() =
                           RCol = c
                           REndCol = max (c + 1) ec
                           RMessage =
-                            $"possible re-enumeration: '{name}' is command-backed and unforced — each pull re-runs '{cmd}'; snapshot one run: {repair}" }
+                            $"possible re-enumeration: '{name}'{note} is command-backed and unforced — each pull re-runs '{cmd}'; snapshot one run: {repair}" }
 
     member _.Poison() = poisoned <- true
 
@@ -4301,43 +4304,38 @@ type ReenumTracker() =
         | KModule _
         | KImport _ -> ()
         | KLet(name, _, te) ->
-            // RHS uses first (a same-name rebind reads the outer binding
-            // — no `let rec` exists); the alias rule, classified: a
-            // whole-RHS bare name neither pulls nor carries the
-            // tracking onto the alias
-            (match te.Kind with
-             | Check.TEVar _ -> ()
-             | _ -> consume ll te)
+            // RHS first (a same-name rebind reads the outer binding — no
+            // `let rec` exists)
+            let pulls, events = Check.reenumLet fresh (tracked0 ()) name te
 
+            // the binding's own command: the repair rides its source when
+            // it is one clean line (as streamed-it does); assembled
+            // (sentinel-joined) text falls back to the generic spelling
+            (match Check.commandBackedUnforced te, pulls with
+             | Some cmd, (id, n) :: _ when n = name ->
+                 let src = ll.Text.Trim()
+
+                 let repair =
+                     if src.StartsWith "let " && not (src |> Seq.exists System.Char.IsControl) then
+                         $"{src} |> Seq.freeze"
+                     else
+                         "add '|> Seq.freeze' at the binding"
+
+                 info[id] <- (cmd, repair)
+             | _ -> ())
+
+            consume ll events
             tracked.Remove name |> ignore
 
-            match Check.commandBackedUnforced te with
-            | Some cmd ->
-                let id = fresh ()
-
-                // the repair rides the binding's own source when it is
-                // one clean line (as streamed-it does); assembled
-                // (sentinel-joined) text falls back to the generic
-                // spelling
-                let repair =
-                    let src = ll.Text.Trim()
-
-                    if src.StartsWith "let " && not (src |> Seq.exists System.Char.IsControl) then
-                        $"{src} |> Seq.freeze"
-                    else
-                        "add '|> Seq.freeze' at the binding"
-
-                info[id] <- (cmd, repair)
-                counts[id] <- 0
-                tracked[name] <- id
-            | None -> ()
+            if not pulls.IsEmpty then
+                tracked[name] <- pulls
         | KLetPat(pat, _, te) ->
-            consume ll te
+            consume ll (Check.reenumEvents fresh (tracked0 ()) te)
 
             for n, _ in Check.patNameSpans pat do
                 tracked.Remove n |> ignore
         | KCmd te
-        | KExpr te -> consume ll te
+        | KExpr te -> consume ll (Check.reenumEvents fresh (tracked0 ()) te)
 
     member _.Flush() : ReenumFinding list =
         if poisoned then [] else List.ofSeq found
@@ -7284,6 +7282,13 @@ let analyzeLinesAs
 
             match checkStatement true sigState assumeResolver analyzeImport tenv ll with
             | Ok chk ->
+                // the statement's own minted anonymous shapes join its env
+                // now, not at the next statement's drain [D:anon-literals]:
+                // the editor reads a statement's env (completion after the
+                // last good line), and the pending table is per-thread
+                // state that would otherwise leak into the next analysis
+                // [D:lsp-analysis-cache]
+                let chk = { chk with Env = Check.withPendingAnonDefs chk.Env }
                 chk.Warnings |> List.iter warn
 
                 // a duplicate type declaration is an error, not a silent
@@ -8123,7 +8128,7 @@ let run (path: string) (scriptArgs: string list) : int =
                         let origin, frames =
                             match Eval.blameOf ex with
                             | Some b -> posOf b.Exact b.Node, b.Frames |> Seq.choose (posOf false) |> List.ofSeq
-                            | None -> posOf false Eval.RunPos.Current, []
+                            | None -> posOf Eval.RunPos.Exact Eval.RunPos.Current, []
 
                         // an unmapped origin falls back to the innermost frame
                         let origin, frames =
@@ -8176,6 +8181,8 @@ let run (path: string) (scriptArgs: string list) : int =
                         // an import's module code has no positions here:
                         // the statement's own line, never a stale node
                         | _ -> Eval.RunPos.Current <- null
+
+                        Eval.RunPos.Exact <- false
 
                         match stmt with
                         | CNoop -> Ok venv

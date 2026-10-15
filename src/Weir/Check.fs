@@ -7490,74 +7490,172 @@ let commandBackedUnforced (te: TypedExpr) : string option =
 type ReenumEvent =
     // a block-local binder qualified — joins the tracked set for its body
     | ReenumBind of id: int * name: string * cmd: string
-    // an enumerating use of a tracked binding, at its site
-    | ReenumUse of id: int * name: string * span: Span
+    // an enumerating use of a tracked binding, at its site; `note` names
+    // the indirection ("" for a direct read)
+    | ReenumUse of id: int * name: string * note: string * span: Span
+
+/// what reading a name pulls [D:reenum-indirect]: (binding id, binding
+/// name) per pull — a command-backed binding pulls itself once; a carrier
+/// (a function, or a lazy seq derived from tracked bindings) pulls what
+/// its body/RHS reads, each time it is used
+type ReenumTracked = Map<string, (int * string) list>
+
+// a function handed to a `Seq.*` function runs per element — a `for` body
+// is one (`xs |> Seq.iter (fun x -> …)`): a pull there repeats
+let rec private seqHof (f: TypedExpr) =
+    match f.Kind with
+    | TEVar v -> v.StartsWith "Seq." || v.StartsWith "|seq"
+    | TEApp(g, _) -> seqHof g
+    | _ -> false
+
+let private isFunctionValue (te: TypedExpr) =
+    match te.Kind, te.Ty with
+    | (TELambda _ | TELambdaPat _), _ -> true
+    | _, TFun _ -> true
+    | _ -> false
+
+// a binding that defers its reads: a function, or a lazy unforced seq
+let private carries (v: TypedExpr) =
+    isFunctionValue v
+    || (match v.Ty with
+        | TSeq _ -> not (forcedTail v)
+        | _ -> false)
 
 /// enumerating uses of tracked (command-backed, unforced) bindings in
 /// one statement tree, source order, shadow-aware. Conservative and
 /// stated: every read of the name counts as a possible pull — piped,
 /// an adapter/for source, an argv splice, printed/echoed, or passed as
-/// an argument (a callee may pull) — except a plain alias (`let y = x`,
-/// the whole RHS): binding alone does not enumerate, and the alias name
-/// is not tracked onward. Block-local lets that qualify join the
-/// tracked set for their own body (fresh ids from the caller's well).
-let reenumEvents (nextId: unit -> int) (tracked0: Map<string, int>) (root: TypedExpr) : ReenumEvent list =
-    let acc = ResizeArray<ReenumEvent>()
+/// an argument (a callee may pull). Indirect pulls [D:reenum-indirect]:
+/// a carrier binding's RHS does not pull when bound — each use of the
+/// carrier replays what it reads, noted "through 'f'"; a read inside a
+/// function handed to a `Seq.*` function (a `for` body) counts twice.
+/// Block-local lets that qualify join the tracked set for their own
+/// body (fresh ids from the caller's well).
+let rec private reenumWalk
+    (nextId: unit -> int)
+    (emit: ReenumEvent -> unit)
+    (sink: int -> string -> string -> Span -> unit)
+    (tracked: ReenumTracked)
+    (te: TypedExpr)
+    : unit =
+    let walk = reenumWalk nextId emit sink
 
-    let removeAll (names: string list) (m: Map<string, int>) =
+    let removeAll (names: string list) (m: ReenumTracked) =
         names |> List.fold (fun m n -> Map.remove n m) m
 
-    let rec walk (tracked: Map<string, int>) (te: TypedExpr) : unit =
-        match te.Kind with
-        | TEVar n ->
-            match Map.tryFind n tracked with
-            | Some id -> acc.Add(ReenumUse(id, n, te.Span))
-            | None -> ()
-        | TELet(n, _, v, b) ->
-            // the alias rule: a whole-RHS bare name does not pull
-            (match v.Kind with
-             | TEVar _ -> ()
-             | _ -> walk tracked v)
+    let outerIds (m: ReenumTracked) =
+        m |> Seq.collect (fun kv -> kv.Value |> List.map fst) |> Set.ofSeq
 
-            let trackedB =
-                match commandBackedUnforced v with
-                | Some cmd ->
-                    let id = nextId ()
-                    acc.Add(ReenumBind(id, n, cmd))
-                    Map.add n id tracked
-                | None -> Map.remove n tracked
+    match te.Kind with
+    | TEVar n ->
+        match Map.tryFind n tracked with
+        | Some pulls ->
+            for id, name in pulls do
+                sink id name (if name = n then "" else $" (through '{n}')") te.Span
+        | None -> ()
+    | TELet(n, _, v, b) ->
+        let pulls = reenumBind nextId emit sink tracked n v
 
-            walk trackedB b
-        | TELetPat(pat, v, b) ->
-            walk tracked v
-            walk (removeAll (patNameSpans pat |> List.map fst) tracked) b
-        | TELambda(p, _, b) -> walk (Map.remove p tracked) b
-        | TELambdaPat(pat, b) -> walk (removeAll (patNameSpans pat |> List.map fst) tracked) b
-        | TEMatch(s, arms) ->
-            walk tracked s
+        walk
+            (match pulls with
+             | [] -> Map.remove n tracked
+             | ps -> Map.add n ps tracked)
+            b
+    | TELetPat(pat, v, b) ->
+        walk tracked v
+        walk (removeAll (patNameSpans pat |> List.map fst) tracked) b
+    | TELambda(p, _, b) -> walk (Map.remove p tracked) b
+    | TELambdaPat(pat, b) -> walk (removeAll (patNameSpans pat |> List.map fst) tracked) b
+    | TEApp(f, a) when seqHof f && isFunctionValue a ->
+        walk tracked f
+        // a pull of a binding from outside the per-element function repeats
+        let outer = outerIds tracked
 
-            for pat, g, b in arms do
-                let t' = removeAll (patNameSpans pat |> List.map fst) tracked
-                g |> Option.iter (walk t')
-                walk t' b
-        | TERetry(_, o, w, b, u) ->
-            walk tracked o
-            w |> Option.iter (walk tracked)
-            walk tracked b
-            u |> Option.iter (fun (n, pred) -> walk (Map.remove n tracked) pred)
-        | TEWithin(_, binder, a, o, b) ->
-            a |> Option.iter (walk tracked)
-            o |> Option.iter (walk tracked)
+        let loopSink id name note span =
+            sink id name note span
 
-            walk
-                (match binder with
-                 | Some n -> Map.remove n tracked
-                 | None -> tracked)
-                b
-        | _ -> childExprs te |> List.iter (walk tracked)
+            if outer.Contains id then
+                sink id name " (read in a loop)" span
 
-    walk tracked0 root
-    List.ofSeq acc
+        reenumWalk nextId emit loopSink tracked a
+    | TEMatch(s, arms) ->
+        walk tracked s
+
+        for pat, g, b in arms do
+            let t' = removeAll (patNameSpans pat |> List.map fst) tracked
+            g |> Option.iter (walk t')
+            walk t' b
+    | TERetry(_, o, w, b, u) ->
+        walk tracked o
+        w |> Option.iter (walk tracked)
+        walk tracked b
+        u |> Option.iter (fun (n, pred) -> walk (Map.remove n tracked) pred)
+    | TEWithin(_, binder, a, o, b) ->
+        a |> Option.iter (walk tracked)
+        o |> Option.iter (walk tracked)
+
+        walk
+            (match binder with
+             | Some n -> Map.remove n tracked
+             | None -> tracked)
+            b
+    | _ -> childExprs te |> List.iter (walk tracked)
+
+/// bind `n = v` [D:reenum-indirect]: a carrier's RHS reads of outer
+/// tracked bindings are collected as its pulls, not counted now; any
+/// other RHS is walked as uses. A command-backed unforced RHS also pulls
+/// itself (a fresh id, announced with ReenumBind). Returns n's pulls
+/// ([] = untracked).
+and private reenumBind
+    (nextId: unit -> int)
+    (emit: ReenumEvent -> unit)
+    (sink: int -> string -> string -> Span -> unit)
+    (tracked: ReenumTracked)
+    (n: string)
+    (v: TypedExpr)
+    : (int * string) list =
+    if carries v then
+        let outer =
+            tracked |> Seq.collect (fun kv -> kv.Value |> List.map fst) |> Set.ofSeq
+
+        let pulls = ResizeArray<int * string>()
+
+        let collect id name note span =
+            if outer.Contains id then pulls.Add(id, name) else sink id name note span
+
+        reenumWalk nextId emit collect tracked v
+
+        let own =
+            match commandBackedUnforced v with
+            | Some cmd ->
+                let id = nextId ()
+                emit (ReenumBind(id, n, cmd))
+                [ id, n ]
+            | None -> []
+
+        own @ List.ofSeq pulls
+    else
+        reenumWalk nextId emit sink tracked v
+        []
+
+let private reenumCollect (run: (ReenumEvent -> unit) -> (int -> string -> string -> Span -> unit) -> 'r) =
+    let acc = ResizeArray<ReenumEvent>()
+    let r = run acc.Add (fun id name note span -> acc.Add(ReenumUse(id, name, note, span)))
+    r, List.ofSeq acc
+
+/// the events of one statement tree
+let reenumEvents (nextId: unit -> int) (tracked0: ReenumTracked) (root: TypedExpr) : ReenumEvent list =
+    reenumCollect (fun emit sink -> reenumWalk nextId emit sink tracked0 root) |> snd
+
+/// a top-level `let n = v`: the RHS's events and n's pulls ([] =
+/// untracked) [D:reenum-indirect]
+let reenumLet
+    (nextId: unit -> int)
+    (tracked0: ReenumTracked)
+    (n: string)
+    (v: TypedExpr)
+    : (int * string) list * ReenumEvent list =
+    reenumCollect (fun emit sink -> reenumBind nextId emit sink tracked0 n v)
 
 // ---- the newTempDir footgun [D:newtempdir-lint] --------------------------
 // `Path.newTempDir` bound then `Dir.delete`/`Dir.deleteAll`'d in the same

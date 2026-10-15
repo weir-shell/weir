@@ -258,6 +258,38 @@ out=$($BIN check "$pw3/sd.weir" 2>&1) && fail "a defaulted Secret must refuse" |
 echo "$out" | grep -qF "a Secret takes no [<Default>]" || fail "the Secret Default teaching: $out"
 rm -rf "$pw3"
 echo "e2e ok: walk cohort (defaulted-Secret teaching)"
+
+# a Secret spliced into argv reaches the child in the clear, and every
+# error that renders the command line shows it as *** [D:secret-argv-mask]
+smdir=$(mkweirtmp)
+sm_case() { # name, script body; expects a failure naming *** and never the value
+    printf '%s' "$2" > "$smdir/$1.weir"
+    local out rc=0
+    out=$(cd "$smdir" && $BIN "$1.weir" 2>&1) || rc=$?
+    [ $rc -ne 0 ] || fail "secret argv $1: expected a failure: $out"
+    echo "$out" | grep -qF "tok-e2e-123" && fail "secret argv $1: the value leaked: $out"
+    echo "$out" | grep -qF '***' || fail "secret argv $1: expected *** in: $out"
+    echo "e2e ok: secret argv masked — $1"
+}
+sm_case statement 'let s = Secret.of "tok-e2e-123"
+sh -c "test \"$0\" = tok-e2e-123" $s
+sh -c "exit 3" $s
+'
+sm_case reified 'let s = Secret.of "tok-e2e-123"
+let t = sh -c "exit 3" $s | text
+print t
+'
+sm_case chain 'let s = Secret.of "tok-e2e-123"
+let t = echo a | sh -c "exit 4" $s | line
+print t
+'
+sm_case lazy 'let s = Secret.of "tok-e2e-123"
+let xs = sh -c "echo a; exit 5" $s
+xs |> Seq.iter print
+'
+out=$(cd "$smdir" && $BIN statement.weir 2>&1) || true
+echo "$out" | grep -qF "exit code 3: sh -c exit 3 ***" || fail "secret argv: the clear splice ran, the failing one masked: $out"
+rm -rf "$smdir"
 chmod 700 "$pwdir/locked.txt" 2>/dev/null; rm -rf "$pwdir"
 
 # BSD date has no %N — millisecond clock via python3 there (python3 is
@@ -3718,7 +3750,7 @@ rm -rf "$ckdir"
 # --- runtime errors name the failing line [D:runtime-position]: a raise
 # inside any block form reports the failing statement's file:line:col, not
 # the enclosing top-level statement's line. A command reports its own
-# column; other raises report the start of the failing line. A lazily read
+# column, a raising call its callee's; other raises the start of the failing line. A lazily read
 # command's failure blames the command, wherever it is read.
 rpdir=$(mkweirtmp)
 rp_case() { # name, expected "file:line:col: error", script body
@@ -3780,13 +3812,13 @@ rp_case lambda "lambda.weir:2:5: error: command failed with exit code 6" '[1] |>
 '
 # a parallel arm's raise is blamed where the arm raised, not on the
 # thread that rethrows it
-rp_case pmap "pmap.weir:4:9: error: arm 2" 'let ys =
+rp_case pmap "pmap.weir:4:24: error: arm 2" 'let ys =
     [1; 2; 3]
     |> Seq.pmap (fun i ->
         if i == 2 then fail $"arm {i}" else i)
 print $"{Seq.length ys}"
 '
-rp_case piter "piter.weir:3:9: error: arm 2" 'print "start"
+rp_case piter "piter.weir:3:24: error: arm 2" 'print "start"
 [1; 2; 3] |> Seq.piter (fun i ->
         if i == 2 then fail $"arm {i}")
 '
@@ -3867,10 +3899,19 @@ out=$(cd "$rpdir" && $BIN check --can can.weir 2>&1)
 echo "$out" | grep -qE 'git +can\.weir:1:9' || fail "--can: git at its own column: $out"
 echo "$out" | grep -qE 'head +can\.weir:1:19' || fail "--can: the head stage at its own column: $out"
 echo "e2e ok: unknown head names a missing program; --can columns per command"
-rp_case item "item.weir:3:5: error:" 'if true then
+rp_case item "item.weir:3:20: error:" 'if true then
     print "s"
     let x = [1] |> Seq.item 5
     print $"{x}"
+'
+# a call that raises inside a one-line form is reported at the callee's
+# column; a reifier's failure at its command [D:runtime-position-call]
+rp_case oneline "oneline.weir:2:23: error: boom" 'let x = 3
+let y = if x > 2 then fail "boom" else 1
+print $"{y}"
+'
+rp_case reified "reified.weir:1:9: error: command failed with exit code 2" 'let t = sh -c "exit 2" | text
+print t
 '
 rm -rf "$rpdir"
 
@@ -6484,7 +6525,7 @@ for shape in 'let _r = [1..10] |> Seq.map gen | HASHTOOL | line' \
     { cat "$fddir/gen.weir"; printf '%s\nprint "unreached"\n' "$shape"; } | sed "s|HASHTOOL|$HASHTOOL|" > "$fddir/prodfail.weir"
     rc=0; out=$(cd "$fddir" && timeout 10 $BIN prodfail.weir 2>&1) || rc=$?
     [ $rc -eq 1 ] || fail "producer raise into a command must fail ($shape) rc=$rc: $out"
-    echo "$out" | grep -qF "prodfail.weir:2:5: error: boom" || fail "producer raise at the producer's line ($shape): $out"
+    echo "$out" | grep -qF "prodfail.weir:2:20: error: boom" || fail "producer raise at the producer's line ($shape): $out"
     case "$out" in *unreached*) fail "no statement runs after the producer's raise ($shape): $out" ;; esac
 done
 printf 'let _r = [1..10] |> Seq.map (fun i -> if i == 3 then exit 5 else $"{i}") | cat |> Seq.length\nprint "unreached"\n' > "$fddir/prodexit.weir"

@@ -117,6 +117,24 @@
   non-ASCII byte) was dropped from a 200; the client now gets a 500 and
   `Server.streamErrors` names the header. A control byte in a request
   header value (e.g. BEL), sent before, is refused too.
+- **A `Secret` in a failed command's error shows as `***`.** `curl -H
+  $auth …` exiting nonzero printed the token in "command failed … :
+  curl -H <token>" — in CI logs too. Every error that shows a command
+  line (statements, `| text`/`| line`/…, pipelines, output read later)
+  now masks it; the command still receives the real value.
+- **The re-enumeration warning sees indirect reads**: two calls of a
+  function that reads a command-backed binding, a read inside a `for`
+  body or a `Seq.map` lambda, and two uses of a lazy binding derived
+  from it (`let ys = xs |> Seq.where …`, or `let ys = xs`) each run the
+  command again, and now warn.
+- **A runtime error in a one-line form points at the failing call.**
+  `let y = if x > 2 then fail "boom" else 1` reported column 1; it now
+  points at `fail` (and `xs |> Seq.item 5` at `Seq.item`).
+- **The LSP no longer re-analyzes the file on every request.** Hover
+  and completion in a 20k-line file took seconds each; the analysis is
+  now reused until the next edit.
+- **`from xml` refuses mixed content in a text field.** `<n>a<b/>c</n>`
+  read as `"ac"`; it is now an error naming `<n>`, `<b>` and the field.
 
 ## v0.0.74
 

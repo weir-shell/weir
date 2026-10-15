@@ -583,7 +583,9 @@ print $"{key} -> {value}"
   naming `Secret.reveal`, the one exit. It DOES splice into argv in the
   clear (`curl -H $auth`, reified too: `… | complete`/`line`/`$e(…)`;
   and as an env value: `TOKEN=$s cmd`, `within env TOKEN=$s` —
-  `ps`-visible, a stated non-claim). `Eq`
+  `ps`-visible, a stated non-claim) — while weir's own messages that
+  show the command line ("command failed …: curl -H ***") mask the
+  spliced word [D:secret-argv-mask]. `Eq`
   compares (`s1 == s2`), `Ord` refuses. Produced by `Env.load`/`Args.load`
   `Secret` fields (env is the CI secret channel), `File.readSecret p`
   (a mounted secret file), a `Secret` field READ by `from json`/`from
@@ -1043,7 +1045,10 @@ print (Option.flatten (Some None) |> Option.defaultValue 0)
   STRICT — not for infinite seqs). When to force, three customers:
   REUSE (a command-backed seq re-runs its process per enumeration —
   force once, consume twice; `weir check` WARNS on the second pull of
-  an unforced command-backed binding — advisory, exit stays 0; the
+  an unforced command-backed binding, indirect pulls included — two
+  calls of a function reading it, a read in a `for`/`Seq.*` lambda,
+  a lazy binding derived from it [D:reenum-indirect] — advisory, exit
+  stays 0; the
   REPL echo of such a `let` shows `name : type (command-backed — runs
   on each use; type name to run it)` and NEVER runs it
   [D:repl-let-echo-lazy]); TIMING (a lazy `ls`/`Path.glob`/command
@@ -1874,7 +1879,10 @@ doc |> Yaml.merge p |> to yaml |> Seq.iter print
   and there is NO `to xml`. A DTD (`<!DOCTYPE …>`) refuses
   [D:xml-no-dtd] — no declared entity expands or resolves.
   An element that repeats under a `string`/`Option<string>`/record
-  field refuses (never silently the first) — declare a `seq< >`.
+  field refuses (never silently the first) — declare a `seq< >`. A
+  text field over MIXED content (`<n>a<b/>c</n>`) refuses too, naming
+  the element and field — never the concatenated text
+  [D:from-xml-mixed].
 
 ```weir
 type Ref  = { [<Attr>] Include: string }

@@ -32,8 +32,11 @@ An error while the script runs is reported as `file:line:col` too, at
 the statement that failed — inside an `if`, `match`, `for`, `within`
 or `retry` body, a pipeline, or a lambda, not at the block's first
 line. A failed command points at the command itself, even when its
-output is only read a few lines later. Other errors (`fail`, a builtin)
-point at the start of the failing line. A failure inside a function
+output is only read a few lines later; a reifier's failure (`| text`,
+`| line`, …) points at its command. A failing call (`fail`, a builtin
+such as `Seq.item`) points at the function called, so `if bad then
+fail "x" else …` on one line points at `fail`. Other errors point at
+the start of the failing line. A failure inside a function
 reports the line in the function, then where it was called from, one
 line per call, innermost first:
 

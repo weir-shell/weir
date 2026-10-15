@@ -44,6 +44,15 @@ type RunPos() =
         with get () = RunPos.current
         and set (v: obj) = RunPos.current <- v
 
+    [<System.ThreadStatic; DefaultValue>]
+    static val mutable private exact: bool
+
+    /// Current is an application's callee while the call runs: a raise
+    /// there is reported at its own column [D:runtime-position-call]
+    static member Exact
+        with get () = RunPos.exact
+        and set (v: bool) = RunPos.exact <- v
+
     static member val SameStatement: System.Func<obj, bool> = null with get, set
 
     static member IsCall(body: obj) =
@@ -129,6 +138,7 @@ let pinOnThread (ex: exn) : unit =
 
         if isNull b.Node then
             b.Node <- RunPos.Current
+            b.Exact <- RunPos.Exact
 
 /// a command's stdin feed, pinned where the producer raised: the writer
 /// thread pulls it, the main thread rethrows the raise
@@ -1830,6 +1840,15 @@ let private xmlDoc
         |> Seq.tryHead
         |> Option.map (fun a -> a.Value)
 
+    // a text leaf is the element's own text: child elements inside it
+    // (mixed content) refuse rather than concatenate [D:from-xml-mixed]
+    let textOf (c: XElement) (shownName: string) =
+        match c.Elements() |> Seq.tryHead with
+        | Some inner ->
+            failwith
+                $"{who}: element <{c.Name.LocalName}> for field '{shownName}' holds a child element <{inner.Name.LocalName}> — a text field reads an element with text only (mixed content is outside the XML subset): {shown}"
+        | None -> c.Value
+
     // one element -> one row; `prefix` is the dotted path above it
     let rec objRowXml (prefix: string) (rdef: RecordDef) (el: XElement) : Value =
         let readField (name: string, ty: Ty) =
@@ -1852,13 +1871,13 @@ let private xmlDoc
                     // a child element's inner text (required / optional)
                     | TStr ->
                         match childElem el name shownName "seq<string>" with
-                        | Some c -> VStr c.Value
+                        | Some c -> VStr(textOf c shownName)
                         | None ->
                             failwith
                                 $"{who}: missing element <{name}> in <{el.Name.LocalName}> for field '{shownName}' in: {shown}"
                     | TNamed("Option", [ TStr ]) ->
                         match childElem el name shownName "seq<string>" with
-                        | Some c -> VUnion("Some", Some(VStr c.Value))
+                        | Some c -> VUnion("Some", Some(VStr(textOf c shownName)))
                         | None -> VUnion("None", None)
                     // repeated children: [<Elem "X">] names them, else the
                     // element type (a record) or the field name (strings)
@@ -1872,7 +1891,7 @@ let private xmlDoc
                         childElems el elemName
                         |> Seq.mapi (fun i c ->
                             match elem with
-                            | TStr -> VStr c.Value
+                            | TStr -> VStr(textOf c $"{shownName}[{i}]")
                             | TNamed(n, []) when defs.ContainsKey n -> objRowXml $"{shownName}[{i}]." defs[n] c
                             | _ -> unreachable "the checker restricts an XML seq to strings or records")
                         |> List.ofSeq
@@ -2537,8 +2556,11 @@ let scalarString (what: string) (v: Value) : string =
     | VStr s -> s
     // a Secret splices to argv in the clear [D:secret]: `curl -H
     // $auth` needs the real value. print/printerr reject Secret at
-    // the type (printArgTy), so this arm is reached only via argv
-    | VSecret s -> s
+    // the type (printArgTy), so this arm is reached only via argv —
+    // marked so argv-rendering messages mask it [D:secret-argv-mask]
+    | VSecret s ->
+        Proc.markSecretWord s
+        s
     | VUuid g -> formatUuid g
     | VInt n -> string n
     | VBool true -> "true"
@@ -3313,6 +3335,7 @@ and private progOf (env: Env) (h: Check.TCmdHead) : string =
 
 and eval (env: Env) (te: TypedExpr) : Value =
     RunPos.Current <- box te
+    RunPos.Exact <- false
     // a signal or closed stdout unwinds here, before the node runs
     // [D:signal-main-unwind]
     Session.checkTeardown ()
@@ -3541,7 +3564,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
         eval (bindings |> List.fold (fun m (n, v) -> Map.add n v m) env) body
     | TELambdaPat(pat, body) -> VClosurePat(pat, body, env)
     | TELambda(param, _, body) -> VClosure(param, body, env)
-    | TEApp(fn, arg) -> apply (eval env fn) (eval env arg)
+    | TEApp(fn, arg) -> callAt env fn arg
     | TEPipe(arg, { Kind = TECmd(chead, cargs, cenvO) }) ->
         // collect the command chain left of this hop [D:byte-pipes]: a
         // command feeding a command is a raw byte hop (a hop makes no
@@ -3578,7 +3601,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
         System.Console.Out.Flush()
         Proc.runChainInherited (chainSpecs env arg chead cargs cenvO)
         VUnit
-    | TEPipe(arg, fn) -> apply (eval env fn) (eval env arg)
+    | TEPipe(arg, fn) -> callAt env fn arg
     | TEField(target, field) ->
         match eval env target with
         | VRecord(name, fields) ->
@@ -3959,7 +3982,8 @@ and eval (env: Env) (te: TypedExpr) : Value =
                  let b = blameFor original
 
                  if isNull b.Node then
-                     b.Node <- RunPos.Current)
+                     b.Node <- RunPos.Current
+                     b.Exact <- RunPos.Exact)
 
             (try
                 if Session.deregisterAlways hooked then
@@ -4700,6 +4724,32 @@ and apply (fn: Value) (arg: Value) : Value =
     | VBuiltin f -> f arg
     | v -> unreachable $"the checker rejects application of {formatValue v}"
 
+// an application: callee, then argument, then the call — which runs with
+// the callee as the current node, so a raise from the call itself (`fail`,
+// a builtin) is reported at the callee's column, not the line's first
+// [D:runtime-position-call]
+and private callAt (env: Env) (fn: TypedExpr) (arg: TypedExpr) : Value =
+    let f = eval env fn
+    let a = eval env arg
+
+    // a reifier's call is its command's: blamed at the command, whose
+    // program is the reifier's first argument
+    let rec reifiedCmd (e: TypedExpr) =
+        match e.Kind with
+        | TEApp({ Kind = TEVar v }, first) when v.StartsWith '|' && (Ast.reifierOfVar v).IsSome -> Some first
+        | TEApp(g, _) -> reifiedCmd g
+        | _ -> None
+
+    let at = reifiedCmd fn |> Option.defaultValue fn
+
+    if at.Span.Start.Col >= 1 then
+        RunPos.Current <- box at
+        RunPos.Exact <- true
+
+    let r = apply f a
+    RunPos.Exact <- false
+    r
+
 // a call of a function defined elsewhere [D:runtime-position]: a raise
 // unwinding through it is blamed on the innermost node first (if nothing
 // blamed it yet), then gains this call site as a trace frame
@@ -4715,6 +4765,7 @@ and private inFunction (f: unit -> Value) : Value =
 
         if isNull b.Node then
             b.Node <- RunPos.Current
+            b.Exact <- RunPos.Exact
 
         if not (isNull callSite) then
             b.Frames.Add callSite

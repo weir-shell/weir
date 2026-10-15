@@ -594,7 +594,7 @@ let private oneLine (prog: string) (argv: string list) (lines: seq<string>) : Va
     match List.ofSeq lines with
     | [ one ] -> VStr(one.Trim())
     | ls ->
-        let shown = String.concat " " (prog :: argv)
+        let shown = Proc.showArgv (prog :: argv)
         failwith $"'{shown} | line' expected exactly one line of output, got {List.length ls}"
 
 let private linedWith (overlay: (string * string) list) : Value =
@@ -7542,7 +7542,7 @@ let private chainSpecs (stagesV: Value) (stdinV: Value) : Proc.Spec list =
     | v -> unreachable $"the parser builds a chain as a stage list, got {formatValue v}"
 
 let private chainShown (specs: Proc.Spec list) =
-    specs |> List.map (fun sp -> String.concat " " (sp.Prog :: sp.Args)) |> String.concat " | "
+    specs |> List.map (fun sp -> Proc.showArgv (sp.Prog :: sp.Args)) |> String.concat " | "
 
 let private chainBuiltin (k: Proc.Spec list -> Value) : Value =
     VBuiltin(fun stagesV -> VBuiltin(fun stdinV -> k (chainSpecs stagesV stdinV)))

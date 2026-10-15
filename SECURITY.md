@@ -138,7 +138,8 @@ it, by design):
   - a secret the author `Secret.reveal`s and then prints, or splices
     into **argv** — visible in `ps` on many systems (allowed by
     design: `curl -H $auth` is the point; `ps` visibility is the
-    platform's property, not weir's);
+    platform's property, not weir's). weir's OWN messages mask it:
+    see the argv claim below;
   - a secret in a command's OUTPUT, a response body, or anything
     written to a file — weir cannot know a `Completed`'s stdout holds
     one;
@@ -312,9 +313,19 @@ batteries refuse to run against a stale binary.
 
 Secrets passed to a child via `within env` or the env sigil `$e(...)` are not echoed: a
 failed command's error renders only the program and its arguments, and
-a `complete` record carries no environment field. A secret leaks only
-if the script itself places it in argv or interpolates it — the
-author's choice, not weir's default.
+a `complete` record carries no environment field.
+
+A `Secret` spliced into argv (`curl -H $auth`, `$@tokens`) reaches the
+child in the clear, and every message weir renders from a command line
+— a nonzero exit (statement, reifier, pipeline, lazily read output, the
+REPL's status line) and `| line`'s output-count error — shows that word
+as `***` [D:secret-argv-mask]. The mask is by text: any argv word equal
+to the text of a Secret spliced earlier in the run is masked. Out of
+scope: a word that only CONTAINS a secret (a revealed value
+concatenated into a larger string is a plain string), the child's own
+output (a tool that echoes its arguments to stderr), and `ps`. A secret
+leaks into weir's output only if the script reveals it — the author's
+choice, not weir's default.
 
 ## Reporting a vulnerability
 

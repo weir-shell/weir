@@ -3,9 +3,9 @@ module Weir.Lsp
 // weir lsp — v1 [D:lsp-v1]: diagnostics, hover, completion over
 // stdio JSON-RPC. Hand-rolled loop (Ionide.LanguageServerProtocol
 // carries a reflection serializer the trimmer discipline bans).
-// Whole-file re-check per didChange; the server owns no type state
-// between checks — per-document text is the only state (stale-cache
-// bugs refused by construction).
+// Whole-file re-check per didChange. The one cache is the analysis per
+// (file, exact text), shared by every request until the next document
+// event drops it [D:lsp-analysis-cache].
 
 open System
 open Weir.Types
@@ -175,10 +175,40 @@ let private notify (method: string) (writeParams: Text.Json.Utf8JsonWriter -> un
 
 let tokenLegend = [| "weirCommandHead"; "weirArgv"; "weirSplice" |]
 
+// the analysis cache [D:lsp-analysis-cache]: hover, completion,
+// definition and tokens re-asked for the same text re-analyzed it per
+// request (a 20k-line file, seconds each). Keyed by file and init mode,
+// hit only on the exact same lines; every document event (open, change,
+// close) drops it all, so an edited module reaches its importers.
+let private analysisCache =
+    Collections.Generic.Dictionary<struct (bool * string), string list * (Script.Diagnostic list * (Script.LogicalLine * Script.CheckedStatement) list * TypeEnv * Script.LogicalLine list)>()
+
+let private analyzeCachedAs (asInit: bool) (path: string) (lines: string list) =
+    let key = struct (asInit, path)
+
+    let hit =
+        lock analysisCache (fun () ->
+            match analysisCache.TryGetValue key with
+            | true, (ls, r) when ls = lines -> Some r
+            | _ -> None)
+
+    match hit with
+    | Some r -> r
+    | None ->
+        let r = Script.analyzeLinesAs asInit path lines
+        lock analysisCache (fun () -> analysisCache[key] <- (lines, r))
+        r
+
+let analyzeCached (path: string) (lines: string list) = analyzeCachedAs false path lines
+
+/// drop every cached analysis — a document changed [D:lsp-analysis-cache]
+let dropAnalyses () =
+    lock analysisCache (fun () -> analysisCache.Clear())
+
 /// (0-based line, 0-based startChar, length, tokenType), sorted by
 /// position — the raw form the LSP delta encoding rides on.
 let semanticTokensFor (lines: string list) : (int * int * int * int) list =
-    let _, stmts, _, _ = Script.analyzeLines "tokens" lines
+    let _, stmts, _, _ = analyzeCached "tokens" lines
     let lineArr = List.toArray lines
     let out = ResizeArray<int * int * int * int>()
 
@@ -484,9 +514,9 @@ let private analyze (uri: string) (text: string) =
     // the missing marker included
     let diags, stmts, env0, lls =
         if canonical || Script.isInitMarked raw then
-            Script.analyzeLinesAs true path raw
+            analyzeCachedAs true path raw
         else
-            Script.analyzeLines path raw
+            analyzeCached path raw
 
     diags, stmts, env0, lls
 
@@ -803,7 +833,7 @@ let rec private innerLetSig (name: string) (jcol: int) (te: Check.TypedExpr) : s
 let private targetStmts (absPath: string) =
     Script.targetSourceLines absPath
     |> Option.map (fun lines ->
-        let _, stmts, _, _ = Script.analyzeLines absPath lines
+        let _, stmts, _, _ = analyzeCached absPath lines
         lines, stmts)
 
 // the KType declaring `tyName` among `stmts` — file-agnostic so the
@@ -1024,7 +1054,7 @@ let definitionTarget
     (line: int)
     (col: int)
     : (string option * int * int * int) option =
-    let _, stmts, _, _ = Script.analyzeLines path lines
+    let _, stmts, _, _ = analyzeCached path lines
 
     let imports =
         stmts
@@ -1537,7 +1567,7 @@ let private schemaHover (path: string) (name: string) : string option =
 /// site for a usage / field / case reference (definitionFor) [Group 1a],
 /// else the builtin's [D:builtin-docs].
 let hoverAt (path: string) (lines: string list) (line: int) (col: int) : string option =
-    let _, stmts, _, _ = Script.analyzeLines path lines
+    let _, stmts, _, _ = analyzeCached path lines
 
     match toLogical stmts line col with
     | Some(ll, chk, jcol) when
@@ -2212,6 +2242,7 @@ let run (debug: bool) : int =
                              match jStr "uri" td, jStr "text" td with
                              | Some uri, Some text ->
                                  docs[uri] <- text
+                                 dropAnalyses ()
                                  // re-check all: this doc and any open importer of it
                                  refreshAll ()
                              | _ -> ()
@@ -2222,6 +2253,7 @@ let run (debug: bool) : int =
                              match jStr "uri" td, jStr "text" change with
                              | Some uri, Some text ->
                                  docs[uri] <- text
+                                 dropAnalyses ()
                                  refreshAll ()
                              | _ -> ()
                          | _ -> ())
@@ -2230,6 +2262,7 @@ let run (debug: bool) : int =
                         |> Option.bind (jStr "uri")
                         |> Option.iter (fun uri ->
                             docs.Remove uri |> ignore
+                            dropAnalyses ()
                             refreshAll ())
                     | "textDocument/semanticTokens/full" ->
                         let writeResult (w: Text.Json.Utf8JsonWriter) =

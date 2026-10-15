@@ -50,6 +50,25 @@ Ruled 2026-10-15 (PLAN-daily-driver W4): **every item below is daily-driver — 
 - ~~**fmt** formats a file with a yaml-district parse error, and spaces inside
   multi-line interpolation holes.~~ done: fmt refuses any file check cannot
   parse; respace skips district content and lines inside a hole [D:fmt-parse-gate].
+- ~~**Re-enumeration warning** misses indirect pulls (through a function, a
+  loop, a derived binding).~~ — done: carriers replay their pulls, a
+  loop read counts twice [D:reenum-indirect].
+- **User generic types at the wire:** generic records are refused at the
+  json/yaml boundary and `from json seq<B<int>>` is a parse error; user
+  generics are undocumented in SKILL.md.
+- ~~**Runtime error positions** are statement-granular inside a one-line
+  `if … then fail … else …`.~~ — done: a raising call reports its
+  callee's column [D:runtime-position-call].
+- ~~**LSP re-analyzes a large file per hover** (20k lines ≈ 3s).~~ — done:
+  one analysis per (file, text), dropped on any document event
+  [D:lsp-analysis-cache].
+- ~~**A Secret spliced into argv shows in clear in "command failed" errors**
+  (SECURITY.md non-claim; CI logs make it worth revisiting).~~ — done:
+  argv-rendering messages mask it as `***` [D:secret-argv-mask].
+- ~~**`from xml` mixed content** (`<N>a<b/>c</N>`) is silently concatenated.~~
+  — done: a text field over mixed content refuses [D:from-xml-mixed].
+- **fmt** formats a file with a yaml-district parse error, and spaces inside
+  multi-line interpolation holes.
 - **History file and fmt rewrite invalid UTF-8** as U+FFFD ([D:source-utf8]
   covers source files only). fmt half done: fmt reads through the entry
   read, refuses located and leaves the file untouched (e2e pins the bytes);
