@@ -46,6 +46,17 @@ type TransportError =
     | Refused of port: int
     | TlsUntrusted
     | OtherTransport of root: string
+    // not a transport failure but the same Error channel: the response
+    // declared a charset .NET cannot decode
+    | UnknownCharset of charset: string * status: int
+    // the redirect bound ran out — a loop, never a 3xx handed back as data
+    | RedirectLoop of hops: int * last: string
+
+// raised inside send when the body's declared charset is unknown — the
+// catch turns it into UnknownCharset, never the cannot-reach umbrella
+exception private CharsetUnknown of string * int
+
+exception private TooManyRedirects of int * string
 
 let private rootMessage (ex: exn) : string =
     let rec inner (e: exn) =
@@ -115,6 +126,10 @@ let transportMessage (host: string) (err: TransportError) : string =
     | Refused port -> $"{host}:{port} refused the connection — nothing is listening there"
     | TlsUntrusted -> $"cannot establish TLS with {host} — the certificate is not trusted"
     | OtherTransport root -> $"cannot reach {host} — {root}"
+    | UnknownCharset(cs, status) ->
+        $"{host} answered {status} with a body in charset '{cs}', which weir cannot decode — weir decodes utf-8, utf-16, utf-32, us-ascii and iso-8859-1; a mislabelled body is never guessed at"
+    | RedirectLoop(hops, last) ->
+        $"{host}: still redirecting after {hops} hops (the last at {redactUrl last}) — a redirect loop"
 
 /// two URLs share an origin [D:secret-redirect] iff scheme, host and port
 /// all match (a port change is a different origin — the same rule the BCL
@@ -281,22 +296,51 @@ let send (req: Req) : Result<Resp, string * TransportError> =
                     curBody <- None
 
                 curUrl <- nextUri.ToString()
+            | Some _ when isRedirect code ->
+                resp.Dispose()
+                raise (TooManyRedirects(hops, curUrl))
             | _ ->
                 result <- resp
                 go <- false
 
         use resp = result
 
+        // one pair per received header line, the value verbatim: the
+        // parsed view splits a value into tokens (a Server header's
+        // product list) and the old "," join merged repeats into one
         let headers =
-            [ for h in resp.Headers -> h.Key, String.concat "," h.Value ]
+            [ for h in resp.Headers.NonValidated do
+                  for v in h.Value -> h.Key, v ]
             @ (match resp.Content with
                | null -> []
-               | c -> [ for h in c.Headers -> h.Key, String.concat "," h.Value ])
+               | c ->
+                   [ for h in c.Headers.NonValidated do
+                         for v in h.Value -> h.Key, v ])
 
+        // an undecodable declared charset is its own error, never a
+        // guessed decode — the same never-silent-U+FFFD law as
+        // [D:source-utf8]
         let body =
             match resp.Content with
             | null -> ""
-            | c -> c.ReadAsStringAsync(deadline.Token).Result
+            | c ->
+                match c.Headers.ContentType with
+                | null -> ()
+                | t when String.IsNullOrWhiteSpace t.CharSet -> ()
+                | t ->
+                    let cs = t.CharSet.Trim().Trim('"')
+
+                    let known =
+                        try
+                            Text.Encoding.GetEncoding cs |> ignore
+                            true
+                        with _ ->
+                            false
+
+                    if not known then
+                        raise (CharsetUnknown(cs, int resp.StatusCode))
+
+                c.ReadAsStringAsync(deadline.Token).Result
 
         Ok
             { Status = int resp.StatusCode
@@ -313,7 +357,11 @@ let send (req: Req) : Result<Resp, string * TransportError> =
                 // `user:pass@host` credential must not print verbatim)
                 redactUrl req.Url, 0
 
-        let err = classifyTransport req.TimeoutMs port ex
+        let err =
+            match ex with
+            | CharsetUnknown(cs, status) -> UnknownCharset(cs, status)
+            | TooManyRedirects(hops, last) -> RedirectLoop(hops, last)
+            | _ -> classifyTransport req.TimeoutMs port ex
         Error(transportMessage host err, err)
 
 /// Basic auth is an encoding, not a prefix: base64(user:pass) [D:http] —

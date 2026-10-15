@@ -24,175 +24,181 @@ let private evalOnce (input: string) : int =
     let normalized = (input: string).Replace("\r\n", "\n")
     let srcLines = normalized.Split('\n') |> Array.toList
 
-    let assembled =
-        if normalized.Contains '\n' then
-            Script.assemble (srcLines |> List.mapi (fun i l -> i + 1, l))
-        else
-            // the single-line spelling keeps its exact path (stripComment
-            // up front [D:trailing-comments]); multi-line strips inside
-            // assembly, as files do
-            Ok [ Script.singleLine (Script.stripComment input) ]
+    // blank or comment-only input has no statement to point at — say so,
+    // never a bare caret under nothing
+    if srcLines |> List.forall (fun l -> (Script.stripComment l).Trim() = "") then
+        Console.Error.WriteLine "weir -e: nothing to evaluate — give it an expression: weir -e '1 + 2'"
+        2
+    else
+        let assembled =
+            if normalized.Contains '\n' then
+                Script.assemble (srcLines |> List.mapi (fun i l -> i + 1, l))
+            else
+                // the single-line spelling keeps its exact path (stripComment
+                // up front [D:trailing-comments]); multi-line strips inside
+                // assembly, as files do
+                Ok [ Script.singleLine (Script.stripComment input) ]
 
-    let srcLine (n: int) =
-        srcLines |> List.tryItem (n - 1) |> Option.defaultValue ""
+        let srcLine (n: int) =
+            srcLines |> List.tryItem (n - 1) |> Option.defaultValue ""
 
-    let showDiag (d: Script.StmtDiag) =
-        let line = srcLine d.PhysLine
+        let showDiag (d: Script.StmtDiag) =
+            let line = srcLine d.PhysLine
 
-        (if d.Parse then
-             Console.Error.WriteLine line
-
-             Console.Error.WriteLine(
-                 Types.Color.red Types.Color.onStderr.Value (String(' ', max 0 (d.PhysCol - 1)) + "^")
-             )
-
-             Console.Error.WriteLine d.Message
-         else
-             match d.Span with
-             | Some _ ->
+            (if d.Parse then
                  Console.Error.WriteLine line
 
-                 let width =
-                     match d.PhysEnd with
-                     | Some(el, ec) when el = d.PhysLine -> max 1 (ec - d.PhysCol)
-                     | _ -> 1
-
                  Console.Error.WriteLine(
-                     Types.Color.red
-                         Types.Color.onStderr.Value
-                         (String(' ', max 0 (d.PhysCol - 1)) + String('^', width))
+                     Types.Color.red Types.Color.onStderr.Value (String(' ', max 0 (d.PhysCol - 1)) + "^")
                  )
 
-                 Console.Error.WriteLine $"type error: {d.Message}"
-             | None -> Console.Error.WriteLine d.Message)
+                 Console.Error.WriteLine d.Message
+             else
+                 match d.Span with
+                 | Some _ ->
+                     Console.Error.WriteLine line
 
-        printHint line
+                     let width =
+                         match d.PhysEnd with
+                         | Some(el, ec) when el = d.PhysLine -> max 1 (ec - d.PhysCol)
+                         | _ -> 1
 
-    match assembled with
-    | Error msg ->
-        Console.Error.WriteLine msg
-        1
-    | Ok lls ->
-        let rec checkAll tenv acc rest =
-            match rest with
-            | [] -> Ok(List.rev acc)
-            | (ll: Script.LogicalLine) :: tail ->
-                match Script.checkStatement false None Script.resolver Script.scriptOnlyImport tenv ll with
-                | Error d -> Error d
-                | Ok chk -> checkAll chk.Env ((ll, chk) :: acc) tail
+                     Console.Error.WriteLine(
+                         Types.Color.red
+                             Types.Color.onStderr.Value
+                             (String(' ', max 0 (d.PhysCol - 1)) + String('^', width))
+                     )
 
-        match checkAll typeEnv [] lls with
-        | Error d ->
-            showDiag d
+                     Console.Error.WriteLine $"type error: {d.Message}"
+                 | None -> Console.Error.WriteLine d.Message)
+
+            printHint line
+
+        match assembled with
+        | Error msg ->
+            Console.Error.WriteLine msg
             1
-        | Ok checked' ->
-            // reading (b) [D:e-programs]: every statement may declare,
-            // but the program must end in an expression — each kind
-            // keeps its own specific refusal message
-            let lastKindError =
-                match checked' |> List.tryLast with
-                | Some(_, chk) ->
-                    match chk.Kind with
-                    | Script.KType _ -> Some "-e takes an expression, not a declaration"
-                    | Script.KLet _ -> Some "-e takes an expression, not a let statement"
-                    | Script.KLetPat _ -> Some "-e evaluates one expression; use 'let (x, y) = ... in ...'"
-                    | Script.KModule _ -> Some "-e takes an expression, not a module declaration"
-                    | Script.KImport _ ->
-                        // unreachable: scriptOnlyImport rejects the import before this
-                        Some "import is script-only"
-                    | Script.KSig _ ->
-                        // unreachable: -e passes no sig context, so the
-                        // form already refused [D:module-signatures]
-                        Some "signatures belong to module APIs — scripts infer"
-                    | Script.KExpr _
-                    | Script.KCmd _ -> None
-                | None -> None
+        | Ok lls ->
+            let rec checkAll tenv acc rest =
+                match rest with
+                | [] -> Ok(List.rev acc)
+                | (ll: Script.LogicalLine) :: tail ->
+                    match Script.checkStatement false None Script.resolver Script.scriptOnlyImport tenv ll with
+                    | Error d -> Error d
+                    | Ok chk -> checkAll chk.Env ((ll, chk) :: acc) tail
 
-            match lastKindError with
-            | Some m ->
-                Console.Error.WriteLine m
+            match checkAll typeEnv [] lls with
+            | Error d ->
+                showDiag d
                 1
-            | None ->
-                for _, chk in checked' do
-                    for wl, wc, wm in chk.Warnings do
-                        if List.length lls > 1 then
-                            Console.Error.WriteLine $"{wl}:{wc}: warning: {wm}"
-                        else
-                            Console.Error.WriteLine $"warning: {wm}"
+            | Ok checked' ->
+                // reading (b) [D:e-programs]: every statement may declare,
+                // but the program must end in an expression — each kind
+                // keeps its own specific refusal message
+                let lastKindError =
+                    match checked' |> List.tryLast with
+                    | Some(_, chk) ->
+                        match chk.Kind with
+                        | Script.KType _ -> Some "-e takes an expression, not a declaration"
+                        | Script.KLet _ -> Some "-e takes an expression, not a let statement"
+                        | Script.KLetPat _ -> Some "-e evaluates one expression; use 'let (x, y) = ... in ...'"
+                        | Script.KModule _ -> Some "-e takes an expression, not a module declaration"
+                        | Script.KImport _ ->
+                            // unreachable: scriptOnlyImport rejects the import before this
+                            Some "import is script-only"
+                        | Script.KSig _ ->
+                            // unreachable: -e passes no sig context, so the
+                            // form already refused [D:module-signatures]
+                            Some "signatures belong to module APIs — scripts infer"
+                        | Script.KExpr _
+                        | Script.KCmd _ -> None
+                    | None -> None
 
-                let lastIdx = List.length checked' - 1
+                match lastKindError with
+                | Some m ->
+                    Console.Error.WriteLine m
+                    1
+                | None ->
+                    for _, chk in checked' do
+                        for wl, wc, wm in chk.Warnings do
+                            if List.length lls > 1 then
+                                Console.Error.WriteLine $"{wl}:{wc}: warning: {wm}"
+                            else
+                                Console.Error.WriteLine $"warning: {wm}"
 
-                let rec execAll (venv: Eval.Env) idx rest =
-                    match rest with
-                    | [] -> 0
-                    | (_, (chk: Script.CheckedStatement)) :: tail ->
-                        try
-                            match chk.Kind with
-                            | Script.KType decl ->
-                                let venv' =
-                                    match decl.Body with
-                                    | DUnion cases ->
-                                        Eval.constructorValues cases |> List.fold (fun m (n, v) -> Map.add n v m) venv
-                                    | DRecord _ -> venv
+                    let lastIdx = List.length checked' - 1
 
-                                execAll venv' (idx + 1) tail
-                            | Script.KLet(name, _, te) -> execAll (Map.add name (Eval.eval venv te) venv) (idx + 1) tail
-                            | Script.KLetPat(pat, _, te) ->
-                                let bindings = Eval.bindPattern pat (Eval.eval venv te)
-                                execAll (bindings |> List.fold (fun m (n, v) -> Map.add n v m) venv) (idx + 1) tail
-                            | Script.KModule _
-                            | Script.KImport _
-                            | Script.KSig _ ->
-                                // unreachable: gated above / by scriptOnlyImport /
-                                // the sig-context refusal [D:module-signatures]
-                                execAll venv (idx + 1) tail
-                            | Script.KExpr te
-                            | Script.KCmd te when idx < lastIdx ->
-                                // mid-program statements behave as in a file:
-                                // commands stream, expression values discard
-                                (match chk.Kind with
-                                 | Script.KCmd _ -> Script.printResult (Eval.eval venv te)
-                                 | _ -> Eval.eval venv te |> ignore)
+                    let rec execAll (venv: Eval.Env) idx rest =
+                        match rest with
+                        | [] -> 0
+                        | (_, (chk: Script.CheckedStatement)) :: tail ->
+                            try
+                                match chk.Kind with
+                                | Script.KType decl ->
+                                    let venv' =
+                                        match decl.Body with
+                                        | DUnion cases ->
+                                            Eval.constructorValues cases |> List.fold (fun m (n, v) -> Map.add n v m) venv
+                                        | DRecord _ -> venv
 
-                                execAll venv (idx + 1) tail
-                            | Script.KExpr te
-                            | Script.KCmd te ->
-                                // the last statement is the result — the -e echo
-                                let v = Eval.eval venv te
+                                    execAll venv' (idx + 1) tail
+                                | Script.KLet(name, _, te) -> execAll (Map.add name (Eval.eval venv te) venv) (idx + 1) tail
+                                | Script.KLetPat(pat, _, te) ->
+                                    let bindings = Eval.bindPattern pat (Eval.eval venv te)
+                                    execAll (bindings |> List.fold (fun m (n, v) -> Map.add n v m) venv) (idx + 1) tail
+                                | Script.KModule _
+                                | Script.KImport _
+                                | Script.KSig _ ->
+                                    // unreachable: gated above / by scriptOnlyImport /
+                                    // the sig-context refusal [D:module-signatures]
+                                    execAll venv (idx + 1) tail
+                                | Script.KExpr te
+                                | Script.KCmd te when idx < lastIdx ->
+                                    // mid-program statements behave as in a file:
+                                    // commands stream, expression values discard
+                                    (match chk.Kind with
+                                     | Script.KCmd _ -> Script.printResult (Eval.eval venv te)
+                                     | _ -> Eval.eval venv te |> ignore)
 
-                                if v <> Eval.VUnit then
-                                    // the -e echo applies the same
-                                    // binary refusal as the REPL's
-                                    // [D:binary-echo], so every echo
-                                    // path shares it
-                                    let v = Eval.echoPrep v
+                                    execAll venv (idx + 1) tail
+                                | Script.KExpr te
+                                | Script.KCmd te ->
+                                    // the last statement is the result — the -e echo
+                                    let v = Eval.eval venv te
 
-                                    // the -e echo shares the REPL echo's var
-                                    // normalization (formatEchoTy) — the one
-                                    // consumer beside the REPL meta lines
-                                    // [D:repl-fn-echo]
-                                    if not Console.IsOutputRedirected && Eval.echoBinary Eval.echoPipedCap v then
-                                        Console.WriteLine
-                                            $": {formatEchoTy te.Ty} (binary output — the echo refuses a terminal; redirect to a file, or print deliberately)"
-                                    else
-                                        let rendered, hint = Eval.echoValue Eval.echoPipedCap v
+                                    if v <> Eval.VUnit then
+                                        // the -e echo applies the same
+                                        // binary refusal as the REPL's
+                                        // [D:binary-echo], so every echo
+                                        // path shares it
+                                        let v = Eval.echoPrep v
 
-                                        let tail' = Eval.echoTail hint
+                                        // the -e echo shares the REPL echo's var
+                                        // normalization (formatEchoTy) — the one
+                                        // consumer beside the REPL meta lines
+                                        // [D:repl-fn-echo]
+                                        if not Console.IsOutputRedirected && Eval.echoBinary Eval.echoPipedCap v then
+                                            Console.WriteLine
+                                                $": {formatEchoTy te.Ty} (binary output — the echo refuses a terminal; redirect to a file, or print deliberately)"
+                                        else
+                                            let rendered, hint = Eval.echoValue Eval.echoPipedCap v
 
-                                        Console.WriteLine $"{rendered} : {formatEchoTy te.Ty}{tail'}"
+                                            let tail' = Eval.echoTail hint
 
-                                0
-                        with
-                        | Eval.ExitRequest code -> code
-                        | ex ->
-                            Console.Error.WriteLine(
-                                Types.Color.red Types.Color.onStderr.Value "error"
-                                + $": {Eval.sanitizeIfTty Console.IsErrorRedirected ex.Message}"
-                            )
+                                            Console.WriteLine $"{rendered} : {formatEchoTy te.Ty}{tail'}"
 
-                            1
+                                    0
+                            with
+                            | Eval.ExitRequest code -> code
+                            | ex ->
+                                Console.Error.WriteLine(
+                                    Types.Color.red Types.Color.onStderr.Value "error"
+                                    + $": {Eval.sanitizeIfTty Console.IsErrorRedirected ex.Message}"
+                                )
 
-                execAll valueEnv 0 checked'
+                                1
+
+                    execAll valueEnv 0 checked'
 
 // a script (or -e) tears down on its main thread: signals and a closed
 // stdout end it with their own code [D:signal-main-unwind] [D:stdout-epipe]
@@ -715,22 +721,39 @@ let main argv =
             | _ ->
                 Console.Error.WriteLine usage
                 2
-    try
-        dispatch ()
-    with
-    | Eval.ExitRequest code -> code
-    | ex ->
-        // located like a lint error: file:1:1 with the class, non-zero
-        // (2 — the tool's own failure, distinct from a script's exit 1)
-        // ex.Message interpolates attacker-influenced data (a filename,
-        // URL, or value), so it is sanitized at a tty like every other
-        // error-echo site [D:binary-echo]; the class name is weir-internal.
-        Console.Error.WriteLine(
-            Types.Color.red Types.Color.onStderr.Value "internal error"
-            + $": {ex.GetType().Name}: {Eval.sanitizeIfTty Console.IsErrorRedirected ex.Message}"
-        )
 
-        Console.Error.WriteLine
-            "this is a weir bug — the front end should have produced a located diagnostic; please report it with the script"
+    let guarded () =
+        try
+            dispatch ()
+        with
+        | Eval.ExitRequest code -> code
+        | ex ->
+            // located like a lint error: file:1:1 with the class, non-zero
+            // (2 — the tool's own failure, distinct from a script's exit 1)
+            // ex.Message interpolates attacker-influenced data (a filename,
+            // URL, or value), so it is sanitized at a tty like every other
+            // error-echo site [D:binary-echo]; the class name is weir-internal.
+            Console.Error.WriteLine(
+                Types.Color.red Types.Color.onStderr.Value "internal error"
+                + $": {ex.GetType().Name}: {Eval.sanitizeIfTty Console.IsErrorRedirected ex.Message}"
+            )
 
-        2
+            Console.Error.WriteLine
+                "this is a weir bug — the front end should have produced a located diagnostic; please report it with the script"
+
+            2
+
+    // the front end and the runner get a stack of their own, not the
+    // platform's main-thread size (1MB on Windows, `ulimit -s` on POSIX):
+    // a block's statements are width, not depth, so a long function body
+    // recurses once per statement through parse/check/eval [D:block-width];
+    // nesting stays bounded by the counted ceiling and the stack probe
+    // [D:depth-guard]. Reserved, not committed — pages are touched on use.
+    let code = ref 0
+
+    let worker =
+        Threading.Thread((fun () -> code.Value <- guarded ()), 256 * 1024 * 1024)
+
+    worker.Start()
+    worker.Join()
+    code.Value

@@ -33,7 +33,7 @@ let liveAmbient () =
 // env are NUL-terminated C strings, so a NUL-bearing word would
 // silently truncate at the child (the prefix runs; exit 0; no
 // diagnostic). The evaluator's statement path already refused, but the
-// reifier builtins, the ambient `within env` overlay, `into`, and the
+// reifier builtins, the ambient `within env` overlay, and the
 // dynamic head assemble argv/env downstream and skipped it, so the
 // byte leaked. Refusing here — the one point every process start
 // funnels through — covers all of them. Same located message the
@@ -42,6 +42,16 @@ let private nulRefusal (what: string) (s: string) : unit =
     if s.Contains '\u0000' then
         failwith
             $"{what} contains a NUL byte — it would silently truncate at the process boundary (argv and env are NUL-terminated); NUL-bearing data is binary: pass it via a file or stdin, not an argument"
+
+// no command runs while a module is imported [D:module-import-no-commands]:
+// the check-time walk refuses the direct forms; a helper reached through
+// a value, a lambda or composition lands here
+let private importRefusal (prog: string) : unit =
+    match Session.importGuardModule () with
+    | Some m ->
+        failwith
+            $"'{prog}' runs a command while module {m} is imported — a module's lets must not run commands at import; wrap the value in a function: let v () = …"
+    | None -> ()
 
 // the single spawn point [D:spawn-spec]: psi construction, the env
 // law, cwd, the not-found mapping, and the race-group registration
@@ -67,9 +77,11 @@ let private spawn
         failwith
             $"'{prog}' runs a command, and commands are refused inside 'plan' — a spawned binary reads and writes opaquely, so its effects cannot be captured; plan covers weir-native mutation only (File/Dir/Http)"
 
+    importRefusal prog
+
     // ambient `within env` layers apply outer-first under the explicit
     // spec env, so inner and explicit keys win [D:within-scopes] —
-    // applied at the spawn so every child (reifiers, cmd/into, scoped
+    // applied at the spawn so every child (reifiers, scoped
     // procs) obeys the one law, not just the Eval command paths. A lazy
     // spawn replays its written-site snapshot [D:ambient-capture].
     let ambient =
@@ -118,31 +130,35 @@ let private spawn
     psi.RedirectStandardError <- redirectErr
     psi.RedirectStandardInput <- redirectIn
 
-    let p =
-        try
-            Process.Start psi
-        with :? System.ComponentModel.Win32Exception ->
-            failwith $"command not found or not executable: {prog}"
+    // start through registration inside the spawn gate: the teardown kill
+    // sees every started child, and none starts after it
+    // [D:signal-main-unwind]
+    Session.gatedSpawn (fun () ->
+        let p =
+            try
+                Process.Start psi
+            with :? System.ComponentModel.Win32Exception ->
+                failwith $"command not found or not executable: {prog}"
 
-    // a racing arm's children join its group [D:seq-pfirst] — a no-op
-    // outside pfirst, and the scoped child owes it too: the spill path
-    // reached the exit-hook backstop without ever joining the group
-    Session.registerChild p
+        // a racing arm's children join its group [D:seq-pfirst] — a no-op
+        // outside pfirst, and the scoped child owes it too: the spill path
+        // reached the exit-hook backstop without ever joining the group
+        Session.registerChild p
 
-    // every live child is the signal handler's to tree-kill
-    // [D:signal-main-unwind]: a pid-targeted SIGTERM (timeout, docker
-    // stop, a CI cancel) reaches weir alone, and an unregistered
-    // foreground child outlived it, reparented to init. Deregistered at
-    // its exit; the check after subscribing covers an exit that raced it.
-    let pid = p.Id
-    Session.registerForeground p
-    p.Exited.Add(fun _ -> Session.deregisterProcAt pid p)
-    p.EnableRaisingEvents <- true
+        // every live child is the signal handler's to tree-kill
+        // [D:signal-main-unwind]: a pid-targeted SIGTERM (timeout, docker
+        // stop, a CI cancel) reaches weir alone, and an unregistered
+        // foreground child outlived it, reparented to init. Deregistered at
+        // its exit; the check after subscribing covers an exit that raced it.
+        let pid = p.Id
+        Session.registerForeground p
+        p.Exited.Add(fun _ -> Session.deregisterProcAt pid p)
+        p.EnableRaisingEvents <- true
 
-    if p.HasExited then
-        Session.deregisterProcAt pid p
+        if p.HasExited then
+            Session.deregisterProcAt pid p
 
-    p
+        p)
 
 // the one starter: the shared spawn plus the stdin writer, which pulls
 // the input seq lazily as the pipe accepts (laziness reaches inputs too).
@@ -373,6 +389,8 @@ let exec (s: Spec) : unit =
     if Session.planGuardActive () then
         failwith
             $"'{s.Prog}' runs a command, and commands are refused inside 'plan' — a spawned binary reads and writes opaquely, so its effects cannot be captured; plan covers weir-native mutation only (File/Dir/Http)"
+
+    importRefusal s.Prog
 
     // the same boundary spawn enforces [D:spawn-nul-funnel]
     nulRefusal "the command program name" s.Prog

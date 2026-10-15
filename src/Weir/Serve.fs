@@ -41,7 +41,7 @@ type SBody =
     // the lazy body [D:http-serve]: each element written and flushed as
     // produced, so a client sees bytes before the seq ends (the
     // incremental law the acceptance pins). Chunked transfer, one SSE
-    // `data:` line per element.
+    // event per element, one `data:` line per line of it.
     | RStream of seq<string>
 
 type SResp =
@@ -167,6 +167,10 @@ let methodTokenOk (m: string) : bool =
 /// inside the handler)
 exception BodyReadTimeout
 
+/// raised when the request body is larger than the configured maxBody
+/// [D:serve-max-body] — the accept loop answers 413 without reading on
+exception BodyTooLarge
+
 /// raised when a handler-returned response header carries CR/LF/NUL
 /// [D:http-header-bytes] — the inbound-response face of the review's F3.
 /// A distinguishable signal (BodyReadTimeout's shape) so the accept loop
@@ -180,22 +184,39 @@ exception ResponseHeaderInjection of message: string
 /// a task the deadline cancels; exhaustion raises BodyReadTimeout. The
 /// underlying socket read is not itself cancellable, so the task is
 /// abandoned on timeout and the connection is closed by the caller.
-let private readBodyBounded (stream: IO.Stream) (enc: Text.Encoding) (timeoutMs: int) : string =
+let private readBodyBounded (stream: IO.Stream) (enc: Text.Encoding) (timeoutMs: int) (maxBody: int64) : string =
+    // the size bound [D:serve-max-body] counts bytes as they arrive, so a
+    // chunked body with no Content-Length is bounded too: at most
+    // maxBody + 1 bytes are ever buffered
     let work =
         System.Threading.Tasks.Task.Run(fun () ->
-            use r = new IO.StreamReader(stream, enc)
-            r.ReadToEnd())
+            use ms = new IO.MemoryStream()
+            let buf = Array.zeroCreate<byte> 65536
+            let mutable n = stream.Read(buf, 0, buf.Length)
+
+            while n > 0 && ms.Length <= maxBody do
+                ms.Write(buf, 0, n)
+                n <- if ms.Length > maxBody then 0 else stream.Read(buf, 0, buf.Length)
+
+            if ms.Length > maxBody then
+                None
+            else
+                use r = new IO.StreamReader(new IO.MemoryStream(ms.ToArray()), enc)
+                Some(r.ReadToEnd()))
 
     if work.Wait timeoutMs then
-        work.Result
+        match work.Result with
+        | Some body -> body
+        | None -> raise BodyTooLarge
     else
         raise BodyReadTimeout
 
 /// read the request primitives off a context — path, query (no '?'),
 /// method, headers (in wire order, duplicates preserved), body as UTF-8
 /// text (request-body streaming is out of scope v1 [D:http-serve]). The
-/// body read is bounded by `bodyTimeoutMs` [D:serve-body-timeout].
-let readRequest (ctx: HttpListenerContext) (bodyTimeoutMs: int) : SReq =
+/// body read is bounded by `bodyTimeoutMs` [D:serve-body-timeout] and its
+/// size by `maxBody` [D:serve-max-body].
+let readRequest (ctx: HttpListenerContext) (bodyTimeoutMs: int) (maxBody: int64) : SReq =
     let req = ctx.Request
 
     // GetValues over the indexer [D:http-serve]: for a header the parser
@@ -218,8 +239,10 @@ let readRequest (ctx: HttpListenerContext) (bodyTimeoutMs: int) : SReq =
                           key, v ]
 
     let body =
-        if req.HasEntityBody then
-            readBodyBounded req.InputStream req.ContentEncoding bodyTimeoutMs
+        if req.ContentLength64 > maxBody then
+            raise BodyTooLarge
+        elif req.HasEntityBody then
+            readBodyBounded req.InputStream req.ContentEncoding bodyTimeoutMs maxBody
         else
             ""
 
@@ -264,11 +287,26 @@ let private abortWithoutTrailer (out: HttpListenerResponse) : unit =
     with _ ->
         ()
 
+/// the framing and hop-by-hop headers (RFC 9110 §7.6.1, RFC 9112 §6) —
+/// the listener owns them: a handler's Transfer-Encoding beside the
+/// computed Content-Length (or a stale Content-Length) desynchronizes the
+/// client's framing, so they are dropped from a handler's response
+let framingHeaders: Set<string> =
+    Set.ofList
+        [ "transfer-encoding"
+          "content-length"
+          "connection"
+          "keep-alive"
+          "proxy-connection"
+          "te"
+          "trailer"
+          "upgrade" ]
+
 let writeResponse (ctx: HttpListenerContext) (resp: SResp) (onStreamFailure: string -> unit) : unit =
     let out = ctx.Response
     out.StatusCode <- resp.Status
 
-    for (k, v) in resp.Headers do
+    for (k, v) in resp.Headers |> List.filter (fun (k, _) -> not (framingHeaders.Contains(k.ToLowerInvariant()))) do
         // ContentType/ContentLength are properties, not header adds;
         // set the common one explicitly, pass the rest through
         try
@@ -279,8 +317,35 @@ let writeResponse (ctx: HttpListenerContext) (resp: SResp) (onStreamFailure: str
         with _ ->
             ()
 
+    // no body on HEAD, 1xx, 204 or 304 (RFC 9110 §6.4.1): bytes there
+    // are read as the start of the next response on a kept-alive
+    // connection. HEAD still declares the length a GET would carry.
+    let isHead =
+        String.Equals(ctx.Request.HttpMethod, "HEAD", StringComparison.OrdinalIgnoreCase)
+
+    let bodyless = isHead || resp.Status < 200 || resp.Status = 204 || resp.Status = 304
+
+    let fixedBytes =
+        match resp.Body with
+        | RNoBody -> Some [||]
+        | RText s
+        | RJson s
+        | RForm s -> Some(Encoding.UTF8.GetBytes s)
+        | RStream _ -> None
+
     try
         match resp.Body with
+        | _ when bodyless ->
+            match resp.Body with
+            | RJson _ when isNull out.ContentType -> out.ContentType <- "application/json"
+            | RForm _ when isNull out.ContentType -> out.ContentType <- "application/x-www-form-urlencoded"
+            | RStream _ when isNull out.ContentType -> out.ContentType <- "text/event-stream"
+            | _ -> ()
+
+            match fixedBytes with
+            | Some b when isHead && resp.Status >= 200 && resp.Status <> 204 && resp.Status <> 304 ->
+                out.ContentLength64 <- int64 b.Length
+            | _ -> out.ContentLength64 <- 0L
         | RNoBody -> out.ContentLength64 <- 0L
         | RText s ->
             let bytes = Encoding.UTF8.GetBytes s
@@ -332,8 +397,15 @@ let writeResponse (ctx: HttpListenerContext) (resp: SResp) (onStreamFailure: str
                 | None -> go <- false
                 | Some false -> go <- false
                 | Some true ->
-                    let line = e.Current
-                    let frame = Encoding.UTF8.GetBytes($"data: {line}\n\n")
+                    // one `data:` line per line of the element: SSE ends
+                    // a field at CR, LF or CRLF, so an embedded newline
+                    // would otherwise forge a new field or event
+                    let fields =
+                        e.Current.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n')
+                        |> Array.map (fun l -> $"data: {l}\n")
+                        |> String.concat ""
+
+                    let frame = Encoding.UTF8.GetBytes(fields + "\n")
 
                     try
                         out.OutputStream.Write(frame, 0, frame.Length)
@@ -357,7 +429,7 @@ let writeResponse (ctx: HttpListenerContext) (resp: SResp) (onStreamFailure: str
             | None -> out.OutputStream.Close()
 
         match resp.Body with
-        | RStream _ -> () // the stream arm closed/aborted above
+        | RStream _ when not bodyless -> () // the stream arm closed/aborted above
         | _ -> out.OutputStream.Close()
     with _ ->
         // any late write failure (client vanished) — the connection is

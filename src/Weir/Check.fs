@@ -5087,11 +5087,15 @@ and private withinContracts
                 | Some({ Kind = ERecord fields } as a) ->
                     let names = fields |> List.map (fun (n, _, _) -> n) |> Set.ofList
                     let core = Set.ofList [ "port"; "maxConcurrent" ]
-                    let withTimeout = Set.add "bodyTimeout" core
+                    // maxBody is optional the same way [D:serve-max-body]
+                    let optional = Set.ofList [ "bodyTimeout"; "maxBody" ]
 
-                    if names = core || names = withTimeout then
+                    if Set.isSubset core names && Set.isSubset (Set.difference names core) optional then
                         let fieldTy name =
-                            if name = "bodyTimeout" then TDur else TInt
+                            match name with
+                            | "bodyTimeout" -> TDur
+                            | "maxBody" -> TSize
+                            | _ -> TInt
 
                         fields
                         |> List.fold

@@ -3151,7 +3151,7 @@ let ambientRebinders =
 
 // the explicit sigil env only — ambient `within env` layers apply in
 // Proc's starters themselves [D:within-scopes], so every spawn
-// (reifier desugars, cmd/into included) obeys the outer-first rule,
+// (reifier desugars included) obeys the outer-first rule,
 // not just these Eval paths
 let rec private overlayOf (env: Env) (cenvO: TypedExpr option) : (string * string) list =
     match cenvO with
@@ -3916,12 +3916,20 @@ and eval (env: Env) (te: TypedExpr) : Value =
                 | VStr s -> s
                 | v -> unreachable $"the checker rejects a lock path of {formatValue v}"
 
+            if path = "" then
+                failwith "within lock: the lock path is empty — name a lock file"
+
             let resolved = Session.resolve path
+
+            if System.IO.Directory.Exists resolved then
+                failwith $"within lock: {resolved} is a directory — the lock is a file (e.g. {resolved}/.lock)"
 
             let timeoutMs =
                 topts
                 |> Option.map (fun o ->
                     match eval env o with
+                    | VDur ms when ms < 0L ->
+                        failwith $"within lock: timeout must not be negative, got {formatDuration ms}"
                     | VDur ms -> ms
                     | v -> unreachable $"the checker rejects a lock timeout of {formatValue v}")
 
@@ -3944,6 +3952,8 @@ and eval (env: Env) (te: TypedExpr) : Value =
                      // elsewhere"
                      | :? System.IO.DirectoryNotFoundException ->
                          failwith $"within lock: no such directory for {resolved} — the lock file's parent must exist"
+                     | :? System.UnauthorizedAccessException ->
+                         failwith $"within lock: cannot open {resolved}: permission denied"
                      | :? System.IO.IOException -> None)
                 with
                 | Some fs -> fs
@@ -4085,6 +4095,17 @@ and eval (env: Env) (te: TypedExpr) : Value =
             if bodyTimeoutMs < 1 then
                 failwith $"serve: bodyTimeout is at least 1ms, got {bodyTimeoutMs}ms"
 
+            // the request-body size bound [D:serve-max-body]: optional,
+            // 16 MiB, answered 413 past it
+            let maxBody =
+                match List.tryFind (fun (n, _) -> n = "maxBody") cfg with
+                | Some(_, VSize b) -> b
+                | Some(_, v) -> unreachable $"serve maxBody {formatValue v}"
+                | None -> 16L * 1024L * 1024L
+
+            if maxBody < 0L then
+                failwith $"serve: maxBody cannot be negative, got {formatSize maxBody}"
+
             // the handler closure, evaluated once at scope entry
             let handler =
                 match topts with
@@ -4222,7 +4243,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
                                         // a slow client dribbling its body
                                         // cannot park this slot forever —
                                         // 408 on exhaustion
-                                        let req = Serve.readRequest ctx bodyTimeoutMs
+                                        let req = Serve.readRequest ctx bodyTimeoutMs maxBody
 
                                         // a malformed method token is refused
                                         // at the boundary [D:serve-method]:
@@ -4254,6 +4275,21 @@ and eval (env: Env) (te: TypedExpr) : Value =
                                                 { Status = 408
                                                   Headers = []
                                                   Body = Serve.RText "request body read timed out" }
+                                                ignore
+                                         with _ ->
+                                             ())
+                                    | Serve.BodyTooLarge ->
+                                        // past maxBody [D:serve-max-body]: the
+                                        // rest of the body is never read, so the
+                                        // connection closes after the 413
+                                        (try
+                                            ctx.Response.KeepAlive <- false
+
+                                            Serve.writeResponse
+                                                ctx
+                                                { Status = 413
+                                                  Headers = []
+                                                  Body = Serve.RText $"request body exceeds maxBody ({formatSize maxBody})" }
                                                 ignore
                                          with _ ->
                                              ())

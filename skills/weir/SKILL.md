@@ -563,9 +563,10 @@ print $"{key} -> {value}"
   `Http.send` captures the Op). `url |> Http.withQuery [(k, v)]` percent-encodes
   a query string. `resp |> Http.header "etag" : Option<string>` reads a
   response header case-insensitively (HTTP's own law — a hand-rolled
-  pairs filter misses ETag vs etag); `Http.headerAll` is the
-  multiplicity read for repeating headers (Set-Cookie), wire order
-  kept. `Http.query` is the QUERY method (idempotent, so
+  pairs filter misses ETag vs etag) — the first line's value;
+  `Http.headerAll` is the multiplicity read for repeating headers
+  (Set-Cookie): one entry per received header line, wire order kept,
+  values verbatim (never split or comma-joined). `Http.query` is the QUERY method (idempotent, so
   `retry` around it is safe by definition). TLS verification is ON;
   `{ req with insecure = true }` disables it for ONE request (a loud
   per-call field for self-signed clusters). `Http.defaults` is the
@@ -580,7 +581,11 @@ print $"{key} -> {value}"
   (`NoAuth`/`Bearer of Secret`/`Basic of string * Secret` — Basic does
   the base64); a `Secret` carries WHOLE (interpolating a token is a
   check error) and `show` masks it. Status is DATA (`if resp.status >=
-  400 then fail …`, a 404 binds); only TRANSPORT failure raises. The
+  400 then fail …`, a 404 binds); only TRANSPORT failure raises (and a
+  redirect loop — past 50 hops it raises, naming it). `auth` plus an
+  explicit `Authorization` header is refused (two credentials). On a
+  cross-origin redirect `auth`, every `secretHeaders` name and a plain
+  `Authorization`/`Proxy-Authorization`/`Cookie` header are dropped. The
   body is `NoBody`/`Json`/`Text of string`/`Form of seq<string * string>`
   [D:http-dx] — `Json` takes the VALUE (any shape `to json` admits, the
   same law checked at the call site) and renders at the boundary,
@@ -666,16 +671,24 @@ print $"{key} -> {value}"
   is refused at the boundary with 400. The response `body` is an
   `HttpBody` — the SAME union the `Http` client uses (`NoBody`/`Text`/
   `Json`/`Form`), plus `Stream of seq<string>`: the runtime PULLS and FLUSHES
-  each element as produced (chunked, SSE-shaped `data:` lines), so a lazy
+  each element as produced (chunked, SSE-shaped: one event per element,
+  one `data:` line per line of it — a newline cannot forge an event), so a lazy
   producer streams incrementally — the client sees early elements before
   the seq ends. If a `Stream` producer RAISES mid-body, the failure is
   surfaced to the script through `Server.streamErrors srv` (the
   designated channel, Proc.wait's shape — it is not raised out of the
-  handler). `maxConcurrent` bounds handlers-at-once (the `pmapWith` law);
+  handler). A HEAD, 1xx, 204 or 304 reply carries no body bytes
+  whatever the handler returned (HEAD still declares the GET length).
+  Framing and hop-by-hop headers a handler returns (`Transfer-Encoding`,
+  `Content-Length`, `Connection`, `Keep-Alive`, `TE`, `Trailer`,
+  `Upgrade`) are dropped — the listener frames the response.
+  `maxConcurrent` bounds handlers-at-once (the `pmapWith` law);
   excess queues. `bodyTimeout` (a `Duration`, OPTIONAL — default 30s)
-  bounds the request-body read so a slow client cannot park a slot; the
-  config is `{ port; maxConcurrent }` or `{ port; maxConcurrent;
-  bodyTimeout }`. The handle surface is `Server.port`/`Server.running`/
+  bounds the request-body read so a slow client cannot park a slot;
+  `maxBody` (a `Size`, OPTIONAL — default 16MiB) bounds its size, a
+  larger body answered 413 without being buffered [D:serve-max-body].
+  The config is `{ port; maxConcurrent }` plus either optional field
+  (`{ port = 8080; maxConcurrent = 4; maxBody = 1MiB }`). The handle surface is `Server.port`/`Server.running`/
   `Server.streamErrors` — no `stop` (the scope IS the teardown). ONE type
   family: `HttpMethod`, header pairs and the body union are shared
   client↔server; only the records differ where the wire does
@@ -713,7 +726,8 @@ within serve srv = { port = 8410; maxConcurrent = 4 } handler
 - `within lock "path"` holds an ADVISORY file lock for the block
   [D:within-lock]: created if missing, nothing bound (there is
   nothing to ask a lock). Blocking by default; `timeout=30s` bounds
-  the wait and exhaustion raises, retry-style. Excludes across
+  the wait and exhaustion raises, retry-style (a negative timeout, an
+  empty path or a directory raises). Excludes across
   processes AND across `pmap` arms (flock semantics, per open file —
   probe-pinned), and interoperates with `flock(1)`. The one scope
   whose guarantee survives `kill -9`: the KERNEL releases the lock on
@@ -1264,7 +1278,7 @@ print x
   (the checker catches future shadowing loudly — expression mode, not
   a silent tool swap). Builtins WITHOUT a
   qualified spelling (`cd`, `pwd`, `print`, `printerr`, `show`,
-  `exit`, `fail`, `into`, `not`, `fst`, `snd`, `nats`) are RESERVED
+  `exit`, `fail`, `not`, `fst`, `snd`, `nats`) are RESERVED
   binder names [D:reserve-builtins] — a binding would shadow them for
   the whole file with no way back, so the checker refuses; bare
   aliases (`max`, `find`, `item`…) stay bindable because the
@@ -1902,11 +1916,15 @@ conf |> Seq.iter print
   declaration-only (`type`/`let` only, no commands or bare
   expressions; a `let` that runs a command at import is refused,
   through a reifier or a saturated call of the module's own
-  command-running helper too — wrap it: `let v () = …`), not
-  runnable. Import it with `import "./lib/x.weir"`
+  command-running helper too — wrap it: `let v () = …`; a command
+  reached at import any other way — a helper passed as a value,
+  composed, or in a `Seq.pmap` arm — raises at run time, located
+  [D:module-import-no-commands]), not runnable. Import it with `import "./lib/x.weir"`
   (a literal path, first in the file before declarations) or
   `import "./lib/x.weir" as X`. Access is ALWAYS qualified:
-  `X.helper`, `X.Ctx` types cross the boundary. THE EXPORT RULE
+  `X.helper`, `X.Ctx` types cross the boundary; a member named like
+  a builtin (`Doc.Text`, `M.id`) exports too, reached qualified — the
+  bare name stays the builtin [D:module-builtin-names]. THE EXPORT RULE
   [D:module-signatures]: a SIGNATURE line — `let helper : int -> int`
   with NO `=` — declares a member's type AND exports it; the
   signature IS the export. An unsigned member is module-PRIVATE
@@ -1940,8 +1958,10 @@ conf |> Seq.iter print
   [D:init-import]. A relative path resolves from the importing file's
   REAL location (a symlinked script or init imports beside the
   original; `Self.scriptPath` keeps the link). Imports are transitive (a module may import); a
-  shared module is checked once (diamonds collapse) and an import
-  cycle is a named check error.
+  shared module is checked once and its body RUNS once per program
+  [D:module-once] — diamonds, re-aliases and symlinks (identity is
+  the real path) share one instance — and an import cycle is a named
+  check error.
 
 ```weir
 // a module: the signed member exports, the unsigned one is private

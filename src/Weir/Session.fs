@@ -143,6 +143,23 @@ let enterPlanGuard () : unit = planGuardDepth.Value <- planGuardDepth.Value + 1
 
 let exitPlanGuard () : unit = planGuardDepth.Value <- max 0 (planGuardDepth.Value - 1)
 
+// the import guard [D:module-import-no-commands]: while a module body is
+// evaluated, no command runs — on any thread (a `Seq.pmap` arm at import
+// runs on a worker), so process-wide, not thread-local. Imports evaluate
+// before the importer's first statement, so nothing else spawns then.
+// Holds the importing modules' names, innermost first.
+let mutable private importGuard: string list = []
+
+/// the module being imported right now, if any (Proc's spawn-time refusal)
+let importGuardModule () : string option =
+    List.tryHead (System.Threading.Volatile.Read &importGuard)
+
+let enterImportGuard (name: string) : unit =
+    System.Threading.Volatile.Write(&importGuard, name :: importGuard)
+
+let exitImportGuard () : unit =
+    System.Threading.Volatile.Write(&importGuard, (match importGuard with _ :: t -> t | [] -> []))
+
 let enterWorker (parentCwd: string) : unit = localCwd.Value <- Some parentCwd
 
 let exitWorker () : unit =
@@ -235,6 +252,49 @@ let mutable private hookRoots: obj list = []
 // dir open, so the order is load-bearing on Windows
 let private liveProcs =
     System.Collections.Concurrent.ConcurrentDictionary<int, System.Diagnostics.Process>()
+
+// the teardown kill [D:signal-main-unwind]: spawning stops, then every
+// live child's tree dies exactly once. Spawns hold the gate shared from
+// Process.Start through registration, so the kill (exclusive) sees every
+// child a worker started; a spawn after it refuses. The main thread
+// settles the same kill before exiting, so the process never exits with
+// a tree half-killed (a SIGSTOPped grandchild left orphaned).
+let private spawnGate =
+    new System.Threading.ReaderWriterLockSlim(System.Threading.LockRecursionPolicy.SupportsRecursion)
+
+let mutable private spawningStopped = false
+
+let private killedProcs =
+    System.Collections.Generic.HashSet<System.Diagnostics.Process>(HashIdentity.Reference)
+
+/// run a process start + registration inside the spawn gate; refuses once
+/// the teardown kill has run
+let gatedSpawn (start: unit -> 'a) : 'a =
+    spawnGate.EnterReadLock()
+
+    try
+        if spawningStopped then
+            failwith "the script is being torn down — no new command starts"
+
+        start ()
+    finally
+        spawnGate.ExitReadLock()
+
+/// stop spawning and tree-kill every live child not already killed
+let private killLiveChildren () : unit =
+    spawnGate.EnterWriteLock()
+
+    try
+        spawningStopped <- true
+
+        for kv in liveProcs do
+            if killedProcs.Add kv.Value then
+                try
+                    kv.Value.Kill true
+                with _ ->
+                    ()
+    finally
+        spawnGate.ExitWriteLock()
 
 // pending `always` cleanups [D:within-always]: LIFO, run by the exit
 // hook on signals/hard exits; a completed scope deregisters (its own
@@ -393,7 +453,10 @@ let requestTeardown (code: int) : unit =
 let exitCodeOr (code: int) : int =
     match System.Threading.Volatile.Read &teardownCode with
     | 0 -> code
-    | c -> c
+    | c ->
+        // a requested teardown's kill completes before the exit
+        killLiveChildren ()
+        c
 
 /// raise the requested teardown on the main thread, once: the unwind
 /// then runs the cleanups as ordinary code (which must not be cut short
@@ -582,12 +645,7 @@ let private installExitHook () =
                                     130
 
                             requestTeardown code
-
-                            for kv in liveProcs do
-                                try
-                                    kv.Value.Kill true
-                                with _ ->
-                                    ()
+                            killLiveChildren ()
 
                             // the backstop: a main thread blocked where
                             // no boundary comes (a stdin read, a network

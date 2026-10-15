@@ -20,3 +20,26 @@ session".)
 
 (Done: comparison/boolean completeness — landed with `<>` inheriting `==`'s
 equatability and short-circuit `&&`/`||`, as pre-committed.)
+
+## From the second bug hunt (2026-10-14, PLAN-hunt2-fixes.md)
+
+- **`from json` reading a `Yaml` field** — would let `gen types` keep a
+  self-referential field instead of omitting it [D:gen-types-cycles].
+- **`serve` answers only the first of pipelined requests** on one
+  connection.
+- **Inference order:** `a + b + 0` doesn't infer while `0 + a + b` does.
+- **Re-enumeration warning** misses indirect pulls (through a function, a
+  loop, a derived binding).
+- **User generic types at the wire:** generic records are refused at the
+  json/yaml boundary and `from json seq<B<int>>` is a parse error; user
+  generics are undocumented in SKILL.md.
+- **Runtime error positions** are statement-granular inside a one-line
+  `if … then fail … else …`.
+- **LSP re-analyzes a large file per hover** (20k lines ≈ 3s).
+- **A Secret spliced into argv shows in clear in "command failed" errors**
+  (SECURITY.md non-claim; CI logs make it worth revisiting).
+- **`from xml` mixed content** (`<N>a<b/>c</N>`) is silently concatenated.
+- **fmt** formats a file with a yaml-district parse error, and spaces inside
+  multi-line interpolation holes.
+- **History file and fmt rewrite invalid UTF-8** as U+FFFD ([D:source-utf8]
+  covers source files only).

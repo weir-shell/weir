@@ -402,20 +402,6 @@ let private asString (v: Value) : string =
 
 let private argStrings (args: seq<Value>) : string list = args |> Seq.map asString |> List.ofSeq
 
-let private intoImpl: Value =
-    VBuiltin(fun c ->
-        VBuiltin(fun sv ->
-            match c, sv with
-            | VStr cmdline, VSeq items ->
-                let lines = items |> Seq.map asString |> Eval.pinnedFeed
-                // sh resolves on PATH like every other spawn — the /bin/sh
-                // hardcode had no Windows answer (Git Bash puts sh on PATH)
-                VSeq(
-                    Proc.lines (Proc.resolveProg "sh") [ "-c"; cmdline ] (Some lines)
-                    |> Seq.map VStr
-                )
-            | _ -> unreachable "the checker rejects 'into' on these arguments"))
-
 let private cdImpl: Value =
     VBuiltin(fun v ->
         match v with
@@ -1325,7 +1311,6 @@ let private optionFlattenImpl: Value =
         | v -> unreachable $"the checker rejects 'Option.flatten' on {formatValue v}")
 
 let private seqInt = TSeq(TInt)
-let private seqStr = TSeq TStr
 let private tA = TVar "a"
 let private tB = TVar "b"
 
@@ -4449,15 +4434,32 @@ let private runRequest (reqV: Value) : Http.Resp =
 
         let auth = authHeaders (get "auth")
         let secret = headerPairs (get "secretHeaders")
+        let plain = headerPairs (get "headers")
+
+        // `auth` and an explicit Authorization header would merge into one
+        // invalid header on the wire — two credentials, refused
+        if not auth.IsEmpty then
+            match
+                (plain @ secret)
+                |> List.tryFind (fun (k, _) -> System.String.Equals(k, "Authorization", System.StringComparison.OrdinalIgnoreCase))
+            with
+            | Some(k, _) ->
+                failwith
+                    $"Http: the request sets both `auth` and an '{k}' header — two credentials for one header; keep one (`auth` is the usual spelling)"
+            | None -> ()
 
         // the credential channels [D:secret-redirect]: auth's Authorization
         // and every secretHeaders name are dropped on a cross-origin
-        // redirect, so the two channels agree (F4). Names are lowercased for
-        // a case-insensitive match, the same casing Http.send filters on.
+        // redirect, so the two channels agree (F4). The credential-bearing
+        // names are dropped from plain `headers` too (Authorization,
+        // Proxy-Authorization, Cookie) — as the BCL drops them. Names are
+        // lowercased for a case-insensitive match, the same casing
+        // Http.send filters on.
         let sensitive =
             (auth @ secret)
             |> List.map (fun (k, _) -> k.ToLowerInvariant())
             |> Set.ofList
+            |> Set.union (Set.ofList [ "authorization"; "proxy-authorization"; "cookie" ])
 
         let req: Http.Req =
             { Method = httpMethodName (get "method")
@@ -4465,7 +4467,7 @@ let private runRequest (reqV: Value) : Http.Resp =
                 (match get "url" with
                  | VStr s -> s
                  | v -> unreachable $"url {formatValue v}")
-              Headers = auth @ headerPairs (get "headers") @ secret
+              Headers = auth @ plain @ secret
               SensitiveHeaders = sensitive
               Body = httpBodyOf (get "body")
               TimeoutMs =
@@ -7456,7 +7458,6 @@ let private chainTy (result: Ty) : Ty =
 let private entries: (string * Ty * Value) list =
     [ "ls", seqFileRow, realLs
       "nats", seqInt, natsImpl
-      "into", TFun(TStr, TFun(seqStr, seqStr)), intoImpl
       "cd", TFun(TStr, TStr), cdImpl
       "pwd", TStr, pwdImpl
       "not", TFun(TBool, TBool), notImpl

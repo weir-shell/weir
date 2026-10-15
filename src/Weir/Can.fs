@@ -691,11 +691,11 @@ let private ofChecked (pairs: (LogicalLine * CheckedStatement) list) : (LogicalL
 /// the report. `--strict` exits 2 on any opaque site — CI's "treat
 /// unanalysable as failure" as a flag, not a default.
 let run (json: bool) (strict: bool) (path: string) : int =
-    if not (System.IO.File.Exists path) then
-        eprintfn $"weir: no such script: {path}"
+    match readEntryScript path with
+    | Error msg ->
+        eprintfn $"weir: {msg}"
         2
-    else
-        let rawLines = System.IO.File.ReadAllLines path |> Array.toList
+    | Ok rawLines ->
         let diags, pairs, _, _ = analyzeLines path rawLines
 
         if diags |> List.exists (fun d -> d.Severity = "error") then

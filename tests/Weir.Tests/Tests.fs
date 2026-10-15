@@ -1131,7 +1131,7 @@ let boundaryTests =
           test "funnel: a NUL in the `into` cmdline refuses (into path) [D:spawn-nul-funnel]" {
               skipOnWindows ()
               // into spawns `sh -c <cmdline>` — the cmdline is arg[1]
-              nulMsg (fun () -> Weir.Proc.lines "sh" [ "-c"; $"echo before{nul}after" ] None |> Seq.iter ignore) "into cmdline"
+              nulMsg (fun () -> Weir.Proc.lines "sh" [ "-c"; $"echo before{nul}after" ] None |> Seq.iter ignore) "sh -c cmdline"
           }
           test "funnel: a NUL PROGRAM name refuses (dynamic head ^$name) [D:spawn-nul-funnel]" {
               skipOnWindows ()
@@ -3031,7 +3031,7 @@ let boundaryTests =
               let imagePos = g.Text.IndexOf "\n    image:"
               Expect.isTrue (imagePos < namePos && imagePos > 0) "fields sort alphabetically"
           }
-          test "schema-types: refs name types, allOf flattens, arrays nest, cycles keep opaque [D:schema-types]" {
+          test "schema-types: refs name types, allOf flattens, arrays nest, cycles omit the field [D:schema-types]" {
               let genAs asName src =
                   match Weir.Contracts.parseSchema "t" src with
                   | Error e -> failtest e
@@ -3101,8 +3101,32 @@ let boundaryTests =
                   | Ok g -> g
                   | Error e -> failtest e
 
-              Expect.stringContains cyc.Text "items: Option<seq<Yaml>>" "a self-ref field keeps opaque Yaml"
-              Expect.stringContains cyc.Text "self-referential" "the cycle note fires"
+              // a self-ref field is omitted with a note, so the type stays one
+              // `from json` admits — no opaque Yaml field (H19)
+              Expect.isFalse (cyc.Text.Contains "Yaml") cyc.Text
+              Expect.isFalse (cyc.Text.Contains "    items:") "the cyclic field is omitted"
+              Expect.stringContains cyc.Text "name: Option<string>" "the finite fields stay"
+              Expect.stringContains cyc.Text "items: refers back to its own definition — omitted" "the cycle note fires"
+
+              let ds =
+                  diagsIn
+                      "h19.weir"
+                      ((cyc.Text.Split '\n' |> List.ofArray |> List.filter (fun l -> not (l.StartsWith "module ")))
+                       @ [ "let x = [\"{\\\"name\\\":\\\"a\\\",\\\"items\\\":[{\\\"name\\\":\\\"b\\\"}]}\"] |> from json Props"
+                           "print (show x.name)" ])
+
+              Expect.isEmpty (ds |> List.filter (fun d -> d.Severity = "error")) $"from json admits the generated type: {ds}"
+
+              // a definition that is nothing but its own cycle has no record
+              match
+                  genAs
+                      None
+                      """{ "$ref": "#/definitions/Loop",
+                           "definitions": { "Loop": { "type": "object", "properties": {
+                             "next": { "$ref": "#/definitions/Loop" } } } } }"""
+              with
+              | Ok g -> failtest $"an all-cyclic top must refuse, got {g.Text}"
+              | Error e -> Expect.stringContains e "finite tree" e
 
               // an unrepresentable top level refuses with the located reason
               let refusal =
@@ -3221,17 +3245,6 @@ let boundaryTests =
                   match Weir.Fmt.formatLines out with
                   | Ok out2 -> Expect.equal out2 out "idempotent with a block scalar inside"
                   | Error e -> failtestf "second fmt failed: %s" e
-          }
-          test "into feeds stdin and yields stdout" {
-              // into is the documented sh -c path, so the fixture is a
-              // POSIX shell by definition. into's Windows semantics are
-              // undecided [D:windows-s3] — its default shell there would
-              // be cmd /c, a real (small) feature awaiting a receipt; a
-              // stated gap beats a blind shim.
-              skipOnWindows ()
-              // tr strips BSD wc's left-padding — the subject is the stdin
-              // plumbing, not wc's platform formatting
-              Expect.equal (run "nats |> take 3 |> to jsonl |> into \"wc -l | tr -d ' '\"" |> forceSeq) [ VStr "3" ] ""
           }
           test "from can be let-bound" {
               expectValue
@@ -9234,6 +9247,10 @@ let reserveBuiltinTests =
               // the escape-bearer, not an alias [D:dir-stat]: Dir.stat
               // "." is ls's way back, so ls binds
               expectValue "let ls = 3 in ls" (VInt 3L)
+          }
+          test "into is deleted: an ordinary unbound, bindable name [D:into-deleted]" {
+              expectValue "let into = 4 in into" (VInt 4L)
+              Expect.stringContains (checkErr "[\"a\"] |> into \"cat\"").Message "into" "unbound into"
           } ]
 
 let wireKeyTests =
@@ -9712,7 +9729,7 @@ let schemaHoverTests =
 
         System.IO.File.WriteAllText(
             System.IO.Path.Combine(td, ".weir", "lock.json"),
-            """{ "artifacts": [ { "kind": "schema", "name": "six", "url": "https://example.com/six.json", "sha256": "abc", "path": "schemas/six.json" }, { "kind": "schema", "name": "ghost", "url": "https://example.com/ghost.json", "sha256": "def", "path": "schemas/ghost.json" } ] }"""
+            """{ "artifacts": [ { "kind": "schema", "name": "six", "url": "https://example.com/six.json", "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "path": "schemas/six.json" }, { "kind": "schema", "name": "ghost", "url": "https://example.com/ghost.json", "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "path": "schemas/ghost.json" } ] }"""
         )
 
         let entry = System.IO.Path.Combine(td, "main.weir")
@@ -11678,6 +11695,140 @@ let lockfileConfinementTests =
                   Expect.stringContains msg "escapes .weir/" "the refusal names the escape"
                   Expect.stringContains msg "../ESCAPE.json" "and the offending path"
           }
+          test "entryDest refuses the lockfile and .weir/ itself — restore never overwrites lock.json (H5)" {
+              let root = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "weir-conf-root")
+
+              for bad in [ "lock.json"; "./lock.json"; "schemas/../lock.json"; "LOCK.JSON"; "."; "schemas/.." ] do
+                  match Weir.Contracts.entryDest root (mkEntry bad) with
+                  | Ok d -> failtest $"'{bad}' must refuse, got {d}"
+                  | Error msg -> Expect.stringContains msg "lockfile" $"'{bad}': the refusal names the lockfile"
+          }
+          test "a malformed lock entry is a weir-worded refusal naming the entry and field (H12)" {
+              let dir = tempDir "weir-h12"
+
+              try
+                  let sha = System.String('a', 64)
+
+                  let entry (fields: string) =
+                      "{ \"artifacts\": [ { " + fields + " } ] }"
+
+                  let full =
+                      $"\"kind\": \"schema\", \"name\": \"n\", \"url\": \"http://x\", \"sha256\": \"{sha}\", \"path\": \"schemas/n.json\""
+
+                  let cases =
+                      [ entry (full.Replace(sha, "abc")), "\"sha256\" must be 64 hex digits"
+                        entry (full.Replace("\"path\": \"schemas/n.json\"", "\"path\": null")), "\"path\" must be a string"
+                        entry (full.Replace("\"url\": \"http://x\", ", "")), "missing \"url\""
+                        entry (full.Replace("schemas/n.json", "")), "\"path\" is empty"
+                        "{ \"artifacts\": [ 3 ] }", "artifacts[0] must be an object"
+                        "[]", "must be a JSON object" ]
+
+                  for text, want in cases do
+                      System.IO.File.WriteAllText(System.IO.Path.Combine(dir, "lock.json"), text)
+
+                      match Weir.Contracts.readLock dir with
+                      | Ok _ -> failtest $"{text} must refuse"
+                      | Error msg ->
+                          Expect.stringContains msg "malformed lockfile" "weir-worded"
+                          Expect.stringContains msg want $"names the field: {text}"
+
+                  System.IO.File.WriteAllText(System.IO.Path.Combine(dir, "lock.json"), entry full)
+
+                  match Weir.Contracts.readLock dir with
+                  | Ok [ e ] -> Expect.equal e.Path "schemas/n.json" "a well-formed entry reads"
+                  | other -> failtest $"a well-formed lock reads: {other}"
+              finally
+                  System.IO.Directory.Delete(dir, true)
+          }
+          test "a module re-fetch carries the WEIR_TOKEN_<host> credential add sent (H13)" {
+              let var = Weir.Contracts.hostTokenVar "modules.example.test"
+              let gl = Weir.Contracts.hostTokenVar "gitlab.com"
+              let gh = Weir.Contracts.hostTokenVar "github.com"
+              let saved = [ var; gl; gh ] |> List.map (fun v -> v, System.Environment.GetEnvironmentVariable v)
+
+              try
+                  System.Environment.SetEnvironmentVariable(var, "t1")
+                  System.Environment.SetEnvironmentVariable(gl, "t2")
+                  System.Environment.SetEnvironmentVariable(gh, "t3")
+
+                  let auth url =
+                      fst (Weir.Contracts.moduleFetchHeaders url)
+                      |> List.filter (fun (k, _) -> k <> "User-Agent")
+
+                  Expect.equal (auth "https://modules.example.test/m.weir") [ "Authorization", "token t1" ] "raw URL host"
+                  Expect.equal (auth "https://gitlab.com/g/r/-/raw/abc/m.weir") [ "PRIVATE-TOKEN", "t2" ] "gitlab"
+
+                  Expect.equal
+                      (auth "https://raw.githubusercontent.com/o/r/abc/m.weir")
+                      [ "Authorization", "token t3" ]
+                      "github raw reads the github.com token"
+
+                  Expect.equal (auth "https://other.example.test/m.weir") [] "no token, no header"
+              finally
+                  for v, old in saved do
+                      System.Environment.SetEnvironmentVariable(v, old)
+          }
+          test "a module's restore hash mismatch names `weir add module`, not schema (H56)" {
+              let dir = tempDir "weir-h56c"
+              let l = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0)
+              l.Start()
+              let port = (l.LocalEndpoint :?> System.Net.IPEndPoint).Port
+
+              let t =
+                  System.Threading.Thread(fun () ->
+                      try
+                          use c = l.AcceptTcpClient()
+                          use st = c.GetStream()
+                          let buf = Array.zeroCreate<byte> 8192
+                          st.Read(buf, 0, buf.Length) |> ignore
+                          let r = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nhi"B
+                          st.Write(r, 0, r.Length)
+                      with _ ->
+                          ())
+
+              t.IsBackground <- true
+              t.Start()
+
+              try
+                  let url = $"http://127.0.0.1:{port}/m.weir"
+
+                  Weir.Contracts.writeLock
+                      dir
+                      [ { Kind = "module"
+                          Name = "m"
+                          Url = url
+                          Sha256 = System.String('a', 64)
+                          Path = "modules/m.weir"
+                          Version = None } ]
+
+                  match Weir.Contracts.restore dir with
+                  | Ok lines -> failtest $"a hash mismatch must refuse: {lines}"
+                  | Error e -> Expect.stringContains e $"weir add module {url} --as m" e
+              finally
+                  l.Stop()
+                  System.IO.Directory.Delete(dir, true)
+          }
+          test "entryDest refuses a leaf symlinked to the lockfile (H5)" {
+              if not (System.OperatingSystem.IsWindows()) then
+                  let dir = tempDir "weir-h5"
+
+                  try
+                      let weirDir = System.IO.Path.Combine(dir, ".weir")
+                      System.IO.Directory.CreateDirectory(System.IO.Path.Combine(weirDir, "schemas")) |> ignore
+                      System.IO.File.WriteAllText(System.IO.Path.Combine(weirDir, "lock.json"), "{}")
+
+                      System.IO.File.CreateSymbolicLink(
+                          System.IO.Path.Combine(weirDir, "schemas", "x.json"),
+                          System.IO.Path.Combine(weirDir, "lock.json")
+                      )
+                      |> ignore
+
+                      match Weir.Contracts.entryDest weirDir (mkEntry "schemas/x.json") with
+                      | Ok d -> failtest $"a leaf linked to lock.json must refuse, got {d}"
+                      | Error msg -> Expect.stringContains msg "lockfile" "the refusal names the lockfile"
+                  finally
+                      System.IO.Directory.Delete(dir, true)
+          }
           test "an unreadable import is a LOCATED diagnostic, never a crash (F2)" {
               // mode-000 on the imported file: check must give a located
               // 'cannot read import' error, not throw (the old crash)
@@ -12520,6 +12671,30 @@ let depthGuardTests =
               match result with
               | Some(Error m) -> Expect.stringContains m "nested too deeply" "the probe fired before the stack ran out"
               | Some(Ok _) -> failtest "a 512KB stack cannot fit depth 499 — the probe should have fired"
+              | None -> failtest "the parse thread produced no result"
+          }
+          test "a block's statements are width, not depth [D:block-width]" {
+              // 600 lets and a 600-element `;` sequence: past the ceiling
+              // as a nest, but statements never count toward it. A thread
+              // with room — the CLI's own stack — so the probe stays quiet.
+              let lets =
+                  (List.init 600 (fun i -> $"let _a{i} = {i} in") |> String.concat " ") + " _a0 + _a599"
+
+              let seqs = List.replicate 600 "1" |> String.concat "; "
+              let mutable result = None
+
+              let t =
+                  System.Threading.Thread(
+                      (fun () -> result <- Some(Weir.Parser.parseExpr lets, Weir.Parser.parseExpr seqs)),
+                      64 * 1024 * 1024
+                  )
+
+              t.Start()
+              t.Join()
+
+              match result with
+              | Some(Ok _, Ok _) -> ()
+              | Some(a, b) -> failtestf "block width counted as depth: %A / %A" (Result.isOk a) b
               | None -> failtest "the parse thread produced no result"
           }
           test "over-ceiling parens diagnose, located, no crash" {
@@ -16150,6 +16325,40 @@ let httpTests =
         | VStr s -> s
         | v -> failtest $"not a string: {v}"
 
+    // a raw one-response-per-connection server on a free loopback port:
+    // `answer` maps the request head to the exact response bytes, so a
+    // test controls repeated headers and charsets byte-for-byte; the
+    // request heads land in the returned list
+    let rawServe (answer: string -> string) : int * System.Collections.Concurrent.ConcurrentQueue<string> =
+        let l = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0)
+        l.Start()
+        let seen = System.Collections.Concurrent.ConcurrentQueue<string>()
+
+        let loop () =
+            try
+                while true do
+                    use c = l.AcceptTcpClient()
+                    use st = c.GetStream()
+                    let buf = Array.zeroCreate<byte> 65536
+                    let sb = System.Text.StringBuilder()
+
+                    while not (sb.ToString().Contains "\r\n\r\n") do
+                        let n = st.Read(buf, 0, buf.Length)
+                        if n = 0 then failwith "eof"
+                        sb.Append(System.Text.Encoding.Latin1.GetString(buf, 0, n)) |> ignore
+
+                    let head = sb.ToString()
+                    seen.Enqueue head
+                    let bytes = System.Text.Encoding.Latin1.GetBytes(answer head)
+                    st.Write(bytes, 0, bytes.Length)
+            with _ ->
+                ()
+
+        let t = System.Threading.Thread(loop)
+        t.IsBackground <- true
+        t.Start()
+        (l.LocalEndpoint :?> System.Net.IPEndPoint).Port, seen
+
     testList
         "Http [D:http]"
         [ test "the response body reads under weir's line law [D:http-body-lines]: no trailing empty, CRLF normalized, empty is empty" {
@@ -16427,6 +16636,81 @@ let httpTests =
                   (run "\"http://x?a=1\" |> Http.withQuery [(\"b\", \"2\")]")
                   (VStr "http://x?a=1&b=2")
                   "an existing query gets & not ?"
+          }
+          test "response headers: one pair per received line, values verbatim (H14)" {
+              let port, _ =
+                  rawServe (fun _ ->
+                      "HTTP/1.1 200 OK\r\nServer: BaseHTTP/0.6 Python/3.14.4\r\nX-Rep: a\r\nX-Rep: b, c\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+
+              let r = $"Http.send (Http.get \"http://127.0.0.1:{port}/\")"
+
+              Expect.equal
+                  (run $"{r} |> Http.header \"server\"")
+                  (VUnion("Some", Some(VStr "BaseHTTP/0.6 Python/3.14.4")))
+                  "a single value is never re-joined"
+
+              Expect.equal
+                  (run $"{r} |> Http.headerAll \"x-rep\" |> Str.join \"|\"")
+                  (VStr "a|b, c")
+                  "one entry per header line, the list value untouched"
+
+              Expect.equal (run $"{r} |> Http.header \"X-Rep\"") (VUnion("Some", Some(VStr "a"))) "header is the first line"
+          }
+          test "an undecodable response charset is its own error, never 'cannot reach' (H15)" {
+              let port, _ =
+                  rawServe (fun head ->
+                      let cs = if head.Contains "/latin" then "iso-8859-1" else "x-bogus"
+                      $"HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset={cs}\r\nContent-Length: 2\r\nConnection: close\r\n\r\n\u00e9!")
+
+              let ex =
+                  Expect.throwsC (fun () -> run $"Http.send (Http.get \"http://127.0.0.1:{port}/\")" |> ignore) id
+
+              Expect.stringContains ex.Message "charset 'x-bogus'" ex.Message
+              Expect.isFalse (ex.Message.Contains "cannot reach") ex.Message
+
+              Expect.equal
+                  (run $"(Http.send (Http.get \"http://127.0.0.1:{port}/latin\")).body |> Str.join \"\"")
+                  (VStr "\u00e9!")
+                  "a known charset still decodes"
+          }
+          test "auth plus an explicit Authorization header is refused — two credentials (H55)" {
+              let ex =
+                  Expect.throwsC
+                      (fun () ->
+                          run
+                              "Http.send { Http.get \"http://127.0.0.1:9/\" with auth = Basic (\"u\", Secret.of \"p\"); headers = [(\"authorization\", \"Bearer x\")] }"
+                          |> ignore)
+                      id
+
+              Expect.stringContains ex.Message "two credentials" ex.Message
+          }
+          test "a plain Cookie/Authorization header is dropped on a cross-origin redirect (H55)" {
+              let portB, seenB =
+                  rawServe (fun _ -> "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+
+              let portA, _ =
+                  rawServe (fun _ ->
+                      $"HTTP/1.1 302 Found\r\nLocation: http://localhost:{portB}/b\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+
+              Expect.equal
+                  (run
+                      $"(Http.send {{ Http.get \"http://127.0.0.1:{portA}/a\" with headers = [(\"Cookie\", \"sid=SECRET\"); (\"Authorization\", \"Bearer SECRET\"); (\"X-Control\", \"kept\")] }}).status")
+                  (VInt 200L)
+                  "the redirect is followed"
+
+              let head = String.concat "" seenB
+              Expect.isFalse (head.Contains "SECRET") $"no credential crosses origins: {head}"
+              Expect.stringContains head "X-Control: kept" "an ordinary header crosses"
+          }
+          test "a redirect loop is a named error, never a 3xx handed back as data (H55)" {
+              let port, _ =
+                  rawServe (fun _ -> "HTTP/1.1 302 Found\r\nLocation: /again\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+
+              let ex =
+                  Expect.throwsC (fun () -> run $"Http.send (Http.get \"http://127.0.0.1:{port}/\")" |> ignore) id
+
+              Expect.stringContains ex.Message "redirect loop" ex.Message
+              Expect.stringContains ex.Message "50 hops" ex.Message
           } ]
 
 let functionKeywordTests =
@@ -18179,6 +18463,48 @@ let walkCohortTests =
                   Expect.isTrue
                       hit
                       $"the declare-after-import half must name the import: {diags |> List.map (fun d -> d.Message)}"
+              finally
+                  System.IO.Directory.Delete(td, true)
+          }
+          test "an import alias spelled like a union case in scope is refused (H56)" {
+              let td = tempDir "weir-h56a"
+              System.IO.File.WriteAllLines(System.IO.Path.Combine(td, "m.weir"), [| "module M"; "let x : int"; "let x = 1" |])
+
+              try
+                  for alias in [ "Some"; "Ok" ] do
+                      let diags =
+                          diagsIn (System.IO.Path.Combine(td, "main.weir")) [ $"import \"./m.weir\" as {alias}"; "print \"x\"" ]
+
+                      Expect.exists
+                          diags
+                          (fun d -> d.Message.Contains $"the name '{alias}' is a union case in scope")
+                          $"{alias}: {diags |> List.map (fun d -> d.Message)}"
+
+                  let ok = diagsIn (System.IO.Path.Combine(td, "main.weir")) [ "import \"./m.weir\" as Mine"; "print (show Mine.x)" ]
+                  Expect.isEmpty (ok |> List.filter (fun d -> d.Severity = "error")) "an ordinary alias stays clean"
+              finally
+                  System.IO.Directory.Delete(td, true)
+          }
+          test "weir:<name> in both .weir/modules and .weir/types is an error, not a silent precedence (H56)" {
+              let td = tempDir "weir-h56b"
+              System.IO.Directory.CreateDirectory(System.IO.Path.Combine(td, ".git")) |> ignore
+              let wd = System.IO.Path.Combine(td, ".weir")
+              System.IO.Directory.CreateDirectory(System.IO.Path.Combine(wd, "modules")) |> ignore
+              System.IO.Directory.CreateDirectory(System.IO.Path.Combine(wd, "types")) |> ignore
+              System.IO.File.WriteAllLines(System.IO.Path.Combine(wd, "modules", "x.weir"), [| "module X"; "let a : int"; "let a = 1" |])
+              System.IO.File.WriteAllLines(System.IO.Path.Combine(wd, "types", "x.weir"), [| "module X"; "type T = { a: int }" |])
+
+              try
+                  let diags = diagsIn (System.IO.Path.Combine(td, "main.weir")) [ "import \"weir:x\" as X"; "print \"x\"" ]
+
+                  Expect.exists
+                      diags
+                      (fun d -> d.Message.Contains "names two vendored files")
+                      $"{diags |> List.map (fun d -> d.Message)}"
+
+                  System.IO.File.Delete(System.IO.Path.Combine(wd, "types", "x.weir"))
+                  let ok = diagsIn (System.IO.Path.Combine(td, "main.weir")) [ "import \"weir:x\" as X"; "print (show X.a)" ]
+                  Expect.isEmpty (ok |> List.filter (fun d -> d.Severity = "error")) "one home resolves"
               finally
                   System.IO.Directory.Delete(td, true)
           }
@@ -21902,6 +22228,80 @@ let serveTests =
     let okHandler =
         "let h = fun req -> HttpServerResponse { status = 200; headers = []; body = Text \"ok\" }"
 
+    // drive the Serve leg over a real loopback socket: `answer` maps the
+    // read request to a response, each raw request is sent in turn on ONE
+    // kept-alive connection, and each reply's raw bytes (Date dropped)
+    // come back — the wire view a unit can pin
+    let wireWith (maxBody: int64) (answer: Weir.Serve.SReq -> Weir.Serve.SResp) (raws: string list) : string list =
+        let probe = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0)
+        probe.Start()
+        let port = (probe.LocalEndpoint :?> System.Net.IPEndPoint).Port
+        probe.Stop()
+        let h = Weir.Serve.start port
+
+        let loop () =
+            let mutable go = true
+
+            while go do
+                match Weir.Serve.accept h with
+                | None -> go <- false
+                | Some ctx ->
+                    let resp =
+                        try
+                            answer (Weir.Serve.readRequest ctx 5000 maxBody)
+                        with
+                        | Weir.Serve.BodyTooLarge ->
+                            ctx.Response.KeepAlive <- false
+
+                            { Status = 413
+                              Headers = []
+                              Body = Weir.Serve.RText "too large" }
+                        | ex ->
+                            { Status = 599
+                              Headers = []
+                              Body = Weir.Serve.RText ex.Message }
+
+                    Weir.Serve.writeResponse ctx resp ignore
+
+        let t = System.Threading.Thread(loop)
+        t.IsBackground <- true
+        t.Start()
+
+        try
+            use c = new System.Net.Sockets.TcpClient("127.0.0.1", port)
+            c.ReceiveTimeout <- 700
+            let st = c.GetStream()
+
+            [ for raw in raws do
+                  let b = System.Text.Encoding.Latin1.GetBytes(raw: string)
+                  st.Write(b, 0, b.Length)
+                  let buf = Array.zeroCreate<byte> 65536
+                  let sb = System.Text.StringBuilder()
+
+                  // the first byte may wait on a cold listener (JIT, a loaded
+                  // CI runner); once a reply flows, a short quiet gap ends it
+                  c.ReceiveTimeout <- 10000
+
+                  (try
+                      let mutable n = st.Read(buf, 0, buf.Length)
+                      c.ReceiveTimeout <- 700
+
+                      while n > 0 do
+                          sb.Append(System.Text.Encoding.Latin1.GetString(buf, 0, n)) |> ignore
+                          n <- st.Read(buf, 0, buf.Length)
+                   with _ ->
+                       ())
+
+                  yield
+                      System.Text.RegularExpressions.Regex.Replace(sb.ToString(), "Date: [^\r]*\r\n", "") ]
+        finally
+            Weir.Serve.stop h
+
+    let wire = wireWith (16L * 1024L * 1024L)
+
+    let get (m: string) (path: string) =
+        $"{m} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n"
+
     testList
         "within serve [D:http-serve]"
         [ test "the head form checks clean: binder = config record + handler, body sequences with lets" {
@@ -21997,6 +22397,115 @@ let serveTests =
               let h2 = Weir.Serve.start 8199
               Expect.isFalse h2.Closed "the second bind succeeds after the first freed"
               Weir.Serve.stop h2
+          }
+          test "no body on 204, 304 or HEAD — a kept-alive connection stays in frame (H16)" {
+              let answer (r: Weir.Serve.SReq) : Weir.Serve.SResp =
+                  match r.Path with
+                  | "/nc" -> { Status = 204; Headers = []; Body = Weir.Serve.RText "LEAK204" }
+                  | "/nm" -> { Status = 304; Headers = []; Body = Weir.Serve.RJson "LEAK304" }
+                  | _ -> { Status = 200; Headers = []; Body = Weir.Serve.RText "hello" }
+
+              let replies = wire answer [ get "GET" "/nc"; get "HEAD" "/x"; get "GET" "/nm"; get "GET" "/x" ]
+
+              match replies with
+              | [ nc; head; nm; ok ] ->
+                  Expect.stringContains nc "204" nc
+                  Expect.isFalse (nc.Contains "LEAK204") $"204 carries no body: {nc}"
+                  Expect.isTrue (head.EndsWith "\r\n\r\n") $"HEAD ends at the head: {head}"
+                  Expect.stringContains head "Content-Length: 5" "HEAD declares the GET length"
+                  Expect.isFalse (nm.Contains "LEAK304") $"304 carries no body: {nm}"
+                  Expect.isTrue (ok.StartsWith "HTTP/1.1 200" && ok.EndsWith "hello") $"the next reply is in frame: {ok}"
+              | other -> failtest $"four replies expected: {other}"
+          }
+          test "a handler's framing and hop-by-hop headers are dropped; others pass (H17)" {
+              let answer (_: Weir.Serve.SReq) : Weir.Serve.SResp =
+                  { Status = 200
+                    Headers =
+                      [ "Transfer-Encoding", "chunked"
+                        "content-length", "99"
+                        "Connection", "close"
+                        "Keep-Alive", "timeout=5"
+                        "Upgrade", "h2c"
+                        "X-Ok", "kept" ]
+                    Body = Weir.Serve.RText "hello" }
+
+              match wire answer [ get "GET" "/a"; get "GET" "/b" ] with
+              | [ a; b ] ->
+                  let lower = a.ToLowerInvariant()
+
+                  for bad in [ "transfer-encoding"; "content-length: 99"; "connection: close"; "keep-alive"; "upgrade" ] do
+                      Expect.isFalse (lower.Contains bad) $"'{bad}' is dropped: {a}"
+
+                  Expect.stringContains a "Content-Length: 5" "the listener's own length"
+                  Expect.stringContains a "X-Ok: kept" "an ordinary header passes"
+                  Expect.isTrue (b.EndsWith "hello") $"the connection stays in frame: {b}"
+              | other -> failtest $"two replies expected: {other}"
+          }
+          test "a Stream element's newlines become data: lines of ONE event — no forged events (H18)" {
+              let answer (_: Weir.Serve.SReq) : Weir.Serve.SResp =
+                  { Status = 200
+                    Headers = []
+                    Body = Weir.Serve.RStream(seq { "a\n\nevent: evil\ndata: x"; "b\r\nc\rd"; "e" }) }
+
+              match wire answer [ get "GET" "/s" ] with
+              | [ r ] ->
+                  let body = System.Text.RegularExpressions.Regex.Replace(r, "\r\n[0-9a-fA-F]+\r\n", "")
+
+                  Expect.stringContains
+                      body
+                      "data: a\ndata: \ndata: event: evil\ndata: data: x\n\ndata: b\ndata: c\ndata: d\n\ndata: e\n\n"
+                      r
+
+                  Expect.isFalse (body.Contains "\nevent: evil") "no forged field line"
+              | other -> failtest $"one reply expected: {other}"
+          }
+          test "maxBody: a body past the bound is 413 whether declared or chunked; within it reads whole (H20)" {
+              let echo (r: Weir.Serve.SReq) : Weir.Serve.SResp =
+                  { Status = 200
+                    Headers = []
+                    Body = Weir.Serve.RText $"got:{r.Body}" }
+
+              let post (body: string) =
+                  $"POST /p HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: {body.Length}\r\n\r\n{body}"
+
+              let chunked (body: string) =
+                  $"POST /p HTTP/1.1\r\nHost: 127.0.0.1\r\nTransfer-Encoding: chunked\r\n\r\n{body.Length:x}\r\n{body}\r\n0\r\n\r\n"
+
+              match wireWith 10L echo [ post "0123456789" ] with
+              | [ r ] -> Expect.isTrue (r.EndsWith "got:0123456789") $"exactly maxBody reads: {r}"
+              | other -> failtest $"{other}"
+
+              match wireWith 10L echo [ post "0123456789X" ] with
+              | [ r ] -> Expect.stringContains r "HTTP/1.1 413" r
+              | other -> failtest $"{other}"
+
+              match wireWith 10L echo [ chunked "0123456789XYZ" ] with
+              | [ r ] -> Expect.stringContains r "HTTP/1.1 413" r
+              | other -> failtest $"{other}"
+
+              match wireWith 10L echo [ chunked "abc" ] with
+              | [ r ] -> Expect.isTrue (r.EndsWith "got:abc") $"a small chunked body reads: {r}"
+              | other -> failtest $"{other}"
+          }
+          test "maxBody is an optional Size field of the serve config literal (H20)" {
+              clean
+                  [ okHandler
+                    "within serve srv = { port = 80; maxConcurrent = 1; maxBody = 1MiB } h"
+                    "    print \"ok\"" ]
+                  "maxBody alone"
+
+              clean
+                  [ okHandler
+                    "within serve srv = { port = 80; maxConcurrent = 1; bodyTimeout = 2s; maxBody = 64KiB } h"
+                    "    print \"ok\"" ]
+                  "both optional fields"
+
+              mustSay
+                  [ okHandler
+                    "within serve srv = { port = 80; maxConcurrent = 1; maxBody = 5 } h"
+                    "    print \"ok\"" ]
+                  "Size"
+                  "maxBody is a Size"
           }
           // ---- F9: the method boundary [D:serve-method] ----
           test "HttpMethod carries a well-formed unlisted verb as Other; an inlined handler routes on it and on Query" {

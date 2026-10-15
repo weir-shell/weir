@@ -337,12 +337,33 @@ let entryDest (weirDir: string) (e: LockEntry) : Result<string, string> =
     let tampered () =
         $"{e.Kind} {e.Name}: the lock records path '{e.Path}', which escapes .weir/ — a lock entry must stay under the vendor directory; this lock was tampered with or hand-edited"
 
+    // the lockfile and the vendor root itself are inside .weir/ but are
+    // never an artifact [D:lockfile-confinement] — an entry naming either
+    // (lexically or through a symlinked leaf) would let restore overwrite
+    // the lock it is reading
+    let reserved (p: string) =
+        let full = Path.TrimEndingDirectorySeparator(Path.GetFullPath p)
+        let root = Path.TrimEndingDirectorySeparator(Path.GetFullPath weirDir)
+
+        String.Equals(full, root, StringComparison.OrdinalIgnoreCase)
+        || String.Equals(full, Path.Combine(root, "lock.json"), StringComparison.OrdinalIgnoreCase)
+
+    let reservedReal (dest: string) =
+        match resolveExistingPrefix weirDir, resolveExistingPrefix dest with
+        | Ok realRoot, Ok realDest ->
+            String.Equals(realDest, realRoot, StringComparison.OrdinalIgnoreCase)
+            || String.Equals(realDest, Path.Combine(realRoot, "lock.json"), StringComparison.OrdinalIgnoreCase)
+        | _ -> false
+
     match confineUnder weirDir e.Path with
     | Error _ -> Error(tampered ())
     | Ok dest ->
         match confineRealUnder weirDir dest with
-        | Ok _ -> Ok dest
         | Error _ -> Error(tampered ())
+        | Ok _ when reserved dest || reservedReal dest ->
+            Error
+                $"{e.Kind} {e.Name}: the lock records path '{e.Path}', which names .weir/lock.json or .weir/ itself — an artifact never overwrites the lockfile; this lock was tampered with or hand-edited"
+        | Ok _ -> Ok dest
 
 let sha256Hex (bytes: byte[]) : string =
     use sha = Security.Cryptography.SHA256.Create()
@@ -353,6 +374,8 @@ let sha256Hex (bytes: byte[]) : string =
 
 let private lockPath (weirDir: string) = Path.Combine(weirDir, "lock.json")
 
+exception private LockShape of string
+
 let readLock (weirDir: string) : Result<LockEntry list, string> =
     let p = lockPath weirDir
 
@@ -362,29 +385,71 @@ let readLock (weirDir: string) : Result<LockEntry list, string> =
         try
             use doc = Text.Json.JsonDocument.Parse(File.ReadAllText p)
 
+            if doc.RootElement.ValueKind <> Text.Json.JsonValueKind.Object then
+                raise (LockShape "the lockfile must be a JSON object")
+
             let ver =
                 match doc.RootElement.TryGetProperty "schemaVersion" with
-                | true, v -> v.GetInt32()
+                | true, v when v.ValueKind = Text.Json.JsonValueKind.Number -> v.GetInt32()
+                | true, _ -> raise (LockShape "\"schemaVersion\" must be a number")
                 | _ -> 1 // pre-field locks are version 1
 
             if ver > 1 then
                 failwith $"lock schemaVersion {ver} is newer than this weir understands — upgrade weir"
 
-            doc.RootElement.GetProperty("artifacts").EnumerateArray()
-            |> Seq.map (fun e ->
-                { Kind = e.GetProperty("kind").GetString()
-                  Name = e.GetProperty("name").GetString()
-                  Url = e.GetProperty("url").GetString()
-                  Sha256 = e.GetProperty("sha256").GetString()
-                  Path = e.GetProperty("path").GetString()
-                  Version =
-                    match e.TryGetProperty "version" with
-                    | true, v -> Some(v.GetString())
-                    | _ -> None })
+            // every entry is validated at read, naming the entry and the
+            // field [D:lockfile-confinement]: a hand-edited lock must be a
+            // weir-worded refusal, never a null or a short-sha crash in a
+            // consumer
+            let bad (msg: string) = raise (LockShape msg)
+
+            let artifacts =
+                match doc.RootElement.TryGetProperty "artifacts" with
+                | true, a when a.ValueKind = Text.Json.JsonValueKind.Array -> a
+                | true, _ -> bad "\"artifacts\" must be an array"
+                | _ -> bad "no \"artifacts\" array"
+
+            artifacts.EnumerateArray()
+            |> Seq.mapi (fun i e ->
+                let at = $"artifacts[{i}]"
+
+                if e.ValueKind <> Text.Json.JsonValueKind.Object then
+                    bad $"{at} must be an object"
+
+                let str (field: string) (required: bool) : string option =
+                    match e.TryGetProperty field with
+                    | true, v when v.ValueKind = Text.Json.JsonValueKind.String -> Some(v.GetString())
+                    | true, _ -> bad $"{at}: \"{field}\" must be a string"
+                    | _ when required -> bad $"{at}: missing \"{field}\""
+                    | _ -> None
+
+                let need (field: string) =
+                    match str field true with
+                    | Some "" -> bad $"{at}: \"{field}\" is empty"
+                    | Some v -> v
+                    | None -> ""
+
+                let kind = need "kind"
+                let name = need "name"
+                let at = $"{at} ({kind} {name})"
+                let url = need "url"
+                let sha = need "sha256"
+                let path = need "path"
+
+                if sha.Length <> 64 || not (sha |> Seq.forall Uri.IsHexDigit) then
+                    bad $"{at}: \"sha256\" must be 64 hex digits, got '{sha}'"
+
+                { Kind = kind
+                  Name = name
+                  Url = url
+                  Sha256 = sha.ToLowerInvariant()
+                  Path = path
+                  Version = str "version" false })
             |> List.ofSeq
             |> Ok
-        with ex ->
-            Error $"{p}: cannot read the lockfile: {ex.Message}"
+        with
+        | LockShape msg -> Error $"{p}: malformed lockfile — {msg}; re-add the artifact or fix the entry"
+        | ex -> Error $"{p}: cannot read the lockfile: {ex.Message}"
 
 let writeLock (weirDir: string) (entries: LockEntry list) : unit =
     use ms = new MemoryStream()
@@ -660,6 +725,32 @@ let resolveModuleSpec (spec: string) : Result<ResolvedModuleSource, string> =
                         | h ->
                             Error
                                 $"unknown host '{h}' — the shorthand knows github.com and gitlab.com; any other host takes the full raw URL: weir add module https://… --as <name>"
+
+/// the credential a re-fetch of a locked module carries — the same
+/// WEIR_TOKEN_<host> header `add module` sent, derived from the locked
+/// raw URL (the lock never stores a token). A raw.githubusercontent.com
+/// URL is the github.com shorthand's download, so it reads that host's
+/// token when its own is unset.
+let moduleFetchHeaders (url: string) : (string * string) list * string option =
+    let host =
+        try
+            (Uri url).Host
+        with _ ->
+            ""
+
+    let token, tokenHost =
+        match hostToken host with
+        | Some t -> Some t, host
+        | None when host = "raw.githubusercontent.com" -> hostToken "github.com", "github.com"
+        | None -> None, host
+
+    let auth =
+        match token with
+        | Some t when host = "gitlab.com" -> [ "PRIVATE-TOKEN", t ]
+        | Some t -> [ "Authorization", "token " + t ]
+        | None -> []
+
+    uaHeader @ auth, (if tokenHost = "" then None else Some tokenHost)
 
 /// the shared vendoring tail: write the artifact and upsert its lock
 /// entry together, or neither. Returns (sha256, prior entry's sha) so
@@ -1265,14 +1356,32 @@ let restore (weirDir: string) : Result<string list, string> =
                     Error
                         $"{e.Kind} {e.Name}: ABSENT and generated (nothing to fetch) — the file should be checked in; recreate deliberately with `weir add sig {e.Name}`"
                 else
-                    match fetchBytes e.Url with
+                    // a module re-fetch carries the host token `add module`
+                    // sent, or a private module 404s
+                    let fetched =
+                        if e.Kind = "module" then
+                            let headers, tokenHost = moduleFetchHeaders e.Url
+
+                            fetchBytesWith headers e.Url
+                            |> Result.mapError (fun err ->
+                                match tokenHost with
+                                | Some h -> hintPrivate h err
+                                | None -> err)
+                        else
+                            fetchBytes e.Url
+
+                    match fetched with
                     | Error err -> Error $"{e.Kind} {e.Name}: {err}"
                     | Ok(bytes, _) ->
                         let hash = sha256Hex bytes
 
+                        // the re-add names the entry's own kind — a module's
+                        // locked url is the raw URL `add module` accepts
+                        let readd = $"`weir add {e.Kind} {e.Url} --as {e.Name}`"
+
                         if hash <> e.Sha256 then
                             Error
-                                $"{e.Kind} {e.Name}: fetched bytes hash {hash.Substring(0, 12)}… but the lock records {e.Sha256.Substring(0, 12)}… — the source changed; if intended, `weir add schema` again"
+                                $"{e.Kind} {e.Name}: fetched bytes hash {hash.Substring(0, 12)}… but the lock records {e.Sha256.Substring(0, 12)}… — the source changed; if intended, re-add it: {readd}"
                         else
                             let repaired = File.Exists dest
 

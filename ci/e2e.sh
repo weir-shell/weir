@@ -303,6 +303,13 @@ expect() {
 
 out=$($BIN -e '(1 + 2) * 2')
 expect "expression eval" "6 : int" "$out"
+# blank or comment-only -e says so — never a bare caret under nothing
+# (Git Bash on Windows rewrites a leading `//` argument as a path — off here)
+for e in '' '// c' '   '; do
+    rc=0; out=$(MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' $BIN -e "$e" 2>&1) || rc=$?
+    [ "$rc" = "2" ] || fail "-e '$e' exits 2, got $rc: $out"
+    expect "-e '$e' names the problem" "nothing to evaluate" "$out"
+done
 
 out=$($BIN -e 'ls |> Seq.where (fun f -> f.bytes > 1MiB) |> Seq.take 5' 2>&1); rc=$?
 [ $rc -eq 0 ] || fail "flagship pipeline must run measure-free: $out"
@@ -1107,7 +1114,7 @@ echo "e2e ok: fmt canonicalizes, --check gates, output runs; flags never read as
 # tarball) the repo's script dirs stand in
 fmtroot="$(dirname "$0")/.."
 fmtfiles=$(git -C "$fmtroot" ls-files '*.weir' 2>/dev/null) \
-    || fmtfiles=$(cd "$fmtroot" && find ci examples tools -name '*.weir')
+    || fmtfiles=$(cd "$fmtroot" && find ci examples tools -type f -name '*.weir')
 [ -n "$fmtfiles" ] || fail "fmt repo gate found no .weir files under $fmtroot"
 for f in $fmtfiles; do
     rc=0
@@ -2515,7 +2522,7 @@ within env outer
     print $"succeeds={ok}"
     let r2 = feedIt ()
     print $"{r2.stdout |> Seq.head}"
-    ["z"] |> into "echo into=$RA" |> Seq.iter print
+    ["z"] | sh -c "cat >/dev/null; echo vpipe=$RA"
     within env inner
         sh -c "echo nested=$RA-$RB" | orFail "nested orFail lost a layer"
         $sig1(sh -c "echo sigil=$RA-$RB" | orFail "sigil twin lost the ambient underlay")
@@ -2525,7 +2532,7 @@ echo "$rout" | grep -qF "orfail=amb-keep"  || fail "orFail sees ambient env: $ro
 echo "$rout" | grep -qF "complete=amb"     || fail "complete sees ambient env: $rout"
 echo "$rout" | grep -qF "succeeds=true"    || fail "succeeds sees ambient env: $rout"
 echo "$rout" | grep -qF "intwin=amb"       || fail "stdin twin sees ambient env (dynamic scope): $rout"
-echo "$rout" | grep -qF "into=amb"         || fail "into sees ambient env: $rout"
+echo "$rout" | grep -qF "vpipe=amb"        || fail "value-headed pipe sees ambient env: $rout"
 echo "$rout" | grep -qF "nested=in-keep"   || fail "reifier nesting: inner wins, outer key survives: $rout"
 echo "$rout" | grep -qF "sigil=sig-keep"   || fail "explicit sigil wins over ambient, ambient underlay survives: $rout"
 echo "e2e ok: ambient env reaches every spawn — reifier family, In/Env twins, into; nesting outer-first"
@@ -2540,7 +2547,8 @@ froot="$(cd "$(dirname "$0")/.." && pwd)"
 if [ "$(uname -s)" = "Linux" ] && command -v dotnet >/dev/null 2>&1 && [ -f "$froot/tests/Weir.Fuzz/Weir.Fuzz.fsproj" ]; then
     obs_rc=0
     obs=$( cd "$froot" && $BIN tools/fuzz.weir --seed 4242 --count 10 2>&1 ) || obs_rc=$?
-    [ "$obs_rc" = "0" ] || fail "observed-count run failed: $(echo "$obs" | tail -3)"
+    # name the failing property and its shrunk input, not just the tally
+    [ "$obs_rc" = "0" ] || fail "observed-count run failed: $(echo "$obs" | grep -E -A25 '^ *Failed [A-Z]' | head -60; echo "$obs" | tail -3)"
     echo "$obs" | grep -qF "deep fuzz clean: seed=4242 count=10 (observed)" \
         || fail "driver must report the OBSERVED config: $(echo "$obs" | tail -3)"
     echo "e2e ok: fuzz driver reports observed seed/count (instrument measures, not restates)"
@@ -2732,6 +2740,33 @@ WEOF
     [ "$left" = "0" ] || fail "SIGTERM to weir must tree-kill its foreground child (orphans left: $left)"
     echo "e2e ok: SIGTERM to weir's pid reaps the foreground child"
 
+    # ...and every pmap worker's tree, exactly once, after spawning stops
+    # [D:signal-main-unwind]: the kill raced the exit (a SIGSTOPped
+    # grandchild left behind) — 20 runs, no `sleep` may survive
+    cat > "$dtdir/pmapterm.weir" <<'WEOF'
+within
+    [1..4] |> Seq.pmap (fun _ -> sh -c "sleep 98764; echo x" |> Seq.freeze) |> Seq.iter (fun _ -> ())
+always
+    printerr "cleanup"
+WEOF
+    pkill -9 -f "^sleep 98764" 2>/dev/null || true
+    orphans=0
+    for _ in $(seq 1 20); do
+        setsid "$BIN" "$dtdir/pmapterm.weir" </dev/null >/dev/null 2>&1 &
+        wpid=$!
+        for _ in $(seq 1 40); do [ "$(pgrep -cf "^sleep 98764" 2>/dev/null || true)" = "4" ] && break; sleep 0.1; done
+        kill -TERM "$wpid" 2>/dev/null || true
+        code=0; wait "$wpid" 2>/dev/null || code=$?
+        [ "$code" = "143" ] || fail "SIGTERM to a pmap script must exit 143 (got $code)"
+        sleep 0.2
+        if pgrep -f "^sleep 98764" >/dev/null 2>&1; then
+            orphans=$((orphans + 1))
+            pkill -9 -f "^sleep 98764" 2>/dev/null || true
+        fi
+    done
+    [ "$orphans" = "0" ] || fail "SIGTERM must tree-kill every pmap worker's child ($orphans of 20 runs left orphans)"
+    echo "e2e ok: SIGTERM reaps every pmap worker's grandchild, 20 runs"
+
     # the double-signal escape [D:signal-teardown]: a second signal during
     # a slow teardown hard-exits (the shell's double-Ctrl+C), never wedging
     # on a stuck cleanup. The always sleeps 20s; the second SIGINT must land
@@ -2921,6 +2956,27 @@ WEOF
 else
     echo "e2e skip: within lock matrix (POSIX rows)"
 fi
+
+# weir-worded refusals, never raw .NET text: a lock on a directory or "",
+# a negative lock timeout; importing a directory or a device
+h54dir=$(mkweirtmp)
+mkdir "$h54dir/adir"
+for spec in 'lock "adir"|is a directory — the lock is a file' 'lock ""|the lock path is empty' 'lock "x.lock" timeout=-1s|timeout must not be negative, got -1s'; do
+    printf 'within %s\n    print "in"\n' "${spec%%|*}" > "$h54dir/l.weir"
+    rc=0; out=$( cd "$h54dir" && $BIN l.weir 2>&1 ) || rc=$?
+    [ "$rc" = "1" ] || fail "within ${spec%%|*} must raise, rc=$rc: $out"
+    expect "within ${spec%%|*} is refused, weir-worded" "${spec##*|}" "$out"
+    case "$out" in *"Access to the path"*) fail "raw .NET text leaked: $out" ;; esac
+done
+printf 'import "./adir" as D\nprint "x"\n' > "$h54dir/imd.weir"
+out=$($BIN check "$h54dir/imd.weir" 2>&1) || true
+expect "importing a directory is weir-worded" "it is a directory, not a module" "$out"
+if [ "$IS_WINDOWS" = "0" ]; then
+    printf 'import "/dev/zero" as Z\nprint "x"\n' > "$h54dir/imz.weir"
+    out=$(timeout 10 $BIN check "$h54dir/imz.weir" 2>&1) || true
+    expect "importing a device is refused, not read forever" "not a regular file" "$out"
+fi
+rm -rf "$h54dir"
 
 # ---- streaming statement echo [D:stream-echo] -------------------------------
 # the general pty instrument (tests/pty/pty-run.py — built for these
@@ -6859,17 +6915,46 @@ if [ "$IS_WINDOWS" = "1" ]; then
     # exist there; the depth guard itself ran above at full stack
     echo "e2e SKIP: the small-stack probe cell — no POSIX stack limit on Windows (depth 499 parsed above)"
 else
-    errout=$( (ulimit -s 512; $BIN check "$ddir/deep.weir") 2>&1 ) && fail "small-stack deep parse must diagnose"
+    # the front end runs on weir's own stack, not the process main
+    # thread's [D:block-width]: a 512KB `ulimit -s` no longer starves the
+    # parse (the probe itself stays pinned by the unit 512KB-thread test)
+    errout=$( (ulimit -s 512; $BIN check "$ddir/deep.weir") 2>&1 )
     rc=$?
-    # the 512KB budget is calibrated against AOT frames — a JIT build's
-    # are larger and overflow before the guard fires, which reads as a
-    # SEGV in this assertion. Name the requirement rather than let a
-    # wrong-binary run masquerade as a depth-guard regression.
-    [ "$rc" -lt 128 ] || fail "small-stack deep parse crashed (rc=$rc) — the probe must fire first (this cell needs the PUBLISHED AOT binary; a dotnet-build/JIT \$BIN overflows 512KB on frame size alone — run ./publish.sh, or set WEIR_BIN to the published binary)"
-    echo "$errout" | grep -qF "nested too deeply" || fail "probe diagnostic missing: $errout"
-    echo "e2e ok: depth probe diagnoses on a 512KB stack (no SIGSEGV), full stack still parses 499"
+    [ "$rc" -eq 0 ] || fail "depth 499 must parse under ulimit -s 512 (rc=$rc): $errout"
+    echo "e2e ok: depth 499 parses under ulimit -s 512 (weir's own stack), and on a full-size stack"
 fi
 rm -rf "$ddir"
+
+# position translation is indexed once per statement: a 64k-line heredoc
+# runs as fast as it checks (a per-node segment scan made run quadratic)
+hpdir=$(mkweirtmp)
+python3 -c "print('\n'.join(['let s = <<<'] + ['    line %d' % i for i in range(64000)] + ['print (Seq.length s)']))" > "$hpdir/long.weir"
+out=$(timeout 20 $BIN "$hpdir/long.weir" 2>&1) || fail "a 64k-line heredoc must run in well under 20s: $out"
+[ "$out" = "64000" ] || fail "a 64k-line heredoc: its line count, got: $out"
+rm -rf "$hpdir"
+echo "e2e ok: a 64k-line heredoc runs in linear time"
+
+# statements are width, not depth [D:block-width]: 20k top-level
+# statements run in a loop, and a 2000-statement function body neither
+# meets the nesting ceiling nor overflows a 1MB `ulimit -s`
+bwdir=$(mkweirtmp)
+python3 -c "print('\n'.join('print \"x\"' for _ in range(20000)))" > "$bwdir/flat.weir"
+python3 -c "
+print('let f () =')
+for i in range(2000): print(f'    let _x{i} = {i}')
+print('    _x0 + _x1999')
+print('print \$\"{f ()}\"')" > "$bwdir/body.weir"
+if [ "$IS_WINDOWS" = "1" ]; then
+    n=$($BIN "$bwdir/flat.weir" | wc -l | tr -d ' ') || fail "20k flat statements must run"
+    out=$($BIN "$bwdir/body.weir" 2>&1) || fail "a 2000-statement body must run: $out"
+else
+    n=$( (ulimit -s 1024; $BIN "$bwdir/flat.weir") | wc -l | tr -d ' ') || fail "20k flat statements must run on a 1MB stack"
+    out=$( (ulimit -s 1024; $BIN "$bwdir/body.weir") 2>&1) || fail "a 2000-statement body must run on a 1MB stack: $out"
+fi
+[ "$n" = "20000" ] || fail "20k flat statements: all printed, got $n"
+[ "$out" = "1999" ] || fail "a 2000-statement body: its value, got: $out"
+rm -rf "$bwdir"
+echo "e2e ok: 20k top-level statements and a 2000-statement body run under a 1MB stack"
 
 # deep lazy chains walk iteratively [D:seq-depth-iterative]: a fold nesting
 # Seq.append / Seq.map / Seq.where / Seq.choose 100k deep enumerates on a small stack (POSIX: 1MB,
@@ -7009,6 +7094,22 @@ printf 'import "./weakh.weir"\nprint W.v\n' > "$mdir/weakh_main.weir"
 out=$($BIN "$mdir/weakh_main.weir" 2>&1 || true)
 expect "weak purity through a helper (import)" "cannot run a command at import" "$out"
 case "$out" in *SIDE-EFFECT-AT-IMPORT*) fail "a helper ran its command at import: $out" ;; esac
+# ...and at run time, whatever the route [D:module-import-no-commands]:
+# a helper through a value, a lambda, composition, collect or a pmap arm
+# slips past the check-time walk, and the spawn itself is refused, located
+for form in '[()] |> Seq.map helper |> Seq.map Seq.length |> Seq.sum' \
+            '(fun () -> helper ()) () |> Seq.length' \
+            '(helper >> Seq.length) ()' \
+            '[()] |> Seq.collect helper |> Seq.freeze |> Seq.length' \
+            '[1; 2] |> Seq.pmap (fun _ -> helper () |> Seq.length) |> Seq.sum'; do
+    printf 'module W\nlet helper () = sh -c "echo SIDE-EFFECT-AT-IMPORT >&2; echo val"\nlet _h = helper\nlet v : int\nlet v = %s\n' "$form" > "$mdir/weakv.weir"
+    printf 'import "./weakv.weir"\nprint $"{W.v}"\n' > "$mdir/weakv_main.weir"
+    rc=0; out=$($BIN "$mdir/weakv_main.weir" 2>&1) || rc=$?
+    [ "$rc" -eq 1 ] || fail "a command at import must fail the run ($form): rc=$rc $out"
+    expect "no command at import, run time: $form" "weakv.weir:2:" "$out"
+    expect "no command at import, run time (message): $form" "runs a command while module W is imported" "$out"
+    case "$out" in *SIDE-EFFECT-AT-IMPORT*) fail "a command ran at import ($form): $out" ;; esac
+done
 
 # the graph [D:modules-v1]: transitive imports resolve and evaluate; a
 # module can import and use another module's members
@@ -7025,6 +7126,37 @@ printf 'module R\nimport "./shared.weir"\nlet y : int\nlet y = S.v + 2\n' > "$md
 printf 'import "./left.weir"\nimport "./right.weir"\nprint (show (L.x + R.y))\n' > "$mdir/diamond.weir"
 out=$($BIN "$mdir/diamond.weir" 2>&1)
 expect "a diamond shares one module across both paths" "13" "$out"
+
+# a module's body runs once per program, identity = its real path
+# [D:module-once]: a diamond, a re-alias and a symlinked import share one
+# Uuid.v4; an 18-level double diamond (2^17 import paths) stays instant
+printf 'module U\nlet uid : Uuid\nlet uid = Uuid.v4 ()\n' > "$mdir/once.weir"
+printf 'module V\nimport "./once.weir"\nlet id2 : Uuid\nlet id2 = U.uid\n' > "$mdir/oncev.weir"
+ln -s once.weir "$mdir/oncelink.weir" 2>/dev/null || cp "$mdir/once.weir" "$mdir/oncelink.weir"
+printf 'import "./once.weir"\nimport "./oncev.weir"\nimport "./once.weir" as U2\nimport "./oncelink.weir" as U3\nprint $"{U.uid == V.id2} {U.uid == U2.uid} {U.uid == U3.uid}"\n' > "$mdir/once-main.weir"
+out=$($BIN "$mdir/once-main.weir" 2>&1)
+if [ -L "$mdir/oncelink.weir" ]; then
+    expect "a module evaluates once: diamond, re-alias, symlink" "true true true" "$out"
+else
+    expect "a module evaluates once: diamond, re-alias" "true true false" "$out"
+fi
+for i in $(seq 0 17); do
+    if [ "$i" = 0 ]; then
+        printf 'module M0\nlet x : int\nlet x = 1\n' > "$mdir/dd0.weir"
+    else
+        printf 'module M%s\nimport "./dd%s.weir" as A\nimport "./dd%s.weir" as B\nlet x : int\nlet x = A.x + B.x\n' "$i" "$((i-1))" "$((i-1))" > "$mdir/dd$i.weir"
+    fi
+done
+printf 'import "./dd17.weir" as T\nprint (show T.x)\n' > "$mdir/dd-main.weir"
+out=$(timeout 20 $BIN "$mdir/dd-main.weir" 2>&1)
+expect "an 18-level double diamond evaluates each module once" "131072" "$out"
+
+# a member named like a builtin is exported, reachable qualified; the bare
+# name stays the builtin [D:module-builtin-names]
+printf 'module Doc\ntype Doc = Text of string | Empty\nlet id : int -> int\nlet id n = n + 100\nlet render : Doc -> string\nlet render d =\n    match d with\n    | Text s -> s\n    | Empty -> ""\n' > "$mdir/bdoc.weir"
+printf 'import "./bdoc.weir"\nprint $"{Doc.render (Doc.Text "hi")} {Doc.id 1} {id 1} {Text "b"}"\n' > "$mdir/bdoc-main.weir"
+out=$($BIN "$mdir/bdoc-main.weir" 2>&1)
+expect "builtin-named members export; the bare name stays the builtin" 'hi 101 1 Text "b"' "$out"
 
 # an import cycle is a check error naming the loop, at its closing edge
 printf 'module CA\nimport "./cb.weir"\nlet a = 1\n' > "$mdir/ca.weir"
@@ -8247,6 +8379,68 @@ if [ "$IS_WINDOWS" = "0" ]; then
 else
     echo "e2e skip: F2 unreadable-import (POSIX mode bits)"
 fi
+
+# the entry script's read is weir-worded in every mode, never an internal
+# exception: unreadable (mode 000), a directory, a device; and fmt on a
+# read-only file names the write it cannot make
+if [ "$IS_WINDOWS" = "0" ]; then
+    h11dir=$(mkweirtmp)
+    printf 'print "hi"\n' > "$h11dir/deny.weir"
+    chmod 000 "$h11dir/deny.weir"
+    mkdir "$h11dir/adir"
+    for mode in "" "check" "check --can" "check --json" "check --can --json" "fmt"; do
+        if [ ! -r "$h11dir/deny.weir" ]; then
+            rc=0; out=$($BIN $mode "$h11dir/deny.weir" 2>&1) || rc=$?
+            [ "$rc" = "2" ] || fail "an unreadable script ($mode) exits 2, got $rc: $out"
+            expect "an unreadable script is weir-worded ($mode)" "cannot read $h11dir/deny.weir: permission denied" "$out"
+        fi
+        rc=0; out=$($BIN $mode "$h11dir/adir" 2>&1) || rc=$?
+        [ "$rc" = "2" ] || fail "a directory argument ($mode) exits 2, got $rc: $out"
+        expect "a directory argument names itself ($mode)" "$h11dir/adir is a directory, not a script" "$out"
+        rc=0; out=$($BIN $mode /dev/zero 2>&1) || rc=$?
+        [ "$rc" = "2" ] || fail "a device ($mode) exits 2, got $rc: $out"
+        expect "a device is refused, not read forever ($mode)" "not a regular file" "$out"
+    done
+    chmod 644 "$h11dir/deny.weir"
+    printf 'print  "x"\n' > "$h11dir/ro.weir"
+    chmod 444 "$h11dir/ro.weir"
+    if [ ! -w "$h11dir/ro.weir" ]; then
+        rc=0; out=$($BIN fmt "$h11dir/ro.weir" 2>&1) || rc=$?
+        [ "$rc" = "2" ] || fail "fmt on a read-only file exits 2, got $rc: $out"
+        expect "fmt on a read-only file is weir-worded" "cannot write $h11dir/ro.weir: permission denied" "$out"
+    fi
+    rm -rf "$h11dir"
+else
+    echo "e2e skip: unreadable entry script (POSIX mode bits, /dev/zero)"
+fi
+
+# a source file must be UTF-8 [D:source-utf8]: the first invalid byte is a
+# located refusal (entry and import alike), never a silent U+FFFD; a BOM
+# and CRLF still read
+u8dir=$(mkweirtmp)
+printf 'print "ok"\nprint "\303\251t\303\251 \377 x"\n' > "$u8dir/bad.weir"
+for mode in "" "check" "fmt"; do
+    rc=0; out=$($BIN $mode "$u8dir/bad.weir" 2>&1) || rc=$?
+    [ "$rc" = "2" ] || fail "invalid UTF-8 ($mode) exits 2, got $rc: $out"
+    expect "invalid UTF-8 is located ($mode)" "bad.weir:2:12: invalid UTF-8" "$out"
+done
+printf 'module M\nlet x : int\nlet x = 1 // \376\n' > "$u8dir/m.weir"
+printf 'import "./m.weir"\nprint (show M.x)\n' > "$u8dir/main.weir"
+out=$($BIN "$u8dir/main.weir" 2>&1) || true
+expect "invalid UTF-8 in a module is located in the module" "m.weir:3:14: error: invalid UTF-8" "$out"
+printf '\357\273\277print "bom"\r\nprint "crlf"\r\n' > "$u8dir/bom.weir"
+out=$($BIN "$u8dir/bom.weir" 2>&1)
+[ "$out" = "bom
+crlf" ] || fail "a BOM and CRLF still read: $out"
+rm -rf "$u8dir"
+
+# an error in the join text between continuation lines sits just past the
+# physical line's last character, never beyond it
+jcdir=$(mkweirtmp)
+printf 'd\n    within lock""t\n    w\n' > "$jcdir/join.weir"
+out=$($BIN check "$jcdir/join.weir" 2>&1) || true
+expect "a joined-line error column stays on its line" "join.weir:2:19: error" "$out"
+rm -rf "$jcdir"
 
 # check-time catches on the real schema: the typo (did-you-mean) and a
 # misplaced nesting (a field at the wrong level)
@@ -10590,7 +10784,7 @@ for line in \
     "ci/deep-lock.sh × 2  tools/fuzz.weir:31:1, 66:5" \
     "File.read (path not statically known)  tools/fuzz.weir:59:20" \
     "within tmp (a temporary directory)  tools/fuzz.weir:47:1" \
-    "sets WEIR_FUZZ_SEED, WEIR_FUZZ_COUNT, WEIR_FUZZ_REPORT for children (within env)  tools/fuzz.weir:48:41" \
+    "sets WEIR_FUZZ_SEED, WEIR_FUZZ_COUNT, WEIR_FUZZ_REPORT for children (within env)  tools/fuzz.weir:52:5" \
     "fail  tools/fuzz.weir:62:9"; do
     echo "$hcan" | grep -qF "$line" || fail "the homepage's --can quote drifted — update index.astro; missing: $line"
 done
@@ -11143,6 +11337,36 @@ out=$($BIN "$svdir/timeout.weir" 2>&1) || fail "serve body-timeout run failed: $
 echo "$out" | grep -qF "status=HTTP/1.1 408" || fail "F12: a slow body must be refused with 408: $out"
 echo "e2e ok: within serve — F12 request-body read timeout refuses a slow client with 408"
 
+# (H20) the request-body size bound [D:serve-max-body]: a body past
+# maxBody is answered 413 (never buffered whole); one within it reaches
+# the handler. Small bound — the test never sends a large body.
+svport7=8477
+cat > "$svdir/maxbody.py" <<'PYEOF'
+import socket, sys
+port, n = int(sys.argv[1]), int(sys.argv[2])
+s = socket.socket(); s.connect(('127.0.0.1', port))
+s.sendall(('POST /x HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: %d\r\nConnection: close\r\n\r\n' % n).encode() + b'x' * n)
+d = b''
+while True:
+    c = s.recv(4096)
+    if not c: break
+    d += c
+print('status=%s body=%s' % (d.split(b'\r\n', 1)[0].decode(), d.split(b'\r\n\r\n', 1)[-1].decode()))
+PYEOF
+cat > "$svdir/maxbody.weir" <<WEOF
+within serve srv = { port = $svport7; maxConcurrent = 2; maxBody = 16B } (fun req -> HttpServerResponse { status = 200; headers = []; body = Text \$"len={Str.length req.body}" })
+    poll timeout=8s interval=100ms
+        Net.portOpen $svport7
+    let fits = sh -c "python3 '$svdir/maxbody.py' $svport7 16" | complete
+    fits.stdout |> Seq.iter print
+    let over = sh -c "python3 '$svdir/maxbody.py' $svport7 17" | complete
+    over.stdout |> Seq.iter print
+WEOF
+out=$($BIN "$svdir/maxbody.weir" 2>&1) || fail "serve maxBody run failed: $out"
+echo "$out" | grep -qF "status=HTTP/1.1 200 OK body=len=16" || fail "H20: a body of exactly maxBody must reach the handler: $out"
+echo "$out" | grep -qF "status=HTTP/1.1 413" || fail "H20: a body past maxBody must be 413: $out"
+echo "e2e ok: within serve — H20 maxBody answers 413 past the bound"
+
 # (F13) tty data sanitize [D:binary-echo]/[D:tty-color]: a data value's
 # terminal-DRIVING escapes (OSC title/clipboard, cursor/screen CSI, CR
 # name-hiding, BEL) render sanitized at a tty, while SGR colour passes
@@ -11403,13 +11627,13 @@ within env [Env.pair "FOO" v]
     print (show r.exitCode)
 WEOF
     nul_refuses ambient
-    # 4. into — the sh -c cmdline tail past the NUL would drop
-    cat > "$nuldir/into.weir" <<'WEOF'
+    # 4. a value piped into `sh -c` — the cmdline tail past the NUL would drop
+    cat > "$nuldir/pipesh.weir" <<'WEOF'
 let tail = emitnul |> Seq.exactlyOne
 let cmd = $"argvdump before{tail}after"
-["one"] |> into cmd |> Seq.iter print
+["one"] | sh -c $cmd |> Seq.iter print
 WEOF
-    nul_refuses into
+    nul_refuses pipesh
     # 5. the $e(...) env twin — an env value via the sigil
     cat > "$nuldir/envsigil.weir" <<'WEOF'
 let v = emitnul |> Seq.exactlyOne

@@ -705,11 +705,11 @@ let desugarAliasHeads (r: Parser.Resolver) (aliasOf: string -> (string * string 
             line
 
 let formatFile (checkOnly: bool) (path: string) : int =
-    if not (System.IO.File.Exists path) then
-        System.Console.Error.WriteLine $"weir: no such script: {path}"
+    match Script.readEntryScript path with
+    | Error msg ->
+        System.Console.Error.WriteLine $"weir: {msg}"
         2
-    else
-        let lines = System.IO.File.ReadAllLines path |> Array.toList
+    | Ok lines ->
 
         let header, body =
             match lines with
@@ -732,6 +732,14 @@ let formatFile (checkOnly: bool) (path: string) : int =
                 System.Console.Error.WriteLine $"weir fmt: {path} would be reformatted"
                 1
             else
-                System.IO.File.WriteAllLines(path, result)
-                System.Console.Error.WriteLine $"weir fmt: formatted {path}"
-                0
+                try
+                    System.IO.File.WriteAllLines(path, result)
+                    System.Console.Error.WriteLine $"weir fmt: formatted {path}"
+                    0
+                with
+                | :? System.UnauthorizedAccessException ->
+                    System.Console.Error.WriteLine $"weir fmt: cannot write {path}: permission denied"
+                    2
+                | :? System.IO.IOException as ex ->
+                    System.Console.Error.WriteLine $"weir fmt: cannot write {path}: {ex.Message}"
+                    2

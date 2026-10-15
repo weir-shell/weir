@@ -1108,11 +1108,19 @@ let bracketFold
 //   LastSegStart — index just past the last sibling sentinel (or 0): the
 //                 proc/serve binder-head scan runs over the last segment
 //                 only, never the whole growing text (LastIndexOf was O(N)).
+// each assembled line's segment ends, aligned with its Segments — set at
+// statement close (bufToLL), read by translate
+let private segmentEnds =
+    System.Runtime.CompilerServices.ConditionalWeakTable<LogicalLine, int[]>()
+
 type private PendBuf =
     { Sb: System.Text.StringBuilder
       // the statement's first physical line (LogicalLine.Head)
       Head: int
       Segments: (int * int * int) list
+      // where each segment's own text ends (aligned with Segments): the
+      // synthetic join text after it is no physical column
+      Ends: int list
       // index of the last non-whitespace char in Sb, or -1
       LastNonWs: int
       // index just past the last sibling sentinel (Parser.sibSep) in Sb, or 0
@@ -1325,9 +1333,13 @@ let private bufEndsInEnvHead (b: PendBuf) : bool =
 // materialize a LogicalLine from a finished pending buffer (segments are
 // reversed at the boundary exactly as before)
 let private bufToLL (b: PendBuf) : LogicalLine =
-    { Text = b.Sb.ToString()
-      Head = b.Head
-      Segments = List.rev b.Segments }
+    let ll =
+        { Text = b.Sb.ToString()
+          Head = b.Head
+          Segments = List.rev b.Segments }
+
+    segmentEnds.AddOrUpdate(ll, List.rev b.Ends |> List.toArray)
+    ll
 
 // a fresh single-line buffer (the assembler's per-statement seed)
 let private bufNew (text: string) (lineNo: int) (indent: int) : PendBuf =
@@ -1337,6 +1349,7 @@ let private bufNew (text: string) (lineNo: int) (indent: int) : PendBuf =
     { Sb = sb
       Head = lineNo
       Segments = [ (0, lineNo, indent) ]
+      Ends = [ text.Length ]
       LastNonWs = nonWs
       LastSegStart = segStart }
 
@@ -1369,7 +1382,13 @@ let private applyJoin (j: Join) (b: PendBuf) (piece: string) (lineNo: int) (inde
                 b.Sb.Remove(b.Sb.Length - strip, strip) |> ignore
 
             let nonWs, segStart = scanTail b.Sb 0 -1 0
-            let b = { b with LastNonWs = nonWs; LastSegStart = segStart }
+
+            let b =
+                { b with
+                    LastNonWs = nonWs
+                    LastSegStart = segStart
+                    Ends = b.Ends |> List.map (min b.Sb.Length) }
+
             bufAppend b (opener + piece + ")")
         | JDistrictSibling opener -> bufAppend b (" ; " + opener + piece + ")")
         | JDistrictPipe ->
@@ -1377,11 +1396,27 @@ let private applyJoin (j: Join) (b: PendBuf) (piece: string) (lineNo: int) (inde
             // quadratic path; rescan the (now one-shorter) buffer whole
             b.Sb.Remove(b.Sb.Length - 1, 1) |> ignore
             let nonWs, segStart = scanTail b.Sb 0 -1 0
-            let b = { b with LastNonWs = nonWs; LastSegStart = segStart }
+
+            let b =
+                { b with
+                    LastNonWs = nonWs
+                    LastSegStart = segStart
+                    Ends = b.Ends |> List.map (min b.Sb.Length) }
+
             bufAppend b (" " + piece + ")")
         | JYamlLine rel -> bufAppend b (Parser.sibSepStr + String(' ', rel) + piece)
 
-    { b with Segments = (joinedStart, lineNo, indent) :: b.Segments }
+    // the piece ends before a district's closing ")"
+    let pieceEnd =
+        match j with
+        | JDistrictOpen _
+        | JDistrictSibling _
+        | JDistrictPipe -> bufLen b - 1
+        | _ -> bufLen b
+
+    { b with
+        Segments = (joinedStart, lineNo, indent) :: b.Segments
+        Ends = pieceEnd :: b.Ends }
 
 let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> =
     // trailing comments strip here, per physical line [D:trailing-comments]:
@@ -1476,7 +1511,9 @@ let assemble (numbered: (int * string) list) : Result<LogicalLine list, string> 
                 LastSegStart = (if b.LastSegStart >= ts then b.LastSegStart + 1 else b.LastSegStart)
                 Segments =
                     b.Segments
-                    |> List.map (fun (js, l, i) -> (if js >= ts then js + 1 else js), l, i) }
+                    |> List.map (fun (js, l, i) -> (if js >= ts then js + 1 else js), l, i)
+                Ends =
+                    List.map2 (fun (js, _, _) e -> if js >= ts || e > ts then e + 1 else e) b.Segments b.Ends }
 
         let folded =
             numbered
@@ -2425,13 +2462,70 @@ let pipedAttaches (buf: string list) (next: string) : bool =
         | None, Some _ -> true
         | Some a, Some b -> b <= a
 
+// a logical line's segment index, built once per line: translate is called
+// per typed node, and a linear scan per call made a long statement
+// quadratic (a 64k-line heredoc)
+type private SegIndex =
+    { Starts: int[]
+      Lines: int[]
+      Indents: int[]
+      // where each segment's own text ends — the synthetic join text
+      // between it and the next segment is no physical column
+      Ends: int[] }
+
+let private segIndexes =
+    System.Runtime.CompilerServices.ConditionalWeakTable<LogicalLine, SegIndex>()
+
+let private buildSegIndex (ll: LogicalLine) : SegIndex =
+    let segs = List.toArray ll.Segments
+    let starts = segs |> Array.map (fun (js, _, _) -> js)
+
+    // a line not from the assembler has no join text to step over
+    let ends =
+        match segmentEnds.TryGetValue ll with
+        | true, e when e.Length = starts.Length -> e
+        | _ -> Array.init starts.Length (fun i -> if i + 1 < starts.Length then starts[i + 1] else ll.Text.Length)
+
+    { Starts = starts
+      Lines = segs |> Array.map (fun (_, l, _) -> l)
+      Indents = segs |> Array.map (fun (_, _, i) -> i)
+      Ends = ends }
+
 let translate (ll: LogicalLine) (col: int) : int * int =
+    let ix = segIndexes.GetValue(ll, buildSegIndex)
     let joinedIdx = col - 1
 
-    let segStart, physLine, physIndent =
-        ll.Segments |> List.filter (fun (js, _, _) -> js <= joinedIdx) |> List.last
+    // the last segment starting at or before the index
+    let i =
+        match Array.BinarySearch(ix.Starts, joinedIdx) with
+        | i when i >= 0 ->
+            // equal starts (an empty segment): the last of them, as before
+            let mutable j = i
 
-    physLine, joinedIdx - segStart + physIndent + 1
+            while j + 1 < ix.Starts.Length && ix.Starts[j + 1] = joinedIdx do
+                j <- j + 1
+
+            j
+        | i -> max 0 (~~~i - 1)
+
+    // a position in the join text sits just past its line's last
+    // character, never beyond the physical line — except on the
+    // assembler's wrapping "(" directly before the next segment, which
+    // opens that segment's compound: it maps to the segment's start
+    let next = i + 1
+
+    if
+        joinedIdx > ix.Ends[i]
+        && next < ix.Starts.Length
+        && (let mutable k = joinedIdx
+            while k < ix.Starts[next] && ll.Text[k] = '(' do
+                k <- k + 1
+            k = ix.Starts[next])
+    then
+        ix.Lines[next], ix.Indents[next] + 1
+    else
+        let at = min joinedIdx ix.Ends[i]
+        ix.Lines[i], at - ix.Starts[i] + ix.Indents[i] + 1
 
 // ANSI color for interactive diagnostics: gated per stream on TTY,
 // NO_COLOR, and TERM=dumb — pipes and CI capture always get plain
@@ -2693,7 +2787,8 @@ type CheckedStmt =
 // a checked, imported module [D:modules-v1]. Its check-time contributions
 // (Members -> Modules[Alias], TypeDefs -> Types, TypeNames -> ModuleTypes)
 // merge into the importer's tenv; Body replays at exec to build the
-// module's values. AbsPath is the normalized identity (symlinks unresolved).
+// module's values. AbsPath is the path as reached; the identity is its
+// real path [D:module-once].
 and LoadedModule =
     { Alias: string
       // the module's own name (declared or filename-derived), independent
@@ -3844,6 +3939,20 @@ let private checkStatementCore
                     stmtErr
                         $"the name '{lm.Alias}' is already a module in scope; import it under a different name with 'as'"
                 )
+            // an alias spelled like a union case in scope (`as Some`) would
+            // read as the constructor at every use — refused, as a second
+            // module of one name is
+            | Ok lm when
+                tenv.Types
+                |> Map.exists (fun _ def ->
+                    match def with
+                    | Union u -> u.Cases |> List.exists (fun (c, _) -> c = lm.Alias)
+                    | _ -> false)
+                ->
+                Error(
+                    stmtErr
+                        $"the name '{lm.Alias}' is a union case in scope; import the module under a different name with 'as'"
+                )
             | Ok lm ->
                 // a transitive holder yields, the same type reached again is
                 // no clash [D:transitive-types]
@@ -4274,10 +4383,7 @@ let private moduleBaseEnvs (absPath: string) : TypeEnv * Eval.Env =
         Modules = te.Modules |> Map.add "Self" selfMembers },
     ve |> Map.add "Self.scriptPath" (Eval.VStr absPath)
 
-// the one import path resolver [D:modules-v1]: absolute + normalized (for
-// identity and, later, caching); symlinks stay unresolved — as in
-// Path.glob, two links to one file are two files.
-let private resolveImportPath (importingAbsPath: string) (path: string) : string =
+let private resolveImportPathRaw (importingAbsPath: string) (path: string) : string =
     let dir = IO.Path.GetDirectoryName importingAbsPath
 
     if path.StartsWith "weir:" then
@@ -4297,7 +4403,8 @@ let private resolveImportPath (importingAbsPath: string) (path: string) : string
             else
                 // one namespace, two homes [D:schema-types]: vendored
                 // modules first, then generated types (.weir/types/ —
-                // `weir gen types` output); a missing name still errors
+                // `weir gen types` output); a name in both is refused at
+                // import (vendoredCollision), a missing name still errors
                 // through the modules path below
                 let typesPath = IO.Path.GetFullPath(IO.Path.Combine(wd, "types", name + ".weir"))
 
@@ -4307,6 +4414,38 @@ let private resolveImportPath (importingAbsPath: string) (path: string) : string
             IO.Path.GetFullPath(IO.Path.Combine(dir, ".weir", "modules", name + ".weir"))
     else
         IO.Path.GetFullPath(IO.Path.Combine(dir, path))
+
+// a module's identity is its real path [D:module-once]: every symlinked
+// component resolved, so two links to one file import one module
+let rec private realPath (full: string) : string =
+    match IO.Path.GetDirectoryName full with
+    | null -> full
+    | parent ->
+        let here = IO.Path.Combine(realPath parent, IO.Path.GetFileName full)
+
+        try
+            match IO.FileInfo(here).ResolveLinkTarget true with
+            | null -> here
+            | target -> realPath target.FullName
+        with _ ->
+            here
+
+
+// one `weir:` name, two vendored homes: a module under .weir/modules and a
+// generated types module under .weir/types both named <name> — an error,
+// never a silent precedence (the modules file would shadow the types one)
+let private vendoredCollision (importingAbsPath: string) (path: string) : (string * string) option =
+    if path.StartsWith "weir:" then
+        let name = path.Substring 5
+
+        match Contracts.findWeirDir (IO.Path.GetDirectoryName importingAbsPath) with
+        | Ok wd ->
+            let m = IO.Path.GetFullPath(IO.Path.Combine(wd, "modules", name + ".weir"))
+            let t = IO.Path.GetFullPath(IO.Path.Combine(wd, "types", name + ".weir"))
+            if IO.File.Exists m && IO.File.Exists t then Some(m, t) else None
+        | Error _ -> None
+    else
+        None
 
 // F#'s filename fallback for a bare `module`: capitalize the base name. A
 // non-identifier filename has no derivation (name it, or import `as`).
@@ -4345,6 +4484,106 @@ let private moduleCommandHelpers (lets: (string * Check.TypedExpr) list) : Map<s
             | None -> Map.remove n m)
         Map.empty
 
+// a source file's read, once into a result: an entry script or an import
+// that is missing, a directory, unreadable or not a regular file (a device
+// that never ends) is a weir-worded refusal, never a raw .NET exception
+type SourceFault =
+    | NotFound
+    | IsDirectory
+    | PermissionDenied
+    | NotRegular
+    | IoFault of string
+    // the first invalid byte's 1-based line and column [D:source-utf8]
+    | InvalidUtf8 of line: int * col: int
+
+// a zero-length stat is a pipe, a procfs file or a device: read it with a
+// ceiling, so /dev/zero refuses instead of filling memory
+let private unsizedCap = 16 * 1024 * 1024
+
+let private readSourceBytes (path: string) : byte[] =
+    use fs = new IO.FileStream(path, IO.FileMode.Open, IO.FileAccess.Read, IO.FileShare.ReadWrite)
+    let sized = try fs.Length with _ -> 0L
+
+    if sized > 0L then
+        use ms = new IO.MemoryStream(int sized)
+        fs.CopyTo ms
+        ms.ToArray()
+    else
+        use ms = new IO.MemoryStream()
+        let buf = Array.zeroCreate<byte> 65536
+        let mutable n = fs.Read(buf, 0, buf.Length)
+
+        while n > 0 do
+            if ms.Length + int64 n > int64 unsizedCap then
+                raise (IO.InvalidDataException "unsized")
+
+            ms.Write(buf, 0, n)
+            n <- fs.Read(buf, 0, buf.Length)
+
+        ms.ToArray()
+
+// a source file is UTF-8 [D:source-utf8]: strict decoding, so the first
+// invalid byte is a located refusal, never a silent U+FFFD. One leading
+// BOM is skipped; lines split as ReadAllLines splits (\r\n, \n, \r).
+exception private BadUtf8 of line: int * col: int
+
+let private strictUtf8 = Text.UTF8Encoding(false, true)
+
+let private decodeSourceLines (bytes: byte[]) : string list =
+    let start =
+        if bytes.Length >= 3 && bytes[0] = 0xEFuy && bytes[1] = 0xBBuy && bytes[2] = 0xBFuy then
+            3
+        else
+            0
+
+    let text =
+        try
+            strictUtf8.GetString(bytes, start, bytes.Length - start)
+        with :? Text.DecoderFallbackException as ex ->
+            // the bad byte's offset; its line is the newlines before it,
+            // its column the code points before it on that line, plus one
+            let at = start + max 0 ex.Index
+            let lineStart = (Array.LastIndexOf(bytes, 10uy, max 0 (at - 1)) + 1) |> max start
+            let line = 1 + (bytes[start .. at - 1] |> Array.sumBy (fun b -> if b = 10uy then 1 else 0))
+            let prefix = Text.Encoding.UTF8.GetString(bytes, lineStart, at - lineStart)
+            let col = 1 + (prefix.EnumerateRunes() |> Seq.length)
+            raise (BadUtf8(line, col))
+
+    use sr = new IO.StringReader(text)
+    let acc = Collections.Generic.List<string>()
+    let mutable line = sr.ReadLine()
+
+    while not (isNull line) do
+        acc.Add line
+        line <- sr.ReadLine()
+
+    List.ofSeq acc
+
+let readSourceFile (path: string) : Result<string list, SourceFault> =
+    if IO.Directory.Exists path then
+        Error IsDirectory
+    else
+        try
+            Ok(decodeSourceLines (readSourceBytes path))
+        with
+        | :? IO.FileNotFoundException
+        | :? IO.DirectoryNotFoundException -> Error NotFound
+        | :? UnauthorizedAccessException -> Error PermissionDenied
+        | :? IO.InvalidDataException -> Error NotRegular
+        | BadUtf8(l, c) -> Error(InvalidUtf8(l, c))
+        | :? IO.IOException as ex -> Error(IoFault ex.Message)
+
+/// the entry script's read, worded for the CLI: `weir: <message>`, exit 2
+let readEntryScript (path: string) : Result<string list, string> =
+    readSourceFile path
+    |> Result.mapError (function
+        | NotFound -> $"no such script: {path}"
+        | IsDirectory -> $"{path} is a directory, not a script"
+        | PermissionDenied -> $"cannot read {path}: permission denied"
+        | NotRegular -> $"cannot read {path}: not a regular file — a script is a text file"
+        | IoFault m -> $"cannot read {path}: {m}"
+        | InvalidUtf8(l, c) -> $"{path}:{l}:{c}: invalid UTF-8 — a source file must be UTF-8; this byte is not")
+
 // buffer-over-disk [D:modules-v1]: when the LSP sets this, an imported file's
 // content is read through it (open editor buffers first, then disk) so an
 // unsaved dependency checks against what the user sees; None -> CLI, plain
@@ -4362,6 +4601,7 @@ type private ImportRead =
     | ISource of string list
     | IAbsent
     | IUnreadable of string
+    | IBadUtf8 of line: int * col: int
 
 let private readImportSource (absPath: string) : ImportRead =
     match importSourceOverride.Value with
@@ -4370,15 +4610,16 @@ let private readImportSource (absPath: string) : ImportRead =
         | Some lines -> ISource lines
         | None -> IAbsent
     | None ->
-        try
-            ISource(IO.File.ReadAllLines absPath |> Array.toList)
-        with
-        | :? IO.FileNotFoundException
-        | :? IO.DirectoryNotFoundException -> IAbsent
-        | ex ->
-            // present but unreadable — permission denied, a directory in
-            // the path, an IO fault; name the path and the reason, located
-            IUnreadable ex.Message
+        // present but unreadable — permission denied, a directory, a
+        // device, an IO fault; name the path and the reason, located
+        match readSourceFile absPath with
+        | Ok lines -> ISource lines
+        | Error NotFound -> IAbsent
+        | Error IsDirectory -> IUnreadable "it is a directory, not a module"
+        | Error PermissionDenied -> IUnreadable "permission denied"
+        | Error NotRegular -> IUnreadable "not a regular file — a module is a text file"
+        | Error(IoFault m) -> IUnreadable m
+        | Error(InvalidUtf8(l, c)) -> IBadUtf8(l, c)
 
 // resolve + check an imported module to a LoadedModule, or an ImportError.
 // The graph [D:modules-v1]: `cache` (normalized abs path -> module) checks a
@@ -4397,7 +4638,11 @@ let rec loadModuleCachedWith
     (path: string)
     (importAs: string option)
     : Result<LoadedModule, ImportError> =
-    let absPath = resolveImportPath importingAbsPath path
+    // the path as the user reaches it (diagnostics, the LSP's locations)
+    // and the identity [D:module-once] apart: on macOS /var is a link to
+    // /private/var, and an editor must get back the path it opened
+    let absPath = resolveImportPathRaw importingAbsPath path
+    let key = realPath absPath
 
     // an import-statement error reports at the import line (File=None)
     let stmt msg =
@@ -4415,22 +4660,27 @@ let rec loadModuleCachedWith
         && (let n = path.Substring 5 in n = "" || n.Contains "/" || n.Contains "\\" || n.Contains "..")
     then
         stmt "a weir: import names a vendored module, never a path — weir:<name>, no separators"
-    elif absPath = importingAbsPath then
+    elif (vendoredCollision importingAbsPath path).IsSome then
+        let m, t = (vendoredCollision importingAbsPath path).Value
+
+        stmt
+            $"'{path}' names two vendored files, {m} and {t} — a vendored module and a generated types module cannot share a name; regenerate the types under another name (weir gen types --schema <schema> --out .weir/types/<other>.weir) or re-add the module with another --as"
+    elif key = realPath importingAbsPath then
         stmt "a file cannot import itself"
-    elif List.contains absPath chain then
+    elif List.contains key chain then
         // a cycle — same detector as self-import, different rendering
         // (decision 9): render the loop by file name
-        let recent = chain |> List.takeWhile ((<>) absPath)
+        let recent = chain |> List.takeWhile ((<>) key)
 
         let loop =
-            (absPath :: (List.rev recent @ [ absPath ]))
+            (key :: (List.rev recent @ [ key ]))
             |> List.map IO.Path.GetFileName
             |> String.concat " → "
 
         stmt $"import cycle: {loop}"
-    elif cache.ContainsKey absPath then
+    elif cache.ContainsKey key then
         // a diamond's shared module is checked once; re-alias per import site
-        let cached = cache[absPath]
+        let cached = cache[key]
 
         Ok
             { cached with
@@ -4449,6 +4699,12 @@ let rec loadModuleCachedWith
         else
             stmt $"cannot resolve import: no file at {absPath}"
     | IUnreadable reason -> stmt $"cannot read import {absPath}: {reason}"
+    | IBadUtf8(l, c) ->
+        Error
+            { File = Some absPath
+              Line = l
+              Col = c
+              Message = "invalid UTF-8 — a source file must be UTF-8; this byte is not" }
     | ISource rawLines ->
         let body, bodyOffset, _ = scriptBody rawLines
 
@@ -4472,7 +4728,7 @@ let rec loadModuleCachedWith
                     // transitive: a reached module's own imports resolve, sharing
                     // the cache, with this module pushed on the chain
                     let childLoader: ImportLoader =
-                        fun p _ a -> loadModuleCachedWith false cache (absPath :: chain) absPath p a
+                        fun p _ a -> loadModuleCachedWith false cache (key :: chain) absPath p a
 
                     // a module-content error reports at the module's own site
                     let at line col msg : Result<_, ImportError> =
@@ -4644,10 +4900,23 @@ let rec loadModuleCachedWith
                                     | Record _ -> [])
                                 |> Set.ofList
 
+                            // own = declared in this body, a builtin's name
+                            // included — exported, reachable qualified
+                            // (`Doc.Text`); the bare name stays the builtin
+                            // [D:module-builtin-names]
+                            let declared =
+                                moduleBody
+                                |> List.collect (function
+                                    | _, CLet(n, _) -> [ n ]
+                                    | _, CLetPat(p, _) -> Parser.patLeafNames p
+                                    | _ -> [])
+                                |> Set.ofList
+                                |> Set.union ctorNames
+
                             let ownMembers =
                                 finalTenv.Values
                                 |> Map.toList
-                                |> List.filter (fun (n, _) -> not (Map.containsKey n baseTenv.Values))
+                                |> List.filter (fun (n, _) -> declared.Contains n)
 
                             let members =
                                 ownMembers
@@ -4717,7 +4986,7 @@ let rec loadModuleCachedWith
                                              n, Map.tryFind n finalTenv.TypeOrigins |> Option.defaultValue (ownOrigin n)))
                                   Body = moduleBody }
 
-                            cache[absPath] <- loaded
+                            cache[key] <- loaded
                             Ok loaded
             | Ok _ -> notAModule
             | Error _ -> notAModule
@@ -4727,7 +4996,31 @@ let rec loadModuleCachedWith
 // from the entry), exposing a nested import's members as `alias.member` for
 // this module's own lets. Returns the module's venv (bindings under bare
 // names); the caller exposes this module's Members qualified.
+//
+// A module's body runs once per program [D:module-once]: keyed by its
+// identity, and by the checked Body itself — a reloaded module (the REPL
+// re-importing an edited file) is a new body and runs afresh.
+let private replayed =
+    System.Collections.Generic.Dictionary<string, (LogicalLine * CheckedStmt) list * Eval.Env>()
+
 let rec replayModule (procFacts: (string * Eval.Value) list) (lm: LoadedModule) : Eval.Env =
+    let key = realPath lm.AbsPath
+
+    match replayed.TryGetValue key with
+    | true, (body, venv) when obj.ReferenceEquals(body, lm.Body) -> venv
+    | _ ->
+        Session.enterImportGuard lm.NaturalName
+
+        let venv =
+            try
+                replayModuleBody procFacts lm
+            finally
+                Session.exitImportGuard ()
+
+        replayed[key] <- (lm.Body, venv)
+        venv
+
+and private replayModuleBody (procFacts: (string * Eval.Value) list) (lm: LoadedModule) : Eval.Env =
     let _, mBase0 = moduleBaseEnvs lm.AbsPath
     let mBase = procFacts |> List.fold (fun m (k, v) -> Map.add k v m) mBase0
 
@@ -4772,6 +5065,7 @@ let checkVendoredModule (absPath: string) : Result<int, string> =
     match readImportSource absPath with
     | IAbsent -> Error $"cannot read {absPath}"
     | IUnreadable reason -> Error $"cannot read {absPath}: {reason}"
+    | IBadUtf8(l, c) -> Error $"{absPath}:{l}:{c}: invalid UTF-8 — a source file must be UTF-8; this byte is not"
     | ISource raws ->
         if raws |> List.exists (fun l -> l.StartsWith "import ") then
             Error
@@ -5286,7 +5580,8 @@ let targetSourceLines (absPath: string) : string list option =
     match readImportSource absPath with
     | ISource lines -> Some lines
     | IAbsent
-    | IUnreadable _ -> None
+    | IUnreadable _
+    | IBadUtf8 _ -> None
 
 /// the signatures a file's #sig head declares, loaded; quiet on load
 /// errors — diagnostics are analyzeLines' job [D:lsp-cross-file]
@@ -6777,11 +7072,11 @@ let printDiags (json: bool) (parsedAny: bool) (diags: Diagnostic list) : unit =
             Console.WriteLine(Color.bold c $"{d.File}:{d.Line}:{d.Col}" + $": {sev}: {d.Message}")
 
 let checkOnly (json: bool) (path: string) : int =
-    if not (IO.File.Exists path) then
-        Console.Error.WriteLine $"weir: no such script: {path}"
+    match readEntryScript path with
+    | Error msg ->
+        Console.Error.WriteLine $"weir: {msg}"
         2
-    else
-        let rawLines = IO.File.ReadAllLines path |> Array.toList
+    | Ok rawLines ->
         let diags, stmts, _, _ = analyzeLines path rawLines
         printDiags json (not (List.isEmpty stmts)) diags
 
@@ -6813,11 +7108,11 @@ let private fieldDocsFor (rawLines: string list) (ll: LogicalLine) : Map<string,
     |> Map.ofList
 
 let run (path: string) (scriptArgs: string list) : int =
-    if not (IO.File.Exists path) then
-        Console.Error.WriteLine $"weir: no such script: {path}"
+    match readEntryScript path with
+    | Error msg ->
+        Console.Error.WriteLine $"weir: {msg}"
         2
-    else
-        let rawLines = IO.File.ReadAllLines path |> Array.toList
+    | Ok rawLines ->
 
         let body, bodyOffset, runSigDecls = scriptBody rawLines
 
@@ -7229,130 +7524,114 @@ let run (path: string) (scriptArgs: string list) : int =
                             |> String.concat Environment.NewLine
                         | None -> runtimeErrorLine path lineNo ex.Message
 
-                    let rec exec (venv: Eval.Env) (rest: (int * CheckedStmt) list) : int =
-                        match rest with
-                        | [] -> 0
-                        | (lineNo, stmt) :: tail ->
-                            // each top-level statement starts at its own root; a
-                            // closure from this statement is not a call
-                            Eval.RunPos.SameStatement <-
-                                System.Func<obj, bool>(fun body ->
-                                    match runPositions.TryGetValue body with
-                                    | true, (f, s, _, _) -> f = path && s = lineNo
-                                    | _ -> false)
+                    // statements are width, not depth: a loop, each step in
+                    // its own try [D:block-width]
+                    let fail (lineNo: int) (ex: exn) : Result<Eval.Env, int> =
+                        match ex with
+                        | Eval.ExitRequest code -> Error code
+                        | ex ->
+                            Console.Error.WriteLine(runtimeErrorAt lineNo ex)
+                            Error 1
 
-                            match stmt with
-                            | CLet(_, te)
-                            | CLetPat(_, te)
-                            | CExpr te
-                            | CCmd te -> Eval.RunPos.Current <- box te
-                            // an import's module code has no positions here:
-                            // the statement's own line, never a stale node
-                            | _ -> Eval.RunPos.Current <- null
+                    let step (venv: Eval.Env) (lineNo: int) (stmt: CheckedStmt) : Result<Eval.Env, int> =
+                        // each top-level statement starts at its own root; a
+                        // closure from this statement is not a call
+                        Eval.RunPos.SameStatement <-
+                            System.Func<obj, bool>(fun body ->
+                                match runPositions.TryGetValue body with
+                                | true, (f, s, _, _) -> f = path && s = lineNo
+                                | _ -> false)
 
-                            match stmt with
-                            | CNoop -> exec venv tail
-                            | CImport lm ->
-                                try
-                                    // replay the module (its Body, including any
-                                    // nested imports) and expose its members as
-                                    // `alias.member` [D:modules-v1]
-                                    // process facts (incl. entryPath) ride from
-                                    // the entry; the module keeps its own scriptPath
-                                    let procFacts =
-                                        [ "Self.pid"; "Self.args"; "Self.stdin"; "Self.entryPath" ]
-                                        |> List.choose (fun k -> Map.tryFind k venv |> Option.map (fun v -> k, v))
+                        match stmt with
+                        | CLet(_, te)
+                        | CLetPat(_, te)
+                        | CExpr te
+                        | CCmd te -> Eval.RunPos.Current <- box te
+                        // an import's module code has no positions here:
+                        // the statement's own line, never a stale node
+                        | _ -> Eval.RunPos.Current <- null
 
-                                    let moduleVenv = replayModule procFacts lm
+                        match stmt with
+                        | CNoop -> Ok venv
+                        | CImport lm ->
+                            try
+                                // replay the module (its Body, including any
+                                // nested imports) and expose its members as
+                                // `alias.member` [D:modules-v1]
+                                // process facts (incl. entryPath) ride from
+                                // the entry; the module keeps its own scriptPath
+                                let procFacts =
+                                    [ "Self.pid"; "Self.args"; "Self.stdin"; "Self.entryPath" ]
+                                    |> List.choose (fun k -> Map.tryFind k venv |> Option.map (fun v -> k, v))
 
-                                    let venv' =
-                                        lm.Members
-                                        |> List.fold
-                                            (fun acc (n, _) ->
-                                                match Map.tryFind n moduleVenv with
-                                                | Some v -> Map.add $"{lm.Alias}.{n}" v acc
-                                                | None -> acc)
-                                            venv
+                                let moduleVenv = replayModule procFacts lm
 
-                                    exec venv' tail
-                                with
-                                | Eval.ExitRequest code -> code
-                                | ex ->
-                                    Console.Error.WriteLine(
-                                        runtimeErrorAt lineNo ex
-                                    )
+                                lm.Members
+                                |> List.fold
+                                    (fun acc (n, _) ->
+                                        match Map.tryFind n moduleVenv with
+                                        | Some v -> Map.add $"{lm.Alias}.{n}" v acc
+                                        | None -> acc)
+                                    venv
+                                |> Ok
+                            with ex ->
+                                fail lineNo ex
+                        | CType decl ->
+                            match decl.Body with
+                            | DUnion cases ->
+                                Eval.constructorValues cases |> List.fold (fun m (n, v) -> Map.add n v m) venv
+                            | DRecord _ -> venv
+                            |> Ok
+                        | CLetPat(pat, te) ->
+                            try
+                                let bindings = Eval.bindPattern pat (Eval.eval venv te)
+                                Ok(bindings |> List.fold (fun m (n, v) -> Map.add n v m) venv)
+                            with ex ->
+                                fail lineNo ex
+                        | CLet(name, te) ->
+                            try
+                                Ok(Map.add name (Eval.eval venv te) venv)
+                            with ex ->
+                                fail lineNo ex
+                        | CCmd te ->
+                            try
+                                // the bare command statement at a tty
+                                // inherits stdout [D:colour-inherit]: the
+                                // child sees the terminal (isatty true,
+                                // colour on) and weir never holds the
+                                // bytes; redirected output keeps the
+                                // batched path — byte-identical, decided
+                                // at spawn
+                                (match te.Kind with
+                                 | _ when Eval.inheritsStdout te ->
+                                     // no mid-line tidy: a DSR query
+                                     // hangs under a non-answering
+                                     // terminal — bash's posture, wart
+                                     // and all
+                                     Console.Out.Flush()
+                                     Eval.inheritCommandStatement venv te
+                                 | _ -> printResult (Eval.eval venv te))
 
-                                    1
-                            | CType decl ->
-                                let venv' =
-                                    match decl.Body with
-                                    | DUnion cases ->
-                                        Eval.constructorValues cases |> List.fold (fun m (n, v) -> Map.add n v m) venv
-                                    | DRecord _ -> venv
+                                Ok venv
+                            with ex ->
+                                fail lineNo ex
+                        | CExpr te ->
+                            try
+                                Eval.eval venv te |> ignore
+                                Ok venv
+                            with ex ->
+                                fail lineNo ex
 
-                                exec venv' tail
-                            | CLetPat(pat, te) ->
-                                try
-                                    let bindings = Eval.bindPattern pat (Eval.eval venv te)
-                                    exec (bindings |> List.fold (fun m (n, v) -> Map.add n v m) venv) tail
-                                with
-                                | Eval.ExitRequest code -> code
-                                | ex ->
-                                    Console.Error.WriteLine(
-                                        runtimeErrorAt lineNo ex
-                                    )
+                    let mutable venv = valueEnv0
+                    let mutable rest = stmts
+                    let mutable code = None
 
-                                    1
-                            | CLet(name, te) ->
-                                try
-                                    exec (Map.add name (Eval.eval venv te) venv) tail
-                                with
-                                | Eval.ExitRequest code -> code
-                                | ex ->
-                                    Console.Error.WriteLine(
-                                        runtimeErrorAt lineNo ex
-                                    )
+                    while code.IsNone && not (List.isEmpty rest) do
+                        let (lineNo, stmt) = List.head rest
+                        rest <- List.tail rest
 
-                                    1
-                            | CCmd te ->
-                                try
-                                    // the bare command statement at a tty
-                                    // inherits stdout [D:colour-inherit]: the
-                                    // child sees the terminal (isatty true,
-                                    // colour on) and weir never holds the
-                                    // bytes; redirected output keeps the
-                                    // batched path — byte-identical, decided
-                                    // at spawn
-                                    (match te.Kind with
-                                     | _ when Eval.inheritsStdout te ->
-                                         // no mid-line tidy: a DSR query
-                                         // hangs under a non-answering
-                                         // terminal — bash's posture, wart
-                                         // and all
-                                         Console.Out.Flush()
-                                         Eval.inheritCommandStatement venv te
-                                     | _ -> printResult (Eval.eval venv te))
+                        match step venv lineNo stmt with
+                        | Ok venv' -> venv <- venv'
+                        | Error c -> code <- Some c
 
-                                    exec venv tail
-                                with
-                                | Eval.ExitRequest code -> code
-                                | ex ->
-                                    Console.Error.WriteLine(
-                                        runtimeErrorAt lineNo ex
-                                    )
-
-                                    1
-                            | CExpr te ->
-                                try
-                                    Eval.eval venv te |> ignore
-                                    exec venv tail
-                                with
-                                | Eval.ExitRequest code -> code
-                                | ex ->
-                                    Console.Error.WriteLine(
-                                        runtimeErrorAt lineNo ex
-                                    )
-
-                                    1
-
-                    exec valueEnv0 stmts
+                    defaultArg code 0
