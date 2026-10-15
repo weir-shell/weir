@@ -11354,6 +11354,7 @@ while True:
     if not c: break
     d += c
 print('GOT-FIRST=%s' % (b'data: first' in d))
+print('TERMINATED=%s' % d.endswith(b'0\r\n\r\n'))
 PYEOF
 cat > "$svdir/stream.weir" <<WEOF
 let handler = fun req ->
@@ -11378,10 +11379,14 @@ out=$($BIN "$svdir/stream.weir" 2>&1) || fail "serve stream run failed: $out"
 # The failure-surfacing half below (streamErrors) holds on every platform.
 if [ "$IS_WINDOWS" = "0" ]; then
     echo "$out" | grep -qF "GOT-FIRST=True" || fail "F8: the client must receive the first element before the producer died: $out"
+    # the client can TELL [D:serve-stream-truncate]: the chunked body ends
+    # without its zero-length terminator, so its HTTP layer reports a
+    # truncated body — a proper terminator after a failure must not survive
+    echo "$out" | grep -qF "TERMINATED=False" || fail "F8: a producer raise must leave the chunked body unterminated: $out"
 fi
 echo "$out" | grep -qF "stream-errors=1" || fail "F8: the script must observe the producer failure via the channel: $out"
 echo "$out" | grep -qF "stream-err=producer died" || fail "F8: Server.streamErrors must carry the failure message: $out"
-echo "e2e ok: within serve — F8 a Stream producer raise surfaces via Server.streamErrors (not silent)"
+echo "e2e ok: within serve — F8 a Stream producer raise surfaces via Server.streamErrors and leaves the client an unterminated body"
 
 # (F3-serve) a response header carrying CR/LF [D:http-header-bytes]: the
 # serve face of the injection refusal. A raw socket referees the wire so
@@ -11403,11 +11408,13 @@ def get(path):
     return d
 evil = get('/crlf')
 benign = get('/ok')
+badname = get('/badname')
 status_evil = evil.split(b'\r\n', 1)[0].decode()
 print('EVIL-STATUS=%s' % status_evil)
 # the forged header/name must NOT appear anywhere in the evil response
 print('FORGED=%s' % ((b'Injected' in evil) or (b'X-Crlf' in evil)))
 print('BENIGN-ARRIVES=%s' % (b'X-Benign: present' in benign))
+print('BADNAME-STATUS=%s' % badname.split(b'\r\n', 1)[0].decode())
 PYEOF
 cat > "$svdir/hdr.weir" <<WEOF
 let crlf = Str.fromBase64 "DQo="
@@ -11415,6 +11422,7 @@ let handler = fun req ->
     match req.path with
     | "/crlf" -> HttpServerResponse { status = 200; headers = [("X-Crlf", "a" + crlf + "Injected: yes")]; body = Text "ok" }
     | "/ok" -> HttpServerResponse { status = 200; headers = [("X-Benign", "present")]; body = Text "ok" }
+    | "/badname" -> HttpServerResponse { status = 200; headers = [("Bad Name", "v")]; body = Text "ok" }
     | _ -> HttpServerResponse { status = 404; headers = []; body = Text "nf" }
 
 within serve srv = { port = $svport5; maxConcurrent = 2 } handler
@@ -11432,9 +11440,25 @@ out=$($BIN "$svdir/hdr.weir" 2>&1) || fail "serve header-injection run failed: $
 echo "$out" | grep -qF "EVIL-STATUS=HTTP/1.1 500" || fail "F3-serve: an injecting response header must be refused (500), got: $out"
 echo "$out" | grep -qF "FORGED=False" || fail "F3-serve: the forged header must NOT reach the wire: $out"
 echo "$out" | grep -qF "BENIGN-ARRIVES=True" || fail "F3-serve: a clean control header must still arrive (refusal is distinguishable from headers-never-working): $out"
-echo "$out" | grep -qF "refusals=1" || fail "F3-serve: the script must observe the located refusal via Server.streamErrors: $out"
+echo "$out" | grep -qF "refusals=2" || fail "F3-serve/F11: the script must observe both located refusals via Server.streamErrors: $out"
 echo "$out" | grep -qF "response header 'X-Crlf' carries a CR byte" || fail "F3-serve: the located refusal must name the header and byte: $out"
-echo "e2e ok: within serve — F3 a CR/LF response header is refused (500, no forged header, control arrives, located via streamErrors)"
+# (F11) a header the listener cannot send is refused by name, never
+# dropped [D:http-header-unsendable]: a 500, and the reason on the channel
+echo "$out" | grep -qF "BADNAME-STATUS=HTTP/1.1 500" || fail "F11-serve: an unsendable response header must be refused (500), not dropped: $out"
+echo "$out" | grep -qF "refusal=response header 'Bad Name' cannot be sent — its name carries a space" || fail "F11-serve: the refusal must name the header and why: $out"
+echo "e2e ok: within serve — F3 a CR/LF response header is refused (500, no forged header, control arrives, located via streamErrors); F11 an unsendable one too"
+
+# (F11-client) a request header with no place on the wire is refused by
+# name before any connection [D:http-header-unsendable] — HttpClient
+# skipped it silently. Nothing need listen: the refusal precedes the send.
+for case in 'Bad Name|v|its name carries a space' 'Content-Type|application/json|it is a body header and this request has no body' 'X-U|café|its value carries the non-ASCII character'; do
+    hn=${case%%|*}; rest=${case#*|}; hv=${rest%%|*}; why=${rest#*|}
+    rc=0
+    out=$($BIN -e "print \$\"{(Http.send { Http.get \"http://127.0.0.1:9/\" with headers = [(\"$hn\", \"$hv\")] }).status}\"" 2>&1) || rc=$?
+    [ "$rc" = "1" ] || fail "F11-client: '$hn' must be refused (exit 1), got rc=$rc: $out"
+    echo "$out" | grep -qF "request header '$hn' cannot be sent — $why" || fail "F11-client: the refusal must name '$hn' and why: $out"
+done
+echo "e2e ok: Http.send — F11 a header with no place on the wire is refused by name (bad name, bodyless body header, non-ASCII)"
 
 # (F12) the request-body read timeout [D:serve-body-timeout]: a slow
 # client declaring a large Content-Length and holding the socket is

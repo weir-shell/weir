@@ -153,13 +153,7 @@ let accept (h: Handle) : HttpListenerContext option =
 /// refusal Bundle C's header guard performs; a well-formed unlisted verb
 /// (TRACE, a proxy's own) is preserved, carried to the handler as Other.
 let methodTokenOk (m: string) : bool =
-    not (String.IsNullOrEmpty m)
-    && m
-       |> Seq.forall (fun c ->
-           (c >= 'A' && c <= 'Z')
-           || (c >= 'a' && c <= 'z')
-           || (c >= '0' && c <= '9')
-           || "!#$%&'*+-.^_`|~".Contains c)
+    not (String.IsNullOrEmpty m) && m |> Seq.forall Http.isTchar
 
 /// raised when the request-body read exceeds the configured bound
 /// [D:serve-body-timeout] — a distinguishable signal so the accept loop
@@ -172,12 +166,13 @@ exception BodyReadTimeout
 exception BodyTooLarge
 
 /// raised when a handler-returned response header carries CR/LF/NUL
-/// [D:http-header-bytes] — the inbound-response face of the review's F3.
-/// A distinguishable signal (BodyReadTimeout's shape) so the accept loop
-/// refuses the response without emitting the injecting header (never a
-/// silent drop) and surfaces the located message to the script through
-/// the stream-error channel. Carries the located refusal.
-exception ResponseHeaderInjection of message: string
+/// [D:http-header-bytes] — the inbound-response face of the review's F3 —
+/// or cannot be sent at all [D:http-header-unsendable]. A distinguishable
+/// signal (BodyReadTimeout's shape) so the accept loop refuses the
+/// response without emitting the header (never a silent drop) and
+/// surfaces the located message to the script through the stream-error
+/// channel. Carries the located refusal.
+exception ResponseHeaderRefused of message: string
 
 /// read the whole body under a deadline [D:serve-body-timeout]: a slow
 /// client dribbling bytes cannot park the slot forever. The read runs on
@@ -272,16 +267,43 @@ let readRequest (ctx: HttpListenerContext) (bodyTimeoutMs: int) (maxBody: int64)
 /// message here, where the serve scope surfaces it to the script (a
 /// Server member, Proc.wait's shape). A client disconnect is not a
 /// producer failure: it ends enumeration and closes cleanly, unreported.
-/// abort a chunked response on a producer failure [D:serve-stream]. The
-/// intent is to leave the client a truncated body (no zero-length chunk),
-/// but the managed HttpListener emits the terminator on both Close() and
-/// Abort() and exposes no public way to suppress it; the only mechanism
-/// found reaches into HttpListener's private fields, which the AOT trimmer
-/// refuses (IL2075) — see the session report. So (a) degrades to a plain
-/// Abort here, and the designated channel (b) — Server.streamErrors — is
-/// the reliable, script-observable signal: a monitoring loop reads it and
-/// learns its producer died (a silent abort would hide that).
+/// the managed listener's chunk-terminator latch [D:serve-stream-truncate]:
+/// HttpResponseStream writes the zero-length chunk on dispose unless its
+/// `_trailer_sent` is set, and Abort() disposes it, so a plain Abort ends
+/// a dead stream like a complete one. A constant type name and field name
+/// keep the reflection trimmer-visible. None where the field is absent
+/// (http.sys on Windows, a renamed field) — the abort is then plain.
+let private trailerSentField: Reflection.FieldInfo option =
+    try
+        match Type.GetType("System.Net.HttpResponseStream, System.Net.HttpListener", false) with
+        | null -> None
+        | t ->
+            match t.GetField("_trailer_sent", Reflection.BindingFlags.NonPublic ||| Reflection.BindingFlags.Instance) with
+            | null -> None
+            | f when f.FieldType = typeof<bool> -> Some f
+            | _ -> None
+    with _ ->
+        None
+
+/// whether this platform can end a chunked response without its
+/// terminator [D:serve-stream-truncate] — the unit pin asserts it on the
+/// managed listener, so a runtime that renames the field fails a test
+/// rather than silently restoring the clean terminator
+let canTruncate () : bool = trailerSentField.IsSome
+
+/// abort a chunked response on a producer failure [D:serve-stream-truncate]:
+/// latch the terminator as already sent, then Abort — the connection
+/// closes with the chunked body unterminated, so the client's own HTTP
+/// layer reports a truncated body (curl: exit 18; a .NET client: an
+/// IOException), never a complete stream.
 let private abortWithoutTrailer (out: HttpListenerResponse) : unit =
+    try
+        match trailerSentField with
+        | Some f -> f.SetValue(out.OutputStream, true)
+        | None -> ()
+    with _ ->
+        ()
+
     try
         out.Abort()
     with _ ->
@@ -302,7 +324,29 @@ let framingHeaders: Set<string> =
           "trailer"
           "upgrade" ]
 
+/// refuse the first response header the listener cannot send
+/// [D:http-header-unsendable]: the shared predicate words the reason; a
+/// scratch collection with the listener's own validation backs it, so a
+/// header the platform would refuse is never dropped unnamed. Framing
+/// headers are skipped — the listener owns them (dropped by design)
+let refuseUnsendableResponseHeaders (headers: (string * string) list) : unit =
+    let scratch = WebHeaderCollection()
+
+    for (k, v) in headers |> List.filter (fun (k, _) -> not (framingHeaders.Contains(k.ToLowerInvariant()))) do
+        match Http.headerUnsendable (k, v) with
+        | Some reason -> raise (ResponseHeaderRefused(Http.headerUnsendableMessage "response header" k reason))
+        | None ->
+            try
+                scratch.Add(k, v)
+            with ex ->
+                raise (ResponseHeaderRefused(Http.headerUnsendableMessage "response header" k ex.Message))
+
 let writeResponse (ctx: HttpListenerContext) (resp: SResp) (onStreamFailure: string -> unit) : unit =
+    // every header is checked before the response is touched
+    // [D:http-header-unsendable], so a refusal leaves a clean context for
+    // the accept loop's 500
+    refuseUnsendableResponseHeaders resp.Headers
+
     let out = ctx.Response
     out.StatusCode <- resp.Status
 
@@ -314,8 +358,8 @@ let writeResponse (ctx: HttpListenerContext) (resp: SResp) (onStreamFailure: str
                 out.ContentType <- v
             else
                 out.Headers.Add(k, v)
-        with _ ->
-            ()
+        with ex ->
+            raise (ResponseHeaderRefused(Http.headerUnsendableMessage "response header" k ex.Message))
 
     // no body on HEAD, 1xx, 204 or 304 (RFC 9110 §6.4.1): bytes there
     // are read as the start of the next response on a kept-alive

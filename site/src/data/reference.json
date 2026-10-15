@@ -1718,7 +1718,7 @@
         {
           "name": "streamErrors",
           "signature": "Server.streamErrors (srv: Server) : seq\u003Cstring\u003E",
-          "summary": "Error messages from Stream response bodies that raised partway through; the client received a truncated body for each. Empty until one fails. Streaming errors are reported here instead of being raised out of the handler.",
+          "summary": "Error messages from Stream response bodies that raised partway through (the client received a truncated body for each), and from response headers that could not be sent (the client received a 500). Empty until one fails. These errors are reported here instead of being raised out of the handler.",
           "example": null,
           "pointer": "When a Stream body raises, the client\u0027s response is cut off and the error is recorded here."
         }

@@ -600,7 +600,11 @@ print $"{key} -> {value}"
   check error) and `show` masks it. Status is DATA (`if resp.status >=
   400 then fail …`, a 404 binds); only TRANSPORT failure raises (and a
   redirect loop — past 50 hops it raises, naming it). `auth` plus an
-  explicit `Authorization` header is refused (two credentials). On a
+  explicit `Authorization` header is refused (two credentials). A
+  header the wire cannot carry raises before anything is sent, naming
+  the header — a CR/LF/NUL byte, a non-token name (`"Bad Name"`), a
+  control or non-ASCII value byte, or a body header (`Content-Type`,
+  `Expires`) on a `NoBody` request. On a
   cross-origin redirect `auth`, every `secretHeaders` name and a plain
   `Authorization`/`Proxy-Authorization`/`Cookie` header are dropped. The
   body is `NoBody`/`Json`/`Text of string`/`Form of seq<string * string>`
@@ -695,7 +699,11 @@ print $"{key} -> {value}"
   the seq ends. If a `Stream` producer RAISES mid-body, the failure is
   surfaced to the script through `Server.streamErrors srv` (the
   designated channel, Proc.wait's shape — it is not raised out of the
-  handler). A HEAD, 1xx, 204 or 304 reply carries no body bytes
+  handler), and the client sees a TRUNCATED body: the connection closes
+  without the final empty chunk (curl exits 18), never a clean end. A
+  response header the wire cannot carry (a non-token name, a control or
+  non-ASCII value byte, CR/LF) is refused, never dropped: a 500 to the
+  client, the header and reason on `Server.streamErrors`. A HEAD, 1xx, 204 or 304 reply carries no body bytes
   whatever the handler returned (HEAD still declares the GET length).
   Framing and hop-by-hop headers a handler returns (`Transfer-Encoding`,
   `Content-Length`, `Connection`, `Keep-Alive`, `TE`, `Trailer`,

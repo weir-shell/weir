@@ -23122,6 +23122,88 @@ let serveTests =
                   "the designated channel records failures in order"
 
               Weir.Serve.stop h
+          }
+          // ---- F8: the client sees the truncation [D:serve-stream-truncate] ----
+          test "a Stream producer raise ends the chunked body WITHOUT its terminator; a clean stream keeps it [D:serve-stream-truncate]" {
+              // http.sys (Windows) owns its own framing; the latch is the
+              // managed listener's
+              if not (System.OperatingSystem.IsWindows()) then
+                  Expect.isTrue (Weir.Serve.canTruncate ()) "the managed listener's terminator latch is reachable"
+
+                  let stream (lines: seq<string>) : Weir.Serve.SReq -> Weir.Serve.SResp =
+                      fun _ ->
+                          { Status = 200
+                            Headers = []
+                            Body = Weir.Serve.RStream lines }
+
+                  let dead =
+                      wire
+                          (stream (
+                              seq {
+                                  yield "first"
+                                  failwith "producer died"
+                              }
+                          ))
+                          [ get "GET" "/" ]
+                      |> List.head
+
+                  Expect.stringContains dead "data: first" "the element before the raise was sent"
+                  Expect.isFalse (dead.EndsWith "0\r\n\r\n") $"no terminating chunk after a producer raise: {dead}"
+
+                  let whole = wire (stream [ "a"; "b" ]) [ get "GET" "/" ] |> List.head
+                  Expect.isTrue (whole.EndsWith "0\r\n\r\n") $"a clean stream ends with its terminator: {whole}"
+          }
+          // ---- F11: an unsendable header is refused by name [D:http-header-unsendable] ----
+          test "headerUnsendable names a non-token name, a control or non-ASCII value byte; a clean pair passes [D:http-header-unsendable]" {
+              Expect.isNone (Weir.Http.headerUnsendable ("X-Ok", "a\tb ~")) "a token name and a visible-ASCII/tab value pass"
+
+              let reason pair =
+                  Weir.Http.headerUnsendable pair |> Option.defaultValue "<none>"
+
+              Expect.equal (reason ("", "v")) "its name is empty" "an empty name"
+              Expect.stringContains (reason ("Bad Name", "v")) "its name carries a space" "a space in the name"
+              Expect.stringContains (reason ("Bad:Name", "v")) "its name carries ':'" "a colon in the name"
+              Expect.stringContains (reason ("X", "a\u0007b")) "control character U+0007" "a control byte in the value"
+              Expect.stringContains (reason ("X", "café")) "non-ASCII character 'é'" "a non-ASCII value"
+          }
+          test "a request header is refused by name, never skipped — a body header needs a body [D:http-header-unsendable]" {
+              let refuse hasBody headers =
+                  Expect.throwsC
+                      (fun () -> Weir.Http.refuseUnsendableRequestHeader failwith hasBody headers)
+                      (fun ex -> ex.Message)
+
+              Expect.equal
+                  (refuse false [ ("X-Ok", "1"); ("Bad Name", "v") ])
+                  "request header 'Bad Name' cannot be sent — its name carries a space, which a header name cannot (letters, digits and !#$%&'*+-.^_`|~ only)"
+                  "a non-token name is refused, named"
+
+              Expect.equal
+                  (refuse false [ ("Content-Type", "application/json") ])
+                  "request header 'Content-Type' cannot be sent — it is a body header and this request has no body (give the request a body or drop the header)"
+                  "a body header on a bodyless request has no place"
+
+              // with a body the content header lands on the content
+              Weir.Http.refuseUnsendableRequestHeader failwith true [ ("Content-Type", "application/json"); ("Expires", "0") ]
+              Weir.Http.refuseUnsendableRequestHeader failwith false [ ("X-A", "1"); ("Host", "h") ]
+          }
+          test "a response header the listener cannot send is refused by name; framing headers stay the listener's" {
+              let refused headers =
+                  try
+                      Weir.Serve.refuseUnsendableResponseHeaders headers
+                      None
+                  with Weir.Serve.ResponseHeaderRefused m ->
+                      Some m
+
+              Expect.equal
+                  (refused [ ("X-Ok", "1"); ("Bad:Name", "v") ])
+                  (Some "response header 'Bad:Name' cannot be sent — its name carries ':', which a header name cannot (letters, digits and !#$%&'*+-.^_`|~ only)")
+                  "a non-token name is refused, named"
+
+              Expect.isSome (refused [ ("X-U", "café") ]) "a non-ASCII value is refused"
+
+              Expect.isNone
+                  (refused [ ("WWW-Authenticate", "Basic realm=x"); ("Keep-Alive", "\u0007"); ("Content-Type", "text/plain") ])
+                  "a sendable header passes; a framing header is dropped by design, not refused"
           } ]
 
 let versionStampTests =

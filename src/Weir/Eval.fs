@@ -4225,7 +4225,7 @@ and eval (env: Env) (te: TypedExpr) : Value =
                     // script through the stream-error channel, and the
                     // response is refused without the injecting header
                     // (the accept loop 500s it).
-                    Http.refuseHeaderInjection "response header" (fun m -> raise (Serve.ResponseHeaderInjection m)) headers
+                    Http.refuseHeaderInjection "response header" (fun m -> raise (Serve.ResponseHeaderRefused m)) headers
 
                     let asString v =
                         match v with
@@ -4346,10 +4346,12 @@ and eval (env: Env) (te: TypedExpr) : Value =
                                                 ignore
                                          with _ ->
                                              ())
-                                    | Serve.ResponseHeaderInjection msg ->
+                                    | Serve.ResponseHeaderRefused msg ->
                                         // a handler returned a header carrying
-                                        // CR/LF/NUL [D:http-header-bytes]: refuse
-                                        // the response without the injecting
+                                        // CR/LF/NUL [D:http-header-bytes] or one
+                                        // the wire cannot carry
+                                        // [D:http-header-unsendable]: refuse
+                                        // the response without the offending
                                         // header (never a silent drop) — a 500
                                         // to the client, and the located message
                                         // to the script via the stream-error

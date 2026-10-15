@@ -80,6 +80,18 @@
   splices take `Uuid`, `isEmpty` is qualified-only in the REPL, `$HOME`
   in argv is a splice, `&&` warns, `Path.glob` sorts per level, and
   smaller wording fixes).
+- **A `serve` `Stream` body that raises partway now looks cut off to the
+  client.** It ended with a clean chunked terminator, so the client read
+  a complete stream; the connection now closes without it (curl exits
+  18). `Server.streamErrors` still records the error.
+- **A header weir can't send is an error naming it, never dropped.**
+  `Http.send` skipped a header with a bad name (`"Bad Name"`) and a
+  `Content-Type`/`Expires` on a `NoBody` request; it now refuses before
+  sending, and says why (a non-ASCII value said "cannot reach"). A
+  `serve` response header the listener rejects (a bad name, a control or
+  non-ASCII byte) was dropped from a 200; the client now gets a 500 and
+  `Server.streamErrors` names the header. A control byte in a request
+  header value (e.g. BEL), sent before, is refused too.
 
 ## v0.0.74
 

@@ -419,3 +419,74 @@ let refuseHeaderInjection (who: string) (fail: string -> unit) (headers: (string
         match headerInjection (k, v) with
         | Some(byteName, where) -> fail (headerInjectionMessage who k byteName where)
         | None -> ()
+
+/// an RFC 9110 tchar — the byte class of a header name and a method
+/// token [D:serve-method] [D:http-header-unsendable]
+let isTchar (c: char) : bool =
+    (c >= 'A' && c <= 'Z')
+    || (c >= 'a' && c <= 'z')
+    || (c >= '0' && c <= '9')
+    || "!#$%&'*+-.^_`|~".Contains c
+
+let private describeChar (c: char) : string =
+    if c = ' ' then "a space"
+    elif c < ' ' || c = '\127' then $"U+{int c:X4}"
+    else $"'{c}'"
+
+/// why a header cannot cross the wire as given, or None
+/// [D:http-header-unsendable]: a name that is not a token, or a value
+/// with a control character or a non-ASCII one. Both crossings refused
+/// these by dropping the header (the server) or skipping it (a client
+/// name); CR/LF/NUL are the injection class, checked first with their
+/// own message [D:http-header-bytes].
+let headerUnsendable (name: string, value: string) : string option =
+    if name = "" then
+        Some "its name is empty"
+    else
+        match name |> Seq.tryFind (isTchar >> not) with
+        | Some c ->
+            Some $"its name carries {describeChar c}, which a header name cannot (letters, digits and !#$%%&'*+-.^_`|~ only)"
+        | None ->
+            match value |> Seq.tryFind (fun c -> (c < ' ' && c <> '\t') || c = '\127') with
+            | Some c -> Some $"its value carries the control character {describeChar c}"
+            | None ->
+                match value |> Seq.tryFind (fun c -> c > '\127') with
+                | Some c ->
+                    Some $"its value carries the non-ASCII character {describeChar c} (header values are ASCII; percent-encode or base64 it)"
+                | None -> None
+
+/// the located refusal for an unsendable header [D:http-header-unsendable],
+/// the injection message's shape: the crossing, the header, the reason
+let headerUnsendableMessage (who: string) (name: string) (reason: string) : string =
+    $"{who} '{name}' cannot be sent — {reason}"
+
+/// a request header with no place on the wire [D:http-header-unsendable]:
+/// a body header (Content-Type, Expires, …) on a request without a body
+/// — HttpClient has nowhere to put it. The BCL's own header tables
+/// decide, so weir never keeps a second list of content headers.
+let requestHeaderHasNoPlace (hasBody: bool) (name: string, value: string) : bool =
+    use msg = new HttpRequestMessage()
+
+    if msg.Headers.TryAddWithoutValidation(name, value) then
+        false
+    elif hasBody then
+        use c = new ByteArrayContent([||])
+        not (c.Headers.TryAddWithoutValidation(name, value))
+    else
+        true
+
+/// refuse the first unsendable request header, or pass
+/// [D:http-header-unsendable] — the client crossing; runs after the
+/// injection walk, so CR/LF/NUL keep their own message
+let refuseUnsendableRequestHeader (fail: string -> unit) (hasBody: bool) (headers: (string * string) list) : unit =
+    for (k, v) in headers do
+        match headerUnsendable (k, v) with
+        | Some reason -> fail (headerUnsendableMessage "request header" k reason)
+        | None ->
+            if requestHeaderHasNoPlace hasBody (k, v) then
+                fail (
+                    headerUnsendableMessage
+                        "request header"
+                        k
+                        "it is a body header and this request has no body (give the request a body or drop the header)"
+                )

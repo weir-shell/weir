@@ -1,6 +1,6 @@
 # weir — fixing the multi-area review's fourteen findings
 
-Status: DRAFT, awaiting bless.
+Status: LANDED except F10 (ruled later, PLAN-daily-driver W4) — bundles A+B, C, D, E landed earlier; F8 (a) and the rest of F11 landed 2026-10-15 (session below).
 
 DEPENDENCY GATE: this plan consumes `PLAN-multi-area-review.md` and gates on
 that review's SESSION REPORT (executed 2026-09-20, findings-only, gate green
@@ -306,3 +306,33 @@ standard one, `QUERY`, and a nonsense one); F8's pin asserts the client can TELL
 - Any fix that would require changing a message this plan did not authorize.
 - Bundle C moving a `Secret` rendering behaviour: that crosses into the
   prior review's closed ground and wants its own bless.
+
+## Session 2026-10-15 — F8 (a) and F11 finished (PLAN-daily-driver W4)
+
+Ruled IN: F8, F11. Ruled LATER: F10 — untouched; the repro still prints
+`F10 REPRODUCES`, as before.
+
+- **F8 (a), the client-visible half** [D:serve-stream-truncate]: the
+  terminator suppression the first pass abandoned over IL2075 works with a
+  constant type/field name (trimmer-visible; the AOT publish is clean). A
+  producer raise now leaves the chunked body unterminated (curl exits 18).
+  The channel half (b) is unchanged.
+- **F11** [D:http-header-unsendable]: the silent drops were wider than the
+  CRLF case. Server: any header HttpListener rejects (non-token name, control
+  or non-ASCII value) was swallowed. Client: a non-token name, and a body
+  header (`Content-Type`, `Expires`, `Content-Length`) on a `NoBody`
+  request, were skipped. Both crossings now refuse by name — the client
+  before sending, the server with a 500 plus `Server.streamErrors`.
+- **Repro instrument** (`tools/multi-repro.weir`): area D's control had been
+  failing because the F3 fix makes the shared client fixture exit at its
+  first request; F3 now runs in its own fixture and asserts the REFUSAL
+  (exit 1 naming `X-Evil`). Running F4 for real then exposed a probe bug: it
+  flagged any `X-Api-Key` in the log once anything reached port 8534, though
+  the first hop carries it legitimately. It now reads per-request blocks,
+  with a new `control-redirect-followed`. Verdict: F3 and F4 are fixed.
+  F11's probe accepts a LOUD refusal (not a 200, and `streamErrors` names
+  the header), per [D:http-header-bytes], and adds a bad-name case.
+- **Not done — the BACKLOG pipelining item** needs a ruling: the managed
+  HttpListener drops pipelined bytes (`HttpConnection.Close` → `Init()`
+  replaces the buffer that holds them), so a fix means replacing the
+  listener. See the session report.

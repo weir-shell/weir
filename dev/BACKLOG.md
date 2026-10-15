@@ -28,7 +28,9 @@ Ruled 2026-10-15 (PLAN-daily-driver W4): **every item below is daily-driver — 
 - **`from json` reading a `Yaml` field** — would let `gen types` keep a
   self-referential field instead of omitting it [D:gen-types-cycles].
 - **`serve` answers only the first of pipelined requests** on one
-  connection.
+  connection. Needs a ruling (2026-10-15): the managed HttpListener drops
+  the pipelined bytes itself, so the fix is replacing the listener (see
+  PLAN-review-fixes.md, session 2026-10-15).
 - **Inference order:** `a + b + 0` doesn't infer while `0 + a + b` does.
 - **Re-enumeration warning** misses indirect pulls (through a function, a
   loop, a derived binding).
