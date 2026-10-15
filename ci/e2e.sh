@@ -2547,7 +2547,8 @@ froot="$(cd "$(dirname "$0")/.." && pwd)"
 if [ "$(uname -s)" = "Linux" ] && command -v dotnet >/dev/null 2>&1 && [ -f "$froot/tests/Weir.Fuzz/Weir.Fuzz.fsproj" ]; then
     obs_rc=0
     obs=$( cd "$froot" && $BIN tools/fuzz.weir --seed 4242 --count 10 2>&1 ) || obs_rc=$?
-    [ "$obs_rc" = "0" ] || fail "observed-count run failed: $(echo "$obs" | tail -3)"
+    # name the failing property and its shrunk input, not just the tally
+    [ "$obs_rc" = "0" ] || fail "observed-count run failed: $(echo "$obs" | grep -E -A25 '^ *Failed [A-Z]' | head -60; echo "$obs" | tail -3)"
     echo "$obs" | grep -qF "deep fuzz clean: seed=4242 count=10 (observed)" \
         || fail "driver must report the OBSERVED config: $(echo "$obs" | tail -3)"
     echo "e2e ok: fuzz driver reports observed seed/count (instrument measures, not restates)"
