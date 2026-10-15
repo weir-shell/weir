@@ -2099,10 +2099,17 @@ let private evalCheckedBody (source: string) (state: State) (chk: Script.Checked
             for n, sch in schemes do
                 match bindings |> List.tryFind (fun (bn, _) -> bn = n) with
                 | Some(_, bv) when bv <> Eval.VUnit ->
-                    let rendered, hint = Eval.echoValue cap (Eval.echoPrep bv)
+                    // a command-backed component never runs at echo
+                    // [D:repl-let-echo-lazy]; judged against the whole RHS,
+                    // so a pure seq beside one is conservatively not echoed
+                    if letCommandBacked te bv then
+                        noteCommandSeq n te bv
+                        echoMeta (commandBackedEcho n sch.Ty)
+                    else
+                        let rendered, hint = Eval.echoValue cap (Eval.echoPrep bv)
 
-                    Console.WriteLine
-                        $"{n} : {formatEchoTy sch.Ty} = {Eval.sanitizeTtyData rendered}{Eval.echoTail hint}"
+                        Console.WriteLine
+                            $"{n} : {formatEchoTy sch.Ty} = {Eval.sanitizeTtyData rendered}{Eval.echoTail hint}"
                 | _ -> Console.WriteLine $"{n} : {formatEchoTy sch.Ty}"
 
             { state with

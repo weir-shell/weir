@@ -10584,11 +10584,13 @@ WEOF
     # the echo of a command-backed let never runs it, piped too
     # [D:repl-let-echo-lazy]; typing the name does
     rm -f "$initcfg/lazymark"
-    iout=$(printf 'let c = sh -c "echo cleanup >> %s/lazymark"\nlet g2 = gl\nlet fz = gl |> Seq.freeze\n#quit\n' "$initcfg" \
+    iout=$(printf 'let c = sh -c "echo cleanup >> %s/lazymark"\nlet g2 = gl\nlet fz = gl |> Seq.freeze\nlet (n1, d1) = (1, gl)\n#quit\n' "$initcfg" \
         | XDG_CONFIG_HOME="$initcfg" XDG_STATE_HOME="$initcfg/state" "$BIN" 2>&1)
     echo "$iout" | grep -qF "c : seq<string> (command-backed — runs on each use; type c to run it)" || fail "a command-backed let echoes its type and hint: $iout"
     echo "$iout" | grep -qF "g2 : seq<string> (command-backed" || fail "a let reading a command-backed binding is command-backed too: $iout"
     echo "$iout" | grep -qF 'fz : seq<string> = ["lazy-out"]' || fail "an eager let echoes its value: $iout"
+    echo "$iout" | grep -qF "d1 : seq<string> (command-backed" || fail "a destructured command-backed component echoes its type, never runs: $iout"
+    echo "$iout" | grep -qF "n1 : int = 1" || fail "a destructured pure component still echoes its value: $iout"
     [ "$(tr '\n' ' ' < "$initcfg/lazymark")" = "run " ] || fail "only the frozen let ran: $(cat "$initcfg/lazymark")"
 fi
 cat > "$INITHOME/weir/init.weir" <<'WEOF'
