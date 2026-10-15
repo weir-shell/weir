@@ -1129,8 +1129,25 @@ for args in "--check" "--bogus $fmtdir/ugly.weir" "$fmtdir/ugly.weir $fmtdir/ugl
     echo "$out" | grep -qF "usage: weir fmt" || fail "fmt $args: usage text: $out"
     case "$out" in *"no such script: --"*) fail "fmt $args: a flag read as a script: $out" ;; esac
 done
+# a formatted file ends in exactly one newline [D:fmt-v1]
+printf 'print "a"\n\n\n' > "$fmtdir/tail.weir"
+$BIN fmt "$fmtdir/tail.weir" 2>/dev/null || fail "fmt tail.weir"
+printf 'print "a"\n' | cmp -s - "$fmtdir/tail.weir" || fail "fmt must leave exactly one final newline: $(od -c "$fmtdir/tail.weir")"
+$BIN fmt --check "$fmtdir/tail.weir" 2>/dev/null || fail "one final newline is canonical"
+# a file check cannot parse is refused, byte-identical [D:fmt-parse-gate]
+printf 'let d = yaml\n    a: [1\n    b:  2\nprint  (show d)\n' > "$fmtdir/bad.weir"
+cp "$fmtdir/bad.weir" "$fmtdir/bad.orig"
+rc=0; out=$($BIN fmt "$fmtdir/bad.weir" 2>&1) || rc=$?
+[ "$rc" = "3" ] || fail "fmt on a parse error exits 3, got $rc: $out"
+expect "fmt names the parse error" "cannot format: line 2:" "$out"
+cmp -s "$fmtdir/bad.weir" "$fmtdir/bad.orig" || fail "fmt rewrote a file that does not parse"
+# heredoc content and a multi-line hole are never respaced [D:fmt-respace]
+printf 'let a = 1\nlet s = $<<<\n    y  {a}\nprint s\nlet t = $"x{a +\n    1}y{a}"\nprint t\n' > "$fmtdir/holes.weir"
+cp "$fmtdir/holes.weir" "$fmtdir/holes.orig"
+$BIN fmt "$fmtdir/holes.weir" 2>/dev/null || fail "fmt holes.weir"
+cmp -s "$fmtdir/holes.weir" "$fmtdir/holes.orig" || fail "fmt respaced heredoc content or a hole: $(cat "$fmtdir/holes.weir")"
 rm -rf "$fmtdir"
-echo "e2e ok: fmt canonicalizes, --check gates, output runs; flags never read as scripts"
+echo "e2e ok: fmt canonicalizes, --check gates, output runs; flags never read as scripts; unparseable refused; holes kept"
 
 # every tracked script is already formatted — a repo-wide fmt regression
 # fails here [D:fmt-bracket-shift]; outside a git checkout (an unpacked
@@ -8504,6 +8521,7 @@ for mode in "" "check" "fmt"; do
     [ "$rc" = "2" ] || fail "invalid UTF-8 ($mode) exits 2, got $rc: $out"
     expect "invalid UTF-8 is located ($mode)" "bad.weir:2:12: invalid UTF-8" "$out"
 done
+printf 'print "ok"\nprint "\303\251t\303\251 \377 x"\n' | cmp -s - "$u8dir/bad.weir" || fail "fmt rewrote a file with invalid UTF-8"
 printf 'module M\nlet x : int\nlet x = 1 // \376\n' > "$u8dir/m.weir"
 printf 'import "./m.weir"\nprint (show M.x)\n' > "$u8dir/main.weir"
 out=$($BIN "$u8dir/main.weir" 2>&1) || true

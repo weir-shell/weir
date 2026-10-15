@@ -41,7 +41,10 @@ Ruled 2026-10-15 (PLAN-daily-driver W4): **every item below is daily-driver — 
 - **A Secret spliced into argv shows in clear in "command failed" errors**
   (SECURITY.md non-claim; CI logs make it worth revisiting).
 - **`from xml` mixed content** (`<N>a<b/>c</N>`) is silently concatenated.
-- **fmt** formats a file with a yaml-district parse error, and spaces inside
-  multi-line interpolation holes.
+- ~~**fmt** formats a file with a yaml-district parse error, and spaces inside
+  multi-line interpolation holes.~~ done: fmt refuses any file check cannot
+  parse; respace skips district content and lines inside a hole [D:fmt-parse-gate].
 - **History file and fmt rewrite invalid UTF-8** as U+FFFD ([D:source-utf8]
-  covers source files only).
+  covers source files only). fmt half done: fmt reads through the entry
+  read, refuses located and leaves the file untouched (e2e pins the bytes);
+  the history half awaits a ruling (PLAN-hunt2-backlog-fmt.md).

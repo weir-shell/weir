@@ -871,6 +871,9 @@ expect(isinstance(r, list) and len(r) == 1 and r[0]["newText"].endswith("print (
        f"the formatted text ends in a newline: {r}")
 r = format5(75, "#!/usr/bin/env weir\n  print \"a\"\n")
 expect(r == [] or r is None, f"where the CLI refuses, no edits: {r}")
+# a doc check cannot parse is refused too [D:fmt-parse-gate]
+r = format5(76, "let x = (1 +\nprint  x\n")
+expect(r == [] or r is None, f"an unparseable doc gets no edits: {r}")
 
 send5({"jsonrpc": "2.0", "id": 2, "method": "shutdown", "params": {}})
 m = read5()

@@ -24,6 +24,14 @@
 
 ### Fixed
 
+- **`weir fmt` refuses a file that does not parse** — a yaml-block error
+  or an ordinary parse error is reported with its line and the file is
+  left as it was (exit 3), as `weir check` would report it. Editor
+  formatting makes no edits on such a file.
+- **`weir fmt` no longer respaces `$<<<`/`$$<<<` block content** (`{a}`
+  became `{ a }`) or a `$"…{ … }"` hole that spans lines.
+- **`weir fmt` ends every file in exactly one newline** — trailing blank
+  lines are removed, as the docs always said.
 - **`#alias` completes and gets a did-you-mean**, like the other
   directives; `#help`'s directive list now comes from the same table.
 - **Hover and `#help` explain `fst`, `snd`, `ls`, `pwd`, `[<Attr>]` and

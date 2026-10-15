@@ -2436,10 +2436,10 @@ let run (debug: bool) : int =
                         // the CLI refuses there are no edits.
                         let writeResult (w: Text.Json.Utf8JsonWriter) =
                             match docOf () with
-                            | Some(_, text) ->
+                            | Some(uri, text) ->
                                 let lines = text.Replace("\r\n", "\n").Split('\n') |> Array.toList
 
-                                match Fmt.formatSource text with
+                                match Fmt.formatSource (uriToPath uri) text with
                                 | Ok(formatted, true) ->
                                     let arr = List.toArray lines
                                     let lastIdx = arr.Length - 1
