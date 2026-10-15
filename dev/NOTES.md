@@ -27,6 +27,33 @@ battery. Also found: local.sh's image excluded .git (the root
 .dockerignore), so its decision-keys step (`git ls-files`) could not
 pass in the container; ci/run.Dockerfile.dockerignore keeps .git.
 
+The Linux-CI-only fuzz red (`--seed 4242 --count 10`, one of 46; the
+count-200 smoke green in the same job) is not seed-specific: the
+default seed at count 10 fails the same way. Reproduced by
+oversubscribing 4 cores 2.5x (`taskset -c 0-3` + six busy loops):
+count 10 red, count 200 green — CI's exact shape. The reds are the
+depth axis's wall-clock bounds (operator spine, let-in, elif: 15s).
+Instrumented: the Task.Run queue delay stayed <= 137ms (thread-pool
+starvation ruled out — forcing 64 min pool threads changed nothing);
+the WORK itself took 21-27s against ~0.6s alone — the depth cases
+contending with each other (allocation-heavy parses, shared GC). Run
+sequenced [D:fuzz-depth-sequenced] they pass under the same load,
+worst 8.9s (let-in). Without load, unsequenced, every variant passed
+here (15 cores; taskset 1/2/4 cores; LANG unset) — a CI runner is
+slower per core, which is why only CI saw it.
+
+The hunt-2 laws became invariant 8 [D:fuzz-hunt2-invariants]. Red on
+deep runs from day one, kept red (dev/BACKLOG.md has the inputs):
+positions past the line end after an unclosed bracket, and fmt
+repairing a doc-align error. A first 1,500-program sweep showed
+hundreds of exit-134/255 crashes — all EAGAIN from the container's
+2048-pid cap while other agents ran e2e; serialized, none remained.
+
+The e2e cells that pgrep/pkill their own children matched fixed
+markers (`sleep 98761`…), so concurrent runs killed each other's
+children; markers now derive from the e2e shell's pid
+[D:e2e-run-markers].
+
 ## NUL in a path — the resolve funnel guard (STRIX-5) (2026-09-21)
 
 A `.weir` file whose one line was `./a<NUL>b c` did not error — it

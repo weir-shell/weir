@@ -16,6 +16,12 @@ module Fuzz.Main
 //   Invariant 4 (fmt roundtrip): fmt succeeds on every generated
 //     program, is idempotent, preserves per-statement sexpr shape, and
 //     the formatted program is output-identical on the binary.
+//   Invariant 5 (the hunt-2 laws, on the binary, valid or mutated
+//     input): no exit >= 128, no "internal error", every check position
+//     inside its line, fmt idempotent and never flipping check's verdict.
+//   Invariant 8 (the hunt-2 laws, on the binary, valid or mutated
+//     input): no exit >= 128, no "internal error", every check position
+//     inside its line, fmt idempotent and never flipping check's verdict.
 // Seeds/counts: WEIR_FUZZ_SEED / WEIR_FUZZ_COUNT (smoke default is the
 // pinned seed; tools/fuzz.weir passes fresh seeds for deep runs).
 
@@ -230,6 +236,160 @@ let private shapesOf (lines: string list) : string list option =
                 | Ok stmt -> Weir.Ast.sexprStmt stmt
                 | Error _ -> "<unparsed>")
         )
+
+// the hunt-2 invariants [D:fuzz-hunt2-invariants]: laws a black-box
+// hunt checked by hand, asserted over the BINARY on any input, valid or
+// not. The judges are pure over a run's result, so the positive controls
+// feed them synthetic failures; hunt2Violations is the one composition
+// the property runs.
+let screenRun (label: string) (r: Runner.RunResult) : string list =
+    if r.TimedOut then
+        [] // a slow input is not a crash; the time axis is invariant 2's
+    else
+        [ if r.Rc >= 128 then
+              $"{label}: exit {r.Rc} (a signal or crash)"
+          if (r.Out + r.Err).Contains "internal error" then
+              $"{label}: 'internal error' in the output" ]
+
+// every `check --json` position names a real line and sits at most one
+// past its last code point (the end-of-line slot an "expected …" points at)
+let positionViolations (label: string) (source: string[]) (json: string) : string list =
+    let width (l: string) = l.EnumerateRunes() |> Seq.length
+
+    match
+        (try
+            Some(System.Text.Json.JsonDocument.Parse json)
+         with _ ->
+             None)
+    with
+    | None -> [ $"{label}: check --json printed no JSON: %A{json}" ]
+    | Some doc ->
+        use doc = doc
+
+        [ for d in doc.RootElement.EnumerateArray() do
+              let line = d.GetProperty("line").GetInt32()
+              let col = d.GetProperty("col").GetInt32()
+
+              if line < 1 || line > source.Length then
+                  $"{label}: line {line} of a {source.Length}-line file"
+              elif col < 1 || col > width source[line - 1] + 1 then
+                  $"{label}: {line}:{col} is past the end of its line ({width source[line - 1]} wide)" ]
+
+let hunt2Violations (lines: string list) : string list =
+    Runner.withScript lines (fun file ->
+        let source = System.IO.File.ReadAllLines file
+        let run = Runner.runOn [] file
+        let chk = Runner.runOn [ "check"; "--json" ] file
+
+        let checkPositions label (src: string[]) (r: Runner.RunResult) =
+            if r.TimedOut || r.Rc >= 128 then
+                []
+            else
+                positionViolations label src r.Out
+
+        let fmt1 = Runner.runOn [ "fmt" ] file
+
+        let afterFmt =
+            if fmt1.Rc <> 0 then
+                []
+            else
+                let once = System.IO.File.ReadAllLines file
+                let chk2 = Runner.runOn [ "check"; "--json" ] file
+                let fmt2 = Runner.runOn [ "fmt" ] file
+                let twice = System.IO.File.ReadAllLines file
+
+                [ yield! screenRun "check after fmt" chk2
+                  yield! checkPositions "check after fmt" once chk2
+                  yield! screenRun "second fmt" fmt2
+                  if not (chk.TimedOut || chk2.TimedOut) && (chk.Rc = 0) <> (chk2.Rc = 0) then
+                      $"fmt changed whether the file checks (check rc {chk.Rc} -> {chk2.Rc}); formatted:\n{showProgram (List.ofArray once)}\nbefore: {chk.Out}\nafter: {chk2.Out}"
+                  if fmt2.Rc <> 0 then
+                      $"fmt refused its own output (rc {fmt2.Rc}): {fmt2.Err}"
+                  elif twice <> once then
+                      $"fmt is not idempotent; first:\n{showProgram (List.ofArray once)}\nsecond:\n{showProgram (List.ofArray twice)}" ]
+
+        [ yield! screenRun "run" run
+          yield! screenRun "check" chk
+          yield! checkPositions "check" source chk
+          yield! screenRun "fmt" fmt1
+          yield! afterFmt ])
+
+// the hunt-2 invariants [D:fuzz-hunt2-invariants]: laws a black-box
+// hunt checked by hand, asserted over the BINARY on any input, valid or
+// not. The judges are pure over a run's result, so the positive controls
+// feed them synthetic failures; hunt2Violations is the one composition
+// the property runs.
+let screenRun (label: string) (r: Runner.RunResult) : string list =
+    if r.TimedOut then
+        [] // a slow input is not a crash; the time axis is invariant 2's
+    else
+        [ if r.Rc >= 128 then
+              $"{label}: exit {r.Rc} (a signal or crash)"
+          if (r.Out + r.Err).Contains "internal error" then
+              $"{label}: 'internal error' in the output" ]
+
+// every `check --json` position names a real line and sits at most one
+// past its last code point (the end-of-line slot an "expected …" points at)
+let positionViolations (label: string) (source: string[]) (json: string) : string list =
+    let width (l: string) = l.EnumerateRunes() |> Seq.length
+
+    match
+        (try
+            Some(System.Text.Json.JsonDocument.Parse json)
+         with _ ->
+             None)
+    with
+    | None -> [ $"{label}: check --json printed no JSON: %A{json}" ]
+    | Some doc ->
+        use doc = doc
+
+        [ for d in doc.RootElement.EnumerateArray() do
+              let line = d.GetProperty("line").GetInt32()
+              let col = d.GetProperty("col").GetInt32()
+
+              if line < 1 || line > source.Length then
+                  $"{label}: line {line} of a {source.Length}-line file"
+              elif col < 1 || col > width source[line - 1] + 1 then
+                  $"{label}: {line}:{col} is past the end of its line ({width source[line - 1]} wide)" ]
+
+let hunt2Violations (lines: string list) : string list =
+    Runner.withScript lines (fun file ->
+        let source = System.IO.File.ReadAllLines file
+        let run = Runner.runOn [] file
+        let chk = Runner.runOn [ "check"; "--json" ] file
+
+        let checkPositions label (src: string[]) (r: Runner.RunResult) =
+            if r.TimedOut || r.Rc >= 128 then
+                []
+            else
+                positionViolations label src r.Out
+
+        let fmt1 = Runner.runOn [ "fmt" ] file
+
+        let afterFmt =
+            if fmt1.Rc <> 0 then
+                []
+            else
+                let once = System.IO.File.ReadAllLines file
+                let chk2 = Runner.runOn [ "check"; "--json" ] file
+                let fmt2 = Runner.runOn [ "fmt" ] file
+                let twice = System.IO.File.ReadAllLines file
+
+                [ yield! screenRun "check after fmt" chk2
+                  yield! checkPositions "check after fmt" once chk2
+                  yield! screenRun "second fmt" fmt2
+                  if not (chk.TimedOut || chk2.TimedOut) && (chk.Rc = 0) <> (chk2.Rc = 0) then
+                      $"fmt changed whether the file checks (check rc {chk.Rc} -> {chk2.Rc}); formatted:\n{showProgram (List.ofArray once)}\nbefore: {chk.Out}\nafter: {chk2.Out}"
+                  if fmt2.Rc <> 0 then
+                      $"fmt refused its own output (rc {fmt2.Rc}): {fmt2.Err}"
+                  elif twice <> once then
+                      $"fmt is not idempotent; first:\n{showProgram (List.ofArray once)}\nsecond:\n{showProgram (List.ofArray twice)}" ]
+
+        [ yield! screenRun "run" run
+          yield! screenRun "check" chk
+          yield! checkPositions "check" source chk
+          yield! screenRun "fmt" fmt1
+          yield! afterFmt ])
 
 [<Tests>]
 let tests =
@@ -641,6 +801,76 @@ let tests =
                                           ll.Text
                                           d.Message
                                           (showProgram lines))
+          // [D:fuzz-hunt2-invariants] over the generated program, its
+          // mutated neighbors and an injected-junk twin — valid and
+          // invalid inputs alike, since the hunt's finds were on both
+          testPropertyWithConfig
+              cfg
+              "hunt-2 invariants: no crash or internal error, positions in range, fmt idempotent and verdict-preserving"
+          <| fun (p: Program) (NonNegativeInt s) ->
+              let rnd = Random s
+              let lines = renderPlain p
+
+              let junk =
+                  let tagged = renderTagged defaultCfg p
+                  let eligible = tagged |> List.indexed |> List.filter (fun (_, (_, ok)) -> ok)
+
+                  match eligible with
+                  | [] -> lines
+                  | _ ->
+                      let idx = fst eligible[rnd.Next eligible.Length]
+                      tagged |> List.mapi (fun i (l, _) -> if i = idx then l + " ?!?" else l)
+
+              [ "generated", lines
+                "junk-injected", junk
+                "indent-perturbed", Mutate.perturbIndent rnd lines
+                "line-deleted", Mutate.deleteLine rnd (Mutate.perturbIndent rnd lines)
+                "duplicated+swapped", Mutate.swapLines rnd (Mutate.duplicateLine rnd lines) ]
+              |> List.iter (fun (label, input) ->
+                  match hunt2Violations input with
+                  | [] -> ()
+                  | vs ->
+                      failtestf
+                          "the %s input breaks a hunt-2 invariant:\n  %s\n%s"
+                          label
+                          (String.concat "\n  " vs)
+                          (showProgram input))
+
+          // [D:fuzz-hunt2-invariants] over the generated program, its
+          // mutated neighbors and an injected-junk twin — valid and
+          // invalid inputs alike, since the hunt's finds were on both
+          testPropertyWithConfig
+              cfg
+              "hunt-2 invariants: no crash or internal error, positions in range, fmt idempotent and verdict-preserving"
+          <| fun (p: Program) (NonNegativeInt s) ->
+              let rnd = Random s
+              let lines = renderPlain p
+
+              let junk =
+                  let tagged = renderTagged defaultCfg p
+                  let eligible = tagged |> List.indexed |> List.filter (fun (_, (_, ok)) -> ok)
+
+                  match eligible with
+                  | [] -> lines
+                  | _ ->
+                      let idx = fst eligible[rnd.Next eligible.Length]
+                      tagged |> List.mapi (fun i (l, _) -> if i = idx then l + " ?!?" else l)
+
+              [ "generated", lines
+                "junk-injected", junk
+                "indent-perturbed", Mutate.perturbIndent rnd lines
+                "line-deleted", Mutate.deleteLine rnd (Mutate.perturbIndent rnd lines)
+                "duplicated+swapped", Mutate.swapLines rnd (Mutate.duplicateLine rnd lines) ]
+              |> List.iter (fun (label, input) ->
+                  match hunt2Violations input with
+                  | [] -> ()
+                  | vs ->
+                      failtestf
+                          "the %s input breaks a hunt-2 invariant:\n  %s\n%s"
+                          label
+                          (String.concat "\n  " vs)
+                          (showProgram input))
+
           testPropertyWithConfig cfg "fmt roundtrip: succeeds, idempotent, shape-preserving, output-neutral"
           <| fun (p: Program) ->
               let lines = renderPlain p
@@ -732,6 +962,62 @@ let positiveControls =
               | SpanNoDiag m -> Expect.stringContains m "no diagnostic" "the no-diagnostic detector names itself"
               | SpanOk -> failtest "a clean program cannot satisfy a bad-site claim"
               | SpanMiss m -> failtest $"expected no-diagnostic, got a miss: {m}"
+          }
+          test "invariant 8: a crash exit and an internal error are DETECTED, named" {
+              let r: Runner.RunResult =
+                  { Rc = 134
+                    Out = ""
+                    Err = "internal error: boom"
+                    TimedOut = false }
+
+              let vs = screenRun "control" r
+              Expect.equal vs.Length 2 "both the exit and the text fire"
+              Expect.stringContains vs[0] "exit 134" "the crash judge names the exit"
+              Expect.stringContains vs[1] "internal error" "the text judge names the phrase"
+          }
+          test "invariant 8: a position past its line's end is DETECTED, named" {
+              let json =
+                  """[{"line":1,"col":5,"severity":"error"},{"line":3,"col":1,"severity":"error"}]"""
+
+              let vs = positionViolations "control" [| "abc" |] json
+              Expect.equal vs.Length 2 "both the column and the line fire"
+              Expect.stringContains vs[0] "past the end of its line" "the column judge names itself"
+              Expect.stringContains vs[1] "line 3 of a 1-line file" "the line judge names itself"
+
+              Expect.isEmpty
+                  (positionViolations "control" [| "abc" |] """[{"line":1,"col":4}]""")
+                  "one past the end is the end-of-line slot"
+          }
+          test "invariant 8: the composed detector is clean on a clean program (not vacuously red)" {
+              Expect.isEmpty (hunt2Violations [ "let x = 1"; "print (show x)" ]) "a clean program has no violations"
+          }
+          test "invariant 5: a crash exit and an internal error are DETECTED, named" {
+              let r: Runner.RunResult =
+                  { Rc = 134
+                    Out = ""
+                    Err = "internal error: boom"
+                    TimedOut = false }
+
+              let vs = screenRun "control" r
+              Expect.equal vs.Length 2 "both the exit and the text fire"
+              Expect.stringContains vs[0] "exit 134" "the crash judge names the exit"
+              Expect.stringContains vs[1] "internal error" "the text judge names the phrase"
+          }
+          test "invariant 5: a position past its line's end is DETECTED, named" {
+              let json =
+                  """[{"line":1,"col":5,"severity":"error"},{"line":3,"col":1,"severity":"error"}]"""
+
+              let vs = positionViolations "control" [| "abc" |] json
+              Expect.equal vs.Length 2 "both the column and the line fire"
+              Expect.stringContains vs[0] "past the end of its line" "the column judge names itself"
+              Expect.stringContains vs[1] "line 3 of a 1-line file" "the line judge names itself"
+
+              Expect.isEmpty
+                  (positionViolations "control" [| "abc" |] """[{"line":1,"col":4}]""")
+                  "one past the end is the end-of-line slot"
+          }
+          test "invariant 5: the composed detector is clean on a clean program (not vacuously red)" {
+              Expect.isEmpty (hunt2Violations [ "let x = 1"; "print (show x)" ]) "a clean program has no violations"
           }
           test "invariant 4's shape language DISTINGUISHES (equality is not vacuous)" {
               // the fmt roundtrip compares per-statement sexpr shapes; if

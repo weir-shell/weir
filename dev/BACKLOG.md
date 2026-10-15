@@ -21,6 +21,41 @@ session".)
 (Done: comparison/boolean completeness — landed with `<>` inheriting `==`'s
 equatability and short-circuit `&&`/`||`, as pre-committed.)
 
+## From the fuzzer's hunt-2 invariants (2026-10-15, W6, [D:fuzz-hunt2-invariants])
+
+Invariant 8 is red on deep runs today (green on the pinned smoke and
+the e2e `--seed 4242 --count 10` cell). Found over 6,500 generated
+programs x 5 neighbors; two classes, nothing else (no crash, no
+"internal error", no fmt idempotence break).
+
+- **check positions past the end of their line** (23 of 6,500) — after
+  an unclosed bracket swallows the following lines, the diagnostic's
+  column is the logical (joined) line's or the sibling group's, put on
+  a shorter physical line. Minimal (`4:12` on a 9-wide line):
+
+      let xs = [ 1
+                 2
+                3
+      print "a"
+
+  The `parse` class (`Expecting: …` at e.g. `7:20` of a 15-wide
+  `if v0 > v0 then` under an unclosed `let _v2 = [`) is the same
+  mapping on the parser's side; `seq-unit` and a `check` hint hit it
+  once each.
+- **fmt repairs a `doc-align` error** (14 of 6,500, the only verdict
+  flips seen, all 1 -> 0) — a misaligned `///` in a Stroustrup record
+  is an error to `check`, and `fmt` re-indents it into place:
+
+      type T = {
+            /// doc
+          a: int
+      }
+
+  Needs a ruling: either fmt leaves a layout ERROR alone (refuses, as
+  for an unsettled layout), or "fmt never changes whether a file
+  checks" narrows to "never makes a checking file fail / never masks a
+  non-layout error" — the invariant stays as stated until ruled.
+
 ## From the second bug hunt (2026-10-14, PLAN-hunt2-fixes.md)
 
 Ruled 2026-10-15 (PLAN-daily-driver W4): **every item below is daily-driver — fix all.**

@@ -107,20 +107,27 @@ type RunResult =
       Err: string
       TimedOut: bool }
 
-let runProgram (lines: string list) : RunResult =
+/// the program written to a fresh temp script for the span of `f`
+let withScript (lines: string list) (f: string -> 'a) : 'a =
     stampGate.Force()
     let file = Path.Combine(Path.GetTempPath(), $"fuzz-{Guid.NewGuid():N}.weir")
     File.WriteAllLines(file, lines)
 
     try
-        let r = capture binPath [ file ] 15000
-
-        { Rc = r.Rc
-          Out = r.Out
-          Err = r.Err
-          TimedOut = r.TimedOut }
+        f file
     finally
         try
             File.Delete file
         with _ ->
             ()
+
+/// the binary on an existing script: `weir <args…> <file>`
+let runOn (args: string list) (file: string) : RunResult =
+    let r = capture binPath (args @ [ file ]) 15000
+
+    { Rc = r.Rc
+      Out = r.Out
+      Err = r.Err
+      TimedOut = r.TimedOut }
+
+let runProgram (lines: string list) : RunResult = withScript lines (runOn [])

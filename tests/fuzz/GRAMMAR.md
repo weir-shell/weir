@@ -188,6 +188,9 @@ walk found exactly that gap here.
    brackets/operator-spines — each must diagnose (an error, not
    silent acceptance) within the hang bound. A process crash here
    takes the runner down, so survival IS the no-crash safety pin.
+   The depth axis runs SEQUENCED [D:fuzz-depth-sequenced]: in
+   parallel with its siblings a wall-clock bound measures contention
+   (~0.6s of work read as 15s+ on a starved 4-vCPU runner).
 3. Span soundness: a bad token (` ?!?`) appended to a random
    expression-territory line (command lines are argv territory and
    `///` doc lines are comment territory — both excluded by the
@@ -227,6 +230,17 @@ walk found exactly that gap here.
    intact. A DEDICATED generator (reifier chains are outside the main
    grammar's shape list, like the depth axis); adversarial words are
    pinned by unit + e2e, safe words swept here.
+8. The hunt-2 laws [D:fuzz-hunt2-invariants], on the BINARY, over the
+   generated program AND its neighbors (junk-injected, indent-
+   perturbed, line-deleted, duplicated+swapped — valid and invalid
+   inputs alike): no exit >= 128 and no "internal error" text from
+   run, check or fmt; every `check --json` position names a real line
+   with col <= its code-point width + 1; when fmt accepts, a second
+   fmt is a no-op and `check`'s verdict (rc 0 or not) is unchanged.
+   Pure judges (`screenRun`, `positionViolations`) carry the standing
+   positive controls. KNOWN RED on deep runs, kept un-weakened (see
+   dev/BACKLOG.md): positions past the line end after an unclosed
+   bracket, and fmt repairing a doc-align error (verdict 1 -> 0).
 
 Ledger equivalence claims NOT yet in the transform library (named
 exclusions): env-district/`$e`/`!e` spellings (env features are

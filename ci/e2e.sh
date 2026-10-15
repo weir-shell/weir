@@ -50,6 +50,14 @@ trap 'echo "e2e FAIL: unguarded command failed at line $LINENO: $BASH_COMMAND" >
 
 BIN="${WEIR_BIN:-$HOME/.local/bin/weir}"
 
+# per-run process markers [D:e2e-run-markers]: the cells that pgrep/pkill
+# their own children find them by a sleep duration (or yes's word);
+# deriving it from this shell's pid keeps concurrent e2e runs on one
+# machine from seeing and killing each other's children. Patterns end in
+# `$` so one run's marker is never a prefix of another's.
+MK=$(( 100000 + ($$ % 400000) * 10 ))
+MK1=$((MK + 1)); MK2=$((MK + 2)); MK3=$((MK + 3)); MK4=$((MK + 4)); MK5=$((MK + 5)); MK6=$((MK + 6))
+
 # POSIX-only harnesses (os.fork, pty, zombies) get stated skips on
 # Windows — a skip echoes its reason, never silence
 IS_WINDOWS=0
@@ -583,9 +591,9 @@ fi
 # exit 141, no diagnostic, and `always` runs (POSIX: EPIPE is the signal)
 if [ "$IS_WINDOWS" != "1" ]; then
     epdir=$(mkweirtmp)
-    cat > "$epdir/yes.weir" <<'WEOF'
+    cat > "$epdir/yes.weir" <<WEOF
 within
-    yes epipe98763
+    yes epipe$MK
 always
     File.write "cleaned-yes" ["ok"]
 WEOF
@@ -603,8 +611,8 @@ WEOF
         [ "$(cat "$epdir/cleaned-$probe" 2>/dev/null)" = "ok" ] || fail "a closed stdout runs always ($probe)"
         [ ! -s "$epdir/err-$probe" ] || fail "a closed stdout prints no diagnostic ($probe): $(cat "$epdir/err-$probe")"
     done
-    if pgrep -f "yes epipe98763" >/dev/null 2>&1; then
-        pkill -f "yes epipe98763" 2>/dev/null || true
+    if pgrep -f "yes epipe$MK\$" >/dev/null 2>&1; then
+        pkill -f "yes epipe$MK\$" 2>/dev/null || true
         fail "a closed stdout must reap the relayed child (yes left running)"
     fi
     rm -rf "$epdir"
@@ -2779,10 +2787,10 @@ if [ "$IS_WINDOWS" != "1" ] && command -v setsid >/dev/null 2>&1 && command -v p
     dtdir=$(mkweirtmp)
     # a detached supervisor: a scoped child (reaped by the proc scope) and
     # an `always` cleanup that writes a marker the sweep must reach
-    cat > "$dtdir/detached.weir" <<'WEOF'
+    cat > "$dtdir/detached.weir" <<WEOF
 let marker = Self.args |> Seq.head
 within
-    within proc child = sh -c "sleep 98761"
+    within proc child = sh -c "sleep $MK1"
         Duration.sleep 60s
 always
     ["cleaned-up"] |> File.write marker
@@ -2793,13 +2801,13 @@ WEOF
         sig="${pair%%:*}"; want="${pair##*:}"
         M="$dtdir/marker-$sig"
         rm -f "$M"
-        pkill -f "sleep 98761" 2>/dev/null || true
+        pkill -f "sleep $MK1\$" 2>/dev/null || true
         # setsid = new session, no job control -> SIG_IGN on SIGINT is
         # inherited exactly as the ring probe measured; </dev/null detaches
         setsid "$BIN" "$dtdir/detached.weir" "$M" </dev/null >/dev/null 2>&1 &
         wpid=$!
         # wait for the scoped child to be live (the thing that must be reaped)
-        for _ in $(seq 1 40); do pgrep -f "sleep 98761" >/dev/null 2>&1 && break; sleep 0.2; done
+        for _ in $(seq 1 40); do pgrep -f "sleep $MK1\$" >/dev/null 2>&1 && break; sleep 0.2; done
         kill -"$sig" "$wpid" 2>/dev/null || true
         code=timeout
         for _ in $(seq 1 40); do
@@ -2811,51 +2819,51 @@ WEOF
         [ "$code" = "$want" ] || fail "detached SIG$sig must exit $want (got $code) — the teardown never ran"
         [ "$(cat "$M" 2>/dev/null)" = "cleaned-up" ] || fail "detached SIG$sig must run the always cleanup"
         sleep 0.3
-        left=$(pgrep -cf "sleep 98761" 2>/dev/null || true); left=${left:-0}
+        left=$(pgrep -cf "sleep $MK1\$" 2>/dev/null || true); left=${left:-0}
         [ "$left" = "0" ] || fail "detached SIG$sig must reap the scoped child (orphans left: $left)"
-        pkill -f "sleep 98761" 2>/dev/null || true
+        pkill -f "sleep $MK1\$" 2>/dev/null || true
     done
     echo "e2e ok: detached SIGINT/SIGTERM tear down — always cleanup runs, child reaped, exit 130/143"
 
     # a pid-targeted SIGTERM tree-kills the FOREGROUND child too
     # [D:signal-main-unwind]: `timeout`/`docker stop` signal weir alone; an
     # unregistered foreground child outlived it, reparented to init
-    printf 'sleep 98763\n' > "$dtdir/fg.weir"
-    pkill -f "sleep 98763" 2>/dev/null || true
+    printf 'sleep %s\n' "$MK3" > "$dtdir/fg.weir"
+    pkill -f "sleep $MK3\$" 2>/dev/null || true
     setsid "$BIN" "$dtdir/fg.weir" </dev/null >/dev/null 2>&1 &
     wpid=$!
-    for _ in $(seq 1 40); do pgrep -f "sleep 98763" >/dev/null 2>&1 && break; sleep 0.2; done
+    for _ in $(seq 1 40); do pgrep -f "sleep $MK3\$" >/dev/null 2>&1 && break; sleep 0.2; done
     kill -TERM "$wpid" 2>/dev/null || true
     code=0; wait "$wpid" 2>/dev/null || code=$?
     [ "$code" = "143" ] || fail "SIGTERM to weir with a foreground child must exit 143 (got $code)"
     sleep 0.3
-    left=$(pgrep -cf "sleep 98763" 2>/dev/null || true); left=${left:-0}
-    pkill -f "sleep 98763" 2>/dev/null || true
+    left=$(pgrep -cf "sleep $MK3\$" 2>/dev/null || true); left=${left:-0}
+    pkill -f "sleep $MK3\$" 2>/dev/null || true
     [ "$left" = "0" ] || fail "SIGTERM to weir must tree-kill its foreground child (orphans left: $left)"
     echo "e2e ok: SIGTERM to weir's pid reaps the foreground child"
 
     # ...and every pmap worker's tree, exactly once, after spawning stops
     # [D:signal-main-unwind]: the kill raced the exit (a SIGSTOPped
     # grandchild left behind) — 20 runs, no `sleep` may survive
-    cat > "$dtdir/pmapterm.weir" <<'WEOF'
+    cat > "$dtdir/pmapterm.weir" <<WEOF
 within
-    [1..4] |> Seq.pmap (fun _ -> sh -c "sleep 98764; echo x" |> Seq.freeze) |> Seq.iter (fun _ -> ())
+    [1..4] |> Seq.pmap (fun _ -> sh -c "sleep $MK4; echo x" |> Seq.freeze) |> Seq.iter (fun _ -> ())
 always
     printerr "cleanup"
 WEOF
-    pkill -9 -f "^sleep 98764" 2>/dev/null || true
+    pkill -9 -f "^sleep $MK4\$" 2>/dev/null || true
     orphans=0
     for _ in $(seq 1 20); do
         setsid "$BIN" "$dtdir/pmapterm.weir" </dev/null >/dev/null 2>&1 &
         wpid=$!
-        for _ in $(seq 1 40); do [ "$(pgrep -cf "^sleep 98764" 2>/dev/null || true)" = "4" ] && break; sleep 0.1; done
+        for _ in $(seq 1 40); do [ "$(pgrep -cf "^sleep $MK4\$" 2>/dev/null || true)" = "4" ] && break; sleep 0.1; done
         kill -TERM "$wpid" 2>/dev/null || true
         code=0; wait "$wpid" 2>/dev/null || code=$?
         [ "$code" = "143" ] || fail "SIGTERM to a pmap script must exit 143 (got $code)"
         sleep 0.2
-        if pgrep -f "^sleep 98764" >/dev/null 2>&1; then
+        if pgrep -f "^sleep $MK4\$" >/dev/null 2>&1; then
             orphans=$((orphans + 1))
-            pkill -9 -f "^sleep 98764" 2>/dev/null || true
+            pkill -9 -f "^sleep $MK4\$" 2>/dev/null || true
         fi
     done
     [ "$orphans" = "0" ] || fail "SIGTERM must tree-kill every pmap worker's child ($orphans of 20 runs left orphans)"
@@ -2865,10 +2873,10 @@ WEOF
     # a slow teardown hard-exits (the shell's double-Ctrl+C), never wedging
     # on a stuck cleanup. The always sleeps 20s; the second SIGINT must land
     # the process in well under that, before the cleanup's "done" write.
-    cat > "$dtdir/slow.weir" <<'WEOF'
+    cat > "$dtdir/slow.weir" <<WEOF
 let marker = Self.args |> Seq.head
 within
-    within proc child = sh -c "sleep 98761"
+    within proc child = sh -c "sleep $MK1"
         Duration.sleep 60s
 always
     ["start"] |> File.write marker
@@ -2878,10 +2886,10 @@ WEOF
     $BIN check "$dtdir/slow.weir" >/dev/null 2>&1 || fail "double-signal probe must check"
     DM="$dtdir/dmarker"
     rm -f "$DM"
-    pkill -f "sleep 98761" 2>/dev/null || true
+    pkill -f "sleep $MK1\$" 2>/dev/null || true
     setsid "$BIN" "$dtdir/slow.weir" "$DM" </dev/null >/dev/null 2>&1 &
     dpid=$!
-    for _ in $(seq 1 40); do pgrep -f "sleep 98761" >/dev/null 2>&1 && break; sleep 0.2; done
+    for _ in $(seq 1 40); do pgrep -f "sleep $MK1\$" >/dev/null 2>&1 && break; sleep 0.2; done
     kill -INT "$dpid" 2>/dev/null || true          # first: enters the slow teardown
     for _ in $(seq 1 25); do [ "$(cat "$DM" 2>/dev/null)" = "start" ] && break; sleep 0.2; done
     [ "$(cat "$DM" 2>/dev/null)" = "start" ] || fail "the first SIGINT must enter the always cleanup"
@@ -2894,19 +2902,19 @@ WEOF
     done
     [ "$dcode" != "timeout" ] || fail "a second SIGINT must hard-exit, not wait out the cleanup"
     [ "$(cat "$DM" 2>/dev/null)" != "done" ] || fail "the hard-exit must not let the slow cleanup finish"
-    pkill -f "sleep 98761" 2>/dev/null || true
+    pkill -f "sleep $MK1\$" 2>/dev/null || true
     echo "e2e ok: a second signal mid-teardown hard-exits (the double-Ctrl+C escape)"
 
     # the main thread unwinds [D:signal-main-unwind]: no statement runs
     # after a signal — `Proc.wait` on the killed scoped child returns no
     # code and the lines after it never run, yet `always` does; a main
     # thread asleep in `Duration.sleep` wakes at once
-    cat > "$dtdir/after.weir" <<'WEOF'
+    cat > "$dtdir/after.weir" <<WEOF
 let marker = Self.args |> Seq.head
 within
-    within proc srv = sh -c "sleep 98762"
+    within proc srv = sh -c "sleep $MK2"
         let code = Proc.wait srv
-        print $"wait returned {code}"
+        print \$"wait returned {code}"
         File.append marker ["after"]
 always
     File.append marker ["cleaned-up"]
@@ -2927,7 +2935,7 @@ WEOF
             setsid "$BIN" "$dtdir/$probe.weir" "$M" </dev/null >"$dtdir/out-$probe" 2>&1 &
             wpid=$!
             if [ "$probe" = after ]; then
-                for _ in $(seq 1 40); do pgrep -f "sleep 98762" >/dev/null 2>&1 && break; sleep 0.2; done
+                for _ in $(seq 1 40); do pgrep -f "sleep $MK2\$" >/dev/null 2>&1 && break; sleep 0.2; done
             else
                 sleep 1
             fi
@@ -2940,7 +2948,7 @@ WEOF
             [ "$code" = "$want" ] || fail "$probe: SIG$sig must exit $want promptly (got $code)"
             [ "$(cat "$M" 2>/dev/null)" = "cleaned-up" ] || fail "$probe: SIG$sig runs always and no statement after it (marker: $(cat "$M" 2>/dev/null))"
             ! grep -qF "wait returned" "$dtdir/out-$probe" || fail "$probe: SIG$sig — Proc.wait must not return to the script"
-            pkill -f "sleep 98762" 2>/dev/null || true
+            pkill -f "sleep $MK2\$" 2>/dev/null || true
         done
     done
     echo "e2e ok: a signal unwinds on the main thread — no statement after it, always runs, sleeps wake"
@@ -9616,20 +9624,20 @@ echo "$out" | grep -qF "watch= is poll's key" || fail "the retry refusal reason:
 if [ "$IS_WINDOWS" != "1" ]; then
     # the raise path kills the tree (pgrep is the POSIX spelling; the
     # Windows arm rides the exit-hook block's stated coverage)
-    printf 'within proc p = sh -c "sleep 297"\n    fail "mid-scope"\n' > "$spdir/raise.weir"
+    printf 'within proc p = sh -c "sleep %s"\n    fail "mid-scope"\n' "$MK5" > "$spdir/raise.weir"
     out=$($BIN "$spdir/raise.weir" 2>&1) && fail "the raise must propagate" || true
     echo "$out" | grep -qF "mid-scope" || fail "the raise is the scope's error: $out"
     sleep 0.3
-    pgrep -f "sleep 297" >/dev/null && { pkill -f "sleep 297" 2>/dev/null || true; fail "the raise path left an orphan"; } || true
+    pgrep -f "sleep $MK5\$" >/dev/null && { pkill -f "sleep $MK5\$" 2>/dev/null || true; fail "the raise path left an orphan"; } || true
 
     # the hard-exit sweep: a TERM'd weir leaves no registered child
-    printf 'within proc p = sh -c "sleep 298"\n    Duration.sleep 30s\n' > "$spdir/term.weir"
+    printf 'within proc p = sh -c "sleep %s"\n    Duration.sleep 30s\n' "$MK6" > "$spdir/term.weir"
     $BIN "$spdir/term.weir" & sptw=$!
     sleep 1.2
     kill -TERM $sptw 2>/dev/null || true
     wait $sptw 2>/dev/null || true
     sleep 0.5
-    pgrep -f "sleep 298" >/dev/null && { pkill -f "sleep 298" 2>/dev/null || true; fail "the TERM sweep left the scoped child"; } || true
+    pgrep -f "sleep $MK6\$" >/dev/null && { pkill -f "sleep $MK6\$" 2>/dev/null || true; fail "the TERM sweep left the scoped child"; } || true
 fi
 
 # an escaped handle (the scope's value) answers gracefully after the
