@@ -1,6 +1,6 @@
 # PLAN — daily driver: a day of use without a crash or surprise
 
-Status: READY — v0.0.74 landed (2026-10-15); not started. Definition confirmed by the user (below).
+Status: IN PROGRESS — W1 done (2026-10-15, the bare-surface gate [D:surface-gate]); W5 ruled [D:breaking-policy]; W4 rulings owed. Definition confirmed by the user (below).
 
 ## The goal (user, 2026-10-14)
 
@@ -25,11 +25,11 @@ only adds migration notes.
 3. The docs-vs-binary audit finds no drift in prose claims.
 4. Every parked design is decided in or out, and the "in" ones have landed.
 5. The repro harnesses and the new fuzz invariants run in CI.
-6. A DECISIONS row and a CHANGELOG convention for breaking changes exist.
+6. A DECISIONS row and a CHANGELOG convention for breaking changes exist (done: [D:breaking-policy]).
 
 ## Workstreams, in order
 
-### W1 — Surface audit: every builtin documented or deleted (1 session)
+### W1 — Surface audit: every builtin documented or deleted — DONE
 `into` showed the builtin table can hold things nobody remembers. Diff the
 builtin/module member tables (`Builtins.fs` member lists, `moduleTable`,
 reserved names, reifier desugar targets) against SKILL.md, docs/ and
@@ -69,9 +69,9 @@ loop stops at the first round with no high/medium findings (exit criterion 1).
 - `dev/BACKLOG.md` — each open item tagged "daily-driver" or "later".
 "In" items get their own plans and land before the release.
 
-### W5 — Breaking-change policy (small, alongside W1)
-A DECISIONS row: from the point the user picks, every breaking change gets a `### Breaking`
-CHANGELOG section entry with a one-line migration; still no shims pre-1.0.
+### W5 — Breaking-change policy — DONE (ruled)
+[D:breaking-policy]: no `### Breaking` section until the user decides on 0.1.0;
+from then on every breaking change gets one, with a one-line migration.
 
 ### W6 — Regression automation (1 session)
 - Run `tools/sweep-repro.weir` and `tools/hunt2-repro.weir` in CI (a
@@ -148,10 +148,3 @@ named release is the user's call; nothing in this plan triggers one.
 
 About 4–6 sessions of the current kind, if W3 converges in one or two rounds.
 The swing factors are what W1 turns up and how much of W4 is "in".
-
-## Memory constraint
-
-Until the new host arrives: at most two heavy dotnet agents at a time with
-the memory flags (no node reuse, `-m:1`, `DOTNET_GCHeapHardLimit=3GB` on
-every .NET process — that cap is what stopped the OOM restarts), scratch and
-binaries under /output/wt, never /tmp.
