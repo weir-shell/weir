@@ -708,6 +708,71 @@ let warningTests =
               Expect.isEmpty (msgs "[\"a\", 1; \"b\", 2]") "a list of pairs is the F# idiom"
               Expect.isEmpty (msgs "[1; 2]") ""
           }
+          test "a pair alone on its line below the '[' is the one-per-line layout, not the comma habit [D:list-comma-warning]" {
+              let warns lines =
+                  diagsIn "pairs.weir" lines
+                  |> List.filter (fun d -> d.Message.Contains "this list has one item, a tuple")
+
+              Expect.isEmpty (warns [ "let b = ["; "    \"x\", 1"; "]"; "print (show (Seq.length b))" ]) "multi-line"
+              Expect.isNonEmpty (warns [ "let a = [\"x\", 1]"; "print (show (Seq.length a))" ]) "single-line still warns"
+          }
+          test "check refuses what the init loader refuses in #session [D:repl-init]" {
+              let codes lines =
+                  errorsIn "init.weir" ("#init" :: "" :: lines) |> List.map (fun d -> d.Code, d.Line, d.Col)
+
+              Expect.equal
+                  (codes [ "#session {"; "    env = ["; "        \"X\", $(cat /etc/hostname | line)"; "    ]"; "}" ])
+                  [ "session-command", 4, 11 ]
+                  "a value that runs a command"
+
+              Expect.equal
+                  (codes [ "let name = \"h\""; "#session {"; "    env = ["; "        \"X\", name"; "    ]"; "}" ])
+                  [ "session-decl-ref", 6, 14 ]
+                  "a value naming a declaration — anchored on the name"
+
+              Expect.equal
+                  (codes [ "#session {"; "    foo = 1"; "    echoCap = \"x\""; "    echoCap = 3"; "}" ])
+                  [ "session-key", 4, 5; "session-type", 5, 15; "session-key", 6, 5 ]
+                  "unknown, mistyped and duplicate keys"
+
+              Expect.isEmpty
+                  (codes
+                      [ "let prompt () = \"> \""
+                        "#session {"
+                        "    env = ["
+                        "        \"X\", File.read \"/etc/hostname\" |> Seq.exactlyOne"
+                        "    ]"
+                        "    prompt = prompt"
+                        "}" ])
+                  "a file read is not a command, and prompt may name a declaration"
+
+              // the declaration, alias and block-shape rules ride the same
+              // path [D:init-check-one-home]
+              let codesOf lines = codes lines |> List.map (fun (c, _, _) -> c)
+              Expect.equal (codesOf [ "print \"x\"" ]) [ "init-decl" ] "declaration-only"
+
+              Expect.isNonEmpty
+                  (codesOf [ "let evens () = [1; 2] |> where (fun n -> n > 1)" ])
+                  "bare names are for the prompt, not the init file"
+
+              Expect.equal (codesOf [ "#alias inf = git add . | and git commit" ]) [ "init-alias" ] "a chaining glyph in an alias"
+              Expect.equal (codesOf [ "let b = git log -n 1 | line" ]) [ "init-decl" ] "an eager command let"
+              Expect.isEmpty (codesOf [ "let gl = git log -n 1" ]) "a lazy command let binds"
+              Expect.equal (codesOf [ "#alias a = git"; "#alias b = a status" ]) [ "init-alias" ] "alias-of-alias"
+              Expect.equal (codesOf [ "#alias gl = git log"; "let gl = 1" ]) [ "init-alias" ] "an alias a let shadows"
+              Expect.equal (codesOf [ "#session {"; "    echoCap = 3" ]) [ "session-shape" ] "unclosed block"
+
+              Expect.equal
+                  (codesOf [ "#session {"; "    prompt = p"; "}"; "let p () = \"> \"" ])
+                  []
+                  "prompt checks after the declarations, wherever they sit"
+          }
+          test "an unmarked init file names the marker [D:init-marker]" {
+              let ic =
+                  Weir.Script.checkInit Weir.Script.assumeResolver "init.weir" [ "let x = 1" ]
+
+              Expect.equal (ic.Diags |> List.map _.Code) [ "init-marker" ] ""
+          }
           test "a comma between record-literal fields teaches the separator" {
               for src in [ "let v = { a = 1, b = 2 }"; "let v = {| a = 1, b = 2 |}"; "let v = { T.zero with a = 1, b = 2 }" ] do
                   let e = firstErrorIn "comma.weir" [ "type T = { a: int; b: int }"; src; "print $\"{v.a}\"" ]
@@ -24038,6 +24103,17 @@ let aliasTests =
               match Weir.Repl.parseAliasLineForTest "let = echo" with
               | Error e -> Expect.stringContains e "keyword" "a keyword name is refused, named"
               | Ok _ -> failtest "#alias let = … must be refused"
+          }
+          test "(j2) a chaining glyph in an alias target is refused, naming the function spelling [D:alias-no-chain]" {
+              for glyph in [ "|"; "|>"; "||"; "&&"; ";" ] do
+                  match Weir.Repl.parseAliasLineForTest $"inf = git add . {glyph} and git commit" with
+                  | Error e ->
+                      Expect.stringContains e $"'{glyph}' in an alias target is a literal argument" glyph
+                      Expect.stringContains e "let inf () =" glyph
+                  | Ok _ -> failtest $"'{glyph}' in an alias target must be refused"
+
+              // a glyph glued inside a word is that word's text, not a chain
+              Expect.isTrue (Weir.Repl.parseAliasLineForTest "g = grep a|b" |> Result.isOk) "glued is a literal"
           }
           test "(k) an alias to the builtin cd APPLIES it, never spawns /usr/sbin/cd [D:command-head-alias]" {
               // #alias up = cd .. — `up` must resolve cd as the builtin (the

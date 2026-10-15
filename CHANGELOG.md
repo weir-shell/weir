@@ -1,5 +1,38 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- **The init file refuses bare names.** It is a script, not typing at
+  the prompt: `let evens () = xs |> where …` loaded before and now
+  needs `Seq.where`, as in any script. Bare names still work at the
+  prompt, including for names the init file defines.
+- **An alias target refuses `|`, `|>`, `&&`, `||` and `;`.** An alias
+  is one program plus fixed words, so `#alias inf = git add . | and
+  git commit …` passed `|`, `and`, `git`… to `git add` as arguments.
+  The error names the fix: `let inf () = …`.
+
+### Fixed
+
+- **`weir check` on an init file refuses what the REPL refuses.** Most
+  of the loader's rules passed check and then stopped the init from
+  loading: a `#session` value that runs a command
+  (`$(cat /etc/hostname | line)`), an unknown, repeated or mistyped key,
+  a statement or an eager command `let`, a bad `#alias`, a malformed
+  `#session` block. Check, the editor and the REPL now share one set of
+  rules, with the same messages. Only what needs the value stays
+  load-time: a `cwd` that doesn't exist, an unknown `logLevel`, an
+  `echoCap` out of range.
+- **The REPL reports every error in the init file**, not just the first.
+- **A `#session` value that names one of the file's declarations says
+  why it can't.** Every key but `prompt` is read before the
+  declarations bind; the REPL said "unbound variable", and check
+  accepted it. Both now explain the rule and point at the name.
+- **A tuple alone on its own line in a multi-line list no longer warns.**
+  `env = [` / `"A", "b"` / `]` is one pair per line, not the `[1, 2]`
+  comma habit; a single-line `["a", 1]` still warns.
+
 ## v0.0.74
 
 ### Removed

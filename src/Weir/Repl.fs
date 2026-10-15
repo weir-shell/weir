@@ -413,42 +413,12 @@ module private Term =
 
             t.Start()
 
-// a command-head alias [D:command-head-alias]: (real exe, fixed prefix
-// args). Single-hop by construction — the exe is a real program name,
-// never another alias (define-time resolution rejects alias-of-alias).
-type private Alias = { Exe: string; Prefix: string list }
+// a command-head alias [D:command-head-alias] — the type and its parser
+// live with the init rules (Script.checkInit), one definition for the
+// loader, `weir check` and the live #alias directive
+type private Alias = Script.CommandAlias
 
-/// parse a `#alias name = cmd [args...]` directive line [D:command-head-alias].
-/// The head token maps to (exe, prefix args); argv is split on whitespace
-/// (a fixed prefix is literal words — no quoting/typed-argv machinery: an
-/// alias is a resolution-table entry, not a script line). Returns the name
-/// and its target, or a message. Single-hop is enforced later against the
-/// whole table.
-let private parseAliasLine (body: string) : Result<string * Alias, string> =
-    // body is the text after `#alias`
-    match
-        body.Trim()
-        |> fun s -> System.Text.RegularExpressions.Regex.Match(s, @"^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$")
-    with
-    | m when m.Success && Parser.isKeyword m.Groups.[1].Value ->
-        // a keyword heads its own statement form, never a command — the
-        // alias could never resolve
-        let name = m.Groups.[1].Value
-        Error $"#alias {name}: '{name}' is a keyword — a line starting with it is never a command; pick another name"
-    | m when m.Success ->
-        let name = m.Groups.[1].Value
-
-        let rhsWords =
-            m.Groups.[2].Value.Split([| ' '; '\t' |], StringSplitOptions.RemoveEmptyEntries)
-            |> Array.toList
-
-        match rhsWords with
-        | [] -> Error "#alias needs a target: '#alias name = command [args...]'"
-        | exe :: prefix ->
-            // `#alias ls = ls` (or `= ls --color`) is a legal shadow (bash
-            // allows it), bypassable with `^ls` — register as-is
-            Ok(name, { Exe = exe; Prefix = prefix })
-    | _ -> Error "malformed #alias — usage: '#alias name = command [args...]' (e.g. '#alias k = kubectl')"
+let private parseAliasLine = Script.parseAliasLine
 
 /// a test seam over parseAliasLine [D:command-head-alias]: the private
 /// Alias record is flattened to a public (exe, prefix) pair so unit tests
@@ -3753,10 +3723,7 @@ let rec private loop (state: State) =
 let private initFilePath () =
     Path.Combine(configHome (), "weir", "init.weir")
 
-let private sessionKeys = [ "cwd"; "env"; "logLevel"; "echoCap"; "prompt" ]
-
-/// #session field values must be command-free (the module-let rule);
-/// beyond that any closed expression checks — literals in practice
+/// print one init diagnostic, with its source line and a caret
 let private initDiag (path: string) (line: int) (col: int) (srcLine: string) (msg: string) =
     Console.Error.WriteLine $"{path}:{line}:{col}: {msg}"
 
@@ -3764,94 +3731,10 @@ let private initDiag (path: string) (line: int) (col: int) (srcLine: string) (ms
         Console.Error.WriteLine srcLine
         Console.Error.WriteLine(String(' ', max 0 (col - 1)) + "^")
 
-/// returns the session-block field lets (synthesized, line numbers kept)
-/// and the remaining lines (block replaced by blanks — transparent, so
-/// declaration diagnostics keep their real positions)
-let private splitSessionBlock
-    (path: string)
-    (lines: string[])
-    : Result<(int * string) list * (int * string) list * (int * string) list * (int * string) list, unit> =
-    let mutable fields: (int * string) list = []
-    // the prompt field rides separately [D:session-prompt]: its value
-    // names init declarations, so it checks after they bind — every
-    // other field checks before them (settings before names)
-    let mutable promptFields: (int * string) list = []
-    let mutable inPromptField = false
-    let mutable rest: (int * string) list = []
-    // #alias directive lines, collected with their (1-based) line number;
-    // the text is what follows `#alias` [D:command-head-alias]
-    let mutable aliases: (int * string) list = []
-    let mutable inBlock = false
-    let mutable seen = false
-    let mutable failed = false
-
-    for i in 0 .. lines.Length - 1 do
-        let l = lines.[i]
-        let t = l.Trim()
-
-        if not inBlock && t = "#init" then
-            rest <- (i + 1, "") :: rest
-        elif not inBlock && (t = "#alias" || t.StartsWith "#alias ") then
-            // a top-level directive line; kept out of the declaration
-            // stream and replaced by a blank so declaration diagnostics keep
-            // their real positions (the #session discipline)
-            aliases <- (i + 1, t.Substring("#alias".Length)) :: aliases
-            rest <- (i + 1, "") :: rest
-        elif not inBlock && t.StartsWith "#session" then
-            if seen then
-                initDiag path (i + 1) 1 l "a second #session block — the init takes one"
-                failed <- true
-
-            seen <- true
-
-            if t = "#session {" then
-                inBlock <- true
-            else
-                initDiag path (i + 1) 1 l "malformed #session — usage: '#session {' then 'key = value' lines then '}'"
-                failed <- true
-
-            rest <- (i + 1, "") :: rest
-        elif inBlock && t = "}" then
-            inBlock <- false
-            rest <- (i + 1, "") :: rest
-        elif inBlock then
-            if t <> "" then
-                // a field-start (`key = …`) dedents 4 and gains a 'let '
-                // prefix — 4 chars out, 4 in, columns survive. Every
-                // other line (list entries, closers) passes through
-                // untouched: still indented, still a continuation of the
-                // synthesized let, columns exact
-                let fieldStart =
-                    System.Text.RegularExpressions.Regex.Match(t, "^([A-Za-z_][A-Za-z0-9_]*)\s*=")
-
-                // a continuation line belongs to the field it follows
-                if fieldStart.Success then
-                    inPromptField <- fieldStart.Groups.[1].Value = "prompt"
-
-                let synthesized =
-                    if fieldStart.Success then
-                        "let " + (if l.StartsWith "    " then l.Substring 4 else t)
-                    else
-                        l
-
-                if inPromptField then
-                    promptFields <- (i + 1, synthesized) :: promptFields
-                else
-                    fields <- (i + 1, synthesized) :: fields
-
-            rest <- (i + 1, "") :: rest
-        else
-            rest <- (i + 1, l) :: rest
-
-    if inBlock then
-        initDiag path lines.Length 1 "" "unclosed #session block — a lone '}' line ends it"
-        failed <- true
-
-    if failed then
-        Error()
-    else
-        Ok(List.rev fields, List.rev promptFields, List.rev rest, List.rev aliases)
-
+/// apply one checked #session setting — the static rules (key, type,
+/// command-free) already held in Script.checkInit [D:repl-init]; what is
+/// left needs the value: a cwd that exists, a logLevel that parses, an
+/// echoCap in range
 let private applySessionField
     (path: string)
     (lines: string[])
@@ -3867,69 +3750,48 @@ let private applySessionField
         initDiag path ll.Head 5 (srcLine ll.Head) msg
         false
 
-    match name, te.Ty with
-    | "cwd", Types.TStr ->
-        (match Eval.eval venv te with
-         | Eval.VStr p ->
-             let home () = Builtins.homeDir ()
+    match name, Eval.eval venv te with
+    | "cwd", Eval.VStr p ->
+        let home () = Builtins.homeDir ()
 
-             let expanded =
-                 if p = "~" then
-                     home ()
-                 elif p.StartsWith "~/" then
-                     Path.Combine(home (), p.Substring 2)
-                 else
-                     p
+        let expanded =
+            if p = "~" then home ()
+            elif p.StartsWith "~/" then Path.Combine(home (), p.Substring 2)
+            else p
 
-             let resolved = Session.resolve expanded
+        let resolved = Session.resolve expanded
 
-             if Directory.Exists resolved then
-                 Session.setCwd resolved
-                 true
-             else
-                 err $"cwd: no such directory: {resolved}"
-         | _ -> err "cwd expects a string")
-    | "cwd", ty -> err $"cwd expects a string, got {Types.formatTy ty}"
-    | "logLevel", Types.TStr ->
-        (match Eval.eval venv te with
-         | Eval.VStr lvl ->
-             (match Builtins.parseLogLevel lvl with
-              | Ok i ->
-                  Builtins.setLogThreshold i
-                  true
-              | Error e -> err (e.Replace("WEIR_LOG=", "logLevel=")))
-         | _ -> err "logLevel expects a string")
-    | "logLevel", ty -> err $"logLevel expects a string, got {Types.formatTy ty}"
-    | "echoCap", Types.TInt ->
-        (match Eval.eval venv te with
-         | Eval.VInt n when n > 0 && n <= int64 System.Int32.MaxValue ->
-             echoCap <- Some(Eval.toIntArg "echoCap" Eval.Amount n)
-             true
-         | Eval.VInt n when n > 0 -> err $"echoCap {n} is too large (at most {System.Int32.MaxValue})"
-         | Eval.VInt n -> err $"echoCap must be positive; got {n}"
-         | _ -> err "echoCap expects an int")
-    | "echoCap", ty -> err $"echoCap expects an int, got {Types.formatTy ty}"
-    | "env", Types.TSeq(Types.TTuple [ Types.TStr; Types.TStr ]) ->
-        (match Eval.eval venv te with
-         | Eval.VSeq pairs ->
-             // the session's base reality, not an overlay: set the
-             // process env once, before the first prompt — exactly what
-             // exec'ing weir with this environment would mean. Env.get,
-             // Env.vars, and every spawn see it with no new machinery;
-             // within env and the sigils layer over it as they layer
-             // over any inherited env. (No unset: an entry adds or
-             // overrides, never hides.)
-             for pv in pairs do
-                 match pv with
-                 | Eval.VTuple [ Eval.VStr k; Eval.VStr v ] -> Environment.SetEnvironmentVariable(k, v)
-                 | _ -> ()
+        if Directory.Exists resolved then
+            Session.setCwd resolved
+            true
+        else
+            err $"cwd: no such directory: {resolved}"
+    | "logLevel", Eval.VStr lvl ->
+        match Builtins.parseLogLevel lvl with
+        | Ok i ->
+            Builtins.setLogThreshold i
+            true
+        | Error e -> err (e.Replace("WEIR_LOG=", "logLevel="))
+    | "echoCap", Eval.VInt n when n > 0 && n <= int64 System.Int32.MaxValue ->
+        echoCap <- Some(Eval.toIntArg "echoCap" Eval.Amount n)
+        true
+    | "echoCap", Eval.VInt n when n > 0 -> err $"echoCap {n} is too large (at most {System.Int32.MaxValue})"
+    | "echoCap", Eval.VInt n -> err $"echoCap must be positive; got {n}"
+    | "env", Eval.VSeq pairs ->
+        // the session's base reality, not an overlay: set the
+        // process env once, before the first prompt — exactly what
+        // exec'ing weir with this environment would mean. Env.get,
+        // Env.vars, and every spawn see it with no new machinery;
+        // within env and the sigils layer over it as they layer
+        // over any inherited env. (No unset: an entry adds or
+        // overrides, never hides.)
+        for pv in pairs do
+            match pv with
+            | Eval.VTuple [ Eval.VStr k; Eval.VStr v ] -> Environment.SetEnvironmentVariable(k, v)
+            | _ -> ()
 
-             true
-         | _ -> err "env expects seq<string * string>")
-    | "env", ty -> err $"env expects seq<string * string> — pairs, order kept; got {Types.formatTy ty}"
-    | k, _ ->
-        let hint = didYouMean k (Set.ofList sessionKeys)
-        err $"unknown #session key '{k}'{hint} (the keys: cwd, env, logLevel, echoCap, prompt)"
+        true
+    | k, _ -> err $"#session {k}: unexpected value"
 
 /// load the init file into the session; all-or-nothing. Returns the
 /// state to start with and prints the one report line (stderr — a piped
@@ -3954,434 +3816,204 @@ let private loadInit (baseState: State) : State =
             Console.Error.WriteLine $"init: not loaded ({path}) — the session starts without it"
             baseState
 
-        if not (Script.isInitMarked (List.ofArray lines)) then
-            initDiag
-                path
-                1
-                1
-                (srcLine 1)
-                "the init file declares itself — put #init on the first line"
+        // every static rule, shared with `weir check` and the LSP
+        // [D:repl-init] — the loader only applies what checked
+        let ic = Script.checkInit Script.resolver path (List.ofArray lines)
 
+        match ic.DeclDiags @ ic.Diags with
+        | _ :: _ as ds ->
+            for d in ds |> List.sortBy (fun d -> d.Line, d.Col) do
+                if d.File = path then
+                    initDiag path d.Line d.Col (srcLine d.Line) d.Message
+                else
+                    Console.Error.WriteLine $"{d.File}:{d.Line}:{d.Col}: {d.Message}"
+
+            notLoaded ()
+        | [] ->
+
+        let strictVenv = snd (Prelude.extend Builtins.typeEnvStrict Builtins.valueEnv)
+
+        let aliasMap: Map<string, Alias> =
+            ic.Aliases |> List.fold (fun m (_, n, a) -> Map.add n a m) Map.empty
+
+        // the settings first — settings before names
+        let settingsApplied =
+            ic.Settings
+            |> List.forall (fun (ll, name, te) ->
+                try
+                    applySessionField path lines ll name te strictVenv
+                with ex ->
+                    // a raising value (File.read on a missing path…) fails
+                    // the load like any other located error, never a raw
+                    // trace [D:init-eval-guard]
+                    initDiag path ll.Head 5 (srcLine ll.Head) ex.Message
+                    false)
+
+        if not settingsApplied then
             notLoaded ()
         else
 
-        match splitSessionBlock path lines with
-        | Error() -> notLoaded ()
-        | Ok(fieldLines, promptFieldLines, declLines, aliasLines) ->
-            // imports resolve against the init file's real location
-            // [D:init-import]: a dotfiles symlink imports its neighbours,
-            // exactly as `weir check` on the linked-to file does
-            let importer = Script.fileImportLoader (Script.importAnchor path)
+        // the declarations checked strict (a script's rules); the session
+        // binds them in its own env, where bare names stay available at the
+        // prompt [D:init-check-one-home] — strict-clean means this re-check
+        // passes
+        let importer = Script.fileImportLoader (Script.importAnchor path)
 
-            let checkAll (lls: Script.LogicalLine list) (tenv: TypeEnv) =
-                let rec go env acc rest =
-                    match rest with
-                    | [] -> Ok(List.rev acc)
-                    | (ll: Script.LogicalLine) :: tail ->
+        let sessionDecls =
+            ic.Decls
+            |> List.fold
+                (fun acc (ll, _) ->
+                    match acc with
+                    | Error _ -> acc
+                    | Ok(env, done') ->
                         match Script.checkStatement false None Script.resolver importer env ll with
-                        | Error d -> Error(ll, d)
-                        | Ok chk -> go chk.Env ((ll, chk) :: acc) tail
+                        | Ok chk -> Ok(chk.Env, (ll, chk) :: done')
+                        | Error d -> Error d)
+                (Ok(baseState.TypeEnv, []))
+            |> Result.map (snd >> List.rev)
 
-                go tenv [] lls
+        match sessionDecls with
+        | Error d ->
+            initDiag path d.PhysLine d.PhysCol (srcLine d.PhysLine) d.Message
+            notLoaded ()
+        | Ok sessionDecls ->
 
-            let strictTenv, strictVenv = Prelude.extend Builtins.typeEnvStrict Builtins.valueEnv
+        let attachments = Script.docAttachments (List.ofArray lines)
+        let mutable venv = baseState.Values
+        let mutable tenv = baseState.TypeEnv
+        let mutable names = 0
+        let mutable docs: Map<string, string list> = Map.empty
+        let mutable evalFailed = false
 
-            let reportDiag (ll: Script.LogicalLine) (d: Script.StmtDiag) =
-                initDiag path d.PhysLine d.PhysCol (srcLine d.PhysLine) d.Message
+        for ll, chk in sessionDecls do
+            if not evalFailed then
+                tenv <- chk.Env
 
-            // the #alias table [D:command-head-alias] — a malformed line is
-            // a loud init error (all-or-nothing), and a define-time
-            // alias-of-alias is rejected (single-hop by construction: the
-            // stored Exe is always a real program, never a table name)
-            let aliasTable: Result<Map<string, Alias>, unit> =
-                let mutable tbl: Map<string, Alias> = Map.empty
-                let mutable failed = false
+                try
+                    match chk.Kind with
+                    | Script.KType decl ->
+                        names <- names + 1
 
-                for (lineNo, body) in aliasLines do
-                    if not failed then
-                        match parseAliasLine body with
-                        | Error msg ->
-                            initDiag path lineNo 1 (srcLine lineNo) msg
-                            failed <- true
-                        | Ok(name, alias) -> tbl <- Map.add name alias tbl
+                        (match decl.Body with
+                         | Ast.DUnion cases ->
+                             venv <-
+                                 Eval.constructorValues cases
+                                 |> List.fold (fun m (n, v) -> Map.add n v m) venv
+                         | Ast.DRecord _ -> ())
+                    | Script.KLet(name, _, te) ->
+                        names <- names + 1
+                        let v = Eval.eval venv te
+                        noteCommandSeq name te v
+                        venv <- Map.add name v venv
 
-                if failed then
-                    Error()
-                else
-                    // single-hop: reject any alias whose target is itself an
-                    // alias name — an alias resolves to a binary, never to
-                    // another alias
-                    let mutable bad = None
+                        (match attachments |> List.tryFind (fun (a: Script.DocAttach) -> a.Line = ll.Head) with
+                         | Some a -> docs <- Map.add name a.Doc docs
+                         | None -> ())
+                    | Script.KLetPat(pat, _, te) ->
+                        let bindings = Eval.bindPattern pat (Eval.eval venv te)
+                        names <- names + bindings.Length
+                        venv <- bindings |> List.fold (fun m (n, v) -> Map.add n v m) venv
+                    | Script.KImport lm ->
+                        // replay the module and expose `Alias.member`,
+                        // as the script runner does [D:init-import]
+                        let procFacts =
+                            [ "Self.pid"; "Self.args"; "Self.stdin"; "Self.entryPath" ]
+                            |> List.choose (fun k -> Map.tryFind k venv |> Option.map (fun v -> k, v))
 
-                    for (lineNo, body) in aliasLines do
-                        if bad.IsNone then
-                            match parseAliasLine body with
-                            // a self-shadow (`#alias ls = ls --color`) targets
-                            // the real binary, bypassable with `^ls` — legal.
-                            // Only a target naming a different alias is rejected.
-                            | Ok(name, alias) when alias.Exe <> name && Map.containsKey alias.Exe tbl ->
-                                bad <- Some(lineNo, name, alias.Exe)
-                            | _ -> ()
+                        let moduleVenv = Script.replayModule procFacts lm
 
-                    match bad with
-                    | Some(lineNo, name, exe) ->
-                        initDiag
-                            path
-                            lineNo
-                            1
-                            (srcLine lineNo)
-                            $"#alias {name} = {exe} …: an alias resolves to a program, not to another alias ('{exe}' is itself an alias) — aliases are single-hop"
+                        venv <-
+                            lm.Members
+                            |> List.fold
+                                (fun acc (n, _) ->
+                                    match Map.tryFind n moduleVenv with
+                                    | Some v -> Map.add $"{lm.Alias}.{n}" v acc
+                                    | None -> acc)
+                                venv
 
-                        Error()
-                    | None -> Ok tbl
+                        names <- names + List.length lm.Members
+                    | _ -> ()
+                with ex ->
+                    // a raising let fails the load with a
+                    // located error [D:init-eval-guard];
+                    // names stay all-or-nothing (nothing
+                    // below binds). An effect an earlier
+                    // let already ran is the file's own
+                    // doing — the load reports, it cannot
+                    // unwrite
+                    initDiag path ll.Head 1 (srcLine ll.Head) ex.Message
+                    evalFailed <- true
 
-            // the #session fields first — settings before names
-            let fieldsOutcome =
-                match Script.assemble fieldLines with
-                | Error msg ->
-                    Console.Error.WriteLine $"{path}: {msg}"
+        if evalFailed then
+            notLoaded ()
+        else
+
+        // the prompt field last [D:session-prompt]: a string renders
+        // as-is; a function runs once per entry read
+        let promptOutcome =
+            match ic.Prompt with
+            | None -> true
+            | Some(ll, te) ->
+                try
+                    match te.Ty with
+                    | Types.TStr ->
+                        match Eval.eval venv te with
+                        | Eval.VStr s ->
+                            promptProvider <- Some(fun _ -> s)
+                            true
+                        | _ -> false
+                    | Types.TFun(Types.TUnit, Types.TStr) ->
+                        let f = Eval.eval venv te
+
+                        promptProvider <-
+                            Some(fun _ ->
+                                match Eval.apply f Eval.VUnit with
+                                | Eval.VStr s -> s
+                                | _ -> defaultPrompt)
+
+                        true
+                    // the status-carrying provider [D:prompt-status-arg]:
+                    // ok is the tint — true when the last entry ran
+                    // clean (a bare command's nonzero exit counts as
+                    // not-clean and rides in exit; a reified exit
+                    // stays data)
+                    | _ ->
+                        let f = Eval.eval venv te
+
+                        promptProvider <-
+                            Some(fun (ok, exit) ->
+                                let ex =
+                                    match exit with
+                                    | Some n -> Eval.VUnion("Some", Some(Eval.VInt(int64 n)))
+                                    | None -> Eval.VUnion("None", None)
+
+                                let st =
+                                    Eval.VRecord("PromptStatus", [ "ok", Eval.VBool ok; "exit", ex ])
+
+                                match Eval.apply f st with
+                                | Eval.VStr s -> s
+                                | _ -> defaultPrompt)
+
+                        true
+                with ex ->
+                    initDiag path ll.Head 5 (srcLine ll.Head) ex.Message
                     false
-                | Ok lls ->
-                    match checkAll lls strictTenv with
-                    | Error(ll, d) ->
-                        reportDiag ll d
-                        false
-                    | Ok checked' ->
-                        let mutable ok = true
-                        let mutable seenKeys: Set<string> = Set.empty
 
-                        for ll, chk in checked' do
-                            if ok then
-                                match chk.Kind with
-                                | Script.KLet(name, _, te) ->
-                                    if Set.contains name seenKeys then
-                                        initDiag path ll.Head 5 (srcLine ll.Head) $"duplicate #session key '{name}'"
-                                        ok <- false
-                                    elif Script.runsCommandT te then
-                                        initDiag
-                                            path
-                                            ll.Head
-                                            5
-                                            (srcLine ll.Head)
-                                            "a #session value cannot run a command — settings are read, not computed by running things"
+        if not promptOutcome then
+            promptProvider <- None
+            notLoaded ()
+        else
 
-                                        ok <- false
-                                    else
-                                        seenKeys <- Set.add name seenKeys
+            initDocs <- docs
 
-                                        ok <-
-                                            try
-                                                applySessionField path lines ll name te strictVenv
-                                            with ex ->
-                                                // a raising value (File.read on a missing
-                                                // path…) fails the load like any other
-                                                // located error, never a raw trace
-                                                // [D:init-eval-guard]
-                                                initDiag path ll.Head 5 (srcLine ll.Head) ex.Message
-                                                false
-                                | _ ->
-                                    initDiag
-                                        path
-                                        ll.Head
-                                        1
-                                        (srcLine ll.Head)
-                                        "a #session block takes 'key = value' lines only"
-
-                                    ok <- false
-
-                        ok
-
-            if not fieldsOutcome then
-                notLoaded ()
-            else
-
-            match aliasTable with
-            | Error() -> notLoaded ()
-            | Ok aliasMap ->
-                // the declarations — the module rule, applied to the prompt
-                match Script.assemble declLines with
-                | Error msg ->
-                    Console.Error.WriteLine $"{path}: {msg}"
-                    notLoaded ()
-                | Ok lls ->
-                    match checkAll lls baseState.TypeEnv with
-                    | Error(ll, d) ->
-                        reportDiag ll d
-                        notLoaded ()
-                    | Ok checked' ->
-                        let mutable bad = None
-                        // a lazy command let binds and spawns nothing; forcing one at load is refused [D:lazy-command-lets]
-                        let mutable cmdBindings: Map<string, int> = Map.empty
-
-                        for ll, chk in checked' do
-                            if bad.IsNone then
-                                match chk.Kind with
-                                | Script.KType _ -> ()
-                                | Script.KLet(_, _, te)
-                                | Script.KLetPat(_, _, te) ->
-                                    (match Weir.Check.commandRunsNow cmdBindings te, chk.Kind with
-                                     | Some why, _ -> bad <- Some(ll, $"an init 'let' cannot run a command at load: {why}")
-                                     | None, Script.KLet(name, _, _) ->
-                                         cmdBindings <- Weir.Check.recordCommandBinding cmdBindings name te
-                                     | None, _ -> ())
-                                | Script.KCmd _
-                                | Script.KExpr _ ->
-                                    bad <-
-                                        Some(
-                                            ll,
-                                            "the init file is declaration-only — 'type' and 'let'; it configures the prompt, it cannot run"
-                                        )
-                                // a module's names join the session [D:init-import]
-                                | Script.KImport _ -> ()
-                                | Script.KModule _ ->
-                                    bad <-
-                                        Some(
-                                            ll,
-                                            "the init file is not a module — no 'module' marker; its names are the prompt's"
-                                        )
-                                | Script.KSig _ ->
-                                    // unreachable: no sig context here, the
-                                    // form already refused [D:module-signatures]
-                                    ()
-
-                        // an alias naming a declaration is dead on arrival
-                        // [D:alias-binding-shadow]: the binding shadows the
-                        // table (the line-decider's law), so the collision
-                        // refuses the load — all-or-nothing, located
-                        let aliasClash =
-                            let letNames =
-                                checked'
-                                |> List.collect (fun (_, chk) ->
-                                    match chk.Kind with
-                                    | Script.KLet(n, _, _) -> [ n ]
-                                    | Script.KLetPat(p, _, _) -> Weir.Check.patNameSpans p |> List.map fst
-                                    | _ -> [])
-                                |> Set.ofList
-
-                            aliasLines
-                            |> List.tryPick (fun (lineNo, body) ->
-                                match parseAliasLine body with
-                                | Ok(n, _) when Set.contains n letNames -> Some(lineNo, n)
-                                | _ -> None)
-
-                        if aliasClash.IsSome then
-                            let lineNo, n = aliasClash.Value
-
-                            initDiag
-                                path
-                                lineNo
-                                1
-                                (srcLine lineNo)
-                                $"#alias {n}: '{n}' is also declared in this file — the binding shadows the alias, so it would never resolve; pick another name"
-
-                            notLoaded ()
-                        else
-
-                        match bad with
-                        | Some(ll, msg) ->
-                            initDiag path ll.Head 1 (srcLine ll.Head) msg
-                            notLoaded ()
-                        | None ->
-                            let attachments = Script.docAttachments (List.ofArray lines)
-                            let mutable venv = baseState.Values
-                            let mutable tenv = baseState.TypeEnv
-                            let mutable names = 0
-                            let mutable docs: Map<string, string list> = Map.empty
-                            let mutable evalFailed = false
-
-                            for ll, chk in checked' do
-                                if not evalFailed then
-                                    tenv <- chk.Env
-
-                                    try
-                                        match chk.Kind with
-                                        | Script.KType decl ->
-                                            names <- names + 1
-
-                                            (match decl.Body with
-                                             | Ast.DUnion cases ->
-                                                 venv <-
-                                                     Eval.constructorValues cases
-                                                     |> List.fold (fun m (n, v) -> Map.add n v m) venv
-                                             | Ast.DRecord _ -> ())
-                                        | Script.KLet(name, _, te) ->
-                                            names <- names + 1
-                                            let v = Eval.eval venv te
-                                            noteCommandSeq name te v
-                                            venv <- Map.add name v venv
-
-                                            (match
-                                                attachments
-                                                |> List.tryFind (fun (a: Script.DocAttach) -> a.Line = ll.Head)
-                                             with
-                                             | Some a -> docs <- Map.add name a.Doc docs
-                                             | None -> ())
-                                        | Script.KLetPat(pat, _, te) ->
-                                            let bindings = Eval.bindPattern pat (Eval.eval venv te)
-                                            names <- names + bindings.Length
-                                            venv <- bindings |> List.fold (fun m (n, v) -> Map.add n v m) venv
-                                        | Script.KImport lm ->
-                                            // replay the module and expose `Alias.member`,
-                                            // as the script runner does [D:init-import]
-                                            let procFacts =
-                                                [ "Self.pid"; "Self.args"; "Self.stdin"; "Self.entryPath" ]
-                                                |> List.choose (fun k -> Map.tryFind k venv |> Option.map (fun v -> k, v))
-
-                                            let moduleVenv = Script.replayModule procFacts lm
-
-                                            venv <-
-                                                lm.Members
-                                                |> List.fold
-                                                    (fun acc (n, _) ->
-                                                        match Map.tryFind n moduleVenv with
-                                                        | Some v -> Map.add $"{lm.Alias}.{n}" v acc
-                                                        | None -> acc)
-                                                    venv
-
-                                            names <- names + List.length lm.Members
-                                        | _ -> ()
-                                    with ex ->
-                                        // a raising let fails the load with a
-                                        // located error [D:init-eval-guard];
-                                        // names stay all-or-nothing (nothing
-                                        // below binds). An effect an earlier
-                                        // let already ran is the file's own
-                                        // doing — the load reports, it cannot
-                                        // unwrite
-                                        initDiag path ll.Head 1 (srcLine ll.Head) ex.Message
-                                        evalFailed <- true
-
-                            if evalFailed then
-                                notLoaded ()
-                            else
-
-                            // the prompt field last [D:session-prompt]: its
-                            // value names the declarations above, so it
-                            // checks in the loaded env — a string renders
-                            // as-is; a unit -> string function runs once
-                            // per entry read. The value expression itself
-                            // stays command-free like every field; commands
-                            // belong inside the function it names.
-                            let promptOutcome =
-                                if List.isEmpty promptFieldLines then
-                                    true
-                                else
-                                    match Script.assemble promptFieldLines with
-                                    | Error msg ->
-                                        Console.Error.WriteLine $"{path}: {msg}"
-                                        false
-                                    | Ok lls ->
-                                        match checkAll lls tenv with
-                                        | Error(ll, d) ->
-                                            reportDiag ll d
-                                            false
-                                        | Ok checked' ->
-                                            match checked' with
-                                            | [ (ll, chk) ] ->
-                                                (match chk.Kind with
-                                                 | Script.KLet("prompt", _, te) when Script.runsCommandT te ->
-                                                     initDiag
-                                                         path
-                                                         ll.Head
-                                                         5
-                                                         (srcLine ll.Head)
-                                                         "a #session value cannot run a command — name a function here (prompt = f); the command runs when the prompt calls f"
-
-                                                     false
-                                                 | Script.KLet("prompt", _, te) ->
-                                                     (match te.Ty with
-                                                      | Types.TStr ->
-                                                          (try
-                                                              match Eval.eval venv te with
-                                                              | Eval.VStr s ->
-                                                                  promptProvider <- Some(fun _ -> s)
-                                                                  true
-                                                              | _ -> false
-                                                           with ex ->
-                                                               initDiag path ll.Head 5 (srcLine ll.Head) ex.Message
-                                                               false)
-                                                      | Types.TFun(Types.TUnit, Types.TStr) ->
-                                                          (try
-                                                              let f = Eval.eval venv te
-
-                                                              promptProvider <-
-                                                                  Some(fun _ ->
-                                                                      match Eval.apply f Eval.VUnit with
-                                                                      | Eval.VStr s -> s
-                                                                      | _ -> defaultPrompt)
-
-                                                              true
-                                                           with ex ->
-                                                               initDiag path ll.Head 5 (srcLine ll.Head) ex.Message
-                                                               false)
-                                                      // the status-carrying provider [D:prompt-status-arg]:
-                                                      // ok is the tint — true when the last entry ran
-                                                      // clean (a bare command's nonzero exit counts as
-                                                      // not-clean and rides in exit; a reified exit
-                                                      // stays data)
-                                                      | Types.TFun(dom, Types.TStr) when Script.promptStatusDomain dom ->
-                                                          (try
-                                                              let f = Eval.eval venv te
-
-                                                              promptProvider <-
-                                                                  Some(fun (ok, exit) ->
-                                                                      let ex =
-                                                                          match exit with
-                                                                          | Some n -> Eval.VUnion("Some", Some(Eval.VInt(int64 n)))
-                                                                          | None -> Eval.VUnion("None", None)
-
-                                                                      let st =
-                                                                          Eval.VRecord(
-                                                                              "PromptStatus",
-                                                                              [ "ok", Eval.VBool ok; "exit", ex ]
-                                                                          )
-
-                                                                      match Eval.apply f st with
-                                                                      | Eval.VStr s -> s
-                                                                      | _ -> defaultPrompt)
-
-                                                              true
-                                                           with ex ->
-                                                               initDiag path ll.Head 5 (srcLine ll.Head) ex.Message
-                                                               false)
-                                                      | ty ->
-                                                          initDiag
-                                                              path
-                                                              ll.Head
-                                                              5
-                                                              (srcLine ll.Head)
-                                                              $"prompt expects a string, a unit -> string, or a PromptStatus -> string function (ok + a bare command's exit code), got {Types.formatTy ty}"
-
-                                                          false)
-                                                 | _ ->
-                                                     initDiag
-                                                         path
-                                                         ll.Head
-                                                         1
-                                                         (srcLine ll.Head)
-                                                         "a #session block takes 'key = value' lines only"
-
-                                                     false)
-                                            | (ll, _) :: _ ->
-                                                initDiag path ll.Head 5 (srcLine ll.Head) "duplicate #session key 'prompt'"
-                                                false
-                                            | [] -> true
-
-                            if not promptOutcome then
-                                promptProvider <- None
-                                notLoaded ()
-                            else
-
-                                initDocs <- docs
-
-                                // a successful load is silent [D:repl-init]:
-                                // only failure reports (notLoaded above), so
-                                // the session opens straight on the prompt —
-                                // the loaded names/settings/prompt are their
-                                // own evidence it worked
-                                { TypeEnv = tenv
-                                  Values = venv
-                                  Aliases = aliasMap }
+            // a successful load is silent [D:repl-init]:
+            // only failure reports (notLoaded above), so
+            // the session opens straight on the prompt —
+            // the loaded names/settings/prompt are their
+            // own evidence it worked
+            { TypeEnv = tenv
+              Values = venv
+              Aliases = aliasMap }
 
 let run () =
     if not Console.IsInputRedirected then

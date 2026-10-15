@@ -445,6 +445,9 @@ contain only declarations (`type` and `let`) and
 [`#alias`](#alias-command-head-aliases) lines and one `#session`
 block for settings that a declaration can't express. An imported
 module's members are available in the session as `Alias.member`.
+It follows the script rules, so bare names like `map` or `where`
+are refused there (write `Seq.map`); they're for typing at the
+prompt.
 
 The file must start with `#init` on its first line; the REPL refuses
 to load it otherwise. Any file starting with `#init` is checked as an
@@ -494,7 +497,10 @@ The `#session` keys:
 - `prompt` — see below
 
 A misspelled key gets a suggestion for the closest one. The values
-can't run commands.
+can't run commands, and every value but `prompt` is read before the
+file's declarations, so it can't name them either. Write it inline:
+`"HOST", File.read "/etc/hostname" |> Seq.exactlyOne` (a file read
+is not a command). `weir check` on the init file reports all of this.
 
 A `let pu () = …` is a function with no arguments, not a command
 alias. Functions can take parameters and span several lines, but you
@@ -611,9 +617,10 @@ word itself is replaced. A keyword (`let`, `if`, …) can't be an alias
 name, since a line starting with it is never a command.
 
 Because an alias is just a program plus fixed words, not a command
-line, weir syntax in it is **not interpreted**: `$(…)` captures,
-pipes, and shell `&&`/`||` become literal arguments and are never
-evaluated. For a shortcut that needs those (say, cd to the repo root),
+line, weir syntax in it is **not interpreted**: a `$(…)` capture
+becomes a literal argument. A pipe or chain word (`|`, `|>`, `&&`,
+`||`, `;`) is refused, since it could only ever reach the program as
+an argument. For a shortcut that needs those (say, cd to the repo root),
 write a function with no arguments in `init.weir` instead, and call
 it with `()`:
 

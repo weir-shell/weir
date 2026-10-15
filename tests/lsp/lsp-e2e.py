@@ -600,7 +600,7 @@ else:
     expect("session-key" in [d["code"] for d in init_diags()], "an unknown #session key is flagged")
     init_change('#init\n#session {\n    cwd = 42\n}\n')
     tdiags = init_diags()
-    expect(any(d["code"] == "session-type" and "expects string" in d["message"] for d in tdiags),
+    expect(any(d["code"] == "session-type" and "expects a string" in d["message"] for d in tdiags),
            f"a wrong-typed #session value is flagged: {[d['code'] for d in tdiags]}")
     # a #alias command completes against PATH (git is present in a git CI)
     init_change('#init\n#alias g = gi\n')

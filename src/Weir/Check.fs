@@ -7044,8 +7044,15 @@ let warnings (te: TypedExpr) : Warning list =
          // `[1, 2]` is a one-item list holding a tuple — the comma habit
          // from Python/JS. Only a lone, unparenthesized tuple: a list of
          // several pairs (`["a", 1; "b", 2]`) is the F# idiom, and
-         // `[(1, 2)]` says it on purpose (parens widen the span)
-         | TEList [ { Kind = TETuple(first :: _) } as t ] when t.Span.Start = first.Span.Start ->
+         // `[(1, 2)]` says it on purpose (parens widen the span), and so
+         // does a pair on its own line below the `[` — the multi-line,
+         // one-entry-per-line layout of a pairs list
+         | TEList [ { Kind = TETuple(first :: _) } as t ] when
+             t.Span.Start = first.Span.Start
+             && (match toPhys.Value with
+                 | Some tr -> fst (tr te.Span.Start.Col) = fst (tr t.Span.Start.Col)
+                 | None -> true)
+             ->
              acc.Add
                  { Span = t.Span
                    Message =
