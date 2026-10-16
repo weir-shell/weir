@@ -150,3 +150,4 @@ Performance (brief D)
   287 KB method plus 118 KB / 57 KB static initializers (Builtins, Parser);
   moving it to an embedded data resource saves ~0.25–0.35 MB. A mechanical
   refactor of ~1,580 lines; ruled "only if size starts to matter".
+- **e2e port flake (2026-10-16):** `Http: the echo server never came up on 21652` (`OSError: [Errno 98] Address already in use`) while another agent's tests ran alongside — the Http echo-server cell picks a fixed-range port without the harness-ports retry; give it the [D:harness-ports] claim-and-retry.

@@ -6,6 +6,7 @@ weekly: self-correction rate (stranded = failures), fallback ranking
 skill lines and targeted hints).
 
 ## fallbacks
+- 2026-10-16 | ci/e2e-timing.py -> python3 | the e2e cost report must not depend on the weir binary it is timing (a broken build would lose its own timings).
 - 2026-10-16 | binary-size study (PLAN-binary-size.md, scratch scripts
   outside the repo) -> F# script + python3 | the ILC mstat is a
   metadata/IL blob needing System.Reflection.Metadata, and the startup
