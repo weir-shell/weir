@@ -11509,17 +11509,13 @@ within serve srv = { port = $svport5; maxConcurrent = 2 } handler
 print "stream-done"
 WEOF
 out=$($BIN "$svdir/stream.weir" 2>&1) || fail "serve stream run failed: $out"
-# the incremental-delivery half is a POSIX property: Windows HttpListener
-# buffers the chunked body, so an early chunk is not on the wire when the
-# producer's later raise aborts the response (a verified platform wall).
-# The failure-surfacing half below (streamErrors) holds on every platform.
-if [ "$IS_WINDOWS" = "0" ]; then
-    echo "$out" | grep -qF "GOT-FIRST=True" || fail "F8: the client must receive the first element before the producer died: $out"
-    # the client can TELL [D:serve-stream-truncate]: the chunked body ends
-    # without its zero-length terminator, so its HTTP layer reports a
-    # truncated body — a proper terminator after a failure must not survive
-    echo "$out" | grep -qF "TERMINATED=False" || fail "F8: a producer raise must leave the chunked body unterminated: $out"
-fi
+# one server on every OS [D:serve-kestrel]: the early chunk is on the wire
+# before the producer's later raise, everywhere
+echo "$out" | grep -qF "GOT-FIRST=True" || fail "F8: the client must receive the first element before the producer died: $out"
+# the client can TELL [D:serve-stream-truncate]: the chunked body ends
+# without its zero-length terminator, so its HTTP layer reports a
+# truncated body — a proper terminator after a failure must not survive
+echo "$out" | grep -qF "TERMINATED=False" || fail "F8: a producer raise must leave the chunked body unterminated: $out"
 echo "$out" | grep -qF "stream-errors=1" || fail "F8: the script must observe the producer failure via the channel: $out"
 echo "$out" | grep -qF "stream-err=producer died" || fail "F8: Server.streamErrors must carry the failure message: $out"
 echo "e2e ok: within serve — F8 a Stream producer raise surfaces via Server.streamErrors and leaves the client an unterminated body"
@@ -11657,6 +11653,288 @@ out=$($BIN "$svdir/maxbody.weir" 2>&1) || fail "serve maxBody run failed: $out"
 echo "$out" | grep -qF "status=HTTP/1.1 200 OK body=len=16" || fail "H20: a body of exactly maxBody must reach the handler: $out"
 echo "$out" | grep -qF "status=HTTP/1.1 413" || fail "H20: a body past maxBody must be 413: $out"
 echo "e2e ok: within serve — H20 maxBody answers 413 past the bound"
+
+# ---- serve on Kestrel [D:serve-kestrel]: the wire, end to end ----------
+# Pipelining, repeated headers (F10) and one-response-per-request (H3-E6)
+# on the AOT binary through a weir handler; a raw socket referees the
+# bytes, so the assertion is what the wire carried.
+svport8=8478
+cat > "$svdir/wire.py" <<'PYEOF'
+import socket, sys, re, time
+port = int(sys.argv[1]); H = b"Host: 127.0.0.1:%d\r\n" % port
+def exchange(payload, then=None):
+    s = socket.create_connection(("127.0.0.1", port), timeout=5)
+    s.sendall(payload)
+    if then:
+        time.sleep(0.3); s.sendall(then)
+    d = b""
+    try:
+        while True:
+            x = s.recv(65536)
+            if not x: break
+            d += x
+    except socket.timeout:
+        pass
+    s.close()
+    return d
+def statuses(d): return [m.decode() for m in re.findall(rb"HTTP/1\.1 [0-9]{3}", d)]
+def bodies(d): return [m.decode() for m in re.findall(rb"<[^>]*>", d)]
+g = lambda p, close=False: b"GET %s HTTP/1.1\r\n" % p + H + (b"Connection: close\r\n" if close else b"") + b"\r\n"
+d = exchange(g(b"/p1") + g(b"/p2", True))
+print("PIPE2 %s %s" % (statuses(d), bodies(d)))
+d = exchange(g(b"/q1") + b"POST /q2 HTTP/1.1\r\n" + H + b"Content-Length: 2\r\n\r\nhi" + g(b"/q3", True))
+print("PIPE3 %s %s" % (statuses(d), bodies(d)))
+d = exchange(b"GET /xff HTTP/1.1\r\n" + H + b"X-Forwarded-For: 10.0.0.1\r\nX-Forwarded-For: 10.0.0.2\r\nX-Forwarded-For: 10.0.0.3\r\nConnection: close\r\n\r\n")
+print("XFF %s" % bodies(d))
+d = exchange(b"GET /a HTTP/1.1\r\nHost: example.com\r\n\r\n", g(b"/after-host", True))
+print("E6-HOST %s %s" % (statuses(d), bodies(d)))
+d = exchange(b"GET http://evil.example/x HTTP/1.1\r\n" + H + b"\r\n", g(b"/after-abs", True))
+print("E6-ABS %s %s" % (statuses(d), bodies(d)))
+d = exchange(b"GET / HTTP/9.9\r\n" + H + b"\r\n", g(b"/after-version", True))
+print("E6-VERSION %s %s" % (statuses(d), bodies(d)))
+PYEOF
+cat > "$svdir/wire.weir" <<WEOF
+let handler = fun req ->
+    match req.path with
+    | "/xff" ->
+        let hops = req.headers |> Seq.where (fun (k, _) -> Str.toLower k == "x-forwarded-for") |> Seq.map snd |> Str.join ","
+        HttpServerResponse { status = 200; headers = []; body = Text \$"<{hops}>" }
+    | p -> HttpServerResponse { status = 200; headers = []; body = Text \$"<{p}>" }
+
+within serve srv = { port = $svport8; maxConcurrent = 4 } handler
+    poll timeout=8s interval=100ms
+        Net.portOpen $svport8
+    let out = sh -c "python3 '$svdir/wire.py' $svport8" | complete
+    out.stdout |> Seq.iter print
+WEOF
+out=$($BIN "$svdir/wire.weir" 2>&1) || fail "serve wire run failed: $out"
+echo "$out" | grep -qF "PIPE2 ['HTTP/1.1 200', 'HTTP/1.1 200'] ['</p1>', '</p2>']" || fail "pipelining: two requests on one connection must both be answered, in order: $out"
+echo "$out" | grep -qF "PIPE3 ['HTTP/1.1 200', 'HTTP/1.1 200', 'HTTP/1.1 200'] ['</q1>', '</q2>', '</q3>']" || fail "pipelining: three requests on one connection must all be answered, in order: $out"
+echo "$out" | grep -qF "XFF ['<10.0.0.1,10.0.0.2,10.0.0.3>']" || fail "F10: three X-Forwarded-For lines must reach the handler as three pairs in wire order: $out"
+# H3-E6: a refused request gets one response and the follow-up its own —
+# never an unsolicited 200 a keep-alive client would pair with its next
+echo "$out" | grep -qF "E6-HOST ['HTTP/1.1 404', 'HTTP/1.1 200'] ['</after-host>']" || fail "E6: a foreign Host gets one 404 and the next request its own answer: $out"
+echo "$out" | grep -qE "E6-ABS \['HTTP/1.1 4[0-9]{2}'(, 'HTTP/1.1 200'\] \['</after-abs>'\]|\] \[\])" || fail "E6: an absolute-form foreign URI gets one refusal and no unsolicited 200: $out"
+echo "$out" | grep -qF "E6-VERSION ['HTTP/1.1 505'] []" || fail "E6: an unsupported version gets exactly one 505: $out"
+echo "e2e ok: within serve — pipelining (2 and 3 in order), F10 three duplicates in wire order, E6 one response per request"
+
+# (F8 on Kestrel) curl's own HTTP layer sees the truncation: exit 18, not
+# a clean end — the connection aborts mid-body, no reflection
+# [D:serve-stream-truncate]
+svport9=8479
+cat > "$svdir/f8curl.weir" <<WEOF
+let handler = fun req -> HttpServerResponse { status = 200; headers = []; body = Stream ([1; 2] |> Seq.map (fun i -> if i == 1 then "first" else fail "producer died")) }
+within serve srv = { port = $svport9; maxConcurrent = 2 } handler
+    poll timeout=8s interval=100ms
+        Net.portOpen $svport9
+    let r = curl -s --max-time 5 http://127.0.0.1:$svport9/ | complete
+    print \$"curl-exit={r.exitCode}"
+    let ok = curl -s --max-time 5 http://127.0.0.1:$svport9/ | complete
+    print \$"second-exit={ok.exitCode}"
+WEOF
+out=$($BIN "$svdir/f8curl.weir" 2>&1) || fail "serve F8 curl run failed: $out"
+echo "$out" | grep -qF "curl-exit=18" || fail "F8: curl must exit 18 (truncated chunked body) after a producer raise: $out"
+echo "e2e ok: within serve — F8 a producer raise leaves curl exit 18"
+
+# (H3-A3) [::1] reaches the handler, not a listener 400 — where the host
+# has an IPv6 loopback at all
+svport10=8480
+if python3 -c "import socket; s=socket.socket(socket.AF_INET6); s.bind(('::1', 0))" 2>/dev/null; then
+    cat > "$svdir/v6.weir" <<WEOF
+within serve srv = { port = $svport10; maxConcurrent = 2 } (fun req -> HttpServerResponse { status = 200; headers = []; body = Text "weir-handler" })
+    poll timeout=8s interval=100ms
+        Net.portOpen $svport10
+    let v6 = curl -s -g --noproxy "*" --max-time 5 -w " status=%{http_code}" "http://[::1]:$svport10/" | complete
+    print \$"v6={v6.stdout |> Str.join " "}"
+WEOF
+    out=$($BIN "$svdir/v6.weir" 2>&1) || fail "serve [::1] run failed: $out"
+    echo "$out" | grep -qF "v6=weir-handler status=200" || fail "A3: a [::1] request must reach the handler: $out"
+    echo "e2e ok: within serve — A3 [::1] reaches the handler"
+else
+    echo "e2e skip: within serve [::1] (no IPv6 loopback on this host)"
+fi
+
+# (H3-E5) a slow request body never holds a handler slot: with ONE slot
+# and a client dribbling its body under a 10s bodyTimeout, a fast
+# request is still answered at once
+svport11=8481
+cat > "$svdir/loris.py" <<'PYEOF'
+import socket, sys, time
+port = int(sys.argv[1]); H = b"Host: 127.0.0.1:%d\r\n" % port
+slow = [socket.create_connection(("127.0.0.1", port)) for _ in range(3)]
+for s in slow:
+    s.sendall(b"POST /slow HTTP/1.1\r\n" + H + b"Content-Length: 1000\r\n\r\nab")
+time.sleep(0.5)
+t = time.time()
+c = socket.create_connection(("127.0.0.1", port), timeout=10)
+c.sendall(b"GET /fast HTTP/1.1\r\n" + H + b"Connection: close\r\n\r\n")
+d = b""
+while True:
+    x = c.recv(4096)
+    if not x: break
+    d += x
+print("FAST %s in %.2fs" % (d.split(b"\r\n", 1)[0].decode(), time.time() - t))
+PYEOF
+cat > "$svdir/loris.weir" <<WEOF
+within serve srv = { port = $svport11; maxConcurrent = 1; bodyTimeout = 10s } (fun req -> HttpServerResponse { status = 200; headers = []; body = Text "ok" })
+    poll timeout=8s interval=100ms
+        Net.portOpen $svport11
+    let out = sh -c "python3 '$svdir/loris.py' $svport11" | complete
+    out.stdout |> Seq.iter print
+WEOF
+out=$($BIN "$svdir/loris.weir" 2>&1) || fail "serve slow-body run failed: $out"
+fastline=$(echo "$out" | grep "^FAST " || true)
+echo "$fastline" | grep -qF "FAST HTTP/1.1 200 OK" || fail "E5: a fast request must be served beside slow bodies: $out"
+fastsecs=$(echo "$fastline" | sed -E 's/.* in ([0-9.]+)s/\1/')
+awk -v s="$fastsecs" 'BEGIN{exit !(s < 2.0)}' || fail "E5: slow bodies held the only slot — the fast request waited ${fastsecs}s: $out"
+echo "e2e ok: within serve — E5 slow request bodies never hold a handler slot (fast request in ${fastsecs}s)"
+
+# (H3-E7) a raising handler and an invalid status answer 500 AND reach
+# the script on Server.streamErrors [D:serve-handler-errors]
+svport12=8482
+cat > "$svdir/e7.weir" <<WEOF
+let handler = fun req ->
+    match req.path with
+    | "/raise" -> fail "handler boom"
+    | "/status0" -> HttpServerResponse { status = 0; headers = []; body = Text "x" }
+    | _ -> HttpServerResponse { status = 200; headers = []; body = Text "ok" }
+
+within serve srv = { port = $svport12; maxConcurrent = 2 } handler
+    poll timeout=8s interval=100ms
+        Net.portOpen $svport12
+    let a = curl -s --max-time 5 -w " %{http_code}" http://127.0.0.1:$svport12/raise | complete
+    let b = curl -s --max-time 5 -w " %{http_code}" http://127.0.0.1:$svport12/status0 | complete
+    print \$"raise={a.stdout |> Str.join ""}"
+    print \$"status0={b.stdout |> Str.join ""}"
+    Server.streamErrors srv |> Seq.iter (fun e -> print \$"recorded={e}")
+WEOF
+out=$($BIN "$svdir/e7.weir" 2>&1) || fail "serve E7 run failed: $out"
+echo "$out" | grep -qF "raise=internal error 500" || fail "E7: a raising handler still answers 500 internal error: $out"
+echo "$out" | grep -qF "status0=internal error 500" || fail "E7: an invalid status answers 500: $out"
+echo "$out" | grep -qF "recorded=serve handler on GET /raise failed: handler boom" || fail "E7: the raise must be recorded for the script: $out"
+echo "$out" | grep -qF "recorded=serve handler on GET /status0 failed: status 0 is not an HTTP status (100 to 999)" || fail "E7: the invalid status must be recorded: $out"
+echo "e2e ok: within serve — E7 a raising handler and an invalid status are recorded on Server.streamErrors"
+
+# (H3-C3) a handler outliving the scope never crashes weir: the late
+# handler's result is discarded, `always` runs, and the port is free at
+# once; with eight handlers stuck the scope still closes after ONE
+# bounded drain, not 2s per handler [D:serve-drain]
+svport13=8483
+cat > "$svdir/c3a.weir" <<WEOF
+let handler = fun req ->
+    Duration.sleep 3s
+    HttpServerResponse { status = 200; headers = []; body = Text "late" }
+
+within
+    within serve srv = { port = $svport13; maxConcurrent = 4 } handler
+        poll timeout=8s interval=50ms
+            Net.portOpen $svport13
+        within proc client = curl -s --max-time 10 http://127.0.0.1:$svport13/
+            Duration.sleep 300ms
+    print \$"port-open-after-close={Net.portOpen $svport13}"
+    within serve again = { port = $svport13; maxConcurrent = 1 } handler
+        print "rebind ok"
+    Duration.sleep 3s
+    print "after work"
+always
+    print "always ran"
+WEOF
+code=0; out=$($BIN "$svdir/c3a.weir" 2>&1) || code=$?
+[ "$code" = "0" ] || fail "C3: a handler finishing after the scope closed must not crash weir (exit $code): $out"
+echo "$out" | grep -qF "port-open-after-close=false" || fail "C3: the port must be free right after the scope closes: $out"
+echo "$out" | grep -qF "rebind ok" || fail "C3: a second bind on the port must succeed after close: $out"
+echo "$out" | grep -qF "after work" || fail "C3: the script must keep running past the late handler: $out"
+echo "$out" | grep -qF "always ran" || fail "C3: always must run: $out"
+cat > "$svdir/c3b.weir" <<WEOF
+let handler = fun req ->
+    Duration.sleep 30s
+    HttpServerResponse { status = 200; headers = []; body = Text "late" }
+
+within serve srv = { port = $svport13; maxConcurrent = 8 } handler
+    poll timeout=8s interval=50ms
+        Net.portOpen $svport13
+    within proc client = sh -c "for i in 1 2 3 4 5 6 7 8; do curl -s --max-time 40 http://127.0.0.1:$svport13/ & done; wait"
+        Duration.sleep 500ms
+print "closed"
+WEOF
+t0=$(date +%s)
+code=0; out=$($BIN "$svdir/c3b.weir" 2>&1) || code=$?
+t1=$(date +%s)
+[ "$code" = "0" ] || fail "C3: eight stuck handlers at scope close must not crash weir (exit $code): $out"
+# 0.5s body + one 2s drain + startup slack (a serial join is 2s x 8)
+[ $((t1 - t0)) -le 6 ] || fail "C3: closing with 8 stuck handlers took $((t1 - t0))s — the drain is not bounded and parallel: $out"
+echo "e2e ok: within serve — C3 a late handler never crashes; one bounded drain; port free at once"
+
+# (H3 lows) a queued request whose client already left is never started,
+# and a Stream whose client aborts frees its slot [D:serve-drain]
+svport14=8484
+rm -f "$svdir/starts.txt"
+cat > "$svdir/lows.weir" <<WEOF
+let streamer = fun req ->
+    File.append "$svdir/starts.txt" ["start"]
+    let elems = [1..30] |> Seq.map (fun i ->
+        Duration.sleep 100ms
+        \$"chunk-{i}")
+    HttpServerResponse { status = 200; headers = []; body = Stream elems }
+
+let handler = fun req ->
+    match req.path with
+    | "/fast" -> HttpServerResponse { status = 200; headers = []; body = Text "fast" }
+    | _ -> streamer req
+
+within serve srv = { port = $svport14; maxConcurrent = 2 } handler
+    poll timeout=8s interval=50ms
+        Net.portOpen $svport14
+    let _gone = sh -c "for i in 1 2 3 4 5 6; do curl -s -o /dev/null --max-time 0.5 http://127.0.0.1:$svport14/ & done; wait" | complete
+    let t0 = Instant.now ()
+    let f = curl -s --max-time 10 http://127.0.0.1:$svport14/fast | complete
+    let took = Instant.now () - t0
+    print \$"fast={f.stdout |> Str.join ""} quick={took < 1s}"
+    print \$"starts={File.read "$svdir/starts.txt" |> Seq.length}"
+WEOF
+out=$($BIN "$svdir/lows.weir" 2>&1) || fail "serve lows run failed: $out"
+echo "$out" | grep -qF "fast=fast quick=true" || fail "lows: an aborted Stream must free its slot: $out"
+echo "$out" | grep -qF "starts=2" || fail "lows: queued requests whose clients left must never start (2 slots, 6 clients gone): $out"
+echo "e2e ok: within serve — lows: a gone client's queued request never starts; an aborted Stream frees its slot"
+
+# (shutdown) SIGINT and SIGTERM inside `within serve` with a request in
+# flight: the exit code is the signal's, `always` runs, the port is free
+# the moment weir is gone
+svport15=8485
+if [ "$IS_WINDOWS" != "1" ] && command -v setsid >/dev/null 2>&1; then
+    cat > "$svdir/sig.weir" <<WEOF
+let marker = Self.args |> Seq.head
+let handler = fun req ->
+    Duration.sleep 20s
+    HttpServerResponse { status = 200; headers = []; body = Text "late" }
+within
+    within serve srv = { port = $svport15; maxConcurrent = 2 } handler
+        Duration.sleep 60s
+always
+    ["cleaned-up"] |> File.write marker
+WEOF
+    for pair in "INT:130" "TERM:143"; do
+        sig="${pair%%:*}"; want="${pair##*:}"
+        M="$svdir/sig-$sig"; rm -f "$M"
+        setsid "$BIN" "$svdir/sig.weir" "$M" </dev/null >/dev/null 2>&1 &
+        wpid=$!
+        awaitTcp $svport15 || { kill -9 "$wpid" 2>/dev/null || true; fail "shutdown: the server never came up"; }
+        curl -s -o /dev/null --max-time 30 "http://127.0.0.1:$svport15/" &
+        cpid=$!
+        sleep 0.5
+        kill -"$sig" "$wpid" 2>/dev/null || true
+        code=timeout
+        for _ in $(seq 1 40); do
+            if ! kill -0 "$wpid" 2>/dev/null; then code=0; wait "$wpid" 2>/dev/null || code=$?; break; fi
+            sleep 0.1
+        done
+        kill "$cpid" 2>/dev/null || true; wait "$cpid" 2>/dev/null || true
+        [ "$code" = "$want" ] || { kill -9 "$wpid" 2>/dev/null || true; fail "shutdown: SIG$sig inside within serve must exit $want (got $code)"; }
+        [ "$(cat "$M" 2>/dev/null)" = "cleaned-up" ] || fail "shutdown: SIG$sig must run the always cleanup"
+        $BIN -e "Net.portOpen $svport15" | grep -qF "false" || fail "shutdown: port $svport15 still up after SIG$sig"
+    done
+    echo "e2e ok: within serve — SIGINT/SIGTERM with a request in flight: exit 130/143, always runs, port free"
+fi
 
 # (F13) tty data sanitize [D:binary-echo]/[D:tty-color]: a data value's
 # terminal-DRIVING escapes (OSC title/clipboard, cursor/screen CSI, CR
