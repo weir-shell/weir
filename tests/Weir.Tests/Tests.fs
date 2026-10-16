@@ -23366,26 +23366,36 @@ let serveTests =
         finally
             Weir.Serve.stop h 0
 
-    // read until the peer goes quiet: the first byte may wait on a cold
-    // server (JIT, a loaded CI runner); once a reply flows, a short quiet
-    // gap ends it. Date dropped.
-    let readQuiet (c: System.Net.Sockets.TcpClient) : string =
-        let st = c.GetStream()
+    // read until `fin` holds on what arrived, the peer closes, or it goes
+    // quiet: the first byte may wait on a cold server (JIT, a loaded CI
+    // runner); once a reply flows, a `quietMs` gap ends it. Readiness
+    // is polled, never a receive timeout — a timed-out recv leaves a
+    // Windows socket indeterminate for the next exchange. Date dropped.
+    let readUntil (quietMs: int) (fin: string -> bool) (c: System.Net.Sockets.TcpClient) : string =
         let buf = Array.zeroCreate<byte> 65536
         let sb = System.Text.StringBuilder()
-        c.ReceiveTimeout <- 10000
+        let mutable wait = 10000
 
         (try
-            let mutable n = st.Read(buf, 0, buf.Length)
-            c.ReceiveTimeout <- 700
+            let mutable go = true
 
-            while n > 0 do
-                sb.Append(System.Text.Encoding.Latin1.GetString(buf, 0, n)) |> ignore
-                n <- st.Read(buf, 0, buf.Length)
+            while go && not (fin (sb.ToString())) do
+                if c.Client.Poll(wait * 1000, System.Net.Sockets.SelectMode.SelectRead) then
+                    let n = c.Client.Receive buf
+
+                    if n = 0 then
+                        go <- false
+                    else
+                        sb.Append(System.Text.Encoding.Latin1.GetString(buf, 0, n)) |> ignore
+                        wait <- quietMs
+                else
+                    go <- false
          with _ ->
              ())
 
         System.Text.RegularExpressions.Regex.Replace(sb.ToString(), "Date: [^\r]*\r\n", "")
+
+    let readQuiet = readUntil 700 (fun _ -> false)
 
     let send (c: System.Net.Sockets.TcpClient) (raw: string) =
         let b = System.Text.Encoding.Latin1.GetBytes raw
@@ -23395,6 +23405,15 @@ let serveTests =
     // read request to a response, each raw request is sent in turn on ONE
     // kept-alive connection, and each reply's raw bytes (Date dropped)
     // come back — the wire view a unit can pin
+    // each exchange's read ends early once its `fin` holds on the reply
+    let wireFor (maxBody: int64) (answer: Weir.Serve.SReq -> Weir.Serve.SResp) (exchanges: (string * (string -> bool)) list) : string list =
+        serving maxBody answer (fun port ->
+            use c = new System.Net.Sockets.TcpClient("127.0.0.1", port)
+
+            [ for raw, fin in exchanges do
+                  send c raw
+                  yield readUntil 10000 fin c ])
+
     let wireWith (maxBody: int64) (answer: Weir.Serve.SReq -> Weir.Serve.SResp) (raws: string list) : string list =
         serving maxBody answer (fun port ->
             use c = new System.Net.Sockets.TcpClient("127.0.0.1", port)
@@ -23516,7 +23535,11 @@ let serveTests =
               let two = get "GET" "/p1" + get "GET" "/p2"
               let three = get "GET" "/q1" + get "POST" "/q2" + get "GET" "/q3"
 
-              match wire answer [ two; three ] with
+              // each read waits for its last body (or a close), so responses
+              // arriving in separate segments with gaps all count
+              let has (tag: string) (r: string) = r.Contains tag
+
+              match wireFor (16L * 1024L * 1024L) answer [ two, has "<p2>"; three, has "<q3>" ] with
               | [ a; b ] ->
                   Expect.equal (statusLines a |> List.length) 2 $"two responses for two pipelined requests: {a}"
                   Expect.isTrue (a.IndexOf "<p1>" >= 0 && a.IndexOf "<p1>" < a.IndexOf "<p2>") $"p1 then p2: {a}"
