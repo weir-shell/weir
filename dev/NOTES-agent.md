@@ -6,6 +6,14 @@ weekly: self-correction rate (stranded = failures), fallback ranking
 skill lines and targeted hints).
 
 ## fallbacks
+- 2026-10-16 | hunt3 repro gate (tools/hunt3-repro.weir) -> python3 helpers,
+  `sh -c` once | a pseudo-terminal (H3-E1 escapes at a tty, H3-C6 REPL ^C),
+  raw request bytes and a socket client weir's own client cannot be (the
+  serve probes, an IPv6 `[::1]` client), servers that record what weir sent
+  or answer from `[::1]`/as a proxy (H3-B1, H3-A1), a static schema host
+  (H3-B5..B8), and a directory watcher fast enough to catch
+  File.writeAtomic's temp file (H3-E10); H3-C3 needs `ulimit -c 0`
+  (`sh -c`) so the crash leaves no core.
 - 2026-10-14 | hunt2 repro gate (tools/hunt2-repro.weir) -> python3 via
   value-headed pipes, `sh -c` once | the REPL line editor needs a
   pseudo-terminal (H24/H25/H27/H34), the LSP items need raw JSON-RPC

@@ -1,6 +1,6 @@
 # PLAN — the third bug hunt (daily-driver W3)
 
-Status: ROUND 1 RUNNING — against main @ 80cbdf6 (plan/daily-driver landed).
+Status: ROUND 1 DONE — 37 confirmed (8 high, 29 medium); fixes in PLAN-hunt3-fixes.md
 
 Source plan: PLAN-daily-driver.md W3. Black-box, medium and above only;
 lows go straight to BACKLOG. The loop stops at the first round with no
