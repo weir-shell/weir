@@ -19224,6 +19224,60 @@ let walkCohortTests =
 
               Expect.isTrue (assemblyCount <= 10) $"the cap: got {assemblyCount} assembly diags"
               Expect.isTrue (assemblyCount >= 9) $"the recovery ran to the cap: got {assemblyCount}"
+          }
+          test "a re-indented line's diagnostics sit on its source columns [D:recovery-physical-indent]" {
+              let lines = [ "let xs = [ 1"; "           2"; "          3"; "print \"a\"" ]
+              let diags = diagsIn "eol.weir" lines
+
+              for d in diags do
+                  Expect.isTrue
+                      (d.Col >= 1 && d.Col <= lines[d.Line - 1].Length + 1)
+                      $"{d.Line}:{d.Col} inside its line: {d.Message}"
+
+              let at line =
+                  diags |> List.filter (fun d -> d.Line = line) |> List.map (fun d -> d.Col) |> List.distinct
+
+              Expect.equal (at 3) [ 11 ] "line 3's content start in the source"
+              Expect.equal (at 4) [ 1 ] "line 4's content start in the source"
+          }
+          test "a parse error on a re-indented line maps to its source column [D:recovery-physical-indent]" {
+              let lines =
+                  [ "let v0 = 1"
+                    "let _v2 = [ 1"
+                    "    2"
+                    "if v0 > v0 then"
+                    "    print \"a\""
+                    "else"
+                    "    print \"b\""
+                    "print \"c\"" ]
+
+              let parse = diagsIn "eol.weir" lines |> List.filter (fun d -> d.Code = "parse")
+
+              match parse with
+              | [ d ] ->
+                  Expect.equal (d.Line, d.Col) (4, 16) "the end-of-line slot after `then`"
+              | other -> failtest $"one parse error expected: {other |> List.map (fun d -> d.Line, d.Col, d.Message)}"
+          }
+          test "a check error on a re-indented line names its token's source column [D:recovery-physical-indent]" {
+              let diags =
+                  diagsIn "eol.weir" [ "let xs = [ 1"; "          2 + \"a\""; "]"; "print (show xs)" ]
+
+              match diags |> List.filter (fun d -> d.Code = "check") with
+              | [ d ] -> Expect.equal (d.Line, d.Col) (2, 15) "the string operand"
+              | other -> failtest $"one check error expected: {other |> List.map (fun d -> d.Line, d.Col, d.Message)}"
+
+              // a pipeline stage off its group, the block-alignment repair
+              let staged =
+                  diagsIn
+                      "eol.weir"
+                      [ "let x = [ 1 ]"
+                        "        |> Seq.map (fun a -> a)"
+                        "          |> Seq.map (fun a -> a + \"x\")"
+                        "print (show x)" ]
+
+              match staged |> List.filter (fun d -> d.Code = "check") with
+              | [ d ] -> Expect.equal (d.Line, d.Col) (3, 36) "the string operand"
+              | other -> failtest $"one check error expected: {other |> List.map (fun d -> d.Line, d.Col, d.Message)}"
           } ]
 
 let sizedFindingsTests =

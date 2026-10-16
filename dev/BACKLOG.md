@@ -23,38 +23,26 @@ equatability and short-circuit `&&`/`||`, as pre-committed.)
 
 ## From the fuzzer's hunt-2 invariants (2026-10-15, W6, [D:fuzz-hunt2-invariants])
 
-Invariant 8 is red on deep runs today (green on the pinned smoke and
-the e2e `--seed 4242 --count 10` cell). Found over 6,500 generated
+Invariant 8 was red on deep runs (green on the pinned smoke and the
+e2e `--seed 4242 --count 10` cell). Found over 6,500 generated
 programs x 5 neighbors; two classes, nothing else (no crash, no
-"internal error", no fmt idempotence break).
+"internal error", no fmt idempotence break). Both closed 2026-10-16.
 
-- **check positions past the end of their line** (23 of 6,500) — after
-  an unclosed bracket swallows the following lines, the diagnostic's
-  column is the logical (joined) line's or the sibling group's, put on
-  a shorter physical line. Minimal (`4:12` on a 9-wide line):
+- ~~**check positions past the end of their line** (23 of 6,500)~~ —
+  done: assembly recovery's re-indent of a misaligned line no longer
+  moves any position; segments carry the source indent, so assembly,
+  parse, check and LSP columns land on the line as written
+  [D:recovery-physical-indent]. Minimal (was `4:12` on a 9-wide line):
 
       let xs = [ 1
                  2
                 3
       print "a"
 
-  The `parse` class (`Expecting: …` at e.g. `7:20` of a 15-wide
-  `if v0 > v0 then` under an unclosed `let _v2 = [`) is the same
-  mapping on the parser's side; `seq-unit` and a `check` hint hit it
-  once each.
-- **fmt repairs a `doc-align` error** (14 of 6,500, the only verdict
-  flips seen, all 1 -> 0) — a misaligned `///` in a Stroustrup record
-  is an error to `check`, and `fmt` re-indents it into place:
-
-      type T = {
-            /// doc
-          a: int
-      }
-
-  Needs a ruling: either fmt leaves a layout ERROR alone (refuses, as
-  for an unsettled layout), or "fmt never changes whether a file
-  checks" narrows to "never makes a checking file fail / never masks a
-  non-layout error" — the invariant stays as stated until ruled.
+- ~~**fmt repairs a `doc-align` error** (14 of 6,500)~~ — ruled
+  (user, 2026-10-16): the law narrows to "fmt never makes a checking
+  file fail and never masks a non-layout error"; repairing a pure
+  layout error is fmt's job [D:fmt-repairs-layout].
 
 ## From the second bug hunt (2026-10-14, PLAN-hunt2-fixes.md)
 

@@ -236,11 +236,11 @@ walk found exactly that gap here.
    inputs alike): no exit >= 128 and no "internal error" text from
    run, check or fmt; every `check --json` position names a real line
    with col <= its code-point width + 1; when fmt accepts, a second
-   fmt is a no-op and `check`'s verdict (rc 0 or not) is unchanged.
-   Pure judges (`screenRun`, `positionViolations`) carry the standing
-   positive controls. KNOWN RED on deep runs, kept un-weakened (see
-   dev/BACKLOG.md): positions past the line end after an unclosed
-   bracket, and fmt repairing a doc-align error (verdict 1 -> 0).
+   fmt is a no-op, a checking file still checks, and no non-layout
+   error disappears — repairing a layout-class error (`doc-align`) is
+   fmt's job [D:fmt-repairs-layout]. Pure judges (`screenRun`,
+   `positionViolations`, `verdictViolations`) carry the standing
+   positive controls.
 
 Ledger equivalence claims NOT yet in the transform library (named
 exclusions): env-district/`$e`/`!e` spellings (env features are

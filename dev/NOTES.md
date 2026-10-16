@@ -1,5 +1,39 @@
 # Spike Notes
 
+## Recovery positions (2026-10-16)
+
+Invariant 8's two red classes [D:fuzz-hunt2-invariants], closed.
+
+Positions past the line end [D:recovery-physical-indent]. Not the
+logical-line join: `translate` was right. Assembly recovery
+[D:assembly-recovery] re-indents a misaligned line onto its
+siblings' column and re-assembles the REPAIRED text, so the
+segments recorded the repair's indent. After an unclosed `[`
+swallows the following lines every one of them is "misaligned" and
+gets re-indented to the entry column — then every column computed
+off those segments (the assembly diagnostic's content start, read
+from the repaired input too; `translate` for parse, check, the
+seq-unit warning and hints; the LSP's physical<->logical map) was
+shifted by the re-indent delta, past the end of a shorter source
+line. Lines indented right of their siblings shifted left instead —
+in range, so the fuzzer could not see them, but on the wrong token
+(a pipeline stage two columns off its group put a type error on `+`
+instead of `"x"`). The fix maps back, it does not clamp: the repair
+rewrites leading spaces only, so the source indent restores every
+column exactly. Recovered lines' segments carry the source indent
+(`withPhysicalIndents`, which carries the segment ends across the
+new record), the assembly diagnostic reads the source line.
+
+fmt and layout errors [D:fmt-repairs-layout]: ruled by the user —
+fmt may repair a pure layout error; the law now fails a 0 -> 1
+flip, a 1 -> 0 with nothing listed, and any non-layout error that
+fmt makes disappear. The layout class is `doc-align` alone: the
+other layout errors are assembly errors, and fmt refuses those.
+
+Measured with a counting copy of the invariant-8 composition (the
+property stops at its first failure), same programs before and after
+(seeds 11-13 x 1,200 programs x 5 neighbors): COUNTS_TBD.
+
 ## W6 — regression automation (2026-10-15)
 
 The two bug hunts' acceptance harnesses (tools/sweep-repro.weir,

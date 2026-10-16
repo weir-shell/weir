@@ -1375,6 +1375,29 @@ let private bufToLL (b: PendBuf) : LogicalLine =
     segmentEnds.AddOrUpdate(ll, List.rev b.Ends |> List.toArray)
     ll
 
+// a line's segments re-pointed at the physical indents in `indents`
+// (line -> leading spaces): assembly recovery re-indents a misaligned
+// line, and every position map must read the source, not the repair
+// [D:recovery-physical-indent]
+let withPhysicalIndents (indents: Map<int, int>) (ll: LogicalLine) : LogicalLine =
+    if ll.Segments |> List.exists (fun (_, l, _) -> indents.ContainsKey l) then
+        let moved =
+            { ll with
+                Segments =
+                    ll.Segments
+                    |> List.map (fun (js, l, i) ->
+                        match indents.TryFind l with
+                        | Some phys -> js, l, phys
+                        | None -> js, l, i) }
+
+        match segmentEnds.TryGetValue ll with
+        | true, e -> segmentEnds.AddOrUpdate(moved, e)
+        | _ -> ()
+
+        moved
+    else
+        ll
+
 // a fresh single-line buffer (the assembler's per-statement seed)
 let private bufNew (text: string) (lineNo: int) (indent: int) : PendBuf =
     let sb = System.Text.StringBuilder(text)
@@ -7089,6 +7112,14 @@ let analyzeLinesAs
     // runner keeps hard assembly failure; tooling-only.
     let assemblyDiags = ResizeArray<Diagnostic>()
 
+    let physicalIndent =
+        numbered
+        |> List.map (fun (n, raw) -> n, raw |> Seq.takeWhile ((=) ' ') |> Seq.length)
+        |> Map.ofList
+
+    // the lines a recovery attempt re-indented, at their source indent
+    let reindented = ref Map.empty
+
     let rec assembleRecovering (attempts: int) (input: (int * string) list) =
         let misaligned = ref None
 
@@ -7105,11 +7136,12 @@ let analyzeLinesAs
                          | false, _ -> -1)
                 | None -> -1
 
-            // the named line's content start is the column
+            // the named line's content start is the column — in the
+            // source, not in an earlier attempt's re-indent
+            // [D:recovery-physical-indent]
             let col =
-                input
-                |> List.tryFind (fun (n, _) -> n = line)
-                |> Option.map (fun (_, raw) -> (raw |> Seq.takeWhile ((=) ' ') |> Seq.length) + 1)
+                physicalIndent.TryFind line
+                |> Option.map (fun i -> i + 1)
                 |> Option.defaultValue 1
 
             assemblyDiags.Add
@@ -7129,13 +7161,18 @@ let analyzeLinesAs
                 let fix (n, raw: string) =
                     if n = line then n, String(' ', c) + raw.TrimStart(' ') else n, raw
 
+                reindented.Value <- reindented.Value |> Map.add line physicalIndent[line]
+
                 assembleRecovering (attempts - 1) (input |> List.map fix)
             | _ when line > 0 && input |> List.exists (fun (n, _) -> n = line) ->
                 assembleRecovering (attempts - 1) (input |> List.filter (fun (n, _) -> n <> line))
             | _ -> []
         | Error _ -> []
 
-    let logicalLines = numbered |> assembleRecovering 10 // raw lines: assemble classifies/strips internally
+    let logicalLines =
+        numbered
+        |> assembleRecovering 10 // raw lines: assemble classifies/strips internally
+        |> List.map (withPhysicalIndents reindented.Value)
 
     (let diags0 = List.ofSeq assemblyDiags
      diags0 |> ignore)

@@ -59,6 +59,12 @@
 - **`from json` reads a `Yaml` field,** keeping any subtree whole, and
   `to json` writes it back. `weir gen types` uses it: a field that refers
   back to its own definition is now `Yaml` instead of left out.
+- **Errors on a misaligned line point at the line as written.** On a
+  line indented off its siblings — typically after a `[` or `{` stayed
+  open and swallowed the lines below it — `weir check` and the editor
+  put further errors at the column the line would have had once lined
+  up, often past the end of the real line. They now point at the
+  offending token.
 
 - **`#alias` completes and gets a did-you-mean**, like the other
   directives; `#help`'s directive list now comes from the same table.

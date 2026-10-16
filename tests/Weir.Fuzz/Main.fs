@@ -16,12 +16,10 @@ module Fuzz.Main
 //   Invariant 4 (fmt roundtrip): fmt succeeds on every generated
 //     program, is idempotent, preserves per-statement sexpr shape, and
 //     the formatted program is output-identical on the binary.
-//   Invariant 5 (the hunt-2 laws, on the binary, valid or mutated
-//     input): no exit >= 128, no "internal error", every check position
-//     inside its line, fmt idempotent and never flipping check's verdict.
 //   Invariant 8 (the hunt-2 laws, on the binary, valid or mutated
 //     input): no exit >= 128, no "internal error", every check position
-//     inside its line, fmt idempotent and never flipping check's verdict.
+//     inside its line, fmt idempotent, never making a checking file
+//     fail and never masking a non-layout error.
 // Seeds/counts: WEIR_FUZZ_SEED / WEIR_FUZZ_COUNT (smoke default is the
 // pinned seed; tools/fuzz.weir passes fresh seeds for deep runs).
 
@@ -275,6 +273,42 @@ let positionViolations (label: string) (source: string[]) (json: string) : strin
               elif col < 1 || col > width source[line - 1] + 1 then
                   $"{label}: {line}:{col} is past the end of its line ({width source[line - 1]} wide)" ]
 
+// fmt never makes a checking file fail and never masks a non-layout
+// error; repairing a pure layout error is fmt's job
+// [D:fmt-repairs-layout]. The layout class is the checker's own codes
+// for an error fmt's re-indent removes and nothing else depends on
+let layoutCodes = set [ "doc-align" ]
+
+let private errorKeys (json: string) : (string * string) list option =
+    try
+        use doc = System.Text.Json.JsonDocument.Parse json
+
+        [ for d in doc.RootElement.EnumerateArray() do
+              if d.GetProperty("severity").GetString() = "error" then
+                  // positions move under fmt; the error is its code and words
+                  d.GetProperty("code").GetString(),
+                  System.Text.RegularExpressions.Regex.Replace(d.GetProperty("message").GetString(), "[0-9]+", "N") ]
+        |> Some
+    with _ ->
+        None
+
+let verdictViolations (rcBefore: int, jsonBefore: string) (rcAfter: int, jsonAfter: string) : string list =
+    match errorKeys jsonBefore, errorKeys jsonAfter with
+    | Some before, Some after ->
+        let masked =
+            before
+            |> List.filter (fun (code, _) -> not (layoutCodes.Contains code))
+            |> List.filter (fun k -> not (List.contains k after))
+            |> List.distinct
+
+        [ if rcBefore = 0 && rcAfter <> 0 then
+              $"fmt made a checking file fail (check rc 0 -> {rcAfter})"
+          elif rcBefore <> 0 && rcAfter = 0 && before.IsEmpty then
+              $"fmt made a failing file check (rc {rcBefore} -> 0) with no error to repair"
+          for code, msg in masked do
+              $"fmt masked a non-layout error [{code}]: {msg}" ]
+    | _ -> [] // unparsable output is the position judge's finding
+
 let hunt2Violations (lines: string list) : string list =
     Runner.withScript lines (fun file ->
         let source = System.IO.File.ReadAllLines file
@@ -301,8 +335,9 @@ let hunt2Violations (lines: string list) : string list =
                 [ yield! screenRun "check after fmt" chk2
                   yield! checkPositions "check after fmt" once chk2
                   yield! screenRun "second fmt" fmt2
-                  if not (chk.TimedOut || chk2.TimedOut) && (chk.Rc = 0) <> (chk2.Rc = 0) then
-                      $"fmt changed whether the file checks (check rc {chk.Rc} -> {chk2.Rc}); formatted:\n{showProgram (List.ofArray once)}\nbefore: {chk.Out}\nafter: {chk2.Out}"
+                  if not (chk.TimedOut || chk2.TimedOut || chk.Rc >= 128 || chk2.Rc >= 128) then
+                      for v in verdictViolations (chk.Rc, chk.Out) (chk2.Rc, chk2.Out) do
+                          $"{v}; formatted:\n{showProgram (List.ofArray once)}\nbefore: {chk.Out}\nafter: {chk2.Out}"
                   if fmt2.Rc <> 0 then
                       $"fmt refused its own output (rc {fmt2.Rc}): {fmt2.Err}"
                   elif twice <> once then
@@ -875,6 +910,34 @@ let positiveControls =
               Expect.isEmpty
                   (positionViolations "control" [| "abc" |] """[{"line":1,"col":4}]""")
                   "one past the end is the end-of-line slot"
+          }
+          test "invariant 8: fmt failing a file or masking a non-layout error is DETECTED, named; a layout repair is not" {
+              let err code msg =
+                  $"""{{"line":1,"col":1,"severity":"error","code":"{code}","message":"{msg}"}}"""
+
+              let docAlign = err "doc-align" "this /// doc sits at column 7"
+              let typeErr = err "check" "expected int, got string"
+
+              let fails = verdictViolations (0, "[]") (1, $"[{typeErr}]")
+              Expect.equal fails.Length 1 "0 -> 1 fires"
+              Expect.stringContains fails[0] "made a checking file fail" "the fail judge names itself"
+
+              let masked = verdictViolations (1, $"[{docAlign},{typeErr}]") (0, "[]")
+              Expect.equal masked.Length 1 "a non-layout error gone with the layout one fires"
+              Expect.stringContains masked[0] "masked a non-layout error [check]" "the mask judge names the code"
+
+              let other = err "check" "other"
+              let maskedKept = verdictViolations (1, $"[{typeErr}]") (1, $"[{other}]")
+              Expect.equal maskedKept.Length 1 "a swapped error under an unchanged verdict fires"
+
+              let blank = verdictViolations (1, "[]") (0, "[]")
+              Expect.stringContains blank[0] "no error to repair" "1 -> 0 with nothing listed fires"
+
+              Expect.isEmpty (verdictViolations (1, $"[{docAlign}]") (0, "[]")) "a pure layout repair is fmt's job"
+
+              Expect.isEmpty
+                  (verdictViolations (1, $"[{docAlign},{typeErr}]") (1, $"[{typeErr}]"))
+                  "the layout half repaired, the other kept"
           }
           test "invariant 8: the composed detector is clean on a clean program (not vacuously red)" {
               Expect.isEmpty (hunt2Violations [ "let x = 1"; "print (show x)" ]) "a clean program has no violations"
