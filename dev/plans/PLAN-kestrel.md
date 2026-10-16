@@ -1,6 +1,7 @@
 # PLAN — `serve` on Kestrel
 
-Status: ACTIVE (user, 2026-10-16) — picked up after hunt 3 round 1 found
+Status: DONE on feat/kestrel (Linux gates green; Windows/macOS CI pending) —
+picked up (user, 2026-10-16) after hunt 3 round 1 found
 `serve` behind most of its HTTP findings (see "Hunt 3 findings in scope").
 Supersedes the "later" of [D:serve-pipelining-later].
 
@@ -198,18 +199,22 @@ Weir.Fuzz builds, ci/e2e.sh all green (868 ok), multi-repro / sweep-repro
 dead-privates 0, decision-keys ok, commit-area 80cbdf6..HEAD ok.
 Windows/macOS CI not run (no push from here).
 
-Open for a user ruling (not decided here):
+Ruled (user, 2026-10-16) — all four as the branch has them:
 
 - **Stream client aborts stay unrecorded.** The hunt-3 low says the
   abort "is not recorded"; [D:serve-stream] rules a client disconnect is
   NOT reported (a monitoring loop reads `streamErrors` as "something
   failed"; browsers closing an SSE tab would flood it). The slot half
-  is fixed; recording is left to a ruling.
+  is fixed; disconnects stay unrecorded (RULED: keep [D:serve-stream]).
 - **Cross-name header order.** Kestrel enumerates its known headers
   (Host, Connection, …) before the rest; values of one name keep wire
-  order. Docs now say "in wire order within the name".
+  order. Docs now say "in wire order within the name" (RULED: accepted).
 - **Foreign `Host` refusal** kept (above). A reverse proxy configured
-  with `proxy_set_header Host $host` is refused — as it was before.
+  with `proxy_set_header Host $host` is refused — as it was before
+  (RULED: keep refusing — loopback posture, DNS-rebinding defence).
+- **Wire changes** (no `Server`, `Date` added, 431 for oversized
+  headers, 400 for a NUL target, 256 KiB request line, 1000 headers):
+  RULED: accepted.
 
 ## Design
 
