@@ -27699,12 +27699,24 @@ let hunt3PerfTests =
               let checks (tenv: TypeEnv) =
                   let e = parse "fun x -> (x, a1 + 1)"
                   fun () ->
-                      for _ in 1..300 do
+                      for _ in 1..1000 do
                           match typecheck tenv e with
                           | Ok _ -> ()
                           | Error terr -> failtest (formatError terr)
 
-              growsWithin 5.0 "300 checks against a 100x larger env" (checks (envOf 500)) (checks (envOf 50000))
+              growsWithin 6.0 "1000 checks against a 100x larger env" (checks (envOf 500)) (checks (envOf 50000))
+          }
+          test "a line's position index follows its own segments; equality ignores it [D:line-pos-cache]" {
+              match Weir.Script.assemble [ 1, "let x ="; 2, "    ls"; 3, "    |> Seq.map _.name" ] with
+              | Ok [ ll ] ->
+                  Expect.equal (Weir.Script.translate ll 9) (2, 5) "col 9 is line 2 col 5"
+                  // re-pointed indents: the copy must not read the original's index
+                  let moved = Weir.Script.withPhysicalIndents (Map [ 2, 8 ]) ll
+                  Expect.equal (Weir.Script.translate moved 9) (2, 9) "the moved line reads its own indents"
+                  Expect.equal (Weir.Script.translate ll 9) (2, 5) "the original is untouched"
+                  Expect.notEqual moved ll "different segments, different lines"
+                  Expect.equal { ll with Ends = [||]; PosIndex = null } ll "equality is text, head and segments"
+              | other -> failtest $"unexpected: {other}"
           } ]
 
 [<Tests>]

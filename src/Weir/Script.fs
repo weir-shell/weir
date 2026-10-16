@@ -898,16 +898,38 @@ let private markerOpener (m: MarkerKind) : (string * int * bool) option =
     // the text district joins exactly as yaml does [D:text-block]
     | MarkerKind.Heredoc -> Some("", 0, true)
 
+// translate's per-line data rides the line itself [D:line-pos-cache]:
+// a ConditionalWeakTable entry per line is a GC dependent handle, and one
+// per statement made every collection walk them all. Equality is the
+// line's text and segments only, as before the fields moved here.
+[<CustomEquality; NoComparison>]
 type LogicalLine =
     { Text: string
       Head: int
-      Segments: (int * int * int) list }
+      Segments: (int * int * int) list
+      // where each segment's own text ends, aligned with Segments (the
+      // join text after it is no physical column); empty for a line not
+      // from the assembler
+      Ends: int[]
+      // translate's index, built on first use; it names the Text,
+      // Segments and Ends it was built from, so a copy never reads a
+      // stale one
+      mutable PosIndex: obj }
+
+    override this.Equals(other) =
+        match other with
+        | :? LogicalLine as o -> this.Text = o.Text && this.Head = o.Head && this.Segments = o.Segments
+        | _ -> false
+
+    override this.GetHashCode() = hash (this.Text, this.Head, this.Segments)
 
 // a one-physical-line LogicalLine — the REPL's and -e's spelling
 let singleLine (text: string) : LogicalLine =
     { Text = text
       Head = 1
-      Segments = [ (0, 1, 0) ] }
+      Segments = [ (0, 1, 0) ]
+      Ends = [||]
+      PosIndex = null }
 
 // Block lets — F# light syntax at the assembly layer, the same way F#'s own
 // lexer implements it (token insertion at offside boundaries): a continuation
@@ -1168,11 +1190,6 @@ let bracketFold
 //   LastSegStart — index just past the last sibling sentinel (or 0): the
 //                 proc/serve binder-head scan runs over the last segment
 //                 only, never the whole growing text (LastIndexOf was O(N)).
-// each assembled line's segment ends, aligned with its Segments — set at
-// statement close (bufToLL), read by translate
-let private segmentEnds =
-    System.Runtime.CompilerServices.ConditionalWeakTable<LogicalLine, int[]>()
-
 type private PendBuf =
     { Sb: System.Text.StringBuilder
       // the statement's first physical line (LogicalLine.Head)
@@ -1393,13 +1410,11 @@ let private bufEndsInEnvHead (b: PendBuf) : bool =
 // materialize a LogicalLine from a finished pending buffer (segments are
 // reversed at the boundary exactly as before)
 let private bufToLL (b: PendBuf) : LogicalLine =
-    let ll =
-        { Text = b.Sb.ToString()
-          Head = b.Head
-          Segments = List.rev b.Segments }
-
-    segmentEnds.AddOrUpdate(ll, List.rev b.Ends |> List.toArray)
-    ll
+    { Text = b.Sb.ToString()
+      Head = b.Head
+      Segments = List.rev b.Segments
+      Ends = List.rev b.Ends |> List.toArray
+      PosIndex = null }
 
 // a line's segments re-pointed at the physical indents in `indents`
 // (line -> leading spaces): assembly recovery re-indents a misaligned
@@ -1407,20 +1422,14 @@ let private bufToLL (b: PendBuf) : LogicalLine =
 // [D:recovery-physical-indent]
 let withPhysicalIndents (indents: Map<int, int>) (ll: LogicalLine) : LogicalLine =
     if ll.Segments |> List.exists (fun (_, l, _) -> indents.ContainsKey l) then
-        let moved =
-            { ll with
-                Segments =
-                    ll.Segments
-                    |> List.map (fun (js, l, i) ->
-                        match indents.TryFind l with
-                        | Some phys -> js, l, phys
-                        | None -> js, l, i) }
-
-        match segmentEnds.TryGetValue ll with
-        | true, e -> segmentEnds.AddOrUpdate(moved, e)
-        | _ -> ()
-
-        moved
+        { ll with
+            Segments =
+                ll.Segments
+                |> List.map (fun (js, l, i) ->
+                    match indents.TryFind l with
+                    | Some phys -> js, l, phys
+                    | None -> js, l, i)
+            PosIndex = null }
     else
         ll
 
@@ -2593,10 +2602,11 @@ type private SegIndex =
       Indents: int[]
       // where each segment's own text ends — the synthetic join text
       // between it and the next segment is no physical column
-      Ends: int[] }
-
-let private segIndexes =
-    System.Runtime.CompilerServices.ConditionalWeakTable<LogicalLine, SegIndex>()
+      Ends: int[]
+      // what it was built from [D:line-pos-cache]
+      ForText: string
+      ForSegments: (int * int * int) list
+      ForEnds: int[] }
 
 let private buildSegIndex (ll: LogicalLine) : SegIndex =
     let segs = List.toArray ll.Segments
@@ -2604,17 +2614,34 @@ let private buildSegIndex (ll: LogicalLine) : SegIndex =
 
     // a line not from the assembler has no join text to step over
     let ends =
-        match segmentEnds.TryGetValue ll with
-        | true, e when e.Length = starts.Length -> e
-        | _ -> Array.init starts.Length (fun i -> if i + 1 < starts.Length then starts[i + 1] else ll.Text.Length)
+        if ll.Ends.Length = starts.Length then
+            ll.Ends
+        else
+            Array.init starts.Length (fun i -> if i + 1 < starts.Length then starts[i + 1] else ll.Text.Length)
 
     { Starts = starts
       Lines = segs |> Array.map (fun (_, l, _) -> l)
       Indents = segs |> Array.map (fun (_, _, i) -> i)
-      Ends = ends }
+      Ends = ends
+      ForText = ll.Text
+      ForSegments = ll.Segments
+      ForEnds = ll.Ends }
+
+let private segIndexOf (ll: LogicalLine) : SegIndex =
+    match ll.PosIndex with
+    | :? SegIndex as ix when
+        obj.ReferenceEquals(ix.ForText, ll.Text)
+        && obj.ReferenceEquals(ix.ForSegments, ll.Segments)
+        && obj.ReferenceEquals(ix.ForEnds, ll.Ends)
+        ->
+        ix
+    | _ ->
+        let ix = buildSegIndex ll
+        ll.PosIndex <- ix
+        ix
 
 let translate (ll: LogicalLine) (col: int) : int * int =
-    let ix = segIndexes.GetValue(ll, buildSegIndex)
+    let ix = segIndexOf ll
     let joinedIdx = col - 1
 
     // the last segment starting at or before the index
