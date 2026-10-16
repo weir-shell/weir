@@ -1,8 +1,8 @@
 # PLAN — `serve` on Kestrel
 
-Status: PARKED — ruled later (user, 2026-10-16) [D:serve-pipelining-later].
-Pick up when a `serve` limitation bites (a pipelining client, F10, a
-Windows/macOS divergence from W3) or as a deliberate session of its own.
+Status: ACTIVE (user, 2026-10-16) — picked up after hunt 3 round 1 found
+`serve` behind most of its HTTP findings (see "Hunt 3 findings in scope").
+Supersedes the "later" of [D:serve-pipelining-later].
 
 ## Problem
 
@@ -22,6 +22,36 @@ trace to it, and none has an in-place fix:
 
 On Windows `HttpListener` sits on http.sys, a different stack from the
 Linux/macOS managed one — so `serve` is really two servers today.
+
+## Hunt 3 findings in scope (PLAN-hunt3.md, round 1)
+
+Platform (HttpListener) — gone by construction, each pinned:
+
+- **H3-E6:** after a listener-generated 404 (foreign Host, absolute-form
+  URI) or 505, the same connection also gets an unsolicited
+  `200 OK` + `Connection: close` — a keep-alive client or proxy pairs it
+  with its next request.
+- **H3-A3:** `[::1]` is registered but every request gets the
+  listener's `400 Bad Request (Invalid url …)`, never the handler.
+- **H3-E5:** one slow request body holds a handler slot for the whole
+  `bodyTimeout`; `maxConcurrent` slow clients deny service. Kestrel's
+  minimum request body data rate closes it at the connection, before a
+  slot is taken.
+
+weir's own `serve` loop — rewritten by phase 1 anyway, fixed there:
+
+- **H3-C3 (high):** a handler still running 2 s after the scope closes
+  crashes weir (exit 134): teardown joins each handler with a 2 s cap,
+  disposes the gate, and the late handler's `gate.Release()` throws on
+  a worker thread. The joins are also serial (2 s × N to close).
+  Required: no crash, ever; a bounded, parallel drain; a late handler's
+  result discarded, not raised.
+- **H3-E7:** a raising handler (and an invalid status: 0, -1, 99, 1000)
+  answers `500 internal error` with no trace for the script — record it
+  on `Server.streamErrors` (or a sibling channel; a DECISIONS row).
+- **Lows:** a queued request whose client already left is still
+  started during close; a `Stream` handler keeps its slot after the
+  client aborts, and the abort is not recorded.
 
 ## Measured (2026-10-16, native AOT, linux-x64)
 
@@ -120,7 +150,13 @@ module header comment ("~0 dependency bytes" is no longer true).
   the `Weir.Tests` serveTests, `tools/multi-repro.weir` (F3/F4/F8/F9/F11).
 - New pins: pipelining (two and three requests on one connection, raw
   socket, responses in order); F10 with THREE duplicates (two can't tell
-  last-wins from a merge); F8 still exits curl 18 with no reflection.
+  last-wins from a merge); F8 still exits curl 18 with no reflection;
+  one per hunt-3 finding above (E6 one response per request, A3 `[::1]`
+  reaches the handler, E5 slow bodies don't block a fast client, C3 a
+  late handler never crashes and the scope closes in bounded time, E7 a
+  raising handler is recorded). The hunt-3 repros are under
+  /output/tmp/h3-E/, h3-A/repro/, h3-C/ — port them into pins, don't
+  depend on the scratch paths.
 - Windows/macOS CI jobs run the serve cells (the W3 cross-platform hunt
   can reuse them).
 - Shutdown: Ctrl-C and SIGTERM inside `within serve`, scope exit with
@@ -132,6 +168,7 @@ module header comment ("~0 dependency bytes" is no longer true).
 - All existing serve pins green with message text unchanged; new
   pipelining and F10 pins green on Linux, macOS and Windows CI.
 - No reflection into framework internals in `Serve.fs`.
+- Every hunt-3 finding listed above pinned and green.
 - Size delta and startup within the phase-0 targets.
 - DECISIONS: a new row for the Kestrel move; [D:serve-stream-truncate]
   and [D:serve-pipelining-later] updated to point at it; F10 closed in
