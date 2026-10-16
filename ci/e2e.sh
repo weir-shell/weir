@@ -296,7 +296,8 @@ let xs = sh -c "echo a; exit 5" $s
 xs |> Seq.iter print
 '
 out=$(cd "$smdir" && $BIN statement.weir 2>&1) || true
-echo "$out" | grep -qF "exit code 3: sh -c exit 3 ***" || fail "secret argv: the clear splice ran, the failing one masked: $out"
+# the head renders as resolved on Windows (C:\...\sh.EXE) — pin the argv, not the path
+echo "$out" | grep -qiE 'exit code 3: (.*(/|\\))?sh(\.exe)? -c exit 3 \*\*\*' || fail "secret argv: the clear splice ran, the failing one masked: $out"
 rm -rf "$smdir"
 chmod 700 "$pwdir/locked.txt" 2>/dev/null; rm -rf "$pwdir"
 
