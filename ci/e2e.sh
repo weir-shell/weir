@@ -829,11 +829,17 @@ out=$(cd "$scriptdir" && $BIN show.weir)
 echo "$out" | grep -qF "bytes = " || fail "show must render the builtin row: $out"
 echo "e2e ok: show renders typed rows on the AOT binary"
 
+# the same program with no sleep is the baseline (startup + spawns), so a
+# loaded machine cannot fail the parallelism claim: parallel adds ~1s
+# to it, serial ~4s
 start=$(now_ms)
-$BIN -e '[1; 2; 3; 4] |> Seq.piter (fun n -> if ($(sh -c "sleep 0.3" | complete)).exitCode > 99 then print "never")' >/dev/null 2>&1 || fail "piter probe failed"
+$BIN -e '[1; 2; 3; 4] |> Seq.piter (fun n -> if ($(sh -c "true" | complete)).exitCode > 99 then print "never")' >/dev/null 2>&1 || fail "piter baseline probe failed"
+base_ms=$(($(now_ms) - start))
+start=$(now_ms)
+$BIN -e '[1; 2; 3; 4] |> Seq.piter (fun n -> if ($(sh -c "sleep 1" | complete)).exitCode > 99 then print "never")' >/dev/null 2>&1 || fail "piter probe failed"
 elapsed_ms=$(($(now_ms) - start))
-[ "$elapsed_ms" -lt 900 ] || fail "piter must run workers in parallel (4x300ms took ${elapsed_ms}ms)"
-echo "e2e ok: piter parallelism (4x300ms in ${elapsed_ms}ms)"
+[ $((elapsed_ms - base_ms)) -lt 2500 ] || fail "piter must run workers in parallel (4x1s took ${elapsed_ms}ms over a ${base_ms}ms baseline)"
+echo "e2e ok: piter parallelism (4x1s in ${elapsed_ms}ms over a ${base_ms}ms baseline)"
 
 # temp-dir fixture, leaf pins: /tmp and /etc are POSIX-isms a native
 # weir resolves drive-relative on Windows (D:\tmp), and pwd's separator
