@@ -1929,7 +1929,7 @@ PYADP
     echo "e2e ok: repl lexical coloring, head verdicts, NO_COLOR"
 
     python3 "$(dirname "$0")/../tests/repl/repl-quality.py" "$BIN" || fail "repl quality (history/Ctrl+R)"
-    echo "e2e ok: repl history (XDG/dedup/0600), Ctrl+R fzf-stub + fallback"
+    echo "e2e ok: repl history (XDG/dedup/0600/invalid-UTF-8 kept raw), Ctrl+R fzf-stub + fallback"
 
     python3 "$(dirname "$0")/../tests/repl/waiting-indicator.py" "$BIN" || fail "waiting indicator"
     echo "e2e ok: repl waiting indicator (grace, erase, fast/piped/child-owned silent)"
@@ -7428,6 +7428,22 @@ if [ "$IS_WINDOWS" != "1" ]; then
     [ $rc -eq 0 ] || fail "HOME= must not stop the REPL (rc $rc): $out"
     expect "HOME= runs the REPL line" "HI" "$out"
     expect "…and turns history off with a note" "history off for this session" "$out"
+fi
+
+# invalid UTF-8 in history is skipped, never rewritten [D:history-utf8]: the
+# duplicate makes the load rewrite the file; the bad lines come back
+# byte-for-byte in place, stay out of #history, and one located note says so
+if [ "$IS_WINDOWS" != "1" ]; then
+    hu="$cfgdir/hutf8"
+    mkdir -p "$hu/weir"
+    printf 'a\n\377\376 bad\nb\na\nlet m = "x\\nmatch\n\303(\n' > "$hu/weir/history"
+    out=$(printf '#history\n' | XDG_CONFIG_HOME="$cfgdir/none" XDG_STATE_HOME="$hu" $BIN 2>&1); rc=$?
+    [ $rc -eq 0 ] || fail "a history with invalid UTF-8 must not stop the REPL (rc $rc): $out"
+    expect "the bad lines get one located note" "weir: history: $hu/weir/history:2: invalid UTF-8 — 2 lines left out of recall, kept on disk as-is" "$out"
+    expect "…the valid entries recall, deduped" "(4 entries)" "$out"
+    echo "$out" | grep -qF "bad" && fail "an invalid-UTF-8 line must not be recalled: $out"
+    printf '\377\376 bad\nb\na\nlet m = "x\\nmatch\n\303(\n' > "$cfgdir/hutf8-expected"
+    cmp "$hu/weir/history" "$cfgdir/hutf8-expected" || fail "the load rewrite must keep invalid-UTF-8 lines byte-for-byte: $(od -c "$hu/weir/history")"
 fi
 
 # a malformed config must not affect a script — scripts never read it, so the

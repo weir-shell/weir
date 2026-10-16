@@ -90,8 +90,7 @@ Ruled 2026-10-15 (PLAN-daily-driver W4): **every item below is daily-driver — 
 - ~~**fmt** formats a file with a yaml-district parse error, and spaces inside
   multi-line interpolation holes.~~ done: fmt refuses any file check cannot
   parse; respace skips district content and lines inside a hole [D:fmt-parse-gate].
-- **History file and fmt rewrite invalid UTF-8** as U+FFFD ([D:source-utf8]
-  covers source files only). fmt half done: fmt reads through the entry
-  read, refuses located and leaves the file untouched (e2e pins the bytes).
-  History half ruled (b) SKIP (user, 2026-10-16): valid entries load, bad
-  lines stay out of recall and are written back byte-for-byte.
+- ~~**History file and fmt rewrite invalid UTF-8** as U+FFFD ([D:source-utf8]
+  covers source files only).~~ — done: fmt refuses located and leaves the
+  file untouched; history skips an invalid line from recall, writes it back
+  byte-for-byte on every rewrite and says so once [D:history-utf8].

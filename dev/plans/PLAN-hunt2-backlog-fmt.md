@@ -1,7 +1,7 @@
 # PLAN — hunt2 backlog: fmt items
 
-Status: LANDED for items 1, 2, 3 (fmt half) and 4; item 3's history half
-waits on a ruling (options below).
+Status: LANDED — items 1–4, item 3's history half on the user's ruling
+(option b, skip) [D:history-utf8].
 
 Source: dev/BACKLOG.md "From the second bug hunt" (user: every item
 daily-driver, fix all).
@@ -30,7 +30,9 @@ daily-driver, fix all).
      `file:L:C: invalid UTF-8`, exit 2, untouched) — e2e pins it; add the
      byte-identical assertion.
    - history: NOT settled by [D:source-utf8] (a source-file ruling; the
-     backlog says so). Needs a ruling — options in the final report.
+     backlog says so). RULED (b) skip, LANDED: invalid lines stay out of
+     recall and are written back byte-for-byte on every rewrite, one
+     located note [D:history-utf8].
 
 4. **fmt ends every file in exactly ONE newline** (user ruling 2026-10-15,
    option a): trailing blank lines go, in `formatSource`, guarded by an
@@ -58,3 +60,5 @@ invalid byte is silently replaced on disk. Options:
 ## Decisions
 
 - [D:fmt-parse-gate] (new) — fmt refuses a file `weir check` cannot parse.
+- [D:history-utf8] (new) — history skips invalid-UTF-8 lines and keeps them
+  byte-for-byte.

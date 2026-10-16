@@ -213,6 +213,12 @@ Up-arrow, `#history` and `Ctrl+R` each show a command once
 off with `historyDedup = false` in the
 [config](tooling.md#configuration).
 
+A line in the history file that is not valid UTF-8 (say, written by
+another tool) is left out of history — Up-arrow, `#history` and
+`Ctrl+R` never show it — and one note names the first such line. The
+REPL never changes it: whenever it rewrites the file, that line is
+written back byte for byte, in its place.
+
 ## The last result: `it`
 
 Every expression and command sets `it` to its result, even when the

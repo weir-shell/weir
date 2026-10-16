@@ -66,6 +66,24 @@ noquit = [l for l in lines1b if l != "#quit"]
 if noquit != ["seeded", "2 + 2", "1 + 1"]:
     failures.append(f"erasedups keep-last / load-dedup wrong (expected each once, re-entry last): {lines1b}")
 
+# --- 1c. invalid UTF-8 lines [D:history-utf8]: never recalled, and the
+# re-entered line's rewrite writes them back byte-for-byte in place. The
+# seed's last line is raw AND unterminated: the first append must not glue
+# onto it.
+d1c = tempfile.mkdtemp()
+os.makedirs(d1c + "/state/weir", exist_ok=True)
+open(d1c + "/state/weir/history", "wb").write(b"good\n\xff bad\nx\n\xc3(")
+out1c = run_repl({"XDG_STATE_HOME": d1c + "/state", "XDG_CONFIG_HOME": d1c + "/cfg"},
+                 [('1 + 1\r', 0.3), ('2 + 2\r', 0.3), ('1 + 1\r', 0.3), ('#history\r', 0.4), ('#quit\r', 0.3)])
+got1c = open(d1c + "/state/weir/history", "rb").read()
+want1c = b"good\n\xff bad\nx\n\xc3(\n2 + 2\n1 + 1\n#history\n#quit\n"
+if got1c != want1c:
+    failures.append(f"invalid-UTF-8 lines not kept byte-for-byte across the dedup rewrite: {got1c!r}")
+if "bad" in out1c or "(5 entries)" not in out1c:
+    failures.append(f"#history must list the 5 valid entries and never the invalid lines: {out1c!r}")
+if "invalid UTF-8 — 2 lines left out of recall" not in out1c:
+    failures.append(f"the invalid-UTF-8 note is missing: {out1c!r}")
+
 # --- 2. Ctrl+R via a stub fzf: the selection replaces the line, and the
 # invocation carries --no-extended before the config flags (weir glyphs
 # ^ | $ ! are fzf query operators; literal matching is the default, and
@@ -158,4 +176,4 @@ if failures:
     for f in failures:
         print("repl-quality FAIL:", f)
     sys.exit(1)
-print("repl-quality: history (XDG/erasedups keep-last/load-dedup/0600), Ctrl+R fzf-stub + minimal fallback, #find fzf-stub (--no-extended + --repl-doc preview), let-RHS head Tab (alias inserts at the RHS and the statement head) hold")
+print("repl-quality: history (XDG/erasedups keep-last/load-dedup/0600/invalid-UTF-8 kept raw), Ctrl+R fzf-stub + minimal fallback, #find fzf-stub (--no-extended + --repl-doc preview), let-RHS head Tab (alias inserts at the RHS and the statement head) hold")

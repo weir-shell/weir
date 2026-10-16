@@ -45,6 +45,9 @@
   became `{ a }`) or a `$"…{ … }"` hole that spans lines.
 - **`weir fmt` ends every file in exactly one newline** — trailing blank
   lines are removed, as the docs always said.
+- **The REPL no longer rewrites invalid UTF-8 in the history file** as
+  `�`. Such a line is left out of history (one note names it) and
+  written back byte for byte whenever the file is rewritten.
 - **`a + b + 0` infers.** `+` on two unknown values now waits for the
   rest of the statement: the other operand, a later `+ 0`, or how the
   result is used decides it, so the order you write it in no longer

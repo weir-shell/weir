@@ -17975,6 +17975,69 @@ let fileRowSizeTests =
               expectValue "ls |> Seq.sortByDescending _.bytes |> take 1 |> map _.name" (VSeq [ VStr "b.bin" ])
           } ]
 
+let replHistoryUtf8Tests =
+    // the history file's invalid-UTF-8 lines [D:history-utf8]: skipped from
+    // recall, written back byte-for-byte in place on every rewrite
+    let nl = System.Text.Encoding.UTF8.GetBytes System.Environment.NewLine
+    let bad1 = [| 0xFFuy; 0xFEuy; byte ' '; byte 'x' |]
+    let bad2 = [| 0xC3uy; byte '(' |]
+
+    let file (lines: byte[] list) =
+        lines |> List.collect (fun l -> List.ofArray l @ List.ofArray nl) |> Array.ofList
+
+    let u (s: string) = System.Text.Encoding.UTF8.GetBytes s
+
+    let entries (lines: Weir.Repl.HistoryLine seq) =
+        [ for l in lines do
+              match l with
+              | Weir.Repl.HEntry e -> e
+              | Weir.Repl.HRaw _ -> () ]
+
+    testList
+        "repl history invalid UTF-8 [D:history-utf8]"
+        [ test "valid lines are entries, invalid lines are held raw — never recalled" {
+              let lines = Weir.Repl.historyParseForTest (file [ u "a"; bad1; u "b"; bad2 ])
+              Expect.equal (entries lines) [ "a"; "b" ] "only the valid lines recall"
+
+              Expect.equal
+                  [ for l in lines do
+                        match l with
+                        | Weir.Repl.HRaw r -> r
+                        | _ -> () ]
+                  [ bad1; bad2 ]
+                  "the bad lines are held as their bytes"
+          }
+          test "parse then render is bytes in == bytes out" {
+              let bytes = file [ u "let s = \"é\""; bad1; u "x\\ny"; bad2; u "" ]
+              Expect.equal (Weir.Repl.historyRenderForTest (Weir.Repl.historyParseForTest bytes)) bytes "byte-identical"
+          }
+          test "an escaped multi-line entry decodes whole; a bad byte in one is one raw line" {
+              let lines = Weir.Repl.historyParseForTest (file [ u "match x with\\n| _ -> 1"; Array.append (u "if a\\n") bad1 ])
+              Expect.equal (entries lines) [ "match x with\n| _ -> 1" ] "the valid entry keeps its newline"
+              Expect.equal (Weir.Repl.historyRenderForTest lines) (file [ u "match x with\\n| _ -> 1"; Array.append (u "if a\\n") bad1 ]) "the bad entry round-trips"
+          }
+          test "load compaction dedupes entries keep-last; raw lines keep their places" {
+              let lines = Weir.Repl.historyParseForTest (file [ u "a"; bad1; u "b"; u "a"; bad1; bad2 ])
+              let c = Weir.Repl.historyCompactForTest 100 true lines
+              Expect.equal (Weir.Repl.historyRenderForTest c) (file [ bad1; u "b"; u "a"; bad1; bad2 ]) "raw lines never dedupe"
+          }
+          test "the cap counts file lines, raw included" {
+              let lines = Weir.Repl.historyParseForTest (file [ u "a"; bad1; u "b"; bad2; u "c" ])
+              let c = Weir.Repl.historyCompactForTest 3 true lines
+              Expect.equal (Weir.Repl.historyRenderForTest c) (file [ u "b"; bad2; u "c" ]) "the last three lines"
+          }
+          test "a re-entered line's rewrite keeps raw lines byte-for-byte in place" {
+              let img = ResizeArray(Weir.Repl.historyParseForTest (file [ u "a"; bad1; u "b"; bad2 ]))
+              Expect.equal (Weir.Repl.historyRememberForTest true img "a") 1 "one earlier copy erased"
+              Expect.equal (Weir.Repl.historyRenderForTest img) (file [ bad1; u "b"; bad2; u "a" ]) "raw lines in place"
+          }
+          test "CRLF terminators and a leading BOM are not line content" {
+              let bytes = Array.concat [ [| 0xEFuy; 0xBBuy; 0xBFuy |]; u "a\r\n"; bad1; u "\r\nb" ]
+              let lines = Weir.Repl.historyParseForTest bytes
+              Expect.equal (entries lines) [ "a"; "b" ] "BOM and CR stripped"
+              Expect.equal (Weir.Repl.historyRenderForTest lines) (file [ u "a"; bad1; u "b" ]) "the raw line's bytes exact"
+          } ]
+
 let replTableTests =
     // the REPL's table echo [D:repl-table]: presentation only — a pure
     // function over values, tty-gated at the call site (the piped REPL
@@ -26622,6 +26685,7 @@ let allTests =
           jsonBoundaryTests
           fromJsonSeqTests
           fileRowSizeTests
+          replHistoryUtf8Tests
           replTableTests
           lsTruthTests
           fileStatTests
