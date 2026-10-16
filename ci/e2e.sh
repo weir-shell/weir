@@ -2972,6 +2972,76 @@ WEOF
         done
     done
     echo "e2e ok: a signal unwinds on the main thread — no statement after it, always runs, sleeps wake"
+
+    # the teardown stops the body's spawns, never a cleanup's
+    # [D:teardown-always-spawns]: commands (and a fan-out) inside `always`
+    # run on SIGINT/SIGTERM
+    cat > "$dtdir/alcmd.weir" <<'WEOF'
+let marker = Self.args |> Seq.head
+within
+    Duration.sleep 60s
+always
+    let n = [1; 2; 3] |> Seq.pmap (fun i -> echo $i | line) |> Seq.length
+    let m = $"{marker}-{n}"
+    touch $m
+WEOF
+    for pair in "INT:130" "TERM:143"; do
+        sig="${pair%%:*}"; want="${pair##*:}"
+        M="$dtdir/alcmd-$sig"
+        rm -f "$M-3"
+        setsid "$BIN" "$dtdir/alcmd.weir" "$M" </dev/null >/dev/null 2>&1 &
+        wpid=$!
+        sleep 1
+        kill -"$sig" "$wpid" 2>/dev/null || true
+        code=0; wait "$wpid" 2>/dev/null || code=$?
+        [ "$code" = "$want" ] || fail "always-cmd: SIG$sig must exit $want (got $code)"
+        [ -f "$M-3" ] || fail "always-cmd: SIG$sig must run the always block's commands and fan-out"
+    done
+    echo "e2e ok: on SIGINT/SIGTERM the always block's commands and fan-out run"
+
+    # a teardown stops parallel workers taking arms [D:teardown-stops-arms]:
+    # after SIGTERM no new piter arm starts, and no scoped spill dir leaks
+    cat > "$dtdir/arms.weir" <<'WEOF'
+let log = Self.args |> Seq.head
+within
+    [1..100000] |> Seq.piterWith 16 (fun i ->
+        Duration.sleep 10ms
+        File.append log [$"arm {i}"])
+always
+    let a = File.read log |> Seq.length
+    Duration.sleep 1s
+    let b = File.read log |> Seq.length
+    [$"{b - a}"] |> File.write $"{log}.grew"
+WEOF
+    cat > "$dtdir/spill.weir" <<WEOF
+[1..5000] |> Seq.piterWith 16 (fun i ->
+    within proc p = sleep $MK4
+        Duration.sleep 1ms)
+WEOF
+    rm -f "$dtdir/arms.log" "$dtdir/arms.log.grew"
+    setsid "$BIN" "$dtdir/arms.weir" "$dtdir/arms.log" </dev/null >/dev/null 2>&1 &
+    wpid=$!
+    sleep 1
+    kill -TERM "$wpid" 2>/dev/null || true
+    code=0; wait "$wpid" 2>/dev/null || code=$?
+    [ "$code" = "143" ] || fail "arms: SIGTERM must exit 143 (got $code)"
+    grew=$(cat "$dtdir/arms.log.grew" 2>/dev/null || echo missing)
+    [ "$grew" -le 16 ] 2>/dev/null || fail "arms: piter kept taking arms after SIGTERM (grew: $grew)"
+    sptmp="$dtdir/spilltmp"
+    mkdir -p "$sptmp"
+    pkill -9 -f "^sleep $MK4\$" 2>/dev/null || true
+    TMPDIR="$sptmp" setsid "$BIN" "$dtdir/spill.weir" </dev/null >/dev/null 2>&1 &
+    wpid=$!
+    sleep 1
+    kill -TERM "$wpid" 2>/dev/null || true
+    code=0; wait "$wpid" 2>/dev/null || code=$?
+    [ "$code" = "143" ] || fail "spill: SIGTERM must exit 143 (got $code)"
+    sleep 0.3
+    leaked=$(find "$sptmp" -mindepth 1 -maxdepth 1 | wc -l)
+    left=$(pgrep -cf "^sleep $MK4\$" 2>/dev/null || true); left=${left:-0}
+    pkill -9 -f "^sleep $MK4\$" 2>/dev/null || true
+    [ "$leaked" = "0" ] && [ "$left" = "0" ] || fail "spill: SIGTERM leaked $leaked weir-proc dir(s), $left orphan(s)"
+    echo "e2e ok: a teardown stops piter taking arms; no spill dir or child leaks"
 else
     echo "e2e skip: detached-signal pins (POSIX + setsid + pgrep)"
 fi

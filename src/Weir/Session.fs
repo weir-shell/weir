@@ -293,13 +293,30 @@ let mutable private spawningStopped = false
 let private killedProcs =
     System.Collections.Generic.HashSet<System.Diagnostics.Process>(HashIdentity.Reference)
 
+// an `always` block in progress on this logical flow [D:teardown-always-spawns]:
+// the teardown stops the body's spawns, never a cleanup's — teardown
+// commands are what `always` is for
+let private cleanupDepth = System.Threading.AsyncLocal<int>()
+
+/// run an `always` cleanup: spawns inside it start even after the teardown
+/// kill, and a parallel fan-out inside it keeps taking arms
+let runningCleanup (f: unit -> 'a) : 'a =
+    cleanupDepth.Value <- cleanupDepth.Value + 1
+
+    try
+        f ()
+    finally
+        cleanupDepth.Value <- cleanupDepth.Value - 1
+
+let inCleanup () = cleanupDepth.Value > 0
+
 /// run a process start + registration inside the spawn gate; refuses once
-/// the teardown kill has run
+/// the teardown kill has run, except inside an `always` cleanup
 let gatedSpawn (start: unit -> 'a) : 'a =
     spawnGate.EnterReadLock()
 
     try
-        if spawningStopped then
+        if spawningStopped && not (inCleanup ()) then
             failwith "the script is being torn down — no new command starts"
 
         start ()
@@ -483,6 +500,15 @@ let exitCodeOr (code: int) : int =
         // a requested teardown's kill completes before the exit
         killLiveChildren ()
         c
+
+/// a parallel worker stops taking arms once a teardown is requested
+/// (a signal, a closed stdout) [D:teardown-stops-arms] — unless the
+/// fan-out runs inside an `always` cleanup
+let stopTakingArms () : bool =
+    System.Threading.Volatile.Read &teardownCode <> 0 && not (inCleanup ())
+
+/// the requested teardown's exit code, or 0 when none is requested
+let teardownRequested () : int = System.Threading.Volatile.Read &teardownCode
 
 /// raise the requested teardown on the main thread, once: the unwind
 /// then runs the cleanups as ordinary code (which must not be cut short

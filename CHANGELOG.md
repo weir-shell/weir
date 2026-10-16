@@ -76,6 +76,13 @@
   command argument (`cd /usr/`; quoted only for a space or quote), and
   where a path is quoted (`File.read ./<Tab>`) several matches extend
   inside a closed literal (`File.read "./s"`, cursor inside).
+- **Commands inside `always` run on Ctrl+C and SIGTERM.** They were
+  refused ("no new command starts"), so cleanups were skipped. The
+  body's commands still stop, and a second signal still exits at once.
+- **`pmap`/`piter` stop taking new items after Ctrl+C, SIGTERM or a
+  closed stdout.** Workers kept starting thousands of items during the
+  teardown, and each `within proc` in them left a `weir-proc-*` temp
+  dir behind. Items already running finish.
 - **`weir fmt` keeps a file's line endings.** It wrote the platform
   newline, so reformatting turned an LF file CRLF on Windows and a CRLF
   file LF elsewhere; a CRLF file now stays CRLF and an LF file LF.

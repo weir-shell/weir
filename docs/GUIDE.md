@@ -886,7 +886,8 @@ Two more kinds round out the set.
 
 A plain `within` holds nothing. It's just a body plus an `always`
 block that runs however the body exits: normally, by an error, by
-`exit n`, or on SIGINT/SIGTERM. Only `kill -9` skips it. If both the
+`exit n`, or on SIGINT/SIGTERM. Only `kill -9` skips it. On a signal
+the body's commands stop, but the commands in `always` still run. If both the
 body and the cleanup fail, you get the body's error, and the
 cleanup's failure is printed to stderr with a marker. Cleanup of any
 enclosing scopes still runs.

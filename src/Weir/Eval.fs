@@ -3975,7 +3975,10 @@ and eval (env: Env) (te: TypedExpr) : Value =
         //     cleanup must not strand the enclosing scopes' LIFO.
         // exit n is a raise (ExitRequest) and unwinds the same way;
         // signals run the pending cleanups via the exit hook, LIFO.
-        let runCleanup () = eval env cleanup |> ignore
+        // a cleanup's commands start even mid-teardown [D:teardown-always-spawns]
+        let runCleanup () =
+            Session.runningCleanup (fun () -> eval env cleanup |> ignore)
+
         let hooked = Session.registerAlways runCleanup
 
         match
@@ -4170,16 +4173,29 @@ and eval (env: Env) (te: TypedExpr) : Value =
             let spill =
                 System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"weir-proc-{System.Guid.NewGuid():N}")
 
-            System.IO.Directory.CreateDirectory spill |> ignore
-            Session.registerTmpDir spill
+            // created and registered inside the spawn gate, so no spill dir
+            // appears after the teardown kill; removed when the start
+            // refuses [D:teardown-stops-arms]
+            Session.gatedSpawn (fun () ->
+                System.IO.Directory.CreateDirectory spill |> ignore
+                Session.registerTmpDir spill)
 
             let p, drain =
-                Proc.startSpilled
-                    overlay
-                    (Proc.resolveProg prog)
-                    argv
-                    (System.IO.Path.Combine(spill, "out.log"))
-                    (System.IO.Path.Combine(spill, "err.log"))
+                try
+                    Proc.startSpilled
+                        overlay
+                        (Proc.resolveProg prog)
+                        argv
+                        (System.IO.Path.Combine(spill, "out.log"))
+                        (System.IO.Path.Combine(spill, "err.log"))
+                with _ ->
+                    (try
+                        System.IO.Directory.Delete(spill, true)
+                     with _ ->
+                         ())
+
+                    Session.deregisterTmpDir spill
+                    reraise ()
 
             Session.registerProc p
 

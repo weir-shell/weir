@@ -1596,7 +1596,15 @@ let private runParallelWith (degree: int) (f: Value) (items: seq<Value>) : Value
     let callNode = RunPos.Current
 
     let worker () =
-        let mutable i = System.Threading.Interlocked.Increment &next
+        // a teardown stops new arms; in-flight ones finish (their children
+        // die with the teardown kill) [D:teardown-stops-arms]
+        let take () =
+            if Session.stopTakingArms () then
+                arr.Length
+            else
+                System.Threading.Interlocked.Increment &next
+
+        let mutable i = take ()
 
         while i < arr.Length do
             Session.enterWorker parentCwd
@@ -1614,7 +1622,7 @@ let private runParallelWith (degree: int) (f: Value) (items: seq<Value>) : Value
             finally
                 Session.exitWorker ()
 
-            i <- System.Threading.Interlocked.Increment &next
+            i <- take ()
 
     // arms are one level deeper [D:parallel-ladder]: set before
     // StartNew so the workers capture depth+1, restored after the join
@@ -1628,6 +1636,11 @@ let private runParallelWith (degree: int) (f: Value) (items: seq<Value>) : Value
         Session.waitTask (Task.WhenAll(tasks: Task[]))
     finally
         Session.setParallelDepth depth
+
+    // arms skipped by a teardown leave no result: the fan-out ends with
+    // the teardown's code, never a partial array [D:teardown-stops-arms]
+    if Session.stopTakingArms () then
+        raise (ExitRequest(Session.teardownRequested ()))
 
     if not errors.IsEmpty then
         raise errors[Seq.min errors.Keys]

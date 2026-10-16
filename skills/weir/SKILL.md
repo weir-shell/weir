@@ -773,7 +773,9 @@ within serve srv = { port = 8410; maxConcurrent = 4 } handler
 - A bare `within` (no kind) + `always` is the exit discipline alone
   [D:within-always]: the indented body runs, then the `always` block
   runs on EVERY exit — normal, `fail`, `exit n`, SIGINT/SIGTERM (not
-  `kill -9`, the standing carve-out). The rulings: a cleanup raise on
+  `kill -9`, the standing carve-out). On a signal the body's commands
+  stop, but the `always` block's commands (and fan-outs) run — teardown
+  commands are what it is for. The rulings: a cleanup raise on
   a CLEAN exit propagates (always is never where a raise disappears);
   when already unwinding, the ORIGINAL error wins and the cleanup's
   own failure goes to stderr with a marker; a failed inner cleanup
@@ -808,6 +810,8 @@ within serve srv = { port = 8410; maxConcurrent = 4 } handler
   second signal mid-teardown hard-exits, the double-Ctrl+C escape).
   A signal sent to weir's pid alone (`timeout`, `docker stop`, a CI
   cancel) tree-kills the running foreground command too, scoped or not.
+  A `pmap`/`piter` takes no new arm after the signal (or the closed
+  stdout); arms already running finish.
   Two carve-outs, both by design: `kill -9` of weir itself cannot, by
   definition — no userspace design closes that hole; and a weir
   BACKGROUNDED IN AN INTERACTIVE SHELL (`weir … &`/`nohup`, which

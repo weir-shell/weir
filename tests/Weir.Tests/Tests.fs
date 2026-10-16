@@ -26717,6 +26717,36 @@ let runsCommandReifierTests =
           } ]
 
 // the GUIDE sweep's findings, pinned [D:sweep-findings]
+let teardownSeamTests =
+    // signal-path behaviour (a teardown requested by SIGINT/SIGTERM/EPIPE)
+    // is process-global and one-way, so its pins are e2e cells; these pin
+    // the seams it rests on
+    testList
+        "teardown seams"
+        [ test "runningCleanup marks the flow, nests, restores on a raise, and reaches tasks [D:teardown-always-spawns]" {
+              Expect.isFalse (Weir.Session.inCleanup ()) "outside any always"
+
+              let inner =
+                  Weir.Session.runningCleanup (fun () ->
+                      Weir.Session.runningCleanup (fun () -> ()) |> ignore
+                      let viaTask = System.Threading.Tasks.Task.Run(fun () -> Weir.Session.inCleanup ()).Result
+                      Weir.Session.inCleanup (), viaTask)
+
+              Expect.equal inner (true, true) "inside, after a nested cleanup, and on a worker task"
+
+              Expect.throws
+                  (fun () -> Weir.Session.runningCleanup (fun () -> failwith "boom") |> ignore)
+                  "the cleanup's raise propagates"
+
+              Expect.isFalse (Weir.Session.inCleanup ()) "restored after a raise"
+          }
+          test "without a teardown, workers take every arm and spawns start [D:teardown-stops-arms]" {
+              Expect.isFalse (Weir.Session.stopTakingArms ()) "no teardown requested"
+              Expect.equal (Weir.Session.teardownRequested ()) 0 "no code"
+              Expect.equal (Weir.Session.gatedSpawn (fun () -> 7)) 7 "the gate is open"
+              expectValue "[1..200] |> Seq.pmapWith 16 (fun i -> i) |> Seq.length" (VInt 200L)
+          } ]
+
 let sweepFindingTests =
     let msgs file lines = diagsIn file lines |> List.map (fun d -> d.Message)
 
@@ -26941,6 +26971,7 @@ let allTests =
     testList
         "Weir"
         [ hardeningTests
+          teardownSeamTests
           docsBinaryTests
           hunt2CheckerTests
           sweepFindingTests
