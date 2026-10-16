@@ -9627,7 +9627,11 @@ let withinEnvPairsTests =
     // [D:within-env-pairs]
     let diagsOf = errorMsgsIn "wep.weir"
 
-    testList
+    // testSequenced: evaluating `within env` pushes the session's root
+    // overlay — one stack shared by every test thread — so a parallel
+    // pop could drop another test's layer
+    testSequenced
+    <| testList
         "within env NAME=value [D:within-env-pairs]"
         [ test "pairs in the head check clean, every value spelling" {
               Expect.isEmpty
@@ -9688,7 +9692,10 @@ let envSugarTests =
         finally
             System.Environment.SetEnvironmentVariable(name, null)
 
-    testList
+    // testSequenced: the overlay cases push the shared root overlay (see
+    // withinEnvPairsTests)
+    testSequenced
+    <| testList
         "env sugar"
         [ test "Env.need reads a set var and raises naming an unset one [D:env-need-getor]" {
               withVar "WEIR_T_NEED" "tok" (fun () -> expectValue "Env.need \"WEIR_T_NEED\"" (VStr "tok"))
