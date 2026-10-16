@@ -71,6 +71,13 @@ Not measured yet: startup to first response, RSS, thread count.
 
 ## Design
 
+**Dependency:** Kestrel is part of the ASP.NET Core shared framework
+that ships with the .NET SDK — `<FrameworkReference
+Include="Microsoft.AspNetCore.App" />` in Weir.fsproj, no NuGet package
+(the standalone Kestrel packages ended at 2.x). AOT publish pulls the
+`Microsoft.AspNetCore.App.Runtime.<rid>` pack, version-locked to the
+SDK; security updates ride the SDK like HttpListener's do.
+
 **Keep `Serve.fs`'s surface; swap its insides.** `HttpListener` appears
 nowhere outside `Serve.fs`. Eval drives a PULL loop (`start`, `accept`,
 `readRequest`, `writeResponse`, `stop`, `streamErrors`) and owns the
