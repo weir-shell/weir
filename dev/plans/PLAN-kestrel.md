@@ -136,6 +136,75 @@ all three); the first CI run of the branch is the probe.
 
 Go: every phase-0 target met.
 
+## Phases 1–2 (2026-10-16, branch feat/kestrel)
+
+Landed as planned — `HttpListener` is gone from `Serve.fs`, Eval's pull
+loop and error arms kept — with these departures, each found while
+probing and recorded in [D:serve-kestrel]/[D:serve-drain]:
+
+- **E5 is closed by reading the body in the request delegate**, before
+  the request is parked — not by Kestrel's minimum data rate. The rate
+  rule is OFF: `bodyTimeout` stays the one documented bound (a slow but
+  steady upload inside it still succeeds).
+- **`MaxRequestBodySize`** is set per request, only for a declared
+  length (Kestrel's refusal then closes at once instead of draining); a
+  chunked body is counted by weir — Kestrel's global limit refused a
+  3-byte chunked body at a 10-byte bound.
+- **F8 without reflection needs weir's own chunk framing** on HTTP/1.1:
+  Kestrel's `Abort()` is a TCP reset (curl 56, not 18), and its own
+  chunking writes the terminator on every graceful end. With
+  `Transfer-Encoding: chunked` set by weir, a producer failure asks
+  `IConnectionLifetimeNotificationFeature.RequestClose()` and completes
+  with no terminator: a FIN mid-body, curl 18.
+- **A foreign `Host` is refused in the delegate** (404 `unknown host`,
+  one response, the connection stays in frame) — HttpListener's prefix
+  match did this implicitly; kept so the loopback posture and its
+  DNS-rebinding guard don't widen. Any port is accepted.
+- **Teardown (C3):** `Serve.stop h drainMs` — port freed first, queued
+  requests detached unstarted, in-flight ones get the drain together,
+  then detached (abort + writes dropped). The gate is never disposed;
+  the accept loop takes its slot before dequeuing; the signal sweep
+  stops with no drain.
+- `Serve.start` takes the body limits (the delegate needs them);
+  `readRequest` takes the parked request only; `Serve.finish` releases
+  the delegate; `canTruncate`/`trailerSentField`/`abortWithoutTrailer`
+  are deleted, and so is the `WebHeaderCollection` scratch check (the
+  shared predicate plus the add's own raise cover it).
+
+Pins (finding → pin):
+
+| finding | unit (tests/Weir.Tests serveTests) | e2e (ci/e2e.sh, AOT) |
+|---|---|---|
+| pipelining | two and three on one connection, in order | `PIPE2`/`PIPE3` |
+| F10 | three `X-Forwarded-For`, in order | `XFF`; multi-repro F10 asserts `one two three` in order |
+| F8, no reflection | terminator absent after a raise, present on a clean stream | `TERMINATED=False` (now on every OS); curl exit 18 |
+| H3-E6 | foreign Host, absolute-form, `HTTP/9.9`: one response each, follow-up pairs with its own | `E6-HOST`/`E6-ABS`/`E6-VERSION` |
+| H3-A3 | `[::1]` reaches the handler (when bound) | curl `-g http://[::1]` (skips without IPv6) |
+| H3-E5 | a fast request overtakes a slow body | 3 slow bodies, 1 slot, fast < 2 s |
+| H3-C3 | — | 3 s handler after close: exit 0, `always`, port free, rebind; 8 stuck handlers close in ≤ 6 s |
+| H3-E7 | — | raise and `status = 0` → 500 + recorded lines |
+| lows | — | 6 gone clients, 2 slots → 2 starts; aborted Stream frees its slot |
+| shutdown | port frees, rebind (start/stop pin) | SIGINT/SIGTERM with a request in flight → 130/143, `always`, port free |
+
+Each new e2e cell was run against the base binary too: all fail there
+except F8-curl, shutdown and the Stream-slot half of the lows (parity
+pins). The cross-platform kit (`tools/hunt3-xplat.weir`, branch
+hunt3/xplat) should gain the pipelining, F10, E6, A3 and F8-curl cells
+— not on this branch.
+
+Open for a user ruling (not decided here):
+
+- **Stream client aborts stay unrecorded.** The hunt-3 low says the
+  abort "is not recorded"; [D:serve-stream] rules a client disconnect is
+  NOT reported (a monitoring loop reads `streamErrors` as "something
+  failed"; browsers closing an SSE tab would flood it). The slot half
+  is fixed; recording is left to a ruling.
+- **Cross-name header order.** Kestrel enumerates its known headers
+  (Host, Connection, …) before the rest; values of one name keep wire
+  order. Docs now say "in wire order within the name".
+- **Foreign `Host` refusal** kept (above). A reverse proxy configured
+  with `proxy_set_header Host $host` is refused — as it was before.
+
 ## Design
 
 **Dependency:** Kestrel is part of the ASP.NET Core shared framework

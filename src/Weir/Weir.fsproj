@@ -73,6 +73,13 @@
     <PackageReference Update="FSharp.Core" Version="10.1.302" />
   </ItemGroup>
 
+  <!-- Kestrel for `within serve` [D:serve-kestrel]: the ASP.NET Core shared
+       framework that ships with the SDK — no NuGet package; AOT publish
+       links the runtime pack version-locked to the SDK -->
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
   <ItemGroup>
     <Compile Include="Version.fs" />
     <Compile Include="Types.fs" />
@@ -94,7 +101,7 @@
     <!-- after Check: the schema validator walks the TYPED template;
          before Script: check-time schema resolution [D:contracts-spine] -->
     <Compile Include="Http.fs" />
-    <!-- the server twin of Http.fs [D:http-serve]: the listener leg,
+    <!-- the server twin of Http.fs [D:http-serve]: the Kestrel leg,
          primitives in/out, no Value dependency (Builtins translates).
          After Http.fs so the shared boundary reads top-to-bottom;
          before Eval, which the within-serve scope drives. -->

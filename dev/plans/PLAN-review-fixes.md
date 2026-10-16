@@ -1,6 +1,6 @@
 # weir — fixing the multi-area review's fourteen findings
 
-Status: LANDED except F10 (ruled later, PLAN-daily-driver W4) — bundles A+B, C, D, E landed earlier; F8 (a) and the rest of F11 landed 2026-10-15 (session below).
+Status: LANDED — F10 closed by the Kestrel move (PLAN-kestrel, [D:serve-kestrel]; the multi-repro F10 pin now asserts all three values in wire order) — bundles A+B, C, D, E landed earlier; F8 (a) and the rest of F11 landed 2026-10-15 (session below).
 
 DEPENDENCY GATE: this plan consumes `PLAN-multi-area-review.md` and gates on
 that review's SESSION REPORT (executed 2026-09-20, findings-only, gate green

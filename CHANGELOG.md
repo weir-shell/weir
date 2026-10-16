@@ -26,6 +26,17 @@
 
 ### Changed
 
+- **`serve` runs on Kestrel** (ASP.NET Core's server, part of the .NET
+  SDK) instead of `HttpListener` — one server on Linux, macOS and
+  Windows, and the binary is about 1.7 MB larger. What a client can
+  notice: responses carry `Date` and no `Server` header; request
+  headers over 32 KiB get 431 (was 400); a NUL byte in the request
+  target gets 400; a request whose `Host` is not `127.0.0.1`,
+  `localhost` or `[::1]` gets a plain `404 unknown host`; a repeated
+  header's values keep their order, but different header names may
+  reach the handler in another order than sent. Closing the block
+  frees the port at once and gives running handlers two seconds,
+  together, to finish.
 - **The init file refuses bare names.** It is a script, not typing at
   the prompt: `let evens () = xs |> where …` loaded before and now
   needs `Seq.where`, as in any script. Bare names still work at the
@@ -36,6 +47,30 @@
   The error names the fix: `let inf () = …`.
 
 ### Fixed
+- **`serve` answers pipelined requests.** Two or three requests sent
+  back to back on one connection got one answer; each now gets its
+  own, in order.
+- **`serve` keeps every value of a repeated request header.** Three
+  `X-Forwarded-For` lines reached the handler as the last one only;
+  they now arrive as three pairs, in the order sent.
+- **`serve` sends one response per request.** After refusing a request
+  (a foreign `Host`, an absolute URL, `HTTP/9.9`) it also sent an
+  unasked-for `200 OK` that a keep-alive client paired with its next
+  request.
+- **`serve` answers requests to `[::1]`.** They all got `400 Bad
+  Request (Invalid url …)` and never reached the handler.
+- **A slow request body no longer holds a `serve` handler slot.** The
+  body is read before a slot is taken, so `maxConcurrent` slow uploads
+  cannot shut out other clients for the whole `bodyTimeout`.
+- **A `serve` handler still running when the block closes no longer
+  crashes weir** (exit 134); its response is discarded. Closing waits
+  two seconds in total, not two seconds per running handler.
+- **A raising `serve` handler is recorded.** It answered `500 internal
+  error` with no trace for the script; it, and a status outside
+  100–999, now also add a line to `Server.streamErrors`.
+- **`serve` drops a queued request whose client already left** instead
+  of running the handler for it, and a `Stream` whose client
+  disconnects frees its slot at once.
 - **`weir fmt` keeps a file's line endings.** It wrote the platform
   newline, so reformatting turned an LF file CRLF on Windows and a CRLF
   file LF elsewhere; a CRLF file now stays CRLF and an LF file LF.

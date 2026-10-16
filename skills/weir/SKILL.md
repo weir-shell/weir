@@ -714,9 +714,9 @@ print $"{key} -> {value}"
   `match` — weir's union dispatch, not a routing framework.
   `HttpServerRequest` carries `method`/`path`/`query` (the raw string,
   no leading `?` — `Str.trySplitOnce "=" req.query`)/`headers` (pairs,
-  wire order — but the platform listener collapses REPEATED request
-  headers to the last value, so a proxied `X-Forwarded-For` chain reads
-  the last hop only, a stated non-claim)/`body` (request text;
+  one per value: a repeated header such as a proxied `X-Forwarded-For`
+  chain arrives whole, in wire order within the name; compare names
+  case-insensitively)/`body` (request text;
   request-body streaming is out of scope v1). `method` is `HttpMethod`:
   a well-formed verb the union does not name (`TRACE`, a proxy's own)
   reads as `Other of string` so a handler can route on it (`| Other v ->
@@ -734,14 +734,19 @@ print $"{key} -> {value}"
   without the final empty chunk (curl exits 18), never a clean end. A
   response header the wire cannot carry (a non-token name, a control or
   non-ASCII value byte, CR/LF) is refused, never dropped: a 500 to the
-  client, the header and reason on `Server.streamErrors`. A HEAD, 1xx, 204 or 304 reply carries no body bytes
+  client, the header and reason on `Server.streamErrors`. A handler
+  that RAISES (or returns a status outside 100–999) answers 500 and is
+  recorded there too (`serve handler on GET /x failed: …`). A HEAD, 1xx, 204 or 304 reply carries no body bytes
   whatever the handler returned (HEAD still declares the GET length).
   Framing and hop-by-hop headers a handler returns (`Transfer-Encoding`,
   `Content-Length`, `Connection`, `Keep-Alive`, `TE`, `Trailer`,
-  `Upgrade`) are dropped — the listener frames the response.
+  `Upgrade`) are dropped — the server frames the response.
   `maxConcurrent` bounds handlers-at-once (the `pmapWith` law);
-  excess queues. `bodyTimeout` (a `Duration`, OPTIONAL — default 30s)
-  bounds the request-body read so a slow client cannot park a slot;
+  excess queues; pipelined requests are answered in order. A request
+  whose `Host` is not a loopback name (`127.0.0.1`, `localhost`,
+  `[::1]`) gets a 404 before any handler runs. The body is read before a
+  handler slot is taken, so a slow upload never holds one: `bodyTimeout`
+  (a `Duration`, OPTIONAL — default 30s) bounds that read (408);
   `maxBody` (a `Size`, OPTIONAL — default 16MiB) bounds its size, a
   larger body answered 413 without being buffered [D:serve-max-body].
   The config is `{ port; maxConcurrent }` plus either optional field

@@ -51,11 +51,9 @@ Ruled 2026-10-15 (PLAN-daily-driver W4): **every item below is daily-driver — 
 - ~~**`from json` reading a `Yaml` field**~~ — done: `Yaml` crosses json
   both ways and `gen types` drafts a cyclic field as `Yaml`
   [D:json-yaml-field].
-- **`serve` answers only the first of pipelined requests** on one
-  connection. Ruled LATER (user, 2026-10-16): the managed HttpListener
-  drops the pipelined bytes itself; the fix is a Kestrel move (also fixes
-  F10 and retires the F8 `_trailer_sent` stopgap) — parked as
-  dev/plans/PLAN-kestrel.md.
+- ~~**`serve` answers only the first of pipelined requests**~~ — done:
+  `serve` runs on Kestrel, which answers them in order (F10 and the F8
+  reflection went with it) [D:serve-kestrel].
 - ~~**Inference order:**~~ — done: `+` over two unknowns defers to any
   later anchor in the statement [D:plus-defer].
 - ~~**Re-enumeration warning** misses indirect pulls (through a function, a

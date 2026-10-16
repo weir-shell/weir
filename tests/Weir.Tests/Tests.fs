@@ -23124,16 +23124,19 @@ let serveTests =
     let okHandler =
         "let h = fun req -> HttpServerResponse { status = 200; headers = []; body = Text \"ok\" }"
 
-    // drive the Serve leg over a real loopback socket: `answer` maps the
-    // read request to a response, each raw request is sent in turn on ONE
-    // kept-alive connection, and each reply's raw bytes (Date dropped)
-    // come back — the wire view a unit can pin
-    let wireWith (maxBody: int64) (answer: Weir.Serve.SReq -> Weir.Serve.SResp) (raws: string list) : string list =
+    let freePort () =
         let probe = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0)
         probe.Start()
         let port = (probe.LocalEndpoint :?> System.Net.IPEndPoint).Port
         probe.Stop()
-        let h = Weir.Serve.start port
+        port
+
+    let limits (maxBody: int64) : Weir.Serve.Limits = { BodyTimeoutMs = 5000; MaxBody = maxBody }
+
+    // serve `answer` on a fresh port for the duration of `f port`
+    let serving (maxBody: int64) (answer: Weir.Serve.SReq -> Weir.Serve.SResp) (f: int -> 'a) : 'a =
+        let port = freePort ()
+        let h = Weir.Serve.start port (limits maxBody)
 
         let loop () =
             let mutable go = true
@@ -23144,11 +23147,9 @@ let serveTests =
                 | Some ctx ->
                     let resp =
                         try
-                            answer (Weir.Serve.readRequest ctx 5000 maxBody)
+                            answer (Weir.Serve.readRequest ctx)
                         with
                         | Weir.Serve.BodyTooLarge ->
-                            ctx.Response.KeepAlive <- false
-
                             { Status = 413
                               Headers = []
                               Body = Weir.Serve.RText "too large" }
@@ -23158,40 +23159,59 @@ let serveTests =
                               Body = Weir.Serve.RText ex.Message }
 
                     Weir.Serve.writeResponse ctx resp ignore
+                    Weir.Serve.finish ctx
 
         let t = System.Threading.Thread(loop)
         t.IsBackground <- true
         t.Start()
 
         try
-            use c = new System.Net.Sockets.TcpClient("127.0.0.1", port)
+            f port
+        finally
+            Weir.Serve.stop h 0
+
+    // read until the peer goes quiet: the first byte may wait on a cold
+    // server (JIT, a loaded CI runner); once a reply flows, a short quiet
+    // gap ends it. Date dropped.
+    let readQuiet (c: System.Net.Sockets.TcpClient) : string =
+        let st = c.GetStream()
+        let buf = Array.zeroCreate<byte> 65536
+        let sb = System.Text.StringBuilder()
+        c.ReceiveTimeout <- 10000
+
+        (try
+            let mutable n = st.Read(buf, 0, buf.Length)
             c.ReceiveTimeout <- 700
-            let st = c.GetStream()
+
+            while n > 0 do
+                sb.Append(System.Text.Encoding.Latin1.GetString(buf, 0, n)) |> ignore
+                n <- st.Read(buf, 0, buf.Length)
+         with _ ->
+             ())
+
+        System.Text.RegularExpressions.Regex.Replace(sb.ToString(), "Date: [^\r]*\r\n", "")
+
+    let send (c: System.Net.Sockets.TcpClient) (raw: string) =
+        let b = System.Text.Encoding.Latin1.GetBytes raw
+        c.GetStream().Write(b, 0, b.Length)
+
+    // drive the Serve leg over a real loopback socket: `answer` maps the
+    // read request to a response, each raw request is sent in turn on ONE
+    // kept-alive connection, and each reply's raw bytes (Date dropped)
+    // come back — the wire view a unit can pin
+    let wireWith (maxBody: int64) (answer: Weir.Serve.SReq -> Weir.Serve.SResp) (raws: string list) : string list =
+        serving maxBody answer (fun port ->
+            use c = new System.Net.Sockets.TcpClient("127.0.0.1", port)
 
             [ for raw in raws do
-                  let b = System.Text.Encoding.Latin1.GetBytes(raw: string)
-                  st.Write(b, 0, b.Length)
-                  let buf = Array.zeroCreate<byte> 65536
-                  let sb = System.Text.StringBuilder()
+                  send c raw
+                  yield readQuiet c ])
 
-                  // the first byte may wait on a cold listener (JIT, a loaded
-                  // CI runner); once a reply flows, a short quiet gap ends it
-                  c.ReceiveTimeout <- 10000
-
-                  (try
-                      let mutable n = st.Read(buf, 0, buf.Length)
-                      c.ReceiveTimeout <- 700
-
-                      while n > 0 do
-                          sb.Append(System.Text.Encoding.Latin1.GetString(buf, 0, n)) |> ignore
-                          n <- st.Read(buf, 0, buf.Length)
-                   with _ ->
-                       ())
-
-                  yield
-                      System.Text.RegularExpressions.Regex.Replace(sb.ToString(), "Date: [^\r]*\r\n", "") ]
-        finally
-            Weir.Serve.stop h
+    // the status lines of a raw exchange, in wire order
+    let statusLines (reply: string) : string list =
+        System.Text.RegularExpressions.Regex.Matches(reply, "HTTP/1\\.[01] [0-9]{3}[^\r]*")
+        |> Seq.map (fun m -> m.Value)
+        |> List.ofSeq
 
     let wire = wireWith (16L * 1024L * 1024L)
 
@@ -23263,36 +23283,153 @@ let serveTests =
                   "a Stream response body"
           }
           test "Serve.start binds the port; stop frees it; stop is idempotent" {
-              let h = Weir.Serve.start 8199
+              let lim = limits (16L * 1024L * 1024L)
+              let h = Weir.Serve.start 8199 lim
               Expect.equal h.Port 8199 "the handle carries the port"
               Expect.isFalse h.Closed "open after start"
 
-              // the loopback names are registered beside each other so a
-              // Host: localhost request reaches the handler, not .NET's
-              // prefix-miss 404 [D:serve-loopback-names]; the posture stays
-              // loopback — never a +/* all-interfaces bind
-              let prefixes = h.Listener.Prefixes |> List.ofSeq
-              Expect.contains prefixes "http://127.0.0.1:8199/" "the v4 loopback name"
-              Expect.contains prefixes "http://localhost:8199/" "the localhost name"
+              // loopback only [D:serve-loopback-names]: 127.0.0.1, and ::1
+              // where the host has it — never an all-interfaces bind
+              Expect.contains h.Bound "127.0.0.1" "the v4 loopback address"
 
-              Expect.isFalse
-                  (prefixes |> List.exists (fun p -> p.Contains "+" || p.Contains "*"))
-                  "no all-interfaces bind — the loopback posture holds"
+              Expect.isTrue
+                  (h.Bound |> List.forall (fun a -> a = "127.0.0.1" || a = "::1"))
+                  $"no all-interfaces bind — the loopback posture holds: {h.Bound}"
 
               // a second bind on the held port fails (the socket is taken)
-              Expect.throwsC (fun () -> Weir.Serve.start 8199 |> ignore) (fun ex ->
-                  Expect.stringContains ex.Message "8199" "the bind error names the port")
+              Expect.throwsC (fun () -> Weir.Serve.start 8199 lim |> ignore) (fun ex ->
+                  Expect.stringContains ex.Message "serve: cannot listen on 127.0.0.1:8199" "the bind error names the port")
               |> ignore
 
-              Weir.Serve.stop h
+              Weir.Serve.stop h 0
               Expect.isTrue h.Closed "closed after stop"
               // idempotent: a second stop is benign
-              Weir.Serve.stop h
+              Weir.Serve.stop h 0
 
               // the port frees — a fresh bind on it now succeeds
-              let h2 = Weir.Serve.start 8199
+              let h2 = Weir.Serve.start 8199 lim
               Expect.isFalse h2.Closed "the second bind succeeds after the first freed"
-              Weir.Serve.stop h2
+              Weir.Serve.stop h2 0
+          }
+          test "pipelined requests on one connection are each answered, in order [D:serve-kestrel]" {
+              let answer (r: Weir.Serve.SReq) : Weir.Serve.SResp =
+                  { Status = 200
+                    Headers = []
+                    Body = Weir.Serve.RText $"<{r.Path.TrimStart('/')}>" }
+
+              let two = get "GET" "/p1" + get "GET" "/p2"
+              let three = get "GET" "/q1" + get "POST" "/q2" + get "GET" "/q3"
+
+              match wire answer [ two; three ] with
+              | [ a; b ] ->
+                  Expect.equal (statusLines a |> List.length) 2 $"two responses for two pipelined requests: {a}"
+                  Expect.isTrue (a.IndexOf "<p1>" >= 0 && a.IndexOf "<p1>" < a.IndexOf "<p2>") $"p1 then p2: {a}"
+                  Expect.equal (statusLines b |> List.length) 3 $"three responses for three: {b}"
+
+                  Expect.isTrue
+                      (b.IndexOf "<q1>" >= 0 && b.IndexOf "<q1>" < b.IndexOf "<q2>" && b.IndexOf "<q2>" < b.IndexOf "<q3>")
+                      $"q1, q2, q3 in order: {b}"
+              | other -> failtest $"two exchanges expected: {other}"
+          }
+          test "three duplicate request headers reach the handler as three pairs in wire order (F10) [D:serve-kestrel]" {
+              // three, not two: two cannot tell last-wins from a merge
+              let answer (r: Weir.Serve.SReq) : Weir.Serve.SResp =
+                  let xs =
+                      r.Headers
+                      |> List.filter (fun (k, _) -> k.ToLowerInvariant() = "x-forwarded-for")
+                      |> List.map snd
+
+                  { Status = 200
+                    Headers = []
+                    Body = Weir.Serve.RText(String.concat "," xs) }
+
+              let req =
+                  "GET /d HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Forwarded-For: 10.0.0.1\r\nX-Forwarded-For: 10.0.0.2\r\nX-Forwarded-For: 10.0.0.3\r\n\r\n"
+
+              match wire answer [ req ] with
+              | [ r ] -> Expect.isTrue (r.EndsWith "10.0.0.1,10.0.0.2,10.0.0.3") $"all three, in order: {r}"
+              | other -> failtest $"{other}"
+          }
+          test "a refused request gets exactly one response; the next request on the connection pairs with its own (H3-E6)" {
+              let answer (r: Weir.Serve.SReq) : Weir.Serve.SResp =
+                  { Status = 200
+                    Headers = []
+                    Body = Weir.Serve.RText $"<{r.Path.TrimStart('/')}>" }
+
+              // a foreign Host and an absolute-form URI naming a foreign
+              // host are refused before the handler [D:serve-kestrel]; the
+              // connection stays in frame, so the follow-up reads its own
+              // answer, never an unsolicited one
+              let foreign = "GET /a HTTP/1.1\r\nHost: example.com\r\n\r\n"
+              let absForeign = "GET http://evil.example/x HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n"
+
+              for bad in [ foreign; absForeign ] do
+                  match wire answer [ bad; get "GET" "/next" ] with
+                  | [ r1; r2 ] ->
+                      Expect.equal (statusLines r1 |> List.length) 1 $"one response to the refused request: {r1}"
+                      Expect.isFalse (r1.StartsWith "HTTP/1.1 200") $"refused, not served: {r1}"
+                      Expect.isFalse (r1.Contains "<") $"the handler did not run: {r1}"
+
+                      if r2 <> "" then
+                          Expect.equal (statusLines r2) [ "HTTP/1.1 200 OK" ] $"the follow-up gets its own answer: {r2}"
+                          Expect.isTrue (r2.EndsWith "<next>") r2
+                  | other -> failtest $"{other}"
+
+              // a version the server does not speak: one 505, then the
+              // connection closes — no unsolicited 200 behind it
+              serving (16L * 1024L * 1024L) answer (fun port ->
+                  use c = new System.Net.Sockets.TcpClient("127.0.0.1", port)
+                  send c "GET / HTTP/9.9\r\nHost: 127.0.0.1\r\n\r\n"
+                  let r = readQuiet c
+                  Expect.equal (statusLines r |> List.map (fun l -> l.Substring(0, 12))) [ "HTTP/1.1 505" ] $"exactly one 505: {r}")
+
+              // the loopback names all reach the handler [D:serve-loopback-names]
+              for host in [ "localhost"; "127.0.0.1"; "[::1]" ] do
+                  serving (16L * 1024L * 1024L) answer (fun port ->
+                      use c = new System.Net.Sockets.TcpClient("127.0.0.1", port)
+                      send c $"GET /n HTTP/1.1\r\nHost: {host}:{port}\r\n\r\n"
+                      let r = readQuiet c
+                      Expect.isTrue (r.EndsWith "<n>") $"Host: {host} reaches the handler: {r}")
+          }
+          test "a request over [::1] reaches the handler (H3-A3) [D:serve-loopback-names]" {
+              let answer (_: Weir.Serve.SReq) : Weir.Serve.SResp =
+                  { Status = 200
+                    Headers = []
+                    Body = Weir.Serve.RText "weir-handler" }
+
+              let port = freePort ()
+              let h = Weir.Serve.start port (limits 1024L)
+              let v6 = h.Bound |> List.contains "::1"
+              Weir.Serve.stop h 0
+
+              // a host without IPv6 loopback binds 127.0.0.1 alone
+              if v6 then
+                  serving 1024L answer (fun port ->
+                      use c = new System.Net.Sockets.TcpClient(System.Net.Sockets.AddressFamily.InterNetworkV6)
+                      c.Connect(System.Net.IPAddress.IPv6Loopback, port)
+                      send c $"GET / HTTP/1.1\r\nHost: [::1]:{port}\r\n\r\n"
+                      let r = readQuiet c
+                      Expect.isTrue (r.StartsWith "HTTP/1.1 200" && r.EndsWith "weir-handler") $"[::1] reaches the handler: {r}")
+          }
+          test "a slow request body is read before the request is accepted — a fast request overtakes it (H3-E5) [D:serve-kestrel]" {
+              let answer (r: Weir.Serve.SReq) : Weir.Serve.SResp =
+                  { Status = 200
+                    Headers = []
+                    Body = Weir.Serve.RText $"<{r.Path.TrimStart('/')}>" }
+
+              // the harness accepts one request at a time, like a single
+              // handler slot: a body still arriving must not hold it
+              serving 1024L answer (fun port ->
+                  use slow = new System.Net.Sockets.TcpClient("127.0.0.1", port)
+                  send slow "POST /slow HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 100\r\n\r\na"
+                  System.Threading.Thread.Sleep 300
+                  let clock = System.Diagnostics.Stopwatch.StartNew()
+                  use fast = new System.Net.Sockets.TcpClient("127.0.0.1", port)
+                  send fast (get "GET" "/fast")
+                  let r = readQuiet fast
+                  Expect.isTrue (r.EndsWith "<fast>") $"the fast request is served: {r}"
+                  // readQuiet's own quiet gap is 700ms
+                  Expect.isLessThan clock.ElapsedMilliseconds 3000L "served without waiting out the slow body")
           }
           test "no body on 204, 304 or HEAD — a kept-alive connection stays in frame (H16)" {
               let answer (r: Weir.Serve.SReq) : Weir.Serve.SResp =
@@ -23509,7 +23646,7 @@ let serveTests =
           }
           // ---- F8: the stream-producer failure channel [D:serve-stream] ----
           test "a Stream producer raise records on the handle, not a raise out of the handler" {
-              let h = Weir.Serve.start 8207
+              let h = Weir.Serve.start 8207 (limits 1024L)
               Expect.isEmpty (Weir.Serve.streamErrors h) "no errors before a failure"
               Weir.Serve.recordStreamError h "producer died"
               Weir.Serve.recordStreamError h "another"
@@ -23519,37 +23656,32 @@ let serveTests =
                   [ "producer died"; "another" ]
                   "the designated channel records failures in order"
 
-              Weir.Serve.stop h
+              Weir.Serve.stop h 0
           }
           // ---- F8: the client sees the truncation [D:serve-stream-truncate] ----
           test "a Stream producer raise ends the chunked body WITHOUT its terminator; a clean stream keeps it [D:serve-stream-truncate]" {
-              // http.sys (Windows) owns its own framing; the latch is the
-              // managed listener's
-              if not (System.OperatingSystem.IsWindows()) then
-                  Expect.isTrue (Weir.Serve.canTruncate ()) "the managed listener's terminator latch is reachable"
+              let stream (lines: seq<string>) : Weir.Serve.SReq -> Weir.Serve.SResp =
+                  fun _ ->
+                      { Status = 200
+                        Headers = []
+                        Body = Weir.Serve.RStream lines }
 
-                  let stream (lines: seq<string>) : Weir.Serve.SReq -> Weir.Serve.SResp =
-                      fun _ ->
-                          { Status = 200
-                            Headers = []
-                            Body = Weir.Serve.RStream lines }
+              let dead =
+                  wire
+                      (stream (
+                          seq {
+                              yield "first"
+                              failwith "producer died"
+                          }
+                      ))
+                      [ get "GET" "/" ]
+                  |> List.head
 
-                  let dead =
-                      wire
-                          (stream (
-                              seq {
-                                  yield "first"
-                                  failwith "producer died"
-                              }
-                          ))
-                          [ get "GET" "/" ]
-                      |> List.head
+              Expect.stringContains dead "data: first" "the element before the raise was sent"
+              Expect.isFalse (dead.EndsWith "0\r\n\r\n") $"no terminating chunk after a producer raise: {dead}"
 
-                  Expect.stringContains dead "data: first" "the element before the raise was sent"
-                  Expect.isFalse (dead.EndsWith "0\r\n\r\n") $"no terminating chunk after a producer raise: {dead}"
-
-                  let whole = wire (stream [ "a"; "b" ]) [ get "GET" "/" ] |> List.head
-                  Expect.isTrue (whole.EndsWith "0\r\n\r\n") $"a clean stream ends with its terminator: {whole}"
+              let whole = wire (stream [ "a"; "b" ]) [ get "GET" "/" ] |> List.head
+              Expect.isTrue (whole.EndsWith "0\r\n\r\n") $"a clean stream ends with its terminator: {whole}"
           }
           // ---- F11: an unsendable header is refused by name [D:http-header-unsendable] ----
           test "headerUnsendable names a non-token name, a control or non-ASCII value byte; a clean pair passes [D:http-header-unsendable]" {

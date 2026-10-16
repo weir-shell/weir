@@ -5988,7 +5988,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
           |> named [ "srv" ]
           "Server.streamErrors",
           bd
-              "Error messages from Stream response bodies that raised partway through (the client received a truncated body for each), and from response headers that could not be sent (the client received a 500). Empty until one fails. These errors are reported here instead of being raised out of the handler."
+              "Error messages from Stream response bodies that raised partway through (the client received a truncated body for each), from response headers that could not be sent, and from handlers that raised or returned an invalid status (the client received a 500 for each). Empty until one fails. These errors are reported here instead of being raised out of the handler."
               None
               (Some "When a Stream body raises, the client's response is cut off and the error is recorded here.")
           |> named [ "srv" ]

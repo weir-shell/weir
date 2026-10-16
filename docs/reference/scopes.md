@@ -147,7 +147,10 @@ names — `127.0.0.1`, `localhost` and `[::1]` — so a client using any of
 them reaches the handler (`[::1]` is skipped quietly on a host without
 IPv6 loopback). It only listens on loopback and never binds all
 interfaces, so it can't be reached from other machines; put a reverse
-proxy in front of it for a public address.
+proxy in front of it for a public address. A request whose `Host`
+names anything else gets a 404 before the handler runs, so a proxy
+must pass a loopback `Host` (nginx's default `proxy_pass
+http://127.0.0.1:8080` does).
 
 The handler routes on `req.path` with an ordinary `match`; there is
 no routing framework:
@@ -174,16 +177,25 @@ reports a truncated body (curl exits 18) rather than a complete
 stream. A response header that can't be sent — a name that isn't a
 valid header token, or a value with a control or non-ASCII character
 — is never dropped quietly: the client gets a 500 and
-`Server.streamErrors` names the header and why. `maxConcurrent` limits how many
-handlers run at once, as with `Seq.pmapWith`; extra requests wait in a
-queue.
+`Server.streamErrors` names the header and why. A handler that raises,
+or returns a status outside 100–999, also gets the client a 500 and
+leaves a line there (`serve handler on GET /x failed: …`).
+`maxConcurrent` limits how many handlers run at once, as with
+`Seq.pmapWith`; extra requests wait in a queue, and pipelined requests
+on one connection are answered in order.
 
 The config record is `{ port; maxConcurrent }`, optionally with
 `bodyTimeout` (a `Duration`, default 30s) that limits how long
 reading the request body may take, and `maxBody` (a `Size`, default
-16MiB) that limits its size. A client that sends its body too slowly
-gets a 408 instead of tying up a handler; a body larger than `maxBody`
-gets a 413 and is never buffered whole.
+16MiB) that limits its size. The body is read before a handler slot
+is taken, so a slow upload never ties one up: a client that sends its
+body too slowly gets a 408, and a body larger than `maxBody` gets a
+413 and is never buffered whole.
+
+When the block exits, the port is freed at once and requests still
+waiting in the queue are dropped. Handlers already running get two
+seconds, together, to finish their responses; a handler still running
+after that keeps running, but its response is discarded.
 
 `HttpServerRequest` carries:
 
@@ -194,9 +206,9 @@ gets a 413 and is never buffered whole.
 - `path`
 - `query` — the raw string without the leading `?`; split it with
   `Str.trySplitOnce`
-- `headers` — pairs, in the order received. The underlying listener
-  keeps only the last value of a repeated header, so a proxied
-  `X-Forwarded-For` chain shows only the last hop
+- `headers` — pairs, one per value: a repeated header (a proxied
+  `X-Forwarded-For` chain) arrives whole, its values in the order
+  received. Compare names case-insensitively
 - `body` — the request text
 
 Deliberately not supported in v1:
