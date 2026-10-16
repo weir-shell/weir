@@ -635,7 +635,9 @@ print $"{key} -> {value}"
   header the wire cannot carry raises before anything is sent, naming
   the header — a CR/LF/NUL byte, a non-token name (`"Bad Name"`), a
   control or non-ASCII value byte, or a body header (`Content-Type`,
-  `Expires`) on a `NoBody` request. On a
+  `Expires`) on a `NoBody` request; for a secret value (`auth`,
+  `secretHeaders`) the message gives the byte offset, never the
+  character. On a
   cross-origin redirect `auth`, every `secretHeaders` name and a plain
   `Authorization`/`Proxy-Authorization`/`Cookie` header are dropped. The
   body is `NoBody`/`Json`/`Text of string`/`Form of seq<string * string>`

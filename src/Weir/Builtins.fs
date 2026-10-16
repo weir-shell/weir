@@ -4619,7 +4619,11 @@ let private runRequest (reqV: Value) : Http.Resp =
         // a header with no place on the wire is refused, never skipped
         // [D:http-header-unsendable]: a non-token name, a control or
         // non-ASCII value byte, a body header on a bodyless request
-        Http.refuseUnsendableRequestHeader failwith req.Body.IsSome req.Headers
+        Http.refuseUnsendableRequestHeader
+            failwith
+            req.Body.IsSome
+            ((auth @ secret) |> List.map (fun (k, _) -> k.ToLowerInvariant()) |> Set.ofList)
+            req.Headers
 
         let host =
             try

@@ -23696,10 +23696,34 @@ let serveTests =
               Expect.stringContains (reason ("X", "a\u0007b")) "control character U+0007" "a control byte in the value"
               Expect.stringContains (reason ("X", "café")) "non-ASCII character 'é'" "a non-ASCII value"
           }
+          test "a secret header value is located by byte offset, its character never named [D:secret-header-offset]" {
+              let secret pair =
+                  Weir.Http.headerUnsendableWith true pair |> Option.defaultValue "<none>"
+
+              let r = secret ("X-Tok", "aéßb")
+              Expect.stringContains r "a non-ASCII character at byte offset 1 of the secret value" "UTF-8 offset of the first offender"
+              Expect.isFalse (r.Contains "é" || r.Contains "ß") $"no character of the secret: {r}"
+              Expect.stringContains (secret ("X-Tok", "ab\u0007")) "a control character at byte offset 2 of the secret value" "a control byte too"
+              Expect.isFalse ((secret ("X-Tok", "ab\u0007")).Contains "U+0007") "the control code is not named"
+              Expect.stringContains (secret ("X-Tok", "üb\u0001")) "control character at byte offset 3" "offset counts UTF-8 bytes"
+
+              let refused =
+                  Expect.throwsC
+                      (fun () ->
+                          Weir.Http.refuseUnsendableRequestHeader
+                              failwith
+                              false
+                              (Set.ofList [ "x-tok" ])
+                              [ ("X-Plain", "ok"); ("X-TOK", "sßcret") ])
+                      (fun ex -> ex.Message)
+
+              Expect.stringContains refused "request header 'X-TOK'" "the header is named"
+              Expect.isFalse (refused.Contains "ß") "the name match is case-insensitive"
+          }
           test "a request header is refused by name, never skipped — a body header needs a body [D:http-header-unsendable]" {
               let refuse hasBody headers =
                   Expect.throwsC
-                      (fun () -> Weir.Http.refuseUnsendableRequestHeader failwith hasBody headers)
+                      (fun () -> Weir.Http.refuseUnsendableRequestHeader failwith hasBody Set.empty headers)
                       (fun ex -> ex.Message)
 
               Expect.equal
@@ -23713,8 +23737,8 @@ let serveTests =
                   "a body header on a bodyless request has no place"
 
               // with a body the content header lands on the content
-              Weir.Http.refuseUnsendableRequestHeader failwith true [ ("Content-Type", "application/json"); ("Expires", "0") ]
-              Weir.Http.refuseUnsendableRequestHeader failwith false [ ("X-A", "1"); ("Host", "h") ]
+              Weir.Http.refuseUnsendableRequestHeader failwith true Set.empty [ ("Content-Type", "application/json"); ("Expires", "0") ]
+              Weir.Http.refuseUnsendableRequestHeader failwith false Set.empty [ ("X-A", "1"); ("Host", "h") ]
           }
           test "a response header the listener cannot send is refused by name; framing headers stay the listener's" {
               let refused headers =

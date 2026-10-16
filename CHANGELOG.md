@@ -85,6 +85,10 @@
   The message reads `unknown flag '--token=***' — … write '--token
   <value>'` for a `Secret` field, and an unknown `--name=value` flag is
   shown as `'--name=…'` (it may be a misspelled secret).
+- **A non-ASCII or control character in a secret header value is no
+  longer printed.** For `auth` and `secretHeaders`, the refusal names
+  the header and the byte offset (`at byte offset 8 of the secret
+  value`); plain headers still name the character.
 - **Commands inside `always` run on Ctrl+C and SIGTERM.** They were
   refused ("no new command starts"), so cleanups were skipped. The
   body's commands still stop, and a second signal still exits at once.

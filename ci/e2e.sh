@@ -11671,6 +11671,18 @@ for case in 'Bad Name|v|its name carries a space' 'Content-Type|application/json
     echo "$out" | grep -qF "request header '$hn' cannot be sent — $why" || fail "F11-client: the refusal must name '$hn' and why: $out"
 done
 echo "e2e ok: Http.send — F11 a header with no place on the wire is refused by name (bad name, bodyless body header, non-ASCII)"
+# a Secret's offending character is never printed [D:secret-header-offset]:
+# secretHeaders and auth = Bearer name the header and the byte offset
+for req in 'secretHeaders = [("X-Tok", Secret.of "sßcret")]|X-Tok|at byte offset 1 of the secret value' \
+           'auth = Bearer (Secret.of "tØken")|Authorization|at byte offset 8 of the secret value'; do
+    rf=${req%%|*}; rest=${req#*|}; hn=${rest%%|*}; why=${rest#*|}
+    rc=0
+    out=$($BIN -e "print \$\"{(Http.send { Http.get \"http://127.0.0.1:9/\" with $rf }).status}\"" 2>&1) || rc=$?
+    [ "$rc" = "1" ] || fail "secret-header: '$hn' must be refused (exit 1), got rc=$rc: $out"
+    echo "$out" | grep -qF "request header '$hn' cannot be sent — its value carries a non-ASCII character $why" || fail "secret-header: '$hn' must name the offset: $out"
+    echo "$out" | grep -qE 'ß|Ø' && fail "secret-header: the secret's character leaked: $out" || true
+done
+echo "e2e ok: Http.send — a secret header's non-ASCII byte is located by offset, never printed"
 
 # (F12) the request-body read timeout [D:serve-body-timeout]: a slow
 # client declaring a large Content-Length and holding the socket is

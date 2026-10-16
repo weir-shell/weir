@@ -438,8 +438,16 @@ let private describeChar (c: char) : string =
 /// with a control character or a non-ASCII one. Both crossings refused
 /// these by dropping the header (the server) or skipping it (a client
 /// name); CR/LF/NUL are the injection class, checked first with their
-/// own message [D:http-header-bytes].
-let headerUnsendable (name: string, value: string) : string option =
+/// own message [D:http-header-bytes]. A secret value is described by the
+/// UTF-8 byte offset of the offending character, never the character
+/// [D:secret-header-offset].
+let headerUnsendableWith (secret: bool) (name: string, value: string) : string option =
+    let which (kind: string) (i: int) =
+        if secret then
+            $"a {kind} character at byte offset {System.Text.Encoding.UTF8.GetByteCount(value.AsSpan(0, i))} of the secret value"
+        else
+            $"the {kind} character {describeChar value[i]}"
+
     if name = "" then
         Some "its name is empty"
     else
@@ -447,13 +455,19 @@ let headerUnsendable (name: string, value: string) : string option =
         | Some c ->
             Some $"its name carries {describeChar c}, which a header name cannot (letters, digits and !#$%%&'*+-.^_`|~ only)"
         | None ->
-            match value |> Seq.tryFind (fun c -> (c < ' ' && c <> '\t') || c = '\127') with
-            | Some c -> Some $"its value carries the control character {describeChar c}"
+            match value |> Seq.tryFindIndex (fun c -> (c < ' ' && c <> '\t') || c = '\127') with
+            | Some i -> Some("its value carries " + which "control" i)
             | None ->
-                match value |> Seq.tryFind (fun c -> c > '\127') with
-                | Some c ->
-                    Some $"its value carries the non-ASCII character {describeChar c} (header values are ASCII; percent-encode or base64 it)"
+                match value |> Seq.tryFindIndex (fun c -> c > '\127') with
+                | Some i ->
+                    Some(
+                        "its value carries "
+                        + which "non-ASCII" i
+                        + " (header values are ASCII; percent-encode or base64 it)"
+                    )
                 | None -> None
+
+let headerUnsendable (pair: string * string) : string option = headerUnsendableWith false pair
 
 /// the located refusal for an unsendable header [D:http-header-unsendable],
 /// the injection message's shape: the crossing, the header, the reason
@@ -478,9 +492,14 @@ let requestHeaderHasNoPlace (hasBody: bool) (name: string, value: string) : bool
 /// refuse the first unsendable request header, or pass
 /// [D:http-header-unsendable] — the client crossing; runs after the
 /// injection walk, so CR/LF/NUL keep their own message
-let refuseUnsendableRequestHeader (fail: string -> unit) (hasBody: bool) (headers: (string * string) list) : unit =
+let refuseUnsendableRequestHeader
+    (fail: string -> unit)
+    (hasBody: bool)
+    (secretNames: Set<string>)
+    (headers: (string * string) list)
+    : unit =
     for (k, v) in headers do
-        match headerUnsendable (k, v) with
+        match headerUnsendableWith (secretNames.Contains(k.ToLowerInvariant())) (k, v) with
         | Some reason -> fail (headerUnsendableMessage "request header" k reason)
         | None ->
             if requestHeaderHasNoPlace hasBody (k, v) then
