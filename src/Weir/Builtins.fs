@@ -913,13 +913,39 @@ let private globSegRegex (seg: string) : System.Text.RegularExpressions.Regex =
     sb.Append "$" |> ignore
     System.Text.RegularExpressions.Regex(sb.ToString())
 
+/// a glob pattern's root and segments [D:path-glob]: `Some (fsRoot,
+/// shownRoot)` for an absolute pattern, None for a relative one. `/`
+/// separates everywhere; on Windows `\` separates too (no Windows name
+/// holds one, so it is never a literal there) and a drive (`C:/`), a
+/// UNC share (`\\host\share`) or a leading separator roots the pattern;
+/// matches below the root are shown with `/` [D:path-drive-root].
+let globSplit (windows: bool) (pattern: string) : (string * string) option * string list =
+    let seps = if windows then [| '/'; '\\' |] else [| '/' |]
+    let isSep c = Array.contains c seps
+    let segsOf (s: string) =
+        s.Split(seps, System.StringSplitOptions.RemoveEmptyEntries) |> Array.toList
+
+    let n = pattern.Length
+
+    if windows && n >= 3 && System.Char.IsAsciiLetter pattern[0] && pattern[1] = ':' && isSep pattern[2] then
+        let d = pattern.Substring(0, 2)
+        Some(d + "\\", d + "/"), segsOf (pattern.Substring 3)
+    else
+        match segsOf pattern with
+        | host :: share :: rest when windows && n >= 2 && isSep pattern[0] && isSep pattern[1] ->
+            Some($"\\\\{host}\\{share}\\", $"//{host}/{share}/"), rest
+        | segs when n >= 1 && isSep pattern[0] -> Some((if windows then "\\" else "/"), "/"), segs
+        | segs -> None, segs
+
 let private globWalk (rootFs: string) (pattern: string) : seq<string> =
     seq {
-        let isAbs = pattern.StartsWith "/"
+        let windows = System.OperatingSystem.IsWindows()
+        let root, segs = globSplit windows pattern
 
-        let segs = pattern.Split('/') |> Array.filter (fun s -> s <> "") |> Array.toList
-
-        let rootDisplay = if isAbs then "/" else ""
+        let rootDisplay =
+            match root with
+            | Some(_, shown) -> shown
+            | None -> ""
 
         let entriesOf (dirFs: string) =
             try
@@ -993,7 +1019,7 @@ let private globWalk (rootFs: string) (pattern: string) : seq<string> =
 
         // a trailing `/` matches directories only, each shown with its
         // slash — bash's law (`*/` is `a/`, never a file) [D:path-glob]
-        if pattern.Length > 1 && pattern.EndsWith "/" then
+        if pattern.Length > 1 && (pattern.EndsWith "/" || (windows && pattern.EndsWith "\\")) then
             for m in walk rootFs rootDisplay segs do
                 if System.IO.Directory.Exists(System.IO.Path.Combine(rootFs, m)) then
                     yield m + "/"
@@ -1011,16 +1037,19 @@ let private globImpl: Value =
             // cwd). The walk stays lazy.
             let scoped = Session.scopedCwd ()
 
+            let root, segs = globSplit (System.OperatingSystem.IsWindows()) pat
+
             let rootOf () =
-                if pat.StartsWith "/" then "/"
-                else scoped |> Option.defaultWith Session.Cwd
+                match root with
+                | Some(fsRoot, _) -> fsRoot
+                | None -> scoped |> Option.defaultWith Session.Cwd
 
             // inside a plan the walk's literal prefix is a listing root
             // [D:plan-stale-reads], judged where glob is called
             if PlanMode.active () then
                 let literal =
-                    pat.Split('/')
-                    |> Array.filter (fun s -> s <> "")
+                    segs
+                    |> List.toArray
                     |> Array.takeWhile (fun seg -> not (seg |> Seq.exists (fun c -> c = '*' || c = '?' || c = '[')))
 
                 PlanMode.checkTree "Path.glob" (System.IO.Path.GetFullPath(System.IO.Path.Combine(Array.append [| rootOf () |] literal)))
@@ -2943,28 +2972,27 @@ let private pathUnderImpl: Value =
 // collapses the text — for the legitimate escape (a project reference
 // leaving its own directory) both siblings decline. A relative path
 // keeps its leading '..'s; at an absolute root '..' swallows.
-let private pathNormalize (p: string) : string =
-    let seps =
-        [| System.IO.Path.DirectorySeparatorChar
-           System.IO.Path.AltDirectorySeparatorChar |]
+let pathNormalizeOn (windows: bool) (p: string) : string =
+    let seps = if windows then [| '\\'; '/' |] else [| '/' |]
 
-    let rooted = p.Length > 0 && Array.contains p[0] seps
+    // a Windows drive root ("C:/", "C:\\") is a root like "/" — platform-
+    // gated so a POSIX file literally named "c:" stays an ordinary segment
+    // [D:path-drive-root]
+    let drive =
+        windows
+        && p.Length >= 3
+        && System.Char.IsAsciiLetter p[0]
+        && p[1] = ':'
+        && Array.contains p[2] seps
 
-    // a Windows drive head ("C:") never pops — platform-gated so a
-    // POSIX file literally named "c:" stays an ordinary segment
-    let driveHead (out: ResizeArray<string>) =
-        System.OperatingSystem.IsWindows()
-        && out.Count = 1
-        && out[0].Length = 2
-        && out[0][1] = ':'
-
+    let rooted = drive || (p.Length > 0 && Array.contains p[0] seps)
     let out = ResizeArray<string>()
 
-    for s in p.Split(seps, System.StringSplitOptions.RemoveEmptyEntries) do
+    for s in (if drive then p.Substring 3 else p).Split(seps, System.StringSplitOptions.RemoveEmptyEntries) do
         match s with
         | "." -> ()
         | ".." ->
-            if out.Count > 0 && out[out.Count - 1] <> ".." && not (driveHead out) then
+            if out.Count > 0 && out[out.Count - 1] <> ".." then
                 out.RemoveAt(out.Count - 1)
             elif not rooted then
                 out.Add ".."
@@ -2975,9 +3003,13 @@ let private pathNormalize (p: string) : string =
     // normalize to it (the originals do .Replace('\\', "/"))
     let body = String.concat "/" (List.ofSeq out)
 
-    if rooted then "/" + body
+    if drive then p.Substring(0, 2) + "/" + body
+    elif rooted then "/" + body
     elif body = "" then "."
     else body
+
+let private pathNormalize (p: string) : string =
+    pathNormalizeOn (System.OperatingSystem.IsWindows()) p
 
 // home + XDG dirs [D:path-home], the one implementation the REPL's
 // config/state paths also use: Windows maps to SpecialFolder
@@ -6757,7 +6789,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
            |> named [ "base"; "name" ])
           "Path.normalize",
           (bd
-              "Resolve '.' and '..' segments in the text of a path, without touching the filesystem, using the current directory, or following symlinks. combine leaves '..' in place and under rejects paths that leave the base; use normalize when going up out of a directory is intended. A relative path keeps its leading '..' segments; at the root of an absolute path, '..' is dropped."
+              "Resolve '.' and '..' segments in the text of a path, without touching the filesystem, using the current directory, or following symlinks. combine leaves '..' in place and under rejects paths that leave the base; use normalize when going up out of a directory is intended. A relative path keeps its leading '..' segments; at the root of an absolute path, '..' is dropped (on Windows a drive root such as C:/ counts as a root)."
               (Some "Path.normalize \"src/App/../Core/Core.csproj\"")
               None
            |> named [ "path" ])

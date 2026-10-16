@@ -1022,7 +1022,7 @@
         {
           "name": "normalize",
           "signature": "Path.normalize (path: string) : string",
-          "summary": "Resolve \u0027.\u0027 and \u0027..\u0027 segments in the text of a path, without touching the filesystem, using the current directory, or following symlinks. combine leaves \u0027..\u0027 in place and under rejects paths that leave the base; use normalize when going up out of a directory is intended. A relative path keeps its leading \u0027..\u0027 segments; at the root of an absolute path, \u0027..\u0027 is dropped.",
+          "summary": "Resolve \u0027.\u0027 and \u0027..\u0027 segments in the text of a path, without touching the filesystem, using the current directory, or following symlinks. combine leaves \u0027..\u0027 in place and under rejects paths that leave the base; use normalize when going up out of a directory is intended. A relative path keeps its leading \u0027..\u0027 segments; at the root of an absolute path, \u0027..\u0027 is dropped (on Windows a drive root such as C:/ counts as a root).",
           "example": "Path.normalize \u0022src/App/../Core/Core.csproj\u0022",
           "pointer": null
         },

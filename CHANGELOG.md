@@ -81,6 +81,14 @@
   read `FOO=BAR` as the variable `FOO` (so `PATH=…` replaced `PATH`).
 
 ### Fixed
+- **`Path.normalize` treats a Windows drive root as a root.** On
+  Windows, `Path.normalize "C:/../y"` gave `C:/../y`; it is now `C:/y`,
+  as `/../y` is `/y`.
+- **`Path.glob` takes a native Windows directory prefix.** On Windows,
+  `Path.glob (Path.combine d "*.txt")` (backslashes) found nothing, and
+  a `C:/…` pattern was walked from the drive's current directory; `\`
+  now separates and a drive or UNC prefix roots the pattern. Matches
+  are shown with `/`.
 - **`serve` answers pipelined requests.** Two or three requests sent
   back to back on one connection got one answer; each now gets its
   own, in order.

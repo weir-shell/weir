@@ -2284,7 +2284,8 @@ print (f 1)
   the third spelling — a lexical `..`/`.` collapse (no filesystem
   touch, no cwd, symlinks never followed) for the legitimate escape
   both siblings decline: combine keeps `..`, under raises. A relative
-  path keeps its leading `..`s; at an absolute root `..` swallows.
+  path keeps its leading `..`s; at an absolute root `..` swallows
+  (on Windows a drive root `C:/` is a root too: `C:/../y` is `C:/y`).
   `under` is purely
   TEXTUAL — it confines the PATH, never the resolved target, so a
   symlink inside `base` pointing out is textually under and is NOT
@@ -2304,7 +2305,10 @@ print (f 1)
   echo relative and resolve against the cwd AT ENUMERATION —
   `|> Seq.freeze` pins the answer before a `cd`. No matches = the
   empty seq (`match ... with | [] -> fail "no matches"`).
-  Unreadable dirs skip (discovery, not assertion).
+  Unreadable dirs skip (discovery, not assertion). On Windows `\`
+  separates too (never a class member there) and a `C:/`,
+  `\\host\share` or leading-separator prefix roots the pattern, so
+  `Path.glob (Path.combine d "*.txt")` works; matches are shown with `/`.
 - Editor mode-coloring (LSP semantic tokens) is for humans — agents
   read `weir check`; colors carry no information the checker does
   not already report.

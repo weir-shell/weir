@@ -14106,6 +14106,26 @@ let agentFindingsTests =
               expectValue "Path.normalize \"/a/../../b\"" (VStr "/b")
               expectValue "Path.combine \"/repo/src/App\" \"../Core/Core.csproj\" |> Path.normalize" (VStr "/repo/src/Core/Core.csproj")
           }
+          test "Path.normalize and Path.glob root a Windows drive on Windows only [D:path-drive-root]" {
+              let norm = Weir.Builtins.pathNormalizeOn
+              Expect.equal (norm true "C:/../y") "C:/y" "a drive root swallows '..'"
+              Expect.equal (norm true @"C:\a\..\..\b") "C:/b" "backslashes, past the root"
+              Expect.equal (norm true "C:/..") "C:/" "the drive root itself"
+              Expect.equal (norm true @"\a\..\b") "/b" "a leading backslash roots"
+              Expect.equal (norm true "../x") "../x" "a relative path keeps its '..'"
+              Expect.equal (norm false "C:/../y") "y" "on POSIX C: is an ordinary segment"
+              Expect.equal (norm false @"a\..\b") @"a\..\b" "on POSIX a backslash is a name byte"
+
+              let split = Weir.Builtins.globSplit
+              Expect.equal (split true @"C:\Users\me\X13\*.txt") (Some(@"C:\", "C:/"), [ "Users"; "me"; "X13"; "*.txt" ]) "a native prefix"
+              Expect.equal (split true @"C:\Users\me/*.txt") (Some(@"C:\", "C:/"), [ "Users"; "me"; "*.txt" ]) "mixed separators"
+              Expect.equal (split true "c:/x/*") (Some(@"c:\", "c:/"), [ "x"; "*" ]) "a forward-slashed drive"
+              Expect.equal (split true @"\\host\share\d\*") (Some(@"\\host\share\", "//host/share/"), [ "d"; "*" ]) "a UNC share"
+              Expect.equal (split true @"\d\*") (Some(@"\", "/"), [ "d"; "*" ]) "the current drive's root"
+              Expect.equal (split true @"src\*.fs") (None, [ "src"; "*.fs" ]) "relative"
+              Expect.equal (split false @"C:\x\*.txt") (None, [ @"C:\x\*.txt" ]) "on POSIX one segment"
+              Expect.equal (split false "/a//b/*") (Some("/", "/"), [ "a"; "b"; "*" ]) "POSIX absolute"
+          }
           test "Path.home + XDG dirs resolve — the typed stand-in for ~/$HOME [D:path-home]" {
               // each is unit -> string, non-empty; the XDG dirs live under
               // home (POSIX default / Windows profile), and stateHome is
