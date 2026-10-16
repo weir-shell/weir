@@ -24,11 +24,19 @@ type private ScanMode =
     | InterpTriple
     | Hole of depth: int
 
-let private stringScan (f: 'a -> int -> char -> 'a) (init: 'a) (s: string) : 'a * bool =
+// the scanner's state between chunks: the open modes, innermost first
+type StringState = private StringState of ScanMode list
+
+let private stringScanFrom
+    (modes0: ScanMode list)
+    (f: 'a -> int -> char -> 'a)
+    (init: 'a)
+    (s: string)
+    : 'a * ScanMode list =
     let mutable st = init
     let mutable i = 0
     // innermost first; empty = top-level code
-    let mutable modes: ScanMode list = []
+    let mutable modes: ScanMode list = modes0
 
     let tripleAt (j: int) =
         j + 2 < s.Length && s[j] = '"' && s[j + 1] = '"' && s[j + 2] = '"'
@@ -102,6 +110,10 @@ let private stringScan (f: 'a -> int -> char -> 'a) (init: 'a) (s: string) : 'a 
 
         i <- i + 1
 
+    st, modes
+
+let private stringScan (f: 'a -> int -> char -> 'a) (init: 'a) (s: string) : 'a * bool =
+    let st, modes = stringScanFrom [] f init s
     st, not modes.IsEmpty
 
 let private foldOutsideStrings (f: 'a -> int -> char -> 'a) (init: 'a) (s: string) : 'a = fst (stringScan f init s)
@@ -111,6 +123,17 @@ let private foldOutsideStrings (f: 'a -> int -> char -> 'a) (init: 'a) (s: strin
 // such a buffer instead of growing it [D:repl-multiline]
 let endsInsideString (s: string) : bool =
     snd (stringScan (fun () _ _ -> ()) () s)
+
+// endsInsideString over a text fed in chunks, linear in the total
+// [D:one-scanner]: the state after `a` then `b` is the state after
+// `a + b` whenever `b` starts with a newline (no lookahead or lookbehind
+// matches across one)
+let stringStart: StringState = StringState []
+
+let stringStep (StringState modes) (chunk: string) : StringState =
+    StringState(snd (stringScanFrom modes (fun () _ _ -> ()) () chunk))
+
+let isInsideString (StringState modes) : bool = not modes.IsEmpty
 
 let stripComment (line: string) : string =
     // comment only at line start or after whitespace: bareword URLs

@@ -27518,7 +27518,7 @@ let hunt3BehaviorTests =
           } ]
 
 // ---- hunt-3 performance cliffs: semantics pinned, growth guarded ---------
-// [D:value-hash]. The growth
+// [D:value-hash] [D:one-scanner]. The growth
 // guards time one input and its 10x in process; linear work grows ~10x,
 // the quadratic forms these replaced grew ~100x. 25x is the acceptance
 // harness's rule (tools/hunt3-repro.weir), wide enough for a noisy runner.
@@ -27641,6 +27641,36 @@ let hunt3PerfTests =
                       |> ignore
 
               growsLinearly "Seq.distinct over tuples" (distinctOver 3000) (distinctOver 30000)
+          }
+          test "the chunked string state equals a rescan of the whole prefix [D:one-scanner]" {
+              let rng = System.Random 1790
+              let alphabet = [| "\""; "'"; "@"; "$"; "{"; "}"; "{{"; "\\"; "\"\"\""; "a"; " "; "//"; "$\"" |]
+
+              for _ in 1..3000 do
+                  let lines =
+                      List.init (1 + rng.Next 5) (fun _ -> String.concat "" (List.init (rng.Next 8) (fun _ -> alphabet[rng.Next alphabet.Length])))
+
+                  let mutable prefix = ""
+                  let mutable state = Weir.Script.stringStart
+
+                  for l in lines do
+                      Expect.equal (Weir.Script.isInsideString state) (Weir.Script.endsInsideString prefix) $"after {prefix}"
+                      prefix <- prefix + "\n" + l
+                      state <- Weir.Script.stringStep state ("\n" + l)
+
+                  Expect.equal (Weir.Script.isInsideString state) (Weir.Script.endsInsideString prefix) $"after {prefix}"
+          }
+          test "fmt grows linearly in a statement's physical line count" {
+              let heredoc n =
+                  fun () ->
+                      let src =
+                          [ "let h = <<<" ] @ List.init n (fun i -> $"    line {i} text {{x}} \"q\"") @ [ "h |> Seq.iter print" ]
+
+                      match Weir.Fmt.formatLines src with
+                      | Ok out -> Expect.equal out src "already formatted"
+                      | Error e -> failtest e
+
+              growsLinearly "fmt of a heredoc" (heredoc 600) (heredoc 6000)
           } ]
 
 [<Tests>]
