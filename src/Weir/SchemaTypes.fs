@@ -75,7 +75,13 @@ let generate
             // schema territory weir does not draft) [D:schema-types]
             reg.AddNote $"{where}: anyOf — drafted the FIRST variant only; verify the rest"
             shape desired srcKey parentStem path first
-        | SEnum values ->
+        | SEnum(values, true) ->
+            // an integer enum drafts int [D:schema-int-enum] — string
+            // would refuse the document's own numbers
+            let listed = String.concat ", " values
+            reg.AddNote $"{where}: an enum of {listed} — drafted int; match the values yourself"
+            "int"
+        | SEnum(values, false) ->
             // bounded v1: enum drafts string, the values ride a note
             // (a string union is a stated follow-up)
             reg.AddNote $"{where}: an enum of {enumText values} — drafted string; match the values yourself"
@@ -92,6 +98,16 @@ let generate
                 elif core = Set.singleton "boolean" then "bool"
                 elif core = Set.singleton "number" || core = Set.ofList [ "integer"; "number" ] then
                     "float"
+                elif core = Set.ofList [ "integer"; "string" ] then
+                    // int-or-string (a k8s port, a rollout percentage)
+                    // drafts the opaque node [D:schema-int-or-string]: it
+                    // crosses json and yaml both ways and keeps 8080 an int
+                    // and "25%" a string — string would refuse 8080 on read
+                    // and quote it on write
+                    reg.AddNote
+                        $"{where}: the schema allows integer/string — drafted Yaml; an int reads as YInt n, a string as YStr s"
+
+                    "Yaml"
                 elif core.IsEmpty then
                     // type: ["null"] — nothing but absence to draft
                     reg.AddNote $"{where}: the schema allows only null — drafted Option<string>"
@@ -208,7 +224,38 @@ let generate
     | [] ->
         Error
             $"the schema's top level is '{top}', not an object with declared properties — there is no record to generate; read the value directly with that type"
-    | decls -> Ok(Infer.renderDecls reserved decls, reg.Notes, top)
+    | decls ->
+        // the validation keywords of the trees this module drafts — the
+        // root and every definition it reached — one note per keyword
+        // [D:schema-validation-keys]
+        let shown (key: string option) (p: string) =
+            let local =
+                p.Replace("additionalProperties.", "*.").Replace("properties.", "").Replace("items.", "[].").Replace("allOf.", "").Replace(".[]", "[]").TrimEnd('.')
+
+            match key, local with
+            | None, "" -> "the schema root"
+            | None, l -> l
+            | Some k, "" -> defStem k
+            | Some k, l -> defStem k + "." + l
+
+        let unenforced =
+            doc.Unenforced
+            |> List.filter (fun (key, _, _) ->
+                match key with
+                | None -> true
+                | Some k -> memo.ContainsKey k)
+            |> List.groupBy (fun (_, kw, _) -> kw)
+            |> List.sortBy fst
+            |> List.map (fun (kw, hits) ->
+                let places = hits |> List.map (fun (key, _, p) -> shown key p) |> List.distinct
+                let listed = places |> List.truncate 5 |> String.concat ", "
+
+                let more =
+                    if places.Length > 5 then $" and {places.Length - 5} more" else ""
+
+                $"not enforced: {kw} on {listed}{more}")
+
+        Ok(Infer.renderDecls reserved decls, reg.Notes @ unenforced, top)
 
 /// what one generation produced — the CLI's whole answer
 type Generated =

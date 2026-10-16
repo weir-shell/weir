@@ -602,22 +602,34 @@ let private header (s: State) (root: Tab) : Tab =
 
 // ---- document --------------------------------------------------------------
 
-let rec private toNode (v: Value) : Yaml.Node =
+// an offset-less datetime (local date-time, date or time) is noted by
+// (line, text): the yaml node tree has no datetime case, and an Instant
+// read must refuse one [D:toml-local-instant]
+let rec private toNode (locals: HashSet<int * string>) (v: Value) : Yaml.Node =
     match v with
-    | VStr(text, l)
-    | VDate(text, l) -> Yaml.NScalar(text, true, l)
+    | VStr(text, l) -> Yaml.NScalar(text, true, l)
+    | VDate(text, l) ->
+        if not (dateTime.Match(text).Groups[10].Success) then
+            locals.Add((l, text)) |> ignore
+
+        Yaml.NScalar(text, true, l)
     | VNum(text, l) -> Yaml.NScalar(text, false, l)
     | VBool(b, l) -> Yaml.NScalar((if b then "true" else "false"), false, l)
-    | VArr(items, l) -> Yaml.NSeq(items |> Seq.map toNode |> List.ofSeq, l)
-    | VTab t -> tableNode t
-    | VAot(l, line) -> Yaml.NSeq(l |> Seq.map tableNode |> List.ofSeq, line)
+    | VArr(items, l) -> Yaml.NSeq(items |> Seq.map (toNode locals) |> List.ofSeq, l)
+    | VTab t -> tableNode locals t
+    | VAot(l, line) -> Yaml.NSeq(l |> Seq.map (tableNode locals) |> List.ofSeq, line)
 
-and private tableNode (t: Tab) : Yaml.Node =
-    Yaml.NMap(t.Keys |> Seq.map (fun k -> k, toNode t.Values[k]) |> List.ofSeq, t.Line)
+and private tableNode (locals: HashSet<int * string>) (t: Tab) : Yaml.Node =
+    Yaml.NMap(t.Keys |> Seq.map (fun k -> k, toNode locals t.Values[k]) |> List.ofSeq, t.Line)
 
-/// Parse a TOML document into the yaml node tree (a mapping at the top);
-/// errors read `line N: …`
-let parse (text: string) : Result<Yaml.Node, string> =
+/// a parsed document: the yaml node tree (a mapping at the top) and the
+/// offset-less datetimes in it, by (line, text)
+type Doc =
+    { Root: Yaml.Node
+      LocalDates: Set<int * string> }
+
+/// Parse a TOML document; errors read `line N: …`
+let parseDoc (text: string) : Result<Doc, string> =
     let s = { Src = text; Pos = 0; Line = 1 }
     let root = newTab Header 1
     let mutable current = root
@@ -642,6 +654,13 @@ let parse (text: string) : Result<Yaml.Node, string> =
                 keyval s current 0
                 endOfLine s "key/value pair"
 
-        Ok(tableNode root)
+        let locals = HashSet<int * string>()
+        let node = tableNode locals root
+        Ok { Root = node; LocalDates = Set.ofSeq locals }
     with TomlError(line, msg) ->
         Error $"line {line}: {msg}"
+
+/// Parse a TOML document into the yaml node tree (a mapping at the top);
+/// errors read `line N: …`
+let parse (text: string) : Result<Yaml.Node, string> =
+    parseDoc text |> Result.map (fun d -> d.Root)

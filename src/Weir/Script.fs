@@ -536,6 +536,9 @@ let classifyPiece (piece: string) : PieceClass =
         piece.StartsWith "if "
         || piece.StartsWith "match "
         || piece.StartsWith "within "
+        // the bare within [D:within-always] — its `always` closes the
+        // body like an else, and a dedented sibling statement closes both
+        || piece = "within"
         || piece.StartsWith "for "
         // the bounded-loop pair [D:retry-poll] — the machine's 5th and
         // 6th members, still no stack
@@ -4295,7 +4298,7 @@ type ReenumFinding =
 type ReenumTracker() =
     // top-level tracked names -> their pulls [D:reenum-indirect];
     // id -> (command, repair)
-    let tracked = System.Collections.Generic.Dictionary<string, (int * string) list>()
+    let tracked = System.Collections.Generic.Dictionary<string, Check.ReenumCarry>()
     let info = System.Collections.Generic.Dictionary<int, string * string>()
     let counts = System.Collections.Generic.Dictionary<int, int>()
     let found = ResizeArray<ReenumFinding>()
@@ -4356,12 +4359,12 @@ type ReenumTracker() =
         | KLet(name, _, te) ->
             // RHS first (a same-name rebind reads the outer binding — no
             // `let rec` exists)
-            let pulls, events = Check.reenumLet fresh (tracked0 ()) name te
+            let carry, events = Check.reenumLet fresh (tracked0 ()) name te
 
             // the binding's own command: the repair rides its source when
             // it is one clean line (as streamed-it does); assembled
             // (sentinel-joined) text falls back to the generic spelling
-            (match Check.commandBackedUnforced te, pulls with
+            (match Check.commandBackedUnforced te, carry.Pulls with
              | Some cmd, (id, n) :: _ when n = name ->
                  let src = ll.Text.Trim()
 
@@ -4377,8 +4380,8 @@ type ReenumTracker() =
             consume ll events
             tracked.Remove name |> ignore
 
-            if not pulls.IsEmpty then
-                tracked[name] <- pulls
+            if not carry.Pulls.IsEmpty || carry.Forced then
+                tracked[name] <- carry
         | KLetPat(pat, _, te) ->
             consume ll (Check.reenumEvents fresh (tracked0 ()) te)
 

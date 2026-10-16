@@ -471,11 +471,15 @@ let formatValue (v: Value) : string = formatWith showLimits 0 v
 // existing Value machinery [D:secret].
 type private PlanFrame =
     { Ops: ResizeArray<Value>
-      // the literal target paths captured mutations write
-      // [D:plan-apply]; a later read of one is known-after-apply and
-      // refused. Session-resolved so a relative read matches an
-      // earlier relative write.
-      Targets: System.Collections.Generic.HashSet<string> }
+      // the target paths captured mutations change [D:plan-apply]
+      // (normalized, no trailing separator); a later read at, under,
+      // or — for a listing — above one is known-after-apply and
+      // refused [D:plan-stale-reads]. Session-resolved so a relative
+      // read matches an earlier relative write.
+      Targets: ResizeArray<string>
+      // `within tmp` dirs opened inside this plan [D:plan-within-tmp]:
+      // deleted when their scope closes, before any apply
+      TmpRoots: ResizeArray<string> }
 
 module PlanMode =
     let private stack = new System.Threading.ThreadLocal<PlanFrame list>(fun () -> [])
@@ -483,12 +487,26 @@ module PlanMode =
     /// is a plan currently capturing on this thread?
     let active () = not (List.isEmpty stack.Value)
 
+    let private norm (p: string) =
+        let t = System.IO.Path.TrimEndingDirectorySeparator p
+        if t = "" then p else t
+
+    // `p` equals `root` or lies below it (both normalized)
+    let private within (root: string) (p: string) =
+        p = root
+        || p.StartsWith(
+            (if System.IO.Path.EndsInDirectorySeparator root then root
+             else root + string System.IO.Path.DirectorySeparatorChar),
+            System.StringComparison.Ordinal
+        )
+
     /// run f while a fresh capture frame is on top; returns the captured
     /// Ops in capture order (the frame is popped on every exit)
     let capturing (f: unit -> unit) : Value list =
         let frame =
             { Ops = ResizeArray()
-              Targets = System.Collections.Generic.HashSet() }
+              Targets = ResizeArray()
+              TmpRoots = ResizeArray() }
 
         stack.Value <- frame :: stack.Value
         // mirror the frame push into Session's thread-local guard so the
@@ -509,27 +527,85 @@ module PlanMode =
 
         List.ofSeq frame.Ops
 
+    /// a `within tmp` dir opened while planning [D:plan-within-tmp]:
+    /// every open frame records it — the dir is gone before any of
+    /// those plans can apply
+    let noteTmp (dir: string) =
+        for frame in stack.Value do
+            frame.TmpRoots.Add(norm dir)
+
+    // the filesystem paths an Op names (HttpSend names none)
+    let private opPaths (op: Value) : string list =
+        match op with
+        | VUnion("WriteFile", Some(VTuple [ VStr p; _ ]))
+        | VUnion("WriteFileAtomic", Some(VTuple [ VStr p; _ ])) -> [ p ]
+        | VUnion(_, Some(VStr p)) -> [ p ]
+        | VUnion(_, Some(VTuple [ VStr a; VStr b ])) -> [ a; b ]
+        | _ -> []
+
     /// append a captured Op to the top frame; record its target paths so
-    /// a later read of the same path is refused (known-after-apply)
+    /// a later read at or under one is refused (known-after-apply). An
+    /// Op naming a path under a `within tmp` dir this plan opened is
+    /// refused [D:plan-within-tmp]: apply would meet a deleted dir
+    /// midway, after earlier ops ran.
     let capture (op: Value) (targets: string list) =
         match stack.Value with
         | frame :: _ ->
+            let case =
+                match op with
+                | VUnion(c, _) -> c
+                | _ -> "Op"
+
+            for p in opPaths op do
+                match frame.TmpRoots |> Seq.tryFind (fun root -> within root (norm p)) with
+                | Some root ->
+                    failwith
+                        $"plan: this captures a {case} of '{p}', under the 'within tmp' directory '{root}' opened inside the plan — that directory is deleted when its scope closes, before Plan.apply runs, so apply would fail midway. Build the content in memory and capture the write to its real destination, or do the tmp work outside the plan"
+                | None -> ()
+
             frame.Ops.Add op
-            targets |> List.iter (fun p -> frame.Targets.Add p |> ignore)
+            targets |> List.iter (fun p -> frame.Targets.Add(norm p))
         | [] -> unreachable "PlanMode.capture with no active frame"
 
-    /// a read builtin's known-after-apply gate [D:plan-apply]: inside a
-    /// plan, reading a path an earlier captured mutation targeted would
-    /// see stale state (the mutation is still a pending Op). The
-    /// refusal is located and path-scoped: only a read of a captured
-    /// target refuses; other reads run. `op`/`path` name the offender
-    /// and the suggested restructure.
+    let private refuse (op: string) (resolvedPath: string) (target: string) =
+        let what =
+            if target = norm resolvedPath then "targets it"
+            else $"targets '{target}'"
+
+        failwith
+            $"{op}: known-after-apply — this reads '{resolvedPath}', but an earlier captured mutation in this 'plan' {what}; the read would see stale state (the mutation is a pending Op, not yet applied). Restructure so the read does not depend on a captured write, or move it out of the plan"
+
+    /// a read builtin's known-after-apply gate [D:plan-apply]
+    /// [D:plan-stale-reads]: inside a plan, reading a path an earlier
+    /// captured mutation changed would see stale state (the mutation is
+    /// still a pending Op). A point read (one path's content, existence
+    /// or metadata) conflicts with a target it equals or lies under (a
+    /// captured Dir.deleteAll/move covers the tree), and with a target
+    /// below a path that does not exist yet (a captured write would
+    /// create it). Other reads run. `op`/`path` name the offender.
     let checkRead (op: string) (resolvedPath: string) =
         match stack.Value with
-        | frame :: _ when frame.Targets.Contains resolvedPath ->
-            failwith
-                $"{op}: known-after-apply — this reads '{resolvedPath}', but an earlier captured mutation in this 'plan' targets it; the read would see stale state (the mutation is a pending Op, not yet applied). Restructure so the read does not depend on a captured write, or move it out of the plan"
-        | _ -> ()
+        | frame :: _ ->
+            let r = norm resolvedPath
+
+            frame.Targets
+            |> Seq.tryFind (fun t ->
+                within t r
+                || (within r t && not (System.IO.Directory.Exists r)))
+            |> Option.iter (refuse op resolvedPath)
+        | [] -> ()
+
+    /// the listing gate (Dir.list/stat, Path.glob, ls) [D:plan-stale-reads]:
+    /// a listing of `root` also sees every captured target below it
+    let checkTree (op: string) (resolvedRoot: string) =
+        match stack.Value with
+        | frame :: _ ->
+            let r = norm resolvedRoot
+
+            frame.Targets
+            |> Seq.tryFind (fun t -> within t r || within r t)
+            |> Option.iter (refuse op resolvedRoot)
+        | [] -> ()
 
 // The REPL/-e echo [D:repl-echo]: bounded render plus the way-out
 // hint. The count shows only when already known (a materialized list)
@@ -1229,17 +1305,24 @@ let private decodeCoded (where: string) (c: Codec) (text: string option) (num: i
 // a JSON value as a `Yaml` node [D:json-yaml-field]: JSON is a YAML
 // subset, so an opaque `Yaml` field reads any subtree whole — object
 // -> YMap (document order), array -> YSeq, and a number by the YAML
-// scalar rule (integer-shaped -> YInt, else YFloat)
+// scalar rule (integer-shaped -> YInt, else YFloat). A repeated key
+// last-wins at its first position, as records and Map read it
+// [D:json-yaml-dupkeys] — a YMap holding both would write YAML weir
+// itself refuses.
 let rec private jsonYamlNode (where: string) (e: System.Text.Json.JsonElement) : Value =
     match e.ValueKind with
     | System.Text.Json.JsonValueKind.Object ->
+        let props = e.EnumerateObject() |> List.ofSeq
+        let last = props |> List.map (fun p -> p.Name, p.Value) |> Map.ofList
+
         VUnion(
             "YMap",
             Some(
                 VSeq(
-                    e.EnumerateObject()
-                    |> Seq.map (fun p -> VTuple [ VStr p.Name; jsonYamlNode where p.Value ])
-                    |> List.ofSeq
+                    props
+                    |> List.map (fun p -> p.Name)
+                    |> List.distinct
+                    |> List.map (fun k -> VTuple [ VStr k; jsonYamlNode where last[k] ])
                 )
             )
         )
@@ -1436,11 +1519,11 @@ let private jsonDocRead
     (text: string)
     : Value =
     use doc =
-        try
-            System.Text.Json.JsonDocument.Parse text
-        with ex ->
-            // never System.Text.Json's words [D:json-boundary]
-            failwith $"{who}: not valid JSON: {shown}"
+        match parseJsonBounded (fun o -> System.Text.Json.JsonDocument.Parse(text, o)) with
+        | Ok d -> d
+        // never System.Text.Json's words [D:json-boundary]
+        | Error(Some why) -> failwith $"{who}: valid JSON, but {why}: {shown}"
+        | Error None -> failwith $"{who}: not valid JSON: {shown}"
 
     let root = doc.RootElement
 
@@ -2141,7 +2224,11 @@ let rec yamlNodeValue (node: Yaml.Node) : Value =
             Some(VSeq(entries |> List.map (fun (k, v) -> VTuple [ VStr k; yamlNodeValue v ]) |> List.toSeq))
         )
 
-let rec private yamlConvert (shape: Yaml.Shape) (node: Yaml.Node) : Value =
+// `localDate line raw`: is this scalar an offset-less TOML datetime
+// [D:toml-local-instant] — false for every yaml read
+let rec private yamlConvertWith (localDate: int -> string -> bool) (shape: Yaml.Shape) (node: Yaml.Node) : Value =
+    let yamlConvert = yamlConvertWith localDate
+
     match shape, node with
     | Yaml.SOpt _, Yaml.NNull _ -> VUnion("None", None)
     | Yaml.SOpt inner, n -> VUnion("Some", Some(yamlConvert inner n))
@@ -2187,6 +2274,14 @@ let rec private yamlConvert (shape: Yaml.Shape) (node: Yaml.Node) : Value =
                 | Error _ -> failwith $"from yaml: line {line}: expected float, got '{raw}'"
     | Yaml.SStr, Yaml.NScalar(raw, _, _) -> VStr raw
     | Yaml.SSecret, Yaml.NScalar(raw, _, _) -> VSecret raw
+    | Yaml.SCodec Iso8601, Yaml.NScalar(raw, _, line) when localDate line raw ->
+        let what =
+            if not (raw.Contains ':') then "a local date"
+            elif not (raw.Contains '-') then "a local time"
+            else "a local date-time"
+
+        failwith
+            $"from yaml: line {line}: {raw} is {what} — it has no offset, so it names no instant; write an offset date-time (2024-03-01T10:00:00Z, or +02:00 for the zone), or read it into a string field"
     | Yaml.SCodec c, Yaml.NScalar(raw, quoted, line) ->
         let num =
             match (if quoted then (false, 0L) else System.Int64.TryParse raw) with
@@ -2297,6 +2392,8 @@ let rec private yamlConvert (shape: Yaml.Shape) (node: Yaml.Node) : Value =
 
         failwith $"from yaml: line {Yaml.nodeLine node}: expected {want}, got {got}"
 
+let private yamlConvert = yamlConvertWith (fun _ _ -> false)
+
 let private yamlFromImpl (shape: Yaml.Shape) (stream: bool) : Value =
     VBuiltin(fun v ->
         match v with
@@ -2350,11 +2447,11 @@ let private tomlFromImpl (shape: Yaml.Shape) : Value =
                     | v -> unreachable $"the checker rejects 'from toml' on non-string elements: {formatValue v}")
                 |> String.concat "\n"
 
-            match Toml.parse text with
+            match Toml.parseDoc text with
             | Error msg -> failwith $"from toml: {msg}"
             | Ok doc ->
                 try
-                    yamlConvert shape doc
+                    yamlConvertWith (fun line raw -> doc.LocalDates.Contains((line, raw))) shape doc.Root
                 with Failure msg when msg.StartsWith "from yaml: " ->
                     failwith (
                         "from toml: "
@@ -4584,6 +4681,9 @@ and eval (env: Env) (te: TypedExpr) : Value =
             // exit (pfirst exit-race, Ctrl-C) sweeps what this finally
             // could not; the clean path deregisters and the hook is idle
             Session.registerTmpDir dir
+            // opened inside a plan: a captured op under it is refused
+            // [D:plan-within-tmp]
+            PlanMode.noteTmp dir
 
             try
                 eval (Map.add binderName (VStr dir) env) body

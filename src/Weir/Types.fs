@@ -1213,3 +1213,30 @@ type RawBmpEncoder() =
 
 let rawJsonWriterOptions =
     System.Text.Json.JsonWriterOptions(Encoder = RawBmpEncoder())
+
+// The JSON reading depth [D:json-depth]: weir's own value bound (show,
+// equality, to yaml all stop at 100), not System.Text.Json's default 64
+// — a valid document between the two read as "not valid JSON". Past the
+// bound the refusal names the depth; invalid JSON stays its own error.
+let jsonMaxDepth = 100
+
+/// parse one JSON document under the bound: Error (Some why) for a
+/// valid document nested past it, Error None for text that is not JSON
+let parseJsonBounded
+    (parse: System.Text.Json.JsonDocumentOptions -> System.Text.Json.JsonDocument)
+    : Result<System.Text.Json.JsonDocument, string option> =
+    try
+        Ok(parse (System.Text.Json.JsonDocumentOptions(MaxDepth = jsonMaxDepth)))
+    with :? System.Text.Json.JsonException ->
+        // telling the two failures apart: the reader is iterative, so an
+        // unbounded re-read of the rejected text costs memory, not stack
+        match
+            (try
+                Some(parse (System.Text.Json.JsonDocumentOptions(MaxDepth = System.Int32.MaxValue)))
+             with :? System.Text.Json.JsonException ->
+                 None)
+        with
+        | Some doc ->
+            doc.Dispose()
+            Error(Some $"it nests deeper than {jsonMaxDepth} levels, weir's bound for a value")
+        | None -> Error None

@@ -536,13 +536,16 @@ print $"{key} -> {value}"
   (`t + 1d`-style "next day same wall time" does not exist; a shift is
   exact physical time — `t + 24h` means exactly 24 hours). `Instant.now ()`;
   `Instant.parse` reads ISO 8601 (`Z` or numeric offsets, normalized
-  to UTC; a bare date is midnight UTC; RFC 3339's space separator and
+  to UTC; a bare date is midnight UTC, and a time with no offset is
+  read as UTC — the json/yaml `[<Iso8601>]` codec too; RFC 3339's space separator and
   fractions past 7 digits read, truncated); `Instant.parseWith`/`tryParseWith`
   read NAMED formats for log lines and cert dates — `%Y %m %d %e %b
   %H %M %S %f %z`, prefix semantics (the line's tail rides free), no
   `%z` means UTC. `instant - instant` IS a `Duration`
   (`expiry - Instant.now () > 24h * 300`); `instant ± duration`
-  shifts; two points never add (teaching error). Ord/Eq admit —
+  shifts; two points never add (teaching error); `Instant.now () + d`
+  with `d` not yet known refuses too — anchor it as a Duration
+  (`d + 0s`). Ord/Eq admit —
   instants sort and compare. `Args.load`/`Env.load` parse ISO into
   `Instant` fields (`--since 2026-08-01`). No JSON/YAML on its own —
   declare the field's encoding [D:wire-codecs]: `[<Iso8601>] at:
@@ -912,15 +915,22 @@ let x =
   so compare plans or ops, not the seq).
   `Plan.preview` renders human lines (wrote nothing), `Plan.isEmpty`,
   and `Plan.apply` performs in capture order. The Op arms are the mutation surface: `WriteFile of
-  string * seq<string>`, `DeleteFile`, `Copy`/`Move`/`CopyDir`/`MoveDir of
+  string * seq<string>`, `WriteFileAtomic` (`File.writeAtomic`; apply
+  replaces the file atomically too), `DeleteFile`, `Copy`/`Move`/`CopyDir`/`MoveDir of
   string * string`, `MakeDir`, `DeleteDir` (empty only), `DeleteTree`
   (`Dir.deleteAll`), `HttpSend of HttpRequest` (a
   mutating method only — an `Other` verb included unless it is a safe one; `show` masks the auth Secret). Content is
   snapshotted at plan time, so `preview == apply`. The refusals:
   `proc` inside a plan (a spawned binary is uncapturable — plan covers
   weir-native mutation only), `apply` inside a plan (a capture cannot
-  be captured — apply OUTSIDE), and a known-after-apply read (reading
-  a path an earlier captured mutation targets would see stale state).
+  be captured — apply OUTSIDE), a known-after-apply read (any file
+  read, existence check or listing at, under, or over a path an
+  earlier captured mutation changes would see stale state — a write in
+  `d` makes `Dir.list d` and `Path.glob "d/*"` refuse; a captured
+  `Dir.deleteAll d` makes every read under `d` refuse), and a captured
+  op under a `within tmp` dir opened inside the plan (the dir is gone
+  before apply — build the content in memory, or do the tmp work
+  outside the plan).
   `apply` is NOT transactional: it stops at the first failing op with
   prior ops done, no rollback (that is the IaC line weir does not
   cross). `confirm` is your own branch on a Plan value, not a builtin.
@@ -1690,7 +1700,7 @@ type Bad = C of int
   ONE object; an empty mapping writes `[]` and reads back empty),
   a `Map<string, T>` of one, or an opaque `Yaml` node — any subtree
   read whole (JSON is a YAML subset: object -> `YMap` in document
-  order, `null` -> `YNull`) and written back as the JSON it denotes
+  order, a repeated key last-wins, `null` -> `YNull`) and written back as the JSON it denotes
   [D:json-yaml-field] — so `{ entityids: Entity }`,
   `{ items: seq<Item> }`, `{ labels: seq<string * string> }`, and an
   ID-keyed `{ documents: Map<string, Doc> }` all read. A `Map`'s keys are DATA, not schema, and strings
@@ -1795,7 +1805,12 @@ type Bad = C of int
   user-owned decl-only module at `.weir/types/<name>.weir` from the
   locked schema, where `required` decides plain-vs-`Option`,
   `additionalProperties` becomes the `seq<string * V>` mapping, and
-  `$ref` definition names become type names; import it with
+  `$ref` definition names become type names; an int-or-string field
+  (a k8s port) drafts `Yaml` (8080 stays `YInt`, `"25%"` `YStr`), an
+  integer `enum` drafts `int`; validation keywords (`minLength`,
+  `pattern`, `minimum`, `maxItems`, `uniqueItems`, `readOnly`, …) are
+  accepted but NOT enforced — each gets a `// note: not enforced:`
+  line; import it with
   `import "weir:<name>" as X` (type names resolve bare in the
   adapter slot). `from table` stays the tier for tools with no
   schema at all. The generated file is yours — regeneration is an
@@ -1876,7 +1891,8 @@ doc |> Yaml.merge p |> to yaml |> Seq.iter print
   the YAML field law (records, seqs, `Option`, `[<Wire "key">]`,
   codecs); `seq`/`stream`/`Map` tops refuse (the document is a table).
   Arrays of tables (`[[bin]]`) are `seq<record>`. A date/time reads as
-  its TEXT (`[<Iso8601>]` takes an offset date-time into `Instant`);
+  its TEXT (`[<Iso8601>]` takes an offset date-time into `Instant`; a
+  local date-time, date or time has no offset and refuses there);
   `inf`/`nan` parse but refuse into a `float` field. Duplicate keys and
   re-defined tables are located errors. No `to toml`.
 - XML is a READ-ONLY typed boundary [D:from-xml]: `from xml T` reads
@@ -2680,7 +2696,7 @@ the checker's own environment [D:surface-gate] — same contract as above:
 - type `HttpResponse`: { `status` `headers` `body` }
 - type `HttpServerRequest`: { `method` `path` `query` `headers` `body` }
 - type `HttpServerResponse`: { `status` `headers` `body` }
-- type `Op`: `WriteFile` `DeleteFile` `Copy` `Move` `CopyDir` `MoveDir` `MakeDir` `DeleteDir` `DeleteTree` `HttpSend`
+- type `Op`: `WriteFile` `WriteFileAtomic` `DeleteFile` `Copy` `Move` `CopyDir` `MoveDir` `MakeDir` `DeleteDir` `DeleteTree` `HttpSend`
 - type `Option`: `Some` `None`
 - type `Poll`: { `timeout` `interval` }
 - type `PromptStatus`: { `ok` `exit` }

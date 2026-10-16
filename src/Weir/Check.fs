@@ -287,6 +287,17 @@ let private firstDup (xs: string list) : string option =
     |> List.countBy id
     |> List.tryPick (fun (x, n) -> if n > 1 then Some x else None)
 
+// an inline `Env.load {| … |}` / `Args.load {| … |}` shape registers
+// under its canonical name with every field as written; a repeated
+// name is refused as a declared record's is [D:env-inline-type]
+let private loadShapeDup (env: TypeEnv) (tyName: string) : string option =
+    if tyName.StartsWith "{|" then
+        match typeDefFor env tyName with
+        | Some(Record def) -> firstDup (def.Fields |> List.map fst)
+        | _ -> None
+    else
+        None
+
 let private bindParams (env: TypeEnv) (bindings: (string * Ty) list) : TypeEnv =
     { env with
         Values = bindings |> List.fold (fun vs (n, t) -> Map.add n (mono t) vs) env.Values }
@@ -1178,6 +1189,9 @@ let private opValueLambda (op: string) (sp: Span) : Expr =
         )
       Span = sp }
 
+let private instantPlusUnknown =
+    "cannot infer this side of '+' — an Instant adds only a Duration; anchor this side as a Duration (add `+ 0s` where it is built, or pass a Duration value like 5m)"
+
 let rec private typeBinOp
     (ctx: Ctx)
     (env: TypeEnv)
@@ -1224,6 +1238,11 @@ let rec private typeBinOp
             bind ctx env l.Span TBool l.Ty
             |> Result.bind (fun () -> bind ctx env r.Span TBool r.Ty)
         )
+    // a point plus an unknown [D:instant-plus-unknown]: the unknown is
+    // not a second point — binding it to Instant would teach "two
+    // points don't add" about a side nobody wrote as one
+    | "+", TVar _, TInstant -> err l.Span instantPlusUnknown
+    | "+", TInstant, TVar _ -> err r.Span instantPlusUnknown
     | _, TVar _, ((TInt | TFloat | TStr | TBool | TDur | TSize | TInstant | TUuid) as t) ->
         retryAfter (bind ctx env l.Span t l.Ty)
     | _, ((TInt | TFloat | TStr | TBool | TDur | TSize | TInstant | TUuid) as t), TVar _ ->
@@ -3476,6 +3495,8 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                     // Imitates from-json's type-name-in-special-position
                     // resolution, relocated to expression position.
                     (match arg.Kind with
+                     | EVar tyName when (loadShapeDup env tyName).IsSome ->
+                         err arg.Span $"duplicate field '{(loadShapeDup env tyName).Value}' in the anonymous record"
                      | EVar tyName ->
                          match typeDefFor env tyName with
                          | Some(Record def) when def.Params.IsEmpty ->
@@ -3663,6 +3684,8 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                                  buildPayloads Map.empty udef.Cases
 
                          match arg.Kind with
+                         | EVar tyName when (loadShapeDup env tyName).IsSome ->
+                             err arg.Span $"duplicate field '{(loadShapeDup env tyName).Value}' in the anonymous record"
                          | EVar tyName ->
                              match typeDefFor env tyName with
                              | Some(Record def) when def.Params.IsEmpty ->
@@ -7540,8 +7563,14 @@ type ReenumEvent =
 /// what reading a name pulls [D:reenum-indirect]: (binding id, binding
 /// name) per pull — a command-backed binding pulls itself once; a carrier
 /// (a function, or a lazy seq derived from tracked bindings) pulls what
-/// its body/RHS reads, each time it is used
-type ReenumTracked = Map<string, (int * string) list>
+/// its body/RHS reads, each time it is used. `Forced` marks a function
+/// whose body ends materialized: a call's result carries nothing
+/// [D:reenum-forced-call]
+type ReenumCarry =
+    { Pulls: (int * string) list
+      Forced: bool }
+
+type ReenumTracked = Map<string, ReenumCarry>
 
 // a function handed to a `Seq.*` function runs per element — a `for` body
 // is one (`xs |> Seq.iter (fun x -> …)`): a pull there repeats
@@ -7557,11 +7586,39 @@ let private isFunctionValue (te: TypedExpr) =
     | _, TFun _ -> true
     | _ -> false
 
+// a function whose body (under its lambdas) ends materialized
+let rec private forcedBody (v: TypedExpr) =
+    match v.Kind with
+    | TELambda(_, _, b)
+    | TELambdaPat(_, b) -> forcedBody b
+    | _ -> forcedTail v
+
+// a call of a tracked function whose body ends materialized
+// [D:reenum-forced-call] — `f ()`, `x |> f`, through let-in tails
+let rec private forcedCall (tracked: ReenumTracked) (v: TypedExpr) =
+    let rec head (e: TypedExpr) =
+        match e.Kind with
+        | TEApp(f, _) -> head f
+        | TEVar g -> Some g
+        | _ -> None
+
+    let forcedFn (e: TypedExpr) =
+        match head e |> Option.bind (fun g -> Map.tryFind g tracked) with
+        | Some c -> c.Forced
+        | None -> false
+
+    match v.Kind with
+    | TEApp(f, _) -> forcedFn f
+    | TEPipe(_, f) -> forcedFn f
+    | TELet(_, _, _, b)
+    | TELetPat(_, _, b) -> forcedCall tracked b
+    | _ -> false
+
 // a binding that defers its reads: a function, or a lazy unforced seq
-let private carries (v: TypedExpr) =
+let private carries (tracked: ReenumTracked) (v: TypedExpr) =
     isFunctionValue v
     || (match v.Ty with
-        | TSeq _ -> not (forcedTail v)
+        | TSeq _ -> not (forcedTail v) && not (forcedCall tracked v)
         | _ -> false)
 
 /// enumerating uses of tracked (command-backed, unforced) bindings in
@@ -7587,22 +7644,23 @@ let rec private reenumWalk
         names |> List.fold (fun m n -> Map.remove n m) m
 
     let outerIds (m: ReenumTracked) =
-        m |> Seq.collect (fun kv -> kv.Value |> List.map fst) |> Set.ofSeq
+        m |> Seq.collect (fun kv -> kv.Value.Pulls |> List.map fst) |> Set.ofSeq
 
     match te.Kind with
     | TEVar n ->
         match Map.tryFind n tracked with
-        | Some pulls ->
-            for id, name in pulls do
+        | Some carry ->
+            for id, name in carry.Pulls do
                 sink id name (if name = n then "" else $" (through '{n}')") te.Span
         | None -> ()
     | TELet(n, _, v, b) ->
-        let pulls = reenumBind nextId emit sink tracked n v
+        let carry = reenumBind nextId emit sink tracked n v
 
         walk
-            (match pulls with
-             | [] -> Map.remove n tracked
-             | ps -> Map.add n ps tracked)
+            (if carry.Pulls.IsEmpty && not carry.Forced then
+                 Map.remove n tracked
+             else
+                 Map.add n carry tracked)
             b
     | TELetPat(pat, v, b) ->
         walk tracked v
@@ -7647,8 +7705,8 @@ let rec private reenumWalk
 /// bind `n = v` [D:reenum-indirect]: a carrier's RHS reads of outer
 /// tracked bindings are collected as its pulls, not counted now; any
 /// other RHS is walked as uses. A command-backed unforced RHS also pulls
-/// itself (a fresh id, announced with ReenumBind). Returns n's pulls
-/// ([] = untracked).
+/// itself (a fresh id, announced with ReenumBind). Returns n's carry
+/// (no pulls and not Forced = untracked).
 and private reenumBind
     (nextId: unit -> int)
     (emit: ReenumEvent -> unit)
@@ -7656,10 +7714,10 @@ and private reenumBind
     (tracked: ReenumTracked)
     (n: string)
     (v: TypedExpr)
-    : (int * string) list =
-    if carries v then
+    : ReenumCarry =
+    if carries tracked v then
         let outer =
-            tracked |> Seq.collect (fun kv -> kv.Value |> List.map fst) |> Set.ofSeq
+            tracked |> Seq.collect (fun kv -> kv.Value.Pulls |> List.map fst) |> Set.ofSeq
 
         let pulls = ResizeArray<int * string>()
 
@@ -7676,10 +7734,11 @@ and private reenumBind
                 [ id, n ]
             | None -> []
 
-        own @ List.ofSeq pulls
+        { Pulls = own @ List.ofSeq pulls
+          Forced = isFunctionValue v && forcedBody v }
     else
         reenumWalk nextId emit sink tracked v
-        []
+        { Pulls = []; Forced = false }
 
 let private reenumCollect (run: (ReenumEvent -> unit) -> (int -> string -> string -> Span -> unit) -> 'r) =
     let acc = ResizeArray<ReenumEvent>()
@@ -7690,14 +7749,14 @@ let private reenumCollect (run: (ReenumEvent -> unit) -> (int -> string -> strin
 let reenumEvents (nextId: unit -> int) (tracked0: ReenumTracked) (root: TypedExpr) : ReenumEvent list =
     reenumCollect (fun emit sink -> reenumWalk nextId emit sink tracked0 root) |> snd
 
-/// a top-level `let n = v`: the RHS's events and n's pulls ([] =
-/// untracked) [D:reenum-indirect]
+/// a top-level `let n = v`: the RHS's events and n's carry
+/// [D:reenum-indirect]
 let reenumLet
     (nextId: unit -> int)
     (tracked0: ReenumTracked)
     (n: string)
     (v: TypedExpr)
-    : (int * string) list * ReenumEvent list =
+    : ReenumCarry * ReenumEvent list =
     reenumCollect (fun emit sink -> reenumBind nextId emit sink tracked0 n v)
 
 // ---- the newTempDir footgun [D:newtempdir-lint] --------------------------

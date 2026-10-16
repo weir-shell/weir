@@ -192,6 +192,17 @@ WEOF
 fout=$($BIN check "$redir/forced.weir" 2>&1) || fail "forced must check clean: $fout"
 echo "$fout" | grep -q "re-enumeration" && fail "a forced binding must not warn: $fout" || true
 echo "e2e ok: re-enumeration warning on the second pull, exit 0; Seq.freeze silences it"
+# [D:reenum-forced-call]: a call of a function that freezes is a snapshot
+cat > "$redir/fcall.weir" <<'WEOF'
+let files = git ls-files
+let snap () = files |> Seq.freeze
+let a = snap ()
+print $"{a |> Seq.length}"
+a |> Seq.iter print
+WEOF
+fout=$($BIN check "$redir/fcall.weir" 2>&1) || fail "fcall must check clean: $fout"
+echo "$fout" | grep -q "re-enumeration" && fail "a frozen call result must not warn: $fout" || true
+echo "e2e ok: re-enumeration — a call of a freezing function carries nothing"
 
 # walk candidates: exit codes exact; File.readSecret (never covered); Dir.copy success
 pw2=$(mkweirtmp)
@@ -2772,6 +2783,24 @@ fi
 rm -rf "$aadir"
 echo "e2e ok: always after any within — cleanup inside the scope on every exit path; cd/env/lock/proc held"
 
+# [D:within-always]: an indented bare within/always, then a sibling statement
+wadir=$(mkweirtmp)
+cat > "$wadir/body.weir" <<'WEOF'
+let f () =
+    within
+        print "body"
+    always
+        print "cleanup"
+    print "after"
+f ()
+WEOF
+out=$($BIN "$wadir/body.weir" 2>&1) || fail "an indented within/always + statement must run: $out"
+[ "$out" = "body
+cleanup
+after" ] || fail "body, cleanup, after: $out"
+rm -rf "$wadir"
+echo "e2e ok: an indented within … always followed by a statement assembles and runs"
+
 # ---- within env NAME=value [D:within-env-pairs] ----------------------------
 # the env-prefix words scope a block; a body line's own prefix stays its
 # command's (the head joins sentineled); the parent stays clean
@@ -5170,8 +5199,38 @@ expect "from toml: arrays of tables" "cli,srv" "$out"
 expect "from toml: [<Wire>] and [<Iso8601>]" ">=3.11 2024-03-01T10:00:00Z" "$out"
 terr=$(cd "$tdir" && $BIN -e 'File.read "dup.toml" |> from toml {| a: int |} |> _.a |> show |> print' 2>&1) && fail "a duplicate key must fail: $terr" || true
 echo "$terr" | grep -qF "from toml: line 3: the key 'a' is defined twice" || fail "the duplicate key is located: $terr"
-echo "e2e ok: from toml — Cargo/pyproject on disk, Wire, Iso8601, located duplicate key"
+# [D:toml-local-instant]: an offset-less datetime names no instant
+lerr=$($BIN -e '["start = 2024-03-01T10:00:00"] |> from toml {| start: string |} |> _.start |> print' 2>&1) || fail "a local date-time reads into a string: $lerr"
+[ "$lerr" = "2024-03-01T10:00:00" ] || fail "the string keeps the text: $lerr"
+printf 'type LR = { [<Iso8601>] start: Instant }\nlet r = ["start = 2024-03-01T10:00:00"] |> from toml LR\nprint $"{r.start}"\n' > "$tdir/local.weir"
+lerr=$($BIN "$tdir/local.weir" 2>&1) && fail "a local date-time into an Instant must refuse: $lerr" || true
+echo "$lerr" | grep -qF "from toml: line 1: 2024-03-01T10:00:00 is a local date-time" || fail "the local date-time refusal: $lerr"
+echo "e2e ok: from toml — Cargo/pyproject on disk, Wire, Iso8601, located duplicate key, a local date-time refuses an Instant"
 rm -rf "$tdir"
+
+# [D:json-depth] [D:json-yaml-dupkeys]: a valid document past 64 levels
+# reads; past 100 it names the depth; a repeated key into a Yaml node
+# last-wins, so to yaml writes YAML weir reads back
+jdir=$(mkweirtmp)
+python3 -I - "$jdir" <<'PYEOF'
+import sys
+d = lambda n: '{\\"a\\":' * n + '1' + '}' * n
+for n in (65, 101):
+    open(sys.argv[1] + '/d%d.weir' % n, 'w').write('type N = { a: Yaml }\nlet _r = ["' + d(n) + '"] |> from json N\nprint "read"\n')
+PYEOF
+out=$($BIN "$jdir/d65.weir" 2>&1) || fail "a 65-deep JSON document must read: $out"
+[ "$out" = "read" ] || fail "the 65-deep read: $out"
+out=$($BIN "$jdir/d101.weir" 2>&1) && fail "a 101-deep document must refuse" || true
+echo "$out" | grep -qF "valid JSON, but it nests deeper than 100 levels" || fail "the depth is named: $out"
+cat > "$jdir/dup.weir" <<'WEOF'
+type R = { v: Yaml }
+let r = ["{\"v\": {\"a\": 1, \"b\": 2, \"a\": 3}}"] |> from json R
+r |> to yaml |> from yaml R |> to json |> Seq.iter print
+WEOF
+out=$($BIN "$jdir/dup.weir" 2>&1) || fail "a repeated key into Yaml must round-trip: $out"
+[ "$out" = '{"v":{"a":3,"b":2}}' ] || fail "last value, first position: $out"
+rm -rf "$jdir"
+echo "e2e ok: from json — 65-deep reads, 101-deep names the depth, a repeated key into Yaml last-wins"
 
 # |> try [D:try-form]: a failure as a value — a real missing file and a
 # malformed document become None / Error; exit passes through the capture
@@ -8881,6 +8940,13 @@ awaitHttp "http://127.0.0.1:$gtport/pod-v1-trimmed.json" || { kill $gtsrv 2>/dev
 # anyOf IntOrString, nullable, x-kubernetes-*) vendors clean
 ( cd "$gtdir/proj" && $BIN add schema http://127.0.0.1:$gtport/pod-v1-trimmed.json --as pod ) | grep -q "added schema pod" || fail "add schema on the ref-heavy pod fixture"
 ( cd "$gtdir/proj" && $BIN add schema http://127.0.0.1:$gtport/scalar.json --as scalar ) >/dev/null || fail "add schema scalar"
+# [D:schema-validation-keys] [D:schema-int-or-string] [D:schema-int-enum]:
+# validation keywords vendor; int-or-string and an integer enum draft
+# types the document's own values read into
+cat > "$gtdir/serve/svc.json" <<'JEOF'
+{"type":"object","$comment":"c","required":["level"],"properties":{"name":{"type":"string","minLength":1,"pattern":"^a"},"port":{"anyOf":[{"type":"integer"},{"type":"string"}],"x-kubernetes-int-or-string":true},"level":{"type":"integer","enum":[1,2,3]},"tags":{"type":"array","items":{"type":"string"},"maxItems":3,"uniqueItems":true}}}
+JEOF
+( cd "$gtdir/proj" && $BIN add schema http://127.0.0.1:$gtport/svc.json --as svc ) >/dev/null || fail "add schema over validation keywords"
 kill $gtsrv 2>/dev/null || true
 wait $gtsrv 2>/dev/null || true
 
@@ -8958,6 +9024,24 @@ echo "$out" | grep -qF "no locked schema 'nope' — add it: weir add schema <url
 out=$( cd "$gtdir/proj" && $BIN gen types --schema pod --as lowercase 2>&1 ) && fail "a lowercase --as must refuse" || true
 echo "$out" | grep -qF "must be a type name: an uppercase letter first" || fail "--as teaches the type-name rule: $out"
 echo "e2e ok: gen types refusals — scalar top, unlocked name, lowercase --as"
+
+( cd "$gtdir/proj" && $BIN gen types --schema svc ) >/dev/null || fail "gen types svc"
+svcmod="$gtdir/proj/.weir/types/svc.weir"
+grep -qF "port: Option<Yaml>" "$svcmod" || fail "int-or-string drafts Yaml: $(cat "$svcmod")"
+grep -qF "level: int" "$svcmod" || fail "an integer enum drafts int: $(cat "$svcmod")"
+grep -qF "// note: not enforced: minLength on name" "$svcmod" || fail "the minLength note: $(cat "$svcmod")"
+grep -qF "// note: not enforced: uniqueItems on tags" "$svcmod" || fail "the uniqueItems note: $(cat "$svcmod")"
+cat > "$gtdir/proj/svc.weir" <<'WEOF'
+import "weir:svc" as S
+let j = ["{\"port\": 8080, \"level\": 2}"] |> from json Svc
+j |> to json |> Seq.iter print
+let y = ["port: 8080"; "level: 1"] |> from yaml Svc
+y |> to yaml |> Seq.iter print
+WEOF
+out=$( cd "$gtdir/proj" && $BIN svc.weir 2>&1 ) || fail "the svc types read json and yaml: $out"
+echo "$out" | grep -qF '"port":8080' || fail "json keeps 8080 an int: $out"
+echo "$out" | grep -qxF "port: 8080" || fail "yaml writes 8080 unquoted: $out"
+echo "e2e ok: gen types — validation keywords noted, int-or-string as Yaml, an integer enum as int"
 
 # --out -: stdout, nothing written; --as renames the top type
 ( cd "$gtdir/proj" && $BIN gen types --schema pod --as Manifest --out - ) | grep -qF "type Manifest = {" || fail "--as + --out - streams the renamed module"
@@ -9147,6 +9231,12 @@ out=$($BIN "$indir/slice.weir") || fail "log-slice acceptance failed: $out"
 printf 'type TR = { t: Instant }\nlet x = [""] |> from json TR\n' > "$indir/jr.weir"
 out=$($BIN "$indir/jr.weir" 2>&1) && fail "an Instant json field must refuse" || true
 echo "$out" | grep -qF "Instant.epochMs into an int field" || fail "the refusal names the conversions: $out"
+
+# [D:instant-plus-unknown]: the unknown side is taught, not "two points"
+printf 'let at d = Instant.now () + d\nprint $"{at 5m}"\n' > "$indir/pu.weir"
+out=$($BIN check "$indir/pu.weir" 2>&1) && fail "Instant + an unknown must refuse" || true
+echo "$out" | grep -qF "cannot infer this side of '+'" || fail "the unknown side is taught: $out"
+echo "$out" | grep -qF "two points" && fail "never 'two points' for an unknown: $out" || true
 
 rm -rf "$indir"
 echo "e2e ok: Instant (cert-expiry via openssl enddate, log slicing by cutoff, JSON refusal teaches)"
@@ -9340,6 +9430,10 @@ aout=$($BIN "$candir/argsinline.weir" -v --out x 2>&1) || fail "inline Args.load
 [ "$aout" = "true Some \"x\"" ] || fail "inline Args.load values: $aout"
 $BIN "$candir/argsinline.weir" --help 2>&1 | grep -qF -- "--verbose" || fail "inline Args.load derives --help"
 echo "e2e ok: Env.need/getOr and inline Env.load/Args.load — values, located need failure, --can names, --help"
+printf 'let e = Env.load {| DUP_X: string; DUP_X: int |}\nprint e.DUP_X\n' > "$candir/envdup.weir"
+dout=$($BIN check "$candir/envdup.weir" 2>&1) && fail "a duplicate inline field must refuse at check: $dout" || true
+echo "$dout" | grep -qF "duplicate field 'DUP_X' in the anonymous record" || fail "the duplicate is named: $dout"
+echo "e2e ok: inline Env.load refuses a duplicate field at check"
 
 # --strict: opaque sites become a distinct nonzero for CI's choosing
 strictrc=0
@@ -11272,6 +11366,61 @@ WEOF
 out=$($BIN "$padir/kaa.weir" 2>&1) && fail "a known-after-apply read must refuse" || true
 echo "$out" | grep -qF "known-after-apply" || fail "the known-after-apply teaching must fire: $out"
 echo "e2e ok: plan/apply — a known-after-apply read refuses (located)"
+
+# [D:plan-stale-reads]: every fs read is guarded — a listing after a
+# captured write inside it, a read under a captured deleteAll
+mkdir -p "$padir/sr/tree" && printf 't\n' > "$padir/sr/tree/f"
+cat > "$padir/sr1.weir" <<WEOF
+let p =
+    plan
+        File.write "$padir/sr/new.txt" ["n"]
+        print \$"{Path.glob "$padir/sr/*.txt" |> Seq.length}"
+print \$"{p |> Plan.isEmpty}"
+WEOF
+out=$($BIN "$padir/sr1.weir" 2>&1) && fail "a glob over a dir with a captured write must refuse" || true
+echo "$out" | grep -qF "Path.glob: known-after-apply" || fail "the glob refusal: $out"
+cat > "$padir/sr2.weir" <<WEOF
+let p =
+    plan
+        Dir.deleteAll "$padir/sr/tree"
+        print \$"{File.exists "$padir/sr/tree/f"}"
+print \$"{p |> Plan.isEmpty}"
+WEOF
+out=$($BIN "$padir/sr2.weir" 2>&1) && fail "File.exists under a captured deleteAll must refuse" || true
+echo "$out" | grep -qF "File.exists: known-after-apply" || fail "the exists refusal: $out"
+echo "e2e ok: plan/apply — stale reads refuse: a listing over a captured write, a read under a captured deleteAll"
+
+# [D:plan-within-tmp]: an op under a within tmp opened in the plan refuses
+# before anything applies
+cat > "$padir/wt.weir" <<WEOF
+let p =
+    plan
+        File.write "$padir/wt-first.txt" ["a"]
+        within tmp t
+            File.write \$"{t}/x" ["y"]
+p |> Plan.apply
+WEOF
+out=$($BIN "$padir/wt.weir" 2>&1) && fail "an op under a plan's within tmp must refuse" || true
+echo "$out" | grep -qF "opened inside the plan" || fail "the within-tmp refusal: $out"
+[ -f "$padir/wt-first.txt" ] && fail "nothing may apply after the refusal"
+echo "e2e ok: plan/apply — an op under a within tmp opened in the plan refuses, nothing applied"
+
+# [D:plan-writeatomic]: writeAtomic applies atomically — a hardlink keeps the old inode
+if [ "$IS_WINDOWS" != "1" ]; then
+    printf 'old\n' > "$padir/wa.txt" && ln "$padir/wa.txt" "$padir/wa-link.txt"
+    cat > "$padir/wa.weir" <<WEOF
+let p =
+    plan
+        File.writeAtomic "$padir/wa.txt" ["new"]
+p |> Plan.preview |> Seq.iter print
+p |> Plan.apply
+WEOF
+    out=$($BIN "$padir/wa.weir" 2>&1) || fail "a planned writeAtomic must apply: $out"
+    echo "$out" | grep -qF "atomically" || fail "the preview names the atomic write: $out"
+    [ "$(cat "$padir/wa.txt")" = "new" ] || fail "the target holds the new content"
+    [ "$(cat "$padir/wa-link.txt")" = "old" ] || fail "an applied writeAtomic must split the hardlink"
+    echo "e2e ok: plan/apply — File.writeAtomic applies atomically (the hardlink keeps the old content)"
+fi
 
 # DA-01 [D:plan-parallel-refusal]: a parallel/race callback runs on a
 # worker thread without the (thread-local) plan capture frame — a native

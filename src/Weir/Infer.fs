@@ -65,11 +65,17 @@ let rec private ofJsonElement (el: System.Text.Json.JsonElement) : INode =
 let private jsonNode (lines: string seq) : Result<INode, string> =
     let text = String.Join("\n", lines)
 
-    try
-        use doc = System.Text.Json.JsonDocument.Parse text
+    match Weir.Types.parseJsonBounded (fun o -> System.Text.Json.JsonDocument.Parse(text, o)) with
+    | Ok doc ->
+        use doc = doc
         Ok(ofJsonElement doc.RootElement)
-    with ex ->
-        Error $"#infer: the sample is not valid JSON: {ex.Message}"
+    | Error(Some why) -> Error $"#infer: the sample is valid JSON, but {why}"
+    | Error None ->
+        try
+            System.Text.Json.JsonDocument.Parse(text).Dispose()
+            Error "#infer: the sample is not valid JSON"
+        with ex ->
+            Error $"#infer: the sample is not valid JSON: {ex.Message}"
 
 /// NDJSON — one JSON document per non-blank line, gathered into an array
 let private jsonlNode (lines: string seq) : Result<INode, string> =
@@ -78,11 +84,17 @@ let private jsonlNode (lines: string seq) : Result<INode, string> =
 
     for line in lines do
         if err.IsNone && line.Trim() <> "" then
-            try
-                use doc = System.Text.Json.JsonDocument.Parse line
+            match Weir.Types.parseJsonBounded (fun o -> System.Text.Json.JsonDocument.Parse(line, o)) with
+            | Ok doc ->
+                use doc = doc
                 docs.Add(ofJsonElement doc.RootElement)
-            with ex ->
-                err <- Some $"#infer: a jsonl line is not valid JSON: {ex.Message}"
+            | Error(Some why) -> err <- Some $"#infer: a jsonl line is valid JSON, but {why}"
+            | Error None ->
+                try
+                    System.Text.Json.JsonDocument.Parse(line).Dispose()
+                    err <- Some "#infer: a jsonl line is not valid JSON"
+                with ex ->
+                    err <- Some $"#infer: a jsonl line is not valid JSON: {ex.Message}"
 
     match err with
     | Some e -> Error e

@@ -37,6 +37,25 @@
   reach the handler in another order than sent. Closing the block
   frees the port at once and gives running handlers two seconds,
   together, to finish.
+- **`weir add schema` accepts validation keywords.** `minLength`,
+  `maxLength`, `pattern`, `minimum`, `maximum`, `exclusiveMinimum`,
+  `exclusiveMaximum`, `multipleOf`, `minItems`, `maxItems`,
+  `uniqueItems`, `minProperties`, `maxProperties`, `readOnly`,
+  `writeOnly`, `deprecated` and `$comment` no longer refuse the whole
+  schema (real GitHub workflow and Kubernetes schemas use them). They
+  are not enforced; `weir gen types` writes one
+  `// note: not enforced: …` line per keyword.
+- **`weir gen types` drafts an int-or-string field as `Yaml`** (a
+  Kubernetes port, `x-kubernetes-int-or-string`), so `from json` reads
+  `8080` and `to yaml` writes it back unquoted; it was `string`. An
+  enum of integers drafts `int` instead of `string`.
+- **`File.writeAtomic` inside a `plan` records a `WriteFileAtomic` op**
+  and `Plan.apply` replaces the file atomically, as the direct call
+  does; it recorded `WriteFile` and applied an in-place write, so a
+  hard link saw the new content.
+- **`from toml` refuses a date-time without an offset into an
+  `[<Iso8601>] Instant`** — `start = 2024-03-01T10:00:00` read as
+  10:00 UTC. Add an offset, or read it into a `string` field.
 - **The init file refuses bare names.** It is a script, not typing at
   the prompt: `let evens () = xs |> where …` loaded before and now
   needs `Seq.where`, as in any script. Bare names still work at the
@@ -99,6 +118,29 @@
 - **A `plan` no longer sends `Http.send` with `Other "PURGE"`** (or any
   other `Other` verb): it is captured as an `HttpSend` op like `Post`.
   Only GET, HEAD, OPTIONS, QUERY and TRACE (any casing) count as reads.
+- **A `plan` refuses every stale read.** `File.exists`, `File.sha256`,
+  `File.readBytes`, `Path.glob`, `ls` and the rest of the file reads
+  now refuse after a captured change they would not see, as
+  `File.read` did; a listing refuses after a write inside it, a read
+  under a captured `Dir.deleteAll` or move refuses, and `a.txt/` is
+  `a.txt`.
+- **A `plan` refuses an op inside a `within tmp` opened in it.** That
+  directory is deleted before `Plan.apply`, which then failed midway
+  after earlier ops had run.
+- **`from json` reads documents nested up to 100 levels** (it stopped
+  at 64 and said "not valid JSON"); deeper documents say so by depth.
+  `weir add schema` likewise.
+- **A `Yaml` field read from JSON keeps one of a repeated key** — the
+  last value, at the first position — so `to yaml` no longer writes
+  YAML weir refuses.
+- **An indented `within … always` followed by another statement
+  parses**; it failed with "dedents below the open block".
+- **No re-enumeration warning on the result of a function that
+  freezes** (`let f () = xs |> Seq.freeze` then reading `f ()` twice).
+- **`Env.load {| A: string; A: int |}` refuses the duplicate field** at
+  check, as a declared record does; `Args.load` too.
+- **`Instant.now () + d` with `d` unknown says to anchor `d` as a
+  Duration** instead of "two points don't add".
 - **`weir fmt` keeps a file's line endings.** It wrote the platform
   newline, so reformatting turned an LF file CRLF on Windows and a CRLF
   file LF elsewhere; a CRLF file now stays CRLF and an LF file LF.

@@ -107,6 +107,7 @@ let private lsRow (info: FileSystemInfo) : Value =
           VStr info.FullName ]
 
 let private lsEnumerate (cwd: string) : seq<Value> =
+    PlanMode.checkTree "ls" cwd
     // the whole directory — files and subdirectories (GetFiles
     // silently halved the listing for a month) [D:ls-truth]
     let infos =
@@ -1010,14 +1011,21 @@ let private globImpl: Value =
             // cwd). The walk stays lazy.
             let scoped = Session.scopedCwd ()
 
-            VSeq(
-                Seq.delay (fun () ->
-                    let rootFs =
-                        if pat.StartsWith "/" then "/"
-                        else scoped |> Option.defaultWith Session.Cwd
+            let rootOf () =
+                if pat.StartsWith "/" then "/"
+                else scoped |> Option.defaultWith Session.Cwd
 
-                    globWalk rootFs pat |> Seq.map VStr)
-            )
+            // inside a plan the walk's literal prefix is a listing root
+            // [D:plan-stale-reads], judged where glob is called
+            if PlanMode.active () then
+                let literal =
+                    pat.Split('/')
+                    |> Array.filter (fun s -> s <> "")
+                    |> Array.takeWhile (fun seg -> not (seg |> Seq.exists (fun c -> c = '*' || c = '?' || c = '[')))
+
+                PlanMode.checkTree "Path.glob" (System.IO.Path.GetFullPath(System.IO.Path.Combine(Array.append [| rootOf () |] literal)))
+
+            VSeq(Seq.delay (fun () -> globWalk (rootOf ()) pat |> Seq.map VStr))
         | _ -> unreachable "the checker rejects 'glob' on this argument")
 
 let private str1 (name: string) (f: string -> string) : Value =
@@ -3237,6 +3245,7 @@ let private envFromFileImpl: Value =
             VSeq(
                 Seq.delay (fun () ->
                     let resolved = Session.resolve path
+                    PlanMode.checkRead "Env.fromFile" resolved
 
                     // the File-family guards, in Env.fromFile's own words —
                     // a missing .env must not leak
@@ -3399,14 +3408,16 @@ let private ioGuarded (op: string) (r: string) (f: unit -> 'a) : 'a =
 // plan's own frame (a nested mutation in the content is
 // captured/refused).
 
-/// capture a WriteFile op (File.write): force the content seq to data now.
+/// capture a WriteFile op (File.write) or WriteFileAtomic (File.writeAtomic,
+/// applied through the atomic path [D:plan-writeatomic]): force the
+/// content seq to data now.
 /// The captured path is the resolved absolute path [D:plan-path-bound]:
 /// the target is fixed at capture, so apply writes exactly the previewed
 /// location regardless of the apply-time cwd.
-let private capWrite (resolved: string) (lines: Value seq) : Value option =
+let private capWrite (case: string) (resolved: string) (lines: Value seq) : Value option =
     if PlanMode.active () then
         let snapshot = lines |> List.ofSeq // FORCE: snapshot content at plan time
-        PlanMode.capture (VUnion("WriteFile", Some(VTuple [ VStr resolved; VSeq snapshot ]))) [ resolved ]
+        PlanMode.capture (VUnion(case, Some(VTuple [ VStr resolved; VSeq snapshot ]))) [ resolved ]
         Some VUnit
     else
         None
@@ -3421,12 +3432,20 @@ let private capPath1 (case: string) (resolved: string) : Value option =
         None
 
 /// capture a two-path op (Copy / Move): the destination is the target a
-/// later read would see stale (the source is read, not written). Both
+/// later read would see stale, and a move's source (a copy's is only
+/// read). Both
 /// paths are stored resolved absolute [D:plan-path-bound] — apply
 /// replays the exact captured source and destination, cwd-independent.
 let private capPath2 (case: string) (resolvedSrc: string) (resolvedDst: string) : Value option =
     if PlanMode.active () then
-        PlanMode.capture (VUnion(case, Some(VTuple [ VStr resolvedSrc; VStr resolvedDst ]))) [ resolvedDst ]
+        // a move also changes its source (gone after apply) [D:plan-stale-reads]
+        let targets =
+            match case with
+            | "Move"
+            | "MoveDir" -> [ resolvedSrc; resolvedDst ]
+            | _ -> [ resolvedDst ]
+
+        PlanMode.capture (VUnion(case, Some(VTuple [ VStr resolvedSrc; VStr resolvedDst ]))) targets
         Some VUnit
     else
         None
@@ -3603,7 +3622,7 @@ let private fileMembers: (string * Ty * Value) list =
               | VStr path, VSeq lines ->
                   let r = Session.resolve path
 
-                  match capWrite r lines with
+                  match capWrite "WriteFile" r lines with
                   | Some captured -> captured
                   | None ->
                   writeGuard "File.write" r
@@ -3638,7 +3657,7 @@ let private fileMembers: (string * Ty * Value) list =
               | VStr path, VSeq lines ->
                   let r = Session.resolve path
 
-                  match capWrite r lines with
+                  match capWrite "WriteFileAtomic" r lines with
                   | Some captured -> captured
                   | None ->
                   writeGuard "File.writeAtomic" r
@@ -3674,7 +3693,10 @@ let private fileMembers: (string * Ty * Value) list =
       TFun(TStr, TBool),
       VBuiltin(fun v ->
           match v with
-          | VStr path -> VBool(File.Exists(Session.resolve path))
+          | VStr path ->
+              let r = Session.resolve path
+              PlanMode.checkRead "File.exists" r
+              VBool(File.Exists r)
           | v -> unreachable $"the checker rejects 'File.exists' on {formatValue v}") ]
 
 // fail keeps exit-1 (message-carrying); `exit n` is the propagation
@@ -3760,6 +3782,7 @@ let private fsMoreFileMembers: (string * Ty * Value) list =
           match v with
           | VStr p ->
               let r = Session.resolve p
+              PlanMode.checkRead "File.mode" r
 
               if not (System.IO.File.Exists r || System.IO.Directory.Exists r || FileInfo(r).Exists) then
                   failwith $"File.mode: no such path: {r}"
@@ -3806,6 +3829,7 @@ let private fsMoreFileMembers: (string * Ty * Value) list =
           match v with
           | VStr p ->
               let r = Session.resolve p
+              PlanMode.checkRead "File.isExecutable" r
 
               // "" is a no-such-path, not the cwd [D:isexecutable-empty]:
               // Session.resolve "" folds to the cwd, which exists and
@@ -3837,6 +3861,7 @@ let private fsMoreFileMembers: (string * Ty * Value) list =
           match v with
           | VStr p ->
               let r = Session.resolve p
+              PlanMode.checkRead "File.readBytes" r
               readGuard "File.readBytes" r
               VBytes(ioGuarded "File.readBytes" r (fun () -> readBytesShared r))
           | v -> unreachable $"the checker rejects 'File.readBytes' on {formatValue v}")
@@ -3864,6 +3889,7 @@ let private fsMoreFileMembers: (string * Ty * Value) list =
           match v with
           | VStr p ->
               let r = Session.resolve p
+              PlanMode.checkRead "File.sha256" r
               readGuard "File.sha256" r
 
               VStr(
@@ -3999,7 +4025,7 @@ let private dirMembers: (string * Ty * Value) list =
           match v with
           | VStr p ->
               let r = Session.resolve p
-              PlanMode.checkRead "Dir.list" r
+              PlanMode.checkTree "Dir.list" r
 
               if not (System.IO.Directory.Exists r) then
                   failwith $"Dir.list: no such directory: {r}"
@@ -4019,6 +4045,7 @@ let private dirMembers: (string * Ty * Value) list =
           match v with
           | VStr p ->
               let r = Session.resolve p
+              PlanMode.checkTree "Dir.stat" r
 
               if not (System.IO.Directory.Exists r) then
                   failwith $"Dir.stat: no such directory: {r}"
@@ -4830,6 +4857,8 @@ let private previewOp (op: Value) : string =
     match op with
     | VUnion("WriteFile", Some(VTuple [ VStr p; VSeq lines ])) ->
         $"write {p} ({lines |> Seq.length} line(s))"
+    | VUnion("WriteFileAtomic", Some(VTuple [ VStr p; VSeq lines ])) ->
+        $"write {p} atomically ({lines |> Seq.length} line(s))"
     | VUnion("DeleteFile", Some(VStr p)) -> $"delete file {p}"
     | VUnion("MakeDir", Some(VStr p)) -> $"make dir {p}"
     | VUnion("DeleteDir", Some(VStr p)) -> $"delete dir {p}"
@@ -4862,6 +4891,9 @@ let private applyOp (op: Value) : unit =
             fs.SetLength 0L
             fs.Seek(0L, SeekOrigin.Begin) |> ignore
             fs.Write(payload, 0, payload.Length))
+    | VUnion("WriteFileAtomic", Some(VTuple [ VStr r; VSeq lines ])) ->
+        writeGuard "Plan.apply (WriteFileAtomic)" r
+        ioGuarded "Plan.apply (WriteFileAtomic)" r (fun () -> atomicReplace r lines)
     | VUnion("DeleteFile", Some(VStr r)) -> doFileDelete "Plan.apply (DeleteFile)" r
     | VUnion("MakeDir", Some(VStr r)) -> doDirCreate "Plan.apply (MakeDir)" r
     | VUnion("DeleteDir", Some(VStr r)) -> doDirDelete "Plan.apply (DeleteDir)" r
@@ -6838,7 +6870,7 @@ let builtinDocs: Map<string, BuiltinDoc> =
            |> named [ "path"; "lines" ])
           "File.writeAtomic",
           (bd
-              "Write a sequence of lines by replacing the whole file at once: the content goes to a temp file in the same directory, is flushed to disk, and is then renamed over the target. Readers see either the complete old file or the complete new one, and a failed write leaves the original intact. For a symlink, the file it points to is replaced, not the link; the file's permissions and any existing BOM are kept. Because the file is a new inode, hard links are separated, open handles and tail -f keep seeing the old file, and a single-file bind mount into a container stops updating; use File.write when you need an in-place write. Inside a plan it records the same WriteFile op as File.write, and apply then does an in-place write."
+              "Write a sequence of lines by replacing the whole file at once: the content goes to a temp file in the same directory, is flushed to disk, and is then renamed over the target. Readers see either the complete old file or the complete new one, and a failed write leaves the original intact. For a symlink, the file it points to is replaced, not the link; the file's permissions and any existing BOM are kept. Because the file is a new inode, hard links are separated, open handles and tail -f keep seeing the old file, and a single-file bind mount into a container stops updating; use File.write when you need an in-place write. Inside a plan it records a WriteFileAtomic op, and apply replaces the file the same way."
               None
               None
            |> named [ "path"; "lines" ])

@@ -470,7 +470,7 @@
         {
           "name": "writeAtomic",
           "signature": "File.writeAtomic (path: string) (lines: seq\u003Cstring\u003E) : unit",
-          "summary": "Write a sequence of lines by replacing the whole file at once: the content goes to a temp file in the same directory, is flushed to disk, and is then renamed over the target. Readers see either the complete old file or the complete new one, and a failed write leaves the original intact. For a symlink, the file it points to is replaced, not the link; the file\u0027s permissions and any existing BOM are kept. Because the file is a new inode, hard links are separated, open handles and tail -f keep seeing the old file, and a single-file bind mount into a container stops updating; use File.write when you need an in-place write. Inside a plan it records the same WriteFile op as File.write, and apply then does an in-place write.",
+          "summary": "Write a sequence of lines by replacing the whole file at once: the content goes to a temp file in the same directory, is flushed to disk, and is then renamed over the target. Readers see either the complete old file or the complete new one, and a failed write leaves the original intact. For a symlink, the file it points to is replaced, not the link; the file\u0027s permissions and any existing BOM are kept. Because the file is a new inode, hard links are separated, open handles and tail -f keep seeing the old file, and a single-file bind mount into a container stops updating; use File.write when you need an in-place write. Inside a plan it records a WriteFileAtomic op, and apply replaces the file the same way.",
           "example": null,
           "pointer": null
         },
@@ -2793,6 +2793,10 @@
       "cases": [
         {
           "name": "WriteFile",
+          "payload": "string * seq\u003Cstring\u003E"
+        },
+        {
+          "name": "WriteFileAtomic",
           "payload": "string * seq\u003Cstring\u003E"
         },
         {

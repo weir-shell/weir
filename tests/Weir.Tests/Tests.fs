@@ -3006,8 +3006,8 @@ let boundaryTests =
                   "allOf of two substantive schemas rejected"
 
               Expect.stringContains
-                  (errOf """{ "type": "object", "properties": { "p": { "pattern": "^x" } } }""")
-                  "at properties.p.: 'pattern'"
+                  (errOf """{ "type": "object", "properties": { "p": { "patternProperties": {} } } }""")
+                  "at properties.p.: 'patternProperties'"
                   "unknown keyword named WITH its JSON path"
 
               Expect.stringContains
@@ -3144,9 +3144,10 @@ let boundaryTests =
               // enum → string + a note listing the values
               Expect.stringContains g.Text "phase: Option<string>" "enum drafts string"
               Expect.stringContains g.Text "an enum of 'Pending', 'Running'" "the enum note lists the values"
-              // anyOf scalar alternatives → string + the convert note
-              Expect.stringContains g.Text "port: Option<string>" "IntOrString drafts string"
-              Expect.stringContains g.Text "allows integer/string" "the IntOrString note names both kinds"
+              // anyOf int-or-string → the opaque node + a note naming the cases
+              // [D:schema-int-or-string]
+              Expect.stringContains g.Text "port: Option<Yaml>" "IntOrString drafts Yaml"
+              Expect.stringContains g.Text "allows integer/string — drafted Yaml" "the IntOrString note names both kinds"
               // a keyword wire key rides the sanitizer
               Expect.stringContains g.Text "[<Wire \"type\">]\n    kind: Option<string>" "keyword keys ride [<Wire>]"
               // scalars
@@ -9501,6 +9502,142 @@ let planApplyTests =
                   Expect.isFalse (System.IO.File.Exists marker) "the captured write did not run"
               finally
                   System.IO.Directory.Delete(dir, true)
+          }
+          // [D:plan-stale-reads]: one guard on every fs read — a point
+          // read conflicts with a target it equals or lies under (and one
+          // below a path that does not exist yet); a listing also with
+          // every target below it; a move changes its source too
+          test "stale reads: the guard matches by path prefix, listings see targets below" {
+              let root = td ()
+              System.IO.Directory.CreateDirectory(System.IO.Path.Combine(root, "sb", "tree")) |> ignore
+              let at (p: string) = System.IO.Path.Combine(root, p)
+
+              let refused (f: unit -> unit) =
+                  try
+                      f ()
+                      false
+                  with Failure m ->
+                      Expect.stringContains m "known-after-apply" "the refusal names the law"
+                      true
+
+              let inPlan (targets: string list) (read: unit -> unit) =
+                  let mutable r = false
+
+                  Weir.Eval.PlanMode.capturing (fun () ->
+                      for t in targets do
+                          Weir.Eval.PlanMode.capture (VUnion("DeleteFile", Some(VStr t))) [ t ]
+
+                      r <- refused read)
+                  |> ignore
+
+                  r
+
+              try
+                  let rd p () = Weir.Eval.PlanMode.checkRead "File.read" (at p)
+                  let tree p () = Weir.Eval.PlanMode.checkTree "Dir.list" (at p)
+                  Expect.isTrue (inPlan [ at "sb/a.txt" ] (rd "sb/a.txt")) "the exact path"
+                  Expect.isTrue (inPlan [ at "sb/a.txt" ] (rd "sb/a.txt/")) "a trailing slash is the same path"
+                  Expect.isTrue (inPlan [ at "sb/tree" ] (rd "sb/tree/f")) "a read under a captured dir op"
+                  Expect.isFalse (inPlan [ at "sb/tree" ] (rd "sb/treehouse")) "a sibling sharing the prefix runs"
+                  Expect.isFalse (inPlan [ at "sb/new.txt" ] (rd "sb")) "an existing dir's own facts run"
+                  Expect.isTrue (inPlan [ at "fresh/x" ] (rd "fresh")) "a path a captured write would create"
+                  Expect.isTrue (inPlan [ at "sb/new.txt" ] (tree "sb")) "a listing sees a target below it"
+                  Expect.isFalse (inPlan [ at "other/x" ] (tree "sb")) "a listing elsewhere runs"
+              finally
+                  System.IO.Directory.Delete(root, true)
+          }
+          test "stale reads: every fs read builtin refuses after a captured mutation; a move's source too" {
+              let root = td ()
+              System.IO.Directory.CreateDirectory(System.IO.Path.Combine(root, "sb", "tree")) |> ignore
+              System.IO.File.WriteAllText(System.IO.Path.Combine(root, "sb", "a.txt"), "a\n")
+              System.IO.File.WriteAllText(System.IO.Path.Combine(root, "sb", "tree", "f"), "t\n")
+              let d = weirPath root
+
+              let prog (mutation: string) (read: string) =
+                  [ "let p ="; "    plan"; $"        {mutation}"; $"        {read}"; "print $\"{p |> Plan.isEmpty}\"" ]
+
+              try
+                  for mutation, read in
+                      [ $"File.delete \"{d}/sb/a.txt\"", $"print (show (File.exists \"{d}/sb/a.txt\"))"
+                        $"File.write \"{d}/sb/a.txt\" [\"n\"]", $"print (File.sha256 \"{d}/sb/a.txt\")"
+                        $"File.write \"{d}/sb/a.txt\" [\"n\"]", $"print $\"{{File.readBytes \"{d}/sb/a.txt\" |> Bytes.length}}\""
+                        $"File.write \"{d}/sb/new.txt\" [\"n\"]", $"print $\"{{Path.glob \"{d}/sb/*.txt\" |> Seq.length}}\""
+                        $"File.write \"{d}/sb/new.txt\" [\"n\"]", $"print $\"{{Dir.list \"{d}/sb\" |> Seq.length}}\""
+                        $"Dir.deleteAll \"{d}/sb/tree\"", $"File.read \"{d}/sb/tree/f\" |> Seq.iter print"
+                        $"File.move \"{d}/sb/a.txt\" \"{d}/sb/b.txt\"", $"File.read \"{d}/sb/a.txt\" |> Seq.iter print" ] do
+                      Expect.notEqual (runFile (prog mutation read)) 0 $"refused: {read} after {mutation}"
+
+                  Expect.equal
+                      (runFile (prog $"File.write \"{d}/sb/new.txt\" [\"n\"]" $"print (show (Dir.exists \"{d}/sb\"))"))
+                      0
+                      "an existing parent's existence is not stale"
+              finally
+                  System.IO.Directory.Delete(root, true)
+          }
+          // [D:plan-writeatomic]: writeAtomic captures its own op and
+          // applies through the atomic path — the inode is replaced
+          test "writeAtomic in a plan captures WriteFileAtomic and applies atomically (a hardlink keeps the old)" {
+              skipOnWindows ()
+              let root = td ()
+              System.IO.Directory.CreateDirectory root |> ignore
+              let d = weirPath root
+
+              try
+                  let code =
+                      runFile
+                          [ $"File.write \"{d}/a.txt\" [\"old\"]"
+                            $"ln \"{d}/a.txt\" \"{d}/link.txt\""
+                            "let p ="
+                            "    plan"
+                            $"        File.writeAtomic \"{d}/a.txt\" [\"new\"]"
+                            $"if (p |> Plan.ops |> Seq.exactlyOne) <> WriteFileAtomic(\"{d}/a.txt\", [\"new\"]) then fail \"the op\""
+                            "if not ((p |> Plan.preview |> Seq.exactlyOne) |> Str.contains \"atomically\") then fail \"the preview\""
+                            "p |> Plan.apply" ]
+
+                  Expect.equal code 0 "captured and applied"
+                  Expect.equal (System.IO.File.ReadAllText(System.IO.Path.Combine(root, "a.txt"))) "new\n" "the target is new"
+                  Expect.equal (System.IO.File.ReadAllText(System.IO.Path.Combine(root, "link.txt"))) "old\n" "the hardlink split"
+              finally
+                  System.IO.Directory.Delete(root, true)
+          }
+          // [D:plan-within-tmp]: an op under a `within tmp` dir opened
+          // inside the plan refuses at capture — nothing reaches apply
+          test "within tmp inside a plan: a captured op under its dir refuses before anything applies" {
+              let root = td ()
+              System.IO.Directory.CreateDirectory root |> ignore
+              let d = weirPath root
+
+              try
+                  for inner in
+                      [ [ "            File.write $\"{t}/x\" [\"y\"]" ]
+                        [ $"            File.copy $\"{{t}}/missing\" \"{d}/x\"" ] ] do
+                      let code =
+                          runFile (
+                              [ "let p ="
+                                "    plan"
+                                $"        File.write \"{d}/first.txt\" [\"a\"]"
+                                "        within tmp t" ]
+                              @ inner
+                              @ [ "p |> Plan.apply" ]
+                          )
+
+                      Expect.notEqual code 0 $"refused: {inner}"
+
+                  Expect.isFalse (System.IO.File.Exists(System.IO.Path.Combine(root, "first.txt"))) "nothing applied"
+
+                  // a tmp scope around the plan outlives the apply inside it
+                  let code =
+                      runFile
+                          [ "within tmp t"
+                            "    let p ="
+                            "        plan"
+                            "            File.write $\"{t}/x\" [\"y\"]"
+                            "    p |> Plan.apply"
+                            "    if not (File.exists $\"{t}/x\") then fail \"not applied\"" ]
+
+                  Expect.equal code 0 "a tmp dir opened outside the plan is a fine target"
+              finally
+                  System.IO.Directory.Delete(root, true)
           } ]
 
 let withinKindsTests =
@@ -17817,8 +17954,8 @@ let formatSurfaceTests =
 
               Expect.stringContains m "got a decimal number — declare it float" ""
           }
-          test "over-deep nesting rejects with the teaching, never a raw parser word" {
-              let deep = String.replicate 100 "{\"a\":" + "1" + String.replicate 100 "}"
+          test "over-deep nesting rejects with the teaching, never a raw parser word [D:json-depth]" {
+              let deep = String.replicate 101 "{\"a\":" + "1" + String.replicate 101 "}"
 
               let m =
                   try
@@ -17828,7 +17965,7 @@ let formatSurfaceTests =
                   with e ->
                       e.Message
 
-              Expect.stringContains m "from json: not valid JSON" ""
+              Expect.stringContains m "from json: valid JSON, but it nests deeper than 100 levels" ""
               Expect.isFalse (m.Contains "MaxDepth") "no System.Text.Json words"
           } ]
 
@@ -27061,6 +27198,222 @@ let hunt2CheckerTests =
               | v -> failtest $"null is a YNull node (as from yaml reads it), a missing Option<Yaml> is None: {formatValue v}"
           } ]
 
+let hunt3BehaviorTests =
+    // the third hunt's formats / generators / checker items: JSON depth
+    // [D:json-depth], TOML local date-times [D:toml-local-instant],
+    // duplicate JSON keys into Yaml [D:json-yaml-dupkeys], schema drafting
+    // [D:schema-int-or-string] [D:schema-int-enum]
+    // [D:schema-validation-keys], the bare within's always in a body
+    // [D:within-always], forced calls [D:reenum-forced-call], inline
+    // Env.load duplicates [D:env-inline-type], Instant + unknown
+    // [D:instant-plus-unknown]
+    let text v =
+        forceSeq v
+        |> List.map (function
+            | VStr s -> s
+            | v -> failtest $"expected text, got {formatValue v}")
+        |> String.concat "\n"
+
+    let henv =
+        env
+        |> declare "type HN = { a: Yaml }"
+        |> declare "type HT = { [<Iso8601>] start: Instant }"
+        |> declare "type HS = { start: string }"
+
+    let doc (json: string) =
+        "[\"" + json.Replace("\"", "\\\"") + "\"]"
+
+    let deep n =
+        String.replicate n "{\"a\":" + "1" + String.replicate n "}"
+
+    let gen src =
+        match Weir.Contracts.parseSchema "t" src with
+        | Error e -> failtest e
+        | Ok d ->
+            match Weir.SchemaTypes.moduleText Weir.Parser.keywords Set.empty "t" None "0123456789abcdef" "http://src" d with
+            | Ok g -> g.Text
+            | Error e -> failtest e
+
+    testList
+        "hunt3 behaviour"
+        [ test "from json reads a document up to weir's 100-level bound; past it names the depth [D:json-depth]" {
+              Expect.equal (runUnder henv (doc (deep 99) + " |> from json HN |> fun _ -> 1")) (VInt 1L) "99 deep reads"
+
+              let msg =
+                  (Expect.throwsC (fun () -> runUnder henv (doc (deep 101) + " |> from json HN") |> ignore) id).Message
+
+              Expect.stringContains msg "nests deeper than 100 levels" "the depth named"
+              Expect.isFalse (msg.Contains "not valid JSON") "never 'not valid JSON' for valid JSON"
+
+              let bad =
+                  (Expect.throwsC (fun () -> runUnder henv (doc "{\"a\": " + " |> from json HN") |> ignore) id).Message
+
+              Expect.stringContains bad "not valid JSON" "invalid JSON keeps its own error"
+          }
+          test "a schema nested past 64 JSON levels parses [D:json-depth]" {
+              let schema =
+                  String.replicate 32 "{\"type\":\"object\",\"properties\":{\"c\":"
+                  + "{\"type\":\"integer\"}"
+                  + String.replicate 32 "}}"
+
+              match Weir.Contracts.parseSchema "t" schema with
+              | Ok _ -> ()
+              | Error e -> failtest e
+          }
+          test "from toml refuses an offset-less datetime into an Instant; an offset reads [D:toml-local-instant]" {
+              let read v =
+                  $"[\"start = {v}\"] |> from toml HT |> fun r -> show r.start"
+
+              Expect.equal (runUnder henv (read "2024-03-01T10:00:00+02:00")) (VStr "2024-03-01T08:00:00Z") "offset"
+              Expect.equal (runUnder henv (read "2024-03-01T10:00:00Z")) (VStr "2024-03-01T10:00:00Z") "Z"
+
+              for v, what in
+                  [ "2024-03-01T10:00:00", "a local date-time"
+                    "2024-03-01 10:00:00", "a local date-time"
+                    "2024-03-01", "a local date"
+                    "10:00:00", "a local time" ] do
+                  let msg = (Expect.throwsC (fun () -> runUnder henv (read v) |> ignore) id).Message
+                  Expect.stringContains msg $"{v} is {what}" $"refused: {v}"
+                  Expect.stringContains msg "from toml: line 1" "located, toml-labelled"
+
+              Expect.equal
+                  (runUnder henv "[\"start = 2024-03-01T10:00:00\"] |> from toml HS |> fun r -> r.start")
+                  (VStr "2024-03-01T10:00:00")
+                  "a string field keeps the text"
+          }
+          test "duplicate JSON keys into a Yaml field last-win at the first position [D:json-yaml-dupkeys]" {
+              let src = doc """{"a": {"x": 1, "y": 2, "x": 3}}"""
+              Expect.equal (runUnder henv $"{src} |> from json HN |> to json" |> text) """{"a":{"x":3,"y":2}}""" "json"
+
+              Expect.equal
+                  (runUnder henv $"{src} |> from json HN |> to yaml |> from yaml HN |> to yaml" |> text)
+                  "a:\n  x: 3\n  y: 2"
+                  "the yaml round trip holds"
+          }
+          test "schema drafting: int-or-string is Yaml, an integer enum is int [D:schema-int-or-string][D:schema-int-enum]" {
+              let g =
+                  gen
+                      """{ "type": "object", "required": ["level"],
+                           "properties": {
+                             "port": { "anyOf": [{ "type": "integer" }, { "type": "string" }], "x-kubernetes-int-or-string": true },
+                             "bare": { "x-kubernetes-int-or-string": true },
+                             "level": { "type": "integer", "enum": [1, 2, 3] },
+                             "mixed": { "enum": [1, "two"] } } }"""
+
+              Expect.stringContains g "port: Option<Yaml>" "anyOf int/string → Yaml"
+              Expect.stringContains g "bare: Option<Yaml>" "the marker alone → Yaml"
+              Expect.stringContains g "YInt n, a string as YStr s" "the note names the cases"
+              Expect.stringContains g "\n    level: int\n" "an integer enum drafts int"
+              Expect.stringContains g "an enum of 1, 2, 3 — drafted int" "its values in the note"
+              Expect.stringContains g "mixed: Option<string>" "a mixed enum stays string"
+          }
+          test "schema validation keywords are admitted and noted, never enforced [D:schema-validation-keys]" {
+              let g =
+                  gen
+                      """{ "type": "object", "$comment": "c",
+                           "properties": {
+                             "name": { "type": "string", "minLength": 1, "maxLength": 9, "pattern": "^a" },
+                             "n": { "type": "integer", "minimum": 0, "readOnly": true },
+                             "tags": { "type": "array", "items": { "type": "string", "minLength": 2 }, "maxItems": 3, "uniqueItems": true, "deprecated": true } } }"""
+
+              Expect.stringContains g "name: Option<string>" "drafts as without the keywords"
+              Expect.stringContains g "// note: not enforced: minLength on name, tags[]" "one note per keyword, every place"
+              Expect.stringContains g "// note: not enforced: pattern on name" "pattern"
+              Expect.stringContains g "// note: not enforced: readOnly on n" "readOnly"
+              Expect.stringContains g "// note: not enforced: uniqueItems on tags" "uniqueItems"
+              Expect.isFalse (g.Contains "$comment") "a comment is documentation, not noted"
+
+              // shape-changing keywords still refuse
+              match Weir.Contracts.parseSchema "t" """{ "type": "object", "properties": { "p": { "const": 1 } } }""" with
+              | Error e -> Expect.stringContains e "'const'" "const refuses"
+              | Ok _ -> failtest "const must refuse"
+          }
+          test "schema validation notes cover only the definitions the module drafts [D:schema-validation-keys]" {
+              let g =
+                  gen
+                      """{ "$ref": "#/definitions/a.v1.Used",
+                           "definitions": {
+                             "a.v1.Used": { "type": "object", "properties": { "s": { "type": "string", "maxLength": 3 } } },
+                             "a.v1.Unused": { "type": "object", "properties": { "t": { "type": "string", "pattern": "x" } } } } }"""
+
+              Expect.stringContains g "// note: not enforced: maxLength on Used.s" "a reached definition's keyword"
+              Expect.isFalse (g.Contains "pattern") "an unreached definition stays quiet"
+          }
+          test "an indented bare within … always followed by a statement assembles [D:within-always]" {
+              errorsCleanIn
+                  "wa.weir"
+                  [ "let f () ="
+                    "    within"
+                    "        print \"body\""
+                    "    always"
+                    "        print \"cleanup\""
+                    "    print \"after\""
+                    "f ()"
+                    "if true then"
+                    "    within"
+                    "        within"
+                    "            print \"inner\""
+                    "        always"
+                    "            print \"ic\""
+                    "        print \"mid\""
+                    "    always"
+                    "        print \"oc\""
+                    "    print \"after\"" ]
+                  "nested and sibling statements"
+          }
+          test "a call of a function that freezes carries nothing [D:reenum-forced-call]" {
+              let reenum lines =
+                  diagsIn "re.weir" lines |> List.filter (fun d -> d.Message.Contains "re-enumeration")
+
+              Expect.isEmpty
+                  (reenum
+                      [ "let xs = git ls-files"
+                        "let f () = xs |> Seq.freeze"
+                        "let a = f ()"
+                        "print $\"{a |> Seq.length}\""
+                        "print $\"{a |> Seq.length}\"" ])
+                  "the result is a snapshot"
+
+              Expect.isEmpty
+                  (reenum
+                      [ "let xs = git ls-files"
+                        "let g n = xs |> Seq.take n |> Seq.freeze"
+                        "let a = 2 |> g"
+                        "print $\"{a |> Seq.length}\""
+                        "print $\"{a |> Seq.length}\"" ])
+                  "a piped call too"
+
+              // each call still pulls once
+              Expect.equal
+                  (reenum
+                      [ "let xs = git ls-files"
+                        "let f () = xs |> Seq.freeze"
+                        "let a = f ()"
+                        "let b = f ()"
+                        "print $\"{a |> Seq.length}\"" ]
+                   |> List.length)
+                  1
+                  "two calls are two pulls"
+          }
+          test "inline Env.load / Args.load refuse a duplicate field [D:env-inline-type]" {
+              match errorsIn "e.weir" [ "let e = Env.load {| H3F_P: string; H3F_P: int |}"; "print e.H3F_P" ] with
+              | e :: _ -> Expect.stringContains e.Message "duplicate field 'H3F_P' in the anonymous record" "Env.load"
+              | [] -> failtest "Env.load must refuse"
+
+              match errorsIn "a.weir" [ "let a = Args.load {| v: bool; v: string |}"; "print a.v" ] with
+              | e :: _ -> Expect.stringContains e.Message "duplicate field 'v' in the anonymous record" "Args.load"
+              | [] -> failtest "Args.load must refuse"
+          }
+          test "Instant + an unknown teaches the unknown side, not two points [D:instant-plus-unknown]" {
+              for src in [ "fun d -> Instant.now () + d"; "fun d -> d + Instant.now ()"; "fun a -> fun b -> a + b + Instant.now ()" ] do
+                  let m = (checkErr src).Message
+                  Expect.stringContains m "cannot infer this side of '+'" src
+                  Expect.isFalse (m.Contains "two points") src
+
+              Expect.stringContains (checkErr "Instant.now () + Instant.now ()").Message "two points don't add" "two real points"
+              Expect.equal (checkOk "fun d -> Instant.now () + (d + 0s)").Ty (TFun(TDur, TInstant)) "the anchor works"
+          } ]
+
 [<Tests>]
 let allTests =
     testList
@@ -27068,6 +27421,7 @@ let allTests =
         [ hardeningTests
           teardownSeamTests
           argsSecretEchoTests
+          hunt3BehaviorTests
           docsBinaryTests
           hunt2CheckerTests
           sweepFindingTests

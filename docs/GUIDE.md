@@ -2568,7 +2568,8 @@ checks it (the parentheses are needed, and a recorded operation holds
 the absolute path). Preview and diff come for free.
 
 These are the operations a plan can hold (the `Op` union):
-`WriteFile`, `DeleteFile`, `Copy`, `Move` (files), `CopyDir`,
+`WriteFile`, `WriteFileAtomic` (from `File.writeAtomic`; `apply`
+replaces the file atomically too), `DeleteFile`, `Copy`, `Move` (files), `CopyDir`,
 `MoveDir`, `MakeDir`, `DeleteDir` (`Dir.delete`, empty only),
 `DeleteTree` (`Dir.deleteAll`), and `HttpSend` (only for HTTP
 methods that change things; `show` masks the auth Secret). Reads still **happen** inside a plan, since a
@@ -2588,8 +2589,15 @@ Where the guarantee stops:
   Nested `plan` blocks are fine; each returns its own plan.
 - **Reading something the plan has already changed is an error**,
   pointing at the line. The change hasn't been made yet, so the read
-  would see old data. Rearrange the code so the read doesn't depend
-  on a recorded write.
+  would see old data. That covers any read of the file or anything
+  under a changed directory, an existence check, and a listing
+  (`Dir.list`, `Path.glob`, `ls`) of a directory the plan writes
+  into. Rearrange the code so the read doesn't depend on a recorded
+  write.
+- **A recorded change inside a `within tmp` directory opened in the
+  plan is an error**: that directory is deleted when the block ends,
+  before `apply` could use it. Build the content in memory, or do the
+  temp-dir work outside the plan.
 - **`apply` is not a transaction.** It performs operations in the
   order they were recorded and **stops at the first failure, leaving
   earlier operations done. There's no rollback.** Weir deliberately
