@@ -1,8 +1,9 @@
 # weir — shrinking the AOT binary (measurement study)
 
-Status: PROPOSED (2026-10-16). The no-cost set is committed on
-explore/binary-size ([D:binary-size]); OptimizationPreference=Size and
-the larger refactors below wait on a ruling.
+Status: LANDED on plan/hunt3 (2026-10-16) — the no-cost set
+([D:binary-size], 20.7 → 17.8 MB). Ruled (user): keep the two framework
+stubs; keep OptimizationPreference=Speed; the builtinDocs-as-data refactor
+goes to BACKLOG; UseSystemResourceKeys rejected (user-visible text).
 
 Baseline: 0bf815c, linux-x64 NativeAOT, .NET 10.0.13 ILC, FSharp.Core
 10.1.302 — **20,707,400 bytes**. Every number below is a real publish
