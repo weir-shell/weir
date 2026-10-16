@@ -182,6 +182,9 @@
 - **`weir fmt` is fast on long statements again.** A 5,000-line heredoc
   took 9 s (time grew with the square of the line count; yaml blocks and
   multi-line lists too, and editor formatting); it takes 0.2 s.
+- **`weir check`, `weir <script>` and editor diagnostics are fast on
+  long scripts.** Each top-level `let` cost time in proportion to the
+  lets before it: 30,000 lets took 12 s, now 3 s.
 - **`Seq.distinct` is fast**, and so are `Seq.distinctBy`, `countBy`,
   `groupBy` and `except` on tuple or record keys. 25,000 distinct
   strings took 11 s through `Seq.distinct`; 20,000 tuple keys took 44 s

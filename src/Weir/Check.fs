@@ -299,8 +299,7 @@ let private loadShapeDup (env: TypeEnv) (tyName: string) : string option =
         None
 
 let private bindParams (env: TypeEnv) (bindings: (string * Ty) list) : TypeEnv =
-    { env with
-        Values = bindings |> List.fold (fun vs (n, t) -> Map.add n (mono t) vs) env.Values }
+    bindings |> List.fold (fun e (n, t) -> bindValue n (mono t) e) env
 
 let private substParams (ps: string list) (args: Ty list) (ty: Ty) : Ty =
     let m = List.zip ps args |> Map.ofList
@@ -688,16 +687,11 @@ let private instantiate (ctx: Ctx) (span: Span) (sch: Scheme) : Ty =
 // a fully quantified scheme is closed — and usually from another
 // statement's ctx, whose var names this ctx's subst may reuse, so it
 // must not be resolved here [D:hole-generic]
+// [D:env-open-index]: only the env's non-closed schemes are walked
 let private envFreeVars (ctx: Ctx) (env: TypeEnv) : Set<string> =
     let fromEnv =
-        env.Values
-        |> Map.fold
-            (fun acc _ (sch: Scheme) ->
-                if Set.isEmpty (tyVars sch.Ty - sch.Forall) then
-                    acc
-                else
-                    acc + (tyVars (finalTy ctx sch.Ty) - sch.Forall))
-            Set.empty
+        openSchemes env
+        |> Map.fold (fun acc _ (sch: Scheme) -> acc + (tyVars (finalTy ctx sch.Ty) - sch.Forall)) Set.empty
     // an undecided `+` keeps its vars monomorphic [D:plus-defer]: a
     // later use in the statement may still decide it
     ctx.AddsOpen
@@ -2951,9 +2945,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
                             body.Span
                             $"this {head} body yields bool, so it IS the predicate — drop the until segment (a different condition belongs in the body itself)"
                 | bodyTy ->
-                    let env' =
-                        { env with
-                            Values = Map.add b (generalize bodyTy) env.Values }
+                    let env' = bindValue b (generalize bodyTy) env
 
                     do!
                         match until with
@@ -3209,8 +3201,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
             let! tbody =
                 infer
                     ctx
-                    { env with
-                        Values = Map.add name scheme env.Values }
+                    (bindValue name scheme env)
                     body
 
             return
@@ -3236,8 +3227,7 @@ let rec private infer (ctx: Ctx) (env: TypeEnv) (expr: Expr) : Result<TypedExpr,
             let! tbody =
                 infer
                     ctx
-                    { env with
-                        Values = schemes |> List.fold (fun vs (n, s) -> Map.add n s vs) env.Values }
+                    (schemes |> List.fold (fun e (n, s) -> bindValue n s e) env)
                     body
 
             return
@@ -5772,8 +5762,7 @@ and private check (ctx: Ctx) (env: TypeEnv) (expr: Expr) (expected: Ty) : Result
             let! tbody =
                 check
                     ctx
-                    { env with
-                        Values = Map.add name scheme env.Values }
+                    (bindValue name scheme env)
                     body
                     expected
 
@@ -7248,14 +7237,11 @@ let checkDecl (env: TypeEnv) (decl: Decl) : Result<TypeEnv, TypeError> =
                               RowOrigins = Map.empty
                               HoleDefaults = [] }
 
-                        let values =
-                            cases
-                            |> List.fold (fun vs (c, payload, _) -> Map.add c (ctorScheme payload) vs) env.Values
-
                         return
-                            { env with
-                                Types = Map.add decl.Name def env.Types
-                                Values = values }
+                            cases
+                            |> List.fold
+                                (fun e (c, payload, _) -> bindValue c (ctorScheme payload) e)
+                                { env with Types = Map.add decl.Name def env.Types }
                 }
 
 // Advisory findings only — coverage and reachability are checker

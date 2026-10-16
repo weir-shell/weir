@@ -27518,7 +27518,7 @@ let hunt3BehaviorTests =
           } ]
 
 // ---- hunt-3 performance cliffs: semantics pinned, growth guarded ---------
-// [D:value-hash] [D:one-scanner]. The growth
+// [D:value-hash] [D:env-open-index] [D:one-scanner]. The growth
 // guards time one input and its 10x in process; linear work grows ~10x,
 // the quadratic forms these replaced grew ~100x. 25x is the acceptance
 // harness's rule (tools/hunt3-repro.weir), wide enough for a noisy runner.
@@ -27671,6 +27671,40 @@ let hunt3PerfTests =
                       | Error e -> failtest e
 
               growsLinearly "fmt of a heredoc" (heredoc 600) (heredoc 6000)
+          }
+          test "the env's open-scheme index equals a full filter through adds and shadowing [D:env-open-index]" {
+              let closed = generalize (TFun(TVar "a", TVar "a"))
+              let opened = mono (TVar "t9")
+              let isOpen (sch: Scheme) = not (Set.isEmpty (tyVars sch.Ty - sch.Forall))
+              let rng = System.Random 1791
+              let mutable env = Weir.Builtins.typeEnv
+
+              for _ in 1..2000 do
+                  let name = $"v{rng.Next 50}"
+                  env <- bindValue name (if rng.Next 3 = 0 then opened else closed) env
+                  Expect.isTrue (env.OpenIndex |> Option.exists (fun ix -> obj.ReferenceEquals(ix.For, env.Values))) "bindValue leaves a current index"
+                  Expect.equal (openSchemes env) (env.Values |> Map.filter (fun _ s -> isOpen s)) "index = filter"
+
+              // Values moved without bindValue: the stale index is ignored
+              let other = { env with Values = Map.add "w" opened env.Values }
+              Expect.equal (openSchemes other) (other.Values |> Map.filter (fun _ s -> isOpen s)) "stale index rescans"
+              Expect.equal (openSchemes (indexed other)) (openSchemes other) "indexed agrees"
+          }
+          test "a statement's check cost does not grow with the env's size [D:env-open-index]" {
+              // the script fold's shape: each top-level binding extends
+              // the env through bindValue, then the next statement checks
+              let envOf n =
+                  [ 1..n ] |> List.fold (fun e i -> bindValue $"a{i}" (generalize TInt) e) Weir.Builtins.typeEnv
+
+              let checks (tenv: TypeEnv) =
+                  let e = parse "fun x -> (x, a1 + 1)"
+                  fun () ->
+                      for _ in 1..300 do
+                          match typecheck tenv e with
+                          | Ok _ -> ()
+                          | Error terr -> failtest (formatError terr)
+
+              growsWithin 5.0 "300 checks against a 100x larger env" (checks (envOf 500)) (checks (envOf 50000))
           } ]
 
 [<Tests>]

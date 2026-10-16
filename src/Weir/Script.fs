@@ -3797,8 +3797,7 @@ let private checkStatementCore
                     Ok
                         { Kind = KLetPat(pat, schemes, te)
                           Env =
-                            { tenv with
-                                Values = schemes |> List.fold (fun vs (n, sch) -> Map.add n sch vs) tenv.Values }
+                            schemes |> List.fold (fun e (n, sch) -> bindValue n sch e) tenv
                           Warnings = warningsOf te }
         | Ok(SLet(name, e)) ->
             // SLet carries the name as a bare string, so re-derive its own
@@ -3856,8 +3855,7 @@ let private checkStatementCore
                         Ok
                             { Kind = KLet(name, scheme, te)
                               Env =
-                                { tenv with
-                                    Values = Map.add name scheme tenv.Values }
+                                bindValue name scheme tenv
                               Warnings = warningsOf te }
             | None ->
                 match sigCtx with
@@ -3885,8 +3883,7 @@ let private checkStatementCore
                         Ok
                             { Kind = KLet(name, scheme, te)
                               Env =
-                                { tenv with
-                                    Values = Map.add name scheme tenv.Values }
+                                bindValue name scheme tenv
                               Warnings = warningsOf te }
         | Ok(SCmd e) ->
             let tenv = Check.withAnonDefs tenv e
@@ -7567,9 +7564,7 @@ let analyzeLinesAs
                       | _ -> ())
 
                      for n in bound do
-                         tenv <-
-                             { tenv with
-                                 Values = Map.add n holeScheme tenv.Values }
+                         tenv <- bindValue n holeScheme tenv
                  | Error _ ->
                      // a statement that does not parse still names its
                      // binder [D:parse-error-binds]: harvested lexically, a
@@ -7580,16 +7575,14 @@ let analyzeLinesAs
 
                      if m.Success && not (Parser.keywords.Contains m.Groups[1].Value) then
                          tenv <-
-                             { tenv with
-                                 Values =
-                                     Map.add
-                                         m.Groups[1].Value
-                                         { Forall = Set.singleton "__hole"
-                                           Cs = Map.empty
-                                           Ty = TVar "__hole"
-                                           RowOrigins = Map.empty
-                                           HoleDefaults = [] }
-                                         tenv.Values })
+                             bindValue
+                                 m.Groups[1].Value
+                                 { Forall = Set.singleton "__hole"
+                                   Cs = Map.empty
+                                   Ty = TVar "__hole"
+                                   RowOrigins = Map.empty
+                                   HoleDefaults = [] }
+                                 tenv)
 
                 let echoesFailedImport =
                     failedImports
