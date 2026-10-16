@@ -6,6 +6,10 @@ weekly: self-correction rate (stranded = failures), fallback ranking
 skill lines and targeted hints).
 
 ## fallbacks
+- 2026-10-16 | binary-size study (PLAN-binary-size.md, scratch scripts
+  outside the repo) -> F# script + python3 | the ILC mstat is a
+  metadata/IL blob needing System.Reflection.Metadata, and the startup
+  medians need sub-millisecond timing (weir's Duration is integer ms).
 - 2026-10-16 | hunt3 repro gate (tools/hunt3-repro.weir) -> python3 helpers,
   `sh -c` once | a pseudo-terminal (H3-E1 escapes at a tty, H3-C6 REPL ^C),
   raw request bytes and a socket client weir's own client cannot be (the
