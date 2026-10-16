@@ -12142,6 +12142,23 @@ $BIN check --can "$svdir/c$jname" >> "$svdir/j2.out" 2>/dev/null || true
 python3 -c "import sys; a=open('$svdir/j1.out','rb').read(); b=open('$svdir/j2.out','rb').read(); n=b'r\xe2\x80\xaeq\xc2\x9b.weir'; sys.exit(0 if (n in a and n in b and b'\\\\u' not in a + b and b'\\\\x9b' not in a + b) else 1)" \
     || fail "tty-bidi: redirected check --json / --can (json and human) must stay byte-faithful (raw RLO/C1 in the path)"
 echo "e2e ok: tty-bidi check --json and --can (json and human) sanitized at a tty, byte-faithful when redirected"
+# every console sink rides the tty sanitizer [D:tty-sink-sanitize]:
+# printerr, Log.*, the Self.prompt message and the -e echo neutralize an
+# OSC at a tty (the pty harness reprs a raw ESC as \x1b, a defanged one
+# as \\x1b), and stay byte-faithful when redirected
+sinkrun="$(dirname "$0")/../tests/pty/pty-run.py"
+for sink in 'printerr ((Str.fromBase64 "Gw==") + "]52;c;SINK")' \
+            'Log.warn ((Str.fromBase64 "Gw==") + "]52;c;SINK")' \
+            'Self.prompt ((Str.fromBase64 "Gw==") + "]52;c;SINK")' \
+            'Some ((Str.fromBase64 "Gw==") + "]52;c;SINK")'; do
+    sout=$(printf 'SLEEP 300\nSEND ans\\n\nSLEEP 300\n' | python3 "$sinkrun" 6 "$BIN" -e "$sink" 2>&1)
+    echo "$sout" | grep -qF '\\x1b]52;c;SINK' || fail "tty-sink: $sink must render the OSC visible at a tty: $sout"
+    echo "$sout" | grep -q '[^\\]\\x1b\]52' && fail "tty-sink: $sink put a raw OSC on the tty: $sout" || true
+done
+printf 'ans\n' | $BIN -e 'Log.warn ((Str.fromBase64 "Gw==") + "]52;c;SINK")' 2> "$svdir/sink.err" || true
+python3 -c "import sys; sys.exit(0 if b'\x1b]52;c;SINK' in open('$svdir/sink.err','rb').read() else 1)" \
+    || fail "tty-sink: a redirected stderr must stay byte-faithful"
+echo "e2e ok: tty-sink printerr, Log, Self.prompt and the -e echo sanitized at a tty, byte-faithful when redirected"
 else
     echo "e2e skip: F13 tty sanitize is pty-driven — no termios/pty on Windows Python"
 fi

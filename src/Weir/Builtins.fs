@@ -1532,7 +1532,12 @@ let private logTint (code: string) (label: string) =
 
 let private logAt (level: int) (code: string) (label: string) (msg: string) =
     if level >= logThreshold then
-        System.Console.Error.WriteLine(logTint code label + " " + msg)
+        // the message is data bound for stderr [D:tty-sink-sanitize]
+        System.Console.Error.WriteLine(
+            logTint code label
+            + " "
+            + sanitizeIfTty System.Console.IsErrorRedirected msg
+        )
 
 
 let private parallelCeiling = 64
@@ -5694,7 +5699,8 @@ let private moduleTable: (string * (string * Ty * Value) list) list =
         VBuiltin(fun v ->
             match v with
             | VStr msg ->
-                eprintf "%s " msg
+                // [D:tty-sink-sanitize]
+                eprintf "%s " (sanitizeIfTty System.Console.IsErrorRedirected msg)
                 System.Console.Error.Flush()
 
                 match readPromptLine () with
@@ -7507,7 +7513,10 @@ let private printerrImpl: Value =
             writeLinesTo System.Console.Error items
             VUnit
         | (VStr _ | VInt _ | VFloat _ | VBool _ | VUuid _) as scalar ->
-            System.Console.Error.WriteLine(scalarString "printerr argument" scalar)
+            // the print rule on stderr [D:tty-sink-sanitize]
+            System.Console.Error.WriteLine(
+                sanitizeIfTty System.Console.IsErrorRedirected (scalarString "printerr argument" scalar)
+            )
             VUnit
         | v -> unreachable $"the checker rejects 'printerr' on {formatValue v}")
 

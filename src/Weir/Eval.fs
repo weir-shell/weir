@@ -4014,7 +4014,10 @@ and eval (env: Env) (te: TypedExpr) : Value =
                  // the checker refuses exit inside always; a raise here
                  // would swap the original for a code — unreachable
                  ()
-             | ce -> eprintfn "within/always: the cleanup ALSO failed — %s (the original error wins)" ce.Message)
+             | ce ->
+                 eprintfn
+                     "within/always: the cleanup ALSO failed — %s (the original error wins)"
+                     (sanitizeIfTty System.Console.IsErrorRedirected ce.Message))
 
             raise original
     | TEWithin(kind, binder, targ, topts, body) ->

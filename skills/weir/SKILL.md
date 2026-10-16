@@ -2569,7 +2569,10 @@ let port = match Some 8080 with | Some p -> p | None -> fail "absent"
 print (show port)
 ```
 - `printerr` is `print` to stderr (same argument rule) — diagnostics
-  there, data on stdout, so `weir script | next` stays clean.
+  there, data on stdout, so `weir script | next` stays clean. Like
+  `print`, at a tty it neutralizes terminal-driving escapes in the
+  text (so do `Log.*`, the `Self.prompt` message and the `-e` echo);
+  redirected, the bytes pass unchanged.
 - `Log.trace/debug/info/warn "msg"` — levelled diagnostics, ALWAYS to
   stderr (stdout is data; there is no stream knob). `WEIR_LOG=level`
   selects (`trace|debug|info|warn|off`; default `info`; invalid

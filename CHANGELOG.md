@@ -76,6 +76,11 @@
   command argument (`cd /usr/`; quoted only for a space or quote), and
   where a path is quoted (`File.read ./<Tab>`) several matches extend
   inside a closed literal (`File.read "./s"`, cursor inside).
+- **`printerr`, `Log.*`, the `Self.prompt` message and the `-e` echo
+  neutralize terminal escapes at a tty**, as `print` does: a value
+  carrying an OSC 52 (clipboard write), a title change or a screen
+  clear shows as visible `\x1b…` text instead of driving the terminal.
+  Redirected output is unchanged.
 - **Commands inside `always` run on Ctrl+C and SIGTERM.** They were
   refused ("no new command starts"), so cleanups were skipped. The
   body's commands still stop, and a second signal still exits at once.
