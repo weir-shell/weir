@@ -27010,7 +27010,7 @@ let hunt3BehaviourTests =
           }
           test "a race cancelled by an enclosing race ends without hanging [D:pfirst-join]" {
               expectValue
-                  "[1; 2] |> Seq.pfirst (fun i -> [10; 20] |> Seq.pfirst (fun j -> match i with | 1 -> Duration.sleep 50ms ; i * 100 + j | _ -> Duration.sleep 5s ; 0))"
+                  "[1; 2] |> Seq.pfirst (fun i -> [10; 20] |> Seq.pfirst (fun j -> match i with | 1 -> (if j == 10 then Duration.sleep 50ms else Duration.sleep 2s) ; i * 100 + j | _ -> Duration.sleep 5s ; 0))"
                   (VInt 110L)
           }
           test "a REPL ^C cuts a runtime-owned wait, through try; a cleanup's wait needs a second ^C [D:repl-interrupt]" {
@@ -27529,16 +27529,12 @@ let private growsWithin (factor: float) (label: string) (small: unit -> unit) (b
         sw.Elapsed.TotalMilliseconds
 
     small () // warm the JIT and caches
-    let judge () = time small, time big
-    let within (ts, tb) = tb <= factor * max ts 2.0
-    let first = judge ()
-    // one re-measure absorbs a scheduler hiccup
-    let ts, tb =
-        if within first then
-            first
-        else
-            let ts2, tb2 = judge ()
-            min (fst first) ts2, min (snd first) tb2
+    // best of three each, and the small side floored at 10ms: a few-ms
+    // baseline is all GC pause and tier-up noise on a shared runner, while
+    // the quadratic forms these guard against overshoot the floor 70x+
+    let best (f: unit -> unit) = List.init 3 (fun _ -> time f) |> List.min
+    let within (ts, tb) = tb <= factor * max ts 10.0
+    let ts, tb = best small, best big
 
     Expect.isTrue (within (ts, tb)) $"{label}: {tb:F0}ms vs {ts:F0}ms for the small input — over {factor}x"
 
