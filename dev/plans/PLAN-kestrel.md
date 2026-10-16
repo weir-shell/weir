@@ -192,6 +192,12 @@ pins). The cross-platform kit (`tools/hunt3-xplat.weir`, branch
 hunt3/xplat) should gain the pipelining, F10, E6, A3 and F8-curl cells
 — not on this branch.
 
+Gates at cd6de6b (AOT 20.55 MB, no new IL warnings): unit 2197/2197,
+Weir.Fuzz builds, ci/e2e.sh all green (868 ok), multi-repro / sweep-repro
+/ hunt2-repro all fixed, skill-doc 315 blocks, fsharp-oracle 194 pass,
+dead-privates 0, decision-keys ok, commit-area 80cbdf6..HEAD ok.
+Windows/macOS CI not run (no push from here).
+
 Open for a user ruling (not decided here):
 
 - **Stream client aborts stay unrecorded.** The hunt-3 low says the
