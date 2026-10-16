@@ -38,7 +38,11 @@ delete it (a user ruling per item, batched in one table). Each documented
 member that doesn't exist: fix the doc. Deliverable: a CI check that fails on
 an undocumented public builtin, so the gap cannot reopen.
 
-### W2 — Docs vs binary (same session as W1, or the next)
+### W2 — Docs vs binary (same session as W1, or the next) — DONE
+SKILL.md, GUIDE, repl and tooling probed against the binary; the five
+W2a rulings landed (user, 2026-10-16) [D:map-values] [D:assembly-col]
+[D:late-imports] [D:let-in-commands].
+
 `ci/skill-doc.sh` checks fenced blocks only; prose claims drift (hunt 2 found
 several). Walk SKILL.md and GUIDE.md section by section; every concrete claim
 gets a probe. Mismatches become "binary wrong" fixes or "doc wrong" edits.
@@ -60,7 +64,7 @@ not yet swept:
 Swept areas are re-probed only for regressions from the latest changes. The
 loop stops at the first round with no high/medium findings (exit criterion 1).
 
-### W4 — Parked designs: decide in or out — RULED (user, 2026-10-15)
+### W4 — Parked designs: decide in or out — DONE (ruled 2026-10-15; "in" items landed 2026-10-16)
 - Env sugar B (`Env.need`/`Env.getOr`) and A (inline `{| … |}` in
   `Env.load`/`Args.load`): IN.
 - Branches: all ten (dx/*, within-always-any, retire-bang, next) were
@@ -70,6 +74,10 @@ loop stops at the first round with no high/medium findings (exit criterion 1).
   unsendable header is dropped silently) IN; F10 (duplicate request
   headers collapse) later.
 - Nine landed plans marked LANDED in their status lines.
+- 2026-10-16 (user): serve pipelining LATER — a Kestrel move is parked
+  (fixes pipelining and F10, retires the F8 `_trailer_sent` stopgap, which
+  is accepted meanwhile) [D:serve-pipelining-later]; REPL history with
+  invalid UTF-8: skip [D:history-utf8].
 
 Original brief:
 - Env sugar (`dev/plans/PLAN-env-sugar.md`) — ready to execute.
@@ -84,7 +92,12 @@ Original brief:
 [D:breaking-policy]: no `### Breaking` section until the user decides on 0.1.0;
 from then on every breaking change gets one, with a one-line migration.
 
-### W6 — Regression automation (1 session)
+### W6 — Regression automation (1 session) — DONE
+Repro harnesses gate CI and local.sh; the depth axis runs sequenced
+[D:fuzz-depth-sequenced]; invariant 8 is green after the recovery-position
+fix and the narrowed fmt law (user, 2026-10-16) [D:recovery-physical-indent]
+[D:fmt-repairs-layout].
+
 - Run `tools/sweep-repro.weir` and `tools/hunt2-repro.weir` in CI (a
   Linux job; each must print all OK). First harden their free-port
   picking: H14's probe once lost its port between pick and bind
